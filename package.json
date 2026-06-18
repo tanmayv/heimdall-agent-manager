@@ -1,0 +1,36 @@
+{
+  "name": "odin-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Electron/Vite React UI prototype for Odin Test.",
+  "main": "electron-dist/main.cjs",
+  "scripts": {
+    "dev": "npm run build:electron && concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+    "typecheck": "tsc -b",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "build": "npm run typecheck && vite build && npm run build:electron",
+    "preview": "vite preview --host 127.0.0.1",
+    "smoke": "npm run build"
+  },
+  "dependencies": {
+    "@reduxjs/toolkit": "^2.2.8",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-redux": "^9.1.2"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.0.1",
+    "electron": "^33.0.2",
+    "postcss": "^8.4.47",
+    "tailwindcss": "^3.4.14",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10",
+    "wait-on": "^8.0.1"
+  }
+}

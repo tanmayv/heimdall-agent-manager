@@ -1,0 +1,38 @@
+[daemon]
+bind_host = "127.0.0.1"
+port = 49322
+data_dir = "~/.local/share/odin-test"
+
+[wrapper]
+daemon_url = "http://127.0.0.1:49322"
+credentials_path = "~/.local/share/odin-test/wrapper-credentials.json"
+agent_name = "pi"
+default_agent = "pi"
+display_name = "pi main"
+requested_access_mode = "main"
+command = ["pi"]
+tmux_session = "bc-agents"
+tmux_window_prefix = "agent"
+working_dir = "."
+
+# Per-agent-command launch customization. The wrapper selects this section by
+# wrapper.command[0] ("pi" here), or by stripping "-agent" from the agent class
+# when wrapper.command is empty.
+[wrapper.agent-cmd.pi]
+command = ["pi"]
+yolo_flags = []
+# pi accepts the starter prompt as a positional arg:
+#   pi "prompt"
+prompt_flags = []
+starter_prompt = "You are {instance}. Use bc-odinctl with token {token}. Read inbox with: bc-odinctl --config ./config.toml inbox --token {token}. Send with: bc-odinctl --config ./config.toml send --token {token} --to <agent_instance_id> --body <message>."
+
+[wrapper.agent-cmd.claude]
+command = ["claude"]
+# Claude yolo/non-interactive permission bypass:
+#   claude --dangerously-skip-permissions "prompt"
+yolo_flags = ["--dangerously-skip-permissions"]
+prompt_flags = []
+starter_prompt = "You are {instance}. Use bc-odinctl with token {token}. Read inbox with: bc-odinctl --config ./config.toml inbox --token {token}. Send with: bc-odinctl --config ./config.toml send --token {token} --to <agent_instance_id> --body <message>."
+
+[ctl]
+daemon_url = "http://127.0.0.1:49322"

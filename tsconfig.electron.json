@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    "strict": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "outDir": "electron-dist",
+    "rootDir": "electron",
+    "types": ["node"]
+  },
+  "include": ["electron/**/*.cts"]
+}
