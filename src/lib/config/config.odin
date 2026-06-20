@@ -5,7 +5,7 @@ import "core:strconv"
 import "core:strings"
 import contracts "odin_test:contracts"
 
-DEFAULT_CONFIG_PATH :: "~/.config/odin-test/config.toml"
+DEFAULT_CONFIG_PATH :: "~/.config/heimdall/config.toml"
 CONFIG_PATH_FLAG :: "--config"
 
 Config :: struct {
@@ -24,6 +24,15 @@ Daemon_Config :: struct {
 	hub_auth_token: string,
 	user_token: string,
 	hub_enabled: bool,
+	nudge_enabled: bool,
+	nudge_interval_seconds: int,
+	nudge_ready_after_seconds: int,
+	nudge_review_after_seconds: int,
+	nudge_need_improvements_after_seconds: int,
+	nudge_working_stale_after_seconds: int,
+	nudge_cooldown_seconds: int,
+	nudge_restart_grace_seconds: int,
+	nudge_send_escape_prefix: bool,
 }
 
 Wrapper_Config :: struct {
@@ -38,6 +47,21 @@ Wrapper_Config :: struct {
 	tmux_session: string,
 	tmux_window_prefix: string,
 	working_dir: string,
+	agent_run_dir: string,
+	project: string,
+	memory_templates: []string,
+}
+
+Startup_Detection_Config :: struct {
+	enabled: bool,
+	startup_probe_seconds: int,
+	capture_interval_ms: int,
+	ready_patterns: []string,
+	blocked_patterns: []string,
+	probe_prompt: string,
+	probe_expect_echo: bool,
+	startup_unknown_is_blocked: bool,
+	sanitized_reason_mapping: []string,
 }
 
 Agent_Command_Config :: struct {
@@ -46,6 +70,15 @@ Agent_Command_Config :: struct {
 	yolo_flags: []string,
 	prompt_flags: []string,
 	starter_prompt: string,
+	run_dir: string,
+	agent_run_dir: string,
+	project: string,
+	bootstrap_enabled: bool,
+	bootstrap_profile: string,
+	bootstrap_files: []string,
+	bootstrap_sections: []string,
+	memory_templates: []string,
+	startup_detection: Startup_Detection_Config,
 }
 
 Ctl_Config :: struct {
@@ -62,6 +95,7 @@ Section :: enum {
 	Daemon,
 	Wrapper,
 	Wrapper_Agent_Command,
+	Wrapper_Agent_Startup_Detection,
 	Ctl,
 }
 
@@ -121,6 +155,12 @@ parse_config :: proc(content: string, cfg: ^Config) {
 			current_agent_command = ""
 			continue
 		}
+		if strings.has_prefix(line, "[wrapper.agent-cmd.") && strings.has_suffix(line, ".startup_detection]") {
+			section = .Wrapper_Agent_Startup_Detection
+			current_agent_command = line[len("[wrapper.agent-cmd."):len(line) - len(".startup_detection]")]
+			ensure_agent_command(&cfg.wrapper, current_agent_command)
+			continue
+		}
 		if strings.has_prefix(line, "[wrapper.agent-cmd.") && strings.has_suffix(line, "]") {
 			section = .Wrapper_Agent_Command
 			current_agent_command = line[len("[wrapper.agent-cmd."):len(line) - 1]
@@ -145,6 +185,8 @@ parse_config :: proc(content: string, cfg: ^Config) {
 			parse_wrapper_key(key, value, &cfg.wrapper)
 		case .Wrapper_Agent_Command:
 			parse_agent_command_key(current_agent_command, key, value, &cfg.wrapper)
+		case .Wrapper_Agent_Startup_Detection:
+			parse_startup_detection_key(current_agent_command, key, value, &cfg.wrapper)
 		case .Ctl:
 			parse_ctl_key(key, value, &cfg.ctl)
 		case:
@@ -174,6 +216,24 @@ parse_daemon_key :: proc(key, value: string, cfg: ^Daemon_Config) {
 		cfg.user_token = parse_string(value)
 	case "hub_enabled":
 		cfg.hub_enabled = parse_bool(value)
+	case "nudge_enabled":
+		cfg.nudge_enabled = parse_bool(value)
+	case "nudge_interval_seconds":
+		if n, ok := strconv.parse_int(value); ok do cfg.nudge_interval_seconds = int(n)
+	case "nudge_ready_after_seconds":
+		if n, ok := strconv.parse_int(value); ok do cfg.nudge_ready_after_seconds = int(n)
+	case "nudge_review_after_seconds":
+		if n, ok := strconv.parse_int(value); ok do cfg.nudge_review_after_seconds = int(n)
+	case "nudge_need_improvements_after_seconds":
+		if n, ok := strconv.parse_int(value); ok do cfg.nudge_need_improvements_after_seconds = int(n)
+	case "nudge_working_stale_after_seconds":
+		if n, ok := strconv.parse_int(value); ok do cfg.nudge_working_stale_after_seconds = int(n)
+	case "nudge_cooldown_seconds":
+		if n, ok := strconv.parse_int(value); ok do cfg.nudge_cooldown_seconds = int(n)
+	case "nudge_restart_grace_seconds":
+		if n, ok := strconv.parse_int(value); ok do cfg.nudge_restart_grace_seconds = int(n)
+	case "nudge_send_escape_prefix":
+		cfg.nudge_send_escape_prefix = parse_bool(value)
 	case:
 	}
 }
@@ -200,6 +260,12 @@ parse_wrapper_key :: proc(key, value: string, cfg: ^Wrapper_Config) {
 		cfg.tmux_window_prefix = parse_string(value)
 	case "working_dir":
 		cfg.working_dir = parse_string(value)
+	case "agent_run_dir":
+		cfg.agent_run_dir = parse_string(value)
+	case "project":
+		cfg.project = parse_string(value)
+	case "memory_templates":
+		cfg.memory_templates = parse_string_array(value)
 	case:
 	}
 }
@@ -231,6 +297,48 @@ parse_agent_command_key :: proc(name, key, value: string, cfg: ^Wrapper_Config) 
 		cfg.agent_commands[idx].prompt_flags = parse_string_array(value)
 	case "starter_prompt":
 		cfg.agent_commands[idx].starter_prompt = parse_string(value)
+	case "run_dir":
+		cfg.agent_commands[idx].run_dir = parse_string(value)
+	case "agent_run_dir":
+		cfg.agent_commands[idx].agent_run_dir = parse_string(value)
+	case "project":
+		cfg.agent_commands[idx].project = parse_string(value)
+	case "bootstrap_enabled":
+		cfg.agent_commands[idx].bootstrap_enabled = parse_bool(value)
+	case "bootstrap_profile":
+		cfg.agent_commands[idx].bootstrap_profile = parse_string(value)
+	case "bootstrap_files":
+		cfg.agent_commands[idx].bootstrap_files = parse_string_array(value)
+	case "bootstrap_sections":
+		cfg.agent_commands[idx].bootstrap_sections = parse_string_array(value)
+	case "memory_templates":
+		cfg.agent_commands[idx].memory_templates = parse_string_array(value)
+	case:
+	}
+}
+
+parse_startup_detection_key :: proc(name, key, value: string, cfg: ^Wrapper_Config) {
+	idx := ensure_agent_command(cfg, name)
+	sd := &cfg.agent_commands[idx].startup_detection
+	switch key {
+	case "enabled":
+		sd.enabled = parse_bool(value)
+	case "startup_probe_seconds":
+		if n, ok := strconv.parse_int(value); ok do sd.startup_probe_seconds = int(n)
+	case "capture_interval_ms":
+		if n, ok := strconv.parse_int(value); ok do sd.capture_interval_ms = int(n)
+	case "ready_patterns":
+		sd.ready_patterns = parse_string_array(value)
+	case "blocked_patterns":
+		sd.blocked_patterns = parse_string_array(value)
+	case "probe_prompt":
+		sd.probe_prompt = parse_string(value)
+	case "probe_expect_echo":
+		sd.probe_expect_echo = parse_bool(value)
+	case "startup_unknown_is_blocked":
+		sd.startup_unknown_is_blocked = parse_bool(value)
+	case "sanitized_reason_mapping", "reason_mapping":
+		sd.sanitized_reason_mapping = parse_string_array(value)
 	case:
 	}
 }
@@ -290,25 +398,37 @@ default_config :: proc() -> Config {
 	cfg: Config
 	cfg.daemon.bind_host = "127.0.0.1"
 	cfg.daemon.port = 49322
-	cfg.daemon.data_dir = "~/.local/share/odin-test"
+	cfg.daemon.data_dir = "~/.local/share/heimdall"
 	cfg.daemon.daemon_id = "local-daemon"
 	cfg.daemon.user_id = "local-user"
 	cfg.daemon.namespace = "default"
 	cfg.daemon.hub_auth_token = "local-hub-auth-token"
 	cfg.daemon.user_token = "local-user-encryption-token"
 	cfg.daemon.hub_enabled = false
+	cfg.daemon.nudge_enabled = false
+	cfg.daemon.nudge_interval_seconds = 60
+	cfg.daemon.nudge_ready_after_seconds = 300
+	cfg.daemon.nudge_review_after_seconds = 300
+	cfg.daemon.nudge_need_improvements_after_seconds = 300
+	cfg.daemon.nudge_working_stale_after_seconds = 900
+	cfg.daemon.nudge_cooldown_seconds = 300
+	cfg.daemon.nudge_restart_grace_seconds = 60
+	cfg.daemon.nudge_send_escape_prefix = false
 
 	cfg.wrapper.daemon_url = "http://127.0.0.1:49322"
-	cfg.wrapper.credentials_path = "~/.local/share/odin-test/wrapper-credentials.json"
+	cfg.wrapper.credentials_path = "~/.local/share/heimdall/wrapper-credentials.json"
 	cfg.wrapper.agent_name = "pi"
 	cfg.wrapper.default_agent = "pi"
-	cfg.wrapper.display_name = "pi main"
+	cfg.wrapper.display_name = "{instance}"
 	cfg.wrapper.requested_access_mode = .Main
 	cfg.wrapper.command = nil
 	cfg.wrapper.agent_commands = make([dynamic]Agent_Command_Config)
-	cfg.wrapper.tmux_session = "bc-agents"
+	cfg.wrapper.tmux_session = "ham-agents"
 	cfg.wrapper.tmux_window_prefix = "agent"
 	cfg.wrapper.working_dir = "."
+	cfg.wrapper.agent_run_dir = ""
+	cfg.wrapper.project = "default"
+	cfg.wrapper.memory_templates = nil
 
 	cfg.ctl.daemon_url = "http://127.0.0.1:49322"
 

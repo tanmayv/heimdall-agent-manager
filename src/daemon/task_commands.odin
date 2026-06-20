@@ -3,6 +3,7 @@ package main
 Task_Create_Command :: struct {
 	task_id: string,
 	chain_id: string,
+	standalone: bool,
 	title: string,
 	description: string,
 	acceptance_criteria: string,
@@ -61,6 +62,23 @@ Task_Review_Command :: struct {
 	chain_id: string,
 	result: string,
 	comment: string,
+	author_agent_instance_id: string,
+}
+
+Task_Nudge_Command :: struct {
+	task_id: string,
+	chain_id: string,
+	body: string,
+	author_agent_instance_id: string,
+}
+
+Task_Chain_Update_Command :: struct {
+	chain_id: string,
+	title: string,
+	description: string,
+	coordinator_agent_instance_id: string,
+	default_reviewer_agent_instance_id: string,
+	final_summary: string,
 	author_agent_instance_id: string,
 }
 

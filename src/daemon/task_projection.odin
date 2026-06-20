@@ -17,6 +17,7 @@ task_projection_apply_event :: proc(event: Task_Event) -> bool {
 		task_states[idx].acceptance_criteria = strings.clone(event.acceptance_criteria)
 		task_states[idx].priority = strings.clone(event.priority)
 		if event.status != "" do task_states[idx].status = strings.clone(event.status)
+		if event.body != "" do task_states[idx].last_comment = strings.clone(event.body)
 		task_states[idx].assignee_agent_instance_id = strings.clone(event.assignee_agent_instance_id)
 		task_states[idx].assigned_agent_instance_id = strings.clone(event.assignee_agent_instance_id)
 		task_states[idx].reviewer_agent_instance_id = strings.clone(event.reviewer_agent_instance_id)
@@ -58,6 +59,12 @@ task_projection_apply_event :: proc(event: Task_Event) -> bool {
 		task_chains[idx].coordinator_agent_instance_id = strings.clone(event.coordinator_agent_instance_id)
 		task_chains[idx].default_reviewer_agent_instance_id = strings.clone(event.default_reviewer_agent_instance_id)
 		task_chains[idx].created_at_unix_ms = event.created_unix_ms
+	case .Chain_Metadata_Updated:
+		idx := task_chain_index(event.chain_id)
+		task_chains[idx].title = strings.clone(event.title)
+		task_chains[idx].description = strings.clone(event.description)
+		task_chains[idx].coordinator_agent_instance_id = strings.clone(event.coordinator_agent_instance_id)
+		task_chains[idx].default_reviewer_agent_instance_id = strings.clone(event.default_reviewer_agent_instance_id)
 	case .Chain_Status_Changed:
 		idx := task_chain_index(event.chain_id)
 		task_chains[idx].status = strings.clone(event.status)

@@ -1,0 +1,338 @@
+import { useEffect, useState } from 'react';
+import { useDispatch, useSelector } from 'react-redux';
+import { createProjectFromUi, fetchProjectDetail, refreshProjects, selectProject, updateProjectFromUi } from '../store/projectSlice';
+import * as daemonApi from '../api/daemonApi';
+import type { ProjectAnchor } from '../api/daemonApi';
+
+const blankAnchor: ProjectAnchor = { type: '', value: '', note: '' };
+
+function formatTime(unixMs: number) {
+  if (!unixMs) return '—';
+  return new Date(unixMs).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function cleanAnchors(anchors: ProjectAnchor[]) {
+  return anchors
+    .map((anchor) => ({ type: anchor.type.trim(), value: anchor.value.trim(), note: anchor.note.trim() }))
+    .filter((anchor) => anchor.type || anchor.value || anchor.note);
+}
+
+export default function ProjectsPage({ session }: { session: any }) {
+  const dispatch = useDispatch<any>();
+  const { projectsById, projectIds, selectedProjectId, loading, detailLoading, mutating, error } = useSelector((state: any) => state.projects);
+  const selectedProject = selectedProjectId ? projectsById[selectedProjectId] : null;
+  const [page, setPage] = useState<'list' | 'create'>('list');
+  const [form, setForm] = useState({ name: '', description: '', anchors: [{ ...blankAnchor }] as ProjectAnchor[] });
+  const [detailForm, setDetailForm] = useState({ projectId: '', name: '', description: '', anchors: [] as ProjectAnchor[] });
+  const [pickerError, setPickerError] = useState('');
+  const [projectAgents, setProjectAgents] = useState<any[]>([]);
+  const [allAgents, setAllAgents] = useState<any[]>([]);
+  const [agentTemplates, setAgentTemplates] = useState<any[]>([]);
+  const [agentProviders, setAgentProviders] = useState<Array<{ name: string }>>([]);
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [agentError, setAgentError] = useState('');
+  const [agentMode, setAgentMode] = useState<'existing' | 'new'>('existing');
+  const [existingAgentId, setExistingAgentId] = useState('');
+  const [newAgentForm, setNewAgentForm] = useState({ templateId: 'reviewer', provider: '', displayName: '' });
+
+  useEffect(() => {
+    if (session.connected && session.clientToken) dispatch(refreshProjects());
+  }, [dispatch, session.connected, session.clientToken]);
+
+  useEffect(() => {
+    if (selectedProjectId) dispatch(fetchProjectDetail(selectedProjectId));
+  }, [dispatch, selectedProjectId]);
+
+  useEffect(() => {
+    if (!selectedProject) return;
+    setDetailForm({
+      projectId: selectedProject.projectId,
+      name: selectedProject.name || '',
+      description: selectedProject.description || '',
+      anchors: (selectedProject.anchors?.length ? selectedProject.anchors : [{ ...blankAnchor }]).map((anchor) => ({ type: anchor.type || '', value: anchor.value || '', note: anchor.note || '' })),
+    });
+  }, [selectedProject?.projectId, selectedProject?.updatedUnixMs]);
+
+  async function refreshProjectAgents(projectId = selectedProjectId) {
+    if (!projectId) return;
+    setAgentError('');
+    try {
+      const [projectList, allList, templates, providers] = await Promise.all([
+        daemonApi.listKnownAgents({ daemonUrl: session.daemonUrl, projectId }),
+        daemonApi.listKnownAgents({ daemonUrl: session.daemonUrl }),
+        daemonApi.listAgentTemplates({ daemonUrl: session.daemonUrl }).catch(() => []),
+        daemonApi.listAgentProviders({ daemonUrl: session.daemonUrl }).catch(() => []),
+      ]);
+      setProjectAgents(projectList || []);
+      setAllAgents(allList || []);
+      setAgentTemplates((templates || []).map((template: any) => ({ templateId: template.template_id || template.templateId || template.id, displayName: template.display_name || template.displayName || template.name || template.template_id, roleHint: template.role_hint || template.roleHint || '', defaultProviderProfile: template.default_provider_profile || template.defaultProviderProfile || template.provider_profile || '' })).filter((template: any) => template.templateId));
+      const normalizedProviders = (providers || []).map((provider: any) => ({ name: provider.name || String(provider) })).filter((provider: any) => provider.name);
+      setAgentProviders(normalizedProviders);
+      setNewAgentForm((current) => ({ ...current, provider: current.provider || normalizedProviders[0]?.name || '' }));
+    } catch (err: any) {
+      setAgentError(err?.message || 'Failed to load project agents');
+    }
+  }
+
+  useEffect(() => {
+    if (selectedProjectId) refreshProjectAgents(selectedProjectId);
+  }, [selectedProjectId, session.daemonUrl]);
+
+  function agentRecordId(agent: any) { return agent.agent_record_id || agent.agentRecordId || ''; }
+  function agentInstanceId(agent: any) { return agent.agent_instance_id || agent.agentInstanceId || agent.id || ''; }
+  function agentDisplayName(agent: any) { return agent.display_name || agent.displayName || agent.alias || agentInstanceId(agent) || 'Unnamed agent'; }
+  function agentTemplateId(agent: any) { return agent.template_id || agent.templateId || ''; }
+  function agentProvider(agent: any) { return agent.provider_profile || agent.providerProfile || agent.agent_class || ''; }
+  function projectDisplayName() { return selectedProject?.name || selectedProject?.projectId || 'Project'; }
+  function suggestedAgentDisplayName() { return `${newAgentForm.templateId || 'agent'}@${projectDisplayName()}`; }
+
+  function updateAnchor(index: number, patch: Partial<ProjectAnchor>) {
+    setForm((current) => ({
+      ...current,
+      anchors: current.anchors.map((anchor, anchorIndex) => anchorIndex === index ? { ...anchor, ...patch } : anchor),
+    }));
+  }
+
+  function removeAnchor(index: number) {
+    setForm((current) => ({ ...current, anchors: current.anchors.filter((_, anchorIndex) => anchorIndex !== index) }));
+  }
+
+  function updateDetailAnchor(index: number, patch: Partial<ProjectAnchor>) {
+    setDetailForm((current) => ({
+      ...current,
+      anchors: current.anchors.map((anchor, anchorIndex) => anchorIndex === index ? { ...anchor, ...patch } : anchor),
+    }));
+  }
+
+  function removeDetailAnchor(index: number) {
+    setDetailForm((current) => ({ ...current, anchors: current.anchors.filter((_, anchorIndex) => anchorIndex !== index) }));
+  }
+
+  async function chooseDirectoryAnchor(target: 'create' | 'detail', index: number) {
+    setPickerError('');
+    if (!window.odinApi?.pickDirectory) {
+      setPickerError('Directory picker is only available in the Electron app.');
+      return;
+    }
+    try {
+      const result = await window.odinApi.pickDirectory();
+      if (!result || result.canceled || !result.path) return;
+      if (target === 'create') updateAnchor(index, { value: result.path });
+      else updateDetailAnchor(index, { value: result.path });
+    } catch (error: any) {
+      setPickerError(error?.message || 'Directory picker failed.');
+    }
+  }
+
+  function submitDetail(event) {
+    event.preventDefault();
+    if (!detailForm.projectId || !detailForm.name.trim() || mutating) return;
+    dispatch(updateProjectFromUi({
+      projectId: detailForm.projectId,
+      name: detailForm.name.trim(),
+      description: detailForm.description.trim(),
+      anchors: cleanAnchors(detailForm.anchors),
+    })).catch(() => undefined);
+  }
+
+  function submitCreate(event) {
+    event.preventDefault();
+    if (!form.name.trim() || mutating) return;
+    dispatch(createProjectFromUi({ name: form.name.trim(), description: form.description.trim(), anchors: cleanAnchors(form.anchors) }))
+      .unwrap()
+      .then((result) => {
+        if (result?.project_id) dispatch(selectProject(result.project_id));
+        setForm({ name: '', description: '', anchors: [{ ...blankAnchor }] });
+        setPage('list');
+      })
+      .catch(() => undefined);
+  }
+
+  async function addExistingAgent(event) {
+    event.preventDefault();
+    if (!selectedProjectId || !existingAgentId || agentBusy) return;
+    const agent = allAgents.find((item) => (agentRecordId(item) || agentInstanceId(item)) === existingAgentId);
+    if (!agent) return;
+    setAgentBusy(true);
+    setAgentError('');
+    try {
+      await daemonApi.associateAgentWithProject({ daemonUrl: session.daemonUrl, agentRecordId: agentRecordId(agent), agentInstanceId: agentInstanceId(agent), projectId: selectedProjectId });
+      setExistingAgentId('');
+      await refreshProjectAgents(selectedProjectId);
+    } catch (err: any) {
+      setAgentError(err?.message || 'Failed to add existing agent');
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
+  async function startProjectAgent(event) {
+    event.preventDefault();
+    if (!selectedProjectId || !newAgentForm.provider || agentBusy) return;
+    const displayName = newAgentForm.displayName.trim() || suggestedAgentDisplayName();
+    if (allAgents.some((agent) => agentDisplayName(agent).trim().toLowerCase() === displayName.toLowerCase())) {
+      setAgentError(`An agent named ${displayName} already exists. Choose a unique display name.`);
+      return;
+    }
+    setAgentBusy(true);
+    setAgentError('');
+    try {
+      const result = await daemonApi.startAgent({ daemonUrl: session.daemonUrl, provider: newAgentForm.provider, templateId: newAgentForm.templateId, projectId: selectedProjectId, displayName });
+      await refreshProjectAgents(selectedProjectId);
+      const refreshed = await daemonApi.listKnownAgents({ daemonUrl: session.daemonUrl, projectId: selectedProjectId });
+      setProjectAgents(refreshed || []);
+      if (!((refreshed || []).some((agent: any) => agentDisplayName(agent) === (result.display_name || displayName)))) {
+        setAgentError('Agent started, but refreshed project-agent list did not return the requested display name yet. Refresh to reconcile.');
+      }
+      setNewAgentForm((current) => ({ ...current, displayName: '' }));
+    } catch (err: any) {
+      setAgentError(err?.message || 'Failed to start project agent');
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
+  async function removeProjectAgent(agent: any) {
+    if (!window.confirm(`Remove ${agentDisplayName(agent)} from ${projectDisplayName()}? The agent record remains known; only the project association is removed.`)) return;
+    setAgentBusy(true);
+    setAgentError('');
+    try {
+      await daemonApi.disassociateAgentFromProject({ daemonUrl: session.daemonUrl, agentRecordId: agentRecordId(agent), agentInstanceId: agentInstanceId(agent) });
+      await refreshProjectAgents(selectedProjectId);
+    } catch (err: any) {
+      setAgentError(err?.message || 'Failed to remove project agent');
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
+  const availableExistingAgents = allAgents.filter((agent) => !projectAgents.some((projectAgent) => (agentRecordId(projectAgent) && agentRecordId(projectAgent) === agentRecordId(agent)) || (agentInstanceId(projectAgent) && agentInstanceId(projectAgent) === agentInstanceId(agent))));
+
+  return (
+    <main className="flex min-w-0 flex-1 flex-col bg-[var(--fd-canvas)]">
+      <header className="framer-panel flex items-center justify-between border-b border-[var(--fd-hairline)] px-6 py-4">
+        <div>
+          <p className="framer-topline tracking-[0.28em]">Projects</p>
+          <h2 className="mt-1 text-2xl font-bold text-white">Project workspace</h2>
+        </div>
+        <div className="flex gap-2">
+          {page === 'create' ? <button type="button" onClick={() => setPage('list')} className="framer-pill-secondary">Back</button> : null}
+          <button type="button" onClick={() => dispatch(refreshProjects())} disabled={loading} className="framer-pill-secondary disabled:opacity-40">{loading ? 'Refreshing…' : 'Refresh'}</button>
+          <button type="button" onClick={() => setPage('create')} className="framer-pill">+ Project</button>
+        </div>
+      </header>
+
+      <section className="min-h-0 flex-1 overflow-y-auto p-6">
+        {error ? <div className="mb-4 rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">{error}</div> : null}
+        {pickerError ? <div className="mb-4 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">{pickerError}</div> : null}
+
+        {page === 'create' ? (
+          <form onSubmit={submitCreate} className="framer-card-xl mx-auto max-w-4xl space-y-4 p-5">
+            <div>
+              <p className="framer-topline">Create project</p>
+              <h3 className="mt-1 text-xl font-bold text-white">New project</h3>
+              <p className="mt-2 text-sm text-[#999]">Project id is generated by the daemon. Anchors are intentionally loose type/value/note records.</p>
+            </div>
+            <input value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Project name" className="framer-input w-full px-3 py-2" required />
+            <textarea value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} placeholder="Optional description" className="framer-input min-h-24 w-full px-3 py-2" />
+            <div className="space-y-3">
+              <div className="flex items-center justify-between"><p className="framer-topline">Initial anchors</p><button type="button" onClick={() => setForm((current) => ({ ...current, anchors: [...current.anchors, { ...blankAnchor }] }))} className="framer-pill-secondary px-3 py-2 text-xs">+ Anchor</button></div>
+              {form.anchors.map((anchor, index) => (
+                <div key={index} className="framer-card grid grid-cols-[0.65fr_1fr_1fr_auto_auto] gap-2 p-3">
+                  <input value={anchor.type} onChange={(event) => updateAnchor(index, { type: event.target.value })} placeholder="type" list="anchor-types" className="framer-input px-3 py-2 text-sm" />
+                  <input value={anchor.value} onChange={(event) => updateAnchor(index, { value: event.target.value })} placeholder="value" className="framer-input px-3 py-2 text-sm" />
+                  <input value={anchor.note} onChange={(event) => updateAnchor(index, { note: event.target.value })} placeholder="note" className="framer-input px-3 py-2 text-sm" />
+                  {anchor.type.trim().toLowerCase() === 'directory' ? <button type="button" onClick={() => chooseDirectoryAnchor('create', index)} className="framer-pill-secondary px-3 py-2 text-xs">Browse…</button> : null}
+                  <button type="button" onClick={() => removeAnchor(index)} className="framer-pill-secondary px-3 py-2 text-xs">Remove</button>
+                </div>
+              ))}
+              <datalist id="anchor-types"><option value="directory" /><option value="git_repo" /><option value="file" /><option value="url" /><option value="custom" /></datalist>
+            </div>
+            <div className="flex justify-end gap-2"><button type="button" onClick={() => setPage('list')} className="framer-pill-secondary">Cancel</button><button disabled={!form.name.trim() || mutating} className="framer-pill disabled:opacity-40">{mutating ? 'Creating…' : 'Create project'}</button></div>
+          </form>
+        ) : (
+          <div className="grid min-h-full grid-cols-[minmax(300px,0.9fr)_minmax(420px,1.3fr)] gap-5">
+            <div className="space-y-2">
+              {projectIds.map((projectId) => {
+                const project = projectsById[projectId];
+                return (
+                  <button key={projectId} type="button" onClick={() => dispatch(selectProject(projectId))} className={`framer-card w-full p-4 text-left transition hover:-translate-y-0.5 ${selectedProjectId === projectId ? 'border-[var(--fd-accent-blue)]' : ''}`}>
+                    <p className="font-semibold text-white">{project.name || project.projectId}</p>
+                    <p className="mt-1 break-all text-xs text-[#999]">{project.projectId}</p>
+                    <p className="mt-2 line-clamp-2 text-sm text-[#bbb]">{project.description || 'No description'}</p>
+                    <p className="framer-subtext mt-2 text-xs">{project.anchors?.length || 0} anchors · updated {formatTime(project.updatedUnixMs || project.createdUnixMs)}</p>
+                  </button>
+                );
+              })}
+              {!projectIds.length ? <div className="framer-card border-dashed p-5 text-sm text-[#999]">No projects yet. Create one to get started.</div> : null}
+            </div>
+            <div className="framer-card-xl p-5">
+              {selectedProject ? (
+                <>
+                  <div className="flex items-start justify-between gap-4"><div><p className="framer-topline">Project detail {detailLoading ? '· loading…' : ''}</p><h3 className="mt-1 text-2xl font-bold text-white">{selectedProject.name}</h3><p className="mt-1 break-all text-xs text-[#999]">{selectedProject.projectId}</p></div><span className="framer-chip">{selectedProject.anchors?.length || 0} anchors</span></div>
+                  <form onSubmit={submitDetail} className="mt-5 space-y-4">
+                    <input value={detailForm.name} onChange={(event) => setDetailForm({ ...detailForm, name: event.target.value })} placeholder="Project name" className="framer-input w-full px-3 py-2 text-sm" required />
+                    <textarea value={detailForm.description} onChange={(event) => setDetailForm({ ...detailForm, description: event.target.value })} placeholder="Project description" className="framer-input min-h-24 w-full px-3 py-2 text-sm" />
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between"><p className="framer-topline">Anchors</p><button type="button" onClick={() => setDetailForm((current) => ({ ...current, anchors: [...current.anchors, { ...blankAnchor }] }))} className="framer-pill-secondary px-3 py-2 text-xs">+ Anchor</button></div>
+                      {detailForm.anchors.map((anchor, index) => (
+                        <div key={index} className="framer-card grid grid-cols-[0.65fr_1fr_1fr_auto_auto] gap-2 p-3">
+                          <input value={anchor.type} onChange={(event) => updateDetailAnchor(index, { type: event.target.value })} placeholder="type" list="anchor-types" className="framer-input px-3 py-2 text-sm" />
+                          <input value={anchor.value} onChange={(event) => updateDetailAnchor(index, { value: event.target.value })} placeholder="value" className="framer-input px-3 py-2 text-sm" />
+                          <input value={anchor.note} onChange={(event) => updateDetailAnchor(index, { note: event.target.value })} placeholder="note" className="framer-input px-3 py-2 text-sm" />
+                          {anchor.type.trim().toLowerCase() === 'directory' ? <button type="button" onClick={() => chooseDirectoryAnchor('detail', index)} className="framer-pill-secondary px-3 py-2 text-xs">Browse…</button> : null}
+                          <button type="button" onClick={() => removeDetailAnchor(index)} className="framer-pill-secondary px-3 py-2 text-xs">Remove</button>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex justify-end"><button disabled={!detailForm.name.trim() || mutating} className="framer-pill disabled:opacity-40">{mutating ? 'Saving…' : 'Save project'}</button></div>
+                  </form>
+
+                  <section className="mt-6 space-y-4 border-t border-[var(--fd-hairline)] pt-5">
+                    <div className="flex items-center justify-between gap-3">
+                      <div><p className="framer-topline">Project agents</p><p className="mt-1 text-sm text-[#999]">Agents associated with this project_id. Durable ids are daemon-generated and hidden from entry.</p></div>
+                      <button type="button" onClick={() => refreshProjectAgents(selectedProjectId)} className="framer-pill-secondary px-3 py-2 text-xs">Refresh</button>
+                    </div>
+                    {agentError ? <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">{agentError}</div> : null}
+                    <div className="space-y-2">
+                      {projectAgents.length ? projectAgents.map((agent) => (
+                        <div key={agentRecordId(agent) || agentInstanceId(agent)} className="framer-card flex items-start justify-between gap-3 p-3">
+                          <div className="min-w-0"><p className="truncate text-sm font-semibold text-white">{agentDisplayName(agent)}</p><p className="mt-1 text-xs text-[#999]">Template {agentTemplateId(agent) || '—'} · Provider {agentProvider(agent) || '—'}</p></div>
+                          <button type="button" onClick={() => removeProjectAgent(agent)} disabled={agentBusy} className="framer-pill-secondary px-3 py-2 text-xs disabled:opacity-40">Remove</button>
+                        </div>
+                      )) : <div className="framer-card border-dashed p-4 text-sm text-[#999]">No agents are associated with this project yet.</div>}
+                    </div>
+
+                    <div className="grid gap-3 lg:grid-cols-2">
+                      <form onSubmit={addExistingAgent} className="framer-card space-y-3 p-4">
+                        <div><p className="framer-topline">Add existing</p><p className="mt-1 text-xs text-[#999]">Associates a known agent with this project.</p></div>
+                        <select value={existingAgentId} onChange={(event) => setExistingAgentId(event.target.value)} className="framer-input w-full px-3 py-2 text-sm">
+                          <option value="">Select known agent</option>
+                          {availableExistingAgents.map((agent) => <option key={agentRecordId(agent) || agentInstanceId(agent)} value={agentRecordId(agent) || agentInstanceId(agent)}>{agentDisplayName(agent)}</option>)}
+                        </select>
+                        <button disabled={!existingAgentId || agentBusy} className="framer-pill disabled:opacity-40">Add to project</button>
+                      </form>
+
+                      <form onSubmit={startProjectAgent} className="framer-card space-y-3 p-4">
+                        <div><p className="framer-topline">Add new</p><p className="mt-1 text-xs text-[#999]">Selected project is locked; display name is sent separately from project_id.</p></div>
+                        <select value={newAgentForm.templateId} onChange={(event) => setNewAgentForm({ ...newAgentForm, templateId: event.target.value })} className="framer-input w-full px-3 py-2 text-sm">
+                          {agentTemplates.length ? agentTemplates.map((template) => <option key={template.templateId} value={template.templateId}>{template.displayName || template.templateId}</option>) : <option value="reviewer">reviewer</option>}
+                        </select>
+                        <select value={newAgentForm.provider} onChange={(event) => setNewAgentForm({ ...newAgentForm, provider: event.target.value })} className="framer-input w-full px-3 py-2 text-sm">
+                          {agentProviders.length ? agentProviders.map((provider) => <option key={provider.name} value={provider.name}>{provider.name}</option>) : <option value="">No providers</option>}
+                        </select>
+                        <input value={newAgentForm.displayName} onChange={(event) => setNewAgentForm({ ...newAgentForm, displayName: event.target.value })} placeholder={suggestedAgentDisplayName()} className="framer-input w-full px-3 py-2 text-sm" />
+                        <p className="text-xs text-[#999]">Default display_name: <span className="text-white">{suggestedAgentDisplayName()}</span>. Project association uses <span className="text-white">{selectedProjectId}</span>.</p>
+                        <button disabled={!newAgentForm.provider || agentBusy} className="framer-pill disabled:opacity-40">Start project agent</button>
+                      </form>
+                    </div>
+                  </section>
+                </>
+              ) : <p className="text-sm text-[#999]">Select a project to view details.</p>}
+            </div>
+          </div>
+        )}
+      </section>
+    </main>
+  );
+}

@@ -1,0 +1,220 @@
+import { useEffect, useState } from 'react';
+import { useDispatch, useSelector } from 'react-redux';
+import { decideMemoryProposal, fetchMemoryDetail, proposeMemoryChange, refreshMemory, selectMemory, setMemoryFilters } from '../store/memorySlice';
+
+const MEMORY_TYPES = ['fact', 'habit', 'episode', 'expertise', 'skill'];
+const MEMORY_STATUSES = ['active', 'pending', 'archived', 'rejected'];
+
+function formatTime(unixMs: number) {
+  if (!unixMs) return '—';
+  return new Date(unixMs).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function statusTone(status: string) {
+  if (status === 'active') return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300';
+  if (status === 'pending') return 'border-amber-500/25 bg-amber-500/10 text-amber-200';
+  if (status === 'rejected') return 'border-red-500/25 bg-red-500/10 text-red-200';
+  return 'border-[var(--fd-hairline)] bg-[var(--fd-surface-1)] text-[#aaa]';
+}
+
+function StatusPill({ status }: { status: string }) {
+  return <span className={`rounded-full border px-2 py-1 text-[11px] font-medium ${statusTone(status)}`}>{status || 'unknown'}</span>;
+}
+
+function Field({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="framer-card p-3">
+      <p className="framer-topline text-[10px]">{label}</p>
+      <p className="mt-1 break-words text-sm text-white">{String(value || '—')}</p>
+    </div>
+  );
+}
+
+const blankForm = { proposalAction: 'new', memoryId: '', expectedVersion: '', subjectAgent: '', type: 'fact', scope: 'global', title: '', body: '', reason: '', evidence: '', sourceTaskId: '' };
+
+export default function MemoryBoard({ session }) {
+  const dispatch = useDispatch<any>();
+  const { recordsById, recordIds, selectedMemoryId, historyById, filters, loading, detailLoading, error } = useSelector((state: any) => state.memory);
+  const selected = selectedMemoryId ? recordsById[selectedMemoryId] : null;
+  const history = selectedMemoryId ? historyById[selectedMemoryId] ?? [] : [];
+  const [page, setPage] = useState<'list' | 'detail' | 'propose'>('list');
+  const [form, setForm] = useState(blankForm);
+  const [decisionReason, setDecisionReason] = useState('');
+  const [mutationError, setMutationError] = useState('');
+  const [mutating, setMutating] = useState(false);
+  const canMutate = Boolean(session.clientToken) && session.connected && !mutating;
+
+  useEffect(() => {
+    if (session.connected && session.clientToken) dispatch(refreshMemory());
+  }, [dispatch, session.connected, session.clientToken, filters.subjectAgent, filters.type, filters.status]);
+
+  useEffect(() => {
+    if (selectedMemoryId) dispatch(fetchMemoryDetail(selectedMemoryId));
+  }, [dispatch, selectedMemoryId]);
+
+  function updateForm(patch: any) {
+    setForm((current) => ({ ...current, ...patch }));
+  }
+
+  function openDetail(memoryId: string) {
+    dispatch(selectMemory(memoryId));
+    setPage('detail');
+  }
+
+  function openProposal(action: string, record: any = selected) {
+    setMutationError('');
+    setForm({
+      ...blankForm,
+      proposalAction: action,
+      memoryId: action === 'new' ? '' : record?.memoryId || '',
+      expectedVersion: action === 'new' ? '' : String(record?.version || ''),
+      subjectAgent: record?.subjectAgent || '',
+      type: record?.type || 'fact',
+      scope: record?.scope || 'global',
+      title: action === 'archive' || action === 'rollback' ? record?.title || '' : record?.title || '',
+      body: action === 'archive' || action === 'rollback' ? '' : record?.body || '',
+      sourceTaskId: record?.sourceTaskId || '',
+      reason: '',
+      evidence: '',
+    });
+    setPage('propose');
+  }
+
+  async function runMutation(callback: () => Promise<any>) {
+    setMutationError('');
+    setMutating(true);
+    try {
+      await callback();
+    } catch (error: any) {
+      setMutationError(error?.message || 'Memory mutation failed');
+    } finally {
+      setMutating(false);
+    }
+  }
+
+  function submitProposal(event) {
+    event.preventDefault();
+    if (!canMutate || !form.reason.trim() || !form.evidence.trim()) return;
+    runMutation(async () => {
+      const payload: any = {
+        proposalAction: form.proposalAction,
+        memory_id: form.memoryId.trim(),
+        expected_version: Number(form.expectedVersion || selected?.version || 0),
+        subject_agent: form.subjectAgent.trim(),
+        scope: form.scope.trim() || 'global',
+        type: form.type,
+        title: form.title.trim(),
+        body: form.body,
+        reason: form.reason.trim(),
+        evidence: form.evidence.trim(),
+        source_task_id: form.sourceTaskId.trim(),
+      };
+      if (form.proposalAction === 'new') {
+        delete payload.memory_id;
+        delete payload.expected_version;
+      }
+      await dispatch(proposeMemoryChange(payload)).unwrap();
+      setForm(blankForm);
+      setPage('list');
+    });
+  }
+
+  function decide(decision: 'approve' | 'reject') {
+    if (!selected?.proposalId || !canMutate) return;
+    runMutation(async () => {
+      await dispatch(decideMemoryProposal({ proposalId: selected.proposalId, decision, reason: decisionReason.trim() })).unwrap();
+      setDecisionReason('');
+      await dispatch(fetchMemoryDetail(selected.memoryId));
+    });
+  }
+
+  const counts = MEMORY_STATUSES.map((status) => ({ status, count: recordIds.filter((id) => recordsById[id]?.status === status).length }));
+
+  return (
+    <main className="flex min-w-0 flex-1 flex-col bg-[var(--fd-canvas)]">
+      <header className="framer-panel flex items-center justify-between border-b border-[var(--fd-hairline)] px-6 py-4">
+        <div>
+          <p className="framer-topline tracking-[0.28em]">Memory</p>
+          <h2 className="mt-1 text-2xl font-bold text-white">Durable memory</h2>
+        </div>
+        <div className="flex gap-2">
+          {page !== 'list' ? <button type="button" onClick={() => setPage('list')} className="framer-pill-secondary">Back</button> : null}
+          <button type="button" onClick={() => dispatch(refreshMemory())} className="framer-pill-secondary" disabled={loading}>Refresh</button>
+          <button type="button" onClick={() => openProposal('new', null)} className="framer-pill" disabled={!session.clientToken}>+ Proposal</button>
+        </div>
+      </header>
+
+      <section className="min-h-0 flex-1 overflow-y-auto p-6">
+        {error ? <div className="mb-4 rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">{error}</div> : null}
+        {mutationError ? <div className="mb-4 rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">{mutationError}</div> : null}
+
+        {page === 'list' ? (
+          <div className="grid min-h-full grid-cols-[minmax(300px,0.9fr)_minmax(420px,1.3fr)] gap-5">
+            <div className="space-y-4">
+              <div className="framer-card-xl p-4">
+                <div className="grid grid-cols-4 gap-2">
+                  {counts.map((item) => <div key={item.status} className="framer-card p-3"><p className="framer-topline text-[10px]">{item.status}</p><p className="mt-1 text-xl font-bold">{item.count}</p></div>)}
+                </div>
+                <div className="mt-4 grid gap-2">
+                  <input value={filters.subjectAgent} onChange={(event) => dispatch(setMemoryFilters({ subjectAgent: event.target.value }))} placeholder="Filter subject agent" className="framer-input px-3 py-2 text-sm" />
+                  <div className="grid grid-cols-2 gap-2">
+                    <select value={filters.type} onChange={(event) => dispatch(setMemoryFilters({ type: event.target.value }))} className="framer-input px-3 py-2 text-sm"><option value="">All types</option>{MEMORY_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}</select>
+                    <select value={filters.status} onChange={(event) => dispatch(setMemoryFilters({ status: event.target.value }))} className="framer-input px-3 py-2 text-sm"><option value="">All statuses</option>{MEMORY_STATUSES.map((status) => <option key={status} value={status}>{status}</option>)}</select>
+                  </div>
+                </div>
+              </div>
+              <div className="space-y-2">
+                {recordIds.map((id) => {
+                  const record = recordsById[id];
+                  return (
+                    <button key={id} type="button" onClick={() => openDetail(id)} className={`framer-card w-full p-4 text-left transition hover:-translate-y-0.5 ${selectedMemoryId === id ? 'border-[var(--fd-accent-blue)]' : ''}`}>
+                      <div className="flex items-start justify-between gap-3"><div><p className="font-semibold text-white">{record.title || record.memoryId}</p><p className="mt-1 text-xs text-[#999]">{record.subjectAgent || 'global'} · {record.type} · v{record.version}</p></div><StatusPill status={record.status} /></div>
+                      <p className="mt-2 line-clamp-2 text-sm text-[#bdbdbd]">{record.body || record.reason || 'No body'}</p>
+                    </button>
+                  );
+                })}
+                {!recordIds.length ? <div className="framer-card border-dashed p-5 text-sm text-[#999]">No memory records match the filters.</div> : null}
+              </div>
+            </div>
+            <MemoryDetail selected={selected} history={history} detailLoading={detailLoading} decisionReason={decisionReason} setDecisionReason={setDecisionReason} openProposal={openProposal} decide={decide} canMutate={canMutate} />
+          </div>
+        ) : page === 'detail' ? (
+          <MemoryDetail selected={selected} history={history} detailLoading={detailLoading} decisionReason={decisionReason} setDecisionReason={setDecisionReason} openProposal={openProposal} decide={decide} canMutate={canMutate} />
+        ) : (
+          <form onSubmit={submitProposal} className="framer-card-xl mx-auto max-w-4xl space-y-4 p-5">
+            <div><p className="framer-topline">Proposal</p><h3 className="mt-1 text-xl font-bold capitalize">{form.proposalAction} memory</h3><p className="mt-1 text-sm text-[#999]">Reason and evidence are required for review/history and are not part of the runtime memory body.</p></div>
+            <div className="grid grid-cols-2 gap-3">
+              <select value={form.proposalAction} onChange={(event) => updateForm({ proposalAction: event.target.value })} className="framer-input px-3 py-2"><option value="new">new</option><option value="edit">edit</option><option value="archive">archive</option><option value="rollback">rollback</option></select>
+              <input value={form.memoryId} onChange={(event) => updateForm({ memoryId: event.target.value })} placeholder="memory_id for edit/archive/rollback" className="framer-input px-3 py-2" disabled={form.proposalAction === 'new'} />
+              <input value={form.expectedVersion} onChange={(event) => updateForm({ expectedVersion: event.target.value })} placeholder="expected version" className="framer-input px-3 py-2" disabled={form.proposalAction === 'new'} />
+              <input value={form.subjectAgent} onChange={(event) => updateForm({ subjectAgent: event.target.value })} placeholder="subject agent" className="framer-input px-3 py-2" disabled={form.proposalAction !== 'new'} />
+              <select value={form.type} onChange={(event) => updateForm({ type: event.target.value })} className="framer-input px-3 py-2" disabled={form.proposalAction === 'archive'}>{MEMORY_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}</select>
+              <input value={form.scope} onChange={(event) => updateForm({ scope: event.target.value })} placeholder="scope" className="framer-input px-3 py-2" />
+              <input value={form.title} onChange={(event) => updateForm({ title: event.target.value })} placeholder="title" className="framer-input px-3 py-2" disabled={form.proposalAction === 'archive' || form.proposalAction === 'rollback'} />
+              <input value={form.sourceTaskId} onChange={(event) => updateForm({ sourceTaskId: event.target.value })} placeholder="source task id" className="framer-input px-3 py-2" />
+            </div>
+            <textarea value={form.body} onChange={(event) => updateForm({ body: event.target.value })} placeholder="memory body" className="framer-input min-h-36 w-full px-3 py-2" disabled={form.proposalAction === 'archive' || form.proposalAction === 'rollback'} />
+            <textarea value={form.reason} onChange={(event) => updateForm({ reason: event.target.value })} placeholder="required reason" className="framer-input min-h-20 w-full px-3 py-2" required />
+            <textarea value={form.evidence} onChange={(event) => updateForm({ evidence: event.target.value })} placeholder="required evidence" className="framer-input min-h-20 w-full px-3 py-2" required />
+            <div className="flex justify-end gap-2"><button type="button" onClick={() => setPage('list')} className="framer-pill-secondary">Cancel</button><button type="submit" className="framer-pill" disabled={!canMutate || !form.reason.trim() || !form.evidence.trim()}>{mutating ? 'Submitting…' : 'Submit proposal'}</button></div>
+          </form>
+        )}
+      </section>
+    </main>
+  );
+}
+
+function MemoryDetail({ selected, history, detailLoading, decisionReason, setDecisionReason, openProposal, decide, canMutate }) {
+  if (!selected) return <div className="framer-card-xl p-5 text-sm text-[#999]">Select a memory record to view details and history.</div>;
+  const metadata = (() => { try { return JSON.stringify(JSON.parse(selected.metadataJson || '{}'), null, 2); } catch { return selected.metadataJson || ''; } })();
+  return (
+    <div className="framer-card-xl min-h-full p-5">
+      <div className="flex items-start justify-between gap-4"><div><p className="framer-topline">{selected.memoryId}</p><h3 className="mt-1 text-2xl font-bold text-white">{selected.title || 'Untitled memory'}</h3><p className="mt-2 text-sm text-[#999]">{selected.subjectAgent || 'global'} · {selected.type} · {selected.scope}</p></div><StatusPill status={selected.status} /></div>
+      <div className="mt-5 grid grid-cols-2 gap-3"><Field label="Version" value={selected.version} /><Field label="Proposal" value={selected.proposalId} /><Field label="Source task" value={selected.sourceTaskId} /><Field label="Updated" value={formatTime(selected.updatedUnixMs || selected.createdUnixMs)} /></div>
+      <div className="mt-5 grid gap-4 lg:grid-cols-2"><section className="framer-card p-4"><p className="framer-topline">Body</p><pre className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-[#ddd]">{selected.body || '—'}</pre></section><section className="framer-card p-4"><p className="framer-topline">Review metadata</p><p className="mt-3 text-sm text-[#aaa]">Reason</p><pre className="mt-1 whitespace-pre-wrap break-words text-sm text-[#ddd]">{selected.reason || '—'}</pre><p className="mt-3 text-sm text-[#aaa]">Evidence</p><pre className="mt-1 whitespace-pre-wrap break-words text-sm text-[#ddd]">{selected.evidence || '—'}</pre>{metadata ? <><p className="mt-3 text-sm text-[#aaa]">Metadata</p><pre className="mt-1 whitespace-pre-wrap break-words text-xs text-[#bbb]">{metadata}</pre></> : null}</section></div>
+      <div className="mt-5 flex flex-wrap gap-2"><button type="button" onClick={() => openProposal('edit', selected)} className="framer-pill-secondary">Propose edit</button><button type="button" onClick={() => openProposal('archive', selected)} className="framer-pill-secondary">Propose archive</button><button type="button" onClick={() => openProposal('rollback', selected)} className="framer-pill-secondary">Propose rollback</button></div>
+      {selected.status === 'pending' && selected.proposalId ? <div className="mt-5 rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4"><p className="font-semibold text-amber-100">Pending proposal decision</p><textarea value={decisionReason} onChange={(event) => setDecisionReason(event.target.value)} placeholder="optional decision reason" className="framer-input mt-3 min-h-16 w-full px-3 py-2" /><div className="mt-3 flex justify-end gap-2"><button type="button" onClick={() => decide('reject')} disabled={!canMutate} className="framer-pill-secondary">Reject</button><button type="button" onClick={() => decide('approve')} disabled={!canMutate} className="framer-pill">Approve</button></div></div> : null}
+      <section className="mt-5"><p className="framer-topline">Version / history {detailLoading ? '· loading…' : ''}</p><div className="mt-3 space-y-2">{history.map((event) => <div key={event.eventId || `${event.proposalId}-${event.createdUnixMs}`} className="framer-card p-3"><div className="flex justify-between gap-3 text-sm"><span className="font-medium text-white">{event.proposalId || event.eventId}</span><span className="text-[#999]">{formatTime(event.createdUnixMs)}</span></div><p className="mt-1 text-xs text-[#999]">by {event.author || 'unknown'}</p>{event.reason ? <p className="mt-2 text-sm text-[#ddd]">Reason: {event.reason}</p> : null}{event.evidence ? <p className="mt-1 text-sm text-[#bbb]">Evidence: {event.evidence}</p> : null}</div>)}{!history.length ? <div className="framer-card border-dashed p-4 text-sm text-[#999]">No history loaded.</div> : null}</div></section>
+    </div>
+  );
+}

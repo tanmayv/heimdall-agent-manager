@@ -4,20 +4,30 @@ import "core:fmt"
 import "core:net"
 import "core:strings"
 import "core:thread"
+import "core:sys/posix"
 import cfg_lib "odin_test:lib/config"
 import mp "odin_test:lib/message_provider"
+import memp "odin_test:lib/memory_provider"
 
 server_bind_host: string
 server_port: int
 server_config_path: string
 server_data_dir: string
+server_agent_providers: [dynamic]string
 message_provider: mp.Message_Provider
+memory_provider: memp.Memory_Provider
 
 run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 	server_bind_host = strings.clone(cfg.daemon.bind_host)
 	server_port = int(cfg.daemon.port)
 	server_config_path = strings.clone(config_path)
 	server_data_dir = strings.clone(cfg.daemon.data_dir)
+	server_agent_providers = make([dynamic]string)
+	for provider in cfg.wrapper.agent_commands {
+		if provider.name != "" do append(&server_agent_providers, strings.clone(provider.name))
+	}
+	if len(server_agent_providers) == 0 && cfg.wrapper.default_agent != "" do append(&server_agent_providers, strings.clone(cfg.wrapper.default_agent))
+	if len(server_agent_providers) == 0 && cfg.wrapper.agent_name != "" do append(&server_agent_providers, strings.clone(cfg.wrapper.agent_name))
 
 	address := net.IP4_Loopback
 	if cfg.daemon.bind_host != "127.0.0.1" {
@@ -32,24 +42,40 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 		return false
 	}
 	defer net.close(listener)
+	if !socket_set_close_on_exec(listener) {
+		fmt.println("warning: failed to set daemon listener close-on-exec")
+	}
 
 	registry_init()
 	user_client_registry_init()
 	message_provider = mp.new_memory_provider()
+	memory_provider = memp.new_local_provider(server_data_dir)
 	central_hub_init()
 	task_store_init(server_data_dir)
+	project_store_init(server_data_dir)
+	agent_store_init(server_data_dir)
 	chat_store_init(server_data_dir)
 	router_adapter_init(cfg.daemon)
 	hub_sync_init()
 	message_queue_init()
 	message_queue_start_worker()
 	hub_sync_start_worker()
+	task_nudge_scheduler_start(cfg.daemon)
 	fmt.println("odin-daemon listening", cfg.daemon.bind_host, cfg.daemon.port)
 	for {
 		client, _, accept_err := net.accept_tcp(listener)
 		if accept_err != nil do continue
+		if !socket_set_close_on_exec(client) {
+			fmt.println("warning: failed to set client socket close-on-exec")
+		}
 		thread.run_with_poly_data(client, handle_client)
 	}
+}
+
+socket_set_close_on_exec :: proc(socket: net.TCP_Socket) -> bool {
+	flags := posix.fcntl(posix.FD(socket), .GETFD, 0)
+	if flags < 0 do return false
+	return posix.fcntl(posix.FD(socket), .SETFD, flags | posix.FD_CLOEXEC) != -1
 }
 
 handle_client :: proc(client: net.TCP_Socket) {
@@ -82,6 +108,11 @@ handle_client :: proc(client: net.TCP_Socket) {
 		return
 	}
 
+	if strings.has_prefix(request, "POST /startup ") {
+		handle_startup_report(client, request_body(request))
+		return
+	}
+
 	if strings.has_prefix(request, "POST /user-client/register ") {
 		handle_user_client_register(client, request_body(request))
 		return
@@ -104,6 +135,61 @@ handle_client :: proc(client: net.TCP_Socket) {
 
 	if strings.has_prefix(request, "POST /agent-rpc ") {
 		handle_agent_rpc(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "GET /agents/templates ") {
+		handle_agents_templates(client)
+		return
+	}
+
+	if strings.has_prefix(request, "POST /agents/templates/create ") || strings.has_prefix(request, "POST /agents/templates/update ") {
+		handle_agent_template_create_update(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /agents/templates/show ") {
+		handle_agent_template_show(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /agents/templates/archive ") || strings.has_prefix(request, "POST /agents/templates/delete ") {
+		handle_agent_template_archive(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "GET /agents/providers ") || strings.has_prefix(request, "POST /agents/providers ") {
+		handle_agents_providers(client)
+		return
+	}
+
+	if strings.has_prefix(request, "GET /agents ") || strings.has_prefix(request, "GET /agents?") {
+		handle_agents_list(client, request)
+		return
+	}
+
+	if strings.has_prefix(request, "POST /agents/associate ") {
+		handle_agents_associate(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /agents/disassociate ") {
+		handle_agents_disassociate(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /agents/show ") {
+		handle_agent_instance_show(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /agents/update ") {
+		handle_agent_instance_update(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /agents/archive ") || strings.has_prefix(request, "POST /agents/delete ") || strings.has_prefix(request, "POST /agents/remove ") {
+		handle_agent_instance_archive(client, request_body(request))
 		return
 	}
 
@@ -137,6 +223,66 @@ handle_client :: proc(client: net.TCP_Socket) {
 		return
 	}
 
+	if strings.has_prefix(request, "POST /memory/propose/new ") {
+		handle_memory_propose(client, request_body(request), "new")
+		return
+	}
+
+	if strings.has_prefix(request, "POST /memory/propose/edit ") {
+		handle_memory_propose(client, request_body(request), "edit")
+		return
+	}
+
+	if strings.has_prefix(request, "POST /memory/propose/archive ") {
+		handle_memory_propose(client, request_body(request), "archive")
+		return
+	}
+
+	if strings.has_prefix(request, "POST /memory/propose/rollback ") {
+		handle_memory_propose(client, request_body(request), "rollback")
+		return
+	}
+
+	if strings.has_prefix(request, "POST /memory/decide ") {
+		handle_memory_decide(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /memory/list ") {
+		handle_memory_list(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /memory/show ") {
+		handle_memory_show(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /memory/history ") {
+		handle_memory_history(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /projects/create ") {
+		handle_project_create(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /projects/update ") {
+		handle_project_update(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /projects/list ") {
+		handle_project_list(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /projects/show ") {
+		handle_project_show(client, request_body(request))
+		return
+	}
+
 	if strings.has_prefix(request, "POST /tasks/create ") {
 		handle_task_create(client, request_body(request))
 		return
@@ -167,6 +313,11 @@ handle_client :: proc(client: net.TCP_Socket) {
 		return
 	}
 
+	if strings.has_prefix(request, "POST /tasks/nudge ") {
+		handle_task_nudge(client, request_body(request))
+		return
+	}
+
 	if strings.has_prefix(request, "POST /tasks/list ") {
 		handle_task_list_authed(client, request_body(request))
 		return
@@ -194,6 +345,11 @@ handle_client :: proc(client: net.TCP_Socket) {
 
 	if strings.has_prefix(request, "POST /task-chains/retry-archives ") {
 		handle_task_archive_retry(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /task-chains/update ") {
+		handle_task_chain_update(client, request_body(request))
 		return
 	}
 

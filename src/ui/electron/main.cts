@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 
 const isDev = !app.isPackaged;
@@ -9,7 +9,7 @@ function createWindow() {
     height: 760,
     minWidth: 920,
     minHeight: 620,
-    title: 'Odin UI',
+    title: 'Heimdall',
     backgroundColor: '#0f172a',
     webPreferences: {
       contextIsolation: true,
@@ -24,6 +24,16 @@ function createWindow() {
     win.loadFile(path.join(__dirname, '..', 'dist', 'index.html'));
   }
 }
+
+ipcMain.handle('odin-api:pick-directory', async (event) => {
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const result = await dialog.showOpenDialog(owner || undefined, {
+    title: 'Select project anchor directory',
+    properties: ['openDirectory'],
+  });
+  if (result.canceled || !result.filePaths.length) return { ok: true, canceled: true, path: '' };
+  return { ok: true, canceled: false, path: result.filePaths[0] };
+});
 
 ipcMain.handle('odin-api:request', async (_event, { url, method = 'GET', body }) => {
   const response = await fetch(url, {

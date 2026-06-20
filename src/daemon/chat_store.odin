@@ -7,7 +7,7 @@ import "core:strings"
 CHAT_MAX_EVENTS :: 20000
 CHAT_MAX_MESSAGES :: 10000
 
-Chat_Event_Kind :: enum { Message_Appended, Read_Marked }
+Chat_Event_Kind :: enum { Message_Appended, Delivered_Marked, Read_Marked, Delivery_Failed }
 
 Chat_Event :: struct {
 	event_id: string,
@@ -17,7 +17,10 @@ Chat_Event :: struct {
 	agent_instance_id: string,
 	direction: string,
 	body: string,
+	delivered_unix_ms: i64,
 	read_unix_ms: i64,
+	delivery_failed_unix_ms: i64,
+	delivery_error: string,
 	created_unix_ms: i64,
 }
 
@@ -27,7 +30,10 @@ Chat_Message :: struct {
 	agent_instance_id: string,
 	direction: string,
 	body: string,
+	delivered_unix_ms: i64,
 	read_unix_ms: i64,
+	delivery_failed_unix_ms: i64,
+	delivery_error: string,
 	created_unix_ms: i64,
 }
 
@@ -69,8 +75,15 @@ chat_store_apply_event :: proc(event: Chat_Event) -> bool {
 	#partial switch event.kind {
 	case .Message_Appended:
 		if chat_message_count < CHAT_MAX_MESSAGES {
-			chat_messages[chat_message_count] = Chat_Message{message_id = strings.clone(event.message_id), user_id = strings.clone(event.user_id), agent_instance_id = strings.clone(event.agent_instance_id), direction = strings.clone(event.direction), body = strings.clone(event.body), read_unix_ms = event.read_unix_ms, created_unix_ms = event.created_unix_ms}
+			chat_messages[chat_message_count] = Chat_Message{message_id = strings.clone(event.message_id), user_id = strings.clone(event.user_id), agent_instance_id = strings.clone(event.agent_instance_id), direction = strings.clone(event.direction), body = strings.clone(event.body), delivered_unix_ms = event.delivered_unix_ms, read_unix_ms = event.read_unix_ms, delivery_failed_unix_ms = event.delivery_failed_unix_ms, delivery_error = strings.clone(event.delivery_error), created_unix_ms = event.created_unix_ms}
 			chat_message_count += 1
+		}
+	case .Delivered_Marked:
+		for i in 0..<chat_message_count {
+			msg := &chat_messages[i]
+			if msg.user_id != event.user_id || msg.agent_instance_id != event.agent_instance_id do continue
+			if event.message_id != "" && msg.message_id != event.message_id do continue
+			if msg.delivered_unix_ms == 0 || msg.delivered_unix_ms < event.delivered_unix_ms do msg.delivered_unix_ms = event.delivered_unix_ms
 		}
 	case .Read_Marked:
 		read_direction := event.direction
@@ -81,6 +94,16 @@ chat_store_apply_event :: proc(event: Chat_Event) -> bool {
 			if msg.direction != read_direction do continue
 			if event.message_id != "" && msg.message_id != event.message_id && msg.created_unix_ms > chat_message_created(event.message_id) do continue
 			if msg.read_unix_ms == 0 || msg.read_unix_ms < event.read_unix_ms do msg.read_unix_ms = event.read_unix_ms
+		}
+	case .Delivery_Failed:
+		for i in 0..<chat_message_count {
+			msg := &chat_messages[i]
+			if msg.user_id != event.user_id || msg.agent_instance_id != event.agent_instance_id do continue
+			if event.message_id != "" && msg.message_id != event.message_id do continue
+			if msg.delivery_failed_unix_ms == 0 || msg.delivery_failed_unix_ms < event.delivery_failed_unix_ms {
+				msg.delivery_failed_unix_ms = event.delivery_failed_unix_ms
+				msg.delivery_error = strings.clone(event.delivery_error)
+			}
 		}
 	}
 	return true
@@ -131,15 +154,20 @@ chat_event_json :: proc(event: Chat_Event) -> string {
 	strings.write_string(&builder, `","agent_instance_id":"`); json_write_string(&builder, event.agent_instance_id)
 	strings.write_string(&builder, `","direction":"`); json_write_string(&builder, event.direction)
 	strings.write_string(&builder, `","body":"`); json_write_string(&builder, event.body)
-	strings.write_string(&builder, `","read_unix_ms":`); strings.write_string(&builder, fmt.tprintf("%d", event.read_unix_ms))
-	strings.write_string(&builder, `,"created_unix_ms":`); strings.write_string(&builder, fmt.tprintf("%d", event.created_unix_ms)); strings.write_string(&builder, `}`)
+	strings.write_string(&builder, `","delivered_unix_ms":`); strings.write_string(&builder, fmt.tprintf("%d", event.delivered_unix_ms))
+	strings.write_string(&builder, `,"read_unix_ms":`); strings.write_string(&builder, fmt.tprintf("%d", event.read_unix_ms))
+	strings.write_string(&builder, `,"delivery_failed_unix_ms":`); strings.write_string(&builder, fmt.tprintf("%d", event.delivery_failed_unix_ms))
+	strings.write_string(&builder, `,"delivery_error":"`); json_write_string(&builder, event.delivery_error)
+	strings.write_string(&builder, `","created_unix_ms":`); strings.write_string(&builder, fmt.tprintf("%d", event.created_unix_ms)); strings.write_string(&builder, `}`)
 	return strings.to_string(builder)
 }
 
 chat_event_from_json :: proc(line: string) -> (Chat_Event, bool) {
 	kind_text := extract_json_string(line, "kind", "")
 	kind := Chat_Event_Kind.Message_Appended
+	if kind_text == "Delivered_Marked" do kind = .Delivered_Marked
 	if kind_text == "Read_Marked" do kind = .Read_Marked
-	event := Chat_Event{event_id = extract_json_string(line, "event_id", ""), kind = kind, message_id = extract_json_string(line, "message_id", ""), user_id = extract_json_string(line, "user_id", ""), agent_instance_id = extract_json_string(line, "agent_instance_id", ""), direction = extract_json_string(line, "direction", ""), body = extract_json_string(line, "body", ""), read_unix_ms = i64(extract_json_int(line, "read_unix_ms", 0)), created_unix_ms = i64(extract_json_int(line, "created_unix_ms", 0))}
+	if kind_text == "Delivery_Failed" do kind = .Delivery_Failed
+	event := Chat_Event{event_id = extract_json_string(line, "event_id", ""), kind = kind, message_id = extract_json_string(line, "message_id", ""), user_id = extract_json_string(line, "user_id", ""), agent_instance_id = extract_json_string(line, "agent_instance_id", ""), direction = extract_json_string(line, "direction", ""), body = extract_json_string(line, "body", ""), delivered_unix_ms = i64(extract_json_int(line, "delivered_unix_ms", 0)), read_unix_ms = i64(extract_json_int(line, "read_unix_ms", 0)), delivery_failed_unix_ms = i64(extract_json_int(line, "delivery_failed_unix_ms", 0)), delivery_error = extract_json_string(line, "delivery_error", ""), created_unix_ms = i64(extract_json_int(line, "created_unix_ms", 0))}
 	return event, kind_text != ""
 }

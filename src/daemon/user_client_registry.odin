@@ -59,11 +59,40 @@ user_client_user_for_token :: proc(client_instance_id, client_token: string) -> 
 	return ""
 }
 
+user_client_user_exists :: proc(user_id: string) -> bool {
+	for i in 0..<user_client_count {
+		if user_clients[i].user_id == user_id do return true
+	}
+	return false
+}
+
+user_client_has_ws :: proc(user_id: string) -> bool {
+	for i in 0..<user_client_count {
+		if user_clients[i].user_id == user_id && user_clients[i].has_ws do return true
+	}
+	return false
+}
+
 user_client_fanout_ws_text :: proc(user_id, text: string) -> int {
 	sent := 0
 	for i in 0..<user_client_count {
 		client := &user_clients[i]
 		if client.user_id != user_id || !client.has_ws do continue
+		if ws_send_text(client.ws_socket, text) {
+			sent += 1
+		} else {
+			client.has_ws = false
+			client.connected = false
+		}
+	}
+	return sent
+}
+
+user_client_fanout_all_ws_text :: proc(text: string) -> int {
+	sent := 0
+	for i in 0..<user_client_count {
+		client := &user_clients[i]
+		if !client.has_ws do continue
 		if ws_send_text(client.ws_socket, text) {
 			sent += 1
 		} else {

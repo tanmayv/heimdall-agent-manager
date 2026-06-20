@@ -1,4 +1,4 @@
-# Review Guidelines for Odin Test POC
+# Review Guidelines for Heimdall AI Manager POC
 
 Use this guide when reviewing changes in this project. The goal is to preserve the architecture while keeping the POC moving quickly.
 
@@ -6,10 +6,10 @@ Use this guide when reviewing changes in this project. The goal is to preserve t
 
 This project prototypes a local agent coordination system:
 
-- `bc-odin-daemon`: local daemon/control plane
-- `bc-agent-wrapper`: launches an interactive agent in tmux and connects it to daemon
-- `bc-odinctl`: CLI for daemon inspection/control
-- `bc-test-agent`: synthetic test/load agent for message flow validation
+- `ham-daemon`: local daemon/control plane
+- `ham-wrapper`: launches an interactive agent in tmux and connects it to daemon
+- `ham-ctl`: CLI for daemon inspection/control
+- `ham-test-agent`: synthetic test/load agent for message flow validation
 
 Core principle:
 
@@ -59,11 +59,11 @@ So `coder-agent@project-1` is valid.
 Always run:
 
 ```bash
-cd /Users/tanmayvijay/odin-test
-nix build .#bc-odin-daemon .#bc-agent-wrapper .#bc-odinctl .#bc-test-agent
+cd /Users/tanmayvijay/heimdall-ai-manager
+nix build .#ham-daemon .#ham-wrapper .#ham-ctl .#ham-test-agent
 ```
 
-If `bc-test-agent` does not exist in the branch/session yet, build the first three.
+If `ham-test-agent` does not exist in the branch/session yet, build the first three.
 
 ### 2. Canonical RPC Actions Only
 
@@ -271,7 +271,7 @@ Important consequence:
 - escaped strings are not correctly unescaped
 - arbitrary bodies containing quotes/backslashes/braces may break parsing/logging
 
-For `bc-test-agent`, prefer generated message bodies that avoid JSON-special chars until proper JSON parsing exists.
+For `ham-test-agent`, prefer generated message bodies that avoid JSON-special chars until proper JSON parsing exists.
 
 Good test body format:
 
@@ -286,9 +286,9 @@ Avoid newlines/quotes/backslashes for load-test byte accounting.
 ### Basic daemon/wrapper list
 
 ```bash
-bc-odin-daemon --config ./config.toml
-bc-agent-wrapper --config ./config.toml coder-agent@project-1
-bc-odinctl --config ./config.toml list
+ham-daemon --config ./config.toml
+ham-wrapper --config ./config.toml coder-agent@project-1
+ham-ctl --config ./config.toml list
 ```
 
 Expected:
@@ -330,15 +330,15 @@ Expected:
 
 ### Test agent smoke
 
-After `bc-test-agent` exists:
+After `ham-test-agent` exists:
 
 - register/start two agents
 - run both test agents targeting each other
 - inspect:
 
 ```text
-/tmp/bc-test/stats/*.stats.json
-/tmp/bc-test/logs/*.incoming.jsonl
+/tmp/ham-test/stats/*.stats.json
+/tmp/ham-test/logs/*.incoming.jsonl
 ```
 
 Expected:

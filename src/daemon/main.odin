@@ -7,7 +7,7 @@ import cfg_lib "odin_test:lib/config"
 
 main :: proc() {
 	if has_flag(os.args, "--version") {
-		fmt.println("bc-odin-daemon", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
+		fmt.println("ham-daemon", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
 		return
 	}
 	if has_flag(os.args, "--help") || has_flag(os.args, "-h") {
@@ -33,6 +33,6 @@ has_flag :: proc(args: []string, flag: string) -> bool {
 }
 
 print_usage :: proc() {
-	fmt.println("bc-odin-daemon", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
-	fmt.println("usage: bc-odin-daemon [--config <path>] [--version] [--help]")
+	fmt.println("ham-daemon", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
+	fmt.println("usage: ham-daemon [--config <path>] [--version] [--help]")
 }

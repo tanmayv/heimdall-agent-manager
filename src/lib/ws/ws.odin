@@ -10,6 +10,8 @@ WS_KEY :: "dGhlIHNhbXBsZSBub25jZQ=="
 Connection :: struct {
 	socket: net.TCP_Socket,
 	connected: bool,
+	pending_texts: [8]string,
+	pending_count: int,
 }
 
 connect :: proc(ws_url: string) -> (Connection, bool) {
@@ -58,6 +60,15 @@ close :: proc(conn: ^Connection) {
 
 poll_text :: proc(conn: ^Connection) -> (text: string, ok: bool) {
 	if !conn.connected do return "", false
+	if conn.pending_count > 0 {
+		text = conn.pending_texts[0]
+		for i in 1..<conn.pending_count {
+			conn.pending_texts[i - 1] = conn.pending_texts[i]
+		}
+		conn.pending_count -= 1
+		conn.pending_texts[conn.pending_count] = ""
+		return text, true
+	}
 
 	buf: [4096]byte
 	n, err := net.recv_tcp(conn.socket, buf[:])
@@ -70,24 +81,38 @@ poll_text :: proc(conn: ^Connection) -> (text: string, ok: bool) {
 		conn.connected = false
 		return "", false
 	}
-	if n < 2 do return "", false
 
-	opcode := buf[0] & 0x0f
-	payload_len := int(buf[1] & 0x7f)
-	header_len := 2
-	if payload_len == 126 {
-		if n < 4 do return "", false
-		payload_len = int(buf[2]) << 8 | int(buf[3])
-		header_len = 4
+	first_text := ""
+	pos := 0
+	for pos + 2 <= n {
+		opcode := buf[pos] & 0x0f
+		payload_len := int(buf[pos + 1] & 0x7f)
+		header_len := 2
+		if payload_len == 126 {
+			if pos + 4 > n do break
+			payload_len = int(buf[pos + 2]) << 8 | int(buf[pos + 3])
+			header_len = 4
+		}
+		frame_end := pos + header_len + payload_len
+		if frame_end > n do break
+		if opcode == 0x8 {
+			conn.connected = false
+			return "", false
+		}
+		if opcode == 0x1 {
+			frame_text := strings.clone(string(buf[pos + header_len:frame_end]))
+			if first_text == "" {
+				first_text = frame_text
+			} else if conn.pending_count < len(conn.pending_texts) {
+				conn.pending_texts[conn.pending_count] = frame_text
+				conn.pending_count += 1
+			}
+		}
+		pos = frame_end
 	}
-	if opcode == 0x8 {
-		conn.connected = false
-		return "", false
-	}
-	if opcode != 0x1 do return "", false
-	if payload_len > n - header_len do return "", false
 
-	return string(buf[header_len:header_len + payload_len]), true
+	if first_text == "" do return "", false
+	return first_text, true
 }
 
 parse_ws_url :: proc(ws_url: string) -> (host: string, port: u16, path: string, ok: bool) {

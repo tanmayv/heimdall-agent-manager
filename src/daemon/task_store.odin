@@ -10,7 +10,7 @@ TASK_MAX_CHAINS :: 512
 TASK_MAX_PARTICIPANTS :: 4096
 
 Task_Status :: enum { Pending, Ready, Claimed, In_Progress, Blocked, Needs_Review, Needs_Improvements, Approved, Rejected, Done, Cancelled, Open, Working, Archived }
-Task_Event_Kind :: enum { Task_Created, Task_Comment, Task_Status_Changed, Task_Assigned, Task_Participant_Added, Task_Review_Submitted, Chain_Created, Chain_Status_Changed, Chain_Final_Summary_Set, Chain_Completed, Chain_Archive_Pending, Chain_Archived }
+Task_Event_Kind :: enum { Task_Created, Task_Comment, Task_Status_Changed, Task_Assigned, Task_Participant_Added, Task_Review_Submitted, Task_Nudged, Task_Nudge_Failed, Chain_Created, Chain_Metadata_Updated, Chain_Status_Changed, Chain_Final_Summary_Set, Chain_Completed, Chain_Archive_Pending, Chain_Archived }
 
 Task_Event :: struct {
 	event_id: string,
@@ -97,7 +97,7 @@ task_store_init :: proc(data_dir: string) {
 
 task_store_append_event :: proc(event: Task_Event) -> bool {
 	ev := event
-	if ev.event_id == "" do ev.event_id = fmt.tprintf("taskevt_%d", router_now_unix_ms())
+	if ev.event_id == "" do ev.event_id = strings.clone(fmt.tprintf("taskevt_%d", router_now_unix_ms()))
 	if ev.created_unix_ms == 0 do ev.created_unix_ms = router_now_unix_ms()
 	if !task_store_apply_event(ev) do return false
 	file, err := os.open(task_events_path, os.O_CREATE | os.O_APPEND | os.O_WRONLY)
@@ -109,11 +109,37 @@ task_store_append_event :: proc(event: Task_Event) -> bool {
 }
 
 task_store_apply_event :: proc(event: Task_Event) -> bool {
+	stable := task_event_clone(event)
 	if task_event_count < TASK_MAX_EVENTS {
-		task_events[task_event_count] = event
+		task_events[task_event_count] = stable
 		task_event_count += 1
 	}
-	return task_projection_apply_event(event)
+	return task_projection_apply_event(stable)
+}
+
+task_event_clone :: proc(event: Task_Event) -> Task_Event {
+	return Task_Event{
+		event_id = strings.clone(event.event_id),
+		kind = event.kind,
+		task_id = strings.clone(event.task_id),
+		chain_id = strings.clone(event.chain_id),
+		title = strings.clone(event.title),
+		description = strings.clone(event.description),
+		acceptance_criteria = strings.clone(event.acceptance_criteria),
+		priority = strings.clone(event.priority),
+		status = strings.clone(event.status),
+		body = strings.clone(event.body),
+		agent_instance_id = strings.clone(event.agent_instance_id),
+		assignee_agent_instance_id = strings.clone(event.assignee_agent_instance_id),
+		reviewer_agent_instance_id = strings.clone(event.reviewer_agent_instance_id),
+		coordinator_agent_instance_id = strings.clone(event.coordinator_agent_instance_id),
+		default_reviewer_agent_instance_id = strings.clone(event.default_reviewer_agent_instance_id),
+		depends_on = strings.clone(event.depends_on),
+		role = strings.clone(event.role),
+		created_by = strings.clone(event.created_by),
+		author_agent_instance_id = strings.clone(event.author_agent_instance_id),
+		created_unix_ms = event.created_unix_ms,
+	}
 }
 
 task_store_replay :: proc() {
@@ -166,7 +192,10 @@ task_event_kind_from_string :: proc(value: string) -> Task_Event_Kind {
 	case "Task_Assigned": return .Task_Assigned
 	case "Task_Participant_Added": return .Task_Participant_Added
 	case "Task_Review_Submitted": return .Task_Review_Submitted
+	case "Task_Nudged": return .Task_Nudged
+	case "Task_Nudge_Failed": return .Task_Nudge_Failed
 	case "Chain_Created": return .Chain_Created
+	case "Chain_Metadata_Updated": return .Chain_Metadata_Updated
 	case "Chain_Status_Changed": return .Chain_Status_Changed
 	case "Chain_Final_Summary_Set": return .Chain_Final_Summary_Set
 	case "Chain_Completed": return .Chain_Completed

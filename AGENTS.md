@@ -1,4 +1,4 @@
-# Odin Test Project Guide
+# Heimdall AI Manager Project Guide
 
 This project is a prototype for a local daemon + tmux-backed agent wrapper + CLI control tool. The daemon tracks uniquely named agent instances, wrapper processes launch interactive agents in tmux, and WebSocket notifications are used only to signal that messages are available; actual message storage/fetching is intended to go through a message provider abstraction later.
 
@@ -17,9 +17,9 @@ This project is a prototype for a local daemon + tmux-backed agent wrapper + CLI
 - `flake.nix`
   - Nix flake defining build packages and apps.
   - Packages:
-    - `bc-odin-daemon`
-    - `bc-agent-wrapper`
-    - `bc-odinctl`
+    - `ham-daemon`
+    - `ham-wrapper`
+    - `ham-ctl`
   - Provides a dev shell with Odin, OLS, tmux, curl, and jq.
   - Uses `nixpkgs-unstable` and overrides Odin to use LLVM 21 on Darwin to avoid current compiler-rt issues.
 
@@ -29,6 +29,14 @@ This project is a prototype for a local daemon + tmux-backed agent wrapper + CLI
 - `config.toml`
   - Example runtime config.
   - Contains daemon bind/port settings, wrapper daemon URL, tmux session/window config, command to launch, and ctl daemon URL.
+  - Documents managed agent run directories and provider bootstrap profiles:
+    - `wrapper.agent_run_dir` enables generated runtime cwd layout `<agent_run_dir>/<safe-project>/<safe-agent-instance>`.
+    - `wrapper.project` and per-agent-cmd `project` select project context/anchors for bootstrap files.
+    - Per-agent-cmd `run_dir` is an exact cwd override and bypasses managed layout.
+    - Per-agent-cmd `bootstrap_enabled` turns on managed file generation.
+    - Per-agent-cmd `bootstrap_profile` chooses provider defaults: `pi` and `codex` generate `AGENTS.md`; `claude` generates `CLAUDE.md`.
+    - Per-agent-cmd `bootstrap_files` overrides destination filenames; `bootstrap_sections` can restrict generated sections to any of `identity`, `guidance`, `project`, and `memory`.
+    - Managed files are overwritten only when they contain the Heimdall managed header, and removed only when previously listed in `.heimdall-bootstrap-manifest`.
 
 - `AGENTS.md`
   - This guide.
@@ -97,7 +105,7 @@ Files:
 
 ### `src/daemon` package: `main`
 
-Daemon binary package for `bc-odin-daemon`.
+Daemon binary package for `ham-daemon`.
 
 Responsibilities:
 
@@ -126,7 +134,7 @@ Files:
 
 ### `src/wrapper` package: `main`
 
-Wrapper binary package for `bc-agent-wrapper`.
+Wrapper binary package for `ham-wrapper`.
 
 Responsibilities:
 
@@ -154,7 +162,7 @@ Files:
 
 ### `src/ctl` package: `main`
 
-CLI binary package for `bc-odinctl`.
+CLI binary package for `ham-ctl`.
 
 Responsibilities:
 
@@ -227,13 +235,13 @@ Files:
 1. Start daemon:
 
 ```bash
-bc-odin-daemon --config ./config.toml
+ham-daemon --config ./config.toml
 ```
 
 2. Start wrapper:
 
 ```bash
-bc-agent-wrapper --config ./config.toml coder-agent@project-1
+ham-wrapper --config ./config.toml coder-agent@project-1
 ```
 
 3. Wrapper launches configured command in tmux, registers with daemon, opens WS, and starts heartbeat.
@@ -241,7 +249,7 @@ bc-agent-wrapper --config ./config.toml coder-agent@project-1
 4. List agents:
 
 ```bash
-bc-odinctl --config ./config.toml list
+ham-ctl --config ./config.toml list
 ```
 
 5. Agent RPC send-message currently triggers only WS metadata notification:
@@ -265,7 +273,7 @@ bc-odinctl --config ./config.toml list
 Default config path:
 
 ```text
-~/.config/odin-test/config.toml
+~/.config/heimdall/config.toml
 ```
 
 Pass `--config <path>` to override.
@@ -291,20 +299,39 @@ prompt_flags = []
 starter_prompt = "You are {instance}. Use token {token}."
 ```
 
-`bc-odinctl agents start ... --agent <name>` selects one of these profiles. If omitted, `[wrapper].default_agent` is used.
+`ham-ctl agents start ... --agent <name>` selects one of these profiles. If omitted, `[wrapper].default_agent` is used.
+
+### Startup detection
+
+Wrappers can classify provider startup without persisting raw terminal transcripts. Add a nested startup detection section under an agent command profile:
+
+```toml
+[wrapper.agent-cmd.claude.startup_detection]
+enabled = true
+startup_probe_seconds = 20
+capture_interval_ms = 500
+ready_patterns = ["> ", "How can I help"]
+blocked_patterns = ["Do you trust the files in this folder", "Claude needs your permission"]
+probe_prompt = ""
+probe_expect_echo = false
+startup_unknown_is_blocked = false
+sanitized_reason_mapping = ["trust=Claude directory trust prompt", "permission=Claude permission prompt"]
+```
+
+The wrapper captures bounded pane text in memory only during the probe window. It reports only metadata and safe diagnostics to the daemon: `starting`, `ready`, `startup_blocked`, `startup_failed`, or `startup_unknown`, plus provider/run-dir/tmux metadata and a sanitized reason. Do not put secrets or raw terminal snippets in `sanitized_reason_mapping`; use short operator-safe descriptions such as “approve Claude directory trust in the agent terminal”.
 
 ### Ctl commands
 
-`bc-odinctl` is the preferred user/agent interface:
+`ham-ctl` is the preferred user/agent interface. Attention gating is enforced by the daemon: `tasks next` first recomputes eligible dependency/slot promotions, and if a reviewer/verifier is configured the assignee should not pick another task until the current task is validated. Attempts to create or move a task to `ready` while dependencies or assignee slots are blocked return structured errors such as `error: "dependency"` or `error: "assignee_active_task"` with `blocking_task_ids`; resolve or wait on those tasks, or explicitly move work to a blocked/planned state.
 
 ```bash
-bc-odinctl health
-bc-odinctl list
-bc-odinctl agents list
-bc-odinctl agents start <agent_instance_id> [--agent pi|claude] [--detached|--remote [host:port]]
-bc-odinctl send --token <token> --to <agent_instance_id> --body <text>
-bc-odinctl send --token <token> --to <agent_instance_id> --stdin
-bc-odinctl inbox --token <token> [--limit N] [--include-read] [--json]
+ham-ctl health
+ham-ctl list
+ham-ctl agents list
+ham-ctl agents start <agent_instance_id> [--agent pi|claude] [--detached|--remote [host:port]]
+ham-ctl send --token <token> --to <agent_instance_id> --body <text>
+ham-ctl send --token <token> --to <agent_instance_id> --stdin
+ham-ctl inbox --token <token> [--limit N] [--include-read] [--json]
 ```
 
 ### Local vs remote start
@@ -312,19 +339,19 @@ bc-odinctl inbox --token <token> [--limit N] [--include-read] [--json]
 Foreground local start:
 
 ```bash
-bc-odinctl agents start pi-agent@a --agent pi
+ham-ctl agents start pi-agent@a --agent pi
 ```
 
 Local detached start:
 
 ```bash
-bc-odinctl agents start pi-agent@a --agent pi --detached
+ham-ctl agents start pi-agent@a --agent pi --detached
 ```
 
 Remote daemon start:
 
 ```bash
-bc-odinctl agents start pi-agent@a --agent pi --remote host:49322
+ham-ctl agents start pi-agent@a --agent pi --remote host:49322
 ```
 
 Remote semantics:
@@ -341,7 +368,7 @@ Daemon endpoint:
 POST /agents/start
 ```
 
-The daemon package includes `bc-agent-wrapper` in its Nix output so it can launch a local wrapper.
+The daemon package includes `ham-wrapper` in its Nix output so it can launch a local wrapper.
 
 ## Token Model
 

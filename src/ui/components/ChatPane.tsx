@@ -1,34 +1,139 @@
+import { useLayoutEffect, useRef, useState } from 'react';
 import Composer from './Composer';
 import MessageBubble from './MessageBubble';
 
+const NEW_MESSAGE_THRESHOLD = 48;
+
 export default function ChatPane({ agent, messages, session, sending }) {
+  const messageListRef = useRef(null);
+  const prevMessageCountRef = useRef(messages.length);
+  const prevAgentIdRef = useRef(agent?.id ?? '');
+  const wasNearBottomRef = useRef(true);
+  const submitScrollPendingRef = useRef(false);
+  const [showNewMessagesToast, setShowNewMessagesToast] = useState(false);
+
+  function getIsNearBottom() {
+    const container = messageListRef.current;
+    if (!container) return true;
+    const delta = container.scrollHeight - container.scrollTop - container.clientHeight;
+    return delta <= NEW_MESSAGE_THRESHOLD;
+  }
+
+  function getIsScrollable() {
+    const container = messageListRef.current;
+    if (!container) return false;
+    return container.scrollHeight > container.clientHeight;
+  }
+
+  function scrollToBottom(behavior: 'auto' | 'smooth' = 'auto') {
+    const container = messageListRef.current;
+    if (!container) return;
+    container.scrollTo({ top: container.scrollHeight, behavior });
+    wasNearBottomRef.current = true;
+  }
+
+  function scrollToBottomAfterLayout(behavior: 'auto' | 'smooth' = 'auto') {
+    scrollToBottom(behavior);
+    window.requestAnimationFrame(() => scrollToBottom(behavior));
+  }
+
+  function onComposerSubmit() {
+    // The sent message appears after the async send/fetch completes; remember the
+    // user's intent so the next message-list update scrolls even if the new row
+    // makes the post-render position no longer count as near-bottom.
+    submitScrollPendingRef.current = true;
+    if (getIsScrollable()) {
+      scrollToBottom('smooth');
+    }
+    setShowNewMessagesToast(false);
+  }
+
+  function onScrollToBottomClick() {
+    scrollToBottom('smooth');
+    setShowNewMessagesToast(false);
+  }
+
+  function onMessagesScroll() {
+    const nearBottom = getIsNearBottom();
+    wasNearBottomRef.current = nearBottom;
+    if (nearBottom) {
+      setShowNewMessagesToast(false);
+    }
+  }
+
+  useLayoutEffect(() => {
+    const previousAgentId = prevAgentIdRef.current;
+    const currentAgentId = agent?.id ?? '';
+    const previousCount = prevMessageCountRef.current;
+    const agentChanged = currentAgentId !== previousAgentId;
+    const messageAdded = messages.length > previousCount;
+
+    if (agentChanged) {
+      setShowNewMessagesToast(false);
+      scrollToBottomAfterLayout('auto');
+    } else if (messageAdded) {
+      if (submitScrollPendingRef.current || wasNearBottomRef.current) {
+        scrollToBottom(submitScrollPendingRef.current ? 'smooth' : 'auto');
+        setShowNewMessagesToast(false);
+      } else {
+        setShowNewMessagesToast(true);
+      }
+    } else if (getIsNearBottom()) {
+      wasNearBottomRef.current = true;
+      setShowNewMessagesToast(false);
+    }
+
+    submitScrollPendingRef.current = false;
+    prevMessageCountRef.current = messages.length;
+    prevAgentIdRef.current = currentAgentId;
+  }, [agent?.id, messages]);
+
   return (
-    <main className="flex min-w-0 flex-1 flex-col bg-slate-950">
-      <header className="animate-float-in flex items-center justify-between border-b border-slate-800 bg-slate-950/90 px-6 py-4">
+    <main className="framer-panel flex min-w-0 flex-1 flex-col bg-[var(--fd-canvas)]">
+      <header className="animate-float-in border-b border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-6 py-4 flex items-center justify-between">
         <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-[0.25em] text-slate-500">Selected agent</p>
-          <h2 className="mt-1 truncate text-xl font-bold text-white">{agent?.label ?? 'No agent selected'}</h2>
-          <p className="mt-1 truncate font-mono text-xs text-slate-400">{agent?.id ?? 'Choose an agent from the sidebar'}</p>
+          <p className="framer-topline">Selected agent</p>
+          <h2 className="mt-1 truncate text-2xl framer-headline">{agent?.label ?? 'No agent selected'}</h2>
+          <p className="framer-subtext mt-1 truncate">{agent ? `${agent.templateId || 'agent'} · ${agent.providerProfile || 'provider'}` : 'Choose an agent from the sidebar'}</p>
         </div>
-        <div className="animate-halo-breathe rounded-[1.5rem] border border-slate-800 bg-slate-900 px-3 py-2 text-right shadow-lg shadow-slate-950/20 transition-all duration-300 hover:-translate-y-0.5 hover:border-blue-400/40">
-          <p className="text-xs text-slate-500">User</p>
-          <p className="font-mono text-xs text-slate-300">{session.userId}</p>
-        </div>
+        <div className="framer-chip animate-halo-breathe">User: <span className="text-white">{session.userId}</span></div>
       </header>
 
-      <section className="flex-1 overflow-y-auto bg-[radial-gradient(circle_at_top_right,_rgba(59,130,246,0.12),_transparent_35%),linear-gradient(180deg,_#0f172a,_#020617)] px-1 py-4 sm:px-2">
-        <div className="w-full flex flex-col gap-3">
-          {messages.length ? (
-            messages.map((message) => <MessageBubble key={message.id} message={message} />)
-          ) : (
-            <div className="animate-float-in rounded-[2rem] border border-dashed border-slate-800 bg-slate-950/50 p-8 text-center text-sm text-slate-500 transition-all duration-300 hover:border-blue-400/30">
-              {agent ? 'No chat messages for this agent yet.' : 'Select a connected agent to view chat history.'}
-            </div>
-          )}
-        </div>
-      </section>
+      <div className="relative flex-1 min-h-0">
+        <section
+          ref={messageListRef}
+          onScroll={onMessagesScroll}
+          className="h-full overflow-y-auto px-1 py-4 sm:px-2"
+        >
+          <div className="w-full flex flex-col gap-3">
+            {messages.length ? (
+              messages.map((message) => <MessageBubble key={message.id} message={message} />)
+            ) : (
+              <div className="framer-card framer-subtext text-center p-8 text-[#999]">
+                {agent ? 'No chat messages for this agent yet.' : 'Select a connected agent to view chat history.'}
+              </div>
+            )}
+          </div>
+        </section>
 
-      <Composer selectedAgent={agent} disabled={!session.connected || sending} />
+        {showNewMessagesToast && (
+          <div className="absolute bottom-6 left-1/2 z-10 -translate-x-1/2">
+            <button
+              onClick={onScrollToBottomClick}
+              type="button"
+              className="framer-pill bg-white px-4 py-2 text-xs shadow-[0_14px_40px_rgba(0,0,0,0.35)] hover:translate-y-0 hover:scale-105"
+            >
+              New Messages
+            </button>
+          </div>
+        )}
+      </div>
+
+      <Composer
+        selectedAgent={agent}
+        disabled={!session.connected || sending}
+        onSubmit={onComposerSubmit}
+      />
     </main>
   );
 }

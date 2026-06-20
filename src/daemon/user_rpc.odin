@@ -18,6 +18,29 @@ handle_user_rpc :: proc(client: net.TCP_Socket, body: string) {
 	case "list_chats": handle_user_rpc_list_chats(client, user_id)
 	case "send_to_agent": handle_user_rpc_send_to_agent(client, body, user_id)
 	case "mark_read": handle_user_rpc_mark_read(client, body, user_id)
+	case "list_tasks": handle_user_rpc_list_tasks(client)
+	case "task_log": handle_user_rpc_task_log(client, body)
+	case "task_create": handle_user_rpc_task_create(client, body, user_id)
+	case "task_chain_create": handle_user_rpc_task_chain_create(client, body, user_id)
+	case "task_comment": handle_user_rpc_task_comment(client, body, user_id)
+	case "task_status": handle_user_rpc_task_status(client, body, user_id)
+	case "task_assign": handle_user_rpc_task_assign(client, body, user_id)
+	case "task_participant": handle_user_rpc_task_participant(client, body, user_id)
+	case "task_nudge": handle_user_rpc_task_nudge(client, body, user_id)
+	case "task_chain_update": handle_user_rpc_task_chain_update(client, body, user_id)
+	case "task_chain_status": handle_user_rpc_task_chain_status(client, body, user_id)
+	case "memory_propose_new": write_memory_service_response(client, memory_service_propose("new", body, user_id))
+	case "memory_propose_edit": write_memory_service_response(client, memory_service_propose("edit", body, user_id))
+	case "memory_propose_archive": write_memory_service_response(client, memory_service_propose("archive", body, user_id))
+	case "memory_propose_rollback": write_memory_service_response(client, memory_service_propose("rollback", body, user_id))
+	case "memory_decide": write_memory_service_response(client, memory_service_decide(extract_json_string(body, "decision", extract_json_string(body, "result", "")), body, user_id))
+	case "memory_list": write_response(client, 200, "OK", memory_service_list_json(body))
+	case "memory_show": write_response(client, 200, "OK", memory_service_show_json(body))
+	case "memory_history": write_response(client, 200, "OK", memory_service_history_json(body))
+	case "project_list": write_response(client, 200, "OK", project_list_json())
+	case "project_show": out, status := project_show_json(extract_json_string(body, "project_id", "")); if status == 404 { write_response(client, 404, "Not Found", out) } else { write_response(client, 200, "OK", out) }
+	case "project_create": write_project_service_response(client, project_create(body, user_id))
+	case "project_update": write_project_service_response(client, project_update(body, user_id))
 	case:
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"unsupported user-rpc action"}`)
 	}
@@ -41,7 +64,11 @@ handle_user_rpc_send_to_agent :: proc(client: net.TCP_Socket, body, user_id: str
 	}
 	stored := chat_events[chat_event_count - 1]
 	sent := chat_event_fanout(user_id, agent_instance_id, stored.message_id, stored.direction)
-	agent_chat_notify_user_message(agent_instance_id, user_id, stored.message_id)
+	if agent_chat_notify_user_message(agent_instance_id, user_id, stored.message_id) {
+		if chat_store_append_event(Chat_Event{kind = .Delivered_Marked, user_id = user_id, agent_instance_id = agent_instance_id, message_id = stored.message_id, direction = "user_to_agent", delivered_unix_ms = router_now_unix_ms()}) {
+			chat_event_fanout(user_id, agent_instance_id, stored.message_id, "delivered")
+		}
+	}
 	write_response(client, 200, "OK", chat_send_response_json(stored.message_id, sent))
 }
 
@@ -56,6 +83,64 @@ handle_user_rpc_fetch_chat :: proc(client: net.TCP_Socket, body, user_id: string
 
 handle_user_rpc_list_chats :: proc(client: net.TCP_Socket, user_id: string) {
 	write_response(client, 200, "OK", chat_list_json(user_id))
+}
+
+handle_user_rpc_list_tasks :: proc(client: net.TCP_Socket) {
+	write_response(client, 200, "OK", task_store_state_json())
+}
+
+handle_user_rpc_task_log :: proc(client: net.TCP_Socket, body: string) {
+	task_id := extract_json_string(body, "task_id", "")
+	if task_id == "" {
+		write_response(client, 400, "Bad Request", `{"ok":false,"message":"task_log requires task_id"}`)
+		return
+	}
+	write_response(client, 200, "OK", task_log_json(task_id))
+}
+
+handle_user_rpc_task_create :: proc(client: net.TCP_Socket, body, user_id: string) {
+	result := task_service_create_task(Task_Create_Command{task_id = extract_json_string(body, "task_id", ""), chain_id = extract_json_string(body, "chain_id", ""), standalone = extract_json_bool(body, "standalone", false), title = extract_json_string(body, "title", ""), description = extract_json_string(body, "description", ""), acceptance_criteria = extract_json_string(body, "acceptance_criteria", ""), priority = extract_json_string(body, "priority", ""), status = extract_json_string(body, "status", ""), assignee_agent_instance_id = extract_json_string(body, "assignee_agent_instance_id", ""), reviewer_agent_instance_id = extract_json_string(body, "reviewer_agent_instance_id", ""), coordinator_agent_instance_id = extract_json_string(body, "coordinator_agent_instance_id", ""), depends_on = extract_json_string(body, "depends_on", ""), created_by = user_id, author_agent_instance_id = user_id})
+	write_task_service_response(client, result)
+}
+
+handle_user_rpc_task_chain_create :: proc(client: net.TCP_Socket, body, user_id: string) {
+	result := task_service_create_chain(Task_Chain_Create_Command{chain_id = extract_json_string(body, "chain_id", ""), title = extract_json_string(body, "title", ""), description = extract_json_string(body, "description", ""), status = extract_json_string(body, "status", ""), coordinator_agent_instance_id = extract_json_string(body, "coordinator_agent_instance_id", ""), default_reviewer_agent_instance_id = extract_json_string(body, "default_reviewer_agent_instance_id", ""), author_agent_instance_id = user_id})
+	write_task_service_response(client, result)
+}
+
+handle_user_rpc_task_comment :: proc(client: net.TCP_Socket, body, user_id: string) {
+	result := task_service_comment(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "body", ""), user_id)
+	write_task_service_response(client, result)
+}
+
+handle_user_rpc_task_status :: proc(client: net.TCP_Socket, body, user_id: string) {
+	result := task_service_set_status(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "status", ""), extract_json_string(body, "body", ""), user_id)
+	write_task_service_response(client, result)
+}
+
+handle_user_rpc_task_assign :: proc(client: net.TCP_Socket, body, user_id: string) {
+	result := task_service_assign(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "agent_instance_id", ""), user_id)
+	write_task_service_response(client, result)
+}
+
+handle_user_rpc_task_participant :: proc(client: net.TCP_Socket, body, user_id: string) {
+	result := task_service_add_participant(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "agent_instance_id", ""), extract_json_string(body, "role", ""), user_id)
+	write_task_service_response(client, result)
+}
+
+handle_user_rpc_task_nudge :: proc(client: net.TCP_Socket, body, user_id: string) {
+	result := task_service_nudge(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "body", ""), user_id)
+	write_task_service_response(client, result)
+}
+
+handle_user_rpc_task_chain_update :: proc(client: net.TCP_Socket, body, user_id: string) {
+	result := task_service_update_chain(Task_Chain_Update_Command{chain_id = extract_json_string(body, "chain_id", ""), title = extract_json_string(body, "title", ""), description = extract_json_string(body, "description", ""), coordinator_agent_instance_id = extract_json_string(body, "coordinator_agent_instance_id", ""), default_reviewer_agent_instance_id = extract_json_string(body, "default_reviewer_agent_instance_id", ""), final_summary = extract_json_string(body, "final_summary", ""), author_agent_instance_id = user_id})
+	write_task_service_response(client, result)
+}
+
+handle_user_rpc_task_chain_status :: proc(client: net.TCP_Socket, body, user_id: string) {
+	result := task_service_set_chain_status(extract_json_string(body, "chain_id", ""), extract_json_string(body, "status", ""), extract_json_string(body, "final_summary", ""), user_id)
+	write_task_service_response(client, result)
 }
 
 handle_user_rpc_mark_read :: proc(client: net.TCP_Socket, body, user_id: string) {
@@ -129,7 +214,10 @@ chat_write_message_json :: proc(builder: ^strings.Builder, msg: Chat_Message) {
 	strings.write_string(builder, `{"message_id":"`); json_write_string(builder, msg.message_id)
 	strings.write_string(builder, `","direction":"`); json_write_string(builder, msg.direction)
 	strings.write_string(builder, `","body":"`); json_write_string(builder, msg.body)
-	strings.write_string(builder, `","read_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", msg.read_unix_ms))
+	strings.write_string(builder, `","delivered_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", msg.delivered_unix_ms))
+	strings.write_string(builder, `,"read_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", msg.read_unix_ms))
+	strings.write_string(builder, `,"delivery_failed_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", msg.delivery_failed_unix_ms))
+	strings.write_string(builder, `,"delivery_error":"`); json_write_string(builder, msg.delivery_error); strings.write_string(builder, `"`)
 	strings.write_string(builder, `,"created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", msg.created_unix_ms))
 	strings.write_string(builder, `}`)
 }

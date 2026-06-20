@@ -10,8 +10,9 @@
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true,
     "outDir": "electron-dist",
-    "rootDir": "electron",
-    "types": ["node"]
+    "rootDir": "src/ui/electron",
+    "types": ["node"],
+    "tsBuildInfoFile": "./tsconfig.electron.tsbuildinfo"
   },
-  "include": ["electron/**/*.cts"]
+  "include": ["src/ui/electron/**/*.cts"]
 }

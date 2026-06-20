@@ -7,7 +7,7 @@ import "core:strings"
 handle_task_create :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
-	result := task_service_create_task(Task_Create_Command{task_id = extract_json_string(body, "task_id", ""), chain_id = extract_json_string(body, "chain_id", ""), title = extract_json_string(body, "title", ""), description = extract_json_string(body, "description", ""), acceptance_criteria = extract_json_string(body, "acceptance_criteria", ""), priority = extract_json_string(body, "priority", ""), status = extract_json_string(body, "status", ""), assignee_agent_instance_id = extract_json_string(body, "assignee_agent_instance_id", ""), reviewer_agent_instance_id = extract_json_string(body, "reviewer_agent_instance_id", ""), coordinator_agent_instance_id = extract_json_string(body, "coordinator_agent_instance_id", ""), depends_on = extract_json_string(body, "depends_on", ""), created_by = author, author_agent_instance_id = author})
+	result := task_service_create_task(Task_Create_Command{task_id = extract_json_string(body, "task_id", ""), chain_id = extract_json_string(body, "chain_id", ""), standalone = extract_json_bool(body, "standalone", false), title = extract_json_string(body, "title", ""), description = extract_json_string(body, "description", ""), acceptance_criteria = extract_json_string(body, "acceptance_criteria", ""), priority = extract_json_string(body, "priority", ""), status = extract_json_string(body, "status", ""), assignee_agent_instance_id = extract_json_string(body, "assignee_agent_instance_id", ""), reviewer_agent_instance_id = extract_json_string(body, "reviewer_agent_instance_id", ""), coordinator_agent_instance_id = extract_json_string(body, "coordinator_agent_instance_id", ""), depends_on = extract_json_string(body, "depends_on", ""), created_by = author, author_agent_instance_id = author})
 	write_task_service_response(client, result)
 }
 
@@ -53,6 +53,20 @@ handle_task_review :: proc(client: net.TCP_Socket, body: string) {
 	write_task_service_response(client, result)
 }
 
+handle_task_nudge :: proc(client: net.TCP_Socket, body: string) {
+	author, ok := task_author_from_body(client, body)
+	if !ok do return
+	result := task_service_nudge(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "body", ""), author)
+	write_task_service_response(client, result)
+}
+
+handle_task_chain_update :: proc(client: net.TCP_Socket, body: string) {
+	author, ok := task_author_from_body(client, body)
+	if !ok do return
+	result := task_service_update_chain(Task_Chain_Update_Command{chain_id = extract_json_string(body, "chain_id", ""), title = extract_json_string(body, "title", ""), description = extract_json_string(body, "description", ""), coordinator_agent_instance_id = extract_json_string(body, "coordinator_agent_instance_id", ""), default_reviewer_agent_instance_id = extract_json_string(body, "default_reviewer_agent_instance_id", ""), final_summary = extract_json_string(body, "final_summary", ""), author_agent_instance_id = author})
+	write_task_service_response(client, result)
+}
+
 handle_task_chain_status :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
@@ -88,6 +102,7 @@ handle_task_list_authed :: proc(client: net.TCP_Socket, body: string) {
 handle_task_next :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
+	task_recompute_promotions(author)
 	state, found := task_claim_next_for_agent(author)
 	if !found {
 		write_response(client, 200, "OK", `{"ok":true,"task":null}`)
@@ -154,6 +169,8 @@ write_task_service_response :: proc(client: net.TCP_Socket, result: Task_Service
 	status_text := "OK"
 	if result.status_code == 400 do status_text = "Bad Request"
 	if result.status_code == 401 do status_text = "Unauthorized"
+	if result.status_code == 404 do status_text = "Not Found"
+	if result.status_code == 409 do status_text = "Conflict"
 	if result.status_code == 500 do status_text = "Internal Server Error"
 	write_response(client, result.status_code, status_text, result.message)
 }
@@ -191,6 +208,7 @@ task_store_state_json :: proc() -> string {
 		if i > 0 do strings.write_string(&builder, `,`)
 		p := task_participants[i]
 		strings.write_string(&builder, `{"task_id":"`); json_write_string(&builder, p.task_id)
+		strings.write_string(&builder, `","chain_id":"`); json_write_string(&builder, p.chain_id)
 		strings.write_string(&builder, `","agent_instance_id":"`); json_write_string(&builder, p.agent_instance_id)
 		strings.write_string(&builder, `","role":"`); json_write_string(&builder, p.role)
 		strings.write_string(&builder, `"}`)

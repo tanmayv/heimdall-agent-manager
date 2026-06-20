@@ -44,7 +44,7 @@ Config :: struct {
 
 main :: proc() {
 	if has_flag(os.args, "--version") {
-		fmt.println("bc-test-agent", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
+		fmt.println("ham-test-agent", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
 		return
 	}
 	if has_flag(os.args, "--help") || has_flag(os.args, "-h") {
@@ -70,7 +70,7 @@ main :: proc() {
 	next_stats_unix_ms := stats.started_unix_ms
 	conversation_id := conversation_id_for_instance(cfg.agent_instance_id)
 
-	fmt.println("bc-test-agent starting", cfg.agent_instance_id, "targets", len(targets))
+	fmt.println("ham-test-agent starting", cfg.agent_instance_id, "targets", len(targets))
 	for now_unix_ms() < end_unix_ms {
 		now := now_unix_ms()
 		for i in 0..<len(targets) {
@@ -114,7 +114,7 @@ main :: proc() {
 
 	stats.updated_unix_ms = now_unix_ms()
 	write_stats(cfg, stats)
-	fmt.println("bc-test-agent done", cfg.agent_instance_id, "sent", stats.sent_messages, "received", stats.received_messages)
+	fmt.println("ham-test-agent done", cfg.agent_instance_id, "sent", stats.sent_messages, "received", stats.received_messages)
 }
 
 has_flag :: proc(args: []string, flag: string) -> bool {
@@ -125,8 +125,8 @@ has_flag :: proc(args: []string, flag: string) -> bool {
 }
 
 print_usage :: proc() {
-	fmt.println("bc-test-agent", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
-	fmt.println("usage: bc-test-agent --agent-instance-id <id> --agent-token <token> [--daemon-url <url>] [--targets <id:ms,...>] [--duration-sec N] [--version] [--help]")
+	fmt.println("ham-test-agent", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
+	fmt.println("usage: ham-test-agent --agent-instance-id <id> --agent-token <token> [--daemon-url <url>] [--targets <id:ms,...>] [--duration-sec N] [--version] [--help]")
 }
 
 parse_args :: proc(args: []string) -> Config {
@@ -134,8 +134,8 @@ parse_args :: proc(args: []string) -> Config {
 		daemon_url = "http://127.0.0.1:49322",
 		duration_sec = 60,
 		message_size = 256,
-		stats_dir = "/tmp/bc-test/stats",
-		log_dir = "/tmp/bc-test/logs",
+		stats_dir = "/tmp/ham-test/stats",
+		log_dir = "/tmp/ham-test/logs",
 		fetch_interval_ms = 500,
 	}
 	for i := 1; i < len(args); i += 1 {

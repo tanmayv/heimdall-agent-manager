@@ -387,7 +387,7 @@ For now, service can infer newly read messages by fetching unread messages only.
 7. Build:
 
 ```bash
-nix build .#bc-odin-daemon .#bc-agent-wrapper .#bc-odinctl
+nix build .#ham-daemon .#ham-wrapper .#ham-ctl
 ```
 
 8. Smoke test:

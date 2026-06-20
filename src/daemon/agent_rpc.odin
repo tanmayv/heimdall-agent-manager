@@ -26,6 +26,22 @@ handle_agent_rpc :: proc(client: net.TCP_Socket, body: string) {
 		handle_agent_rpc_fetch_user_chat(client, body, from_agent_instance_id)
 	} else if action == "user_presence" {
 		write_response(client, 200, "OK", user_presence_json())
+	} else if action == "memory_propose_new" {
+		write_memory_service_response(client, memory_service_propose("new", body, from_agent_instance_id))
+	} else if action == "memory_propose_edit" {
+		write_memory_service_response(client, memory_service_propose("edit", body, from_agent_instance_id))
+	} else if action == "memory_propose_archive" {
+		write_memory_service_response(client, memory_service_propose("archive", body, from_agent_instance_id))
+	} else if action == "memory_propose_rollback" {
+		write_memory_service_response(client, memory_service_propose("rollback", body, from_agent_instance_id))
+	} else if action == "memory_decide" {
+		write_memory_service_response(client, memory_service_decide(extract_json_string(body, "decision", extract_json_string(body, "result", "")), body, from_agent_instance_id))
+	} else if action == "memory_list" {
+		write_response(client, 200, "OK", memory_service_list_json(body))
+	} else if action == "memory_show" {
+		write_response(client, 200, "OK", memory_service_show_json(body))
+	} else if action == "memory_history" {
+		write_response(client, 200, "OK", memory_service_history_json(body))
 	} else {
 		fmt.println("agent_rpc failure unsupported_action", action, "from", from_agent_instance_id)
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"unsupported agent-rpc action"}`)
@@ -36,9 +52,17 @@ handle_agent_rpc_send_to_user :: proc(client: net.TCP_Socket, body, from_agent_i
 	user_id := extract_json_string(body, "user_id", "")
 	payload := extract_json_string(body, "payload", "")
 	if payload == "" do payload = extract_json_string(body, "body", "")
-	message_id, ok := agent_chat_send_to_user(from_agent_instance_id, user_id, payload)
-	if !ok {
+	if !valid_user_id(user_id) || payload == "" {
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"send_to_user requires valid user_id and body"}`)
+		return
+	}
+	if !user_client_user_exists(user_id) {
+		write_response(client, 404, "Not Found", `{"ok":false,"message":"unknown user_id"}`)
+		return
+	}
+	message_id, ok := agent_chat_send_to_user(from_agent_instance_id, user_id, payload)
+	if !ok || message_id == "" {
+		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"send_to_user did not create a message"}`)
 		return
 	}
 	builder := strings.builder_make()

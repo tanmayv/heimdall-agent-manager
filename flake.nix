@@ -1,5 +1,5 @@
 {
-  description = "Odin interactive agent daemon prototype";
+  description = "Heimdall Agent Manager";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -25,12 +25,14 @@
           runHook preBuild
           mkdir -p $out/bin
           odin build ${srcDir} -collection:odin_test=src -out:$out/bin/${name}
+          ${if name == "ham-wrapper" then "ln -s ham-wrapper $out/bin/bc-agent-wrapper" else ""}
+          ${if name == "ham-test-agent" then "ln -s ham-test-agent $out/bin/bc-test-agent" else ""}
           runHook postBuild
         '';
       };
 
       mkOdinDaemonPackage = pkgs: odin: pkgs.stdenv.mkDerivation {
-        pname = "bc-odin-daemon";
+        pname = "ham-daemon";
         version = appVersion;
         src = ./.;
         nativeBuildInputs = [ odin ];
@@ -39,14 +41,16 @@
         buildPhase = ''
           runHook preBuild
           mkdir -p $out/bin
-          odin build src/daemon -collection:odin_test=src -out:$out/bin/bc-odin-daemon
-          odin build src/wrapper -collection:odin_test=src -out:$out/bin/bc-agent-wrapper
+          odin build src/daemon -collection:odin_test=src -out:$out/bin/ham-daemon
+          odin build src/wrapper -collection:odin_test=src -out:$out/bin/ham-wrapper
+          ln -s ham-daemon $out/bin/bc-odin-daemon
+          ln -s ham-wrapper $out/bin/bc-agent-wrapper
           runHook postBuild
         '';
       };
 
       mkOdinCtlPackage = pkgs: odin: pkgs.stdenv.mkDerivation {
-        pname = "bc-odinctl";
+        pname = "ham-ctl";
         version = appVersion;
         src = ./.;
         nativeBuildInputs = [ odin ];
@@ -55,13 +59,86 @@
         buildPhase = ''
           runHook preBuild
           mkdir -p $out/bin
-          odin build src/ctl -collection:odin_test=src -out:$out/bin/bc-odinctl
-          odin build src/wrapper -collection:odin_test=src -out:$out/bin/bc-agent-wrapper
+          odin build src/ctl -collection:odin_test=src -out:$out/bin/ham-ctl
+          odin build src/wrapper -collection:odin_test=src -out:$out/bin/ham-wrapper
+          ln -s ham-ctl $out/bin/bc-odinctl
+          ln -s ham-wrapper $out/bin/bc-agent-wrapper
           runHook postBuild
         '';
       };
+
+      mkOdinUiPackage = pkgs: pkgs.buildNpmPackage {
+        pname = "heimdall";
+        version = appVersion;
+        src = ./.;
+        npmDepsHash = "sha256-HGsFWlo7IUWrhJBqsmXDAmhGZ6dDEaZ39ZOi1cGg7eU=";
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        npmBuildScript = "build";
+        npmFlags = [ "--ignore-scripts" ];
+        npmInstallFlags = [ "--ignore-scripts" ];
+        installPhase = ''
+          runHook preInstall
+          mkdir -p $out/share/heimdall/{dist,electron-dist}
+          cp -r dist/* $out/share/heimdall/dist/
+          cp -r electron-dist/* $out/share/heimdall/electron-dist/
+          mkdir -p $out/bin
+          makeWrapper ${pkgs.electron}/bin/electron $out/bin/heimdall \
+            --add-flags "$out/share/heimdall/electron-dist/main.cjs"
+          ln -s heimdall $out/bin/odin-ui
+          runHook postInstall
+        '';
+      };
+
+      homeManagerModule = { config, lib, pkgs, ... }:
+        let
+          cfg = config.programs.heimdall;
+          legacyCfg = config.programs.odin-test;
+          useLegacy = legacyCfg.enable && !cfg.enable;
+          effectiveCfg = if useLegacy then legacyCfg else cfg;
+          system = pkgs.stdenv.hostPlatform.system;
+          odinPackages = self.packages.${system};
+          packageByName = {
+            daemon = odinPackages.ham-daemon;
+            wrapper = odinPackages.ham-wrapper;
+            ctl = odinPackages.ham-ctl;
+            test-agent = odinPackages.ham-test-agent;
+            ui = odinPackages.heimdall;
+          };
+          heimdallOptions = {
+            enable = lib.mkEnableOption "Heimdall Agent Manager";
+
+            packageNames = lib.mkOption {
+              type = lib.types.listOf (lib.types.enum [ "daemon" "wrapper" "ctl" "test-agent" "ui" ]);
+              default = [ "daemon" "wrapper" "ctl" "test-agent" "ui" ];
+              example = [ "ctl" "ui" ];
+              description = ''
+                Heimdall Agent Manager packages to install into home.packages. The ui entry installs
+                the Heimdall Electron app package.
+              '';
+            };
+
+            packages = lib.mkOption {
+              type = lib.types.listOf lib.types.package;
+              default = [ ];
+              description = "Additional Heimdall package derivations to install.";
+            };
+          };
+        in
+        {
+          options.programs.heimdall = heimdallOptions;
+          options.programs.odin-test = heimdallOptions // {
+            enable = lib.mkEnableOption "Heimdall Agent Manager (legacy odin-test option namespace)";
+          };
+
+          config = lib.mkIf (cfg.enable || legacyCfg.enable) {
+            home.packages = (map (name: packageByName.${name}) effectiveCfg.packageNames) ++ effectiveCfg.packages;
+          };
+        };
     in
     {
+      homeModules.default = homeManagerModule;
+      homeManagerModules.default = homeManagerModule;
+
       packages = forAllSystems (system:
         let
           pkgs = pkgsFor system;
@@ -72,30 +149,42 @@
           odin = pkgs.odin.override { llvmPackages_18 = pkgs.llvmPackages_21; };
         in
         {
-          bc-odin-daemon = mkOdinDaemonPackage pkgs odin;
-          bc-agent-wrapper = mkOdinPackage pkgs odin "bc-agent-wrapper" "src/wrapper";
-          bc-odinctl = mkOdinCtlPackage pkgs odin;
-          bc-test-agent = mkOdinPackage pkgs odin "bc-test-agent" "src/test_agent";
-          default = self.packages.${system}.bc-odin-daemon;
+          ham-daemon = mkOdinDaemonPackage pkgs odin;
+          ham-wrapper = mkOdinPackage pkgs odin "ham-wrapper" "src/wrapper";
+          ham-ctl = mkOdinCtlPackage pkgs odin;
+          ham-test-agent = mkOdinPackage pkgs odin "ham-test-agent" "src/test_agent";
+          heimdall = mkOdinUiPackage pkgs;
+          # Compatibility package aliases for existing users/scripts.
+          bc-odin-daemon = self.packages.${system}.ham-daemon;
+          bc-agent-wrapper = self.packages.${system}.ham-wrapper;
+          bc-odinctl = self.packages.${system}.ham-ctl;
+          bc-test-agent = self.packages.${system}.ham-test-agent;
+          bc-odin-ui = self.packages.${system}.heimdall;
+          default = self.packages.${system}.ham-daemon;
         });
 
       apps = forAllSystems (system: {
         daemon = {
           type = "app";
-          program = "${self.packages.${system}.bc-odin-daemon}/bin/bc-odin-daemon";
+          program = "${self.packages.${system}.ham-daemon}/bin/ham-daemon";
         };
         wrapper = {
           type = "app";
-          program = "${self.packages.${system}.bc-agent-wrapper}/bin/bc-agent-wrapper";
+          program = "${self.packages.${system}.ham-wrapper}/bin/ham-wrapper";
         };
         ctl = {
           type = "app";
-          program = "${self.packages.${system}.bc-odinctl}/bin/bc-odinctl";
+          program = "${self.packages.${system}.ham-ctl}/bin/ham-ctl";
         };
         test-agent = {
           type = "app";
-          program = "${self.packages.${system}.bc-test-agent}/bin/bc-test-agent";
+          program = "${self.packages.${system}.ham-test-agent}/bin/ham-test-agent";
         };
+        heimdall = {
+          type = "app";
+          program = "${self.packages.${system}.heimdall}/bin/heimdall";
+        };
+        odin-ui = self.apps.${system}.heimdall;
         default = self.apps.${system}.daemon;
       });
 

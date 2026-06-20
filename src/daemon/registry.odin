@@ -16,6 +16,13 @@ Agent_Record :: struct {
 	has_agent_token: bool,
 	agent_token: string,
 	last_seen_unix_ms: i64,
+	startup_status: string,
+	startup_reason_code: string,
+	startup_safe_diagnostic: string,
+	startup_updated_unix_ms: i64,
+	provider_profile: string,
+	run_dir: string,
+	tmux_pane: string,
 	has_ws: bool,
 	ws_socket: net.TCP_Socket,
 }
@@ -63,6 +70,10 @@ registry_register :: proc(agent_class, agent_instance_id, display_name: string, 
 		agents[idx].has_agent_token = true
 		agents[idx].agent_token = strings.clone(agent_token)
 		agents[idx].last_seen_unix_ms = now_unix_ms()
+		if agents[idx].startup_status == "" {
+			agents[idx].startup_status = "starting"
+			agents[idx].startup_updated_unix_ms = agents[idx].last_seen_unix_ms
+		}
 		return agents[idx]
 	}
 
@@ -76,6 +87,8 @@ registry_register :: proc(agent_class, agent_instance_id, display_name: string, 
 		has_agent_token = true,
 		agent_token = strings.clone(agent_token),
 		last_seen_unix_ms = now_unix_ms(),
+		startup_status = "starting",
+		startup_updated_unix_ms = now_unix_ms(),
 	}
 
 	if agent_count < MAX_AGENTS {
@@ -196,6 +209,20 @@ registry_send_ws_text :: proc(agent_instance_id, text: string) -> bool {
 	return false
 }
 
+registry_update_startup :: proc(agent_instance_id, status, reason_code, safe_diagnostic, provider_profile, run_dir, tmux_pane: string) -> bool {
+	if idx := registry_find_agent(agent_instance_id); idx >= 0 {
+		agents[idx].startup_status = strings.clone(status)
+		agents[idx].startup_reason_code = strings.clone(reason_code)
+		agents[idx].startup_safe_diagnostic = strings.clone(safe_diagnostic)
+		if provider_profile != "" do agents[idx].provider_profile = strings.clone(provider_profile)
+		if run_dir != "" do agents[idx].run_dir = strings.clone(run_dir)
+		if tmux_pane != "" do agents[idx].tmux_pane = strings.clone(tmux_pane)
+		agents[idx].startup_updated_unix_ms = now_unix_ms()
+		return true
+	}
+	return false
+}
+
 registry_heartbeat :: proc(agent_instance_id: string) -> bool {
 	if idx := registry_find_agent(agent_instance_id); idx >= 0 {
 		agents[idx].connected = true
@@ -273,6 +300,13 @@ conversation_id_for_instance :: proc(agent_instance_id: string) -> string {
 	return strings.to_string(builder)
 }
 
+registry_agent_live :: proc(agent_instance_id: string) -> bool {
+	idx := registry_find_agent(agent_instance_id)
+	if idx < 0 do return false
+	now := now_unix_ms()
+	return agents[idx].connected && now - agents[idx].last_seen_unix_ms < DUPLICATE_HEARTBEAT_FRESH_MS
+}
+
 registry_list_json :: proc() -> string {
 	builder := strings.builder_make()
 	strings.write_string(&builder, "{\"agents\":[")
@@ -295,6 +329,13 @@ registry_list_json :: proc() -> string {
 		strings.write_string(&builder, "true" if agent.has_agent_token else "false")
 		strings.write_string(&builder, ",\"last_seen_unix_ms\":")
 		strings.write_string(&builder, fmt.tprintf("%d", agent.last_seen_unix_ms))
+		strings.write_string(&builder, `,"startup_status":"`); json_write_string(&builder, agent.startup_status)
+		strings.write_string(&builder, `","startup_reason_code":"`); json_write_string(&builder, agent.startup_reason_code)
+		strings.write_string(&builder, `","safe_diagnostic":"`); json_write_string(&builder, agent.startup_safe_diagnostic)
+		strings.write_string(&builder, `","provider_profile":"`); json_write_string(&builder, agent.provider_profile)
+		strings.write_string(&builder, `","run_dir":"`); json_write_string(&builder, agent.run_dir)
+		strings.write_string(&builder, `","tmux_pane":"`); json_write_string(&builder, agent.tmux_pane)
+		strings.write_string(&builder, `","startup_updated_unix_ms":`); strings.write_string(&builder, fmt.tprintf("%d", agent.startup_updated_unix_ms))
 		strings.write_string(&builder, "}")
 	}
 	strings.write_string(&builder, "]}")

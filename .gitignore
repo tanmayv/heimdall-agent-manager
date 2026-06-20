@@ -3,6 +3,8 @@ node_modules/
 dist/
 electron-dist/
 .run-logs/
+.nix-build-links/
+bin/
 result
 result-*
 ~

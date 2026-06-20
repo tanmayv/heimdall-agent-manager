@@ -25,6 +25,7 @@ handle_ws :: proc(client: net.TCP_Socket, request: string) {
 
 	write_ws_upgrade(client, ws_accept_key(key))
 	registry_set_ws(agent_instance_id, client)
+	agent_lifecycle_emit(agent_instance_id, "connected", "websocket_connected")
 	fmt.println("ws connected", agent_instance_id)
 	ws_read_loop(strings.clone(agent_instance_id), client)
 }
@@ -54,6 +55,7 @@ ws_read_loop :: proc(agent_instance_id: string, client: net.TCP_Socket) {
 		n, err := net.recv_tcp(client, buf[:])
 		if err != nil || n == 0 {
 			registry_clear_ws(agent_instance_id)
+			agent_lifecycle_emit(agent_instance_id, "disconnected", "websocket_closed")
 			fmt.println("ws disconnected", agent_instance_id)
 			return
 		}

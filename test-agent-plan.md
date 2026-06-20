@@ -2,7 +2,7 @@
 
 ## Goal
 
-Add a standalone `bc-test-agent` binary for integration/load testing the daemon, wrapper, message provider, and RPC message flow.
+Add a standalone `ham-test-agent` binary for integration/load testing the daemon, wrapper, message provider, and RPC message flow.
 
 The test agent should behave like a simple autonomous agent:
 
@@ -12,9 +12,9 @@ The test agent should behave like a simple autonomous agent:
 - track sent/received message counts and byte counts
 - write stats files for large-scale validation
 
-Real-world assumption: a real agent such as `pi` may learn its token from prompt/context/AGENTS.md. For testing, `bc-test-agent` will receive token and identity through explicit CLI flags.
+Real-world assumption: a real agent such as `pi` may learn its token from prompt/context/AGENTS.md. For testing, `ham-test-agent` will receive token and identity through explicit CLI flags.
 
-WebSocket remains daemon/wrapper notification-only. `bc-test-agent` should not depend on WS. It should actively fetch via RPC to simulate the agent reading messages.
+WebSocket remains daemon/wrapper notification-only. `ham-test-agent` should not depend on WS. It should actively fetch via RPC to simulate the agent reading messages.
 
 ## Add Binary
 
@@ -27,14 +27,14 @@ src/test_agent/main.odin
 Update `flake.nix` with package/app:
 
 ```bash
-nix build .#bc-test-agent
+nix build .#ham-test-agent
 nix run .#test-agent
 ```
 
 Binary name:
 
 ```text
-bc-test-agent
+ham-test-agent
 ```
 
 ## CLI Arguments
@@ -60,8 +60,8 @@ Defaults:
 --duration-sec 60
 --message-size 256
 --fetch-interval-ms 500
---stats-dir /tmp/bc-test/stats
---log-dir /tmp/bc-test/logs
+--stats-dir /tmp/ham-test/stats
+--log-dir /tmp/ham-test/logs
 ```
 
 Required:
@@ -228,15 +228,15 @@ Example:
 ```toml
 [wrapper]
 command = [
-  "bc-test-agent",
+  "ham-test-agent",
   "--daemon-url", "http://127.0.0.1:49322",
   "--agent-instance-id", "coder-agent@a",
   "--agent-token", "agent_coder-agent@a",
   "--targets", "coder-agent@b:1000",
   "--duration-sec", "60",
   "--message-size", "256",
-  "--stats-dir", "/tmp/bc-test/stats",
-  "--log-dir", "/tmp/bc-test/logs"
+  "--stats-dir", "/tmp/ham-test/stats",
+  "--log-dir", "/tmp/ham-test/logs"
 ]
 ```
 
@@ -246,7 +246,7 @@ Later wrapper can template/inject token and instance after registration. For now
 
 Start daemon.
 
-Start two wrappers using `bc-test-agent` commands:
+Start two wrappers using `ham-test-agent` commands:
 
 - `coder-agent@a` targets `coder-agent@b`
 - `coder-agent@b` targets `coder-agent@a`
@@ -256,10 +256,10 @@ Run for 30-60 seconds.
 Verify:
 
 ```text
-/tmp/bc-test/stats/coder-agent@a.stats.json
-/tmp/bc-test/stats/coder-agent@b.stats.json
-/tmp/bc-test/logs/coder-agent@a.incoming.jsonl
-/tmp/bc-test/logs/coder-agent@b.incoming.jsonl
+/tmp/ham-test/stats/coder-agent@a.stats.json
+/tmp/ham-test/stats/coder-agent@b.stats.json
+/tmp/ham-test/logs/coder-agent@a.incoming.jsonl
+/tmp/ham-test/logs/coder-agent@b.incoming.jsonl
 ```
 
 Expected:
@@ -274,7 +274,7 @@ Expected:
 - Canonical RPC actions only:
   - `send_message`
   - `fetch_messages`
-- Do not depend on WS in `bc-test-agent`.
+- Do not depend on WS in `ham-test-agent`.
 - Do not send actual message bodies over WS.
 - Actual messages move through RPC/provider only.
 - Keep implementation simple and POC-friendly.

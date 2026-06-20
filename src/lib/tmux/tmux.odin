@@ -75,14 +75,34 @@ ensure_not_copy_mode :: proc(pane_id: string) {
 }
 
 send_line :: proc(pane_id, text: string) -> bool {
+	return send_line_with_escape(pane_id, text, false)
+}
+
+send_line_with_escape :: proc(pane_id, text: string, escape_prefix: bool) -> bool {
 	if pane_id == "" do return false
 	ensure_not_copy_mode(pane_id)
+	if escape_prefix {
+		escape_cmd := []string{"tmux", "send-keys", "-t", pane_id, "Escape"}
+		state, _, _, err := os.process_exec(os.Process_Desc{command = escape_cmd}, context.allocator)
+		if err != nil || !state.success do return false
+	}
 	send_text_cmd := []string{"tmux", "send-keys", "-t", pane_id, "-l", text}
 	state, _, _, err := os.process_exec(os.Process_Desc{command = send_text_cmd}, context.allocator)
 	if err != nil || !state.success do return false
 	enter_cmd := []string{"tmux", "send-keys", "-t", pane_id, "Enter"}
 	state, _, _, err = os.process_exec(os.Process_Desc{command = enter_cmd}, context.allocator)
 	return err == nil && state.success
+}
+
+capture_pane_text :: proc(pane_id: string, line_limit := 80) -> (string, bool) {
+	if pane_id == "" do return "", false
+	limit := line_limit
+	if limit <= 0 do limit = 80
+	start := fmt.tprintf("-%d", limit)
+	cmd := []string{"tmux", "capture-pane", "-p", "-t", pane_id, "-S", start}
+	state, stdout, _, err := os.process_exec(os.Process_Desc{command = cmd}, context.allocator)
+	if err != nil || !state.success do return "", false
+	return string(stdout), true
 }
 
 pane_exists :: proc(pane_id: string) -> bool {
