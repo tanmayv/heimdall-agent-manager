@@ -59,7 +59,7 @@ extract_header :: proc(request, name: string) -> string {
 
 write_response :: proc(client: net.TCP_Socket, status: int, status_text, body: string) {
 	response := fmt.tprintf(
-		"HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
+		"HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nConnection: close\r\n\r\n%s",
 		status,
 		status_text,
 		len(body),

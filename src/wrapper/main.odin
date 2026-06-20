@@ -44,6 +44,12 @@ main :: proc() {
 		return
 	}
 
+	model_tier := option_value(os.args, "--tier", "normal")
+	if model_tier != "cheap" && model_tier != "normal" && model_tier != "smart" {
+		fmt.println("invalid --tier value; expected cheap, normal, or smart; got:", model_tier)
+		return
+	}
+
 	agent_cmd, agent_cmd_ok := selected_agent_command(cfg, selected_agent)
 	window_name := wrapper_window_name(cfg.tmux_window_prefix, agent_instance_id)
 	cwd := resolve_agent_run_dir(cfg, agent_cmd, agent_cmd_ok, selected_agent, agent_instance_id)
@@ -78,6 +84,7 @@ main :: proc() {
 	fmt.println("agent_instance_id", agent_instance_id)
 	fmt.println("selected_agent", selected_agent)
 	fmt.println("display_name", display_name)
+	fmt.println("model_tier", model_tier)
 	fmt.println("daemon_health", response.body)
 	fmt.println("registered", register_response.body)
 
@@ -99,11 +106,15 @@ main :: proc() {
 	fmt.println("tmux_window", window_name)
 	fmt.println("working_dir", cwd)
 
-	if agent_cmd_ok && agent_cmd.bootstrap_enabled {
-		generate_bootstrap_files(cwd, cfg, agent_cmd, selected_agent, registered_instance_id, display_name, cfg.daemon_url, agent_token)
+	if agent_cmd_ok && len(agent_cmd.bootstrap.enabled_features) > 0 {
+		generate_bootstrap_files(cwd, loaded.path, cfg, agent_cmd, selected_agent, registered_instance_id, display_name, cfg.daemon_url, agent_token)
 	}
 
-	command := build_agent_command(cfg, selected_agent, cfg.daemon_url, registered_instance_id, display_name, conversation_id, agent_token)
+	stop_message := cfg.stop_message
+	if agent_cmd_ok && agent_cmd.stop_message != "" do stop_message = agent_cmd.stop_message
+	if stop_message == "" do stop_message = "Agent stop requested. You have {time} seconds to complete your current work and checkpoint before shutdown."
+
+	command := build_agent_command(cfg, selected_agent, cfg.daemon_url, registered_instance_id, display_name, conversation_id, agent_token, model_tier)
 	launch, launch_ok := tmux.ensure_agent_window(cfg.tmux_session, window_name, cwd, command)
 	if !launch_ok {
 		fmt.println("failed to launch or find tmux window")
@@ -128,7 +139,7 @@ main :: proc() {
 		fmt.println("ws connection failed", ws_url)
 	}
 
-	heartbeat_loop(cfg.daemon_url, agent_class, registered_instance_id, display_name, agent_token, launch.pane_id, &ws_conn)
+	heartbeat_loop(cfg.daemon_url, agent_class, registered_instance_id, display_name, agent_token, launch.pane_id, stop_message, &ws_conn)
 }
 
 Startup_Probe_Result :: struct {
@@ -138,7 +149,10 @@ Startup_Probe_Result :: struct {
 }
 
 startup_probe_agent :: proc(cfg: cfg_lib.Startup_Detection_Config, pane_id: string) -> Startup_Probe_Result {
-	if !cfg.enabled do return Startup_Probe_Result{status = "disabled"}
+	if !cfg.enabled {
+		if cfg.ready_on_launch do return Startup_Probe_Result{status = "ready", reason_code = "launch_success", safe_diagnostic = "Agent reported ready on successful launch"}
+		return Startup_Probe_Result{status = "disabled"}
+	}
 	if pane_id == "" do return Startup_Probe_Result{status = "startup_failed", reason_code = "missing_pane", safe_diagnostic = "tmux pane was not available for startup detection"}
 
 	probe_seconds := cfg.startup_probe_seconds
@@ -258,7 +272,7 @@ read_yes_from_stdin :: proc() -> bool {
 	return answer == "y" || answer == "Y" || answer == "yes" || answer == "YES"
 }
 
-heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name, agent_token, tmux_pane: string, ws_conn: ^ws.Connection) {
+heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name, agent_token, tmux_pane, stop_message: string, ws_conn: ^ws.Connection) {
 	fmt.println("heartbeat started", agent_instance_id)
 	failed_heartbeats := 0
 	for {
@@ -290,6 +304,10 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 		if text, got_message := ws.poll_text(ws_conn); got_message {
 			if strings.index(text, `"type":"duplicate_check"`) >= 0 {
 				// internal control message; do not surface as an agent message
+			} else if strings.index(text, `"type":"stop_event"`) >= 0 {
+				fmt.println("stop event", text)
+				handle_stop_event(text, tmux_pane, agent_instance_id, stop_message, ws_conn)
+				return
 			} else if strings.index(text, `"type":"message_event"`) >= 0 {
 				fmt.println("message event", text)
 				handle_message_event(text, tmux_pane)
@@ -380,6 +398,28 @@ handle_user_chat_event :: proc(text, tmux_pane: string) {
 	} else {
 		fmt.println("failed to notify agent pane", line)
 	}
+}
+
+handle_stop_event :: proc(text, tmux_pane, agent_instance_id, stop_message: string, ws_conn: ^ws.Connection) {
+	time_in_sec := extract_json_int(text, "time_in_sec", 30)
+	msg := replace_all(stop_message, "{time}", fmt.tprintf("%d", time_in_sec))
+	fmt.println("stop: sending escape and message to pane", tmux_pane)
+	_ = tmux.send_line_with_escape(tmux_pane, msg, true)
+	fmt.println("stop: waiting", time_in_sec, "seconds")
+	time.sleep(time.Duration(time_in_sec) * time.Second)
+	fmt.println("stop: killing pane", tmux_pane)
+	_ = tmux.kill_pane(tmux_pane)
+	fmt.println("stop: sending stop_done via WS")
+	report_stop_done(ws_conn, agent_instance_id)
+	fmt.println("stop: done, wrapper exiting")
+}
+
+report_stop_done :: proc(ws_conn: ^ws.Connection, agent_instance_id: string) {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"type":"stop_done","agent_instance_id":"`)
+	json_write_string(&b, agent_instance_id)
+	strings.write_string(&b, `"}`)
+	_ = ws.send_text(ws_conn, strings.to_string(b))
 }
 
 reregister_and_reconnect_ws :: proc(daemon_url, agent_class, agent_instance_id, display_name, agent_token: string, ws_conn: ^ws.Connection) -> (string, bool) {
@@ -534,7 +574,7 @@ resolve_agent_run_dir :: proc(cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Ag
 
 	root := cfg.agent_run_dir
 	if agent_cmd_ok && agent_cmd.agent_run_dir != "" do root = agent_cmd.agent_run_dir
-	if root == "" do return resolve_working_dir(cfg.working_dir)
+	if root == "" do return resolve_working_dir(".")
 
 	project := cfg.project
 	if agent_cmd_ok && agent_cmd.project != "" do project = agent_cmd.project
@@ -581,25 +621,273 @@ safe_slug :: proc(value: string) -> string {
 BOOTSTRAP_HEADER :: "<!-- HEIMDALL-MANAGED-BOOTSTRAP v1: safe to overwrite -->"
 BOOTSTRAP_MANIFEST :: ".heimdall-bootstrap-manifest"
 
-generate_bootstrap_files :: proc(cwd: string, cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Command_Config, selected_agent, agent_instance_id, display_name, daemon_url, agent_token: string) {
-	profile := bootstrap_profile(agent_cmd, selected_agent)
-	files := agent_cmd.bootstrap_files
-	if len(files) == 0 {
-		files = default_bootstrap_files(profile)
+Memory_Record :: struct {
+	memory_id:             string,
+	type_text:             string,
+	title:                 string,
+	body:                  string,
+	scope:                 string,
+	is_configured_template: bool,
+}
+
+fetch_all_active_memories :: proc(daemon_url, agent_token, agent_instance_id: string, memory_templates: []string) -> [dynamic]Memory_Record {
+	result := make([dynamic]Memory_Record)
+	configured_ids := make(map[string]bool)
+
+	if len(memory_templates) > 0 {
+		req := strings.builder_make()
+		strings.write_string(&req, `{"agent_token":"`); json_write_string(&req, agent_token)
+		strings.write_string(&req, `","action":"memory_list","status":"active"}`)
+		resp, ok := http.post(daemon_url, contracts.ROUTE_AGENT_RPC, strings.to_string(req))
+		if ok && resp.status == 200 {
+			parse_into_memory_records(resp.body, memory_templates, true, &result, &configured_ids)
+		}
 	}
-	cleanup_removed_bootstrap_files(cwd, files)
+
+	req2 := strings.builder_make()
+	strings.write_string(&req2, `{"agent_token":"`); json_write_string(&req2, agent_token)
+	strings.write_string(&req2, `","action":"memory_list","subject_agent":"`); json_write_string(&req2, agent_instance_id)
+	strings.write_string(&req2, `","status":"active"}`)
+	resp2, ok2 := http.post(daemon_url, contracts.ROUTE_AGENT_RPC, strings.to_string(req2))
+	if ok2 && resp2.status == 200 {
+		parse_into_memory_records(resp2.body, memory_templates, false, &result, &configured_ids)
+	}
+
+	return result
+}
+
+parse_into_memory_records :: proc(body: string, memory_templates: []string, templates_only: bool, result: ^[dynamic]Memory_Record, configured_ids: ^map[string]bool) {
+	idx := 0
+	for {
+		start_rel := strings.index(body[idx:], `{"memory_id":"`)
+		if start_rel < 0 do break
+		start := idx + start_rel
+		end := json_object_end(body, start)
+		if end <= start do break
+		object := body[start:end]
+
+		status := extract_json_string(object, "status", "")
+		if status != "active" { idx = end; continue }
+
+		type_text := extract_json_string(object, "type", "fact")
+		memory_id := extract_json_string(object, "memory_id", "")
+		title := extract_json_string(object, "title", "")
+		body_text := extract_json_string(object, "body", "")
+		scope := extract_json_string(object, "scope", "")
+		is_configured_template := type_text == "template" && memory_template_matches(object, memory_templates)
+
+		if templates_only {
+			if !is_configured_template { idx = end; continue }
+			configured_ids^[memory_id] = true
+			append(result, Memory_Record{memory_id = memory_id, type_text = type_text, title = title, body = body_text, scope = scope, is_configured_template = true})
+		} else {
+			if _, seen := configured_ids^[memory_id]; seen { idx = end; continue }
+			append(result, Memory_Record{memory_id = memory_id, type_text = type_text, title = title, body = body_text, scope = scope, is_configured_template = false})
+		}
+		idx = end
+	}
+}
+
+generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Command_Config, selected_agent, agent_instance_id, display_name, daemon_url, agent_token: string) {
+	if len(agent_cmd.bootstrap.enabled_features) == 0 do return
+
+	profile := bootstrap_profile(agent_cmd, selected_agent)
 	memory_templates := agent_cmd.memory_templates
 	if len(memory_templates) == 0 do memory_templates = cfg.memory_templates
-	memory_context := active_memory_bootstrap(daemon_url, agent_token, agent_instance_id, memory_templates)
 	project_context := project_bootstrap_context(daemon_url, agent_token, cfg, agent_cmd)
-	for file_name in files {
-		if !safe_relative_path(file_name) do continue
-		path := join_path(cwd, file_name)
-		if !can_write_managed_file(path) do continue
-		content := bootstrap_file_content(file_name, profile, agent_cmd.bootstrap_sections, selected_agent, agent_instance_id, display_name, daemon_url, memory_context, project_context)
-		write_managed_file(path, content)
+	memories := fetch_all_active_memories(daemon_url, agent_token, agent_instance_id, memory_templates)
+
+	has_memory_md := false
+	for feature in agent_cmd.bootstrap.enabled_features {
+		if feature == "MEMORY_MD" { has_memory_md = true; break }
 	}
-	write_manifest(cwd, files)
+
+	written := make([dynamic]string)
+
+	for feature in agent_cmd.bootstrap.enabled_features {
+		fc := agent_cmd.bootstrap.features[feature]
+		switch feature {
+		case "AGENTS_MD":
+			name := fc.name
+			if name == "" {
+				if profile == "claude" { name = "CLAUDE.md" } else { name = "AGENTS.md" }
+			}
+			content_sections := fc.content
+			if len(content_sections) == 0 {
+				content_sections = []string{"IDENTITY", "GUIDANCE", "PROJECT", "MEMORY"}
+			}
+			path := join_path(cwd, name)
+			if can_write_managed_file(path) {
+				text := build_agents_md(name, profile, content_sections, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path, memories[:], project_context, has_memory_md)
+				write_managed_file(path, text)
+				append(&written, name)
+			}
+		case "MEMORY_MD":
+			name := fc.name
+			if name == "" do name = "MEMORY.md"
+			path := join_path(cwd, name)
+			if can_write_managed_file(path) {
+				text := build_memory_md(memories[:])
+				write_managed_file(path, text)
+				append(&written, name)
+			}
+		case "SKILLS":
+			rel_dir := fc.relative_dir
+			if rel_dir == "" do rel_dir = "skills"
+			filename := fc.filename
+			if filename == "" do filename = "SKILL.md"
+			skill_paths := write_skills(cwd, rel_dir, filename, memories[:])
+			for p in skill_paths {
+				append(&written, p)
+			}
+		}
+	}
+
+	cleanup_removed_bootstrap_files(cwd, written[:])
+	write_manifest(cwd, written[:])
+}
+
+content_section_enabled :: proc(sections: []string, section: string) -> bool {
+	if len(sections) == 0 do return true
+	for item in sections {
+		if item == section || item == "ALL" || item == "all" do return true
+	}
+	return false
+}
+
+build_agents_md :: proc(name, profile: string, content_sections: []string, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path: string, memories: []Memory_Record, project_context: string, has_memory_md: bool) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, BOOTSTRAP_HEADER); strings.write_string(&b, "\n")
+	strings.write_string(&b, bootstrap_title(name, profile)); strings.write_string(&b, "\n\n")
+	if content_section_enabled(content_sections, "IDENTITY") {
+		ctl_bin := "~/heimdall/bin/" + CTL_SYSTEM + "/ham-ctl"
+		strings.write_string(&b, "FIRST RUN: `")
+		strings.write_string(&b, ctl_bin)
+		strings.write_string(&b, " --config ")
+		strings.write_string(&b, config_path)
+		strings.write_string(&b, " --token ")
+		strings.write_string(&b, agent_token)
+		strings.write_string(&b, " agent-ready` — this tells Heimdall you are alive. Do this before anything else.\n\n")
+		strings.write_string(&b, "- Display name: "); strings.write_string(&b, display_name); strings.write_string(&b, "\n")
+		strings.write_string(&b, "- Agent instance: "); strings.write_string(&b, agent_instance_id); strings.write_string(&b, "\n")
+		strings.write_string(&b, "- Provider/profile: "); strings.write_string(&b, selected_agent); strings.write_string(&b, " / "); strings.write_string(&b, profile); strings.write_string(&b, "\n")
+		strings.write_string(&b, "- Daemon URL: "); strings.write_string(&b, daemon_url); strings.write_string(&b, "\n")
+		strings.write_string(&b, "- This file is generated by Heimdall and is overwritten on agent start. Unmanaged files are preserved.\n")
+	}
+	if content_section_enabled(content_sections, "GUIDANCE") {
+		strings.write_string(&b, bootstrap_profile_guidance(profile, name))
+	}
+	if content_section_enabled(content_sections, "PROJECT") && project_context != "" {
+		strings.write_string(&b, project_context)
+	}
+	if content_section_enabled(content_sections, "MEMORY") {
+		mem_str := render_memory_for_agents_md(memories, has_memory_md)
+		if mem_str != "" do strings.write_string(&b, mem_str)
+	}
+	return strings.to_string(b)
+}
+
+render_memory_for_agents_md :: proc(memories: []Memory_Record, has_memory_md: bool) -> string {
+	b := strings.builder_make()
+
+	// Configured template memories
+	wrote_tpl := false
+	for m in memories {
+		if !m.is_configured_template do continue
+		if !wrote_tpl {
+			strings.write_string(&b, "\n\n# Active Approved Memory Templates\nOnly configured, approved active template memories are included here; pending, rejected, and archived templates are excluded.\n")
+			wrote_tpl = true
+		}
+		strings.write_string(&b, "\n- template: ")
+		if m.title != "" { strings.write_string(&b, m.title); strings.write_string(&b, " — ") }
+		strings.write_string(&b, m.body); strings.write_string(&b, "\n")
+	}
+
+	// Active memory section — inline types (EXPERTISE, HABIT) and reference types (FACT, EPISODE)
+	wrote_active := false
+
+	inline_types := []string{"expertise", "habit"}
+	for type_name in inline_types {
+		for m in memories {
+			if m.is_configured_template do continue
+			if m.type_text != type_name do continue
+			if !wrote_active {
+				strings.write_string(&b, "\n\n# Active Approved Memory\nOnly active approved memory is included here; pending, rejected, and archived proposals are excluded.\n")
+				wrote_active = true
+			}
+			strings.write_string(&b, "\n- "); strings.write_string(&b, type_name); strings.write_string(&b, ": ")
+			if m.title != "" { strings.write_string(&b, m.title); strings.write_string(&b, " — ") }
+			strings.write_string(&b, m.body); strings.write_string(&b, "\n")
+		}
+	}
+
+	ref_types := []string{"fact", "episode"}
+	for type_name in ref_types {
+		for m in memories {
+			if m.is_configured_template do continue
+			if m.type_text != type_name do continue
+			if !wrote_active {
+				strings.write_string(&b, "\n\n# Active Approved Memory\nOnly active approved memory is included here; pending, rejected, and archived proposals are excluded.\n")
+				wrote_active = true
+			}
+			if has_memory_md {
+				slug := safe_slug(m.title)
+				strings.write_string(&b, "\n- "); strings.write_string(&b, type_name); strings.write_string(&b, ": ")
+				strings.write_string(&b, m.title)
+				strings.write_string(&b, " — see [MEMORY.md#"); strings.write_string(&b, slug)
+				strings.write_string(&b, "](MEMORY.md#"); strings.write_string(&b, slug); strings.write_string(&b, ")\n")
+			} else {
+				strings.write_string(&b, "\n- "); strings.write_string(&b, type_name); strings.write_string(&b, ": ")
+				if m.title != "" { strings.write_string(&b, m.title); strings.write_string(&b, " — ") }
+				strings.write_string(&b, m.body); strings.write_string(&b, "\n")
+			}
+		}
+	}
+
+	if !wrote_tpl && !wrote_active do return ""
+	return strings.to_string(b)
+}
+
+build_memory_md :: proc(memories: []Memory_Record) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, BOOTSTRAP_HEADER); strings.write_string(&b, "\n")
+	strings.write_string(&b, "# Memory\n\n")
+	strings.write_string(&b, "Full bodies of FACT and EPISODE memories. Regenerated each agent start.\n")
+	wrote_any := false
+	for m in memories {
+		if m.type_text != "fact" && m.type_text != "episode" do continue
+		if m.is_configured_template do continue
+		slug := safe_slug(m.title)
+		strings.write_string(&b, "\n## "); strings.write_string(&b, m.title)
+		strings.write_string(&b, " {#"); strings.write_string(&b, slug); strings.write_string(&b, "}\n\n")
+		strings.write_string(&b, m.body); strings.write_string(&b, "\n")
+		wrote_any = true
+	}
+	if !wrote_any {
+		strings.write_string(&b, "\n_(No fact or episode memories active.)_\n")
+	}
+	return strings.to_string(b)
+}
+
+write_skills :: proc(cwd, rel_dir, filename: string, memories: []Memory_Record) -> []string {
+	written := make([dynamic]string)
+	for m in memories {
+		if m.type_text != "skill" do continue
+		slug := safe_slug(m.title)
+		skill_dir_rel := join_path(rel_dir, slug)
+		skill_dir_abs := join_path(cwd, skill_dir_rel)
+		_ = os.make_directory_all(skill_dir_abs)
+		file_rel := join_path(skill_dir_rel, filename)
+		file_abs := join_path(skill_dir_abs, filename)
+		if can_write_managed_file(file_abs) {
+			content_b := strings.builder_make()
+			strings.write_string(&content_b, BOOTSTRAP_HEADER); strings.write_string(&content_b, "\n")
+			strings.write_string(&content_b, m.body); strings.write_string(&content_b, "\n")
+			write_managed_file(file_abs, strings.to_string(content_b))
+			append(&written, file_rel)
+		}
+	}
+	return written[:]
 }
 
 cleanup_removed_bootstrap_files :: proc(cwd: string, files: []string) {
@@ -655,40 +943,12 @@ write_managed_file :: proc(path, content: string) {
 	}
 }
 
-bootstrap_file_content :: proc(file_name, profile: string, sections: []string, selected_agent, agent_instance_id, display_name, daemon_url, memory_context, project_context: string) -> string {
-	builder := strings.builder_make()
-	strings.write_string(&builder, BOOTSTRAP_HEADER); strings.write_string(&builder, "\n")
-	strings.write_string(&builder, bootstrap_title(file_name, profile)); strings.write_string(&builder, "\n\n")
-	if bootstrap_section_enabled(sections, "identity") {
-		strings.write_string(&builder, "- Display name: "); strings.write_string(&builder, display_name); strings.write_string(&builder, "\n")
-		strings.write_string(&builder, "- Agent instance: "); strings.write_string(&builder, agent_instance_id); strings.write_string(&builder, "\n")
-		strings.write_string(&builder, "- Provider/profile: "); strings.write_string(&builder, selected_agent); strings.write_string(&builder, " / "); strings.write_string(&builder, profile); strings.write_string(&builder, "\n")
-		strings.write_string(&builder, "- Daemon URL: "); strings.write_string(&builder, daemon_url); strings.write_string(&builder, "\n")
-		strings.write_string(&builder, "- This file is generated by Heimdall and is overwritten on agent start. Unmanaged files are preserved.\n")
-	}
-	if bootstrap_section_enabled(sections, "guidance") do strings.write_string(&builder, bootstrap_profile_guidance(profile, file_name))
-	if bootstrap_section_enabled(sections, "project") && project_context != "" do strings.write_string(&builder, project_context)
-	if bootstrap_section_enabled(sections, "memory") && memory_context != "" do strings.write_string(&builder, memory_context)
-	return strings.to_string(builder)
-}
-
 bootstrap_profile :: proc(agent_cmd: cfg_lib.Agent_Command_Config, selected_agent: string) -> string {
-	if agent_cmd.bootstrap_profile != "" do return agent_cmd.bootstrap_profile
 	name := selected_agent
 	if name == "" do name = agent_cmd.name
 	if name == "claude" || strings.has_prefix(name, "claude-") do return "claude"
 	if name == "codex" || strings.has_prefix(name, "codex-") do return "codex"
 	return "pi"
-}
-
-default_bootstrap_files :: proc(profile: string) -> []string {
-	files := make([]string, 1)
-	if profile == "claude" {
-		files[0] = "CLAUDE.md"
-	} else {
-		files[0] = "AGENTS.md"
-	}
-	return files
 }
 
 bootstrap_title :: proc(file_name, profile: string) -> string {
@@ -709,15 +969,94 @@ bootstrap_profile_guidance :: proc(profile, file_name: string) -> string {
 	} else {
 		strings.write_string(&builder, "- Pi profile: this generated `AGENTS.md` is the primary run-directory instruction file. Read inbox/task state before beginning new work.\n")
 	}
+	strings.write_string(&builder, "\n# Ham-ctl CLI Reference\n")
+	strings.write_string(&builder, "All commands use: `./bin/ham-ctl --config ./config.toml <command> --token <your-token> [flags]`\n")
+	strings.write_string(&builder, "\n## List and start agents\n")
+	strings.write_string(&builder, "```\n")
+	strings.write_string(&builder, "# List all known/connected agents\n")
+	strings.write_string(&builder, "agents list\n")
+	strings.write_string(&builder, "# => {\"agents\":[{\"agent_instance_id\":\"coder@project-123\",\"connected\":true,...}]}\n")
+	strings.write_string(&builder, "\n")
+	strings.write_string(&builder, "# Start an agent in a detached tmux window\n")
+	strings.write_string(&builder, "agents start <agent-instance-id> --agent claude --detached\n")
+	strings.write_string(&builder, "# => {\"ok\":true,\"mode\":\"detached\",\"agent_token\":\"agt_...\",\"wrapper_log\":\"/path/to/log\"}\n")
+	strings.write_string(&builder, "```\n")
+	strings.write_string(&builder, "\n## Create a task chain and tasks\n")
+	strings.write_string(&builder, "```\n")
+	strings.write_string(&builder, "# 1. Create a task chain (coordinator owns it, default-reviewer reviews tasks in it)\n")
+	strings.write_string(&builder, "task-chains create --title \"Implement feature X\" --description \"Build and review feature X\" \\\n")
+	strings.write_string(&builder, "  --coordinator <coordinator-agent-instance-id> \\\n")
+	strings.write_string(&builder, "  --default-reviewer <reviewer-agent-instance-id>\n")
+	strings.write_string(&builder, "# => {\"ok\":true,\"chain_id\":\"chain-abc123\",\"status\":\"active\"}\n")
+	strings.write_string(&builder, "\n")
+	strings.write_string(&builder, "# 2. Create a task inside the chain (task_id is always daemon-generated; never pass --task-id on create)\n")
+	strings.write_string(&builder, "tasks create --chain-id <chain-id> --title \"Write unit tests\" \\\n")
+	strings.write_string(&builder, "  --description \"Add test coverage for feature X\" \\\n")
+	strings.write_string(&builder, "  --assignee <assignee-agent-instance-id> \\\n")
+	strings.write_string(&builder, "  --reviewer <reviewer-agent-instance-id> \\\n")
+	strings.write_string(&builder, "  --coordinator <coordinator-agent-instance-id> \\\n")
+	strings.write_string(&builder, "  --status ready\n")
+	strings.write_string(&builder, "# => {\"ok\":true,\"task_id\":\"task-def456\",\"chain_id\":\"chain-abc123\"}\n")
+	strings.write_string(&builder, "\n")
+	strings.write_string(&builder, "# Root tasks (no --chain-id) auto-create a chain; use --standalone for a one-off task with no chain\n")
+	strings.write_string(&builder, "tasks create --title \"Quick fix\" --assignee <agent> --status ready --standalone\n")
+	strings.write_string(&builder, "```\n")
+	strings.write_string(&builder, "\n## Work a task to completion\n")
+	strings.write_string(&builder, "```\n")
+	strings.write_string(&builder, "# Claim the next ready task assigned to you\n")
+	strings.write_string(&builder, "tasks next\n")
+	strings.write_string(&builder, "\n")
+	strings.write_string(&builder, "# Inspect a task\n")
+	strings.write_string(&builder, "tasks show --task-id <task-id>\n")
+	strings.write_string(&builder, "\n")
+	strings.write_string(&builder, "# Log progress\n")
+	strings.write_string(&builder, "tasks comment --task-id <task-id> --chain-id <chain-id> --body \"Starting work on tests\"\n")
+	strings.write_string(&builder, "\n")
+	strings.write_string(&builder, "# Update status as work progresses\n")
+	strings.write_string(&builder, "tasks status --task-id <task-id> --chain-id <chain-id> --status working --body \"Implementing now\"\n")
+	strings.write_string(&builder, "tasks status --task-id <task-id> --chain-id <chain-id> --status done --body \"All tests written and passing\"\n")
+	strings.write_string(&builder, "\n")
+	strings.write_string(&builder, "# Reviewer approves (valid results: approved | needs_improvements | rejected)\n")
+	strings.write_string(&builder, "tasks review --task-id <task-id> --chain-id <chain-id> --result approved --comment \"Looks good\"\n")
+	strings.write_string(&builder, "\n")
+	strings.write_string(&builder, "# Complete the chain once all tasks are done\n")
+	strings.write_string(&builder, "task-chains complete --chain <chain-id> --summary \"Feature X delivered and reviewed\"\n")
+	strings.write_string(&builder, "# => {\"ok\":true,\"archive_ok\":true}\n")
+	strings.write_string(&builder, "```\n")
+	strings.write_string(&builder, "\n## Messages\n")
+	strings.write_string(&builder, "```\n")
+	strings.write_string(&builder, "# Read your agent inbox\n")
+	strings.write_string(&builder, "inbox\n")
+	strings.write_string(&builder, "\n")
+	strings.write_string(&builder, "# Send a message to another agent\n")
+	strings.write_string(&builder, "send --to <agent-instance-id> --body \"Please review task-def456\"\n")
+	strings.write_string(&builder, "\n")
+	strings.write_string(&builder, "# Read chat messages from a user\n")
+	strings.write_string(&builder, "chat fetch-user --user-id operator@local\n")
+	strings.write_string(&builder, "\n")
+	strings.write_string(&builder, "# Reply to a user\n")
+	strings.write_string(&builder, "chat send-to-user --user-id operator@local --body \"Task is complete\"\n")
+	strings.write_string(&builder, "```\n")
+	strings.write_string(&builder, "\n## Memory\n")
+	strings.write_string(&builder, "```\n")
+	strings.write_string(&builder, "# Propose a new memory item (type: fact | habit | episode | expertise | skill | template)\n")
+	strings.write_string(&builder, "memory propose new --subject-agent <agent-instance-id> --type fact \\\n")
+	strings.write_string(&builder, "  --title \"Prefers concise PR descriptions\" \\\n")
+	strings.write_string(&builder, "  --body \"Agent prefers short, bullet-point PR descriptions over long prose.\" \\\n")
+	strings.write_string(&builder, "  --reason \"Observed during code review\" --evidence <task-id>\n")
+	strings.write_string(&builder, "# => {\"ok\":true,\"memory_id\":\"mem_123\",\"proposal_id\":\"proposal_123\"}\n")
+	strings.write_string(&builder, "\n")
+	strings.write_string(&builder, "# List pending proposals\n")
+	strings.write_string(&builder, "memory list --status pending\n")
+	strings.write_string(&builder, "\n")
+	strings.write_string(&builder, "# Approve or reject a proposal\n")
+	strings.write_string(&builder, "memory decide --proposal-id <proposal-id> --decision approve|reject\n")
+	strings.write_string(&builder, "\n")
+	strings.write_string(&builder, "# Edit an existing memory (use --expected-version to prevent conflicts)\n")
+	strings.write_string(&builder, "memory propose edit --memory-id <id> --expected-version 1 \\\n")
+	strings.write_string(&builder, "  --title <new-title> --body <new-body> --reason <why> --evidence <source>\n")
+	strings.write_string(&builder, "```\n")
 	return strings.to_string(builder)
-}
-
-bootstrap_section_enabled :: proc(sections: []string, section: string) -> bool {
-	if len(sections) == 0 do return true
-	for item in sections {
-		if item == section || item == "all" do return true
-	}
-	return false
 }
 
 project_bootstrap_context :: proc(daemon_url, agent_token: string, cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Command_Config) -> string {
@@ -733,11 +1072,7 @@ project_bootstrap_context :: proc(daemon_url, agent_token: string, cfg: cfg_lib.
 		formatted := format_project_bootstrap(response.body)
 		if formatted != "" do return formatted
 	}
-	builder := strings.builder_make()
-	strings.write_string(&builder, "\n\n# Project Context\n")
-	strings.write_string(&builder, "Configured project: "); strings.write_string(&builder, project_id); strings.write_string(&builder, "\n")
-	strings.write_string(&builder, "Project anchors are optional context only; do not infer source cwd from them unless explicitly instructed.\n")
-	return strings.to_string(builder)
+	return ""
 }
 
 format_project_bootstrap :: proc(body: string) -> string {
@@ -815,7 +1150,16 @@ template_display_name :: proc(display_name, agent_class, agent_instance_id, sele
 	return templated
 }
 
-build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_url, agent_instance_id, display_name, conversation_id, agent_token: string) -> []string {
+resolve_model_value :: proc(m: cfg_lib.Model_Tiers_Config, tier: string) -> string {
+	switch tier {
+	case "cheap":  return m.cheap
+	case "normal": return m.normal
+	case "smart":  return m.smart
+	}
+	return ""
+}
+
+build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, model_tier: string) -> []string {
 	agent_command_name := selected_agent
 	if agent_command_name == "" do agent_command_name = command_name_for_agent(cfg.command, cfg.agent_name)
 	for agent_cmd in cfg.agent_commands {
@@ -828,11 +1172,25 @@ build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_
 			append_templated_args(&result, base, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
 			append_templated_args(&result, agent_cmd.yolo_flags, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
 			append_templated_args(&result, agent_cmd.prompt_flags, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
+			// Model tier flag
+			if agent_cmd.models.flag != "" {
+				model_value := resolve_model_value(agent_cmd.models, model_tier)
+				if model_value != "" {
+					append(&result, agent_cmd.models.flag)
+					append(&result, model_value)
+					fmt.println("model_value", model_value)
+				} else {
+					fmt.println("model_tier_unavailable tier", model_tier, "has no mapping for", agent_command_name)
+				}
+			} else if model_tier != "" {
+				fmt.println("model_flag_missing no models.flag configured for", agent_command_name)
+			}
 			if agent_cmd.starter_prompt != "" {
 				prompt := template_string(agent_cmd.starter_prompt, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
 				templates := agent_cmd.memory_templates
 				if len(templates) == 0 do templates = cfg.memory_templates
-				prompt = strings.concatenate({prompt, memory_cli_guidance(agent_token), active_memory_bootstrap(daemon_url, agent_token, agent_instance_id, templates)})
+				mem_context := "" if len(agent_cmd.bootstrap.enabled_features) > 0 else active_memory_bootstrap(daemon_url, agent_token, agent_instance_id, templates)
+				prompt = strings.concatenate({prompt, memory_cli_guidance(agent_token), mem_context})
 				append(&result, prompt)
 			}
 			return result[:]
@@ -866,7 +1224,7 @@ active_memory_bootstrap :: proc(daemon_url, agent_token, agent_instance_id: stri
 	strings.write_string(&request, `","action":"memory_list","subject_agent":"`); json_write_string(&request, agent_instance_id)
 	strings.write_string(&request, `","status":"active"}`)
 	response, ok := http.post(daemon_url, contracts.ROUTE_AGENT_RPC, strings.to_string(request))
-	if ok && response.status == 200 do strings.write_string(&builder, format_active_memory_bootstrap(response.body, nil, false))
+	if ok && response.status == 200 do strings.write_string(&builder, format_active_memory_bootstrap(response.body, memory_templates, false))
 	return strings.to_string(builder)
 }
 
@@ -884,7 +1242,9 @@ format_active_memory_bootstrap :: proc(body: string, memory_templates: []string,
 		object := body[start:end]
 		status := extract_json_string(object, "status", "")
 		type_text := extract_json_string(object, "type", "fact")
-		if status == "active" && (!templates_only || (type_text == "template" && memory_template_matches(object, memory_templates))) {
+		// When templates_only=false, skip template memories already shown in the templates section
+		already_shown_as_template := !templates_only && type_text == "template" && len(memory_templates) > 0 && memory_template_matches(object, memory_templates)
+		if status == "active" && !already_shown_as_template && (!templates_only || (type_text == "template" && memory_template_matches(object, memory_templates))) {
 			if !wrote_header {
 				if templates_only {
 					strings.write_string(&builder, "\n\n# Active Approved Memory Templates\nOnly configured, approved active template memories are included here; pending, rejected, and archived templates are excluded.\n")
@@ -966,7 +1326,14 @@ template_command :: proc(command: []string, daemon_url, agent_instance_id, displ
 	return result
 }
 
+when ODIN_OS == .Linux && ODIN_ARCH == .amd64  { CTL_SYSTEM :: "linux-x86_64" }
+else when ODIN_OS == .Linux && ODIN_ARCH == .arm64  { CTL_SYSTEM :: "linux-arm64" }
+else when ODIN_OS == .Darwin && ODIN_ARCH == .arm64 { CTL_SYSTEM :: "darwin-arm64" }
+else when ODIN_OS == .Darwin && ODIN_ARCH == .amd64 { CTL_SYSTEM :: "darwin-x86_64" }
+else { CTL_SYSTEM :: "unknown" }
+
 template_string :: proc(value, daemon_url, agent_instance_id, display_name, conversation_id, agent_token: string) -> string {
+	ctl_bin := "~/heimdall/bin/" + CTL_SYSTEM + "/ham-ctl"
 	templated := replace_all(value, "{daemon_url}", daemon_url)
 	templated = replace_all(templated, "{agent_instance_id}", agent_instance_id)
 	templated = replace_all(templated, "{display_name}", display_name)
@@ -974,6 +1341,7 @@ template_string :: proc(value, daemon_url, agent_instance_id, display_name, conv
 	templated = replace_all(templated, "{conversation_id}", conversation_id)
 	templated = replace_all(templated, "{agent_token}", agent_token)
 	templated = replace_all(templated, "{token}", agent_token)
+	templated = replace_all(templated, "{ctl_bin}", ctl_bin)
 	return templated
 }
 
@@ -1047,7 +1415,7 @@ option_value :: proc(args: []string, name, fallback: string) -> string {
 
 agent_identity_from_args :: proc(args: []string, fallback: string) -> string {
 	for i := 1; i < len(args); i += 1 {
-		if args[i] == cfg_lib.CONFIG_PATH_FLAG || args[i] == "--agent" || args[i] == "--agent-token" {
+		if args[i] == cfg_lib.CONFIG_PATH_FLAG || args[i] == "--agent" || args[i] == "--agent-token" || args[i] == "--display-name" || args[i] == "--tier" {
 			i += 1
 			continue
 		}

@@ -45,6 +45,16 @@ main :: proc() {
 		return
 	}
 
+	if len(cmd) >= 2 && cmd[0] == "agents" && cmd[1] == "create" {
+		ctl_agents_create(daemon_url, os.args)
+		return
+	}
+
+	if len(cmd) >= 2 && cmd[0] == "agents" && cmd[1] == "update" {
+		ctl_agents_update(daemon_url, os.args)
+		return
+	}
+
 	if cmd[0] == "start" || (len(cmd) >= 2 && cmd[0] == "agents" && cmd[1] == "start") {
 		idx := 1
 		if cmd[0] == "agents" do idx = 2
@@ -93,6 +103,11 @@ main :: proc() {
 
 	if len(cmd) >= 2 && cmd[0] == "chat" {
 		ctl_chat(daemon_url, cmd[1], os.args)
+		return
+	}
+
+	if cmd[0] == "agent-ready" {
+		ctl_agent_ready(daemon_url, os.args)
 		return
 	}
 
@@ -178,6 +193,63 @@ ctl_agents_start_remote :: proc(agent_instance_id: string, args: []string, confi
 		return
 	}
 	fmt.println(response.body)
+}
+
+ctl_agents_create :: proc(daemon_url: string, args: []string) {
+	name := option_value(args, "--name", option_value(args, "--id", ""))
+	agent := option_value(args, "--agent", option_value(args, "--provider", "pi"))
+	tier := option_value(args, "--tier", "normal")
+	display_name := option_value(args, "--display-name", name)
+	template_id := option_value(args, "--template", "")
+	project_id := option_value(args, "--project", "")
+
+	fields := make([dynamic]string)
+	append(&fields, json_kv("agent_instance_id", name))
+	append(&fields, json_kv("display_name", display_name))
+	append(&fields, json_kv("provider_profile", agent))
+	append(&fields, json_kv("template_id", template_id))
+	append(&fields, json_kv("project_id", project_id))
+	append(&fields, json_kv("model_tier", tier))
+	body := fmt.tprintf("{%s}", strings.join(fields[:], ","))
+	response, ok := http.post(daemon_url, "/agents/create", body)
+	if !ok { fmt.println(`{"ok":false,"message":"create request failed"}`); return }
+	fmt.println(response.body)
+}
+
+ctl_agents_update :: proc(daemon_url: string, args: []string) {
+	agent_instance_id := option_value(args, "--id", "")
+	if agent_instance_id == "" { fmt.println("usage: ham-ctl agents update --id <agent_instance_id> [--tier cheap|normal|smart] [--display-name <name>]"); return }
+
+	fields := make([dynamic]string)
+	append(&fields, json_kv("agent_instance_id", agent_instance_id))
+	if tier := option_value(args, "--tier", ""); tier != "" do append(&fields, json_kv("model_tier", tier))
+	if dn := option_value(args, "--display-name", ""); dn != "" do append(&fields, json_kv("display_name", dn))
+	if pp := option_value(args, "--provider", ""); pp != "" do append(&fields, json_kv("provider_profile", pp))
+	body := fmt.tprintf("{%s}", strings.join(fields[:], ","))
+	response, ok := http.post(daemon_url, "/agents/update", body)
+	if !ok { fmt.println(`{"ok":false,"message":"update request failed"}`); return }
+	fmt.println(response.body)
+}
+
+ctl_agent_ready :: proc(daemon_url: string, args: []string) {
+	token := option_value(args, "--token", "")
+	if token == "" {
+		fmt.println("usage: ham-ctl --token <token> agent-ready")
+		os.exit(1)
+	}
+	builder := strings.builder_make()
+	strings.write_string(&builder, `{"agent_token":"`)
+	json_write_string(&builder, token)
+	strings.write_string(&builder, `","action":"agent_ready"}`)
+	response, ok := http.post(daemon_url, contracts.ROUTE_AGENT_RPC, strings.to_string(builder))
+	if !ok {
+		fmt.println(`{"ok":false,"message":"agent-ready request failed"}`)
+		os.exit(1)
+	}
+	fmt.println(response.body)
+	if response.status != 200 {
+		os.exit(1)
+	}
 }
 
 ctl_send :: proc(daemon_url: string, args: []string) {
@@ -734,6 +806,16 @@ extract_json_string :: proc(body, key, fallback: string) -> string {
 	return body[start:start + end]
 }
 
+json_kv :: proc(key, value: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `"`)
+	json_write_string(&b, key)
+	strings.write_string(&b, `":"`)
+	json_write_string(&b, value)
+	strings.write_string(&b, `"`)
+	return strings.to_string(b)
+}
+
 json_write_string :: proc(builder: ^strings.Builder, value: string) {
 	for ch in value {
 		switch ch {
@@ -777,5 +859,6 @@ print_usage :: proc(config_path, daemon_url: string) {
 	fmt.println("  chat list|fetch|send|mark-read --client-instance-id <client> --token <client_token> [--agent-instance-id <agent>] [--body <text>] [--message-id <id>]")
 	fmt.println("  chat send-to-user --token <agent_token> --user-id <user> --body <text>")
 	fmt.println("  chat fetch-user --token <agent_token> --user-id <user>")
+	fmt.println("  agent-ready --token <agent_token>   (signal to daemon that agent is alive and ready)")
 	fmt.println("global flags: --config <path>, --daemon-url <url>, --version, --help")
 }

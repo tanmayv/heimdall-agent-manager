@@ -33,6 +33,7 @@ Daemon_Config :: struct {
 	nudge_cooldown_seconds: int,
 	nudge_restart_grace_seconds: int,
 	nudge_send_escape_prefix: bool,
+	startup_stale_after_seconds: int,
 }
 
 Wrapper_Config :: struct {
@@ -46,14 +47,15 @@ Wrapper_Config :: struct {
 	agent_commands: [dynamic]Agent_Command_Config,
 	tmux_session: string,
 	tmux_window_prefix: string,
-	working_dir: string,
 	agent_run_dir: string,
 	project: string,
 	memory_templates: []string,
+	stop_message: string,
 }
 
 Startup_Detection_Config :: struct {
 	enabled: bool,
+	ready_on_launch: bool,
 	startup_probe_seconds: int,
 	capture_interval_ms: int,
 	ready_patterns: []string,
@@ -62,6 +64,25 @@ Startup_Detection_Config :: struct {
 	probe_expect_echo: bool,
 	startup_unknown_is_blocked: bool,
 	sanitized_reason_mapping: []string,
+}
+
+Model_Tiers_Config :: struct {
+	flag:   string,
+	cheap:  string,
+	normal: string,
+	smart:  string,
+}
+
+Bootstrap_Feature_Config :: struct {
+	name:         string,
+	content:      []string,
+	relative_dir: string,
+	filename:     string,
+}
+
+Bootstrap_Config :: struct {
+	enabled_features: []string,
+	features:         map[string]Bootstrap_Feature_Config,
 }
 
 Agent_Command_Config :: struct {
@@ -73,11 +94,10 @@ Agent_Command_Config :: struct {
 	run_dir: string,
 	agent_run_dir: string,
 	project: string,
-	bootstrap_enabled: bool,
-	bootstrap_profile: string,
-	bootstrap_files: []string,
-	bootstrap_sections: []string,
+	bootstrap: Bootstrap_Config,
+	models: Model_Tiers_Config,
 	memory_templates: []string,
+	stop_message: string,
 	startup_detection: Startup_Detection_Config,
 }
 
@@ -95,6 +115,9 @@ Section :: enum {
 	Daemon,
 	Wrapper,
 	Wrapper_Agent_Command,
+	Wrapper_Agent_Bootstrap,
+	Wrapper_Agent_Bootstrap_Feature,
+	Wrapper_Agent_Models,
 	Wrapper_Agent_Startup_Detection,
 	Ctl,
 }
@@ -139,6 +162,7 @@ expand_home :: proc(path: string) -> string {
 parse_config :: proc(content: string, cfg: ^Config) {
 	section := Section.None
 	current_agent_command := ""
+	current_bootstrap_feature := ""
 	lines := strings.split(content, "\n")
 
 	for raw_line in lines {
@@ -155,13 +179,45 @@ parse_config :: proc(content: string, cfg: ^Config) {
 			current_agent_command = ""
 			continue
 		}
-		if strings.has_prefix(line, "[wrapper.agent-cmd.") && strings.has_suffix(line, ".startup_detection]") {
+		// Most specific first: [wrapper.agent-cmd.<name>.bootstrap.<FEATURE>]
+		// Length guard: prefix(19) + name(≥1) + ".bootstrap."(11) + feature(≥1) + "]"(1) = ≥33
+		if strings.has_prefix(line, "[wrapper.agent-cmd.") && strings.has_suffix(line, "]") && len(line) > 33 {
+			inner := line[len("[wrapper.agent-cmd."):len(line) - 1]
+			if bi := strings.index(inner, ".bootstrap."); bi >= 0 && bi > 0 && bi + len(".bootstrap.") < len(inner) {
+				section = .Wrapper_Agent_Bootstrap_Feature
+				current_agent_command = inner[:bi]
+				current_bootstrap_feature = inner[bi + len(".bootstrap."):]
+				ensure_agent_command(&cfg.wrapper, current_agent_command)
+				continue
+			}
+		}
+		// [wrapper.agent-cmd.<name>.bootstrap]
+		// Length guard: prefix(19) + name(≥1) + ".bootstrap]"(11) = ≥31
+		if strings.has_prefix(line, "[wrapper.agent-cmd.") && strings.has_suffix(line, ".bootstrap]") && len(line) > 19 + len(".bootstrap]") {
+			section = .Wrapper_Agent_Bootstrap
+			current_agent_command = line[len("[wrapper.agent-cmd."):len(line) - len(".bootstrap]")]
+			ensure_agent_command(&cfg.wrapper, current_agent_command)
+			continue
+		}
+		// [wrapper.agent-cmd.<name>.models]
+		// Length guard: prefix(19) + name(≥1) + ".models]"(8) = ≥28
+		if strings.has_prefix(line, "[wrapper.agent-cmd.") && strings.has_suffix(line, ".models]") && len(line) > 19 + len(".models]") {
+			section = .Wrapper_Agent_Models
+			current_agent_command = line[len("[wrapper.agent-cmd."):len(line) - len(".models]")]
+			ensure_agent_command(&cfg.wrapper, current_agent_command)
+			continue
+		}
+		// [wrapper.agent-cmd.<name>.startup_detection]
+		// Length guard: prefix(19) + name(≥1) + ".startup_detection]"(19) = ≥39
+		if strings.has_prefix(line, "[wrapper.agent-cmd.") && strings.has_suffix(line, ".startup_detection]") && len(line) > 19 + len(".startup_detection]") {
 			section = .Wrapper_Agent_Startup_Detection
 			current_agent_command = line[len("[wrapper.agent-cmd."):len(line) - len(".startup_detection]")]
 			ensure_agent_command(&cfg.wrapper, current_agent_command)
 			continue
 		}
-		if strings.has_prefix(line, "[wrapper.agent-cmd.") && strings.has_suffix(line, "]") {
+		// [wrapper.agent-cmd.<name>]
+		// Length guard: prefix(19) + name(≥1) + "]"(1) = ≥21
+		if strings.has_prefix(line, "[wrapper.agent-cmd.") && strings.has_suffix(line, "]") && len(line) > 20 {
 			section = .Wrapper_Agent_Command
 			current_agent_command = line[len("[wrapper.agent-cmd."):len(line) - 1]
 			ensure_agent_command(&cfg.wrapper, current_agent_command)
@@ -185,6 +241,12 @@ parse_config :: proc(content: string, cfg: ^Config) {
 			parse_wrapper_key(key, value, &cfg.wrapper)
 		case .Wrapper_Agent_Command:
 			parse_agent_command_key(current_agent_command, key, value, &cfg.wrapper)
+		case .Wrapper_Agent_Bootstrap:
+			parse_bootstrap_key(current_agent_command, key, value, &cfg.wrapper)
+		case .Wrapper_Agent_Bootstrap_Feature:
+			parse_bootstrap_feature_key(current_agent_command, current_bootstrap_feature, key, value, &cfg.wrapper)
+		case .Wrapper_Agent_Models:
+			parse_models_key(current_agent_command, key, value, &cfg.wrapper)
 		case .Wrapper_Agent_Startup_Detection:
 			parse_startup_detection_key(current_agent_command, key, value, &cfg.wrapper)
 		case .Ctl:
@@ -234,6 +296,8 @@ parse_daemon_key :: proc(key, value: string, cfg: ^Daemon_Config) {
 		if n, ok := strconv.parse_int(value); ok do cfg.nudge_restart_grace_seconds = int(n)
 	case "nudge_send_escape_prefix":
 		cfg.nudge_send_escape_prefix = parse_bool(value)
+	case "startup_stale_after_seconds":
+		if n, ok := strconv.parse_int(value); ok do cfg.startup_stale_after_seconds = int(n)
 	case:
 	}
 }
@@ -258,14 +322,14 @@ parse_wrapper_key :: proc(key, value: string, cfg: ^Wrapper_Config) {
 		cfg.tmux_session = parse_string(value)
 	case "tmux_window_prefix":
 		cfg.tmux_window_prefix = parse_string(value)
-	case "working_dir":
-		cfg.working_dir = parse_string(value)
 	case "agent_run_dir":
 		cfg.agent_run_dir = parse_string(value)
 	case "project":
 		cfg.project = parse_string(value)
 	case "memory_templates":
 		cfg.memory_templates = parse_string_array(value)
+	case "stop_message":
+		cfg.stop_message = parse_string(value)
 	case:
 	}
 }
@@ -282,7 +346,9 @@ ensure_agent_command :: proc(cfg: ^Wrapper_Config, name: string) -> int {
 	for command, i in cfg.agent_commands {
 		if command.name == name do return i
 	}
-	append(&cfg.agent_commands, Agent_Command_Config{name = strings.clone(name)})
+	cmd := Agent_Command_Config{name = strings.clone(name)}
+	cmd.bootstrap.features = make(map[string]Bootstrap_Feature_Config)
+	append(&cfg.agent_commands, cmd)
 	return len(cfg.agent_commands) - 1
 }
 
@@ -303,16 +369,51 @@ parse_agent_command_key :: proc(name, key, value: string, cfg: ^Wrapper_Config) 
 		cfg.agent_commands[idx].agent_run_dir = parse_string(value)
 	case "project":
 		cfg.agent_commands[idx].project = parse_string(value)
-	case "bootstrap_enabled":
-		cfg.agent_commands[idx].bootstrap_enabled = parse_bool(value)
-	case "bootstrap_profile":
-		cfg.agent_commands[idx].bootstrap_profile = parse_string(value)
-	case "bootstrap_files":
-		cfg.agent_commands[idx].bootstrap_files = parse_string_array(value)
-	case "bootstrap_sections":
-		cfg.agent_commands[idx].bootstrap_sections = parse_string_array(value)
 	case "memory_templates":
 		cfg.agent_commands[idx].memory_templates = parse_string_array(value)
+	case "stop_message":
+		cfg.agent_commands[idx].stop_message = parse_string(value)
+	case:
+	}
+}
+
+parse_bootstrap_key :: proc(name, key, value: string, cfg: ^Wrapper_Config) {
+	idx := ensure_agent_command(cfg, name)
+	switch key {
+	case "enabled_features":
+		cfg.agent_commands[idx].bootstrap.enabled_features = parse_string_array(value)
+	case:
+	}
+}
+
+parse_bootstrap_feature_key :: proc(name, feature, key, value: string, cfg: ^Wrapper_Config) {
+	idx := ensure_agent_command(cfg, name)
+	fc := cfg.agent_commands[idx].bootstrap.features[feature]
+	switch key {
+	case "name":
+		fc.name = parse_string(value)
+	case "content":
+		fc.content = parse_string_array(value)
+	case "relative_dir":
+		fc.relative_dir = parse_string(value)
+	case "filename":
+		fc.filename = parse_string(value)
+	case:
+	}
+	cfg.agent_commands[idx].bootstrap.features[feature] = fc
+}
+
+parse_models_key :: proc(name, key, value: string, cfg: ^Wrapper_Config) {
+	idx := ensure_agent_command(cfg, name)
+	switch key {
+	case "flag":
+		cfg.agent_commands[idx].models.flag = parse_string(value)
+	case "cheap":
+		cfg.agent_commands[idx].models.cheap = parse_string(value)
+	case "normal":
+		cfg.agent_commands[idx].models.normal = parse_string(value)
+	case "smart":
+		cfg.agent_commands[idx].models.smart = parse_string(value)
 	case:
 	}
 }
@@ -323,6 +424,8 @@ parse_startup_detection_key :: proc(name, key, value: string, cfg: ^Wrapper_Conf
 	switch key {
 	case "enabled":
 		sd.enabled = parse_bool(value)
+	case "ready_on_launch":
+		sd.ready_on_launch = parse_bool(value)
 	case "startup_probe_seconds":
 		if n, ok := strconv.parse_int(value); ok do sd.startup_probe_seconds = int(n)
 	case "capture_interval_ms":
@@ -414,6 +517,7 @@ default_config :: proc() -> Config {
 	cfg.daemon.nudge_cooldown_seconds = 300
 	cfg.daemon.nudge_restart_grace_seconds = 60
 	cfg.daemon.nudge_send_escape_prefix = false
+	cfg.daemon.startup_stale_after_seconds = 120
 
 	cfg.wrapper.daemon_url = "http://127.0.0.1:49322"
 	cfg.wrapper.credentials_path = "~/.local/share/heimdall/wrapper-credentials.json"
@@ -425,7 +529,6 @@ default_config :: proc() -> Config {
 	cfg.wrapper.agent_commands = make([dynamic]Agent_Command_Config)
 	cfg.wrapper.tmux_session = "ham-agents"
 	cfg.wrapper.tmux_window_prefix = "agent"
-	cfg.wrapper.working_dir = "."
 	cfg.wrapper.agent_run_dir = ""
 	cfg.wrapper.project = "default"
 	cfg.wrapper.memory_templates = nil

@@ -61,6 +61,7 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 	message_queue_start_worker()
 	hub_sync_start_worker()
 	task_nudge_scheduler_start(cfg.daemon)
+	agent_startup_janitor_start(cfg.daemon)
 	fmt.println("odin-daemon listening", cfg.daemon.bind_host, cfg.daemon.port)
 	for {
 		client, _, accept_err := net.accept_tcp(listener)
@@ -83,6 +84,10 @@ handle_client :: proc(client: net.TCP_Socket) {
 
 	request, ok := read_http_request(client)
 	if !ok do return
+	if strings.has_prefix(request, "OPTIONS ") {
+		write_response(client, 200, "OK", `{}`)
+		return
+	}
 	if strings.has_prefix(request, "GET /health ") {
 		write_response(client, 200, "OK", `{"ok":true,"protocol_version":1}`)
 		return
@@ -178,6 +183,11 @@ handle_client :: proc(client: net.TCP_Socket) {
 		return
 	}
 
+	if strings.has_prefix(request, "POST /agents/create ") {
+		handle_agent_instance_create(client, request_body(request))
+		return
+	}
+
 	if strings.has_prefix(request, "POST /agents/show ") {
 		handle_agent_instance_show(client, request_body(request))
 		return
@@ -195,6 +205,16 @@ handle_client :: proc(client: net.TCP_Socket) {
 
 	if strings.has_prefix(request, "POST /agents/start ") {
 		handle_agents_start(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /agents/stop-done ") {
+		handle_agents_stop_done(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /agents/stop ") {
+		handle_agents_stop(client, request_body(request), request)
 		return
 	}
 

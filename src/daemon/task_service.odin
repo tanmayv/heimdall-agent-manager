@@ -32,9 +32,7 @@ task_service_create_task :: proc(cmd: Task_Create_Command) -> Task_Service_Resul
 	}
 	priority := cmd.priority
 	if priority == "" do priority = "normal"
-	assignee := cmd.assignee_agent_instance_id
-	if assignee == "" do assignee = agents_first_by_role_hint("assignee", "")
-	event := Task_Event{kind = .Task_Created, task_id = task_id, chain_id = chain_id, title = cmd.title, description = cmd.description, acceptance_criteria = cmd.acceptance_criteria, priority = priority, status = status, assignee_agent_instance_id = assignee, reviewer_agent_instance_id = cmd.reviewer_agent_instance_id, coordinator_agent_instance_id = cmd.coordinator_agent_instance_id, depends_on = cmd.depends_on, created_by = cmd.created_by, author_agent_instance_id = cmd.author_agent_instance_id}
+	event := Task_Event{kind = .Task_Created, task_id = task_id, chain_id = chain_id, title = cmd.title, description = cmd.description, acceptance_criteria = cmd.acceptance_criteria, priority = priority, status = status, assignee_agent_instance_id = cmd.assignee_agent_instance_id, reviewer_agent_instance_id = cmd.reviewer_agent_instance_id, coordinator_agent_instance_id = cmd.coordinator_agent_instance_id, depends_on = cmd.depends_on, created_by = cmd.created_by, author_agent_instance_id = cmd.author_agent_instance_id}
 	if !task_store_append_event(event) do return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append task create failed"}`}
 	task_notify_event(event)
 	builder := strings.builder_make()
@@ -349,23 +347,19 @@ task_status_terminal_for_nudge :: proc(status: string) -> bool {
 task_nudge_target_for_status :: proc(state: Task_State, status: string) -> string {
 	switch status {
 	case "ready", "working", "claimed", "in_progress", "open", "needs_improvements", "rejected":
-		if t := task_target_for_role(state, "assignee"); t != "" do return t
-		return agents_first_by_role_hint("assignee", "")
+		return task_target_for_role(state, "assignee")
 	case "review", "needs_review":
-		if t := task_target_for_role(state, "reviewer"); t != "" do return t
-		return agents_first_by_role_hint("reviewer", "")
+		return task_target_for_role(state, "reviewer")
 	case "blocked":
-		if t := task_target_for_role(state, "coordinator"); t != "" do return t
-		return agents_first_by_role_hint("coordinator", "")
+		return task_target_for_role(state, "coordinator")
 	case "approved", "done":
-		if verifier := task_target_for_role(state, "verifier"); verifier != "" do return verifier
-		if t := task_target_for_role(state, "coordinator"); t != "" do return t
-		return agents_first_by_role_hint("coordinator", "")
+		verifier := task_target_for_role(state, "verifier")
+		if verifier != "" do return verifier
+		return task_target_for_role(state, "coordinator")
 	case:
-		if t := task_target_for_role(state, "assignee"); t != "" do return t
-		if t := agents_first_by_role_hint("assignee", ""); t != "" do return t
-		if t := task_target_for_role(state, "coordinator"); t != "" do return t
-		return agents_first_by_role_hint("coordinator", "")
+		target := task_target_for_role(state, "assignee")
+		if target != "" do return target
+		return task_target_for_role(state, "coordinator")
 	}
 }
 

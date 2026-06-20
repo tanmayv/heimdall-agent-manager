@@ -115,6 +115,26 @@ poll_text :: proc(conn: ^Connection) -> (text: string, ok: bool) {
 	return first_text, true
 }
 
+send_text :: proc(conn: ^Connection, text: string) -> bool {
+	if !conn.connected do return false
+	frame: [4096]byte
+	n := len(text)
+	if n > 4090 do return false
+	frame[0] = 0x81
+	header_len := 2
+	if n <= 125 {
+		frame[1] = byte(n)
+	} else {
+		frame[1] = 126
+		frame[2] = byte((n >> 8) & 0xff)
+		frame[3] = byte(n & 0xff)
+		header_len = 4
+	}
+	copy(frame[header_len:], transmute([]byte)text)
+	_, err := net.send_tcp(conn.socket, frame[:header_len + n])
+	return err == nil
+}
+
 parse_ws_url :: proc(ws_url: string) -> (host: string, port: u16, path: string, ok: bool) {
 	url := ws_url
 	if strings.has_prefix(url, "ws://") {

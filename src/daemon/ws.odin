@@ -59,7 +59,52 @@ ws_read_loop :: proc(agent_instance_id: string, client: net.TCP_Socket) {
 			fmt.println("ws disconnected", agent_instance_id)
 			return
 		}
-		fmt.println("ws received", agent_instance_id, n, "bytes")
+		if n < 2 do continue
+
+		opcode := buf[0] & 0x0f
+		masked := (buf[1] & 0x80) != 0
+		payload_len := int(buf[1] & 0x7f)
+
+		offset := 2
+		if payload_len == 126 {
+			if n < 4 do continue
+			payload_len = int(buf[2]) << 8 | int(buf[3])
+			offset = 4
+		} else if payload_len == 127 {
+			continue
+		}
+
+		mask_key: [4]byte
+		if masked {
+			if n < offset + 4 do continue
+			mask_key = {buf[offset], buf[offset+1], buf[offset+2], buf[offset+3]}
+			offset += 4
+			for i in 0..<payload_len {
+				buf[offset + i] = buf[offset + i] ~ mask_key[i % 4]
+			}
+		}
+
+		if offset + payload_len > n do continue
+
+		if opcode == 0x1 && payload_len > 0 {
+			text := string(buf[offset:offset+payload_len])
+			ws_dispatch_agent_message(agent_instance_id, text)
+		} else if opcode == 0x8 {
+			registry_clear_ws(agent_instance_id)
+			agent_lifecycle_emit(agent_instance_id, "disconnected", "ws_close_frame")
+			fmt.println("ws close frame", agent_instance_id)
+			return
+		}
+	}
+}
+
+ws_dispatch_agent_message :: proc(agent_instance_id: string, text: string) {
+	msg_type := extract_json_string(text, "type", "")
+	fmt.println("ws agent message", agent_instance_id, msg_type)
+	if msg_type == "stop_done" {
+		registry_update_startup(agent_instance_id, "stopped", "stop_done", "Agent stopped gracefully", "", "", "")
+		registry_clear_ws(agent_instance_id)
+		agent_lifecycle_emit(agent_instance_id, "offline", "stop_done")
 	}
 }
 

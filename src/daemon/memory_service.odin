@@ -25,10 +25,11 @@ memory_service_propose :: proc(action, body, author: string) -> Memory_Service_R
 	metadata_json := extract_json_string(body, "metadata_json", "")
 
 	mem_type, type_ok := memory_type_parse(type_text)
-	if action == "new" && !type_ok do return memory_error(400, "invalid memory type")
 	if (action == "edit" || action == "archive") && target_id == "" do return memory_error(400, "memory_id required")
 	if (action == "edit" || action == "archive" || action == "rollback") && expected_version <= 0 do return memory_error(400, "expected_version required")
-	if action == "new" && (subject == "" || title == "" || memory_body == "") do return memory_error(400, "memory propose new requires subject_agent, type, title, and body")
+	if action == "new" && (subject == "" || title == "" || memory_body == "") do return memory_error(400, "memory propose new requires subject_agent, title, and body")
+	if action == "new" && agent_record_index_by_instance(subject) < 0 do return memory_error(400, "subject_agent is not a known agent instance")
+	if !type_ok do return memory_error(400, "invalid memory type")
 	if action == "edit" && (title == "" || memory_body == "") do return memory_error(400, "memory propose edit requires memory_id, expected_version, title, and body")
 	if action == "rollback" && target_id == "" do return memory_error(400, "memory_id required")
 
@@ -105,12 +106,14 @@ memory_service_decide :: proc(decision, body, author: string) -> Memory_Service_
 	return Memory_Service_Result{ok = true, status_code = 200, message = memory_response_json("approved", proposal.memory_id, proposal_id)}
 }
 
-memory_service_list_json :: proc(body: string) -> string {
+memory_service_list_json :: proc(body: string, calling_agent_id: string = "") -> string {
 	status_text := extract_json_string(body, "status", "active")
 	status, status_ok := memory_status_parse(status_text)
 	include_all := extract_json_bool(body, "include_all_statuses", false) || status_text == "all"
 	if !status_ok && !include_all do return `{"ok":false,"message":"invalid memory status"}`
-	resp := memp.list_records(&memory_provider, contracts.Memory_List_Request{subject_agent = extract_json_string(body, "subject_agent", extract_json_string(body, "agent", "")), scope = extract_json_string(body, "scope", ""), status = status, include_all_statuses = include_all})
+	explicit_subject := extract_json_string(body, "subject_agent", extract_json_string(body, "agent", ""))
+	subject := explicit_subject if explicit_subject != "" else calling_agent_id
+	resp := memp.list_records(&memory_provider, contracts.Memory_List_Request{subject_agent = subject, scope = extract_json_string(body, "scope", ""), status = status, include_all_statuses = include_all})
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"ok":true,"records":[`)
 	for i in 0..<len(resp.records) {
@@ -157,7 +160,7 @@ memory_response_json :: proc(message, memory_id, proposal_id: string) -> string 
 	b := strings.builder_make(); strings.write_string(&b, `{"ok":true,"message":"`); json_write_string(&b, message); strings.write_string(&b, `","memory_id":"`); json_write_string(&b, memory_id); strings.write_string(&b, `","proposal_id":"`); json_write_string(&b, proposal_id); strings.write_string(&b, `"}`); return strings.to_string(b)
 }
 
-memory_type_parse :: proc(value: string) -> (contracts.Memory_Type, bool) { switch value { case "fact": return .Fact, true; case "habit": return .Habit, true; case "episode": return .Episode, true; case "expertise": return .Expertise, true; case "skill": return .Skill, true; case "template": return .Template, true } return .Fact, false }
+memory_type_parse :: proc(value: string) -> (contracts.Memory_Type, bool) { switch value { case "", "fact": return .Fact, true; case "habit": return .Habit, true; case "episode": return .Episode, true; case "expertise": return .Expertise, true; case "skill": return .Skill, true; case "template": return .Template, true } return .Fact, false }
 memory_status_parse :: proc(value: string) -> (contracts.Memory_Status, bool) { switch value { case "pending": return .Pending, true; case "active": return .Active, true; case "archived": return .Archived, true; case "rejected": return .Rejected, true } return .Active, false }
 memory_type_string_service :: proc(kind: contracts.Memory_Type) -> string { switch kind { case .Fact: return "fact"; case .Habit: return "habit"; case .Episode: return "episode"; case .Expertise: return "expertise"; case .Skill: return "skill"; case .Template: return "template" } return "fact" }
 memory_status_string_service :: proc(status: contracts.Memory_Status) -> string { switch status { case .Pending: return "pending"; case .Active: return "active"; case .Archived: return "archived"; case .Rejected: return "rejected" } return "pending" }

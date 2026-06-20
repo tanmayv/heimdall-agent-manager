@@ -113,6 +113,13 @@ pane_exists :: proc(pane_id: string) -> bool {
 	return strings.trim_space(string(stdout)) != ""
 }
 
+kill_pane :: proc(pane_id: string) -> bool {
+	if pane_id == "" do return false
+	cmd := []string{"tmux", "kill-pane", "-t", pane_id}
+	state, _, _, err := os.process_exec(os.Process_Desc{command = cmd}, context.allocator)
+	return err == nil && state.success
+}
+
 kill_window :: proc(session, window: string) -> bool {
 	window_id := window_id_for_window(session, window)
 	if window_id == "" do return false

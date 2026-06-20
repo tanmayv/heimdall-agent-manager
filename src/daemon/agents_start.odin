@@ -5,6 +5,10 @@ import "core:net"
 import "core:os"
 import "core:strings"
 
+valid_model_tier :: proc(tier: string) -> bool {
+	return tier == "cheap" || tier == "normal" || tier == "smart"
+}
+
 handle_agents_providers :: proc(client: net.TCP_Socket) {
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"ok":true,"providers":[`)
@@ -63,7 +67,9 @@ handle_agents_list :: proc(client: net.TCP_Socket, request: string) {
 			if wrote > 0 do strings.write_string(&builder, `,`)
 			strings.write_string(&builder, `{"agent_record_id":"","agent_instance_id":"`); json_write_string(&builder, ag.agent_instance_id)
 			strings.write_string(&builder, `","display_name":"`); json_write_string(&builder, ag.display_name)
-			strings.write_string(&builder, `","template_id":"","provider_profile":"`); json_write_string(&builder, ag.agent_class)
+			// provider_profile is set on startup report; fall back to agent_class (always set on register)
+			live_pp := ag.provider_profile; if live_pp == "" do live_pp = ag.agent_class
+			strings.write_string(&builder, `","template_id":"","provider_profile":"`); json_write_string(&builder, live_pp)
 			strings.write_string(&builder, `","project_id":"","run_dir":"`); json_write_string(&builder, ag.run_dir)
 			strings.write_string(&builder, `","connected":`); strings.write_string(&builder, "true" if ag.connected else "false")
 			strings.write_string(&builder, `,"last_seen_unix_ms":`); strings.write_string(&builder, fmt.tprintf("%d", ag.last_seen_unix_ms))
@@ -88,7 +94,8 @@ handle_agents_associate :: proc(client: net.TCP_Socket, body: string) {
 	if idx < 0 { write_response(client, 404, "Not Found", `{"ok":false,"message":"agent not found"}`); return }
 	rec := agent_instance_records[idx]
 	rec.project_id = strings.clone(project_id)
-	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = rec.provider_profile, project_id = rec.project_id, run_dir = rec.run_dir, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent association"}`); return }
+	assoc_tier := rec.model_tier; if assoc_tier == "" do assoc_tier = "normal"
+	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = rec.provider_profile, project_id = rec.project_id, run_dir = rec.run_dir, model_tier = assoc_tier, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent association"}`); return }
 	write_agent_ok_response(client, "associated", agent_instance_records[agent_record_index(rec.agent_record_id)])
 }
 
@@ -100,8 +107,41 @@ handle_agents_disassociate :: proc(client: net.TCP_Socket, body: string) {
 	if idx < 0 { write_response(client, 404, "Not Found", `{"ok":false,"message":"agent not found"}`); return }
 	rec := agent_instance_records[idx]
 	rec.project_id = ""
-	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = rec.provider_profile, project_id = "", run_dir = rec.run_dir, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent disassociation"}`); return }
+	disassoc_tier := rec.model_tier; if disassoc_tier == "" do disassoc_tier = "normal"
+	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = rec.provider_profile, project_id = "", run_dir = rec.run_dir, model_tier = disassoc_tier, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent disassociation"}`); return }
 	write_agent_ok_response(client, "disassociated", agent_instance_records[agent_record_index(rec.agent_record_id)])
+}
+
+// Upsert an agent instance record. If the instance already exists the record_id and run_dir are
+// preserved; caller-supplied non-empty fields override stored ones. Returns the resolved
+// agent_record_id and the final model_tier, or ("", "") on failure.
+agent_record_upsert :: proc(
+	agent_instance_id, display_label, template_id, provider_profile, project_id, run_dir_override, model_tier: string,
+) -> (agent_record_id: string, final_tier: string, ok: bool) {
+	rec_id := agent_new_record_id()
+	run_dir := run_dir_override
+	tier := model_tier; if tier == "" do tier = "normal"
+	pp := provider_profile
+	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 {
+		rec_id = agent_instance_records[idx].agent_record_id
+		if run_dir == "" do run_dir = agent_instance_records[idx].run_dir
+		if pp == "" do pp = agent_instance_records[idx].provider_profile
+	}
+	if pp == "" do pp = "pi"
+	ev := Agent_Instance_Event{
+		kind = .Agent_Instance_Upserted,
+		agent_record_id = rec_id,
+		agent_instance_id = agent_instance_id,
+		display_name = display_label,
+		template_id = template_id,
+		provider_profile = pp,
+		project_id = project_id,
+		run_dir = run_dir,
+		model_tier = tier,
+		author = "api",
+	}
+	if !agent_store_append_event(ev) do return "", "", false
+	return rec_id, tier, true
 }
 
 handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
@@ -111,30 +151,43 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 	display_name := extract_json_string(body, "display_name", extract_json_string(body, "alias", ""))
 	agent_instance_id := extract_json_string(body, "agent_instance_id", "")
 	config_path := extract_json_string(body, "config_path", server_config_path)
-	if agent_instance_id == "" do agent_instance_id = agent_generated_instance_id(template_id, project_id)
+	if agent_instance_id == "" {
+		id_base := display_name if display_name != "" else template_id
+		agent_instance_id = agent_generated_instance_id(id_base, project_id)
+	}
 	if display_name == "" do display_name = agent_instance_id
-	if provider_profile == "" do provider_profile = "pi"
 	if template_id == "" do template_id = derive_agent_class(agent_instance_id)
 	if !valid_agent_instance_id(agent_instance_id) {
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid agent_instance_id"}`)
 		return
 	}
 
-	agent_record_id := agent_new_record_id()
-	run_dir := ""
+	// Resolve model_tier: stored record's tier is the base; caller may override.
+	stored_model_tier := "normal"
 	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 {
-		agent_record_id = agent_instance_records[idx].agent_record_id
-		run_dir = agent_instance_records[idx].run_dir
+		stored_model_tier = agent_instance_records[idx].model_tier
+		if stored_model_tier == "" do stored_model_tier = "normal"
 	}
+	if request_tier := extract_json_string(body, "model_tier", ""); request_tier != "" {
+		if !valid_model_tier(request_tier) {
+			write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid model_tier; expected cheap, normal, or smart"}`)
+			return
+		}
+		stored_model_tier = request_tier
+	}
+
 	log_path := wrapper_log_path(agent_instance_id)
-	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = agent_record_id, agent_instance_id = agent_instance_id, display_name = display_name, template_id = template_id, provider_profile = provider_profile, project_id = project_id, run_dir = run_dir, author = "api"}) {
+	agent_record_id, final_tier, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, provider_profile, project_id, "", stored_model_tier)
+	if !upsert_ok {
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`)
 		return
 	}
+	// Reload provider_profile as resolved by upsert (may have fallen back to stored value)
+	if idx := agent_record_index(agent_record_id); idx >= 0 do provider_profile = agent_instance_records[idx].provider_profile
 
 	agent_token := generate_agent_token()
 	registry_add_pending_agent_token(agent_instance_id, agent_token)
-	ok := launch_wrapper_detached(agent_instance_id, provider_profile, config_path, log_path, agent_token, display_name)
+	ok := launch_wrapper_detached(agent_instance_id, provider_profile, config_path, log_path, agent_token, display_name, final_tier)
 	if !ok {
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to start wrapper"}`)
 		return
@@ -171,6 +224,8 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 	strings.write_string(builder, `","provider_profile":"`); json_write_string(builder, rec.provider_profile)
 	strings.write_string(builder, `","project_id":"`); json_write_string(builder, rec.project_id)
 	strings.write_string(builder, `","run_dir":"`); json_write_string(builder, rec.run_dir)
+	model_tier := rec.model_tier; if model_tier == "" do model_tier = "normal"
+	strings.write_string(builder, `","model_tier":"`); json_write_string(builder, model_tier)
 	strings.write_string(builder, `","created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.created_unix_ms))
 	strings.write_string(builder, `,"updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.updated_unix_ms))
 	strings.write_string(builder, `,"archived_at_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.archived_at_unix_ms))
@@ -211,7 +266,7 @@ query_param :: proc(request, name: string) -> string {
 	return query[start:start + end]
 }
 
-launch_wrapper_detached :: proc(agent_instance_id, selected_agent, config_path, log_path, agent_token, display_name: string) -> bool {
+launch_wrapper_detached :: proc(agent_instance_id, selected_agent, config_path, log_path, agent_token, display_name, model_tier: string) -> bool {
 	_ = os.make_directory_all(parent_dir(log_path))
 	wrapper_bin := default_wrapper_bin()
 
@@ -232,6 +287,9 @@ launch_wrapper_detached :: proc(agent_instance_id, selected_agent, config_path, 
 		strings.write_string(&builder, " --display-name ")
 		strings.write_string(&builder, shell_quote(display_name))
 	}
+	tier := model_tier; if tier == "" do tier = "normal"
+	strings.write_string(&builder, " --tier ")
+	strings.write_string(&builder, shell_quote(tier))
 	strings.write_string(&builder, " ")
 	strings.write_string(&builder, shell_quote(agent_instance_id))
 	strings.write_string(&builder, " > ")
@@ -361,8 +419,33 @@ handle_agent_instance_update :: proc(client: net.TCP_Socket, body: string) {
 	provider_profile := extract_json_string(body, "provider_profile", rec.provider_profile)
 	project_id := extract_json_string(body, "project_id", rec.project_id)
 	run_dir := extract_json_string(body, "run_dir", rec.run_dir)
-	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = display_name, template_id = template_id, provider_profile = provider_profile, project_id = project_id, run_dir = run_dir, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`); return }
+	model_tier := rec.model_tier; if model_tier == "" do model_tier = "normal"
+	if req_tier := extract_json_string(body, "model_tier", ""); req_tier != "" {
+		if !valid_model_tier(req_tier) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid model_tier; expected cheap, normal, or smart"}`); return }
+		model_tier = req_tier
+	}
+	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = display_name, template_id = template_id, provider_profile = provider_profile, project_id = project_id, run_dir = run_dir, model_tier = model_tier, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`); return }
 	write_agent_ok_response(client, "updated", agent_instance_records[agent_record_index(rec.agent_record_id)])
+}
+
+handle_agent_instance_create :: proc(client: net.TCP_Socket, body: string) {
+	agent_instance_id := extract_json_string(body, "agent_instance_id", "")
+	display_name := extract_json_string(body, "display_name", extract_json_string(body, "name", ""))
+	provider_profile := extract_json_string(body, "provider_profile", extract_json_string(body, "agent", ""))
+	template_id := extract_json_string(body, "template_id", "")
+	project_id := extract_json_string(body, "project_id", "")
+	model_tier := extract_json_string(body, "model_tier", "normal")
+	if !valid_model_tier(model_tier) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid model_tier; expected cheap, normal, or smart"}`); return }
+	if agent_instance_id == "" {
+		id_base := display_name if display_name != "" else template_id
+		agent_instance_id = agent_generated_instance_id(id_base, project_id)
+	}
+	if display_name == "" do display_name = agent_instance_id
+	if template_id == "" do template_id = derive_agent_class(agent_instance_id)
+	if !valid_agent_instance_id(agent_instance_id) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid agent_instance_id"}`); return }
+	agent_record_id, _, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, provider_profile, project_id, "", model_tier)
+	if !upsert_ok { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`); return }
+	write_agent_ok_response(client, "created", agent_instance_records[agent_record_index(agent_record_id)])
 }
 
 handle_agent_instance_archive :: proc(client: net.TCP_Socket, body: string) {

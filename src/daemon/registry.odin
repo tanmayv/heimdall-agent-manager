@@ -199,6 +199,12 @@ registry_clear_ws :: proc(agent_instance_id: string) {
 		agents[idx].has_ws = false
 		agents[idx].connected = false
 		agents[idx].last_seen_unix_ms = now_unix_ms()
+		if agents[idx].startup_status == "starting" {
+			agents[idx].startup_status = "startup_failed"
+			agents[idx].startup_reason_code = "ws_disconnected"
+			agents[idx].startup_safe_diagnostic = "Agent disconnected before reporting startup status"
+			agents[idx].startup_updated_unix_ms = agents[idx].last_seen_unix_ms
+		}
 	}
 }
 

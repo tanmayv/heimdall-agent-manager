@@ -37,11 +37,13 @@ handle_agent_rpc :: proc(client: net.TCP_Socket, body: string) {
 	} else if action == "memory_decide" {
 		write_memory_service_response(client, memory_service_decide(extract_json_string(body, "decision", extract_json_string(body, "result", "")), body, from_agent_instance_id))
 	} else if action == "memory_list" {
-		write_response(client, 200, "OK", memory_service_list_json(body))
+		write_response(client, 200, "OK", memory_service_list_json(body, from_agent_instance_id))
 	} else if action == "memory_show" {
 		write_response(client, 200, "OK", memory_service_show_json(body))
 	} else if action == "memory_history" {
 		write_response(client, 200, "OK", memory_service_history_json(body))
+	} else if action == "agent_ready" {
+		handle_agent_ready(client, from_agent_instance_id)
 	} else {
 		fmt.println("agent_rpc failure unsupported_action", action, "from", from_agent_instance_id)
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"unsupported agent-rpc action"}`)
@@ -117,6 +119,36 @@ agent_rpc_parse_fetch_messages_command :: proc(body, from_agent_instance_id: str
 			include_read = include_read,
 		},
 	}
+}
+
+handle_agent_ready :: proc(client: net.TCP_Socket, agent_instance_id: string) {
+	idx := registry_find_agent(agent_instance_id)
+	if idx < 0 {
+		write_response(client, 404, "Not Found", `{"ok":false,"message":"agent not found"}`)
+		return
+	}
+	status := agents[idx].startup_status
+	if status == "ready" {
+		builder := strings.builder_make()
+		strings.write_string(&builder, `{"ok":true,"already":true,"execution_state":"running","agent_instance_id":"`)
+		json_write_string(&builder, agent_instance_id)
+		strings.write_string(&builder, `"}`)
+		write_response(client, 200, "OK", strings.to_string(builder))
+		return
+	}
+	// Accept from any non-ready state: starting, startup_blocked, startup_failed,
+	// startup_unknown, "". Reaching this call proves the agent is alive.
+	agents[idx].startup_status = "ready"
+	agents[idx].startup_reason_code = "agent_ready"
+	agents[idx].startup_safe_diagnostic = "Agent called agent-ready"
+	agents[idx].connected = true
+	agents[idx].startup_updated_unix_ms = now_unix_ms()
+	agent_lifecycle_emit(agent_instance_id, "connected", "agent_ready")
+	builder := strings.builder_make()
+	strings.write_string(&builder, `{"ok":true,"execution_state":"running","agent_instance_id":"`)
+	json_write_string(&builder, agent_instance_id)
+	strings.write_string(&builder, `"}`)
+	write_response(client, 200, "OK", strings.to_string(builder))
 }
 
 write_agent_rpc_service_result :: proc(client: net.TCP_Socket, result: Service_Result) {
