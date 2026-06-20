@@ -36,9 +36,16 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
   const agents = useSelector((state: any) => state.chat.agents);
 
   const [tab, setTab] = useState<'agents' | 'templates'>('agents');
+
+  // --- Known Agents state ---
   const [archiving, setArchiving] = useState<string | null>(null);
   const [agentError, setAgentError] = useState('');
+  const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
+  const [agentForm, setAgentForm] = useState({ displayName: '', templateId: '', providerProfile: '' });
+  const [agentSaving, setAgentSaving] = useState(false);
+  const [agentFormError, setAgentFormError] = useState('');
 
+  // --- Templates state ---
   const [templates, setTemplates] = useState<any[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
   const [templatesError, setTemplatesError] = useState('');
@@ -47,9 +54,10 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
   const [templateSaving, setTemplateSaving] = useState(false);
   const [templateFormError, setTemplateFormError] = useState('');
 
+  // Load templates on mount (needed for agent edit dropdown too)
   useEffect(() => {
-    if (tab === 'templates') loadTemplates();
-  }, [tab, session.daemonUrl]);
+    loadTemplates();
+  }, [session.daemonUrl]);
 
   async function loadTemplates() {
     setTemplatesLoading(true);
@@ -57,10 +65,48 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
     try {
       const items = await daemonApi.listAgentTemplates({ daemonUrl: session.daemonUrl });
       setTemplates((items ?? []).map(normalizeTemplate).filter((t) => t.templateId));
-    } catch (err: any) {
-      setTemplatesError(err?.message || 'Failed to load templates');
+    } catch {
+      // Silently fall back — daemon may not be reachable yet
     } finally {
       setTemplatesLoading(false);
+    }
+  }
+
+  // ---- Agent actions ----
+
+  function startEditAgent(agent: any) {
+    setEditingAgentId(agent.id);
+    setAgentForm({ displayName: agent.label || '', templateId: agent.templateId || '', providerProfile: agent.providerProfile || '' });
+    setAgentFormError('');
+  }
+
+  function cancelEditAgent() {
+    setEditingAgentId(null);
+    setAgentFormError('');
+  }
+
+  async function handleSaveAgent(event: any) {
+    event.preventDefault();
+    const name = agentForm.displayName.trim();
+    if (!name) { setAgentFormError('Display name is required.'); return; }
+    const duplicate = agents.find((a: any) => (a.label || '').trim().toLowerCase() === name.toLowerCase() && a.id !== editingAgentId);
+    if (duplicate) { setAgentFormError(`An agent named "${name}" already exists.`); return; }
+    setAgentSaving(true);
+    setAgentFormError('');
+    try {
+      await daemonApi.updateAgent({
+        daemonUrl: session.daemonUrl,
+        agentInstanceId: editingAgentId!,
+        displayName: name,
+        templateId: agentForm.templateId || undefined,
+        providerProfile: agentForm.providerProfile || undefined,
+      });
+      setEditingAgentId(null);
+      dispatch(refreshAgents());
+    } catch (err: any) {
+      setAgentFormError(err?.message || 'Failed to update agent');
+    } finally {
+      setAgentSaving(false);
     }
   }
 
@@ -77,6 +123,8 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
       setArchiving(null);
     }
   }
+
+  // ---- Template actions ----
 
   function startEditTemplate(template: any) {
     setEditingTemplate(template);
@@ -167,6 +215,8 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
       </div>
 
       <div className="flex flex-1 flex-col overflow-y-auto p-6">
+
+        {/* ---- KNOWN AGENTS TAB ---- */}
         {tab === 'agents' && (
           <section className="space-y-3">
             {agentError ? <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">{agentError}</div> : null}
@@ -175,36 +225,96 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                 No known agents yet. Start one to see it here.
               </div>
             ) : agents.map((agent: any) => (
-              <div
-                key={agent.id}
-                className="framer-card flex items-start justify-between gap-4 rounded-[var(--fd-radius-xl)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-1)] p-4"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className={`h-2.5 w-2.5 shrink-0 rounded-full shadow ${STATUS_DOT[agent.status] ?? STATUS_DOT.offline} ${agent.status === 'connected' ? 'animate-soft-pulse' : ''}`} />
-                    <p className="truncate text-sm font-semibold text-white">{agent.label}</p>
-                    <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${agent.status === 'connected' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-[#333] text-[#888]'}`}>
-                      {STATUS_LABEL[agent.status] ?? 'Known'}
-                    </span>
+              <div key={agent.id} className="overflow-hidden rounded-[var(--fd-radius-xl)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-1)]">
+
+                {/* Agent row */}
+                <div className="flex items-start justify-between gap-4 p-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className={`h-2.5 w-2.5 shrink-0 rounded-full shadow ${STATUS_DOT[agent.status] ?? STATUS_DOT.offline} ${agent.status === 'connected' ? 'animate-soft-pulse' : ''}`} />
+                      <p className="truncate text-sm font-semibold text-white">{agent.label}</p>
+                      <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${agent.status === 'connected' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-[#333] text-[#888]'}`}>
+                        {STATUS_LABEL[agent.status] ?? 'Known'}
+                      </span>
+                    </div>
+                    <p className="framer-subtext mt-1.5 truncate text-xs">
+                      {[agent.templateId && `Template: ${agent.templateId}`, agent.providerProfile && `Provider: ${agent.providerProfile}`, agent.projectId && `Project: ${agent.projectId}`, agent.roleHint && `Role: ${agent.roleHint}`].filter(Boolean).join(' · ') || 'No metadata'}
+                    </p>
+                    <p className="mt-1 text-[11px] text-[#666]">Last seen {agent.lastSeen}</p>
                   </div>
-                  <p className="framer-subtext mt-1.5 truncate text-xs">
-                    {[agent.templateId && `Template: ${agent.templateId}`, agent.providerProfile && `Provider: ${agent.providerProfile}`, agent.projectId && `Project: ${agent.projectId}`, agent.roleHint && `Role: ${agent.roleHint}`].filter(Boolean).join(' · ') || 'No metadata'}
-                  </p>
-                  <p className="mt-1 text-[11px] text-[#666]">Last seen {agent.lastSeen}</p>
+                  <div className="flex shrink-0 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => editingAgentId === agent.id ? cancelEditAgent() : startEditAgent(agent)}
+                      className={`rounded-lg border px-3 py-1.5 text-[11px] transition ${editingAgentId === agent.id ? 'border-[var(--fd-accent-blue)]/50 bg-[var(--fd-accent-blue)]/10 text-[var(--fd-accent-blue)]' : 'border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] text-[#ccc] hover:border-[var(--fd-accent-blue)]/50 hover:text-white'}`}
+                    >
+                      {editingAgentId === agent.id ? 'Cancel' : 'Edit'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleArchiveAgent(agent)}
+                      disabled={archiving === agent.id}
+                      className="rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-1.5 text-[11px] text-red-300 transition hover:bg-red-500/20 disabled:opacity-40"
+                    >
+                      {archiving === agent.id ? 'Archiving…' : 'Archive'}
+                    </button>
+                  </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => handleArchiveAgent(agent)}
-                  disabled={archiving === agent.id}
-                  className="shrink-0 rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-1.5 text-[11px] text-red-300 transition hover:bg-red-500/20 disabled:opacity-40"
-                >
-                  {archiving === agent.id ? 'Archiving…' : 'Archive'}
-                </button>
+
+                {/* Inline edit form */}
+                {editingAgentId === agent.id && (
+                  <form
+                    onSubmit={handleSaveAgent}
+                    className="border-t border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-4 pb-4 pt-3"
+                  >
+                    {agentFormError ? <div className="mb-3 rounded-xl border border-red-500/30 bg-red-500/10 p-2.5 text-xs text-red-200">{agentFormError}</div> : null}
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                      <label className="block">
+                        <span className="framer-topline text-[10px]">Display name <span className="text-red-400">*</span></span>
+                        <input
+                          value={agentForm.displayName}
+                          onChange={(e) => setAgentForm((f) => ({ ...f, displayName: e.target.value }))}
+                          className="framer-input mt-1.5 w-full px-3 py-2 text-sm"
+                          placeholder="e.g. odin-coder"
+                        />
+                      </label>
+                      <label className="block">
+                        <span className="framer-topline text-[10px]">Template</span>
+                        <select
+                          value={agentForm.templateId}
+                          onChange={(e) => setAgentForm((f) => ({ ...f, templateId: e.target.value }))}
+                          className="framer-input mt-1.5 w-full px-3 py-2 text-sm"
+                        >
+                          <option value="">— no template —</option>
+                          {templates.map((t) => (
+                            <option key={t.templateId} value={t.templateId}>{t.displayName}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="block">
+                        <span className="framer-topline text-[10px]">Provider profile</span>
+                        <input
+                          value={agentForm.providerProfile}
+                          onChange={(e) => setAgentForm((f) => ({ ...f, providerProfile: e.target.value }))}
+                          className="framer-input mt-1.5 w-full px-3 py-2 text-sm"
+                          placeholder="e.g. pi, claude"
+                        />
+                      </label>
+                    </div>
+                    <div className="mt-3 flex justify-end gap-2">
+                      <button type="button" onClick={cancelEditAgent} className="framer-pill-secondary text-xs">Cancel</button>
+                      <button type="submit" disabled={agentSaving} className="framer-pill text-xs">
+                        {agentSaving ? 'Saving…' : 'Save changes'}
+                      </button>
+                    </div>
+                  </form>
+                )}
               </div>
             ))}
           </section>
         )}
 
+        {/* ---- TEMPLATES TAB ---- */}
         {tab === 'templates' && (
           <section className="space-y-4">
             {templatesError ? <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">{templatesError}</div> : null}
