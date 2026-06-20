@@ -38,6 +38,7 @@ handle_agents_templates :: proc(client: net.TCP_Socket) {
 
 handle_agents_list :: proc(client: net.TCP_Socket, request: string) {
 	project_id := query_param(request, "project_id")
+	role_hint := query_param(request, "role_hint")
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"ok":true,"agents":[`)
 	wrote := 0
@@ -45,12 +46,17 @@ handle_agents_list :: proc(client: net.TCP_Socket, request: string) {
 		rec := agent_instance_records[i]
 		if rec.archived_at_unix_ms != 0 do continue
 		if project_id != "" && rec.project_id != project_id do continue
+		if role_hint != "" {
+			tidx := agent_template_index(rec.template_id)
+			if tidx < 0 do continue
+			if agent_template_records[tidx].role_hint != role_hint do continue
+		}
 		if wrote > 0 do strings.write_string(&builder, `,`)
 		agent_instance_record_json(&builder, rec)
 		wrote += 1
 	}
 	// Preserve existing live-registry visibility for callers that used /clients only.
-	if project_id == "" {
+	if project_id == "" && role_hint == "" {
 		for i in 0..<agent_count {
 			ag := agents[i]
 			if agent_record_index_by_instance(ag.agent_instance_id) >= 0 do continue

@@ -3,6 +3,20 @@ package main
 import "core:fmt"
 import "core:strings"
 
+// Returns the first non-archived agent_instance_id whose template role_hint matches.
+// If project_id is non-empty, also requires a matching project.
+agents_first_by_role_hint :: proc(role_hint, project_id: string) -> string {
+	for i in 0..<agent_instance_record_count {
+		rec := agent_instance_records[i]
+		if rec.archived_at_unix_ms != 0 do continue
+		if project_id != "" && rec.project_id != project_id do continue
+		tidx := agent_template_index(rec.template_id)
+		if tidx < 0 do continue
+		if agent_template_records[tidx].role_hint == role_hint do return rec.agent_instance_id
+	}
+	return ""
+}
+
 task_status_complete :: proc(status: string) -> bool {
 	return status == "approved" || status == "done" || status == "completed" || status == "validated"
 }

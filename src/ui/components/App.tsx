@@ -7,6 +7,7 @@ import TaskBoard from './TaskBoard';
 import MemoryBoard from './MemoryBoard';
 import StartAgentPage from './StartAgentPage';
 import ProjectsPage from './ProjectsPage';
+import AgentsPage from './AgentsPage';
 import {
   chatEventReceived,
   fetchSelectedChat,
@@ -29,7 +30,7 @@ export default function App() {
   const { agents, selectedAgentId, chats, session, sending } = useSelector((state: any) => state.chat);
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? null;
   const messages = selectedAgent ? chats[selectedAgent.id] ?? [] : [];
-  const [view, setView] = useState<'chat' | 'settings' | 'tasks' | 'memory' | 'projects' | 'startAgent'>('chat');
+  const [view, setView] = useState<'chat' | 'settings' | 'tasks' | 'memory' | 'projects' | 'agents' | 'startAgent'>('chat');
   const selectedAgentRef = useRef(selectedAgentId);
   const cachedChatsRef = useRef(chats);
   const sessionRef = useRef(session);
@@ -201,6 +202,7 @@ export default function App() {
             setView('projects');
             dispatch(refreshProjects());
           }}
+          onOpenAgents={() => setView('agents')}
           onOpenStartAgent={() => setView('startAgent')}
           onOpenSettings={() => setView('settings')}
         />
@@ -212,6 +214,8 @@ export default function App() {
           <MemoryBoard session={session} />
         ) : view === 'projects' ? (
           <ProjectsPage session={session} />
+        ) : view === 'agents' ? (
+          <AgentsPage session={session} onOpenStartAgent={() => setView('startAgent')} />
         ) : view === 'startAgent' ? (
           <StartAgentPage
             session={session}

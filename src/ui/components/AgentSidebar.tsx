@@ -10,7 +10,7 @@ function projectGroupLabel(projectId) {
   return projectId === 'unassigned' ? 'No project' : projectId;
 }
 
-export default function AgentSidebar({ agents, selectedAgentId, session, activeView, onSelectAgent, onRefreshAgents, onOpenChat, onOpenTasks, onOpenMemory, onOpenProjects, onOpenStartAgent, onOpenSettings }) {
+export default function AgentSidebar({ agents, selectedAgentId, session, activeView, onSelectAgent, onRefreshAgents, onOpenChat, onOpenTasks, onOpenMemory, onOpenProjects, onOpenAgents, onOpenStartAgent, onOpenSettings }) {
   const [collapsedProjects, setCollapsedProjects] = useState({});
   const projectGroups = useMemo(() => {
     const groups = new Map();
@@ -68,6 +68,13 @@ export default function AgentSidebar({ agents, selectedAgentId, session, activeV
           className={`${activeView === 'projects' ? 'framer-pill bg-white' : 'framer-pill-secondary'} px-3 py-2 text-xs`}
         >
           Projects
+        </button>
+        <button
+          type="button"
+          onClick={onOpenAgents}
+          className={`${activeView === 'agents' ? 'framer-pill bg-white' : 'framer-pill-secondary'} px-3 py-2 text-xs`}
+        >
+          Agents
         </button>
         <button
           type="button"
