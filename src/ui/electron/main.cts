@@ -67,7 +67,15 @@ app.whenReady().then(async () => {
 
   const debugPort = await startDebugServer();
   updatePort(debugPort);
-  console.log(`[debug] instance registry port=${debugPort} pid=${process.pid}`);
+
+  console.log('[heimdall] startup config:');
+  console.log(`  daemon_url=${daemonUrl}`);
+  console.log(`  daemon_url_source=${process.env.HEIMDALL_DAEMON_URL ? 'env' : 'default'}`);
+  console.log(`  debug_port=${debugPort}`);
+  console.log(`  pid=${process.pid}`);
+  console.log(`  platform=${process.platform}`);
+  console.log(`  electron=${process.versions.electron}`);
+  console.log(`  packaged=${app.isPackaged}`);
 
   createWindow();
 

@@ -330,6 +330,7 @@ launch_wrapper_detached :: proc(agent_instance_id, selected_agent, config_path, 
 }
 
 default_wrapper_bin :: proc() -> string {
+	if server_wrapper_bin != "" do return server_wrapper_bin
 	if len(os.args) > 0 {
 		exe := os.args[0]
 		slash := strings.last_index_byte(exe, '/')

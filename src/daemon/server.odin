@@ -14,6 +14,7 @@ server_bind_host: string
 server_port: int
 server_config_path: string
 server_data_dir: string
+server_wrapper_bin: string
 server_agent_providers: [dynamic]string
 server_agent_cmd_configs: [dynamic]cfg_lib.Agent_Command_Config
 message_provider: mp.Message_Provider
@@ -24,6 +25,7 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 	server_port = int(cfg.daemon.port)
 	server_config_path = strings.clone(config_path)
 	server_data_dir = strings.clone(cfg.daemon.data_dir)
+	server_wrapper_bin = strings.clone(cfg.daemon.wrapper_bin)
 	server_agent_providers = make([dynamic]string)
 	server_agent_cmd_configs = make([dynamic]cfg_lib.Agent_Command_Config)
 	for provider in cfg.wrapper.agent_commands {

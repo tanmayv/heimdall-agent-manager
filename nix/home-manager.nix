@@ -297,10 +297,24 @@ let
     // lib.optionalAttrs cfg.ctl.enable     { ctl     = { daemon_url = cfg.ctl.daemonUrl; }; };
 
   resolvePackage = name:
-    self.packages.${pkgs.stdenv.hostPlatform.system}.${
-      { daemon = "ham-daemon"; wrapper = "ham-wrapper"; ctl = "ham-ctl";
-        test-agent = "ham-test-agent"; ui = "heimdall"; }.${name}
-    };
+    let
+      basePkg = self.packages.${pkgs.stdenv.hostPlatform.system}.${
+        { daemon = "ham-daemon"; wrapper = "ham-wrapper"; ctl = "ham-ctl";
+          test-agent = "ham-test-agent"; ui = "heimdall"; }.${name}
+      };
+      daemonUrlForUi = "http://${cfg.daemon.bindHost}:${toString cfg.daemon.port}";
+    in
+    if name == "ui" && cfg.daemon.enable then
+      pkgs.symlinkJoin {
+        name = "heimdall-wrapped";
+        paths = [ basePkg ];
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        postBuild = ''
+          wrapProgram $out/bin/heimdall \
+            --set HEIMDALL_DAEMON_URL "${daemonUrlForUi}"
+        '';
+      }
+    else basePkg;
 
   daemonPkg = self.packages.${pkgs.stdenv.hostPlatform.system}.ham-daemon;
 
