@@ -8,7 +8,9 @@ const { startDebugServer } = require('./debugServer.cjs');
 // app.whenReady() and before any path lookup.
 app.setName('heimdall-ui');
 
-const isDev = !app.isPackaged;
+// app.isPackaged is false when Electron loads a loose .cjs (Nix install, CI).
+// Treat as dev only when the Vite dev server URL is explicitly provided.
+const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -76,6 +78,7 @@ app.whenReady().then(async () => {
   console.log(`  platform=${process.platform}`);
   console.log(`  electron=${process.versions.electron}`);
   console.log(`  packaged=${app.isPackaged}`);
+  console.log(`  dev=${isDev}`);
 
   createWindow();
 
