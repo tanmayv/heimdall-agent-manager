@@ -40,7 +40,7 @@ task_chain_archive_snapshot_json :: proc(chain_id: string) -> string {
 	strings.write_string(&builder, `","description":"`); json_write_string(&builder, chain.description)
 	strings.write_string(&builder, `","status":"`); json_write_string(&builder, chain.status)
 	strings.write_string(&builder, `","coordinator_agent_instance_id":"`); json_write_string(&builder, chain.coordinator_agent_instance_id)
-	strings.write_string(&builder, `","default_reviewer_agent_instance_id":"`); json_write_string(&builder, chain.default_reviewer_agent_instance_id)
+	strings.write_string(&builder, `","project_id":"`); json_write_string(&builder, chain.project_id)
 	strings.write_string(&builder, `","created_at_unix_ms":`); strings.write_string(&builder, fmt.tprintf("%d", chain.created_at_unix_ms))
 	strings.write_string(&builder, `,"completed_at_unix_ms":`); strings.write_string(&builder, fmt.tprintf("%d", chain.completed_at_unix_ms))
 	strings.write_string(&builder, `,"final_summary":"`); json_write_string(&builder, chain.final_summary)
@@ -55,7 +55,6 @@ task_chain_archive_snapshot_json :: proc(chain_id: string) -> string {
 		strings.write_string(&builder, `","title":"`); json_write_string(&builder, state.title)
 		strings.write_string(&builder, `","status":"`); json_write_string(&builder, state.status)
 		strings.write_string(&builder, `","assignee_agent_instance_id":"`); json_write_string(&builder, state.assignee_agent_instance_id)
-		strings.write_string(&builder, `","reviewer_agent_instance_id":"`); json_write_string(&builder, state.reviewer_agent_instance_id)
 		strings.write_string(&builder, `","coordinator_agent_instance_id":"`); json_write_string(&builder, state.coordinator_agent_instance_id)
 		strings.write_string(&builder, `"}`)
 	}

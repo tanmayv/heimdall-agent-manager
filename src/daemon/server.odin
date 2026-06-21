@@ -363,8 +363,18 @@ handle_client :: proc(client: net.TCP_Socket) {
 		return
 	}
 
-	if strings.has_prefix(request, "POST /tasks/review ") {
-		handle_task_review(client, request_body(request))
+	if strings.has_prefix(request, "POST /tasks/vote ") {
+		handle_task_review_vote(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /tasks/comment-resolve ") {
+		handle_task_comment_resolve(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /tasks/comments ") {
+		handle_task_comments(client, request_body(request))
 		return
 	}
 
@@ -415,6 +425,11 @@ handle_client :: proc(client: net.TCP_Socket) {
 
 	if strings.has_prefix(request, "POST /task-chains/complete ") {
 		handle_task_chain_complete(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /task-chains/activate ") {
+		handle_task_chain_activate(client, request_body(request))
 		return
 	}
 

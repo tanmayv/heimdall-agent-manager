@@ -6,7 +6,7 @@ import "core:thread"
 import "core:time"
 import cfg_lib "odin_test:lib/config"
 
-task_nudge_cfg: cfg_lib.Daemon_Config
+task_nudge_cfg:               cfg_lib.Daemon_Config
 task_nudge_scheduler_started: bool
 
 task_nudge_scheduler_start :: proc(cfg: cfg_lib.Daemon_Config) {
@@ -31,16 +31,16 @@ task_nudge_scheduler_worker :: proc() {
 
 task_nudge_scheduler_tick :: proc() -> int {
 	if !task_nudge_cfg.nudge_enabled do return 0
-	now := router_now_unix_ms()
+	now     := router_now_unix_ms()
 	changed := 0
 	for i in 0..<task_state_count {
-		state := task_states[i]
+		state     := task_states[i]
 		threshold := task_nudge_threshold_seconds(state.status)
 		if threshold <= 0 do continue
 		if state.updated_at_unix_ms == 0 do continue
 		if now - state.updated_at_unix_ms < i64(threshold) * 1000 do continue
 		target := task_nudge_target_for_status(state, state.status)
-		last := task_last_nudge_unix_ms(state.task_id, target)
+		last   := task_last_nudge_unix_ms(state.task_id, target)
 		cooldown := task_nudge_cfg.nudge_cooldown_seconds
 		if cooldown <= 0 do cooldown = 300
 		if last > 0 && now - last < i64(cooldown) * 1000 do continue
@@ -54,7 +54,15 @@ task_nudge_scheduler_tick :: proc() -> int {
 				body = strings.concatenate({body, " reason=target_not_live"})
 			}
 		}
-		event := Task_Event{kind = kind, task_id = state.task_id, chain_id = state.chain_id, status = state.status, body = body, agent_instance_id = target, author_agent_instance_id = "task-nudge-scheduler"}
+		event := Task_Event{
+			kind                     = kind,
+			task_id                  = state.task_id,
+			chain_id                 = state.chain_id,
+			status                   = state.status,
+			body                     = body,
+			agent_instance_id        = target,
+			author_agent_instance_id = "task-nudge-scheduler",
+		}
 		if task_store_append_event(event) {
 			if kind == .Task_Nudged do task_notify_event(event)
 			changed += 1
@@ -65,13 +73,11 @@ task_nudge_scheduler_tick :: proc() -> int {
 
 task_nudge_threshold_seconds :: proc(status: string) -> int {
 	switch status {
-	case "ready", "claimed":
+	case "ready":
 		return task_nudge_cfg.nudge_ready_after_seconds
-	case "review", "needs_review", "approved", "done":
+	case "review_ready":
 		return task_nudge_cfg.nudge_review_after_seconds
-	case "needs_improvements", "rejected":
-		return task_nudge_cfg.nudge_need_improvements_after_seconds
-	case "working", "in_progress", "open":
+	case "in_progress":
 		return task_nudge_cfg.nudge_working_stale_after_seconds
 	case:
 		return 0
@@ -93,10 +99,30 @@ task_last_nudge_unix_ms :: proc(task_id, target: string) -> i64 {
 task_scheduled_nudge_body :: proc(state: Task_State, target: string) -> string {
 	delivery := "ws_fallback"
 	if task_nudge_cfg.nudge_send_escape_prefix do delivery = "escape_prefixed_pane_or_ws"
-	action := "please work on it or move it to blocked/planned"
-	if state.status == "review" || state.status == "needs_review" do action = "waiting on review"
-	if state.status == "approved" || state.status == "done" do action = "waiting on verification"
-	return fmt.tprintf("Task %s is waiting on you: %s. status=%s delivery=%s target=%s", state.task_id, action, state.status, delivery, target)
+	action := "please continue work or move to blocked"
+	switch state.status {
+	case "ready":
+		action = "task is ready to be worked on"
+	case "review_ready":
+		action = "waiting on your review"
+	case "in_progress":
+		action = "please continue work or move to blocked"
+	}
+	unresolved := task_unresolved_comments(state.task_id)
+	b := strings.builder_make()
+	strings.write_string(&b, fmt.tprintf("Task %s: %s. status=%s delivery=%s target=%s", state.task_id, action, state.status, delivery, target))
+	if len(unresolved) > 0 {
+		strings.write_string(&b, fmt.tprintf(" unresolved_comments=%d", len(unresolved)))
+		limit := len(unresolved)
+		if limit > 3 do limit = 3
+		for i in 0..<limit {
+			c := unresolved[i]
+			snippet := c.body
+			if len(snippet) > 80 do snippet = snippet[:80]
+			strings.write_string(&b, fmt.tprintf(" [%s: %s]", c.author_agent_instance_id, snippet))
+		}
+	}
+	return strings.to_string(b)
 }
 
 task_nudge_delivery_method :: proc(body: string) -> string {

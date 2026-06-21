@@ -4,7 +4,6 @@ import "core:fmt"
 import "core:strings"
 
 // Returns the first non-archived agent_instance_id whose template role_hint matches.
-// If project_id is non-empty, also requires a matching project.
 agents_first_by_role_hint :: proc(role_hint, project_id: string) -> string {
 	for i in 0..<agent_instance_record_count {
 		rec := agent_instance_records[i]
@@ -17,18 +16,42 @@ agents_first_by_role_hint :: proc(role_hint, project_id: string) -> string {
 	return ""
 }
 
-task_status_complete :: proc(status: string) -> bool {
-	return status == "approved" || status == "done" || status == "completed" || status == "validated"
+// --- Status predicates ---
+
+task_status_allowed :: proc(status: string) -> bool {
+	switch status {
+	case "planning", "ready", "in_progress", "review_ready", "approved", "blocked", "cancelled":
+		return true
+	case:
+		return false
+	}
 }
 
-task_dependencies_satisfied :: proc(depends_on: string) -> bool {
-	return task_dependency_blocking_ids(depends_on) == ""
+task_status_terminal :: proc(status: string) -> bool {
+	return status == "approved" || status == "cancelled"
+}
+
+task_status_active_for_assignee :: proc(state: Task_State) -> bool {
+	switch state.status {
+	case "ready", "in_progress", "review_ready":
+		return true
+	case:
+		return false
+	}
+}
+
+task_status_complete :: proc(status: string) -> bool {
+	return status == "approved"
 }
 
 task_state_satisfies_dependency :: proc(state: Task_State) -> bool {
-	if state.status == "validated" || state.status == "completed" do return true
-	if (state.status == "approved" || state.status == "done") && !task_state_has_reviewer_or_verifier(state) do return true
-	return false
+	return state.status == "approved"
+}
+
+// --- Dependency helpers ---
+
+task_dependencies_satisfied :: proc(depends_on: string) -> bool {
+	return task_dependency_blocking_ids(depends_on) == ""
 }
 
 task_dependency_blocking_ids :: proc(depends_on: string) -> string {
@@ -54,9 +77,171 @@ task_dependency_blocking_ids :: proc(depends_on: string) -> string {
 	return strings.to_string(builder)
 }
 
-task_auto_unblock_dependents :: proc(completed_task_id, author: string) -> int {
-	return task_recompute_promotions(author)
+task_depends_on_task :: proc(depends_on, task_id: string) -> bool {
+	deps := strings.split(depends_on, ",")
+	for dep in deps {
+		if strings.trim_space(dep) == task_id do return true
+	}
+	return false
 }
+
+// --- Active slot checks ---
+
+// Returns the task_id that blocks the assignee from taking another task (excludes excluding_task_id).
+task_active_slot_blocker :: proc(assignee, excluding_task_id: string) -> string {
+	if assignee == "" do return ""
+	for i in 0..<task_state_count {
+		state := task_states[i]
+		if state.task_id == excluding_task_id do continue
+		if state.assignee_agent_instance_id != assignee do continue
+		if task_status_active_for_assignee(state) do return state.task_id
+	}
+	return ""
+}
+
+// Returns the task_id that is currently in review_ready and the reviewer hasn't voted on yet
+// (excluding excluding_task_id). Used to enforce one-active-review constraint.
+task_reviewer_active_slot_blocker :: proc(reviewer, excluding_task_id: string) -> string {
+	if reviewer == "" do return ""
+	for i in 0..<task_state_count {
+		state := task_states[i]
+		if state.task_id == excluding_task_id do continue
+		if state.status != "review_ready" do continue
+		if !task_actor_has_role(state, reviewer, "lgtm_required") && !task_actor_has_role(state, reviewer, "lgtm_optional") do continue
+		if task_reviewer_has_voted(state.task_id, reviewer) do continue
+		return state.task_id
+	}
+	return ""
+}
+
+task_reviewer_has_voted :: proc(task_id, reviewer: string) -> bool {
+	for i in 0..<task_lgtm_vote_count {
+		v := task_lgtm_votes[i]
+		if v.task_id == task_id && v.reviewer_agent_instance_id == reviewer do return true
+	}
+	return false
+}
+
+// --- LGTM checks ---
+
+task_all_required_lgtms_approved :: proc(task_id: string) -> bool {
+	required_count := 0
+	approved_count := 0
+	for i in 0..<task_participant_count {
+		p := task_participants[i]
+		if p.task_id != task_id || p.role != "lgtm_required" do continue
+		required_count += 1
+		for j in 0..<task_lgtm_vote_count {
+			v := task_lgtm_votes[j]
+			if v.task_id == task_id && v.reviewer_agent_instance_id == p.agent_instance_id && v.approved {
+				approved_count += 1
+				break
+			}
+		}
+	}
+	return required_count > 0 && approved_count == required_count
+}
+
+// --- Chain queries ---
+
+task_active_chain_for_project :: proc(project_id: string) -> string {
+	if project_id == "" do return ""
+	for i in 0..<task_chain_count {
+		c := task_chains[i]
+		if c.project_id != project_id do continue
+		if c.status == "planning" || c.status == "in_progress" || c.status == "blocked" {
+			return c.chain_id
+		}
+	}
+	return ""
+}
+
+task_all_chain_tasks_terminal :: proc(chain_id: string) -> bool {
+	found_any := false
+	for i in 0..<task_state_count {
+		state := task_states[i]
+		if state.chain_id != chain_id do continue
+		found_any = true
+		if !task_status_terminal(state.status) do return false
+	}
+	return found_any
+}
+
+// --- Role / authorization helpers ---
+
+task_actor_is_user :: proc(actor: string) -> bool {
+	return actor != "" && !registry_agent_exists(actor)
+}
+
+task_actor_has_role :: proc(state: Task_State, actor, role: string) -> bool {
+	if actor == "" do return false
+	switch role {
+	case "assignee":
+		if state.assignee_agent_instance_id == actor do return true
+	case "coordinator":
+		if state.coordinator_agent_instance_id == actor do return true
+	case:
+	}
+	for i in 0..<task_participant_count {
+		p := task_participants[i]
+		if p.role != role || p.agent_instance_id != actor do continue
+		if p.task_id != state.task_id && (state.chain_id == "" || p.chain_id != state.chain_id) do continue
+		return true
+	}
+	return false
+}
+
+task_actor_can_override :: proc(state: Task_State, actor: string) -> bool {
+	return task_actor_is_user(actor) || task_actor_has_role(state, actor, "coordinator")
+}
+
+task_status_change_authorized :: proc(state: Task_State, next_status, actor: string) -> bool {
+	if task_actor_can_override(state, actor) do return true
+	switch next_status {
+	case "in_progress", "review_ready", "blocked":
+		return task_actor_has_role(state, actor, "assignee")
+	case "cancelled":
+		return false
+	case:
+		return false
+	}
+}
+
+// --- Target routing ---
+
+task_nudge_target_for_status :: proc(state: Task_State, status: string) -> string {
+	switch status {
+	case "ready", "in_progress", "blocked":
+		return task_target_for_role(state, "assignee")
+	case "review_ready":
+		return task_target_for_role(state, "lgtm_required")
+	case "approved":
+		return task_target_for_role(state, "coordinator")
+	case:
+		target := task_target_for_role(state, "assignee")
+		if target != "" do return target
+		return task_target_for_role(state, "coordinator")
+	}
+}
+
+task_target_for_role :: proc(state: Task_State, role: string) -> string {
+	switch role {
+	case "assignee":
+		if state.assignee_agent_instance_id != "" do return state.assignee_agent_instance_id
+	case "coordinator":
+		if state.coordinator_agent_instance_id != "" do return state.coordinator_agent_instance_id
+	case:
+	}
+	for i in 0..<task_participant_count {
+		p := task_participants[i]
+		if p.role != role do continue
+		if p.task_id != state.task_id && (state.chain_id == "" || p.chain_id != state.chain_id) do continue
+		return p.agent_instance_id
+	}
+	return ""
+}
+
+// --- Auto-promotion ---
 
 task_recompute_promotions :: proc(author: string) -> int {
 	changed := 0
@@ -64,37 +249,49 @@ task_recompute_promotions :: proc(author: string) -> int {
 		state := task_states[i]
 		if !task_promotion_candidate(state) do continue
 		if !task_dependencies_satisfied(state.depends_on) do continue
+		chain_idx, chain_found := task_existing_chain_index(state.chain_id)
+		if chain_found && task_chains[chain_idx].status == "planning" do continue
 		assignee := state.assignee_agent_instance_id
 		status := "ready"
-		body := "system_block:cleared"
+		body := "system_auto:deps_cleared"
 		if assignee != "" {
 			active_blocker := task_active_slot_blocker(assignee, state.task_id)
 			if active_blocker != "" {
 				status = "blocked"
-				body = strings.concatenate({"system_block:assignee_active_task:", active_blocker})
+				body   = strings.concatenate({"system_block:assignee_active_task:", active_blocker})
 			} else {
 				best := task_best_promotion_candidate_for_assignee(assignee)
 				if best != "" && best != state.task_id {
 					status = "blocked"
-					body = strings.concatenate({"system_block:assignee_active_task:", best})
+					body   = strings.concatenate({"system_block:assignee_active_task:", best})
 				}
 			}
 		}
-		if state.status == status && state.last_comment == body do continue
-		event := Task_Event{kind = .Task_Status_Changed, task_id = state.task_id, chain_id = state.chain_id, status = status, body = body, author_agent_instance_id = author}
+		if state.status == status do continue
+		event := Task_Event{
+			kind                     = .Task_Status_Changed,
+			task_id                  = state.task_id,
+			chain_id                 = state.chain_id,
+			status                   = status,
+			body                     = body,
+			author_agent_instance_id = author,
+		}
 		if task_store_append_event(event) {
 			task_notify_event(event)
 			changed += 1
+			if status == "ready" {
+				task_service_auto_claim(state.task_id)
+			}
 		}
 	}
 	return changed
 }
 
 task_promotion_candidate :: proc(state: Task_State) -> bool {
-	if state.status == "pending" do return true
+	if state.status == "planning" do return true
 	if state.status != "blocked" do return false
-	kind := task_system_block_kind(state)
-	return kind == TASK_SYSTEM_BLOCK_DEPENDENCY || kind == TASK_SYSTEM_BLOCK_ASSIGNEE_ACTIVE
+	return task_system_block_kind(state) == TASK_SYSTEM_BLOCK_DEPENDENCY ||
+	       task_system_block_kind(state) == TASK_SYSTEM_BLOCK_ASSIGNEE_ACTIVE
 }
 
 task_best_promotion_candidate_for_assignee :: proc(assignee: string) -> string {
@@ -121,83 +318,41 @@ task_state_orders_before :: proc(a, b: Task_State) -> bool {
 task_priority_rank :: proc(priority: string) -> int {
 	switch priority {
 	case "P0", "p0", "urgent", "critical": return 0
-	case "P1", "p1", "high": return 1
-	case "P2", "p2", "normal", "": return 2
-	case "P3", "p3", "low": return 3
-	case: return 4
+	case "P1", "p1", "high":               return 1
+	case "P2", "p2", "normal", "":         return 2
+	case "P3", "p3", "low":                return 3
+	case:                                   return 4
 	}
 }
 
-task_depends_on_task :: proc(depends_on, task_id: string) -> bool {
-	deps := strings.split(depends_on, ",")
-	for dep in deps {
-		if strings.trim_space(dep) == task_id do return true
-	}
-	return false
-}
-
-task_claim_next_for_agent :: proc(agent_instance_id: string) -> (Task_State, bool) {
-	for i in 0..<task_state_count {
-		state := task_states[i]
-		if state.status != "ready" do continue
-		if state.assignee_agent_instance_id != "" && state.assignee_agent_instance_id != agent_instance_id do continue
-		if !task_dependencies_satisfied(state.depends_on) do continue
-		excluding := ""
-		if state.assignee_agent_instance_id == agent_instance_id do excluding = state.task_id
-		if task_active_slot_blocker(agent_instance_id, excluding) != "" do continue
-		if state.assignee_agent_instance_id == "" {
-			assign_event := Task_Event{kind = .Task_Assigned, task_id = state.task_id, chain_id = state.chain_id, agent_instance_id = agent_instance_id, role = "assignee", author_agent_instance_id = agent_instance_id}
-			if !task_store_append_event(assign_event) do continue
-		}
-		event := Task_Event{kind = .Task_Status_Changed, task_id = state.task_id, chain_id = state.chain_id, status = "claimed", body = "claimed by agent", author_agent_instance_id = agent_instance_id}
-		if task_store_append_event(event) {
-			return task_states[task_state_index(state.task_id, state.chain_id)], true
-		}
-	}
-	return Task_State{}, false
-}
-
-TASK_SYSTEM_BLOCK_DEPENDENCY :: "dependency"
+TASK_SYSTEM_BLOCK_DEPENDENCY     :: "dependency"
 TASK_SYSTEM_BLOCK_ASSIGNEE_ACTIVE :: "assignee_active_task"
 
 task_system_block_kind :: proc(state: Task_State) -> string {
 	if state.status != "blocked" do return ""
-	if strings.has_prefix(state.last_comment, "system_block:dependency") do return TASK_SYSTEM_BLOCK_DEPENDENCY
-	if strings.has_prefix(state.last_comment, "system_block:assignee_active_task") do return TASK_SYSTEM_BLOCK_ASSIGNEE_ACTIVE
+	// The block kind is stored in the last status-change comment body
+	for i := task_event_count - 1; i >= 0; i -= 1 {
+		ev := task_events[i]
+		if ev.task_id != state.task_id || ev.kind != .Task_Status_Changed || ev.status != "blocked" do continue
+		if strings.has_prefix(ev.body, "system_block:dependency") do return TASK_SYSTEM_BLOCK_DEPENDENCY
+		if strings.has_prefix(ev.body, "system_block:assignee_active_task") do return TASK_SYSTEM_BLOCK_ASSIGNEE_ACTIVE
+		return "manual"
+	}
 	return "manual"
 }
 
-task_state_has_reviewer_or_verifier :: proc(state: Task_State) -> bool {
-	if state.reviewer_agent_instance_id != "" do return true
-	for i in 0..<task_participant_count {
-		p := task_participants[i]
-		if p.task_id != state.task_id && (state.chain_id == "" || p.chain_id != state.chain_id) do continue
-		if p.role == "reviewer" || p.role == "verifier" do return true
+// --- Comment queries ---
+
+task_unresolved_comments :: proc(task_id: string) -> []Task_Comment_State {
+	result := make([dynamic]Task_Comment_State)
+	for i in 0..<task_comment_count {
+		c := task_comments[i]
+		if c.task_id == task_id && !c.resolved do append(&result, c)
 	}
-	return false
+	return result[:]
 }
 
-task_status_active_for_assignee :: proc(state: Task_State) -> bool {
-	switch state.status {
-	case "ready", "claimed", "working", "in_progress", "open", "review", "needs_review", "needs_improvements", "rejected":
-		return true
-	case "approved", "done":
-		return task_state_has_reviewer_or_verifier(state)
-	case:
-		return false
-	}
-}
-
-task_active_slot_blocker :: proc(assignee, excluding_task_id: string) -> string {
-	if assignee == "" do return ""
-	for i in 0..<task_state_count {
-		state := task_states[i]
-		if state.task_id == excluding_task_id do continue
-		if state.assignee_agent_instance_id != assignee do continue
-		if task_status_active_for_assignee(state) do return state.task_id
-	}
-	return ""
-}
+// --- JSON serialization ---
 
 task_state_json :: proc(state: Task_State) -> string {
 	builder := strings.builder_make()
@@ -227,34 +382,83 @@ task_log_json :: proc(task_id: string) -> string {
 }
 
 task_write_state_json :: proc(builder: ^strings.Builder, state: Task_State) {
-	strings.write_string(builder, `{"task_id":"`); json_write_string(builder, state.task_id)
-	strings.write_string(builder, `","chain_id":"`); json_write_string(builder, state.chain_id)
-	strings.write_string(builder, `","title":"`); json_write_string(builder, state.title)
-	strings.write_string(builder, `","description":"`); json_write_string(builder, state.description)
+	unresolved := task_unresolved_comments(state.task_id)
+	strings.write_string(builder, `{"task_id":"`);            json_write_string(builder, state.task_id)
+	strings.write_string(builder, `","chain_id":"`);          json_write_string(builder, state.chain_id)
+	strings.write_string(builder, `","title":"`);             json_write_string(builder, state.title)
+	strings.write_string(builder, `","description":"`);       json_write_string(builder, state.description)
 	strings.write_string(builder, `","acceptance_criteria":"`); json_write_string(builder, state.acceptance_criteria)
-	strings.write_string(builder, `","priority":"`); json_write_string(builder, state.priority)
-	strings.write_string(builder, `","status":"`); json_write_string(builder, state.status)
+	strings.write_string(builder, `","priority":"`);          json_write_string(builder, state.priority)
+	strings.write_string(builder, `","status":"`);            json_write_string(builder, state.status)
 	strings.write_string(builder, `","assignee_agent_instance_id":"`); json_write_string(builder, state.assignee_agent_instance_id)
-	strings.write_string(builder, `","reviewer_agent_instance_id":"`); json_write_string(builder, state.reviewer_agent_instance_id)
 	strings.write_string(builder, `","coordinator_agent_instance_id":"`); json_write_string(builder, state.coordinator_agent_instance_id)
-	strings.write_string(builder, `","depends_on":"`); json_write_string(builder, state.depends_on)
-	strings.write_string(builder, `","created_by":"`); json_write_string(builder, state.created_by)
+	strings.write_string(builder, `","depends_on":"`);        json_write_string(builder, state.depends_on)
+	strings.write_string(builder, `","created_by":"`);        json_write_string(builder, state.created_by)
 	strings.write_string(builder, `","created_at_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", state.created_at_unix_ms))
-	strings.write_string(builder, `,"updated_at_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", state.updated_at_unix_ms))
+	strings.write_string(builder, `,"updated_at_unix_ms":`);  strings.write_string(builder, fmt.tprintf("%d", state.updated_at_unix_ms))
+	strings.write_string(builder, `,"unresolved_comment_count":`); strings.write_string(builder, fmt.tprintf("%d", len(unresolved)))
 	strings.write_string(builder, `}`)
 }
 
-task_write_chain_json :: proc(builder: ^strings.Builder, chain: Task_Chain_State) {
-	strings.write_string(builder, `{"chain_id":"`); json_write_string(builder, chain.chain_id)
-	strings.write_string(builder, `","title":"`); json_write_string(builder, chain.title)
-	strings.write_string(builder, `","description":"`); json_write_string(builder, chain.description)
-	strings.write_string(builder, `","status":"`); json_write_string(builder, chain.status)
-	strings.write_string(builder, `","coordinator_agent_instance_id":"`); json_write_string(builder, chain.coordinator_agent_instance_id)
-	strings.write_string(builder, `","default_reviewer_agent_instance_id":"`); json_write_string(builder, chain.default_reviewer_agent_instance_id)
-	strings.write_string(builder, `","final_summary":"`); json_write_string(builder, chain.final_summary)
-	strings.write_string(builder, `","created_at_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", chain.created_at_unix_ms))
-	strings.write_string(builder, `,"completed_at_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", chain.completed_at_unix_ms))
-	strings.write_string(builder, `,"archive_pending":`); strings.write_string(builder, "true" if chain.archive_pending else "false")
-	strings.write_string(builder, `,"archived":`); strings.write_string(builder, "true" if chain.archived else "false")
-	strings.write_string(builder, `}`)
+task_existing_state_index :: proc(task_id, chain_id: string) -> (int, bool) {
+	for i in 0..<task_state_count {
+		if task_states[i].task_id == task_id && (chain_id == "" || task_states[i].chain_id == chain_id) {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
+task_existing_chain_index :: proc(chain_id: string) -> (int, bool) {
+	for i in 0..<task_chain_count {
+		if task_chains[i].chain_id == chain_id do return i, true
+	}
+	return -1, false
+}
+
+task_id_exists :: proc(task_id: string) -> bool {
+	for i in 0..<task_state_count {
+		if task_states[i].task_id == task_id do return true
+	}
+	return false
+}
+
+task_chain_id_exists :: proc(chain_id: string) -> bool {
+	for i in 0..<task_chain_count {
+		if task_chains[i].chain_id == chain_id do return true
+	}
+	return false
+}
+
+task_generate_id :: proc() -> string {
+	base := router_now_unix_ms()
+	for i in 0..<1000 {
+		candidate := fmt.tprintf("task-%x", base + i64(i))
+		if !task_id_exists(candidate) do return candidate
+	}
+	return fmt.tprintf("task-%x", router_now_unix_ms())
+}
+
+task_generate_chain_id :: proc() -> string {
+	base := router_now_unix_ms()
+	for i in 0..<1000 {
+		candidate := fmt.tprintf("chain-%x", base + i64(i))
+		if !task_chain_id_exists(candidate) do return candidate
+	}
+	return fmt.tprintf("chain-%x", router_now_unix_ms())
+}
+
+task_chain_id_for_root :: proc(task_id: string) -> string {
+	if strings.has_prefix(task_id, "task-") do return fmt.tprintf("chain-%s", task_id[len("task-"):])
+	return fmt.tprintf("chain-%s", task_id)
+}
+
+task_root_id_for_response :: proc(chain_id, task_id: string, created_chain: bool) -> string {
+	if chain_id == "" do return ""
+	if created_chain do return task_id
+	for i in 0..<task_state_count {
+		state := task_states[i]
+		if state.chain_id == chain_id do return state.task_id
+	}
+	return ""
 }
