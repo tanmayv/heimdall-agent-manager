@@ -11,6 +11,7 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
         </div>
         <button
           type="button"
+          data-debug-id="settings-back-btn"
           onClick={onBack}
           className="framer-pill-secondary px-4 py-2 text-xs"
         >

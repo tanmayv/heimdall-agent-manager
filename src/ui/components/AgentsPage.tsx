@@ -266,7 +266,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
           <p className="framer-topline tracking-[0.28em]">Heimdall</p>
           <h2 className="mt-1 text-2xl font-bold text-white">Agents</h2>
         </div>
-        <button type="button" onClick={onOpenStartAgent} className="framer-pill">
+        <button type="button" data-debug-id="agents-page-start-agent-btn" onClick={onOpenStartAgent} className="framer-pill">
           + Start agent
         </button>
       </header>
@@ -276,6 +276,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
           <button
             key={t}
             type="button"
+            data-debug-id={`agents-tab-${t}`}
             onClick={() => setTab(t)}
             className={`rounded-t-lg border border-b-0 px-4 py-2 text-xs font-semibold uppercase tracking-[0.14em] transition ${
               tab === t
@@ -325,6 +326,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                     {agent.status === 'connected' ? (
                       <button
                         type="button"
+                        data-debug-id={`agent-stop-btn-${agent.id}`}
                         onClick={() => handleStopAgent(agent)}
                         disabled={stopping === agent.id}
                         className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-300 transition hover:bg-amber-500/20 disabled:opacity-40"
@@ -334,6 +336,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                     ) : (
                       <button
                         type="button"
+                        data-debug-id={`agent-start-btn-${agent.id}`}
                         onClick={() => handleStartAgent(agent)}
                         disabled={starting === agent.id}
                         className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] text-emerald-300 transition hover:bg-emerald-500/20 disabled:opacity-40"
@@ -343,6 +346,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                     )}
                     <button
                       type="button"
+                      data-debug-id={`agent-edit-toggle-btn-${agent.id}`}
                       onClick={() => editingAgentId === agent.id ? cancelEditAgent() : startEditAgent(agent)}
                       className={`rounded-lg border px-3 py-1.5 text-[11px] transition ${editingAgentId === agent.id ? 'border-[var(--fd-accent-blue)]/50 bg-[var(--fd-accent-blue)]/10 text-[var(--fd-accent-blue)]' : 'border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] text-[#ccc] hover:border-[var(--fd-accent-blue)]/50 hover:text-white'}`}
                     >
@@ -350,6 +354,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                     </button>
                     <button
                       type="button"
+                      data-debug-id={`agent-archive-btn-${agent.id}`}
                       onClick={() => handleArchiveAgent(agent)}
                       disabled={archiving === agent.id}
                       className="rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-1.5 text-[11px] text-red-300 transition hover:bg-red-500/20 disabled:opacity-40"
@@ -370,6 +375,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                       <label className="block">
                         <span className="framer-topline text-[10px]">Display name <span className="text-red-400">*</span></span>
                         <input
+                          data-debug-id="agent-edit-display-name"
                           value={agentForm.displayName}
                           onChange={(e) => setAgentForm((f) => ({ ...f, displayName: e.target.value }))}
                           className="framer-input mt-1.5 w-full px-3 py-2 text-sm"
@@ -379,6 +385,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                       <label className="block">
                         <span className="framer-topline text-[10px]">Template</span>
                         <select
+                          data-debug-id="agent-edit-template-select"
                           value={agentForm.templateId}
                           onChange={(e) => setAgentForm((f) => ({ ...f, templateId: e.target.value }))}
                           className="framer-input mt-1.5 w-full px-3 py-2 text-sm"
@@ -392,6 +399,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                       <label className="block">
                         <span className="framer-topline text-[10px]">Provider profile</span>
                         <input
+                          data-debug-id="agent-edit-provider"
                           value={agentForm.providerProfile}
                           onChange={(e) => setAgentForm((f) => ({ ...f, providerProfile: e.target.value }))}
                           className="framer-input mt-1.5 w-full px-3 py-2 text-sm"
@@ -403,7 +411,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                       <span className="framer-topline text-[10px]">Model tier</span>
                       <div className="mt-1.5 flex gap-2">
                         {(['cheap', 'normal', 'smart'] as const).map((tier) => (
-                          <label key={tier} className={`flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-xl border px-2 py-2 text-xs transition ${agentForm.modelTier === tier ? 'border-[var(--fd-accent-blue)]/60 bg-[var(--fd-accent-blue)]/10 text-white' : 'border-[var(--fd-hairline)] text-[#888] hover:text-[#ccc]'}`}>
+                          <label key={tier} data-debug-id={`agent-edit-model-tier-${tier}`} className={`flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-xl border px-2 py-2 text-xs transition ${agentForm.modelTier === tier ? 'border-[var(--fd-accent-blue)]/60 bg-[var(--fd-accent-blue)]/10 text-white' : 'border-[var(--fd-hairline)] text-[#888] hover:text-[#ccc]'}`}>
                             <input type="radio" name="editModelTier" value={tier} checked={agentForm.modelTier === tier} onChange={() => setAgentForm((f) => ({ ...f, modelTier: tier }))} className="sr-only" />
                             <span className="font-semibold capitalize">{tier}</span>
                           </label>
@@ -412,8 +420,8 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                       <p className="mt-1 text-[11px] text-[#666]">Takes effect on next start.</p>
                     </div>
                     <div className="mt-3 flex justify-end gap-2">
-                      <button type="button" onClick={cancelEditAgent} className="framer-pill-secondary text-xs">Cancel</button>
-                      <button type="submit" disabled={agentSaving} className="framer-pill text-xs">
+                      <button type="button" data-debug-id="agent-edit-cancel-btn" onClick={cancelEditAgent} className="framer-pill-secondary text-xs">Cancel</button>
+                      <button type="submit" data-debug-id="agent-edit-save-btn" disabled={agentSaving} className="framer-pill text-xs">
                         {agentSaving ? 'Saving…' : 'Save changes'}
                       </button>
                     </div>
@@ -458,7 +466,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                   <textarea data-debug-id="template-form-persona" value={templateForm.persona} onChange={(e) => setTemplateForm((f) => ({ ...f, persona: e.target.value }))} rows={3} placeholder="Describe the agent's persona and behaviour…" className="framer-input mt-1.5 w-full resize-none px-3 py-2 text-sm" />
                 </label>
                 <div className="flex justify-end gap-2">
-                  <button type="button" onClick={cancelTemplateEdit} className="framer-pill-secondary">Cancel</button>
+                  <button type="button" data-debug-id="template-form-cancel-btn" onClick={cancelTemplateEdit} className="framer-pill-secondary">Cancel</button>
                   <button data-debug-id="template-form-submit" type="submit" disabled={templateSaving} className="framer-pill">{templateSaving ? 'Saving…' : 'Save template'}</button>
                 </div>
               </form>
@@ -486,6 +494,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                 <div className="flex shrink-0 gap-2">
                   <button
                     type="button"
+                    data-debug-id={`template-edit-btn-${t.templateId}`}
                     onClick={() => startEditTemplate(t)}
                     className="rounded-lg border border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-3 py-1.5 text-[11px] text-[#ccc] transition hover:border-[var(--fd-accent-blue)]/50 hover:text-white"
                   >
@@ -493,6 +502,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                   </button>
                   <button
                     type="button"
+                    data-debug-id={`template-archive-btn-${t.templateId}`}
                     onClick={() => handleArchiveTemplate(t.templateId, t.displayName)}
                     className="rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-1.5 text-[11px] text-red-300 transition hover:bg-red-500/20"
                   >
@@ -515,6 +525,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                 <label className="flex flex-col gap-1">
                   <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#666]">Provider</span>
                   <select
+                    data-debug-id="test-provider-select"
                     value={testProvider}
                     onChange={(e) => setTestProvider(e.target.value)}
                     className="framer-input px-3 py-1.5 text-sm"
@@ -531,6 +542,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                       <button
                         key={tier}
                         type="button"
+                        data-debug-id={`test-tier-btn-${tier}`}
                         onClick={() => setTestTier(tier)}
                         className={`rounded-lg border px-3 py-1.5 text-[11px] font-semibold transition ${
                           testTier === tier
@@ -548,6 +560,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
 
                 <button
                   type="button"
+                  data-debug-id="test-run-btn"
                   onClick={handleRunTest}
                   disabled={testLaunching || !testProvider}
                   className="framer-pill disabled:opacity-40"

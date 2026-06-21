@@ -24,6 +24,7 @@ export default function SessionConfig({ session, onReconnect }) {
         <span className="framer-topline">Connection config</span>
         <button
           type="submit"
+          data-debug-id="session-config-reconnect-btn"
           disabled={!canConnect}
           className="framer-pill bg-white px-3 py-1 text-xs disabled:cursor-not-allowed disabled:opacity-40"
         >
@@ -35,6 +36,7 @@ export default function SessionConfig({ session, onReconnect }) {
       </label>
       <input
         id="daemon-url"
+        data-debug-id="session-config-daemon-url"
         value={daemonUrl}
         onChange={(event) => setDaemonUrl(event.target.value)}
         className="framer-input mt-1 h-10 w-full rounded-[var(--fd-radius-md)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-3 py-2 text-xs"
@@ -45,6 +47,7 @@ export default function SessionConfig({ session, onReconnect }) {
       </label>
       <input
         id="user-id"
+        data-debug-id="session-config-user-id"
         value={userId}
         onChange={(event) => setUserId(event.target.value)}
         className="framer-input mt-1 h-10 w-full rounded-[var(--fd-radius-md)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-3 py-2 text-xs"

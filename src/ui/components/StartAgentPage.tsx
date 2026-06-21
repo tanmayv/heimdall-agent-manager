@@ -143,7 +143,7 @@ export default function StartAgentPage({ session, onBack, onStarted }: { session
           <p className="framer-topline tracking-[0.28em]">Agents</p>
           <h2 className="mt-1 text-2xl font-bold text-white">Start new agent</h2>
         </div>
-        <button type="button" onClick={onBack} className="framer-pill-secondary">Back</button>
+        <button type="button" data-debug-id="start-agent-back-btn" onClick={onBack} className="framer-pill-secondary">Back</button>
       </header>
 
       <section className="flex flex-1 items-start justify-center overflow-y-auto p-6">
@@ -161,7 +161,7 @@ export default function StartAgentPage({ session, onBack, onStarted }: { session
 
           <label className="block">
             <span className="framer-topline">Project</span>
-            <select value={projectId} onChange={(event) => setProjectId(event.target.value)} className="framer-input mt-2 w-full px-3 py-2 text-sm">
+            <select data-debug-id="start-agent-project-select" value={projectId} onChange={(event) => setProjectId(event.target.value)} className="framer-input mt-2 w-full px-3 py-2 text-sm">
               <option value="">No project / legacy default</option>
               {projectIds.map((id: string) => <option key={id} value={id}>{projectsById[id]?.name || id}</option>)}
             </select>
@@ -170,7 +170,7 @@ export default function StartAgentPage({ session, onBack, onStarted }: { session
 
           <label className="block">
             <span className="framer-topline">Agent template / persona</span>
-            <select value={templateId} onChange={(event) => setTemplateId(event.target.value)} className="framer-input mt-2 w-full px-3 py-2 text-sm" disabled={loadingTemplates || !templates.length}>
+            <select data-debug-id="start-agent-template-select" value={templateId} onChange={(event) => setTemplateId(event.target.value)} className="framer-input mt-2 w-full px-3 py-2 text-sm" disabled={loadingTemplates || !templates.length}>
               {templates.map((template) => <option key={template.templateId} value={template.templateId}>{template.displayName}</option>)}
             </select>
             <div className="mt-2 rounded-2xl border border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] p-3 text-xs leading-5 text-[#aaa]">
@@ -181,7 +181,7 @@ export default function StartAgentPage({ session, onBack, onStarted }: { session
 
           <label className="block">
             <span className="framer-topline">Provider / profile</span>
-            <select value={provider} onChange={(event) => setProvider(event.target.value)} className="framer-input mt-2 w-full px-3 py-2 text-sm" disabled={loadingProviders || !providers.length}>
+            <select data-debug-id="start-agent-provider-select" value={provider} onChange={(event) => setProvider(event.target.value)} className="framer-input mt-2 w-full px-3 py-2 text-sm" disabled={loadingProviders || !providers.length}>
               {providers.length ? providers.map((item) => <option key={item.name} value={item.name}>{item.name}</option>) : <option value="">No configured providers</option>}
             </select>
             <p className="mt-2 text-xs text-[#999]">Runtime provider remains separate from the selected template/persona.</p>
@@ -191,7 +191,7 @@ export default function StartAgentPage({ session, onBack, onStarted }: { session
             <span className="framer-topline">Model tier</span>
             <div className="mt-2 flex gap-3">
               {(['cheap', 'normal', 'smart'] as const).map((tier) => (
-                <label key={tier} className={`flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-sm transition ${modelTier === tier ? 'border-[var(--fd-accent-blue)]/60 bg-[var(--fd-accent-blue)]/10 text-white' : 'border-[var(--fd-hairline)] text-[#888] hover:border-[var(--fd-hairline)] hover:text-[#ccc]'}`}>
+                <label key={tier} data-debug-id={`start-agent-model-tier-${tier}`} className={`flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-sm transition ${modelTier === tier ? 'border-[var(--fd-accent-blue)]/60 bg-[var(--fd-accent-blue)]/10 text-white' : 'border-[var(--fd-hairline)] text-[#888] hover:border-[var(--fd-hairline)] hover:text-[#ccc]'}`}>
                   <input type="radio" name="modelTier" value={tier} checked={modelTier === tier} onChange={() => setModelTier(tier)} className="sr-only" />
                   <span className="font-semibold capitalize">{tier}</span>
                 </label>
@@ -202,15 +202,15 @@ export default function StartAgentPage({ session, onBack, onStarted }: { session
 
           <label className="block">
             <span className="framer-topline">Optional display name</span>
-            <input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder={suggestedDisplayName} className="framer-input mt-2 w-full px-3 py-2 text-sm" />
+            <input data-debug-id="start-agent-display-name" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder={suggestedDisplayName} className="framer-input mt-2 w-full px-3 py-2 text-sm" />
             <p className="mt-2 text-xs text-[#999]">
               Suggested label: <span className="text-white">{suggestedDisplayName}</span>. This is not a durable id; the daemon will provide the AgentInstance id.
             </p>
           </label>
 
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={onBack} className="framer-pill-secondary">Cancel</button>
-            <button type="submit" className="framer-pill" disabled={!providers.length || starting}>
+            <button type="button" data-debug-id="start-agent-cancel-btn" onClick={onBack} className="framer-pill-secondary">Cancel</button>
+            <button type="submit" data-debug-id="start-agent-submit-btn" className="framer-pill" disabled={!providers.length || starting}>
               {starting ? 'Starting…' : 'Start agent'}
             </button>
           </div>

@@ -121,6 +121,7 @@ export default function ChatPane({ agent, messages, session, sending }) {
             <button
               onClick={onScrollToBottomClick}
               type="button"
+              data-debug-id="chat-scroll-to-bottom-btn"
               className="framer-pill bg-white px-4 py-2 text-xs shadow-[0_14px_40px_rgba(0,0,0,0.35)] hover:translate-y-0 hover:scale-105"
             >
               New Messages

@@ -390,6 +390,59 @@ Examples:
 
 For daemon-launched remote wrappers, daemon generates the random token, returns it to ctl, and passes it to wrapper via `--agent-token` so wrapper registers with the same token.
 
+## UI Debug IDs
+
+Every interactive element in the Electron UI must have a `data-debug-id` attribute. The Electron debug API (exposed at `http://127.0.0.1:<debug-port>/elements`, `/click`, `/type`, etc.) uses these IDs to locate and interact with elements programmatically.
+
+### Naming convention
+
+- Format: `kebab-case` strings, all lowercase.
+- Pattern: `<page-or-context>-<element-role>[-<qualifier>]`
+- For list items that repeat, append the item's stable ID: `agent-item-${agent.id}`, `chain-card-${chainId}`.
+- For indexed rows (e.g. anchor arrays), append the index: `create-anchor-type-0`, `detail-anchor-remove-btn-2`.
+- For tier/tab variants, append the variant value: `start-agent-model-tier-smart`, `agents-tab-templates`.
+
+### Required elements
+
+All of the following element types must have `data-debug-id`:
+- `button` — every button, including icon-only buttons and items that act as buttons
+- `input` — every text/radio/checkbox input
+- `select` — every dropdown
+- `textarea` — every multi-line input
+- `label` wrapping a radio input — use on the `<label>` itself for radio groups styled as clickable tiles
+
+### Per-component registry
+
+| Component | Key IDs |
+|-----------|---------|
+| `AgentSidebar` | `nav-chat`, `nav-tasks`, `nav-memory`, `nav-projects`, `nav-agents`, `nav-settings`, `new-agent-btn`, `refresh-agents-btn`, `project-group-toggle-${projectId}` |
+| `AgentListItem` | `agent-item-${agent.id}`, `agent-item-dismiss-warning-${agent.id}` |
+| `Composer` | `message-input`, `send-message-btn` |
+| `ChatPane` | `chat-scroll-to-bottom-btn` |
+| `SessionConfig` | `session-config-reconnect-btn`, `session-config-daemon-url`, `session-config-user-id` |
+| `SettingsPage` | `settings-back-btn` |
+| `StartAgentPage` | `start-agent-back-btn`, `start-agent-project-select`, `start-agent-template-select`, `start-agent-provider-select`, `start-agent-model-tier-${tier}`, `start-agent-display-name`, `start-agent-cancel-btn`, `start-agent-submit-btn` |
+| `AgentsPage` | `agents-page-start-agent-btn`, `agents-tab-${t}`, `agent-stop-btn-${id}`, `agent-start-btn-${id}`, `agent-edit-toggle-btn-${id}`, `agent-archive-btn-${id}`, `agent-edit-display-name`, `agent-edit-template-select`, `agent-edit-provider`, `agent-edit-model-tier-${tier}`, `agent-edit-cancel-btn`, `agent-edit-save-btn`, `template-form-id`, `template-form-display-name`, `template-form-role-hint`, `template-form-provider`, `template-form-persona`, `template-form-cancel-btn`, `template-form-submit`, `template-new-btn`, `template-edit-btn-${id}`, `template-archive-btn-${id}`, `test-provider-select`, `test-tier-btn-${tier}`, `test-run-btn` |
+| `MemoryBoard` | `memory-back-btn`, `memory-refresh-btn`, `memory-new-proposal-btn`, `memory-filter-agent`, `memory-filter-type`, `memory-filter-status`, `memory-record-${id}`, `proposal-action-select`, `proposal-memory-id`, `proposal-expected-version`, `proposal-subject-agent-select`, `proposal-type-select`, `proposal-scope`, `proposal-title`, `proposal-source-task-id`, `proposal-body`, `proposal-reason`, `proposal-evidence`, `proposal-cancel-btn`, `proposal-submit-btn`, `memory-propose-edit-btn`, `memory-propose-archive-btn`, `memory-propose-rollback-btn`, `memory-decision-reason`, `memory-reject-btn`, `memory-approve-btn` |
+| `ProjectsPage` | `projects-back-btn`, `projects-refresh-btn`, `projects-new-btn`, `create-project-name`, `create-project-description`, `create-project-add-anchor-btn`, `create-anchor-type-${i}`, `create-anchor-value-${i}`, `create-anchor-note-${i}`, `create-anchor-browse-btn-${i}`, `create-anchor-remove-btn-${i}`, `create-project-cancel-btn`, `create-project-submit-btn`, `project-list-item-${id}`, `detail-project-name`, `detail-project-description`, `detail-project-add-anchor-btn`, `detail-anchor-type-${i}`, `detail-anchor-value-${i}`, `detail-anchor-note-${i}`, `detail-anchor-browse-btn-${i}`, `detail-anchor-remove-btn-${i}`, `detail-project-save-btn`, `project-agents-refresh-btn`, `project-agent-remove-btn`, `add-existing-agent-select`, `add-existing-agent-submit-btn`, `new-agent-template-select`, `new-agent-provider-select`, `new-agent-display-name`, `start-project-agent-btn` |
+| `TaskBoard` | `task-back-btn`, `task-add-to-chain-btn`, `task-new-chain-btn`, `task-new-root-btn`, `task-refresh-btn`, `chain-card-${id}`, `task-card-${id}`, `chain-edit-title`, `chain-edit-description`, `chain-edit-coordinator-select`, `chain-edit-reviewer-select`, `chain-edit-final-summary`, `chain-save-metadata-btn`, `chain-status-input`, `chain-status-summary`, `chain-set-status-btn`, `chain-add-task-btn-${columnId}`, `create-chain-title`, `create-chain-id`, `create-chain-description`, `create-chain-coordinator-select`, `create-chain-reviewer-select`, `create-chain-cancel-btn`, `create-chain-submit-btn`, `create-task-mode-select`, `create-task-priority`, `create-task-status`, `create-task-title`, `create-task-description`, `create-task-assignee-select`, `create-task-reviewer-select`, `create-task-coordinator-select`, `create-task-cancel-btn`, `create-task-submit-btn`, `task-nudge-btn`, `task-comment-input`, `task-comment-submit-btn`, `task-status-input`, `task-status-note-input`, `task-status-update-btn`, `task-assign-agent-select`, `task-assign-submit-btn`, `task-participant-agent-select`, `task-participant-role-select`, `task-participant-submit-btn` |
+
+### Shared component: AgentSelect
+
+`AgentSelect` accepts an optional `debugId` prop that maps directly to `data-debug-id` on the underlying `<select>`. Always pass `debugId` when using `AgentSelect`:
+
+```tsx
+<AgentSelect debugId="create-task-assignee-select" ... />
+```
+
+### Adding new elements
+
+When adding any new interactive element to the UI:
+
+1. Choose an ID following the naming convention above.
+2. Add `data-debug-id="your-id"` to the element.
+3. Add the ID to the relevant row in the per-component registry table above.
+
 ## Wrapper Lifecycle Notes
 
 - Wrapper checks for an exact existing tmux window before registration.

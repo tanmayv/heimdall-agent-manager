@@ -142,6 +142,7 @@ export default function AgentSidebar({ agents, projectsById, selectedAgentId, se
               <section key={projectId} className="space-y-2">
                 <button
                   type="button"
+                  data-debug-id={`project-group-toggle-${projectId}`}
                   onClick={() => toggleProjectGroup(projectId)}
                   className="flex w-full items-center justify-between rounded-[var(--fd-radius-lg)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-3 py-2 text-left transition hover:border-[var(--fd-accent-blue)]/50"
                 >

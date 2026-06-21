@@ -68,6 +68,7 @@ export default function AgentListItem({ agent, selected, onSelect, hideProject =
                 {agent.status === 'startup_unknown' && onDismissWarning ? (
                   <button
                     type="button"
+                    data-debug-id={`agent-item-dismiss-warning-${agent.id}`}
                     onClick={(e) => { e.stopPropagation(); onDismissWarning(); }}
                     className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold text-amber-300 transition hover:bg-amber-400/20 hover:text-amber-100"
                   >
