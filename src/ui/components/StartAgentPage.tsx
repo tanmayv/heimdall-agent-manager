@@ -34,6 +34,7 @@ export default function StartAgentPage({ session, onBack, onStarted }: { session
   const [templates, setTemplates] = useState(fallbackTemplates);
   const [templateId, setTemplateId] = useState('default');
   const [projectId, setProjectId] = useState('');
+  const [modelTier, setModelTier] = useState<'cheap' | 'normal' | 'smart'>('normal');
   const [loadingProviders, setLoadingProviders] = useState(false);
   const [loadingTemplates, setLoadingTemplates] = useState(false);
   const [starting, setStarting] = useState(false);
@@ -113,6 +114,7 @@ export default function StartAgentPage({ session, onBack, onStarted }: { session
         templateId,
         projectId,
         displayName: effectiveDisplayName,
+        modelTier,
       });
       const knownAgent = {
         agent_instance_id: response.agent_instance_id || '',
@@ -184,6 +186,19 @@ export default function StartAgentPage({ session, onBack, onStarted }: { session
             </select>
             <p className="mt-2 text-xs text-[#999]">Runtime provider remains separate from the selected template/persona.</p>
           </label>
+
+          <div className="block">
+            <span className="framer-topline">Model tier</span>
+            <div className="mt-2 flex gap-3">
+              {(['cheap', 'normal', 'smart'] as const).map((tier) => (
+                <label key={tier} className={`flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl border px-3 py-2.5 text-sm transition ${modelTier === tier ? 'border-[var(--fd-accent-blue)]/60 bg-[var(--fd-accent-blue)]/10 text-white' : 'border-[var(--fd-hairline)] text-[#888] hover:border-[var(--fd-hairline)] hover:text-[#ccc]'}`}>
+                  <input type="radio" name="modelTier" value={tier} checked={modelTier === tier} onChange={() => setModelTier(tier)} className="sr-only" />
+                  <span className="font-semibold capitalize">{tier}</span>
+                </label>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-[#999]">Maps to the provider's cheap / normal / smart model defined in config.</p>
+          </div>
 
           <label className="block">
             <span className="framer-topline">Optional display name</span>

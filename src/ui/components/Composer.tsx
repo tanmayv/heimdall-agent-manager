@@ -26,9 +26,15 @@ export default function Composer({ selectedAgent, disabled, onSubmit }) {
         </label>
         <textarea
           id="composer"
+          data-debug-id="message-input"
           rows={2}
           value={body}
           onChange={(event) => setBody(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && event.ctrlKey) {
+              handleSubmit(event);
+            }
+          }}
           placeholder={selectedAgent ? `Message ${selectedAgent.id}...` : 'Select a connected agent to start chatting'}
           className="framer-input max-h-32 w-full resize-none rounded-[var(--fd-radius-md)] border-0 bg-transparent px-3 py-2 text-sm transition-colors duration-300 placeholder:text-[#999]"
         />
@@ -36,6 +42,7 @@ export default function Composer({ selectedAgent, disabled, onSubmit }) {
           <p className="framer-subtext">Messages send through /user-rpc send_to_agent</p>
           <button
             type="submit"
+            data-debug-id="send-message-btn"
             disabled={!canSend}
             className="framer-pill bg-white disabled:cursor-not-allowed disabled:opacity-40"
           >

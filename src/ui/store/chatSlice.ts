@@ -76,6 +76,7 @@ function mapAgent(agent: any) {
     templateId: agent.template_id || agent.templateId || '',
     providerProfile: agent.provider_profile || agent.providerProfile || agent.agent_class || '',
     roleHint: agent.role_hint || agent.roleHint || '',
+    modelTier: agent.model_tier || agent.modelTier || 'normal',
     known: agent.known ?? true,
   };
 }
@@ -92,10 +93,20 @@ function metadataOnlyAgent(agent: any) {
   };
 }
 
-function mergeKnownAndLiveAgents(localKnownAgents: any[], daemonKnownAgents: any[], liveAgents: any[]) {
+function mergeKnownAndLiveAgents(localKnownAgents: any[], daemonKnownAgents: any[], liveAgents: any[], daemonReachable = false) {
   const byId: any = {};
+  // When daemon responded, build an authoritative ID set so stale/archived local entries are pruned.
+  const daemonIds = new Set<string>();
+  if (daemonReachable) {
+    for (const a of [...daemonKnownAgents, ...liveAgents]) {
+      const id = a.agent_instance_id || a.agentInstanceId || a.id;
+      if (id) daemonIds.add(id);
+    }
+  }
   for (const agent of localKnownAgents.map((item) => mapAgent(metadataOnlyAgent(item)))) {
-    if (agent.id) byId[agent.id] = { ...agent, status: 'offline', startupStatus: '', known: true };
+    if (!agent.id) continue;
+    if (daemonReachable && !daemonIds.has(agent.id)) continue;
+    byId[agent.id] = { ...agent, status: 'offline', startupStatus: '', known: true };
   }
   for (const daemonAgent of daemonKnownAgents.map(mapAgent)) {
     if (!daemonAgent.id) continue;
@@ -148,13 +159,15 @@ export const refreshAgents = createAsyncThunk('chat/refreshAgents', async (_, { 
   const { daemonUrl } = (getState() as any).chat.session;
   const localKnown = loadKnownAgents();
   let daemonKnown: any[] = [];
+  let daemonReachable = false;
   try {
     daemonKnown = await daemonApi.listKnownAgents({ daemonUrl });
+    daemonReachable = true;
   } catch {
     daemonKnown = [];
   }
   const liveAgents = await daemonApi.listConnectedAgents({ daemonUrl });
-  const merged = mergeKnownAndLiveAgents(localKnown, daemonKnown, liveAgents);
+  const merged = mergeKnownAndLiveAgents(localKnown, daemonKnown, liveAgents, daemonReachable);
   storeKnownAgents(merged);
   return merged;
 });
@@ -210,6 +223,7 @@ const initialState = {
   agents: [],
   chats: {},
   sending: false,
+  testRuns: [] as any[],
 };
 
 const chatSlice = createSlice({
@@ -281,6 +295,46 @@ const chatSlice = createSlice({
       if (existingIndex >= 0) state.agents[existingIndex] = { ...state.agents[existingIndex], ...mapped, known: true } as never;
       else state.agents.unshift(mapped as never);
       storeKnownAgents(state.agents);
+    },
+    testStartReceived(state, action) {
+      const run = action.payload;
+      const idx = state.testRuns.findIndex((r: any) => r.testRunId === run.test_run_id);
+      const mapped = {
+        testRunId: run.test_run_id,
+        provider: run.provider,
+        tier: run.tier,
+        resolvedModel: run.resolved_model,
+        status: 'starting',
+        startedUnixMs: run.started_unix_ms,
+      };
+      if (idx >= 0) state.testRuns[idx] = { ...state.testRuns[idx], ...mapped };
+      else state.testRuns.unshift(mapped);
+    },
+    testDoneReceived(state, action) {
+      const run = action.payload;
+      const idx = state.testRuns.findIndex((r: any) => r.testRunId === run.test_run_id);
+      const update = {
+        status: run.status,
+        reason: run.reason,
+        elapsedMs: run.elapsed_ms,
+        paneTail: run.pane_tail,
+        completedUnixMs: run.completed_unix_ms,
+      };
+      if (idx >= 0) state.testRuns[idx] = { ...state.testRuns[idx], ...update };
+    },
+    setTestRuns(state, action) {
+      state.testRuns = (action.payload ?? []).map((r: any) => ({
+        testRunId: r.test_run_id,
+        provider: r.provider,
+        tier: r.tier,
+        resolvedModel: r.resolved_model,
+        status: r.status,
+        reason: r.reason,
+        elapsedMs: r.elapsed_ms,
+        paneTail: r.pane_tail,
+        startedUnixMs: r.started_unix_ms,
+        completedUnixMs: r.completed_unix_ms,
+      }));
     },
     agentLifecycleEventReceived(state, action) {
       const payload = action.payload || {};
@@ -366,5 +420,5 @@ const chatSlice = createSlice({
   },
 });
 
-export const { selectAgent, setDaemonUrl, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived } = chatSlice.actions;
+export const { selectAgent, setDaemonUrl, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived, testStartReceived, testDoneReceived, setTestRuns } = chatSlice.actions;
 export default chatSlice.reducer;

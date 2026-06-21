@@ -63,6 +63,7 @@ handle_agents_list :: proc(client: net.TCP_Socket, request: string) {
 	if project_id == "" && role_hint == "" {
 		for i in 0..<agent_count {
 			ag := agents[i]
+			if is_test_token(ag.agent_token) do continue
 			if agent_record_index_by_instance(ag.agent_instance_id) >= 0 do continue
 			if wrote > 0 do strings.write_string(&builder, `,`)
 			strings.write_string(&builder, `{"agent_record_id":"","agent_instance_id":"`); json_write_string(&builder, ag.agent_instance_id)

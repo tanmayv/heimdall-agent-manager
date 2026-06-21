@@ -14,6 +14,7 @@ server_port: int
 server_config_path: string
 server_data_dir: string
 server_agent_providers: [dynamic]string
+server_agent_cmd_configs: [dynamic]cfg_lib.Agent_Command_Config
 message_provider: mp.Message_Provider
 memory_provider: memp.Memory_Provider
 
@@ -23,8 +24,12 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 	server_config_path = strings.clone(config_path)
 	server_data_dir = strings.clone(cfg.daemon.data_dir)
 	server_agent_providers = make([dynamic]string)
+	server_agent_cmd_configs = make([dynamic]cfg_lib.Agent_Command_Config)
 	for provider in cfg.wrapper.agent_commands {
-		if provider.name != "" do append(&server_agent_providers, strings.clone(provider.name))
+		if provider.name != "" {
+			append(&server_agent_providers, strings.clone(provider.name))
+			append(&server_agent_cmd_configs, provider)
+		}
 	}
 	if len(server_agent_providers) == 0 && cfg.wrapper.default_agent != "" do append(&server_agent_providers, strings.clone(cfg.wrapper.default_agent))
 	if len(server_agent_providers) == 0 && cfg.wrapper.agent_name != "" do append(&server_agent_providers, strings.clone(cfg.wrapper.agent_name))
@@ -62,6 +67,7 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 	hub_sync_start_worker()
 	task_nudge_scheduler_start(cfg.daemon)
 	agent_startup_janitor_start(cfg.daemon)
+	test_run_startup_sweep()
 	fmt.println("odin-daemon listening", cfg.daemon.bind_host, cfg.daemon.port)
 	for {
 		client, _, accept_err := net.accept_tcp(listener)
@@ -215,6 +221,21 @@ handle_client :: proc(client: net.TCP_Socket) {
 
 	if strings.has_prefix(request, "POST /agents/stop ") {
 		handle_agents_stop(client, request_body(request), request)
+		return
+	}
+
+	if strings.has_prefix(request, "POST /agents/test-launch ") {
+		handle_agents_test_launch(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "GET /agents/test-status") {
+		handle_agents_test_status(client, request)
+		return
+	}
+
+	if strings.has_prefix(request, "GET /agents/test-history") {
+		handle_agents_test_history(client)
 		return
 	}
 

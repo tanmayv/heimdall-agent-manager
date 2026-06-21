@@ -1,5 +1,12 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
+const { pruneAndRegister, updatePort, deregister } = require('./instanceRegistry.cjs');
+const { startDebugServer } = require('./debugServer.cjs');
+
+// Namespace Electron state under "heimdall-ui" so it doesn't collide with the
+// ham daemon/wrapper config dir at <appData>/heimdall/. Must be called before
+// app.whenReady() and before any path lookup.
+app.setName('heimdall-ui');
 
 const isDev = !app.isPackaged;
 
@@ -54,12 +61,23 @@ ipcMain.handle('odin-api:request', async (_event, { url, method = 'GET', body })
   return data;
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  const daemonUrl = process.env.HEIMDALL_DAEMON_URL || 'http://127.0.0.1:49322';
+  pruneAndRegister(daemonUrl);
+
+  const debugPort = await startDebugServer();
+  updatePort(debugPort);
+  console.log(`[debug] instance registry port=${debugPort} pid=${process.pid}`);
+
   createWindow();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+app.on('before-quit', () => {
+  deregister();
 });
 
 app.on('window-all-closed', () => {

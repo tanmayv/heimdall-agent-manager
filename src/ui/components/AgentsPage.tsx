@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { refreshAgents } from '../store/chatSlice';
+import { refreshAgents, setTestRuns } from '../store/chatSlice';
 import * as daemonApi from '../api/daemonApi';
 
 const STATUS_DOT: Record<string, string> = {
@@ -34,14 +34,17 @@ const blankTemplate = { templateId: '', displayName: '', roleHint: '', defaultPr
 export default function AgentsPage({ session, onOpenStartAgent }: { session: any; onOpenStartAgent: () => void }) {
   const dispatch = useDispatch<any>();
   const agents = useSelector((state: any) => state.chat.agents);
+  const testRuns = useSelector((state: any) => state.chat.testRuns);
 
-  const [tab, setTab] = useState<'agents' | 'templates'>('agents');
+  const [tab, setTab] = useState<'agents' | 'templates' | 'test'>('agents');
 
   // --- Known Agents state ---
   const [archiving, setArchiving] = useState<string | null>(null);
+  const [stopping, setStopping] = useState<string | null>(null);
+  const [starting, setStarting] = useState<string | null>(null);
   const [agentError, setAgentError] = useState('');
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
-  const [agentForm, setAgentForm] = useState({ displayName: '', templateId: '', providerProfile: '' });
+  const [agentForm, setAgentForm] = useState({ displayName: '', templateId: '', providerProfile: '', modelTier: 'normal' });
   const [agentSaving, setAgentSaving] = useState(false);
   const [agentFormError, setAgentFormError] = useState('');
 
@@ -53,6 +56,13 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
   const [templateForm, setTemplateForm] = useState({ ...blankTemplate });
   const [templateSaving, setTemplateSaving] = useState(false);
   const [templateFormError, setTemplateFormError] = useState('');
+
+  // --- Test Providers state ---
+  const [testProviders, setTestProviders] = useState<string[]>([]);
+  const [testProvider, setTestProvider] = useState('');
+  const [testTier, setTestTier] = useState<'cheap' | 'normal' | 'smart'>('normal');
+  const [testLaunching, setTestLaunching] = useState(false);
+  const [testError, setTestError] = useState('');
 
   // Load templates on mount (needed for agent edit dropdown too)
   useEffect(() => {
@@ -72,11 +82,39 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
     }
   }
 
+  // Load providers + history when test tab is opened
+  useEffect(() => {
+    if (tab !== 'test') return;
+    daemonApi.listAgentProviders({ daemonUrl: session.daemonUrl })
+      .then((providers: any) => {
+        const names: string[] = (providers ?? []).map((p: any) => p.name || p).filter(Boolean);
+        setTestProviders(names);
+        if (!testProvider && names.length > 0) setTestProvider(names[0]);
+      })
+      .catch(() => {});
+    daemonApi.getTestHistory({ daemonUrl: session.daemonUrl })
+      .then((data: any) => { dispatch(setTestRuns(data?.runs ?? [])); })
+      .catch(() => {});
+  }, [tab, session.daemonUrl]);
+
+  async function handleRunTest() {
+    if (!testProvider) return;
+    setTestLaunching(true);
+    setTestError('');
+    try {
+      await daemonApi.testLaunch({ daemonUrl: session.daemonUrl, provider: testProvider, tier: testTier });
+    } catch (err: any) {
+      setTestError(err?.message || 'Failed to launch test');
+    } finally {
+      setTestLaunching(false);
+    }
+  }
+
   // ---- Agent actions ----
 
   function startEditAgent(agent: any) {
     setEditingAgentId(agent.id);
-    setAgentForm({ displayName: agent.label || '', templateId: agent.templateId || '', providerProfile: agent.providerProfile || '' });
+    setAgentForm({ displayName: agent.label || '', templateId: agent.templateId || '', providerProfile: agent.providerProfile || '', modelTier: agent.modelTier || 'normal' });
     setAgentFormError('');
   }
 
@@ -100,6 +138,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
         displayName: name,
         templateId: agentForm.templateId || undefined,
         providerProfile: agentForm.providerProfile || undefined,
+        modelTier: agentForm.modelTier || undefined,
       });
       setEditingAgentId(null);
       dispatch(refreshAgents());
@@ -107,6 +146,41 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
       setAgentFormError(err?.message || 'Failed to update agent');
     } finally {
       setAgentSaving(false);
+    }
+  }
+
+  async function handleStopAgent(agent: any) {
+    setStopping(agent.id);
+    setAgentError('');
+    try {
+      await daemonApi.stopAgent({ daemonUrl: session.daemonUrl, agentInstanceId: agent.id });
+      dispatch(refreshAgents());
+    } catch (err: any) {
+      setAgentError(err?.message || 'Failed to stop agent');
+    } finally {
+      setStopping(null);
+    }
+  }
+
+  async function handleStartAgent(agent: any) {
+    setStarting(agent.id);
+    setAgentError('');
+    try {
+      const tpl = templates.find((t) => t.templateId === agent.templateId);
+      await daemonApi.startAgent({
+        daemonUrl: session.daemonUrl,
+        agentInstanceId: agent.id,
+        provider: agent.providerProfile || tpl?.defaultProviderProfile || 'pi',
+        templateId: agent.templateId || undefined,
+        projectId: agent.projectId || undefined,
+        displayName: agent.label,
+        modelTier: agent.modelTier || 'normal',
+      });
+      dispatch(refreshAgents());
+    } catch (err: any) {
+      setAgentError(err?.message || 'Failed to start agent');
+    } finally {
+      setStarting(null);
     }
   }
 
@@ -198,7 +272,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
       </header>
 
       <div className="flex gap-1 border-b border-[var(--fd-hairline)] px-6 pt-3">
-        {(['agents', 'templates'] as const).map((t) => (
+        {(['agents', 'templates', 'test'] as const).map((t) => (
           <button
             key={t}
             type="button"
@@ -209,7 +283,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                 : 'border-transparent text-[#777] hover:text-white'
             }`}
           >
-            {t === 'agents' ? 'Known Agents' : 'Templates'}
+            {t === 'agents' ? 'Known Agents' : t === 'templates' ? 'Templates' : 'Test Providers'}
           </button>
         ))}
       </div>
@@ -236,6 +310,11 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                       <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${agent.status === 'connected' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-[#333] text-[#888]'}`}>
                         {STATUS_LABEL[agent.status] ?? 'Known'}
                       </span>
+                      <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+                        (agent.modelTier || 'normal') === 'smart' ? 'bg-violet-500/20 text-violet-300' :
+                        (agent.modelTier || 'normal') === 'cheap' ? 'bg-amber-500/15 text-amber-400' :
+                        'border border-[var(--fd-hairline)] text-[#666]'
+                      }`}>{agent.modelTier || 'normal'}</span>
                     </div>
                     <p className="framer-subtext mt-1.5 truncate text-xs">
                       {[agent.templateId && `Template: ${agent.templateId}`, agent.providerProfile && `Provider: ${agent.providerProfile}`, agent.projectId && `Project: ${agent.projectId}`, agent.roleHint && `Role: ${agent.roleHint}`].filter(Boolean).join(' · ') || 'No metadata'}
@@ -243,6 +322,25 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                     <p className="mt-1 text-[11px] text-[#666]">Last seen {agent.lastSeen}</p>
                   </div>
                   <div className="flex shrink-0 gap-2">
+                    {agent.status === 'connected' ? (
+                      <button
+                        type="button"
+                        onClick={() => handleStopAgent(agent)}
+                        disabled={stopping === agent.id}
+                        className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 text-[11px] text-amber-300 transition hover:bg-amber-500/20 disabled:opacity-40"
+                      >
+                        {stopping === agent.id ? 'Stopping…' : 'Stop'}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleStartAgent(agent)}
+                        disabled={starting === agent.id}
+                        className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 text-[11px] text-emerald-300 transition hover:bg-emerald-500/20 disabled:opacity-40"
+                      >
+                        {starting === agent.id ? 'Starting…' : 'Start'}
+                      </button>
+                    )}
                     <button
                       type="button"
                       onClick={() => editingAgentId === agent.id ? cancelEditAgent() : startEditAgent(agent)}
@@ -301,6 +399,18 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                         />
                       </label>
                     </div>
+                    <div className="mt-3">
+                      <span className="framer-topline text-[10px]">Model tier</span>
+                      <div className="mt-1.5 flex gap-2">
+                        {(['cheap', 'normal', 'smart'] as const).map((tier) => (
+                          <label key={tier} className={`flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-xl border px-2 py-2 text-xs transition ${agentForm.modelTier === tier ? 'border-[var(--fd-accent-blue)]/60 bg-[var(--fd-accent-blue)]/10 text-white' : 'border-[var(--fd-hairline)] text-[#888] hover:text-[#ccc]'}`}>
+                            <input type="radio" name="editModelTier" value={tier} checked={agentForm.modelTier === tier} onChange={() => setAgentForm((f) => ({ ...f, modelTier: tier }))} className="sr-only" />
+                            <span className="font-semibold capitalize">{tier}</span>
+                          </label>
+                        ))}
+                      </div>
+                      <p className="mt-1 text-[11px] text-[#666]">Takes effect on next start.</p>
+                    </div>
                     <div className="mt-3 flex justify-end gap-2">
                       <button type="button" onClick={cancelEditAgent} className="framer-pill-secondary text-xs">Cancel</button>
                       <button type="submit" disabled={agentSaving} className="framer-pill text-xs">
@@ -326,34 +436,34 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                 {!editingTemplate.templateId && (
                   <label className="block">
                     <span className="framer-topline text-[10px]">Template ID <span className="text-red-400">*</span></span>
-                    <input value={templateForm.templateId} onChange={(e) => setTemplateForm((f) => ({ ...f, templateId: e.target.value }))} placeholder="e.g. coder" className="framer-input mt-1.5 w-full px-3 py-2 text-sm" />
+                    <input data-debug-id="template-form-id" value={templateForm.templateId} onChange={(e) => setTemplateForm((f) => ({ ...f, templateId: e.target.value }))} placeholder="e.g. coder" className="framer-input mt-1.5 w-full px-3 py-2 text-sm" />
                     <p className="mt-1 text-[11px] text-[#777]">Stable identifier — cannot be changed after creation.</p>
                   </label>
                 )}
                 <label className="block">
                   <span className="framer-topline text-[10px]">Display name <span className="text-red-400">*</span></span>
-                  <input value={templateForm.displayName} onChange={(e) => setTemplateForm((f) => ({ ...f, displayName: e.target.value }))} placeholder="e.g. Coding agent" className="framer-input mt-1.5 w-full px-3 py-2 text-sm" />
+                  <input data-debug-id="template-form-display-name" value={templateForm.displayName} onChange={(e) => setTemplateForm((f) => ({ ...f, displayName: e.target.value }))} placeholder="e.g. Coding agent" className="framer-input mt-1.5 w-full px-3 py-2 text-sm" />
                 </label>
                 <label className="block">
                   <span className="framer-topline text-[10px]">Role hint</span>
-                  <input value={templateForm.roleHint} onChange={(e) => setTemplateForm((f) => ({ ...f, roleHint: e.target.value }))} placeholder="e.g. coder, reviewer, coordinator" className="framer-input mt-1.5 w-full px-3 py-2 text-sm" />
+                  <input data-debug-id="template-form-role-hint" value={templateForm.roleHint} onChange={(e) => setTemplateForm((f) => ({ ...f, roleHint: e.target.value }))} placeholder="e.g. coder, reviewer, coordinator" className="framer-input mt-1.5 w-full px-3 py-2 text-sm" />
                   <p className="mt-1 text-[11px] text-[#777]">Internal routing metadata — not shown as a required picker.</p>
                 </label>
                 <label className="block">
                   <span className="framer-topline text-[10px]">Default provider profile</span>
-                  <input value={templateForm.defaultProviderProfile} onChange={(e) => setTemplateForm((f) => ({ ...f, defaultProviderProfile: e.target.value }))} placeholder="e.g. pi, claude" className="framer-input mt-1.5 w-full px-3 py-2 text-sm" />
+                  <input data-debug-id="template-form-provider" value={templateForm.defaultProviderProfile} onChange={(e) => setTemplateForm((f) => ({ ...f, defaultProviderProfile: e.target.value }))} placeholder="e.g. pi, claude" className="framer-input mt-1.5 w-full px-3 py-2 text-sm" />
                 </label>
                 <label className="block">
                   <span className="framer-topline text-[10px]">Persona / instructions</span>
-                  <textarea value={templateForm.persona} onChange={(e) => setTemplateForm((f) => ({ ...f, persona: e.target.value }))} rows={3} placeholder="Describe the agent's persona and behaviour…" className="framer-input mt-1.5 w-full resize-none px-3 py-2 text-sm" />
+                  <textarea data-debug-id="template-form-persona" value={templateForm.persona} onChange={(e) => setTemplateForm((f) => ({ ...f, persona: e.target.value }))} rows={3} placeholder="Describe the agent's persona and behaviour…" className="framer-input mt-1.5 w-full resize-none px-3 py-2 text-sm" />
                 </label>
                 <div className="flex justify-end gap-2">
                   <button type="button" onClick={cancelTemplateEdit} className="framer-pill-secondary">Cancel</button>
-                  <button type="submit" disabled={templateSaving} className="framer-pill">{templateSaving ? 'Saving…' : 'Save template'}</button>
+                  <button data-debug-id="template-form-submit" type="submit" disabled={templateSaving} className="framer-pill">{templateSaving ? 'Saving…' : 'Save template'}</button>
                 </div>
               </form>
             ) : (
-              <button type="button" onClick={startNewTemplate} className="framer-pill-secondary w-full py-2.5 text-sm">
+              <button data-debug-id="template-new-btn" type="button" onClick={startNewTemplate} className="framer-pill-secondary w-full py-2.5 text-sm">
                 + New template
               </button>
             )}
@@ -391,6 +501,97 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                 </div>
               </div>
             ))}
+          </section>
+        )}
+
+        {/* ---- TEST PROVIDERS TAB ---- */}
+        {tab === 'test' && (
+          <section className="space-y-4">
+            {/* Launch form */}
+            <div className="framer-card rounded-[var(--fd-radius-xl)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-1)] p-4 space-y-3">
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-[#777]">Run provider test</p>
+
+              <div className="flex flex-wrap items-end gap-3">
+                <label className="flex flex-col gap-1">
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#666]">Provider</span>
+                  <select
+                    value={testProvider}
+                    onChange={(e) => setTestProvider(e.target.value)}
+                    className="framer-input px-3 py-1.5 text-sm"
+                  >
+                    {testProviders.length === 0 && <option value="">—</option>}
+                    {testProviders.map((p) => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </label>
+
+                <div className="flex flex-col gap-1">
+                  <span className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#666]">Tier</span>
+                  <div className="flex gap-1">
+                    {(['cheap', 'normal', 'smart'] as const).map((tier) => (
+                      <button
+                        key={tier}
+                        type="button"
+                        onClick={() => setTestTier(tier)}
+                        className={`rounded-lg border px-3 py-1.5 text-[11px] font-semibold transition ${
+                          testTier === tier
+                            ? tier === 'smart' ? 'border-violet-500/50 bg-violet-500/20 text-violet-200'
+                              : tier === 'cheap' ? 'border-amber-500/50 bg-amber-500/20 text-amber-200'
+                              : 'border-sky-500/50 bg-sky-500/20 text-sky-200'
+                            : 'border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] text-[#888] hover:text-white'
+                        }`}
+                      >
+                        {tier}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleRunTest}
+                  disabled={testLaunching || !testProvider}
+                  className="framer-pill disabled:opacity-40"
+                >
+                  {testLaunching ? 'Launching…' : 'Run test'}
+                </button>
+              </div>
+
+              {testError && <p className="text-xs text-red-300">{testError}</p>}
+            </div>
+
+            {/* Live run list */}
+            {testRuns.length === 0 ? (
+              <div className="framer-card border border-dashed border-[var(--fd-hairline)] p-6 text-sm text-[#999]">
+                No test runs yet. Launch one above.
+              </div>
+            ) : testRuns.map((run: any) => {
+              const terminal = run.status === 'success' || run.status === 'failed' || run.status === 'timed_out';
+              const dotCls = run.status === 'success' ? 'bg-emerald-400' : run.status === 'failed' || run.status === 'timed_out' ? 'bg-red-400' : 'bg-sky-400 animate-soft-pulse';
+              const elapsedSec = run.elapsedMs ? (run.elapsedMs / 1000).toFixed(1) + 's' : null;
+              return (
+                <div key={run.testRunId} className="rounded-[var(--fd-radius-xl)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-1)] p-4 space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <span className={`h-2 w-2 shrink-0 rounded-full shadow ${dotCls}`} />
+                    <span className="text-sm font-semibold text-white">{run.provider}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+                      run.tier === 'smart' ? 'bg-violet-500/20 text-violet-300' :
+                      run.tier === 'cheap' ? 'bg-amber-500/15 text-amber-400' :
+                      'border border-[var(--fd-hairline)] text-[#666]'
+                    }`}>{run.tier}</span>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+                      run.status === 'success' ? 'bg-emerald-500/20 text-emerald-300' :
+                      run.status === 'failed' || run.status === 'timed_out' ? 'bg-red-500/20 text-red-300' :
+                      'bg-sky-500/15 text-sky-300'
+                    }`}>{run.status}</span>
+                    {elapsedSec && <span className="text-[11px] text-[#666]">{elapsedSec}</span>}
+                  </div>
+                  <p className="text-[11px] text-[#666]">{run.testRunId}{run.resolvedModel ? ` · ${run.resolvedModel}` : ''}{run.reason ? ` · ${run.reason}` : ''}</p>
+                  {terminal && run.paneTail && (
+                    <pre className="mt-1 max-h-24 overflow-y-auto rounded-lg bg-[#111] px-3 py-2 text-[10px] leading-4 text-[#aaa] whitespace-pre-wrap">{run.paneTail}</pre>
+                  )}
+                </div>
+              );
+            })}
           </section>
         )}
       </div>

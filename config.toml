@@ -59,7 +59,7 @@ enabled_features = ["AGENTS_MD"]
 
 [wrapper.agent-cmd.pi.models]
 flag = "--model"
-cheap = "haiku"
+cheap = "openai-codex/gpt-5.3-codex-spark"
 normal = "sonnet"
 smart = "opus"
 

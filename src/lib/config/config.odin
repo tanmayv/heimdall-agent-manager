@@ -5,8 +5,25 @@ import "core:strconv"
 import "core:strings"
 import contracts "odin_test:contracts"
 
-DEFAULT_CONFIG_PATH :: "~/.config/heimdall/config.toml"
 CONFIG_PATH_FLAG :: "--config"
+
+default_config_path :: proc() -> string {
+	when ODIN_OS == .Windows {
+		appdata := os.get_env_alloc("APPDATA", context.allocator)
+		if appdata != "" do return strings.concatenate({appdata, "\\heimdall\\config.toml"})
+		return "heimdall\\config.toml"
+	} else when ODIN_OS == .Darwin {
+		home := os.get_env_alloc("HOME", context.allocator)
+		if home != "" do return strings.concatenate({home, "/Library/Application Support/heimdall/config.toml"})
+		return "config.toml"
+	} else {
+		xdg := os.get_env_alloc("XDG_CONFIG_HOME", context.allocator)
+		if xdg != "" do return strings.concatenate({xdg, "/heimdall/config.toml"})
+		home := os.get_env_alloc("HOME", context.allocator)
+		if home != "" do return strings.concatenate({home, "/.config/heimdall/config.toml"})
+		return "config.toml"
+	}
+}
 
 Config :: struct {
 	daemon: Daemon_Config,
@@ -129,7 +146,7 @@ config_path_from_args :: proc(args: []string) -> string {
 		}
 	}
 
-	return DEFAULT_CONFIG_PATH
+	return default_config_path()
 }
 
 load :: proc(path: string) -> (Load_Result, bool) {
@@ -474,6 +491,15 @@ parse_string_array :: proc(value: string) -> []string {
 		items[i] = parse_string(part)
 	}
 	return items
+}
+
+resolve_model_value :: proc(m: Model_Tiers_Config, tier: string) -> string {
+	switch tier {
+	case "cheap":  return m.cheap
+	case "normal": return m.normal
+	case "smart":  return m.smart
+	}
+	return ""
 }
 
 parse_access_mode :: proc(value: string) -> contracts.Client_Access_Mode {

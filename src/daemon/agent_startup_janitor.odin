@@ -28,6 +28,7 @@ agent_startup_janitor_tick :: proc() {
 	threshold := i64(timeout) * 1000
 	for i in 0..<agent_count {
 		if agents[i].startup_status != "starting" do continue
+		if is_test_token(agents[i].agent_token) do continue
 		if now - agents[i].startup_updated_unix_ms < threshold do continue
 		id := agents[i].agent_instance_id
 		agents[i].startup_status = "startup_failed"
@@ -37,4 +38,5 @@ agent_startup_janitor_tick :: proc() {
 		if !agents[i].has_ws do agents[i].connected = false
 		agent_lifecycle_emit(id, "startup_failed", "startup_stale")
 	}
+	test_run_janitor_tick()
 }

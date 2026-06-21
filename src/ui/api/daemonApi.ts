@@ -127,7 +127,7 @@ export async function listAgentProviders({ daemonUrl }: { daemonUrl: string }) {
   return data.providers ?? [];
 }
 
-export async function startAgent({ daemonUrl, agentInstanceId = '', provider, templateId, projectId, alias, displayName }: { daemonUrl: string; agentInstanceId?: string; provider: string; templateId?: string; projectId?: string; alias?: string; displayName?: string }) {
+export async function startAgent({ daemonUrl, agentInstanceId = '', provider, templateId, projectId, alias, displayName, modelTier }: { daemonUrl: string; agentInstanceId?: string; provider: string; templateId?: string; projectId?: string; alias?: string; displayName?: string; modelTier?: string }) {
   const body: any = {
     agent: provider || '',
     provider_profile: provider || '',
@@ -135,6 +135,7 @@ export async function startAgent({ daemonUrl, agentInstanceId = '', provider, te
     project_id: projectId || '',
     alias: alias || displayName || '',
     display_name: displayName || alias || '',
+    model_tier: modelTier || 'normal',
   };
   if (agentInstanceId) body.agent_instance_id = agentInstanceId;
   return requestJson(joinUrl(daemonUrl, '/agents/start'), {
@@ -151,13 +152,28 @@ export async function showAgent({ daemonUrl, agentRecordId, agentInstanceId }: {
   });
 }
 
-export async function updateAgent({ daemonUrl, agentRecordId, agentInstanceId, displayName, templateId, providerProfile, projectId, runDir }: { daemonUrl: string; agentRecordId?: string; agentInstanceId?: string; displayName?: string; templateId?: string; providerProfile?: string; projectId?: string; runDir?: string }) {
+export async function createAgent({ daemonUrl, agentInstanceId, displayName, providerProfile, templateId, projectId, modelTier }: { daemonUrl: string; agentInstanceId?: string; displayName?: string; providerProfile?: string; templateId?: string; projectId?: string; modelTier?: string }) {
+  return requestJson(joinUrl(daemonUrl, '/agents/create'), {
+    method: 'POST',
+    body: {
+      agent_instance_id: agentInstanceId || '',
+      display_name: displayName || '',
+      provider_profile: providerProfile || '',
+      template_id: templateId || '',
+      project_id: projectId || '',
+      model_tier: modelTier || 'normal',
+    },
+  });
+}
+
+export async function updateAgent({ daemonUrl, agentRecordId, agentInstanceId, displayName, templateId, providerProfile, projectId, runDir, modelTier }: { daemonUrl: string; agentRecordId?: string; agentInstanceId?: string; displayName?: string; templateId?: string; providerProfile?: string; projectId?: string; runDir?: string; modelTier?: string }) {
   const body: any = { agent_record_id: agentRecordId || '', agent_instance_id: agentInstanceId || '' };
   if (displayName !== undefined) body.display_name = displayName;
   if (templateId !== undefined) body.template_id = templateId;
   if (providerProfile !== undefined) body.provider_profile = providerProfile;
   if (projectId !== undefined) body.project_id = projectId;
   if (runDir !== undefined) body.run_dir = runDir;
+  if (modelTier !== undefined) body.model_tier = modelTier;
   return requestJson(joinUrl(daemonUrl, '/agents/update'), {
     method: 'POST',
     body,
@@ -168,6 +184,13 @@ export async function archiveAgent({ daemonUrl, agentRecordId, agentInstanceId }
   return requestJson(joinUrl(daemonUrl, '/agents/archive'), {
     method: 'POST',
     body: { agent_record_id: agentRecordId || '', agent_instance_id: agentInstanceId || '' },
+  });
+}
+
+export async function stopAgent({ daemonUrl, agentInstanceId }: { daemonUrl: string; agentInstanceId: string }) {
+  return requestJson(joinUrl(daemonUrl, '/agents/stop'), {
+    method: 'POST',
+    body: { agent_instance_id: agentInstanceId },
   });
 }
 
@@ -313,6 +336,18 @@ export async function proposeMemory({ daemonUrl, clientInstanceId, clientToken, 
 
 export async function decideMemory({ daemonUrl, clientInstanceId, clientToken, proposalId, decision, reason }: UserRpcRequest & { proposalId: string; decision: 'approve' | 'reject'; reason?: string }) {
   return userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action: 'memory_decide', body: { proposal_id: proposalId, decision, reason: reason || '' } });
+}
+
+export async function testLaunch({ daemonUrl, provider, tier }: { daemonUrl: string; provider: string; tier: string }) {
+  return requestJson(joinUrl(daemonUrl, '/agents/test-launch'), { method: 'POST', body: { provider, tier } });
+}
+
+export async function getTestStatus({ daemonUrl, testRunId }: { daemonUrl: string; testRunId: string }) {
+  return requestJson(joinUrl(daemonUrl, `/agents/test-status?test_run_id=${encodeURIComponent(testRunId)}`));
+}
+
+export async function getTestHistory({ daemonUrl }: { daemonUrl: string }) {
+  return requestJson(joinUrl(daemonUrl, '/agents/test-history'));
 }
 
 export function normalizeProject(project: any): Project {

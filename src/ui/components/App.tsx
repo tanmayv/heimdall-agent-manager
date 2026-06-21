@@ -20,6 +20,8 @@ import {
   userWsDisconnected,
   userWsError,
   agentLifecycleEventReceived,
+  testStartReceived,
+  testDoneReceived,
 } from '../store/chatSlice';
 import { refreshTaskBoard, taskEventReceived } from '../store/taskSlice';
 import { memoryEventReceived, refreshMemory } from '../store/memorySlice';
@@ -28,6 +30,7 @@ import { refreshProjects } from '../store/projectSlice';
 export default function App() {
   const dispatch = useDispatch<any>();
   const { agents, selectedAgentId, chats, session, sending } = useSelector((state: any) => state.chat);
+  const { projectsById } = useSelector((state: any) => state.projects);
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? null;
   const messages = selectedAgent ? chats[selectedAgent.id] ?? [] : [];
   const [view, setView] = useState<'chat' | 'settings' | 'tasks' | 'memory' | 'projects' | 'agents' | 'startAgent'>('chat');
@@ -123,6 +126,14 @@ export default function App() {
           dispatch(agentLifecycleEventReceived(payload));
           return;
         }
+        if (payload?.type === 'test_start') {
+          dispatch(testStartReceived(payload));
+          return;
+        }
+        if (payload?.type === 'test_done') {
+          dispatch(testDoneReceived(payload));
+          return;
+        }
         if (payload?.type !== 'chat_event') return;
         dispatch(chatEventReceived(payload));
         const agentId = payload.agent_instance_id;
@@ -181,6 +192,7 @@ export default function App() {
       <div className="flex h-full">
         <AgentSidebar
           agents={agents}
+          projectsById={projectsById}
           selectedAgentId={selectedAgentId}
           session={session}
           activeView={view}
@@ -211,7 +223,7 @@ export default function App() {
         ) : view === 'tasks' ? (
           <TaskBoard session={session} />
         ) : view === 'memory' ? (
-          <MemoryBoard session={session} />
+          <MemoryBoard session={session} agents={agents} />
         ) : view === 'projects' ? (
           <ProjectsPage session={session} />
         ) : view === 'agents' ? (

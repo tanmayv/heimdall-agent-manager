@@ -44,6 +44,8 @@ handle_agent_rpc :: proc(client: net.TCP_Socket, body: string) {
 		write_response(client, 200, "OK", memory_service_history_json(body))
 	} else if action == "agent_ready" {
 		handle_agent_ready(client, from_agent_instance_id)
+	} else if action == "start_success" {
+		handle_start_success(client, agent_token)
 	} else {
 		fmt.println("agent_rpc failure unsupported_action", action, "from", from_agent_instance_id)
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"unsupported agent-rpc action"}`)

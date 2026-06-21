@@ -11,7 +11,18 @@ import http "odin_test:lib/http_client"
 import tmux "odin_test:lib/tmux"
 import ws "odin_test:lib/ws"
 
+// Test agents use a minimal one-shot prompt. The prompt uses the same {ctl_bin},
+// {daemon_url}, and {token} substitutions as the normal starter_prompt template.
+TEST_AGENT_STARTER_PROMPT :: "You are a Heimdall test agent. Your only task:\n\nRun exactly this shell command:\n{ctl_bin} --daemon-url {daemon_url} --token {token} start-success\n\nIf the command exits 0, you are done — say \"TEST OK\" and stop.\nIf it errors, print the error verbatim and stop.\nDo not perform any other action. Do not write files. Do not read files."
+
+is_test_token :: proc(token: string) -> bool {
+	return strings.has_prefix(token, "agt_test_")
+}
+
 main :: proc() {
+	if len(os.args) > 1 && os.args[1] == "test" {
+		os.exit(run_test_command(os.args))
+	}
 	if has_flag(os.args, "--version") {
 		fmt.println("ham-wrapper", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
 		return
@@ -106,7 +117,7 @@ main :: proc() {
 	fmt.println("tmux_window", window_name)
 	fmt.println("working_dir", cwd)
 
-	if agent_cmd_ok && len(agent_cmd.bootstrap.enabled_features) > 0 {
+	if agent_cmd_ok && len(agent_cmd.bootstrap.enabled_features) > 0 && !is_test_token(agent_token) {
 		generate_bootstrap_files(cwd, loaded.path, cfg, agent_cmd, selected_agent, registered_instance_id, display_name, cfg.daemon_url, agent_token)
 	}
 
@@ -121,6 +132,7 @@ main :: proc() {
 		return
 	}
 	fmt.println("tmux_pane", launch.pane_id)
+	_ = tmux.rename_window_for_pane(launch.pane_id, fmt.tprintf("[Starting] %s", window_name))
 	if agent_cmd_ok {
 		report_startup_status(cfg.daemon_url, registered_instance_id, "starting", "launch", "Agent process launched in tmux", selected_agent, cwd, launch.pane_id)
 		result := startup_probe_agent(agent_cmd.startup_detection, launch.pane_id)
@@ -129,7 +141,16 @@ main :: proc() {
 			if result.reason_code != "" do fmt.println("startup_reason_code", result.reason_code)
 			if result.safe_diagnostic != "" do fmt.println("startup_diagnostic", result.safe_diagnostic)
 			report_startup_status(cfg.daemon_url, registered_instance_id, result.status, result.reason_code, result.safe_diagnostic, selected_agent, cwd, launch.pane_id)
+			if result.status == "startup_blocked" {
+				_ = tmux.rename_window_for_pane(launch.pane_id, fmt.tprintf("[Blocked] %s", window_name))
+			} else {
+				_ = tmux.rename_window_for_pane(launch.pane_id, window_name)
+			}
+		} else {
+			_ = tmux.rename_window_for_pane(launch.pane_id, window_name)
 		}
+	} else {
+		_ = tmux.rename_window_for_pane(launch.pane_id, window_name)
 	}
 
 	ws_conn, ws_ok := ws.connect(ws_url)
@@ -148,7 +169,7 @@ Startup_Probe_Result :: struct {
 	safe_diagnostic: string,
 }
 
-startup_probe_agent :: proc(cfg: cfg_lib.Startup_Detection_Config, pane_id: string) -> Startup_Probe_Result {
+startup_probe_agent :: proc(cfg: cfg_lib.Startup_Detection_Config, pane_id: string, abort_flag: ^bool = nil) -> Startup_Probe_Result {
 	if !cfg.enabled {
 		if cfg.ready_on_launch do return Startup_Probe_Result{status = "ready", reason_code = "launch_success", safe_diagnostic = "Agent reported ready on successful launch"}
 		return Startup_Probe_Result{status = "disabled"}
@@ -164,6 +185,7 @@ startup_probe_agent :: proc(cfg: cfg_lib.Startup_Detection_Config, pane_id: stri
 	echo_seen := cfg.probe_prompt == "" || !cfg.probe_expect_echo
 
 	for time.to_unix_nanoseconds(time.now()) <= deadline {
+		if abort_flag != nil && abort_flag^ do break
 		if !tmux.pane_exists(pane_id) do return Startup_Probe_Result{status = "startup_failed", reason_code = "pane_exited", safe_diagnostic = "tmux pane exited during startup detection"}
 		if cfg.probe_prompt != "" && !probe_sent {
 			_ = tmux.send_line(pane_id, cfg.probe_prompt)
@@ -692,6 +714,15 @@ generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_
 	if len(agent_cmd.bootstrap.enabled_features) == 0 do return
 
 	profile := bootstrap_profile(agent_cmd, selected_agent)
+
+	// Pre-trust the run directory for Claude Code so the workspace trust dialog is skipped.
+	if profile == "claude" {
+		dot_claude_dir := join_path(cwd, ".claude")
+		_ = os.make_directory(dot_claude_dir)
+		settings_path := join_path(dot_claude_dir, "settings.json")
+		settings_json := `{"permissions":{"defaultMode":"bypassPermissions"}}`
+		_ = os.write_entire_file(settings_path, transmute([]u8)settings_json)
+	}
 	memory_templates := agent_cmd.memory_templates
 	if len(memory_templates) == 0 do memory_templates = cfg.memory_templates
 	project_context := project_bootstrap_context(daemon_url, agent_token, cfg, agent_cmd)
@@ -760,7 +791,7 @@ build_agents_md :: proc(name, profile: string, content_sections: []string, selec
 	strings.write_string(&b, BOOTSTRAP_HEADER); strings.write_string(&b, "\n")
 	strings.write_string(&b, bootstrap_title(name, profile)); strings.write_string(&b, "\n\n")
 	if content_section_enabled(content_sections, "IDENTITY") {
-		ctl_bin := "~/heimdall/bin/" + CTL_SYSTEM + "/ham-ctl"
+		ctl_bin := HAM_CTL_BIN
 		strings.write_string(&b, "FIRST RUN: `")
 		strings.write_string(&b, ctl_bin)
 		strings.write_string(&b, " --config ")
@@ -1150,15 +1181,6 @@ template_display_name :: proc(display_name, agent_class, agent_instance_id, sele
 	return templated
 }
 
-resolve_model_value :: proc(m: cfg_lib.Model_Tiers_Config, tier: string) -> string {
-	switch tier {
-	case "cheap":  return m.cheap
-	case "normal": return m.normal
-	case "smart":  return m.smart
-	}
-	return ""
-}
-
 build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, model_tier: string) -> []string {
 	agent_command_name := selected_agent
 	if agent_command_name == "" do agent_command_name = command_name_for_agent(cfg.command, cfg.agent_name)
@@ -1174,7 +1196,7 @@ build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_
 			append_templated_args(&result, agent_cmd.prompt_flags, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
 			// Model tier flag
 			if agent_cmd.models.flag != "" {
-				model_value := resolve_model_value(agent_cmd.models, model_tier)
+				model_value := cfg_lib.resolve_model_value(agent_cmd.models, model_tier)
 				if model_value != "" {
 					append(&result, agent_cmd.models.flag)
 					append(&result, model_value)
@@ -1185,7 +1207,11 @@ build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_
 			} else if model_tier != "" {
 				fmt.println("model_flag_missing no models.flag configured for", agent_command_name)
 			}
-			if agent_cmd.starter_prompt != "" {
+			if is_test_token(agent_token) {
+				// Test agents get a minimal one-shot prompt; skip memory guidance.
+				prompt := template_string(TEST_AGENT_STARTER_PROMPT, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
+				append(&result, prompt)
+			} else if agent_cmd.starter_prompt != "" {
 				prompt := template_string(agent_cmd.starter_prompt, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
 				templates := agent_cmd.memory_templates
 				if len(templates) == 0 do templates = cfg.memory_templates
@@ -1326,14 +1352,12 @@ template_command :: proc(command: []string, daemon_url, agent_instance_id, displ
 	return result
 }
 
-when ODIN_OS == .Linux && ODIN_ARCH == .amd64  { CTL_SYSTEM :: "linux-x86_64" }
-else when ODIN_OS == .Linux && ODIN_ARCH == .arm64  { CTL_SYSTEM :: "linux-arm64" }
-else when ODIN_OS == .Darwin && ODIN_ARCH == .arm64 { CTL_SYSTEM :: "darwin-arm64" }
-else when ODIN_OS == .Darwin && ODIN_ARCH == .amd64 { CTL_SYSTEM :: "darwin-x86_64" }
-else { CTL_SYSTEM :: "unknown" }
+// Path to ham-ctl binary. Update this when the install location changes.
+// Future: put ham-ctl on $PATH and set this to just "ham-ctl".
+HAM_CTL_BIN :: "~/heimdall-agent-manager/bin/linux-x86_64/ham-ctl"
 
 template_string :: proc(value, daemon_url, agent_instance_id, display_name, conversation_id, agent_token: string) -> string {
-	ctl_bin := "~/heimdall/bin/" + CTL_SYSTEM + "/ham-ctl"
+	ctl_bin := HAM_CTL_BIN
 	templated := replace_all(value, "{daemon_url}", daemon_url)
 	templated = replace_all(templated, "{agent_instance_id}", agent_instance_id)
 	templated = replace_all(templated, "{display_name}", display_name)

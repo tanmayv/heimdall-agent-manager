@@ -11,3 +11,5 @@ result-*
 .vscode/
 .DS_Store
 tsconfig.*.tsbuildinfo
+CLAUDE.md
+.heimdall-bootstrap-manifest

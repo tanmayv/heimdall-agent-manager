@@ -6,12 +6,23 @@ function projectGroupKey(agent) {
   return agent.projectId || 'unassigned';
 }
 
-function projectGroupLabel(projectId) {
-  return projectId === 'unassigned' ? 'No project' : projectId;
+function projectGroupLabel(projectId, projectsById) {
+  if (projectId === 'unassigned') return 'No project';
+  return projectsById?.[projectId]?.name || projectId;
 }
 
-export default function AgentSidebar({ agents, selectedAgentId, session, activeView, onSelectAgent, onRefreshAgents, onOpenChat, onOpenTasks, onOpenMemory, onOpenProjects, onOpenAgents, onOpenStartAgent, onOpenSettings }) {
+export default function AgentSidebar({ agents, projectsById, selectedAgentId, session, activeView, onSelectAgent, onRefreshAgents, onOpenChat, onOpenTasks, onOpenMemory, onOpenProjects, onOpenAgents, onOpenStartAgent, onOpenSettings }) {
   const [collapsedProjects, setCollapsedProjects] = useState({});
+  const [dismissedWarnings, setDismissedWarnings] = useState<Set<string>>(new Set());
+
+  function dismissWarning(agentId: string) {
+    setDismissedWarnings((prev) => new Set([...prev, agentId]));
+  }
+
+  function handleRefresh() {
+    setDismissedWarnings(new Set());
+    onRefreshAgents();
+  }
   const projectGroups = useMemo(() => {
     const groups = new Map();
     for (const agent of agents) {
@@ -43,6 +54,7 @@ export default function AgentSidebar({ agents, selectedAgentId, session, activeV
       <nav className="mt-4 grid grid-cols-2 gap-2">
         <button
           type="button"
+          data-debug-id="nav-chat"
           onClick={onOpenChat}
           className={`${activeView === 'chat' ? 'framer-pill bg-white' : 'framer-pill-secondary'} px-3 py-2 text-xs`}
         >
@@ -50,6 +62,7 @@ export default function AgentSidebar({ agents, selectedAgentId, session, activeV
         </button>
         <button
           type="button"
+          data-debug-id="nav-tasks"
           onClick={onOpenTasks}
           className={`${activeView === 'tasks' ? 'framer-pill bg-white' : 'framer-pill-secondary'} px-3 py-2 text-xs`}
         >
@@ -57,6 +70,7 @@ export default function AgentSidebar({ agents, selectedAgentId, session, activeV
         </button>
         <button
           type="button"
+          data-debug-id="nav-memory"
           onClick={onOpenMemory}
           className={`${activeView === 'memory' ? 'framer-pill bg-white' : 'framer-pill-secondary'} px-3 py-2 text-xs`}
         >
@@ -64,6 +78,7 @@ export default function AgentSidebar({ agents, selectedAgentId, session, activeV
         </button>
         <button
           type="button"
+          data-debug-id="nav-projects"
           onClick={onOpenProjects}
           className={`${activeView === 'projects' ? 'framer-pill bg-white' : 'framer-pill-secondary'} px-3 py-2 text-xs`}
         >
@@ -71,6 +86,7 @@ export default function AgentSidebar({ agents, selectedAgentId, session, activeV
         </button>
         <button
           type="button"
+          data-debug-id="nav-agents"
           onClick={onOpenAgents}
           className={`${activeView === 'agents' ? 'framer-pill bg-white' : 'framer-pill-secondary'} px-3 py-2 text-xs`}
         >
@@ -78,6 +94,7 @@ export default function AgentSidebar({ agents, selectedAgentId, session, activeV
         </button>
         <button
           type="button"
+          data-debug-id="nav-settings"
           onClick={onOpenSettings}
           className={`${activeView === 'settings' ? 'framer-pill bg-white' : 'framer-pill-secondary'} px-3 py-2 text-xs`}
         >
@@ -90,6 +107,7 @@ export default function AgentSidebar({ agents, selectedAgentId, session, activeV
         <div className="flex items-center gap-2">
           <button
             type="button"
+            data-debug-id="new-agent-btn"
             onClick={onOpenStartAgent}
             className="flex h-7 w-7 items-center justify-center rounded-full border border-[var(--fd-accent-blue)]/40 bg-[var(--fd-accent-blue)]/10 text-base leading-none text-[var(--fd-accent-blue)] transition hover:scale-105 hover:bg-[var(--fd-accent-blue)] hover:text-black"
             aria-label="Start new agent"
@@ -101,7 +119,8 @@ export default function AgentSidebar({ agents, selectedAgentId, session, activeV
           </button>
           <button
             type="button"
-            onClick={onRefreshAgents}
+            data-debug-id="refresh-agents-btn"
+            onClick={handleRefresh}
             className="framer-topline text-[11px] text-[var(--fd-accent-blue)] transition-colors duration-200 hover:text-white"
           >
             Refresh
@@ -122,7 +141,7 @@ export default function AgentSidebar({ agents, selectedAgentId, session, activeV
                   className="flex w-full items-center justify-between rounded-[var(--fd-radius-lg)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-3 py-2 text-left transition hover:border-[var(--fd-accent-blue)]/50"
                 >
                   <span className="min-w-0">
-                    <span className="block truncate text-xs font-semibold uppercase tracking-[0.18em] text-white">{projectGroupLabel(projectId)}</span>
+                    <span className="block truncate text-xs font-semibold uppercase tracking-[0.18em] text-white">{projectGroupLabel(projectId, projectsById)}</span>
                     <span className="framer-subtext text-[11px]">{groupAgents.length} known · {connectedCount} live</span>
                   </span>
                   <span className="text-sm text-[#aaa]">{collapsed ? '▸' : '▾'}</span>
@@ -134,6 +153,8 @@ export default function AgentSidebar({ agents, selectedAgentId, session, activeV
                     selected={agent.id === selectedAgentId}
                     onSelect={() => onSelectAgent(agent.id)}
                     hideProject
+                    warningDismissed={dismissedWarnings.has(agent.id)}
+                    onDismissWarning={() => dismissWarning(agent.id)}
                   />
                 )) : null}
               </section>

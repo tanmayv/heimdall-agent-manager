@@ -25,12 +25,13 @@ function defaultSuggestedFix(agent) {
   return '';
 }
 
-export default function AgentListItem({ agent, selected, onSelect, hideProject = false }) {
-  const startupIssue = agent.status === 'startup_blocked' || agent.status === 'startup_failed' || agent.status === 'startup_unknown';
+export default function AgentListItem({ agent, selected, onSelect, hideProject = false, warningDismissed = false, onDismissWarning }: { agent: any; selected: boolean; onSelect: () => void; hideProject?: boolean; warningDismissed?: boolean; onDismissWarning?: () => void }) {
+  const startupIssue = !warningDismissed && (agent.status === 'startup_blocked' || agent.status === 'startup_failed' || agent.status === 'startup_unknown');
   const suggestedFix = defaultSuggestedFix(agent);
   return (
     <button
       type="button"
+      data-debug-id={`agent-item-${agent.id}`}
       onClick={onSelect}
       className={`animate-float-in group relative w-full overflow-hidden rounded-[var(--fd-radius-xl)] border transition-all duration-300 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-[var(--fd-accent-blue)]/60 hover:bg-[var(--fd-surface-2)] ${
         selected
@@ -48,12 +49,28 @@ export default function AgentListItem({ agent, selected, onSelect, hideProject =
               } ${statusStyles[agent.status] ?? statusStyles.offline}`}
             />
             <p className="truncate text-sm font-semibold text-white transition-transform duration-300 group-hover:translate-x-0.5">{agent.label}</p>
+            <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${
+              agent.modelTier === 'smart' ? 'bg-violet-500/20 text-violet-300' :
+              agent.modelTier === 'cheap' ? 'bg-amber-500/15 text-amber-400' :
+              'border border-[var(--fd-hairline)] text-[#666]'
+            }`}>{agent.modelTier || 'normal'}</span>
           </div>
           <p className="framer-subtext mt-1 truncate">{agent.templateId || 'agent'} · {agent.providerProfile || 'provider'}</p>
           <p className="framer-subtext mt-2 text-[#999]">{statusLabels[agent.status] || 'Known agent'} · Last seen {agent.lastSeen}</p>
           {startupIssue ? (
             <div className="mt-2 rounded-xl border border-amber-400/25 bg-amber-400/10 p-2 text-left text-[11px] leading-4 text-amber-100">
-              <p className="font-semibold">{agent.startupReason || 'Startup needs attention.'}</p>
+              <div className="flex items-start justify-between gap-2">
+                <p className="font-semibold">{agent.startupReason || 'Startup needs attention.'}</p>
+                {agent.status === 'startup_unknown' && onDismissWarning ? (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onDismissWarning(); }}
+                    className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold text-amber-300 transition hover:bg-amber-400/20 hover:text-amber-100"
+                  >
+                    Dismiss
+                  </button>
+                ) : null}
+              </div>
               {suggestedFix ? <p className="mt-1 text-amber-100/80">Fix: {suggestedFix}</p> : null}
               {(agent.runDir || agent.tmuxTarget || agent.logPath) ? (
                 <p className="mt-1 break-all text-amber-100/70">

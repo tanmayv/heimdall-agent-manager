@@ -32,7 +32,7 @@ function Field({ label, value }: { label: string; value: string | number }) {
 
 const blankForm = { proposalAction: 'new', memoryId: '', expectedVersion: '', subjectAgent: '', type: 'fact', scope: 'global', title: '', body: '', reason: '', evidence: '', sourceTaskId: '' };
 
-export default function MemoryBoard({ session }) {
+export default function MemoryBoard({ session, agents = [] }: { session: any; agents?: any[] }) {
   const dispatch = useDispatch<any>();
   const { recordsById, recordIds, selectedMemoryId, historyById, filters, loading, detailLoading, error } = useSelector((state: any) => state.memory);
   const selected = selectedMemoryId ? recordsById[selectedMemoryId] : null;
@@ -187,7 +187,7 @@ export default function MemoryBoard({ session }) {
               <select value={form.proposalAction} onChange={(event) => updateForm({ proposalAction: event.target.value })} className="framer-input px-3 py-2"><option value="new">new</option><option value="edit">edit</option><option value="archive">archive</option><option value="rollback">rollback</option></select>
               <input value={form.memoryId} onChange={(event) => updateForm({ memoryId: event.target.value })} placeholder="memory_id for edit/archive/rollback" className="framer-input px-3 py-2" disabled={form.proposalAction === 'new'} />
               <input value={form.expectedVersion} onChange={(event) => updateForm({ expectedVersion: event.target.value })} placeholder="expected version" className="framer-input px-3 py-2" disabled={form.proposalAction === 'new'} />
-              <input value={form.subjectAgent} onChange={(event) => updateForm({ subjectAgent: event.target.value })} placeholder="subject agent" className="framer-input px-3 py-2" disabled={form.proposalAction !== 'new'} />
+              <select value={form.subjectAgent} onChange={(event) => updateForm({ subjectAgent: event.target.value })} className="framer-input px-3 py-2" disabled={form.proposalAction !== 'new'}><option value="">— select agent —</option>{agents.map((a: any) => <option key={a.id} value={a.id}>{a.label || a.id}</option>)}</select>
               <select value={form.type} onChange={(event) => updateForm({ type: event.target.value })} className="framer-input px-3 py-2" disabled={form.proposalAction === 'archive'}>{MEMORY_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}</select>
               <input value={form.scope} onChange={(event) => updateForm({ scope: event.target.value })} placeholder="scope" className="framer-input px-3 py-2" />
               <input value={form.title} onChange={(event) => updateForm({ title: event.target.value })} placeholder="title" className="framer-input px-3 py-2" disabled={form.proposalAction === 'archive' || form.proposalAction === 'rollback'} />

@@ -19,6 +19,24 @@ main :: proc() {
 		return
 	}
 
+	// Dispatch config-free RPC commands before loading config.
+	// These only need --daemon-url and --token — used by agents in sandboxed envs.
+	{
+		early_cmd := command_tokens(os.args)
+		defer delete(early_cmd)
+		if len(early_cmd) > 0 {
+			early_url := option_value(os.args, "--daemon-url", "http://127.0.0.1:49322")
+			if early_cmd[0] == "agent-ready" {
+				ctl_agent_ready(early_url, os.args)
+				return
+			}
+			if early_cmd[0] == "start-success" {
+				ctl_start_success(early_url, os.args)
+				return
+			}
+		}
+	}
+
 	config_path := cfg_lib.config_path_from_args(os.args)
 	loaded, ok := cfg_lib.load(config_path)
 	if !ok {
@@ -108,6 +126,11 @@ main :: proc() {
 
 	if cmd[0] == "agent-ready" {
 		ctl_agent_ready(daemon_url, os.args)
+		return
+	}
+
+	if cmd[0] == "start-success" {
+		ctl_start_success(daemon_url, os.args)
 		return
 	}
 
@@ -244,6 +267,27 @@ ctl_agent_ready :: proc(daemon_url: string, args: []string) {
 	response, ok := http.post(daemon_url, contracts.ROUTE_AGENT_RPC, strings.to_string(builder))
 	if !ok {
 		fmt.println(`{"ok":false,"message":"agent-ready request failed"}`)
+		os.exit(1)
+	}
+	fmt.println(response.body)
+	if response.status != 200 {
+		os.exit(1)
+	}
+}
+
+ctl_start_success :: proc(daemon_url: string, args: []string) {
+	token := option_value(args, "--token", "")
+	if token == "" {
+		fmt.println("usage: ham-ctl --token <token> start-success")
+		os.exit(1)
+	}
+	builder := strings.builder_make()
+	strings.write_string(&builder, `{"agent_token":"`)
+	json_write_string(&builder, token)
+	strings.write_string(&builder, `","action":"start_success"}`)
+	response, ok := http.post(daemon_url, contracts.ROUTE_AGENT_RPC, strings.to_string(builder))
+	if !ok {
+		fmt.println(`{"ok":false,"message":"start-success request failed"}`)
 		os.exit(1)
 	}
 	fmt.println(response.body)

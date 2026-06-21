@@ -7,6 +7,12 @@ agent_lifecycle_emit :: proc(agent_instance_id, connection_state, reason: string
 	idx := registry_find_agent(agent_instance_id)
 	if idx < 0 do return
 	agent := agents[idx]
+	// Test agents never emit production lifecycle events; their lifecycle is
+	// tracked separately in test_runs and broadcast as test_start / test_done.
+	if is_test_token(agent.agent_token) {
+		test_run_on_lifecycle(agent.agent_token, connection_state, reason)
+		return
+	}
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"type":"agent_lifecycle_changed","agent_instance_id":"`); json_write_string(&builder, agent.agent_instance_id)
 	strings.write_string(&builder, `","agent_class":"`); json_write_string(&builder, agent.agent_class)
