@@ -42,9 +42,7 @@
           runHook preBuild
           mkdir -p $out/bin
           odin build src/daemon -collection:odin_test=src -out:$out/bin/ham-daemon
-          odin build src/wrapper -collection:odin_test=src -out:$out/bin/ham-wrapper
           ln -s ham-daemon $out/bin/bc-odin-daemon
-          ln -s ham-wrapper $out/bin/bc-agent-wrapper
           runHook postBuild
         '';
       };
@@ -60,9 +58,7 @@
           runHook preBuild
           mkdir -p $out/bin
           odin build src/ctl -collection:odin_test=src -out:$out/bin/ham-ctl
-          odin build src/wrapper -collection:odin_test=src -out:$out/bin/ham-wrapper
           ln -s ham-ctl $out/bin/bc-odinctl
-          ln -s ham-wrapper $out/bin/bc-agent-wrapper
           runHook postBuild
         '';
       };

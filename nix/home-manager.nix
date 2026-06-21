@@ -298,6 +298,7 @@ let
         test-agent = "ham-test-agent"; ui = "heimdall"; }.${name}
     };
 
+  daemonPkg = self.packages.${pkgs.stdenv.hostPlatform.system}.ham-daemon;
 
 in
 {
@@ -333,6 +334,14 @@ in
         type        = lib.types.bool;
         default     = true;
         description = "Generate the [daemon] section in config.toml.";
+      };
+
+      service = {
+        enable = lib.mkOption {
+          type        = lib.types.bool;
+          default     = true;
+          description = "Create a systemd user service (heimdall-daemon.service) that starts ham-daemon on login.";
+        };
       };
       bindHost = lib.mkOption {
         type        = lib.types.str;
@@ -526,5 +535,18 @@ in
 
     xdg.configFile."heimdall/config.toml".source =
       tomlFormat.generate "heimdall-config.toml" configAttrs;
+
+    systemd.user.services.heimdall-daemon = lib.mkIf (cfg.daemon.enable && cfg.daemon.service.enable) {
+      Unit = {
+        Description = "Heimdall Agent Manager Daemon";
+        After       = [ "network.target" ];
+      };
+      Service = {
+        ExecStart = "${daemonPkg}/bin/ham-daemon";
+        Restart    = "on-failure";
+        RestartSec = "5s";
+      };
+      Install.WantedBy = [ "default.target" ];
+    };
   };
 }
