@@ -104,6 +104,7 @@ main :: proc() {
 	conversation_id := extract_json_string(register_response.body, "conversation_id", "")
 	ws_url := extract_json_string(register_response.body, "ws_url", "")
 	agent_token := extract_json_string(register_response.body, "agent_token", "")
+	template_instructions := extract_json_string(register_response.body, "template_instructions", "")
 	if registered_instance_id == "" {
 		fmt.println("registration response missing agent_instance_id")
 		return
@@ -118,7 +119,7 @@ main :: proc() {
 	fmt.println("tmux_window", window_name)
 	fmt.println("working_dir", cwd)
 
-	if agent_cmd_ok && len(agent_cmd.bootstrap.enabled_features) > 0 && !is_test_token(agent_token) {
+	if agent_cmd_ok && !is_test_token(agent_token) {
 		// Daemon passes the agent record's actual project_id via --project-id so
 		// the bootstrap reflects the *current* project, not the per-provider
 		// default in config.toml.
@@ -126,7 +127,7 @@ main :: proc() {
 			agent_cmd.project = override_project_id
 			cfg.project = override_project_id
 		}
-		generate_bootstrap_files(cwd, loaded.path, cfg, agent_cmd, selected_agent, registered_instance_id, display_name, cfg.daemon_url, agent_token)
+		generate_bootstrap_files(cwd, loaded.path, cfg, agent_cmd, selected_agent, registered_instance_id, display_name, cfg.daemon_url, agent_token, template_instructions)
 	}
 
 	stop_message := cfg.stop_message
@@ -174,7 +175,7 @@ main :: proc() {
 		// Probe ran above; we don't have its result here, but the daemon's startup
 		// status will have been updated. Use "running" as a benign default for now.
 	}
-	heartbeat_loop(cfg.daemon_url, agent_class, registered_instance_id, display_name, agent_token, launch.pane_id, stop_message, selected_agent, model_tier, override_project_id, cwd, initial_exec_state, &ws_conn)
+	heartbeat_loop(cfg.daemon_url, agent_class, registered_instance_id, display_name, agent_token, launch.pane_id, stop_message, selected_agent, model_tier, override_project_id, cwd, initial_exec_state, cfg.tmux_session, window_name, &ws_conn)
 }
 
 Startup_Probe_Result :: struct {
@@ -338,8 +339,9 @@ read_yes_from_stdin :: proc() -> bool {
 	return answer == "y" || answer == "Y" || answer == "yes" || answer == "YES"
 }
 
-heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name, agent_token, tmux_pane, stop_message, provider_profile, provider_tier, project_id, run_dir, initial_exec_state: string, ws_conn: ^ws.Connection) {
+heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name, agent_token, tmux_pane, stop_message, provider_profile, provider_tier, project_id, run_dir, initial_exec_state, tmux_session, window_name: string, ws_conn: ^ws.Connection) {
 	fmt.println("heartbeat started", agent_instance_id)
+	current_token := agent_token
 	failed_heartbeats := 0
 	exec_state := initial_exec_state
 	if exec_state == "" do exec_state = "running"
@@ -351,12 +353,24 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 			return
 		}
 
-		body := heartbeat_request_json(agent_instance_id, agent_token, display_name, provider_profile, provider_tier, project_id, tmux_pane, run_dir, exec_state, "", pid, exec_state_since)
+		body := heartbeat_request_json(agent_instance_id, current_token, display_name, provider_profile, provider_tier, project_id, tmux_pane, run_dir, exec_state, "", pid, exec_state_since)
 		response, ok := http.post(daemon_url, contracts.ROUTE_HEARTBEAT, body)
 		if ok && response.status == 200 {
 			failed_heartbeats = 0
 			fmt.println("heartbeat ok", agent_instance_id)
 			log_heartbeat_corrections(response.body, agent_instance_id)
+		} else if ok && response.status == 401 {
+			// Token not found in registry (daemon restarted). Re-register fresh to
+			// get the token back into the daemon's in-memory registry.
+			fmt.println("heartbeat token_not_found; re-registering", agent_instance_id)
+			if new_ws_url, new_token, reconnected := reregister_and_reconnect_ws(daemon_url, agent_class, agent_instance_id, display_name, current_token, ws_conn); reconnected {
+				fmt.println("re-registered", agent_instance_id, new_ws_url)
+				current_token = new_token
+				failed_heartbeats = 0
+			} else {
+				fmt.println("re-register failed", agent_instance_id)
+				failed_heartbeats += 1
+			}
 		} else if ok && response.status == 400 {
 			// Distinguish project_not_found / missing_required so operator sees it.
 			fmt.println("heartbeat rejected", agent_instance_id, response.body)
@@ -368,8 +382,9 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 
 		if failed_heartbeats >= 3 {
 			fmt.println("heartbeat failed repeatedly; re-registering", agent_instance_id)
-			if new_ws_url, reconnected := reregister_and_reconnect_ws(daemon_url, agent_class, agent_instance_id, display_name, agent_token, ws_conn); reconnected {
+			if new_ws_url, new_token, reconnected := reregister_and_reconnect_ws(daemon_url, agent_class, agent_instance_id, display_name, current_token, ws_conn); reconnected {
 				fmt.println("reconnected", agent_instance_id, new_ws_url)
+				current_token = new_token
 				failed_heartbeats = 0
 			} else {
 				fmt.println("reconnect attempt failed", agent_instance_id)
@@ -381,7 +396,7 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 				// internal control message; do not surface as an agent message
 			} else if strings.index(text, `"type":"stop_event"`) >= 0 {
 				fmt.println("stop event", text)
-				handle_stop_event(text, tmux_pane, agent_instance_id, stop_message, ws_conn)
+				handle_stop_event(text, tmux_pane, tmux_session, window_name, agent_instance_id, stop_message, ws_conn)
 				return
 			} else if strings.index(text, `"type":"message_event"`) >= 0 {
 				fmt.println("message event", text)
@@ -475,7 +490,7 @@ handle_user_chat_event :: proc(text, tmux_pane: string) {
 	}
 }
 
-handle_stop_event :: proc(text, tmux_pane, agent_instance_id, stop_message: string, ws_conn: ^ws.Connection) {
+handle_stop_event :: proc(text, tmux_pane, tmux_session, window_name, agent_instance_id, stop_message: string, ws_conn: ^ws.Connection) {
 	time_in_sec := extract_json_int(text, "time_in_sec", 30)
 	msg := replace_all(stop_message, "{time}", fmt.tprintf("%d", time_in_sec))
 	fmt.println("stop: sending escape and message to pane", tmux_pane)
@@ -484,6 +499,8 @@ handle_stop_event :: proc(text, tmux_pane, agent_instance_id, stop_message: stri
 	time.sleep(time.Duration(time_in_sec) * time.Second)
 	fmt.println("stop: killing pane", tmux_pane)
 	_ = tmux.kill_pane(tmux_pane)
+	fmt.println("stop: killing window", tmux_session, window_name)
+	_ = tmux.kill_window(tmux_session, window_name)
 	fmt.println("stop: sending stop_done via WS")
 	report_stop_done(ws_conn, agent_instance_id)
 	fmt.println("stop: done, wrapper exiting")
@@ -497,9 +514,9 @@ report_stop_done :: proc(ws_conn: ^ws.Connection, agent_instance_id: string) {
 	_ = ws.send_text(ws_conn, strings.to_string(b))
 }
 
-reregister_and_reconnect_ws :: proc(daemon_url, agent_class, agent_instance_id, display_name, agent_token: string, ws_conn: ^ws.Connection) -> (string, bool) {
+reregister_and_reconnect_ws :: proc(daemon_url, agent_class, agent_instance_id, display_name, agent_token: string, ws_conn: ^ws.Connection) -> (new_ws_url: string, new_token: string, ok: bool) {
 	response, health_ok := http.get(daemon_url, contracts.ROUTE_HEALTH)
-	if !health_ok || response.status != 200 do return "", false
+	if !health_ok || response.status != 200 do return "", "", false
 
 	register_body := register_request_json(agent_class, agent_instance_id, display_name, agent_token)
 	register_response, register_ok := http.post(daemon_url, contracts.ROUTE_REGISTER, register_body)
@@ -507,17 +524,18 @@ reregister_and_reconnect_ws :: proc(daemon_url, agent_class, agent_instance_id, 
 		if register_ok {
 			fmt.println("re-registration failed", register_response.status, register_response.body)
 		}
-		return "", false
+		return "", "", false
 	}
 
-	new_ws_url := extract_json_string(register_response.body, "ws_url", "")
-	if new_ws_url == "" do return "", false
+	ws_url := extract_json_string(register_response.body, "ws_url", "")
+	token  := extract_json_string(register_response.body, "agent_token", agent_token)
+	if ws_url == "" do return "", "", false
 
 	ws.close(ws_conn)
-	new_conn, ws_ok := ws.connect(new_ws_url)
-	if !ws_ok do return new_ws_url, false
+	new_conn, ws_ok := ws.connect(ws_url)
+	if !ws_ok do return ws_url, token, false
 	ws_conn^ = new_conn
-	return new_ws_url, true
+	return ws_url, token, true
 }
 
 heartbeat_request_json :: proc(agent_instance_id, agent_token, display_name, provider_profile, provider_tier, project_id, tmux_pane, run_dir, exec_state, blocked_reason: string, pid: int, exec_state_since_unix_ms: i64) -> string {
@@ -662,12 +680,6 @@ selected_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent: stri
 }
 
 resolve_agent_run_dir :: proc(cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Command_Config, agent_cmd_ok: bool, selected_agent, agent_instance_id: string) -> string {
-	if agent_cmd_ok && agent_cmd.run_dir != "" {
-		cwd := resolve_working_dir(agent_cmd.run_dir)
-		_ = os.make_directory_all(cwd)
-		return cwd
-	}
-
 	root := cfg.agent_run_dir
 	if agent_cmd_ok && agent_cmd.agent_run_dir != "" do root = agent_cmd.agent_run_dir
 	if root == "" do return resolve_working_dir(".")
@@ -784,58 +796,57 @@ parse_into_memory_records :: proc(body: string, memory_templates: []string, temp
 	}
 }
 
-generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Command_Config, selected_agent, agent_instance_id, display_name, daemon_url, agent_token: string) {
-	if len(agent_cmd.bootstrap.enabled_features) == 0 do return
-
+generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Command_Config, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, template_instructions: string) {
 	profile := bootstrap_profile(agent_cmd, selected_agent)
 	memory_templates := agent_cmd.memory_templates
 	if len(memory_templates) == 0 do memory_templates = cfg.memory_templates
 	project_context := project_bootstrap_context(daemon_url, agent_token, cfg, agent_cmd)
 	memories := fetch_all_active_memories(daemon_url, agent_token, agent_instance_id, memory_templates)
 
-	has_memory_md := false
-	for feature in agent_cmd.bootstrap.enabled_features {
-		if feature == "MEMORY_MD" { has_memory_md = true; break }
-	}
-
 	written := make([dynamic]string)
 
-	for feature in agent_cmd.bootstrap.enabled_features {
-		fc := agent_cmd.bootstrap.features[feature]
-		switch feature {
-		case "AGENTS_MD":
-			name := fc.name
-			if name == "" {
-				if profile == "claude" { name = "CLAUDE.md" } else { name = "AGENTS.md" }
-			}
-			content_sections := fc.content
-			if len(content_sections) == 0 {
-				content_sections = []string{"IDENTITY", "GUIDANCE", "PROJECT", "MEMORY"}
-			}
-			path := join_path(cwd, name)
-			if can_write_managed_file(path) {
-				text := build_agents_md(name, profile, content_sections, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path, memories[:], project_context, has_memory_md)
-				write_managed_file(path, text)
-				append(&written, name)
-			}
-		case "MEMORY_MD":
-			name := fc.name
-			if name == "" do name = "MEMORY.md"
-			path := join_path(cwd, name)
-			if can_write_managed_file(path) {
-				text := build_memory_md(memories[:])
-				write_managed_file(path, text)
-				append(&written, name)
-			}
-		case "SKILLS":
-			rel_dir := fc.relative_dir
-			if rel_dir == "" do rel_dir = "skills"
-			filename := fc.filename
-			if filename == "" do filename = "SKILL.md"
-			skill_paths := write_skills(cwd, rel_dir, filename, memories[:])
-			for p in skill_paths {
-				append(&written, p)
-			}
+	// AGENTS_MD (CLAUDE.md for claude profile, AGENTS.md otherwise)
+	{
+		fc := agent_cmd.bootstrap.features["AGENTS_MD"]
+		name := fc.name
+		if name == "" {
+			if profile == "claude" { name = "CLAUDE.md" } else { name = "AGENTS.md" }
+		}
+		content_sections := fc.content
+		if len(content_sections) == 0 {
+			content_sections = []string{"IDENTITY", "GUIDANCE", "PROJECT", "MEMORY"}
+		}
+		path := join_path(cwd, name)
+		if can_write_managed_file(path) {
+			text := build_agents_md(name, profile, content_sections, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path, memories[:], project_context, true, template_instructions)
+			write_managed_file(path, text)
+			append(&written, name)
+		}
+	}
+
+	// MEMORY_MD
+	{
+		fc := agent_cmd.bootstrap.features["MEMORY_MD"]
+		name := fc.name
+		if name == "" do name = "MEMORY.md"
+		path := join_path(cwd, name)
+		if can_write_managed_file(path) {
+			text := build_memory_md(memories[:])
+			write_managed_file(path, text)
+			append(&written, name)
+		}
+	}
+
+	// SKILLS
+	{
+		fc := agent_cmd.bootstrap.features["SKILLS"]
+		rel_dir := fc.relative_dir
+		if rel_dir == "" do rel_dir = "skills"
+		filename := fc.filename
+		if filename == "" do filename = "SKILL.md"
+		skill_paths := write_skills(cwd, rel_dir, filename, memories[:])
+		for p in skill_paths {
+			append(&written, p)
 		}
 	}
 
@@ -851,7 +862,7 @@ content_section_enabled :: proc(sections: []string, section: string) -> bool {
 	return false
 }
 
-build_agents_md :: proc(name, profile: string, content_sections: []string, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path: string, memories: []Memory_Record, project_context: string, has_memory_md: bool) -> string {
+build_agents_md :: proc(name, profile: string, content_sections: []string, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path: string, memories: []Memory_Record, project_context: string, has_memory_md: bool, template_instructions: string) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, BOOTSTRAP_HEADER); strings.write_string(&b, "\n")
 	strings.write_string(&b, bootstrap_title(name, profile)); strings.write_string(&b, "\n\n")
@@ -869,6 +880,11 @@ build_agents_md :: proc(name, profile: string, content_sections: []string, selec
 		strings.write_string(&b, "- Provider/profile: "); strings.write_string(&b, selected_agent); strings.write_string(&b, " / "); strings.write_string(&b, profile); strings.write_string(&b, "\n")
 		strings.write_string(&b, "- Daemon URL: "); strings.write_string(&b, daemon_url); strings.write_string(&b, "\n")
 		strings.write_string(&b, "- This file is generated by Heimdall and is overwritten on agent start. Unmanaged files are preserved.\n")
+		if template_instructions != "" {
+			strings.write_string(&b, "\n# Template Instructions\n")
+			strings.write_string(&b, template_instructions)
+			strings.write_string(&b, "\n")
+		}
 	}
 	if content_section_enabled(content_sections, "GUIDANCE") {
 		strings.write_string(&b, bootstrap_profile_guidance(profile, name))
@@ -1284,7 +1300,7 @@ build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_
 				prompt := template_string(agent_cmd.starter_prompt, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
 				templates := agent_cmd.memory_templates
 				if len(templates) == 0 do templates = cfg.memory_templates
-				mem_context := "" if len(agent_cmd.bootstrap.enabled_features) > 0 else active_memory_bootstrap(daemon_url, agent_token, agent_instance_id, templates)
+				mem_context := "" // Memory is injected via bootstrap files (always generated).
 				prompt = strings.concatenate({prompt, memory_cli_guidance(agent_token), mem_context})
 				append(&result, prompt)
 			}

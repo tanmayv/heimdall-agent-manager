@@ -100,8 +100,7 @@ Bootstrap_Feature_Config :: struct {
 }
 
 Bootstrap_Config :: struct {
-	enabled_features: []string,
-	features:         map[string]Bootstrap_Feature_Config,
+	features: map[string]Bootstrap_Feature_Config,
 }
 
 Agent_Command_Config :: struct {
@@ -110,7 +109,6 @@ Agent_Command_Config :: struct {
 	yolo_flags: []string,
 	prompt_flags: []string,
 	starter_prompt: string,
-	run_dir: string,
 	agent_run_dir: string,
 	project: string,
 	bootstrap: Bootstrap_Config,
@@ -382,8 +380,6 @@ parse_agent_command_key :: proc(name, key, value: string, cfg: ^Wrapper_Config) 
 		cfg.agent_commands[idx].prompt_flags = parse_string_array(value)
 	case "starter_prompt":
 		cfg.agent_commands[idx].starter_prompt = parse_string(value)
-	case "run_dir":
-		cfg.agent_commands[idx].run_dir = expand_home(parse_string(value))
 	case "agent_run_dir":
 		cfg.agent_commands[idx].agent_run_dir = expand_home(parse_string(value))
 	case "project":
@@ -397,12 +393,8 @@ parse_agent_command_key :: proc(name, key, value: string, cfg: ^Wrapper_Config) 
 }
 
 parse_bootstrap_key :: proc(name, key, value: string, cfg: ^Wrapper_Config) {
-	idx := ensure_agent_command(cfg, name)
-	switch key {
-	case "enabled_features":
-		cfg.agent_commands[idx].bootstrap.enabled_features = parse_string_array(value)
-	case:
-	}
+	// enabled_features removed — all bootstrap files are always generated.
+	_ = name; _ = key; _ = value; _ = cfg
 }
 
 parse_bootstrap_feature_key :: proc(name, feature, key, value: string, cfg: ^Wrapper_Config) {

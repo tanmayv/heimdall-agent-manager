@@ -42,7 +42,14 @@ handle_register :: proc(client: net.TCP_Socket, body: string) {
 	)
 	router_adapter_announce_local_agent(agent_instance_id, agent_class)
 	agent_lifecycle_emit(agent_instance_id, "registered", "register")
-	write_response(client, 200, "OK", register_response_json(record))
+	// Look up template instructions so the wrapper can include them in the bootstrap.
+	template_instructions := ""
+	if si := agent_record_index_by_instance(agent_instance_id); si >= 0 {
+		if ti := agent_template_index(agent_instance_records[si].template_id); ti >= 0 {
+			template_instructions = agent_template_records[ti].instructions
+		}
+	}
+	write_response(client, 200, "OK", register_response_json(record, template_instructions))
 }
 
 handle_startup_report :: proc(client: net.TCP_Socket, body: string) {
@@ -119,18 +126,18 @@ handle_heartbeat :: proc(client: net.TCP_Socket, body: string) {
 		return
 	}
 
-	// Token + registry recovery. If registry has the agent and a token, the
-	// supplied token must match. If registry doesn't have the agent (daemon
-	// restarted while wrapper was live), re-register from the snapshot —
-	// the wrapper already proved identity by holding the token bound to a
-	// persisted record (verified below) or by being a fresh agent.
+	// Token validation. Registry is the source of truth; if the token is not
+	// found (e.g. daemon restarted), reject with token_not_found so the wrapper
+	// calls /agents/register to obtain a fresh token rather than silently
+	// re-entering the registry with a potentially stale identity.
 	if reg_idx := registry_find_agent(snap.agent_instance_id); reg_idx >= 0 {
 		if agents[reg_idx].has_agent_token && snap.agent_token != "" && agents[reg_idx].agent_token != snap.agent_token {
 			write_response(client, 409, "Conflict", `{"ok":false,"error":"token_mismatch","message":"agent_token does not match registry"}`)
 			return
 		}
 	} else {
-		_ = registry_register(derive_agent_class(snap.agent_instance_id), snap.agent_instance_id, snap.display_name, snap.agent_token)
+		write_response(client, 401, "Unauthorized", `{"ok":false,"error":"token_not_found","message":"agent token not in registry; call /agents/register to obtain a fresh token"}`)
+		return
 	}
 
 	store_idx := agent_record_index_by_instance(snap.agent_instance_id)

@@ -35,11 +35,7 @@ memory_templates = []
 # Optional per-provider managed run-dir/bootstrap controls.
 # agent_run_dir = "~/.local/share/heimdall/agent-runs"
 # project = "default"
-# run_dir = "" # exact path; bypasses <agent_run_dir>/<project>/<agent> layout
-# bootstrap_enabled = false
 # bootstrap_profile = "pi" # pi|claude|codex or custom profile name
-# bootstrap_files = ["AGENTS.md"] # default: CLAUDE.md for claude, AGENTS.md otherwise
-# bootstrap_sections = ["identity", "guidance", "project", "memory"] # omit to include all
 
 # Per-agent-command launch customization. The wrapper selects this section by
 # wrapper.command[0] ("pi" here), or by stripping "-agent" from the agent class
@@ -53,9 +49,6 @@ yolo_flags = []
 #   pi "prompt"
 prompt_flags = []
 starter_prompt = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap file (AGENTS.md or CLAUDE.md) for context, identity, and what you can do."
-
-[wrapper.agent-cmd.pi.bootstrap]
-enabled_features = ["AGENTS_MD"]
 
 [wrapper.agent-cmd.pi.models]
 flag = "--model"
@@ -74,9 +67,6 @@ command = ["claude"]
 yolo_flags = ["--dangerously-skip-permissions"]
 prompt_flags = []
 starter_prompt = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap file (AGENTS.md or CLAUDE.md) for context, identity, and what you can do."
-
-[wrapper.agent-cmd.claude.bootstrap]
-enabled_features = ["AGENTS_MD", "MEMORY_MD", "SKILLS"]
 
 [wrapper.agent-cmd.claude.bootstrap.AGENTS_MD]
 name = "CLAUDE.md"
@@ -119,9 +109,6 @@ command = ["codex"]
 yolo_flags = []
 prompt_flags = []
 starter_prompt = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap file (AGENTS.md or CLAUDE.md) for context, identity, and what you can do."
-
-[wrapper.agent-cmd.codex.bootstrap]
-enabled_features = ["AGENTS_MD"]
 
 [wrapper.agent-cmd.codex.models]
 flag = "-m"

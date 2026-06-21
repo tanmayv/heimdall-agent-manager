@@ -89,51 +89,7 @@
         '';
       };
 
-      homeManagerModule = { config, lib, pkgs, ... }:
-        let
-          cfg = config.programs.heimdall;
-          legacyCfg = config.programs.odin-test;
-          useLegacy = legacyCfg.enable && !cfg.enable;
-          effectiveCfg = if useLegacy then legacyCfg else cfg;
-          system = pkgs.stdenv.hostPlatform.system;
-          odinPackages = self.packages.${system};
-          packageByName = {
-            daemon = odinPackages.ham-daemon;
-            wrapper = odinPackages.ham-wrapper;
-            ctl = odinPackages.ham-ctl;
-            test-agent = odinPackages.ham-test-agent;
-            ui = odinPackages.heimdall;
-          };
-          heimdallOptions = {
-            enable = lib.mkEnableOption "Heimdall Agent Manager";
-
-            packageNames = lib.mkOption {
-              type = lib.types.listOf (lib.types.enum [ "daemon" "wrapper" "ctl" "test-agent" "ui" ]);
-              default = [ "daemon" "wrapper" "ctl" "test-agent" "ui" ];
-              example = [ "ctl" "ui" ];
-              description = ''
-                Heimdall Agent Manager packages to install into home.packages. The ui entry installs
-                the Heimdall Electron app package.
-              '';
-            };
-
-            packages = lib.mkOption {
-              type = lib.types.listOf lib.types.package;
-              default = [ ];
-              description = "Additional Heimdall package derivations to install.";
-            };
-          };
-        in
-        {
-          options.programs.heimdall = heimdallOptions;
-          options.programs.odin-test = heimdallOptions // {
-            enable = lib.mkEnableOption "Heimdall Agent Manager (legacy odin-test option namespace)";
-          };
-
-          config = lib.mkIf (cfg.enable || legacyCfg.enable) {
-            home.packages = (map (name: packageByName.${name}) effectiveCfg.packageNames) ++ effectiveCfg.packages;
-          };
-        };
+      homeManagerModule = import ./nix/home-manager.nix { inherit self; };
     in
     {
       homeModules.default = homeManagerModule;
