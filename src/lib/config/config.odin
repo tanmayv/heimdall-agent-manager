@@ -13,6 +13,8 @@ default_config_path :: proc() -> string {
 		if appdata != "" do return strings.concatenate({appdata, "\\heimdall\\config.toml"})
 		return "heimdall\\config.toml"
 	} else when ODIN_OS == .Darwin {
+		xdg := os.get_env_alloc("XDG_CONFIG_HOME", context.allocator)
+		if xdg != "" do return strings.concatenate({xdg, "/heimdall/config.toml"})
 		home := os.get_env_alloc("HOME", context.allocator)
 		if home != "" do return strings.concatenate({home, "/Library/Application Support/heimdall/config.toml"})
 		return "config.toml"
@@ -51,6 +53,7 @@ Daemon_Config :: struct {
 	nudge_restart_grace_seconds: int,
 	nudge_send_escape_prefix: bool,
 	startup_stale_after_seconds: int,
+	wrapper_bin: string,
 }
 
 Wrapper_Config :: struct {
@@ -68,6 +71,7 @@ Wrapper_Config :: struct {
 	project: string,
 	memory_templates: []string,
 	stop_message: string,
+	ham_ctl_bin: string,
 }
 
 Startup_Detection_Config :: struct {
@@ -315,6 +319,8 @@ parse_daemon_key :: proc(key, value: string, cfg: ^Daemon_Config) {
 		cfg.nudge_send_escape_prefix = parse_bool(value)
 	case "startup_stale_after_seconds":
 		if n, ok := strconv.parse_int(value); ok do cfg.startup_stale_after_seconds = int(n)
+	case "wrapper_bin":
+		cfg.wrapper_bin = parse_string(value)
 	case:
 	}
 }
@@ -347,6 +353,8 @@ parse_wrapper_key :: proc(key, value: string, cfg: ^Wrapper_Config) {
 		cfg.memory_templates = parse_string_array(value)
 	case "stop_message":
 		cfg.stop_message = parse_string(value)
+	case "ham_ctl_bin":
+		cfg.ham_ctl_bin = expand_home(parse_string(value))
 	case:
 	}
 }

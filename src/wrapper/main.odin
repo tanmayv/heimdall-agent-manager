@@ -45,6 +45,7 @@ main :: proc() {
 	}
 
 	cfg := loaded.config.wrapper
+	if cfg.ham_ctl_bin != "" do g_ctl_bin = cfg.ham_ctl_bin
 	selected_agent := option_value(os.args, "--agent", cfg.default_agent)
 	if selected_agent == "" do selected_agent = cfg.agent_name
 	requested_agent_token := option_value(os.args, "--agent-token", "")
@@ -467,9 +468,9 @@ handle_memory_event :: proc(text, tmux_pane, agent_instance_id: string) {
 	proposal_id := extract_json_string(text, "proposal_id", "")
 	subject_agent := extract_json_string(text, "subject_agent", "")
 	status := extract_json_string(text, "status", "")
-	line := fmt.tprintf("Memory %s %s by %s for %s (%s). Fetch details with: %s memory show --token <your token> --memory-id %s", memory_id, event, changed_by, subject_agent, status, HAM_CTL_BIN, memory_id)
+	line := fmt.tprintf("Memory %s %s by %s for %s (%s). Fetch details with: %s memory show --token <your token> --memory-id %s", memory_id, event, changed_by, subject_agent, status, effective_ctl_bin(), memory_id)
 	if proposal_id != "" && (status == "pending" || strings.index(event, "Proposed") >= 0) {
-		line = fmt.tprintf("Memory proposal %s %s by %s for %s. Review with: %s memory history --token <your token> --memory-id %s", proposal_id, event, changed_by, subject_agent, HAM_CTL_BIN, memory_id)
+		line = fmt.tprintf("Memory proposal %s %s by %s for %s. Review with: %s memory history --token <your token> --memory-id %s", proposal_id, event, changed_by, subject_agent, effective_ctl_bin(), memory_id)
 	}
 	if tmux.send_line(tmux_pane, line) {
 		fmt.println("notified agent pane", line)
@@ -482,7 +483,7 @@ handle_user_chat_event :: proc(text, tmux_pane: string) {
 	user_id := extract_json_string(text, "user_id", "unknown")
 	pending_count := extract_json_int(text, "pending_count", 1)
 	if pending_count <= 0 do pending_count = 1
-	line := fmt.tprintf("%d User Chat Messages from %s. Read with: %s chat fetch-user --token <your token> --user-id %s", pending_count, user_id, HAM_CTL_BIN, user_id)
+	line := fmt.tprintf("%d User Chat Messages from %s. Read with: %s chat fetch-user --token <your token> --user-id %s", pending_count, user_id, effective_ctl_bin(), user_id)
 	if tmux.send_line(tmux_pane, line) {
 		fmt.println("notified agent pane", line)
 	} else {
@@ -867,9 +868,8 @@ build_agents_md :: proc(name, profile: string, content_sections: []string, selec
 	strings.write_string(&b, BOOTSTRAP_HEADER); strings.write_string(&b, "\n")
 	strings.write_string(&b, bootstrap_title(name, profile)); strings.write_string(&b, "\n\n")
 	if content_section_enabled(content_sections, "IDENTITY") {
-		ctl_bin := HAM_CTL_BIN
 		strings.write_string(&b, "FIRST RUN: `")
-		strings.write_string(&b, ctl_bin)
+		strings.write_string(&b, effective_ctl_bin())
 		strings.write_string(&b, " --daemon-url ")
 		strings.write_string(&b, daemon_url)
 		strings.write_string(&b, " --token ")
@@ -1073,7 +1073,7 @@ bootstrap_profile_guidance :: proc(profile, file_name: string) -> string {
 	builder := strings.builder_make()
 	strings.write_string(&builder, "\n# Heimdall Tooling\n")
 	strings.write_string(&builder, "- Use repo-local `")
-	strings.write_string(&builder, HAM_CTL_BIN)
+	strings.write_string(&builder, effective_ctl_bin())
 	strings.write_string(&builder, " --config ./config.toml ...` for Heimdall task, chat, project, and memory workflows when available.\n")
 	strings.write_string(&builder, "- Track non-trivial/verifiable work in Heimdall tasks; keep status current and request review when complete.\n")
 	if profile == "claude" {
@@ -1102,7 +1102,7 @@ bootstrap_profile_guidance :: proc(profile, file_name: string) -> string {
 	strings.write_string(&builder, "This prevents unauthorized work and keeps the user in control.\n")
 	strings.write_string(&builder, "\n# Ham-ctl CLI Reference\n")
 	strings.write_string(&builder, "All commands use: `")
-	strings.write_string(&builder, HAM_CTL_BIN)
+	strings.write_string(&builder, effective_ctl_bin())
 	strings.write_string(&builder, " --config ./config.toml <command> --token <your-token> [flags]`\n")
 	strings.write_string(&builder, "\n## List and start agents\n")
 	strings.write_string(&builder, "```\n")
@@ -1346,9 +1346,9 @@ build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_
 
 memory_cli_guidance :: proc(agent_token: string) -> string {
 	builder := strings.builder_make()
-	bin :: HAM_CTL_BIN
-	write_ctl :: proc(b: ^strings.Builder, suffix: string) {
-		strings.write_string(b, HAM_CTL_BIN)
+	bin := effective_ctl_bin()
+	write_ctl :: proc(b: ^strings.Builder, bin, suffix: string) {
+		strings.write_string(b, bin)
 		strings.write_string(b, suffix)
 	}
 	strings.write_string(&builder, "\n\n# Memory CLI\n")
@@ -1356,29 +1356,29 @@ memory_cli_guidance :: proc(agent_token: string) -> string {
 	strings.write_string(&builder, bin)
 	strings.write_string(&builder, "` memory commands with your token for durable memory proposals and review. Approved active memory is what affects runtime behavior; pending, rejected, and archived proposals do not. Template memories are reusable starter memory for configured agents/roles and follow the same propose/approve/version/archive/rollback lifecycle. Proposal reason/evidence are proposal-only review metadata and should not be copied into runtime memory bodies. Skill memories must use structured body text with at least name: and description:.\n")
 	strings.write_string(&builder, "Examples: ")
-	write_ctl(&builder, " memory propose new --token ")
+	write_ctl(&builder, bin, " memory propose new --token ")
 	strings.write_string(&builder, agent_token)
 	strings.write_string(&builder, " --subject-agent <agent> --type fact|habit|episode|expertise|skill|template --title <title> --body <body> --reason <why> --evidence <task-or-source>; ")
-	write_ctl(&builder, " memory propose edit --token ")
+	write_ctl(&builder, bin, " memory propose edit --token ")
 	strings.write_string(&builder, agent_token)
 	strings.write_string(&builder, " --memory-id <id> --expected-version <n> --title <title> --body <body> --reason <why> --evidence <source>; ")
-	write_ctl(&builder, " memory propose archive --token ")
+	write_ctl(&builder, bin, " memory propose archive --token ")
 	strings.write_string(&builder, agent_token)
 	strings.write_string(&builder, " --memory-id <id> --expected-version <n> --reason <why> --evidence <source>; ")
-	write_ctl(&builder, " memory propose rollback --token ")
+	write_ctl(&builder, bin, " memory propose rollback --token ")
 	strings.write_string(&builder, agent_token)
 	strings.write_string(&builder, " --memory-id <id> --expected-version <n> --reason <why> --evidence <source>.\n")
 	strings.write_string(&builder, "Review/query: ")
-	write_ctl(&builder, " memory decide --token ")
+	write_ctl(&builder, bin, " memory decide --token ")
 	strings.write_string(&builder, agent_token)
 	strings.write_string(&builder, " --proposal-id <proposal_id> --decision approve|reject; ")
-	write_ctl(&builder, " memory list --token ")
+	write_ctl(&builder, bin, " memory list --token ")
 	strings.write_string(&builder, agent_token)
 	strings.write_string(&builder, " --status active|pending|archived|rejected|all; ")
-	write_ctl(&builder, " memory show --token ")
+	write_ctl(&builder, bin, " memory show --token ")
 	strings.write_string(&builder, agent_token)
 	strings.write_string(&builder, " --memory-id <id>; ")
-	write_ctl(&builder, " memory history --token ")
+	write_ctl(&builder, bin, " memory history --token ")
 	strings.write_string(&builder, agent_token)
 	strings.write_string(&builder, " --memory-id <id>.\n")
 	return strings.to_string(builder)
@@ -1502,12 +1502,19 @@ template_command :: proc(command: []string, daemon_url, agent_instance_id, displ
 	return result
 }
 
-// Path to ham-ctl binary. Update this when the install location changes.
-// Future: put ham-ctl on $PATH and set this to just "ham-ctl".
-HAM_CTL_BIN :: "~/heimdall-agent-manager/bin/linux-x86_64/ham-ctl"
+// Compile-time fallback path for ham-ctl. Set ham_ctl_bin in config.toml to override at runtime.
+HAM_CTL_BIN :: "ham-ctl"
+
+// Runtime ctl bin path resolved from config at startup. Falls back to HAM_CTL_BIN when empty.
+g_ctl_bin: string
+
+effective_ctl_bin :: proc() -> string {
+	if g_ctl_bin != "" do return g_ctl_bin
+	return HAM_CTL_BIN
+}
 
 template_string :: proc(value, daemon_url, agent_instance_id, display_name, conversation_id, agent_token: string) -> string {
-	ctl_bin := HAM_CTL_BIN
+	ctl_bin := effective_ctl_bin()
 	templated := replace_all(value, "{daemon_url}", daemon_url)
 	templated = replace_all(templated, "{agent_instance_id}", agent_instance_id)
 	templated = replace_all(templated, "{display_name}", display_name)

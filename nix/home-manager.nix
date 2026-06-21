@@ -257,8 +257,11 @@ let
     // { models    = mkModels ac.models; }
     // lib.optionalAttrs (ac.startupDetection != null)  { startup_detection = mkStartupDetection ac.startupDetection; };
 
+  wrapperPkg = self.packages.${pkgs.stdenv.hostPlatform.system}.ham-wrapper;
+
   mkDaemon = d:
-    { bind_host = d.bindHost; port = d.port; data_dir = d.dataDir; }
+    { bind_host = d.bindHost; port = d.port; data_dir = d.dataDir;
+      wrapper_bin = "${wrapperPkg}/bin/ham-wrapper"; }
     // lib.optionalAttrs (d.startupStaleAfterSeconds != null)           { startup_stale_after_seconds          = d.startupStaleAfterSeconds; }
     // lib.optionalAttrs (d.nudge.enabled != null)                      { nudge_enabled                        = d.nudge.enabled; }
     // lib.optionalAttrs (d.nudge.intervalSeconds != null)              { nudge_interval_seconds               = d.nudge.intervalSeconds; }
@@ -283,6 +286,7 @@ let
       project             = w.project;
       memory_templates    = w.memoryTemplates;
     }
+    // lib.optionalAttrs (w.hamCtlBin != null)      { ham_ctl_bin   = w.hamCtlBin; }
     // lib.optionalAttrs (w.command != [])          { command       = w.command; }
     // lib.optionalAttrs (w.agentRunDir != null)    { agent_run_dir = w.agentRunDir; }
     // lib.optionalAttrs (w.agentCommands != {})    { "agent-cmd"   = lib.mapAttrs (_: mkAgentCmd) w.agentCommands; };
@@ -475,6 +479,18 @@ in
         type        = lib.types.listOf lib.types.str;
         default     = [];
         description = "Memory template IDs/titles injected into agent starter prompts (global default).";
+      };
+
+      hamCtlBin = lib.mkOption {
+        type        = lib.types.nullOr lib.types.str;
+        default     = "${self.packages.${pkgs.stdenv.hostPlatform.system}.ham-ctl}/bin/ham-ctl";
+        defaultText = lib.literalExpression ''"''${pkgs.ham-ctl}/bin/ham-ctl"'';
+        description = ''
+          Absolute path to the ham-ctl binary written into agent bootstrap files.
+          Defaults to the ham-ctl binary from the Nix store so agents do not need
+          ham-ctl on $PATH. Set to null to omit the key and fall back to the
+          wrapper binary's built-in default.
+        '';
       };
 
       agentCommands = lib.mkOption {
