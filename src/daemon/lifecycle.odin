@@ -1,6 +1,8 @@
 package main
 
+import "core:fmt"
 import "core:net"
+import "core:strings"
 
 handle_register :: proc(client: net.TCP_Socket, body: string) {
 	agent_instance_id := extract_json_string(body, "agent_instance_id", "unknown")
@@ -64,23 +66,145 @@ handle_startup_report :: proc(client: net.TCP_Socket, body: string) {
 		rec := agent_instance_records[idx]
 		if provider_profile != "" do rec.provider_profile = provider_profile
 		if run_dir != "" do rec.run_dir = run_dir
-		_ = agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = rec.provider_profile, project_id = rec.project_id, run_dir = rec.run_dir, author = "startup_report"})
+		// Preserve stored model_tier — startup_report doesn't carry tier and
+		// emitting with empty tier would clobber the value set at /agents/start.
+		_ = agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = rec.provider_profile, project_id = rec.project_id, run_dir = rec.run_dir, model_tier = rec.model_tier, author = "startup_report"})
 	}
 	agent_lifecycle_emit(agent_instance_id, status, "startup_report")
 	write_response(client, 200, "OK", `{"ok":true}`)
 }
 
+// handle_heartbeat is the single sync point between wrapper, daemon, and UI.
+// Behavior:
+//   - Required fields (display_name, agent_instance_id, provider_profile,
+//     provider_tier) must be present; missing → 400.
+//   - If agent_store has no record for instance_id, daemon inserts from the
+//     wrapper payload. This is the ONLY write-from-wrapper path. project_id,
+//     when non-empty, must reference an existing project — otherwise reject
+//     with project_not_found and do not insert.
+//   - If agent_store has a record, daemon does not write. It compares
+//     identity/config fields and returns daemon's values as `corrections`.
+//     The wrapper logs corrections; behavior beyond logging is deferred.
+//   - Token must match the registry token for the instance; if registry has no
+//     entry, the heartbeat reconstructs it (covers daemon-restart-with-live-
+//     wrappers).
+//   - Runtime fields (pid, tmux_pane, exec_state, ...) update the in-memory
+//     registry only. If any changed, fan out agent.runtime_changed.
 handle_heartbeat :: proc(client: net.TCP_Socket, body: string) {
-	agent_instance_id := extract_json_string(body, "agent_instance_id", "")
-	if !valid_agent_instance_id(agent_instance_id) {
+	snap := Heartbeat_Snapshot{
+		agent_instance_id        = extract_json_string(body, "agent_instance_id", ""),
+		agent_token              = extract_json_string(body, "agent_token", ""),
+		display_name             = extract_json_string(body, "display_name", ""),
+		provider_profile         = extract_json_string(body, "provider_profile", ""),
+		provider_tier            = extract_json_string(body, "provider_tier", ""),
+		project_id               = extract_json_string(body, "project_id", ""),
+		tmux_pane                = extract_json_string(body, "tmux_pane", ""),
+		pid                      = extract_json_int(body, "pid", 0),
+		exec_state               = extract_json_string(body, "exec_state", ""),
+		exec_state_since_unix_ms = i64(extract_json_int(body, "exec_state_since_unix_ms", 0)),
+		blocked_reason           = extract_json_string(body, "blocked_reason", ""),
+		run_dir                  = extract_json_string(body, "run_dir", ""),
+	}
+
+	if !valid_agent_instance_id(snap.agent_instance_id) {
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid agent_instance_id"}`)
 		return
 	}
-	was_live := registry_agent_live(agent_instance_id)
-	if registry_heartbeat(agent_instance_id) {
-		if !was_live do agent_lifecycle_emit(agent_instance_id, "connected", "heartbeat")
-		write_response(client, 200, "OK", `{"ok":true}`)
-	} else {
-		write_response(client, 404, "Not Found", `{"ok":false,"message":"unknown agent instance"}`)
+	if snap.display_name == "" || snap.provider_profile == "" || snap.provider_tier == "" {
+		write_response(client, 400, "Bad Request", `{"ok":false,"error":"missing_required","message":"heartbeat requires display_name, provider_profile, provider_tier"}`)
+		return
 	}
+	if snap.provider_tier != "cheap" && snap.provider_tier != "normal" && snap.provider_tier != "smart" {
+		write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid provider_tier; expected cheap, normal, or smart"}`)
+		return
+	}
+
+	// Token + registry recovery. If registry has the agent and a token, the
+	// supplied token must match. If registry doesn't have the agent (daemon
+	// restarted while wrapper was live), re-register from the snapshot —
+	// the wrapper already proved identity by holding the token bound to a
+	// persisted record (verified below) or by being a fresh agent.
+	if reg_idx := registry_find_agent(snap.agent_instance_id); reg_idx >= 0 {
+		if agents[reg_idx].has_agent_token && snap.agent_token != "" && agents[reg_idx].agent_token != snap.agent_token {
+			write_response(client, 409, "Conflict", `{"ok":false,"error":"token_mismatch","message":"agent_token does not match registry"}`)
+			return
+		}
+	} else {
+		_ = registry_register(derive_agent_class(snap.agent_instance_id), snap.agent_instance_id, snap.display_name, snap.agent_token)
+	}
+
+	store_idx := agent_record_index_by_instance(snap.agent_instance_id)
+	inserted := false
+
+	// Wrapper-test agents (token prefix agt_test_) are ephemeral. They keep
+	// their in-memory registry presence so the test runner can track them,
+	// but they never write to agent_store, never appear in the sidebar (gated
+	// by is_test_token in handle_agents_list), and never enter the
+	// insert-from-heartbeat path.
+	is_test := is_test_token(snap.agent_token)
+
+	if store_idx < 0 && !is_test {
+		// Insert path — the only place a wrapper-supplied value lands in the DB.
+		if snap.project_id != "" && project_index(snap.project_id) < 0 {
+			write_response(client, 400, "Bad Request", `{"ok":false,"error":"project_not_found","message":"project_id does not exist; agent not persisted"}`)
+			return
+		}
+		rec_id, _, ok := agent_record_upsert(snap.agent_instance_id, snap.display_name, derive_agent_class(snap.agent_instance_id), snap.provider_profile, snap.project_id, snap.run_dir, snap.provider_tier)
+		if !ok || rec_id == "" {
+			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`)
+			return
+		}
+		inserted = true
+		store_idx = agent_record_index_by_instance(snap.agent_instance_id)
+	}
+
+	// Build corrections from stored record — wrapper-supplied values that
+	// disagree with daemon are NOT persisted. Empty stored project_id is a
+	// valid configuration (unassigned) and is sent back as a correction so
+	// the wrapper learns about it.
+	corrections_b := strings.builder_make()
+	have_corrections := false
+
+	add_correction :: proc(b: ^strings.Builder, have: ^bool, field, value: string) {
+		if have^ do strings.write_string(b, ",")
+		strings.write_string(b, `"`); json_write_string(b, field); strings.write_string(b, `":"`); json_write_string(b, value); strings.write_string(b, `"`)
+		have^ = true
+	}
+
+	if store_idx >= 0 {
+		stored := agent_instance_records[store_idx]
+		if !inserted {
+			if snap.display_name != stored.display_name && stored.display_name != "" {
+				add_correction(&corrections_b, &have_corrections, "display_name", stored.display_name)
+			}
+			if snap.provider_profile != stored.provider_profile && stored.provider_profile != "" {
+				add_correction(&corrections_b, &have_corrections, "provider_profile", stored.provider_profile)
+			}
+			if snap.provider_tier != stored.model_tier && stored.model_tier != "" {
+				add_correction(&corrections_b, &have_corrections, "provider_tier", stored.model_tier)
+			}
+			if snap.project_id != stored.project_id {
+				add_correction(&corrections_b, &have_corrections, "project_id", stored.project_id)
+			}
+		}
+		registry_refresh_identity_cache(snap.agent_instance_id, stored.display_name, stored.provider_profile, stored.model_tier, stored.project_id)
+	} else {
+		// Test agent (or otherwise unpersisted) — cache wrapper-supplied identity
+		// so registry-backed views render. Nothing hits disk.
+		registry_refresh_identity_cache(snap.agent_instance_id, snap.display_name, snap.provider_profile, snap.provider_tier, snap.project_id)
+	}
+
+	was_live := registry_agent_live(snap.agent_instance_id)
+	runtime_changed := registry_apply_heartbeat_snapshot(snap)
+	if !was_live do agent_lifecycle_emit(snap.agent_instance_id, "connected", "heartbeat")
+	if runtime_changed do agent_runtime_emit(snap.agent_instance_id, "heartbeat")
+
+	resp := strings.builder_make()
+	strings.write_string(&resp, `{"ok":true,"inserted":`)
+	strings.write_string(&resp, "true" if inserted else "false")
+	strings.write_string(&resp, `,"corrections":{`)
+	if have_corrections do strings.write_string(&resp, strings.to_string(corrections_b))
+	strings.write_string(&resp, `}}`)
+	_ = fmt.tprintf("") // keep fmt import live if downstream edits remove uses
+	write_response(client, 200, "OK", strings.to_string(resp))
 }

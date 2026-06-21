@@ -75,10 +75,12 @@ Startup_Detection_Config :: struct {
 	ready_on_launch: bool,
 	startup_probe_seconds: int,
 	capture_interval_ms: int,
-	ready_patterns: []string,
 	blocked_patterns: []string,
-	probe_prompt: string,
-	probe_expect_echo: bool,
+	auto_enter_patterns: []string,
+	// Parallel to auto_enter_patterns. Each entry is a tmux send-keys argument
+	// dispatched BEFORE the Enter (e.g. "Down" to move selection off the
+	// default option). Empty string or missing index = no pre-key, just Enter.
+	auto_enter_pre_keys: []string,
 	startup_unknown_is_blocked: bool,
 	sanitized_reason_mapping: []string,
 }
@@ -282,7 +284,7 @@ parse_daemon_key :: proc(key, value: string, cfg: ^Daemon_Config) {
 			cfg.port = u16(port)
 		}
 	case "data_dir":
-		cfg.data_dir = parse_string(value)
+		cfg.data_dir = expand_home(parse_string(value))
 	case "daemon_id":
 		cfg.daemon_id = parse_string(value)
 	case "user_id":
@@ -324,7 +326,7 @@ parse_wrapper_key :: proc(key, value: string, cfg: ^Wrapper_Config) {
 	case "daemon_url":
 		cfg.daemon_url = parse_string(value)
 	case "credentials_path":
-		cfg.credentials_path = parse_string(value)
+		cfg.credentials_path = expand_home(parse_string(value))
 	case "agent_name":
 		cfg.agent_name = parse_string(value)
 	case "default_agent":
@@ -340,7 +342,7 @@ parse_wrapper_key :: proc(key, value: string, cfg: ^Wrapper_Config) {
 	case "tmux_window_prefix":
 		cfg.tmux_window_prefix = parse_string(value)
 	case "agent_run_dir":
-		cfg.agent_run_dir = parse_string(value)
+		cfg.agent_run_dir = expand_home(parse_string(value))
 	case "project":
 		cfg.project = parse_string(value)
 	case "memory_templates":
@@ -381,9 +383,9 @@ parse_agent_command_key :: proc(name, key, value: string, cfg: ^Wrapper_Config) 
 	case "starter_prompt":
 		cfg.agent_commands[idx].starter_prompt = parse_string(value)
 	case "run_dir":
-		cfg.agent_commands[idx].run_dir = parse_string(value)
+		cfg.agent_commands[idx].run_dir = expand_home(parse_string(value))
 	case "agent_run_dir":
-		cfg.agent_commands[idx].agent_run_dir = parse_string(value)
+		cfg.agent_commands[idx].agent_run_dir = expand_home(parse_string(value))
 	case "project":
 		cfg.agent_commands[idx].project = parse_string(value)
 	case "memory_templates":
@@ -447,14 +449,12 @@ parse_startup_detection_key :: proc(name, key, value: string, cfg: ^Wrapper_Conf
 		if n, ok := strconv.parse_int(value); ok do sd.startup_probe_seconds = int(n)
 	case "capture_interval_ms":
 		if n, ok := strconv.parse_int(value); ok do sd.capture_interval_ms = int(n)
-	case "ready_patterns":
-		sd.ready_patterns = parse_string_array(value)
 	case "blocked_patterns":
 		sd.blocked_patterns = parse_string_array(value)
-	case "probe_prompt":
-		sd.probe_prompt = parse_string(value)
-	case "probe_expect_echo":
-		sd.probe_expect_echo = parse_bool(value)
+	case "auto_enter_patterns":
+		sd.auto_enter_patterns = parse_string_array(value)
+	case "auto_enter_pre_keys":
+		sd.auto_enter_pre_keys = parse_string_array(value)
 	case "startup_unknown_is_blocked":
 		sd.startup_unknown_is_blocked = parse_bool(value)
 	case "sanitized_reason_mapping", "reason_mapping":
@@ -485,12 +485,43 @@ parse_string_array :: proc(value: string) -> []string {
 	inner := strings.trim_space(v[1:len(v) - 1])
 	if inner == "" do return nil
 
-	parts := strings.split(inner, ",")
+	parts := split_top_level_commas(inner)
 	items := make([]string, len(parts))
 	for part, i in parts {
 		items[i] = parse_string(part)
 	}
 	return items
+}
+
+// Split on commas that are NOT inside a "..." or '...' string literal. Handles
+// backslash escapes inside double-quoted strings so commas in patterns like
+// "Yes, I trust this folder" stay grouped.
+split_top_level_commas :: proc(s: string) -> []string {
+	out: [dynamic]string
+	start := 0
+	in_dq := false
+	in_sq := false
+	i := 0
+	for i < len(s) {
+		ch := s[i]
+		if in_dq {
+			if ch == '\\' && i + 1 < len(s) { i += 2; continue }
+			if ch == '"' do in_dq = false
+		} else if in_sq {
+			if ch == '\'' do in_sq = false
+		} else {
+			switch ch {
+			case '"':  in_dq = true
+			case '\'': in_sq = true
+			case ',':
+				append(&out, s[start:i])
+				start = i + 1
+			}
+		}
+		i += 1
+	}
+	append(&out, s[start:])
+	return out[:]
 }
 
 resolve_model_value :: proc(m: Model_Tiers_Config, tier: string) -> string {

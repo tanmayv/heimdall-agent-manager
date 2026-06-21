@@ -71,7 +71,9 @@ handle_agents_list :: proc(client: net.TCP_Socket, request: string) {
 			// provider_profile is set on startup report; fall back to agent_class (always set on register)
 			live_pp := ag.provider_profile; if live_pp == "" do live_pp = ag.agent_class
 			strings.write_string(&builder, `","template_id":"","provider_profile":"`); json_write_string(&builder, live_pp)
-			strings.write_string(&builder, `","project_id":"","run_dir":"`); json_write_string(&builder, ag.run_dir)
+			strings.write_string(&builder, `","project_id":"","project_name":"","run_dir":"`); json_write_string(&builder, ag.run_dir)
+			strings.write_string(&builder, `","conversation_id":"`); json_write_string(&builder, ag.conversation_id)
+			strings.write_string(&builder, `","tmux_pane":"`); json_write_string(&builder, ag.tmux_pane)
 			strings.write_string(&builder, `","connected":`); strings.write_string(&builder, "true" if ag.connected else "false")
 			strings.write_string(&builder, `,"last_seen_unix_ms":`); strings.write_string(&builder, fmt.tprintf("%d", ag.last_seen_unix_ms))
 			strings.write_string(&builder, `,"startup_status":"`); json_write_string(&builder, ag.startup_status)
@@ -123,10 +125,15 @@ agent_record_upsert :: proc(
 	run_dir := run_dir_override
 	tier := model_tier; if tier == "" do tier = "normal"
 	pp := provider_profile
+	resolved_project_id := project_id
 	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 {
 		rec_id = agent_instance_records[idx].agent_record_id
 		if run_dir == "" do run_dir = agent_instance_records[idx].run_dir
 		if pp == "" do pp = agent_instance_records[idx].provider_profile
+		// Empty project_id from caller (e.g. /agents/start with no body project_id)
+		// must NOT clobber the stored association. Use the stored value as the
+		// fallback; explicit disassociation goes through /agents/disassociate.
+		if resolved_project_id == "" do resolved_project_id = agent_instance_records[idx].project_id
 	}
 	if pp == "" do pp = "pi"
 	ev := Agent_Instance_Event{
@@ -136,7 +143,7 @@ agent_record_upsert :: proc(
 		display_name = display_label,
 		template_id = template_id,
 		provider_profile = pp,
-		project_id = project_id,
+		project_id = resolved_project_id,
 		run_dir = run_dir,
 		model_tier = tier,
 		author = "api",
@@ -183,12 +190,17 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`)
 		return
 	}
-	// Reload provider_profile as resolved by upsert (may have fallen back to stored value)
-	if idx := agent_record_index(agent_record_id); idx >= 0 do provider_profile = agent_instance_records[idx].provider_profile
+	// Reload provider_profile and project_id as resolved by upsert (may have
+	// fallen back to stored value if caller didn't provide a fresh one).
+	resolved_project_id := project_id
+	if idx := agent_record_index(agent_record_id); idx >= 0 {
+		provider_profile = agent_instance_records[idx].provider_profile
+		resolved_project_id = agent_instance_records[idx].project_id
+	}
 
 	agent_token := generate_agent_token()
 	registry_add_pending_agent_token(agent_instance_id, agent_token)
-	ok := launch_wrapper_detached(agent_instance_id, provider_profile, config_path, log_path, agent_token, display_name, final_tier)
+	ok := launch_wrapper_detached(agent_instance_id, provider_profile, config_path, log_path, agent_token, display_name, final_tier, resolved_project_id)
 	if !ok {
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to start wrapper"}`)
 		return
@@ -224,15 +236,22 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 	strings.write_string(builder, `","template_id":"`); json_write_string(builder, rec.template_id)
 	strings.write_string(builder, `","provider_profile":"`); json_write_string(builder, rec.provider_profile)
 	strings.write_string(builder, `","project_id":"`); json_write_string(builder, rec.project_id)
+	project_name := ""
+	if rec.project_id != "" {
+		if pidx := project_index(rec.project_id); pidx >= 0 do project_name = project_records[pidx].name
+	}
+	strings.write_string(builder, `","project_name":"`); json_write_string(builder, project_name)
 	strings.write_string(builder, `","run_dir":"`); json_write_string(builder, rec.run_dir)
 	model_tier := rec.model_tier; if model_tier == "" do model_tier = "normal"
 	strings.write_string(builder, `","model_tier":"`); json_write_string(builder, model_tier)
 	strings.write_string(builder, `","created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.created_unix_ms))
 	strings.write_string(builder, `,"updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.updated_unix_ms))
 	strings.write_string(builder, `,"archived_at_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.archived_at_unix_ms))
+	strings.write_string(builder, `,"conversation_id":"`); json_write_string(builder, conversation_id_for_instance(rec.agent_instance_id))
 	if live_idx := registry_find_agent(rec.agent_instance_id); live_idx >= 0 {
 		agent := agents[live_idx]
-		strings.write_string(builder, `,"connected":`); strings.write_string(builder, "true" if agent.connected else "false")
+		strings.write_string(builder, `","tmux_pane":"`); json_write_string(builder, agent.tmux_pane)
+		strings.write_string(builder, `","connected":`); strings.write_string(builder, "true" if agent.connected else "false")
 		strings.write_string(builder, `,"connection_state":"`); json_write_string(builder, "connected" if agent.connected else "registered")
 		strings.write_string(builder, `","last_seen_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", agent.last_seen_unix_ms))
 		strings.write_string(builder, `,"startup_status":"`); json_write_string(builder, agent.startup_status)
@@ -240,7 +259,7 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 		strings.write_string(builder, `","safe_diagnostic":"`); json_write_string(builder, agent.startup_safe_diagnostic)
 		strings.write_string(builder, `","startup_updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", agent.startup_updated_unix_ms))
 	} else {
-		strings.write_string(builder, `,"connected":false,"connection_state":"offline"`)
+		strings.write_string(builder, `","tmux_pane":"","connected":false,"connection_state":"offline"`)
 	}
 	strings.write_string(builder, `}`)
 }
@@ -267,7 +286,7 @@ query_param :: proc(request, name: string) -> string {
 	return query[start:start + end]
 }
 
-launch_wrapper_detached :: proc(agent_instance_id, selected_agent, config_path, log_path, agent_token, display_name, model_tier: string) -> bool {
+launch_wrapper_detached :: proc(agent_instance_id, selected_agent, config_path, log_path, agent_token, display_name, model_tier, project_id: string) -> bool {
 	_ = os.make_directory_all(parent_dir(log_path))
 	wrapper_bin := default_wrapper_bin()
 
@@ -291,6 +310,10 @@ launch_wrapper_detached :: proc(agent_instance_id, selected_agent, config_path, 
 	tier := model_tier; if tier == "" do tier = "normal"
 	strings.write_string(&builder, " --tier ")
 	strings.write_string(&builder, shell_quote(tier))
+	if project_id != "" {
+		strings.write_string(&builder, " --project-id ")
+		strings.write_string(&builder, shell_quote(project_id))
+	}
 	strings.write_string(&builder, " ")
 	strings.write_string(&builder, shell_quote(agent_instance_id))
 	strings.write_string(&builder, " > ")

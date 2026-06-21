@@ -85,11 +85,6 @@ export async function registerUserClient({ daemonUrl, userId, clientInstanceId, 
   });
 }
 
-export async function listConnectedAgents({ daemonUrl }: { daemonUrl: string }) {
-  const data = await requestJson(joinUrl(daemonUrl, '/clients'));
-  return data.agents ?? data.clients ?? [];
-}
-
 export async function listAgentTemplates({ daemonUrl }: { daemonUrl: string }) {
   const data = await requestJson(joinUrl(daemonUrl, '/agents/templates'));
   return data.templates ?? [];

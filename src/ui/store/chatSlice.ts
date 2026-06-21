@@ -73,6 +73,7 @@ function mapAgent(agent: any) {
     conversationId: agent.conversation_id || agent.conversationId,
     unreadCount: agent.unreadCount || 0,
     projectId: agent.project_id || agent.projectId || '',
+    projectName: agent.project_name || agent.projectName || '',
     templateId: agent.template_id || agent.templateId || '',
     providerProfile: agent.provider_profile || agent.providerProfile || agent.agent_class || '',
     roleHint: agent.role_hint || agent.roleHint || '',
@@ -93,12 +94,15 @@ function metadataOnlyAgent(agent: any) {
   };
 }
 
-function mergeKnownAndLiveAgents(localKnownAgents: any[], daemonKnownAgents: any[], liveAgents: any[], daemonReachable = false) {
+// Merge persisted-and-live agent records from /agents with the UI's localStorage
+// cache (so the sidebar isn't blank during a daemon round-trip). /agents already
+// embeds live registry fields (connected, tmux_pane, startup_status, etc.) when
+// a wrapper is up, so we no longer need a second /clients fetch.
+function mergeKnownAndLiveAgents(localKnownAgents: any[], daemonAgents: any[], daemonReachable = false) {
   const byId: any = {};
-  // When daemon responded, build an authoritative ID set so stale/archived local entries are pruned.
   const daemonIds = new Set<string>();
   if (daemonReachable) {
-    for (const a of [...daemonKnownAgents, ...liveAgents]) {
+    for (const a of daemonAgents) {
       const id = a.agent_instance_id || a.agentInstanceId || a.id;
       if (id) daemonIds.add(id);
     }
@@ -108,25 +112,11 @@ function mergeKnownAndLiveAgents(localKnownAgents: any[], daemonKnownAgents: any
     if (daemonReachable && !daemonIds.has(agent.id)) continue;
     byId[agent.id] = { ...agent, status: 'offline', startupStatus: '', known: true };
   }
-  for (const daemonAgent of daemonKnownAgents.map(mapAgent)) {
+  for (const daemonAgent of daemonAgents.map(mapAgent)) {
     if (!daemonAgent.id) continue;
-    byId[daemonAgent.id] = { ...(byId[daemonAgent.id] || {}), ...daemonAgent, status: daemonAgent.startupStatus || 'offline', known: true };
-  }
-  for (const live of liveAgents.map(mapAgent)) {
-    if (!live.id) continue;
-    const existing = byId[live.id] || {};
-    const liveLabelLooksLikeId = !live.label || live.label === live.id;
-    byId[live.id] = {
-      ...existing,
-      ...live,
-      label: liveLabelLooksLikeId ? (existing.label || live.label) : live.label,
-      projectId: live.projectId || existing.projectId || '',
-      templateId: live.templateId || existing.templateId || '',
-      providerProfile: live.providerProfile || existing.providerProfile || '',
-      roleHint: live.roleHint || existing.roleHint || '',
-      status: live.status,
-      known: true,
-    };
+    const existing = byId[daemonAgent.id] || {};
+    const status = daemonAgent.status || daemonAgent.startupStatus || ((daemonAgent as any).connected ? 'connected' : 'offline');
+    byId[daemonAgent.id] = { ...existing, ...daemonAgent, status, known: true };
   }
   return Object.values(byId).sort((left: any, right: any) => {
     if (left.status !== right.status) return left.status === 'connected' ? -1 : right.status === 'connected' ? 1 : left.status.localeCompare(right.status);
@@ -158,16 +148,15 @@ export const registerSession = createAsyncThunk('chat/registerSession', async (_
 export const refreshAgents = createAsyncThunk('chat/refreshAgents', async (_, { getState }) => {
   const { daemonUrl } = (getState() as any).chat.session;
   const localKnown = loadKnownAgents();
-  let daemonKnown: any[] = [];
+  let daemonAgents: any[] = [];
   let daemonReachable = false;
   try {
-    daemonKnown = await daemonApi.listKnownAgents({ daemonUrl });
+    daemonAgents = await daemonApi.listKnownAgents({ daemonUrl });
     daemonReachable = true;
   } catch {
-    daemonKnown = [];
+    daemonAgents = [];
   }
-  const liveAgents = await daemonApi.listConnectedAgents({ daemonUrl });
-  const merged = mergeKnownAndLiveAgents(localKnown, daemonKnown, liveAgents, daemonReachable);
+  const merged = mergeKnownAndLiveAgents(localKnown, daemonAgents, daemonReachable);
   storeKnownAgents(merged);
   return merged;
 });
@@ -314,6 +303,10 @@ const chatSlice = createSlice({
       const run = action.payload;
       const idx = state.testRuns.findIndex((r: any) => r.testRunId === run.test_run_id);
       const update = {
+        testRunId: run.test_run_id,
+        provider: run.provider,
+        tier: run.tier,
+        resolvedModel: run.resolved_model,
         status: run.status,
         reason: run.reason,
         elapsedMs: run.elapsed_ms,
@@ -321,6 +314,7 @@ const chatSlice = createSlice({
         completedUnixMs: run.completed_unix_ms,
       };
       if (idx >= 0) state.testRuns[idx] = { ...state.testRuns[idx], ...update };
+      else state.testRuns.unshift(update);
     },
     setTestRuns(state, action) {
       state.testRuns = (action.payload ?? []).map((r: any) => ({
@@ -351,9 +345,11 @@ const chatSlice = createSlice({
           ...mapped,
           label: mappedLabelLooksLikeId ? (existing.label || mapped.label) : mapped.label,
           projectId: mapped.projectId || existing.projectId || '',
+          projectName: mapped.projectName || existing.projectName || '',
           templateId: mapped.templateId || existing.templateId || '',
           providerProfile: mapped.providerProfile || existing.providerProfile || '',
           roleHint: mapped.roleHint || existing.roleHint || '',
+          modelTier: mapped.modelTier || existing.modelTier || 'normal',
           known: true,
         } as never;
       } else {

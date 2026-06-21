@@ -7,6 +7,11 @@ import "core:strings"
 AGENT_MAX_RECORDS :: 1024
 AGENT_MAX_EVENTS :: 4096
 
+// Persisted identity + configuration for an agent. NEVER add runtime or session
+// fields here (pid, tmux_pane, exec_state, last_heartbeat_*) — those go on
+// Agent_Record in registry.odin so they stay in-memory only. Daemon is the
+// source of truth for everything in this struct; wrapper-supplied values that
+// disagree are sent back as corrections, not persisted.
 Agent_Instance_Record :: struct {
 	agent_record_id: string,
 	agent_instance_id: string,

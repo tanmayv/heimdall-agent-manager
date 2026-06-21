@@ -26,10 +26,6 @@ main :: proc() {
 		defer delete(early_cmd)
 		if len(early_cmd) > 0 {
 			early_url := option_value(os.args, "--daemon-url", "http://127.0.0.1:49322")
-			if early_cmd[0] == "agent-ready" {
-				ctl_agent_ready(early_url, os.args)
-				return
-			}
 			if early_cmd[0] == "start-success" {
 				ctl_start_success(early_url, os.args)
 				return
@@ -124,11 +120,6 @@ main :: proc() {
 		return
 	}
 
-	if cmd[0] == "agent-ready" {
-		ctl_agent_ready(daemon_url, os.args)
-		return
-	}
-
 	if cmd[0] == "start-success" {
 		ctl_start_success(daemon_url, os.args)
 		return
@@ -147,9 +138,9 @@ ctl_health :: proc(daemon_url: string) {
 }
 
 ctl_agents_list :: proc(daemon_url: string) {
-	response, ok := http.get(daemon_url, contracts.ROUTE_CLIENTS)
+	response, ok := http.get(daemon_url, "/agents")
 	if !ok {
-		fmt.println("client list failed")
+		fmt.println("agents list failed")
 		return
 	}
 	fmt.println(response.body)
@@ -167,7 +158,7 @@ ctl_agents_start :: proc(agent_instance_id: string, args: []string, config_path,
 		return
 	}
 
-	// Do not preflight duplicate status from /clients here. The clients list can
+	// Do not preflight duplicate status from /agents here. The agents list can
 	// contain stale records after a wrapper/terminal crash. Let wrapper -> daemon
 	// registration decide active_duplicate using daemon-side liveness checks.
 	wrapper_bin := option_value(args, "--wrapper-bin", default_wrapper_bin(args))
@@ -252,27 +243,6 @@ ctl_agents_update :: proc(daemon_url: string, args: []string) {
 	response, ok := http.post(daemon_url, "/agents/update", body)
 	if !ok { fmt.println(`{"ok":false,"message":"update request failed"}`); return }
 	fmt.println(response.body)
-}
-
-ctl_agent_ready :: proc(daemon_url: string, args: []string) {
-	token := option_value(args, "--token", "")
-	if token == "" {
-		fmt.println("usage: ham-ctl --token <token> agent-ready")
-		os.exit(1)
-	}
-	builder := strings.builder_make()
-	strings.write_string(&builder, `{"agent_token":"`)
-	json_write_string(&builder, token)
-	strings.write_string(&builder, `","action":"agent_ready"}`)
-	response, ok := http.post(daemon_url, contracts.ROUTE_AGENT_RPC, strings.to_string(builder))
-	if !ok {
-		fmt.println(`{"ok":false,"message":"agent-ready request failed"}`)
-		os.exit(1)
-	}
-	fmt.println(response.body)
-	if response.status != 200 {
-		os.exit(1)
-	}
 }
 
 ctl_start_success :: proc(daemon_url: string, args: []string) {
@@ -903,6 +873,6 @@ print_usage :: proc(config_path, daemon_url: string) {
 	fmt.println("  chat list|fetch|send|mark-read --client-instance-id <client> --token <client_token> [--agent-instance-id <agent>] [--body <text>] [--message-id <id>]")
 	fmt.println("  chat send-to-user --token <agent_token> --user-id <user> --body <text>")
 	fmt.println("  chat fetch-user --token <agent_token> --user-id <user>")
-	fmt.println("  agent-ready --token <agent_token>   (signal to daemon that agent is alive and ready)")
+	fmt.println("  start-success --token <agent_token>   (signal to daemon that agent is alive and ready)")
 	fmt.println("global flags: --config <path>, --daemon-url <url>, --version, --help")
 }

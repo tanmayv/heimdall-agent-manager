@@ -52,7 +52,7 @@ yolo_flags = []
 # pi accepts the starter prompt as a positional arg:
 #   pi "prompt"
 prompt_flags = []
-starter_prompt = "You are {display_name}. Your agent instance id is {instance}. Your token is {token}. Your VERY FIRST action: run `{ctl_bin} --config ./config.toml --token {token} agent-ready`. Then run `{ctl_bin} --config ./config.toml --help` to see what else you can do."
+starter_prompt = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap file (AGENTS.md or CLAUDE.md) for context, identity, and what you can do."
 
 [wrapper.agent-cmd.pi.bootstrap]
 enabled_features = ["AGENTS_MD"]
@@ -73,7 +73,7 @@ command = ["claude"]
 #   claude --dangerously-skip-permissions "prompt"
 yolo_flags = ["--dangerously-skip-permissions"]
 prompt_flags = []
-starter_prompt = "You are {display_name}. Your agent instance id is {instance}. Your token is {token}. Your VERY FIRST action: run `{ctl_bin} --config ./config.toml --token {token} agent-ready`. Then run `{ctl_bin} --config ./config.toml --help` to see what else you can do."
+starter_prompt = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap file (AGENTS.md or CLAUDE.md) for context, identity, and what you can do."
 
 [wrapper.agent-cmd.claude.bootstrap]
 enabled_features = ["AGENTS_MD", "MEMORY_MD", "SKILLS"]
@@ -101,10 +101,16 @@ smart = "opus"
 enabled = true
 startup_probe_seconds = 20
 capture_interval_ms = 500
-ready_patterns = ["Welcome back", "⏵⏵ "]
-blocked_patterns = ["Enter auto mode","Quick safety check", "Yes, I trust this folder", "WARNING: Claude Code running in Bypass Permissions mode", "Enter to confirm · Esc to cancel"]
-probe_prompt = ""
-probe_expect_echo = false
+# auto_enter_patterns: when matched in pane during startup probe, wrapper presses
+# the matching pre-key (if any) followed by Enter, then resumes detection.
+# auto_enter_pre_keys is parallel: empty / missing index = just Enter; otherwise
+# the value is passed to `tmux send-keys` first (e.g. "Down", "Tab", "Up", "1").
+# Use a pre-key when the prompt's default option isn't what we want.
+auto_enter_patterns = ["Yes, I trust this folder", "WARNING: Claude Code running in Bypass Permissions mode"]
+# Trust prompt's default is "Yes" → bare Enter is fine. Bypass-permissions
+# warning defaults to "No, exit" → press Down to move to "Yes, proceed".
+auto_enter_pre_keys = ["", "Down"]
+blocked_patterns = ["Enter auto mode"]
 startup_unknown_is_blocked = false
 sanitized_reason_mapping = ["trust=Claude directory trust prompt", "trust=Claude directory trust prompt", "bypass=Claude bypass permissions warning", "confirm=Claude interactive confirm prompt"]
 
@@ -112,7 +118,7 @@ sanitized_reason_mapping = ["trust=Claude directory trust prompt", "trust=Claude
 command = ["codex"]
 yolo_flags = []
 prompt_flags = []
-starter_prompt = "You are {display_name}. Your agent instance id is {instance}. Your token is {token}. Your VERY FIRST action: run `{ctl_bin} --config ./config.toml --token {token} agent-ready`. Then run `{ctl_bin} --config ./config.toml --help` to see what else you can do."
+starter_prompt = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap file (AGENTS.md or CLAUDE.md) for context, identity, and what you can do."
 
 [wrapper.agent-cmd.codex.bootstrap]
 enabled_features = ["AGENTS_MD"]

@@ -6,9 +6,14 @@ function projectGroupKey(agent) {
   return agent.projectId || 'unassigned';
 }
 
-function projectGroupLabel(projectId, projectsById) {
+function projectGroupLabel(projectId, projectsById, agentsInGroup) {
   if (projectId === 'unassigned') return 'No project';
-  return projectsById?.[projectId]?.name || projectId;
+  const fromStore = projectsById?.[projectId]?.name;
+  if (fromStore) return fromStore;
+  for (const a of (agentsInGroup ?? [])) {
+    if (a?.projectName) return a.projectName;
+  }
+  return projectId;
 }
 
 export default function AgentSidebar({ agents, projectsById, selectedAgentId, session, activeView, onSelectAgent, onRefreshAgents, onOpenChat, onOpenTasks, onOpenMemory, onOpenProjects, onOpenAgents, onOpenStartAgent, onOpenSettings }) {
@@ -141,7 +146,7 @@ export default function AgentSidebar({ agents, projectsById, selectedAgentId, se
                   className="flex w-full items-center justify-between rounded-[var(--fd-radius-lg)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-3 py-2 text-left transition hover:border-[var(--fd-accent-blue)]/50"
                 >
                   <span className="min-w-0">
-                    <span className="block truncate text-xs font-semibold uppercase tracking-[0.18em] text-white">{projectGroupLabel(projectId, projectsById)}</span>
+                    <span className="block truncate text-xs font-semibold uppercase tracking-[0.18em] text-white">{projectGroupLabel(projectId, projectsById, groupAgents)}</span>
                     <span className="framer-subtext text-[11px]">{groupAgents.length} known · {connectedCount} live</span>
                   </span>
                   <span className="text-sm text-[#aaa]">{collapsed ? '▸' : '▾'}</span>

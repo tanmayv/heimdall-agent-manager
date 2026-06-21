@@ -6,6 +6,12 @@ import "core:net"
 import "core:strings"
 import "core:time"
 
+// In-memory runtime/session state for a live agent wrapper. NEVER persisted.
+// Reconstructed from wrapper heartbeats on daemon restart. Identity/configuration
+// fields live in Agent_Instance_Record (agent_store.odin) and are the source of
+// truth — fields below that mirror them (display_name, provider_profile, etc.)
+// are a cached view that the heartbeat refreshes for fast lookups; they must
+// not be the place anything writes back to disk.
 Agent_Record :: struct {
 	agent_instance_id: string,
 	agent_class: string,
@@ -21,10 +27,80 @@ Agent_Record :: struct {
 	startup_safe_diagnostic: string,
 	startup_updated_unix_ms: i64,
 	provider_profile: string,
+	provider_tier: string,
+	project_id: string,
 	run_dir: string,
 	tmux_pane: string,
+	pid: int,
+	exec_state: string,
+	exec_state_since_unix_ms: i64,
+	blocked_reason: string,
 	has_ws: bool,
 	ws_socket: net.TCP_Socket,
+}
+
+Heartbeat_Snapshot :: struct {
+	agent_instance_id: string,
+	agent_token: string,
+	display_name: string,
+	provider_profile: string,
+	provider_tier: string,
+	project_id: string,
+	tmux_pane: string,
+	pid: int,
+	exec_state: string,
+	exec_state_since_unix_ms: i64,
+	blocked_reason: string,
+	run_dir: string,
+}
+
+// registry_apply_heartbeat_snapshot updates only the runtime/session fields on
+// an existing registry entry. Returns true when any runtime field changed
+// (caller fans out agent.runtime_changed on true).
+registry_apply_heartbeat_snapshot :: proc(snap: Heartbeat_Snapshot) -> (changed: bool) {
+	idx := registry_find_agent(snap.agent_instance_id)
+	if idx < 0 do return false
+	a := &agents[idx]
+	a.connected = true
+	a.last_seen_unix_ms = now_unix_ms()
+	if snap.tmux_pane != "" && snap.tmux_pane != a.tmux_pane {
+		a.tmux_pane = strings.clone(snap.tmux_pane)
+		changed = true
+	}
+	if snap.pid != 0 && snap.pid != a.pid {
+		a.pid = snap.pid
+		changed = true
+	}
+	if snap.run_dir != "" && snap.run_dir != a.run_dir {
+		a.run_dir = strings.clone(snap.run_dir)
+		changed = true
+	}
+	if snap.exec_state != "" && snap.exec_state != a.exec_state {
+		a.exec_state = strings.clone(snap.exec_state)
+		a.exec_state_since_unix_ms = snap.exec_state_since_unix_ms
+		if a.exec_state_since_unix_ms == 0 do a.exec_state_since_unix_ms = a.last_seen_unix_ms
+		changed = true
+	}
+	if snap.blocked_reason != a.blocked_reason {
+		a.blocked_reason = strings.clone(snap.blocked_reason)
+		changed = true
+	}
+	return changed
+}
+
+// registry_refresh_identity_cache mirrors a few identity/config fields into the
+// in-memory registry so list views can render without joining against the
+// agent_store. Does NOT persist. Caller must have already validated the values
+// against the store (they should equal the store's values or be the corrections
+// the daemon is about to send back).
+registry_refresh_identity_cache :: proc(agent_instance_id, display_name, provider_profile, provider_tier, project_id: string) {
+	idx := registry_find_agent(agent_instance_id)
+	if idx < 0 do return
+	a := &agents[idx]
+	if display_name != "" do a.display_name = strings.clone(display_name)
+	if provider_profile != "" do a.provider_profile = strings.clone(provider_profile)
+	if provider_tier != "" do a.provider_tier = strings.clone(provider_tier)
+	a.project_id = strings.clone(project_id)
 }
 
 // TODO: Registry is process-global and not thread-safe yet; daemon request handlers run in threads.
@@ -313,37 +389,3 @@ registry_agent_live :: proc(agent_instance_id: string) -> bool {
 	return agents[idx].connected && now - agents[idx].last_seen_unix_ms < DUPLICATE_HEARTBEAT_FRESH_MS
 }
 
-registry_list_json :: proc() -> string {
-	builder := strings.builder_make()
-	strings.write_string(&builder, "{\"agents\":[")
-	for i in 0..<agent_count {
-		if i > 0 do strings.write_string(&builder, ",")
-		agent := agents[i]
-		strings.write_string(&builder, "{\"agent_instance_id\":\"")
-		strings.write_string(&builder, agent.agent_instance_id)
-		strings.write_string(&builder, "\",\"agent_class\":\"")
-		strings.write_string(&builder, agent.agent_class)
-		strings.write_string(&builder, "\",\"conversation_id\":\"")
-		strings.write_string(&builder, agent.conversation_id)
-		strings.write_string(&builder, "\",\"display_name\":\"")
-		strings.write_string(&builder, agent.display_name)
-		strings.write_string(&builder, "\",\"access_mode\":\"")
-		strings.write_string(&builder, agent.access_mode)
-		strings.write_string(&builder, "\",\"connected\":")
-		strings.write_string(&builder, "true" if agent.connected else "false")
-		strings.write_string(&builder, ",\"has_agent_token\":")
-		strings.write_string(&builder, "true" if agent.has_agent_token else "false")
-		strings.write_string(&builder, ",\"last_seen_unix_ms\":")
-		strings.write_string(&builder, fmt.tprintf("%d", agent.last_seen_unix_ms))
-		strings.write_string(&builder, `,"startup_status":"`); json_write_string(&builder, agent.startup_status)
-		strings.write_string(&builder, `","startup_reason_code":"`); json_write_string(&builder, agent.startup_reason_code)
-		strings.write_string(&builder, `","safe_diagnostic":"`); json_write_string(&builder, agent.startup_safe_diagnostic)
-		strings.write_string(&builder, `","provider_profile":"`); json_write_string(&builder, agent.provider_profile)
-		strings.write_string(&builder, `","run_dir":"`); json_write_string(&builder, agent.run_dir)
-		strings.write_string(&builder, `","tmux_pane":"`); json_write_string(&builder, agent.tmux_pane)
-		strings.write_string(&builder, `","startup_updated_unix_ms":`); strings.write_string(&builder, fmt.tprintf("%d", agent.startup_updated_unix_ms))
-		strings.write_string(&builder, "}")
-	}
-	strings.write_string(&builder, "]}")
-	return strings.to_string(builder)
-}

@@ -173,6 +173,42 @@ const routes: Array<{ method: string; path: string; handler: Handler }> = [
   },
   {
     method: 'POST',
+    path: '/select',
+    handler: async (body) => {
+      let params: any = {};
+      try { params = JSON.parse(body); } catch { return { ok: false, message: 'invalid json' }; }
+      const query: string = params.query ?? '';
+      const value: string = params.value ?? '';
+      const index: number = params.index ?? 0;
+      if (!query) return { ok: false, message: 'query required' };
+      const js = `(function() {
+        const els = Array.from(document.querySelectorAll(${JSON.stringify(query)}));
+        const el = els[${index}];
+        if (!el) return JSON.stringify({ ok: false, found: false });
+        el.scrollIntoView({ block: 'nearest' });
+        if (el.tagName === 'SELECT') {
+          const descriptor = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value');
+          descriptor.set.call(el, ${JSON.stringify(value)});
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return JSON.stringify({ ok: true, found: true, value: el.value });
+        }
+        if (el.tagName === 'INPUT' && (el.type === 'radio' || el.type === 'checkbox')) {
+          const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked');
+          descriptor.set.call(el, true);
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          el.click();
+          return JSON.stringify({ ok: true, found: true, checked: el.checked });
+        }
+        return JSON.stringify({ ok: false, found: true, message: 'unsupported tag ' + el.tagName });
+      })()`;
+      const json = await evalInRenderer(js);
+      try { return JSON.parse(json as string); } catch { return { ok: false, message: 'eval failed' }; }
+    },
+  },
+  {
+    method: 'POST',
     path: '/highlight',
     handler: async (body) => {
       let params: any = {};

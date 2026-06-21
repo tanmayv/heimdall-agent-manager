@@ -22,10 +22,12 @@ import {
   agentLifecycleEventReceived,
   testStartReceived,
   testDoneReceived,
+  setTestRuns,
 } from '../store/chatSlice';
 import { refreshTaskBoard, taskEventReceived } from '../store/taskSlice';
 import { memoryEventReceived, refreshMemory } from '../store/memorySlice';
 import { refreshProjects } from '../store/projectSlice';
+import * as daemonApi from '../api/daemonApi';
 
 export default function App() {
   const dispatch = useDispatch<any>();
@@ -53,6 +55,7 @@ export default function App() {
       .then(() => {
         dispatch(refreshAgents());
         dispatch(refreshTaskBoard());
+        dispatch(refreshProjects());
       })
       .catch(() => undefined);
   };
@@ -132,6 +135,15 @@ export default function App() {
         }
         if (payload?.type === 'test_done') {
           dispatch(testDoneReceived(payload));
+          // Belt-and-suspenders: refetch canonical history in case test_start
+          // was missed (e.g. WS just reconnected) or the reducer needs a
+          // field we didn't include in the event payload.
+          const url = sessionRef.current?.daemonUrl;
+          if (url) {
+            daemonApi.getTestHistory({ daemonUrl: url })
+              .then((data: any) => dispatch(setTestRuns(data?.runs ?? [])))
+              .catch(() => {});
+          }
           return;
         }
         if (payload?.type !== 'chat_event') return;

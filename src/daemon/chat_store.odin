@@ -59,6 +59,11 @@ chat_store_append_event :: proc(event: Chat_Event) -> bool {
 	if ev.created_unix_ms == 0 do ev.created_unix_ms = router_now_unix_ms()
 	if ev.message_id == "" && ev.kind == .Message_Appended do ev.message_id = fmt.tprintf("chatmsg_%d", ev.created_unix_ms)
 	if !chat_store_apply_event(ev) do return false
+	// Only Message_Appended carries chat content that must survive a restart.
+	// Read/delivered/failed marks are transient UI state — applying them in
+	// memory is enough; persisting them blew the event log up to 15M lines
+	// because the UI ticks Read_Marked continuously.
+	if ev.kind != .Message_Appended do return true
 	file, err := os.open(chat_events_path, os.O_CREATE | os.O_APPEND | os.O_WRONLY)
 	if err != nil do return false
 	defer os.close(file)

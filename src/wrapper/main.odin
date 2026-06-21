@@ -55,6 +55,7 @@ main :: proc() {
 		return
 	}
 
+	override_project_id := option_value(os.args, "--project-id", "")
 	model_tier := option_value(os.args, "--tier", "normal")
 	if model_tier != "cheap" && model_tier != "normal" && model_tier != "smart" {
 		fmt.println("invalid --tier value; expected cheap, normal, or smart; got:", model_tier)
@@ -118,6 +119,13 @@ main :: proc() {
 	fmt.println("working_dir", cwd)
 
 	if agent_cmd_ok && len(agent_cmd.bootstrap.enabled_features) > 0 && !is_test_token(agent_token) {
+		// Daemon passes the agent record's actual project_id via --project-id so
+		// the bootstrap reflects the *current* project, not the per-provider
+		// default in config.toml.
+		if override_project_id != "" {
+			agent_cmd.project = override_project_id
+			cfg.project = override_project_id
+		}
 		generate_bootstrap_files(cwd, loaded.path, cfg, agent_cmd, selected_agent, registered_instance_id, display_name, cfg.daemon_url, agent_token)
 	}
 
@@ -160,7 +168,13 @@ main :: proc() {
 		fmt.println("ws connection failed", ws_url)
 	}
 
-	heartbeat_loop(cfg.daemon_url, agent_class, registered_instance_id, display_name, agent_token, launch.pane_id, stop_message, &ws_conn)
+	initial_exec_state := "running"
+	if agent_cmd_ok && agent_cmd.startup_detection.enabled {
+		// Derive initial state from the probe outcome the daemon already heard about.
+		// Probe ran above; we don't have its result here, but the daemon's startup
+		// status will have been updated. Use "running" as a benign default for now.
+	}
+	heartbeat_loop(cfg.daemon_url, agent_class, registered_instance_id, display_name, agent_token, launch.pane_id, stop_message, selected_agent, model_tier, override_project_id, cwd, initial_exec_state, &ws_conn)
 }
 
 Startup_Probe_Result :: struct {
@@ -180,34 +194,64 @@ startup_probe_agent :: proc(cfg: cfg_lib.Startup_Detection_Config, pane_id: stri
 	if probe_seconds <= 0 do probe_seconds = 15
 	interval_ms := cfg.capture_interval_ms
 	if interval_ms <= 0 do interval_ms = 500
-	deadline := time.to_unix_nanoseconds(time.now()) + i64(probe_seconds) * i64(time.Second)
-	probe_sent := false
-	echo_seen := cfg.probe_prompt == "" || !cfg.probe_expect_echo
+	probe_window_ns := i64(probe_seconds) * i64(time.Second)
+	deadline := time.to_unix_nanoseconds(time.now()) + probe_window_ns
+	auto_enter_cooldown_until: i64 = 0
+	iteration := 0
+	fmt.println("startup_probe begin pane", pane_id, "probe_seconds", probe_seconds, "interval_ms", interval_ms, "auto_enter_patterns", len(cfg.auto_enter_patterns), "blocked_patterns", len(cfg.blocked_patterns))
+	for p, i in cfg.auto_enter_patterns {
+		pk := ""
+		if i < len(cfg.auto_enter_pre_keys) do pk = cfg.auto_enter_pre_keys[i]
+		fmt.printf("  auto_enter[%d]=%q pre_key=%q\n", i, p, pk)
+	}
+	for p, i in cfg.blocked_patterns do fmt.printf("  blocked[%d]=%q\n", i, p)
 
 	for time.to_unix_nanoseconds(time.now()) <= deadline {
 		if abort_flag != nil && abort_flag^ do break
 		if !tmux.pane_exists(pane_id) do return Startup_Probe_Result{status = "startup_failed", reason_code = "pane_exited", safe_diagnostic = "tmux pane exited during startup detection"}
-		if cfg.probe_prompt != "" && !probe_sent {
-			_ = tmux.send_line(pane_id, cfg.probe_prompt)
-			probe_sent = true
-		}
 		pane_text, ok := tmux.capture_pane_text(pane_id, 80)
 		if !ok do return Startup_Probe_Result{status = "startup_failed", reason_code = "capture_failed", safe_diagnostic = "tmux pane capture failed during startup detection"}
-		if cfg.probe_expect_echo && cfg.probe_prompt != "" && strings.index(pane_text, cfg.probe_prompt) >= 0 do echo_seen = true
-		if idx := first_matching_pattern(pane_text, cfg.blocked_patterns); idx >= 0 {
-			return Startup_Probe_Result{status = "startup_blocked", reason_code = startup_reason_code("blocked", idx, cfg.blocked_patterns[idx]), safe_diagnostic = startup_safe_diagnostic(cfg, idx, "Startup blocked by configured provider prompt")}
+		iteration += 1
+		if iteration == 1 || iteration % 10 == 0 {
+			preview_len := len(pane_text)
+			if preview_len > 400 do preview_len = 400
+			fmt.printf("startup_probe iter=%d pane_text_len=%d tail=%q\n", iteration, len(pane_text), pane_text[len(pane_text)-preview_len:])
 		}
-		if echo_seen {
-			if idx := first_matching_pattern(pane_text, cfg.ready_patterns); idx >= 0 {
-				return Startup_Probe_Result{status = "ready", reason_code = startup_reason_code("ready", idx, cfg.ready_patterns[idx]), safe_diagnostic = "Startup ready pattern matched"}
+		now_ns := time.to_unix_nanoseconds(time.now())
+		if now_ns >= auto_enter_cooldown_until {
+			if idx := first_matching_pattern(pane_text, cfg.auto_enter_patterns); idx >= 0 {
+				pre_key := ""
+				if idx < len(cfg.auto_enter_pre_keys) do pre_key = cfg.auto_enter_pre_keys[idx]
+				fmt.println("startup auto_enter matched idx", idx, "pattern", cfg.auto_enter_patterns[idx], "pre_key", pre_key)
+				if pre_key != "" {
+					pre_cmd := []string{"tmux", "send-keys", "-t", pane_id, pre_key}
+					_, _, _, _ = os.process_exec(os.Process_Desc{command = pre_cmd}, context.allocator)
+					// Tiny pause so the TUI registers the navigation before Enter
+					time.sleep(150 * time.Millisecond)
+				}
+				enter_cmd := []string{"tmux", "send-keys", "-t", pane_id, "Enter"}
+				_, _, _, _ = os.process_exec(os.Process_Desc{command = enter_cmd}, context.allocator)
+				// Cool down so the same buffered prompt text doesn't retrigger
+				// before the TUI repaints. Extend deadline by the original probe
+				// window so dismissing a prompt doesn't eat the ready budget.
+				if pre_key != "" {
+					fmt.println("startup auto_enter sent pre_key", pre_key)
+				}
+				fmt.println("startup auto_enter sent Enter; cooldown 2s; deadline extended by", probe_seconds, "s")
+				auto_enter_cooldown_until = now_ns + i64(2) * i64(time.Second)
+				deadline = now_ns + probe_window_ns
+				time.sleep(time.Duration(interval_ms) * time.Millisecond)
+				continue
 			}
+		}
+		if idx := first_matching_pattern(pane_text, cfg.blocked_patterns); idx >= 0 {
+			fmt.println("startup blocked matched idx", idx, "pattern", cfg.blocked_patterns[idx])
+			return Startup_Probe_Result{status = "startup_blocked", reason_code = startup_reason_code("blocked", idx, cfg.blocked_patterns[idx]), safe_diagnostic = startup_safe_diagnostic(cfg, idx, "Startup blocked by configured provider prompt")}
 		}
 		time.sleep(time.Duration(interval_ms) * time.Millisecond)
 	}
 
-	if cfg.probe_expect_echo && cfg.probe_prompt != "" && !echo_seen {
-		return Startup_Probe_Result{status = "startup_unknown", reason_code = "probe_echo_missing", safe_diagnostic = "Startup probe echo was not observed"}
-	}
+	fmt.println("startup_probe timeout after", iteration, "iterations; no pattern matched")
 	status := "startup_unknown"
 	if cfg.startup_unknown_is_blocked do status = "startup_blocked"
 	return Startup_Probe_Result{status = status, reason_code = "no_pattern_matched", safe_diagnostic = "No configured startup pattern matched before timeout"}
@@ -294,20 +338,29 @@ read_yes_from_stdin :: proc() -> bool {
 	return answer == "y" || answer == "Y" || answer == "yes" || answer == "YES"
 }
 
-heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name, agent_token, tmux_pane, stop_message: string, ws_conn: ^ws.Connection) {
+heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name, agent_token, tmux_pane, stop_message, provider_profile, provider_tier, project_id, run_dir, initial_exec_state: string, ws_conn: ^ws.Connection) {
 	fmt.println("heartbeat started", agent_instance_id)
 	failed_heartbeats := 0
+	exec_state := initial_exec_state
+	if exec_state == "" do exec_state = "running"
+	exec_state_since := time.to_unix_nanoseconds(time.now()) / 1_000_000
+	pid := os.get_pid()
 	for {
 		if !tmux.pane_exists(tmux_pane) {
 			fmt.println("agent tmux pane missing; stopping wrapper", tmux_pane)
 			return
 		}
 
-		body := heartbeat_request_json(agent_instance_id, tmux_pane)
+		body := heartbeat_request_json(agent_instance_id, agent_token, display_name, provider_profile, provider_tier, project_id, tmux_pane, run_dir, exec_state, "", pid, exec_state_since)
 		response, ok := http.post(daemon_url, contracts.ROUTE_HEARTBEAT, body)
 		if ok && response.status == 200 {
 			failed_heartbeats = 0
 			fmt.println("heartbeat ok", agent_instance_id)
+			log_heartbeat_corrections(response.body, agent_instance_id)
+		} else if ok && response.status == 400 {
+			// Distinguish project_not_found / missing_required so operator sees it.
+			fmt.println("heartbeat rejected", agent_instance_id, response.body)
+			failed_heartbeats += 1
 		} else {
 			failed_heartbeats += 1
 			fmt.println("heartbeat failed", agent_instance_id)
@@ -399,9 +452,9 @@ handle_memory_event :: proc(text, tmux_pane, agent_instance_id: string) {
 	proposal_id := extract_json_string(text, "proposal_id", "")
 	subject_agent := extract_json_string(text, "subject_agent", "")
 	status := extract_json_string(text, "status", "")
-	line := fmt.tprintf("Memory %s %s by %s for %s (%s). Fetch details with: ./bin/ham-ctl --config ./config.toml memory show --token <your token> --memory-id %s", memory_id, event, changed_by, subject_agent, status, memory_id)
+	line := fmt.tprintf("Memory %s %s by %s for %s (%s). Fetch details with: %s memory show --token <your token> --memory-id %s", memory_id, event, changed_by, subject_agent, status, HAM_CTL_BIN, memory_id)
 	if proposal_id != "" && (status == "pending" || strings.index(event, "Proposed") >= 0) {
-		line = fmt.tprintf("Memory proposal %s %s by %s for %s. Review with: ./bin/ham-ctl --config ./config.toml memory history --token <your token> --memory-id %s", proposal_id, event, changed_by, subject_agent, memory_id)
+		line = fmt.tprintf("Memory proposal %s %s by %s for %s. Review with: %s memory history --token <your token> --memory-id %s", proposal_id, event, changed_by, subject_agent, HAM_CTL_BIN, memory_id)
 	}
 	if tmux.send_line(tmux_pane, line) {
 		fmt.println("notified agent pane", line)
@@ -414,7 +467,7 @@ handle_user_chat_event :: proc(text, tmux_pane: string) {
 	user_id := extract_json_string(text, "user_id", "unknown")
 	pending_count := extract_json_int(text, "pending_count", 1)
 	if pending_count <= 0 do pending_count = 1
-	line := fmt.tprintf("%d User Chat Messages from %s. Read with: ./bin/ham-ctl --config ./config.toml chat fetch-user --token <your token> --user-id %s", pending_count, user_id, user_id)
+	line := fmt.tprintf("%d User Chat Messages from %s. Read with: %s chat fetch-user --token <your token> --user-id %s", pending_count, user_id, HAM_CTL_BIN, user_id)
 	if tmux.send_line(tmux_pane, line) {
 		fmt.println("notified agent pane", line)
 	} else {
@@ -467,14 +520,35 @@ reregister_and_reconnect_ws :: proc(daemon_url, agent_class, agent_instance_id, 
 	return new_ws_url, true
 }
 
-heartbeat_request_json :: proc(agent_instance_id, tmux_pane: string) -> string {
-	builder := strings.builder_make()
-	strings.write_string(&builder, "{\"agent_instance_id\":\"")
-	strings.write_string(&builder, agent_instance_id)
-	strings.write_string(&builder, "\",\"tmux_pane\":\"")
-	strings.write_string(&builder, tmux_pane)
-	strings.write_string(&builder, "\"}")
-	return strings.to_string(builder)
+heartbeat_request_json :: proc(agent_instance_id, agent_token, display_name, provider_profile, provider_tier, project_id, tmux_pane, run_dir, exec_state, blocked_reason: string, pid: int, exec_state_since_unix_ms: i64) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"agent_instance_id":"`); json_write_string(&b, agent_instance_id)
+	strings.write_string(&b, `","agent_token":"`); json_write_string(&b, agent_token)
+	strings.write_string(&b, `","display_name":"`); json_write_string(&b, display_name)
+	strings.write_string(&b, `","provider_profile":"`); json_write_string(&b, provider_profile)
+	strings.write_string(&b, `","provider_tier":"`); json_write_string(&b, provider_tier)
+	strings.write_string(&b, `","project_id":"`); json_write_string(&b, project_id)
+	strings.write_string(&b, `","tmux_pane":"`); json_write_string(&b, tmux_pane)
+	strings.write_string(&b, `","run_dir":"`); json_write_string(&b, run_dir)
+	strings.write_string(&b, `","exec_state":"`); json_write_string(&b, exec_state)
+	strings.write_string(&b, `","blocked_reason":"`); json_write_string(&b, blocked_reason)
+	strings.write_string(&b, `","pid":`); strings.write_string(&b, fmt.tprintf("%d", pid))
+	strings.write_string(&b, `,"exec_state_since_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", exec_state_since_unix_ms))
+	strings.write_string(&b, `}`)
+	return strings.to_string(b)
+}
+
+// log_heartbeat_corrections prints any fields the daemon corrected. For now we
+// only log — applying corrections to running wrapper state is deferred.
+log_heartbeat_corrections :: proc(body, agent_instance_id: string) {
+	idx := strings.index(body, `"corrections":{`)
+	if idx < 0 do return
+	start := idx + len(`"corrections":{`)
+	end := strings.index_byte(body[start:], '}')
+	if end <= 0 do return
+	contents := body[start:start + end]
+	if strings.trim_space(contents) == "" do return
+	fmt.println("heartbeat corrections", agent_instance_id, contents)
 }
 
 extract_json_string :: proc(body, key, fallback: string) -> string {
@@ -714,15 +788,6 @@ generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_
 	if len(agent_cmd.bootstrap.enabled_features) == 0 do return
 
 	profile := bootstrap_profile(agent_cmd, selected_agent)
-
-	// Pre-trust the run directory for Claude Code so the workspace trust dialog is skipped.
-	if profile == "claude" {
-		dot_claude_dir := join_path(cwd, ".claude")
-		_ = os.make_directory(dot_claude_dir)
-		settings_path := join_path(dot_claude_dir, "settings.json")
-		settings_json := `{"permissions":{"defaultMode":"bypassPermissions"}}`
-		_ = os.write_entire_file(settings_path, transmute([]u8)settings_json)
-	}
 	memory_templates := agent_cmd.memory_templates
 	if len(memory_templates) == 0 do memory_templates = cfg.memory_templates
 	project_context := project_bootstrap_context(daemon_url, agent_token, cfg, agent_cmd)
@@ -794,11 +859,11 @@ build_agents_md :: proc(name, profile: string, content_sections: []string, selec
 		ctl_bin := HAM_CTL_BIN
 		strings.write_string(&b, "FIRST RUN: `")
 		strings.write_string(&b, ctl_bin)
-		strings.write_string(&b, " --config ")
-		strings.write_string(&b, config_path)
+		strings.write_string(&b, " --daemon-url ")
+		strings.write_string(&b, daemon_url)
 		strings.write_string(&b, " --token ")
 		strings.write_string(&b, agent_token)
-		strings.write_string(&b, " agent-ready` — this tells Heimdall you are alive. Do this before anything else.\n\n")
+		strings.write_string(&b, " start-success` — this tells Heimdall you are alive. Do this before anything else. (No --config needed; ham-ctl finds it at ~/.config/heimdall/config.toml. Run this command verbatim from any directory.)\n\n")
 		strings.write_string(&b, "- Display name: "); strings.write_string(&b, display_name); strings.write_string(&b, "\n")
 		strings.write_string(&b, "- Agent instance: "); strings.write_string(&b, agent_instance_id); strings.write_string(&b, "\n")
 		strings.write_string(&b, "- Provider/profile: "); strings.write_string(&b, selected_agent); strings.write_string(&b, " / "); strings.write_string(&b, profile); strings.write_string(&b, "\n")
@@ -991,7 +1056,9 @@ bootstrap_title :: proc(file_name, profile: string) -> string {
 bootstrap_profile_guidance :: proc(profile, file_name: string) -> string {
 	builder := strings.builder_make()
 	strings.write_string(&builder, "\n# Heimdall Tooling\n")
-	strings.write_string(&builder, "- Use repo-local `./bin/ham-ctl --config ./config.toml ...` for Heimdall task, chat, project, and memory workflows when available.\n")
+	strings.write_string(&builder, "- Use `")
+	strings.write_string(&builder, HAM_CTL_BIN)
+	strings.write_string(&builder, "` (absolute path; do not rely on cwd) for Heimdall task, chat, project, and memory workflows when available.\n")
 	strings.write_string(&builder, "- Track non-trivial/verifiable work in Heimdall tasks; keep status current and request review when complete.\n")
 	if profile == "claude" {
 		strings.write_string(&builder, "- Claude profile: this generated `CLAUDE.md` is the primary local instruction file. Keep tool/reference notes concise and fetch details through Heimdall CLI/RPC when needed.\n")
@@ -1001,7 +1068,9 @@ bootstrap_profile_guidance :: proc(profile, file_name: string) -> string {
 		strings.write_string(&builder, "- Pi profile: this generated `AGENTS.md` is the primary run-directory instruction file. Read inbox/task state before beginning new work.\n")
 	}
 	strings.write_string(&builder, "\n# Ham-ctl CLI Reference\n")
-	strings.write_string(&builder, "All commands use: `./bin/ham-ctl --config ./config.toml <command> --token <your-token> [flags]`\n")
+	strings.write_string(&builder, "All commands use: `")
+	strings.write_string(&builder, HAM_CTL_BIN)
+	strings.write_string(&builder, " <command> --token <your-token> [flags]`\n")
 	strings.write_string(&builder, "\n## List and start agents\n")
 	strings.write_string(&builder, "```\n")
 	strings.write_string(&builder, "# List all known/connected agents\n")
@@ -1227,10 +1296,41 @@ build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_
 
 memory_cli_guidance :: proc(agent_token: string) -> string {
 	builder := strings.builder_make()
+	bin :: HAM_CTL_BIN
+	write_ctl :: proc(b: ^strings.Builder, suffix: string) {
+		strings.write_string(b, HAM_CTL_BIN)
+		strings.write_string(b, suffix)
+	}
 	strings.write_string(&builder, "\n\n# Memory CLI\n")
-	strings.write_string(&builder, "Use repo-local ./bin/ham-ctl memory commands with your token for durable memory proposals and review. Approved active memory is what affects runtime behavior; pending, rejected, and archived proposals do not. Template memories are reusable starter memory for configured agents/roles and follow the same propose/approve/version/archive/rollback lifecycle. Proposal reason/evidence are proposal-only review metadata and should not be copied into runtime memory bodies. Skill memories must use structured body text with at least name: and description:.\n")
-	strings.write_string(&builder, "Examples: ./bin/ham-ctl --config ./config.toml memory propose new --token "); strings.write_string(&builder, agent_token); strings.write_string(&builder, " --subject-agent <agent> --type fact|habit|episode|expertise|skill|template --title <title> --body <body> --reason <why> --evidence <task-or-source>; ./bin/ham-ctl --config ./config.toml memory propose edit --token "); strings.write_string(&builder, agent_token); strings.write_string(&builder, " --memory-id <id> --expected-version <n> --title <title> --body <body> --reason <why> --evidence <source>; ./bin/ham-ctl --config ./config.toml memory propose archive --token "); strings.write_string(&builder, agent_token); strings.write_string(&builder, " --memory-id <id> --expected-version <n> --reason <why> --evidence <source>; ./bin/ham-ctl --config ./config.toml memory propose rollback --token "); strings.write_string(&builder, agent_token); strings.write_string(&builder, " --memory-id <id> --expected-version <n> --reason <why> --evidence <source>.\n")
-	strings.write_string(&builder, "Review/query: ./bin/ham-ctl --config ./config.toml memory decide --token "); strings.write_string(&builder, agent_token); strings.write_string(&builder, " --proposal-id <proposal_id> --decision approve|reject; ./bin/ham-ctl --config ./config.toml memory list --token "); strings.write_string(&builder, agent_token); strings.write_string(&builder, " --status active|pending|archived|rejected|all; ./bin/ham-ctl --config ./config.toml memory show --token "); strings.write_string(&builder, agent_token); strings.write_string(&builder, " --memory-id <id>; ./bin/ham-ctl --config ./config.toml memory history --token "); strings.write_string(&builder, agent_token); strings.write_string(&builder, " --memory-id <id>.\n")
+	strings.write_string(&builder, "Use the absolute `")
+	strings.write_string(&builder, bin)
+	strings.write_string(&builder, "` memory commands with your token for durable memory proposals and review. Approved active memory is what affects runtime behavior; pending, rejected, and archived proposals do not. Template memories are reusable starter memory for configured agents/roles and follow the same propose/approve/version/archive/rollback lifecycle. Proposal reason/evidence are proposal-only review metadata and should not be copied into runtime memory bodies. Skill memories must use structured body text with at least name: and description:.\n")
+	strings.write_string(&builder, "Examples: ")
+	write_ctl(&builder, " memory propose new --token ")
+	strings.write_string(&builder, agent_token)
+	strings.write_string(&builder, " --subject-agent <agent> --type fact|habit|episode|expertise|skill|template --title <title> --body <body> --reason <why> --evidence <task-or-source>; ")
+	write_ctl(&builder, " memory propose edit --token ")
+	strings.write_string(&builder, agent_token)
+	strings.write_string(&builder, " --memory-id <id> --expected-version <n> --title <title> --body <body> --reason <why> --evidence <source>; ")
+	write_ctl(&builder, " memory propose archive --token ")
+	strings.write_string(&builder, agent_token)
+	strings.write_string(&builder, " --memory-id <id> --expected-version <n> --reason <why> --evidence <source>; ")
+	write_ctl(&builder, " memory propose rollback --token ")
+	strings.write_string(&builder, agent_token)
+	strings.write_string(&builder, " --memory-id <id> --expected-version <n> --reason <why> --evidence <source>.\n")
+	strings.write_string(&builder, "Review/query: ")
+	write_ctl(&builder, " memory decide --token ")
+	strings.write_string(&builder, agent_token)
+	strings.write_string(&builder, " --proposal-id <proposal_id> --decision approve|reject; ")
+	write_ctl(&builder, " memory list --token ")
+	strings.write_string(&builder, agent_token)
+	strings.write_string(&builder, " --status active|pending|archived|rejected|all; ")
+	write_ctl(&builder, " memory show --token ")
+	strings.write_string(&builder, agent_token)
+	strings.write_string(&builder, " --memory-id <id>; ")
+	write_ctl(&builder, " memory history --token ")
+	strings.write_string(&builder, agent_token)
+	strings.write_string(&builder, " --memory-id <id>.\n")
 	return strings.to_string(builder)
 }
 
@@ -1439,7 +1539,7 @@ option_value :: proc(args: []string, name, fallback: string) -> string {
 
 agent_identity_from_args :: proc(args: []string, fallback: string) -> string {
 	for i := 1; i < len(args); i += 1 {
-		if args[i] == cfg_lib.CONFIG_PATH_FLAG || args[i] == "--agent" || args[i] == "--agent-token" || args[i] == "--display-name" || args[i] == "--tier" {
+		if args[i] == cfg_lib.CONFIG_PATH_FLAG || args[i] == "--agent" || args[i] == "--agent-token" || args[i] == "--display-name" || args[i] == "--tier" || args[i] == "--project-id" {
 			i += 1
 			continue
 		}

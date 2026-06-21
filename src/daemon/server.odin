@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:net"
 import "core:strings"
 import "core:thread"
+import "core:time"
 import "core:sys/posix"
 import cfg_lib "odin_test:lib/config"
 import mp "odin_test:lib/message_provider"
@@ -41,6 +42,37 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 		}
 	}
 
+	// Initialize all subsystems BEFORE binding the listen socket so the kernel
+	// can't accept SYNs that we'd then ignore for tens of seconds while stores
+	// replay events on cold start.
+	init_t0 := time.tick_now()
+	time_step :: proc(name: string, prev: ^time.Tick) {
+		now := time.tick_now()
+		dt_ms := time.duration_milliseconds(time.tick_diff(prev^, now))
+		fmt.printf("init %s %.1fms\n", name, dt_ms)
+		prev^ = now
+	}
+	step := init_t0
+	registry_init(); time_step("registry_init", &step)
+	user_client_registry_init(); time_step("user_client_registry_init", &step)
+	message_provider = mp.new_memory_provider(); time_step("message_provider", &step)
+	memory_provider = memp.new_local_provider(server_data_dir); time_step("memory_provider", &step)
+	central_hub_init(); time_step("central_hub_init", &step)
+	task_store_init(server_data_dir); time_step("task_store_init", &step)
+	project_store_init(server_data_dir); time_step("project_store_init", &step)
+	agent_store_init(server_data_dir); time_step("agent_store_init", &step)
+	chat_store_init(server_data_dir); time_step("chat_store_init", &step)
+	router_adapter_init(cfg.daemon); time_step("router_adapter_init", &step)
+	hub_sync_init(); time_step("hub_sync_init", &step)
+	message_queue_init(); time_step("message_queue_init", &step)
+	message_queue_start_worker(); time_step("message_queue_start_worker", &step)
+	hub_sync_start_worker(); time_step("hub_sync_start_worker", &step)
+	task_nudge_scheduler_start(cfg.daemon); time_step("task_nudge_scheduler_start", &step)
+	agent_startup_janitor_start(cfg.daemon); time_step("agent_startup_janitor_start", &step)
+	test_run_startup_sweep(); time_step("test_run_startup_sweep", &step)
+	total_ms := time.duration_milliseconds(time.tick_diff(init_t0, time.tick_now()))
+	fmt.printf("init TOTAL %.1fms\n", total_ms)
+
 	listener, err := net.listen_tcp({address, int(cfg.daemon.port)})
 	if err != nil {
 		fmt.println("failed to listen", cfg.daemon.bind_host, cfg.daemon.port)
@@ -50,24 +82,6 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 	if !socket_set_close_on_exec(listener) {
 		fmt.println("warning: failed to set daemon listener close-on-exec")
 	}
-
-	registry_init()
-	user_client_registry_init()
-	message_provider = mp.new_memory_provider()
-	memory_provider = memp.new_local_provider(server_data_dir)
-	central_hub_init()
-	task_store_init(server_data_dir)
-	project_store_init(server_data_dir)
-	agent_store_init(server_data_dir)
-	chat_store_init(server_data_dir)
-	router_adapter_init(cfg.daemon)
-	hub_sync_init()
-	message_queue_init()
-	message_queue_start_worker()
-	hub_sync_start_worker()
-	task_nudge_scheduler_start(cfg.daemon)
-	agent_startup_janitor_start(cfg.daemon)
-	test_run_startup_sweep()
 	fmt.println("odin-daemon listening", cfg.daemon.bind_host, cfg.daemon.port)
 	for {
 		client, _, accept_err := net.accept_tcp(listener)
@@ -411,11 +425,6 @@ handle_client :: proc(client: net.TCP_Socket) {
 
 	if strings.has_prefix(request, "GET /tasks ") {
 		handle_task_list(client)
-		return
-	}
-
-	if strings.has_prefix(request, "GET /clients ") {
-		write_response(client, 200, "OK", registry_list_json())
 		return
 	}
 

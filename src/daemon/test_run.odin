@@ -100,21 +100,38 @@ test_run_is_terminal :: proc(status: string) -> bool {
 
 test_run_cleanup :: proc(idx: int) {
 	run := &test_runs[idx]
-	// Kill the test agent's tmux pane (stored via registry from startup_report).
-	agent_idx := registry_find_agent(run.test_agent_instance_id)
+	// The wrapper registers under "<id>@<project>" but test_agent_instance_id
+	// is just "<id>". Resolve via token so the registry lookup matches.
+	resolved_instance := run.test_agent_instance_id
+	if run.test_token != "" {
+		if mapped := registry_agent_instance_for_token(run.test_token); mapped != "" {
+			resolved_instance = mapped
+		}
+	}
+	agent_idx := registry_find_agent(resolved_instance)
 	if agent_idx >= 0 && agents[agent_idx].tmux_pane != "" {
 		pane := agents[agent_idx].tmux_pane
 		cmd := []string{"tmux", "kill-pane", "-t", pane}
 		_, _, _, _ = os.process_exec(os.Process_Desc{command = cmd}, context.allocator)
 	}
-	// Remove test run dir.
 	if run.run_dir != "" {
 		_ = os.remove_all(run.run_dir)
 	}
 }
 
 capture_test_pane_tail :: proc(agent_instance_id: string, lines: int) -> string {
-	agent_idx := registry_find_agent(agent_instance_id)
+	resolved := agent_instance_id
+	if registry_find_agent(resolved) < 0 {
+		// Wrapper may have registered with a "@project" suffix; find by scan.
+		for i in 0..<agent_count {
+			id := agents[i].agent_instance_id
+			if strings.has_prefix(id, agent_instance_id) && (len(id) == len(agent_instance_id) || id[len(agent_instance_id)] == '@') {
+				resolved = id
+				break
+			}
+		}
+	}
+	agent_idx := registry_find_agent(resolved)
 	if agent_idx < 0 do return ""
 	pane := agents[agent_idx].tmux_pane
 	if pane == "" do return ""
@@ -310,7 +327,27 @@ handle_agents_test_history :: proc(client: net.TCP_Socket) {
 
 handle_start_success :: proc(client: net.TCP_Socket, agent_token: string) {
 	if !is_test_token(agent_token) {
-		write_response(client, 400, "Bad Request", `{"ok":false,"message":"start-success is only valid for test agents"}`)
+		// Production agent reporting it's ready. Flip startup_status and emit
+		// agent_lifecycle_changed so the UI / janitors know the wrapper-side
+		// probe is no longer the source of truth.
+		agent_instance_id := registry_agent_instance_for_token(agent_token)
+		if agent_instance_id == "" {
+			write_response(client, 404, "Not Found", `{"ok":false,"message":"no agent found for this token"}`)
+			return
+		}
+		_ = registry_update_startup(agent_instance_id, "ready", "start_success", "Agent reported ready via start-success RPC", "", "", "")
+		// Mark connected so UI shows green; emit lifecycle event with state="connected"
+		// for consistency with the deprecated agent_ready path the UI already knows.
+		if idx := registry_find_agent(agent_instance_id); idx >= 0 {
+			agents[idx].connected = true
+			agents[idx].startup_updated_unix_ms = now_unix_ms()
+		}
+		agent_lifecycle_emit(agent_instance_id, "connected", "start_success")
+		b := strings.builder_make()
+		strings.write_string(&b, `{"ok":true,"agent_instance_id":"`)
+		json_write_string(&b, agent_instance_id)
+		strings.write_string(&b, `","status":"ready"}`)
+		write_response(client, 200, "OK", strings.to_string(b))
 		return
 	}
 	idx := test_run_find_by_token(agent_token)

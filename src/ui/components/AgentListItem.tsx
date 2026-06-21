@@ -1,3 +1,5 @@
+import { useSelector } from 'react-redux';
+
 const statusStyles = {
   connected: 'bg-emerald-400 shadow-emerald-400/40',
   starting: 'bg-sky-400 shadow-sky-400/40',
@@ -28,6 +30,8 @@ function defaultSuggestedFix(agent) {
 export default function AgentListItem({ agent, selected, onSelect, hideProject = false, warningDismissed = false, onDismissWarning }: { agent: any; selected: boolean; onSelect: () => void; hideProject?: boolean; warningDismissed?: boolean; onDismissWarning?: () => void }) {
   const startupIssue = !warningDismissed && (agent.status === 'startup_blocked' || agent.status === 'startup_failed' || agent.status === 'startup_unknown');
   const suggestedFix = defaultSuggestedFix(agent);
+  const projectsById = useSelector((state: any) => state.projects?.projectsById ?? {});
+  const projectLabel = agent.projectId ? (projectsById[agent.projectId]?.name || agent.projectName || agent.projectId) : '';
   return (
     <button
       type="button"
@@ -83,7 +87,7 @@ export default function AgentListItem({ agent, selected, onSelect, hideProject =
           ) : null}
           {((!hideProject && agent.projectId) || agent.templateId || agent.providerProfile || agent.roleHint) ? (
             <p className="mt-2 line-clamp-2 text-left text-[11px] leading-4 text-[#aaa]">
-              {!hideProject && agent.projectId ? `Project ${agent.projectId}` : ''}
+              {!hideProject && agent.projectId ? `Project ${projectLabel}` : ''}
               {agent.templateId ? `${!hideProject && agent.projectId ? ' · ' : ''}Template ${agent.templateId}` : ''}
               {agent.providerProfile ? `${(!hideProject && agent.projectId) || agent.templateId ? ' · ' : ''}Provider ${agent.providerProfile}` : ''}
               {agent.roleHint ? `${(!hideProject && agent.projectId) || agent.templateId || agent.providerProfile ? ' · ' : ''}Role ${agent.roleHint}` : ''}

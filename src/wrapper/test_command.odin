@@ -50,6 +50,11 @@ run_test_command :: proc(args: []string) -> int {
 	strict_tier := !has_flag(args, "--no-strict-tier")
 	verbose     := has_flag(args, "--verbose")
 	dry_run     := has_flag(args, "--dry-run")
+	manual_verify := has_flag(args, "--manual-verify")
+	if manual_verify {
+		// Manual verification implies preserving the session so the user can attach.
+		keep = "always"
+	}
 
 	if provider == "" {
 		fmt.fprintln(os.stderr, "ham-wrapper test: --provider is required")
@@ -161,6 +166,14 @@ run_test_command :: proc(args: []string) -> int {
 		fmt.printf("  (soft fail: %s; continuing)\n", s5fail)
 	}
 	if intrinsics.atomic_load(&g_test_abort) { return test_abort_cleanup(&state) }
+
+	if manual_verify {
+		fmt.printf("[6/6] manual verification                          OK    session preserved; attach with: tmux attach -t %s\n", state.session)
+		fmt.printf("\nPASS  total %.1fs (manual)\n", elapsed_seconds(state.start_ns))
+		fmt.printf("  cwd=%s\n", state.cwd)
+		fmt.printf("  When you're done, clean up with: tmux kill-session -t %s && rm -rf %s\n", state.session, state.cwd)
+		return 0
+	}
 
 	// Step 6
 	s6ok, s6detail, s6fail := step6_verify_file(&state)
