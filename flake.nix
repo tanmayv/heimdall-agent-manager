@@ -42,7 +42,6 @@
           runHook preBuild
           mkdir -p $out/bin
           odin build src/daemon -collection:odin_test=src -out:$out/bin/ham-daemon
-          ln -s ham-daemon $out/bin/bc-odin-daemon
           runHook postBuild
         '';
       };
@@ -58,7 +57,6 @@
           runHook preBuild
           mkdir -p $out/bin
           odin build src/ctl -collection:odin_test=src -out:$out/bin/ham-ctl
-          ln -s ham-ctl $out/bin/bc-odinctl
           runHook postBuild
         '';
       };
@@ -80,7 +78,6 @@
           mkdir -p $out/bin
           makeWrapper ${pkgs.electron}/bin/electron $out/bin/heimdall \
             --add-flags "$out/share/heimdall/electron-dist/main.cjs"
-          ln -s heimdall $out/bin/odin-ui
           runHook postInstall
         '';
       };
@@ -106,12 +103,8 @@
           ham-ctl = mkOdinCtlPackage pkgs odin;
           ham-test-agent = mkOdinPackage pkgs odin "ham-test-agent" "src/test_agent";
           heimdall = mkOdinUiPackage pkgs;
-          # Compatibility package aliases for existing users/scripts.
-          bc-odin-daemon = self.packages.${system}.ham-daemon;
           bc-agent-wrapper = self.packages.${system}.ham-wrapper;
-          bc-odinctl = self.packages.${system}.ham-ctl;
           bc-test-agent = self.packages.${system}.ham-test-agent;
-          bc-odin-ui = self.packages.${system}.heimdall;
           default = self.packages.${system}.ham-daemon;
         });
 
@@ -136,7 +129,6 @@
           type = "app";
           program = "${self.packages.${system}.heimdall}/bin/heimdall";
         };
-        odin-ui = self.apps.${system}.heimdall;
         default = self.apps.${system}.daemon;
       });
 
