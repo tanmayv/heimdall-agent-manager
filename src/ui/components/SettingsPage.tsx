@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { useDispatch } from 'react-redux';
+import { saveUserPreference } from '../store/chatSlice';
 import SessionConfig from './SessionConfig';
 import * as daemonApi from '../api/daemonApi';
 
@@ -57,6 +59,7 @@ const KEY_DESCRIPTIONS: Record<string, string> = {
 };
 
 export default function SettingsPage({ session, onReconnect, onBack }) {
+  const dispatch = useDispatch<any>();
   const [preferences, setPreferences] = useState<Preference[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -68,6 +71,7 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
   // Edit states for fields in the UI
   const [editValues, setEditValues] = useState<Record<string, string>>({});
   const [editInterrupts, setEditInterrupts] = useState<Record<string, boolean>>({});
+  const [resettingSetup, setResettingSetup] = useState(false);
 
   const textareasRef = useRef<Record<string, HTMLTextAreaElement | null>>({});
 
@@ -273,6 +277,24 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
     }
   };
 
+  const handleRerunSetup = async () => {
+    if (!confirm('Are you sure you want to rerun the first-time setup wizard? You will be immediately redirected to the onboarding flow.')) {
+      return;
+    }
+    setResettingSetup(true);
+    try {
+      await dispatch(saveUserPreference({
+        key: 'setup_completed',
+        value: 'false',
+        interrupt: false,
+      })).unwrap();
+    } catch (err: any) {
+      alert(`Failed to reset setup: ${err?.message || 'Unknown error'}`);
+    } finally {
+      setResettingSetup(false);
+    }
+  };
+
   return (
     <main className="framer-panel flex min-w-0 flex-1 flex-col bg-[var(--fd-canvas)]">
       <header className="flex animate-float-in items-center justify-between border-b border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-6 py-4">
@@ -408,6 +430,24 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
                   )}
                 </button>
               </div>
+            </div>
+          </div>
+
+          {/* 5. Onboarding & Setup */}
+          <div className="framer-card p-6 border border-amber-500/10 bg-amber-500/5">
+            <h3 className="text-sm font-semibold text-[#888] uppercase tracking-wider mb-2">🛡️ Setup & Onboarding</h3>
+            <p className="text-xs text-[#666] mb-4">
+              Rerun the interactive onboarding wizard to configure your daemon connection IP, set your friendly operator display name, specify your database backup folder, and re-verify your agent connectivity tests.
+            </p>
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={handleRerunSetup}
+                disabled={resettingSetup}
+                className="px-4 py-2.5 rounded-xl font-bold text-xs bg-amber-500 text-black hover:bg-amber-400 active:scale-[0.98] transition-all duration-200"
+              >
+                {resettingSetup ? 'Resetting Setup...' : 'Rerun Setup Wizard'}
+              </button>
             </div>
           </div>
 
