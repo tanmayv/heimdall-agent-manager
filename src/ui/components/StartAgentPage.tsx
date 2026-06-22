@@ -21,6 +21,7 @@ function normalizeTemplate(template: any) {
     roleHint: template.role_hint || template.roleHint || '',
     defaultProviderProfile: template.default_provider_profile || template.defaultProviderProfile || template.provider_profile || '',
     description: template.description || template.persona || template.instructions || '',
+    suggestedModelTier: template.suggested_model_tier || template.suggestedModelTier || 'normal',
   };
 }
 
@@ -96,6 +97,12 @@ export default function StartAgentPage({ session, onBack, onStarted }: { session
   useEffect(() => {
     if (!provider && selectedTemplate?.defaultProviderProfile) setProvider(selectedTemplate.defaultProviderProfile);
   }, [provider, selectedTemplate?.defaultProviderProfile]);
+
+  useEffect(() => {
+    if (selectedTemplate?.suggestedModelTier) {
+      setModelTier(selectedTemplate.suggestedModelTier as any);
+    }
+  }, [selectedTemplate]);
 
   async function handleSubmit(event) {
     event.preventDefault();

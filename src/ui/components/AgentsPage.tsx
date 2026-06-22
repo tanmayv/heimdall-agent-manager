@@ -25,11 +25,13 @@ function normalizeTemplate(t: any) {
     displayName: t.display_name || t.displayName || t.template_id || '',
     roleHint: t.role_hint || t.roleHint || '',
     defaultProviderProfile: t.default_provider_profile || t.defaultProviderProfile || '',
-    persona: t.persona || t.instructions || t.description || '',
+    persona: t.persona || '',
+    instructions: t.instructions || '',
+    suggestedModelTier: t.suggested_model_tier || t.suggestedModelTier || 'normal',
   };
 }
 
-const blankTemplate = { templateId: '', displayName: '', roleHint: '', defaultProviderProfile: '', persona: '' };
+const blankTemplate = { templateId: '', displayName: '', roleHint: '', defaultProviderProfile: '', persona: '', instructions: '', suggestedModelTier: 'normal' };
 
 export default function AgentsPage({ session, onOpenStartAgent }: { session: any; onOpenStartAgent: () => void }) {
   const dispatch = useDispatch<any>();
@@ -237,6 +239,8 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
           role_hint: templateForm.roleHint.trim(),
           default_provider_profile: templateForm.defaultProviderProfile.trim(),
           persona: templateForm.persona.trim(),
+          instructions: templateForm.instructions.trim(),
+          suggested_model_tier: templateForm.suggestedModelTier,
           update: !isNew,
         },
       });
@@ -462,8 +466,25 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                   <input data-debug-id="template-form-provider" value={templateForm.defaultProviderProfile} onChange={(e) => setTemplateForm((f) => ({ ...f, defaultProviderProfile: e.target.value }))} placeholder="e.g. pi, claude" className="framer-input mt-1.5 w-full px-3 py-2 text-sm" />
                 </label>
                 <label className="block">
-                  <span className="framer-topline text-[10px]">Persona / instructions</span>
-                  <textarea data-debug-id="template-form-persona" value={templateForm.persona} onChange={(e) => setTemplateForm((f) => ({ ...f, persona: e.target.value }))} rows={3} placeholder="Describe the agent's persona and behaviour…" className="framer-input mt-1.5 w-full resize-none px-3 py-2 text-sm" />
+                  <span className="framer-topline text-[10px]">Suggested model tier</span>
+                  <select
+                    data-debug-id="template-form-model-tier"
+                    value={templateForm.suggestedModelTier}
+                    onChange={(e) => setTemplateForm((f) => ({ ...f, suggestedModelTier: e.target.value }))}
+                    className="framer-input mt-1.5 w-full bg-[var(--fd-surface-2)] px-3 py-2 text-sm text-white"
+                  >
+                    <option value="cheap">Cheap (e.g. Gemini Flash Lite)</option>
+                    <option value="normal">Normal (e.g. Gemini Flash)</option>
+                    <option value="smart">Smart (e.g. Gemini Pro)</option>
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="framer-topline text-[10px]">Persona</span>
+                  <textarea data-debug-id="template-form-persona" value={templateForm.persona} onChange={(e) => setTemplateForm((f) => ({ ...f, persona: e.target.value }))} rows={3} placeholder="Describe the agent's persona and behavioral style..." className="framer-input mt-1.5 w-full resize-none px-3 py-2 text-sm" />
+                </label>
+                <label className="block">
+                  <span className="framer-topline text-[10px]">Instructions</span>
+                  <textarea data-debug-id="template-form-instructions" value={templateForm.instructions} onChange={(e) => setTemplateForm((f) => ({ ...f, instructions: e.target.value }))} rows={3} placeholder="Provide step-by-step operating guidelines or starter prompts..." className="framer-input mt-1.5 w-full resize-none px-3 py-2 text-sm" />
                 </label>
                 <div className="flex justify-end gap-2">
                   <button type="button" data-debug-id="template-form-cancel-btn" onClick={cancelTemplateEdit} className="framer-pill-secondary">Cancel</button>
@@ -488,8 +509,10 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                     ID: <span className="text-[#aaa]">{t.templateId}</span>
                     {t.roleHint ? <> · Role hint: <span className="text-[#aaa]">{t.roleHint}</span></> : null}
                     {t.defaultProviderProfile ? <> · Provider: <span className="text-[#aaa]">{t.defaultProviderProfile}</span></> : null}
+                    {t.suggestedModelTier ? <> · Suggested Tier: <span className="text-[#aaa] capitalize">{t.suggestedModelTier}</span></> : null}
                   </p>
-                  {t.persona ? <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-[#777]">{t.persona}</p> : null}
+                  {t.persona ? <p className="mt-2 line-clamp-2 text-[11px] leading-4 text-[#888]"><b>Persona:</b> {t.persona}</p> : null}
+                  {t.instructions ? <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-[#666]"><b>Instructions:</b> {t.instructions}</p> : null}
                 </div>
                 <div className="flex shrink-0 gap-2">
                   <button

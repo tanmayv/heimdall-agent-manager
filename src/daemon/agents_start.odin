@@ -403,6 +403,7 @@ handle_agent_template_create_update :: proc(client: net.TCP_Socket, body: string
 	ev.parent_template_id = extract_json_string(body, "parent_template_id", "")
 	ev.default_provider_profile = extract_json_string(body, "default_provider_profile", extract_json_string(body, "provider_profile", ""))
 	ev.bootstrap_defaults = extract_json_string(body, "bootstrap_defaults", "")
+	ev.suggested_model_tier = extract_json_string(body, "suggested_model_tier", "normal")
 	ev.author = "api"
 	agent_parse_string_array_field(body, "memory_templates", &ev.memory_templates, &ev.memory_template_count)
 	if !agent_template_append_event(ev) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent template"}`); return }
@@ -496,6 +497,7 @@ agent_template_record_json :: proc(builder: ^strings.Builder, rec: Agent_Templat
 	strings.write_string(builder, `","parent_template_id":"`); json_write_string(builder, rec.parent_template_id)
 	strings.write_string(builder, `","default_provider_profile":"`); json_write_string(builder, rec.default_provider_profile)
 	strings.write_string(builder, `","bootstrap_defaults":"`); json_write_string(builder, rec.bootstrap_defaults)
+	strings.write_string(builder, `","suggested_model_tier":"`); json_write_string(builder, rec.suggested_model_tier)
 	strings.write_string(builder, `","created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.created_unix_ms))
 	strings.write_string(builder, `,"updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.updated_unix_ms))
 	strings.write_string(builder, `,"archived_at_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.archived_at_unix_ms))

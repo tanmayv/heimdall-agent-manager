@@ -56,7 +56,7 @@ agent_store_init :: proc(data_dir: string) {
 	agent_instance_events_path = strings.clone(fmt.tprintf("%s/instance-events.jsonl", agent_store_dir))
 	_ = os.make_directory_all(agent_store_dir)
 	agent_store_replay()
-	agent_template_store_init()
+	agent_template_store_init(data_dir)
 }
 
 agent_store_append_event :: proc(event: Agent_Instance_Event) -> bool {
@@ -155,6 +155,7 @@ Agent_Template_Record :: struct {
 	parent_template_id: string,
 	default_provider_profile: string,
 	bootstrap_defaults: string,
+	suggested_model_tier: string,
 	memory_templates: [AGENT_TEMPLATE_MAX_MEMORY_TEMPLATES]string,
 	memory_template_count: int,
 	created_unix_ms: i64,
@@ -174,6 +175,7 @@ Agent_Template_Event :: struct {
 	parent_template_id: string,
 	default_provider_profile: string,
 	bootstrap_defaults: string,
+	suggested_model_tier: string,
 	memory_templates: [AGENT_TEMPLATE_MAX_MEMORY_TEMPLATES]string,
 	memory_template_count: int,
 	author: string,
@@ -186,32 +188,28 @@ agent_template_events: [AGENT_MAX_EVENTS]Agent_Template_Event
 agent_template_event_count: int
 agent_template_events_path: string
 
-agent_template_store_init :: proc() {
+agent_template_store_init :: proc(data_dir: string) {
 	agent_template_record_count = 0
 	agent_template_event_count = 0
-	agent_template_events_path = strings.clone(fmt.tprintf("%s/template-events.jsonl", agent_store_dir))
-	agent_template_store_replay()
+	if !agent_template_db_init(data_dir) {
+		fmt.println("WARNING: agent_template_db_init failed, templates will not persist across restarts")
+		return
+	}
+	_ = agent_template_db_load_all()
 }
 
 agent_template_append_event :: proc(event: Agent_Template_Event) -> bool {
 	ev := agent_template_event_clone(event)
 	if ev.event_id == "" do ev.event_id = strings.clone(fmt.tprintf("agent_template_evt_%d", router_now_unix_ms()))
 	if ev.created_unix_ms == 0 do ev.created_unix_ms = router_now_unix_ms()
-	file, err := os.open(agent_template_events_path, os.O_CREATE | os.O_APPEND | os.O_WRONLY)
-	if err != nil do return false
-	defer os.close(file)
-	os.write_string(file, agent_template_event_json(ev)); os.write_string(file, "\n")
-	return agent_template_apply_event(ev)
-}
-
-agent_template_store_replay :: proc() {
-	data, err := os.read_entire_file(agent_template_events_path, context.allocator)
-	if err != nil do return
-	for line in strings.split(string(data), "\n") {
-		trimmed := strings.trim_space(line)
-		if trimmed == "" do continue
-		if ev, ok := agent_template_event_from_json(trimmed); ok do agent_template_apply_event(ev)
+	
+	if !agent_template_apply_event(ev) do return false
+	
+	idx := agent_template_index(ev.template_id)
+	if idx >= 0 {
+		return agent_template_db_save(agent_template_records[idx])
 	}
+	return false
 }
 
 agent_template_apply_event :: proc(event: Agent_Template_Event) -> bool {
@@ -237,6 +235,7 @@ agent_template_apply_event :: proc(event: Agent_Template_Event) -> bool {
 	rec.parent_template_id = strings.clone(event.parent_template_id)
 	rec.default_provider_profile = strings.clone(event.default_provider_profile)
 	rec.bootstrap_defaults = strings.clone(event.bootstrap_defaults)
+	rec.suggested_model_tier = strings.clone(event.suggested_model_tier)
 	rec.memory_template_count = event.memory_template_count
 	for i in 0..<event.memory_template_count do rec.memory_templates[i] = strings.clone(event.memory_templates[i])
 	if rec.created_unix_ms == 0 do rec.created_unix_ms = event.created_unix_ms
@@ -249,13 +248,13 @@ agent_template_index :: proc(template_id: string) -> int { for i in 0..<agent_te
 
 agent_template_event_clone :: proc(e: Agent_Template_Event) -> Agent_Template_Event {
 	out := e
-	out.event_id = strings.clone(e.event_id); out.template_id = strings.clone(e.template_id); out.display_name = strings.clone(e.display_name); out.persona = strings.clone(e.persona); out.instructions = strings.clone(e.instructions); out.role_hint = strings.clone(e.role_hint); out.parent_template_id = strings.clone(e.parent_template_id); out.default_provider_profile = strings.clone(e.default_provider_profile); out.bootstrap_defaults = strings.clone(e.bootstrap_defaults); out.author = strings.clone(e.author)
+	out.event_id = strings.clone(e.event_id); out.template_id = strings.clone(e.template_id); out.display_name = strings.clone(e.display_name); out.persona = strings.clone(e.persona); out.instructions = strings.clone(e.instructions); out.role_hint = strings.clone(e.role_hint); out.parent_template_id = strings.clone(e.parent_template_id); out.default_provider_profile = strings.clone(e.default_provider_profile); out.bootstrap_defaults = strings.clone(e.bootstrap_defaults); out.suggested_model_tier = strings.clone(e.suggested_model_tier); out.author = strings.clone(e.author)
 	for i in 0..<e.memory_template_count do out.memory_templates[i] = strings.clone(e.memory_templates[i])
 	return out
 }
 
 agent_template_event_json :: proc(event: Agent_Template_Event) -> string {
-	b := strings.builder_make(); strings.write_string(&b, `{"event_id":"`); json_write_string(&b, event.event_id); strings.write_string(&b, `","kind":"`); json_write_string(&b, fmt.tprintf("%v", event.kind)); strings.write_string(&b, `","template_id":"`); json_write_string(&b, event.template_id); strings.write_string(&b, `","display_name":"`); json_write_string(&b, event.display_name); strings.write_string(&b, `","persona":"`); json_write_string(&b, event.persona); strings.write_string(&b, `","instructions":"`); json_write_string(&b, event.instructions); strings.write_string(&b, `","role_hint":"`); json_write_string(&b, event.role_hint); strings.write_string(&b, `","parent_template_id":"`); json_write_string(&b, event.parent_template_id); strings.write_string(&b, `","default_provider_profile":"`); json_write_string(&b, event.default_provider_profile); strings.write_string(&b, `","bootstrap_defaults":"`); json_write_string(&b, event.bootstrap_defaults); strings.write_string(&b, `","author":"`); json_write_string(&b, event.author); strings.write_string(&b, `","created_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", event.created_unix_ms)); strings.write_string(&b, `,"memory_templates":[`)
+	b := strings.builder_make(); strings.write_string(&b, `{"event_id":"`); json_write_string(&b, event.event_id); strings.write_string(&b, `","kind":"`); json_write_string(&b, fmt.tprintf("%v", event.kind)); strings.write_string(&b, `","template_id":"`); json_write_string(&b, event.template_id); strings.write_string(&b, `","display_name":"`); json_write_string(&b, event.display_name); strings.write_string(&b, `","persona":"`); json_write_string(&b, event.persona); strings.write_string(&b, `","instructions":"`); json_write_string(&b, event.instructions); strings.write_string(&b, `","role_hint":"`); json_write_string(&b, event.role_hint); strings.write_string(&b, `","parent_template_id":"`); json_write_string(&b, event.parent_template_id); strings.write_string(&b, `","default_provider_profile":"`); json_write_string(&b, event.default_provider_profile); strings.write_string(&b, `","bootstrap_defaults":"`); json_write_string(&b, event.bootstrap_defaults); strings.write_string(&b, `","suggested_model_tier":"`); json_write_string(&b, event.suggested_model_tier); strings.write_string(&b, `","author":"`); json_write_string(&b, event.author); strings.write_string(&b, `","created_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", event.created_unix_ms)); strings.write_string(&b, `,"memory_templates":[`)
 	for i in 0..<event.memory_template_count { if i > 0 do strings.write_string(&b, `,`); strings.write_string(&b, `"`); json_write_string(&b, event.memory_templates[i]); strings.write_string(&b, `"`) }
 	strings.write_string(&b, `]}`); return strings.to_string(b)
 }
@@ -263,7 +262,7 @@ agent_template_event_json :: proc(event: Agent_Template_Event) -> string {
 agent_template_event_from_json :: proc(line: string) -> (Agent_Template_Event, bool) {
 	kind := Agent_Template_Event_Kind.Agent_Template_Upserted
 	if extract_json_string(line, "kind", "") == "Agent_Template_Archived" do kind = .Agent_Template_Archived
-	ev := Agent_Template_Event{event_id = extract_json_string(line, "event_id", ""), kind = kind, template_id = extract_json_string(line, "template_id", ""), display_name = extract_json_string(line, "display_name", ""), persona = extract_json_string(line, "persona", ""), instructions = extract_json_string(line, "instructions", ""), role_hint = extract_json_string(line, "role_hint", ""), parent_template_id = extract_json_string(line, "parent_template_id", ""), default_provider_profile = extract_json_string(line, "default_provider_profile", ""), bootstrap_defaults = extract_json_string(line, "bootstrap_defaults", ""), author = extract_json_string(line, "author", ""), created_unix_ms = i64(extract_json_int(line, "created_unix_ms", 0))}
+	ev := Agent_Template_Event{event_id = extract_json_string(line, "event_id", ""), kind = kind, template_id = extract_json_string(line, "template_id", ""), display_name = extract_json_string(line, "display_name", ""), persona = extract_json_string(line, "persona", ""), instructions = extract_json_string(line, "instructions", ""), role_hint = extract_json_string(line, "role_hint", ""), parent_template_id = extract_json_string(line, "parent_template_id", ""), default_provider_profile = extract_json_string(line, "default_provider_profile", ""), bootstrap_defaults = extract_json_string(line, "bootstrap_defaults", ""), suggested_model_tier = extract_json_string(line, "suggested_model_tier", "normal"), author = extract_json_string(line, "author", ""), created_unix_ms = i64(extract_json_int(line, "created_unix_ms", 0))}
 	agent_parse_string_array_field(line, "memory_templates", &ev.memory_templates, &ev.memory_template_count)
 	return ev, ev.template_id != ""
 }
