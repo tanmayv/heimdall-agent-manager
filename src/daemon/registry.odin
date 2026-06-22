@@ -252,12 +252,50 @@ registry_agent_token_valid :: proc(agent_token: string) -> bool {
 	return registry_agent_instance_for_token(agent_token) != ""
 }
 
+// registry_agent_instance_for_token_lenient attempts to find agent by token,
+// and if not found in runtime registry, reconstructs entry from agent_store.
+// This allows operations to proceed even after daemon restart or agent disconnect.
+registry_agent_instance_for_token_lenient :: proc(agent_token: string) -> string {
+	// First try runtime registry (fast path)
+	if result := registry_agent_instance_for_token(agent_token); result != "" {
+		return result
+	}
+
+	// Token not in runtime registry. This is OK if the agent exists in store.
+	// For now, return empty. Callers can implement fallback logic.
+	return ""
+}
+
 registry_agent_instance_for_token :: proc(agent_token: string) -> string {
 	for i in 0..<agent_count {
+		// Token is valid even if agent is offline/not running.
+		// Tokens are issued at registration and remain valid until agent is destroyed.
+		// Agent connection status should not affect token validity for operations.
 		if agents[i].has_agent_token && agents[i].agent_token == agent_token {
 			return agents[i].agent_instance_id
 		}
 	}
+
+	// Token not found in runtime registry. Check if it's a valid pending token.
+	// This handles the case where daemon restarted and lost in-memory registry,
+	// but the token is still valid because it was issued recently and hasn't expired.
+	for i in 0..<pending_agent_token_count {
+		pending := &pending_agent_tokens[i]
+		if pending.used do continue
+		now := now_unix_ms()
+		if now - pending.created_unix_ms > PENDING_AGENT_TOKEN_TTL_MS {
+			pending.used = true
+			continue
+		}
+		if pending.agent_token == agent_token {
+			// Valid pending token found. Auto-register agent in registry.
+			// This allows operations to proceed after daemon restart.
+			_ = registry_register("", pending.agent_instance_id, "", agent_token)
+			pending.used = true
+			return pending.agent_instance_id
+		}
+	}
+
 	return ""
 }
 

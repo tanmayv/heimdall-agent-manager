@@ -64,6 +64,11 @@ main :: proc() {
 	}
 
 	agent_cmd, agent_cmd_ok := selected_agent_command(cfg, selected_agent)
+	if !agent_cmd_ok {
+		fmt.println("error: no agent-cmd config found for agent", selected_agent)
+		fmt.printfln("hint: add [wrapper.agent-cmd.%s] to your config, or pass --agent <configured-name>", selected_agent)
+		return
+	}
 	window_name := wrapper_window_name(cfg.tmux_window_prefix, agent_instance_id)
 	cwd := resolve_agent_run_dir(cfg, agent_cmd, agent_cmd_ok, selected_agent, agent_instance_id)
 
@@ -120,7 +125,7 @@ main :: proc() {
 	fmt.println("tmux_window", window_name)
 	fmt.println("working_dir", cwd)
 
-	if agent_cmd_ok && !is_test_token(agent_token) {
+	if !is_test_token(agent_token) {
 		// Daemon passes the agent record's actual project_id via --project-id so
 		// the bootstrap reflects the *current* project, not the per-provider
 		// default in config.toml.
@@ -132,7 +137,7 @@ main :: proc() {
 	}
 
 	stop_message := cfg.stop_message
-	if agent_cmd_ok && agent_cmd.stop_message != "" do stop_message = agent_cmd.stop_message
+	if agent_cmd.stop_message != "" do stop_message = agent_cmd.stop_message
 	if stop_message == "" do stop_message = "Agent stop requested. You have {time} seconds to complete your current work and checkpoint before shutdown."
 
 	command := build_agent_command(cfg, selected_agent, cfg.daemon_url, registered_instance_id, display_name, conversation_id, agent_token, model_tier)
@@ -143,19 +148,15 @@ main :: proc() {
 	}
 	fmt.println("tmux_pane", launch.pane_id)
 	_ = tmux.rename_window_for_pane(launch.pane_id, fmt.tprintf("[Starting] %s", window_name))
-	if agent_cmd_ok {
-		report_startup_status(cfg.daemon_url, registered_instance_id, "starting", "launch", "Agent process launched in tmux", selected_agent, cwd, launch.pane_id)
-		result := startup_probe_agent(agent_cmd.startup_detection, launch.pane_id)
-		if result.status != "disabled" {
-			fmt.println("startup_status", result.status)
-			if result.reason_code != "" do fmt.println("startup_reason_code", result.reason_code)
-			if result.safe_diagnostic != "" do fmt.println("startup_diagnostic", result.safe_diagnostic)
-			report_startup_status(cfg.daemon_url, registered_instance_id, result.status, result.reason_code, result.safe_diagnostic, selected_agent, cwd, launch.pane_id)
-			if result.status == "startup_blocked" {
-				_ = tmux.rename_window_for_pane(launch.pane_id, fmt.tprintf("[Blocked] %s", window_name))
-			} else {
-				_ = tmux.rename_window_for_pane(launch.pane_id, window_name)
-			}
+	report_startup_status(cfg.daemon_url, registered_instance_id, "starting", "launch", "Agent process launched in tmux", selected_agent, cwd, launch.pane_id)
+	result := startup_probe_agent(agent_cmd.startup_detection, launch.pane_id)
+	if result.status != "disabled" {
+		fmt.println("startup_status", result.status)
+		if result.reason_code != "" do fmt.println("startup_reason_code", result.reason_code)
+		if result.safe_diagnostic != "" do fmt.println("startup_diagnostic", result.safe_diagnostic)
+		report_startup_status(cfg.daemon_url, registered_instance_id, result.status, result.reason_code, result.safe_diagnostic, selected_agent, cwd, launch.pane_id)
+		if result.status == "startup_blocked" {
+			_ = tmux.rename_window_for_pane(launch.pane_id, fmt.tprintf("[Blocked] %s", window_name))
 		} else {
 			_ = tmux.rename_window_for_pane(launch.pane_id, window_name)
 		}
@@ -171,11 +172,6 @@ main :: proc() {
 	}
 
 	initial_exec_state := "running"
-	if agent_cmd_ok && agent_cmd.startup_detection.enabled {
-		// Derive initial state from the probe outcome the daemon already heard about.
-		// Probe ran above; we don't have its result here, but the daemon's startup
-		// status will have been updated. Use "running" as a benign default for now.
-	}
 	heartbeat_loop(cfg.daemon_url, agent_class, registered_instance_id, display_name, agent_token, launch.pane_id, stop_message, selected_agent, model_tier, override_project_id, cwd, initial_exec_state, cfg.tmux_session, window_name, &ws_conn)
 }
 
@@ -368,6 +364,7 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 				fmt.println("re-registered", agent_instance_id, new_ws_url)
 				current_token = new_token
 				failed_heartbeats = 0
+				notify_agent_token_refreshed(tmux_pane, daemon_url, new_token, agent_instance_id)
 			} else {
 				fmt.println("re-register failed", agent_instance_id)
 				failed_heartbeats += 1
@@ -387,6 +384,7 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 				fmt.println("reconnected", agent_instance_id, new_ws_url)
 				current_token = new_token
 				failed_heartbeats = 0
+				notify_agent_token_refreshed(tmux_pane, daemon_url, new_token, agent_instance_id)
 			} else {
 				fmt.println("reconnect attempt failed", agent_instance_id)
 			}
@@ -489,6 +487,15 @@ handle_user_chat_event :: proc(text, tmux_pane: string) {
 	} else {
 		fmt.println("failed to notify agent pane", line)
 	}
+}
+
+notify_agent_token_refreshed :: proc(tmux_pane, daemon_url, new_token, agent_instance_id: string) {
+	msg := fmt.tprintf(
+		"SYSTEM: Heimdall daemon restarted and issued a new agent token. Your previous token is invalid. New token: %s — update all pending ham-ctl commands to use this token. Run: %s --daemon-url %s --token %s start-success",
+		new_token, effective_ctl_bin(), daemon_url, new_token,
+	)
+	fmt.println("token_refreshed: notifying agent pane", tmux_pane)
+	_ = tmux.send_line_with_escape(tmux_pane, msg, true)
 }
 
 handle_stop_event :: proc(text, tmux_pane, tmux_session, window_name, agent_instance_id, stop_message: string, ws_conn: ^ws.Connection) {

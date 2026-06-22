@@ -5,7 +5,6 @@ import "core:strings"
 
 agent_chat_send_to_user :: proc(agent_instance_id, user_id, body: string) -> (string, bool) {
 	if !valid_user_id(user_id) || body == "" do return "", false
-	if !user_client_user_exists(user_id) do return "", false
 	message_id, ok := chat_append_agent_to_user(user_id, agent_instance_id, body)
 	if !ok || message_id == "" do return "", false
 	return message_id, true

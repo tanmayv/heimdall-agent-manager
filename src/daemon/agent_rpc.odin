@@ -79,6 +79,7 @@ handle_agent_rpc_fetch_user_chat :: proc(client: net.TCP_Socket, body, from_agen
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"fetch_user_chat requires valid user_id"}`)
 		return
 	}
+	unread_only := extract_json_bool(body, "unread_only", true)
 	if chat_has_unread_direction(user_id, from_agent_instance_id, "user_to_agent") {
 		now := router_now_unix_ms()
 		if !chat_store_append_event(Chat_Event{kind = .Read_Marked, user_id = user_id, agent_instance_id = from_agent_instance_id, direction = "user_to_agent", read_unix_ms = now}) {
@@ -87,7 +88,7 @@ handle_agent_rpc_fetch_user_chat :: proc(client: net.TCP_Socket, body, from_agen
 		}
 		chat_event_fanout(user_id, from_agent_instance_id, "", "read")
 	}
-	write_response(client, 200, "OK", chat_fetch_json(user_id, from_agent_instance_id))
+	write_response(client, 200, "OK", chat_fetch_json(user_id, from_agent_instance_id, unread_only))
 }
 
 agent_rpc_parse_send_message_command :: proc(body, from_agent_instance_id: string) -> Command {

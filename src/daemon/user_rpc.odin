@@ -78,7 +78,8 @@ handle_user_rpc_fetch_chat :: proc(client: net.TCP_Socket, body, user_id: string
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"fetch_chat requires agent_instance_id"}`)
 		return
 	}
-	write_response(client, 200, "OK", chat_fetch_json(user_id, agent_instance_id))
+	unread_only := extract_json_bool(body, "unread_only", true)
+	write_response(client, 200, "OK", chat_fetch_json(user_id, agent_instance_id, unread_only))
 }
 
 handle_user_rpc_list_chats :: proc(client: net.TCP_Socket, user_id: string) {
@@ -171,7 +172,7 @@ chat_send_response_json :: proc(message_id: string, fanout_count: int) -> string
 	return strings.to_string(builder)
 }
 
-chat_fetch_json :: proc(user_id, agent_instance_id: string) -> string {
+chat_fetch_json :: proc(user_id, agent_instance_id: string, unread_only: bool = true) -> string {
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"ok":true,"user_id":"`); json_write_string(&builder, user_id)
 	strings.write_string(&builder, `","agent_instance_id":"`); json_write_string(&builder, agent_instance_id)
@@ -180,6 +181,7 @@ chat_fetch_json :: proc(user_id, agent_instance_id: string) -> string {
 	for i in 0..<chat_message_count {
 		msg := chat_messages[i]
 		if msg.user_id != user_id || msg.agent_instance_id != agent_instance_id do continue
+		if unread_only && msg.read_unix_ms != 0 do continue
 		if !first do strings.write_string(&builder, `,`)
 		first = false
 		chat_write_message_json(&builder, msg)

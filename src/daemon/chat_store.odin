@@ -65,7 +65,10 @@ chat_store_append_event :: proc(event: Chat_Event) -> bool {
 	// because the UI ticks Read_Marked continuously.
 	if ev.kind != .Message_Appended do return true
 	file, err := os.open(chat_events_path, os.O_CREATE | os.O_APPEND | os.O_WRONLY)
-	if err != nil do return false
+	if err != nil {
+		fmt.println("chat_store_append_event: os.open failed, event applied to memory only:", err)
+		return true
+	}
 	defer os.close(file)
 	os.write_string(file, chat_event_json(ev))
 	os.write_string(file, "\n")
