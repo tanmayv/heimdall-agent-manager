@@ -417,7 +417,8 @@ build_test_argv :: proc(cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Co
 
 shell_join_argv :: proc(argv: []string) -> string {
 	builder := strings.builder_make()
-	for i, arg in argv {
+	for i := 0; i < len(argv); i += 1 {
+		arg := argv[i]
 		if i > 0 do strings.write_string(&builder, " ")
 		if arg == "" {
 			strings.write_string(&builder, "''")
