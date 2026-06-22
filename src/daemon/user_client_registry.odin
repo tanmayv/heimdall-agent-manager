@@ -63,6 +63,23 @@ user_client_heartbeat :: proc(client_instance_id, client_token: string) -> bool 
 		auth_db_update_last_seen(client_token, user_clients[idx].last_seen_unix_ms)
 		return true
 	}
+
+	// Token not in registry, check database for recovery after daemon restart
+	itype, user_id := auth_db_get_identity(client_token)
+	if itype == "user" && user_id != "" {
+		fmt.println("TOKEN RECOVERY: Found persisted user token, recovering user", user_id)
+		// Re-register user with recovered token
+		_, ok, _ := user_client_register(user_id, client_instance_id, client_token)
+		if ok {
+			// Update last_seen
+			if idx := user_client_find(client_instance_id); idx >= 0 {
+				user_clients[idx].last_seen_unix_ms = now_unix_ms()
+				auth_db_update_last_seen(client_token, user_clients[idx].last_seen_unix_ms)
+			}
+			return true
+		}
+	}
+
 	return false
 }
 

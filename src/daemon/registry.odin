@@ -307,6 +307,15 @@ registry_agent_instance_for_token :: proc(agent_token: string) -> string {
 		}
 	}
 
+	// Check persistent database for token recovery after daemon restart
+	itype, iid := auth_db_get_identity(agent_token)
+	if itype == "agent" && iid != "" {
+		fmt.println("TOKEN RECOVERY: Found persisted agent token, recovering agent", iid)
+		// Auto-register agent in runtime registry using persisted token
+		_ = registry_register("", iid, "", agent_token)
+		return iid
+	}
+
 	return ""
 }
 

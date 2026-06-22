@@ -127,12 +127,22 @@ handle_heartbeat :: proc(client: net.TCP_Socket, body: string) {
 	}
 
 	// Token validation. Registry is the source of truth; if the token is not
-	// found (e.g. daemon restarted), reject with token_not_found so the wrapper
-	// calls /agents/register to obtain a fresh token rather than silently
-	// re-entering the registry with a potentially stale identity.
+	// found, try to recover from persistent database (daemon restart case).
 	if reg_idx := registry_find_agent(snap.agent_instance_id); reg_idx >= 0 {
 		if agents[reg_idx].has_agent_token && snap.agent_token != "" && agents[reg_idx].agent_token != snap.agent_token {
 			write_response(client, 409, "Conflict", `{"ok":false,"error":"token_mismatch","message":"agent_token does not match registry"}`)
+			return
+		}
+	} else if snap.agent_token != "" {
+		// Agent not in runtime registry. Try to recover from persistent storage.
+		itype, iid := auth_db_get_identity(snap.agent_token)
+		if itype == "agent" && iid == snap.agent_instance_id {
+			fmt.println("HEARTBEAT RECOVERY: Recovering agent", snap.agent_instance_id, "from persistent token")
+			// Re-register in runtime registry using persistent token
+			_ = registry_register("", snap.agent_instance_id, snap.display_name, snap.agent_token)
+		} else {
+			// Token not in registry and not found in persistent storage
+			write_response(client, 401, "Unauthorized", `{"ok":false,"error":"token_not_found","message":"agent token not in registry; call /agents/register to obtain a fresh token"}`)
 			return
 		}
 	} else {

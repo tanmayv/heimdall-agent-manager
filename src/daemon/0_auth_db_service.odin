@@ -139,6 +139,31 @@ auth_db_update_last_seen :: proc(token: string, now_unix_ms: i64) -> bool {
 	return true
 }
 
+auth_db_get_identity :: proc(token: string) -> (identity_type: string, identity_id: string) {
+	stmt: sqlite3_stmt = nil
+
+	query := `SELECT identity_type, identity_id FROM tokens WHERE token = ?`
+
+	rc := sqlite3_prepare_v2(auth_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK {
+		fmt.println("auth_db_get_identity: prepare failed:", rc)
+		return "", ""
+	}
+	defer sqlite3_finalize(stmt)
+
+	sqlite3_bind_text(stmt, 1, cstring(raw_data(token)), -1, SQLITE_TRANSIENT)
+
+	if sqlite3_step(stmt) == SQLITE_ROW {
+		itype := strings.clone_from_cstring(sqlite3_column_text(stmt, 0))
+		iid := strings.clone_from_cstring(sqlite3_column_text(stmt, 1))
+		fmt.println("DEBUG: auth_db_get_identity found token, identity_type =", itype, "identity_id =", iid)
+		return itype, iid
+	}
+
+	fmt.println("DEBUG: auth_db_get_identity no identity found for token")
+	return "", ""
+}
+
 auth_db_close :: proc() {
 	if auth_db.db != nil {
 		sqlite3_close(auth_db.db)
