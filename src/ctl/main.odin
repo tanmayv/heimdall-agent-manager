@@ -596,7 +596,14 @@ ctl_agent_chat :: proc(daemon_url, action: string, args: []string) {
 	if action == "send-to-user" {
 		strings.write_string(&body, `","action":"send_to_user","body":"`); json_write_string(&body, option_value(args, "--body", "")); strings.write_string(&body, `"}`)
 	} else {
-		strings.write_string(&body, `","action":"fetch_user_chat"}`)
+		include_read := has_flag(args, "--include-read")
+		strings.write_string(&body, `","action":"fetch_user_chat","unread_only":`)
+		if include_read {
+			strings.write_string(&body, "false")
+		} else {
+			strings.write_string(&body, "true")
+		}
+		strings.write_string(&body, `}`)
 	}
 	response, ok := http.post(daemon_url, contracts.ROUTE_AGENT_RPC, strings.to_string(body))
 	if !ok { fmt.println(`{"ok":false,"message":"agent chat request failed"}`); return }
@@ -892,7 +899,7 @@ print_usage :: proc(config_path, daemon_url: string) {
 	fmt.println("  users presence --token <agent_token>")
 	fmt.println("  chat list|fetch|send|mark-read --client-instance-id <client> --token <client_token> [--agent-instance-id <agent>] [--body <text>] [--message-id <id>]")
 	fmt.println("  chat send-to-user --token <agent_token> --user-id <user> --body <text>")
-	fmt.println("  chat fetch-user --token <agent_token> --user-id <user>")
+	fmt.println("  chat fetch-user --token <agent_token> --user-id <user> [--include-read]")
 	fmt.println("  start-success --token <agent_token>   (signal to daemon that agent is alive and ready)")
 	fmt.println("global flags: --config <path>, --daemon-url <url>, --version, --help")
 }

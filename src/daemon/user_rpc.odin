@@ -185,7 +185,7 @@ chat_fetch_json :: proc(user_id, agent_instance_id: string, unread_only: bool = 
 	if unread_only {
 		messages = message_db_fetch_unread(user_id, agent_instance_id, direction)
 	} else {
-		messages = message_db_fetch_all(user_id, agent_instance_id)
+		messages = message_db_fetch_all(user_id, agent_instance_id, direction)
 	}
 
 	first := true

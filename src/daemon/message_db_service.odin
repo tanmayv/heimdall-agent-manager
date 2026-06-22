@@ -358,11 +358,16 @@ message_db_get_last_read_for_direction :: proc(user_id, agent_instance_id, direc
 	return message_db_get_last_read(user_id, agent_instance_id)
 }
 
-message_db_fetch_all :: proc(user_id, agent_instance_id: string) -> [dynamic]Chat_Message {
+message_db_fetch_all :: proc(user_id, agent_instance_id: string, direction: string = "") -> [dynamic]Chat_Message {
 	messages := make([dynamic]Chat_Message)
 	stmt: sqlite3_stmt = nil
 
-	query := `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? ORDER BY created_unix_ms ASC`
+	query: string
+	if direction == "user_to_agent" || direction == "agent_to_user" {
+		query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = ? ORDER BY created_unix_ms ASC`
+	} else {
+		query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? ORDER BY created_unix_ms ASC`
+	}
 
 	rc := sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
@@ -373,6 +378,9 @@ message_db_fetch_all :: proc(user_id, agent_instance_id: string) -> [dynamic]Cha
 
 	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), -1, SQLITE_TRANSIENT)
 	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), -1, SQLITE_TRANSIENT)
+	if direction == "user_to_agent" || direction == "agent_to_user" {
+		sqlite3_bind_text(stmt, 3, cstring(raw_data(direction)), -1, SQLITE_TRANSIENT)
+	}
 
 	for sqlite3_step(stmt) == SQLITE_ROW {
 		msg := Chat_Message{
