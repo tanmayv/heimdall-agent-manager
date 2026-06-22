@@ -158,7 +158,7 @@ export default function ChatPane({ agent, session }: { agent: any; session: any 
         <section
           ref={messageListRef}
           onScroll={onMessagesScroll}
-          className="h-full overflow-y-auto px-1 py-4 sm:px-2"
+          className="h-full overflow-y-auto px-1 py-4 sm:px-2 transform-gpu"
         >
           <div className="w-full flex flex-col gap-3">
             {messages.length ? (

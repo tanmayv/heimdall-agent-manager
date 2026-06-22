@@ -73,8 +73,8 @@ const Composer = memo(function Composer({ selectedAgent, disabled, onSubmit, sma
         </div>
       )}
 
-      <form className="w-full" onSubmit={handleSubmit}>
-        <div className="framer-card relative rounded-[var(--fd-radius-xxl)] p-2 transition-colors duration-300 focus-within:border-[var(--fd-accent-blue)]/60 focus-within:shadow-[0_0_0_1px_var(--fd-accent-blue)]">
+      <form className="w-full will-change-transform transform-gpu" onSubmit={handleSubmit}>
+        <div className="framer-card relative rounded-[var(--fd-radius-xxl)] p-2 will-change-transform transform-gpu">
           <label htmlFor="composer" className="sr-only">
             Message {selectedAgent?.label ?? 'agent'}
           </label>
@@ -94,7 +94,7 @@ const Composer = memo(function Composer({ selectedAgent, disabled, onSubmit, sma
               }
             }}
             placeholder={selectedAgent ? `Message ${selectedAgent.id}...` : 'Select a connected agent to start chatting'}
-            className="framer-input max-h-32 w-full resize-none rounded-[var(--fd-radius-md)] border-0 bg-transparent px-3 py-2 text-sm shadow-none focus:shadow-none placeholder:text-[#999]"
+            className="framer-input max-h-32 w-full resize-none rounded-[var(--fd-radius-md)] border-0 bg-transparent px-3 py-2 text-sm shadow-none focus:shadow-none placeholder:text-[#999] will-change-transform transform-gpu"
           />
           <div className="flex items-center justify-between px-2 pb-1">
             <p className="framer-subtext">Messages send through /user-rpc send_to_agent</p>
