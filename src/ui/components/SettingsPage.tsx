@@ -196,7 +196,7 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
   );
 
   const livePrefs = preferences.filter(p =>
-    !['starter_prompt', 'bootstrap_header', 'bootstrap_title', 'bootstrap_profile_guidance', ...auditingKeys].includes(p.key)
+    !['starter_prompt', 'bootstrap_header', 'bootstrap_title', 'bootstrap_profile_guidance', 'backup_dir', ...auditingKeys].includes(p.key)
   );
 
   const handleSaveAuditingConfig = async () => {
@@ -244,6 +244,34 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
 
   const auditorOptions = Array.from(new Set([...knownAgentIds, configuredAuditor])).filter(Boolean);
   const reviewerOptions = Array.from(new Set([...knownAgentIds, configuredReviewer])).filter(Boolean);
+
+  const [backingUp, setBackingUp] = useState(false);
+
+  const handleTriggerBackup = async () => {
+    setBackingUp(true);
+    try {
+      const response = await fetch(`${session.daemonUrl}/backup/trigger`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          client_token: session.clientToken,
+          agent_token: session.clientToken,
+        }),
+      });
+      const data = await response.json();
+      if (response.ok && data.ok) {
+        alert(data.message || 'Database backup completed successfully!');
+      } else {
+        alert(`Backup failed: ${data.message || 'Unknown error'}`);
+      }
+    } catch (err: any) {
+      alert(`Network error triggering backup: ${err?.message || 'Unknown error'}`);
+    } finally {
+      setBackingUp(false);
+    }
+  };
 
   return (
     <main className="framer-panel flex min-w-0 flex-1 flex-col bg-[var(--fd-canvas)]">
@@ -319,6 +347,70 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
               </div>
             )}
           </div>
+
+          {/* 4. Database Backups */}
+          <div className="framer-card p-6">
+            <h3 className="text-sm font-semibold text-[#888] uppercase tracking-wider mb-2">🗄️ Database Backups</h3>
+            <p className="text-xs text-[#666] mb-4">
+              Backup all local SQLite databases (tasks, template registry, chat history, preferences, and memories) to a secure dated folder. 
+              The daemon automatically takes a scheduled backup once every day in the background.
+            </p>
+
+            <div className="space-y-4">
+              {/* Backup Dir Input */}
+              <div className="flex flex-col gap-2">
+                <label className="text-[10px] text-[#555] font-bold uppercase tracking-wider">💾 Backup Destination Directory</label>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={editValues['backup_dir'] ?? ''}
+                    onChange={(e) => setEditValues(prev => ({ ...prev, backup_dir: e.target.value }))}
+                    onBlur={async () => {
+                      const val = editValues['backup_dir'] ?? '';
+                      try {
+                        await daemonApi.savePreference({
+                          daemonUrl: session.daemonUrl,
+                          clientToken: session.clientToken,
+                          key: 'backup_dir',
+                          value: val,
+                          interrupt: false,
+                        });
+                      } catch (err) {
+                        console.error('Failed to save backup_dir preference:', err);
+                      }
+                    }}
+                    className="framer-input px-3 py-2 text-xs w-full font-mono"
+                    placeholder="e.g. ~/heimdall-backups"
+                  />
+                </div>
+                <span className="text-[10px] text-[#555] italic">Home directory (~) will be expanded automatically on the backend.</span>
+              </div>
+
+              {/* Trigger Backup Button */}
+              <div className="pt-2">
+                <button
+                  type="button"
+                  onClick={handleTriggerBackup}
+                  disabled={backingUp}
+                  className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-all duration-200 ${
+                    backingUp
+                      ? 'bg-[#111] border border-[#222] text-[#444] pointer-events-none'
+                      : 'bg-white text-black hover:bg-[#e0e0e0] active:scale-[0.98]'
+                  }`}
+                >
+                  {backingUp ? (
+                    <div className="flex items-center justify-center">
+                      <div className="animate-spin mr-2 h-3.5 w-3.5 border-2 border-t-transparent border-white rounded-full"></div>
+                      Backing up...
+                    </div>
+                  ) : (
+                    'Backup Databases Now'
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+
         </div>
       </section>
     </main>

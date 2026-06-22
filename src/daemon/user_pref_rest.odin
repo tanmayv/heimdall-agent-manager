@@ -25,6 +25,7 @@ PREFERENCE_KEYS := []string{
 	"memory_reviewer_agent_id",
 	"memory_reviewer_model_tier",
 	"memory_reviewer_provider_profile",
+	"backup_dir",
 }
 
 get_preference_default :: proc(key: string, agent_class := "") -> (value: string, interrupt: bool) {
@@ -149,6 +150,9 @@ get_preference_default :: proc(key: string, agent_class := "") -> (value: string
 
 	case "memory_reviewer_provider_profile":
 		return "pi", false
+
+	case "backup_dir":
+		return "~/heimdall-backups", false
 	}
 	return "", false
 }

@@ -92,6 +92,7 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 	task_nudge_scheduler_start(cfg.daemon); time_step("task_nudge_scheduler_start", &step)
 	agent_startup_janitor_start(cfg.daemon); time_step("agent_startup_janitor_start", &step)
 	test_run_startup_sweep(); time_step("test_run_startup_sweep", &step)
+	backup_scheduler_start(); time_step("backup_scheduler_start", &step)
 	total_ms := time.duration_milliseconds(time.tick_diff(init_t0, time.tick_now()))
 	fmt.printf("init TOTAL %.1fms\n", total_ms)
 
@@ -484,6 +485,11 @@ handle_client :: proc(client: net.TCP_Socket) {
 
 	if strings.has_prefix(request, "POST /task-chains/show ") {
 		handle_task_chain_show(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /backup/trigger ") {
+		handle_backup_trigger(client, request_body(request))
 		return
 	}
 
