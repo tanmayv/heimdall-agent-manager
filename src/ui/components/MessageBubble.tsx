@@ -274,15 +274,25 @@ export default function MessageBubble({ message }) {
 
   let structuredQuestion: { type: string; question: string; suggested_answers: string[] } | null = null;
   let multiQuestion: MultiQuestion | null = null;
+  let smartAnswerBody: string | null = null;
 
   if (!isUser && message.body) {
     try {
       const parsed = JSON.parse(message.body);
       if (parsed) {
-        if (parsed.type === 'structured_question' && parsed.question && Array.isArray(parsed.suggested_answers)) {
-          structuredQuestion = parsed;
-        } else if (parsed.type === 'multi_question' && Array.isArray(parsed.questions)) {
+        const questionText = parsed.question || parsed.body || parsed.text;
+        const optionsArray = parsed.suggested_answers || parsed.options || parsed.answers || parsed.suggested_replies;
+
+        if (parsed.type === 'multi_question' && Array.isArray(parsed.questions)) {
           multiQuestion = parsed;
+        } else if (parsed.type === 'smart_answer' && parsed.body) {
+          smartAnswerBody = parsed.body;
+        } else if (typeof questionText === 'string' && Array.isArray(optionsArray)) {
+          structuredQuestion = {
+            type: 'structured_question',
+            question: questionText,
+            suggested_answers: optionsArray.map(String),
+          };
         }
       }
     } catch (e) {
@@ -494,6 +504,8 @@ export default function MessageBubble({ message }) {
               })}
             </div>
           </div>
+        ) : smartAnswerBody ? (
+          <MarkdownContent text={smartAnswerBody} />
         ) : (
           <MarkdownContent text={message.body} />
         )}

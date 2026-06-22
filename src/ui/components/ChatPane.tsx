@@ -121,6 +121,22 @@ export default function ChatPane({ agent, messages, session, sending }) {
     prevAgentIdRef.current = currentAgentId;
   }, [agent?.id, messages]);
 
+  const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
+  let smartReplies: string[] | null = null;
+  if (lastMessage && lastMessage.author !== 'user' && lastMessage.body) {
+    try {
+      const parsed = JSON.parse(lastMessage.body);
+      if (parsed) {
+        const replies = parsed.suggested_replies || parsed.suggested_answers || parsed.options || parsed.answers;
+        if (parsed.type === 'smart_answer' && Array.isArray(replies)) {
+          smartReplies = replies.map(String);
+        }
+      }
+    } catch (e) {
+      // Ignore
+    }
+  }
+
   return (
     <main className="framer-panel flex min-w-0 flex-1 flex-col bg-[var(--fd-canvas)]">
       <header className="animate-float-in border-b border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-6 py-4 flex items-center justify-between">
@@ -167,6 +183,7 @@ export default function ChatPane({ agent, messages, session, sending }) {
         selectedAgent={agent}
         disabled={!session.connected || sending}
         onSubmit={onComposerSubmit}
+        smartReplies={smartReplies}
       />
     </main>
   );
