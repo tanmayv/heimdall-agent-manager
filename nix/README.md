@@ -12,7 +12,7 @@ The flake exposes a Home Manager module under `homeModules.default` (also
 
 ```nix
 # flake.nix inputs
-inputs.heimdall.url = "github:yourorg/heimdall-agent-manager";
+inputs.heimdall.url = "github:tanmayv/heimdall-agent-manager";
 ```
 
 ```nix
@@ -202,6 +202,7 @@ programs.heimdall = {
 | Option | Type | Default |
 |---|---|---|
 | `enable` | bool | `true` |
+| `service.enable` | bool | `true` |
 | `bindHost` | str | `"127.0.0.1"` |
 | `port` | port | `49322` |
 | `dataDir` | str | `"~/.local/share/heimdall"` |
@@ -231,6 +232,7 @@ programs.heimdall = {
 | `agentRunDir` | str \| null | `"~/.local/share/heimdall/agent-runs"` |
 | `project` | str | `"default"` |
 | `memoryTemplates` | list of str | `[]` |
+| `hamCtlBin` | str \| null | `"${pkgs.ham-ctl}/bin/ham-ctl"` |
 | `agentCommands` | attrs of agentCmd | `{}` |
 
 ### `programs.heimdall.wrapper.agentCommands.<name>`
