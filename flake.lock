@@ -16,26 +16,9 @@
         "type": "github"
       }
     },
-    "odin-sqlite3": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1772328003,
-        "narHash": "sha256-ZpjPhXgV5dulIGFXldaogAvK+6Q9LHoSuEh0BN693lo=",
-        "owner": "saenai255",
-        "repo": "odin-sqlite3",
-        "rev": "0666d2d4af9efe32a7a7c26184536e8c3be79b3b",
-        "type": "github"
-      },
-      "original": {
-        "owner": "saenai255",
-        "repo": "odin-sqlite3",
-        "type": "github"
-      }
-    },
     "root": {
       "inputs": {
-        "nixpkgs": "nixpkgs",
-        "odin-sqlite3": "odin-sqlite3"
+        "nixpkgs": "nixpkgs"
       }
     }
   },

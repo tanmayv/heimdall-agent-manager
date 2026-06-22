@@ -3,7 +3,7 @@ package main
 import "core:fmt"
 import "core:os"
 import "core:strings"
-import sqlite "sqlite"
+import sqlite "../vendor/sqlite3"
 
 Message_Db_Service :: struct {
 	db: sqlite.sqlite3,
