@@ -69,6 +69,7 @@ function renderHeading(level: number, key: string, children: ReturnType<typeof r
 }
 
 const MarkdownContent = memo(function MarkdownContent({ text }: { text: string }) {
+  console.log('[Render] MarkdownContent');
   const blocks = [];
   const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
   let paragraph: string[] = [];
@@ -252,6 +253,7 @@ async function copyMessageText(text: string) {
 }
 
 const MessageBubble = memo(function MessageBubble({ message }: { message: any }) {
+  console.log('[Render] MessageBubble', message.id);
   const dispatch = useDispatch<any>();
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
   const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null);

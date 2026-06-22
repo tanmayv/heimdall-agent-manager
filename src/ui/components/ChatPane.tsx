@@ -9,6 +9,7 @@ const NEW_MESSAGE_THRESHOLD = 48;
 const EMPTY_ARRAY: any[] = [];
 
 export default function ChatPane({ agent, session }: { agent: any; session: any }) {
+  console.log('[Render] ChatPane', agent?.id || 'no-agent');
   const dispatch = useDispatch<any>();
   const messages = useSelector((state: any) => agent ? state.chat.chats[agent.id] ?? EMPTY_ARRAY : EMPTY_ARRAY);
   const sending = useSelector((state: any) => state.chat.sending);

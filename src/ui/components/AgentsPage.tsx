@@ -34,6 +34,7 @@ function normalizeTemplate(t: any) {
 const blankTemplate = { templateId: '', displayName: '', roleHint: '', defaultProviderProfile: '', persona: '', instructions: '', suggestedModelTier: 'normal' };
 
 export default function AgentsPage({ session, onOpenStartAgent }: { session: any; onOpenStartAgent: () => void }) {
+  console.log('[Render] AgentsPage');
   const dispatch = useDispatch<any>();
   const agents = useSelector((state: any) => state.chat.agents);
   const testRuns = useSelector((state: any) => state.chat.testRuns);
@@ -553,6 +554,7 @@ const AgentEditForm = memo(function AgentEditForm({
   onSubmit,
   onCancel
 }: AgentEditFormProps) {
+  console.log('[Render] AgentEditForm', agent.id);
   const [form, setForm] = useState({
     displayName: agent.label || '',
     templateId: agent.templateId || 'none',
@@ -644,6 +646,7 @@ const TemplateEditForm = memo(function TemplateEditForm({
   onSubmit,
   onCancel
 }: TemplateEditFormProps) {
+  console.log('[Render] TemplateEditForm', template.templateId || 'new');
   const [form, setForm] = useState({
     templateId: template.templateId || '',
     displayName: template.displayName || '',

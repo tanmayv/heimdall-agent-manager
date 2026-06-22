@@ -57,6 +57,7 @@ const AgentSidebar = memo(function AgentSidebar({
   auditBadgeCount,
   onToggleAudit
 }: AgentSidebarProps) {
+  console.log('[Render] AgentSidebar');
   const [collapsedProjects, setCollapsedProjects] = useState({});
   const [dismissedWarnings, setDismissedWarnings] = useState<Set<string>>(new Set());
 

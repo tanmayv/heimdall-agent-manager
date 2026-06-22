@@ -33,6 +33,7 @@ function Field({ label, value }: { label: string; value: string | number }) {
 const blankForm = { proposalAction: 'new', memoryId: '', expectedVersion: '', subjectAgent: '', type: 'fact', scope: 'global', title: '', body: '', reason: '', evidence: '', sourceTaskId: '' };
 
 export default function MemoryBoard({ session, agents = [] }: { session: any; agents?: any[] }) {
+  console.log('[Render] MemoryBoard');
   const dispatch = useDispatch<any>();
   const { recordsById, recordIds, selectedMemoryId, historyById, filters, loading, detailLoading, error } = useSelector((state: any) => state.memory);
   const selected = selectedMemoryId ? recordsById[selectedMemoryId] : null;

@@ -48,6 +48,7 @@ const AgentListItem = memo(function AgentListItem({
   warningDismissed?: boolean; 
   onDismissWarning?: (id: string) => void 
 }) {
+  console.log('[Render] AgentListItem', agent.id);
   const startupIssue = !warningDismissed && (agent.status === 'startup_blocked' || agent.status === 'startup_failed' || agent.status === 'startup_unknown');
   const suggestedFix = defaultSuggestedFix(agent);
   

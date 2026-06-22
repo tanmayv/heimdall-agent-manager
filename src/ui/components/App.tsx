@@ -37,6 +37,7 @@ import AuditSidebar from './AuditSidebar';
 const EMPTY_ARRAY: any[] = [];
 
 export default function App() {
+  console.log('[Render] App');
   const dispatch = useDispatch<any>();
   const { agents, selectedAgentId, session } = useSelector((state: any) => state.chat);
   const { projectsById } = useSelector((state: any) => state.projects);

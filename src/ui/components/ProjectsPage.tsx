@@ -18,6 +18,7 @@ function cleanAnchors(anchors: ProjectAnchor[]) {
 }
 
 export default function ProjectsPage({ session }: { session: any }) {
+  console.log('[Render] ProjectsPage');
   const dispatch = useDispatch<any>();
   const { projectsById, projectIds, selectedProjectId, loading, detailLoading, mutating, error } = useSelector((state: any) => state.projects);
   const selectedProject = selectedProjectId ? projectsById[selectedProjectId] : null;
