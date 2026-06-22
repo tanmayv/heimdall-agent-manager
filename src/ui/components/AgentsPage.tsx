@@ -322,7 +322,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                       }`}>{agent.modelTier || 'normal'}</span>
                     </div>
                     <p className="framer-subtext mt-1.5 truncate text-xs">
-                      {[agent.templateId && `Template: ${agent.templateId}`, agent.providerProfile && `Provider: ${agent.providerProfile}`, agent.projectId && `Project: ${agent.projectId}`, agent.roleHint && `Role: ${agent.roleHint}`].filter(Boolean).join(' · ') || 'No metadata'}
+                      {[agent.templateId && `Template: ${agent.templateId === 'none' ? 'None' : agent.templateId}`, agent.providerProfile && `Provider: ${agent.providerProfile}`, agent.projectId && `Project: ${agent.projectId}`, agent.roleHint && `Role: ${agent.roleHint}`].filter(Boolean).join(' · ') || 'No metadata'}
                     </p>
                     <p className="mt-1 text-[11px] text-[#666]">Last seen {agent.lastSeen}</p>
                   </div>
@@ -394,7 +394,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                           onChange={(e) => setAgentForm((f) => ({ ...f, templateId: e.target.value }))}
                           className="framer-input mt-1.5 w-full px-3 py-2 text-sm"
                         >
-                          <option value="">— no template —</option>
+                          <option value="none">— no template —</option>
                           {templates.map((t) => (
                             <option key={t.templateId} value={t.templateId}>{t.displayName}</option>
                           ))}

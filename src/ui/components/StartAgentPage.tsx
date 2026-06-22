@@ -42,7 +42,10 @@ export default function StartAgentPage({ session, onBack, onStarted }: { session
   const [error, setError] = useState('');
   const [result, setResult] = useState<any>(null);
 
-  const selectedTemplate = useMemo(() => templates.find((template) => template.templateId === templateId) || templates[0], [templates, templateId]);
+  const selectedTemplate = useMemo(() => {
+    if (templateId === 'none') return null;
+    return templates.find((template) => template.templateId === templateId) || null;
+  }, [templates, templateId]);
   const selectedProject = projectId ? projectsById[projectId] : null;
   const suggestedDisplayName = `${selectedTemplate?.templateId || 'agent'}@${selectedProject?.name || projectId || 'no-project'}`;
   const effectiveDisplayName = displayName.trim() || suggestedDisplayName;
@@ -177,7 +180,8 @@ export default function StartAgentPage({ session, onBack, onStarted }: { session
 
           <label className="block">
             <span className="framer-topline">Agent template / persona</span>
-            <select data-debug-id="start-agent-template-select" value={templateId} onChange={(event) => setTemplateId(event.target.value)} className="framer-input mt-2 w-full px-3 py-2 text-sm" disabled={loadingTemplates || !templates.length}>
+            <select data-debug-id="start-agent-template-select" value={templateId} onChange={(event) => setTemplateId(event.target.value)} className="framer-input mt-2 w-full px-3 py-2 text-sm" disabled={loadingTemplates}>
+              <option value="none">None (Custom / No Template)</option>
               {templates.map((template) => <option key={template.templateId} value={template.templateId}>{template.displayName}</option>)}
             </select>
             <div className="mt-2 rounded-2xl border border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] p-3 text-xs leading-5 text-[#aaa]">
