@@ -10,12 +10,22 @@ handle_get_task_chains :: proc(client: net.TCP_Socket, ctx: ^Route_Context) {
 	author, ok := rest_authorize(client, ctx)
 	if !ok do return
 
+	created_after_str := query_param_value(ctx.query, "created_after")
+	created_before_str := query_param_value(ctx.query, "created_before")
 	limit_str := query_param_value(ctx.query, "limit")
 	offset_str := query_param_value(ctx.query, "offset")
 	
+	created_after := i64(0)
+	created_before := i64(0)
 	limit := 20
 	offset := 0
 
+	if created_after_str != "" {
+		if val, parse_ok := strconv.parse_i64(created_after_str); parse_ok do created_after = val
+	}
+	if created_before_str != "" {
+		if val, parse_ok := strconv.parse_i64(created_before_str); parse_ok do created_before = val
+	}
 	if limit_str != "" {
 		if val, parse_ok := strconv.parse_int(limit_str); parse_ok do limit = int(val)
 	}
@@ -25,16 +35,32 @@ handle_get_task_chains :: proc(client: net.TCP_Socket, ctx: ^Route_Context) {
 
 	b := strings.builder_make()
 	strings.write_string(&b, `{"chains":[`)
+	
+	first := true
 	count := 0
-	start := min(offset, task_chain_count)
-	end := min(task_chain_count, start + limit)
-	for i in start..<end {
-		if count > 0 do strings.write_string(&b, `,`)
-		task_write_chain_json(&b, task_chains[i])
+	matched_count := 0
+
+	for i in 0..<task_chain_count {
+		chain := task_chains[i]
+		
+		// Apply filters
+		if created_after > 0 && chain.created_at_unix_ms < created_after do continue
+		if created_before > 0 && chain.created_at_unix_ms > created_before do continue
+		
+		matched_count += 1
+		
+		// Apply limit/offset
+		if matched_count - 1 < offset do continue
+		if count >= limit do continue
+		
+		if !first do strings.write_string(&b, `,`)
+		first = false
+		task_write_chain_json(&b, chain)
 		count += 1
 	}
+
 	strings.write_string(&b, `],"total_count":`)
-	strings.write_string(&b, fmt.tprintf("%d", task_chain_count))
+	strings.write_string(&b, fmt.tprintf("%d", matched_count))
 	strings.write_string(&b, `}`)
 	write_response(client, 200, "OK", strings.to_string(b))
 }
