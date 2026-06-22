@@ -35,7 +35,6 @@ body {
   min-height: 620px;
   background: var(--fd-canvas);
   color: var(--fd-ink);
-  font-feature-settings: 'cv01', 'cv05', 'cv09', 'cv11', 'ss03', 'ss07', 'dlig', 'tnum';
 }
 
 * {
