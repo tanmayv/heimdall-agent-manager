@@ -256,14 +256,34 @@ export default function MessageBubble({ message }) {
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
   const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null);
 
+  // Wizard state for multi-question questionnaire
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+  const [answers, setAnswers] = useState<Record<number, string>>({});
+  const [multiSubmitted, setMultiSubmitted] = useState(false);
+
   const isUser = message.author === 'user';
 
+  type MultiQuestion = {
+    type: 'multi_question';
+    questions: Array<{
+      id?: string;
+      text: string;
+      options: string[];
+    }>;
+  };
+
   let structuredQuestion: { type: string; question: string; suggested_answers: string[] } | null = null;
+  let multiQuestion: MultiQuestion | null = null;
+
   if (!isUser && message.body) {
     try {
       const parsed = JSON.parse(message.body);
-      if (parsed && parsed.type === 'structured_question' && parsed.question && Array.isArray(parsed.suggested_answers)) {
-        structuredQuestion = parsed;
+      if (parsed) {
+        if (parsed.type === 'structured_question' && parsed.question && Array.isArray(parsed.suggested_answers)) {
+          structuredQuestion = parsed;
+        } else if (parsed.type === 'multi_question' && Array.isArray(parsed.questions)) {
+          multiQuestion = parsed;
+        }
       }
     } catch (e) {
       // Fall back to plain markdown
@@ -275,6 +295,20 @@ export default function MessageBubble({ message }) {
     setSelectedAnswer(answer);
     const tempId = `local_temp_${Date.now()}`;
     dispatch(sendMessageToSelectedAgent({ body: answer, tempId }));
+  }
+
+  function handleMultiSubmit() {
+    if (!multiQuestion || multiSubmitted) return;
+    setMultiSubmitted(true);
+
+    let summary = '[Answers to Questionnaire]\n';
+    multiQuestion.questions.forEach((q, idx) => {
+      const ans = answers[idx] ?? '(No answer)';
+      summary += `\n${idx + 1}. ${q.text}\n=> ${ans}\n`;
+    });
+
+    const tempId = `local_temp_${Date.now()}`;
+    dispatch(sendMessageToSelectedAgent({ body: summary, tempId }));
   }
 
   const deliveryLabel = isUser
@@ -291,7 +325,11 @@ export default function MessageBubble({ message }) {
 
   async function handleCopy() {
     try {
-      const rawText = structuredQuestion ? structuredQuestion.question : (message.body || '');
+      const rawText = multiQuestion
+        ? 'Questionnaire Card'
+        : structuredQuestion
+        ? structuredQuestion.question
+        : (message.body || '');
       await copyMessageText(rawText);
       setCopyState('copied');
     } catch {
@@ -299,6 +337,108 @@ export default function MessageBubble({ message }) {
     } finally {
       window.setTimeout(() => setCopyState('idle'), 1800);
     }
+  }
+
+  function renderMultiQuestionCard(mq: MultiQuestion) {
+    const currentQ = mq.questions[currentQuestionIndex];
+    if (!currentQ) return null;
+
+    const selectedOption = answers[currentQuestionIndex];
+    const isLast = currentQuestionIndex === mq.questions.length - 1;
+    const hasSelection = selectedOption !== undefined;
+
+    return (
+      <div className="w-full bg-[#141414] border border-[#222] rounded-[var(--fd-radius-xl)] p-4 shadow-md animate-fade-in my-2 min-w-[280px]">
+        <div className="flex items-center justify-between border-b border-[#222] pb-2.5 mb-3">
+          <span className="text-[10px] font-bold text-[var(--fd-accent-blue)] uppercase tracking-wider">
+            Questionnaire
+          </span>
+          <span className="text-[10px] text-[#777] font-mono">
+            {multiSubmitted ? 'Completed' : `Question ${currentQuestionIndex + 1} of ${mq.questions.length}`}
+          </span>
+        </div>
+
+        {multiSubmitted ? (
+          <div className="space-y-3 py-1">
+            <p className="text-xs text-green-400 font-semibold flex items-center gap-1.5 mb-2">
+              <span className="text-sm">✓</span> Questionnaire submitted successfully!
+            </p>
+            {mq.questions.map((q, idx) => (
+              <div key={idx} className="border-l border-[#2c2c2c] pl-3 py-0.5">
+                <p className="text-[10px] text-[#666]">{q.text}</p>
+                <p className="text-xs text-white font-medium mt-0.5">{answers[idx]}</p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div>
+            <p className="text-xs sm:text-sm text-white font-semibold leading-relaxed mb-4">
+              {currentQ.text}
+            </p>
+
+            <div className="space-y-2">
+              {currentQ.options.map((option, idx) => {
+                const isSelected = selectedOption === option;
+                return (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => setAnswers(prev => ({ ...prev, [currentQuestionIndex]: option }))}
+                    className={`w-full text-left text-xs px-4 py-2.5 rounded-lg border transition-all font-medium ${
+                      isSelected
+                        ? 'bg-[var(--fd-accent-blue)]/10 text-[var(--fd-accent-blue)] border-[var(--fd-accent-blue)]/40 shadow-sm'
+                        : 'bg-[#1b1b1b] text-white border-[#222] hover:bg-[#222] hover:border-[#333]'
+                    }`}
+                  >
+                    {option}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="flex items-center justify-between border-t border-[#222] pt-3.5 mt-5">
+              {currentQuestionIndex > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setCurrentQuestionIndex(prev => prev - 1)}
+                  className="text-xs text-[#999] hover:text-white transition-all px-3 py-1.5 rounded-md hover:bg-[#222]"
+                >
+                  Back
+                </button>
+              ) : (
+                <div></div>
+              )}
+
+              <div className="flex gap-2">
+                {isLast ? (
+                  <button
+                    type="button"
+                    disabled={!hasSelection}
+                    onClick={handleMultiSubmit}
+                    className={`framer-pill-primary px-4 py-1.5 text-xs font-semibold shadow-sm transition-all ${
+                      hasSelection ? 'opacity-100 hover:scale-102' : 'opacity-40 cursor-not-allowed'
+                    }`}
+                  >
+                    Submit Answers
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    disabled={!hasSelection}
+                    onClick={() => setCurrentQuestionIndex(prev => prev + 1)}
+                    className={`framer-pill-primary px-4 py-1.5 text-xs font-semibold shadow-sm transition-all ${
+                      hasSelection ? 'opacity-100 hover:scale-102' : 'opacity-40 cursor-not-allowed'
+                    }`}
+                  >
+                    Next
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
   }
 
   return (
@@ -326,7 +466,9 @@ export default function MessageBubble({ message }) {
             </svg>
           )}
         </button>
-        {structuredQuestion ? (
+        {multiQuestion ? (
+          renderMultiQuestionCard(multiQuestion)
+        ) : structuredQuestion ? (
           <div>
             <MarkdownContent text={structuredQuestion.question} />
             <div className="mt-3 flex flex-wrap gap-2 animate-fade-in">
