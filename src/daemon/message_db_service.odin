@@ -659,6 +659,38 @@ message_db_fetch_cursor_paginated :: proc(user_id, agent_instance_id: string, li
 	return messages
 }
 
+message_db_get_message :: proc(message_id: string) -> (Chat_Message, bool) {
+	stmt: sqlite3_stmt = nil
+	query := `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE message_id = ?`
+
+	rc := sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK {
+		fmt.println("message_db_get_message: prepare failed:", rc)
+		return Chat_Message{}, false
+	}
+	defer sqlite3_finalize(stmt)
+
+	sqlite3_bind_text(stmt, 1, cstring(raw_data(message_id)), i32(len(message_id)), SQLITE_TRANSIENT)
+
+	if sqlite3_step(stmt) == SQLITE_ROW {
+		msg := Chat_Message{
+			message_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 0)),
+			user_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 1)),
+			agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 2)),
+			direction = strings.clone_from_cstring(sqlite3_column_text(stmt, 3)),
+			body = strings.clone_from_cstring(sqlite3_column_text(stmt, 4)),
+			delivered_unix_ms = sqlite3_column_int64(stmt, 5),
+			read_unix_ms = 0,
+			delivery_failed_unix_ms = sqlite3_column_int64(stmt, 6),
+			delivery_error = strings.clone_from_cstring(sqlite3_column_text(stmt, 7)),
+			created_unix_ms = sqlite3_column_int64(stmt, 8),
+		}
+		return msg, true
+	}
+
+	return Chat_Message{}, false
+}
+
 message_db_close :: proc() {
 	if message_db.db != nil {
 		sqlite3_close(message_db.db)

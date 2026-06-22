@@ -155,12 +155,22 @@ task_notification_json :: proc(event: Task_Event, status: string) -> string {
 	strings.write_string(&b, `","body":"`)
 	json_write_string(&b, task_notification_summary(event))
 	strings.write_string(&b, `"`)
+	
 	if event.kind == .Task_Nudged {
 		strings.write_string(&b, `,"delivery_method":"`)
 		json_write_string(&b, task_nudge_delivery_method(event.body))
 		strings.write_string(&b, `","send_escape_prefix":`)
 		strings.write_string(&b, "true" if strings.index(event.body, "delivery=escape_prefixed_pane_or_ws") >= 0 else "false")
 	}
+
+	// Augment with full task payload if task_id is present
+	if event.task_id != "" {
+		if idx, found := task_existing_state_index(event.task_id, event.chain_id); found {
+			strings.write_string(&b, `,"task":`)
+			task_write_state_json(&b, task_states[idx])
+		}
+	}
+
 	strings.write_string(&b, `}`)
 	return strings.to_string(b)
 }
