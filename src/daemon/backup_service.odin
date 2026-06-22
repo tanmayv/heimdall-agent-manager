@@ -46,7 +46,6 @@ backup_scheduler_tick :: proc() {
 	if backup_dir_pref == "" do return
 	
 	backup_root := expand_home(backup_dir_pref)
-	defer delete(backup_root)
 	
 	// Check if backup has already been taken today
 	if backup_already_taken_today(backup_root) do return
@@ -70,7 +69,6 @@ backup_already_taken_today :: proc(backup_root: string) -> bool {
 	
 	for info in infos {
 		full_path := fmt.tprintf("%s/%s", backup_root, info.name)
-		defer delete(full_path)
 		if os.is_dir(full_path) && strings.has_prefix(info.name, today_prefix) {
 			return true
 		}
@@ -88,7 +86,6 @@ backup_execute :: proc(author: string) -> (ok: bool, message: string) {
 	
 	// Expand home
 	backup_root := expand_home(backup_dir_pref)
-	defer delete(backup_root)
 	
 	// Generate dated folder name: backup_YYYYMMDD_HHMMSS
 	now := time.now()
@@ -97,7 +94,6 @@ backup_execute :: proc(author: string) -> (ok: bool, message: string) {
 	
 	folder_name := fmt.tprintf("backup_%d%02d%02d_%02d%02d%02d", year, int(month), day, hour, min, sec)
 	dest_dir := fmt.tprintf("%s/%s", backup_root, folder_name)
-	defer delete(dest_dir)
 	
 	// Ensure dest dir exists
 	if os.make_directory_all(dest_dir) != nil {
@@ -128,7 +124,6 @@ backup_execute :: proc(author: string) -> (ok: bool, message: string) {
 		if db_info.db == nil do continue
 		
 		dest_file_path := fmt.tprintf("%s/%s", dest_dir, db_info.name)
-		defer delete(dest_file_path)
 		
 		if backup_single_db(db_info.db, dest_file_path) {
 			success_count += 1
@@ -214,7 +209,6 @@ backup_list :: proc(author: string) -> (backups: []Backup_Record, ok: bool, mess
 	}
 	
 	backup_root := expand_home(backup_dir_pref)
-	defer delete(backup_root)
 	
 	if !os.is_dir(backup_root) {
 		return nil, true, ""
@@ -325,10 +319,8 @@ backup_restore :: proc(author, folder_name: string) -> (ok: bool, message: strin
 	}
 	
 	backup_root := expand_home(backup_dir_pref)
-	defer delete(backup_root)
 	
 	source_dir := fmt.tprintf("%s/%s", backup_root, folder_name)
-	defer delete(source_dir)
 	
 	if !os.is_dir(source_dir) {
 		return false, fmt.tprintf("Backup folder '%s' does not exist.", folder_name)
@@ -357,7 +349,6 @@ backup_restore :: proc(author, folder_name: string) -> (ok: bool, message: strin
 		if db_info.db == nil do continue
 		
 		source_file_path := fmt.tprintf("%s/%s", source_dir, db_info.name)
-		defer delete(source_file_path)
 		
 		if !os.is_file(source_file_path) do continue
 		
