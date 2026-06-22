@@ -150,14 +150,14 @@ export default function MemoryBoard({ session, agents = [] }: { session: any; ag
         </div>
       </header>
 
-      <section className="min-h-0 flex-1 overflow-y-auto p-6">
+      <section className="min-h-0 flex-1 overflow-hidden p-6">
         {error ? <div className="mb-4 rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">{error}</div> : null}
         {mutationError ? <div className="mb-4 rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">{mutationError}</div> : null}
 
         {page === 'list' ? (
-          <div className="grid min-h-full grid-cols-[minmax(300px,0.9fr)_minmax(420px,1.3fr)] gap-5">
-            <div className="space-y-4">
-              <div className="framer-card-xl p-4">
+          <div className="grid h-full grid-cols-[minmax(300px,0.95fr)_minmax(420px,1.25fr)] gap-5 overflow-hidden">
+            <div className="flex flex-col h-full min-h-0 space-y-4">
+              <div className="framer-card-xl p-4 shrink-0">
                 <div className="grid grid-cols-4 gap-2">
                   {counts.map((item) => <div key={item.status} className="framer-card p-3"><p className="framer-topline text-[10px]">{item.status}</p><p className="mt-1 text-xl font-bold">{item.count}</p></div>)}
                 </div>
@@ -169,7 +169,7 @@ export default function MemoryBoard({ session, agents = [] }: { session: any; ag
                   </div>
                 </div>
               </div>
-              <div className="space-y-2">
+              <div className="flex-1 overflow-y-auto space-y-2 pr-1 min-h-0">
                 {recordIds.map((id) => {
                   const record = recordsById[id];
                   return (
@@ -182,7 +182,9 @@ export default function MemoryBoard({ session, agents = [] }: { session: any; ag
                 {!recordIds.length ? <div className="framer-card border-dashed p-5 text-sm text-[#999]">No memory records match the filters.</div> : null}
               </div>
             </div>
-            <MemoryDetail selected={selected} history={history} detailLoading={detailLoading} decisionReason={decisionReason} setDecisionReason={setDecisionReason} openProposal={openProposal} decide={decide} canMutate={canMutate} />
+            <div className="h-full min-h-0 overflow-hidden">
+              <MemoryDetail selected={selected} history={history} detailLoading={detailLoading} decisionReason={decisionReason} setDecisionReason={setDecisionReason} openProposal={openProposal} decide={decide} canMutate={canMutate} />
+            </div>
           </div>
         ) : page === 'detail' ? (
           <MemoryDetail selected={selected} history={history} detailLoading={detailLoading} decisionReason={decisionReason} setDecisionReason={setDecisionReason} openProposal={openProposal} decide={decide} canMutate={canMutate} />
@@ -205,7 +207,7 @@ function MemoryDetail({ selected, history, detailLoading, decisionReason, setDec
   if (!selected) return <div className="framer-card-xl p-5 text-sm text-[#999]">Select a memory record to view details and history.</div>;
   const metadata = (() => { try { return JSON.stringify(JSON.parse(selected.metadataJson || '{}'), null, 2); } catch { return selected.metadataJson || ''; } })();
   return (
-    <div className="framer-card-xl min-h-full p-5">
+    <div className="framer-card-xl h-full overflow-y-auto p-5">
       <div className="flex items-start justify-between gap-4"><div><p className="framer-topline">{selected.memoryId}</p><h3 className="mt-1 text-2xl font-bold text-white">{selected.title || 'Untitled memory'}</h3><p className="mt-2 text-sm text-[#999]">{selected.subjectAgent || 'global'} · {selected.type} · {selected.scope}</p></div><StatusPill status={selected.status} /></div>
       <div className="mt-5 grid grid-cols-2 gap-3"><Field label="Version" value={selected.version} /><Field label="Proposal" value={selected.proposalId} /><Field label="Source task" value={selected.sourceTaskId} /><Field label="Updated" value={formatTime(selected.updatedUnixMs || selected.createdUnixMs)} /></div>
       <div className="mt-5 grid gap-4 lg:grid-cols-2"><section className="framer-card p-4"><p className="framer-topline">Body</p><pre className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-[#ddd]">{selected.body || '—'}</pre></section><section className="framer-card p-4"><p className="framer-topline">Review metadata</p><p className="mt-3 text-sm text-[#aaa]">Reason</p><pre className="mt-1 whitespace-pre-wrap break-words text-sm text-[#ddd]">{selected.reason || '—'}</pre><p className="mt-3 text-sm text-[#aaa]">Evidence</p><pre className="mt-1 whitespace-pre-wrap break-words text-sm text-[#ddd]">{selected.evidence || '—'}</pre>{metadata ? <><p className="mt-3 text-sm text-[#aaa]">Metadata</p><pre className="mt-1 whitespace-pre-wrap break-words text-xs text-[#bbb]">{metadata}</pre></> : null}</section></div>
