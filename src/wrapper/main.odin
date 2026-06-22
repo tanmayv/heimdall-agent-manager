@@ -1445,10 +1445,6 @@ build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_
 				append(&result, prompt)
 			} else if active_live_prefs.starter_prompt != "" {
 				prompt := template_string(active_live_prefs.starter_prompt, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
-				templates := agent_cmd.memory_templates
-				if len(templates) == 0 do templates = cfg.memory_templates
-				mem_context := "" // Memory is injected via bootstrap files (always generated).
-				prompt = strings.concatenate({prompt, memory_cli_guidance(agent_token), mem_context})
 				append(&result, prompt)
 			}
 			return result[:]

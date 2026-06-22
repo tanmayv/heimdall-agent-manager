@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { useDispatch } from 'react-redux';
+import { sendMessageToSelectedAgent } from '../store/chatSlice';
 
 function isSafeUrl(url: string) {
   const trimmed = url.trim();
@@ -250,8 +252,31 @@ async function copyMessageText(text: string) {
 }
 
 export default function MessageBubble({ message }) {
+  const dispatch = useDispatch<any>();
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
+  const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null);
+
   const isUser = message.author === 'user';
+
+  let structuredQuestion: { type: string; question: string; suggested_answers: string[] } | null = null;
+  if (!isUser && message.body) {
+    try {
+      const parsed = JSON.parse(message.body);
+      if (parsed && parsed.type === 'structured_question' && parsed.question && Array.isArray(parsed.suggested_answers)) {
+        structuredQuestion = parsed;
+      }
+    } catch (e) {
+      // Fall back to plain markdown
+    }
+  }
+
+  function handleAnswerClick(answer: string) {
+    if (selectedAnswer) return;
+    setSelectedAnswer(answer);
+    const tempId = `local_temp_${Date.now()}`;
+    dispatch(sendMessageToSelectedAgent({ body: answer, tempId }));
+  }
+
   const deliveryLabel = isUser
     ? (message.sending
       ? 'Sending...'
@@ -266,7 +291,8 @@ export default function MessageBubble({ message }) {
 
   async function handleCopy() {
     try {
-      await copyMessageText(message.body || '');
+      const rawText = structuredQuestion ? structuredQuestion.question : (message.body || '');
+      await copyMessageText(rawText);
       setCopyState('copied');
     } catch {
       setCopyState('error');
@@ -300,7 +326,35 @@ export default function MessageBubble({ message }) {
             </svg>
           )}
         </button>
-        <MarkdownContent text={message.body} />
+        {structuredQuestion ? (
+          <div>
+            <MarkdownContent text={structuredQuestion.question} />
+            <div className="mt-3 flex flex-wrap gap-2 animate-fade-in">
+              {structuredQuestion.suggested_answers.map((answer, idx) => {
+                const isChosen = selectedAnswer === answer;
+                return (
+                  <button
+                    key={idx}
+                    type="button"
+                    disabled={selectedAnswer !== null}
+                    onClick={() => handleAnswerClick(answer)}
+                    className={`text-[11px] sm:text-xs px-3.5 py-1.5 rounded-full transition-all font-semibold shadow-sm border ${
+                      isChosen
+                        ? 'bg-[var(--fd-accent-blue)] text-black border-[var(--fd-accent-blue)] scale-98'
+                        : selectedAnswer !== null
+                        ? 'bg-[#1a1a1a] text-[#444] border-[#222] cursor-not-allowed opacity-40'
+                        : 'bg-[#222] hover:bg-[#2e2e2e] text-white border-[#2e2e2e] hover:border-[var(--fd-accent-blue)]/40 active:scale-95'
+                    }`}
+                  >
+                    {answer}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <MarkdownContent text={message.body} />
+        )}
         <p className={`mt-2 flex items-center justify-end gap-2 text-xs ${isUser ? 'text-slate-900/70' : 'text-[#999]'}`}>
           <span>{message.timestamp}</span>
           {deliveryLabel ? <span aria-label={`Message ${deliveryLabel.toLowerCase()}`}>{deliveryLabel}</span> : null}

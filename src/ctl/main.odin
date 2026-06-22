@@ -594,7 +594,39 @@ ctl_agent_chat :: proc(daemon_url, action: string, args: []string) {
 	strings.write_string(&body, `{"agent_token":"`); json_write_string(&body, option_value(args, "--token", ""))
 	strings.write_string(&body, `","user_id":"`); json_write_string(&body, option_value(args, "--user-id", ""))
 	if action == "send-to-user" {
-		strings.write_string(&body, `","action":"send_to_user","body":"`); json_write_string(&body, option_value(args, "--body", "")); strings.write_string(&body, `"}`)
+		body_val := option_value(args, "--body", "")
+		question_val := option_value(args, "--question", "")
+		answers_val := option_value(args, "--answers", "")
+		
+		final_body := ""
+		if question_val != "" {
+			ab := strings.builder_make()
+			strings.write_string(&ab, `{"type":"structured_question","question":"`)
+			json_write_string(&ab, question_val)
+			strings.write_string(&ab, `","suggested_answers":[`)
+			
+			if answers_val != "" {
+				parts := strings.split(answers_val, ",")
+				defer delete(parts)
+				for part, idx in parts {
+					if idx > 0 do strings.write_string(&ab, ",")
+					strings.write_string(&ab, `"`)
+					trimmed := strings.trim_space(part)
+					json_write_string(&ab, trimmed)
+					strings.write_string(&ab, `"`)
+				}
+			}
+			
+			strings.write_string(&ab, `]}`)
+			final_body = strings.to_string(ab)
+		} else {
+			final_body = strings.clone(body_val)
+		}
+		defer delete(final_body)
+
+		strings.write_string(&body, `","action":"send_to_user","body":"`)
+		json_write_string(&body, final_body)
+		strings.write_string(&body, `"}`)
 	} else {
 		include_read := has_flag(args, "--include-read")
 		limit := option_value(args, "--limit", "3")
@@ -906,7 +938,7 @@ print_usage :: proc(config_path, daemon_url: string) {
 	fmt.println("  users heartbeat --client-instance-id <client> --token <client_token>")
 	fmt.println("  users presence --token <agent_token>")
 	fmt.println("  chat list|fetch|send|mark-read --client-instance-id <client> --token <client_token> [--agent-instance-id <agent>] [--body <text>] [--message-id <id>]")
-	fmt.println("  chat send-to-user --token <agent_token> --user-id <user> --body <text>")
+	fmt.println("  chat send-to-user --token <agent_token> --user-id <user> [--body <text>] [--question <text> --answers <ans1,ans2,...>]")
 	fmt.println("  chat fetch-user --token <agent_token> --user-id <user> [--include-read] [--limit N] [--cursor TS]")
 	fmt.println("  start-success --token <agent_token>   (signal to daemon that agent is alive and ready)")
 	fmt.println("global flags: --config <path>, --daemon-url <url>, --version, --help")
