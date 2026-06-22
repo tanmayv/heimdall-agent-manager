@@ -5,6 +5,7 @@ import { sendMessageToSelectedAgent } from '../store/chatSlice';
 export default function Composer({ selectedAgent, disabled, onSubmit, smartReplies }) {
   const dispatch = useDispatch<any>();
   const [body, setBody] = useState('');
+  console.log('[Render] Composer', { hasAgent: !!selectedAgent, disabled, bodyLength: body.length });
   const canSend = selectedAgent && body.trim() && !disabled;
 
   function handleSubmit(event) {
