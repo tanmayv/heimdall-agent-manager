@@ -43,7 +43,12 @@ parse_route_context :: proc(request: string) -> Route_Context {
 	if strings.has_suffix(clean_path, "/") do clean_path = clean_path[:len(clean_path) - 1]
 
 	if clean_path != "" {
-		ctx.segments = strings.split(clean_path, "/")
+		raw_segments := strings.split(clean_path, "/")
+		ctx.segments = make([]string, len(raw_segments))
+		for seg, idx in raw_segments {
+			ctx.segments[idx] = url_decode(seg)
+		}
+		delete(raw_segments)
 	} else {
 		ctx.segments = make([]string, 0)
 	}
@@ -85,6 +90,9 @@ route_context_free :: proc(ctx: ^Route_Context) {
 	delete(ctx.path)
 	delete(ctx.query)
 	delete(ctx.token)
+	for seg in ctx.segments {
+		delete(seg)
+	}
 	delete(ctx.segments)
 }
 
@@ -169,4 +177,41 @@ handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_C
 	}
 
 	return false
+}
+
+url_decode :: proc(s: string) -> string {
+	builder := strings.builder_make()
+	i := 0
+	for i < len(s) {
+		if s[i] == '%' && i + 2 < len(s) {
+			hex := s[i+1 : i+3]
+			val, ok := parse_hex_byte(hex)
+			if ok {
+				strings.write_byte(&builder, val)
+				i += 3
+				continue
+			}
+		}
+		strings.write_byte(&builder, s[i])
+		i += 1
+	}
+	return strings.to_string(builder)
+}
+
+parse_hex_byte :: proc(hex: string) -> (val: byte, ok: bool) {
+	if len(hex) != 2 do return 0, false
+	
+	h1 := hex_char_to_val(hex[0]) or_return
+	h2 := hex_char_to_val(hex[1]) or_return
+	
+	return byte((h1 << 4) | h2), true
+}
+
+hex_char_to_val :: proc(ch: byte) -> (int, bool) {
+	switch ch {
+	case '0'..='9': return int(ch - '0'), true
+	case 'a'..='f': return int(ch - 'a' + 10), true
+	case 'A'..='F': return int(ch - 'A' + 10), true
+	}
+	return 0, false
 }
