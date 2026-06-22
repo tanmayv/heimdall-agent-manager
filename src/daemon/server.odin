@@ -114,6 +114,14 @@ handle_client :: proc(client: net.TCP_Socket) {
 		write_response(client, 200, "OK", `{}`)
 		return
 	}
+
+	// Route REST requests first
+	ctx := parse_route_context(request)
+	defer route_context_free(&ctx)
+	if handle_rest_route(client, request, &ctx) {
+		return
+	}
+
 	if strings.has_prefix(request, "GET /health ") {
 		write_response(client, 200, "OK", `{"ok":true,"protocol_version":1}`)
 		return

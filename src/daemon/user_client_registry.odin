@@ -90,6 +90,20 @@ user_client_user_for_token :: proc(client_instance_id, client_token: string) -> 
 	return ""
 }
 
+user_client_id_for_token :: proc(client_token: string) -> string {
+	for i in 0..<user_client_count {
+		if user_clients[i].client_token == client_token {
+			return user_clients[i].user_id
+		}
+	}
+	// Check persistent database for token recovery
+	itype, iid := auth_db_get_identity(client_token)
+	if itype == "user" && iid != "" {
+		return iid
+	}
+	return ""
+}
+
 user_client_user_exists :: proc(user_id: string) -> bool {
 	for i in 0..<user_client_count {
 		if user_clients[i].user_id == user_id do return true

@@ -143,10 +143,10 @@ registry_register :: proc(agent_class, agent_instance_id, display_name: string, 
 			// No stored token found, generate new one
 			agent_token = generate_agent_token()
 		}
-		// Store the token (insert or replace)
-		if !auth_db_store_token(agent_token, "agent", instance, now_unix_ms()) {
-			fmt.println("WARNING: failed to store agent token for", instance)
-		}
+	}
+	// Always store the token (insert or replace) so it persists across daemon restarts
+	if !auth_db_store_token(agent_token, "agent", instance, now_unix_ms()) {
+		fmt.println("WARNING: failed to store agent token for", instance)
 	}
 
 	if idx := registry_find_agent(instance); idx >= 0 {
