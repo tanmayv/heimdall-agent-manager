@@ -62,6 +62,8 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
   const [error, setError] = useState<string | null>(null);
   const [savingKey, setSavingKey] = useState<string | null>(null);
   const [resettingKey, setResettingKey] = useState<string | null>(null);
+  const [knownAgents, setKnownAgents] = useState<any[]>([]);
+  const [isSavingAuditing, setIsSavingAuditing] = useState(false);
 
   // Edit states for fields in the UI
   const [editValues, setEditValues] = useState<Record<string, string>>({});
@@ -73,8 +75,18 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
   useEffect(() => {
     if (session?.daemonUrl && session?.clientToken) {
       fetchPrefs();
+      fetchKnownAgents();
     }
   }, [session?.daemonUrl, session?.clientToken]);
+
+  const fetchKnownAgents = async () => {
+    try {
+      const list = await daemonApi.listKnownAgents({ daemonUrl: session.daemonUrl });
+      setKnownAgents(list);
+    } catch (err) {
+      console.error('Failed to fetch known agents:', err);
+    }
+  };
 
   const fetchPrefs = async () => {
     setLoading(true);
@@ -169,13 +181,69 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
     }, 0);
   };
 
+  const auditingKeys = [
+    'memory_auditor_enabled',
+    'memory_auditor_agent_id',
+    'memory_auditor_model_tier',
+    'memory_auditor_provider_profile',
+    'memory_reviewer_agent_id',
+    'memory_reviewer_model_tier',
+    'memory_reviewer_provider_profile'
+  ];
+
   const bootstrapPrefs = preferences.filter(p =>
     ['starter_prompt', 'bootstrap_header', 'bootstrap_title', 'bootstrap_profile_guidance'].includes(p.key)
   );
 
   const livePrefs = preferences.filter(p =>
-    !['starter_prompt', 'bootstrap_header', 'bootstrap_title', 'bootstrap_profile_guidance'].includes(p.key)
+    !['starter_prompt', 'bootstrap_header', 'bootstrap_title', 'bootstrap_profile_guidance', ...auditingKeys].includes(p.key)
   );
+
+  const handleSaveAuditingConfig = async () => {
+    setIsSavingAuditing(true);
+    try {
+      const promises = auditingKeys.map(key =>
+        daemonApi.savePreference({
+          daemonUrl: session.daemonUrl,
+          clientToken: session.clientToken,
+          key,
+          value: editValues[key] ?? '',
+          interrupt: false,
+        })
+      );
+      const results = await Promise.all(promises);
+      setPreferences(prev => {
+        let updated = [...prev];
+        results.forEach(res => {
+          if (res?.ok && res?.preference) {
+            updated = updated.map(p => (p.key === res.preference.key ? res.preference : p));
+          }
+        });
+        return updated;
+      });
+      alert('Cognitive Memory Auditing configuration saved successfully!');
+    } catch (err: any) {
+      alert(`Error saving auditing config: ${err?.message || 'Unknown error'}`);
+    } finally {
+      setIsSavingAuditing(false);
+    }
+  };
+
+  const hasAuditingChanged = auditingKeys.some(key => {
+    const pref = preferences.find(p => p.key === key);
+    return pref ? (editValues[key] ?? '') !== pref.value : false;
+  });
+
+  const knownAgentIds = knownAgents.map(a => a.agent_instance_id);
+  const configuredAuditor = editValues['memory_auditor_agent_id'] || '';
+  const configuredReviewer = editValues['memory_reviewer_agent_id'] || '';
+
+  const isAuditorKnown = configuredAuditor !== '' && knownAgentIds.includes(configuredAuditor);
+  const isReviewerKnown = configuredReviewer !== '' && knownAgentIds.includes(configuredReviewer);
+  const canEnableAuditing = isAuditorKnown && isReviewerKnown;
+
+  const auditorOptions = Array.from(new Set([...knownAgentIds, configuredAuditor])).filter(Boolean);
+  const reviewerOptions = Array.from(new Set([...knownAgentIds, configuredReviewer])).filter(Boolean);
 
   return (
     <main className="framer-panel flex min-w-0 flex-1 flex-col bg-[var(--fd-canvas)]">
@@ -207,7 +275,160 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
             </div>
           </div>
 
-          {/* 2. User Preferences Loader */}
+          {/* 2. Cognitive Memory Auditing & Optimization */}
+          <div className="framer-card p-6 border border-[var(--fd-hairline)] bg-[#181818] animate-float-in">
+            <h3 className="text-sm font-semibold text-white flex items-center mb-2">
+              <span>🧠 Cognitive Memory Auditing & Optimization</span>
+            </h3>
+            <p className="text-xs text-[#666] mb-4">
+              Configure the background Cognitive Memory Auditing agents that analyze completed task chains, extract expertise, and propose memories.
+            </p>
+
+            {!canEnableAuditing && (
+              <div className="border border-yellow-500/20 bg-yellow-500/5 text-yellow-400 text-xs p-3.5 rounded-lg mb-4 flex items-start leading-relaxed">
+                <span className="mr-2 text-base">⚠️</span>
+                <div>
+                  <p className="font-bold">Memory Auditing Disabled</p>
+                  <p className="mt-0.5 text-[#bbb]">
+                    Auditing requires both a valid **Auditor** and **Reviewer** agent instance registered with the daemon. 
+                    {!isAuditorKnown && <span className="block mt-0.5">• Auditor instance <code className="text-yellow-300 font-mono">"{configuredAuditor || 'None'}"</code> is not registered.</span>}
+                    {!isReviewerKnown && <span className="block mt-0.5">• Reviewer instance <code className="text-yellow-300 font-mono">"{configuredReviewer || 'None'}"</code> is not registered.</span>}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-4">
+              {/* A. Enable Toggle */}
+              <div className="flex items-center justify-between border-b border-[var(--fd-hairline)] pb-4">
+                <div>
+                  <span className="text-xs font-bold text-white block">Enable Memory Auditing</span>
+                  <span className="text-[10px] text-[#666] mt-0.5 block">Automatically trigger audits on completed task chains.</span>
+                </div>
+                <label className={`relative inline-flex items-center ${canEnableAuditing ? 'cursor-pointer' : 'cursor-not-allowed opacity-50'}`}>
+                  <input
+                    type="checkbox"
+                    disabled={!canEnableAuditing}
+                    checked={canEnableAuditing && editValues['memory_auditor_enabled'] === 'true'}
+                    onChange={e => setEditValues(prev => ({ ...prev, memory_auditor_enabled: e.target.checked ? 'true' : 'false' }))}
+                    className="sr-only peer"
+                  />
+                  <div className="w-9 h-5 bg-[#333] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-[#555] after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[var(--fd-accent)]"></div>
+                </label>
+              </div>
+
+              {/* B. Two Column Layout */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {/* Auditor */}
+                <div className="bg-[#121212] p-4 rounded-lg border border-[#222]">
+                  <h4 className="text-xs font-bold text-white mb-3 flex items-center">
+                    <span className="mr-1.5">🔍</span> Memory Auditor Agent
+                  </h4>
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-[10px] text-[#888] font-semibold block mb-1">Agent Instance ID</label>
+                      <select
+                        value={configuredAuditor}
+                        onChange={e => setEditValues(prev => ({ ...prev, memory_auditor_agent_id: e.target.value }))}
+                        className="w-full bg-[#1c1c1c] border border-[#333] text-xs text-white p-2 rounded focus:outline-none focus:border-[var(--fd-accent)]"
+                      >
+                        <option value="">-- Select Registered Agent --</option>
+                        {auditorOptions.map(id => (
+                          <option key={id} value={id}>{id} {!knownAgentIds.includes(id) && '(Offline/Unregistered)'}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[10px] text-[#888] font-semibold block mb-1">Model Tier</label>
+                        <select
+                          value={editValues['memory_auditor_model_tier'] || 'normal'}
+                          onChange={e => setEditValues(prev => ({ ...prev, memory_auditor_model_tier: e.target.value }))}
+                          className="w-full bg-[#1c1c1c] border border-[#333] text-xs text-white p-2 rounded focus:outline-none"
+                        >
+                          <option value="cheap">cheap</option>
+                          <option value="normal">normal</option>
+                          <option value="smart">smart</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-[#888] font-semibold block mb-1">Provider Profile</label>
+                        <input
+                          type="text"
+                          value={editValues['memory_auditor_provider_profile'] || ''}
+                          onChange={e => setEditValues(prev => ({ ...prev, memory_auditor_provider_profile: e.target.value }))}
+                          className="w-full bg-[#1c1c1c] border border-[#333] text-xs text-white p-2 rounded focus:outline-none"
+                          placeholder="e.g. jetski"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Reviewer */}
+                <div className="bg-[#121212] p-4 rounded-lg border border-[#222]">
+                  <h4 className="text-xs font-bold text-white mb-3 flex items-center">
+                    <span className="mr-1.5">⚖️</span> Memory Reviewer Agent
+                  </h4>
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-[10px] text-[#888] font-semibold block mb-1">Agent Instance ID</label>
+                      <select
+                        value={configuredReviewer}
+                        onChange={e => setEditValues(prev => ({ ...prev, memory_reviewer_agent_id: e.target.value }))}
+                        className="w-full bg-[#1c1c1c] border border-[#333] text-xs text-white p-2 rounded focus:outline-none focus:border-[var(--fd-accent)]"
+                      >
+                        <option value="">-- Select Registered Agent --</option>
+                        {reviewerOptions.map(id => (
+                          <option key={id} value={id}>{id} {!knownAgentIds.includes(id) && '(Offline/Unregistered)'}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="text-[10px] text-[#888] font-semibold block mb-1">Model Tier</label>
+                        <select
+                          value={editValues['memory_reviewer_model_tier'] || 'normal'}
+                          onChange={e => setEditValues(prev => ({ ...prev, memory_reviewer_model_tier: e.target.value }))}
+                          className="w-full bg-[#1c1c1c] border border-[#333] text-xs text-white p-2 rounded focus:outline-none"
+                        >
+                          <option value="cheap">cheap</option>
+                          <option value="normal">normal</option>
+                          <option value="smart">smart</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[10px] text-[#888] font-semibold block mb-1">Provider Profile</label>
+                        <input
+                          type="text"
+                          value={editValues['memory_reviewer_provider_profile'] || ''}
+                          onChange={e => setEditValues(prev => ({ ...prev, memory_reviewer_provider_profile: e.target.value }))}
+                          className="w-full bg-[#1c1c1c] border border-[#333] text-xs text-white p-2 rounded focus:outline-none"
+                          placeholder="e.g. jetski"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Save Button */}
+              <div className="flex justify-end pt-2">
+                <button
+                  type="button"
+                  disabled={isSavingAuditing || !hasAuditingChanged}
+                  onClick={handleSaveAuditingConfig}
+                  className={`framer-pill-primary px-6 py-2 text-xs font-semibold transition-all ${
+                    hasAuditingChanged ? 'opacity-100 hover:scale-102' : 'opacity-40 cursor-not-allowed'
+                  }`}
+                >
+                  {isSavingAuditing ? 'Saving Config...' : 'Save Auditing Config'}
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* 3. User Preferences */}
           <div className="framer-card p-6">
             <h3 className="text-sm font-semibold text-[#888] uppercase tracking-wider mb-2">User Preferences</h3>
             <p className="text-xs text-[#666] mb-4">Customize the templates and behaviors Heimdall uses to prompt and notify your active agents.</p>

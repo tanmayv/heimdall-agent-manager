@@ -307,38 +307,52 @@ export default function App() {
           auditBadgeCount={unreviewedChains.length}
           onToggleAudit={handleToggleAudit}
         />
-        {view === 'chat' ? (
+        {/* Persistent Dashboard Pages (Preserves DOM, State, and Scroll positions) */}
+        <div className={`flex-1 min-w-0 h-full ${view === 'chat' ? 'flex flex-col' : 'hidden'}`}>
           <ChatPane agent={selectedAgent} session={session} />
-        ) : view === 'tasks' ? (
+        </div>
+        <div className={`flex-1 min-w-0 h-full ${view === 'tasks' ? 'flex flex-col' : 'hidden'}`}>
           <TaskBoard session={session} />
-        ) : view === 'memory' ? (
+        </div>
+        <div className={`flex-1 min-w-0 h-full ${view === 'memory' ? 'flex flex-col' : 'hidden'}`}>
           <MemoryBoard session={session} agents={agents} />
-        ) : view === 'memoryAudit' ? (
+        </div>
+        <div className={`flex-1 min-w-0 h-full ${view === 'memoryAudit' ? 'flex flex-col' : 'hidden'}`}>
           <MemoryAuditBoard session={session} agents={agents} />
-        ) : view === 'projects' ? (
+        </div>
+        <div className={`flex-1 min-w-0 h-full ${view === 'projects' ? 'flex flex-col' : 'hidden'}`}>
           <ProjectsPage session={session} />
-        ) : view === 'agents' ? (
+        </div>
+        <div className={`flex-1 min-w-0 h-full ${view === 'agents' ? 'flex flex-col' : 'hidden'}`}>
           <AgentsPage session={session} onOpenStartAgent={handleOpenStartAgent} />
-        ) : view === 'startAgent' ? (
-          <StartAgentPage
-            session={session}
-            onBack={handleOpenChat}
-            onStarted={() => {
-              dispatch(refreshAgents());
-              setView('chat');
-            }}
-          />
-        ) : (
-          <SettingsPage
-            session={session}
-            onBack={handleOpenChat}
-            onReconnect={(config) => {
-              dispatch(updateSessionConfig(config));
-              setView('chat');
-              window.setTimeout(connectSession, 0);
-            }}
-          />
-        )}
+        </div>
+
+        {/* Conditional Form Pages (Resets state on mount/unmount) */}
+        <div className={`flex-1 min-w-0 h-full ${view === 'startAgent' ? 'flex flex-col' : 'hidden'}`}>
+          {view === 'startAgent' && (
+            <StartAgentPage
+              session={session}
+              onBack={handleOpenChat}
+              onStarted={() => {
+                dispatch(refreshAgents());
+                setView('chat');
+              }}
+            />
+          )}
+        </div>
+        <div className={`flex-1 min-w-0 h-full ${view === 'settings' ? 'flex flex-col' : 'hidden'}`}>
+          {view === 'settings' && (
+            <SettingsPage
+              session={session}
+              onBack={handleOpenChat}
+              onReconnect={(config) => {
+                dispatch(updateSessionConfig(config));
+                setView('chat');
+                window.setTimeout(connectSession, 0);
+              }}
+            />
+          )}
+        </div>
         <AuditSidebar open={isAuditOpen} onClose={() => setIsAuditOpen(false)} />
       </div>
     </div>
