@@ -418,3 +418,25 @@ export async function createProject({ daemonUrl, clientInstanceId, clientToken, 
 export async function updateProject({ daemonUrl, clientInstanceId, clientToken, projectId, name, description, anchors }: UserRpcRequest & { projectId: string; name?: string; description?: string; anchors?: ProjectAnchor[] }) {
   return userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action: 'project_update', body: { project_id: projectId, name: name || '', description: description || '', anchors: anchors || [] } });
 }
+
+export async function fetchPreferences({ daemonUrl, clientToken }: { daemonUrl: string; clientToken: string }) {
+  return requestJson(joinUrl(daemonUrl, '/preferences'), {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${clientToken || ''}` }
+  });
+}
+
+export async function savePreference({ daemonUrl, clientToken, key, value, interrupt }: { daemonUrl: string; clientToken: string; key: string; value: string; interrupt: boolean }) {
+  return requestJson(joinUrl(daemonUrl, '/preferences'), {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${clientToken || ''}` },
+    body: { key, value, interrupt }
+  });
+}
+
+export async function resetPreference({ daemonUrl, clientToken, key }: { daemonUrl: string; clientToken: string; key: string }) {
+  return requestJson(joinUrl(daemonUrl, `/preferences/${encodeURIComponent(key)}`), {
+    method: 'DELETE',
+    headers: { 'Authorization': `Bearer ${clientToken || ''}` }
+  });
+}
