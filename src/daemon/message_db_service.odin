@@ -24,6 +24,7 @@ foreign sqlite3_lib {
 	sqlite3_finalize :: proc(pStmt: sqlite3_stmt) -> c.int ---
 	sqlite3_step :: proc(pStmt: sqlite3_stmt) -> c.int ---
 	sqlite3_exec :: proc(db: sqlite3, sql: cstring, callback: rawptr, arg: rawptr, errmsg: [^]cstring) -> c.int ---
+	sqlite3_errmsg :: proc(db: sqlite3) -> cstring ---
 	sqlite3_bind_text :: proc(pStmt: sqlite3_stmt, index: c.int, value: cstring, n: c.int, destructor: rawptr) -> c.int ---
 	sqlite3_bind_int64 :: proc(pStmt: sqlite3_stmt, index: c.int, value: c.longlong) -> c.int ---
 	sqlite3_column_text :: proc(pStmt: sqlite3_stmt, iCol: c.int) -> cstring ---

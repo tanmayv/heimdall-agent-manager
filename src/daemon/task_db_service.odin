@@ -128,7 +128,12 @@ task_db_create_schema :: proc() -> bool {
 }
 
 task_db_bind_text :: proc(stmt: sqlite3_stmt, index: int, val: string) {
-	sqlite3_bind_text(stmt, c.int(index), cstring(raw_data(val)), i32(len(val)), SQLITE_TRANSIENT)
+	ptr := cstring(raw_data(val))
+	if ptr == nil {
+		sqlite3_bind_text(stmt, c.int(index), "", 0, SQLITE_TRANSIENT)
+	} else {
+		sqlite3_bind_text(stmt, c.int(index), ptr, i32(len(val)), SQLITE_TRANSIENT)
+	}
 }
 
 task_db_save_task :: proc(state: Task_State) -> bool {
@@ -161,7 +166,11 @@ task_db_save_task :: proc(state: Task_State) -> bool {
 	sqlite3_bind_int64(stmt, 13, state.updated_at_unix_ms)
 
 	rc = sqlite3_step(stmt)
-	return rc == SQLITE_DONE
+	if rc != SQLITE_DONE {
+		fmt.printf("task_db_save_task: step failed: %d (%s)\n", rc, sqlite3_errmsg(task_db.db))
+		return false
+	}
+	return true
 }
 
 task_db_save_chain :: proc(chain: Task_Chain_State) -> bool {
@@ -192,7 +201,11 @@ task_db_save_chain :: proc(chain: Task_Chain_State) -> bool {
 	task_db_bind_text(stmt, 12, chain.evaluation)
 
 	rc = sqlite3_step(stmt)
-	return rc == SQLITE_DONE
+	if rc != SQLITE_DONE {
+		fmt.printf("task_db_save_chain: step failed: %d (%s)\n", rc, sqlite3_errmsg(task_db.db))
+		return false
+	}
+	return true
 }
 
 task_db_save_comment :: proc(comment: Task_Comment_State) -> bool {
@@ -217,7 +230,11 @@ task_db_save_comment :: proc(comment: Task_Comment_State) -> bool {
 	sqlite3_bind_int64(stmt, 7, comment.created_unix_ms)
 
 	rc = sqlite3_step(stmt)
-	return rc == SQLITE_DONE
+	if rc != SQLITE_DONE {
+		fmt.printf("task_db_save_comment: step failed: %d (%s)\n", rc, sqlite3_errmsg(task_db.db))
+		return false
+	}
+	return true
 }
 
 task_db_save_vote :: proc(vote: Task_LGTM_Vote_State) -> bool {
@@ -242,7 +259,11 @@ task_db_save_vote :: proc(vote: Task_LGTM_Vote_State) -> bool {
 	sqlite3_bind_int64(stmt, 7, vote.created_unix_ms)
 
 	rc = sqlite3_step(stmt)
-	return rc == SQLITE_DONE
+	if rc != SQLITE_DONE {
+		fmt.printf("task_db_save_vote: step failed: %d (%s)\n", rc, sqlite3_errmsg(task_db.db))
+		return false
+	}
+	return true
 }
 
 task_db_save_participant :: proc(part: Task_Participant) -> bool {
@@ -264,7 +285,11 @@ task_db_save_participant :: proc(part: Task_Participant) -> bool {
 	task_db_bind_text(stmt, 4, part.role)
 
 	rc = sqlite3_step(stmt)
-	return rc == SQLITE_DONE
+	if rc != SQLITE_DONE {
+		fmt.printf("task_db_save_participant: step failed: %d (%s)\n", rc, sqlite3_errmsg(task_db.db))
+		return false
+	}
+	return true
 }
 
 task_db_load_all :: proc() -> bool {
