@@ -105,6 +105,15 @@ function AgentSelect({ value, onChange, agents, placeholder = 'Select agent', de
   );
 }
 
+function getCreatedAfterTimestamp(range: 'all' | '24h' | '7d' | '30d'): number {
+  let createdAfter = 0;
+  const now = Date.now();
+  if (range === '24h') createdAfter = now - 24 * 3600 * 1000;
+  else if (range === '7d') createdAfter = now - 7 * 24 * 3600 * 1000;
+  else if (range === '30d') createdAfter = now - 30 * 24 * 3600 * 1000;
+  return createdAfter;
+}
+
 export default function TaskBoard({ session }) {
   const dispatch = useDispatch<any>();
   const taskState = useSelector((state: any) => state.tasks);
@@ -136,16 +145,11 @@ export default function TaskBoard({ session }) {
   const [mutating, setMutating] = useState(false);
   const [nudgeState, setNudgeState] = useState({ taskId: '', status: 'idle', message: '' });
   const [draggedItem, setDraggedItem] = useState<{ kind: 'task' | 'chain'; id: string; fromBucket: string } | null>(null);
-  const [timeRange, setTimeRange] = useState<'all' | '24h' | '7d' | '30d'>('all');
+  const [timeRange, setTimeRange] = useState<'all' | '24h' | '7d' | '30d'>('7d');
 
   function handleTimeRangeChange(range: typeof timeRange) {
     setTimeRange(range);
-    let createdAfter = 0;
-    const now = Date.now();
-    if (range === '24h') createdAfter = now - 24 * 3600 * 1000;
-    else if (range === '7d') createdAfter = now - 7 * 24 * 3600 * 1000;
-    else if (range === '30d') createdAfter = now - 30 * 24 * 3600 * 1000;
-
+    const createdAfter = getCreatedAfterTimestamp(range);
     dispatch(refreshTaskBoard({ createdAfter }));
   }
 
@@ -167,7 +171,10 @@ export default function TaskBoard({ session }) {
   ]);
 
   useEffect(() => {
-    if (session.connected && session.clientToken) dispatch(refreshTaskBoard());
+    if (session.connected && session.clientToken) {
+      const createdAfter = getCreatedAfterTimestamp('7d');
+      dispatch(refreshTaskBoard({ createdAfter }));
+    }
   }, [dispatch, session.connected, session.clientToken]);
 
   useEffect(() => {
@@ -421,7 +428,10 @@ export default function TaskBoard({ session }) {
               <button type="button" data-debug-id="task-new-root-btn" onClick={() => openCreateTask('root')} className="framer-pill bg-white">+ Task</button>
             </>
           )}
-          <button type="button" data-debug-id="task-refresh-btn" onClick={() => dispatch(refreshTaskBoard())} disabled={!session.connected || loading} className="framer-pill-secondary disabled:cursor-not-allowed disabled:opacity-40">{loading ? 'Refreshing…' : 'Refresh'}</button>
+          <button type="button" data-debug-id="task-refresh-btn" onClick={() => {
+            const createdAfter = getCreatedAfterTimestamp(timeRange);
+            dispatch(refreshTaskBoard({ createdAfter }));
+          }} disabled={!session.connected || loading} className="framer-pill-secondary disabled:cursor-not-allowed disabled:opacity-40">{loading ? 'Refreshing…' : 'Refresh'}</button>
         </div>
       </header>
     );
