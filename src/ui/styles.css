@@ -392,29 +392,6 @@ body {
   }
 }
 
-@property --orbit-angle {
-  syntax: '<angle>';
-  inherits: false;
-  initial-value: 0deg;
-}
-
-@keyframes glow-orbit {
-  from {
-    --orbit-angle: 0deg;
-  }
-  to {
-    --orbit-angle: 360deg;
-  }
-}
-
-@keyframes shimmer-sweep {
-  from {
-    transform: translateX(-120%);
-  }
-  to {
-    transform: translateX(120%);
-  }
-}
 
 @keyframes bubble-pop {
   0% {
@@ -439,33 +416,4 @@ body {
   }
 }
 
-.shimmer-surface::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.05), transparent);
-  animation: shimmer-sweep 2.8s ease-in-out infinite;
-  pointer-events: none;
-}
 
-.orbit-ring::before {
-  content: '';
-  position: absolute;
-  inset: -1px;
-  border-radius: inherit;
-  padding: 1px;
-  background: conic-gradient(
-    from var(--orbit-angle),
-    color-mix(in oklab, var(--fd-accent-blue), transparent 100%) 0deg,
-    color-mix(in oklab, var(--fd-accent-blue), transparent 65%) 250deg,
-    color-mix(in oklab, var(--fd-accent-blue), transparent 35%) 292deg,
-    color-mix(in oklab, var(--fd-accent-blue), transparent 65%) 326deg,
-    color-mix(in oklab, var(--fd-accent-blue), transparent 100%) 360deg
-  );
-  animation: glow-orbit 5s linear infinite;
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  pointer-events: none;
-}

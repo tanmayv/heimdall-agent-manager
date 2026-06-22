@@ -1,6 +1,5 @@
 import { useMemo, useState, memo, useCallback } from 'react';
 import AgentListItem from './AgentListItem';
-import ConnectionBadge from './ConnectionBadge';
 
 function projectGroupKey(agent) {
   return agent.projectId || 'unassigned';
@@ -98,19 +97,29 @@ const AgentSidebar = memo(function AgentSidebar({
             {(session?.userDisplayName || session?.userId || 'OP')[0].toUpperCase()}
           </div>
           <div className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-semibold text-white">
-              {session?.userDisplayName || 'Operator'}
-            </span>
+            <div className="flex items-center gap-2">
+              <span className="truncate text-sm font-semibold text-white">
+                {session?.userDisplayName || 'Operator'}
+              </span>
+              <span
+                className={`h-2 w-2 rounded-full shrink-0 ${
+                  session?.status === 'connected'
+                    ? (session?.wsStatus === 'connected' ? 'bg-emerald-400' : 'bg-amber-400')
+                    : 'bg-rose-500'
+                }`}
+                title={
+                  session?.status === 'connected'
+                    ? (session?.wsStatus === 'connected' ? 'Daemon + WS Connected' : 'Daemon Connected (No WS)')
+                    : 'Daemon Offline'
+                }
+              />
+            </div>
             <span className="block truncate text-xs text-[#aaa]">
               {session?.userId || 'operator@local'}
             </span>
           </div>
         </div>
-        <h1 className="mt-4 text-2xl font-bold text-white">Live Agents</h1>
-        <p className="framer-subtext mt-1">Connected daemon agents</p>
       </div>
-
-      <ConnectionBadge session={session} />
 
       <nav className="mt-4 grid grid-cols-2 gap-2">
         <button
