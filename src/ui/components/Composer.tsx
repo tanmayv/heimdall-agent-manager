@@ -15,7 +15,8 @@ export default function Composer({ selectedAgent, disabled, onSubmit }) {
       onSubmit();
     }
     setBody('');
-    dispatch(sendMessageToSelectedAgent(nextBody));
+    const tempId = `local_temp_${Date.now()}`;
+    dispatch(sendMessageToSelectedAgent({ body: nextBody, tempId }));
   }
 
   return (

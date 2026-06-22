@@ -219,17 +219,20 @@ export const fetchSelectedChat = createAsyncThunk(
   }
 );
 
-export const sendMessageToSelectedAgent = createAsyncThunk('chat/sendMessageToSelectedAgent', async (body: string, { dispatch, getState }) => {
-  const { session, selectedAgentId } = (getState() as any).chat;
-  await daemonApi.sendToAgent({
-    daemonUrl: session.daemonUrl,
-    clientInstanceId: session.clientInstanceId,
-    clientToken: session.clientToken,
-    agentInstanceId: selectedAgentId,
-    body,
-  });
-  await (dispatch as any)(fetchSelectedChat(selectedAgentId));
-});
+export const sendMessageToSelectedAgent = createAsyncThunk(
+  'chat/sendMessageToSelectedAgent',
+  async (payload: { body: string; tempId: string }, { getState }) => {
+    const { session, selectedAgentId } = (getState() as any).chat;
+    const res = await daemonApi.sendToAgent({
+      daemonUrl: session.daemonUrl,
+      clientInstanceId: session.clientInstanceId,
+      clientToken: session.clientToken,
+      agentInstanceId: selectedAgentId,
+      body: payload.body,
+    });
+    return { messageId: res.message_id };
+  }
+);
 
 export const startAgentInstance = createAsyncThunk('chat/startAgentInstance', async (agent: any, { dispatch, getState }) => {
   const { session } = (getState() as any).chat;
@@ -507,15 +510,50 @@ const chatSlice = createSlice({
         }
         state.session.error = action.error.message || 'Failed to fetch chat';
       })
-      .addCase(sendMessageToSelectedAgent.pending, (state) => {
+      .addCase(sendMessageToSelectedAgent.pending, (state: any, action) => {
         state.sending = true;
         state.session.error = '';
+        const { body, tempId } = action.meta.arg;
+        const agentId = state.selectedAgentId;
+        if (agentId && tempId) {
+          if (!state.chats[agentId]) {
+            state.chats[agentId] = [];
+          }
+          state.chats[agentId].push({
+            id: tempId,
+            author: 'user',
+            body,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            sending: true,
+            readUnixMs: 0,
+            deliveredUnixMs: 0,
+          });
+        }
       })
-      .addCase(sendMessageToSelectedAgent.fulfilled, (state) => {
+      .addCase(sendMessageToSelectedAgent.fulfilled, (state: any, action) => {
         state.sending = false;
+        const { tempId } = action.meta.arg;
+        const agentId = state.selectedAgentId;
+        const { messageId } = action.payload;
+        if (agentId && tempId && state.chats[agentId]) {
+          const msg = state.chats[agentId].find((m: any) => m.id === tempId);
+          if (msg) {
+            msg.id = messageId;
+            msg.sending = false;
+          }
+        }
       })
-      .addCase(sendMessageToSelectedAgent.rejected, (state, action) => {
+      .addCase(sendMessageToSelectedAgent.rejected, (state: any, action) => {
         state.sending = false;
+        const { tempId } = action.meta.arg;
+        const agentId = state.selectedAgentId;
+        if (agentId && tempId && state.chats[agentId]) {
+          const msg = state.chats[agentId].find((m: any) => m.id === tempId);
+          if (msg) {
+            msg.sending = false;
+            msg.error = true;
+          }
+        }
         state.session.error = action.error.message || 'Failed to send message';
       });
   },

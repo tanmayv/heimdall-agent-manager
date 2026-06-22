@@ -252,7 +252,17 @@ async function copyMessageText(text: string) {
 export default function MessageBubble({ message }) {
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
   const isUser = message.author === 'user';
-  const deliveryLabel = isUser ? (message.readUnixMs > 0 ? 'Read' : message.deliveredUnixMs > 0 ? 'Delivered' : 'Sent') : '';
+  const deliveryLabel = isUser
+    ? (message.sending
+      ? 'Sending...'
+      : message.error
+      ? 'Failed'
+      : message.readUnixMs > 0
+      ? 'Read'
+      : message.deliveredUnixMs > 0
+      ? 'Delivered'
+      : 'Sent')
+    : '';
 
   async function handleCopy() {
     try {
@@ -270,9 +280,11 @@ export default function MessageBubble({ message }) {
       <div
         className={`group max-w-[88%] sm:max-w-[86%] md:max-w-[82%] rounded-[var(--fd-radius-xxl)] px-4 py-3 pr-11 transition-all duration-300 hover:-translate-y-0.5 hover:scale-[1.01] border relative overflow-hidden before:content-[''] before:absolute before:top-3 before:w-0 before:h-0 before:border-t-[8px] before:border-t-transparent before:border-b-[8px] before:border-b-transparent ${
           isUser
-            ? 'border-[var(--fd-accent-blue)]/70 bg-[var(--fd-accent-blue)] text-black before:right-[-12px] before:border-l-[12px] before:border-l-[var(--fd-accent-blue)]'
+            ? (message.error
+              ? 'border-red-500 bg-red-950/20 text-red-200 before:right-[-12px] before:border-l-[12px] before:border-l-red-950/20'
+              : 'border-[var(--fd-accent-blue)]/70 bg-[var(--fd-accent-blue)] text-black before:right-[-12px] before:border-l-[12px] before:border-l-[var(--fd-accent-blue)]')
             : 'border-[var(--fd-hairline)] bg-[var(--fd-surface-1)] text-white before:-left-3 before:border-r-[12px] before:border-r-[var(--fd-surface-1)]'
-        }`}
+        } ${message.sending ? 'opacity-60 animate-pulse' : ''}`}
       >
         <button
           type="button"
