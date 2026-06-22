@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, memo, useCallback } from 'react';
 import AgentListItem from './AgentListItem';
 import ConnectionBadge from './ConnectionBadge';
 
@@ -16,18 +16,58 @@ function projectGroupLabel(projectId, projectsById, agentsInGroup) {
   return projectId;
 }
 
-export default function AgentSidebar({ agents, projectsById, selectedAgentId, session, activeView, onSelectAgent, onRefreshAgents, onStartAgent, onStopAgent, onOpenChat, onOpenTasks, onOpenMemory, onOpenProjects, onOpenAgents, onOpenStartAgent, onOpenSettings, auditBadgeCount, onToggleAudit }) {
+interface AgentSidebarProps {
+  agents: any[];
+  projectsById: Record<string, any>;
+  selectedAgentId: string;
+  session: any;
+  activeView: string;
+  onSelectAgent: (agentId: string) => void;
+  onRefreshAgents: () => void;
+  onStartAgent: (agent: any) => void;
+  onStopAgent: (agentId: string) => void;
+  onOpenChat: () => void;
+  onOpenTasks: () => void;
+  onOpenMemory: () => void;
+  onOpenProjects: () => void;
+  onOpenAgents: () => void;
+  onOpenStartAgent: () => void;
+  onOpenSettings: () => void;
+  auditBadgeCount: number;
+  onToggleAudit: () => void;
+}
+
+const AgentSidebar = memo(function AgentSidebar({
+  agents,
+  projectsById,
+  selectedAgentId,
+  session,
+  activeView,
+  onSelectAgent,
+  onRefreshAgents,
+  onStartAgent,
+  onStopAgent,
+  onOpenChat,
+  onOpenTasks,
+  onOpenMemory,
+  onOpenProjects,
+  onOpenAgents,
+  onOpenStartAgent,
+  onOpenSettings,
+  auditBadgeCount,
+  onToggleAudit
+}: AgentSidebarProps) {
   const [collapsedProjects, setCollapsedProjects] = useState({});
   const [dismissedWarnings, setDismissedWarnings] = useState<Set<string>>(new Set());
 
-  function dismissWarning(agentId: string) {
+  const dismissWarning = useCallback((agentId: string) => {
     setDismissedWarnings((prev) => new Set([...prev, agentId]));
-  }
+  }, []);
 
-  function handleRefresh() {
+  const handleRefresh = useCallback(() => {
     setDismissedWarnings(new Set());
     onRefreshAgents();
-  }
+  }, [onRefreshAgents]);
   const projectGroups = useMemo(() => {
     const groups = new Map();
     for (const agent of agents) {
@@ -170,12 +210,12 @@ export default function AgentSidebar({ agents, projectsById, selectedAgentId, se
                     key={agent.id}
                     agent={agent}
                     selected={agent.id === selectedAgentId}
-                    onSelect={() => onSelectAgent(agent.id)}
+                    onSelect={onSelectAgent}
                     hideProject
                     warningDismissed={dismissedWarnings.has(agent.id)}
-                    onDismissWarning={() => dismissWarning(agent.id)}
-                    onStart={() => onStartAgent(agent)}
-                    onStop={() => onStopAgent(agent.id)}
+                    onDismissWarning={dismissWarning}
+                    onStart={onStartAgent}
+                    onStop={onStopAgent}
                   />
                 )) : null}
               </section>
@@ -189,4 +229,5 @@ export default function AgentSidebar({ agents, projectsById, selectedAgentId, se
       </div>
     </aside>
   );
-}
+});
+export default AgentSidebar;

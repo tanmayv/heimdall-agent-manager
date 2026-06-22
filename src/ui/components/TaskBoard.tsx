@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import {
   addCommentToSelectedTask,
@@ -154,21 +154,31 @@ export default function TaskBoard({ session }) {
   }
 
 
-  const chainIds = Object.keys(chainTaskIds).sort((left, right) => (chainsById[right]?.createdAtUnixMs || 0) - (chainsById[left]?.createdAtUnixMs || 0));
+  const chainIds = useMemo(() => 
+    Object.keys(chainTaskIds).sort((left, right) => (chainsById[right]?.createdAtUnixMs || 0) - (chainsById[left]?.createdAtUnixMs || 0)),
+    [chainTaskIds, chainsById]
+  );
   const selectedChain = selectedChainId ? chainsById[selectedChainId] : null;
   const selectedTask = selectedTaskId ? tasksById[selectedTaskId] : null;
   const selectedEvents = selectedTaskId ? taskLogsByTaskId[selectedTaskId] ?? [] : [];
-  const comments = selectedEvents.filter((event) => event.body || event.kind === 'Task_Comment');
+  const comments = useMemo(() => 
+    selectedEvents.filter((event) => event.body || event.kind === 'Task_Comment'),
+    [selectedEvents]
+  );
   const participants = selectedTaskId ? participantsByTaskId[selectedTaskId] ?? [] : [];
   const selectedTaskTerminal = selectedTask ? isTerminalTaskStatus(selectedTask.status) : false;
   const canMutate = Boolean(session.clientToken) && session.connected && !mutating;
   const nudgeInFlight = nudgeState.taskId === selectedTaskId && nudgeState.status === 'sending';
-  const agentOptions = uniqueValues([
-    ...(chatAgents ?? []).map((agent: any) => agent.id || agent.label),
-    ...Object.values(tasksById).flatMap((task: any) => [task.assigneeAgentInstanceId, task.reviewerAgentInstanceId, task.coordinatorAgentInstanceId]),
-    ...Object.values(participantsByTaskId).flatMap((items: any) => (items ?? []).map((participant: any) => participant.agentInstanceId)),
-    ...Object.values(chainsById).flatMap((chain: any) => [chain.coordinatorAgentInstanceId, chain.defaultReviewerAgentInstanceId]),
-  ]);
+  
+  const agentOptions = useMemo(() => 
+    uniqueValues([
+      ...(chatAgents ?? []).map((agent: any) => agent.id || agent.label),
+      ...Object.values(tasksById).flatMap((task: any) => [task.assigneeAgentInstanceId, task.reviewerAgentInstanceId, task.coordinatorAgentInstanceId]),
+      ...Object.values(participantsByTaskId).flatMap((items: any) => (items ?? []).map((participant: any) => participant.agentInstanceId)),
+      ...Object.values(chainsById).flatMap((chain: any) => [chain.coordinatorAgentInstanceId, chain.defaultReviewerAgentInstanceId]),
+    ]),
+    [chatAgents, tasksById, participantsByTaskId, chainsById]
+  );
 
   useEffect(() => {
     if (session.connected && session.clientToken) {

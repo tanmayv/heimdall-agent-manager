@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, memo } from 'react';
 import { useDispatch } from 'react-redux';
 import { sendMessageToSelectedAgent } from '../store/chatSlice';
 
@@ -68,7 +68,7 @@ function renderHeading(level: number, key: string, children: ReturnType<typeof r
   return <h6 key={key}>{children}</h6>;
 }
 
-function MarkdownContent({ text }: { text: string }) {
+const MarkdownContent = memo(function MarkdownContent({ text }: { text: string }) {
   const blocks = [];
   const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
   let paragraph: string[] = [];
@@ -220,7 +220,7 @@ function MarkdownContent({ text }: { text: string }) {
   flushAllTextBlocks();
 
   return <div className="markdown-message text-sm leading-6">{blocks}</div>;
-}
+});
 
 async function copyMessageText(text: string) {
   if (navigator.clipboard?.writeText) {
@@ -251,7 +251,7 @@ async function copyMessageText(text: string) {
   }
 }
 
-export default function MessageBubble({ message }) {
+const MessageBubble = memo(function MessageBubble({ message }: { message: any }) {
   const dispatch = useDispatch<any>();
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
   const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null);
@@ -509,4 +509,5 @@ export default function MessageBubble({ message }) {
       </div>
     </div>
   );
-}
+});
+export default MessageBubble;

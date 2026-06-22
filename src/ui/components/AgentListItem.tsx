@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { useSelector } from 'react-redux';
 
 const statusStyles = {
@@ -28,7 +29,7 @@ function defaultSuggestedFix(agent) {
   return '';
 }
 
-export default function AgentListItem({ 
+const AgentListItem = memo(function AgentListItem({ 
   agent, 
   selected, 
   onSelect, 
@@ -40,17 +41,21 @@ export default function AgentListItem({
 }: { 
   agent: any; 
   selected: boolean; 
-  onSelect: () => void; 
-  onStart: () => void;
-  onStop: () => void;
+  onSelect: (id: string) => void; 
+  onStart: (agent: any) => void;
+  onStop: (id: string) => void;
   hideProject?: boolean; 
   warningDismissed?: boolean; 
-  onDismissWarning?: () => void 
+  onDismissWarning?: (id: string) => void 
 }) {
   const startupIssue = !warningDismissed && (agent.status === 'startup_blocked' || agent.status === 'startup_failed' || agent.status === 'startup_unknown');
   const suggestedFix = defaultSuggestedFix(agent);
-  const projectsById = useSelector((state: any) => state.projects?.projectsById ?? {});
-  const projectLabel = agent.projectId ? (projectsById[agent.projectId]?.name || agent.projectName || agent.projectId) : '';
+  
+  const projectLabel = useSelector((state: any) => {
+    if (hideProject || !agent.projectId) return '';
+    return state.projects?.projectsById?.[agent.projectId]?.name || agent.projectName || agent.projectId;
+  });
+  
   const isRunning = agent.status === 'connected' || agent.status === 'starting' || agent.status === 'idle' || agent.status === 'startup_blocked';
 
   return (
@@ -63,7 +68,7 @@ export default function AgentListItem({
     >
       <div className="pointer-events-none absolute inset-0 rounded-[var(--fd-radius-xl)] bg-[linear-gradient(120deg,transparent,rgba(255,255,255,0.05),transparent)] opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
       <div 
-        onClick={onSelect}
+        onClick={() => onSelect(agent.id)}
         className="relative flex items-start justify-between gap-3 p-3 cursor-pointer"
       >
         <div className="min-w-0 flex-1 text-left">
@@ -90,7 +95,7 @@ export default function AgentListItem({
                   <button
                     type="button"
                     data-debug-id={`agent-item-dismiss-warning-${agent.id}`}
-                    onClick={(e) => { e.stopPropagation(); onDismissWarning(); }}
+                    onClick={(e) => { e.stopPropagation(); onDismissWarning(agent.id); }}
                     className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold text-amber-300 transition hover:bg-amber-400/20 hover:text-amber-100"
                   >
                     Dismiss
@@ -129,7 +134,7 @@ export default function AgentListItem({
             <button
               type="button"
               data-debug-id={`agent-item-stop-btn-${agent.id}`}
-              onClick={(e) => { e.stopPropagation(); onStop(); }}
+              onClick={(e) => { e.stopPropagation(); onStop(agent.id); }}
               className="rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-red-400 transition hover:bg-red-500 hover:text-white hover:border-red-500"
               title="Stop agent daemon wrapper process"
             >
@@ -139,7 +144,7 @@ export default function AgentListItem({
             <button
               type="button"
               data-debug-id={`agent-item-start-btn-${agent.id}`}
-              onClick={(e) => { e.stopPropagation(); onStart(); }}
+              onClick={(e) => { e.stopPropagation(); onStart(agent); }}
               className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-emerald-400 transition hover:bg-emerald-505 hover:bg-emerald-500 hover:text-black hover:border-emerald-500"
               title="Start agent daemon wrapper process"
             >
@@ -150,4 +155,5 @@ export default function AgentListItem({
       </div>
     </div>
   );
-}
+});
+export default AgentListItem;

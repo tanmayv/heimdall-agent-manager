@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import AgentSidebar from './AgentSidebar';
 import ChatPane from './ChatPane';
@@ -36,15 +36,13 @@ import AuditSidebar from './AuditSidebar';
 
 export default function App() {
   const dispatch = useDispatch<any>();
-  const { agents, selectedAgentId, chats, session, sending } = useSelector((state: any) => state.chat);
+  const { agents, selectedAgentId, session } = useSelector((state: any) => state.chat);
   const { projectsById } = useSelector((state: any) => state.projects);
   const unreviewedChains = useSelector((state: any) => state.tasks.unreviewedChains || []);
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? null;
-  const messages = selectedAgent ? chats[selectedAgent.id] ?? [] : [];
   const [view, setView] = useState<'chat' | 'settings' | 'tasks' | 'memory' | 'projects' | 'agents' | 'startAgent'>('chat');
   const [isAuditOpen, setIsAuditOpen] = useState(false);
   const selectedAgentRef = useRef(selectedAgentId);
-  const cachedChatsRef = useRef(chats);
   const sessionRef = useRef(session);
 
   useEffect(() => {
@@ -53,8 +51,7 @@ export default function App() {
 
   useEffect(() => {
     selectedAgentRef.current = selectedAgentId;
-    cachedChatsRef.current = chats;
-  }, [selectedAgentId, chats]);
+  }, [selectedAgentId]);
 
   const connectSession = () => {
     dispatch(registerSession())
@@ -164,11 +161,7 @@ export default function App() {
         if (agentId && payload.message) {
           dispatch(appendMessage({ agentId, message: payload.message }));
         } else if (agentId) {
-          const isSelected = agentId === selectedAgentRef.current;
-          const isCached = Boolean(cachedChatsRef.current?.[agentId]);
-          if (isSelected || isCached) {
-            dispatch(fetchSelectedChat(agentId));
-          }
+          dispatch(fetchSelectedChat(agentId));
         }
       };
 
@@ -216,6 +209,58 @@ export default function App() {
     };
   }, [dispatch, session.connected]);
 
+  const handleRefreshAgents = useCallback(() => {
+    dispatch(refreshAgents());
+  }, [dispatch]);
+
+  const handleSelectAgent = useCallback((agentId: string) => {
+    dispatch(selectAgent(agentId));
+    setView('chat');
+  }, [dispatch]);
+
+  const handleStartAgent = useCallback((agent: any) => {
+    dispatch(startAgentInstance(agent));
+  }, [dispatch]);
+
+  const handleStopAgent = useCallback((agentId: string) => {
+    dispatch(stopAgentInstance(agentId));
+  }, [dispatch]);
+
+  const handleOpenChat = useCallback(() => {
+    setView('chat');
+  }, []);
+
+  const handleOpenTasks = useCallback(() => {
+    setView('tasks');
+    dispatch(refreshTaskBoard());
+  }, [dispatch]);
+
+  const handleOpenMemory = useCallback(() => {
+    setView('memory');
+    dispatch(refreshMemory());
+  }, [dispatch]);
+
+  const handleOpenProjects = useCallback(() => {
+    setView('projects');
+    dispatch(refreshProjects());
+  }, [dispatch]);
+
+  const handleOpenAgents = useCallback(() => {
+    setView('agents');
+  }, []);
+
+  const handleOpenStartAgent = useCallback(() => {
+    setView('startAgent');
+  }, []);
+
+  const handleOpenSettings = useCallback(() => {
+    setView('settings');
+  }, []);
+
+  const handleToggleAudit = useCallback(() => {
+    setIsAuditOpen((prev) => !prev);
+  }, []);
+
   return (
     <div className="h-screen overflow-hidden bg-[var(--fd-canvas)] text-white">
       <div className="flex h-full">
@@ -225,34 +270,22 @@ export default function App() {
           selectedAgentId={selectedAgentId}
           session={session}
           activeView={view}
-          onRefreshAgents={() => dispatch(refreshAgents())}
-          onSelectAgent={(agentId) => {
-            dispatch(selectAgent(agentId));
-            setView('chat');
-          }}
-          onStartAgent={(agent) => dispatch(startAgentInstance(agent))}
-          onStopAgent={(agentId) => dispatch(stopAgentInstance(agentId))}
-          onOpenChat={() => setView('chat')}
-          onOpenTasks={() => {
-            setView('tasks');
-            dispatch(refreshTaskBoard());
-          }}
-          onOpenMemory={() => {
-            setView('memory');
-            dispatch(refreshMemory());
-          }}
-          onOpenProjects={() => {
-            setView('projects');
-            dispatch(refreshProjects());
-          }}
-          onOpenAgents={() => setView('agents')}
-          onOpenStartAgent={() => setView('startAgent')}
-          onOpenSettings={() => setView('settings')}
+          onRefreshAgents={handleRefreshAgents}
+          onSelectAgent={handleSelectAgent}
+          onStartAgent={handleStartAgent}
+          onStopAgent={handleStopAgent}
+          onOpenChat={handleOpenChat}
+          onOpenTasks={handleOpenTasks}
+          onOpenMemory={handleOpenMemory}
+          onOpenProjects={handleOpenProjects}
+          onOpenAgents={handleOpenAgents}
+          onOpenStartAgent={handleOpenStartAgent}
+          onOpenSettings={handleOpenSettings}
           auditBadgeCount={unreviewedChains.length}
-          onToggleAudit={() => setIsAuditOpen(!isAuditOpen)}
+          onToggleAudit={handleToggleAudit}
         />
         {view === 'chat' ? (
-          <ChatPane agent={selectedAgent} messages={messages} session={session} sending={sending} />
+          <ChatPane agent={selectedAgent} session={session} />
         ) : view === 'tasks' ? (
           <TaskBoard session={session} />
         ) : view === 'memory' ? (
@@ -260,11 +293,11 @@ export default function App() {
         ) : view === 'projects' ? (
           <ProjectsPage session={session} />
         ) : view === 'agents' ? (
-          <AgentsPage session={session} onOpenStartAgent={() => setView('startAgent')} />
+          <AgentsPage session={session} onOpenStartAgent={handleOpenStartAgent} />
         ) : view === 'startAgent' ? (
           <StartAgentPage
             session={session}
-            onBack={() => setView('chat')}
+            onBack={handleOpenChat}
             onStarted={() => {
               dispatch(refreshAgents());
               setView('chat');
@@ -273,7 +306,7 @@ export default function App() {
         ) : (
           <SettingsPage
             session={session}
-            onBack={() => setView('chat')}
+            onBack={handleOpenChat}
             onReconnect={(config) => {
               dispatch(updateSessionConfig(config));
               setView('chat');

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { decideMemoryProposal, fetchMemoryDetail, proposeMemoryChange, refreshMemory, selectMemory, setMemoryFilters } from '../store/memorySlice';
 
@@ -128,7 +128,10 @@ export default function MemoryBoard({ session, agents = [] }: { session: any; ag
     });
   }
 
-  const counts = MEMORY_STATUSES.map((status) => ({ status, count: recordIds.filter((id) => recordsById[id]?.status === status).length }));
+  const counts = useMemo(() => 
+    MEMORY_STATUSES.map((status) => ({ status, count: recordIds.filter((id) => recordsById[id]?.status === status).length })),
+    [recordIds, recordsById]
+  );
 
   return (
     <main className="flex min-w-0 flex-1 flex-col bg-[var(--fd-canvas)]">

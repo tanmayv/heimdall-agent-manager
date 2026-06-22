@@ -237,6 +237,11 @@ export const fetchSelectedChat = createAsyncThunk(
       if (state.fetchingChatsByAgentId?.[agentId]) {
         return false;
       }
+      const isSelected = agentId === state.selectedAgentId;
+      const isCached = Boolean(state.chats?.[agentId]);
+      if (!isSelected && !isCached) {
+        return false;
+      }
     }
   }
 );
