@@ -433,10 +433,10 @@ body {
 
 @keyframes halo-breathe {
   0%, 100% {
-    box-shadow: 0 0 0 0 color-mix(in oklab, var(--fd-accent-blue), transparent 78%);
+    opacity: 0.85;
   }
   50% {
-    box-shadow: 0 0 0 8px color-mix(in oklab, var(--fd-accent-blue), transparent 100%);
+    opacity: 1;
   }
 }
 
