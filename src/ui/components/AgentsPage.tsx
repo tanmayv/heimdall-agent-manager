@@ -1,4 +1,4 @@
-import { useEffect, useState, memo, FormEvent } from 'react';
+import { useEffect, useState, memo, FormEvent, useCallback } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { refreshAgents, setTestRuns } from '../store/chatSlice';
 import * as daemonApi from '../api/daemonApi';
@@ -70,7 +70,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
     loadTemplates();
   }, [session.daemonUrl]);
 
-  async function loadTemplates() {
+  const loadTemplates = useCallback(async () => {
     setTemplatesLoading(true);
     setTemplatesError('');
     try {
@@ -81,7 +81,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
     } finally {
       setTemplatesLoading(false);
     }
-  }
+  }, [session.daemonUrl]);
 
   // Load providers + history when test tab is opened
   useEffect(() => {
@@ -118,12 +118,12 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
     setAgentFormError('');
   }
 
-  function cancelEditAgent() {
+  const cancelEditAgent = useCallback(() => {
     setEditingAgentId(null);
     setAgentFormError('');
-  }
+  }, []);
 
-  async function handleSaveAgent(formData: any) {
+  const handleSaveAgent = useCallback(async (formData: any) => {
     const name = formData.displayName.trim();
     if (!name) { setAgentFormError('Display name is required.'); return; }
     const duplicate = agents.find((a: any) => (a.label || '').trim().toLowerCase() === name.toLowerCase() && a.id !== editingAgentId);
@@ -146,7 +146,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
     } finally {
       setAgentSaving(false);
     }
-  }
+  }, [agents, editingAgentId, session.daemonUrl, dispatch]);
 
   async function handleStopAgent(agent: any) {
     setStopping(agent.id);
@@ -209,12 +209,12 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
     setTemplateFormError('');
   }
 
-  function cancelTemplateEdit() {
+  const cancelTemplateEdit = useCallback(() => {
     setEditingTemplate(null);
     setTemplateFormError('');
-  }
+  }, []);
 
-  async function handleSaveTemplate(formData: any) {
+  const handleSaveTemplate = useCallback(async (formData: any) => {
     const name = formData.displayName.trim();
     const id = formData.templateId.trim();
     if (!name) { setTemplateFormError('Display name is required.'); return; }
@@ -245,7 +245,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
     } finally {
       setTemplateSaving(false);
     }
-  }
+  }, [editingTemplate, templates, session.daemonUrl, loadTemplates]);
 
   async function handleArchiveTemplate(templateId: string, name: string) {
     if (!window.confirm(`Archive template "${name}"? Agents using it won't be affected.`)) return;

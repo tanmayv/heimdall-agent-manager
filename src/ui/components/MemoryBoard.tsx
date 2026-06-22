@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, memo, FormEvent } from 'react';
+import { useEffect, useState, useMemo, memo, FormEvent, useCallback } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { decideMemoryProposal, fetchMemoryDetail, proposeMemoryChange, refreshMemory, selectMemory, setMemoryFilters } from '../store/memorySlice';
 
@@ -55,12 +55,12 @@ export default function MemoryBoard({ session, agents = [] }: { session: any; ag
 
   // Form update helper is deleted because form state is now local to MemoryProposalForm component
 
-  function openDetail(memoryId: string) {
+  const openDetail = useCallback((memoryId: string) => {
     dispatch(selectMemory(memoryId));
     setPage('detail');
-  }
+  }, [dispatch]);
 
-  function openProposal(action: string, record: any = selected) {
+  const openProposal = useCallback((action: string, record: any = selected) => {
     setMutationError('');
     setProposalFormValues({
       proposalAction: action,
@@ -76,9 +76,9 @@ export default function MemoryBoard({ session, agents = [] }: { session: any; ag
       evidence: '',
     });
     setPage('propose');
-  }
+  }, [selected]);
 
-  async function runMutation(callback: () => Promise<any>) {
+  const runMutation = useCallback(async (callback: () => Promise<any>) => {
     setMutationError('');
     setMutating(true);
     try {
@@ -88,9 +88,9 @@ export default function MemoryBoard({ session, agents = [] }: { session: any; ag
     } finally {
       setMutating(false);
     }
-  }
+  }, []);
 
-  function handlePropose(formData: any) {
+  const handlePropose = useCallback((formData: any) => {
     runMutation(async () => {
       const payload: any = {
         proposalAction: formData.proposalAction,
@@ -112,16 +112,20 @@ export default function MemoryBoard({ session, agents = [] }: { session: any; ag
       await dispatch(proposeMemoryChange(payload)).unwrap();
       setPage('list');
     });
-  }
+  }, [dispatch, runMutation, selected?.version]);
 
-  function decide(decision: 'approve' | 'reject') {
+  const handleCancelProposal = useCallback(() => {
+    setPage('list');
+  }, []);
+
+  const decide = useCallback((decision: 'approve' | 'reject') => {
     if (!selected?.proposalId || !canMutate) return;
     runMutation(async () => {
       await dispatch(decideMemoryProposal({ proposalId: selected.proposalId, decision, reason: decisionReason.trim() })).unwrap();
       setDecisionReason('');
       await dispatch(fetchMemoryDetail(selected.memoryId));
     });
-  }
+  }, [dispatch, runMutation, selected?.proposalId, canMutate, decisionReason, selected?.memoryId]);
 
   const counts = useMemo(() => 
     MEMORY_STATUSES.map((status) => ({ status, count: recordIds.filter((id) => recordsById[id]?.status === status).length })),
@@ -185,7 +189,7 @@ export default function MemoryBoard({ session, agents = [] }: { session: any; ag
             canMutate={canMutate}
             mutating={mutating}
             onSubmit={handlePropose}
-            onCancel={() => setPage('list')}
+            onCancel={handleCancelProposal}
           />
         )}
       </section>

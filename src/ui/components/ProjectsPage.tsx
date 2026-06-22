@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, memo, FormEvent } from 'react';
+import { useEffect, useState, useMemo, memo, FormEvent, useCallback } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { createProjectFromUi, fetchProjectDetail, refreshProjects, selectProject, updateProjectFromUi } from '../store/projectSlice';
 import * as daemonApi from '../api/daemonApi';
@@ -41,7 +41,7 @@ export default function ProjectsPage({ session }: { session: any }) {
 
 
 
-  async function refreshProjectAgents(projectId = selectedProjectId) {
+  const refreshProjectAgents = useCallback(async (projectId = selectedProjectId) => {
     if (!projectId) return;
     setAgentError('');
     try {
@@ -59,7 +59,7 @@ export default function ProjectsPage({ session }: { session: any }) {
     } catch (err: any) {
       setAgentError(err?.message || 'Failed to load project agents');
     }
-  }
+  }, [selectedProjectId, session.daemonUrl]);
 
   useEffect(() => {
     if (selectedProjectId) refreshProjectAgents(selectedProjectId);
@@ -69,7 +69,7 @@ export default function ProjectsPage({ session }: { session: any }) {
   function agentInstanceId(agent: any) { return agent.agent_instance_id || agent.agentInstanceId || agent.id || ''; }
   function projectDisplayName() { return selectedProject?.name || selectedProject?.projectId || 'Project'; }
 
-  async function submitDetail(formData: any) {
+  const submitDetail = useCallback((formData: any) => {
     if (!formData.name.trim() || mutating) return;
     dispatch(updateProjectFromUi({
       projectId: formData.projectId,
@@ -77,9 +77,9 @@ export default function ProjectsPage({ session }: { session: any }) {
       description: formData.description.trim(),
       anchors: cleanAnchors(formData.anchors),
     }));
-  }
+  }, [dispatch, mutating]);
 
-  async function submitCreate(formData: any) {
+  const submitCreate = useCallback(async (formData: any) => {
     if (!formData.name.trim() || mutating) return;
     setPage('list');
     try {
@@ -91,9 +91,13 @@ export default function ProjectsPage({ session }: { session: any }) {
     } catch {
       setPage('create');
     }
-  }
+  }, [dispatch, mutating]);
 
-  async function handleAddExistingAgent(agentId: string) {
+  const handleCancelCreate = useCallback(() => {
+    setPage('list');
+  }, []);
+
+  const handleAddExistingAgent = useCallback(async (agentId: string) => {
     if (!selectedProjectId || agentBusy) return;
     const agent = allAgents.find((item) => (agentRecordId(item) || agentInstanceId(item)) === agentId);
     if (!agent) return;
@@ -112,9 +116,9 @@ export default function ProjectsPage({ session }: { session: any }) {
     } finally {
       setAgentBusy(false);
     }
-  }
+  }, [selectedProjectId, agentBusy, allAgents, session.daemonUrl, refreshProjectAgents]);
 
-  async function handleStartProjectAgent(newAgentFormData: any) {
+  const handleStartProjectAgent = useCallback(async (newAgentFormData: any) => {
     if (!selectedProjectId || !newAgentFormData.provider || agentBusy) return;
     const displayName = newAgentFormData.displayName.trim();
     if (allAgents.some((agent) => (agent.display_name || agent.displayName || agent.alias || agent.id || '').trim().toLowerCase() === displayName.toLowerCase())) {
@@ -136,9 +140,9 @@ export default function ProjectsPage({ session }: { session: any }) {
     } finally {
       setAgentBusy(false);
     }
-  }
+  }, [selectedProjectId, agentBusy, allAgents, session.daemonUrl, refreshProjectAgents]);
 
-  async function handleRemoveProjectAgent(agent: any) {
+  const handleRemoveProjectAgent = useCallback(async (agent: any) => {
     const displayName = agent.display_name || agent.displayName || agent.alias || agent.agentInstanceId || agent.id || 'agent';
     if (!window.confirm(`Remove ${displayName} from ${projectDisplayName()}? The agent record remains known; only the project association is removed.`)) return;
     setAgentBusy(true);
@@ -151,7 +155,7 @@ export default function ProjectsPage({ session }: { session: any }) {
     } finally {
       setAgentBusy(false);
     }
-  }
+  }, [selectedProjectId, agentBusy, session.daemonUrl, refreshProjectAgents, selectedProject]);
 
   const availableExistingAgents = useMemo(() => {
     return allAgents.filter((agent) => !projectAgents.some((projectAgent) => (agentRecordId(projectAgent) && agentRecordId(projectAgent) === agentRecordId(agent)) || (agentInstanceId(projectAgent) && agentInstanceId(projectAgent) === agentInstanceId(agent))));
@@ -179,7 +183,7 @@ export default function ProjectsPage({ session }: { session: any }) {
           <ProjectCreateForm
             mutating={mutating}
             onSubmit={submitCreate}
-            onCancel={() => setPage('list')}
+            onCancel={handleCancelCreate}
           />
         ) : (
           <div className="grid min-h-full grid-cols-[minmax(300px,0.9fr)_minmax(420px,1.3fr)] gap-5">
