@@ -130,6 +130,25 @@ rest_authorize :: proc(client: net.TCP_Socket, ctx: ^Route_Context) -> (string, 
 handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_Context) -> bool {
 	if len(ctx.segments) == 0 do return false
 
+	// GET /preferences
+	if len(ctx.segments) == 1 && ctx.segments[0] == "preferences" && ctx.method == "GET" {
+		handle_get_preferences(client, ctx)
+		return true
+	}
+
+	// POST /preferences
+	if len(ctx.segments) == 1 && ctx.segments[0] == "preferences" && ctx.method == "POST" {
+		handle_post_preference(client, request_body(request), ctx)
+		return true
+	}
+
+	// DELETE /preferences/{key}
+	if len(ctx.segments) == 2 && ctx.segments[0] == "preferences" && ctx.method == "DELETE" {
+		key := ctx.segments[1]
+		handle_delete_preference(client, key, ctx)
+		return true
+	}
+
 	// GET /chats
 	if len(ctx.segments) == 1 && ctx.segments[0] == "chats" && ctx.method == "GET" {
 		handle_get_chats(client, ctx)

@@ -101,7 +101,7 @@ extract_json_bool :: proc(body, key: string, fallback: bool) -> bool {
 	return fallback
 }
 
-register_response_json :: proc(record: Agent_Record, template_instructions: string) -> string {
+register_response_json :: proc(record: Agent_Record, template_instructions, prefs_json: string) -> string {
 	builder := strings.builder_make()
 	strings.write_string(&builder, "{\"agent_instance_id\":\"")
 	strings.write_string(&builder, record.agent_instance_id)
@@ -125,7 +125,13 @@ register_response_json :: proc(record: Agent_Record, template_instructions: stri
 		strings.write_string(&builder, "\",\"template_instructions\":\"")
 		json_write_string(&builder, template_instructions)
 	}
-	strings.write_string(&builder, "\"}")
+	if prefs_json != "" {
+		strings.write_string(&builder, "\",\"preferences\":")
+		strings.write_string(&builder, prefs_json)
+		strings.write_string(&builder, "}")
+	} else {
+		strings.write_string(&builder, "\"}")
+	}
 	return strings.to_string(builder)
 }
 

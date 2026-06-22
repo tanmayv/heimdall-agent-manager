@@ -19,8 +19,10 @@ server_agent_providers: [dynamic]string
 server_agent_cmd_configs: [dynamic]cfg_lib.Agent_Command_Config
 message_provider: mp.Message_Provider
 memory_provider: memp.Memory_Provider
+server_config: cfg_lib.Config
 
 run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
+	server_config = cfg
 	server_bind_host = strings.clone(cfg.daemon.bind_host)
 	server_port = int(cfg.daemon.port)
 	server_config_path = strings.clone(config_path)
@@ -69,6 +71,11 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 		fmt.println("WARNING: auth_db_init failed, tokens will not persist across daemon restarts")
 	}
 	time_step("auth_db_init", &step)
+
+	if !user_pref_db_init(server_data_dir) {
+		fmt.println("WARNING: user_pref_db_init failed, preferences will not persist across daemon restarts")
+	}
+	time_step("user_pref_db_init", &step)
 	router_adapter_init(cfg.daemon); time_step("router_adapter_init", &step)
 	hub_sync_init(); time_step("hub_sync_init", &step)
 	message_queue_init(); time_step("message_queue_init", &step)

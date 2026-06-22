@@ -49,7 +49,12 @@ handle_register :: proc(client: net.TCP_Socket, body: string) {
 			template_instructions = agent_template_records[ti].instructions
 		}
 	}
-	write_response(client, 200, "OK", register_response_json(record, template_instructions))
+
+	user_id := server_config.daemon.user_id
+	prefs_json := serialize_all_preferences_json(user_id, agent_class)
+	defer delete(prefs_json)
+
+	write_response(client, 200, "OK", register_response_json(record, template_instructions, prefs_json))
 }
 
 handle_startup_report :: proc(client: net.TCP_Socket, body: string) {

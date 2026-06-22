@@ -20,6 +20,7 @@ is_test_token :: proc(token: string) -> bool {
 }
 
 main :: proc() {
+	initialize_default_preferences()
 	if len(os.args) > 1 && os.args[1] == "test" {
 		os.exit(run_test_command(os.args))
 	}
@@ -111,6 +112,9 @@ main :: proc() {
 	ws_url := extract_json_string(register_response.body, "ws_url", "")
 	agent_token := extract_json_string(register_response.body, "agent_token", "")
 	template_instructions := extract_json_string(register_response.body, "template_instructions", "")
+	prefs_obj := extract_json_object(register_response.body, "preferences")
+	defer if prefs_obj != "" do delete(prefs_obj)
+	apply_preferences_json(prefs_obj)
 	if registered_instance_id == "" {
 		fmt.println("registration response missing agent_instance_id")
 		return
@@ -464,8 +468,14 @@ handle_message_event :: proc(text, tmux_pane: string) {
 	from_agent_instance_id := extract_json_string(text, "from_agent_instance_id", "unknown")
 	if pending_count <= 0 do pending_count = 1
 
-	line := fmt.tprintf("%d Unread Messages from %s.", pending_count, from_agent_instance_id)
-	if tmux.send_line(tmux_pane, line) {
+	line := template_live_message(
+		active_live_prefs.msg_agent_message,
+		pending_count, from_agent_instance_id,
+		"", "", "", "", "", "", "", "", "", "", 0,
+	)
+	defer delete(line)
+
+	if tmux.send_line_with_escape(tmux_pane, line, active_live_prefs.msg_agent_message_int) {
 		fmt.println("notified agent pane", line)
 	} else {
 		fmt.println("failed to notify agent pane", line)
@@ -481,13 +491,19 @@ handle_task_event :: proc(text, tmux_pane, agent_instance_id: string) {
 		return
 	}
 	body := extract_json_string(text, "body", "")
-	line := ""
-	if body != "" {
-		line = fmt.tprintf("Task %s %s by %s: %s", task_id, status, changed_by, body)
-	} else {
-		line = fmt.tprintf("Task %s %s by %s.", task_id, status, changed_by)
-	}
-	escape_prefix := strings.index(text, `"send_escape_prefix":true`) >= 0 || strings.index(body, "delivery=escape_prefixed_pane_or_ws") >= 0
+	
+	template_str := active_live_prefs.msg_task_updated if body != "" else active_live_prefs.msg_task_updated_empty
+	interrupt_val := active_live_prefs.msg_task_updated_int if body != "" else active_live_prefs.msg_task_updated_empty_int
+
+	line := template_live_message(
+		template_str,
+		0, "",
+		task_id, status, changed_by, body, "", "", "", "", "", "", 0,
+	)
+	defer delete(line)
+
+	escape_prefix := interrupt_val || strings.index(text, `"send_escape_prefix":true`) >= 0 || strings.index(body, "delivery=escape_prefixed_pane_or_ws") >= 0
+
 	if tmux.send_line_with_escape(tmux_pane, line, escape_prefix) {
 		fmt.println("notified agent pane", line)
 	} else {
@@ -506,11 +522,25 @@ handle_memory_event :: proc(text, tmux_pane, agent_instance_id: string) {
 	proposal_id := extract_json_string(text, "proposal_id", "")
 	subject_agent := extract_json_string(text, "subject_agent", "")
 	status := extract_json_string(text, "status", "")
-	line := fmt.tprintf("Memory %s %s by %s for %s (%s). Fetch details with: %s memory show --token <your token> --memory-id %s", memory_id, event, changed_by, subject_agent, status, effective_ctl_bin(), memory_id)
+
+	template_str := active_live_prefs.msg_memory_updated
+	interrupt_val := active_live_prefs.msg_memory_updated_int
+	target_id := memory_id
+
 	if proposal_id != "" && (status == "pending" || strings.index(event, "Proposed") >= 0) {
-		line = fmt.tprintf("Memory proposal %s %s by %s for %s. Review with: %s memory history --token <your token> --memory-id %s", proposal_id, event, changed_by, subject_agent, effective_ctl_bin(), memory_id)
+		template_str = active_live_prefs.msg_memory_proposal_updated
+		interrupt_val = active_live_prefs.msg_memory_proposal_updated_int
+		target_id = proposal_id
 	}
-	if tmux.send_line(tmux_pane, line) {
+
+	line := template_live_message(
+		template_str,
+		0, "",
+		"", "", changed_by, "", target_id, event, subject_agent, "", "", "", 0,
+	)
+	defer delete(line)
+
+	if tmux.send_line_with_escape(tmux_pane, line, interrupt_val) {
 		fmt.println("notified agent pane", line)
 	} else {
 		fmt.println("failed to notify agent pane", line)
@@ -521,8 +551,15 @@ handle_user_chat_event :: proc(text, tmux_pane: string) {
 	user_id := extract_json_string(text, "user_id", "unknown")
 	pending_count := extract_json_int(text, "pending_count", 1)
 	if pending_count <= 0 do pending_count = 1
-	line := fmt.tprintf("%d User Chat Messages from %s. Read with: %s chat fetch-user --token <your token> --user-id %s", pending_count, user_id, effective_ctl_bin(), user_id)
-	if tmux.send_line(tmux_pane, line) {
+
+	line := template_live_message(
+		active_live_prefs.msg_user_chat,
+		pending_count, "",
+		"", "", "", "", "", "", "", user_id, "", "", 0,
+	)
+	defer delete(line)
+
+	if tmux.send_line_with_escape(tmux_pane, line, active_live_prefs.msg_user_chat_int) {
 		fmt.println("notified agent pane", line)
 	} else {
 		fmt.println("failed to notify agent pane", line)
@@ -530,19 +567,29 @@ handle_user_chat_event :: proc(text, tmux_pane: string) {
 }
 
 notify_agent_token_refreshed :: proc(tmux_pane, daemon_url, new_token, agent_instance_id: string) {
-	msg := fmt.tprintf(
-		"SYSTEM: Heimdall daemon restarted and issued a new agent token. Your previous token is invalid. New token: %s — update all pending ham-ctl commands to use this token. Run: %s --daemon-url %s --token %s start-success",
-		new_token, effective_ctl_bin(), daemon_url, new_token,
+	line := template_live_message(
+		active_live_prefs.msg_token_refreshed,
+		0, "",
+		"", "", "", "", "", "", "", "", new_token, daemon_url, 0,
 	)
+	defer delete(line)
+
 	fmt.println("token_refreshed: notifying agent pane", tmux_pane)
-	_ = tmux.send_line_with_escape(tmux_pane, msg, true)
+	_ = tmux.send_line_with_escape(tmux_pane, line, active_live_prefs.msg_token_refreshed_int)
 }
 
 handle_stop_event :: proc(text, tmux_pane, tmux_session, window_name, agent_instance_id, stop_message: string, ws_conn: ^ws.Connection) {
 	time_in_sec := extract_json_int(text, "time_in_sec", 30)
-	msg := replace_all(stop_message, "{time}", fmt.tprintf("%d", time_in_sec))
+	
+	line := template_live_message(
+		active_live_prefs.msg_stop_requested,
+		0, "",
+		"", "", "", "", "", "", "", "", "", "", time_in_sec,
+	)
+	defer delete(line)
+
 	fmt.println("stop: sending escape and message to pane", tmux_pane)
-	_ = tmux.send_line_with_escape(tmux_pane, msg, true)
+	_ = tmux.send_line_with_escape(tmux_pane, line, active_live_prefs.msg_stop_requested_int)
 	fmt.println("stop: waiting", time_in_sec, "seconds")
 	time.sleep(time.Duration(time_in_sec) * time.Second)
 	fmt.println("stop: killing pane", tmux_pane)
@@ -577,6 +624,9 @@ reregister_and_reconnect_ws :: proc(daemon_url, agent_class, agent_instance_id, 
 
 	ws_url := extract_json_string(register_response.body, "ws_url", "")
 	token  := extract_json_string(register_response.body, "agent_token", agent_token)
+	prefs_obj := extract_json_object(register_response.body, "preferences")
+	defer if prefs_obj != "" do delete(prefs_obj)
+	apply_preferences_json(prefs_obj)
 	if ws_url == "" do return "", "", false
 
 	ws.close(ws_conn)
@@ -915,7 +965,7 @@ content_section_enabled :: proc(sections: []string, section: string) -> bool {
 
 build_agents_md :: proc(name, profile: string, content_sections: []string, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path: string, memories: []Memory_Record, project_context: string, has_memory_md: bool, template_instructions: string) -> string {
 	b := strings.builder_make()
-	strings.write_string(&b, BOOTSTRAP_HEADER); strings.write_string(&b, "\n")
+	strings.write_string(&b, active_live_prefs.bootstrap_header); strings.write_string(&b, "\n")
 	strings.write_string(&b, bootstrap_title(name, profile)); strings.write_string(&b, "\n\n")
 	if content_section_enabled(content_sections, "IDENTITY") {
 		strings.write_string(&b, "FIRST RUN: `")
@@ -937,7 +987,9 @@ build_agents_md :: proc(name, profile: string, content_sections: []string, selec
 		}
 	}
 	if content_section_enabled(content_sections, "GUIDANCE") {
-		strings.write_string(&b, bootstrap_profile_guidance(profile, name))
+		templated_guidance := template_guidance_string(active_live_prefs.bootstrap_profile_guidance, profile, name, agent_instance_id)
+		strings.write_string(&b, templated_guidance)
+		delete(templated_guidance)
 	}
 	if content_section_enabled(content_sections, "PROJECT") && project_context != "" {
 		strings.write_string(&b, project_context)
@@ -1012,7 +1064,7 @@ render_memory_for_agents_md :: proc(memories: []Memory_Record, has_memory_md: bo
 
 build_memory_md :: proc(memories: []Memory_Record) -> string {
 	b := strings.builder_make()
-	strings.write_string(&b, BOOTSTRAP_HEADER); strings.write_string(&b, "\n")
+	strings.write_string(&b, active_live_prefs.bootstrap_header); strings.write_string(&b, "\n")
 	strings.write_string(&b, "# Memory\n\n")
 	strings.write_string(&b, "Full bodies of FACT and EPISODE memories. Regenerated each agent start.\n")
 	wrote_any := false
@@ -1043,7 +1095,7 @@ write_skills :: proc(cwd, rel_dir, filename: string, memories: []Memory_Record) 
 		file_abs := join_path(skill_dir_abs, filename)
 		if can_write_managed_file(file_abs) {
 			content_b := strings.builder_make()
-			strings.write_string(&content_b, BOOTSTRAP_HEADER); strings.write_string(&content_b, "\n")
+			strings.write_string(&content_b, active_live_prefs.bootstrap_header); strings.write_string(&content_b, "\n")
 			strings.write_string(&content_b, m.body); strings.write_string(&content_b, "\n")
 			write_managed_file(file_abs, strings.to_string(content_b))
 			append(&written, file_rel)
@@ -1075,7 +1127,7 @@ cleanup_removed_bootstrap_files :: proc(cwd: string, files: []string) {
 
 write_manifest :: proc(cwd: string, files: []string) {
 	builder := strings.builder_make()
-	strings.write_string(&builder, BOOTSTRAP_HEADER); strings.write_string(&builder, "\n")
+	strings.write_string(&builder, active_live_prefs.bootstrap_header); strings.write_string(&builder, "\n")
 	for file_name in files {
 		if safe_relative_path(file_name) {
 			strings.write_string(&builder, file_name); strings.write_string(&builder, "\n")
@@ -1087,13 +1139,13 @@ write_manifest :: proc(cwd: string, files: []string) {
 can_write_managed_file :: proc(path: string) -> bool {
 	data, err := os.read_entire_file(path, context.allocator)
 	if err != nil do return true
-	return strings.has_prefix(string(data), BOOTSTRAP_HEADER)
+	return strings.has_prefix(string(data), BOOTSTRAP_HEADER) || strings.has_prefix(string(data), active_live_prefs.bootstrap_header)
 }
 
 file_has_managed_header :: proc(path: string) -> bool {
 	data, err := os.read_entire_file(path, context.allocator)
 	if err != nil do return false
-	return strings.has_prefix(string(data), BOOTSTRAP_HEADER)
+	return strings.has_prefix(string(data), BOOTSTRAP_HEADER) || strings.has_prefix(string(data), active_live_prefs.bootstrap_header)
 }
 
 write_managed_file :: proc(path, content: string) {
@@ -1114,9 +1166,20 @@ bootstrap_profile :: proc(agent_cmd: cfg_lib.Agent_Command_Config, selected_agen
 }
 
 bootstrap_title :: proc(file_name, profile: string) -> string {
+	if active_live_prefs.bootstrap_title != "" && active_live_prefs.bootstrap_title != "# Agent bootstrap for Heimdall AI Manager" {
+		return active_live_prefs.bootstrap_title
+	}
 	if strings.has_suffix(file_name, "CLAUDE.md") || profile == "claude" do return "# Claude bootstrap for Heimdall AI Manager"
 	if profile == "codex" do return "# Codex AGENTS.md bootstrap for Heimdall AI Manager"
 	return "# Agent bootstrap for Heimdall AI Manager"
+}
+
+template_guidance_string :: proc(raw: string, profile, file_name, agent_instance_id: string) -> string {
+	res := strings.replace_all(raw, "{ctl_bin}", effective_ctl_bin())
+	res = strings.replace_all(res, "{profile}", profile)
+	res = strings.replace_all(res, "{file_name}", file_name)
+	res = strings.replace_all(res, "{instance}", agent_instance_id)
+	return res
 }
 
 bootstrap_profile_guidance :: proc(profile, file_name: string) -> string {
@@ -1358,7 +1421,7 @@ build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_
 			base := agent_cmd.command
 			if len(base) == 0 do base = cfg.command
 			count := len(base) + len(agent_cmd.yolo_flags) + len(agent_cmd.prompt_flags)
-			if agent_cmd.starter_prompt != "" do count += 1
+			if active_live_prefs.starter_prompt != "" do count += 1
 			result := make([dynamic]string, 0, count)
 			append_templated_args(&result, base, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
 			append_templated_args(&result, agent_cmd.yolo_flags, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
@@ -1380,8 +1443,8 @@ build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_
 				// Test agents get a minimal one-shot prompt; skip memory guidance.
 				prompt := template_string(TEST_AGENT_STARTER_PROMPT, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
 				append(&result, prompt)
-			} else if agent_cmd.starter_prompt != "" {
-				prompt := template_string(agent_cmd.starter_prompt, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
+			} else if active_live_prefs.starter_prompt != "" {
+				prompt := template_string(active_live_prefs.starter_prompt, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
 				templates := agent_cmd.memory_templates
 				if len(templates) == 0 do templates = cfg.memory_templates
 				mem_context := "" // Memory is injected via bootstrap files (always generated).
@@ -1654,4 +1717,168 @@ agent_identity_from_args :: proc(args: []string, fallback: string) -> string {
 		return args[i]
 	}
 	return fallback
+}
+
+Live_Preferences :: struct {
+	starter_prompt:                  string,
+	bootstrap_header:                string,
+	bootstrap_title:                 string,
+	bootstrap_profile_guidance:      string,
+	msg_agent_message:               string,
+	msg_agent_message_int:           bool,
+	msg_task_updated:                string,
+	msg_task_updated_int:            bool,
+	msg_task_updated_empty:          string,
+	msg_task_updated_empty_int:      bool,
+	msg_memory_updated:              string,
+	msg_memory_updated_int:          bool,
+	msg_memory_proposal_updated:     string,
+	msg_memory_proposal_updated_int: bool,
+	msg_user_chat:                   string,
+	msg_user_chat_int:               bool,
+	msg_token_refreshed:             string,
+	msg_token_refreshed_int:         bool,
+	msg_stop_requested:              string,
+	msg_stop_requested_int:          bool,
+}
+
+active_live_prefs: Live_Preferences
+
+initialize_default_preferences :: proc() {
+	active_live_prefs.starter_prompt = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap file (AGENTS.md or CLAUDE.md) for context, identity, and what you can do."
+	active_live_prefs.bootstrap_header = "<!-- HEIMDALL-MANAGED-BOOTSTRAP v1: safe to overwrite -->"
+	active_live_prefs.bootstrap_title = "# Agent bootstrap for Heimdall AI Manager"
+	active_live_prefs.bootstrap_profile_guidance = "# Default Guidance..."
+	active_live_prefs.msg_agent_message = "{pending_count} Unread Messages from {from_agent_id}."
+	active_live_prefs.msg_agent_message_int = false
+	active_live_prefs.msg_task_updated = "Task {task_id} {status} by {changed_by}: {body}"
+	active_live_prefs.msg_task_updated_int = false
+	active_live_prefs.msg_task_updated_empty = "Task {task_id} {status} by {changed_by}."
+	active_live_prefs.msg_task_updated_empty_int = false
+	active_live_prefs.msg_memory_updated = "Memory {memory_id} {event} by {changed_by} for {subject_agent} ({status}). Fetch details with: {ctl_bin} memory show --token <your token> --memory-id {memory_id}"
+	active_live_prefs.msg_memory_updated_int = false
+	active_live_prefs.msg_memory_proposal_updated = "Memory proposal {proposal_id} {event} by {changed_by} for {subject_agent}. Review with: {ctl_bin} memory history --token <your token> --memory-id {memory_id}"
+	active_live_prefs.msg_memory_proposal_updated_int = false
+	active_live_prefs.msg_user_chat = "{pending_count} User Chat Messages from {user_id}. Read with: {ctl_bin} chat fetch-user --token <your token> --user-id {user_id}"
+	active_live_prefs.msg_user_chat_int = true
+	active_live_prefs.msg_token_refreshed = "SYSTEM: Heimdall daemon restarted and issued a new agent token. Your previous token is invalid. New token: {new_token} — update all pending ham-ctl commands to use this token. Run: {ctl_bin} --daemon-url {daemon_url} --token {new_token} start-success"
+	active_live_prefs.msg_token_refreshed_int = true
+	active_live_prefs.msg_stop_requested = "SYSTEM: Stop requested. You have {time} seconds to save your work."
+	active_live_prefs.msg_stop_requested_int = true
+}
+
+apply_preferences_json :: proc(prefs_json: string) {
+	if prefs_json == "" do return
+
+	update_pref_string :: proc(field: ^string, prefs_json, key, fallback: string) {
+		val := extract_json_string(prefs_json, key, "")
+		if val != "" {
+			field^ = strings.clone(val)
+		}
+	}
+
+	update_pref_bool :: proc(field: ^bool, prefs_json, key: string, fallback: bool) {
+		pattern := fmt.tprintf("\"%s\":", key)
+		idx := strings.index(prefs_json, pattern)
+		if idx >= 0 {
+			start := idx + len(pattern)
+			if strings.has_prefix(prefs_json[start:], "true") {
+				field^ = true
+			} else if strings.has_prefix(prefs_json[start:], "false") {
+				field^ = false
+			}
+		}
+	}
+
+	update_pref_string(&active_live_prefs.starter_prompt, prefs_json, "starter_prompt", active_live_prefs.starter_prompt)
+	update_pref_string(&active_live_prefs.bootstrap_header, prefs_json, "bootstrap_header", active_live_prefs.bootstrap_header)
+	update_pref_string(&active_live_prefs.bootstrap_title, prefs_json, "bootstrap_title", active_live_prefs.bootstrap_title)
+	update_pref_string(&active_live_prefs.bootstrap_profile_guidance, prefs_json, "bootstrap_profile_guidance", active_live_prefs.bootstrap_profile_guidance)
+	
+	update_pref_string(&active_live_prefs.msg_agent_message, prefs_json, "msg_agent_message", active_live_prefs.msg_agent_message)
+	update_pref_bool(&active_live_prefs.msg_agent_message_int, prefs_json, "msg_agent_message_interrupt", active_live_prefs.msg_agent_message_int)
+	
+	update_pref_string(&active_live_prefs.msg_task_updated, prefs_json, "msg_task_updated", active_live_prefs.msg_task_updated)
+	update_pref_bool(&active_live_prefs.msg_task_updated_int, prefs_json, "msg_task_updated_interrupt", active_live_prefs.msg_task_updated_int)
+	
+	update_pref_string(&active_live_prefs.msg_task_updated_empty, prefs_json, "msg_task_updated_empty", active_live_prefs.msg_task_updated_empty)
+	update_pref_bool(&active_live_prefs.msg_task_updated_empty_int, prefs_json, "msg_task_updated_empty_interrupt", active_live_prefs.msg_task_updated_empty_int)
+	
+	update_pref_string(&active_live_prefs.msg_memory_updated, prefs_json, "msg_memory_updated", active_live_prefs.msg_memory_updated)
+	update_pref_bool(&active_live_prefs.msg_memory_updated_int, prefs_json, "msg_memory_updated_interrupt", active_live_prefs.msg_memory_updated_int)
+	
+	update_pref_string(&active_live_prefs.msg_memory_proposal_updated, prefs_json, "msg_memory_proposal_updated", active_live_prefs.msg_memory_proposal_updated)
+	update_pref_bool(&active_live_prefs.msg_memory_proposal_updated_int, prefs_json, "msg_memory_proposal_updated_interrupt", active_live_prefs.msg_memory_proposal_updated_int)
+	
+	update_pref_string(&active_live_prefs.msg_user_chat, prefs_json, "msg_user_chat", active_live_prefs.msg_user_chat)
+	update_pref_bool(&active_live_prefs.msg_user_chat_int, prefs_json, "msg_user_chat_interrupt", active_live_prefs.msg_user_chat_int)
+	
+	update_pref_string(&active_live_prefs.msg_token_refreshed, prefs_json, "msg_token_refreshed", active_live_prefs.msg_token_refreshed)
+	update_pref_bool(&active_live_prefs.msg_token_refreshed_int, prefs_json, "msg_token_refreshed_interrupt", active_live_prefs.msg_token_refreshed_int)
+	
+	update_pref_string(&active_live_prefs.msg_stop_requested, prefs_json, "msg_stop_requested", active_live_prefs.msg_stop_requested)
+	update_pref_bool(&active_live_prefs.msg_stop_requested_int, prefs_json, "msg_stop_requested_interrupt", active_live_prefs.msg_stop_requested_int)
+}
+
+extract_json_object :: proc(body, key: string) -> string {
+	pattern := fmt.tprintf("\"%s\":", key)
+	idx := strings.index(body, pattern)
+	if idx < 0 do return ""
+
+	start := idx + len(pattern)
+	brace_count := 0
+	in_string := false
+	escaped := false
+	
+	i := start
+	for i < len(body) {
+		ch := body[i]
+		if escaped {
+			escaped = false
+			i += 1
+			continue
+		}
+		if ch == '\\' && in_string {
+			escaped = true
+			i += 1
+			continue
+		}
+		if ch == '"' {
+			in_string = !in_string
+		}
+		
+		if !in_string {
+			if ch == '{' {
+				brace_count += 1
+			} else if ch == '}' {
+				brace_count -= 1
+				if brace_count == 0 {
+					return strings.clone(body[start : i + 1])
+				}
+			}
+		}
+		i += 1
+	}
+}
+
+template_live_message :: proc(template_str: string, pending_count: int, from_agent_id, task_id, status, changed_by, body, memory_id, event, subject_agent, user_id, new_token, daemon_url: string, time_val: int) -> string {
+	context.allocator = context.temp_allocator
+	
+	res := strings.replace_all(template_str, "{pending_count}", fmt.tprintf("%d", pending_count))
+	res = strings.replace_all(res, "{from_agent_id}", from_agent_id)
+	res = strings.replace_all(res, "{task_id}", task_id)
+	res = strings.replace_all(res, "{status}", status)
+	res = strings.replace_all(res, "{changed_by}", changed_by)
+	res = strings.replace_all(res, "{body}", body)
+	res = strings.replace_all(res, "{memory_id}", memory_id)
+	res = strings.replace_all(res, "{proposal_id}", memory_id)
+	res = strings.replace_all(res, "{event}", event)
+	res = strings.replace_all(res, "{subject_agent}", subject_agent)
+	res = strings.replace_all(res, "{user_id}", user_id)
+	res = strings.replace_all(res, "{new_token}", new_token)
+	res = strings.replace_all(res, "{daemon_url}", daemon_url)
+	res = strings.replace_all(res, "{time}", fmt.tprintf("%d", time_val))
+	res = strings.replace_all(res, "{ctl_bin}", effective_ctl_bin())
+	
+	return strings.clone(res, context.allocator)
 }
