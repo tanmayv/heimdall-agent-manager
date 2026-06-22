@@ -51,7 +51,7 @@ export default function AuditCard({ chain }: { chain: any }) {
           className="text-[#666] hover:text-[#eee] p-0.5 rounded transition-colors self-start mt-0.5"
         >
           <svg
-            className={`w-4 h-4 transform transition-transform duration-200 ${expanded ? 'rotate-180' : ''}`}
+            className={`w-4 h-4 transform  duration-200 ${expanded ? 'rotate-180' : ''}`}
             fill="none"
             stroke="currentColor"
             viewBox="0 0 24 24"
@@ -83,7 +83,7 @@ export default function AuditCard({ chain }: { chain: any }) {
               type="button"
               disabled={loadingRating !== null}
               onClick={() => handleRate('bad')}
-              className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-[#3a1a1a] hover:border-[#833] text-[#c99] hover:text-[#fcc] hover:bg-[#2a0c0c]/40 text-xs font-semibold transition-[transform,colors] duration-200 active:scale-95 disabled:opacity-40 disabled:pointer-events-none ${
+              className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-[#3a1a1a] hover:border-[#833] text-[#c99] hover:text-[#fcc] hover:bg-[#2a0c0c]/40 text-xs font-semibold transition-[transform,colors] duration-200  disabled:opacity-40 disabled:pointer-events-none ${
                 loadingRating === 'bad' ? 'bg-[#2a0c0c] border-[#833]' : ''
               }`}
             >
@@ -103,7 +103,7 @@ export default function AuditCard({ chain }: { chain: any }) {
               type="button"
               disabled={loadingRating !== null}
               onClick={() => handleRate('good')}
-              className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-white hover:bg-[#e0e0e0] text-black text-xs font-bold transition-[transform,colors] duration-200 active:scale-95 disabled:opacity-40 disabled:pointer-events-none ${
+              className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-white hover:bg-[#e0e0e0] text-black text-xs font-bold transition-[transform,colors] duration-200  disabled:opacity-40 disabled:pointer-events-none ${
                 loadingRating === 'good' ? 'bg-[#bbb]' : ''
               }`}
             >

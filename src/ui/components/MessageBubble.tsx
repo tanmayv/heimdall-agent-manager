@@ -421,7 +421,7 @@ function MessageBubble({ message }: { message: any }) {
                     disabled={!hasSelection}
                     onClick={handleMultiSubmit}
                     className={`framer-pill-primary px-4 py-1.5 text-xs font-semibold shadow-sm transition-[transform,colors] duration-200 ${
-                      hasSelection ? 'opacity-100 hover:scale-102' : 'opacity-40 cursor-not-allowed'
+                      hasSelection ? 'opacity-100 ' : 'opacity-40 cursor-not-allowed'
                     }`}
                   >
                     Submit Answers
@@ -432,7 +432,7 @@ function MessageBubble({ message }: { message: any }) {
                     disabled={!hasSelection}
                     onClick={() => setCurrentQuestionIndex(prev => prev + 1)}
                     className={`framer-pill-primary px-4 py-1.5 text-xs font-semibold shadow-sm transition-[transform,colors] duration-200 ${
-                      hasSelection ? 'opacity-100 hover:scale-102' : 'opacity-40 cursor-not-allowed'
+                      hasSelection ? 'opacity-100 ' : 'opacity-40 cursor-not-allowed'
                     }`}
                   >
                     Next
@@ -449,7 +449,7 @@ function MessageBubble({ message }: { message: any }) {
   return (
     <div className={`animate-bubble-pop flex w-full ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
-        className={`group max-w-[88%] sm:max-w-[86%] md:max-w-[82%] rounded-[var(--fd-radius-xxl)] px-4 py-3 pr-11 transition-[transform,colors] duration-300 hover:-translate-y-0.5 hover:scale-[1.01] border relative overflow-hidden before:content-[''] before:absolute before:top-3 before:w-0 before:h-0 before:border-t-[8px] before:border-t-transparent before:border-b-[8px] before:border-b-transparent ${
+        className={`group max-w-[88%] sm:max-w-[86%] md:max-w-[82%] rounded-[var(--fd-radius-xxl)] px-4 py-3 pr-11 transition-[transform,colors] duration-300   border relative overflow-hidden before:content-[''] before:absolute before:top-3 before:w-0 before:h-0 before:border-t-[8px] before:border-t-transparent before:border-b-[8px] before:border-b-transparent ${
           isUser
             ? (message.error
               ? 'border-red-500 bg-red-950/20 text-red-200 before:right-[-12px] before:border-l-[12px] before:border-l-red-950/20'
@@ -490,7 +490,7 @@ function MessageBubble({ message }: { message: any }) {
                         ? 'bg-[var(--fd-accent-blue)] text-black border-[var(--fd-accent-blue)] scale-98'
                         : selectedAnswer !== null
                         ? 'bg-[#1a1a1a] text-[#444] border-[#222] cursor-not-allowed opacity-40'
-                        : 'bg-[#222] hover:bg-[#2e2e2e] text-white border-[#2e2e2e] hover:border-[var(--fd-accent-blue)]/40 active:scale-95'
+                        : 'bg-[#222] hover:bg-[#2e2e2e] text-white border-[#2e2e2e] hover:border-[var(--fd-accent-blue)]/40 '
                     }`}
                   >
                     {answer}

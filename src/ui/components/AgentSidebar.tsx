@@ -200,7 +200,7 @@ const AgentSidebar = memo(function AgentSidebar({
             type="button"
             data-debug-id="new-agent-btn"
             onClick={onOpenStartAgent}
-            className="flex h-7 w-7 items-center justify-center rounded-full border border-[var(--fd-accent-blue)]/40 bg-[var(--fd-accent-blue)]/10 text-base leading-none text-[var(--fd-accent-blue)] transition hover:scale-105 hover:bg-[var(--fd-accent-blue)] hover:text-black"
+            className="flex h-7 w-7 items-center justify-center rounded-full border border-[var(--fd-accent-blue)]/40 bg-[var(--fd-accent-blue)]/10 text-base leading-none text-[var(--fd-accent-blue)] transition  hover:bg-[var(--fd-accent-blue)] hover:text-black"
             aria-label="Start new agent"
             title="Start new agent"
           >

@@ -195,7 +195,7 @@ export default function ProjectsPage({ session }: { session: any }) {
               {projectIds.map((projectId) => {
                 const project = projectsById[projectId];
                 return (
-                  <button key={projectId} type="button" data-debug-id={`project-list-item-${projectId}`} onClick={() => dispatch(selectProject(projectId))} className={`framer-card w-full p-4 text-left transition hover:-translate-y-0.5 ${selectedProjectId === projectId ? 'border-[var(--fd-accent-blue)]' : ''}`}>
+                  <button key={projectId} type="button" data-debug-id={`project-list-item-${projectId}`} onClick={() => dispatch(selectProject(projectId))} className={`framer-card w-full p-4 text-left transition  ${selectedProjectId === projectId ? 'border-[var(--fd-accent-blue)]' : ''}`}>
                     <p className="font-semibold text-white">{project.name || project.projectId}</p>
                     <p className="mt-1 break-all text-xs text-[#999]">{project.projectId}</p>
                     <p className="mt-2 line-clamp-2 text-sm text-[#bbb]">{project.description || 'No description'}</p>

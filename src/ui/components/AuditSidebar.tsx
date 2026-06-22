@@ -31,7 +31,7 @@ export default function AuditSidebar({ open, onClose }: AuditSidebarProps) {
 
       {/* Right Sidebar Panel */}
       <div
-        className={`fixed top-0 right-0 h-full w-[360px] bg-[#0a0a0a] border-l border-[#1c1c1c] shadow-[var(--fd-shadow-elevated)] z-50 transition-transform duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] flex flex-col ${
+        className={`fixed top-0 right-0 h-full w-[360px] bg-[#0a0a0a] border-l border-[#1c1c1c] shadow-[var(--fd-shadow-elevated)] z-50  duration-300 ease-[cubic-bezier(0.16,1,0.3,1)] flex flex-col ${
           open ? 'translate-x-0' : 'translate-x-full'
         }`}
       >
@@ -46,7 +46,7 @@ export default function AuditSidebar({ open, onClose }: AuditSidebarProps) {
           <button
             type="button"
             onClick={onClose}
-            className="text-[#666] hover:text-[#eee] hover:bg-[#1a1a1a] p-1.5 rounded-lg transition-[transform,colors] duration-150 active:scale-95"
+            className="text-[#666] hover:text-[#eee] hover:bg-[#1a1a1a] p-1.5 rounded-lg transition-[transform,colors] duration-150 "
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />

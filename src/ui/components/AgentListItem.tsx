@@ -61,7 +61,7 @@ const AgentListItem = memo(function AgentListItem({
 
   return (
     <div
-      className={`group relative w-full overflow-hidden rounded-[var(--fd-radius-xl)] border transition-[transform,colors] duration-300 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-[var(--fd-accent-blue)]/60 hover:bg-[var(--fd-surface-2)] ${
+      className={`group relative w-full overflow-hidden rounded-[var(--fd-radius-xl)] border transition-[transform,colors] duration-300   hover:border-[var(--fd-accent-blue)]/60 hover:bg-[var(--fd-surface-2)] ${
         selected
           ? 'animate-halo-breathe border-[var(--fd-accent-blue)]/70 bg-[var(--fd-surface-2)] shadow-lg shadow-[var(--fd-accent-blue)]/20'
           : 'border-[var(--fd-hairline)] bg-[var(--fd-surface-1)]'
@@ -79,7 +79,7 @@ const AgentListItem = memo(function AgentListItem({
                 agent.status === 'connected' ? 'animate-soft-pulse' : ''
               } ${statusStyles[agent.status] ?? statusStyles.offline}`}
             />
-            <p className="truncate text-sm font-semibold text-white transition-transform duration-300 group-hover:translate-x-0.5">{agent.label}</p>
+            <p className="truncate text-sm font-semibold text-white  duration-300 group-hover:translate-x-0.5">{agent.label}</p>
             <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${
               agent.modelTier === 'smart' ? 'bg-violet-500/20 text-violet-300' :
               agent.modelTier === 'cheap' ? 'bg-amber-500/15 text-amber-400' :

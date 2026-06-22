@@ -295,7 +295,7 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
               onClick={handleTrigger}
               className={`w-full py-2.5 rounded-xl font-bold text-sm transition-[transform,colors] duration-200 ${
                 canTrigger
-                  ? 'bg-white text-black hover:bg-[#e0e0e0] active:scale-[0.98]'
+                  ? 'bg-white text-black hover:bg-[#e0e0e0] '
                   : 'bg-[#111] border border-[#222] text-[#444] pointer-events-none'
               }`}
             >

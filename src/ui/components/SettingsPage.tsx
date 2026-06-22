@@ -417,7 +417,7 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
                   className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-[transform,colors] duration-200 ${
                     backingUp
                       ? 'bg-[#111] border border-[#222] text-[#444] pointer-events-none'
-                      : 'bg-white text-black hover:bg-[#e0e0e0] active:scale-[0.98]'
+                      : 'bg-white text-black hover:bg-[#e0e0e0] '
                   }`}
                 >
                   {backingUp ? (
@@ -444,7 +444,7 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
                 type="button"
                 onClick={handleRerunSetup}
                 disabled={resettingSetup}
-                 className="px-4 py-2.5 rounded-xl font-bold text-xs bg-amber-500 text-black hover:bg-amber-400 active:scale-[0.98] transition-[transform,colors] duration-200"
+                 className="px-4 py-2.5 rounded-xl font-bold text-xs bg-amber-500 text-black hover:bg-amber-400  transition-[transform,colors] duration-200"
               >
                 {resettingSetup ? 'Resetting Setup...' : 'Rerun Setup Wizard'}
               </button>
@@ -538,7 +538,7 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
               disabled={isSaving || isResetting || !hasChanged}
               onClick={() => handleSave(key)}
               className={`framer-pill-primary px-4 py-1.5 text-[11px] font-semibold transition-[transform,colors] duration-200 ${
-                hasChanged ? 'opacity-100 hover:scale-102' : 'opacity-40 cursor-not-allowed'
+                hasChanged ? 'opacity-100 ' : 'opacity-40 cursor-not-allowed'
               }`}
             >
               {isSaving ? 'Saving...' : 'Save Override'}

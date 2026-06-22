@@ -216,13 +216,12 @@ body {
   background: rgba(255, 255, 255, 0.08);
   color: currentColor;
   opacity: 0.64;
-  transition: opacity 160ms ease, transform 160ms ease, background 160ms ease;
+  transition: opacity 160ms ease, background 160ms ease;
 }
 
 .message-copy-button:hover,
 .message-copy-button:focus-visible {
   opacity: 1;
-  transform: translateY(-1px) scale(1.04);
   background: rgba(255, 255, 255, 0.17);
   outline: none;
 }
@@ -273,15 +272,13 @@ body {
   line-height: 1;
   letter-spacing: -0.14px;
   font-weight: 500;
-  transition: transform 200ms ease, box-shadow 200ms ease;
+  transition: box-shadow 200ms ease;
 }
 
 .framer-pill:hover {
-  transform: translateY(-1px) scale(1.01);
 }
 
 .framer-pill:active {
-  transform: scale(0.99);
 }
 
 .framer-pill-secondary {
@@ -290,7 +287,7 @@ body {
   background: var(--fd-surface-1);
   color: var(--fd-ink);
   border: 1px solid var(--fd-hairline);
-  transition: transform 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+  transition: border-color 200ms ease, box-shadow 200ms ease;
   font-size: 14px;
   line-height: 1;
   letter-spacing: -0.14px;

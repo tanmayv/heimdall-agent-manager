@@ -65,7 +65,7 @@ const Composer = memo(function Composer({ selectedAgent, disabled, onSubmit, sma
               key={idx}
               type="button"
               onClick={() => handleSmartReplyClick(reply)}
-              className="bg-[#181818] hover:bg-[var(--fd-accent-blue)] hover:text-black border border-[#2a2a2a] hover:border-[var(--fd-accent-blue)]/50 text-[#ccc] text-xs px-3.5 py-1.5 rounded-full transition-[transform,colors] duration-150 active:scale-95 font-semibold shadow-sm"
+              className="bg-[#181818] hover:bg-[var(--fd-accent-blue)] hover:text-black border border-[#2a2a2a] hover:border-[var(--fd-accent-blue)]/50 text-[#ccc] text-xs px-3.5 py-1.5 rounded-full transition-[transform,colors] duration-150  font-semibold shadow-sm"
             >
               {reply}
             </button>

@@ -173,7 +173,7 @@ export default function MemoryBoard({ session, agents = [] }: { session: any; ag
                 {recordIds.map((id) => {
                   const record = recordsById[id];
                   return (
-                    <button key={id} type="button" data-debug-id={`memory-record-${id}`} onClick={() => openDetail(id)} className={`framer-card w-full p-4 text-left transition hover:-translate-y-0.5 ${selectedMemoryId === id ? 'border-[var(--fd-accent-blue)]' : ''}`}>
+                    <button key={id} type="button" data-debug-id={`memory-record-${id}`} onClick={() => openDetail(id)} className={`framer-card w-full p-4 text-left transition  ${selectedMemoryId === id ? 'border-[var(--fd-accent-blue)]' : ''}`}>
                       <div className="flex items-start justify-between gap-3"><div><p className="font-semibold text-white">{record.title || record.memoryId}</p><p className="mt-1 text-xs text-[#999]">{record.subjectAgent || 'global'} · {record.type} · v{record.version}</p></div><StatusPill status={record.status} /></div>
                       <p className="mt-2 line-clamp-2 text-sm text-[#bdbdbd]">{record.body || record.reason || 'No body'}</p>
                     </button>
