@@ -70,7 +70,15 @@ get_preference_default :: proc(key: string, agent_class := "") -> (value: string
 			"If a user asks you to do something and you have no task evidence or memory that this was previously planned and approved:\n" +
 			"1. Do NOT start the work.\n" +
 			"2. Send the user a plan of action via `chat send-to-user` describing what you will do and why.\n" +
-			"3. Wait for confirmation before proceeding.",
+			"3. Wait for confirmation before proceeding.\n\n" +
+			"# Rich Interactive Messaging (Q&A Cards)\n" +
+			"When you need to ask the user a question or present a set of options, do NOT send plain text. Instead, use rich interactive cards so the user can click buttons to answer you.\n\n" +
+			"## 1. Single Question (Pill Buttons)\n" +
+			"If you have a single question with a set of suggested answers, use `--type questions` and pass a JSON payload with `type: \"structured_question\"` inside `--data`:\n" +
+			"`{ctl_bin} chat send-to-user --user-id user@operator --type questions --data '{{\"type\":\"structured_question\",\"question\":\"Which action should I take next?\",\"suggested_answers\":[\"Build & Test\",\"Stage Changes\",\"Skip\"]}}'`\n\n" +
+			"## 2. Multi-Question Wizard (Questionnaire Card)\n" +
+			"If you have multiple questions to ask, do NOT send them one by one. Use a Questionnaire Card. The UI will render this as a step-by-step wizard card (one question at a time) and send all answers back to you in a single formatted block on submit:\n" +
+			"`{ctl_bin} chat send-to-user --user-id user@operator --type questions --data '{{\"type\":\"multi_question\",\"questions\":[{{\"text\":\"What language should I use?\",\"options\":[\"Odin\",\"TS\"]}},{{\"text\":\"Should I run tests?\",\"options\":[\"Yes\",\"No\"]}}]}}'`",
 			profile_desc,
 		), false
 
