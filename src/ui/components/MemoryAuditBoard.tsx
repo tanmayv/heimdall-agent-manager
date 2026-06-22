@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { triggerMemoryAudit, decideMemoryProposal, proposeMemoryChange, refreshMemory, clearActiveAudit } from '../store/memorySlice';
+import { daemonApi } from '../api/daemonApi';
 
 const TIME_RANGES = [
   { value: '1h', label: 'Last 1 Hour' },
@@ -21,12 +22,56 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
   const [decisionReason, setDecisionReason] = useState('');
   const [decidingId, setDecidingId] = useState<string | null>(null);
 
-  // Refresh memories on mount to ensure we have the latest proposals
+  // Auditor/Reviewer states
+  const [auditorId, setAuditorId] = useState('');
+  const [reviewerId, setReviewerId] = useState('');
+  const [prefLoading, setPrefLoading] = useState(false);
+
+  // Refresh memories and fetch preferences on mount
   useEffect(() => {
     if (session.connected && session.clientToken) {
       dispatch(refreshMemory());
+      fetchPrefs();
     }
   }, [dispatch, session.connected, session.clientToken]);
+
+  const fetchPrefs = async () => {
+    setPrefLoading(true);
+    try {
+      const data = await daemonApi.fetchPreferences({
+        daemonUrl: session.daemonUrl,
+        clientToken: session.clientToken,
+      });
+      if (data?.preferences) {
+        const aud = data.preferences.find((p: any) => p.key === 'memory_auditor_agent_id')?.value || '';
+        const rev = data.preferences.find((p: any) => p.key === 'memory_reviewer_agent_id')?.value || '';
+        setAuditorId(aud);
+        setReviewerId(rev);
+      }
+    } catch (err) {
+      console.error('Failed to fetch preferences in MemoryAuditBoard:', err);
+    } finally {
+      setPrefLoading(false);
+    }
+  };
+
+  const handleAgentChange = async (key: string, value: string) => {
+    if (key === 'memory_auditor_agent_id') setAuditorId(value);
+    if (key === 'memory_reviewer_agent_id') setReviewerId(value);
+
+    try {
+      await daemonApi.savePreference({
+        daemonUrl: session.daemonUrl,
+        clientToken: session.clientToken,
+        key,
+        value,
+        interrupt: false,
+      });
+    } catch (err) {
+      console.error(`Failed to save preference ${key}:`, err);
+      alert('Failed to save configuration change');
+    }
+  };
 
   // Map agents to project IDs for hierarchical grouping
   const agentProjectMap = useMemo(() => {
@@ -67,7 +112,19 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
     return groups;
   }, [pendingProposals, agentProjectMap]);
 
-  const canTrigger = Boolean(session.clientToken) && session.connected && !auditLoading && (!activeAudit || activeAudit.status !== 'started');
+  const knownAgentIds = useMemo(() => agents.map((a: any) => a.id), [agents]);
+  const isAuditorKnown = useMemo(() => auditorId !== '' && knownAgentIds.includes(auditorId), [auditorId, knownAgentIds]);
+  const isReviewerKnown = useMemo(() => reviewerId !== '' && knownAgentIds.includes(reviewerId), [reviewerId, knownAgentIds]);
+  const isConfigValid = isAuditorKnown && isReviewerKnown;
+
+  const auditorOptions = useMemo(() => Array.from(new Set([...knownAgentIds, auditorId])).filter(Boolean), [knownAgentIds, auditorId]);
+  const reviewerOptions = useMemo(() => Array.from(new Set([...knownAgentIds, reviewerId])).filter(Boolean), [knownAgentIds, reviewerId]);
+
+  const canTrigger = Boolean(session.clientToken) && 
+                     session.connected && 
+                     !auditLoading && 
+                     (!activeAudit || activeAudit.status !== 'started') &&
+                     isConfigValid;
 
   const handleTrigger = () => {
     if (!canTrigger) return;
@@ -162,7 +219,7 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
                 value={timeRange}
                 onChange={(e) => setTimeRange(e.target.value)}
                 className="framer-input px-3 py-2 text-sm w-full"
-                disabled={!canTrigger}
+                disabled={auditLoading}
               >
                 {TIME_RANGES.map((range) => (
                   <option key={range.value} value={range.value}>
@@ -171,6 +228,48 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
                 ))}
               </select>
             </div>
+
+            {/* Auditor Picker */}
+            <div className="flex flex-col gap-2">
+              <label className="text-[10px] text-[#555] font-bold uppercase tracking-wider">🔍 Memory Auditor Agent</label>
+              <select
+                value={auditorId}
+                onChange={(e) => handleAgentChange('memory_auditor_agent_id', e.target.value)}
+                className="framer-input px-3 py-2 text-sm w-full font-sans"
+                disabled={auditLoading || prefLoading}
+              >
+                <option value="">-- Select Auditor Agent --</option>
+                {auditorOptions.map(id => (
+                  <option key={id} value={id}>{id} {!knownAgentIds.includes(id) && '(Offline/Unregistered)'}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Reviewer Picker */}
+            <div className="flex flex-col gap-2">
+              <label className="text-[10px] text-[#555] font-bold uppercase tracking-wider">⚖️ Memory Reviewer Agent</label>
+              <select
+                value={reviewerId}
+                onChange={(e) => handleAgentChange('memory_reviewer_agent_id', e.target.value)}
+                className="framer-input px-3 py-2 text-sm w-full font-sans"
+                disabled={auditLoading || prefLoading}
+              >
+                <option value="">-- Select Reviewer Agent --</option>
+                {reviewerOptions.map(id => (
+                  <option key={id} value={id}>{id} {!knownAgentIds.includes(id) && '(Offline/Unregistered)'}</option>
+                ))}
+              </select>
+            </div>
+
+            {/* Configuration Validation Warning */}
+            {!isConfigValid && !prefLoading && (
+              <div className="text-[10px] text-yellow-500 bg-yellow-500/5 border border-yellow-500/10 p-2.5 rounded-lg leading-relaxed">
+                <span className="font-bold">⚠️ Trigger Blocked</span>
+                <span className="block mt-0.5 text-[#888]">Both agents must be configured with registered online agents to trigger an audit.</span>
+                {!isAuditorKnown && <span className="block mt-0.5 text-yellow-400/90">• Auditor <code className="text-yellow-300 font-mono">"{auditorId || 'None'}"</code> is unregistered.</span>}
+                {!isReviewerKnown && <span className="block mt-0.5 text-yellow-400/90">• Reviewer <code className="text-yellow-300 font-mono">"{reviewerId || 'None'}"</code> is unregistered.</span>}
+              </div>
+            )}
 
             <button
               type="button"

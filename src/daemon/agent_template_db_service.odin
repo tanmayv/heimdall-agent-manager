@@ -262,33 +262,29 @@ seed_default_templates_if_empty :: proc() {
 		})
 	}
 
-	// 6. Memory Auditor
-	if !agent_template_exists("memory_auditor") {
-		agent_template_db_save(Agent_Template_Record{
-			template_id = "memory_auditor",
-			display_name = "Memory Auditor",
-			role_hint = "auditing",
-			suggested_model_tier = "smart",
-			persona = "You are an expert agent memory auditor and cognitive optimizer. Your mindset is analytical, reflective, and focused on continuous learning. You specialize in analyzing historical task chains, extracting key lessons learned, expertise, and best practices, and formulating them into structured memories that help other agents perform better next time.",
-			instructions = "Analyze successfully completed task chains. Inspect the final summaries, git commits, and results. Extract core expertise, guidelines, and lessons learned. Formulate these findings into structured agent memories (e.g. facts, expertise, or skills) and propose them via the memory proposal system so the participating agents can inherit them.",
-			default_provider_profile = "pi",
-			created_unix_ms = now,
-			updated_unix_ms = now,
-		})
-	}
+	// 6. Memory Auditor (Always updated to ensure instructions match code capabilities)
+	agent_template_db_save(Agent_Template_Record{
+		template_id = "memory_auditor",
+		display_name = "Memory Auditor",
+		role_hint = "auditing",
+		suggested_model_tier = "smart",
+		persona = "You are an expert agent memory auditor and cognitive optimizer. Your mindset is analytical, reflective, and focused on continuous learning. You specialize in analyzing historical task chains, extracting key lessons learned, expertise, and best practices, and formulating them into structured memories that help other agents perform better next time.",
+		instructions = "Analyze successfully completed task chains. Inspect the final summaries, git commits, and results. Extract core expertise, guidelines, and lessons learned. You have access to the local CLI tool 'ham-ctl' in your environment. You can execute 'ham-ctl task-chains show --chain-id <id> --token <your_token>' (using the token passed to you on startup or in your flags) to fetch complete structured task chain histories, task logs, and comments to gain full, accurate context for your audits. Formulate these findings into structured agent memories (e.g. facts, expertise, or skills) and propose them via the memory proposal system so the participating agents can inherit them.",
+		default_provider_profile = "pi",
+		created_unix_ms = now,
+		updated_unix_ms = now,
+	})
 
-	// 7. Memory Reviewer
-	if !agent_template_exists("memory_reviewer") {
-		agent_template_db_save(Agent_Template_Record{
-			template_id = "memory_reviewer",
-			display_name = "Memory Reviewer",
-			role_hint = "reviewing",
-			suggested_model_tier = "smart",
-			persona = "You are an expert agent cognitive reviewer and memory curator. Your mindset is critical, precise, and focused on quality control, structural clarity, and relevance. You specialize in auditing proposed agent memories, checking them for factual correctness, formatting consistency, duplication, and absolute clarity before they are presented to human operators for final approval.",
-			instructions = "Review all pending memory proposals for the target agents and projects. Audit each proposal for: 1. Duplication (does this agent already know this?). 2. Factual Accuracy (is it supported by the task chain evidence?). 3. Structural Clarity and Formatting (is the title descriptive and is the body actionable?). Refine, merge, or annotate proposals with comments to help the human curator make fast, high-fidelity decisions.",
-			default_provider_profile = "pi",
-			created_unix_ms = now,
-			updated_unix_ms = now,
-		})
-	}
+	// 7. Memory Reviewer (Always updated to ensure instructions match code capabilities)
+	agent_template_db_save(Agent_Template_Record{
+		template_id = "memory_reviewer",
+		display_name = "Memory Reviewer",
+		role_hint = "reviewing",
+		suggested_model_tier = "smart",
+		persona = "You are an expert agent cognitive reviewer and memory curator. Your mindset is critical, precise, and focused on quality control, structural clarity, and relevance. You specialize in auditing proposed agent memories, checking them for factual correctness, formatting consistency, duplication, and absolute clarity before they are presented to human operators for final approval.",
+		instructions = "Review all pending memory proposals for the target agents and projects. Audit each proposal for: 1. Duplication (does this agent already know this?). 2. Factual Accuracy (is it supported by the task chain evidence?). You have access to the local CLI tool 'ham-ctl' in your environment. You can run 'ham-ctl task-chains show --chain-id <id> --token <your_token>' (using the token passed to you on startup or in your flags) to read the complete execution details and logs of the target task chain, verifying that the proposed memories are factually supported by the task chain evidence before curating them. 3. Structural Clarity and Formatting (is the title descriptive and is the body actionable?). Refine, merge, or annotate proposals with comments to help the human curator make fast, high-fidelity decisions.",
+		default_provider_profile = "pi",
+		created_unix_ms = now,
+		updated_unix_ms = now,
+	})
 }

@@ -18,6 +18,22 @@ handle_post_task_chain_audit :: proc(client: net.TCP_Socket, body: string, ctx: 
 		return
 	}
 
+	// 1b. Verify Auditor and Reviewer are registered known agent instances
+	auditor_agent_id := memory_auditor_resolve_pref(author, "memory_auditor_agent_id")
+	reviewer_agent_id := memory_auditor_resolve_pref(author, "memory_reviewer_agent_id")
+	defer delete(auditor_agent_id)
+	defer delete(reviewer_agent_id)
+
+	auditor_idx := agent_record_index_by_instance(auditor_agent_id)
+	reviewer_idx := agent_record_index_by_instance(reviewer_agent_id)
+
+	if auditor_idx < 0 || reviewer_idx < 0 {
+		fmt.printfln("WARNING: Memory Audit requested but Auditor '%s' (found=%t) or Reviewer '%s' (found=%t) are not registered known agents. Audit rejected.", 
+			auditor_agent_id, auditor_idx >= 0, reviewer_agent_id, reviewer_idx >= 0)
+		write_response(client, 400, "Bad Request", `{"ok":false,"message":"Memory Auditor or Reviewer agent instances are not registered known agents in the system."}`)
+		return
+	}
+
 	// 2. Parse time_range from body
 	time_range := extract_json_string(body, "time_range", "24h")
 	if time_range != "1h" && time_range != "24h" && time_range != "1d" && time_range != "7d" && time_range != "all" {
