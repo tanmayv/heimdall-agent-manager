@@ -194,14 +194,14 @@ message_db_insert :: proc(msg: Chat_Message) -> bool {
 	}
 	defer sqlite3_finalize(stmt)
 
-	sqlite3_bind_text(stmt, 1, cstring(raw_data(msg.message_id)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 2, cstring(raw_data(msg.user_id)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 3, cstring(raw_data(msg.agent_instance_id)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 4, cstring(raw_data(msg.direction)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 5, cstring(raw_data(msg.body)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 1, cstring(raw_data(msg.message_id)), i32(len(msg.message_id)), SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 2, cstring(raw_data(msg.user_id)), i32(len(msg.user_id)), SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 3, cstring(raw_data(msg.agent_instance_id)), i32(len(msg.agent_instance_id)), SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 4, cstring(raw_data(msg.direction)), i32(len(msg.direction)), SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 5, cstring(raw_data(msg.body)), i32(len(msg.body)), SQLITE_TRANSIENT)
 	sqlite3_bind_int64(stmt, 6, msg.delivered_unix_ms)
 	sqlite3_bind_int64(stmt, 7, msg.delivery_failed_unix_ms)
-	sqlite3_bind_text(stmt, 8, cstring(raw_data(msg.delivery_error)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 8, cstring(raw_data(msg.delivery_error)), i32(len(msg.delivery_error)), SQLITE_TRANSIENT)
 	sqlite3_bind_int64(stmt, 9, msg.created_unix_ms)
 
 	rc = sqlite3_step(stmt)
@@ -241,8 +241,8 @@ message_db_mark_conversation_read :: proc(user_id, agent_instance_id, direction:
 	}
 	defer sqlite3_finalize(stmt)
 
-	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), i32(len(user_id)), SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), i32(len(agent_instance_id)), SQLITE_TRANSIENT)
 	sqlite3_bind_int64(stmt, 3, legacy_read)
 	sqlite3_bind_int64(stmt, 4, user_to_agent_read)
 	sqlite3_bind_int64(stmt, 5, agent_to_user_read)
@@ -270,7 +270,7 @@ message_db_update_delivered :: proc(message_id: string, delivered_unix_ms: i64) 
 	defer sqlite3_finalize(stmt)
 
 	sqlite3_bind_int64(stmt, 1, delivered_unix_ms)
-	sqlite3_bind_text(stmt, 2, cstring(raw_data(message_id)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 2, cstring(raw_data(message_id)), i32(len(message_id)), SQLITE_TRANSIENT)
 
 	rc = sqlite3_step(stmt)
 	if rc != SQLITE_DONE {
@@ -294,8 +294,8 @@ message_db_update_delivery_failed :: proc(message_id: string, failed_unix_ms: i6
 	defer sqlite3_finalize(stmt)
 
 	sqlite3_bind_int64(stmt, 1, failed_unix_ms)
-	sqlite3_bind_text(stmt, 2, cstring(raw_data(error)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 3, cstring(raw_data(message_id)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 2, cstring(raw_data(error)), i32(len(error)), SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 3, cstring(raw_data(message_id)), i32(len(message_id)), SQLITE_TRANSIENT)
 
 	rc = sqlite3_step(stmt)
 	if rc != SQLITE_DONE {
@@ -320,8 +320,8 @@ message_db_get_last_read_status :: proc(user_id, agent_instance_id: string) -> (
 	}
 	defer sqlite3_finalize(stmt)
 
-	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), i32(len(user_id)), SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), i32(len(agent_instance_id)), SQLITE_TRANSIENT)
 
 	if sqlite3_step(stmt) == SQLITE_ROW {
 		user_to_agent_read = sqlite3_column_int64(stmt, 0)
@@ -384,12 +384,12 @@ message_db_fetch_all :: proc(user_id, agent_instance_id: string, direction: stri
 	}
 	defer sqlite3_finalize(stmt)
 
-	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), i32(len(user_id)), SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), i32(len(agent_instance_id)), SQLITE_TRANSIENT)
 	
 	idx := 3
 	if direction == "user_to_agent" || direction == "agent_to_user" {
-		sqlite3_bind_text(stmt, i32(idx), cstring(raw_data(direction)), -1, SQLITE_TRANSIENT)
+		sqlite3_bind_text(stmt, i32(idx), cstring(raw_data(direction)), i32(len(direction)), SQLITE_TRANSIENT)
 		idx += 1
 	}
 	if cursor > 0 {
@@ -445,8 +445,8 @@ message_db_fetch_unread :: proc(user_id, agent_instance_id, direction: string, l
 	}
 	defer sqlite3_finalize(stmt)
 
-	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), i32(len(user_id)), SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), i32(len(agent_instance_id)), SQLITE_TRANSIENT)
 	if direction == "" {
 		t1 := user_to_agent_read
 		if cursor > t1 do t1 = cursor
@@ -499,8 +499,8 @@ message_db_count_unread :: proc(user_id, agent_instance_id: string) -> int {
 	}
 	defer sqlite3_finalize(stmt)
 
-	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), i32(len(user_id)), SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), i32(len(agent_instance_id)), SQLITE_TRANSIENT)
 	sqlite3_bind_int64(stmt, 3, user_to_agent_read)
 	sqlite3_bind_int64(stmt, 4, agent_to_user_read)
 
@@ -525,8 +525,8 @@ message_db_count_unread_for_agent :: proc(user_id, agent_instance_id: string) ->
 	}
 	defer sqlite3_finalize(stmt)
 
-	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), i32(len(user_id)), SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), i32(len(agent_instance_id)), SQLITE_TRANSIENT)
 	sqlite3_bind_int64(stmt, 3, last_read)
 
 	if sqlite3_step(stmt) == SQLITE_ROW {
@@ -553,10 +553,10 @@ message_db_has_unread :: proc(user_id, agent_instance_id, direction: string) -> 
 	}
 	defer sqlite3_finalize(stmt)
 
-	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), i32(len(user_id)), SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), i32(len(agent_instance_id)), SQLITE_TRANSIENT)
 	if direction == "user_to_agent" || direction == "agent_to_user" {
-		sqlite3_bind_text(stmt, 3, cstring(raw_data(direction)), -1, SQLITE_TRANSIENT)
+		sqlite3_bind_text(stmt, 3, cstring(raw_data(direction)), i32(len(direction)), SQLITE_TRANSIENT)
 		last_read := message_db_get_last_read_for_direction(user_id, agent_instance_id, direction)
 		sqlite3_bind_int64(stmt, 4, last_read)
 	} else {
@@ -580,7 +580,7 @@ message_db_get_created_time :: proc(message_id: string) -> i64 {
 	}
 	defer sqlite3_finalize(stmt)
 
-	sqlite3_bind_text(stmt, 1, cstring(raw_data(message_id)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 1, cstring(raw_data(message_id)), i32(len(message_id)), SQLITE_TRANSIENT)
 
 	if sqlite3_step(stmt) == SQLITE_ROW {
 		return sqlite3_column_int64(stmt, 0)
@@ -602,7 +602,7 @@ message_db_get_distinct_agents :: proc(user_id: string) -> [dynamic]string {
 	}
 	defer sqlite3_finalize(stmt)
 
-	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), i32(len(user_id)), SQLITE_TRANSIENT)
 
 	for sqlite3_step(stmt) == SQLITE_ROW {
 		agent := strings.clone_from_cstring(sqlite3_column_text(stmt, 0))
@@ -631,8 +631,8 @@ message_db_get_max_unread_timestamp :: proc(user_id, agent_instance_id, directio
 	}
 	defer sqlite3_finalize(stmt)
 
-	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), i32(len(user_id)), SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), i32(len(agent_instance_id)), SQLITE_TRANSIENT)
 	if direction == "" {
 		last_read := message_db_get_last_read(user_id, agent_instance_id)
 		sqlite3_bind_int64(stmt, 3, last_read)

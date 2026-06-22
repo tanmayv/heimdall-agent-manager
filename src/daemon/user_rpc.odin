@@ -157,7 +157,7 @@ handle_user_rpc_mark_read :: proc(client: net.TCP_Socket, body, user_id: string)
 		return
 	}
 	now := router_now_unix_ms()
-	if !chat_store_append_event(Chat_Event{kind = .Read_Marked, user_id = user_id, agent_instance_id = agent_instance_id, direction = "", message_id = message_id, read_unix_ms = now}) {
+	if !chat_store_append_event(Chat_Event{kind = .Read_Marked, user_id = user_id, agent_instance_id = agent_instance_id, direction = "agent_to_user", message_id = message_id, read_unix_ms = now}) {
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"mark_read failed"}`)
 		return
 	}
