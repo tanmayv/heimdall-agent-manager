@@ -473,9 +473,10 @@ export async function triggerMemoryAudit({ daemonUrl, clientToken, timeRange }: 
   });
 }
 
-export async function testAgentConnectivity({ daemonUrl, clientToken }: { daemonUrl: string; clientToken: string }) {
+export async function testAgentConnectivity({ daemonUrl, clientToken, providers }: { daemonUrl: string; clientToken: string; providers?: string }) {
   return requestJson(joinUrl(daemonUrl, '/agents/test-connectivity'), {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${clientToken || ''}` }
+    headers: { 'Authorization': `Bearer ${clientToken || ''}` },
+    body: providers ? { providers } : undefined
   });
 }

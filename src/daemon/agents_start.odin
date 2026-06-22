@@ -12,12 +12,39 @@ valid_model_tier :: proc(tier: string) -> bool {
 handle_agents_providers :: proc(client: net.TCP_Socket) {
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"ok":true,"providers":[`)
-	for provider, i in server_agent_providers {
-		if i > 0 do strings.write_string(&builder, `,`)
+	
+	first := true
+	for cfg in server_agent_cmd_configs {
+		if !first do strings.write_string(&builder, `,`)
+		first = false
+		
 		strings.write_string(&builder, `{"name":"`)
-		json_write_string(&builder, provider)
-		strings.write_string(&builder, `"}`)
+		json_write_string(&builder, cfg.name)
+		strings.write_string(&builder, `","command":[`)
+		for cmd, idx in cfg.command {
+			if idx > 0 do strings.write_string(&builder, `,`)
+			strings.write_string(&builder, `"`)
+			json_write_string(&builder, cmd)
+			strings.write_string(&builder, `"`)
+		}
+		strings.write_string(&builder, `],"tiers":{`)
+		strings.write_string(&builder, `"cheap":"`)
+		json_write_string(&builder, cfg.models.cheap)
+		strings.write_string(&builder, `","normal":"`)
+		json_write_string(&builder, cfg.models.normal)
+		strings.write_string(&builder, `","smart":"`)
+		json_write_string(&builder, cfg.models.smart)
+		strings.write_string(&builder, `"}}`)
 	}
+	
+	// Fallback if empty
+	if first && len(server_agent_providers) > 0 {
+		for p, idx in server_agent_providers {
+			if idx > 0 do strings.write_string(&builder, `,`)
+			fmt.sbprintf(&builder, `{"name":"%s","command":["%s"],"tiers":{"cheap":"","normal":"","smart":""}}`, p, p)
+		}
+	}
+	
 	strings.write_string(&builder, `]}`)
 	write_response(client, 200, "OK", strings.to_string(builder))
 }
@@ -510,10 +537,27 @@ handle_agents_test_connectivity :: proc(client: net.TCP_Socket, body: string) {
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"results":[`)
 	
+	target_providers_str := extract_json_string(body, "providers", "")
+	
 	first := true
+	
+	// Helper to check if a provider should be tested
+	should_test := proc(name: string, filter: string) -> bool {
+		if filter == "" do return true
+		
+		// Simple comma-separated substring check
+		parts := strings.split(filter, ",")
+		defer delete(parts)
+		for part in parts {
+			if strings.trim_space(part) == name do return true
+		}
+		return false
+	}
 	
 	if len(server_config.wrapper.agent_commands) > 0 {
 		for cmd in server_config.wrapper.agent_commands {
+			if !should_test(cmd.name, target_providers_str) do continue
+			
 			if !first do strings.write_string(&b, ",")
 			first = false
 			
@@ -523,9 +567,11 @@ handle_agents_test_connectivity :: proc(client: net.TCP_Socket, body: string) {
 	}
 	
 	if len(server_config.wrapper.command) > 0 {
-		if !first do strings.write_string(&b, ",")
-		success, err_msg := test_single_agent_command("default", server_config.wrapper.command)
-		fmt.sbprintf(&b, `{"name":"default","ok":%t,"message":"%s"}`, success, err_msg)
+		if should_test("default", target_providers_str) {
+			if !first do strings.write_string(&b, ",")
+			success, err_msg := test_single_agent_command("default", server_config.wrapper.command)
+			fmt.sbprintf(&b, `{"name":"default","ok":%t,"message":"%s"}`, success, err_msg)
+		}
 	}
 	
 	strings.write_string(&b, `]}`)
