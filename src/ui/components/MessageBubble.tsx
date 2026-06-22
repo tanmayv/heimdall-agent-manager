@@ -389,7 +389,7 @@ function MessageBubble({ message }: { message: any }) {
                     key={idx}
                     type="button"
                     onClick={() => setAnswers(prev => ({ ...prev, [currentQuestionIndex]: option }))}
-                    className={`w-full text-left text-xs px-4 py-2.5 rounded-lg border transition-all font-medium ${
+                    className={`w-full text-left text-xs px-4 py-2.5 rounded-lg border transition-colors font-medium ${
                       isSelected
                         ? 'bg-[var(--fd-accent-blue)]/10 text-[var(--fd-accent-blue)] border-[var(--fd-accent-blue)]/40 shadow-sm'
                         : 'bg-[#1b1b1b] text-white border-[#222] hover:bg-[#222] hover:border-[#333]'
@@ -406,7 +406,7 @@ function MessageBubble({ message }: { message: any }) {
                 <button
                   type="button"
                   onClick={() => setCurrentQuestionIndex(prev => prev - 1)}
-                  className="text-xs text-[#999] hover:text-white transition-all px-3 py-1.5 rounded-md hover:bg-[#222]"
+                  className="text-xs text-[#999] hover:text-white transition-colors px-3 py-1.5 rounded-md hover:bg-[#222]"
                 >
                   Back
                 </button>
@@ -420,7 +420,7 @@ function MessageBubble({ message }: { message: any }) {
                     type="button"
                     disabled={!hasSelection}
                     onClick={handleMultiSubmit}
-                    className={`framer-pill-primary px-4 py-1.5 text-xs font-semibold shadow-sm transition-all ${
+                    className={`framer-pill-primary px-4 py-1.5 text-xs font-semibold shadow-sm transition-[transform,colors] duration-200 ${
                       hasSelection ? 'opacity-100 hover:scale-102' : 'opacity-40 cursor-not-allowed'
                     }`}
                   >
@@ -431,7 +431,7 @@ function MessageBubble({ message }: { message: any }) {
                     type="button"
                     disabled={!hasSelection}
                     onClick={() => setCurrentQuestionIndex(prev => prev + 1)}
-                    className={`framer-pill-primary px-4 py-1.5 text-xs font-semibold shadow-sm transition-all ${
+                    className={`framer-pill-primary px-4 py-1.5 text-xs font-semibold shadow-sm transition-[transform,colors] duration-200 ${
                       hasSelection ? 'opacity-100 hover:scale-102' : 'opacity-40 cursor-not-allowed'
                     }`}
                   >
@@ -449,7 +449,7 @@ function MessageBubble({ message }: { message: any }) {
   return (
     <div className={`animate-bubble-pop flex w-full ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
-        className={`group max-w-[88%] sm:max-w-[86%] md:max-w-[82%] rounded-[var(--fd-radius-xxl)] px-4 py-3 pr-11 transition-all duration-300 hover:-translate-y-0.5 hover:scale-[1.01] border relative overflow-hidden before:content-[''] before:absolute before:top-3 before:w-0 before:h-0 before:border-t-[8px] before:border-t-transparent before:border-b-[8px] before:border-b-transparent ${
+        className={`group max-w-[88%] sm:max-w-[86%] md:max-w-[82%] rounded-[var(--fd-radius-xxl)] px-4 py-3 pr-11 transition-[transform,colors] duration-300 hover:-translate-y-0.5 hover:scale-[1.01] border relative overflow-hidden before:content-[''] before:absolute before:top-3 before:w-0 before:h-0 before:border-t-[8px] before:border-t-transparent before:border-b-[8px] before:border-b-transparent ${
           isUser
             ? (message.error
               ? 'border-red-500 bg-red-950/20 text-red-200 before:right-[-12px] before:border-l-[12px] before:border-l-red-950/20'
@@ -485,7 +485,7 @@ function MessageBubble({ message }: { message: any }) {
                     type="button"
                     disabled={selectedAnswer !== null}
                     onClick={() => handleAnswerClick(answer)}
-                    className={`text-[11px] sm:text-xs px-3.5 py-1.5 rounded-full transition-all font-semibold shadow-sm border ${
+                    className={`text-[11px] sm:text-xs px-3.5 py-1.5 rounded-full transition-[transform,colors] duration-150 font-semibold shadow-sm border ${
                       isChosen
                         ? 'bg-[var(--fd-accent-blue)] text-black border-[var(--fd-accent-blue)] scale-98'
                         : selectedAnswer !== null
@@ -512,4 +512,4 @@ function MessageBubble({ message }: { message: any }) {
     </div>
   );
 }
-export default MessageBubble;
+export default memo(MessageBubble);

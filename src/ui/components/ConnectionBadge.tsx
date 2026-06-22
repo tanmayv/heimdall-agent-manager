@@ -15,7 +15,7 @@ export default function ConnectionBadge({ session }) {
       <div className="relative flex items-center justify-between gap-3">
         <span className="framer-topline">Daemon</span>
         <span
-          className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-all duration-500 ${
+          className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors duration-500 ${
             toneByStatus[session.status] ?? toneByStatus.idle
           }`}
         >

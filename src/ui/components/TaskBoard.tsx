@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, memo } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import {
   addCommentToSelectedTask,
@@ -77,6 +77,66 @@ function isTerminalTaskStatus(status: string) {
 function StatusPill({ status }: { status: string }) {
   return <span className={`rounded-full border px-2 py-1 text-[11px] font-medium ${statusTone(status)}`}>{status || 'unknown'}</span>;
 }
+
+interface ChainCardProps {
+  chain: any;
+  chainId: string;
+  bucket: string;
+  taskCount: number;
+  handleDragStart: (kind: 'task' | 'chain', id: string, bucket: string) => void;
+  setDraggedItem: (item: any) => void;
+  openChain: (chainId: string) => void;
+}
+
+const ChainCard = memo(function ChainCard({ chain, chainId, bucket, taskCount, handleDragStart, setDraggedItem, openChain }: ChainCardProps) {
+  return (
+    <button
+      type="button"
+      data-debug-id={`chain-card-${chainId}`}
+      draggable
+      onDragStart={() => handleDragStart('chain', chainId, bucket)}
+      onDragEnd={() => setDraggedItem(null)}
+      onClick={() => openChain(chainId)}
+      className="framer-card w-full cursor-grab p-3 text-left transition-colors hover:border-[var(--fd-accent-blue)]/50 active:cursor-grabbing"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <p className="line-clamp-2 text-sm font-semibold text-white">{chain.title || chain.chainId}</p>
+        <StatusPill status={chain.status} />
+      </div>
+      <p className="framer-subtext mt-2 break-all text-xs">{chain.chainId}</p>
+      <p className="framer-subtext mt-2 text-xs">{taskCount} tasks</p>
+    </button>
+  );
+});
+
+interface TaskCardProps {
+  task: any;
+  taskId: string;
+  bucket: string;
+  handleDragStart: (kind: 'task' | 'chain', id: string, bucket: string) => void;
+  setDraggedItem: (item: any) => void;
+  openTask: (taskId: string) => void;
+}
+
+const TaskCard = memo(function TaskCard({ task, taskId, bucket, handleDragStart, setDraggedItem, openTask }: TaskCardProps) {
+  return (
+    <button
+      type="button"
+      data-debug-id={`task-card-${taskId}`}
+      draggable
+      onDragStart={() => handleDragStart('task', taskId, bucket)}
+      onDragEnd={() => setDraggedItem(null)}
+      onClick={() => openTask(taskId)}
+      className="framer-card w-full cursor-grab p-3 text-left transition-colors hover:border-[var(--fd-accent-blue)]/50 active:cursor-grabbing"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <p className="line-clamp-2 text-sm font-semibold text-white">{task?.title || taskId}</p>
+        <StatusPill status={task?.status} />
+      </div>
+      <p className="framer-subtext mt-2 break-all text-xs">{taskId}</p>
+    </button>
+  );
+});
 
 function Field({ label, value }: { label: string; value: string | number | boolean }) {
   return (
@@ -479,12 +539,18 @@ export default function TaskBoard({ session }) {
     chainIds.forEach((chainId) => {
       const chain = chainsById[chainId] ?? { chainId, title: chainId, status: 'planned' };
       const bucket = statusBucket(chain.status);
+      const taskCount = (chainTaskIds[chainId] ?? []).length;
       chainsByBucket[bucket].push(
-        <button key={chainId} type="button" data-debug-id={`chain-card-${chainId}`} draggable onDragStart={() => handleDragStart('chain', chainId, bucket)} onDragEnd={() => setDraggedItem(null)} onClick={() => openChain(chainId)} className="framer-card w-full cursor-grab p-3 text-left transition-all hover:border-[var(--fd-accent-blue)]/50 active:cursor-grabbing">
-          <div className="flex items-start justify-between gap-2"><p className="line-clamp-2 text-sm font-semibold text-white">{chain.title || chain.chainId}</p><StatusPill status={chain.status} /></div>
-          <p className="framer-subtext mt-2 break-all text-xs">{chain.chainId}</p>
-          <p className="framer-subtext mt-2 text-xs">{(chainTaskIds[chainId] ?? []).length} tasks</p>
-        </button>
+        <ChainCard
+          key={chainId}
+          chain={chain}
+          chainId={chainId}
+          bucket={bucket}
+          taskCount={taskCount}
+          handleDragStart={handleDragStart}
+          setDraggedItem={setDraggedItem}
+          openChain={openChain}
+        />
       );
     });
     return (
@@ -505,10 +571,15 @@ export default function TaskBoard({ session }) {
       const task = tasksById[taskId];
       const bucket = statusBucket(task?.status);
       tasksByBucket[bucket].push(
-        <button key={taskId} type="button" data-debug-id={`task-card-${taskId}`} draggable onDragStart={() => handleDragStart('task', taskId, bucket)} onDragEnd={() => setDraggedItem(null)} onClick={() => openTask(taskId)} className="framer-card w-full cursor-grab p-3 text-left transition-all hover:border-[var(--fd-accent-blue)]/50 active:cursor-grabbing">
-          <div className="flex items-start justify-between gap-2"><p className="line-clamp-2 text-sm font-semibold text-white">{task?.title || taskId}</p><StatusPill status={task?.status} /></div>
-          <p className="framer-subtext mt-2 break-all text-xs">{taskId}</p>
-        </button>
+        <TaskCard
+          key={taskId}
+          task={task}
+          taskId={taskId}
+          bucket={bucket}
+          handleDragStart={handleDragStart}
+          setDraggedItem={setDraggedItem}
+          openTask={openTask}
+        />
       );
     });
     return (

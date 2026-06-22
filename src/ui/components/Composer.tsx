@@ -43,7 +43,7 @@ export default function Composer({ selectedAgent, disabled, onSubmit, smartRepli
               key={idx}
               type="button"
               onClick={() => handleSmartReplyClick(reply)}
-              className="bg-[#181818] hover:bg-[var(--fd-accent-blue)] hover:text-black border border-[#2a2a2a] hover:border-[var(--fd-accent-blue)]/50 text-[#ccc] text-xs px-3.5 py-1.5 rounded-full transition-all active:scale-95 font-semibold shadow-sm"
+              className="bg-[#181818] hover:bg-[var(--fd-accent-blue)] hover:text-black border border-[#2a2a2a] hover:border-[var(--fd-accent-blue)]/50 text-[#ccc] text-xs px-3.5 py-1.5 rounded-full transition-[transform,colors] duration-150 active:scale-95 font-semibold shadow-sm"
             >
               {reply}
             </button>
@@ -52,7 +52,7 @@ export default function Composer({ selectedAgent, disabled, onSubmit, smartRepli
       )}
 
       <form className="w-full" onSubmit={handleSubmit}>
-        <div className="framer-card relative rounded-[var(--fd-radius-xxl)] p-2 transition-all duration-300 focus-within:border-[var(--fd-accent-blue)]/60 focus-within:shadow-[0_0_0_1px_var(--fd-accent-blue)]">
+        <div className="framer-card relative rounded-[var(--fd-radius-xxl)] p-2 transition-colors duration-300 focus-within:border-[var(--fd-accent-blue)]/60 focus-within:shadow-[0_0_0_1px_var(--fd-accent-blue)]">
           <label htmlFor="composer" className="sr-only">
             Message {selectedAgent?.label ?? 'agent'}
           </label>

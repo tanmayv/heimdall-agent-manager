@@ -5,7 +5,9 @@ import memoryReducer from './memorySlice';
 import projectReducer from './projectSlice';
 
 const actionLogger = (store: any) => (next: any) => (action: any) => {
-  console.log('[Redux Action]', action.type, action.payload);
+  if (import.meta.env.DEV) {
+    console.log('[Redux Action]', action.type, action.payload);
+  }
   return next(action);
 };
 

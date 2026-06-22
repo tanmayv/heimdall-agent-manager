@@ -22,7 +22,7 @@ export default function AuditCard({ chain }: { chain: any }) {
 
   return (
     <div
-      className={`framer-card rounded-[var(--fd-radius-xl)] border border-[#222] bg-[#111] p-4 transition-all duration-300 flex flex-col gap-3 shadow-md ${
+      className={`framer-card rounded-[var(--fd-radius-xl)] border border-[#222] bg-[#111] p-4 transition-colors duration-300 flex flex-col gap-3 shadow-md ${
         isExiting ? 'translate-x-[120%] opacity-0 pointer-events-none' : ''
       }`}
       style={{
@@ -83,7 +83,7 @@ export default function AuditCard({ chain }: { chain: any }) {
               type="button"
               disabled={loadingRating !== null}
               onClick={() => handleRate('bad')}
-              className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-[#3a1a1a] hover:border-[#833] text-[#c99] hover:text-[#fcc] hover:bg-[#2a0c0c]/40 text-xs font-semibold transition-all active:scale-95 disabled:opacity-40 disabled:pointer-events-none ${
+              className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-[#3a1a1a] hover:border-[#833] text-[#c99] hover:text-[#fcc] hover:bg-[#2a0c0c]/40 text-xs font-semibold transition-[transform,colors] duration-200 active:scale-95 disabled:opacity-40 disabled:pointer-events-none ${
                 loadingRating === 'bad' ? 'bg-[#2a0c0c] border-[#833]' : ''
               }`}
             >
@@ -103,7 +103,7 @@ export default function AuditCard({ chain }: { chain: any }) {
               type="button"
               disabled={loadingRating !== null}
               onClick={() => handleRate('good')}
-              className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-white hover:bg-[#e0e0e0] text-black text-xs font-bold transition-all active:scale-95 disabled:opacity-40 disabled:pointer-events-none ${
+              className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-white hover:bg-[#e0e0e0] text-black text-xs font-bold transition-[transform,colors] duration-200 active:scale-95 disabled:opacity-40 disabled:pointer-events-none ${
                 loadingRating === 'good' ? 'bg-[#bbb]' : ''
               }`}
             >

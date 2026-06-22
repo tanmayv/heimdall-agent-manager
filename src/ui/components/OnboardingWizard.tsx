@@ -164,7 +164,7 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
             {[1, 2, 3, 4, 5].map((idx) => (
               <div
                 key={idx}
-                className={`h-1.5 w-8 rounded-full transition-all duration-300 ${
+                className={`h-1.5 w-8 rounded-full transition-colors duration-300 ${
                   step === idx ? 'bg-[var(--fd-accent-blue)]' : idx < step ? 'bg-emerald-400' : 'bg-[var(--fd-surface-3)]'
                 }`}
               />

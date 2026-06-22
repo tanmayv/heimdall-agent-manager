@@ -293,7 +293,7 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
             <button
               type="button"
               onClick={handleTrigger}
-              className={`w-full py-2.5 rounded-xl font-bold text-sm transition-all duration-200 ${
+              className={`w-full py-2.5 rounded-xl font-bold text-sm transition-[transform,colors] duration-200 ${
                 canTrigger
                   ? 'bg-white text-black hover:bg-[#e0e0e0] active:scale-[0.98]'
                   : 'bg-[#111] border border-[#222] text-[#444] pointer-events-none'
@@ -306,7 +306,7 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
           {/* Active Audit Run Banner */}
           {activeAudit && (
             <div
-              className={`framer-card-xl p-5 border transition-all duration-300 ${
+              className={`framer-card-xl p-5 border transition-colors duration-300 ${
                 activeAudit.status === 'started'
                   ? 'border-amber-500/20 bg-amber-500/5'
                   : activeAudit.status === 'failed'
@@ -443,7 +443,7 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
                             return (
                               <div
                                 key={prop.proposalId}
-                                className="framer-card-xl p-4 flex flex-col justify-between gap-4 border border-[#222] hover:border-[#333] transition-all"
+                                className="framer-card-xl p-4 flex flex-col justify-between gap-4 border border-[#222] hover:border-[#333] transition-colors"
                               >
                                 <div>
                                   {/* Card Header */}
