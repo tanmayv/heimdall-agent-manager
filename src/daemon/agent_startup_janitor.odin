@@ -63,5 +63,6 @@ agent_startup_janitor_tick :: proc() {
 			}
 		}
 	}
+	audit_janitor_tick()
 	test_run_janitor_tick()
 }

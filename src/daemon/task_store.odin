@@ -118,6 +118,7 @@ Task_Chain_State :: struct {
 	archive_pending:               bool,
 	archived:                      bool,
 	evaluation:                    string,
+	last_audit_at_unix_ms:         i64,
 }
 
 task_events:            [TASK_MAX_EVENTS]Task_Event
@@ -445,4 +446,52 @@ task_event_kind_from_string :: proc(value: string) -> Task_Event_Kind {
 	case "Chain_Evaluated":       return .Chain_Evaluated
 	case:                         return .Task_Comment
 	}
+}
+
+task_store_recover_stuck_system_chains :: proc() {
+	now := router_now_unix_ms()
+	for i in 0..<task_chain_count {
+		chain := &task_chains[i]
+		if chain.project_id == "heimdall-system" && chain.status != "completed" && chain.status != "cancelled" {
+			fmt.printfln("task_store_recover_stuck_system_chains: found stuck system chain %s (status: %s). Cancelling.", chain.chain_id, chain.status)
+			
+			event := Task_Event{
+				kind                     = .Chain_Status_Changed,
+				chain_id                 = chain.chain_id,
+				status                   = "cancelled",
+				author_agent_instance_id = "daemon-recovery",
+			}
+			if task_store_append_event(event) {
+				chain.status = "cancelled"
+				chain.completed_at_unix_ms = now
+			}
+			
+			for j in 0..<task_state_count {
+				task := &task_states[j]
+				if task.chain_id == chain.chain_id && task.status != "approved" && task.status != "cancelled" {
+					fmt.printfln("task_store_recover_stuck_system_chains: cancelling stuck task %s in chain %s", task.task_id, chain.chain_id)
+					task_event := Task_Event{
+						kind                     = .Task_Status_Changed,
+						task_id                  = task.task_id,
+						chain_id                 = chain.chain_id,
+						status                   = "cancelled",
+						body                     = "Cancelled during daemon recovery sweep on boot.",
+						author_agent_instance_id = "daemon-recovery",
+					}
+					if task_store_append_event(task_event) {
+						task.status = "cancelled"
+						task.updated_at_unix_ms = now
+					}
+				}
+			}
+		}
+	}
+}
+
+task_store_update_chain_audit_ts :: proc(chain_id: string, ts: i64) -> bool {
+	idx := task_chain_index_of(chain_id)
+	if idx < 0 do return false
+	
+	task_chains[idx].last_audit_at_unix_ms = ts
+	return task_db_save_chain(task_chains[idx])
 }

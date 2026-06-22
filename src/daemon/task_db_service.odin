@@ -65,7 +65,8 @@ task_db_create_schema :: proc() -> bool {
 		completed_at_unix_ms INTEGER NOT NULL,
 		archive_pending INTEGER NOT NULL DEFAULT 0,
 		archived INTEGER NOT NULL DEFAULT 0,
-		evaluation TEXT NOT NULL DEFAULT 'unreviewed'
+		evaluation TEXT NOT NULL DEFAULT 'unreviewed',
+		last_audit_at_unix_ms INTEGER NOT NULL DEFAULT 0
 	);
 
 	CREATE TABLE IF NOT EXISTS task_comments (
@@ -124,6 +125,18 @@ task_db_create_schema :: proc() -> bool {
 		fmt.println("task_db_create_schema: successfully migrated task_chains table to include 'evaluation' column.")
 	}
 
+	// Safe schema migration: add 'last_audit_at_unix_ms' column to 'task_chains' if it doesn't exist
+	migrate_query_audit := "ALTER TABLE task_chains ADD COLUMN last_audit_at_unix_ms INTEGER NOT NULL DEFAULT 0;"
+	migrate_err_audit: cstring = nil
+	migrate_rc_audit := sqlite3_exec(task_db.db, cstring(raw_data(migrate_query_audit)), nil, nil, &migrate_err_audit)
+	if migrate_rc_audit != SQLITE_OK {
+		if migrate_err_audit != nil {
+			sqlite3_free(rawptr(migrate_err_audit))
+		}
+	} else {
+		fmt.println("task_db_create_schema: successfully migrated task_chains table to include 'last_audit_at_unix_ms' column.")
+	}
+
 	return true
 }
 
@@ -177,8 +190,8 @@ task_db_save_chain :: proc(chain: Task_Chain_State) -> bool {
 	stmt: sqlite3_stmt = nil
 	query := `INSERT OR REPLACE INTO task_chains (
 		chain_id, project_id, title, description, status, coordinator_agent_instance_id,
-		final_summary, created_at_unix_ms, completed_at_unix_ms, archive_pending, archived, evaluation
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		final_summary, created_at_unix_ms, completed_at_unix_ms, archive_pending, archived, evaluation, last_audit_at_unix_ms
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
@@ -199,6 +212,7 @@ task_db_save_chain :: proc(chain: Task_Chain_State) -> bool {
 	sqlite3_bind_int64(stmt, 10, 1 if chain.archive_pending else 0)
 	sqlite3_bind_int64(stmt, 11, 1 if chain.archived else 0)
 	task_db_bind_text(stmt, 12, chain.evaluation)
+	sqlite3_bind_int64(stmt, 13, chain.last_audit_at_unix_ms)
 
 	rc = sqlite3_step(stmt)
 	if rc != SQLITE_DONE {
@@ -300,7 +314,7 @@ task_db_load_all :: proc() -> bool {
 		stmt: sqlite3_stmt = nil
 		query := `SELECT 
 			chain_id, project_id, title, description, status, coordinator_agent_instance_id,
-			final_summary, created_at_unix_ms, completed_at_unix_ms, archive_pending, archived, evaluation
+			final_summary, created_at_unix_ms, completed_at_unix_ms, archive_pending, archived, evaluation, last_audit_at_unix_ms
 			FROM task_chains`
 		rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 		if rc != SQLITE_OK {
@@ -324,6 +338,7 @@ task_db_load_all :: proc() -> bool {
 			c.archive_pending = sqlite3_column_int64(stmt, 9) != 0
 			c.archived = sqlite3_column_int64(stmt, 10) != 0
 			c.evaluation = strings.clone_from_cstring(sqlite3_column_text(stmt, 11))
+			c.last_audit_at_unix_ms = sqlite3_column_int64(stmt, 12)
 			task_chain_count += 1
 		}
 	}

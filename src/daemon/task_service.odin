@@ -313,6 +313,7 @@ task_service_status_command :: proc(cmd: Task_Status_Command) -> Task_Service_Re
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append task status failed"}`}
 	}
 	task_notify_event(event)
+
 	task_recompute_promotions(cmd.author_agent_instance_id)
 	task_service_try_auto_complete_chain(cmd.chain_id)
 	if cmd.status == "review_ready" {

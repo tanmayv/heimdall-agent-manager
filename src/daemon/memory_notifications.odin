@@ -3,16 +3,81 @@ package main
 import "core:fmt"
 import "core:strings"
 import contracts "odin_test:contracts"
-import memp "odin_test:lib/memory_provider"
 
 memory_append_event :: proc(event: contracts.Memory_Event) -> contracts.Memory_Append_Response {
-	resp := memp.append_event(&memory_provider, event)
-	if resp.ok do memory_notify_event(event)
-	return resp
+	ev := event
+	now := router_now_unix_ms()
+	if ev.event_id == "" do ev.event_id = strings.clone(fmt.tprintf("memory_evt_%d", now))
+	if ev.created_unix_ms == 0 do ev.created_unix_ms = now
+	if ev.memory_id == "" do ev.memory_id = strings.clone(fmt.tprintf("mem_%d", ev.created_unix_ms))
+	if ev.proposal_id == "" && ev.kind == .Memory_Proposed do ev.proposal_id = strings.clone(fmt.tprintf("proposal_%d", ev.created_unix_ms))
+	if ev.version == 0 do ev.version = 1
+
+	// Save the event to database first
+	if !memory_db_save_event(ev) {
+		return contracts.Memory_Append_Response{ok = false, message = "save memory event failed", event_id = ev.event_id, memory_id = ev.memory_id, proposal_id = ev.proposal_id}
+	}
+
+	// Apply projection logic to update active 'memories' record
+	rec, found := memory_db_get_record(ev.memory_id)
+	if !found {
+		rec = contracts.Memory_Record{
+			memory_id = strings.clone(ev.memory_id),
+			proposal_id = strings.clone(ev.proposal_id),
+			status = .Pending,
+			version = ev.version,
+			created_unix_ms = ev.created_unix_ms,
+		}
+	}
+
+	#partial switch ev.kind {
+	case .Memory_Proposed:
+		rec.proposal_id = strings.clone(ev.proposal_id)
+		rec.subject_agent = strings.clone(ev.subject_agent)
+		rec.scope = strings.clone(ev.scope)
+		rec.type = ev.type
+		rec.title = strings.clone(ev.title)
+		rec.body = strings.clone(ev.body)
+		rec.status = .Pending
+		rec.reason = strings.clone(ev.reason)
+		rec.evidence = strings.clone(ev.evidence)
+		rec.metadata_json = strings.clone(ev.metadata_json)
+		rec.source_task_id = strings.clone(ev.source_task_id)
+		rec.version = ev.version
+		rec.updated_unix_ms = ev.created_unix_ms
+	case .Memory_Approved:
+		if rec.type == .Expertise {
+			memory_db_archive_active_expertise(rec.subject_agent, rec.scope, rec.memory_id, ev.created_unix_ms)
+		}
+		rec.status = .Active
+		rec.version += 1
+		rec.updated_unix_ms = ev.created_unix_ms
+	case .Memory_Rejected:
+		rec.status = .Rejected
+		rec.updated_unix_ms = ev.created_unix_ms
+	case .Memory_Archived:
+		rec.status = .Archived
+		rec.version += 1
+		rec.updated_unix_ms = ev.created_unix_ms
+	}
+
+	if !memory_db_save_record(rec) {
+		memory_record_free(rec)
+		return contracts.Memory_Append_Response{ok = false, message = "save memory record failed", event_id = ev.event_id, memory_id = ev.memory_id, proposal_id = ev.proposal_id}
+	}
+
+	memory_record_free(rec)
+
+	// Broadcast notifications
+	memory_notify_event(ev)
+
+	return contracts.Memory_Append_Response{ok = true, message = "appended", event_id = ev.event_id, memory_id = ev.memory_id, proposal_id = ev.proposal_id}
 }
 
 memory_notify_event :: proc(event: contracts.Memory_Event) -> bool {
 	rec, found := memory_find_record(event.memory_id, true)
+	if found do defer memory_record_free(rec)
+
 	payload := memory_notification_json(event, rec, found)
 	user_client_fanout_all_ws_text(payload)
 	sent := false

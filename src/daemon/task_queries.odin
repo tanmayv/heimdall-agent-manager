@@ -397,7 +397,23 @@ task_write_state_json :: proc(builder: ^strings.Builder, state: Task_State) {
 	strings.write_string(builder, `","created_at_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", state.created_at_unix_ms))
 	strings.write_string(builder, `,"updated_at_unix_ms":`);  strings.write_string(builder, fmt.tprintf("%d", state.updated_at_unix_ms))
 	strings.write_string(builder, `,"unresolved_comment_count":`); strings.write_string(builder, fmt.tprintf("%d", len(unresolved)))
-	strings.write_string(builder, `}`)
+	
+	// Serialize participants list
+	strings.write_string(builder, `,"participants":[`)
+	first_part := true
+	for i in 0..<task_participant_count {
+		p := task_participants[i]
+		if p.task_id == state.task_id {
+			if !first_part do strings.write_string(builder, `,`)
+			first_part = false
+			strings.write_string(builder, `{"agent_instance_id":"`)
+			json_write_string(builder, p.agent_instance_id)
+			strings.write_string(builder, `","role":"`)
+			json_write_string(builder, p.role)
+			strings.write_string(builder, `"}`)
+		}
+	}
+	strings.write_string(builder, `]}`)
 }
 
 task_existing_state_index :: proc(task_id, chain_id: string) -> (int, bool) {

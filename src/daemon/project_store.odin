@@ -26,6 +26,18 @@ project_store_init :: proc(data_dir: string) {
 	project_events_path = strings.clone(fmt.tprintf("%s/events.jsonl", project_store_dir))
 	_ = os.make_directory_all(project_store_dir)
 	project_store_replay()
+
+	// Ensure the default system project exists
+	if project_index("heimdall-system") < 0 {
+		event := Project_Event{
+			kind = .Project_Created,
+			project_id = "heimdall-system",
+			name = "Heimdall System",
+			description = "Internal system project for cognitive optimization, cognitive audits, and automated memory reviews.",
+			author = "system",
+		}
+		project_store_append_event(event)
+	}
 }
 
 project_store_append_event :: proc(event: Project_Event) -> bool {

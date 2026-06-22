@@ -463,3 +463,12 @@ export async function evaluateTaskChain({ daemonUrl, agentToken, clientInstanceI
     }
   });
 }
+
+export async function triggerMemoryAudit({ daemonUrl, clientToken, timeRange }: { daemonUrl: string; clientToken: string; timeRange: string }) {
+  const path = '/task-chains/audit';
+  return requestJson(joinUrl(daemonUrl, path), {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+    body: { time_range: timeRange }
+  });
+}

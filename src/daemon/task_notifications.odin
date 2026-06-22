@@ -11,6 +11,28 @@ task_notify_event :: proc(event: Task_Event) -> bool {
 		if status == "" do status = state.status
 		payload := task_notification_json(event, status)
 		user_client_fanout_all_ws_text(payload)
+		
+		// E2E Cognitive Memory Audit Hooks
+		if strings.has_prefix(event.chain_id, "chain-audit-") {
+			if status == "approved" {
+				audit_id := event.chain_id[len("chain-audit-"):]
+				memory_auditor_conclude_audit(audit_id, "completed", "")
+			} else if status == "review_ready" {
+				system_project_id := "heimdall-system"
+				author := event.author_agent_instance_id
+				if author == "" || author == "system" || author == "system-review-vote" || author == "system-auto-approve" {
+					author = "operator@local" // fallback to resolve preferences
+				}
+				reviewer_agent_id := memory_auditor_resolve_pref(author, "memory_reviewer_agent_id")
+				reviewer_model_tier := memory_auditor_resolve_pref(author, "memory_reviewer_model_tier")
+				reviewer_provider_profile := memory_auditor_resolve_pref(author, "memory_reviewer_provider_profile")
+				defer delete(reviewer_agent_id)
+				defer delete(reviewer_model_tier)
+				defer delete(reviewer_provider_profile)
+				
+				memory_auditor_start_agent(reviewer_agent_id, "memory_reviewer", reviewer_provider_profile, reviewer_model_tier, system_project_id)
+			}
+		}
 		if event.kind == .Task_Nudged {
 			return task_notify_recipient_except(event.agent_instance_id, payload, event.author_agent_instance_id)
 		}
@@ -91,15 +113,16 @@ task_notify_reviewer_rotation :: proc(reviewer: string) {
 		if !task_actor_has_role(state, reviewer, "lgtm_required") do continue
 		if task_reviewer_has_voted(state.task_id, reviewer) do continue
 		if task_reviewer_active_slot_blocker(reviewer, state.task_id) != "" do continue
-		payload := task_notification_json(Task_Event{
+		event := Task_Event{
 			kind              = .Task_Nudged,
 			task_id           = state.task_id,
 			chain_id          = state.chain_id,
 			status            = "review_ready",
 			agent_instance_id = reviewer,
 			body              = fmt.tprintf("You have a pending review on task %s", state.task_id),
-		}, "review_ready")
-		task_notify_recipient(reviewer, payload)
+		}
+		task_store_append_event(event)
+		task_notify_event(event)
 		return
 	}
 }

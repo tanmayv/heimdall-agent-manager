@@ -5,6 +5,7 @@ import ChatPane from './ChatPane';
 import SettingsPage from './SettingsPage';
 import TaskBoard from './TaskBoard';
 import MemoryBoard from './MemoryBoard';
+import MemoryAuditBoard from './MemoryAuditBoard';
 import StartAgentPage from './StartAgentPage';
 import ProjectsPage from './ProjectsPage';
 import AgentsPage from './AgentsPage';
@@ -29,7 +30,7 @@ import {
   stopAgentInstance,
 } from '../store/chatSlice';
 import { refreshTaskBoard, taskEventReceived, updateTaskStateDirectly, fetchUnreviewedChains } from '../store/taskSlice';
-import { memoryEventReceived, refreshMemory } from '../store/memorySlice';
+import { memoryEventReceived, refreshMemory, auditStartedReceived, auditEndedReceived } from '../store/memorySlice';
 import { refreshProjects } from '../store/projectSlice';
 import * as daemonApi from '../api/daemonApi';
 import AuditSidebar from './AuditSidebar';
@@ -43,7 +44,7 @@ export default function App() {
   const { projectsById } = useSelector((state: any) => state.projects);
   const unreviewedChains = useSelector((state: any) => state.tasks.unreviewedChains || EMPTY_ARRAY);
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? null;
-  const [view, setView] = useState<'chat' | 'settings' | 'tasks' | 'memory' | 'projects' | 'agents' | 'startAgent'>('chat');
+  const [view, setView] = useState<'chat' | 'settings' | 'tasks' | 'memory' | 'memoryAudit' | 'projects' | 'agents' | 'startAgent'>('chat');
   const [isAuditOpen, setIsAuditOpen] = useState(false);
   const selectedAgentRef = useRef(selectedAgentId);
   const sessionRef = useRef(session);
@@ -133,6 +134,15 @@ export default function App() {
         }
         if (payload?.type === 'memory_event') {
           dispatch(memoryEventReceived(payload));
+          dispatch(refreshMemory());
+          return;
+        }
+        if (payload?.type === 'audit_start') {
+          dispatch(auditStartedReceived(payload));
+          return;
+        }
+        if (payload?.type === 'audit_end') {
+          dispatch(auditEndedReceived(payload));
           dispatch(refreshMemory());
           return;
         }
@@ -243,6 +253,11 @@ export default function App() {
     dispatch(refreshMemory());
   }, [dispatch]);
 
+  const handleOpenMemoryAudit = useCallback(() => {
+    setView('memoryAudit');
+    dispatch(refreshMemory());
+  }, [dispatch]);
+
   const handleOpenProjects = useCallback(() => {
     setView('projects');
     dispatch(refreshProjects());
@@ -280,6 +295,7 @@ export default function App() {
           onOpenChat={handleOpenChat}
           onOpenTasks={handleOpenTasks}
           onOpenMemory={handleOpenMemory}
+          onOpenMemoryAudit={handleOpenMemoryAudit}
           onOpenProjects={handleOpenProjects}
           onOpenAgents={handleOpenAgents}
           onOpenStartAgent={handleOpenStartAgent}
@@ -293,6 +309,8 @@ export default function App() {
           <TaskBoard session={session} />
         ) : view === 'memory' ? (
           <MemoryBoard session={session} agents={agents} />
+        ) : view === 'memoryAudit' ? (
+          <MemoryAuditBoard session={session} agents={agents} />
         ) : view === 'projects' ? (
           <ProjectsPage session={session} />
         ) : view === 'agents' ? (

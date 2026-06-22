@@ -17,6 +17,13 @@ PREFERENCE_KEYS := []string{
 	"msg_user_chat",
 	"msg_token_refreshed",
 	"msg_stop_requested",
+	"memory_auditor_enabled",
+	"memory_auditor_agent_id",
+	"memory_auditor_model_tier",
+	"memory_auditor_provider_profile",
+	"memory_reviewer_agent_id",
+	"memory_reviewer_model_tier",
+	"memory_reviewer_provider_profile",
 }
 
 get_preference_default :: proc(key: string, agent_class := "") -> (value: string, interrupt: bool) {
@@ -117,6 +124,27 @@ get_preference_default :: proc(key: string, agent_class := "") -> (value: string
 			return server_config.wrapper.stop_message, true
 		}
 		return "SYSTEM: Stop requested. You have {time} seconds to save your work.", true
+
+	case "memory_auditor_enabled":
+		return "true", false
+
+	case "memory_auditor_agent_id":
+		return "memory-auditor@default", false
+
+	case "memory_auditor_model_tier":
+		return "smart", false
+
+	case "memory_auditor_provider_profile":
+		return "pi", false
+
+	case "memory_reviewer_agent_id":
+		return "memory-reviewer@heimdall", false
+
+	case "memory_reviewer_model_tier":
+		return "smart", false
+
+	case "memory_reviewer_provider_profile":
+		return "pi", false
 	}
 	return "", false
 }

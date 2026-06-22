@@ -36,10 +36,10 @@ user_client_register :: proc(user_id, client_instance_id, requested_token: strin
 			// No stored token found, generate new one
 			token = generate_client_token()
 		}
-		// Store the token (insert or replace)
-		if !auth_db_store_token(token, "user", user_id, now_unix_ms()) {
-			fmt.println("WARNING: failed to store user token for", user_id)
-		}
+	}
+	// Always store the token (insert or replace) so it persists in the DB and is queryable
+	if !auth_db_store_token(token, "user", user_id, now_unix_ms()) {
+		fmt.println("WARNING: failed to store user token for", user_id)
 	}
 	if idx := user_client_find(client_instance_id); idx >= 0 {
 		if user_clients[idx].user_id != user_id do return User_Client_Record{}, false, "client_instance_id belongs to another user"

@@ -29,6 +29,7 @@ interface AgentSidebarProps {
   onOpenChat: () => void;
   onOpenTasks: () => void;
   onOpenMemory: () => void;
+  onOpenMemoryAudit: () => void;
   onOpenProjects: () => void;
   onOpenAgents: () => void;
   onOpenStartAgent: () => void;
@@ -50,6 +51,7 @@ const AgentSidebar = memo(function AgentSidebar({
   onOpenChat,
   onOpenTasks,
   onOpenMemory,
+  onOpenMemoryAudit,
   onOpenProjects,
   onOpenAgents,
   onOpenStartAgent,
@@ -124,6 +126,14 @@ const AgentSidebar = memo(function AgentSidebar({
         </button>
         <button
           type="button"
+          data-debug-id="nav-memory-audit"
+          onClick={onOpenMemoryAudit}
+          className={`${activeView === 'memoryAudit' ? 'framer-pill bg-white' : 'framer-pill-secondary'} px-3 py-2 text-xs`}
+        >
+          Memory Audit
+        </button>
+        <button
+          type="button"
           data-debug-id="nav-projects"
           onClick={onOpenProjects}
           className={`${activeView === 'projects' ? 'framer-pill bg-white' : 'framer-pill-secondary'} px-3 py-2 text-xs`}
@@ -142,7 +152,7 @@ const AgentSidebar = memo(function AgentSidebar({
           type="button"
           data-debug-id="nav-settings"
           onClick={onOpenSettings}
-          className={`${activeView === 'settings' ? 'framer-pill bg-white' : 'framer-pill-secondary'} px-3 py-2 text-xs`}
+          className={`${activeView === 'settings' ? 'framer-pill bg-white' : 'framer-pill-secondary'} px-3 py-2 text-xs col-span-2`}
         >
           Settings
         </button>

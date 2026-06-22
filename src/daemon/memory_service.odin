@@ -3,7 +3,6 @@ package main
 import "core:fmt"
 import "core:strings"
 import contracts "odin_test:contracts"
-import memp "odin_test:lib/memory_provider"
 
 Memory_Service_Result :: struct {
 	ok: bool,
@@ -38,6 +37,7 @@ memory_service_propose :: proc(action, body, author: string) -> Memory_Service_R
 		found: bool
 		target, found = memory_find_record(target_id, true)
 		if !found do return memory_error(404, "memory not found")
+		defer memory_record_free(target)
 		if target.version != expected_version do return memory_error(409, "memory version mismatch")
 		if action != "archive" {
 			if action == "rollback" {
@@ -80,6 +80,7 @@ memory_service_decide :: proc(decision, body, author: string) -> Memory_Service_
 	if proposal_id == "" do return memory_error(400, "proposal_id required")
 	proposal, found := memory_find_proposal(proposal_id)
 	if !found do return memory_error(404, "proposal not found")
+	defer memory_record_free(proposal)
 	if proposal.status != .Pending do return memory_error(400, "proposal is not pending")
 	if decision == "reject" {
 		resp := memory_append_event(contracts.Memory_Event{kind = .Memory_Rejected, memory_id = proposal.memory_id, proposal_id = proposal_id, author = author})
@@ -113,12 +114,18 @@ memory_service_list_json :: proc(body: string, calling_agent_id: string = "") ->
 	if !status_ok && !include_all do return `{"ok":false,"message":"invalid memory status"}`
 	explicit_subject := extract_json_string(body, "subject_agent", extract_json_string(body, "agent", ""))
 	subject := explicit_subject if explicit_subject != "" else calling_agent_id
-	resp := memp.list_records(&memory_provider, contracts.Memory_List_Request{subject_agent = subject, scope = extract_json_string(body, "scope", ""), status = status, include_all_statuses = include_all})
+	
+	records := memory_db_list_records(subject, extract_json_string(body, "scope", ""), status, include_all)
+	defer {
+		for rec in records do memory_record_free(rec)
+		delete(records)
+	}
+
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"ok":true,"records":[`)
-	for i in 0..<len(resp.records) {
+	for i in 0..<len(records) {
 		if i > 0 do strings.write_string(&builder, `,`)
-		memory_write_record_json(&builder, resp.records[i])
+		memory_write_record_json(&builder, records[i])
 	}
 	strings.write_string(&builder, `]}`)
 	return strings.to_string(builder)
@@ -128,27 +135,32 @@ memory_service_show_json :: proc(body: string) -> string {
 	memory_id := extract_json_string(body, "memory_id", "")
 	rec, found := memory_find_record(memory_id, true)
 	if !found do return `{"ok":false,"message":"memory not found"}`
+	defer memory_record_free(rec)
 	builder := strings.builder_make(); strings.write_string(&builder, `{"ok":true,"record":`); memory_write_record_json(&builder, rec); strings.write_string(&builder, `}`); return strings.to_string(builder)
 }
 
 memory_service_history_json :: proc(body: string) -> string {
 	memory_id := extract_json_string(body, "memory_id", "")
-	resp := memp.history(&memory_provider, contracts.Memory_History_Request{memory_id = memory_id})
+	events := memory_db_history(memory_id)
+	defer {
+		for ev in events do memory_event_free(ev)
+		delete(events)
+	}
 	builder := strings.builder_make(); strings.write_string(&builder, `{"ok":true,"events":[`)
-	for i in 0..<len(resp.events) { if i > 0 do strings.write_string(&builder, `,`); memory_write_event_json(&builder, resp.events[i]) }
+	for i in 0..<len(events) { if i > 0 do strings.write_string(&builder, `,`); memory_write_event_json(&builder, events[i]) }
 	strings.write_string(&builder, `]}`); return strings.to_string(builder)
 }
 
 memory_find_record :: proc(memory_id: string, include_all: bool) -> (contracts.Memory_Record, bool) {
-	resp := memp.list_records(&memory_provider, contracts.Memory_List_Request{include_all_statuses = true})
-	for rec in resp.records { if rec.memory_id == memory_id { if include_all || rec.status == .Active do return rec, true } }
-	return contracts.Memory_Record{}, false
+	rec, found := memory_db_get_record(memory_id)
+	if !found do return {}, false
+	if include_all || rec.status == .Active do return rec, true
+	memory_record_free(rec)
+	return {}, false
 }
 
 memory_find_proposal :: proc(proposal_id: string) -> (contracts.Memory_Record, bool) {
-	resp := memp.list_records(&memory_provider, contracts.Memory_List_Request{include_all_statuses = true})
-	for rec in resp.records { if rec.proposal_id == proposal_id do return rec, true }
-	return contracts.Memory_Record{}, false
+	return memory_db_get_proposal(proposal_id)
 }
 
 memory_error :: proc(status: int, message: string) -> Memory_Service_Result {

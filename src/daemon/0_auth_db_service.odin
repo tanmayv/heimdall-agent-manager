@@ -76,9 +76,9 @@ auth_db_store_token :: proc(token, identity_type, identity_id: string, now_unix_
 	}
 	defer sqlite3_finalize(stmt)
 
-	sqlite3_bind_text(stmt, 1, cstring(raw_data(token)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 2, cstring(raw_data(identity_type)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 3, cstring(raw_data(identity_id)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 1, cstring(raw_data(token)), i32(len(token)), SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 2, cstring(raw_data(identity_type)), i32(len(identity_type)), SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 3, cstring(raw_data(identity_id)), i32(len(identity_id)), SQLITE_TRANSIENT)
 	sqlite3_bind_int64(stmt, 4, now_unix_ms)
 	sqlite3_bind_int64(stmt, 5, now_unix_ms)
 
@@ -104,8 +104,8 @@ auth_db_get_token :: proc(identity_type, identity_id: string) -> string {
 	}
 	defer sqlite3_finalize(stmt)
 
-	sqlite3_bind_text(stmt, 1, cstring(raw_data(identity_type)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 2, cstring(raw_data(identity_id)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 1, cstring(raw_data(identity_type)), i32(len(identity_type)), SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 2, cstring(raw_data(identity_id)), i32(len(identity_id)), SQLITE_TRANSIENT)
 
 	if sqlite3_step(stmt) == SQLITE_ROW {
 		token := strings.clone_from_cstring(sqlite3_column_text(stmt, 0))
@@ -130,7 +130,7 @@ auth_db_update_last_seen :: proc(token: string, now_unix_ms: i64) -> bool {
 	defer sqlite3_finalize(stmt)
 
 	sqlite3_bind_int64(stmt, 1, now_unix_ms)
-	sqlite3_bind_text(stmt, 2, cstring(raw_data(token)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 2, cstring(raw_data(token)), i32(len(token)), SQLITE_TRANSIENT)
 
 	rc = sqlite3_step(stmt)
 	if rc != SQLITE_DONE {
@@ -153,7 +153,7 @@ auth_db_get_identity :: proc(token: string) -> (identity_type: string, identity_
 	}
 	defer sqlite3_finalize(stmt)
 
-	sqlite3_bind_text(stmt, 1, cstring(raw_data(token)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 1, cstring(raw_data(token)), i32(len(token)), SQLITE_TRANSIENT)
 
 	if sqlite3_step(stmt) == SQLITE_ROW {
 		itype := strings.clone_from_cstring(sqlite3_column_text(stmt, 0))

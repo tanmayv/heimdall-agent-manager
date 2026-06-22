@@ -8,7 +8,6 @@ import "core:time"
 import "core:sys/posix"
 import cfg_lib "odin_test:lib/config"
 import mp "odin_test:lib/message_provider"
-import memp "odin_test:lib/memory_provider"
 
 server_bind_host: string
 server_port: int
@@ -18,7 +17,6 @@ server_wrapper_bin: string
 server_agent_providers: [dynamic]string
 server_agent_cmd_configs: [dynamic]cfg_lib.Agent_Command_Config
 message_provider: mp.Message_Provider
-memory_provider: memp.Memory_Provider
 server_config: cfg_lib.Config
 
 run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
@@ -61,9 +59,14 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 	registry_init(); time_step("registry_init", &step)
 	user_client_registry_init(); time_step("user_client_registry_init", &step)
 	message_provider = mp.new_memory_provider(); time_step("message_provider", &step)
-	memory_provider = memp.new_local_provider(server_data_dir); time_step("memory_provider", &step)
+	if !memory_db_init(server_data_dir) {
+		fmt.println("WARNING: memory_db_init failed, memories will not persist across daemon restarts")
+	}
+	time_step("memory_db_init", &step)
 	central_hub_init(); time_step("central_hub_init", &step)
-	task_store_init(server_data_dir); time_step("task_store_init", &step)
+	task_store_init(server_data_dir)
+	task_store_recover_stuck_system_chains()
+	time_step("task_store_init", &step)
 	project_store_init(server_data_dir); time_step("project_store_init", &step)
 	agent_store_init(server_data_dir); time_step("agent_store_init", &step)
 	chat_store_init(server_data_dir); time_step("chat_store_init", &step)
@@ -76,6 +79,11 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 		fmt.println("WARNING: user_pref_db_init failed, preferences will not persist across daemon restarts")
 	}
 	time_step("user_pref_db_init", &step)
+
+	if !audit_db_init(server_data_dir) {
+		fmt.println("WARNING: audit_db_init failed, cognitive audits will not persist across daemon restarts")
+	}
+	time_step("audit_db_init", &step)
 	router_adapter_init(cfg.daemon); time_step("router_adapter_init", &step)
 	hub_sync_init(); time_step("hub_sync_init", &step)
 	message_queue_init(); time_step("message_queue_init", &step)
