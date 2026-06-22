@@ -51,6 +51,9 @@ handle_register :: proc(client: net.TCP_Socket, body: string) {
 	}
 
 	user_id := server_config.daemon.user_id
+	if active_user := user_client_get_first_registered_user_id(); active_user != "" {
+		user_id = active_user
+	}
 	prefs_json := serialize_all_preferences_json(user_id, agent_class)
 	defer delete(prefs_json)
 

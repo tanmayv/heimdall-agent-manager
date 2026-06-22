@@ -249,3 +249,10 @@ user_client_error_json :: proc(message: string) -> string {
 	strings.write_string(&builder, `"}`)
 	return strings.to_string(builder)
 }
+
+user_client_get_first_registered_user_id :: proc() -> string {
+	if user_client_count > 0 {
+		return user_clients[0].user_id
+	}
+	return ""
+}
