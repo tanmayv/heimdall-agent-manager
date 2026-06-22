@@ -1859,6 +1859,7 @@ extract_json_object :: proc(body, key: string) -> string {
 		}
 		i += 1
 	}
+	return ""
 }
 
 template_live_message :: proc(template_str: string, pending_count: int, from_agent_id, task_id, status, changed_by, body, memory_id, event, subject_agent, user_id, new_token, daemon_url: string, time_val: int) -> string {
