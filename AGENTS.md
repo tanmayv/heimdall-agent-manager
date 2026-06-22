@@ -451,3 +451,16 @@ When adding any new interactive element to the UI:
 - Wrapper exits if the agent tmux pane disappears.
 - Wrapper attempts re-registration and WS reconnect after repeated heartbeat failures, allowing it to survive daemon restarts.
 - When creating a new tmux session, wrapper creates the agent window directly and avoids an extra default shell window.
+
+## Task Chain Best Practices
+
+When coordinating a task chain, the designated Coordinator Agent must adhere to the following workflow upon task completion:
+
+1. **Verify All Tasks:** Review the outputs of all individual tasks in the chain to ensure they are fully complete, correct, and work together.
+2. **Submit Verifiable Evidence:** When moving the task chain to `completed` (using the `ham-ctl task-chains status --status completed --final-summary "..."` command), the coordinator must provide a comprehensive, high-fidelity final summary. This summary MUST include:
+   - **Verifiable Results/Evidence:** Specific outputs, behavior descriptions, or test logs proving correctness.
+   - **Git Commits:** The hashes of all commits created or reviewed as part of the task chain.
+   - **File Paths:** Precise relative or absolute paths of the files modified or created.
+   - **Result Summary:** A concise overview of the accomplishments.
+3. **Propose Quality Rating:** Propose a quality rating status of `good` or `bad` for the task chain.
+4. **Reasoning:** Provide clear, objective engineering rationale explaining why the chain succeeded (`good`) or if there were critical defects or difficulties encountered (`bad`).

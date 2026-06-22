@@ -3,6 +3,19 @@ package main
 import "core:fmt"
 import "core:strings"
 
+TASK_CHAIN_BEST_PRACTICES :: `## Task Chain Best Practices
+
+When coordinating a task chain, you must adhere to the following workflow upon task completion:
+
+1. **Verify All Tasks:** Review the outputs of all individual tasks in this chain to ensure they are fully complete, correct, and work together.
+2. **Submit Verifiable Evidence:** When moving the task chain to 'completed' (using the 'ham-ctl task-chains status --status completed --final-summary "..."' command), you must provide a comprehensive, high-fidelity final summary. This summary MUST include:
+   - **Verifiable Results/Evidence:** Specific outputs, behavior descriptions, or test logs proving correctness.
+   - **Git Commits:** The hashes of all commits created or reviewed as part of this task chain.
+   - **File Paths:** Precise relative or absolute paths of the files modified or created.
+   - **Result Summary:** A concise overview of the accomplishments.
+3. **Propose Quality Rating:** Propose a quality rating status of 'good' or 'bad' for this task chain.
+4. **Reasoning:** Provide clear, objective engineering rationale explaining why the chain succeeded ('good') or if there were critical defects or difficulties encountered ('bad').`
+
 Task_Service_Result :: struct {
 	ok:          bool,
 	status_code: int,
@@ -85,6 +98,9 @@ task_service_create_task :: proc(cmd: Task_Create_Command) -> Task_Service_Resul
 task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Service_Result {
 	if cmd.title == "" {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"chain create requires title"}`}
+	}
+	if cmd.coordinator_agent_instance_id == "" {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"chain create requires coordinator_agent_instance_id"}`}
 	}
 	if cmd.project_id != "" {
 		if active := task_active_chain_for_project(cmd.project_id); active != "" {
@@ -298,6 +314,7 @@ task_service_status_command :: proc(cmd: Task_Status_Command) -> Task_Service_Re
 	}
 	task_notify_event(event)
 	task_recompute_promotions(cmd.author_agent_instance_id)
+	task_service_try_auto_complete_chain(cmd.chain_id)
 	if cmd.status == "review_ready" {
 		task_notify_all_lgtm_required(cmd.task_id, cmd.chain_id)
 	}
@@ -399,18 +416,41 @@ task_service_try_auto_complete_chain :: proc(chain_id: string) {
 	if chain_id == "" do return
 	chain_idx, found := task_existing_chain_index(chain_id)
 	if !found do return
-	if task_chains[chain_idx].status == "completed" || task_chains[chain_idx].status == "archived" do return
+	if task_chains[chain_idx].status == "reviewing" || task_chains[chain_idx].status == "completed" || task_chains[chain_idx].status == "archived" do return
 	if !task_all_chain_tasks_terminal(chain_id) do return
 	event := Task_Event{
-		kind                     = .Chain_Completed,
+		kind                     = .Chain_Status_Changed,
 		chain_id                 = chain_id,
-		status                   = "completed",
-		body                     = "system_auto:all_tasks_terminal",
+		status                   = "reviewing",
+		body                     = "system_auto:all_tasks_terminal_review_required",
 		author_agent_instance_id = "system-auto-complete",
 	}
 	if task_store_append_event(event) {
 		task_notify_event(event)
-		task_archive_chain_to_hub(chain_id)
+		task_service_ping_coordinator_for_chain_completion(chain_id)
+	}
+}
+
+task_service_ping_coordinator_for_chain_completion :: proc(chain_id: string) {
+	chain_idx, found := task_existing_chain_index(chain_id)
+	if !found do return
+	chain := task_chains[chain_idx]
+	if chain.coordinator_agent_instance_id == "" do return
+
+	message_body := fmt.tprintf(
+		"All tasks in your task chain '%s' (ID: %s) have been completed!\n\n" +
+		"As the designated coordinator, you must now review the results and move the task chain to 'completed' using the 'ham-ctl task-chains status --status completed --final-summary \"...\"' command.\n\n" +
+		"Your final summary must strictly comply with the Task Chain Best Practices below:\n\n%s",
+		chain.title,
+		chain.chain_id,
+		TASK_CHAIN_BEST_PRACTICES,
+	)
+
+	_, ok := chat_store_append_message("operator@local", chain.coordinator_agent_instance_id, "user_to_agent", message_body)
+	if !ok {
+		fmt.println("WARNING: Failed to append completion ping message to coordinator agent:", chain.coordinator_agent_instance_id)
+	} else {
+		fmt.println("INFO: Successfully pinged coordinator agent", chain.coordinator_agent_instance_id, "for chain completion of", chain_id)
 	}
 }
 

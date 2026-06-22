@@ -249,13 +249,13 @@ handle_task_chain_show :: proc(client: net.TCP_Socket, body: string) {
 }
 
 task_author_from_body :: proc(client: net.TCP_Socket, body: string) -> (string, bool) {
-	token  := extract_json_string(body, "agent_token", "")
-	author := registry_agent_instance_for_token(token)
-	if author == "" {
+	token := extract_json_string(body, "agent_token", "")
+	itype, iid := auth_db_get_identity(token)
+	if itype == "" || iid == "" {
 		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"invalid agent token"}`)
 		return "", false
 	}
-	return author, true
+	return iid, true
 }
 
 write_task_service_response :: proc(client: net.TCP_Socket, result: Task_Service_Result) {

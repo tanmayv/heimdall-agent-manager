@@ -111,7 +111,7 @@ export default function AgentSidebar({ agents, projectsById, selectedAgentId, se
           onClick={onToggleAudit}
           className="framer-pill-secondary px-3 py-2 text-xs relative flex items-center justify-center gap-1.5 border border-[#333] hover:border-[#555] col-span-2 mt-1"
         >
-          <span>📋 Task Chain Audit</span>
+          <span>Task Chain Audit</span>
           {auditBadgeCount > 0 && (
             <span className="bg-red-500 text-white text-[9px] font-extrabold px-1.5 py-0.5 rounded-full animate-pulse shadow-sm">
               {auditBadgeCount}
