@@ -57,35 +57,46 @@ Heartbeat_Snapshot :: struct {
 // registry_apply_heartbeat_snapshot updates only the runtime/session fields on
 // an existing registry entry. Returns true when any runtime field changed
 // (caller fans out agent.runtime_changed on true).
-registry_apply_heartbeat_snapshot :: proc(snap: Heartbeat_Snapshot) -> (changed: bool) {
+registry_apply_heartbeat_snapshot :: proc(snap: Heartbeat_Snapshot) -> (runtime_changed: bool, lifecycle_changed: bool) {
 	idx := registry_find_agent(snap.agent_instance_id)
-	if idx < 0 do return false
+	if idx < 0 do return false, false
 	a := &agents[idx]
 	a.connected = true
 	a.last_seen_unix_ms = now_unix_ms()
 	if snap.tmux_pane != "" && snap.tmux_pane != a.tmux_pane {
 		a.tmux_pane = strings.clone(snap.tmux_pane)
-		changed = true
+		runtime_changed = true
 	}
 	if snap.pid != 0 && snap.pid != a.pid {
 		a.pid = snap.pid
-		changed = true
+		runtime_changed = true
 	}
 	if snap.run_dir != "" && snap.run_dir != a.run_dir {
 		a.run_dir = strings.clone(snap.run_dir)
-		changed = true
+		runtime_changed = true
 	}
 	if snap.exec_state != "" && snap.exec_state != a.exec_state {
 		a.exec_state = strings.clone(snap.exec_state)
 		a.exec_state_since_unix_ms = snap.exec_state_since_unix_ms
 		if a.exec_state_since_unix_ms == 0 do a.exec_state_since_unix_ms = a.last_seen_unix_ms
-		changed = true
+		runtime_changed = true
 	}
 	if snap.blocked_reason != a.blocked_reason {
 		a.blocked_reason = strings.clone(snap.blocked_reason)
-		changed = true
+		runtime_changed = true
 	}
-	return changed
+
+	// Self-healing startup state promotion: if the agent is actively executing/idle,
+	// it has clearly finished starting up. Force startup_status to ready.
+	if a.startup_status == "starting" && (a.exec_state == "running" || a.exec_state == "idle" || a.exec_state == "blocked") {
+		a.startup_status = "ready"
+		a.startup_reason_code = "already_running"
+		a.startup_safe_diagnostic = "Agent recovered in active execution state from heartbeat"
+		a.startup_updated_unix_ms = a.last_seen_unix_ms
+		lifecycle_changed = true
+	}
+
+	return runtime_changed, lifecycle_changed
 }
 
 // registry_refresh_identity_cache mirrors a few identity/config fields into the

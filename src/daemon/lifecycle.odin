@@ -212,8 +212,10 @@ handle_heartbeat :: proc(client: net.TCP_Socket, body: string) {
 	}
 
 	was_live := registry_agent_live(snap.agent_instance_id)
-	runtime_changed := registry_apply_heartbeat_snapshot(snap)
-	if !was_live do agent_lifecycle_emit(snap.agent_instance_id, "connected", "heartbeat")
+	runtime_changed, lifecycle_changed := registry_apply_heartbeat_snapshot(snap)
+	if !was_live || lifecycle_changed {
+		agent_lifecycle_emit(snap.agent_instance_id, "connected", "heartbeat")
+	}
 	if runtime_changed do agent_runtime_emit(snap.agent_instance_id, "heartbeat")
 
 	resp := strings.builder_make()
