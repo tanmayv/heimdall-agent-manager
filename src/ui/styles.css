@@ -2,6 +2,12 @@
 @tailwind components;
 @tailwind utilities;
 
+*, *::before, *::after {
+  animation: none !important;
+  transition: none !important;
+  scroll-behavior: auto !important;
+}
+
 :root {
   color-scheme: dark;
   --fd-primary: #ffffff;

@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, memo, FormEvent } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { decideMemoryProposal, fetchMemoryDetail, proposeMemoryChange, refreshMemory, selectMemory, setMemoryFilters } from '../store/memorySlice';
 
@@ -39,7 +39,7 @@ export default function MemoryBoard({ session, agents = [] }: { session: any; ag
   const selected = selectedMemoryId ? recordsById[selectedMemoryId] : null;
   const history = selectedMemoryId ? historyById[selectedMemoryId] ?? [] : [];
   const [page, setPage] = useState<'list' | 'detail' | 'propose'>('list');
-  const [form, setForm] = useState(blankForm);
+  const [proposalFormValues, setProposalFormValues] = useState<any>(null);
   const [decisionReason, setDecisionReason] = useState('');
   const [mutationError, setMutationError] = useState('');
   const [mutating, setMutating] = useState(false);
@@ -53,9 +53,7 @@ export default function MemoryBoard({ session, agents = [] }: { session: any; ag
     if (selectedMemoryId) dispatch(fetchMemoryDetail(selectedMemoryId));
   }, [dispatch, selectedMemoryId]);
 
-  function updateForm(patch: any) {
-    setForm((current) => ({ ...current, ...patch }));
-  }
+  // Form update helper is deleted because form state is now local to MemoryProposalForm component
 
   function openDetail(memoryId: string) {
     dispatch(selectMemory(memoryId));
@@ -64,8 +62,7 @@ export default function MemoryBoard({ session, agents = [] }: { session: any; ag
 
   function openProposal(action: string, record: any = selected) {
     setMutationError('');
-    setForm({
-      ...blankForm,
+    setProposalFormValues({
       proposalAction: action,
       memoryId: action === 'new' ? '' : record?.memoryId || '',
       expectedVersion: action === 'new' ? '' : String(record?.version || ''),
@@ -93,29 +90,26 @@ export default function MemoryBoard({ session, agents = [] }: { session: any; ag
     }
   }
 
-  function submitProposal(event) {
-    event.preventDefault();
-    if (!canMutate || !form.reason.trim() || !form.evidence.trim()) return;
+  function handlePropose(formData: any) {
     runMutation(async () => {
       const payload: any = {
-        proposalAction: form.proposalAction,
-        memory_id: form.memoryId.trim(),
-        expected_version: Number(form.expectedVersion || selected?.version || 0),
-        subject_agent: form.subjectAgent.trim(),
-        scope: form.scope.trim() || 'global',
-        type: form.type,
-        title: form.title.trim(),
-        body: form.body,
-        reason: form.reason.trim(),
-        evidence: form.evidence.trim(),
-        source_task_id: form.sourceTaskId.trim(),
+        proposalAction: formData.proposalAction,
+        memory_id: formData.memoryId.trim(),
+        expected_version: Number(formData.expectedVersion || selected?.version || 0),
+        subject_agent: formData.subjectAgent.trim(),
+        scope: formData.scope.trim() || 'global',
+        type: formData.type,
+        title: formData.title.trim(),
+        body: formData.body,
+        reason: formData.reason.trim(),
+        evidence: formData.evidence.trim(),
+        source_task_id: formData.sourceTaskId.trim(),
       };
-      if (form.proposalAction === 'new') {
+      if (formData.proposalAction === 'new') {
         delete payload.memory_id;
         delete payload.expected_version;
       }
       await dispatch(proposeMemoryChange(payload)).unwrap();
-      setForm(blankForm);
       setPage('list');
     });
   }
@@ -185,23 +179,14 @@ export default function MemoryBoard({ session, agents = [] }: { session: any; ag
         ) : page === 'detail' ? (
           <MemoryDetail selected={selected} history={history} detailLoading={detailLoading} decisionReason={decisionReason} setDecisionReason={setDecisionReason} openProposal={openProposal} decide={decide} canMutate={canMutate} />
         ) : (
-          <form onSubmit={submitProposal} className="framer-card-xl mx-auto max-w-4xl space-y-4 p-5">
-            <div><p className="framer-topline">Proposal</p><h3 className="mt-1 text-xl font-bold capitalize">{form.proposalAction} memory</h3><p className="mt-1 text-sm text-[#999]">Reason and evidence are required for review/history and are not part of the runtime memory body.</p></div>
-            <div className="grid grid-cols-2 gap-3">
-              <select data-debug-id="proposal-action-select" value={form.proposalAction} onChange={(event) => updateForm({ proposalAction: event.target.value })} className="framer-input px-3 py-2"><option value="new">new</option><option value="edit">edit</option><option value="archive">archive</option><option value="rollback">rollback</option></select>
-              <input data-debug-id="proposal-memory-id" value={form.memoryId} onChange={(event) => updateForm({ memoryId: event.target.value })} placeholder="memory_id for edit/archive/rollback" className="framer-input px-3 py-2" disabled={form.proposalAction === 'new'} />
-              <input data-debug-id="proposal-expected-version" value={form.expectedVersion} onChange={(event) => updateForm({ expectedVersion: event.target.value })} placeholder="expected version" className="framer-input px-3 py-2" disabled={form.proposalAction === 'new'} />
-              <select data-debug-id="proposal-subject-agent-select" value={form.subjectAgent} onChange={(event) => updateForm({ subjectAgent: event.target.value })} className="framer-input px-3 py-2" disabled={form.proposalAction !== 'new'}><option value="">— select agent —</option>{agents.map((a: any) => <option key={a.id} value={a.id}>{a.label || a.id}</option>)}</select>
-              <select data-debug-id="proposal-type-select" value={form.type} onChange={(event) => updateForm({ type: event.target.value })} className="framer-input px-3 py-2" disabled={form.proposalAction === 'archive'}>{MEMORY_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}</select>
-              <input data-debug-id="proposal-scope" value={form.scope} onChange={(event) => updateForm({ scope: event.target.value })} placeholder="scope" className="framer-input px-3 py-2" />
-              <input data-debug-id="proposal-title" value={form.title} onChange={(event) => updateForm({ title: event.target.value })} placeholder="title" className="framer-input px-3 py-2" disabled={form.proposalAction === 'archive' || form.proposalAction === 'rollback'} />
-              <input data-debug-id="proposal-source-task-id" value={form.sourceTaskId} onChange={(event) => updateForm({ sourceTaskId: event.target.value })} placeholder="source task id" className="framer-input px-3 py-2" />
-            </div>
-            <textarea data-debug-id="proposal-body" value={form.body} onChange={(event) => updateForm({ body: event.target.value })} placeholder="memory body" className="framer-input min-h-36 w-full px-3 py-2" disabled={form.proposalAction === 'archive' || form.proposalAction === 'rollback'} />
-            <textarea data-debug-id="proposal-reason" value={form.reason} onChange={(event) => updateForm({ reason: event.target.value })} placeholder="required reason" className="framer-input min-h-20 w-full px-3 py-2" required />
-            <textarea data-debug-id="proposal-evidence" value={form.evidence} onChange={(event) => updateForm({ evidence: event.target.value })} placeholder="required evidence" className="framer-input min-h-20 w-full px-3 py-2" required />
-            <div className="flex justify-end gap-2"><button type="button" data-debug-id="proposal-cancel-btn" onClick={() => setPage('list')} className="framer-pill-secondary">Cancel</button><button type="submit" data-debug-id="proposal-submit-btn" className="framer-pill" disabled={!canMutate || !form.reason.trim() || !form.evidence.trim()}>{mutating ? 'Submitting…' : 'Submit proposal'}</button></div>
-          </form>
+          <MemoryProposalForm
+            initialForm={proposalFormValues}
+            agents={agents}
+            canMutate={canMutate}
+            mutating={mutating}
+            onSubmit={handlePropose}
+            onCancel={() => setPage('list')}
+          />
         )}
       </section>
     </main>
@@ -222,3 +207,79 @@ function MemoryDetail({ selected, history, detailLoading, decisionReason, setDec
     </div>
   );
 }
+
+// --- OPTIMIZED SUB-COMPONENTS FOR FORM STATE ISOLATION ---
+
+interface MemoryProposalFormProps {
+  initialForm: any;
+  agents: any[];
+  canMutate: boolean;
+  mutating: boolean;
+  onSubmit: (formData: any) => void;
+  onCancel: () => void;
+}
+
+const MemoryProposalForm = memo(function MemoryProposalForm({
+  initialForm,
+  agents,
+  canMutate,
+  mutating,
+  onSubmit,
+  onCancel
+}: MemoryProposalFormProps) {
+  console.log('[Render] MemoryProposalForm');
+  const [form, setForm] = useState(initialForm || blankForm);
+
+  function updateForm(patch: any) {
+    setForm((current) => ({ ...current, ...patch }));
+  }
+
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    if (!canMutate || !form.reason.trim() || !form.evidence.trim()) return;
+    onSubmit(form);
+  };
+
+  const isSubmitDisabled = !canMutate || !form.reason.trim() || !form.evidence.trim() || mutating;
+
+  return (
+    <form onSubmit={handleSubmit} className="framer-card-xl mx-auto max-w-4xl space-y-4 p-5">
+      <div>
+        <p className="framer-topline">Proposal</p>
+        <h3 className="mt-1 text-xl font-bold capitalize">{form.proposalAction} memory</h3>
+        <p className="mt-1 text-sm text-[#999]">
+          Reason and evidence are required for review/history and are not part of the runtime memory body.
+        </p>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <select data-debug-id="proposal-action-select" value={form.proposalAction} onChange={(event) => updateForm({ proposalAction: event.target.value })} className="framer-input px-3 py-2">
+          <option value="new">new</option>
+          <option value="edit">edit</option>
+          <option value="archive">archive</option>
+          <option value="rollback">rollback</option>
+        </select>
+        <input data-debug-id="proposal-memory-id" value={form.memoryId} onChange={(event) => updateForm({ memoryId: event.target.value })} placeholder="memory_id for edit/archive/rollback" className="framer-input px-3 py-2" disabled={form.proposalAction === 'new'} />
+        <input data-debug-id="proposal-expected-version" value={form.expectedVersion} onChange={(event) => updateForm({ expectedVersion: event.target.value })} placeholder="expected version" className="framer-input px-3 py-2" disabled={form.proposalAction === 'new'} />
+        <select data-debug-id="proposal-subject-agent-select" value={form.subjectAgent} onChange={(event) => updateForm({ subjectAgent: event.target.value })} className="framer-input px-3 py-2" disabled={form.proposalAction !== 'new'}>
+          <option value="">— select agent —</option>
+          {agents.map((a: any) => <option key={a.id} value={a.id}>{a.label || a.id}</option>)}
+        </select>
+        <select data-debug-id="proposal-type-select" value={form.type} onChange={(event) => updateForm({ type: event.target.value })} className="framer-input px-3 py-2" disabled={form.proposalAction === 'archive'}>
+          {MEMORY_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
+        </select>
+        <input data-debug-id="proposal-scope" value={form.scope} onChange={(event) => updateForm({ scope: event.target.value })} placeholder="scope" className="framer-input px-3 py-2" />
+        <input data-debug-id="proposal-title" value={form.title} onChange={(event) => updateForm({ title: event.target.value })} placeholder="title" className="framer-input px-3 py-2" disabled={form.proposalAction === 'archive' || form.proposalAction === 'rollback'} />
+        <input data-debug-id="proposal-source-task-id" value={form.sourceTaskId} onChange={(event) => updateForm({ sourceTaskId: event.target.value })} placeholder="source task id" className="framer-input px-3 py-2" />
+      </div>
+      <textarea data-debug-id="proposal-body" value={form.body} onChange={(event) => updateForm({ body: event.target.value })} placeholder="memory body" className="framer-input min-h-36 w-full px-3 py-2" disabled={form.proposalAction === 'archive' || form.proposalAction === 'rollback'} />
+      <textarea data-debug-id="proposal-reason" value={form.reason} onChange={(event) => updateForm({ reason: event.target.value })} placeholder="required reason" className="framer-input min-h-20 w-full px-3 py-2" required />
+      <textarea data-debug-id="proposal-evidence" value={form.evidence} onChange={(event) => updateForm({ evidence: event.target.value })} placeholder="required evidence" className="framer-input min-h-20 w-full px-3 py-2" required />
+      <div className="flex justify-end gap-2">
+        <button type="button" data-debug-id="proposal-cancel-btn" onClick={onCancel} className="framer-pill-secondary">Cancel</button>
+        <button type="submit" data-debug-id="proposal-submit-btn" className="framer-pill" disabled={isSubmitDisabled}>
+          {mutating ? 'Submitting…' : 'Submit proposal'}
+        </button>
+      </div>
+    </form>
+  );
+});
