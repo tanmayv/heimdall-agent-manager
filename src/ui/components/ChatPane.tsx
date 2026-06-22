@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { fetchSelectedChat } from '../store/chatSlice';
 import Composer from './Composer';
@@ -9,7 +9,11 @@ const NEW_MESSAGE_THRESHOLD = 48;
 const EMPTY_ARRAY: any[] = [];
 
 export default function ChatPane({ agent, session }: { agent: any; session: any }) {
-  console.log('[Render] ChatPane', agent?.id || 'no-agent');
+  const renderStart = performance.now();
+  useEffect(() => {
+    const duration = performance.now() - renderStart;
+    console.log(`[Render Timer] ChatPane took ${duration.toFixed(2)}ms`);
+  });
   const dispatch = useDispatch<any>();
   const messages = useSelector((state: any) => agent ? state.chat.chats[agent.id] ?? EMPTY_ARRAY : EMPTY_ARRAY);
   const sending = useSelector((state: any) => state.chat.sending);

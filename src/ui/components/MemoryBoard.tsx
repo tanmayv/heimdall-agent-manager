@@ -33,7 +33,11 @@ function Field({ label, value }: { label: string; value: string | number }) {
 const blankForm = { proposalAction: 'new', memoryId: '', expectedVersion: '', subjectAgent: '', type: 'fact', scope: 'global', title: '', body: '', reason: '', evidence: '', sourceTaskId: '' };
 
 export default function MemoryBoard({ session, agents = [] }: { session: any; agents?: any[] }) {
-  console.log('[Render] MemoryBoard');
+  const renderStart = performance.now();
+  useEffect(() => {
+    const duration = performance.now() - renderStart;
+    console.log(`[Render Timer] MemoryBoard took ${duration.toFixed(2)}ms`);
+  });
   const dispatch = useDispatch<any>();
   const { recordsById, recordIds, selectedMemoryId, historyById, filters, loading, detailLoading, error } = useSelector((state: any) => state.memory);
   const selected = selectedMemoryId ? recordsById[selectedMemoryId] : null;

@@ -115,7 +115,11 @@ function getCreatedAfterTimestamp(range: 'all' | '24h' | '7d' | '30d'): number {
 }
 
 export default function TaskBoard({ session }) {
-  console.log('[Render] TaskBoard');
+  const renderStart = performance.now();
+  useEffect(() => {
+    const duration = performance.now() - renderStart;
+    console.log(`[Render Timer] TaskBoard took ${duration.toFixed(2)}ms`);
+  });
   const dispatch = useDispatch<any>();
   const taskState = useSelector((state: any) => state.tasks);
   const chatAgents = useSelector((state: any) => state.chat.agents);

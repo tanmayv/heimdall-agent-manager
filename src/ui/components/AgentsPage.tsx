@@ -34,7 +34,11 @@ function normalizeTemplate(t: any) {
 const blankTemplate = { templateId: '', displayName: '', roleHint: '', defaultProviderProfile: '', persona: '', instructions: '', suggestedModelTier: 'normal' };
 
 export default function AgentsPage({ session, onOpenStartAgent }: { session: any; onOpenStartAgent: () => void }) {
-  console.log('[Render] AgentsPage');
+  const renderStart = performance.now();
+  useEffect(() => {
+    const duration = performance.now() - renderStart;
+    console.log(`[Render Timer] AgentsPage took ${duration.toFixed(2)}ms`);
+  });
   const dispatch = useDispatch<any>();
   const agents = useSelector((state: any) => state.chat.agents);
   const testRuns = useSelector((state: any) => state.chat.testRuns);
