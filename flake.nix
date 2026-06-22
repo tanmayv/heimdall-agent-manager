@@ -45,8 +45,9 @@
         dontInstall = true;
         buildPhase = ''
           runHook preBuild
-          mkdir -p $out/bin
-          odin build src/daemon -collection:odin_test=src -collection:sqlite=${sqlite3Src} -out:$out/bin/ham-daemon
+          mkdir -p $out/bin collections
+          cp -r ${sqlite3Src} collections/sqlite
+          odin build src/daemon -collection:odin_test=src -collection:sqlite=collections/sqlite -out:$out/bin/ham-daemon
           runHook postBuild
         '';
       };
