@@ -401,7 +401,6 @@ build_test_argv :: proc(cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Co
 	if len(base) == 0 { base = cfg.command }
 	for arg in base { append(&result, arg) }
 	for flag in agent_cmd.yolo_flags { append(&result, flag) }
-	for flag in agent_cmd.prompt_flags { append(&result, flag) }
 	if !tier_skipped && agent_cmd_ok && agent_cmd.models.flag != "" {
 		model_val := cfg_lib.resolve_model_value(agent_cmd.models, tier)
 		if model_val != "" {
@@ -409,6 +408,7 @@ build_test_argv :: proc(cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Co
 			append(&result, model_val)
 		}
 	}
+	for flag in agent_cmd.prompt_flags { append(&result, flag) }
 	if starter_prompt != "" {
 		append(&result, starter_prompt)
 	}

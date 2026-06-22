@@ -1319,7 +1319,6 @@ build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_
 			result := make([dynamic]string, 0, count)
 			append_templated_args(&result, base, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
 			append_templated_args(&result, agent_cmd.yolo_flags, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
-			append_templated_args(&result, agent_cmd.prompt_flags, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
 			// Model tier flag
 			if agent_cmd.models.flag != "" {
 				model_value := cfg_lib.resolve_model_value(agent_cmd.models, model_tier)
@@ -1333,6 +1332,7 @@ build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_
 			} else if model_tier != "" {
 				fmt.println("model_flag_missing no models.flag configured for", agent_command_name)
 			}
+			append_templated_args(&result, agent_cmd.prompt_flags, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
 			if is_test_token(agent_token) {
 				// Test agents get a minimal one-shot prompt; skip memory guidance.
 				prompt := template_string(TEST_AGENT_STARTER_PROMPT, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
