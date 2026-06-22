@@ -5,9 +5,9 @@ import { refreshProjects } from '../store/projectSlice';
 import { upsertKnownAgent } from '../store/chatSlice';
 
 const fallbackTemplates = [
-  { templateId: 'default', displayName: 'Default agent', roleHint: 'generalist', defaultProviderProfile: '', description: '' },
-  { templateId: 'coding', displayName: 'Coding agent', roleHint: 'implementation', defaultProviderProfile: '', description: '' },
-  { templateId: 'reviewer', displayName: 'Reviewer agent', roleHint: 'reviewer', defaultProviderProfile: '', description: '' },
+  { templateId: 'default', displayName: 'Default agent', roleHint: 'generalist', defaultProviderProfile: '', description: '', suggestedModelTier: 'normal' },
+  { templateId: 'coding', displayName: 'Coding agent', roleHint: 'implementation', defaultProviderProfile: '', description: '', suggestedModelTier: 'normal' },
+  { templateId: 'reviewer', displayName: 'Reviewer agent', roleHint: 'reviewer', defaultProviderProfile: '', description: '', suggestedModelTier: 'smart' },
 ];
 
 function defaultDisplayName() {
