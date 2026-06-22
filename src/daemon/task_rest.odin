@@ -24,7 +24,7 @@ handle_get_task_chains :: proc(client: net.TCP_Socket, ctx: ^Route_Context) {
 	}
 
 	b := strings.builder_make()
-	strings.write_string(&b, `{"ok":true,"chains":[`)
+	strings.write_string(&b, `{"chains":[`)
 	count := 0
 	start := min(offset, task_chain_count)
 	end := min(task_chain_count, start + limit)
@@ -45,7 +45,7 @@ handle_get_chain_tasks :: proc(client: net.TCP_Socket, chain_id: string, ctx: ^R
 	if !ok do return
 
 	b := strings.builder_make()
-	strings.write_string(&b, `{"ok":true,"chain_id":"`)
+	strings.write_string(&b, `{"chain_id":"`)
 	json_write_string(&b, chain_id)
 	strings.write_string(&b, `","tasks":[`)
 	first := true
@@ -67,14 +67,14 @@ handle_get_task :: proc(client: net.TCP_Socket, task_id: string, ctx: ^Route_Con
 	for i in 0..<task_state_count {
 		if task_states[i].task_id == task_id {
 			b := strings.builder_make()
-			strings.write_string(&b, `{"ok":true,"task":`)
+			strings.write_string(&b, `{"task":`)
 			task_write_state_json(&b, task_states[i])
 			strings.write_string(&b, `}`)
 			write_response(client, 200, "OK", strings.to_string(b))
 			return
 		}
 	}
-	write_response(client, 404, "Not Found", `{"ok":false,"message":"task not found"}`)
+	write_response(client, 404, "Not Found", `{"error":"not_found","message":"task not found"}`)
 }
 
 // GET /tasks/{task_id}/comments
@@ -86,7 +86,7 @@ handle_get_task_comments :: proc(client: net.TCP_Socket, task_id: string, ctx: ^
 	unresolved_only := unresolved_str == "true"
 
 	b := strings.builder_make()
-	strings.write_string(&b, `{"ok":true,"comments":[`)
+	strings.write_string(&b, `{"comments":[`)
 	first := true
 	for i in 0..<task_comment_count {
 		c := task_comments[i]

@@ -13,11 +13,29 @@ handle_get_chats :: proc(client: net.TCP_Socket, ctx: ^Route_Context) {
 	// Only users can list their chats (active agent sessions)
 	is_user := user_client_id_for_token(ctx.token) != ""
 	if !is_user {
-		write_response(client, 403, "Forbidden", `{"ok":false,"message":"only users can list chats"}`)
+		write_response(client, 403, "Forbidden", `{"error":"forbidden","message":"only users can list chats"}`)
 		return
 	}
 
-	write_response(client, 200, "OK", chat_list_json(author))
+	builder := strings.builder_make()
+	strings.write_string(&builder, `{"chats":[`)
+	agents := message_db_get_distinct_agents(author)
+	first := true
+	for agent_id in agents {
+		if !first do strings.write_string(&builder, `,`)
+		first = false
+		unread := chat_unread_count(author, agent_id)
+		strings.write_string(&builder, `{"agent_instance_id":"`)
+		json_write_string(&builder, agent_id)
+		strings.write_string(&builder, `","unread_count":`)
+		strings.write_string(&builder, fmt.tprintf("%d", unread))
+		strings.write_string(&builder, `}`)
+		delete(agent_id)
+	}
+	delete(agents)
+	strings.write_string(&builder, `]}`)
+
+	write_response(client, 200, "OK", strings.to_string(builder))
 }
 
 // GET /chats/{agent_id}/messages
@@ -37,7 +55,7 @@ handle_get_chat_messages :: proc(client: net.TCP_Socket, agent_id: string, ctx: 
 		agent_instance_id = author
 		user_id = query_param_value(ctx.query, "user_id")
 		if user_id == "" {
-			write_response(client, 400, "Bad Request", `{"ok":false,"message":"missing user_id query parameter"}`)
+			write_response(client, 400, "Bad Request", `{"error":"bad_request","message":"missing user_id query parameter"}`)
 			return
 		}
 	}
@@ -67,7 +85,7 @@ handle_get_chat_messages :: proc(client: net.TCP_Socket, agent_id: string, ctx: 
 	}
 
 	b := strings.builder_make()
-	strings.write_string(&b, `{"ok":true,"user_id":"`)
+	strings.write_string(&b, `{"user_id":"`)
 	json_write_string(&b, user_id)
 	strings.write_string(&b, `","agent_instance_id":"`)
 	json_write_string(&b, agent_instance_id)

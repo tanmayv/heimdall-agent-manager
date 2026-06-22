@@ -104,7 +104,7 @@ query_param_value :: proc(query, name: string) -> string {
 // Authorize agent/user from the request context
 rest_authorize :: proc(client: net.TCP_Socket, ctx: ^Route_Context) -> (string, bool) {
 	if ctx.token == "" {
-		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"missing authorization token"}`)
+		write_response(client, 401, "Unauthorized", `{"error":"unauthorized","message":"missing authorization token"}`)
 		return "", false
 	}
 	author := registry_agent_instance_for_token(ctx.token)
@@ -112,7 +112,7 @@ rest_authorize :: proc(client: net.TCP_Socket, ctx: ^Route_Context) -> (string, 
 		author = user_client_id_for_token(ctx.token)
 	}
 	if author == "" {
-		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"invalid authorization token"}`)
+		write_response(client, 401, "Unauthorized", `{"error":"unauthorized","message":"invalid authorization token"}`)
 		return "", false
 	}
 	return author, true
