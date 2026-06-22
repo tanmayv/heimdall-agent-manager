@@ -608,8 +608,8 @@ ctl_agent_chat :: proc(daemon_url, action: string, args: []string) {
 			val_body, val_err, val_ok := validate_and_build_special_message(type_val, data_val)
 			if !val_ok {
 				escaped_err, _ := strings.replace_all(val_err, `"`, `\"`)
-				defer delete(escaped_err)
 				fmt.printf(`{"ok":false,"error":"validation_error","message":"%s"}\n`, escaped_err)
+				delete(escaped_err)
 				os.exit(1)
 			}
 			final_body = val_body
