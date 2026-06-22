@@ -31,39 +31,75 @@ task_db_init :: proc(data_dir: string) -> bool {
 		return false
 	}
 
-	fmt.println("task_db_init: database initialized at", db_path)
+	fmt.println("task_db_init: relational database initialized at", db_path)
 	return true
 }
 
 task_db_create_schema :: proc() -> bool {
 	schema := `
-	CREATE TABLE IF NOT EXISTS task_events (
-		event_id TEXT PRIMARY KEY,
-		kind TEXT NOT NULL,
-		task_id TEXT,
-		chain_id TEXT,
-		title TEXT,
-		description TEXT,
-		acceptance_criteria TEXT,
-		priority TEXT,
-		status TEXT,
-		body TEXT,
-		comment_id TEXT,
-		vote_approved TEXT,
-		project_id TEXT,
-		agent_instance_id TEXT,
-		assignee_agent_instance_id TEXT,
-		coordinator_agent_instance_id TEXT,
-		depends_on TEXT,
-		role TEXT,
-		created_by TEXT,
-		author_agent_instance_id TEXT,
+	CREATE TABLE IF NOT EXISTS tasks (
+		task_id TEXT PRIMARY KEY,
+		chain_id TEXT NOT NULL,
+		title TEXT NOT NULL,
+		description TEXT NOT NULL,
+		acceptance_criteria TEXT NOT NULL,
+		priority TEXT NOT NULL,
+		status TEXT NOT NULL,
+		assignee_agent_instance_id TEXT NOT NULL,
+		coordinator_agent_instance_id TEXT NOT NULL,
+		depends_on TEXT NOT NULL,
+		created_by TEXT NOT NULL,
+		created_at_unix_ms INTEGER NOT NULL,
+		updated_at_unix_ms INTEGER NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS task_chains (
+		chain_id TEXT PRIMARY KEY,
+		project_id TEXT NOT NULL,
+		title TEXT NOT NULL,
+		description TEXT NOT NULL,
+		status TEXT NOT NULL,
+		coordinator_agent_instance_id TEXT NOT NULL,
+		final_summary TEXT NOT NULL,
+		created_at_unix_ms INTEGER NOT NULL,
+		completed_at_unix_ms INTEGER NOT NULL,
+		archive_pending INTEGER NOT NULL DEFAULT 0,
+		archived INTEGER NOT NULL DEFAULT 0
+	);
+
+	CREATE TABLE IF NOT EXISTS task_comments (
+		comment_id TEXT PRIMARY KEY,
+		task_id TEXT NOT NULL,
+		chain_id TEXT NOT NULL,
+		body TEXT NOT NULL,
+		author_agent_instance_id TEXT NOT NULL,
+		resolved INTEGER NOT NULL DEFAULT 0,
 		created_unix_ms INTEGER NOT NULL
 	);
 
-	CREATE INDEX IF NOT EXISTS idx_task_id ON task_events(task_id);
-	CREATE INDEX IF NOT EXISTS idx_chain_id ON task_events(chain_id);
-	CREATE INDEX IF NOT EXISTS idx_created_unix_ms ON task_events(created_unix_ms);
+	CREATE TABLE IF NOT EXISTS task_lgtm_votes (
+		task_id TEXT NOT NULL,
+		reviewer_agent_instance_id TEXT NOT NULL,
+		chain_id TEXT NOT NULL,
+		approved INTEGER NOT NULL DEFAULT 0,
+		role TEXT NOT NULL,
+		comment TEXT NOT NULL,
+		created_unix_ms INTEGER NOT NULL,
+		PRIMARY KEY (task_id, reviewer_agent_instance_id)
+	);
+
+	CREATE TABLE IF NOT EXISTS task_participants (
+		task_id TEXT NOT NULL,
+		agent_instance_id TEXT NOT NULL,
+		chain_id TEXT NOT NULL,
+		role TEXT NOT NULL,
+		PRIMARY KEY (task_id, agent_instance_id, role)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_tasks_chain ON tasks(chain_id);
+	CREATE INDEX IF NOT EXISTS idx_comments_task ON task_comments(task_id);
+	CREATE INDEX IF NOT EXISTS idx_votes_task ON task_lgtm_votes(task_id);
+	CREATE INDEX IF NOT EXISTS idx_participants_task ON task_participants(task_id);
 	`
 
 	errmsg: cstring = nil
@@ -83,99 +119,286 @@ task_db_bind_text :: proc(stmt: sqlite3_stmt, index: int, val: string) {
 	sqlite3_bind_text(stmt, c.int(index), cstring(raw_data(val)), i32(len(val)), SQLITE_TRANSIENT)
 }
 
-task_db_insert_event :: proc(event: Task_Event) -> bool {
+task_db_save_task :: proc(state: Task_State) -> bool {
 	stmt: sqlite3_stmt = nil
-
-	query := `INSERT INTO task_events (
-		event_id, kind, task_id, chain_id, title, description, acceptance_criteria,
-		priority, status, body, comment_id, vote_approved, project_id,
-		agent_instance_id, assignee_agent_instance_id, coordinator_agent_instance_id,
-		depends_on, role, created_by, author_agent_instance_id, created_unix_ms
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	query := `INSERT OR REPLACE INTO tasks (
+		task_id, chain_id, title, description, acceptance_criteria, priority, status,
+		assignee_agent_instance_id, coordinator_agent_instance_id, depends_on, created_by,
+		created_at_unix_ms, updated_at_unix_ms
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
-		fmt.println("task_db_insert_event: prepare failed:", rc)
+		fmt.println("task_db_save_task: prepare failed:", rc)
 		return false
 	}
 	defer sqlite3_finalize(stmt)
 
-	kind_str := fmt.tprintf("%v", event.kind)
-
-	task_db_bind_text(stmt, 1, event.event_id)
-	task_db_bind_text(stmt, 2, kind_str)
-	task_db_bind_text(stmt, 3, event.task_id)
-	task_db_bind_text(stmt, 4, event.chain_id)
-	task_db_bind_text(stmt, 5, event.title)
-	task_db_bind_text(stmt, 6, event.description)
-	task_db_bind_text(stmt, 7, event.acceptance_criteria)
-	task_db_bind_text(stmt, 8, event.priority)
-	task_db_bind_text(stmt, 9, event.status)
-	task_db_bind_text(stmt, 10, event.body)
-	task_db_bind_text(stmt, 11, event.comment_id)
-	task_db_bind_text(stmt, 12, event.vote_approved)
-	task_db_bind_text(stmt, 13, event.project_id)
-	task_db_bind_text(stmt, 14, event.agent_instance_id)
-	task_db_bind_text(stmt, 15, event.assignee_agent_instance_id)
-	task_db_bind_text(stmt, 16, event.coordinator_agent_instance_id)
-	task_db_bind_text(stmt, 17, event.depends_on)
-	task_db_bind_text(stmt, 18, event.role)
-	task_db_bind_text(stmt, 19, event.created_by)
-	task_db_bind_text(stmt, 20, event.author_agent_instance_id)
-	sqlite3_bind_int64(stmt, 21, event.created_unix_ms)
+	task_db_bind_text(stmt, 1, state.task_id)
+	task_db_bind_text(stmt, 2, state.chain_id)
+	task_db_bind_text(stmt, 3, state.title)
+	task_db_bind_text(stmt, 4, state.description)
+	task_db_bind_text(stmt, 5, state.acceptance_criteria)
+	task_db_bind_text(stmt, 6, state.priority)
+	task_db_bind_text(stmt, 7, state.status)
+	task_db_bind_text(stmt, 8, state.assignee_agent_instance_id)
+	task_db_bind_text(stmt, 9, state.coordinator_agent_instance_id)
+	task_db_bind_text(stmt, 10, state.depends_on)
+	task_db_bind_text(stmt, 11, state.created_by)
+	sqlite3_bind_int64(stmt, 12, state.created_at_unix_ms)
+	sqlite3_bind_int64(stmt, 13, state.updated_at_unix_ms)
 
 	rc = sqlite3_step(stmt)
-	if rc != SQLITE_DONE {
-		fmt.println("task_db_insert_event: step failed:", rc)
-		return false
-	}
-
-	return true
+	return rc == SQLITE_DONE
 }
 
-task_db_replay_all :: proc() -> bool {
+task_db_save_chain :: proc(chain: Task_Chain_State) -> bool {
 	stmt: sqlite3_stmt = nil
-	query := `SELECT 
-		event_id, kind, task_id, chain_id, title, description, acceptance_criteria,
-		priority, status, body, comment_id, vote_approved, project_id,
-		agent_instance_id, assignee_agent_instance_id, coordinator_agent_instance_id,
-		depends_on, role, created_by, author_agent_instance_id, created_unix_ms
-		FROM task_events ORDER BY created_unix_ms ASC`
+	query := `INSERT OR REPLACE INTO task_chains (
+		chain_id, project_id, title, description, status, coordinator_agent_instance_id,
+		final_summary, created_at_unix_ms, completed_at_unix_ms, archive_pending, archived
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
-		fmt.println("task_db_replay_all: prepare failed:", rc)
+		fmt.println("task_db_save_chain: prepare failed:", rc)
 		return false
 	}
 	defer sqlite3_finalize(stmt)
 
-	for sqlite3_step(stmt) == SQLITE_ROW {
-		event: Task_Event
-		event.event_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 0))
-		kind_str := strings.clone_from_cstring(sqlite3_column_text(stmt, 1))
-		event.kind = task_event_kind_from_string(kind_str)
-		event.task_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 2))
-		event.chain_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 3))
-		event.title = strings.clone_from_cstring(sqlite3_column_text(stmt, 4))
-		event.description = strings.clone_from_cstring(sqlite3_column_text(stmt, 5))
-		event.acceptance_criteria = strings.clone_from_cstring(sqlite3_column_text(stmt, 6))
-		event.priority = strings.clone_from_cstring(sqlite3_column_text(stmt, 7))
-		event.status = strings.clone_from_cstring(sqlite3_column_text(stmt, 8))
-		event.body = strings.clone_from_cstring(sqlite3_column_text(stmt, 9))
-		event.comment_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 10))
-		event.vote_approved = strings.clone_from_cstring(sqlite3_column_text(stmt, 11))
-		event.project_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 12))
-		event.agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 13))
-		event.assignee_agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 14))
-		event.coordinator_agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 15))
-		event.depends_on = strings.clone_from_cstring(sqlite3_column_text(stmt, 16))
-		event.role = strings.clone_from_cstring(sqlite3_column_text(stmt, 17))
-		event.created_by = strings.clone_from_cstring(sqlite3_column_text(stmt, 18))
-		event.author_agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 19))
-		event.created_unix_ms = sqlite3_column_int64(stmt, 20)
+	task_db_bind_text(stmt, 1, chain.chain_id)
+	task_db_bind_text(stmt, 2, chain.project_id)
+	task_db_bind_text(stmt, 3, chain.title)
+	task_db_bind_text(stmt, 4, chain.description)
+	task_db_bind_text(stmt, 5, chain.status)
+	task_db_bind_text(stmt, 6, chain.coordinator_agent_instance_id)
+	task_db_bind_text(stmt, 7, chain.final_summary)
+	sqlite3_bind_int64(stmt, 8, chain.created_at_unix_ms)
+	sqlite3_bind_int64(stmt, 9, chain.completed_at_unix_ms)
+	sqlite3_bind_int64(stmt, 10, 1 if chain.archive_pending else 0)
+	sqlite3_bind_int64(stmt, 11, 1 if chain.archived else 0)
 
-		if !task_store_apply_event(event) {
-			fmt.println("WARNING: task_db_replay_all failed to apply event", event.event_id)
+	rc = sqlite3_step(stmt)
+	return rc == SQLITE_DONE
+}
+
+task_db_save_comment :: proc(comment: Task_Comment_State) -> bool {
+	stmt: sqlite3_stmt = nil
+	query := `INSERT OR REPLACE INTO task_comments (
+		comment_id, task_id, chain_id, body, author_agent_instance_id, resolved, created_unix_ms
+	) VALUES (?, ?, ?, ?, ?, ?, ?)`
+
+	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK {
+		fmt.println("task_db_save_comment: prepare failed:", rc)
+		return false
+	}
+	defer sqlite3_finalize(stmt)
+
+	task_db_bind_text(stmt, 1, comment.comment_id)
+	task_db_bind_text(stmt, 2, comment.task_id)
+	task_db_bind_text(stmt, 3, comment.chain_id)
+	task_db_bind_text(stmt, 4, comment.body)
+	task_db_bind_text(stmt, 5, comment.author_agent_instance_id)
+	sqlite3_bind_int64(stmt, 6, 1 if comment.resolved else 0)
+	sqlite3_bind_int64(stmt, 7, comment.created_unix_ms)
+
+	rc = sqlite3_step(stmt)
+	return rc == SQLITE_DONE
+}
+
+task_db_save_vote :: proc(vote: Task_LGTM_Vote_State) -> bool {
+	stmt: sqlite3_stmt = nil
+	query := `INSERT OR REPLACE INTO task_lgtm_votes (
+		task_id, reviewer_agent_instance_id, chain_id, approved, role, comment, created_unix_ms
+	) VALUES (?, ?, ?, ?, ?, ?, ?)`
+
+	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK {
+		fmt.println("task_db_save_vote: prepare failed:", rc)
+		return false
+	}
+	defer sqlite3_finalize(stmt)
+
+	task_db_bind_text(stmt, 1, vote.task_id)
+	task_db_bind_text(stmt, 2, vote.reviewer_agent_instance_id)
+	task_db_bind_text(stmt, 3, vote.chain_id)
+	sqlite3_bind_int64(stmt, 4, 1 if vote.approved else 0)
+	task_db_bind_text(stmt, 5, vote.role)
+	task_db_bind_text(stmt, 6, vote.comment)
+	sqlite3_bind_int64(stmt, 7, vote.created_unix_ms)
+
+	rc = sqlite3_step(stmt)
+	return rc == SQLITE_DONE
+}
+
+task_db_save_participant :: proc(part: Task_Participant) -> bool {
+	stmt: sqlite3_stmt = nil
+	query := `INSERT OR REPLACE INTO task_participants (
+		task_id, agent_instance_id, chain_id, role
+	) VALUES (?, ?, ?, ?)`
+
+	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK {
+		fmt.println("task_db_save_participant: prepare failed:", rc)
+		return false
+	}
+	defer sqlite3_finalize(stmt)
+
+	task_db_bind_text(stmt, 1, part.task_id)
+	task_db_bind_text(stmt, 2, part.agent_instance_id)
+	task_db_bind_text(stmt, 3, part.chain_id)
+	task_db_bind_text(stmt, 4, part.role)
+
+	rc = sqlite3_step(stmt)
+	return rc == SQLITE_DONE
+}
+
+task_db_load_all :: proc() -> bool {
+	task_projection_reset()
+
+	// 1. Load task_chains
+	{
+		stmt: sqlite3_stmt = nil
+		query := `SELECT 
+			chain_id, project_id, title, description, status, coordinator_agent_instance_id,
+			final_summary, created_at_unix_ms, completed_at_unix_ms, archive_pending, archived
+			FROM task_chains`
+		rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+		if rc != SQLITE_OK {
+			fmt.println("task_db_load_all: prepare chains failed:", rc)
+			return false
+		}
+		defer sqlite3_finalize(stmt)
+
+		for sqlite3_step(stmt) == SQLITE_ROW {
+			if task_chain_count >= TASK_MAX_CHAINS do break
+			c := &task_chains[task_chain_count]
+			c.chain_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 0))
+			c.project_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 1))
+			c.title = strings.clone_from_cstring(sqlite3_column_text(stmt, 2))
+			c.description = strings.clone_from_cstring(sqlite3_column_text(stmt, 3))
+			c.status = strings.clone_from_cstring(sqlite3_column_text(stmt, 4))
+			c.coordinator_agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 5))
+			c.final_summary = strings.clone_from_cstring(sqlite3_column_text(stmt, 6))
+			c.created_at_unix_ms = sqlite3_column_int64(stmt, 7)
+			c.completed_at_unix_ms = sqlite3_column_int64(stmt, 8)
+			c.archive_pending = sqlite3_column_int64(stmt, 9) != 0
+			c.archived = sqlite3_column_int64(stmt, 10) != 0
+			task_chain_count += 1
+		}
+	}
+
+	// 2. Load tasks (task_states)
+	{
+		stmt: sqlite3_stmt = nil
+		query := `SELECT 
+			task_id, chain_id, title, description, acceptance_criteria, priority, status,
+			assignee_agent_instance_id, coordinator_agent_instance_id, depends_on, created_by,
+			created_at_unix_ms, updated_at_unix_ms
+			FROM tasks`
+		rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+		if rc != SQLITE_OK {
+			fmt.println("task_db_load_all: prepare tasks failed:", rc)
+			return false
+		}
+		defer sqlite3_finalize(stmt)
+
+		for sqlite3_step(stmt) == SQLITE_ROW {
+			if task_state_count >= TASK_MAX_TASKS do break
+			t := &task_states[task_state_count]
+			t.task_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 0))
+			t.chain_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 1))
+			t.title = strings.clone_from_cstring(sqlite3_column_text(stmt, 2))
+			t.description = strings.clone_from_cstring(sqlite3_column_text(stmt, 3))
+			t.acceptance_criteria = strings.clone_from_cstring(sqlite3_column_text(stmt, 4))
+			t.priority = strings.clone_from_cstring(sqlite3_column_text(stmt, 5))
+			t.status = strings.clone_from_cstring(sqlite3_column_text(stmt, 6))
+			t.assignee_agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 7))
+			t.coordinator_agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 8))
+			t.depends_on = strings.clone_from_cstring(sqlite3_column_text(stmt, 9))
+			t.created_by = strings.clone_from_cstring(sqlite3_column_text(stmt, 10))
+			t.created_at_unix_ms = sqlite3_column_int64(stmt, 11)
+			t.updated_at_unix_ms = sqlite3_column_int64(stmt, 12)
+			task_state_count += 1
+		}
+	}
+
+	// 3. Load task_comments
+	{
+		stmt: sqlite3_stmt = nil
+		query := `SELECT 
+			comment_id, task_id, chain_id, body, author_agent_instance_id, resolved, created_unix_ms
+			FROM task_comments`
+		rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+		if rc != SQLITE_OK {
+			fmt.println("task_db_load_all: prepare comments failed:", rc)
+			return false
+		}
+		defer sqlite3_finalize(stmt)
+
+		for sqlite3_step(stmt) == SQLITE_ROW {
+			if task_comment_count >= TASK_MAX_COMMENTS do break
+			c := &task_comments[task_comment_count]
+			c.comment_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 0))
+			c.task_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 1))
+			c.chain_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 2))
+			c.body = strings.clone_from_cstring(sqlite3_column_text(stmt, 3))
+			c.author_agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 4))
+			c.resolved = sqlite3_column_int64(stmt, 5) != 0
+			c.created_unix_ms = sqlite3_column_int64(stmt, 6)
+			task_comment_count += 1
+		}
+	}
+
+	// 4. Load task_lgtm_votes
+	{
+		stmt: sqlite3_stmt = nil
+		query := `SELECT 
+			task_id, reviewer_agent_instance_id, chain_id, approved, role, comment, created_unix_ms
+			FROM task_lgtm_votes`
+		rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+		if rc != SQLITE_OK {
+			fmt.println("task_db_load_all: prepare votes failed:", rc)
+			return false
+		}
+		defer sqlite3_finalize(stmt)
+
+		for sqlite3_step(stmt) == SQLITE_ROW {
+			if task_lgtm_vote_count >= TASK_MAX_VOTES do break
+			v := &task_lgtm_votes[task_lgtm_vote_count]
+			v.task_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 0))
+			v.reviewer_agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 1))
+			v.chain_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 2))
+			v.approved = sqlite3_column_int64(stmt, 3) != 0
+			v.role = strings.clone_from_cstring(sqlite3_column_text(stmt, 4))
+			v.comment = strings.clone_from_cstring(sqlite3_column_text(stmt, 5))
+			v.created_unix_ms = sqlite3_column_int64(stmt, 6)
+			task_lgtm_vote_count += 1
+		}
+	}
+
+	// 5. Load task_participants
+	{
+		stmt: sqlite3_stmt = nil
+		query := `SELECT 
+			task_id, agent_instance_id, chain_id, role
+			FROM task_participants`
+		rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+		if rc != SQLITE_OK {
+			fmt.println("task_db_load_all: prepare participants failed:", rc)
+			return false
+		}
+		defer sqlite3_finalize(stmt)
+
+		for sqlite3_step(stmt) == SQLITE_ROW {
+			if task_participant_count >= TASK_MAX_PARTICIPANTS do break
+			p := &task_participants[task_participant_count]
+			p.task_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 0))
+			p.agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 1))
+			p.chain_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 2))
+			p.role = strings.clone_from_cstring(sqlite3_column_text(stmt, 3))
+			task_participant_count += 1
 		}
 	}
 

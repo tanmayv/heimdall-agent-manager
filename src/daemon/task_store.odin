@@ -153,18 +153,57 @@ task_store_init :: proc(data_dir: string) {
 		task_store_replay_jsonl()
 		
 		if task_event_count > 0 {
-			fmt.printf("MIGRATION: Migrating %d task events to SQLite...\n", task_event_count)
+			fmt.printf("MIGRATION: Migrating projected state of %d events to SQLite relational tables...\n", task_event_count)
 			_ = task_db_execute("BEGIN TRANSACTION;")
 			migrated_ok := true
-			for i in 0..<task_event_count {
-				if !task_db_insert_event(task_events[i]) {
+			
+			// Migrate task chains
+			for i in 0..<task_chain_count {
+				if !task_db_save_chain(task_chains[i]) {
 					migrated_ok = false
 					break
 				}
 			}
+			// Migrate tasks
+			if migrated_ok {
+				for i in 0..<task_state_count {
+					if !task_db_save_task(task_states[i]) {
+						migrated_ok = false
+						break
+					}
+				}
+			}
+			// Migrate comments
+			if migrated_ok {
+				for i in 0..<task_comment_count {
+					if !task_db_save_comment(task_comments[i]) {
+						migrated_ok = false
+						break
+					}
+				}
+			}
+			// Migrate LGTM votes
+			if migrated_ok {
+				for i in 0..<task_lgtm_vote_count {
+					if !task_db_save_vote(task_lgtm_votes[i]) {
+						migrated_ok = false
+						break
+					}
+				}
+			}
+			// Migrate participants
+			if migrated_ok {
+				for i in 0..<task_participant_count {
+					if !task_db_save_participant(task_participants[i]) {
+						migrated_ok = false
+						break
+					}
+				}
+			}
+
 			if migrated_ok {
 				_ = task_db_execute("COMMIT;")
-				fmt.println("MIGRATION: Successfully migrated all task events to SQLite!")
+				fmt.println("MIGRATION: Successfully migrated all task data to SQLite relational tables!")
 				
 				migrated_path := fmt.tprintf("%s/events.jsonl.migrated", task_store_dir)
 				err := os.rename(task_events_path, migrated_path)
@@ -173,20 +212,20 @@ task_store_init :: proc(data_dir: string) {
 				}
 			} else {
 				_ = task_db_execute("ROLLBACK;")
-				fmt.println("ERROR: Task event migration failed! Legacy events.jsonl kept.")
+				fmt.println("ERROR: Task relational migration failed! Legacy events.jsonl kept.")
 			}
 		} else {
 			_ = os.remove(task_events_path)
 		}
 		
-		// Reset memory projection to prepare for clean SQLite replay
+		// Reset memory projection to prepare for clean SQLite load
 		task_event_count = 0
 		task_projection_reset()
 	}
 
-	// 3. Replay all events from SQLite
-	if !task_db_replay_all() {
-		fmt.println("ERROR: Failed to replay task events from SQLite")
+	// 3. Load all projected states from SQLite relational tables
+	if !task_db_load_all() {
+		fmt.println("ERROR: Failed to load task data from SQLite relational tables")
 	}
 }
 
@@ -195,8 +234,9 @@ task_store_append_event :: proc(event: Task_Event) -> bool {
 	if ev.event_id == "" do ev.event_id = strings.clone(fmt.tprintf("taskevt_%d", router_now_unix_ms()))
 	if ev.created_unix_ms == 0 do ev.created_unix_ms = router_now_unix_ms()
 	if !task_store_apply_event(ev) do return false
-	// Write to SQLite task database
-	return task_db_insert_event(ev)
+	
+	// Write the projected state directly to the respective SQLite table
+	return task_store_persist_projection_for_event(ev)
 }
 
 task_store_apply_event :: proc(event: Task_Event) -> bool {
@@ -235,7 +275,7 @@ task_event_clone :: proc(event: Task_Event) -> Task_Event {
 }
 
 task_store_replay :: proc() {
-	_ = task_db_replay_all()
+	_ = task_db_load_all()
 }
 
 task_store_replay_jsonl :: proc() {
@@ -248,6 +288,83 @@ task_store_replay_jsonl :: proc() {
 		event, ok := task_event_from_json(trimmed)
 		if ok do task_store_apply_event(event)
 	}
+}
+
+task_store_persist_projection_for_event :: proc(event: Task_Event) -> bool {
+	#partial switch event.kind {
+	case .Task_Created:
+		idx := task_state_index_of(event.task_id)
+		if idx < 0 do return false
+		if !task_db_save_task(task_states[idx]) do return false
+		// Save participants added during creation
+		for i in 0..<task_participant_count {
+			p := task_participants[i]
+			if p.task_id == event.task_id {
+				if !task_db_save_participant(p) do return false
+			}
+		}
+	case .Task_Status_Changed:
+		idx := task_state_index_of(event.task_id)
+		if idx >= 0 {
+			return task_db_save_task(task_states[idx])
+		}
+	case .Task_Assigned:
+		idx := task_state_index_of(event.task_id)
+		if idx < 0 do return false
+		if !task_db_save_task(task_states[idx]) do return false
+		// Save the newly added participant
+		for i in 0..<task_participant_count {
+			p := task_participants[i]
+			if p.task_id == event.task_id && p.agent_instance_id == event.agent_instance_id && p.role == "assignee" {
+				if !task_db_save_participant(p) do return false
+			}
+		}
+	case .Task_Participant_Added:
+		for i in 0..<task_participant_count {
+			p := task_participants[i]
+			if p.task_id == event.task_id && p.agent_instance_id == event.agent_instance_id && p.role == event.role {
+				return task_db_save_participant(p)
+			}
+		}
+	case .Task_Comment:
+		if task_comment_count > 0 {
+			if !task_db_save_comment(task_comments[task_comment_count - 1]) do return false
+			idx := task_state_index_of(event.task_id)
+			if idx >= 0 do return task_db_save_task(task_states[idx])
+		}
+	case .Task_Comment_Resolved:
+		for i in 0..<task_comment_count {
+			if task_comments[i].comment_id == event.comment_id {
+				return task_db_save_comment(task_comments[i])
+			}
+		}
+	case .Task_Review_Vote:
+		if task_lgtm_vote_count > 0 {
+			if !task_db_save_vote(task_lgtm_votes[task_lgtm_vote_count - 1]) do return false
+			idx := task_state_index_of(event.task_id)
+			if idx >= 0 do return task_db_save_task(task_states[idx])
+		}
+	case .Chain_Created, .Chain_Metadata_Updated, .Chain_Status_Changed, .Chain_Final_Summary_Set, .Chain_Completed, .Chain_Archive_Pending, .Chain_Archived:
+		idx := task_chain_index_of(event.chain_id)
+		if idx >= 0 {
+			return task_db_save_chain(task_chains[idx])
+		}
+	}
+	return true
+}
+
+task_state_index_of :: proc(task_id: string) -> int {
+	for i in 0..<task_state_count {
+		if task_states[i].task_id == task_id do return i
+	}
+	return -1
+}
+
+task_chain_index_of :: proc(chain_id: string) -> int {
+	for i in 0..<task_chain_count {
+		if task_chains[i].chain_id == chain_id do return i
+	}
+	return -1
 }
 
 task_event_json :: proc(event: Task_Event) -> string {
