@@ -493,6 +493,16 @@ handle_client :: proc(client: net.TCP_Socket) {
 		return
 	}
 
+	if strings.has_prefix(request, "POST /backups/list ") {
+		handle_backup_list(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /backup/restore ") {
+		handle_backup_restore(client, request_body(request))
+		return
+	}
+
 	if strings.has_prefix(request, "GET /tasks ") {
 		handle_task_list(client)
 		return
