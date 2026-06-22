@@ -16,7 +16,7 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
   // Form Fields
   const [daemonIp, setDaemonIp] = useState<string>('http://127.0.0.1:49322');
   const [displayName, setDisplayName] = useState<string>('');
-  const [memoryDir, setMemoryDir] = useState<string>('~/agent_knowledge');
+  const [backupDir, setBackupDir] = useState<string>('~/heimdall-backups');
   const [provisionMemoryAgents, setProvisionMemoryAgents] = useState<boolean>(true);
 
   // Test Results State
@@ -85,8 +85,8 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
       await daemonApi.savePreference({
         daemonUrl: daemonIp,
         clientToken: token,
-        key: 'memory_auditor_dir',
-        value: memoryDir,
+        key: 'backup_dir',
+        value: backupDir,
         interrupt: false,
       });
 
@@ -228,22 +228,22 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
           </div>
         )}
 
-        {/* Step 3: Durable Memory Path */}
+        {/* Step 3: Database Backup Storage */}
         {step === 3 && (
           <div className="space-y-6">
             <div>
-              <h3 className="text-lg font-semibold text-white">Durable Memory Storage</h3>
+              <h3 className="text-lg font-semibold text-white">Database Backup Storage</h3>
               <p className="framer-subtext mt-1">
-                Provide a path where your durable memory PKM files will reside on the host machine. If this directory path doesn't exist, the daemon will automatically create it.
+                Provide a path where your database backups will be saved on the host machine. If this directory path doesn't exist, the daemon will automatically create it.
               </p>
             </div>
             <div className="space-y-2">
-              <label className="block text-xs font-semibold uppercase tracking-wider text-[#aaa]">PKM Directory Path</label>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-[#aaa]">Backup Directory Path</label>
               <input
                 type="text"
-                value={memoryDir}
-                onChange={(e) => setMemoryDir(e.target.value)}
-                placeholder="~/agent_knowledge"
+                value={backupDir}
+                onChange={(e) => setBackupDir(e.target.value)}
+                placeholder="~/heimdall-backups"
                 className="w-full rounded-[var(--fd-radius-md)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-4 py-2.5 text-white transition focus:border-[var(--fd-accent-blue)] focus:outline-none"
               />
               <span className="text-[11px] text-emerald-400">✓ Path will be resolved and created remotely by the daemon.</span>
@@ -257,7 +257,7 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
               </button>
               <button
                 onClick={() => setStep(4)}
-                disabled={!memoryDir.trim()}
+                disabled={!backupDir.trim()}
                 className="flex-1 rounded-[var(--fd-radius-lg)] bg-[var(--fd-accent-blue)] py-3 font-semibold text-white transition hover:bg-[var(--fd-accent-blue)]/80 disabled:opacity-50"
               >
                 Continue →
