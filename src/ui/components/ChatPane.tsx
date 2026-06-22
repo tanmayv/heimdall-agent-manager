@@ -6,9 +6,11 @@ import MessageBubble from './MessageBubble';
 
 const NEW_MESSAGE_THRESHOLD = 48;
 
+const EMPTY_ARRAY: any[] = [];
+
 export default function ChatPane({ agent, session }: { agent: any; session: any }) {
   const dispatch = useDispatch<any>();
-  const messages = useSelector((state: any) => agent ? state.chat.chats[agent.id] ?? [] : []);
+  const messages = useSelector((state: any) => agent ? state.chat.chats[agent.id] ?? EMPTY_ARRAY : EMPTY_ARRAY);
   const sending = useSelector((state: any) => state.chat.sending);
   const chatsCursor = useSelector((state: any) => state.chat.chatsCursor);
   const chatsHasMore = useSelector((state: any) => state.chat.chatsHasMore);

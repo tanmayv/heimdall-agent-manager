@@ -34,11 +34,13 @@ import { refreshProjects } from '../store/projectSlice';
 import * as daemonApi from '../api/daemonApi';
 import AuditSidebar from './AuditSidebar';
 
+const EMPTY_ARRAY: any[] = [];
+
 export default function App() {
   const dispatch = useDispatch<any>();
   const { agents, selectedAgentId, session } = useSelector((state: any) => state.chat);
   const { projectsById } = useSelector((state: any) => state.projects);
-  const unreviewedChains = useSelector((state: any) => state.tasks.unreviewedChains || []);
+  const unreviewedChains = useSelector((state: any) => state.tasks.unreviewedChains || EMPTY_ARRAY);
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? null;
   const [view, setView] = useState<'chat' | 'settings' | 'tasks' | 'memory' | 'projects' | 'agents' | 'startAgent'>('chat');
   const [isAuditOpen, setIsAuditOpen] = useState(false);
