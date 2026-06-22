@@ -110,6 +110,16 @@ registry_apply_heartbeat_snapshot :: proc(snap: Heartbeat_Snapshot) -> (runtime_
 			a.startup_updated_unix_ms = a.last_seen_unix_ms
 			lifecycle_changed = true
 		}
+	} else {
+		// Backward-compatibility fallback for older wrappers that don't send startup_status in heartbeats.
+		// If the execution state shows it is already running, idle, or blocked, promote startup_status to ready.
+		if a.startup_status == "starting" && (a.exec_state == "running" || a.exec_state == "idle" || a.exec_state == "blocked") {
+			a.startup_status = "ready"
+			a.startup_reason_code = "already_running_fallback"
+			a.startup_safe_diagnostic = "Agent recovered in active execution state (backward-compatibility fallback)"
+			a.startup_updated_unix_ms = a.last_seen_unix_ms
+			lifecycle_changed = true
+		}
 	}
 
 	return runtime_changed, lifecycle_changed
