@@ -81,8 +81,10 @@ handle_user_rpc_fetch_chat :: proc(client: net.TCP_Socket, body, user_id: string
 		return
 	}
 	unread_only := extract_json_bool(body, "unread_only", true)
-	fmt.println("DEBUG: handle_user_rpc_fetch_chat for user", user_id, "agent", agent_instance_id, "unread_only =", unread_only)
-	write_response(client, 200, "OK", chat_fetch_json(user_id, agent_instance_id, unread_only, ""))
+	limit := extract_json_int(body, "limit", 50)
+	cursor := extract_json_i64(body, "cursor", 0)
+	fmt.println("DEBUG: handle_user_rpc_fetch_chat for user", user_id, "agent", agent_instance_id, "unread_only =", unread_only, "limit =", limit, "cursor =", cursor)
+	write_response(client, 200, "OK", chat_fetch_json(user_id, agent_instance_id, unread_only, "", limit, cursor))
 }
 
 handle_user_rpc_list_chats :: proc(client: net.TCP_Socket, user_id: string) {
@@ -175,7 +177,7 @@ chat_send_response_json :: proc(message_id: string, fanout_count: int) -> string
 	return strings.to_string(builder)
 }
 
-chat_fetch_json :: proc(user_id, agent_instance_id: string, unread_only: bool = true, direction: string = "") -> string {
+chat_fetch_json :: proc(user_id, agent_instance_id: string, unread_only: bool = true, direction: string = "", limit: int = 50, cursor: i64 = 0) -> string {
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"ok":true,"user_id":"`); json_write_string(&builder, user_id)
 	strings.write_string(&builder, `","agent_instance_id":"`); json_write_string(&builder, agent_instance_id)

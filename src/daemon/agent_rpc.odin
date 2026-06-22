@@ -80,6 +80,9 @@ handle_agent_rpc_fetch_user_chat :: proc(client: net.TCP_Socket, body, from_agen
 		return
 	}
 	unread_only := extract_json_bool(body, "unread_only", true)
+	limit := extract_json_int(body, "limit", 3)
+	cursor := extract_json_i64(body, "cursor", 0)
+
 	if chat_has_unread_direction(user_id, from_agent_instance_id, "user_to_agent") {
 		// Mark read only up to the latest unread message, not current time
 		// This prevents filtering out agent responses sent around the same time
@@ -92,7 +95,7 @@ handle_agent_rpc_fetch_user_chat :: proc(client: net.TCP_Socket, body, from_agen
 			chat_event_fanout(user_id, from_agent_instance_id, "", "read")
 		}
 	}
-	write_response(client, 200, "OK", chat_fetch_json(user_id, from_agent_instance_id, unread_only, "user_to_agent"))
+	write_response(client, 200, "OK", chat_fetch_json(user_id, from_agent_instance_id, unread_only, "user_to_agent", limit, cursor))
 }
 
 agent_rpc_parse_send_message_command :: proc(body, from_agent_instance_id: string) -> Command {

@@ -77,6 +77,22 @@ extract_json_int :: proc(body, key: string, fallback: int) -> int {
 	return fallback
 }
 
+extract_json_i64 :: proc(body, key: string, fallback: i64) -> i64 {
+	start := json_value_start(body, key)
+	if start < 0 do return fallback
+	end := start
+	for end < len(body) {
+		ch := body[end]
+		if ch < '0' || ch > '9' do break
+		end += 1
+	}
+	if end == start do return fallback
+	if value, ok := strconv.parse_i64(body[start:end]); ok {
+		return value
+	}
+	return fallback
+}
+
 extract_json_bool :: proc(body, key: string, fallback: bool) -> bool {
 	start := json_value_start(body, key)
 	if start < 0 do return fallback

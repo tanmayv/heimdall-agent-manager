@@ -358,15 +358,23 @@ message_db_get_last_read_for_direction :: proc(user_id, agent_instance_id, direc
 	return message_db_get_last_read(user_id, agent_instance_id)
 }
 
-message_db_fetch_all :: proc(user_id, agent_instance_id: string, direction: string = "") -> [dynamic]Chat_Message {
+message_db_fetch_all :: proc(user_id, agent_instance_id: string, direction: string = "", limit: int = 50, cursor: i64 = 0) -> [dynamic]Chat_Message {
 	messages := make([dynamic]Chat_Message)
 	stmt: sqlite3_stmt = nil
 
 	query: string
 	if direction == "user_to_agent" || direction == "agent_to_user" {
-		query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = ? ORDER BY created_unix_ms ASC`
+		if cursor > 0 {
+			query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = ? AND created_unix_ms > ? ORDER BY created_unix_ms ASC LIMIT ?`
+		} else {
+			query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = ? ORDER BY created_unix_ms ASC LIMIT ?`
+		}
 	} else {
-		query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? ORDER BY created_unix_ms ASC`
+		if cursor > 0 {
+			query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND created_unix_ms > ? ORDER BY created_unix_ms ASC LIMIT ?`
+		} else {
+			query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? ORDER BY created_unix_ms ASC LIMIT ?`
+		}
 	}
 
 	rc := sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil)
@@ -378,9 +386,17 @@ message_db_fetch_all :: proc(user_id, agent_instance_id: string, direction: stri
 
 	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), -1, SQLITE_TRANSIENT)
 	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), -1, SQLITE_TRANSIENT)
+	
+	idx := 3
 	if direction == "user_to_agent" || direction == "agent_to_user" {
-		sqlite3_bind_text(stmt, 3, cstring(raw_data(direction)), -1, SQLITE_TRANSIENT)
+		sqlite3_bind_text(stmt, i32(idx), cstring(raw_data(direction)), -1, SQLITE_TRANSIENT)
+		idx += 1
 	}
+	if cursor > 0 {
+		sqlite3_bind_int64(stmt, i32(idx), cursor)
+		idx += 1
+	}
+	sqlite3_bind_int64(stmt, i32(idx), i64(limit))
 
 	for sqlite3_step(stmt) == SQLITE_ROW {
 		msg := Chat_Message{
@@ -401,20 +417,25 @@ message_db_fetch_all :: proc(user_id, agent_instance_id: string, direction: stri
 	return messages
 }
 
-message_db_fetch_unread :: proc(user_id, agent_instance_id, direction: string) -> [dynamic]Chat_Message {
+message_db_fetch_unread :: proc(user_id, agent_instance_id, direction: string, limit: int = 50, cursor: i64 = 0) -> [dynamic]Chat_Message {
 	messages := make([dynamic]Chat_Message)
 	stmt: sqlite3_stmt = nil
 
 	user_to_agent_read, agent_to_user_read := message_db_get_last_read_status(user_id, agent_instance_id)
-	fmt.println("DEBUG: message_db_fetch_unread for", user_id, agent_instance_id, "last_read user_to_agent =", user_to_agent_read, "agent_to_user=", agent_to_user_read, "direction=", direction)
+	
+	start_time := user_to_agent_read
+	if direction == "agent_to_user" do start_time = agent_to_user_read
+	if cursor > start_time do start_time = cursor
+
+	fmt.println("DEBUG: message_db_fetch_unread for", user_id, agent_instance_id, "last_read user_to_agent =", user_to_agent_read, "agent_to_user=", agent_to_user_read, "direction=", direction, "limit=", limit, "cursor=", cursor)
 
 	query: string
 	if direction == "user_to_agent" {
-		query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = 'user_to_agent' AND created_unix_ms > ? ORDER BY created_unix_ms ASC`
+		query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = 'user_to_agent' AND created_unix_ms > ? ORDER BY created_unix_ms ASC LIMIT ?`
 	} else if direction == "agent_to_user" {
-		query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = 'agent_to_user' AND created_unix_ms > ? ORDER BY created_unix_ms ASC`
+		query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = 'agent_to_user' AND created_unix_ms > ? ORDER BY created_unix_ms ASC LIMIT ?`
 	} else {
-		query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND ((direction = 'user_to_agent' AND created_unix_ms > ?) OR (direction = 'agent_to_user' AND created_unix_ms > ?)) ORDER BY created_unix_ms ASC`
+		query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND ((direction = 'user_to_agent' AND created_unix_ms > ?) OR (direction = 'agent_to_user' AND created_unix_ms > ?)) ORDER BY created_unix_ms ASC LIMIT ?`
 	}
 
 	rc := sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil)
@@ -427,12 +448,19 @@ message_db_fetch_unread :: proc(user_id, agent_instance_id, direction: string) -
 	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), -1, SQLITE_TRANSIENT)
 	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), -1, SQLITE_TRANSIENT)
 	if direction == "" {
-		sqlite3_bind_int64(stmt, 3, user_to_agent_read)
-		sqlite3_bind_int64(stmt, 4, agent_to_user_read)
+		t1 := user_to_agent_read
+		if cursor > t1 do t1 = cursor
+		t2 := agent_to_user_read
+		if cursor > t2 do t2 = cursor
+		sqlite3_bind_int64(stmt, 3, t1)
+		sqlite3_bind_int64(stmt, 4, t2)
+		sqlite3_bind_int64(stmt, 5, i64(limit))
 	} else if direction == "user_to_agent" {
-		sqlite3_bind_int64(stmt, 3, user_to_agent_read)
+		sqlite3_bind_int64(stmt, 3, start_time)
+		sqlite3_bind_int64(stmt, 4, i64(limit))
 	} else {
-		sqlite3_bind_int64(stmt, 3, agent_to_user_read)
+		sqlite3_bind_int64(stmt, 3, start_time)
+		sqlite3_bind_int64(stmt, 4, i64(limit))
 	}
 	fmt.println("DEBUG: Query bound with user_id =", user_id, "agent_instance_id =", agent_instance_id)
 
