@@ -83,19 +83,23 @@ handle_agent_rpc_fetch_user_chat :: proc(client: net.TCP_Socket, body, from_agen
 	limit := extract_json_int(body, "limit", 3)
 	cursor := extract_json_i64(body, "cursor", 0)
 
-	if chat_has_unread_direction(user_id, from_agent_instance_id, "user_to_agent") {
-		// Mark read only up to the latest unread message, not current time
-		// This prevents filtering out agent responses sent around the same time
+	// 1. Fetch messages first while they are still unread
+	response_json := chat_fetch_json(user_id, from_agent_instance_id, unread_only, "user_to_agent", limit, cursor)
+
+	// 2. Mark them as read afterwards
+	if unread_only && chat_has_unread_direction(user_id, from_agent_instance_id, "user_to_agent") {
 		read_time := message_db_get_max_unread_timestamp(user_id, from_agent_instance_id, "user_to_agent")
 		if read_time > 0 {
 			if !chat_store_append_event(Chat_Event{kind = .Read_Marked, user_id = user_id, agent_instance_id = from_agent_instance_id, direction = "user_to_agent", read_unix_ms = read_time}) {
-				write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"fetch_user_chat mark read failed"}`)
-				return
+				fmt.println("WARNING: fetch_user_chat mark read failed")
+			} else {
+				chat_event_fanout(user_id, from_agent_instance_id, "", "read")
 			}
-			chat_event_fanout(user_id, from_agent_instance_id, "", "read")
 		}
 	}
-	write_response(client, 200, "OK", chat_fetch_json(user_id, from_agent_instance_id, unread_only, "user_to_agent", limit, cursor))
+
+	// 3. Return the fetched messages
+	write_response(client, 200, "OK", response_json)
 }
 
 agent_rpc_parse_send_message_command :: proc(body, from_agent_instance_id: string) -> Command {
