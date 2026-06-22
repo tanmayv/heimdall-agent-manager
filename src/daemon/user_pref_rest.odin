@@ -52,7 +52,7 @@ get_preference_default :: proc(key: string, agent_class := "") -> (value: string
 
 		return fmt.tprintf(
 			"# Heimdall Tooling\n" +
-			"- Use repo-local `{ctl_bin} --config ./config.toml ...` for Heimdall task, chat, project, and memory workflows when available.\n" +
+			"- Use repo-local `{{ctl_bin}} --config ./config.toml ...` for Heimdall task, chat, project, and memory workflows when available.\n" +
 			"- Track non-trivial/verifiable work in Heimdall tasks; keep status current and request review when complete.\n\n" +
 			"%s\n" +
 			"# Agent Operating Rules\n" +
@@ -63,7 +63,7 @@ get_preference_default :: proc(key: string, agent_class := "") -> (value: string
 			"- Check `inbox` for pending messages before starting anything new.\n" +
 			"- Do not start new work without a task to anchor it.\n\n" +
 			"## 2. Ad-hoc work goes in the ad-hoc chain\n" +
-			"If a user asks you to do something that is not part of your current assigned task chain, create or reuse a chain called `ad-hoc-{instance}`. Create a task in that chain, do the work, and mark it complete.\n\n" +
+			"If a user asks you to do something that is not part of your current assigned task chain, create or reuse a chain called `ad-hoc-{{instance}}`. Create a task in that chain, do the work, and mark it complete.\n\n" +
 			"## 3. Always reply to user@operator messages\n" +
 			"When you receive a message from `user@operator` (or any user), always send a reply via `chat send-to-user`. Never leave a user message unanswered.\n\n" +
 			"## 4. Confirm before acting on unverified requests\n" +
@@ -75,10 +75,10 @@ get_preference_default :: proc(key: string, agent_class := "") -> (value: string
 			"When you need to ask the user a question, present options, or request confirmation, do NOT send plain text. Instead, use rich interactive cards so the user can answer with a single click. Choose the correct type below:\n\n" +
 			"## 1. Smart Replies (Highly Encouraged & Default for Simple Queries)\n" +
 			"For simple queries, confirmations, or short responses (e.g. Yes/No, Proceed/Stop, review choices), use `--type smart_answer` with a JSON payload inside `--data`. This is the preferred method as the UI renders these as quick-action pill buttons directly above the chat input composer for one-click submission:\n" +
-			"`{ctl_bin} chat send-to-user --user-id user@operator --type smart_answer --data '{{\"type\":\"smart_answer\",\"body\":\"Should I proceed with committing these changes?\",\"suggested_replies\":[\"Yes, do it\",\"No, wait\",\"Show diff first\"]}}'`\n\n" +
+			"`{{ctl_bin}} chat send-to-user --user-id user@operator --type smart_answer --data '{{\"type\":\"smart_answer\",\"body\":\"Should I proceed with committing these changes?\",\"suggested_replies\":[\"Yes, do it\",\"No, wait\",\"Show diff first\"]}}'`\n\n" +
 			"## 2. Multi-Question Wizard (Questionnaire Card)\n" +
 			"Use `--type questions` with a JSON payload inside `--data` ONLY when you have a set of multiple distinct questions, each having its own multiple-choice options. The UI will render this as an interactive step-by-step wizard card (one question at a time) and send all answers back to you in a single formatted summary block on submit:\n" +
-			"`{ctl_bin} chat send-to-user --user-id user@operator --type questions --data '{{\"type\":\"multi_question\",\"questions\":[{{\"text\":\"What language should I use?\",\"options\":[\"Odin\",\"TS\"]}},{{\"text\":\"Should I run tests?\",\"options\":[\"Yes\",\"No\"]}}]}}'`",
+			"`{{ctl_bin}} chat send-to-user --user-id user@operator --type questions --data '{{\"type\":\"multi_question\",\"questions\":[{{\"text\":\"What language should I use?\",\"options\":[\"Odin\",\"TS\"]}},{{\"text\":\"Should I run tests?\",\"options\":[\"Yes\",\"No\"]}}]}}'`",
 			profile_desc,
 		), false
 
