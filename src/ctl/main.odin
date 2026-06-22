@@ -1,5 +1,6 @@
 package main
 
+import json "core:encoding/json"
 import "core:fmt"
 import "core:math/rand"
 import "core:os"
@@ -597,15 +598,26 @@ ctl_agent_chat :: proc(daemon_url, action: string, args: []string) {
 		body_val := option_value(args, "--body", "")
 		type_val := option_value(args, "--type", "")
 		data_val := option_value(args, "--data", "")
-		
+
 		final_body := ""
-		if type_val == "questions" {
+		if type_val == "questions" || type_val == "smart_answer" {
 			if data_val == "" {
-				fmt.println(`{"ok":false,"message":"--type questions requires --data <json>"}`)
-				return
+				fmt.printf(`{"ok":false,"error":"validation_error","message":"--type %s requires --data <json>"}\n`, type_val)
+				os.exit(1)
 			}
-			final_body = strings.clone(data_val)
+			val_body, val_err, val_ok := validate_and_build_special_message(type_val, data_val)
+			if !val_ok {
+				escaped_err, _ := strings.replace_all(val_err, `"`, `\"`)
+				defer delete(escaped_err)
+				fmt.printf(`{"ok":false,"error":"validation_error","message":"%s"}\n`, escaped_err)
+				os.exit(1)
+			}
+			final_body = val_body
 		} else {
+			if type_val != "" {
+				fmt.printf(`{"ok":false,"error":"validation_error","message":"Unsupported message type '%s'. Supported types: questions, smart_answer"}\n`, type_val)
+				os.exit(1)
+			}
 			final_body = strings.clone(body_val)
 		}
 		defer delete(final_body)
@@ -928,4 +940,231 @@ print_usage :: proc(config_path, daemon_url: string) {
 	fmt.println("  chat fetch-user --token <agent_token> --user-id <user> [--include-read] [--limit N] [--cursor TS]")
 	fmt.println("  start-success --token <agent_token>   (signal to daemon that agent is alive and ready)")
 	fmt.println("global flags: --config <path>, --daemon-url <url>, --version, --help")
+}
+
+validate_and_build_special_message :: proc(msg_type, data_json: string) -> (result_body: string, error_msg: string, ok: bool) {
+	data_bytes := transmute([]byte)data_json
+	val, err := json.parse(data_bytes)
+	if err != .None {
+		return "", fmt.tprintf("Invalid JSON payload: {}", err), false
+	}
+	defer json.destroy_value(val)
+
+	obj, is_obj := val.(json.Object)
+	if !is_obj {
+		return "", "Data payload must be a JSON object", false
+	}
+
+	if msg_type == "smart_answer" {
+		body_val, has_body := obj["body"]
+		replies_val, has_replies := obj["suggested_replies"]
+
+		for k, _ in obj {
+			if k != "body" && k != "suggested_replies" {
+				schema := 
+					"{\n" +
+					"  \"body\": \"<question_text_string>\",\n" +
+					"  \"suggested_replies\": [\"reply_1\", \"reply_2\", ...]\n" +
+					"}"
+				return "", fmt.tprintf("Validation Error: Extra field '{}' is not allowed in smart_answer schema.\nExpected Schema:\n{}", k, schema), false
+			}
+		}
+
+		if !has_body || !has_replies {
+			schema := 
+				"{\n" +
+				"  \"body\": \"<question_text_string>\",\n" +
+				"  \"suggested_replies\": [\"reply_1\", \"reply_2\", ...]\n" +
+				"}"
+			return "", fmt.tprintf("Validation Error: Missing required fields. Both 'body' and 'suggested_replies' are required.\nExpected Schema:\n{}", schema), false
+		}
+
+		body_str, body_ok := body_val.(json.String)
+		replies_arr, replies_ok := replies_val.(json.Array)
+		if !body_ok || !replies_ok {
+			return "", "Validation Error: 'body' must be a string and 'suggested_replies' must be an array of strings.", false
+		}
+
+		replies_list := make([dynamic]string, context.temp_allocator)
+		for r_val in replies_arr {
+			r_str, r_ok := r_val.(json.String)
+			if !r_ok {
+				return "", "Validation Error: All items in 'suggested_replies' must be strings.", false
+			}
+			append(&replies_list, r_str)
+		}
+
+		ab := strings.builder_make()
+		strings.write_string(&ab, `{"type":"smart_answer","body":"`)
+		json_write_string(&ab, body_str)
+		strings.write_string(&ab, `","suggested_replies":[`)
+		for reply, idx in replies_list {
+			if idx > 0 do strings.write_string(&ab, ",")
+			strings.write_string(&ab, `"`)
+			json_write_string(&ab, reply)
+			strings.write_string(&ab, `"`)
+		}
+		strings.write_string(&ab, `]}`)
+		return strings.to_string(ab), "", true
+
+	} else if msg_type == "questions" {
+		_, has_questions := obj["questions"]
+		_, has_question := obj["question"]
+
+		if has_questions && has_question {
+			return "", "Validation Error: Payload cannot contain both 'questions' and 'question' fields. Choose either multi-question or single-question schema.", false
+		}
+
+		if !has_questions && !has_question {
+			schema_single := 
+				"Single Question Schema:\n" +
+				"{\n" +
+				"  \"question\": \"<question_text_string>\",\n" +
+				"  \"suggested_answers\": [\"ans_1\", \"ans_2\", ...]\n" +
+				"}"
+			schema_multi := 
+				"Multi-Question Questionnaire Schema:\n" +
+				"{\n" +
+				"  \"questions\": [\n" +
+				"    {\n" +
+				"      \"id\": \"<optional_unique_id>\",\n" +
+				"      \"text\": \"<question_text_string>\",\n" +
+				"      \"options\": [\"opt_1\", \"opt_2\", ...]\n" +
+				"    },\n" +
+				"    ...\n" +
+				"  ]\n" +
+				"}"
+			return "", fmt.tprintf("Validation Error: Missing required fields. Must match either Single Question or Multi-Question schema.\n\n{}\n\n{}", schema_single, schema_multi), false
+		}
+
+		if has_questions {
+			questions_val := obj["questions"]
+			questions_arr, q_arr_ok := questions_val.(json.Array)
+			if !q_arr_ok {
+				return "", "Validation Error: 'questions' must be an array of question objects.", false
+			}
+
+			for k, _ in obj {
+				if k != "questions" {
+					return "", fmt.tprintf("Validation Error: Extra field '{}' is not allowed at root of multi-question schema.", k), false
+				}
+			}
+
+			ab := strings.builder_make()
+			strings.write_string(&ab, `{"type":"multi_question","questions":[`)
+
+			for q_val, q_idx in questions_arr {
+				q_obj, q_obj_ok := q_val.(json.Object)
+				if !q_obj_ok {
+					return "", "Validation Error: Items in 'questions' array must be JSON objects.", false
+				}
+
+				q_text_val, q_has_text := q_obj["text"]
+				q_options_val, q_has_options := q_obj["options"]
+				q_id_val, q_has_id := q_obj["id"]
+
+				for k, _ in q_obj {
+					if k != "text" && k != "options" && k != "id" {
+						schema_item := 
+							"Expected Question Item Schema:\n" +
+							"{\n" +
+							"  \"id\": \"<optional_unique_id>\",\n" +
+							"  \"text\": \"<question_text_string>\",\n" +
+							"  \"options\": [\"opt_1\", \"opt_2\", ...]\n" +
+							"}"
+						return "", fmt.tprintf("Validation Error: Extra field '{}' is not allowed in question item at index {}.\n{}", k, q_idx, schema_item), false
+					}
+				}
+
+				if !q_has_text || !q_has_options {
+					return "", fmt.tprintf("Validation Error: Question item at index {} is missing required fields. Both 'text' and 'options' are required.", q_idx), false
+				}
+
+				q_text_str, q_text_ok := q_text_val.(json.String)
+				q_options_arr, q_options_ok := q_options_val.(json.Array)
+				if !q_text_ok || !q_options_ok {
+					return "", fmt.tprintf("Validation Error: In question item at index {}, 'text' must be a string and 'options' must be an array of strings.", q_idx), false
+				}
+
+				q_id_str := ""
+				if q_has_id {
+					id_str, id_ok := q_id_val.(json.String)
+					if !id_ok {
+						return "", fmt.tprintf("Validation Error: In question item at index {}, 'id' must be a string.", q_idx), false
+					}
+					q_id_str = id_str
+				}
+
+				if q_idx > 0 do strings.write_string(&ab, ",")
+				strings.write_string(&ab, "{")
+				if q_has_id {
+					strings.write_string(&ab, `"id":"`)
+					json_write_string(&ab, q_id_str)
+					strings.write_string(&ab, `",`)
+				}
+				strings.write_string(&ab, `"text":"`)
+				json_write_string(&ab, q_text_str)
+				strings.write_string(&ab, `","options":[`)
+				for opt_val, opt_idx in q_options_arr {
+					opt_str, opt_ok := opt_val.(json.String)
+					if !opt_ok {
+						return "", fmt.tprintf("Validation Error: All items in 'options' at question index {} must be strings.", q_idx), false
+					}
+					if opt_idx > 0 do strings.write_string(&ab, ",")
+					strings.write_string(&ab, `"`)
+					json_write_string(&ab, opt_str)
+					strings.write_string(&ab, `"`)
+				}
+				strings.write_string(&ab, `]}`)
+			}
+
+			strings.write_string(&ab, `]}`)
+			return strings.to_string(ab), "", true
+
+		} else {
+			question_val := obj["question"]
+			answers_val, has_answers := obj["suggested_answers"]
+
+			for k, _ in obj {
+				if k != "question" && k != "suggested_answers" {
+					schema := 
+						"Expected Single Question Schema:\n" +
+						"{\n" +
+						"  \"question\": \"<question_text_string>\",\n" +
+						"  \"suggested_answers\": [\"ans_1\", \"ans_2\", ...]\n" +
+						"}"
+					return "", fmt.tprintf("Validation Error: Extra field '{}' is not allowed in single question schema.\n{}", k, schema), false
+				}
+			}
+
+			if !has_answers {
+				return "", "Validation Error: Single question schema requires both 'question' and 'suggested_answers' fields.", false
+			}
+
+			question_str, q_ok := question_val.(json.String)
+			answers_arr, a_ok := answers_val.(json.Array)
+			if !q_ok || !a_ok {
+				return "", "Validation Error: 'question' must be a string and 'suggested_answers' must be an array of strings.", false
+			}
+
+			ab := strings.builder_make()
+			strings.write_string(&ab, `{"type":"structured_question","question":"`)
+			json_write_string(&ab, question_str)
+			strings.write_string(&ab, `","suggested_answers":[`)
+			for ans_val, ans_idx in answers_arr {
+				ans_str, ans_ok := ans_val.(json.String)
+				if !ans_ok {
+					return "", "Validation Error: All items in 'suggested_answers' must be strings.", false
+				}
+				if ans_idx > 0 do strings.write_string(&ab, ",")
+				strings.write_string(&ab, `"`)
+				json_write_string(&ab, ans_str)
+				strings.write_string(&ab, `"`)
+			}
+			strings.write_string(&ab, `]}`)
+			return strings.to_string(ab), "", true
+		}
+	}
+
+	return "", "Unknown message type", false
 }

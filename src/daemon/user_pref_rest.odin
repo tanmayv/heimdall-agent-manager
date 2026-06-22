@@ -72,13 +72,22 @@ get_preference_default :: proc(key: string, agent_class := "") -> (value: string
 			"2. Send the user a plan of action via `chat send-to-user` describing what you will do and why.\n" +
 			"3. Wait for confirmation before proceeding.\n\n" +
 			"# Rich Interactive Messaging (Q&A Cards)\n" +
-			"When you need to ask the user a question, present options, or request confirmation, do NOT send plain text. Instead, use rich interactive cards so the user can answer with a single click. Choose the correct type below:\n\n" +
+			"When you need to ask the user a question, present options, or request confirmation, do NOT send plain text. Instead, use rich interactive cards so the user can answer with a single click. Choose the correct type below based on the scenario:\n\n" +
 			"## 1. Smart Replies (Highly Encouraged & Default for Simple Queries)\n" +
-			"For simple queries, confirmations, or short responses (e.g. Yes/No, Proceed/Stop, review choices), use `--type smart_answer` with a JSON payload inside `--data`. This is the preferred method as the UI renders these as quick-action pill buttons directly above the chat input composer for one-click submission:\n" +
-			"`{{ctl_bin}} chat send-to-user --user-id user@operator --type smart_answer --data '{{\"type\":\"smart_answer\",\"body\":\"Should I proceed with committing these changes?\",\"suggested_replies\":[\"Yes, do it\",\"No, wait\",\"Show diff first\"]}}'`\n\n" +
-			"## 2. Multi-Question Wizard (Questionnaire Card)\n" +
-			"Use `--type questions` with a JSON payload inside `--data` ONLY when you have a set of multiple distinct questions, each having its own multiple-choice options. The UI will render this as an interactive step-by-step wizard card (one question at a time) and send all answers back to you in a single formatted summary block on submit:\n" +
-			"`{{ctl_bin}} chat send-to-user --user-id user@operator --type questions --data '{{\"type\":\"multi_question\",\"questions\":[{{\"text\":\"What language should I use?\",\"options\":[\"Odin\",\"TS\"]}},{{\"text\":\"Should I run tests?\",\"options\":[\"Yes\",\"No\"]}}]}}'`",
+			"**Scenario:** Use this for simple, single-turn questions that have short, common responses (e.g. Yes/No, Proceed/Stop, confirming choices, selecting a model, or asking to view a diff).\n" +
+			"**UX Behavior:** The UI renders these as quick-action pill buttons directly above the text input composer, allowing the user to click to reply instantly or type a custom message.\n" +
+			"**CLI Command:** Use `--type smart_answer` and pass a JSON payload containing only `body` (the question text) and `suggested_replies` (array of strings) inside `--data`. The CLI will automatically validate the schema and inject the type key:\n" +
+			"`{{ctl_bin}} chat send-to-user --user-id user@operator --type smart_answer --data '{{\"body\":\"Should I proceed with committing these changes?\",\"suggested_replies\":[\"Yes, do it\",\"No, wait\",\"Show diff first\"]}}'`\n\n" +
+			"## 2. Single Question Card (Pill Buttons inside Message)\n" +
+			"**Scenario:** Use this when you want to ask a single multiple-choice question where the answer choices are embedded directly inside the message bubble history rather than above the input box (e.g. choosing a setup template or a specific file to edit).\n" +
+			"**UX Behavior:** The UI renders the choices as pill buttons directly inside the chat bubble history. Clicking one submits the response and disables other choices.\n" +
+			"**CLI Command:** Use `--type questions` and pass a JSON payload containing `question` (the question text) and `suggested_answers` (array of strings) inside `--data`:\n" +
+			"`{{ctl_bin}} chat send-to-user --user-id user@operator --type questions --data '{{\"question\":\"Which setup template should I initialize?\",\"suggested_answers\":[\"Web Frontend\",\"CLI Tool\",\"Daemon Service\"]}}'`\n\n" +
+			"## 3. Multi-Question Wizard (Questionnaire Card)\n" +
+			"**Scenario:** Use this ONLY when you have a set of multiple distinct questions to ask the user (e.g. configuring a new project, setting up environment preferences, or running an interactive onboarding survey).\n" +
+			"**UX Behavior:** The UI renders this as a gorgeous step-by-step wizard card (one question at a time) with 'Back' and 'Next' buttons, concluding with a 'Submit' button. Upon submission, it compiles all answers into a single structured response and sends it back to you.\n" +
+			"**CLI Command:** Use `--type questions` and pass a JSON payload containing a `questions` array of objects (each having `text` and `options`) inside `--data`:\n" +
+			"`{{ctl_bin}} chat send-to-user --user-id user@operator --type questions --data '{{\"questions\":[{{\"text\":\"What language should I use?\",\"options\":[\"Odin\",\"TS\"]}},{{\"text\":\"Should I run validation tests?\",\"options\":[\"Yes, run all\",\"No, skip\"]}}]}}'`",
 			profile_desc,
 		), false
 

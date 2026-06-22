@@ -126,11 +126,8 @@ export default function ChatPane({ agent, messages, session, sending }) {
   if (lastMessage && lastMessage.author !== 'user' && lastMessage.body) {
     try {
       const parsed = JSON.parse(lastMessage.body);
-      if (parsed) {
-        const replies = parsed.suggested_replies || parsed.suggested_answers || parsed.options || parsed.answers;
-        if (parsed.type === 'smart_answer' && Array.isArray(replies)) {
-          smartReplies = replies.map(String);
-        }
+      if (parsed && parsed.type === 'smart_answer' && Array.isArray(parsed.suggested_replies)) {
+        smartReplies = parsed.suggested_replies;
       }
     } catch (e) {
       // Ignore

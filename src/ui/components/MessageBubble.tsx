@@ -280,19 +280,12 @@ export default function MessageBubble({ message }) {
     try {
       const parsed = JSON.parse(message.body);
       if (parsed) {
-        const questionText = parsed.question || parsed.body || parsed.text;
-        const optionsArray = parsed.suggested_answers || parsed.options || parsed.answers || parsed.suggested_replies;
-
         if (parsed.type === 'multi_question' && Array.isArray(parsed.questions)) {
           multiQuestion = parsed;
+        } else if (parsed.type === 'structured_question' && parsed.question && Array.isArray(parsed.suggested_answers)) {
+          structuredQuestion = parsed;
         } else if (parsed.type === 'smart_answer' && parsed.body) {
           smartAnswerBody = parsed.body;
-        } else if (typeof questionText === 'string' && Array.isArray(optionsArray)) {
-          structuredQuestion = {
-            type: 'structured_question',
-            question: questionText,
-            suggested_answers: optionsArray.map(String),
-          };
         }
       }
     } catch (e) {
