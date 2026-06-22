@@ -3,9 +3,13 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    odin-sqlite3 = {
+      url = "github:saenai255/odin-sqlite3";
+      flake = false;
+    };
   };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, odin-sqlite3 }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
@@ -31,17 +35,18 @@
         '';
       };
 
-      mkOdinDaemonPackage = pkgs: odin: pkgs.stdenv.mkDerivation {
+      mkOdinDaemonPackage = pkgs: odin: sqlite3Src: pkgs.stdenv.mkDerivation {
         pname = "ham-daemon";
         version = appVersion;
         src = ./.;
         nativeBuildInputs = [ odin ];
+        buildInputs = [ pkgs.sqlite ];
         dontConfigure = true;
         dontInstall = true;
         buildPhase = ''
           runHook preBuild
           mkdir -p $out/bin
-          odin build src/daemon -collection:odin_test=src -out:$out/bin/ham-daemon
+          odin build src/daemon -collection:odin_test=src -collection:sqlite=${sqlite3Src} -out:$out/bin/ham-daemon
           runHook postBuild
         '';
       };
@@ -98,7 +103,7 @@
           odin = pkgs.odin.override { llvmPackages_18 = pkgs.llvmPackages_21; };
         in
         {
-          ham-daemon = mkOdinDaemonPackage pkgs odin;
+          ham-daemon = mkOdinDaemonPackage pkgs odin odin-sqlite3;
           ham-wrapper = mkOdinPackage pkgs odin "ham-wrapper" "src/wrapper";
           ham-ctl = mkOdinCtlPackage pkgs odin;
           ham-test-agent = mkOdinPackage pkgs odin "ham-test-agent" "src/test_agent";

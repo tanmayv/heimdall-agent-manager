@@ -178,7 +178,7 @@ chat_fetch_json :: proc(user_id, agent_instance_id: string, unread_only: bool = 
 	strings.write_string(&builder, `","agent_instance_id":"`); json_write_string(&builder, agent_instance_id)
 	strings.write_string(&builder, `","messages":[`)
 
-	var messages [dynamic]Chat_Message
+	messages := make([dynamic]Chat_Message)
 	if unread_only {
 		messages = message_db_fetch_unread(user_id, agent_instance_id)
 	} else {
