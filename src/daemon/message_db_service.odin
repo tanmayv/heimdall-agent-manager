@@ -3,10 +3,36 @@ package main
 import "core:fmt"
 import "core:os"
 import "core:strings"
-import sqlite "../vendor/sqlite3"
+import "core:c"
+
+// FFI bindings to system sqlite3 library
+foreign import sqlite3_lib "system:sqlite3"
+
+sqlite3 :: distinct rawptr
+sqlite3_stmt :: distinct rawptr
+
+SQLITE_OK       :: 0
+SQLITE_ROW      :: 100
+SQLITE_DONE     :: 101
+SQLITE_TRANSIENT :: rawptr(-1)
+
+@(default_calling_convention="c")
+foreign sqlite3_lib {
+	sqlite3_open :: proc(filename: cstring, ppDb: [^]sqlite3) -> c.int ---
+	sqlite3_close :: proc(db: sqlite3) -> c.int ---
+	sqlite3_prepare_v2 :: proc(db: sqlite3, zSql: cstring, nByte: c.int, ppStmt: [^]sqlite3_stmt, pzTail: [^]cstring) -> c.int ---
+	sqlite3_finalize :: proc(pStmt: sqlite3_stmt) -> c.int ---
+	sqlite3_step :: proc(pStmt: sqlite3_stmt) -> c.int ---
+	sqlite3_exec :: proc(db: sqlite3, sql: cstring, callback: rawptr, arg: rawptr, errmsg: [^]cstring) -> c.int ---
+	sqlite3_bind_text :: proc(pStmt: sqlite3_stmt, index: c.int, value: cstring, n: c.int, destructor: rawptr) -> c.int ---
+	sqlite3_bind_int64 :: proc(pStmt: sqlite3_stmt, index: c.int, value: c.longlong) -> c.int ---
+	sqlite3_column_text :: proc(pStmt: sqlite3_stmt, iCol: c.int) -> cstring ---
+	sqlite3_column_int64 :: proc(pStmt: sqlite3_stmt, iCol: c.int) -> c.longlong ---
+	sqlite3_free :: proc(p: rawptr) ---
+}
 
 Message_Db_Service :: struct {
-	db: sqlite.sqlite3,
+	db: sqlite3,
 	db_path: string,
 }
 
@@ -19,15 +45,15 @@ message_db_init :: proc(data_dir: string) -> bool {
 	db_path := fmt.tprintf("%s/messages.db", db_dir)
 	message_db.db_path = strings.clone(db_path)
 
-	rc := sqlite.open(strings.clone(db_path), &message_db.db)
-	if rc != sqlite.OK {
+	rc := sqlite3_open(strings.clone(db_path), &message_db.db)
+	if rc != SQLITE_OK {
 		fmt.println("message_db_init: sqlite3_open failed:", rc)
 		return false
 	}
 
 	if !message_db_create_schema() {
 		fmt.println("message_db_init: failed to create schema")
-		sqlite.close(message_db.db)
+		sqlite3_close(message_db.db)
 		return false
 	}
 
@@ -62,11 +88,11 @@ message_db_create_schema :: proc() -> bool {
 	`
 
 	errmsg: cstring = nil
-	rc := sqlite.exec(message_db.db, strings.clone(schema), nil, nil, &errmsg)
-	if rc != sqlite.OK {
+	rc := sqlite3_exec(message_db.db, strings.clone(schema), nil, nil, &errmsg)
+	if rc != SQLITE_OK {
 		fmt.println("message_db_create_schema: error:", errmsg)
 		if errmsg != nil {
-			sqlite.free(errmsg)
+			sqlite3_free(rawptr(errmsg))
 		}
 		return false
 	}
@@ -75,7 +101,7 @@ message_db_create_schema :: proc() -> bool {
 }
 
 message_db_insert :: proc(msg: Chat_Message) -> bool {
-	stmt: [^]sqlite.stmt = nil
+	stmt: sqlite3_stmt = nil
 
 	query := fmt.tprintf(
 		`INSERT INTO messages
@@ -84,25 +110,25 @@ message_db_insert :: proc(msg: Chat_Message) -> bool {
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 
-	rc := sqlite.prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
-	if rc != sqlite.OK {
+	rc := sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK {
 		fmt.println("message_db_insert: prepare failed:", rc)
 		return false
 	}
-	defer sqlite.finalize(stmt)
+	defer sqlite3_finalize(stmt)
 
-	sqlite.bind_text(stmt, 1, strings.clone(msg.message_id), -1, sqlite.TRANSIENT)
-	sqlite.bind_text(stmt, 2, strings.clone(msg.user_id), -1, sqlite.TRANSIENT)
-	sqlite.bind_text(stmt, 3, strings.clone(msg.agent_instance_id), -1, sqlite.TRANSIENT)
-	sqlite.bind_text(stmt, 4, strings.clone(msg.direction), -1, sqlite.TRANSIENT)
-	sqlite.bind_text(stmt, 5, strings.clone(msg.body), -1, sqlite.TRANSIENT)
-	sqlite.bind_int64(stmt, 6, msg.delivered_unix_ms)
-	sqlite.bind_int64(stmt, 7, msg.delivery_failed_unix_ms)
-	sqlite.bind_text(stmt, 8, strings.clone(msg.delivery_error), -1, sqlite.TRANSIENT)
-	sqlite.bind_int64(stmt, 9, msg.created_unix_ms)
+	sqlite3_bind_text(stmt, 1, cstring(raw_data(msg.message_id)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 2, cstring(raw_data(msg.user_id)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 3, cstring(raw_data(msg.agent_instance_id)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 4, cstring(raw_data(msg.direction)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 5, cstring(raw_data(msg.body)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_int64(stmt, 6, msg.delivered_unix_ms)
+	sqlite3_bind_int64(stmt, 7, msg.delivery_failed_unix_ms)
+	sqlite3_bind_text(stmt, 8, cstring(raw_data(msg.delivery_error)), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_int64(stmt, 9, msg.created_unix_ms)
 
-	rc = sqlite.step(stmt)
-	if rc != sqlite.DONE {
+	rc = sqlite3_step(stmt)
+	if rc != SQLITE_DONE {
 		fmt.println("message_db_insert: step failed:", rc)
 		return false
 	}
@@ -111,23 +137,23 @@ message_db_insert :: proc(msg: Chat_Message) -> bool {
 }
 
 message_db_mark_conversation_read :: proc(user_id, agent_instance_id: string, read_unix_ms: i64) -> bool {
-	stmt: [^]sqlite.stmt = nil
+	stmt: [^]sqlite3_stmt = nil
 
 	query := `INSERT OR REPLACE INTO conversation_read_status (user_id, agent_instance_id, last_read_unix_ms) VALUES (?, ?, ?)`
 
-	rc := sqlite.prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
-	if rc != sqlite.OK {
+	rc := sqlite3_prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
+	if rc != SQLITE_OK {
 		fmt.println("message_db_mark_conversation_read: prepare failed:", rc)
 		return false
 	}
-	defer sqlite.finalize(stmt)
+	defer sqlite3_finalize(stmt^)
 
-	sqlite.bind_text(stmt, 1, strings.clone(user_id), -1, sqlite.TRANSIENT)
-	sqlite.bind_text(stmt, 2, strings.clone(agent_instance_id), -1, sqlite.TRANSIENT)
-	sqlite.bind_int64(stmt, 3, read_unix_ms)
+	sqlite3_bind_text(stmt^, 1, strings.clone(user_id), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt^, 2, strings.clone(agent_instance_id), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_int64(stmt^, 3, read_unix_ms)
 
-	rc = sqlite.step(stmt)
-	if rc != sqlite.DONE {
+	rc = sqlite3_step(stmt^)
+	if rc != SQLITE_DONE {
 		fmt.println("message_db_mark_conversation_read: step failed:", rc)
 		return false
 	}
@@ -136,22 +162,22 @@ message_db_mark_conversation_read :: proc(user_id, agent_instance_id: string, re
 }
 
 message_db_update_delivered :: proc(message_id: string, delivered_unix_ms: i64) -> bool {
-	stmt: [^]sqlite.stmt = nil
+	stmt: [^]sqlite3_stmt = nil
 
 	query := `UPDATE messages SET delivered_unix_ms = ? WHERE message_id = ?`
 
-	rc := sqlite.prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
-	if rc != sqlite.OK {
+	rc := sqlite3_prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
+	if rc != SQLITE_OK {
 		fmt.println("message_db_update_delivered: prepare failed:", rc)
 		return false
 	}
-	defer sqlite.finalize(stmt)
+	defer sqlite3_finalize(stmt^)
 
-	sqlite.bind_int64(stmt, 1, delivered_unix_ms)
-	sqlite.bind_text(stmt, 2, strings.clone(message_id), -1, sqlite.TRANSIENT)
+	sqlite3_bind_int64(stmt^, 1, delivered_unix_ms)
+	sqlite3_bind_text(stmt^, 2, strings.clone(message_id), -1, SQLITE_TRANSIENT)
 
-	rc = sqlite.step(stmt)
-	if rc != sqlite.DONE {
+	rc = sqlite3_step(stmt^)
+	if rc != SQLITE_DONE {
 		fmt.println("message_db_update_delivered: step failed:", rc)
 		return false
 	}
@@ -160,23 +186,23 @@ message_db_update_delivered :: proc(message_id: string, delivered_unix_ms: i64) 
 }
 
 message_db_update_delivery_failed :: proc(message_id: string, failed_unix_ms: i64, error: string) -> bool {
-	stmt: [^]sqlite.stmt = nil
+	stmt: [^]sqlite3_stmt = nil
 
 	query := `UPDATE messages SET delivery_failed_unix_ms = ?, delivery_error = ? WHERE message_id = ?`
 
-	rc := sqlite.prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
-	if rc != sqlite.OK {
+	rc := sqlite3_prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
+	if rc != SQLITE_OK {
 		fmt.println("message_db_update_delivery_failed: prepare failed:", rc)
 		return false
 	}
-	defer sqlite.finalize(stmt)
+	defer sqlite3_finalize(stmt^)
 
-	sqlite.bind_int64(stmt, 1, failed_unix_ms)
-	sqlite.bind_text(stmt, 2, strings.clone(error), -1, sqlite.TRANSIENT)
-	sqlite.bind_text(stmt, 3, strings.clone(message_id), -1, sqlite.TRANSIENT)
+	sqlite3_bind_int64(stmt^, 1, failed_unix_ms)
+	sqlite3_bind_text(stmt^, 2, strings.clone(error), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt^, 3, strings.clone(message_id), -1, SQLITE_TRANSIENT)
 
-	rc = sqlite.step(stmt)
-	if rc != sqlite.DONE {
+	rc = sqlite3_step(stmt^)
+	if rc != SQLITE_DONE {
 		fmt.println("message_db_update_delivery_failed: step failed:", rc)
 		return false
 	}
@@ -185,22 +211,22 @@ message_db_update_delivery_failed :: proc(message_id: string, failed_unix_ms: i6
 }
 
 message_db_get_last_read :: proc(user_id, agent_instance_id: string) -> i64 {
-	stmt: [^]sqlite.stmt = nil
+	stmt: [^]sqlite3_stmt = nil
 
 	query := `SELECT last_read_unix_ms FROM conversation_read_status WHERE user_id = ? AND agent_instance_id = ?`
 
-	rc := sqlite.prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
-	if rc != sqlite.OK {
+	rc := sqlite3_prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
+	if rc != SQLITE_OK {
 		fmt.println("message_db_get_last_read: prepare failed:", rc)
 		return 0
 	}
-	defer sqlite.finalize(stmt)
+	defer sqlite3_finalize(stmt^)
 
-	sqlite.bind_text(stmt, 1, strings.clone(user_id), -1, sqlite.TRANSIENT)
-	sqlite.bind_text(stmt, 2, strings.clone(agent_instance_id), -1, sqlite.TRANSIENT)
+	sqlite3_bind_text(stmt^, 1, strings.clone(user_id), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt^, 2, strings.clone(agent_instance_id), -1, SQLITE_TRANSIENT)
 
-	if sqlite.step(stmt) == sqlite.ROW {
-		return sqlite.column_int64(stmt, 0)
+	if sqlite3_step(stmt^) == SQLITE_ROW {
+		return sqlite3_column_int64(stmt^, 0)
 	}
 
 	return 0
@@ -208,32 +234,32 @@ message_db_get_last_read :: proc(user_id, agent_instance_id: string) -> i64 {
 
 message_db_fetch_all :: proc(user_id, agent_instance_id: string) -> [dynamic]Chat_Message {
 	messages := make([dynamic]Chat_Message)
-	stmt: [^]sqlite.stmt = nil
+	stmt: [^]sqlite3_stmt = nil
 
 	query := `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? ORDER BY created_unix_ms ASC`
 
-	rc := sqlite.prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
-	if rc != sqlite.OK {
+	rc := sqlite3_prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
+	if rc != SQLITE_OK {
 		fmt.println("message_db_fetch_all: prepare failed:", rc)
 		return messages
 	}
-	defer sqlite.finalize(stmt)
+	defer sqlite3_finalize(stmt^)
 
-	sqlite.bind_text(stmt, 1, strings.clone(user_id), -1, sqlite.TRANSIENT)
-	sqlite.bind_text(stmt, 2, strings.clone(agent_instance_id), -1, sqlite.TRANSIENT)
+	sqlite3_bind_text(stmt^, 1, strings.clone(user_id), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt^, 2, strings.clone(agent_instance_id), -1, SQLITE_TRANSIENT)
 
-	for sqlite.step(stmt) == sqlite.ROW {
+	for sqlite3_step(stmt^) == SQLITE_ROW {
 		msg := Chat_Message{
-			message_id = strings.clone(cstring(sqlite.column_text(stmt, 0))),
-			user_id = strings.clone(cstring(sqlite.column_text(stmt, 1))),
-			agent_instance_id = strings.clone(cstring(sqlite.column_text(stmt, 2))),
-			direction = strings.clone(cstring(sqlite.column_text(stmt, 3))),
-			body = strings.clone(cstring(sqlite.column_text(stmt, 4))),
-			delivered_unix_ms = sqlite.column_int64(stmt, 5),
+			message_id = strings.clone(cstring(sqlite3_column_text(stmt^, 0))),
+			user_id = strings.clone(cstring(sqlite3_column_text(stmt^, 1))),
+			agent_instance_id = strings.clone(cstring(sqlite3_column_text(stmt^, 2))),
+			direction = strings.clone(cstring(sqlite3_column_text(stmt^, 3))),
+			body = strings.clone(cstring(sqlite3_column_text(stmt^, 4))),
+			delivered_unix_ms = sqlite3_column_int64(stmt^, 5),
 			read_unix_ms = 0,
-			delivery_failed_unix_ms = sqlite.column_int64(stmt, 6),
-			delivery_error = strings.clone(cstring(sqlite.column_text(stmt, 7))),
-			created_unix_ms = sqlite.column_int64(stmt, 8),
+			delivery_failed_unix_ms = sqlite3_column_int64(stmt^, 6),
+			delivery_error = strings.clone(cstring(sqlite3_column_text(stmt^, 7))),
+			created_unix_ms = sqlite3_column_int64(stmt^, 8),
 		}
 		append(&messages, msg)
 	}
@@ -243,35 +269,35 @@ message_db_fetch_all :: proc(user_id, agent_instance_id: string) -> [dynamic]Cha
 
 message_db_fetch_unread :: proc(user_id, agent_instance_id: string) -> [dynamic]Chat_Message {
 	messages := make([dynamic]Chat_Message)
-	stmt: [^]sqlite.stmt = nil
+	stmt: [^]sqlite3_stmt = nil
 
 	last_read := message_db_get_last_read(user_id, agent_instance_id)
 
 	query := `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND created_unix_ms > ? ORDER BY created_unix_ms ASC`
 
-	rc := sqlite.prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
-	if rc != sqlite.OK {
+	rc := sqlite3_prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
+	if rc != SQLITE_OK {
 		fmt.println("message_db_fetch_unread: prepare failed:", rc)
 		return messages
 	}
-	defer sqlite.finalize(stmt)
+	defer sqlite3_finalize(stmt^)
 
-	sqlite.bind_text(stmt, 1, strings.clone(user_id), -1, sqlite.TRANSIENT)
-	sqlite.bind_text(stmt, 2, strings.clone(agent_instance_id), -1, sqlite.TRANSIENT)
-	sqlite.bind_int64(stmt, 3, last_read)
+	sqlite3_bind_text(stmt^, 1, strings.clone(user_id), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt^, 2, strings.clone(agent_instance_id), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_int64(stmt^, 3, last_read)
 
-	for sqlite.step(stmt) == sqlite.ROW {
+	for sqlite3_step(stmt^) == SQLITE_ROW {
 		msg := Chat_Message{
-			message_id = strings.clone(cstring(sqlite.column_text(stmt, 0))),
-			user_id = strings.clone(cstring(sqlite.column_text(stmt, 1))),
-			agent_instance_id = strings.clone(cstring(sqlite.column_text(stmt, 2))),
-			direction = strings.clone(cstring(sqlite.column_text(stmt, 3))),
-			body = strings.clone(cstring(sqlite.column_text(stmt, 4))),
-			delivered_unix_ms = sqlite.column_int64(stmt, 5),
+			message_id = strings.clone(cstring(sqlite3_column_text(stmt^, 0))),
+			user_id = strings.clone(cstring(sqlite3_column_text(stmt^, 1))),
+			agent_instance_id = strings.clone(cstring(sqlite3_column_text(stmt^, 2))),
+			direction = strings.clone(cstring(sqlite3_column_text(stmt^, 3))),
+			body = strings.clone(cstring(sqlite3_column_text(stmt^, 4))),
+			delivered_unix_ms = sqlite3_column_int64(stmt^, 5),
 			read_unix_ms = 0,
-			delivery_failed_unix_ms = sqlite.column_int64(stmt, 6),
-			delivery_error = strings.clone(cstring(sqlite.column_text(stmt, 7))),
-			created_unix_ms = sqlite.column_int64(stmt, 8),
+			delivery_failed_unix_ms = sqlite3_column_int64(stmt^, 6),
+			delivery_error = strings.clone(cstring(sqlite3_column_text(stmt^, 7))),
+			created_unix_ms = sqlite3_column_int64(stmt^, 8),
 		}
 		append(&messages, msg)
 	}
@@ -280,68 +306,93 @@ message_db_fetch_unread :: proc(user_id, agent_instance_id: string) -> [dynamic]
 }
 
 message_db_count_unread :: proc(user_id, agent_instance_id: string) -> int {
-	stmt: [^]sqlite.stmt = nil
+	stmt: [^]sqlite3_stmt = nil
 
 	last_read := message_db_get_last_read(user_id, agent_instance_id)
 
 	query := `SELECT COUNT(*) FROM messages WHERE user_id = ? AND agent_instance_id = ? AND created_unix_ms > ?`
 
-	rc := sqlite.prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
-	if rc != sqlite.OK {
+	rc := sqlite3_prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
+	if rc != SQLITE_OK {
 		fmt.println("message_db_count_unread: prepare failed:", rc)
 		return 0
 	}
-	defer sqlite.finalize(stmt)
+	defer sqlite3_finalize(stmt^)
 
-	sqlite.bind_text(stmt, 1, strings.clone(user_id), -1, sqlite.TRANSIENT)
-	sqlite.bind_text(stmt, 2, strings.clone(agent_instance_id), -1, sqlite.TRANSIENT)
-	sqlite.bind_int64(stmt, 3, last_read)
+	sqlite3_bind_text(stmt^, 1, strings.clone(user_id), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt^, 2, strings.clone(agent_instance_id), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_int64(stmt^, 3, last_read)
 
-	if sqlite.step(stmt) == sqlite.ROW {
-		return int(sqlite.column_int64(stmt, 0))
+	if sqlite3_step(stmt^) == SQLITE_ROW {
+		return int(sqlite3_column_int64(stmt^, 0))
+	}
+
+	return 0
+}
+
+message_db_count_unread_for_agent :: proc(user_id, agent_instance_id: string) -> int {
+	stmt: [^]sqlite3_stmt = nil
+
+	last_read := message_db_get_last_read(user_id, agent_instance_id)
+
+	query := `SELECT COUNT(*) FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = 'user_to_agent' AND created_unix_ms > ?`
+
+	rc := sqlite3_prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
+	if rc != SQLITE_OK {
+		fmt.println("message_db_count_unread_for_agent: prepare failed:", rc)
+		return 0
+	}
+	defer sqlite3_finalize(stmt^)
+
+	sqlite3_bind_text(stmt^, 1, strings.clone(user_id), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt^, 2, strings.clone(agent_instance_id), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_int64(stmt^, 3, last_read)
+
+	if sqlite3_step(stmt^) == SQLITE_ROW {
+		return int(sqlite3_column_int64(stmt^, 0))
 	}
 
 	return 0
 }
 
 message_db_has_unread :: proc(user_id, agent_instance_id, direction: string) -> bool {
-	stmt: [^]sqlite.stmt = nil
+	stmt: [^]sqlite3_stmt = nil
 
 	last_read := message_db_get_last_read(user_id, agent_instance_id)
 
 	query := `SELECT 1 FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = ? AND created_unix_ms > ? LIMIT 1`
 
-	rc := sqlite.prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
-	if rc != sqlite.OK {
+	rc := sqlite3_prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
+	if rc != SQLITE_OK {
 		fmt.println("message_db_has_unread: prepare failed:", rc)
 		return false
 	}
-	defer sqlite.finalize(stmt)
+	defer sqlite3_finalize(stmt^)
 
-	sqlite.bind_text(stmt, 1, strings.clone(user_id), -1, sqlite.TRANSIENT)
-	sqlite.bind_text(stmt, 2, strings.clone(agent_instance_id), -1, sqlite.TRANSIENT)
-	sqlite.bind_text(stmt, 3, strings.clone(direction), -1, sqlite.TRANSIENT)
-	sqlite.bind_int64(stmt, 4, last_read)
+	sqlite3_bind_text(stmt^, 1, strings.clone(user_id), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt^, 2, strings.clone(agent_instance_id), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt^, 3, strings.clone(direction), -1, SQLITE_TRANSIENT)
+	sqlite3_bind_int64(stmt^, 4, last_read)
 
-	return sqlite.step(stmt) == sqlite.ROW
+	return sqlite3_step(stmt^) == SQLITE_ROW
 }
 
 message_db_get_created_time :: proc(message_id: string) -> i64 {
-	stmt: [^]sqlite.stmt = nil
+	stmt: [^]sqlite3_stmt = nil
 
 	query := `SELECT created_unix_ms FROM messages WHERE message_id = ?`
 
-	rc := sqlite.prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
-	if rc != sqlite.OK {
+	rc := sqlite3_prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
+	if rc != SQLITE_OK {
 		fmt.println("message_db_get_created_time: prepare failed:", rc)
 		return 0
 	}
-	defer sqlite.finalize(stmt)
+	defer sqlite3_finalize(stmt^)
 
-	sqlite.bind_text(stmt, 1, strings.clone(message_id), -1, sqlite.TRANSIENT)
+	sqlite3_bind_text(stmt^, 1, strings.clone(message_id), -1, SQLITE_TRANSIENT)
 
-	if sqlite.step(stmt) == sqlite.ROW {
-		return sqlite.column_int64(stmt, 0)
+	if sqlite3_step(stmt^) == SQLITE_ROW {
+		return sqlite3_column_int64(stmt^, 0)
 	}
 
 	return 0
@@ -349,55 +400,30 @@ message_db_get_created_time :: proc(message_id: string) -> i64 {
 
 message_db_get_distinct_agents :: proc(user_id: string) -> [dynamic]string {
 	agents := make([dynamic]string)
-	stmt: [^]sqlite.stmt = nil
+	stmt: [^]sqlite3_stmt = nil
 
 	query := `SELECT DISTINCT agent_instance_id FROM messages WHERE user_id = ? ORDER BY MAX(created_unix_ms) DESC`
 
-	rc := sqlite.prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
-	if rc != sqlite.OK {
+	rc := sqlite3_prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
+	if rc != SQLITE_OK {
 		fmt.println("message_db_get_distinct_agents: prepare failed:", rc)
 		return agents
 	}
-	defer sqlite.finalize(stmt)
+	defer sqlite3_finalize(stmt^)
 
-	sqlite.bind_text(stmt, 1, strings.clone(user_id), -1, sqlite.TRANSIENT)
+	sqlite3_bind_text(stmt^, 1, strings.clone(user_id), -1, SQLITE_TRANSIENT)
 
-	for sqlite.step(stmt) == sqlite.ROW {
-		agent := strings.clone(cstring(sqlite.column_text(stmt, 0)))
+	for sqlite3_step(stmt^) == SQLITE_ROW {
+		agent := strings.clone(cstring(sqlite3_column_text(stmt^, 0)))
 		append(&agents, agent)
 	}
 
 	return agents
 }
 
-message_db_count_unread_for_agent :: proc(user_id, agent_instance_id: string) -> int {
-	stmt: [^]sqlite.stmt = nil
-
-	last_read := message_db_get_last_read(user_id, agent_instance_id)
-
-	query := `SELECT COUNT(*) FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = 'user_to_agent' AND created_unix_ms > ?`
-
-	rc := sqlite.prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
-	if rc != sqlite.OK {
-		fmt.println("message_db_count_unread_for_agent: prepare failed:", rc)
-		return 0
-	}
-	defer sqlite.finalize(stmt)
-
-	sqlite.bind_text(stmt, 1, strings.clone(user_id), -1, sqlite.TRANSIENT)
-	sqlite.bind_text(stmt, 2, strings.clone(agent_instance_id), -1, sqlite.TRANSIENT)
-	sqlite.bind_int64(stmt, 3, last_read)
-
-	if sqlite.step(stmt) == sqlite.ROW {
-		return int(sqlite.column_int64(stmt, 0))
-	}
-
-	return 0
-}
-
 message_db_close :: proc() {
 	if message_db.db != nil {
-		sqlite.close(message_db.db)
+		sqlite3_close(message_db.db)
 		message_db.db = nil
 	}
 }
