@@ -35,6 +35,7 @@ function normalizeChain(chain: any) {
     completedAtUnixMs: Number(chain.completed_at_unix_ms || 0),
     archivePending: Boolean(chain.archive_pending),
     archived: Boolean(chain.archived),
+    evaluation: chain.evaluation || 'unreviewed',
   };
 }
 
@@ -213,6 +214,34 @@ export const updateSelectedChainStatus = createAsyncThunk('tasks/updateSelectedC
   await daemonApi.updateTaskChainStatus({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), chainId, status: payload.status, finalSummary: payload.finalSummary });
 });
 
+export const fetchUnreviewedChains = createAsyncThunk(
+  'tasks/fetchUnreviewedChains',
+  async (_, { getState }) => {
+    const { session } = (getState() as any).chat;
+    if (!session.clientToken) return [];
+    const data = await daemonApi.listUnreviewedTaskChains({
+      daemonUrl: session.daemonUrl,
+      clientToken: session.clientToken,
+    });
+    return (data.chains ?? []).map(normalizeChain);
+  }
+);
+
+export const evaluateTaskChain = createAsyncThunk(
+  'tasks/evaluateTaskChain',
+  async (payload: { chainId: string; evaluation: 'good' | 'bad' }, { getState }) => {
+    const { session } = (getState() as any).chat;
+    await daemonApi.evaluateTaskChain({
+      daemonUrl: session.daemonUrl,
+      clientInstanceId: session.clientInstanceId,
+      clientToken: session.clientToken,
+      chainId: payload.chainId,
+      evaluation: payload.evaluation,
+    });
+    return { chainId: payload.chainId, evaluation: payload.evaluation };
+  }
+);
+
 const initialState = {
   chainsById: {},
   tasksById: {},
@@ -225,6 +254,7 @@ const initialState = {
   loading: false,
   error: '',
   lastTaskEvent: null,
+  unreviewedChains: [] as any[],
 };
 
 function sortTaskIds(taskIds: string[], tasksById: any) {
@@ -258,6 +288,17 @@ const taskSlice = createSlice({
     },
     taskEventReceived(state: any, action) {
       state.lastTaskEvent = action.payload;
+      const payload = action.payload;
+      if (payload) {
+        if (payload.event === 'Chain_Completed' && payload.chain) {
+          const normalized = normalizeChain(payload.chain);
+          if (!state.unreviewedChains.some((c: any) => c.chainId === normalized.chainId)) {
+            state.unreviewedChains.push(normalized);
+          }
+        } else if (payload.event === 'Chain_Evaluated') {
+          state.unreviewedChains = state.unreviewedChains.filter((c: any) => c.chainId !== payload.chain_id);
+        }
+      }
     },
     updateTaskStateDirectly(state: any, action) {
       const task = action.payload;
@@ -330,6 +371,13 @@ const taskSlice = createSlice({
         
         state.chainTaskIds[chainId] = tasks.map((t: any) => t.taskId);
         state.chainTaskIds[chainId] = sortTaskIds(state.chainTaskIds[chainId], state.tasksById);
+      })
+      .addCase(fetchUnreviewedChains.fulfilled, (state: any, action) => {
+        state.unreviewedChains = action.payload;
+      })
+      .addCase(evaluateTaskChain.fulfilled, (state: any, action) => {
+        const { chainId } = action.payload;
+        state.unreviewedChains = state.unreviewedChains.filter((c: any) => c.chainId !== chainId);
       });
   },
 });

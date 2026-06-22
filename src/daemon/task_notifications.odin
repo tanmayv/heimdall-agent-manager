@@ -171,6 +171,14 @@ task_notification_json :: proc(event: Task_Event, status: string) -> string {
 		}
 	}
 
+	// Augment with full task chain payload if chain_id is present
+	if event.chain_id != "" {
+		if idx := task_chain_index_of(event.chain_id); idx >= 0 {
+			strings.write_string(&b, `,"chain":`)
+			task_write_chain_json(&b, task_chains[idx])
+		}
+	}
+
 	strings.write_string(&b, `}`)
 	return strings.to_string(b)
 }

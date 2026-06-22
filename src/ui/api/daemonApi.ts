@@ -440,3 +440,26 @@ export async function resetPreference({ daemonUrl, clientToken, key }: { daemonU
     headers: { 'Authorization': `Bearer ${clientToken || ''}` }
   });
 }
+
+export async function listUnreviewedTaskChains({ daemonUrl, clientToken, limit = 100, offset = 0 }: Omit<UserRpcRequest, 'clientInstanceId'> & { limit?: number; offset?: number }) {
+  const path = `/task-chains?status=completed&evaluation=unreviewed&limit=${limit}&offset=${offset}`;
+  return requestJson(joinUrl(daemonUrl, path), {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${clientToken}` }
+  });
+}
+
+export async function evaluateTaskChain({ daemonUrl, agentToken, clientInstanceId, clientToken, chainId, evaluation }: Partial<TaskAgentRequest & UserRpcRequest> & { chainId: string; evaluation: string }) {
+  return taskMutationRequest({
+    daemonUrl,
+    agentToken,
+    clientInstanceId,
+    clientToken,
+    action: 'task_chain_evaluate',
+    agentPath: '/task-chains/evaluate',
+    body: {
+      chain_id: chainId,
+      evaluation,
+    }
+  });
+}

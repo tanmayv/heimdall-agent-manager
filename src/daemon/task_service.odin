@@ -568,3 +568,27 @@ task_gating_error :: proc(error_kind, message, blocking_task_ids: string) -> Tas
 	strings.write_string(&b, `]}`)
 	return Task_Service_Result{ok = false, status_code = 409, message = strings.to_string(b)}
 }
+
+task_service_evaluate_chain :: proc(chain_id, evaluation, author: string) -> Task_Service_Result {
+	if chain_id == "" {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"chain evaluation requires chain_id"}`}
+	}
+	if evaluation != "good" && evaluation != "bad" && evaluation != "unreviewed" {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"invalid evaluation value. Expected: good, bad, unreviewed"}`}
+	}
+	_, found := task_existing_chain_index(chain_id)
+	if !found {
+		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"chain not found"}`}
+	}
+	event := Task_Event{
+		kind                     = .Chain_Evaluated,
+		chain_id                 = chain_id,
+		body                     = evaluation,
+		author_agent_instance_id = author,
+	}
+	if !task_store_append_event(event) {
+		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append chain evaluation failed"}`}
+	}
+	task_notify_event(event)
+	return Task_Service_Result{ok = true, status_code = 200, message = `{"ok":true}`}
+}

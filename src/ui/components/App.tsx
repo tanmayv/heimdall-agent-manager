@@ -28,18 +28,21 @@ import {
   startAgentInstance,
   stopAgentInstance,
 } from '../store/chatSlice';
-import { refreshTaskBoard, taskEventReceived, updateTaskStateDirectly } from '../store/taskSlice';
+import { refreshTaskBoard, taskEventReceived, updateTaskStateDirectly, fetchUnreviewedChains } from '../store/taskSlice';
 import { memoryEventReceived, refreshMemory } from '../store/memorySlice';
 import { refreshProjects } from '../store/projectSlice';
 import * as daemonApi from '../api/daemonApi';
+import AuditSidebar from './AuditSidebar';
 
 export default function App() {
   const dispatch = useDispatch<any>();
   const { agents, selectedAgentId, chats, session, sending } = useSelector((state: any) => state.chat);
   const { projectsById } = useSelector((state: any) => state.projects);
+  const unreviewedChains = useSelector((state: any) => state.tasks.unreviewedChains || []);
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? null;
   const messages = selectedAgent ? chats[selectedAgent.id] ?? [] : [];
   const [view, setView] = useState<'chat' | 'settings' | 'tasks' | 'memory' | 'projects' | 'agents' | 'startAgent'>('chat');
+  const [isAuditOpen, setIsAuditOpen] = useState(false);
   const selectedAgentRef = useRef(selectedAgentId);
   const cachedChatsRef = useRef(chats);
   const sessionRef = useRef(session);
@@ -198,6 +201,7 @@ export default function App() {
 
   useEffect(() => {
     if (!session.connected) return undefined;
+    dispatch(fetchUnreviewedChains());
     const refreshSnapshot = () => dispatch(refreshAgents());
     const onVisibility = () => {
       if (document.visibilityState === 'visible') refreshSnapshot();
@@ -244,6 +248,8 @@ export default function App() {
           onOpenAgents={() => setView('agents')}
           onOpenStartAgent={() => setView('startAgent')}
           onOpenSettings={() => setView('settings')}
+          auditBadgeCount={unreviewedChains.length}
+          onToggleAudit={() => setIsAuditOpen(!isAuditOpen)}
         />
         {view === 'chat' ? (
           <ChatPane agent={selectedAgent} messages={messages} session={session} sending={sending} />
@@ -275,6 +281,7 @@ export default function App() {
             }}
           />
         )}
+        <AuditSidebar open={isAuditOpen} onClose={() => setIsAuditOpen(false)} />
       </div>
     </div>
   );

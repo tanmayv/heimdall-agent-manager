@@ -35,6 +35,7 @@ Task_Event_Kind :: enum {
 	Chain_Completed,
 	Chain_Archive_Pending,
 	Chain_Archived,
+	Chain_Evaluated,
 }
 
 Task_Event :: struct {
@@ -116,6 +117,7 @@ Task_Chain_State :: struct {
 	completed_at_unix_ms:          i64,
 	archive_pending:               bool,
 	archived:                      bool,
+	evaluation:                    string,
 }
 
 task_events:            [TASK_MAX_EVENTS]Task_Event
@@ -344,7 +346,7 @@ task_store_persist_projection_for_event :: proc(event: Task_Event) -> bool {
 			idx := task_state_index_of(event.task_id)
 			if idx >= 0 do return task_db_save_task(task_states[idx])
 		}
-	case .Chain_Created, .Chain_Metadata_Updated, .Chain_Status_Changed, .Chain_Final_Summary_Set, .Chain_Completed, .Chain_Archive_Pending, .Chain_Archived:
+	case .Chain_Created, .Chain_Metadata_Updated, .Chain_Status_Changed, .Chain_Final_Summary_Set, .Chain_Completed, .Chain_Archive_Pending, .Chain_Archived, .Chain_Evaluated:
 		idx := task_chain_index_of(event.chain_id)
 		if idx >= 0 {
 			return task_db_save_chain(task_chains[idx])
@@ -440,6 +442,7 @@ task_event_kind_from_string :: proc(value: string) -> Task_Event_Kind {
 	case "Chain_Completed":       return .Chain_Completed
 	case "Chain_Archive_Pending": return .Chain_Archive_Pending
 	case "Chain_Archived":        return .Chain_Archived
+	case "Chain_Evaluated":       return .Chain_Evaluated
 	case:                         return .Task_Comment
 	}
 }

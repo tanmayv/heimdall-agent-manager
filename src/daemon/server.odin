@@ -464,6 +464,11 @@ handle_client :: proc(client: net.TCP_Socket) {
 		return
 	}
 
+	if strings.has_prefix(request, "POST /task-chains/evaluate ") {
+		handle_task_chain_evaluate(client, request_body(request))
+		return
+	}
+
 	if strings.has_prefix(request, "POST /task-chains/activate ") {
 		handle_task_chain_activate(client, request_body(request))
 		return

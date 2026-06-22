@@ -167,6 +167,15 @@ handle_task_chain_complete :: proc(client: net.TCP_Socket, body: string) {
 	write_task_service_response(client, result)
 }
 
+handle_task_chain_evaluate :: proc(client: net.TCP_Socket, body: string) {
+	author, ok := task_author_from_body(client, body)
+	if !ok do return
+	chain_id   := extract_json_string(body, "chain_id", "")
+	evaluation := extract_json_string(body, "evaluation", "")
+	result     := task_service_evaluate_chain(chain_id, evaluation, author)
+	write_task_service_response(client, result)
+}
+
 handle_task_archive_retry :: proc(client: net.TCP_Socket, body: string) {
 	_, ok := task_author_from_body(client, body)
 	if !ok do return

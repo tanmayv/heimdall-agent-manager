@@ -12,6 +12,8 @@ handle_get_task_chains :: proc(client: net.TCP_Socket, ctx: ^Route_Context) {
 
 	created_after_str := query_param_value(ctx.query, "created_after")
 	created_before_str := query_param_value(ctx.query, "created_before")
+	status_filter := query_param_value(ctx.query, "status")
+	evaluation_filter := query_param_value(ctx.query, "evaluation")
 	limit_str := query_param_value(ctx.query, "limit")
 	offset_str := query_param_value(ctx.query, "offset")
 	
@@ -46,6 +48,8 @@ handle_get_task_chains :: proc(client: net.TCP_Socket, ctx: ^Route_Context) {
 		// Apply filters
 		if created_after > 0 && chain.created_at_unix_ms < created_after do continue
 		if created_before > 0 && chain.created_at_unix_ms > created_before do continue
+		if status_filter != "" && chain.status != status_filter do continue
+		if evaluation_filter != "" && chain.evaluation != evaluation_filter do continue
 		
 		matched_count += 1
 		

@@ -29,6 +29,7 @@ handle_user_rpc :: proc(client: net.TCP_Socket, body: string) {
 	case "task_nudge": handle_user_rpc_task_nudge(client, body, user_id)
 	case "task_chain_update": handle_user_rpc_task_chain_update(client, body, user_id)
 	case "task_chain_status": handle_user_rpc_task_chain_status(client, body, user_id)
+	case "task_chain_evaluate": handle_user_rpc_task_chain_evaluate(client, body, user_id)
 	case "memory_propose_new": write_memory_service_response(client, memory_service_propose("new", body, user_id))
 	case "memory_propose_edit": write_memory_service_response(client, memory_service_propose("edit", body, user_id))
 	case "memory_propose_archive": write_memory_service_response(client, memory_service_propose("archive", body, user_id))
@@ -232,4 +233,13 @@ chat_write_message_json :: proc(builder: ^strings.Builder, msg: Chat_Message) {
 	strings.write_string(builder, `,"delivery_error":"`); json_write_string(builder, msg.delivery_error); strings.write_string(builder, `"`)
 	strings.write_string(builder, `,"created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", msg.created_unix_ms))
 	strings.write_string(builder, `}`)
+}
+
+handle_user_rpc_task_chain_evaluate :: proc(client: net.TCP_Socket, body, user_id: string) {
+	result := task_service_evaluate_chain(
+		extract_json_string(body, "chain_id", ""),
+		extract_json_string(body, "evaluation", ""),
+		user_id,
+	)
+	write_task_service_response(client, result)
 }

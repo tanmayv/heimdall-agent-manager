@@ -16,7 +16,7 @@ function projectGroupLabel(projectId, projectsById, agentsInGroup) {
   return projectId;
 }
 
-export default function AgentSidebar({ agents, projectsById, selectedAgentId, session, activeView, onSelectAgent, onRefreshAgents, onStartAgent, onStopAgent, onOpenChat, onOpenTasks, onOpenMemory, onOpenProjects, onOpenAgents, onOpenStartAgent, onOpenSettings }) {
+export default function AgentSidebar({ agents, projectsById, selectedAgentId, session, activeView, onSelectAgent, onRefreshAgents, onStartAgent, onStopAgent, onOpenChat, onOpenTasks, onOpenMemory, onOpenProjects, onOpenAgents, onOpenStartAgent, onOpenSettings, auditBadgeCount, onToggleAudit }) {
   const [collapsedProjects, setCollapsedProjects] = useState({});
   const [dismissedWarnings, setDismissedWarnings] = useState<Set<string>>(new Set());
 
@@ -104,6 +104,19 @@ export default function AgentSidebar({ agents, projectsById, selectedAgentId, se
           className={`${activeView === 'settings' ? 'framer-pill bg-white' : 'framer-pill-secondary'} px-3 py-2 text-xs`}
         >
           Settings
+        </button>
+        <button
+          type="button"
+          data-debug-id="nav-audit"
+          onClick={onToggleAudit}
+          className="framer-pill-secondary px-3 py-2 text-xs relative flex items-center justify-center gap-1.5 border border-[#333] hover:border-[#555] col-span-2 mt-1"
+        >
+          <span>📋 Task Chain Audit</span>
+          {auditBadgeCount > 0 && (
+            <span className="bg-red-500 text-white text-[9px] font-extrabold px-1.5 py-0.5 rounded-full animate-pulse shadow-sm">
+              {auditBadgeCount}
+            </span>
+          )}
         </button>
       </nav>
 

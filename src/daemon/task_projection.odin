@@ -126,6 +126,10 @@ task_projection_apply_event :: proc(event: Task_Event) -> bool {
 		if task_chains[idx].completed_at_unix_ms == 0 {
 			task_chains[idx].completed_at_unix_ms = event.created_unix_ms
 		}
+
+	case .Chain_Evaluated:
+		idx := task_chain_index(event.chain_id)
+		task_chains[idx].evaluation = strings.clone(event.body)
 	}
 	return true
 }
@@ -210,7 +214,7 @@ task_chain_index :: proc(chain_id: string) -> int {
 	idx := task_chain_count
 	if idx >= TASK_MAX_CHAINS do return TASK_MAX_CHAINS - 1
 	task_chain_count += 1
-	task_chains[idx] = Task_Chain_State{chain_id = strings.clone(chain_id), status = "planning"}
+	task_chains[idx] = Task_Chain_State{chain_id = strings.clone(chain_id), status = "planning", evaluation = strings.clone("unreviewed")}
 	return idx
 }
 
@@ -226,5 +230,6 @@ task_write_chain_json :: proc(builder: ^strings.Builder, chain: Task_Chain_State
 	strings.write_string(builder, `,"completed_at_unix_ms":`);  strings.write_string(builder, fmt.tprintf("%d", chain.completed_at_unix_ms))
 	strings.write_string(builder, `,"archive_pending":`); strings.write_string(builder, "true" if chain.archive_pending else "false")
 	strings.write_string(builder, `,"archived":`);        strings.write_string(builder, "true" if chain.archived else "false")
-	strings.write_string(builder, `}`)
+	strings.write_string(builder, `,"evaluation":"`);     json_write_string(builder, chain.evaluation)
+	strings.write_string(builder, `"}`)
 }
