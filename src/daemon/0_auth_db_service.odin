@@ -62,7 +62,9 @@ auth_db_create_schema :: proc() -> bool {
 }
 
 auth_db_store_token :: proc(token, identity_type, identity_id: string, now_unix_ms: i64) -> bool {
-	fmt.println("DEBUG: auth_db_store_token for", identity_type, identity_id, "token =", token[:20], "...")
+	limit := 20
+	if len(token) < limit do limit = len(token)
+	fmt.println("DEBUG: auth_db_store_token for", identity_type, identity_id, "token =", token[:limit], "...")
 	stmt: sqlite3_stmt = nil
 
 	query := `INSERT OR REPLACE INTO tokens (token, identity_type, identity_id, created_unix_ms, last_seen_unix_ms) VALUES (?, ?, ?, ?, ?)`

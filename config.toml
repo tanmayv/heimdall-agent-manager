@@ -2,6 +2,7 @@
 bind_host = "127.0.0.1"
 port = 49322
 data_dir = "~/.local/share/heimdall"
+wrapper_bin = "./result-wrapper/bin/ham-wrapper"
 # Scheduled task nudges are disabled by default. When enabled, the daemon records durable
 # Task_Nudged/Task_Nudge_Failed events and applies cooldown/restart grace to avoid spam.
 # nudge_enabled = false
