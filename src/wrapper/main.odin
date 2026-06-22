@@ -1175,10 +1175,10 @@ bootstrap_title :: proc(file_name, profile: string) -> string {
 }
 
 template_guidance_string :: proc(raw: string, profile, file_name, agent_instance_id: string) -> string {
-	res := strings.replace_all(raw, "{ctl_bin}", effective_ctl_bin())
-	res = strings.replace_all(res, "{profile}", profile)
-	res = strings.replace_all(res, "{file_name}", file_name)
-	res = strings.replace_all(res, "{instance}", agent_instance_id)
+	res := replace_all(raw, "{ctl_bin}", effective_ctl_bin())
+	res = replace_all(res, "{profile}", profile)
+	res = replace_all(res, "{file_name}", file_name)
+	res = replace_all(res, "{instance}", agent_instance_id)
 	return res
 }
 
@@ -1864,21 +1864,21 @@ extract_json_object :: proc(body, key: string) -> string {
 template_live_message :: proc(template_str: string, pending_count: int, from_agent_id, task_id, status, changed_by, body, memory_id, event, subject_agent, user_id, new_token, daemon_url: string, time_val: int) -> string {
 	context.allocator = context.temp_allocator
 	
-	res := strings.replace_all(template_str, "{pending_count}", fmt.tprintf("%d", pending_count))
-	res = strings.replace_all(res, "{from_agent_id}", from_agent_id)
-	res = strings.replace_all(res, "{task_id}", task_id)
-	res = strings.replace_all(res, "{status}", status)
-	res = strings.replace_all(res, "{changed_by}", changed_by)
-	res = strings.replace_all(res, "{body}", body)
-	res = strings.replace_all(res, "{memory_id}", memory_id)
-	res = strings.replace_all(res, "{proposal_id}", memory_id)
-	res = strings.replace_all(res, "{event}", event)
-	res = strings.replace_all(res, "{subject_agent}", subject_agent)
-	res = strings.replace_all(res, "{user_id}", user_id)
-	res = strings.replace_all(res, "{new_token}", new_token)
-	res = strings.replace_all(res, "{daemon_url}", daemon_url)
-	res = strings.replace_all(res, "{time}", fmt.tprintf("%d", time_val))
-	res = strings.replace_all(res, "{ctl_bin}", effective_ctl_bin())
+	res := replace_all(template_str, "{pending_count}", fmt.tprintf("%d", pending_count))
+	res = replace_all(res, "{from_agent_id}", from_agent_id)
+	res = replace_all(res, "{task_id}", task_id)
+	res = replace_all(res, "{status}", status)
+	res = replace_all(res, "{changed_by}", changed_by)
+	res = replace_all(res, "{body}", body)
+	res = replace_all(res, "{memory_id}", memory_id)
+	res = replace_all(res, "{proposal_id}", memory_id)
+	res = replace_all(res, "{event}", event)
+	res = replace_all(res, "{subject_agent}", subject_agent)
+	res = replace_all(res, "{user_id}", user_id)
+	res = replace_all(res, "{new_token}", new_token)
+	res = replace_all(res, "{daemon_url}", daemon_url)
+	res = replace_all(res, "{time}", fmt.tprintf("%d", time_val))
+	res = replace_all(res, "{ctl_bin}", effective_ctl_bin())
 	
 	return strings.clone(res, context.allocator)
 }
