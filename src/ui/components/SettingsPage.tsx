@@ -414,7 +414,7 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
                   type="button"
                   onClick={handleTriggerBackup}
                   disabled={backingUp}
-                  className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-all duration-200 ${
+                  className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-[transform,colors] duration-200 ${
                     backingUp
                       ? 'bg-[#111] border border-[#222] text-[#444] pointer-events-none'
                       : 'bg-white text-black hover:bg-[#e0e0e0] active:scale-[0.98]'
@@ -444,7 +444,7 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
                 type="button"
                 onClick={handleRerunSetup}
                 disabled={resettingSetup}
-                className="px-4 py-2.5 rounded-xl font-bold text-xs bg-amber-500 text-black hover:bg-amber-400 active:scale-[0.98] transition-all duration-200"
+                 className="px-4 py-2.5 rounded-xl font-bold text-xs bg-amber-500 text-black hover:bg-amber-400 active:scale-[0.98] transition-[transform,colors] duration-200"
               >
                 {resettingSetup ? 'Resetting Setup...' : 'Rerun Setup Wizard'}
               </button>
@@ -465,7 +465,7 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
     const hasChanged = value !== pref.value || (showInterruptToggle && interrupt !== pref.interrupt);
 
     return (
-      <div key={key} className="framer-card bg-[#181818] p-4 border border-[var(--fd-hairline)] hover:border-[#333] transition-all">
+      <div key={key} className="framer-card bg-[#181818] p-4 border border-[var(--fd-hairline)] hover:border-[#333] transition-colors">
         <div className="flex items-start justify-between">
           <div>
             <h5 className="text-xs font-bold text-white flex items-center">
@@ -484,7 +484,7 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
               type="button"
               disabled={isResetting || isSaving}
               onClick={() => handleReset(key)}
-              className="text-[10px] text-[#999] hover:text-red-400 transition-all ml-4"
+              className="text-[10px] text-[#999] hover:text-red-400 transition-colors ml-4"
             >
               {isResetting ? 'Resetting...' : 'Reset Default'}
             </button>
@@ -500,7 +500,7 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
                 key={placeholder}
                 type="button"
                 onClick={() => handleBadgeClick(key, placeholder)}
-                className="bg-[#222] hover:bg-[#333] border border-[#2c2c2c] text-[var(--fd-accent)] text-[10px] px-2 py-0.5 rounded font-mono transition-all"
+                className="bg-[#222] hover:bg-[#333] border border-[#2c2c2c] text-[var(--fd-accent)] text-[10px] px-2 py-0.5 rounded font-mono transition-colors"
               >
                 {placeholder}
               </button>
@@ -537,7 +537,7 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
               type="button"
               disabled={isSaving || isResetting || !hasChanged}
               onClick={() => handleSave(key)}
-              className={`framer-pill-primary px-4 py-1.5 text-[11px] font-semibold transition-all ${
+              className={`framer-pill-primary px-4 py-1.5 text-[11px] font-semibold transition-[transform,colors] duration-200 ${
                 hasChanged ? 'opacity-100 hover:scale-102' : 'opacity-40 cursor-not-allowed'
               }`}
             >
