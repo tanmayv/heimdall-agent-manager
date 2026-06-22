@@ -361,6 +361,20 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 			return
 		}
 
+		// Self-healing WebSocket reconnection: if the WebSocket connection was severed
+		// (e.g. due to daemon restart), re-register and reconnect immediately!
+		if !ws_conn.connected {
+			fmt.println("WebSocket disconnected; attempting to reconnect...", agent_instance_id)
+			if new_ws_url, new_token, reconnected := reregister_and_reconnect_ws(daemon_url, agent_class, agent_instance_id, display_name, current_token, ws_conn); reconnected {
+				fmt.println("WebSocket successfully reconnected!", agent_instance_id, new_ws_url)
+				current_token = new_token
+				failed_heartbeats = 0
+				notify_agent_token_refreshed(tmux_pane, daemon_url, new_token, agent_instance_id)
+			} else {
+				fmt.println("WebSocket reconnection attempt failed; will retry", agent_instance_id)
+			}
+		}
+
 		body := heartbeat_request_json(agent_instance_id, current_token, display_name, provider_profile, provider_tier, project_id, tmux_pane, run_dir, exec_state, "", current_startup_status, current_startup_reason_code, current_startup_safe_diagnostic, pid, exec_state_since)
 		response, ok := http.post(daemon_url, contracts.ROUTE_HEARTBEAT, body)
 		if ok && response.status == 200 {
