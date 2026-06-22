@@ -154,7 +154,7 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--fd-canvas)] p-6 text-white overflow-y-auto">
-      <div className="framer-panel w-full max-w-xl rounded-[var(--fd-radius-xl)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-1)] p-8 shadow-2xl animate-float-in">
+      <div className="framer-panel w-full max-w-xl rounded-[var(--fd-radius-xl)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-1)] p-8 shadow-2xl">
         
         {/* Header */}
         <div className="mb-8 text-center">

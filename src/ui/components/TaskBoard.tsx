@@ -475,7 +475,7 @@ export default function TaskBoard({ session }) {
 
   function renderHeader(subtitle: string) {
     return (
-      <header className="animate-float-in border-b border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-6 py-4 flex items-center justify-between">
+      <header className="border-b border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-6 py-4 flex items-center justify-between">
         <div className="min-w-0">
           <p className="framer-topline">Task workspace</p>
           <h2 className="mt-1 truncate text-2xl framer-headline">Tasks</h2>

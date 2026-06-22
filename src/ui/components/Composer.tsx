@@ -59,7 +59,7 @@ const Composer = memo(function Composer({ selectedAgent, disabled, onSubmit, sma
     <div className="border-t border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] p-4 flex flex-col gap-2.5">
       {/* Smart Replies Row */}
       {showReplies && (
-        <div className="flex flex-wrap gap-2 animate-float-in px-1">
+        <div className="flex flex-wrap gap-2 px-1">
           {smartReplies.map((reply: string, idx: number) => (
             <button
               key={idx}

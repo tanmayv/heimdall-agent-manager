@@ -145,7 +145,7 @@ export default function ChatPane({ agent, session }: { agent: any; session: any 
 
   return (
     <main className="framer-panel flex min-w-0 flex-1 flex-col bg-[var(--fd-canvas)]">
-      <header className="animate-float-in border-b border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-6 py-4 flex items-center justify-between">
+      <header className="border-b border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-6 py-4 flex items-center justify-between">
         <div className="min-w-0">
           <p className="framer-topline">Selected agent</p>
           <h2 className="mt-1 truncate text-2xl framer-headline">{agent?.label ?? 'No agent selected'}</h2>

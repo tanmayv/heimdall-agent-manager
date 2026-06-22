@@ -61,7 +61,7 @@ const AgentListItem = memo(function AgentListItem({
 
   return (
     <div
-      className={`animate-float-in group relative w-full overflow-hidden rounded-[var(--fd-radius-xl)] border transition-[transform,colors] duration-300 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-[var(--fd-accent-blue)]/60 hover:bg-[var(--fd-surface-2)] ${
+      className={`group relative w-full overflow-hidden rounded-[var(--fd-radius-xl)] border transition-[transform,colors] duration-300 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-[var(--fd-accent-blue)]/60 hover:bg-[var(--fd-surface-2)] ${
         selected
           ? 'animate-halo-breathe border-[var(--fd-accent-blue)]/70 bg-[var(--fd-surface-2)] shadow-lg shadow-[var(--fd-accent-blue)]/20'
           : 'border-[var(--fd-hairline)] bg-[var(--fd-surface-1)]'

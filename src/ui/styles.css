@@ -354,9 +354,7 @@ body {
   color: var(--fd-ink-muted);
 }
 
-.animate-float-in {
-  animation: float-in 420ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
-}
+
 
 .animate-bubble-pop {
   animation: bubble-pop 360ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
@@ -370,16 +368,7 @@ body {
   animation: halo-breathe 2.2s ease-in-out infinite;
 }
 
-@keyframes float-in {
-  from {
-    opacity: 0;
-    transform: translateY(14px) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0) scale(1);
-  }
-}
+
 
 @keyframes soft-pulse {
   0%, 100% {

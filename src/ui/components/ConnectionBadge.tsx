@@ -11,7 +11,7 @@ export default function ConnectionBadge({ session }) {
   const wsConnected = session.wsStatus === 'connected';
 
   return (
-    <div className="framer-card framer-panel mt-3 animate-float-in relative overflow-hidden p-3">
+    <div className="framer-card framer-panel mt-3 relative overflow-hidden p-3">
       <div className="relative flex items-center justify-between gap-3">
         <span className="framer-topline">Daemon</span>
         <span
