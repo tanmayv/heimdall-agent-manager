@@ -83,6 +83,7 @@ const Composer = memo(function Composer({ selectedAgent, disabled, onSubmit, sma
             ref={textareaRef}
             data-debug-id="message-input"
             rows={2}
+            spellCheck={false}
             defaultValue=""
             onInput={handleInput}
             onKeyDown={(event) => {
