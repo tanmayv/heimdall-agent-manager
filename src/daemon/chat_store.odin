@@ -76,10 +76,12 @@ chat_store_append_event :: proc(event: Chat_Event) -> bool {
 }
 
 chat_store_apply_event :: proc(event: Chat_Event) -> bool {
-	if chat_event_count < CHAT_MAX_EVENTS {
-		chat_events[chat_event_count] = event
-		chat_event_count += 1
+	if chat_event_count >= CHAT_MAX_EVENTS {
+		fmt.println("chat_store_apply_event: chat_events array full, cannot add event")
+		return false
 	}
+	chat_events[chat_event_count] = event
+	chat_event_count += 1
 	#partial switch event.kind {
 	case .Message_Appended:
 		if chat_message_count < CHAT_MAX_MESSAGES {
