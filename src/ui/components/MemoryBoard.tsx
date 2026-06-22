@@ -61,7 +61,6 @@ export default function MemoryBoard({ session, agents = [] }: { session: any; ag
 
   const openDetail = useCallback((memoryId: string) => {
     dispatch(selectMemory(memoryId));
-    setPage('detail');
   }, [dispatch]);
 
   const openProposal = useCallback((action: string, record: any = selected) => {
@@ -186,8 +185,6 @@ export default function MemoryBoard({ session, agents = [] }: { session: any; ag
               <MemoryDetail selected={selected} history={history} detailLoading={detailLoading} decisionReason={decisionReason} setDecisionReason={setDecisionReason} openProposal={openProposal} decide={decide} canMutate={canMutate} />
             </div>
           </div>
-        ) : page === 'detail' ? (
-          <MemoryDetail selected={selected} history={history} detailLoading={detailLoading} decisionReason={decisionReason} setDecisionReason={setDecisionReason} openProposal={openProposal} decide={decide} canMutate={canMutate} />
         ) : (
           <MemoryProposalForm
             initialForm={proposalFormValues}
