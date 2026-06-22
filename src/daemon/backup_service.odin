@@ -17,8 +17,7 @@ foreign sqlite3_lib {
 	sqlite3_backup_finish :: proc(pBackup: rawptr) -> c.int ---
 }
 
-SQLITE_OK   :: 0
-SQLITE_DONE :: 101
+// SQLite constants are inherited package-wide from message_db_service.odin
 
 backup_scheduler_started: bool
 
