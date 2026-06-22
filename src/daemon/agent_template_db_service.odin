@@ -31,6 +31,12 @@ agent_template_db_init :: proc(data_dir: string) -> bool {
 		return false
 	}
 
+	if !agent_template_db_run_migrations() {
+		fmt.println("agent_template_db_init: failed to run migrations")
+		sqlite3_close(agent_template_db.db)
+		return false
+	}
+
 	fmt.println("agent_template_db_init: database initialized at", agent_template_db.db_path)
 	
 	// Seed default templates if the table is empty!
@@ -66,16 +72,6 @@ agent_template_db_create_schema :: proc() -> bool {
 			sqlite3_free(rawptr(errmsg))
 		}
 		return false
-	}
-
-	// Migration: add is_customized column if it doesn't exist
-	migrate_query := "ALTER TABLE agent_templates ADD COLUMN is_customized INTEGER DEFAULT 0"
-	migrate_err: cstring = nil
-	migrate_rc := sqlite3_exec(agent_template_db.db, cstring(raw_data(migrate_query)), nil, nil, &migrate_err)
-	if migrate_rc != SQLITE_OK {
-		if migrate_err != nil do sqlite3_free(rawptr(migrate_err))
-	} else {
-		fmt.println("agent_template_db_create_schema: successfully migrated agent_templates table to include 'is_customized' column.")
 	}
 
 	return true
@@ -424,4 +420,31 @@ agent_template_get_customized_status :: proc(template_id: string) -> (exists: bo
 		return true, customized
 	}
 	return false, false
+}
+
+TEMPLATE_DB_SCHEMA_VERSION :: 1 // Version 1 adds 'is_customized' column
+
+agent_template_db_run_migrations :: proc() -> bool {
+	current_version := db_get_user_version(agent_template_db.db)
+	
+	if current_version < TEMPLATE_DB_SCHEMA_VERSION {
+		fmt.println("DB: Migrating templates.db to version 1 (adding is_customized)...")
+		if !db_execute(agent_template_db.db, "BEGIN TRANSACTION;") do return false
+		
+		migrate_query := "ALTER TABLE agent_templates ADD COLUMN is_customized INTEGER DEFAULT 0"
+		if !db_execute(agent_template_db.db, migrate_query) {
+			_ = db_execute(agent_template_db.db, "ROLLBACK;")
+			return false
+		}
+		
+		if !db_set_user_version(agent_template_db.db, 1) {
+			_ = db_execute(agent_template_db.db, "ROLLBACK;")
+			return false
+		}
+		
+		if !db_execute(agent_template_db.db, "COMMIT;") do return false
+		fmt.println("DB: Migrated templates.db to version 1 successfully.")
+	}
+	
+	return true
 }

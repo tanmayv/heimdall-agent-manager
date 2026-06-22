@@ -32,6 +32,44 @@ foreign sqlite3_lib {
 	sqlite3_free :: proc(p: rawptr) ---
 }
 
+db_get_user_version :: proc(db: sqlite3) -> int {
+	stmt: sqlite3_stmt = nil
+	if sqlite3_prepare_v2(db, "PRAGMA user_version;", -1, &stmt, nil) != SQLITE_OK do return 0
+	defer sqlite3_finalize(stmt)
+	
+	if sqlite3_step(stmt) == SQLITE_ROW {
+		return int(sqlite3_column_int64(stmt, 0))
+	}
+	return 0
+}
+
+db_set_user_version :: proc(db: sqlite3, version: int) -> bool {
+	query := fmt.tprintf("PRAGMA user_version = %d;", version)
+	errmsg: cstring = nil
+	rc := sqlite3_exec(db, cstring(raw_data(query)), nil, nil, &errmsg)
+	if rc != SQLITE_OK {
+		if errmsg != nil {
+			fmt.printfln("db_set_user_version: error: %s", errmsg)
+			sqlite3_free(rawptr(errmsg))
+		}
+		return false
+	}
+	return true
+}
+
+db_execute :: proc(db: sqlite3, query: string) -> bool {
+	errmsg: cstring = nil
+	rc := sqlite3_exec(db, cstring(raw_data(query)), nil, nil, &errmsg)
+	if rc != SQLITE_OK {
+		if errmsg != nil {
+			fmt.printfln("db_execute failed: %d (%s) query: %s", rc, errmsg, query)
+			sqlite3_free(rawptr(errmsg))
+		}
+		return false
+	}
+	return true
+}
+
 Message_Db_Service :: struct {
 	db: sqlite3,
 	db_path: string,

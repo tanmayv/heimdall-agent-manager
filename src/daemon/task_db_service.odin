@@ -31,6 +31,12 @@ task_db_init :: proc(data_dir: string) -> bool {
 		return false
 	}
 
+	if !task_db_run_migrations() {
+		fmt.println("task_db_init: failed to run migrations")
+		sqlite3_close(task_db.db)
+		return false
+	}
+
 	fmt.println("task_db_init: relational database initialized at", db_path)
 	return true
 }
@@ -113,30 +119,6 @@ task_db_create_schema :: proc() -> bool {
 		}
 		return false
 	}
-	// Safe schema migration: add 'evaluation' column to 'task_chains' if it doesn't exist
-	migrate_query := "ALTER TABLE task_chains ADD COLUMN evaluation TEXT NOT NULL DEFAULT 'unreviewed';"
-	migrate_err: cstring = nil
-	migrate_rc := sqlite3_exec(task_db.db, cstring(raw_data(migrate_query)), nil, nil, &migrate_err)
-	if migrate_rc != SQLITE_OK {
-		if migrate_err != nil {
-			sqlite3_free(rawptr(migrate_err))
-		}
-	} else {
-		fmt.println("task_db_create_schema: successfully migrated task_chains table to include 'evaluation' column.")
-	}
-
-	// Safe schema migration: add 'last_audit_at_unix_ms' column to 'task_chains' if it doesn't exist
-	migrate_query_audit := "ALTER TABLE task_chains ADD COLUMN last_audit_at_unix_ms INTEGER NOT NULL DEFAULT 0;"
-	migrate_err_audit: cstring = nil
-	migrate_rc_audit := sqlite3_exec(task_db.db, cstring(raw_data(migrate_query_audit)), nil, nil, &migrate_err_audit)
-	if migrate_rc_audit != SQLITE_OK {
-		if migrate_err_audit != nil {
-			sqlite3_free(rawptr(migrate_err_audit))
-		}
-	} else {
-		fmt.println("task_db_create_schema: successfully migrated task_chains table to include 'last_audit_at_unix_ms' column.")
-	}
-
 	return true
 }
 
@@ -470,5 +452,53 @@ task_db_execute :: proc(query: string) -> bool {
 		}
 		return false
 	}
+	return true
+}
+
+TASK_DB_SCHEMA_VERSION :: 2 // Version 1: evaluation, Version 2: last_audit_at_unix_ms
+
+task_db_run_migrations :: proc() -> bool {
+	current_version := db_get_user_version(task_db.db)
+	
+	if current_version < 1 {
+		fmt.println("DB: Migrating task.db to version 1 (adding evaluation)...")
+		if !db_execute(task_db.db, "BEGIN TRANSACTION;") do return false
+		
+		migrate_query := "ALTER TABLE task_chains ADD COLUMN evaluation TEXT NOT NULL DEFAULT 'unreviewed';"
+		if !db_execute(task_db.db, migrate_query) {
+			_ = db_execute(task_db.db, "ROLLBACK;")
+			return false
+		}
+		
+		if !db_set_user_version(task_db.db, 1) {
+			_ = db_execute(task_db.db, "ROLLBACK;")
+			return false
+		}
+		
+		if !db_execute(task_db.db, "COMMIT;") do return false
+		fmt.println("DB: Migrated task.db to version 1 successfully.")
+	}
+	
+	current_version = db_get_user_version(task_db.db)
+	
+	if current_version < TASK_DB_SCHEMA_VERSION {
+		fmt.println("DB: Migrating task.db to version 2 (adding last_audit_at_unix_ms)...")
+		if !db_execute(task_db.db, "BEGIN TRANSACTION;") do return false
+		
+		migrate_query := "ALTER TABLE task_chains ADD COLUMN last_audit_at_unix_ms INTEGER NOT NULL DEFAULT 0;"
+		if !db_execute(task_db.db, migrate_query) {
+			_ = db_execute(task_db.db, "ROLLBACK;")
+			return false
+		}
+		
+		if !db_set_user_version(task_db.db, 2) {
+			_ = db_execute(task_db.db, "ROLLBACK;")
+			return false
+		}
+		
+		if !db_execute(task_db.db, "COMMIT;") do return false
+		fmt.println("DB: Migrated task.db to version 2 successfully.")
+	}
+	
 	return true
 }
