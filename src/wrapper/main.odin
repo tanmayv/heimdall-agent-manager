@@ -147,10 +147,16 @@ main :: proc() {
 		return
 	}
 	fmt.println("tmux_pane", launch.pane_id)
-	_ = tmux.rename_window_for_pane(launch.pane_id, fmt.tprintf("[Starting] %s", window_name))
+	startup_status := "ready"
+	startup_reason_code := "ready_on_launch"
+	startup_safe_diagnostic := "Startup detection disabled; assuming ready"
+
 	report_startup_status(cfg.daemon_url, registered_instance_id, "starting", "launch", "Agent process launched in tmux", selected_agent, cwd, launch.pane_id)
 	result := startup_probe_agent(agent_cmd.startup_detection, launch.pane_id)
 	if result.status != "disabled" {
+		startup_status = result.status
+		startup_reason_code = result.reason_code
+		startup_safe_diagnostic = result.safe_diagnostic
 		fmt.println("startup_status", result.status)
 		if result.reason_code != "" do fmt.println("startup_reason_code", result.reason_code)
 		if result.safe_diagnostic != "" do fmt.println("startup_diagnostic", result.safe_diagnostic)
@@ -172,7 +178,7 @@ main :: proc() {
 	}
 
 	initial_exec_state := "running"
-	heartbeat_loop(cfg.daemon_url, agent_class, registered_instance_id, display_name, agent_token, launch.pane_id, stop_message, selected_agent, model_tier, override_project_id, cwd, initial_exec_state, cfg.tmux_session, window_name, &ws_conn)
+	heartbeat_loop(cfg.daemon_url, agent_class, registered_instance_id, display_name, agent_token, launch.pane_id, stop_message, selected_agent, model_tier, override_project_id, cwd, initial_exec_state, startup_status, startup_reason_code, startup_safe_diagnostic, cfg.tmux_session, window_name, &ws_conn)
 }
 
 Startup_Probe_Result :: struct {
@@ -336,7 +342,7 @@ read_yes_from_stdin :: proc() -> bool {
 	return answer == "y" || answer == "Y" || answer == "yes" || answer == "YES"
 }
 
-heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name, agent_token, tmux_pane, stop_message, provider_profile, provider_tier, project_id, run_dir, initial_exec_state, tmux_session, window_name: string, ws_conn: ^ws.Connection) {
+heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name, agent_token, tmux_pane, stop_message, provider_profile, provider_tier, project_id, run_dir, initial_exec_state, initial_startup_status, initial_startup_reason_code, initial_startup_safe_diagnostic, tmux_session, window_name: string, ws_conn: ^ws.Connection) {
 	fmt.println("heartbeat started", agent_instance_id)
 	current_token := agent_token
 	failed_heartbeats := 0
@@ -344,18 +350,38 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 	if exec_state == "" do exec_state = "running"
 	exec_state_since := time.to_unix_nanoseconds(time.now()) / 1_000_000
 	pid := os.get_pid()
+
+	current_startup_status := initial_startup_status
+	current_startup_reason_code := initial_startup_reason_code
+	current_startup_safe_diagnostic := initial_startup_safe_diagnostic
+
 	for {
 		if !tmux.pane_exists(tmux_pane) {
 			fmt.println("agent tmux pane missing; stopping wrapper", tmux_pane)
 			return
 		}
 
-		body := heartbeat_request_json(agent_instance_id, current_token, display_name, provider_profile, provider_tier, project_id, tmux_pane, run_dir, exec_state, "", pid, exec_state_since)
+		body := heartbeat_request_json(agent_instance_id, current_token, display_name, provider_profile, provider_tier, project_id, tmux_pane, run_dir, exec_state, "", current_startup_status, current_startup_reason_code, current_startup_safe_diagnostic, pid, exec_state_since)
 		response, ok := http.post(daemon_url, contracts.ROUTE_HEARTBEAT, body)
 		if ok && response.status == 200 {
 			failed_heartbeats = 0
 			fmt.println("heartbeat ok", agent_instance_id)
 			log_heartbeat_corrections(response.body, agent_instance_id)
+
+			// Parse corrections to dynamically capture startup status overrides from the daemon
+			if corr_idx := strings.index(response.body, `"corrections":{`); corr_idx >= 0 {
+				corr_block := response.body[corr_idx:]
+				if new_status := extract_json_string(corr_block, "startup_status", ""); new_status != "" {
+					fmt.println("HEARTBEAT CORRECTION: startup_status corrected to", new_status)
+					current_startup_status = strings.clone(new_status)
+					if new_reason := extract_json_string(corr_block, "startup_reason_code", ""); new_reason != "" {
+						current_startup_reason_code = strings.clone(new_reason)
+					}
+					if new_diag := extract_json_string(corr_block, "startup_safe_diagnostic", ""); new_diag != "" {
+						current_startup_safe_diagnostic = strings.clone(new_diag)
+					}
+				}
+			}
 		} else if ok && response.status == 401 {
 			// Token not found in registry (daemon restarted). Re-register fresh to
 			// get the token back into the daemon's in-memory registry.
@@ -546,7 +572,7 @@ reregister_and_reconnect_ws :: proc(daemon_url, agent_class, agent_instance_id, 
 	return ws_url, token, true
 }
 
-heartbeat_request_json :: proc(agent_instance_id, agent_token, display_name, provider_profile, provider_tier, project_id, tmux_pane, run_dir, exec_state, blocked_reason: string, pid: int, exec_state_since_unix_ms: i64) -> string {
+heartbeat_request_json :: proc(agent_instance_id, agent_token, display_name, provider_profile, provider_tier, project_id, tmux_pane, run_dir, exec_state, blocked_reason, startup_status, startup_reason_code, startup_safe_diagnostic: string, pid: int, exec_state_since_unix_ms: i64) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, `{"agent_instance_id":"`); json_write_string(&b, agent_instance_id)
 	strings.write_string(&b, `","agent_token":"`); json_write_string(&b, agent_token)
@@ -558,6 +584,9 @@ heartbeat_request_json :: proc(agent_instance_id, agent_token, display_name, pro
 	strings.write_string(&b, `","run_dir":"`); json_write_string(&b, run_dir)
 	strings.write_string(&b, `","exec_state":"`); json_write_string(&b, exec_state)
 	strings.write_string(&b, `","blocked_reason":"`); json_write_string(&b, blocked_reason)
+	strings.write_string(&b, `","startup_status":"`); json_write_string(&b, startup_status)
+	strings.write_string(&b, `","startup_reason_code":"`); json_write_string(&b, startup_reason_code)
+	strings.write_string(&b, `","startup_safe_diagnostic":"`); json_write_string(&b, startup_safe_diagnostic)
 	strings.write_string(&b, `","pid":`); strings.write_string(&b, fmt.tprintf("%d", pid))
 	strings.write_string(&b, `,"exec_state_since_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", exec_state_since_unix_ms))
 	strings.write_string(&b, `}`)

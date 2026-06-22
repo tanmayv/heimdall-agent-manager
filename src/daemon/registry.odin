@@ -52,6 +52,18 @@ Heartbeat_Snapshot :: struct {
 	exec_state_since_unix_ms: i64,
 	blocked_reason: string,
 	run_dir: string,
+	startup_status: string,
+	startup_reason_code: string,
+	startup_safe_diagnostic: string,
+}
+
+startup_status_rank :: proc(status: string) -> int {
+	switch status {
+	case "ready", "startup_failed": return 2
+	case "startup_blocked", "startup_unknown": return 1
+	case "starting", "": return 0
+	case: return -1
+	}
 }
 
 // registry_apply_heartbeat_snapshot updates only the runtime/session fields on
@@ -86,14 +98,18 @@ registry_apply_heartbeat_snapshot :: proc(snap: Heartbeat_Snapshot) -> (runtime_
 		runtime_changed = true
 	}
 
-	// Self-healing startup state promotion: if the agent is actively executing/idle,
-	// it has clearly finished starting up. Force startup_status to ready.
-	if a.startup_status == "starting" && (a.exec_state == "running" || a.exec_state == "idle" || a.exec_state == "blocked") {
-		a.startup_status = "ready"
-		a.startup_reason_code = "already_running"
-		a.startup_safe_diagnostic = "Agent recovered in active execution state from heartbeat"
-		a.startup_updated_unix_ms = a.last_seen_unix_ms
-		lifecycle_changed = true
+	// Declarative startup status synchronization via state rankings
+	if snap.startup_status != "" {
+		snap_rank := startup_status_rank(snap.startup_status)
+		current_rank := startup_status_rank(a.startup_status)
+
+		if snap_rank > current_rank {
+			a.startup_status = strings.clone(snap.startup_status)
+			a.startup_reason_code = strings.clone(snap.startup_reason_code)
+			a.startup_safe_diagnostic = strings.clone(snap.startup_safe_diagnostic)
+			a.startup_updated_unix_ms = a.last_seen_unix_ms
+			lifecycle_changed = true
+		}
 	}
 
 	return runtime_changed, lifecycle_changed

@@ -111,6 +111,9 @@ handle_heartbeat :: proc(client: net.TCP_Socket, body: string) {
 		exec_state_since_unix_ms = i64(extract_json_int(body, "exec_state_since_unix_ms", 0)),
 		blocked_reason           = extract_json_string(body, "blocked_reason", ""),
 		run_dir                  = extract_json_string(body, "run_dir", ""),
+		startup_status           = extract_json_string(body, "startup_status", ""),
+		startup_reason_code      = extract_json_string(body, "startup_reason_code", ""),
+		startup_safe_diagnostic  = extract_json_string(body, "startup_safe_diagnostic", ""),
 	}
 
 	if !valid_agent_instance_id(snap.agent_instance_id) {
@@ -209,6 +212,16 @@ handle_heartbeat :: proc(client: net.TCP_Socket, body: string) {
 		// Test agent (or otherwise unpersisted) — cache wrapper-supplied identity
 		// so registry-backed views render. Nothing hits disk.
 		registry_refresh_identity_cache(snap.agent_instance_id, snap.display_name, snap.provider_profile, snap.provider_tier, snap.project_id)
+	}
+
+	// Dynamic startup status corrections
+	if reg_idx := registry_find_agent(snap.agent_instance_id); reg_idx >= 0 {
+		reg_agent := agents[reg_idx]
+		if snap.startup_status != "" && reg_agent.startup_status != snap.startup_status {
+			add_correction(&corrections_b, &have_corrections, "startup_status", reg_agent.startup_status)
+			add_correction(&corrections_b, &have_corrections, "startup_reason_code", reg_agent.startup_reason_code)
+			add_correction(&corrections_b, &have_corrections, "startup_safe_diagnostic", reg_agent.startup_safe_diagnostic)
+		}
 	}
 
 	was_live := registry_agent_live(snap.agent_instance_id)
