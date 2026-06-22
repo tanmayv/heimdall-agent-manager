@@ -115,9 +115,23 @@ handle_client :: proc(client: net.TCP_Socket) {
 		return
 	}
 
-	// Route REST requests first
 	ctx := parse_route_context(request)
 	defer route_context_free(&ctx)
+
+	telemetry: Request_Telemetry
+	telemetry.method = ctx.method
+	telemetry.path = ctx.path
+	telemetry.start_tick = time.tick_now()
+
+	if ctx.method == "POST" || ctx.method == "PUT" || ctx.method == "PATCH" {
+		telemetry.params = request_body(request)
+	} else {
+		telemetry.params = ctx.query
+	}
+
+	current_telemetry = &telemetry
+	defer current_telemetry = nil
+
 	if handle_rest_route(client, request, &ctx) {
 		return
 	}

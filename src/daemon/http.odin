@@ -4,6 +4,17 @@ import "core:fmt"
 import "core:net"
 import "core:strconv"
 import "core:strings"
+import "core:time"
+
+Request_Telemetry :: struct {
+	method:     string,
+	path:       string,
+	params:     string,
+	start_tick: time.Tick,
+}
+
+@(thread_local)
+current_telemetry: ^Request_Telemetry
 
 read_http_request :: proc(client: net.TCP_Socket) -> (string, bool) {
 	buf: [4096]byte
@@ -66,4 +77,35 @@ write_response :: proc(client: net.TCP_Socket, status: int, status_text, body: s
 		body,
 	)
 	net.send_tcp(client, transmute([]byte)response)
+
+	if current_telemetry != nil {
+		t := current_telemetry
+		duration := time.duration_milliseconds(time.tick_diff(t.start_tick, time.tick_now()))
+
+		now := time.now()
+		y, mo, d := time.date(now)
+		h, mi, s := time.clock_from_time(now)
+		ms := (time.to_unix_nanoseconds(now) / 1_000_000) % 1000
+
+		body_log := ""
+		if len(body) < 100 {
+			body_log = fmt.tprintf(" | Body: %s", body)
+		}
+
+		params_log := t.params
+		if len(params_log) > 200 {
+			params_log = fmt.tprintf("%s...", params_log[:200])
+		}
+
+		fmt.printf("[RPC TELEMETRY] %04d-%02d-%02d %02d:%02d:%02d.%03d | %s %s | Params: %s | Status: %d | Latency: %.1fms | Size: %d bytes%s\n",
+			y, int(mo), d, h, mi, s, ms,
+			t.method,
+			t.path,
+			params_log,
+			status,
+			duration,
+			len(body),
+			body_log,
+		)
+	}
 }
