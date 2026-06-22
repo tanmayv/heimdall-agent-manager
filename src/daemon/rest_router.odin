@@ -148,6 +148,12 @@ handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_C
 		return true
 	}
 
+	// GET /tasks
+	if len(ctx.segments) == 1 && ctx.segments[0] == "tasks" && ctx.method == "GET" {
+		handle_get_tasks(client, ctx)
+		return true
+	}
+
 	// GET /tasks/{task_id}
 	if len(ctx.segments) == 2 && ctx.segments[0] == "tasks" && ctx.method == "GET" {
 		task_id := ctx.segments[1]
