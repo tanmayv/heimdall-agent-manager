@@ -3,6 +3,10 @@ const path = require('path');
 const { pruneAndRegister, updatePort, deregister } = require('./instanceRegistry.cjs');
 const { startDebugServer } = require('./debugServer.cjs');
 
+// Bypass Nix sandbox GPU library mismatches and enable full hardware-accelerated rendering!
+app.commandLine.appendSwitch('disable-gpu-sandbox');
+
+
 // Namespace Electron state under "heimdall-ui" so it doesn't collide with the
 // ham daemon/wrapper config dir at <appData>/heimdall/. Must be called before
 // app.whenReady() and before any path lookup.

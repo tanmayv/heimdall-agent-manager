@@ -95,8 +95,6 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
         // Create Memory Auditor Agent
         await daemonApi.createAgent({
           daemonUrl: daemonIp,
-          clientInstanceId,
-          clientToken: token,
           agent_instance_id: 'memory-auditor@default',
           display_name: 'Memory Auditor',
           template_id: 'memory_auditor',
@@ -108,8 +106,6 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
         // Create Memory Reviewer Agent
         await daemonApi.createAgent({
           daemonUrl: daemonIp,
-          clientInstanceId,
-          clientToken: token,
           agent_instance_id: 'memory-reviewer@heimdall',
           display_name: 'Memory Reviewer',
           template_id: 'memory_reviewer',
