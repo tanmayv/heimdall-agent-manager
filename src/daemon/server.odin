@@ -238,6 +238,11 @@ handle_client :: proc(client: net.TCP_Socket) {
 		return
 	}
 
+	if strings.has_prefix(request, "POST /agents/test-connectivity ") {
+		handle_agents_test_connectivity(client, request_body(request))
+		return
+	}
+
 	if strings.has_prefix(request, "POST /agents/associate ") {
 		handle_agents_associate(client, request_body(request))
 		return

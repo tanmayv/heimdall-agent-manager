@@ -26,6 +26,9 @@ PREFERENCE_KEYS := []string{
 	"memory_reviewer_model_tier",
 	"memory_reviewer_provider_profile",
 	"backup_dir",
+	"user_display_name",
+	"setup_completed",
+	"memory_auditor_dir",
 }
 
 get_preference_default :: proc(key: string, agent_class := "") -> (value: string, interrupt: bool) {
@@ -153,6 +156,12 @@ get_preference_default :: proc(key: string, agent_class := "") -> (value: string
 
 	case "backup_dir":
 		return "~/heimdall-backups", false
+	case "user_display_name":
+		return "", false
+	case "setup_completed":
+		return "false", false
+	case "memory_auditor_dir":
+		return "~/agent_knowledge", false
 	}
 	return "", false
 }
@@ -235,6 +244,16 @@ handle_post_preference :: proc(client: net.TCP_Socket, body: string, ctx: ^Route
 	if !valid_key {
 		write_response(client, 400, "Bad Request", `{"error":"bad_request","message":"invalid preference key"}`)
 		return
+	}
+
+	// Proactively create directory paths for path-based preferences
+	if (key == "memory_auditor_dir" || key == "backup_dir") && value != "" {
+		expanded_path := expand_home(value)
+		if os.make_directory_all(expanded_path) != nil {
+			fmt.printfln("WARNING: Failed to automatically create directory for preference %s at: %s", key, expanded_path)
+		} else {
+			fmt.printfln("SYSTEM: Automatically ensured directory for preference %s exists at: %s", key, expanded_path)
+		}
 	}
 
 	if !user_pref_db_set(user_id, key, value, interrupt) {

@@ -93,7 +93,20 @@ const AgentSidebar = memo(function AgentSidebar({
     <aside className="framer-panel flex h-full w-80 shrink-0 flex-col border-r border-[var(--fd-hairline)] p-4">
       <div className="mb-4">
         <p className="framer-topline tracking-[0.28em]">Heimdall</p>
-        <h1 className="mt-2 text-3xl font-bold text-white">Live Agents</h1>
+        <div className="mt-3 flex items-center gap-3 rounded-[var(--fd-radius-lg)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] p-3">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--fd-accent-blue)]/20 text-xs font-bold text-[var(--fd-accent-blue)]">
+            {(session?.userDisplayName || session?.userId || 'OP')[0].toUpperCase()}
+          </div>
+          <div className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-semibold text-white">
+              {session?.userDisplayName || 'Operator'}
+            </span>
+            <span className="block truncate text-xs text-[#aaa]">
+              {session?.userId || 'operator@local'}
+            </span>
+          </div>
+        </div>
+        <h1 className="mt-4 text-2xl font-bold text-white">Live Agents</h1>
         <p className="framer-subtext mt-1">Connected daemon agents</p>
       </div>
 

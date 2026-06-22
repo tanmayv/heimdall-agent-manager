@@ -167,6 +167,31 @@ export const registerSession = createAsyncThunk('chat/registerSession', async (_
   return daemonApi.registerUserClient(session);
 });
 
+export const fetchPreferences = createAsyncThunk('chat/fetchPreferences', async (_, { getState }) => {
+  const { session } = (getState() as any).chat;
+  const data = await daemonApi.fetchPreferences({
+    daemonUrl: session.daemonUrl,
+    clientToken: session.clientToken,
+  });
+  return data?.preferences ?? [];
+});
+
+export const saveUserPreference = createAsyncThunk(
+  'chat/saveUserPreference',
+  async (payload: { key: string; value: string; interrupt?: boolean }, { getState }) => {
+    const { session } = (getState() as any).chat;
+    const res = await daemonApi.savePreference({
+      daemonUrl: session.daemonUrl,
+      clientToken: session.clientToken,
+      key: payload.key,
+      value: payload.value,
+      interrupt: payload.interrupt ?? false,
+    });
+    return res.preference;
+  }
+);
+
+
 export const refreshAgents = createAsyncThunk('chat/refreshAgents', async (_, { getState }) => {
   const { daemonUrl } = (getState() as any).chat.session;
   const localKnown = loadKnownAgents();
@@ -293,6 +318,7 @@ const initialState = {
   session: {
     daemonUrl: getStoredValue('odin.daemonUrl', DEFAULT_DAEMON_URL),
     userId: getStoredValue('odin.userId', DEFAULT_USER_ID),
+    userDisplayName: getStoredValue('odin.userDisplayName', ''),
     clientInstanceId: createClientInstanceId(),
     clientToken: getStoredValue('odin.clientToken', ''),
     connected: false,
@@ -302,6 +328,8 @@ const initialState = {
     lastChatEvent: null,
     error: '',
   },
+  preferences: [] as any[],
+  userPreferences: {} as Record<string, string>,
   selectedAgentId: '',
   agents: [],
   chats: {},
@@ -527,6 +555,32 @@ const chatSlice = createSlice({
   },
   extraReducers: (builder) => {
     builder
+      .addCase(fetchPreferences.fulfilled, (state, action) => {
+        state.preferences = action.payload;
+        const cache: Record<string, string> = {};
+        for (const p of action.payload) {
+          cache[p.key] = p.value;
+        }
+        state.userPreferences = cache;
+        if (cache['user_display_name']) {
+          state.session.userDisplayName = cache['user_display_name'];
+          setStoredValue('odin.userDisplayName', cache['user_display_name']);
+        }
+      })
+      .addCase(saveUserPreference.fulfilled, (state, action) => {
+        const pref = action.payload;
+        const idx = state.preferences.findIndex((p) => p.key === pref.key);
+        if (idx >= 0) {
+          state.preferences[idx] = pref;
+        } else {
+          state.preferences.push(pref);
+        }
+        state.userPreferences[pref.key] = pref.value;
+        if (pref.key === 'user_display_name') {
+          state.session.userDisplayName = pref.value;
+          setStoredValue('odin.userDisplayName', pref.value);
+        }
+      })
       .addCase(registerSession.pending, (state) => {
         state.session.status = 'connecting';
         state.session.error = '';

@@ -505,3 +505,55 @@ agent_template_record_json :: proc(builder: ^strings.Builder, rec: Agent_Templat
 	for i in 0..<rec.memory_template_count { if i > 0 do strings.write_string(builder, `,`); strings.write_string(builder, `"`); json_write_string(builder, rec.memory_templates[i]); strings.write_string(builder, `"`) }
 	strings.write_string(builder, `]}`)
 }
+
+handle_agents_test_connectivity :: proc(client: net.TCP_Socket, body: string) {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"results":[`)
+	
+	first := true
+	
+	if len(server_config.wrapper.agent_commands) > 0 {
+		for cmd in server_config.wrapper.agent_commands {
+			if !first do strings.write_string(&b, ",")
+			first = false
+			
+			success, err_msg := test_single_agent_command(cmd.name, cmd.command)
+			fmt.sbprintf(&b, `{"name":"%s","ok":%t,"message":"%s"}`, cmd.name, success, err_msg)
+		}
+	}
+	
+	if len(server_config.wrapper.command) > 0 {
+		if !first do strings.write_string(&b, ",")
+		success, err_msg := test_single_agent_command("default", server_config.wrapper.command)
+		fmt.sbprintf(&b, `{"name":"default","ok":%t,"message":"%s"}`, success, err_msg)
+	}
+	
+	strings.write_string(&b, `]}`)
+	write_response(client, 200, "OK", strings.to_string(b))
+}
+
+test_single_agent_command :: proc(name: string, command_slice: []string) -> (ok: bool, message: string) {
+	if len(command_slice) == 0 do return false, "No command configured"
+	
+	exe := command_slice[0]
+	
+	desc := os.Process_Desc{
+		command = []string{"which", exe},
+	}
+	
+	process, err := os.process_start(desc)
+	if err != nil {
+		return false, fmt.tprintf("Failed to execute check: %v", err)
+	}
+	
+	state, wait_err := os.process_wait(process)
+	if wait_err != nil {
+		return false, fmt.tprintf("Failed to wait for check: %v", wait_err)
+	}
+	
+	if !state.success {
+		return false, fmt.tprintf("Executable '%s' not found or not runnable on this system.", exe)
+	}
+	
+	return true, fmt.tprintf("Executable verified: %s", exe)
+}

@@ -472,3 +472,10 @@ export async function triggerMemoryAudit({ daemonUrl, clientToken, timeRange }: 
     body: { time_range: timeRange }
   });
 }
+
+export async function testAgentConnectivity({ daemonUrl, clientToken }: { daemonUrl: string; clientToken: string }) {
+  return requestJson(joinUrl(daemonUrl, '/agents/test-connectivity'), {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${clientToken || ''}` }
+  });
+}

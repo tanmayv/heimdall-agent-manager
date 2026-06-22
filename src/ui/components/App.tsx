@@ -9,11 +9,13 @@ import MemoryAuditBoard from './MemoryAuditBoard';
 import StartAgentPage from './StartAgentPage';
 import ProjectsPage from './ProjectsPage';
 import AgentsPage from './AgentsPage';
+import OnboardingWizard from './OnboardingWizard';
 import {
   chatEventReceived,
   fetchSelectedChat,
   refreshAgents,
   registerSession,
+  fetchPreferences,
   selectAgent,
   updateSessionConfig,
   userWsConnected,
@@ -44,10 +46,24 @@ export default function App() {
     console.log(`[Render Timer] App took ${duration.toFixed(2)}ms`);
   });
   const dispatch = useDispatch<any>();
-  const { agents, selectedAgentId, session } = useSelector((state: any) => state.chat);
+  const { agents, selectedAgentId, session, userPreferences } = useSelector((state: any) => state.chat);
   const { projectsById } = useSelector((state: any) => state.projects);
   const unreviewedChains = useSelector((state: any) => state.tasks.unreviewedChains || EMPTY_ARRAY);
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? null;
+  
+  const [showOnboarding, setShowOnboarding] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (session.connected) {
+      const completed = userPreferences['setup_completed'] === 'true';
+      setShowOnboarding(!completed);
+    } else {
+      const hasToken = Boolean(window.localStorage.getItem('odin.clientToken'));
+      if (!hasToken) {
+        setShowOnboarding(true);
+      }
+    }
+  }, [session.connected, userPreferences]);
   const [view, setView] = useState<'chat' | 'settings' | 'tasks' | 'memory' | 'memoryAudit' | 'projects' | 'agents' | 'startAgent'>('chat');
   const [isAuditOpen, setIsAuditOpen] = useState(false);
   const selectedAgentRef = useRef(selectedAgentId);
@@ -65,6 +81,7 @@ export default function App() {
     dispatch(registerSession())
       .unwrap()
       .then(() => {
+        dispatch(fetchPreferences()); // Fetch preferences immediately on startup!
         dispatch(refreshAgents());
         dispatch(refreshTaskBoard());
         dispatch(refreshProjects());
@@ -282,6 +299,10 @@ export default function App() {
   const handleToggleAudit = useCallback(() => {
     setIsAuditOpen((prev) => !prev);
   }, []);
+
+  if (showOnboarding) {
+    return <OnboardingWizard onComplete={() => setShowOnboarding(false)} />;
+  }
 
   return (
     <div className="h-screen overflow-hidden bg-[var(--fd-canvas)] text-white">
