@@ -23,8 +23,11 @@ import {
   testStartReceived,
   testDoneReceived,
   setTestRuns,
+  appendMessage,
+  startAgentInstance,
+  stopAgentInstance,
 } from '../store/chatSlice';
-import { refreshTaskBoard, taskEventReceived } from '../store/taskSlice';
+import { refreshTaskBoard, taskEventReceived, updateTaskStateDirectly } from '../store/taskSlice';
 import { memoryEventReceived, refreshMemory } from '../store/memorySlice';
 import { refreshProjects } from '../store/projectSlice';
 import * as daemonApi from '../api/daemonApi';
@@ -117,7 +120,11 @@ export default function App() {
         }
         if (payload?.type === 'task_event') {
           dispatch(taskEventReceived(payload));
-          dispatch(refreshTaskBoard());
+          if (payload.task) {
+            dispatch(updateTaskStateDirectly(payload.task));
+          } else {
+            dispatch(refreshTaskBoard());
+          }
           return;
         }
         if (payload?.type === 'memory_event') {
@@ -135,9 +142,6 @@ export default function App() {
         }
         if (payload?.type === 'test_done') {
           dispatch(testDoneReceived(payload));
-          // Belt-and-suspenders: refetch canonical history in case test_start
-          // was missed (e.g. WS just reconnected) or the reducer needs a
-          // field we didn't include in the event payload.
           const url = sessionRef.current?.daemonUrl;
           if (url) {
             daemonApi.getTestHistory({ daemonUrl: url })
@@ -149,10 +153,14 @@ export default function App() {
         if (payload?.type !== 'chat_event') return;
         dispatch(chatEventReceived(payload));
         const agentId = payload.agent_instance_id;
-        const isSelected = agentId === selectedAgentRef.current;
-        const isCached = Boolean(cachedChatsRef.current?.[agentId]);
-        if (agentId && (isSelected || isCached)) {
-          dispatch(fetchSelectedChat(agentId));
+        if (agentId && payload.message) {
+          dispatch(appendMessage({ agentId, message: payload.message }));
+        } else if (agentId) {
+          const isSelected = agentId === selectedAgentRef.current;
+          const isCached = Boolean(cachedChatsRef.current?.[agentId]);
+          if (isSelected || isCached) {
+            dispatch(fetchSelectedChat(agentId));
+          }
         }
       };
 
@@ -213,6 +221,8 @@ export default function App() {
             dispatch(selectAgent(agentId));
             setView('chat');
           }}
+          onStartAgent={(agent) => dispatch(startAgentInstance(agent))}
+          onStopAgent={(agentId) => dispatch(stopAgentInstance(agentId))}
           onOpenChat={() => setView('chat')}
           onOpenTasks={() => {
             setView('tasks');

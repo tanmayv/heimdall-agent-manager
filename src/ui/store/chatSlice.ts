@@ -161,12 +161,26 @@ export const refreshAgents = createAsyncThunk('chat/refreshAgents', async (_, { 
   return merged;
 });
 
-export const fetchSelectedChat = createAsyncThunk('chat/fetchSelectedChat', async (agentId: string | undefined, { getState }) => {
-  const { session, selectedAgentId } = (getState() as any).chat;
-  const agentInstanceId = agentId || selectedAgentId;
-  if (!agentInstanceId || !session.clientToken) return { agentId: agentInstanceId, messages: [], markedRead: false };
+export const fetchSelectedChat = createAsyncThunk('chat/fetchSelectedChat', async (payload: { agentId?: string; limit?: number; cursor?: number } | string | undefined, { getState }) => {
+  const state = (getState() as any).chat;
+  const { session, selectedAgentId } = state;
+  
+  let agentInstanceId = selectedAgentId;
+  let limit = 50;
+  let cursor = 0;
+  
+  if (typeof payload === 'string') {
+    agentInstanceId = payload;
+  } else if (payload && typeof payload === 'object') {
+    agentInstanceId = payload.agentId || selectedAgentId;
+    if (payload.limit !== undefined) limit = payload.limit;
+    if (payload.cursor !== undefined) cursor = payload.cursor;
+  }
+  
+  if (!agentInstanceId || !session.clientToken) return { agentId: agentInstanceId, messages: [], nextCursor: 0, isAppend: false, markedRead: false };
+  
   const isOpenChat = agentInstanceId === selectedAgentId;
-  if (isOpenChat) {
+  if (isOpenChat && cursor === 0) { // Only mark as read on initial load
     await daemonApi.markChatRead({
       daemonUrl: session.daemonUrl,
       clientInstanceId: session.clientInstanceId,
@@ -174,13 +188,22 @@ export const fetchSelectedChat = createAsyncThunk('chat/fetchSelectedChat', asyn
       agentInstanceId,
     });
   }
+  
   const data = await daemonApi.fetchChat({
     daemonUrl: session.daemonUrl,
-    clientInstanceId: session.clientInstanceId,
     clientToken: session.clientToken,
     agentInstanceId,
+    limit,
+    cursor,
   });
-  return { agentId: agentInstanceId, messages: (data.messages ?? []).map(mapMessage), markedRead: isOpenChat };
+  
+  return { 
+    agentId: agentInstanceId, 
+    messages: (data.messages ?? []).map(mapMessage).reverse(), 
+    nextCursor: data.next_cursor || 0, 
+    isAppend: cursor > 0, 
+    markedRead: isOpenChat && cursor === 0 
+  };
 });
 
 export const sendMessageToSelectedAgent = createAsyncThunk('chat/sendMessageToSelectedAgent', async (body: string, { dispatch, getState }) => {
@@ -193,6 +216,28 @@ export const sendMessageToSelectedAgent = createAsyncThunk('chat/sendMessageToSe
     body,
   });
   await (dispatch as any)(fetchSelectedChat(selectedAgentId));
+});
+
+export const startAgentInstance = createAsyncThunk('chat/startAgentInstance', async (agent: any, { dispatch, getState }) => {
+  const { session } = (getState() as any).chat;
+  await daemonApi.startAgent({
+    daemonUrl: session.daemonUrl,
+    agentInstanceId: agent.id,
+    provider: agent.providerProfile || agent.agent_class || '',
+    templateId: agent.templateId,
+    projectId: agent.projectId,
+    modelTier: agent.modelTier,
+  });
+  dispatch(refreshAgents());
+});
+
+export const stopAgentInstance = createAsyncThunk('chat/stopAgentInstance', async (agentInstanceId: string, { dispatch, getState }) => {
+  const { session } = (getState() as any).chat;
+  await daemonApi.stopAgent({
+    daemonUrl: session.daemonUrl,
+    agentInstanceId,
+  });
+  dispatch(refreshAgents());
 });
 
 const initialState = {
@@ -211,9 +256,12 @@ const initialState = {
   selectedAgentId: '',
   agents: [],
   chats: {},
+  chatsCursor: {} as Record<string, number>,   // Track cursor per agent (identity)
+  chatsHasMore: {} as Record<string, boolean>,  // Track if there are more messages per agent
   sending: false,
   testRuns: [] as any[],
 };
+
 
 const chatSlice = createSlice({
   name: 'chat',
@@ -357,6 +405,16 @@ const chatSlice = createSlice({
       }
       storeKnownAgents(state.agents);
     },
+    appendMessage(state, action) {
+      const { agentId, message } = action.payload;
+      if (!state.chats[agentId]) {
+        state.chats[agentId] = [];
+      }
+      const mapped = mapMessage(message);
+      if (!state.chats[agentId].some((m: any) => m.id === mapped.id)) {
+        state.chats[agentId].push(mapped);
+      }
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -391,10 +449,23 @@ const chatSlice = createSlice({
         state.session.error = action.error.message || 'Failed to load agents';
       })
       .addCase(fetchSelectedChat.fulfilled, (state, action) => {
-        if (action.payload.agentId) {
-          state.chats[action.payload.agentId] = action.payload.messages;
+        const { agentId, messages, nextCursor, isAppend } = action.payload;
+        if (agentId) {
+          if (!state.chats[agentId]) {
+            state.chats[agentId] = [];
+          }
+          if (isAppend) {
+            // Prepend older paginated messages to the top
+            state.chats[agentId] = [...messages, ...state.chats[agentId]];
+          } else {
+            // Initial load - replace
+            state.chats[agentId] = messages;
+          }
+          state.chatsCursor[agentId] = nextCursor;
+          state.chatsHasMore[agentId] = nextCursor > 0;
+
           if (action.payload.markedRead) {
-            const agent = state.agents.find((item) => item.id === action.payload.agentId);
+            const agent = state.agents.find((item) => item.id === agentId);
             if (agent) agent.unreadCount = 0;
           }
         }
@@ -416,5 +487,5 @@ const chatSlice = createSlice({
   },
 });
 
-export const { selectAgent, setDaemonUrl, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived, testStartReceived, testDoneReceived, setTestRuns } = chatSlice.actions;
+export const { selectAgent, setDaemonUrl, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage } = chatSlice.actions;
 export default chatSlice.reducer;

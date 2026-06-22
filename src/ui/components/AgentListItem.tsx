@@ -27,16 +27,33 @@ function defaultSuggestedFix(agent) {
   return '';
 }
 
-export default function AgentListItem({ agent, selected, onSelect, hideProject = false, warningDismissed = false, onDismissWarning }: { agent: any; selected: boolean; onSelect: () => void; hideProject?: boolean; warningDismissed?: boolean; onDismissWarning?: () => void }) {
+export default function AgentListItem({ 
+  agent, 
+  selected, 
+  onSelect, 
+  onStart,
+  onStop,
+  hideProject = false, 
+  warningDismissed = false, 
+  onDismissWarning 
+}: { 
+  agent: any; 
+  selected: boolean; 
+  onSelect: () => void; 
+  onStart: () => void;
+  onStop: () => void;
+  hideProject?: boolean; 
+  warningDismissed?: boolean; 
+  onDismissWarning?: () => void 
+}) {
   const startupIssue = !warningDismissed && (agent.status === 'startup_blocked' || agent.status === 'startup_failed' || agent.status === 'startup_unknown');
   const suggestedFix = defaultSuggestedFix(agent);
   const projectsById = useSelector((state: any) => state.projects?.projectsById ?? {});
   const projectLabel = agent.projectId ? (projectsById[agent.projectId]?.name || agent.projectName || agent.projectId) : '';
+  const isRunning = agent.status === 'connected' || agent.status === 'starting';
+
   return (
-    <button
-      type="button"
-      data-debug-id={`agent-item-${agent.id}`}
-      onClick={onSelect}
+    <div
       className={`animate-float-in group relative w-full overflow-hidden rounded-[var(--fd-radius-xl)] border transition-all duration-300 hover:-translate-y-0.5 hover:scale-[1.01] hover:border-[var(--fd-accent-blue)]/60 hover:bg-[var(--fd-surface-2)] ${
         selected
           ? 'animate-halo-breathe border-[var(--fd-accent-blue)]/70 bg-[var(--fd-surface-2)] shadow-lg shadow-[var(--fd-accent-blue)]/20'
@@ -44,8 +61,11 @@ export default function AgentListItem({ agent, selected, onSelect, hideProject =
       }`}
     >
       <div className="pointer-events-none absolute inset-0 rounded-[var(--fd-radius-xl)] bg-[linear-gradient(120deg,transparent,rgba(255,255,255,0.05),transparent)] opacity-0 transition-opacity duration-300 group-hover:opacity-100" />
-      <div className="relative flex items-start justify-between gap-3 p-3">
-        <div className="min-w-0">
+      <div 
+        onClick={onSelect}
+        className="relative flex items-start justify-between gap-3 p-3 cursor-pointer"
+      >
+        <div className="min-w-0 flex-1 text-left">
           <div className="flex items-center gap-2">
             <span
               className={`h-2.5 w-2.5 rounded-full shadow ${
@@ -95,8 +115,38 @@ export default function AgentListItem({ agent, selected, onSelect, hideProject =
             </p>
           ) : null}
         </div>
-        {agent.unreadCount > 0 ? <span className="rounded-full bg-[var(--fd-accent-blue)] px-2 py-0.5 text-[11px] font-bold text-black">{agent.unreadCount}</span> : null}
+        
+        {/* Actions Column */}
+        <div className="flex flex-col items-end gap-2 shrink-0">
+          {agent.unreadCount > 0 ? (
+            <span className="rounded-full bg-[var(--fd-accent-blue)] px-2 py-0.5 text-[11px] font-bold text-black">
+              {agent.unreadCount}
+            </span>
+          ) : null}
+          
+          {isRunning ? (
+            <button
+              type="button"
+              data-debug-id={`agent-item-stop-btn-${agent.id}`}
+              onClick={(e) => { e.stopPropagation(); onStop(); }}
+              className="rounded-md border border-red-500/30 bg-red-500/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-red-400 transition hover:bg-red-500 hover:text-white hover:border-red-500"
+              title="Stop agent daemon wrapper process"
+            >
+              Stop
+            </button>
+          ) : (
+            <button
+              type="button"
+              data-debug-id={`agent-item-start-btn-${agent.id}`}
+              onClick={(e) => { e.stopPropagation(); onStart(); }}
+              className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-emerald-400 transition hover:bg-emerald-505 hover:bg-emerald-500 hover:text-black hover:border-emerald-500"
+              title="Start agent daemon wrapper process"
+            >
+              Start
+            </button>
+          )}
+        </div>
       </div>
-    </button>
+    </div>
   );
 }

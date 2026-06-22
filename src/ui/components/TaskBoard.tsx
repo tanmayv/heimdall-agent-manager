@@ -14,6 +14,7 @@ import {
   updateSelectedChainMetadata,
   updateSelectedChainStatus,
   updateSelectedTaskStatus,
+  fetchTasksForChain,
 } from '../store/taskSlice';
 
 const STATUS_COLUMNS = [
@@ -135,6 +136,19 @@ export default function TaskBoard({ session }) {
   const [mutating, setMutating] = useState(false);
   const [nudgeState, setNudgeState] = useState({ taskId: '', status: 'idle', message: '' });
   const [draggedItem, setDraggedItem] = useState<{ kind: 'task' | 'chain'; id: string; fromBucket: string } | null>(null);
+  const [timeRange, setTimeRange] = useState<'all' | '24h' | '7d' | '30d'>('all');
+
+  function handleTimeRangeChange(range: typeof timeRange) {
+    setTimeRange(range);
+    let createdAfter = 0;
+    const now = Date.now();
+    if (range === '24h') createdAfter = now - 24 * 3600 * 1000;
+    else if (range === '7d') createdAfter = now - 7 * 24 * 3600 * 1000;
+    else if (range === '30d') createdAfter = now - 30 * 24 * 3600 * 1000;
+
+    dispatch(refreshTaskBoard({ createdAfter }));
+  }
+
 
   const chainIds = Object.keys(chainTaskIds).sort((left, right) => (chainsById[right]?.createdAtUnixMs || 0) - (chainsById[left]?.createdAtUnixMs || 0));
   const selectedChain = selectedChainId ? chainsById[selectedChainId] : null;
@@ -187,6 +201,7 @@ export default function TaskBoard({ session }) {
 
   function openChain(chainId: string) {
     dispatch(selectChain(chainId));
+    dispatch(fetchTasksForChain(chainId));
     go('chain');
   }
 
@@ -385,6 +400,18 @@ export default function TaskBoard({ session }) {
           <p className="framer-subtext mt-1 truncate">{subtitle}</p>
         </div>
         <div className="flex items-center gap-2">
+          {page === 'overview' && (
+            <select
+              value={timeRange}
+              onChange={(e) => handleTimeRangeChange(e.target.value as any)}
+              className="framer-input text-xs px-2 py-1 h-[32px] bg-[var(--fd-surface-1)] border-[var(--fd-hairline)] rounded-md text-white mr-1 cursor-pointer"
+            >
+              <option value="all">All Time</option>
+              <option value="24h">Last 24h</option>
+              <option value="7d">Last 7 Days</option>
+              <option value="30d">Last 30 Days</option>
+            </select>
+          )}
           {page !== 'overview' && <button type="button" data-debug-id="task-back-btn" onClick={back} className="framer-pill-secondary">Back</button>}
           {page === 'chain' ? (
             <button type="button" data-debug-id="task-add-to-chain-btn" onClick={() => openCreateTask('subtask')} className="framer-pill bg-white">+ Add Task</button>

@@ -4,6 +4,7 @@ interface OdinApiRequestOptions {
   url: string;
   method?: string;
   body?: unknown;
+  headers?: Record<string, string>;
 }
 
 interface OdinPickDirectoryResult {

@@ -44,10 +44,13 @@ ipcMain.handle('odin-api:pick-directory', async (event) => {
   return { ok: true, canceled: false, path: result.filePaths[0] };
 });
 
-ipcMain.handle('odin-api:request', async (_event, { url, method = 'GET', body }) => {
+ipcMain.handle('odin-api:request', async (_event, { url, method = 'GET', body, headers }) => {
   const response = await fetch(url, {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 
+      'Content-Type': 'application/json',
+      ...headers
+    },
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await response.text();

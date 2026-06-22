@@ -1,10 +1,16 @@
 import { useLayoutEffect, useRef, useState } from 'react';
+import { useDispatch, useSelector } from 'react-redux';
+import { fetchSelectedChat } from '../store/chatSlice';
 import Composer from './Composer';
 import MessageBubble from './MessageBubble';
 
 const NEW_MESSAGE_THRESHOLD = 48;
 
 export default function ChatPane({ agent, messages, session, sending }) {
+  const dispatch = useDispatch<any>();
+  const chatsCursor = useSelector((state: any) => state.chat.chatsCursor);
+  const chatsHasMore = useSelector((state: any) => state.chat.chatsHasMore);
+  const [fetchingMore, setFetchingMore] = useState(false);
   const messageListRef = useRef(null);
   const prevMessageCountRef = useRef(messages.length);
   const prevAgentIdRef = useRef(agent?.id ?? '');
@@ -53,11 +59,38 @@ export default function ChatPane({ agent, messages, session, sending }) {
     setShowNewMessagesToast(false);
   }
 
-  function onMessagesScroll() {
+  async function onMessagesScroll() {
     const nearBottom = getIsNearBottom();
     wasNearBottomRef.current = nearBottom;
     if (nearBottom) {
       setShowNewMessagesToast(false);
+    }
+
+    const container = messageListRef.current;
+    if (container && container.scrollTop === 0 && agent?.id) {
+      const hasMore = chatsHasMore[agent.id] ?? false;
+      const cursor = chatsCursor[agent.id] ?? 0;
+
+      if (hasMore && cursor > 0 && !fetchingMore) {
+        setFetchingMore(true);
+        const prevScrollHeight = container.scrollHeight;
+        try {
+          await dispatch(fetchSelectedChat({
+            agentId: agent.id,
+            cursor,
+            limit: 50
+          })).unwrap();
+
+          window.requestAnimationFrame(() => {
+            const newScrollHeight = container.scrollHeight;
+            container.scrollTop = newScrollHeight - prevScrollHeight;
+          });
+        } catch (e) {
+          console.error('Failed to fetch older messages:', e);
+        } finally {
+          setFetchingMore(false);
+        }
+      }
     }
   }
 

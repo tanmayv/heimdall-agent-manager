@@ -16,7 +16,7 @@ function projectGroupLabel(projectId, projectsById, agentsInGroup) {
   return projectId;
 }
 
-export default function AgentSidebar({ agents, projectsById, selectedAgentId, session, activeView, onSelectAgent, onRefreshAgents, onOpenChat, onOpenTasks, onOpenMemory, onOpenProjects, onOpenAgents, onOpenStartAgent, onOpenSettings }) {
+export default function AgentSidebar({ agents, projectsById, selectedAgentId, session, activeView, onSelectAgent, onRefreshAgents, onStartAgent, onStopAgent, onOpenChat, onOpenTasks, onOpenMemory, onOpenProjects, onOpenAgents, onOpenStartAgent, onOpenSettings }) {
   const [collapsedProjects, setCollapsedProjects] = useState({});
   const [dismissedWarnings, setDismissedWarnings] = useState<Set<string>>(new Set());
 
@@ -161,6 +161,8 @@ export default function AgentSidebar({ agents, projectsById, selectedAgentId, se
                     hideProject
                     warningDismissed={dismissedWarnings.has(agent.id)}
                     onDismissWarning={() => dismissWarning(agent.id)}
+                    onStart={() => onStartAgent(agent)}
+                    onStop={() => onStopAgent(agent.id)}
                   />
                 )) : null}
               </section>

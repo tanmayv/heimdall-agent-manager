@@ -3,6 +3,7 @@ const DEFAULT_TIMEOUT_MS = 5000;
 type RequestOptions = {
   method?: string;
   body?: unknown;
+  headers?: Record<string, string>;
   timeoutMs?: number;
 };
 
@@ -46,9 +47,9 @@ type TaskAgentRequest = {
   agentToken: string;
 };
 
-async function requestJson(url: string, { method = 'GET', body, timeoutMs = DEFAULT_TIMEOUT_MS }: RequestOptions = {}): Promise<any> {
+async function requestJson(url: string, { method = 'GET', body, headers, timeoutMs = DEFAULT_TIMEOUT_MS }: RequestOptions = {}): Promise<any> {
   if (window.odinApi?.request) {
-    return window.odinApi.request({ url, method, body });
+    return window.odinApi.request({ url, method, body, headers });
   }
 
   const controller = new AbortController();
@@ -56,7 +57,10 @@ async function requestJson(url: string, { method = 'GET', body, timeoutMs = DEFA
   try {
     const response = await fetch(url, {
       method,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        ...headers
+      },
       body: body ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });
@@ -69,6 +73,7 @@ async function requestJson(url: string, { method = 'GET', body, timeoutMs = DEFA
     window.clearTimeout(timeout);
   }
 }
+
 
 function joinUrl(baseUrl: string, path: string) {
   return `${baseUrl.replace(/\/$/, '')}${path}`;
@@ -203,17 +208,17 @@ export async function disassociateAgentFromProject({ daemonUrl, agentRecordId, a
   });
 }
 
-export async function fetchChat({ daemonUrl, clientInstanceId, clientToken, agentInstanceId }: AgentRequest) {
-  return requestJson(joinUrl(daemonUrl, '/user-rpc'), {
-    method: 'POST',
-    body: {
-      action: 'fetch_chat',
-      client_instance_id: clientInstanceId,
-      client_token: clientToken,
-      agent_instance_id: agentInstanceId,
-    },
+export async function fetchChat({ daemonUrl, clientToken, agentInstanceId, limit = 50, cursor = 0 }: Partial<AgentRequest> & { limit?: number; cursor?: number }) {
+  let path = `/chats/${encodeURIComponent(agentInstanceId || '')}/messages?limit=${limit}`;
+  if (cursor > 0) {
+    path += `&cursor=${cursor}`;
+  }
+  return requestJson(joinUrl(daemonUrl, path), {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${clientToken || ''}` }
   });
 }
+
 
 export async function sendToAgent({ daemonUrl, clientInstanceId, clientToken, agentInstanceId, body }: AgentRequest & { body: string }) {
   return requestJson(joinUrl(daemonUrl, '/user-rpc'), {
@@ -240,16 +245,52 @@ export async function markChatRead({ daemonUrl, clientInstanceId, clientToken, a
   });
 }
 
-export async function listTasks({ daemonUrl, clientInstanceId, clientToken }: UserRpcRequest) {
-  return requestJson(joinUrl(daemonUrl, '/user-rpc'), {
-    method: 'POST',
-    body: {
-      action: 'list_tasks',
-      client_instance_id: clientInstanceId,
-      client_token: clientToken,
-    },
+export async function listTaskChains({ daemonUrl, clientToken, createdAfter, createdBefore, limit = 100, offset = 0 }: Omit<UserRpcRequest, 'clientInstanceId'> & { createdAfter?: number; createdBefore?: number; limit?: number; offset?: number }) {
+  let path = `/task-chains?limit=${limit}&offset=${offset}`;
+  if (createdAfter && createdAfter > 0) path += `&created_after=${createdAfter}`;
+  if (createdBefore && createdBefore > 0) path += `&created_before=${createdBefore}`;
+  return requestJson(joinUrl(daemonUrl, path), {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${clientToken}` }
   });
 }
+
+export async function listChainTasks({ daemonUrl, clientToken, chainId }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId: string }) {
+  const path = `/task-chains/${encodeURIComponent(chainId)}/tasks`;
+  return requestJson(joinUrl(daemonUrl, path), {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${clientToken}` }
+  });
+}
+
+export async function fetchTask({ daemonUrl, clientToken, taskId }: Omit<UserRpcRequest, 'clientInstanceId'> & { taskId: string }) {
+  const path = `/tasks/${encodeURIComponent(taskId)}`;
+  return requestJson(joinUrl(daemonUrl, path), {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${clientToken}` }
+  });
+}
+
+export async function fetchTaskComments({ daemonUrl, clientToken, taskId, unresolved = false }: Omit<UserRpcRequest, 'clientInstanceId'> & { taskId: string; unresolved?: boolean }) {
+  const path = `/tasks/${encodeURIComponent(taskId)}/comments?unresolved=${unresolved}`;
+  return requestJson(joinUrl(daemonUrl, path), {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${clientToken}` }
+  });
+}
+
+export async function listTasks({ daemonUrl, clientToken, chainId = '', createdAfter = 0, createdBefore = 0, limit = 50, offset = 0 }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId?: string; createdAfter?: number; createdBefore?: number; limit?: number; offset?: number }) {
+  let path = `/tasks?limit=${limit}&offset=${offset}`;
+  if (chainId) path += `&chain_id=${encodeURIComponent(chainId)}`;
+  if (createdAfter > 0) path += `&created_after=${createdAfter}`;
+  if (createdBefore > 0) path += `&created_before=${createdBefore}`;
+
+  return requestJson(joinUrl(daemonUrl, path), {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${clientToken}` }
+  });
+}
+
 
 export async function fetchTaskLog({ daemonUrl, clientInstanceId, clientToken, taskId }: UserRpcRequest & { taskId: string }) {
   return requestJson(joinUrl(daemonUrl, '/user-rpc'), {

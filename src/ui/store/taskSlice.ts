@@ -60,20 +60,60 @@ function normalizeEvent(event: any) {
   };
 }
 
-export const refreshTaskBoard = createAsyncThunk('tasks/refreshTaskBoard', async (_, { getState }) => {
-  const { session } = (getState() as any).chat;
-  if (!session.clientToken) return { chains: [], tasks: [], participants: [] };
-  const data = await daemonApi.listTasks({
+export const refreshTaskBoard = createAsyncThunk('tasks/refreshTaskBoard', async (payload: { createdAfter?: number; createdBefore?: number } | void, { dispatch, getState }) => {
+  const state = getState() as any;
+  const { session } = state.chat;
+  const { selectedChainId } = state.tasks;
+  if (!session.clientToken) return { chains: [], tasks: [], selectedChainId: '' };
+
+  const args = (payload && typeof payload === 'object') ? payload : {};
+  const chainsData = await daemonApi.listTaskChains({
     daemonUrl: session.daemonUrl,
-    clientInstanceId: session.clientInstanceId,
     clientToken: session.clientToken,
+    createdAfter: args.createdAfter,
+    createdBefore: args.createdBefore,
   });
+
+  const chains = (chainsData.chains ?? []).map(normalizeChain);
+
+  let targetChainId = selectedChainId;
+  if (!targetChainId || !chains.some((c: any) => c.chainId === targetChainId)) {
+    targetChainId = chains[0]?.chainId || '';
+  }
+
+  let tasks: any[] = [];
+  if (targetChainId) {
+    const tasksData = await daemonApi.listChainTasks({
+      daemonUrl: session.daemonUrl,
+      clientToken: session.clientToken,
+      chainId: targetChainId,
+    });
+    tasks = (tasksData.tasks ?? []).map(normalizeTask);
+  }
+
   return {
-    chains: (data.chains ?? []).map(normalizeChain),
-    tasks: (data.tasks ?? []).map(normalizeTask),
-    participants: (data.participants ?? []).map(normalizeParticipant),
+    chains,
+    tasks,
+    selectedChainId: targetChainId,
   };
 });
+
+export const fetchTasksForChain = createAsyncThunk('tasks/fetchTasksForChain', async (chainId: string, { getState }) => {
+  const { session } = (getState() as any).chat;
+  if (!session.clientToken || !chainId) return { chainId, tasks: [] };
+
+  const data = await daemonApi.listChainTasks({
+    daemonUrl: session.daemonUrl,
+    clientToken: session.clientToken,
+    chainId,
+  });
+
+  return {
+    chainId,
+    tasks: (data.tasks ?? []).map(normalizeTask),
+  };
+});
+
 
 export const fetchSelectedTaskLog = createAsyncThunk('tasks/fetchSelectedTaskLog', async (taskId: string | undefined, { getState }) => {
   const state = getState() as any;
@@ -217,6 +257,21 @@ const taskSlice = createSlice({
     taskEventReceived(state: any, action) {
       state.lastTaskEvent = action.payload;
     },
+    updateTaskStateDirectly(state: any, action) {
+      const task = action.payload;
+      if (!task) return;
+      const normalized = normalizeTask(task);
+      state.tasksById[normalized.taskId] = normalized;
+      
+      const chainId = normalized.chainId || 'standalone';
+      if (!state.chainTaskIds[chainId]) {
+        state.chainTaskIds[chainId] = [];
+      }
+      if (!state.chainTaskIds[chainId].includes(normalized.taskId)) {
+        state.chainTaskIds[chainId].push(normalized.taskId);
+      }
+      state.chainTaskIds[chainId] = sortTaskIds(state.chainTaskIds[chainId], state.tasksById);
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -228,36 +283,30 @@ const taskSlice = createSlice({
         state.loading = false;
         state.error = '';
         const chainsById: any = {};
-        const tasksById: any = {};
-        const chainTaskIds: any = {};
-        const participantsByTaskId: any = {};
+        const tasksById: any = { ...state.tasksById }; // Preserve existing tasks in memory
+        const chainTaskIds: any = { ...state.chainTaskIds }; // Preserve existing mappings
 
         action.payload.chains.forEach((chain: any) => {
           chainsById[chain.chainId] = chain;
-          chainTaskIds[chain.chainId] = [];
+          if (!chainTaskIds[chain.chainId]) chainTaskIds[chain.chainId] = [];
         });
-        action.payload.tasks.forEach((task: any) => {
-          tasksById[task.taskId] = task;
-          const chainId = task.chainId || 'standalone';
-          if (!chainTaskIds[chainId]) chainTaskIds[chainId] = [];
-          chainTaskIds[chainId].push(task.taskId);
-        });
-        Object.keys(chainTaskIds).forEach((chainId) => {
-          chainTaskIds[chainId] = sortTaskIds(chainTaskIds[chainId], tasksById);
-        });
-        action.payload.participants.forEach((participant: any) => {
-          if (!participant.taskId) return;
-          if (!participantsByTaskId[participant.taskId]) participantsByTaskId[participant.taskId] = [];
-          participantsByTaskId[participant.taskId].push(participant);
-        });
+
+        const targetChainId = action.payload.selectedChainId;
+        if (targetChainId) {
+          chainTaskIds[targetChainId] = [];
+          action.payload.tasks.forEach((task: any) => {
+            tasksById[task.taskId] = task;
+            chainTaskIds[targetChainId].push(task.taskId);
+          });
+          chainTaskIds[targetChainId] = sortTaskIds(chainTaskIds[targetChainId], tasksById);
+        }
 
         state.chainsById = chainsById;
         state.tasksById = tasksById;
         state.chainTaskIds = chainTaskIds;
-        state.participantsByTaskId = participantsByTaskId;
+        
+        state.selectedChainId = targetChainId || action.payload.chains[0]?.chainId || '';
         if (state.selectedTaskId && !tasksById[state.selectedTaskId]) state.selectedTaskId = '';
-        if (state.selectedChainId && !chainsById[state.selectedChainId]) state.selectedChainId = '';
-        if (!state.selectedChainId) state.selectedChainId = action.payload.chains[0]?.chainId || '';
       })
       .addCase(refreshTaskBoard.rejected, (state: any, action) => {
         state.loading = false;
@@ -268,9 +317,20 @@ const taskSlice = createSlice({
       })
       .addCase(fetchSelectedTaskLog.rejected, (state: any, action) => {
         state.error = action.error.message || 'Failed to load task log';
+      })
+      .addCase(fetchTasksForChain.fulfilled, (state: any, action) => {
+        const { chainId, tasks } = action.payload;
+        if (!chainId) return;
+        
+        tasks.forEach((task: any) => {
+          state.tasksById[task.taskId] = task;
+        });
+        
+        state.chainTaskIds[chainId] = tasks.map((t: any) => t.taskId);
+        state.chainTaskIds[chainId] = sortTaskIds(state.chainTaskIds[chainId], state.tasksById);
       });
   },
 });
 
-export const { selectChain, selectTask, toggleChainExpanded, taskEventReceived } = taskSlice.actions;
+export const { selectChain, selectTask, toggleChainExpanded, taskEventReceived, updateTaskStateDirectly } = taskSlice.actions;
 export default taskSlice.reducer;
