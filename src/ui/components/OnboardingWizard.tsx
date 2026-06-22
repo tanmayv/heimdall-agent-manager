@@ -95,23 +95,23 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
         // Create Memory Auditor Agent
         await daemonApi.createAgent({
           daemonUrl: daemonIp,
-          agent_instance_id: 'memory-auditor@default',
-          display_name: 'Memory Auditor',
-          template_id: 'memory_auditor',
-          provider_profile: 'pi',
-          model_tier: 'smart',
-          project_id: 'default',
+          agentInstanceId: 'memory-auditor@default',
+          displayName: 'Memory Auditor',
+          templateId: 'memory_auditor',
+          providerProfile: 'pi',
+          modelTier: 'smart',
+          projectId: 'default',
         });
 
         // Create Memory Reviewer Agent
         await daemonApi.createAgent({
           daemonUrl: daemonIp,
-          agent_instance_id: 'memory-reviewer@heimdall',
-          display_name: 'Memory Reviewer',
-          template_id: 'memory_reviewer',
-          provider_profile: 'pi',
-          model_tier: 'smart',
-          project_id: 'default',
+          agentInstanceId: 'memory-reviewer@heimdall',
+          displayName: 'Memory Reviewer',
+          templateId: 'memory_reviewer',
+          providerProfile: 'pi',
+          modelTier: 'smart',
+          projectId: 'default',
         });
       }
 
