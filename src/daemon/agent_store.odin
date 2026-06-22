@@ -161,6 +161,7 @@ Agent_Template_Record :: struct {
 	created_unix_ms: i64,
 	updated_unix_ms: i64,
 	archived_at_unix_ms: i64,
+	is_customized: bool,
 }
 
 Agent_Template_Event_Kind :: enum { Agent_Template_Upserted, Agent_Template_Archived }
@@ -237,6 +238,9 @@ agent_template_apply_event :: proc(event: Agent_Template_Event) -> bool {
 	rec.bootstrap_defaults = strings.clone(event.bootstrap_defaults)
 	rec.suggested_model_tier = strings.clone(event.suggested_model_tier)
 	rec.memory_template_count = event.memory_template_count
+	if event.author == "api" {
+		rec.is_customized = true
+	}
 	for i in 0..<event.memory_template_count do rec.memory_templates[i] = strings.clone(event.memory_templates[i])
 	if rec.created_unix_ms == 0 do rec.created_unix_ms = event.created_unix_ms
 	rec.updated_unix_ms = event.created_unix_ms

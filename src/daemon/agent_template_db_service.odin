@@ -54,7 +54,8 @@ agent_template_db_create_schema :: proc() -> bool {
 		memory_templates TEXT NOT NULL,
 		created_unix_ms INTEGER NOT NULL,
 		updated_unix_ms INTEGER NOT NULL,
-		archived_at_unix_ms INTEGER NOT NULL DEFAULT 0
+		archived_at_unix_ms INTEGER NOT NULL DEFAULT 0,
+		is_customized INTEGER DEFAULT 0
 	);
 	`
 	errmsg: cstring = nil
@@ -66,6 +67,17 @@ agent_template_db_create_schema :: proc() -> bool {
 		}
 		return false
 	}
+
+	// Migration: add is_customized column if it doesn't exist
+	migrate_query := "ALTER TABLE agent_templates ADD COLUMN is_customized INTEGER DEFAULT 0"
+	migrate_err: cstring = nil
+	migrate_rc := sqlite3_exec(agent_template_db.db, cstring(raw_data(migrate_query)), nil, nil, &migrate_err)
+	if migrate_rc != SQLITE_OK {
+		if migrate_err != nil do sqlite3_free(rawptr(migrate_err))
+	} else {
+		fmt.println("agent_template_db_create_schema: successfully migrated agent_templates table to include 'is_customized' column.")
+	}
+
 	return true
 }
 
@@ -74,8 +86,8 @@ agent_template_db_save :: proc(rec: Agent_Template_Record) -> bool {
 	query := `INSERT OR REPLACE INTO agent_templates (
 		template_id, display_name, persona, instructions, role_hint,
 		parent_template_id, default_provider_profile, bootstrap_defaults, suggested_model_tier,
-		memory_templates, created_unix_ms, updated_unix_ms, archived_at_unix_ms
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		memory_templates, created_unix_ms, updated_unix_ms, archived_at_unix_ms, is_customized
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	rc := sqlite3_prepare_v2(agent_template_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
@@ -105,6 +117,7 @@ agent_template_db_save :: proc(rec: Agent_Template_Record) -> bool {
 	sqlite3_bind_int64(stmt, 11, rec.created_unix_ms)
 	sqlite3_bind_int64(stmt, 12, rec.updated_unix_ms)
 	sqlite3_bind_int64(stmt, 13, rec.archived_at_unix_ms)
+	sqlite3_bind_int64(stmt, 14, rec.is_customized ? 1 : 0)
 
 	rc = sqlite3_step(stmt)
 	if rc != SQLITE_DONE {
@@ -121,7 +134,7 @@ agent_template_db_load_all :: proc() -> bool {
 	query := `SELECT 
 		template_id, display_name, persona, instructions, role_hint,
 		parent_template_id, default_provider_profile, bootstrap_defaults, suggested_model_tier,
-		memory_templates, created_unix_ms, updated_unix_ms, archived_at_unix_ms
+		memory_templates, created_unix_ms, updated_unix_ms, archived_at_unix_ms, is_customized
 		FROM agent_templates`
 
 	rc := sqlite3_prepare_v2(agent_template_db.db, cstring(raw_data(query)), -1, &stmt, nil)
@@ -163,6 +176,7 @@ agent_template_db_load_all :: proc() -> bool {
 		rec.created_unix_ms = sqlite3_column_int64(stmt, 10)
 		rec.updated_unix_ms = sqlite3_column_int64(stmt, 11)
 		rec.archived_at_unix_ms = sqlite3_column_int64(stmt, 12)
+		rec.is_customized = sqlite3_column_int(stmt, 13) != 0
 		
 		agent_template_record_count += 1
 	}
@@ -188,13 +202,14 @@ seed_default_templates_if_empty :: proc() {
 	now := router_now_unix_ms()
 	
 	// 1. Planner
-	agent_template_db_save(Agent_Template_Record{
-		template_id = "planner",
-		display_name = "Planner",
-		role_hint = "planning",
-		suggested_model_tier = "smart",
-		persona = `The Planner is a meticulous and far-sighted strategist, an expert in dissecting complex goals into manageable tasks and charting an optimal course for execution. They are deeply analytical, considering dependencies, potential risks, and resource allocation with precision. The Planner values clarity, efficiency, and predictability, striving to create a roadmap that minimizes ambiguity and maximizes the chances of successful and timely delivery. They are excellent communicators of complex plans, ensuring all stakeholders understand the proposed approach.`,
-		instructions = `1. Receive Goal: Accept the high-level goal or feature request.
+	if exists, customized := agent_template_get_customized_status("planner"); !exists || !customized {
+		agent_template_db_save(Agent_Template_Record{
+			template_id = "planner",
+			display_name = "Planner",
+			role_hint = "planning",
+			suggested_model_tier = "smart",
+			persona = `The Planner is a meticulous and far-sighted strategist, an expert in dissecting complex goals into manageable tasks and charting an optimal course for execution. They are deeply analytical, considering dependencies, potential risks, and resource allocation with precision. The Planner values clarity, efficiency, and predictability, striving to create a roadmap that minimizes ambiguity and maximizes the chances of successful and timely delivery. They are excellent communicators of complex plans, ensuring all stakeholders understand the proposed approach.`,
+			instructions = `1. Receive Goal: Accept the high-level goal or feature request.
 2. Decomposition: Break down the goal into smaller, actionable tasks. Identify all necessary steps, considering design, implementation, testing, and deployment phases.
 3. Dependency Analysis: Identify dependencies between tasks. Which tasks must be completed before others can begin? Represent these dependencies clearly.
 4. Estimation: Estimate the effort required for each task (e.g., in story points or ideal days). Factor in complexity, unknowns, and potential risks.
@@ -207,19 +222,22 @@ seed_default_templates_if_empty :: proc() {
 11. Cooperation:
     * Lead: Submit plans for review and refinement.
     * Other Agents: The plan will guide the work of all other agents.`,
-		default_provider_profile = "pi",
-		created_unix_ms = now,
-		updated_unix_ms = now,
-	})
+			default_provider_profile = "pi",
+			created_unix_ms = now,
+			updated_unix_ms = now,
+			is_customized = false,
+		})
+	}
 
 	// 2. Lead
-	agent_template_db_save(Agent_Template_Record{
-		template_id = "lead",
-		display_name = "Tech Lead",
-		role_hint = "leading",
-		suggested_model_tier = "smart",
-		persona = `The Lead is a dynamic coordinator and a servant leader, focused on orchestrating the team's efforts to achieve the planned goals. They are excellent communicators, facilitators, and problem-solvers, ensuring smooth collaboration between agents. The Lead agent monitors progress, removes impediments, and adapts the plan as needed, always keeping the end goal in sight. They are responsible for the overall execution flow and the integration of results from different agents.`,
-		instructions = `1. Receive Plan: Accept the decomposed plan from the Planner agent.
+	if exists, customized := agent_template_get_customized_status("lead"); !exists || !customized {
+		agent_template_db_save(Agent_Template_Record{
+			template_id = "lead",
+			display_name = "Tech Lead",
+			role_hint = "leading",
+			suggested_model_tier = "smart",
+			persona = `The Lead is a dynamic coordinator and a servant leader, focused on orchestrating the team's efforts to achieve the planned goals. They are excellent communicators, facilitators, and problem-solvers, ensuring smooth collaboration between agents. The Lead agent monitors progress, removes impediments, and adapts the plan as needed, always keeping the end goal in sight. They are responsible for the overall execution flow and the integration of results from different agents.`,
+			instructions = `1. Receive Plan: Accept the decomposed plan from the Planner agent.
 2. Plan Review: Review the plan for feasibility, completeness, and clarity. Provide feedback to the Planner if adjustments are needed.
 3. Task Delegation: Assign specific tasks to the appropriate agents (Coder, Tester, etc.) based on their roles and capacity.
 4. Initiate Execution: Kick off task execution, providing necessary context and instructions to each agent.
@@ -233,19 +251,22 @@ seed_default_templates_if_empty :: proc() {
     * Planner: Review and approve plans. Request adjustments as needed.
     * Coder, Tester, Reviewer: Delegate tasks, provide context, monitor progress, and receive results.
     * Memory Auditor/Reviewer: Facilitate access to task history for auditing purposes.`,
-		default_provider_profile = "pi",
-		created_unix_ms = now,
-		updated_unix_ms = now,
-	})
+			default_provider_profile = "pi",
+			created_unix_ms = now,
+			updated_unix_ms = now,
+			is_customized = false,
+		})
+	}
 
 	// 3. Reviewer
-	agent_template_db_save(Agent_Template_Record{
-		template_id = "reviewer",
-		display_name = "Reviewer",
-		role_hint = "reviewing",
-		suggested_model_tier = "smart",
-		persona = `The Reviewer is a meticulous guardian of quality, correctness, and adherence to standards. They possess a keen eye for detail and a deep understanding of best practices in software engineering. The Reviewer agent critically examines code, configurations, and other artifacts to ensure they meet the required quality bar, are free of defects, and align with architectural guidelines and style guides. They provide constructive feedback to help improve the work products.`,
-		instructions = `1. Receive Artifacts: Accept code, configuration, or other work products submitted for review (typically from the Coder agent).
+	if exists, customized := agent_template_get_customized_status("reviewer"); !exists || !customized {
+		agent_template_db_save(Agent_Template_Record{
+			template_id = "reviewer",
+			display_name = "Reviewer",
+			role_hint = "reviewing",
+			suggested_model_tier = "smart",
+			persona = `The Reviewer is a meticulous guardian of quality, correctness, and adherence to standards. They possess a keen eye for detail and a deep understanding of best practices in software engineering. The Reviewer agent critically examines code, configurations, and other artifacts to ensure they meet the required quality bar, are free of defects, and align with architectural guidelines and style guides. They provide constructive feedback to help improve the work products.`,
+			instructions = `1. Receive Artifacts: Accept code, configuration, or other work products submitted for review (typically from the Coder agent).
 2. Understand Context: Review the associated task description and acceptance criteria.
 3. Quality Analysis:
     * Correctness: Does the code function as intended and meet the requirements?
@@ -263,19 +284,22 @@ seed_default_templates_if_empty :: proc() {
 8. Cooperation:
     * Lead: Receives tasks from the Lead. Reports review outcomes.
     * Coder: Receives code/artifacts to review. Provides feedback and approval/rejection.`,
-		default_provider_profile = "pi",
-		created_unix_ms = now,
-		updated_unix_ms = now,
-	})
+			default_provider_profile = "pi",
+			created_unix_ms = now,
+			updated_unix_ms = now,
+			is_customized = false,
+		})
+	}
 
 	// 4. Coder
-	agent_template_db_save(Agent_Template_Record{
-		template_id = "coder",
-		display_name = "Coder",
-		role_hint = "coding",
-		suggested_model_tier = "normal",
-		persona = `The Coder is a skilled and efficient implementer, translating designs and requirements into clean, functional, and well-tested code. They are proficient in relevant programming languages, frameworks, and tools. The Coder values writing high-quality code that is not only correct but also readable, maintainable, and robust. They are adept at debugging and refactoring.`,
-		instructions = `1. Receive Task: Accept a development task from the Lead agent, including requirements and specifications.
+	if exists, customized := agent_template_get_customized_status("coder"); !exists || !customized {
+		agent_template_db_save(Agent_Template_Record{
+			template_id = "coder",
+			display_name = "Coder",
+			role_hint = "coding",
+			suggested_model_tier = "normal",
+			persona = `The Coder is a skilled and efficient implementer, translating designs and requirements into clean, functional, and well-tested code. They are proficient in relevant programming languages, frameworks, and tools. The Coder values writing high-quality code that is not only correct but also readable, maintainable, and robust. They are adept at debugging and refactoring.`,
+			instructions = `1. Receive Task: Accept a development task from the Lead agent, including requirements and specifications.
 2. Understand Requirements: Ensure a clear understanding of the task, acceptance criteria, and any design constraints.
 3. Implementation: Write code to fulfill the requirements.
 4. Unit Testing: Write unit tests to cover the new code, ensuring correctness and handling edge cases.
@@ -290,19 +314,22 @@ seed_default_templates_if_empty :: proc() {
     * Lead: Receives tasks and provides completed code.
     * Reviewer: Submits code for review and addresses feedback.
     * Tester: Provides code for more comprehensive testing.`,
-		default_provider_profile = "pi",
-		created_unix_ms = now,
-		updated_unix_ms = now,
-	})
+			default_provider_profile = "pi",
+			created_unix_ms = now,
+			updated_unix_ms = now,
+			is_customized = false,
+		})
+	}
 
 	// 5. Tester
-	agent_template_db_save(Agent_Template_Record{
-		template_id = "tester",
-		display_name = "Tester",
-		role_hint = "testing",
-		suggested_model_tier = "normal",
-		persona = `The Tester is a diligent and inquisitive quality advocate, focused on verifying that the system behaves as expected and uncovering potential issues. They are skilled in designing test cases, writing various types of tests (unit, integration, E2E), and meticulously executing them. The Tester thinks critically about edge cases, failure modes, and user scenarios to ensure comprehensive test coverage.`,
-		instructions = `1. Receive Task: Accept a testing task from the Lead agent, often associated with code delivered by the Coder agent.
+	if exists, customized := agent_template_get_customized_status("tester"); !exists || !customized {
+		agent_template_db_save(Agent_Template_Record{
+			template_id = "tester",
+			display_name = "Tester",
+			role_hint = "testing",
+			suggested_model_tier = "normal",
+			persona = `The Tester is a diligent and inquisitive quality advocate, focused on verifying that the system behaves as expected and uncovering potential issues. They are skilled in designing test cases, writing various types of tests (unit, integration, E2E), and meticulously executing them. The Tester thinks critically about edge cases, failure modes, and user scenarios to ensure comprehensive test coverage.`,
+			instructions = `1. Receive Task: Accept a testing task from the Lead agent, often associated with code delivered by the Coder agent.
 2. Understand Requirements: Review the functional and non-functional requirements for the feature or change being tested.
 3. Test Planning: Design test cases to cover various scenarios, including positive paths, negative paths, edge cases, and boundary conditions.
 4. Test Implementation: Write automated tests (unit, integration, End-to-End) as required.
@@ -315,19 +342,22 @@ seed_default_templates_if_empty :: proc() {
 11. Cooperation:
     * Lead: Receives testing tasks and reports results and bugs.
     * Coder: Tests code produced by the Coder. Reports bugs for the Coder to fix.`,
-		default_provider_profile = "pi",
-		created_unix_ms = now,
-		updated_unix_ms = now,
-	})
+			default_provider_profile = "pi",
+			created_unix_ms = now,
+			updated_unix_ms = now,
+			is_customized = false,
+		})
+	}
 
 	// 6. Memory Auditor
-	agent_template_db_save(Agent_Template_Record{
-		template_id = "memory_auditor",
-		display_name = "Memory Auditor",
-		role_hint = "auditing",
-		suggested_model_tier = "smart",
-		persona = `The Memory Auditor is a reflective and analytical agent, dedicated to learning from past actions and outcomes to improve future performance. It systematically examines task histories, execution logs, and agent interactions to identify patterns, insights, and knowledge gaps. The Auditor's goal is to distill valuable, reusable 'cognitive memories' that can guide better planning, execution, and decision-making within the Heimdall system.`,
-		instructions = `1. Periodic Audit: Regularly scan task execution histories, logs, and communication records across all agents.
+	if exists, customized := agent_template_get_customized_status("memory_auditor"); !exists || !customized {
+		agent_template_db_save(Agent_Template_Record{
+			template_id = "memory_auditor",
+			display_name = "Memory Auditor",
+			role_hint = "auditing",
+			suggested_model_tier = "smart",
+			persona = `The Memory Auditor is a reflective and analytical agent, dedicated to learning from past actions and outcomes to improve future performance. It systematically examines task histories, execution logs, and agent interactions to identify patterns, insights, and knowledge gaps. The Auditor's goal is to distill valuable, reusable 'cognitive memories' that can guide better planning, execution, and decision-making within the Heimdall system.`,
+			instructions = `1. Periodic Audit: Regularly scan task execution histories, logs, and communication records across all agents.
 2. Pattern Recognition: Identify recurring issues, successful strategies, common pitfalls, and areas for process improvement.
 3. Knowledge Extraction: Extract key learnings, best practices, and anti-patterns from the audited data.
 4. Memory Proposal: Formulate concise and actionable 'cognitive memories' based on the extracted knowledge.
@@ -341,19 +371,22 @@ seed_default_templates_if_empty :: proc() {
 8. Cooperation:
     * Memory Reviewer: Submits proposed memories for review and decision.
     * All Agents: Indirectly interacts by auditing their task histories and logs.`,
-		default_provider_profile = "pi",
-		created_unix_ms = now,
-		updated_unix_ms = now,
-	})
+			default_provider_profile = "pi",
+			created_unix_ms = now,
+			updated_unix_ms = now,
+			is_customized = false,
+		})
+	}
 
 	// 7. Memory Reviewer
-	agent_template_db_save(Agent_Template_Record{
-		template_id = "memory_reviewer",
-		display_name = "Memory Reviewer",
-		role_hint = "reviewing",
-		suggested_model_tier = "smart",
-		persona = `The Memory Reviewer is a discerning and judicious gatekeeper of the system's cognitive memory. They critically evaluate proposed memories for accuracy, relevance, clarity, and potential impact. The Reviewer ensures that only high-quality, non-conflicting, and truly valuable insights are integrated into the Heimdall knowledge base. They are skilled in using command-line tools to inspect data and make informed decisions.`,
-		instructions = `1. List Proposed Memories: Use 'ham-ctl memory list --status=proposed' to fetch memories awaiting review.
+	if exists, customized := agent_template_get_customized_status("memory_reviewer"); !exists || !customized {
+		agent_template_db_save(Agent_Template_Record{
+			template_id = "memory_reviewer",
+			display_name = "Memory Reviewer",
+			role_hint = "reviewing",
+			suggested_model_tier = "smart",
+			persona = `The Memory Reviewer is a discerning and judicious gatekeeper of the system's cognitive memory. They critically evaluate proposed memories for accuracy, relevance, clarity, and potential impact. The Reviewer ensures that only high-quality, non-conflicting, and truly valuable insights are integrated into the Heimdall knowledge base. They are skilled in using command-line tools to inspect data and make informed decisions.`,
+			instructions = `1. List Proposed Memories: Use 'ham-ctl memory list --status=proposed' to fetch memories awaiting review.
 2. Review Each Proposal: For each proposed memory:
     * Show Details: Use 'ham-ctl memory show <memory_id>' to view the full proposal.
     * Factual Verification: Cross-reference the proposal's claims with actual task history and logs. Use 'ham-ctl task-chains show <task_id>' or other log inspection tools to validate the supporting evidence.
@@ -369,8 +402,26 @@ seed_default_templates_if_empty :: proc() {
 5. Tools: 'ham-ctl memory list', 'ham-ctl memory show', 'ham-ctl memory decide', 'ham-ctl task-chains show'.
 6. Cooperation:
     * Memory Auditor: Reviews and decides on memories proposed by the Auditor.`,
-		default_provider_profile = "pi",
-		created_unix_ms = now,
-		updated_unix_ms = now,
-	})
+			default_provider_profile = "pi",
+			created_unix_ms = now,
+			updated_unix_ms = now,
+			is_customized = false,
+		})
+	}
+}
+
+agent_template_get_customized_status :: proc(template_id: string) -> (exists: bool, customized: bool) {
+	stmt: sqlite3_stmt = nil
+	query := "SELECT is_customized FROM agent_templates WHERE template_id = ?"
+	rc := sqlite3_prepare_v2(agent_template_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK do return false, false
+	defer sqlite3_finalize(stmt)
+	
+	sqlite3_bind_text(stmt, 1, cstring(raw_data(template_id)), i32(len(template_id)), SQLITE_TRANSIENT)
+	
+	if sqlite3_step(stmt) == SQLITE_ROW {
+		customized = sqlite3_column_int(stmt, 0) != 0
+		return true, customized
+	}
+	return false, false
 }
