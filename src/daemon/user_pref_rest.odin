@@ -21,6 +21,7 @@ PREFERENCE_KEYS := []string{
 	"memory_auditor_agent_id",
 	"memory_auditor_model_tier",
 	"memory_auditor_provider_profile",
+	"memory_auditor_timeout_min",
 	"memory_reviewer_agent_id",
 	"memory_reviewer_model_tier",
 	"memory_reviewer_provider_profile",
@@ -136,6 +137,9 @@ get_preference_default :: proc(key: string, agent_class := "") -> (value: string
 
 	case "memory_auditor_provider_profile":
 		return "pi", false
+
+	case "memory_auditor_timeout_min":
+		return "10", false
 
 	case "memory_reviewer_agent_id":
 		return "memory-reviewer@heimdall", false

@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import "core:net"
+import "core:strconv"
 import "core:strings"
 import "core:time"
 import cfg_lib "odin_test:lib/config"
@@ -103,10 +104,8 @@ handle_post_task_chain_audit :: proc(client: net.TCP_Socket, body: string, ctx: 
 	defer audit_run_free(run) // Local copy cleanup
 
 	// 8. Resolve Memory Auditor Agent Configs
-	auditor_agent_id := memory_auditor_resolve_pref(author, "memory_auditor_agent_id")
 	auditor_model_tier := memory_auditor_resolve_pref(author, "memory_auditor_model_tier")
 	auditor_provider_profile := memory_auditor_resolve_pref(author, "memory_auditor_provider_profile")
-	defer delete(auditor_agent_id)
 	defer delete(auditor_model_tier)
 	defer delete(auditor_provider_profile)
 
@@ -154,8 +153,6 @@ handle_post_task_chain_audit :: proc(client: net.TCP_Socket, body: string, ctx: 
 	defer delete(generated_task_id)
 
 	// 11. Add Memory Reviewer as a reviewer participant
-	reviewer_agent_id := memory_auditor_resolve_pref(author, "memory_reviewer_agent_id")
-	defer delete(reviewer_agent_id)
 	add_part_res := task_service_add_participant(generated_task_id, audit_chain_id, reviewer_agent_id, "lgtm_required", author)
 	if !add_part_res.ok {
 		write_response(client, 500, "Internal Server Error", fmt.tprintf("{{\"ok\":false,\"message\":\"failed to add Memory Reviewer participant: %s\"}}", add_part_res.message))
@@ -201,7 +198,13 @@ memory_auditor_start_agent :: proc(agent_instance_id, template_id, provider_prof
 }
 
 memory_auditor_resolve_pref :: proc(user_id, key: string) -> string {
-	pref, found := user_pref_db_get(user_id, key)
+	pref: User_Preference
+	found: bool
+	if user_id != "" {
+		pref, found = user_pref_db_get(user_id, key)
+	} else {
+		pref, found = user_pref_db_get_any(key)
+	}
 	if found {
 		return strings.clone(pref.value)
 	}
@@ -266,10 +269,16 @@ audit_janitor_tick :: proc() {
 	now := now_unix_ms()
 	elapsed_sec := (now - active_run.started_at_unix_ms) / 1000
 
-	// 1. Max Execution Timeout (5 minutes)
-	max_timeout_sec := i64(300)
+	// 1. Max Execution Timeout (configurable, defaults to 10 minutes)
+	timeout_min_str := memory_auditor_resolve_pref("", "memory_auditor_timeout_min")
+	defer delete(timeout_min_str)
+	timeout_min := 10
+	if parsed, ok := strconv.parse_int(timeout_min_str); ok {
+		timeout_min = parsed
+	}
+	max_timeout_sec := i64(timeout_min * 60)
 	if elapsed_sec >= max_timeout_sec {
-		fmt.printfln("AUDIT TIMEOUT: Run %s timed out after %d seconds.", active_run.audit_id, elapsed_sec)
+		fmt.printfln("AUDIT TIMEOUT: Run %s timed out after %d seconds (limit: %d mins).", active_run.audit_id, elapsed_sec, timeout_min)
 		memory_auditor_conclude_audit(active_run.audit_id, "failed", "execution_timeout")
 		return
 	}

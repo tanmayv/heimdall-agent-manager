@@ -22,9 +22,10 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
   const [decisionReason, setDecisionReason] = useState('');
   const [decidingId, setDecidingId] = useState<string | null>(null);
 
-  // Auditor/Reviewer states
+  // Auditor/Reviewer/Timeout states
   const [auditorId, setAuditorId] = useState('');
   const [reviewerId, setReviewerId] = useState('');
+  const [timeoutMin, setTimeoutMin] = useState('10');
   const [prefLoading, setPrefLoading] = useState(false);
 
   // Refresh memories and fetch preferences on mount
@@ -45,8 +46,10 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
       if (data?.preferences) {
         const aud = data.preferences.find((p: any) => p.key === 'memory_auditor_agent_id')?.value || '';
         const rev = data.preferences.find((p: any) => p.key === 'memory_reviewer_agent_id')?.value || '';
+        const tout = data.preferences.find((p: any) => p.key === 'memory_auditor_timeout_min')?.value || '10';
         setAuditorId(aud);
         setReviewerId(rev);
+        setTimeoutMin(tout);
       }
     } catch (err) {
       console.error('Failed to fetch preferences in MemoryAuditBoard:', err);
@@ -55,9 +58,10 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
     }
   };
 
-  const handleAgentChange = async (key: string, value: string) => {
+  const handlePrefChange = async (key: string, value: string) => {
     if (key === 'memory_auditor_agent_id') setAuditorId(value);
     if (key === 'memory_reviewer_agent_id') setReviewerId(value);
+    if (key === 'memory_auditor_timeout_min') setTimeoutMin(value);
 
     try {
       await daemonApi.savePreference({
@@ -234,7 +238,7 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
               <label className="text-[10px] text-[#555] font-bold uppercase tracking-wider">🔍 Memory Auditor Agent</label>
               <select
                 value={auditorId}
-                onChange={(e) => handleAgentChange('memory_auditor_agent_id', e.target.value)}
+                onChange={(e) => handlePrefChange('memory_auditor_agent_id', e.target.value)}
                 className="framer-input px-3 py-2 text-sm w-full font-sans"
                 disabled={auditLoading || prefLoading}
               >
@@ -250,7 +254,7 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
               <label className="text-[10px] text-[#555] font-bold uppercase tracking-wider">⚖️ Memory Reviewer Agent</label>
               <select
                 value={reviewerId}
-                onChange={(e) => handleAgentChange('memory_reviewer_agent_id', e.target.value)}
+                onChange={(e) => handlePrefChange('memory_reviewer_agent_id', e.target.value)}
                 className="framer-input px-3 py-2 text-sm w-full font-sans"
                 disabled={auditLoading || prefLoading}
               >
@@ -259,6 +263,21 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
                   <option key={id} value={id}>{id} {!knownAgentIds.includes(id) && '(Offline/Unregistered)'}</option>
                 ))}
               </select>
+            </div>
+
+            {/* Timeout Config */}
+            <div className="flex flex-col gap-2">
+              <label className="text-[10px] text-[#555] font-bold uppercase tracking-wider">⏱️ Audit Execution Timeout (minutes)</label>
+              <input
+                type="number"
+                min="1"
+                max="120"
+                value={timeoutMin}
+                onChange={(e) => handlePrefChange('memory_auditor_timeout_min', e.target.value)}
+                className="framer-input px-3 py-2 text-sm w-full font-mono"
+                disabled={auditLoading || prefLoading}
+                placeholder="e.g. 10"
+              />
             </div>
 
             {/* Configuration Validation Warning */}

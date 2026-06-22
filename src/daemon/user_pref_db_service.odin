@@ -125,6 +125,29 @@ user_pref_db_get :: proc(user_id, key: string) -> (pref: User_Preference, ok: bo
 	return {}, false
 }
 
+user_pref_db_get_any :: proc(key: string) -> (pref: User_Preference, ok: bool) {
+	stmt: sqlite3_stmt = nil
+	query := `SELECT value, interrupt, is_custom, updated_unix_ms FROM user_preferences WHERE key = ? LIMIT 1`
+
+	rc := sqlite3_prepare_v2(user_pref_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK {
+		fmt.println("user_pref_db_get_any: prepare failed:", rc)
+		return {}, false
+	}
+	defer sqlite3_finalize(stmt)
+
+	sqlite3_bind_text(stmt, 1, cstring(raw_data(key)), i32(len(key)), SQLITE_TRANSIENT)
+
+	if sqlite3_step(stmt) == SQLITE_ROW {
+		pref.value = strings.clone_from_cstring(sqlite3_column_text(stmt, 0))
+		pref.interrupt = sqlite3_column_int64(stmt, 1) == 1
+		pref.is_custom = sqlite3_column_int64(stmt, 2) == 1
+		pref.updated_unix_ms = sqlite3_column_int64(stmt, 3)
+		return pref, true
+	}
+	return {}, false
+}
+
 user_pref_db_delete :: proc(user_id, key: string) -> bool {
 	stmt: sqlite3_stmt = nil
 	query := `DELETE FROM user_preferences WHERE user_id = ? AND key = ?`
