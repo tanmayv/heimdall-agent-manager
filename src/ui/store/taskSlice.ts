@@ -140,14 +140,12 @@ function taskMutationAuth(session: any, agentToken: string) {
 export const createTaskFromBoard = createAsyncThunk('tasks/createTaskFromBoard', async (payload: any, { dispatch, getState }) => {
   const { session } = (getState() as any).chat;
   const result = await daemonApi.createTask({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), ...payload });
-  await (dispatch as any)(refreshTaskBoard());
   return result;
 });
 
 export const createChainFromBoard = createAsyncThunk('tasks/createChainFromBoard', async (payload: any, { dispatch, getState }) => {
   const { session } = (getState() as any).chat;
   const result = await daemonApi.createTaskChain({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), ...payload });
-  await (dispatch as any)(refreshTaskBoard());
   return result;
 });
 
@@ -156,7 +154,6 @@ export const addCommentToSelectedTask = createAsyncThunk('tasks/addCommentToSele
   const { session } = state.chat;
   const task = state.tasks.tasksById[payload.taskId || state.tasks.selectedTaskId];
   await daemonApi.addTaskComment({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), taskId: task.taskId, chainId: task.chainId, body: payload.body });
-  await (dispatch as any)(refreshTaskBoard());
   await (dispatch as any)(fetchSelectedTaskLog(task.taskId));
 });
 
@@ -165,7 +162,6 @@ export const updateSelectedTaskStatus = createAsyncThunk('tasks/updateSelectedTa
   const { session } = state.chat;
   const task = state.tasks.tasksById[payload.taskId || state.tasks.selectedTaskId];
   await daemonApi.updateTaskStatus({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), taskId: task.taskId, chainId: task.chainId, status: payload.status, body: payload.body });
-  await (dispatch as any)(refreshTaskBoard());
   await (dispatch as any)(fetchSelectedTaskLog(task.taskId));
 });
 
@@ -174,7 +170,6 @@ export const assignSelectedTask = createAsyncThunk('tasks/assignSelectedTask', a
   const { session } = state.chat;
   const task = state.tasks.tasksById[payload.taskId || state.tasks.selectedTaskId];
   await daemonApi.assignTask({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), taskId: task.taskId, chainId: task.chainId, agentInstanceId: payload.agentInstanceId });
-  await (dispatch as any)(refreshTaskBoard());
 });
 
 export const addParticipantToSelectedTask = createAsyncThunk('tasks/addParticipantToSelectedTask', async (payload: any, { dispatch, getState }) => {
@@ -182,7 +177,6 @@ export const addParticipantToSelectedTask = createAsyncThunk('tasks/addParticipa
   const { session } = state.chat;
   const task = state.tasks.tasksById[payload.taskId || state.tasks.selectedTaskId];
   await daemonApi.addTaskParticipant({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), taskId: task.taskId, chainId: task.chainId, agentInstanceId: payload.agentInstanceId, role: payload.role });
-  await (dispatch as any)(refreshTaskBoard());
 });
 
 export const nudgeSelectedTask = createAsyncThunk('tasks/nudgeSelectedTask', async (payload: any, { dispatch, getState }) => {
@@ -190,7 +184,6 @@ export const nudgeSelectedTask = createAsyncThunk('tasks/nudgeSelectedTask', asy
   const { session } = state.chat;
   const task = state.tasks.tasksById[payload.taskId || state.tasks.selectedTaskId];
   const result = await daemonApi.nudgeTask({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), taskId: task.taskId, chainId: task.chainId, body: payload.body });
-  await (dispatch as any)(refreshTaskBoard());
   await (dispatch as any)(fetchSelectedTaskLog(task.taskId));
   return result;
 });
@@ -200,7 +193,6 @@ export const updateSelectedChainMetadata = createAsyncThunk('tasks/updateSelecte
   const { session } = state.chat;
   const chainId = payload.chainId || state.tasks.selectedChainId;
   await daemonApi.updateTaskChain({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), chainId, title: payload.title, description: payload.description, coordinatorAgentInstanceId: payload.coordinatorAgentInstanceId, defaultReviewerAgentInstanceId: payload.defaultReviewerAgentInstanceId, finalSummary: payload.finalSummary });
-  await (dispatch as any)(refreshTaskBoard());
 });
 
 export const updateSelectedChainStatus = createAsyncThunk('tasks/updateSelectedChainStatus', async (payload: any, { dispatch, getState }) => {
@@ -208,7 +200,6 @@ export const updateSelectedChainStatus = createAsyncThunk('tasks/updateSelectedC
   const { session } = state.chat;
   const chainId = payload.chainId || state.tasks.selectedChainId;
   await daemonApi.updateTaskChainStatus({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), chainId, status: payload.status, finalSummary: payload.finalSummary });
-  await (dispatch as any)(refreshTaskBoard());
 });
 
 const initialState = {
