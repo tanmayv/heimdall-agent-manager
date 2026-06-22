@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useDispatch } from 'react-redux';
 import { sendMessageToSelectedAgent } from '../store/chatSlice';
+import { handleKeyDownCtrlW } from '../utils/keyboard';
 
 export default function Composer({ selectedAgent, disabled, onSubmit, smartReplies }) {
   const dispatch = useDispatch<any>();
@@ -62,6 +63,8 @@ export default function Composer({ selectedAgent, disabled, onSubmit, smartRepli
             value={body}
             onChange={(event) => setBody(event.target.value)}
             onKeyDown={(event) => {
+              handleKeyDownCtrlW(event);
+              if (event.defaultPrevented) return;
               if (event.key === 'Enter' && event.ctrlKey) {
                 handleSubmit(event);
               }
