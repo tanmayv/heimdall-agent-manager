@@ -161,50 +161,63 @@ export const refreshAgents = createAsyncThunk('chat/refreshAgents', async (_, { 
   return merged;
 });
 
-export const fetchSelectedChat = createAsyncThunk('chat/fetchSelectedChat', async (payload: { agentId?: string; limit?: number; cursor?: number } | string | undefined, { getState }) => {
-  const state = (getState() as any).chat;
-  const { session, selectedAgentId } = state;
-  
-  let agentInstanceId = selectedAgentId;
-  let limit = 50;
-  let cursor = 0;
-  
-  if (typeof payload === 'string') {
-    agentInstanceId = payload;
-  } else if (payload && typeof payload === 'object') {
-    agentInstanceId = payload.agentId || selectedAgentId;
-    if (payload.limit !== undefined) limit = payload.limit;
-    if (payload.cursor !== undefined) cursor = payload.cursor;
-  }
-  
-  if (!agentInstanceId || !session.clientToken) return { agentId: agentInstanceId, messages: [], nextCursor: 0, isAppend: false, markedRead: false };
-  
-  const isOpenChat = agentInstanceId === selectedAgentId;
-  if (isOpenChat && cursor === 0) { // Only mark as read on initial load
-    await daemonApi.markChatRead({
+export const fetchSelectedChat = createAsyncThunk(
+  'chat/fetchSelectedChat',
+  async (payload: { agentId?: string; limit?: number; cursor?: number } | string | undefined, { getState }) => {
+    const state = (getState() as any).chat;
+    const { session, selectedAgentId } = state;
+    
+    let agentInstanceId = selectedAgentId;
+    let limit = 50;
+    let cursor = 0;
+    
+    if (typeof payload === 'string') {
+      agentInstanceId = payload;
+    } else if (payload && typeof payload === 'object') {
+      agentInstanceId = payload.agentId || selectedAgentId;
+      if (payload.limit !== undefined) limit = payload.limit;
+      if (payload.cursor !== undefined) cursor = payload.cursor;
+    }
+    
+    if (!agentInstanceId || !session.clientToken) return { agentId: agentInstanceId, messages: [], nextCursor: 0, isAppend: false, markedRead: false };
+    
+    const isOpenChat = agentInstanceId === selectedAgentId;
+    if (isOpenChat && cursor === 0) { // Only mark as read on initial load
+      await daemonApi.markChatRead({
+        daemonUrl: session.daemonUrl,
+        clientInstanceId: session.clientInstanceId,
+        clientToken: session.clientToken,
+        agentInstanceId,
+      });
+    }
+    
+    const data = await daemonApi.fetchChat({
       daemonUrl: session.daemonUrl,
-      clientInstanceId: session.clientInstanceId,
       clientToken: session.clientToken,
       agentInstanceId,
+      limit,
+      cursor,
     });
+    
+    return { 
+      agentId: agentInstanceId, 
+      messages: (data.messages ?? []).map(mapMessage).reverse(), 
+      nextCursor: data.next_cursor || 0, 
+      isAppend: cursor > 0, 
+      markedRead: isOpenChat && cursor === 0 
+    };
+  },
+  {
+    condition: (payload, { getState }) => {
+      const state = (getState() as any).chat;
+      const agentId = getAgentIdFromPayload(payload, state.selectedAgentId);
+      if (!agentId) return false;
+      if (state.fetchingChatsByAgentId?.[agentId]) {
+        return false;
+      }
+    }
   }
-  
-  const data = await daemonApi.fetchChat({
-    daemonUrl: session.daemonUrl,
-    clientToken: session.clientToken,
-    agentInstanceId,
-    limit,
-    cursor,
-  });
-  
-  return { 
-    agentId: agentInstanceId, 
-    messages: (data.messages ?? []).map(mapMessage).reverse(), 
-    nextCursor: data.next_cursor || 0, 
-    isAppend: cursor > 0, 
-    markedRead: isOpenChat && cursor === 0 
-  };
-});
+);
 
 export const sendMessageToSelectedAgent = createAsyncThunk('chat/sendMessageToSelectedAgent', async (body: string, { dispatch, getState }) => {
   const { session, selectedAgentId } = (getState() as any).chat;
@@ -240,6 +253,12 @@ export const stopAgentInstance = createAsyncThunk('chat/stopAgentInstance', asyn
   dispatch(refreshAgents());
 });
 
+function getAgentIdFromPayload(payload: any, selectedAgentId: string): string {
+  if (typeof payload === 'string') return payload;
+  if (payload && typeof payload === 'object') return payload.agentId || selectedAgentId;
+  return selectedAgentId;
+}
+
 const initialState = {
   session: {
     daemonUrl: getStoredValue('odin.daemonUrl', DEFAULT_DAEMON_URL),
@@ -260,6 +279,7 @@ const initialState = {
   chatsHasMore: {} as Record<string, boolean>,  // Track if there are more messages per agent
   sending: false,
   testRuns: [] as any[],
+  fetchingChatsByAgentId: {} as Record<string, boolean>,
 };
 
 
@@ -448,29 +468,43 @@ const chatSlice = createSlice({
       .addCase(refreshAgents.rejected, (state, action) => {
         state.session.error = action.error.message || 'Failed to load agents';
       })
-      .addCase(fetchSelectedChat.fulfilled, (state, action) => {
-        const { agentId, messages, nextCursor, isAppend } = action.payload;
+      .addCase(fetchSelectedChat.pending, (state: any, action) => {
+        const agentId = getAgentIdFromPayload(action.meta.arg, state.selectedAgentId);
         if (agentId) {
-          if (!state.chats[agentId]) {
-            state.chats[agentId] = [];
+          state.fetchingChatsByAgentId[agentId] = true;
+        }
+      })
+      .addCase(fetchSelectedChat.fulfilled, (state: any, action) => {
+        const agentId = getAgentIdFromPayload(action.meta.arg, state.selectedAgentId);
+        if (agentId) {
+          state.fetchingChatsByAgentId[agentId] = false;
+        }
+        const { agentId: payloadAgentId, messages, nextCursor, isAppend } = action.payload;
+        if (payloadAgentId) {
+          if (!state.chats[payloadAgentId]) {
+            state.chats[payloadAgentId] = [];
           }
           if (isAppend) {
             // Prepend older paginated messages to the top
-            state.chats[agentId] = [...messages, ...state.chats[agentId]];
+            state.chats[payloadAgentId] = [...messages, ...state.chats[payloadAgentId]];
           } else {
             // Initial load - replace
-            state.chats[agentId] = messages;
+            state.chats[payloadAgentId] = messages;
           }
-          state.chatsCursor[agentId] = nextCursor;
-          state.chatsHasMore[agentId] = nextCursor > 0;
+          state.chatsCursor[payloadAgentId] = nextCursor;
+          state.chatsHasMore[payloadAgentId] = nextCursor > 0;
 
           if (action.payload.markedRead) {
-            const agent = state.agents.find((item) => item.id === agentId);
+            const agent = state.agents.find((item) => item.id === payloadAgentId);
             if (agent) agent.unreadCount = 0;
           }
         }
       })
-      .addCase(fetchSelectedChat.rejected, (state, action) => {
+      .addCase(fetchSelectedChat.rejected, (state: any, action) => {
+        const agentId = getAgentIdFromPayload(action.meta.arg, state.selectedAgentId);
+        if (agentId) {
+          state.fetchingChatsByAgentId[agentId] = false;
+        }
         state.session.error = action.error.message || 'Failed to fetch chat';
       })
       .addCase(sendMessageToSelectedAgent.pending, (state) => {

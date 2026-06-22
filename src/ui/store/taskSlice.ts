@@ -60,43 +60,54 @@ function normalizeEvent(event: any) {
   };
 }
 
-export const refreshTaskBoard = createAsyncThunk('tasks/refreshTaskBoard', async (payload: { createdAfter?: number; createdBefore?: number } | void, { dispatch, getState }) => {
-  const state = getState() as any;
-  const { session } = state.chat;
-  const { selectedChainId } = state.tasks;
-  if (!session.clientToken) return { chains: [], tasks: [], selectedChainId: '' };
+export const refreshTaskBoard = createAsyncThunk(
+  'tasks/refreshTaskBoard',
+  async (payload: { createdAfter?: number; createdBefore?: number } | void, { dispatch, getState }) => {
+    const state = getState() as any;
+    const { session } = state.chat;
+    const { selectedChainId } = state.tasks;
+    if (!session.clientToken) return { chains: [], tasks: [], selectedChainId: '' };
 
-  const args = (payload && typeof payload === 'object') ? payload : {};
-  const chainsData = await daemonApi.listTaskChains({
-    daemonUrl: session.daemonUrl,
-    clientToken: session.clientToken,
-    createdAfter: args.createdAfter,
-    createdBefore: args.createdBefore,
-  });
-
-  const chains = (chainsData.chains ?? []).map(normalizeChain);
-
-  let targetChainId = selectedChainId;
-  if (!targetChainId || !chains.some((c: any) => c.chainId === targetChainId)) {
-    targetChainId = chains[0]?.chainId || '';
-  }
-
-  let tasks: any[] = [];
-  if (targetChainId) {
-    const tasksData = await daemonApi.listChainTasks({
+    const args = (payload && typeof payload === 'object') ? payload : {};
+    const chainsData = await daemonApi.listTaskChains({
       daemonUrl: session.daemonUrl,
       clientToken: session.clientToken,
-      chainId: targetChainId,
+      createdAfter: args.createdAfter,
+      createdBefore: args.createdBefore,
     });
-    tasks = (tasksData.tasks ?? []).map(normalizeTask);
-  }
 
-  return {
-    chains,
-    tasks,
-    selectedChainId: targetChainId,
-  };
-});
+    const chains = (chainsData.chains ?? []).map(normalizeChain);
+
+    let targetChainId = selectedChainId;
+    if (!targetChainId || !chains.some((c: any) => c.chainId === targetChainId)) {
+      targetChainId = chains[0]?.chainId || '';
+    }
+
+    let tasks: any[] = [];
+    if (targetChainId) {
+      const tasksData = await daemonApi.listChainTasks({
+        daemonUrl: session.daemonUrl,
+        clientToken: session.clientToken,
+        chainId: targetChainId,
+      });
+      tasks = (tasksData.tasks ?? []).map(normalizeTask);
+    }
+
+    return {
+      chains,
+      tasks,
+      selectedChainId: targetChainId,
+    };
+  },
+  {
+    condition: (payload, { getState }) => {
+      const state = (getState() as any).tasks;
+      if (state.loading) {
+        return false;
+      }
+    }
+  }
+);
 
 export const fetchTasksForChain = createAsyncThunk('tasks/fetchTasksForChain', async (chainId: string, { getState }) => {
   const { session } = (getState() as any).chat;
