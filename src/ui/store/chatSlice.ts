@@ -456,6 +456,29 @@ const chatSlice = createSlice({
         state.chats[agentId] = [];
       }
       const mapped = mapMessage(message);
+
+      // Resolve race condition: if this is a user message from us, check if there is an
+      // optimistic temporary message already in the chat list matching the body.
+      if (mapped.author === 'user') {
+        const optimisticIndex = state.chats[agentId].findIndex(
+          (m: any) => m.author === 'user' && m.body === mapped.body && (m.sending || String(m.id).startsWith('local_temp_'))
+        );
+        if (optimisticIndex >= 0) {
+          // Upgrade the optimistic message in-place to the real database ID and clear sending state
+          state.chats[agentId][optimisticIndex] = {
+            ...state.chats[agentId][optimisticIndex],
+            id: mapped.id,
+            sending: false,
+            timestamp: mapped.timestamp,
+            deliveredUnixMs: mapped.deliveredUnixMs,
+            deliveredAt: mapped.deliveredAt,
+            readUnixMs: mapped.readUnixMs,
+            readAt: mapped.readAt,
+          } as any;
+          return;
+        }
+      }
+
       if (!state.chats[agentId].some((m: any) => m.id === mapped.id)) {
         state.chats[agentId].push(mapped);
       }
