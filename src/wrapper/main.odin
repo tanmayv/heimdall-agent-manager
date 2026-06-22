@@ -1858,7 +1858,7 @@ extract_json_object :: proc(body, key: string) -> string {
 	return ""
 }
 
-template_live_message :: proc(template_str: string, pending_count: int, from_agent_id, task_id, status, changed_by, body, memory_id, event, subject_agent, user_id, new_token, daemon_url: string, time_val: int) -> string {
+template_live_message :: proc(template_str: string, pending_count: int, from_agent_id, task_id, status, changed_by, body, memory_id, event, subject_agent, user_id, new_token, daemon_url: string, time_val: int, allocator := context.allocator) -> string {
 	context.allocator = context.temp_allocator
 	
 	res := replace_all(template_str, "{pending_count}", fmt.tprintf("%d", pending_count))
@@ -1877,5 +1877,5 @@ template_live_message :: proc(template_str: string, pending_count: int, from_age
 	res = replace_all(res, "{time}", fmt.tprintf("%d", time_val))
 	res = replace_all(res, "{ctl_bin}", effective_ctl_bin())
 	
-	return strings.clone(res, context.allocator)
+	return strings.clone(res, allocator)
 }
