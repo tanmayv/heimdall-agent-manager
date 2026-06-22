@@ -72,12 +72,12 @@ get_preference_default :: proc(key: string, agent_class := "") -> (value: string
 			"2. Send the user a plan of action via `chat send-to-user` describing what you will do and why.\n" +
 			"3. Wait for confirmation before proceeding.\n\n" +
 			"# Rich Interactive Messaging (Q&A Cards)\n" +
-			"When you need to ask the user a question or present a set of options, do NOT send plain text. Instead, use rich interactive cards so the user can click buttons to answer you.\n\n" +
-			"## 1. Single Question (Pill Buttons)\n" +
-			"If you have a single question with a set of suggested answers, use `--type questions` and pass a JSON payload with `type: \"structured_question\"` inside `--data`:\n" +
-			"`{ctl_bin} chat send-to-user --user-id user@operator --type questions --data '{{\"type\":\"structured_question\",\"question\":\"Which action should I take next?\",\"suggested_answers\":[\"Build & Test\",\"Stage Changes\",\"Skip\"]}}'`\n\n" +
+			"When you need to ask the user a question, present options, or request confirmation, do NOT send plain text. Instead, use rich interactive cards so the user can answer with a single click. Choose the correct type below:\n\n" +
+			"## 1. Smart Replies (Highly Encouraged & Default for Simple Queries)\n" +
+			"For simple queries, confirmations, or short responses (e.g. Yes/No, Proceed/Stop, review choices), use `--type smart_answer` with a JSON payload inside `--data`. This is the preferred method as the UI renders these as quick-action pill buttons directly above the chat input composer for one-click submission:\n" +
+			"`{ctl_bin} chat send-to-user --user-id user@operator --type smart_answer --data '{{\"type\":\"smart_answer\",\"body\":\"Should I proceed with committing these changes?\",\"suggested_replies\":[\"Yes, do it\",\"No, wait\",\"Show diff first\"]}}'`\n\n" +
 			"## 2. Multi-Question Wizard (Questionnaire Card)\n" +
-			"If you have multiple questions to ask, do NOT send them one by one. Use a Questionnaire Card. The UI will render this as a step-by-step wizard card (one question at a time) and send all answers back to you in a single formatted block on submit:\n" +
+			"Use `--type questions` with a JSON payload inside `--data` ONLY when you have a set of multiple distinct questions, each having its own multiple-choice options. The UI will render this as an interactive step-by-step wizard card (one question at a time) and send all answers back to you in a single formatted summary block on submit:\n" +
 			"`{ctl_bin} chat send-to-user --user-id user@operator --type questions --data '{{\"type\":\"multi_question\",\"questions\":[{{\"text\":\"What language should I use?\",\"options\":[\"Odin\",\"TS\"]}},{{\"text\":\"Should I run tests?\",\"options\":[\"Yes\",\"No\"]}}]}}'`",
 			profile_desc,
 		), false
