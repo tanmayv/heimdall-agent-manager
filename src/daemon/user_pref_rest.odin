@@ -273,7 +273,7 @@ handle_post_preference :: proc(client: net.TCP_Socket, body: string, ctx: ^Route
 	def_val, def_int := get_preference_default(key)
 
 	resp := fmt.tprintf(
-		`{"ok":true,"preference":{"key":"%s","value":"%s","interrupt":%t,"is_custom":true,"default_value":"%s","default_interrupt":%t}}`,
+		`{{"ok":true,"preference":{{"key":"%s","value":"%s","interrupt":%t,"is_custom":true,"default_value":"%s","default_interrupt":%t}}}}`,
 		key, pref.value, pref.interrupt, def_val, def_int,
 	)
 	write_response(client, 200, "OK", resp)
@@ -305,7 +305,7 @@ handle_delete_preference :: proc(client: net.TCP_Socket, key: string, ctx: ^Rout
 	def_val, def_int := get_preference_default(key)
 
 	resp := fmt.tprintf(
-		`{"ok":true,"preference":{"key":"%s","value":"%s","interrupt":%t,"is_custom":false,"default_value":"%s","default_interrupt":%t}}`,
+		`{{"ok":true,"preference":{{"key":"%s","value":"%s","interrupt":%t,"is_custom":false,"default_value":"%s","default_interrupt":%t}}}}`,
 		key, def_val, def_int, def_val, def_int,
 	)
 	write_response(client, 200, "OK", resp)
