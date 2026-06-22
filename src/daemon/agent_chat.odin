@@ -23,11 +23,7 @@ agent_chat_notify_user_message :: proc(agent_instance_id, user_id, message_id: s
 }
 
 chat_unread_for_agent :: proc(user_id, agent_instance_id: string) -> int {
-	count := 0
-	for i in 0..<chat_message_count {
-		msg := chat_messages[i]
-		if msg.user_id == user_id && msg.agent_instance_id == agent_instance_id && msg.direction == "user_to_agent" && msg.read_unix_ms == 0 do count += 1
-	}
+	count := message_db_count_unread_for_agent(user_id, agent_instance_id)
 	if count <= 0 do count = 1
 	return count
 }

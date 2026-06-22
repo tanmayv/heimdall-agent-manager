@@ -57,19 +57,19 @@ handle_user_rpc_send_to_agent :: proc(client: net.TCP_Socket, body, user_id: str
 		write_response(client, 404, "Not Found", `{"ok":false,"message":"unknown agent"}`)
 		return
 	}
-	event := Chat_Event{kind = .Message_Appended, user_id = user_id, agent_instance_id = agent_instance_id, direction = "user_to_agent", body = message_body}
-	if !chat_store_append_event(event) {
+	message_id, ok := chat_store_append_message(user_id, agent_instance_id, "user_to_agent", message_body)
+	if !ok {
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"append chat failed"}`)
 		return
 	}
-	stored := chat_events[chat_event_count - 1]
-	sent := chat_event_fanout(user_id, agent_instance_id, stored.message_id, stored.direction)
-	if agent_chat_notify_user_message(agent_instance_id, user_id, stored.message_id) {
-		if chat_store_append_event(Chat_Event{kind = .Delivered_Marked, user_id = user_id, agent_instance_id = agent_instance_id, message_id = stored.message_id, direction = "user_to_agent", delivered_unix_ms = router_now_unix_ms()}) {
-			chat_event_fanout(user_id, agent_instance_id, stored.message_id, "delivered")
+
+	sent := chat_event_fanout(user_id, agent_instance_id, message_id, "user_to_agent")
+	if agent_chat_notify_user_message(agent_instance_id, user_id, message_id) {
+		if chat_store_append_event(Chat_Event{kind = .Delivered_Marked, user_id = user_id, agent_instance_id = agent_instance_id, message_id = message_id, direction = "user_to_agent", delivered_unix_ms = router_now_unix_ms()}) {
+			chat_event_fanout(user_id, agent_instance_id, message_id, "delivered")
 		}
 	}
-	write_response(client, 200, "OK", chat_send_response_json(stored.message_id, sent))
+	write_response(client, 200, "OK", chat_send_response_json(message_id, sent))
 }
 
 handle_user_rpc_fetch_chat :: proc(client: net.TCP_Socket, body, user_id: string) {

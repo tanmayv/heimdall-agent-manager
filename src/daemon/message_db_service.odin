@@ -370,6 +370,31 @@ message_db_get_distinct_agents :: proc(user_id: string) -> [dynamic]string {
 	return agents
 }
 
+message_db_count_unread_for_agent :: proc(user_id, agent_instance_id: string) -> int {
+	stmt: [^]sqlite.stmt = nil
+
+	last_read := message_db_get_last_read(user_id, agent_instance_id)
+
+	query := `SELECT COUNT(*) FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = 'user_to_agent' AND created_unix_ms > ?`
+
+	rc := sqlite.prepare_v2(message_db.db, strings.clone(query), -1, &stmt, nil)
+	if rc != sqlite.OK {
+		fmt.println("message_db_count_unread_for_agent: prepare failed:", rc)
+		return 0
+	}
+	defer sqlite.finalize(stmt)
+
+	sqlite.bind_text(stmt, 1, strings.clone(user_id), -1, sqlite.TRANSIENT)
+	sqlite.bind_text(stmt, 2, strings.clone(agent_instance_id), -1, sqlite.TRANSIENT)
+	sqlite.bind_int64(stmt, 3, last_read)
+
+	if sqlite.step(stmt) == sqlite.ROW {
+		return int(sqlite.column_int64(stmt, 0))
+	}
+
+	return 0
+}
+
 message_db_close :: proc() {
 	if message_db.db != nil {
 		sqlite.close(message_db.db)

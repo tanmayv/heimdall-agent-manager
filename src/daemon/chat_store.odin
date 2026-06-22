@@ -97,3 +97,23 @@ chat_has_unread_direction :: proc(user_id, agent_instance_id, direction: string)
 chat_message_created :: proc(message_id: string) -> i64 {
 	return message_db_get_created_time(message_id)
 }
+
+chat_store_append_message :: proc(user_id, agent_instance_id, direction, body: string) -> (string, bool) {
+	event := Chat_Event{
+		kind = .Message_Appended,
+		user_id = user_id,
+		agent_instance_id = agent_instance_id,
+		direction = direction,
+		body = body,
+		created_unix_ms = router_now_unix_ms(),
+	}
+
+	if event.created_unix_ms == 0 do event.created_unix_ms = router_now_unix_ms()
+	event.message_id = fmt.tprintf("chatmsg_%d", event.created_unix_ms)
+
+	if !chat_store_append_event(event) {
+		return "", false
+	}
+
+	return event.message_id, true
+}
