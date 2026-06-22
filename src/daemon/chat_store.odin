@@ -65,7 +65,7 @@ chat_store_append_event :: proc(event: Chat_Event) -> bool {
 		}
 
 	case .Read_Marked:
-		if !message_db_mark_conversation_read(ev.user_id, ev.agent_instance_id, ev.read_unix_ms) {
+		if !message_db_mark_conversation_read(ev.user_id, ev.agent_instance_id, ev.direction, ev.read_unix_ms) {
 			fmt.println("chat_store_append_event: failed to mark conversation read", ev.user_id, ev.agent_instance_id)
 			return false
 		}

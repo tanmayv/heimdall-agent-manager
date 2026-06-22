@@ -82,7 +82,7 @@ handle_user_rpc_fetch_chat :: proc(client: net.TCP_Socket, body, user_id: string
 	}
 	unread_only := extract_json_bool(body, "unread_only", true)
 	fmt.println("DEBUG: handle_user_rpc_fetch_chat for user", user_id, "agent", agent_instance_id, "unread_only =", unread_only)
-	write_response(client, 200, "OK", chat_fetch_json(user_id, agent_instance_id, unread_only))
+	write_response(client, 200, "OK", chat_fetch_json(user_id, agent_instance_id, unread_only, ""))
 }
 
 handle_user_rpc_list_chats :: proc(client: net.TCP_Socket, user_id: string) {
@@ -155,7 +155,7 @@ handle_user_rpc_mark_read :: proc(client: net.TCP_Socket, body, user_id: string)
 		return
 	}
 	now := router_now_unix_ms()
-	if !chat_store_append_event(Chat_Event{kind = .Read_Marked, user_id = user_id, agent_instance_id = agent_instance_id, message_id = message_id, read_unix_ms = now}) {
+	if !chat_store_append_event(Chat_Event{kind = .Read_Marked, user_id = user_id, agent_instance_id = agent_instance_id, direction = "", message_id = message_id, read_unix_ms = now}) {
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"mark_read failed"}`)
 		return
 	}
@@ -175,7 +175,7 @@ chat_send_response_json :: proc(message_id: string, fanout_count: int) -> string
 	return strings.to_string(builder)
 }
 
-chat_fetch_json :: proc(user_id, agent_instance_id: string, unread_only: bool = true) -> string {
+chat_fetch_json :: proc(user_id, agent_instance_id: string, unread_only: bool = true, direction: string = "") -> string {
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"ok":true,"user_id":"`); json_write_string(&builder, user_id)
 	strings.write_string(&builder, `","agent_instance_id":"`); json_write_string(&builder, agent_instance_id)
@@ -183,7 +183,7 @@ chat_fetch_json :: proc(user_id, agent_instance_id: string, unread_only: bool = 
 
 	messages := make([dynamic]Chat_Message)
 	if unread_only {
-		messages = message_db_fetch_unread(user_id, agent_instance_id)
+		messages = message_db_fetch_unread(user_id, agent_instance_id, direction)
 	} else {
 		messages = message_db_fetch_all(user_id, agent_instance_id)
 	}

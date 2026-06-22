@@ -57,6 +57,12 @@ message_db_init :: proc(data_dir: string) -> bool {
 		return false
 	}
 
+	if !message_db_migrate_read_status_schema() {
+		fmt.println("message_db_init: failed to migrate read status schema")
+		sqlite3_close(message_db.db)
+		return false
+	}
+
 	fmt.println("message_db_init: database initialized at", db_path)
 	return true
 }
@@ -79,6 +85,8 @@ message_db_create_schema :: proc() -> bool {
 		user_id TEXT NOT NULL,
 		agent_instance_id TEXT NOT NULL,
 		last_read_unix_ms INTEGER DEFAULT 0,
+		last_read_user_to_agent_ms INTEGER DEFAULT 0,
+		last_read_agent_to_user_ms INTEGER DEFAULT 0,
 		PRIMARY KEY (user_id, agent_instance_id)
 	);
 
@@ -97,6 +105,74 @@ message_db_create_schema :: proc() -> bool {
 		return false
 	}
 
+	return true
+}
+
+message_db_migrate_read_status_schema :: proc() -> bool {
+	if !message_db_has_column("conversation_read_status", "last_read_user_to_agent_ms") {
+		if !message_db_add_column("conversation_read_status", "last_read_user_to_agent_ms INTEGER DEFAULT 0") {
+			return false
+		}
+	}
+
+	if !message_db_has_column("conversation_read_status", "last_read_agent_to_user_ms") {
+		if !message_db_add_column("conversation_read_status", "last_read_agent_to_user_ms INTEGER DEFAULT 0") {
+			return false
+		}
+	}
+
+	if message_db_has_column("conversation_read_status", "last_read_unix_ms") {
+		if !message_db_execute("UPDATE conversation_read_status SET last_read_user_to_agent_ms = COALESCE(last_read_user_to_agent_ms, last_read_unix_ms), last_read_agent_to_user_ms = COALESCE(last_read_agent_to_user_ms, last_read_unix_ms)") {
+			fmt.println("message_db_migrate_read_status_schema: failed to seed direction-specific read columns")
+			return false
+		}
+	}
+
+	if !message_db_execute("UPDATE conversation_read_status SET last_read_unix_ms = CASE WHEN last_read_user_to_agent_ms >= last_read_agent_to_user_ms THEN last_read_user_to_agent_ms ELSE last_read_agent_to_user_ms END") {
+		fmt.println("message_db_migrate_read_status_schema: failed to normalize legacy read timestamp")
+		return false
+	}
+
+	return true
+}
+
+message_db_has_column :: proc(table_name, column_name: string) -> bool {
+	stmt: sqlite3_stmt = nil
+	query := fmt.tprintf("PRAGMA table_info(%s)", table_name)
+
+	rc := sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK {
+		fmt.println("message_db_has_column: prepare failed:", rc)
+		return false
+	}
+	defer sqlite3_finalize(stmt)
+
+	for sqlite3_step(stmt) == SQLITE_ROW {
+		name := strings.clone_from_cstring(sqlite3_column_text(stmt, 1))
+		if name == column_name {
+			return true
+		}
+	}
+
+	return false
+}
+
+message_db_add_column :: proc(table_name, column_definition: string) -> bool {
+	query := fmt.tprintf("ALTER TABLE %s ADD COLUMN %s", table_name, column_definition)
+	return message_db_execute(query)
+}
+
+message_db_execute :: proc(query: string) -> bool {
+	errmsg: cstring = nil
+	rc := sqlite3_exec(message_db.db, cstring(raw_data(query)), nil, nil, &errmsg)
+	if rc != SQLITE_OK {
+		fmt.println("message_db_execute failed:", rc)
+		if errmsg != nil {
+			fmt.println("message_db_execute:", errmsg)
+			sqlite3_free(rawptr(errmsg))
+		}
+		return false
+	}
 	return true
 }
 
@@ -138,10 +214,25 @@ message_db_insert :: proc(msg: Chat_Message) -> bool {
 	return true
 }
 
-message_db_mark_conversation_read :: proc(user_id, agent_instance_id: string, read_unix_ms: i64) -> bool {
+message_db_mark_conversation_read :: proc(user_id, agent_instance_id, direction: string, read_unix_ms: i64) -> bool {
+	user_to_agent_read, agent_to_user_read := message_db_get_last_read_status(user_id, agent_instance_id)
+
+	switch direction {
+	case "user_to_agent":
+		if read_unix_ms > user_to_agent_read { user_to_agent_read = read_unix_ms }
+	case "agent_to_user":
+		if read_unix_ms > agent_to_user_read { agent_to_user_read = read_unix_ms }
+	case:
+		if read_unix_ms > user_to_agent_read { user_to_agent_read = read_unix_ms }
+		if read_unix_ms > agent_to_user_read { agent_to_user_read = read_unix_ms }
+	}
+
+	legacy_read := user_to_agent_read
+	if agent_to_user_read > legacy_read { legacy_read = agent_to_user_read }
+
 	stmt: sqlite3_stmt = nil
 
-	query := `INSERT OR REPLACE INTO conversation_read_status (user_id, agent_instance_id, last_read_unix_ms) VALUES (?, ?, ?)`
+	query := `INSERT OR REPLACE INTO conversation_read_status (user_id, agent_instance_id, last_read_unix_ms, last_read_user_to_agent_ms, last_read_agent_to_user_ms) VALUES (?, ?, ?, ?, ?)`
 
 	rc := sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
@@ -152,7 +243,9 @@ message_db_mark_conversation_read :: proc(user_id, agent_instance_id: string, re
 
 	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), -1, SQLITE_TRANSIENT)
 	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_int64(stmt, 3, read_unix_ms)
+	sqlite3_bind_int64(stmt, 3, legacy_read)
+	sqlite3_bind_int64(stmt, 4, user_to_agent_read)
+	sqlite3_bind_int64(stmt, 5, agent_to_user_read)
 
 	rc = sqlite3_step(stmt)
 	if rc != SQLITE_DONE {
@@ -160,7 +253,7 @@ message_db_mark_conversation_read :: proc(user_id, agent_instance_id: string, re
 		return false
 	}
 
-	fmt.println("DEBUG: message_db_mark_conversation_read set", user_id, agent_instance_id, "to", read_unix_ms)
+	fmt.println("DEBUG: message_db_mark_conversation_read set", user_id, agent_instance_id, "to", read_unix_ms, "for", direction)
 	return true
 }
 
@@ -213,15 +306,17 @@ message_db_update_delivery_failed :: proc(message_id: string, failed_unix_ms: i6
 	return true
 }
 
-message_db_get_last_read :: proc(user_id, agent_instance_id: string) -> i64 {
+message_db_get_last_read_status :: proc(user_id, agent_instance_id: string) -> (user_to_agent_read: i64, agent_to_user_read: i64) {
 	stmt: sqlite3_stmt = nil
 
-	query := `SELECT last_read_unix_ms FROM conversation_read_status WHERE user_id = ? AND agent_instance_id = ?`
+	query := `SELECT COALESCE(last_read_user_to_agent_ms, 0), COALESCE(last_read_agent_to_user_ms, 0), COALESCE(last_read_unix_ms, 0)
+		FROM conversation_read_status
+		WHERE user_id = ? AND agent_instance_id = ?`
 
 	rc := sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
-		fmt.println("message_db_get_last_read: prepare failed:", rc)
-		return 0
+		fmt.println("message_db_get_last_read_status: prepare failed:", rc)
+		return 0, 0
 	}
 	defer sqlite3_finalize(stmt)
 
@@ -229,13 +324,38 @@ message_db_get_last_read :: proc(user_id, agent_instance_id: string) -> i64 {
 	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), -1, SQLITE_TRANSIENT)
 
 	if sqlite3_step(stmt) == SQLITE_ROW {
-		last_read := sqlite3_column_int64(stmt, 0)
-		fmt.println("DEBUG: message_db_get_last_read for", user_id, agent_instance_id, "= ", last_read)
-		return last_read
+		user_to_agent_read = sqlite3_column_int64(stmt, 0)
+		agent_to_user_read = sqlite3_column_int64(stmt, 1)
+		legacy_read := sqlite3_column_int64(stmt, 2)
+		if user_to_agent_read == 0 {
+			user_to_agent_read = legacy_read
+		}
+		if agent_to_user_read == 0 {
+			agent_to_user_read = legacy_read
+		}
+		fmt.println("DEBUG: message_db_get_last_read_status for", user_id, agent_instance_id, "= [", user_to_agent_read, ",", agent_to_user_read, "]")
+		return
 	}
 
-	fmt.println("DEBUG: message_db_get_last_read for", user_id, agent_instance_id, "= 0 (no row)")
-	return 0
+	fmt.println("DEBUG: message_db_get_last_read_status for", user_id, agent_instance_id, "= [0,0] (no row)")
+	return 0, 0
+}
+
+message_db_get_last_read :: proc(user_id, agent_instance_id: string) -> i64 {
+	user_to_agent_read, agent_to_user_read := message_db_get_last_read_status(user_id, agent_instance_id)
+	if user_to_agent_read >= agent_to_user_read {
+		return user_to_agent_read
+	}
+	return agent_to_user_read
+}
+
+message_db_get_last_read_for_direction :: proc(user_id, agent_instance_id, direction: string) -> i64 {
+	user_to_agent_read, agent_to_user_read := message_db_get_last_read_status(user_id, agent_instance_id)
+	switch direction {
+	case "user_to_agent": return user_to_agent_read
+	case "agent_to_user": return agent_to_user_read
+	}
+	return message_db_get_last_read(user_id, agent_instance_id)
 }
 
 message_db_fetch_all :: proc(user_id, agent_instance_id: string) -> [dynamic]Chat_Message {
@@ -273,14 +393,21 @@ message_db_fetch_all :: proc(user_id, agent_instance_id: string) -> [dynamic]Cha
 	return messages
 }
 
-message_db_fetch_unread :: proc(user_id, agent_instance_id: string) -> [dynamic]Chat_Message {
+message_db_fetch_unread :: proc(user_id, agent_instance_id, direction: string) -> [dynamic]Chat_Message {
 	messages := make([dynamic]Chat_Message)
 	stmt: sqlite3_stmt = nil
 
-	last_read := message_db_get_last_read(user_id, agent_instance_id)
-	fmt.println("DEBUG: message_db_fetch_unread for", user_id, agent_instance_id, "last_read =", last_read)
+	user_to_agent_read, agent_to_user_read := message_db_get_last_read_status(user_id, agent_instance_id)
+	fmt.println("DEBUG: message_db_fetch_unread for", user_id, agent_instance_id, "last_read user_to_agent =", user_to_agent_read, "agent_to_user=", agent_to_user_read, "direction=", direction)
 
-	query := `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND created_unix_ms > ? ORDER BY created_unix_ms ASC`
+	query: string
+	if direction == "user_to_agent" {
+		query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = 'user_to_agent' AND created_unix_ms > ? ORDER BY created_unix_ms ASC`
+	} else if direction == "agent_to_user" {
+		query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = 'agent_to_user' AND created_unix_ms > ? ORDER BY created_unix_ms ASC`
+	} else {
+		query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND ((direction = 'user_to_agent' AND created_unix_ms > ?) OR (direction = 'agent_to_user' AND created_unix_ms > ?)) ORDER BY created_unix_ms ASC`
+	}
 
 	rc := sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
@@ -291,8 +418,15 @@ message_db_fetch_unread :: proc(user_id, agent_instance_id: string) -> [dynamic]
 
 	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), -1, SQLITE_TRANSIENT)
 	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_int64(stmt, 3, last_read)
-	fmt.println("DEBUG: Query bound with user_id =", user_id, "agent_instance_id =", agent_instance_id, "last_read =", last_read)
+	if direction == "" {
+		sqlite3_bind_int64(stmt, 3, user_to_agent_read)
+		sqlite3_bind_int64(stmt, 4, agent_to_user_read)
+	} else if direction == "user_to_agent" {
+		sqlite3_bind_int64(stmt, 3, user_to_agent_read)
+	} else {
+		sqlite3_bind_int64(stmt, 3, agent_to_user_read)
+	}
+	fmt.println("DEBUG: Query bound with user_id =", user_id, "agent_instance_id =", agent_instance_id)
 
 	for sqlite3_step(stmt) == SQLITE_ROW {
 		msg := Chat_Message{
@@ -318,9 +452,9 @@ message_db_fetch_unread :: proc(user_id, agent_instance_id: string) -> [dynamic]
 message_db_count_unread :: proc(user_id, agent_instance_id: string) -> int {
 	stmt: sqlite3_stmt = nil
 
-	last_read := message_db_get_last_read(user_id, agent_instance_id)
+	user_to_agent_read, agent_to_user_read := message_db_get_last_read_status(user_id, agent_instance_id)
 
-	query := `SELECT COUNT(*) FROM messages WHERE user_id = ? AND agent_instance_id = ? AND created_unix_ms > ?`
+	query := `SELECT COUNT(*) FROM messages WHERE user_id = ? AND agent_instance_id = ? AND ((direction = 'user_to_agent' AND created_unix_ms > ?) OR (direction = 'agent_to_user' AND created_unix_ms > ?))`
 
 	rc := sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
@@ -331,7 +465,8 @@ message_db_count_unread :: proc(user_id, agent_instance_id: string) -> int {
 
 	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), -1, SQLITE_TRANSIENT)
 	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_int64(stmt, 3, last_read)
+	sqlite3_bind_int64(stmt, 3, user_to_agent_read)
+	sqlite3_bind_int64(stmt, 4, agent_to_user_read)
 
 	if sqlite3_step(stmt) == SQLITE_ROW {
 		return int(sqlite3_column_int64(stmt, 0))
@@ -343,7 +478,7 @@ message_db_count_unread :: proc(user_id, agent_instance_id: string) -> int {
 message_db_count_unread_for_agent :: proc(user_id, agent_instance_id: string) -> int {
 	stmt: sqlite3_stmt = nil
 
-	last_read := message_db_get_last_read(user_id, agent_instance_id)
+	last_read := message_db_get_last_read_for_direction(user_id, agent_instance_id, "user_to_agent")
 
 	query := `SELECT COUNT(*) FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = 'user_to_agent' AND created_unix_ms > ?`
 
@@ -368,9 +503,12 @@ message_db_count_unread_for_agent :: proc(user_id, agent_instance_id: string) ->
 message_db_has_unread :: proc(user_id, agent_instance_id, direction: string) -> bool {
 	stmt: sqlite3_stmt = nil
 
-	last_read := message_db_get_last_read(user_id, agent_instance_id)
-
-	query := `SELECT 1 FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = ? AND created_unix_ms > ? LIMIT 1`
+	query: string
+	if direction == "user_to_agent" || direction == "agent_to_user" {
+		query = `SELECT 1 FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = ? AND created_unix_ms > ? LIMIT 1`
+	} else {
+		query = `SELECT 1 FROM messages WHERE user_id = ? AND agent_instance_id = ? AND ((direction = 'user_to_agent' AND created_unix_ms > ?) OR (direction = 'agent_to_user' AND created_unix_ms > ?)) LIMIT 1`
+	}
 
 	rc := sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
@@ -381,8 +519,15 @@ message_db_has_unread :: proc(user_id, agent_instance_id, direction: string) -> 
 
 	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), -1, SQLITE_TRANSIENT)
 	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 3, cstring(raw_data(direction)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_int64(stmt, 4, last_read)
+	if direction == "user_to_agent" || direction == "agent_to_user" {
+		sqlite3_bind_text(stmt, 3, cstring(raw_data(direction)), -1, SQLITE_TRANSIENT)
+		last_read := message_db_get_last_read_for_direction(user_id, agent_instance_id, direction)
+		sqlite3_bind_int64(stmt, 4, last_read)
+	} else {
+		user_to_agent_read, agent_to_user_read := message_db_get_last_read_status(user_id, agent_instance_id)
+		sqlite3_bind_int64(stmt, 3, user_to_agent_read)
+		sqlite3_bind_int64(stmt, 4, agent_to_user_read)
+	}
 
 	return sqlite3_step(stmt) == SQLITE_ROW
 }
@@ -434,9 +579,14 @@ message_db_get_distinct_agents :: proc(user_id: string) -> [dynamic]string {
 message_db_get_max_unread_timestamp :: proc(user_id, agent_instance_id, direction: string) -> i64 {
 	stmt: sqlite3_stmt = nil
 
-	last_read := message_db_get_last_read(user_id, agent_instance_id)
-
-	query := `SELECT MAX(created_unix_ms) FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = ? AND created_unix_ms > ?`
+	query: string
+	if direction == "user_to_agent" {
+		query = `SELECT MAX(created_unix_ms) FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = 'user_to_agent' AND created_unix_ms > ?`
+	} else if direction == "agent_to_user" {
+		query = `SELECT MAX(created_unix_ms) FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = 'agent_to_user' AND created_unix_ms > ?`
+	} else {
+		query = `SELECT MAX(created_unix_ms) FROM messages WHERE user_id = ? AND agent_instance_id = ? AND created_unix_ms > ?`
+	}
 
 	rc := sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
@@ -447,8 +597,13 @@ message_db_get_max_unread_timestamp :: proc(user_id, agent_instance_id, directio
 
 	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), -1, SQLITE_TRANSIENT)
 	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 3, cstring(raw_data(direction)), -1, SQLITE_TRANSIENT)
-	sqlite3_bind_int64(stmt, 4, last_read)
+	if direction == "" {
+		last_read := message_db_get_last_read(user_id, agent_instance_id)
+		sqlite3_bind_int64(stmt, 3, last_read)
+	} else {
+		last_read := message_db_get_last_read_for_direction(user_id, agent_instance_id, direction)
+		sqlite3_bind_int64(stmt, 3, last_read)
+	}
 
 	if sqlite3_step(stmt) == SQLITE_ROW {
 		return sqlite3_column_int64(stmt, 0)
