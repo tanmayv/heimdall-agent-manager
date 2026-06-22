@@ -122,6 +122,19 @@ rest_authorize :: proc(client: net.TCP_Socket, ctx: ^Route_Context) -> (string, 
 handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_Context) -> bool {
 	if len(ctx.segments) == 0 do return false
 
+	// GET /chats
+	if len(ctx.segments) == 1 && ctx.segments[0] == "chats" && ctx.method == "GET" {
+		handle_get_chats(client, ctx)
+		return true
+	}
+
+	// GET /chats/{agent_id}/messages
+	if len(ctx.segments) == 3 && ctx.segments[0] == "chats" && ctx.segments[2] == "messages" && ctx.method == "GET" {
+		agent_id := ctx.segments[1]
+		handle_get_chat_messages(client, agent_id, ctx)
+		return true
+	}
+
 	// GET /task-chains
 	if len(ctx.segments) == 1 && ctx.segments[0] == "task-chains" && ctx.method == "GET" {
 		handle_get_task_chains(client, ctx)

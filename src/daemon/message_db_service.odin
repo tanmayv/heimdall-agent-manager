@@ -557,7 +557,7 @@ message_db_get_distinct_agents :: proc(user_id: string) -> [dynamic]string {
 	agents := make([dynamic]string)
 	stmt: sqlite3_stmt = nil
 
-	query := `SELECT DISTINCT agent_instance_id FROM messages WHERE user_id = ? ORDER BY MAX(created_unix_ms) DESC`
+	query := `SELECT agent_instance_id FROM messages WHERE user_id = ? GROUP BY agent_instance_id ORDER BY MAX(created_unix_ms) DESC`
 
 	rc := sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
@@ -610,6 +610,53 @@ message_db_get_max_unread_timestamp :: proc(user_id, agent_instance_id, directio
 	}
 
 	return 0
+}
+
+message_db_fetch_cursor_paginated :: proc(user_id, agent_instance_id: string, limit: int = 50, cursor: i64 = 0) -> [dynamic]Chat_Message {
+	messages := make([dynamic]Chat_Message)
+	stmt: sqlite3_stmt = nil
+
+	query: string
+	if cursor > 0 {
+		query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND created_unix_ms < ? ORDER BY created_unix_ms DESC LIMIT ?`
+	} else {
+		query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? ORDER BY created_unix_ms DESC LIMIT ?`
+	}
+
+	rc := sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK {
+		fmt.println("message_db_fetch_cursor_paginated: prepare failed:", rc)
+		return messages
+	}
+	defer sqlite3_finalize(stmt)
+
+	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), i32(len(user_id)), SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), i32(len(agent_instance_id)), SQLITE_TRANSIENT)
+
+	if cursor > 0 {
+		sqlite3_bind_int64(stmt, 3, cursor)
+		sqlite3_bind_int64(stmt, 4, i64(limit))
+	} else {
+		sqlite3_bind_int64(stmt, 3, i64(limit))
+	}
+
+	for sqlite3_step(stmt) == SQLITE_ROW {
+		msg := Chat_Message{
+			message_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 0)),
+			user_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 1)),
+			agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 2)),
+			direction = strings.clone_from_cstring(sqlite3_column_text(stmt, 3)),
+			body = strings.clone_from_cstring(sqlite3_column_text(stmt, 4)),
+			delivered_unix_ms = sqlite3_column_int64(stmt, 5),
+			read_unix_ms = 0,
+			delivery_failed_unix_ms = sqlite3_column_int64(stmt, 6),
+			delivery_error = strings.clone_from_cstring(sqlite3_column_text(stmt, 7)),
+			created_unix_ms = sqlite3_column_int64(stmt, 8),
+		}
+		append(&messages, msg)
+	}
+
+	return messages
 }
 
 message_db_close :: proc() {
