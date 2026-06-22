@@ -176,7 +176,7 @@ agent_template_db_load_all :: proc() -> bool {
 		rec.created_unix_ms = sqlite3_column_int64(stmt, 10)
 		rec.updated_unix_ms = sqlite3_column_int64(stmt, 11)
 		rec.archived_at_unix_ms = sqlite3_column_int64(stmt, 12)
-		rec.is_customized = sqlite3_column_int(stmt, 13) != 0
+		rec.is_customized = sqlite3_column_int64(stmt, 13) != 0
 		
 		agent_template_record_count += 1
 	}
@@ -420,7 +420,7 @@ agent_template_get_customized_status :: proc(template_id: string) -> (exists: bo
 	sqlite3_bind_text(stmt, 1, cstring(raw_data(template_id)), i32(len(template_id)), SQLITE_TRANSIENT)
 	
 	if sqlite3_step(stmt) == SQLITE_ROW {
-		customized = sqlite3_column_int(stmt, 0) != 0
+		customized = sqlite3_column_int64(stmt, 0) != 0
 		return true, customized
 	}
 	return false, false
