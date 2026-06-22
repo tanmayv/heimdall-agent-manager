@@ -177,11 +177,16 @@ chat_fetch_json :: proc(user_id, agent_instance_id: string, unread_only: bool = 
 	strings.write_string(&builder, `{"ok":true,"user_id":"`); json_write_string(&builder, user_id)
 	strings.write_string(&builder, `","agent_instance_id":"`); json_write_string(&builder, agent_instance_id)
 	strings.write_string(&builder, `","messages":[`)
+
+	var messages [dynamic]Chat_Message
+	if unread_only {
+		messages = message_db_fetch_unread(user_id, agent_instance_id)
+	} else {
+		messages = message_db_fetch_all(user_id, agent_instance_id)
+	}
+
 	first := true
-	for i in 0..<chat_message_count {
-		msg := chat_messages[i]
-		if msg.user_id != user_id || msg.agent_instance_id != agent_instance_id do continue
-		if unread_only && msg.read_unix_ms != 0 do continue
+	for msg in messages {
 		if !first do strings.write_string(&builder, `,`)
 		first = false
 		chat_write_message_json(&builder, msg)
@@ -193,19 +198,15 @@ chat_fetch_json :: proc(user_id, agent_instance_id: string, unread_only: bool = 
 chat_list_json :: proc(user_id: string) -> string {
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"ok":true,"chats":[`)
+
+	agents := message_db_get_distinct_agents(user_id)
+
 	first := true
-	for i in 0..<chat_message_count {
-		agent_instance_id := chat_messages[i].agent_instance_id
-		if chat_messages[i].user_id != user_id do continue
-		seen := false
-		for j in 0..<i {
-			if chat_messages[j].user_id == user_id && chat_messages[j].agent_instance_id == agent_instance_id { seen = true; break }
-		}
-		if seen do continue
+	for agent_id in agents {
 		if !first do strings.write_string(&builder, `,`)
 		first = false
-		strings.write_string(&builder, `{"agent_instance_id":"`); json_write_string(&builder, agent_instance_id)
-		strings.write_string(&builder, `","unread_count":`); strings.write_string(&builder, fmt.tprintf("%d", chat_unread_count(user_id, agent_instance_id)))
+		strings.write_string(&builder, `{"agent_instance_id":"`); json_write_string(&builder, agent_id)
+		strings.write_string(&builder, `","unread_count":`); strings.write_string(&builder, fmt.tprintf("%d", chat_unread_count(user_id, agent_id)))
 		strings.write_string(&builder, `}`)
 	}
 	strings.write_string(&builder, `]}`)
