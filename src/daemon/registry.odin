@@ -370,10 +370,21 @@ registry_clear_ws :: proc(agent_instance_id: string) {
 }
 
 registry_send_ws_text :: proc(agent_instance_id, text: string) -> bool {
-	if idx := registry_find_agent(agent_instance_id); idx >= 0 && agents[idx].has_ws {
-		return ws_send_text(agents[idx].ws_socket, text)
+	idx := registry_find_agent(agent_instance_id)
+	if idx < 0 {
+		fmt.printf("WARNING: registry_send_ws_text failed: agent '%s' not found in registry\n", agent_instance_id)
+		return false
 	}
-	return false
+	agent := agents[idx]
+	if !agent.has_ws {
+		fmt.printf("WARNING: registry_send_ws_text failed: agent '%s' has no active WebSocket connection (connected=%t)\n", agent_instance_id, agent.connected)
+		return false
+	}
+	ok := ws_send_text(agent.ws_socket, text)
+	if !ok {
+		fmt.printf("ERROR: registry_send_ws_text failed: socket write error to agent '%s' WebSocket\n", agent_instance_id)
+	}
+	return ok
 }
 
 registry_update_startup :: proc(agent_instance_id, status, reason_code, safe_diagnostic, provider_profile, run_dir, tmux_pane: string) -> bool {

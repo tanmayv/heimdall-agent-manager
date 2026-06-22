@@ -55,12 +55,14 @@ handle_user_rpc_send_to_agent :: proc(client: net.TCP_Socket, body, user_id: str
 		return
 	}
 	if !valid_agent_instance_id(agent_instance_id) || !registry_agent_exists(agent_instance_id) {
+		fmt.printf("WARNING: send_to_agent failed: agent '%s' is unknown or unregistered (requested by user '%s')\n", agent_instance_id, user_id)
 		write_response(client, 404, "Not Found", `{"ok":false,"message":"unknown agent"}`)
 		return
 	}
 	message_id, ok := chat_store_append_message(user_id, agent_instance_id, "user_to_agent", message_body)
 	fmt.println("DEBUG: chat_store_append_message returned message_id =", message_id, "ok =", ok)
 	if !ok {
+		fmt.printf("ERROR: send_to_agent failed: chat_store_append_message failed for user '%s' to agent '%s'\n", user_id, agent_instance_id)
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"append chat failed"}`)
 		return
 	}
@@ -70,6 +72,8 @@ handle_user_rpc_send_to_agent :: proc(client: net.TCP_Socket, body, user_id: str
 		if chat_store_append_event(Chat_Event{kind = .Delivered_Marked, user_id = user_id, agent_instance_id = agent_instance_id, message_id = message_id, direction = "user_to_agent", delivered_unix_ms = router_now_unix_ms()}) {
 			chat_event_fanout(user_id, agent_instance_id, message_id, "delivered")
 		}
+	} else {
+		fmt.printf("WARNING: send_to_agent: failed to deliver WebSocket notification to agent '%s' for message '%s' (chat will load on manual fetch)\n", agent_instance_id, message_id)
 	}
 	write_response(client, 200, "OK", chat_send_response_json(message_id, sent))
 }

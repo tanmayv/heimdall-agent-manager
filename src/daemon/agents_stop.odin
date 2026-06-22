@@ -22,16 +22,19 @@ handle_agents_stop :: proc(client: net.TCP_Socket, body: string, request: string
 	}
 	idx := registry_find_agent(agent_instance_id)
 	if idx < 0 {
+		fmt.printf("WARNING: stop_agent failed: agent '%s' not found in registry\n", agent_instance_id)
 		write_response(client, 404, "Not Found", `{"ok":false,"message":"agent not found"}`)
 		return
 	}
 	if !agents[idx].has_ws {
+		fmt.printf("WARNING: stop_agent failed: agent '%s' has no active WebSocket connection (connected=%t)\n", agent_instance_id, agents[idx].connected)
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"agent not connected via WebSocket"}`)
 		return
 	}
 
 	payload := stop_event_json(agent_instance_id, time_in_sec)
 	if !registry_send_ws_text(agent_instance_id, payload) {
+		fmt.printf("ERROR: stop_agent failed: failed to deliver stop event to agent '%s' over WebSocket\n", agent_instance_id)
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to deliver stop event to agent"}`)
 		return
 	}
