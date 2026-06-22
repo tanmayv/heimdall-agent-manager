@@ -431,10 +431,14 @@ agent_template_db_run_migrations :: proc() -> bool {
 		fmt.println("DB: Migrating templates.db to version 1 (adding is_customized)...")
 		if !db_execute(agent_template_db.db, "BEGIN TRANSACTION;") do return false
 		
-		migrate_query := "ALTER TABLE agent_templates ADD COLUMN is_customized INTEGER DEFAULT 0"
-		if !db_execute(agent_template_db.db, migrate_query) {
-			_ = db_execute(agent_template_db.db, "ROLLBACK;")
-			return false
+		if !db_has_column(agent_template_db.db, "agent_templates", "is_customized") {
+			migrate_query := "ALTER TABLE agent_templates ADD COLUMN is_customized INTEGER DEFAULT 0"
+			if !db_execute(agent_template_db.db, migrate_query) {
+				_ = db_execute(agent_template_db.db, "ROLLBACK;")
+				return false
+			}
+		} else {
+			fmt.println("DB: Column 'is_customized' already exists in 'agent_templates', skipping ALTER TABLE.")
 		}
 		
 		if !db_set_user_version(agent_template_db.db, 1) {

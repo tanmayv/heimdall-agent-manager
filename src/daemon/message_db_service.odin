@@ -70,6 +70,22 @@ db_execute :: proc(db: sqlite3, query: string) -> bool {
 	return true
 }
 
+db_has_column :: proc(db: sqlite3, table_name, column_name: string) -> bool {
+	stmt: sqlite3_stmt = nil
+	query := fmt.tprintf("PRAGMA table_info(%s);", table_name)
+	rc := sqlite3_prepare_v2(db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK do return false
+	defer sqlite3_finalize(stmt)
+	
+	for sqlite3_step(stmt) == SQLITE_ROW {
+		name := sqlite3_column_text(stmt, 1)
+		if strings.compare(string(cstring(name)), column_name) == 0 {
+			return true
+		}
+	}
+	return false
+}
+
 Message_Db_Service :: struct {
 	db: sqlite3,
 	db_path: string,

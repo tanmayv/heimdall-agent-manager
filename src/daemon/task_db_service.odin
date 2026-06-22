@@ -464,10 +464,14 @@ task_db_run_migrations :: proc() -> bool {
 		fmt.println("DB: Migrating task.db to version 1 (adding evaluation)...")
 		if !db_execute(task_db.db, "BEGIN TRANSACTION;") do return false
 		
-		migrate_query := "ALTER TABLE task_chains ADD COLUMN evaluation TEXT NOT NULL DEFAULT 'unreviewed';"
-		if !db_execute(task_db.db, migrate_query) {
-			_ = db_execute(task_db.db, "ROLLBACK;")
-			return false
+		if !db_has_column(task_db.db, "task_chains", "evaluation") {
+			migrate_query := "ALTER TABLE task_chains ADD COLUMN evaluation TEXT NOT NULL DEFAULT 'unreviewed';"
+			if !db_execute(task_db.db, migrate_query) {
+				_ = db_execute(task_db.db, "ROLLBACK;")
+				return false
+			}
+		} else {
+			fmt.println("DB: Column 'evaluation' already exists in 'task_chains', skipping ALTER TABLE.")
 		}
 		
 		if !db_set_user_version(task_db.db, 1) {
@@ -485,10 +489,14 @@ task_db_run_migrations :: proc() -> bool {
 		fmt.println("DB: Migrating task.db to version 2 (adding last_audit_at_unix_ms)...")
 		if !db_execute(task_db.db, "BEGIN TRANSACTION;") do return false
 		
-		migrate_query := "ALTER TABLE task_chains ADD COLUMN last_audit_at_unix_ms INTEGER NOT NULL DEFAULT 0;"
-		if !db_execute(task_db.db, migrate_query) {
-			_ = db_execute(task_db.db, "ROLLBACK;")
-			return false
+		if !db_has_column(task_db.db, "task_chains", "last_audit_at_unix_ms") {
+			migrate_query := "ALTER TABLE task_chains ADD COLUMN last_audit_at_unix_ms INTEGER NOT NULL DEFAULT 0;"
+			if !db_execute(task_db.db, migrate_query) {
+				_ = db_execute(task_db.db, "ROLLBACK;")
+				return false
+			}
+		} else {
+			fmt.println("DB: Column 'last_audit_at_unix_ms' already exists in 'task_chains', skipping ALTER TABLE.")
 		}
 		
 		if !db_set_user_version(task_db.db, 2) {
