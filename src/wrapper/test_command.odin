@@ -408,8 +408,8 @@ build_test_argv :: proc(cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Co
 			append(&result, model_val)
 		}
 	}
-	for flag in agent_cmd.prompt_flags { append(&result, flag) }
 	if starter_prompt != "" {
+		for flag in agent_cmd.prompt_flags { append(&result, flag) }
 		append(&result, starter_prompt)
 	}
 	return result[:]
