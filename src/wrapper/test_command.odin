@@ -278,6 +278,7 @@ step3_launch :: proc(state: ^Test_State, cfg: cfg_lib.Wrapper_Config, agent_cmd:
 	}
 
 	argv := build_test_argv(cfg, agent_cmd, agent_cmd_ok, tier, tier_skipped, "")
+	fmt.printf("agent command (initial): %s\n", shell_join_argv(argv))
 	launch, launch_ok := tmux.ensure_agent_window(state.session, "smoke", state.cwd, argv)
 	if !launch_ok {
 		return false, "", "tmux.ensure_agent_window failed"
@@ -304,6 +305,7 @@ step4_restart_with_prompt :: proc(state: ^Test_State, cfg: cfg_lib.Wrapper_Confi
 	state.pane_id = ""
 
 	argv := build_test_argv(cfg, agent_cmd, agent_cmd_ok, tier, tier_skipped, TEST_STARTER_PROMPT)
+	fmt.printf("agent command (with test prompt): %s\n", shell_join_argv(argv))
 	launch, launch_ok := tmux.ensure_agent_window(state.session, "smoke", state.cwd, argv)
 	if !launch_ok {
 		return false, "", "tmux.ensure_agent_window failed on restart"
@@ -411,6 +413,52 @@ build_test_argv :: proc(cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Co
 		append(&result, starter_prompt)
 	}
 	return result[:]
+}
+
+shell_join_argv :: proc(argv: []string) -> string {
+	builder := strings.builder_make()
+	for i, arg in argv {
+		if i > 0 do strings.write_string(&builder, " ")
+		if arg == "" {
+			strings.write_string(&builder, "''")
+			continue
+		}
+
+		has_space := false
+		has_quote := false
+		for ch in arg {
+			switch ch {
+			case ' ', '\t', '\n':
+				has_space = true
+			case '\'', '"', '\\':
+				has_quote = true
+			}
+		}
+
+		if has_space || has_quote {
+			strings.write_string(&builder, "'")
+			for ch in arg {
+				switch ch {
+				case '\'':
+					strings.write_string(&builder, "'\\''")
+				case '\\':
+					strings.write_string(&builder, "\\\\")
+				case '\n':
+					strings.write_string(&builder, "\\n")
+				case '\t':
+					strings.write_string(&builder, "\\t")
+				case '\r':
+					strings.write_string(&builder, "\\r")
+				case:
+					strings.write_rune(&builder, ch)
+				}
+			}
+			strings.write_string(&builder, "'")
+		} else {
+			strings.write_string(&builder, arg)
+		}
+	}
+	return strings.to_string(builder)
 }
 
 generate_run_id :: proc() -> string {
