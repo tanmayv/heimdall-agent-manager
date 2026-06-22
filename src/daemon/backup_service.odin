@@ -378,7 +378,9 @@ backup_restore :: proc(author, folder_name: string) -> (ok: bool, message: strin
 backup_restore_restart_worker :: proc() {
 	time.sleep(1 * time.Second)
 	fmt.println("SYSTEM: Database restore complete. Exiting process to trigger systemd cold restart...")
-	os.exit(0)
+	// Exit with a non-zero code so that systemd (which is configured with Restart=on-failure) 
+	// detects it as an abnormal shutdown and automatically triggers a fresh cold-reboot cycle!
+	os.exit(1)
 }
 
 restore_single_db :: proc(dest_db: sqlite3, source_path: string) -> bool {
