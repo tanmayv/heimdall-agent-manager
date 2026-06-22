@@ -49,6 +49,7 @@ handle_user_rpc :: proc(client: net.TCP_Socket, body: string) {
 handle_user_rpc_send_to_agent :: proc(client: net.TCP_Socket, body, user_id: string) {
 	agent_instance_id := extract_json_string(body, "agent_instance_id", "")
 	message_body := extract_json_string(body, "body", "")
+	fmt.println("DEBUG: handle_user_rpc_send_to_agent called for user", user_id, "to agent", agent_instance_id)
 	if agent_instance_id == "" || message_body == "" {
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"send_to_agent requires agent_instance_id and body"}`)
 		return
@@ -58,6 +59,7 @@ handle_user_rpc_send_to_agent :: proc(client: net.TCP_Socket, body, user_id: str
 		return
 	}
 	message_id, ok := chat_store_append_message(user_id, agent_instance_id, "user_to_agent", message_body)
+	fmt.println("DEBUG: chat_store_append_message returned message_id =", message_id, "ok =", ok)
 	if !ok {
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"append chat failed"}`)
 		return
@@ -79,6 +81,7 @@ handle_user_rpc_fetch_chat :: proc(client: net.TCP_Socket, body, user_id: string
 		return
 	}
 	unread_only := extract_json_bool(body, "unread_only", true)
+	fmt.println("DEBUG: handle_user_rpc_fetch_chat for user", user_id, "agent", agent_instance_id, "unread_only =", unread_only)
 	write_response(client, 200, "OK", chat_fetch_json(user_id, agent_instance_id, unread_only))
 }
 

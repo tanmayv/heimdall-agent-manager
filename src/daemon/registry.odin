@@ -136,7 +136,18 @@ registry_register :: proc(agent_class, agent_instance_id, display_name: string, 
 	if display == "" do display = instance
 
 	agent_token := requested_agent_token
-	if agent_token == "" do agent_token = generate_agent_token()
+	if agent_token == "" {
+		// Try to recover token from persistent storage
+		agent_token = auth_db_get_token("agent", instance)
+		if agent_token == "" {
+			// No stored token found, generate new one
+			agent_token = generate_agent_token()
+		}
+		// Store the token (insert or replace)
+		if !auth_db_store_token(agent_token, "agent", instance, now_unix_ms()) {
+			fmt.println("WARNING: failed to store agent token for", instance)
+		}
+	}
 
 	if idx := registry_find_agent(instance); idx >= 0 {
 		agents[idx].agent_class = strings.clone(class)
@@ -347,6 +358,10 @@ registry_heartbeat :: proc(agent_instance_id: string) -> bool {
 	if idx := registry_find_agent(agent_instance_id); idx >= 0 {
 		agents[idx].connected = true
 		agents[idx].last_seen_unix_ms = now_unix_ms()
+		// Update last_seen in persistent storage
+		if agents[idx].agent_token != "" {
+			auth_db_update_last_seen(agents[idx].agent_token, agents[idx].last_seen_unix_ms)
+		}
 		return true
 	}
 	return false

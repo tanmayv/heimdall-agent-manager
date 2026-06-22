@@ -101,6 +101,7 @@ message_db_create_schema :: proc() -> bool {
 }
 
 message_db_insert :: proc(msg: Chat_Message) -> bool {
+	fmt.println("DEBUG: message_db_insert called for message_id =", msg.message_id, "user_id =", msg.user_id, "agent_instance_id =", msg.agent_instance_id, "direction =", msg.direction)
 	stmt: sqlite3_stmt = nil
 
 	query := fmt.tprintf(
@@ -133,6 +134,7 @@ message_db_insert :: proc(msg: Chat_Message) -> bool {
 		return false
 	}
 
+	fmt.println("DEBUG: message_db_insert succeeded for", msg.message_id)
 	return true
 }
 
@@ -158,6 +160,7 @@ message_db_mark_conversation_read :: proc(user_id, agent_instance_id: string, re
 		return false
 	}
 
+	fmt.println("DEBUG: message_db_mark_conversation_read set", user_id, agent_instance_id, "to", read_unix_ms)
 	return true
 }
 
@@ -226,9 +229,12 @@ message_db_get_last_read :: proc(user_id, agent_instance_id: string) -> i64 {
 	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), -1, SQLITE_TRANSIENT)
 
 	if sqlite3_step(stmt) == SQLITE_ROW {
-		return sqlite3_column_int64(stmt, 0)
+		last_read := sqlite3_column_int64(stmt, 0)
+		fmt.println("DEBUG: message_db_get_last_read for", user_id, agent_instance_id, "= ", last_read)
+		return last_read
 	}
 
+	fmt.println("DEBUG: message_db_get_last_read for", user_id, agent_instance_id, "= 0 (no row)")
 	return 0
 }
 
@@ -272,6 +278,7 @@ message_db_fetch_unread :: proc(user_id, agent_instance_id: string) -> [dynamic]
 	stmt: sqlite3_stmt = nil
 
 	last_read := message_db_get_last_read(user_id, agent_instance_id)
+	fmt.println("DEBUG: message_db_fetch_unread for", user_id, agent_instance_id, "last_read =", last_read)
 
 	query := `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND created_unix_ms > ? ORDER BY created_unix_ms ASC`
 
@@ -285,6 +292,7 @@ message_db_fetch_unread :: proc(user_id, agent_instance_id: string) -> [dynamic]
 	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), -1, SQLITE_TRANSIENT)
 	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), -1, SQLITE_TRANSIENT)
 	sqlite3_bind_int64(stmt, 3, last_read)
+	fmt.println("DEBUG: Query bound with user_id =", user_id, "agent_instance_id =", agent_instance_id, "last_read =", last_read)
 
 	for sqlite3_step(stmt) == SQLITE_ROW {
 		msg := Chat_Message{
@@ -299,9 +307,11 @@ message_db_fetch_unread :: proc(user_id, agent_instance_id: string) -> [dynamic]
 			delivery_error = strings.clone_from_cstring(sqlite3_column_text(stmt, 7)),
 			created_unix_ms = sqlite3_column_int64(stmt, 8),
 		}
+		fmt.println("DEBUG: Found unread message:", msg.message_id, "created at", msg.created_unix_ms)
 		append(&messages, msg)
 	}
 
+	fmt.println("DEBUG: message_db_fetch_unread returning", len(messages), "messages")
 	return messages
 }
 

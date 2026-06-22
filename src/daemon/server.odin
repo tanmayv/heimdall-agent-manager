@@ -64,6 +64,10 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 	project_store_init(server_data_dir); time_step("project_store_init", &step)
 	agent_store_init(server_data_dir); time_step("agent_store_init", &step)
 	chat_store_init(server_data_dir); time_step("chat_store_init", &step)
+	if !auth_db_init(server_data_dir) {
+		fmt.println("WARNING: auth_db_init failed, tokens will not persist across daemon restarts")
+	}
+	time_step("auth_db_init", &step)
 	router_adapter_init(cfg.daemon); time_step("router_adapter_init", &step)
 	hub_sync_init(); time_step("hub_sync_init", &step)
 	message_queue_init(); time_step("message_queue_init", &step)
