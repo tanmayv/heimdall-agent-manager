@@ -318,7 +318,7 @@ body {
   border: 1px solid var(--fd-hairline);
   background: var(--fd-surface-1);
   color: var(--fd-ink);
-  font-feature-settings: inherit;
+  font-feature-settings: normal;
 }
 
 .framer-input:focus {
