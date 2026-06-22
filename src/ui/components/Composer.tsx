@@ -1,22 +1,41 @@
-import { useState } from 'react';
+import { useRef, useState, memo } from 'react';
 import { useDispatch } from 'react-redux';
 import { sendMessageToSelectedAgent } from '../store/chatSlice';
 import { handleKeyDownCtrlW } from '../utils/keyboard';
 
-export default function Composer({ selectedAgent, disabled, onSubmit, smartReplies }) {
+const Composer = memo(function Composer({ selectedAgent, disabled, onSubmit, smartReplies }: any) {
   const dispatch = useDispatch<any>();
-  const [body, setBody] = useState('');
-  console.log('[Render] Composer', { hasAgent: !!selectedAgent, disabled, bodyLength: body.length });
-  const canSend = selectedAgent && body.trim() && !disabled;
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [hasText, setHasText] = useState(false);
+  
+  if (import.meta.env.DEV) {
+    console.log('[Render] Composer', { hasAgent: !!selectedAgent, disabled, hasText });
+  }
+  
+  const canSend = selectedAgent && hasText && !disabled;
 
-  function handleSubmit(event) {
-    const nextBody = body.trim();
+  function handleInput() {
+    const text = textareaRef.current?.value || '';
+    const currentlyHasText = text.trim().length > 0;
+    if (hasText !== currentlyHasText) {
+      setHasText(currentlyHasText);
+    }
+  }
+
+  function handleSubmit(event?: React.FormEvent | React.KeyboardEvent) {
     if (event) event.preventDefault();
-    if (!canSend) return;
+    const nextBody = textareaRef.current?.value.trim() || '';
+    if (!selectedAgent || disabled || !nextBody) return;
+    
     if (onSubmit) {
       onSubmit();
     }
-    setBody('');
+    
+    if (textareaRef.current) {
+      textareaRef.current.value = '';
+    }
+    setHasText(false);
+    
     const tempId = `local_temp_${Date.now()}`;
     dispatch(sendMessageToSelectedAgent({ body: nextBody, tempId }));
   }
@@ -26,7 +45,10 @@ export default function Composer({ selectedAgent, disabled, onSubmit, smartRepli
     if (onSubmit) {
       onSubmit();
     }
-    setBody('');
+    if (textareaRef.current) {
+      textareaRef.current.value = '';
+    }
+    setHasText(false);
     const tempId = `local_temp_${Date.now()}`;
     dispatch(sendMessageToSelectedAgent({ body: replyText, tempId }));
   }
@@ -58,12 +80,13 @@ export default function Composer({ selectedAgent, disabled, onSubmit, smartRepli
           </label>
           <textarea
             id="composer"
+            ref={textareaRef}
             data-debug-id="message-input"
             rows={2}
-            value={body}
-            onChange={(event) => setBody(event.target.value)}
+            defaultValue=""
+            onInput={handleInput}
             onKeyDown={(event) => {
-              handleKeyDownCtrlW(event);
+              handleKeyDownCtrlW(event as any);
               if (event.defaultPrevented) return;
               if (event.key === 'Enter' && event.ctrlKey) {
                 handleSubmit(event);
@@ -87,4 +110,6 @@ export default function Composer({ selectedAgent, disabled, onSubmit, smartRepli
       </form>
     </div>
   );
-}
+});
+
+export default Composer;
