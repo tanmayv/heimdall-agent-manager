@@ -252,7 +252,7 @@ interface ProjectCreateFormProps {
   onCancel: () => void;
 }
 
-const ProjectCreateForm = memo(function ProjectCreateForm({
+function ProjectCreateForm({
   mutating,
   onSubmit,
   onCancel
@@ -322,7 +322,7 @@ const ProjectCreateForm = memo(function ProjectCreateForm({
       </div>
     </form>
   );
-});
+}
 
 interface ProjectEditFormProps {
   project: any;
@@ -330,7 +330,7 @@ interface ProjectEditFormProps {
   onSubmit: (formData: any) => void;
 }
 
-const ProjectEditForm = memo(function ProjectEditForm({
+function ProjectEditForm({
   project,
   mutating,
   onSubmit
@@ -398,7 +398,7 @@ const ProjectEditForm = memo(function ProjectEditForm({
       </div>
     </form>
   );
-});
+}
 
 interface ProjectAgentsManagerProps {
   projectId: string;
@@ -415,7 +415,7 @@ interface ProjectAgentsManagerProps {
   onStartNewAgent: (formData: any) => void;
 }
 
-const ProjectAgentsManager = memo(function ProjectAgentsManager({
+function ProjectAgentsManager({
   projectId,
   projectName,
   projectAgents,
@@ -517,4 +517,4 @@ const ProjectAgentsManager = memo(function ProjectAgentsManager({
       </div>
     </section>
   );
-});
+}

@@ -68,7 +68,7 @@ function renderHeading(level: number, key: string, children: ReturnType<typeof r
   return <h6 key={key}>{children}</h6>;
 }
 
-const MarkdownContent = memo(function MarkdownContent({ text }: { text: string }) {
+function MarkdownContent({ text }: { text: string }) {
   console.log('[Render] MarkdownContent');
   const blocks = [];
   const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
@@ -221,7 +221,7 @@ const MarkdownContent = memo(function MarkdownContent({ text }: { text: string }
   flushAllTextBlocks();
 
   return <div className="markdown-message text-sm leading-6">{blocks}</div>;
-});
+}
 
 async function copyMessageText(text: string) {
   if (navigator.clipboard?.writeText) {
@@ -252,7 +252,7 @@ async function copyMessageText(text: string) {
   }
 }
 
-const MessageBubble = memo(function MessageBubble({ message }: { message: any }) {
+function MessageBubble({ message }: { message: any }) {
   console.log('[Render] MessageBubble', message.id);
   const dispatch = useDispatch<any>();
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
@@ -511,5 +511,5 @@ const MessageBubble = memo(function MessageBubble({ message }: { message: any })
       </div>
     </div>
   );
-});
+}
 export default MessageBubble;

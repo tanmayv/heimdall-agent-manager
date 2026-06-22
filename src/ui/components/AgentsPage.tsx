@@ -546,7 +546,7 @@ interface AgentEditFormProps {
   onCancel: () => void;
 }
 
-const AgentEditForm = memo(function AgentEditForm({
+function AgentEditForm({
   agent,
   templates,
   saving,
@@ -629,7 +629,7 @@ const AgentEditForm = memo(function AgentEditForm({
       </div>
     </form>
   );
-});
+}
 
 interface TemplateEditFormProps {
   template: any;
@@ -639,7 +639,7 @@ interface TemplateEditFormProps {
   onCancel: () => void;
 }
 
-const TemplateEditForm = memo(function TemplateEditForm({
+function TemplateEditForm({
   template,
   saving,
   error,
@@ -715,4 +715,4 @@ const TemplateEditForm = memo(function TemplateEditForm({
       </div>
     </form>
   );
-});
+}

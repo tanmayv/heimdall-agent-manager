@@ -223,7 +223,7 @@ interface MemoryProposalFormProps {
   onCancel: () => void;
 }
 
-const MemoryProposalForm = memo(function MemoryProposalForm({
+function MemoryProposalForm({
   initialForm,
   agents,
   canMutate,
@@ -286,4 +286,4 @@ const MemoryProposalForm = memo(function MemoryProposalForm({
       </div>
     </form>
   );
-});
+}
