@@ -296,7 +296,7 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
   };
 
   return (
-    <main className="framer-panel flex min-w-0 flex-1 flex-col bg-[var(--fd-canvas)]">
+    <main className="framer-panel flex min-w-0 min-h-0 h-full flex-1 flex-col bg-[var(--fd-canvas)]">
       <header className="flex animate-float-in items-center justify-between border-b border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-6 py-4">
         <div>
           <p className="framer-topline">Settings</p>
