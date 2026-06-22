@@ -233,11 +233,9 @@ export default function App() {
     const onVisibility = () => {
       if (document.visibilityState === 'visible') refreshSnapshot();
     };
-    window.addEventListener('focus', refreshSnapshot);
     document.addEventListener('visibilitychange', onVisibility);
     const interval = window.setInterval(refreshSnapshot, 45000);
     return () => {
-      window.removeEventListener('focus', refreshSnapshot);
       document.removeEventListener('visibilitychange', onVisibility);
       window.clearInterval(interval);
     };
