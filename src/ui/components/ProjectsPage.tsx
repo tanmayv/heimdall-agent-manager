@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { createProjectFromUi, fetchProjectDetail, refreshProjects, selectProject, updateProjectFromUi } from '../store/projectSlice';
 import * as daemonApi from '../api/daemonApi';
@@ -206,7 +206,9 @@ export default function ProjectsPage({ session }: { session: any }) {
     }
   }
 
-  const availableExistingAgents = allAgents.filter((agent) => !projectAgents.some((projectAgent) => (agentRecordId(projectAgent) && agentRecordId(projectAgent) === agentRecordId(agent)) || (agentInstanceId(projectAgent) && agentInstanceId(projectAgent) === agentInstanceId(agent))));
+  const availableExistingAgents = useMemo(() => {
+    return allAgents.filter((agent) => !projectAgents.some((projectAgent) => (agentRecordId(projectAgent) && agentRecordId(projectAgent) === agentRecordId(agent)) || (agentInstanceId(projectAgent) && agentInstanceId(projectAgent) === agentInstanceId(agent))));
+  }, [allAgents, projectAgents]);
 
   return (
     <main className="flex min-w-0 flex-1 flex-col bg-[var(--fd-canvas)]">

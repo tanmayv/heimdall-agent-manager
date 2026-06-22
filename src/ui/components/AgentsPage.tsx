@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, memo, FormEvent } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { refreshAgents, setTestRuns } from '../store/chatSlice';
 import * as daemonApi from '../api/daemonApi';
@@ -46,7 +46,6 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
   const [starting, setStarting] = useState<string | null>(null);
   const [agentError, setAgentError] = useState('');
   const [editingAgentId, setEditingAgentId] = useState<string | null>(null);
-  const [agentForm, setAgentForm] = useState({ displayName: '', templateId: '', providerProfile: '', modelTier: 'normal' });
   const [agentSaving, setAgentSaving] = useState(false);
   const [agentFormError, setAgentFormError] = useState('');
 
@@ -55,7 +54,6 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
   const [templatesLoading, setTemplatesLoading] = useState(false);
   const [templatesError, setTemplatesError] = useState('');
   const [editingTemplate, setEditingTemplate] = useState<any | null>(null);
-  const [templateForm, setTemplateForm] = useState({ ...blankTemplate });
   const [templateSaving, setTemplateSaving] = useState(false);
   const [templateFormError, setTemplateFormError] = useState('');
 
@@ -116,7 +114,6 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
 
   function startEditAgent(agent: any) {
     setEditingAgentId(agent.id);
-    setAgentForm({ displayName: agent.label || '', templateId: agent.templateId || '', providerProfile: agent.providerProfile || '', modelTier: agent.modelTier || 'normal' });
     setAgentFormError('');
   }
 
@@ -125,9 +122,8 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
     setAgentFormError('');
   }
 
-  async function handleSaveAgent(event: any) {
-    event.preventDefault();
-    const name = agentForm.displayName.trim();
+  async function handleSaveAgent(formData: any) {
+    const name = formData.displayName.trim();
     if (!name) { setAgentFormError('Display name is required.'); return; }
     const duplicate = agents.find((a: any) => (a.label || '').trim().toLowerCase() === name.toLowerCase() && a.id !== editingAgentId);
     if (duplicate) { setAgentFormError(`An agent named "${name}" already exists.`); return; }
@@ -138,9 +134,9 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
         daemonUrl: session.daemonUrl,
         agentInstanceId: editingAgentId!,
         displayName: name,
-        templateId: agentForm.templateId || undefined,
-        providerProfile: agentForm.providerProfile || undefined,
-        modelTier: agentForm.modelTier || undefined,
+        templateId: formData.templateId || undefined,
+        providerProfile: formData.providerProfile || undefined,
+        modelTier: formData.modelTier || undefined,
       });
       setEditingAgentId(null);
       dispatch(refreshAgents());
@@ -204,13 +200,11 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
 
   function startEditTemplate(template: any) {
     setEditingTemplate(template);
-    setTemplateForm({ ...template });
     setTemplateFormError('');
   }
 
   function startNewTemplate() {
     setEditingTemplate({});
-    setTemplateForm({ ...blankTemplate });
     setTemplateFormError('');
   }
 
@@ -219,10 +213,9 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
     setTemplateFormError('');
   }
 
-  async function handleSaveTemplate(event: any) {
-    event.preventDefault();
-    const name = templateForm.displayName.trim();
-    const id = templateForm.templateId.trim();
+  async function handleSaveTemplate(formData: any) {
+    const name = formData.displayName.trim();
+    const id = formData.templateId.trim();
     if (!name) { setTemplateFormError('Display name is required.'); return; }
     const isNew = !editingTemplate?.templateId;
     if (isNew && !id) { setTemplateFormError('Template ID is required for new templates.'); return; }
@@ -236,11 +229,11 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
         template: {
           template_id: isNew ? id : editingTemplate.templateId,
           display_name: name,
-          role_hint: templateForm.roleHint.trim(),
-          default_provider_profile: templateForm.defaultProviderProfile.trim(),
-          persona: templateForm.persona.trim(),
-          instructions: templateForm.instructions.trim(),
-          suggested_model_tier: templateForm.suggestedModelTier,
+          role_hint: formData.roleHint.trim(),
+          default_provider_profile: formData.defaultProviderProfile.trim(),
+          persona: formData.persona.trim(),
+          instructions: formData.instructions.trim(),
+          suggested_model_tier: formData.suggestedModelTier,
           update: !isNew,
         },
       });
@@ -370,66 +363,14 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
 
                 {/* Inline edit form */}
                 {editingAgentId === agent.id && (
-                  <form
+                  <AgentEditForm
+                    agent={agent}
+                    templates={templates}
+                    saving={agentSaving}
+                    error={agentFormError}
                     onSubmit={handleSaveAgent}
-                    className="border-t border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-4 pb-4 pt-3"
-                  >
-                    {agentFormError ? <div className="mb-3 rounded-xl border border-red-500/30 bg-red-500/10 p-2.5 text-xs text-red-200">{agentFormError}</div> : null}
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                      <label className="block">
-                        <span className="framer-topline text-[10px]">Display name <span className="text-red-400">*</span></span>
-                        <input
-                          data-debug-id="agent-edit-display-name"
-                          value={agentForm.displayName}
-                          onChange={(e) => setAgentForm((f) => ({ ...f, displayName: e.target.value }))}
-                          className="framer-input mt-1.5 w-full px-3 py-2 text-sm"
-                          placeholder="e.g. odin-coder"
-                        />
-                      </label>
-                      <label className="block">
-                        <span className="framer-topline text-[10px]">Template</span>
-                        <select
-                          data-debug-id="agent-edit-template-select"
-                          value={agentForm.templateId}
-                          onChange={(e) => setAgentForm((f) => ({ ...f, templateId: e.target.value }))}
-                          className="framer-input mt-1.5 w-full px-3 py-2 text-sm"
-                        >
-                          <option value="none">— no template —</option>
-                          {templates.map((t) => (
-                            <option key={t.templateId} value={t.templateId}>{t.displayName}</option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="block">
-                        <span className="framer-topline text-[10px]">Provider profile</span>
-                        <input
-                          data-debug-id="agent-edit-provider"
-                          value={agentForm.providerProfile}
-                          onChange={(e) => setAgentForm((f) => ({ ...f, providerProfile: e.target.value }))}
-                          className="framer-input mt-1.5 w-full px-3 py-2 text-sm"
-                          placeholder="e.g. pi, claude"
-                        />
-                      </label>
-                    </div>
-                    <div className="mt-3">
-                      <span className="framer-topline text-[10px]">Model tier</span>
-                      <div className="mt-1.5 flex gap-2">
-                        {(['cheap', 'normal', 'smart'] as const).map((tier) => (
-                          <label key={tier} data-debug-id={`agent-edit-model-tier-${tier}`} className={`flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-xl border px-2 py-2 text-xs transition ${agentForm.modelTier === tier ? 'border-[var(--fd-accent-blue)]/60 bg-[var(--fd-accent-blue)]/10 text-white' : 'border-[var(--fd-hairline)] text-[#888] hover:text-[#ccc]'}`}>
-                            <input type="radio" name="editModelTier" value={tier} checked={agentForm.modelTier === tier} onChange={() => setAgentForm((f) => ({ ...f, modelTier: tier }))} className="sr-only" />
-                            <span className="font-semibold capitalize">{tier}</span>
-                          </label>
-                        ))}
-                      </div>
-                      <p className="mt-1 text-[11px] text-[#666]">Takes effect on next start.</p>
-                    </div>
-                    <div className="mt-3 flex justify-end gap-2">
-                      <button type="button" data-debug-id="agent-edit-cancel-btn" onClick={cancelEditAgent} className="framer-pill-secondary text-xs">Cancel</button>
-                      <button type="submit" data-debug-id="agent-edit-save-btn" disabled={agentSaving} className="framer-pill text-xs">
-                        {agentSaving ? 'Saving…' : 'Save changes'}
-                      </button>
-                    </div>
-                  </form>
+                    onCancel={cancelEditAgent}
+                  />
                 )}
               </div>
             ))}
@@ -442,55 +383,13 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
             {templatesError ? <div className="rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">{templatesError}</div> : null}
 
             {editingTemplate !== null ? (
-              <form onSubmit={handleSaveTemplate} className="framer-card space-y-4 rounded-[var(--fd-radius-xl)] border border-[var(--fd-accent-blue)]/30 bg-[var(--fd-surface-1)] p-5">
-                <h3 className="text-base font-semibold text-white">{editingTemplate.templateId ? `Edit: ${editingTemplate.displayName}` : 'New template'}</h3>
-                {templateFormError ? <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-2.5 text-xs text-red-200">{templateFormError}</div> : null}
-                {!editingTemplate.templateId && (
-                  <label className="block">
-                    <span className="framer-topline text-[10px]">Template ID <span className="text-red-400">*</span></span>
-                    <input data-debug-id="template-form-id" value={templateForm.templateId} onChange={(e) => setTemplateForm((f) => ({ ...f, templateId: e.target.value }))} placeholder="e.g. coder" className="framer-input mt-1.5 w-full px-3 py-2 text-sm" />
-                    <p className="mt-1 text-[11px] text-[#777]">Stable identifier — cannot be changed after creation.</p>
-                  </label>
-                )}
-                <label className="block">
-                  <span className="framer-topline text-[10px]">Display name <span className="text-red-400">*</span></span>
-                  <input data-debug-id="template-form-display-name" value={templateForm.displayName} onChange={(e) => setTemplateForm((f) => ({ ...f, displayName: e.target.value }))} placeholder="e.g. Coding agent" className="framer-input mt-1.5 w-full px-3 py-2 text-sm" />
-                </label>
-                <label className="block">
-                  <span className="framer-topline text-[10px]">Role hint</span>
-                  <input data-debug-id="template-form-role-hint" value={templateForm.roleHint} onChange={(e) => setTemplateForm((f) => ({ ...f, roleHint: e.target.value }))} placeholder="e.g. coder, reviewer, coordinator" className="framer-input mt-1.5 w-full px-3 py-2 text-sm" />
-                  <p className="mt-1 text-[11px] text-[#777]">Internal routing metadata — not shown as a required picker.</p>
-                </label>
-                <label className="block">
-                  <span className="framer-topline text-[10px]">Default provider profile</span>
-                  <input data-debug-id="template-form-provider" value={templateForm.defaultProviderProfile} onChange={(e) => setTemplateForm((f) => ({ ...f, defaultProviderProfile: e.target.value }))} placeholder="e.g. pi, claude" className="framer-input mt-1.5 w-full px-3 py-2 text-sm" />
-                </label>
-                <label className="block">
-                  <span className="framer-topline text-[10px]">Suggested model tier</span>
-                  <select
-                    data-debug-id="template-form-model-tier"
-                    value={templateForm.suggestedModelTier}
-                    onChange={(e) => setTemplateForm((f) => ({ ...f, suggestedModelTier: e.target.value }))}
-                    className="framer-input mt-1.5 w-full bg-[var(--fd-surface-2)] px-3 py-2 text-sm text-white"
-                  >
-                    <option value="cheap">Cheap (e.g. Gemini Flash Lite)</option>
-                    <option value="normal">Normal (e.g. Gemini Flash)</option>
-                    <option value="smart">Smart (e.g. Gemini Pro)</option>
-                  </select>
-                </label>
-                <label className="block">
-                  <span className="framer-topline text-[10px]">Persona</span>
-                  <textarea data-debug-id="template-form-persona" value={templateForm.persona} onChange={(e) => setTemplateForm((f) => ({ ...f, persona: e.target.value }))} rows={3} placeholder="Describe the agent's persona and behavioral style..." className="framer-input mt-1.5 w-full resize-none px-3 py-2 text-sm" />
-                </label>
-                <label className="block">
-                  <span className="framer-topline text-[10px]">Instructions</span>
-                  <textarea data-debug-id="template-form-instructions" value={templateForm.instructions} onChange={(e) => setTemplateForm((f) => ({ ...f, instructions: e.target.value }))} rows={3} placeholder="Provide step-by-step operating guidelines or starter prompts..." className="framer-input mt-1.5 w-full resize-none px-3 py-2 text-sm" />
-                </label>
-                <div className="flex justify-end gap-2">
-                  <button type="button" data-debug-id="template-form-cancel-btn" onClick={cancelTemplateEdit} className="framer-pill-secondary">Cancel</button>
-                  <button data-debug-id="template-form-submit" type="submit" disabled={templateSaving} className="framer-pill">{templateSaving ? 'Saving…' : 'Save template'}</button>
-                </div>
-              </form>
+              <TemplateEditForm
+                template={editingTemplate}
+                saving={templateSaving}
+                error={templateFormError}
+                onSubmit={handleSaveTemplate}
+                onCancel={cancelTemplateEdit}
+              />
             ) : (
               <button data-debug-id="template-new-btn" type="button" onClick={startNewTemplate} className="framer-pill-secondary w-full py-2.5 text-sm">
                 + New template
@@ -634,3 +533,183 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
     </main>
   );
 }
+
+// --- OPTIMIZED SUB-COMPONENTS FOR FORM STATE ISOLATION ---
+
+interface AgentEditFormProps {
+  agent: any;
+  templates: any[];
+  saving: boolean;
+  error: string;
+  onSubmit: (formData: any) => void;
+  onCancel: () => void;
+}
+
+const AgentEditForm = memo(function AgentEditForm({
+  agent,
+  templates,
+  saving,
+  error,
+  onSubmit,
+  onCancel
+}: AgentEditFormProps) {
+  const [form, setForm] = useState({
+    displayName: agent.label || '',
+    templateId: agent.templateId || 'none',
+    providerProfile: agent.providerProfile || '',
+    modelTier: (agent.modelTier || 'normal') as 'cheap' | 'normal' | 'smart',
+  });
+
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    onSubmit(form);
+  };
+
+  return (
+    <form
+      onSubmit={handleSubmit}
+      className="border-t border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-4 pb-4 pt-3"
+    >
+      {error ? <div className="mb-3 rounded-xl border border-red-500/30 bg-red-500/10 p-2.5 text-xs text-red-200">{error}</div> : null}
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <label className="block">
+          <span className="framer-topline text-[10px]">Display name <span className="text-red-400">*</span></span>
+          <input
+            data-debug-id="agent-edit-display-name"
+            value={form.displayName}
+            onChange={(e) => setForm((f) => ({ ...f, displayName: e.target.value }))}
+            className="framer-input mt-1.5 w-full px-3 py-2 text-sm"
+            placeholder="e.g. odin-coder"
+          />
+        </label>
+        <label className="block">
+          <span className="framer-topline text-[10px]">Template</span>
+          <select
+            data-debug-id="agent-edit-template-select"
+            value={form.templateId}
+            onChange={(e) => setForm((f) => ({ ...f, templateId: e.target.value }))}
+            className="framer-input mt-1.5 w-full px-3 py-2 text-sm"
+          >
+            <option value="none">— no template —</option>
+            {templates.map((t) => (
+              <option key={t.templateId} value={t.templateId}>{t.displayName}</option>
+            ))}
+          </select>
+        </label>
+        <label className="block">
+          <span className="framer-topline text-[10px]">Provider profile</span>
+          <input
+            data-debug-id="agent-edit-provider"
+            value={form.providerProfile}
+            onChange={(e) => setForm((f) => ({ ...f, providerProfile: e.target.value }))}
+            className="framer-input mt-1.5 w-full px-3 py-2 text-sm"
+            placeholder="e.g. pi, claude"
+          />
+        </label>
+      </div>
+      <div className="mt-3">
+        <span className="framer-topline text-[10px]">Model tier</span>
+        <div className="mt-1.5 flex gap-2">
+          {(['cheap', 'normal', 'smart'] as const).map((tier) => (
+            <label key={tier} data-debug-id={`agent-edit-model-tier-${tier}`} className={`flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-xl border px-2 py-2 text-xs transition ${form.modelTier === tier ? 'border-[var(--fd-accent-blue)]/60 bg-[var(--fd-accent-blue)]/10 text-white' : 'border-[var(--fd-hairline)] text-[#888] hover:text-[#ccc]'}`}>
+              <input type="radio" name="editModelTier" value={tier} checked={form.modelTier === tier} onChange={() => setForm((f) => ({ ...f, modelTier: tier }))} className="sr-only" />
+              <span className="font-semibold capitalize">{tier}</span>
+            </label>
+          ))}
+        </div>
+        <p className="mt-1 text-[11px] text-[#666]">Takes effect on next start.</p>
+      </div>
+      <div className="mt-3 flex justify-end gap-2">
+        <button type="button" data-debug-id="agent-edit-cancel-btn" onClick={onCancel} className="framer-pill-secondary text-xs">Cancel</button>
+        <button type="submit" data-debug-id="agent-edit-save-btn" disabled={saving} className="framer-pill text-xs">
+          {saving ? 'Saving…' : 'Save changes'}
+        </button>
+      </div>
+    </form>
+  );
+});
+
+interface TemplateEditFormProps {
+  template: any;
+  saving: boolean;
+  error: string;
+  onSubmit: (formData: any) => void;
+  onCancel: () => void;
+}
+
+const TemplateEditForm = memo(function TemplateEditForm({
+  template,
+  saving,
+  error,
+  onSubmit,
+  onCancel
+}: TemplateEditFormProps) {
+  const [form, setForm] = useState({
+    templateId: template.templateId || '',
+    displayName: template.displayName || '',
+    roleHint: template.roleHint || '',
+    defaultProviderProfile: template.defaultProviderProfile || '',
+    persona: template.persona || '',
+    instructions: template.instructions || '',
+    suggestedModelTier: template.suggestedModelTier || 'normal',
+  });
+
+  const isNew = !template.templateId;
+
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    onSubmit(form);
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="framer-card space-y-4 rounded-[var(--fd-radius-xl)] border border-[var(--fd-accent-blue)]/30 bg-[var(--fd-surface-1)] p-5">
+      <h3 className="text-base font-semibold text-white">{isNew ? 'New template' : `Edit: ${form.displayName}`}</h3>
+      {error ? <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-2.5 text-xs text-red-200">{error}</div> : null}
+      {isNew && (
+        <label className="block">
+          <span className="framer-topline text-[10px]">Template ID <span className="text-red-400">*</span></span>
+          <input data-debug-id="template-form-id" value={form.templateId} onChange={(e) => setForm((f) => ({ ...f, templateId: e.target.value }))} placeholder="e.g. coder" className="framer-input mt-1.5 w-full px-3 py-2 text-sm" />
+          <p className="mt-1 text-[11px] text-[#777]">Stable identifier — cannot be changed after creation.</p>
+        </label>
+      )}
+      <label className="block">
+        <span className="framer-topline text-[10px]">Display name <span className="text-red-400">*</span></span>
+        <input data-debug-id="template-form-display-name" value={form.displayName} onChange={(e) => setForm((f) => ({ ...f, displayName: e.target.value }))} placeholder="e.g. Coding agent" className="framer-input mt-1.5 w-full px-3 py-2 text-sm" />
+      </label>
+      <label className="block">
+        <span className="framer-topline text-[10px]">Role hint</span>
+        <input data-debug-id="template-form-role-hint" value={form.roleHint} onChange={(e) => setForm((f) => ({ ...f, roleHint: e.target.value }))} placeholder="e.g. coder, reviewer, coordinator" className="framer-input mt-1.5 w-full px-3 py-2 text-sm" />
+        <p className="mt-1 text-[11px] text-[#777]">Internal routing metadata — not shown as a required picker.</p>
+      </label>
+      <label className="block">
+        <span className="framer-topline text-[10px]">Default provider profile</span>
+        <input data-debug-id="template-form-provider" value={form.defaultProviderProfile} onChange={(e) => setForm((f) => ({ ...f, defaultProviderProfile: e.target.value }))} placeholder="e.g. pi, claude" className="framer-input mt-1.5 w-full px-3 py-2 text-sm" />
+      </label>
+      <label className="block">
+        <span className="framer-topline text-[10px]">Suggested model tier</span>
+        <select
+          data-debug-id="template-form-model-tier"
+          value={form.suggestedModelTier}
+          onChange={(e) => setForm((f) => ({ ...f, suggestedModelTier: e.target.value }))}
+          className="framer-input mt-1.5 w-full bg-[var(--fd-surface-2)] px-3 py-2 text-sm text-white"
+        >
+          <option value="cheap">Cheap (e.g. Gemini Flash Lite)</option>
+          <option value="normal">Normal (e.g. Gemini Flash)</option>
+          <option value="smart">Smart (e.g. Gemini Pro)</option>
+        </select>
+      </label>
+      <label className="block">
+        <span className="framer-topline text-[10px]">Persona</span>
+        <textarea data-debug-id="template-form-persona" value={form.persona} onChange={(e) => setForm((f) => ({ ...f, persona: e.target.value }))} rows={3} placeholder="Describe the agent's persona and behavioral style..." className="framer-input mt-1.5 w-full resize-none px-3 py-2 text-sm" />
+      </label>
+      <label className="block">
+        <span className="framer-topline text-[10px]">Instructions</span>
+        <textarea data-debug-id="template-form-instructions" value={form.instructions} onChange={(e) => setForm((f) => ({ ...f, instructions: e.target.value }))} rows={3} placeholder="Provide step-by-step operating guidelines or starter prompts..." className="framer-input mt-1.5 w-full resize-none px-3 py-2 text-sm" />
+      </label>
+      <div className="flex justify-end gap-2">
+        <button type="button" data-debug-id="template-form-cancel-btn" onClick={onCancel} className="framer-pill-secondary">Cancel</button>
+        <button data-debug-id="template-form-submit" type="submit" disabled={saving} className="framer-pill">{saving ? 'Saving…' : 'Save template'}</button>
+      </div>
+    </form>
+  );
+});
