@@ -20,6 +20,7 @@ import {
   userWsDisconnected,
   userWsError,
   agentLifecycleEventReceived,
+  agentRuntimeEventReceived,
   testStartReceived,
   testDoneReceived,
   setTestRuns,
@@ -134,6 +135,10 @@ export default function App() {
         }
         if (payload?.type === 'agent_lifecycle_changed') {
           dispatch(agentLifecycleEventReceived(payload));
+          return;
+        }
+        if (payload?.type === 'agent_runtime_changed') {
+          dispatch(agentRuntimeEventReceived(payload));
           return;
         }
         if (payload?.type === 'test_start') {

@@ -11,12 +11,13 @@ const statusStyles = {
 };
 
 const statusLabels = {
-  connected: 'Live connection',
+  connected: 'Running',
   starting: 'Starting',
-  startup_blocked: 'Startup blocked',
+  startup_blocked: 'Blocked',
   startup_failed: 'Startup failed',
   startup_unknown: 'Startup unknown',
-  offline: 'Known agent',
+  idle: 'Connected (Idle)',
+  offline: 'Offline',
 };
 
 function defaultSuggestedFix(agent) {
@@ -50,7 +51,7 @@ export default function AgentListItem({
   const suggestedFix = defaultSuggestedFix(agent);
   const projectsById = useSelector((state: any) => state.projects?.projectsById ?? {});
   const projectLabel = agent.projectId ? (projectsById[agent.projectId]?.name || agent.projectName || agent.projectId) : '';
-  const isRunning = agent.status === 'connected' || agent.status === 'starting';
+  const isRunning = agent.status === 'connected' || agent.status === 'starting' || agent.status === 'idle' || agent.status === 'startup_blocked';
 
   return (
     <div

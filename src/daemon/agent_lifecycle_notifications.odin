@@ -27,6 +27,9 @@ agent_lifecycle_emit :: proc(agent_instance_id, connection_state, reason: string
 	strings.write_string(&builder, `","provider_profile":"`); json_write_string(&builder, agent.provider_profile)
 	strings.write_string(&builder, `","run_dir":"`); json_write_string(&builder, agent.run_dir)
 	strings.write_string(&builder, `","tmux_pane":"`); json_write_string(&builder, agent.tmux_pane)
+	strings.write_string(&builder, `","exec_state":"`); json_write_string(&builder, agent.exec_state)
+	strings.write_string(&builder, `","exec_state_since_unix_ms":`); strings.write_string(&builder, fmt.tprintf("%d", agent.exec_state_since_unix_ms))
+	strings.write_string(&builder, `,"blocked_reason":"`); json_write_string(&builder, agent.blocked_reason)
 	// Include project_id / project_name / model_tier so the UI doesn't lose them
 	// when the event arrives (lifecycle events were dropping these by overwriting
 	// the cached agent record with empty strings).

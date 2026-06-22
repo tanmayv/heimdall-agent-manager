@@ -258,8 +258,11 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 		strings.write_string(builder, `","startup_reason_code":"`); json_write_string(builder, agent.startup_reason_code)
 		strings.write_string(builder, `","safe_diagnostic":"`); json_write_string(builder, agent.startup_safe_diagnostic)
 		strings.write_string(builder, `","startup_updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", agent.startup_updated_unix_ms))
+		strings.write_string(builder, `,"exec_state":"`); json_write_string(builder, agent.exec_state)
+		strings.write_string(builder, `","exec_state_since_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", agent.exec_state_since_unix_ms))
+		strings.write_string(builder, `,"blocked_reason":"`); json_write_string(builder, agent.blocked_reason)
 	} else {
-		strings.write_string(builder, `","tmux_pane":"","connected":false,"connection_state":"offline"`)
+		strings.write_string(builder, `","tmux_pane":"","connected":false,"connection_state":"offline","exec_state":"","exec_state_since_unix_ms":0,"blocked_reason":""`)
 	}
 	strings.write_string(builder, `}`)
 }

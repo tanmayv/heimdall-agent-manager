@@ -58,10 +58,29 @@ function safeStartupStatus(agent: any) {
 function mapAgent(agent: any) {
   const lastSeenUnixMs = Number(agent.last_seen_unix_ms ?? agent.lastSeenUnixMs ?? 0);
   const startupStatus = safeStartupStatus(agent);
+  const execState = agent.exec_state || agent.execState || '';
+  const execStateSinceUnixMs = Number(agent.exec_state_since_unix_ms ?? agent.execStateSinceUnixMs ?? 0);
+  const blockedReason = agent.blocked_reason || agent.blockedReason || '';
+
+  let status = 'offline';
+  if (startupStatus) {
+    status = startupStatus;
+  } else if (agent.connected) {
+    if (execState === 'running') {
+      status = 'connected';
+    } else if (execState === 'blocked') {
+      status = 'startup_blocked';
+    } else if (execState === 'idle') {
+      status = 'idle';
+    } else {
+      status = 'connected'; // Fallback
+    }
+  }
+
   return {
     id: agent.agent_instance_id || agent.agentInstanceId || agent.id,
     label: agent.display_name || agent.displayName || agent.alias || agent.agent_instance_id || agent.id,
-    status: startupStatus || (agent.connected ? 'connected' : 'offline'),
+    status,
     startupStatus,
     startupReason: agent.safe_diagnostic || agent.safeDiagnostic || agent.startup_safe_diagnostic || agent.startupSafeDiagnostic || agent.reason || agent.startup_reason_code || agent.startupReasonCode || agent.reason_code || agent.reasonCode || '',
     startupSuggestedFix: agent.suggested_fix || agent.suggestedFix || '',
@@ -79,6 +98,9 @@ function mapAgent(agent: any) {
     roleHint: agent.role_hint || agent.roleHint || '',
     modelTier: agent.model_tier || agent.modelTier || 'normal',
     known: agent.known ?? true,
+    execState,
+    execStateSinceUnixMs,
+    blockedReason,
   };
 }
 
@@ -438,6 +460,42 @@ const chatSlice = createSlice({
         state.chats[agentId].push(mapped);
       }
     },
+    agentRuntimeEventReceived(state, action) {
+      const payload = action.payload || {};
+      const agentId = payload.agent_instance_id;
+      if (!agentId) return;
+      const existingIndex = state.agents.findIndex((agent) => agent.id === agentId);
+      if (existingIndex >= 0) {
+        const existing: any = state.agents[existingIndex];
+        const execState = payload.exec_state || '';
+        
+        let status = existing.status;
+        if (existing.status !== 'offline' || payload.last_seen_unix_ms) {
+          if (execState === 'running') {
+            status = 'connected';
+          } else if (execState === 'blocked') {
+            status = 'startup_blocked';
+          } else if (execState === 'idle') {
+            status = 'idle';
+          } else {
+            status = 'connected';
+          }
+        }
+        
+        state.agents[existingIndex] = {
+          ...existing,
+          status,
+          tmuxPane: payload.tmux_pane ?? existing.tmuxPane,
+          pid: payload.pid ?? existing.pid,
+          execState,
+          execStateSinceUnixMs: payload.exec_state_since_unix_ms ?? existing.execStateSinceUnixMs,
+          blockedReason: payload.blocked_reason ?? existing.blockedReason,
+          runDir: payload.run_dir ?? existing.runDir,
+          lastSeenUnixMs: payload.last_seen_unix_ms ?? existing.lastSeenUnixMs,
+          lastSeen: payload.last_seen_unix_ms ? new Date(payload.last_seen_unix_ms).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : existing.lastSeen,
+        } as never;
+      }
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -559,5 +617,5 @@ const chatSlice = createSlice({
   },
 });
 
-export const { selectAgent, setDaemonUrl, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage } = chatSlice.actions;
+export const { selectAgent, setDaemonUrl, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived, agentRuntimeEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage } = chatSlice.actions;
 export default chatSlice.reducer;
