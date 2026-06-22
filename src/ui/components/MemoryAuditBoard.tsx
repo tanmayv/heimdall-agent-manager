@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { triggerMemoryAudit, decideMemoryProposal, proposeMemoryChange, refreshMemory, clearActiveAudit } from '../store/memorySlice';
-import { daemonApi } from '../api/daemonApi';
+import * as daemonApi from '../api/daemonApi';
 
 const TIME_RANGES = [
   { value: '1h', label: 'Last 1 Hour' },
