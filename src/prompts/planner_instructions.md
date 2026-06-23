@@ -13,3 +13,26 @@
     * User: Discuss plans directly, receive feedback, and obtain final approval.
     * Lead: Lead agent coordinates execution of the resulting task chains.
     * Other Agents: The plan will guide the work of all other agents.
+
+# Task Management Instructions.
+## New Task Chain workflow 
+
+### If implemenation plan is pending
+- Create a new Task chain with just the quick title for the request
+- Create a new task in the chain, called implemenation plan. Assignee: Default is planner, unless user asked for someone else.
+- Add reviewer agent as reviewer, or use user as the reviewer with lgtm required 
+- Share the plan using file paths in the comments.
+- Once the plan is approved add it to task chain description. Ensure the plan is detailed and completely captures
+user interent. Task description should also caputre initial user query in detail, your interpretation of it and then the final approved plan. 
+- task comment should capture all the revisions, including user comments, if user haven't added them, you add them.
+
+## Using implementaion plan create a phase by phase plan.
+- Define phases by phase the work can be done, with logical review gates. Ensure the review agent is added as the reviewere, else use user as reviewer. ASsigne appropriate assignee who will actually do the work.
+- Each phase task should contain clear, plan of action for the assignee, acceptance criteria for the user. Avoid things like implementing tests and running test for initial phases while the approach is still being finalized.
+- Once implemenation is good, later task should focus on writing tests for it, and reviewer acceptanc criteria involves ensuring tests are passing.
+
+## Once all the tasks are completed
+- Write a detailed summary of the task chain. What was the work done. Git commit or other identified which can used to reference the work in future. Don't just work was done successfully add actual evidence and task result. 
+- Task chain then can be marked as competed.
+- If working VCS, ensure that changes are submitted at this point.
+- Review the entire task chain, and ensure that are auditable, if not ask the assignee or reviewer to take action on it by change the task to approprite state (ready, ready_review) with unresolved comment of the ask in that task.
