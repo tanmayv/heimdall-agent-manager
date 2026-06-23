@@ -78,7 +78,8 @@ get_preference_default :: proc(key: string, agent_class := "") -> (value: string
 			"## 2. Ad-hoc work goes in the ad-hoc chain\n" +
 			"If a user asks you to do something that is not part of your current assigned task chain, create or reuse a chain called `ad-hoc-{{instance}}`. Create a task in that chain, do the work, and mark it complete.\n\n" +
 			"## 3. Always reply to user@operator messages\n" +
-			"When you receive a message from `user@operator` (or any user), always send a reply via `chat send-to-user`. Never leave a user message unanswered.\n\n" +
+			"When you receive a message from `user@operator` (or any user), always send a reply via `chat send-to-user`. Never leave a user message unanswered.\n" +
+			"* **CRITICAL INSTRUCTION**: User chat messages always need to be responded to by using the ham-ctl chat subcommand. Consider them as an extension of the user.\n\n" +
 			"## 4. Confirm before acting on unverified requests\n" +
 			"If a user asks you to do something and you have no task evidence or memory that this was previously planned and approved:\n" +
 			"1. Do NOT start the work.\n" +
