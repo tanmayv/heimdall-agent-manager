@@ -566,6 +566,7 @@ handle_user_chat_event :: proc(text, tmux_pane: string) {
 	user_id := extract_json_string(text, "user_id", "unknown")
 	pending_count := extract_json_int(text, "pending_count", 1)
 	if pending_count <= 0 do pending_count = 1
+	send_escape := extract_json_bool(text, "send_escape_prefix", false)
 
 	line := template_live_message(
 		active_live_prefs.msg_user_chat,
@@ -574,7 +575,8 @@ handle_user_chat_event :: proc(text, tmux_pane: string) {
 	)
 	defer delete(line)
 
-	if tmux.send_line_with_escape(tmux_pane, line, active_live_prefs.msg_user_chat_int) {
+	escape_prefix := send_escape || active_live_prefs.msg_user_chat_int
+	if tmux.send_line_with_escape(tmux_pane, line, escape_prefix) {
 		fmt.println("notified agent pane", line)
 	} else {
 		fmt.println("failed to notify agent pane", line)
@@ -760,6 +762,17 @@ extract_json_int :: proc(body, key: string, fallback: int) -> int {
 	parsed, ok := strconv.parse_int(body[start:end])
 	if !ok do return fallback
 	return int(parsed)
+}
+
+extract_json_bool :: proc(body, key: string, fallback: bool) -> bool {
+	pattern := fmt.tprintf("\"%s\":", key)
+	idx := strings.index(body, pattern)
+	if idx < 0 do return fallback
+	start := idx + len(pattern)
+	val_str := strings.trim_space(body[start:])
+	if strings.has_prefix(val_str, "true") do return true
+	if strings.has_prefix(val_str, "false") do return false
+	return fallback
 }
 
 start_detached :: proc(args: []string) {
