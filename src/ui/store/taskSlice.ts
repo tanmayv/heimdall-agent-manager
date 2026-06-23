@@ -27,6 +27,8 @@ function normalizeTask(task: any) {
       agentInstanceId: p.agent_instance_id,
       role: p.role,
     })),
+    unresolvedCommentCount: Number(task.unresolved_comment_count || 0),
+    unresolvedComments: (task.unresolved_comments || []).map(normalizeEvent),
   };
 }
 

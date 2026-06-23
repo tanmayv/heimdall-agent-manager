@@ -136,9 +136,9 @@ const TaskCard = memo(function TaskCard({ task, taskId, bucket, handleDragStart,
         <StatusPill status={task?.status} />
       </div>
       <p className="framer-subtext mt-2 break-all text-xs">{taskId}</p>
-      {task?.unresolved_comment_count > 0 && (
+      {task?.unresolvedCommentCount > 0 && (
         <p className="mt-2 text-[11px] font-semibold text-red-400 flex items-center gap-1">
-          <span>⚠️ {task.unresolved_comment_count} unresolved comment{task.unresolved_comment_count > 1 ? 's' : ''}</span>
+          <span>⚠️ {task.unresolvedCommentCount} unresolved comment{task.unresolvedCommentCount > 1 ? 's' : ''}</span>
         </p>
       )}
     </button>
@@ -1002,7 +1002,7 @@ export default function TaskBoard({ session }) {
               <div className="mt-3 space-y-3">
                 {comments.length ? comments.map((event) => {
                   const isComment = event.kind === 'Task_Comment';
-                  const isUnresolved = isComment && (selectedTask?.unresolved_comments || []).some((uc: any) => uc.comment_id === event.commentId || uc.comment_id === event.eventId);
+                  const isUnresolved = isComment && (selectedTask?.unresolvedComments || []).some((uc: any) => uc.commentId === event.commentId || uc.commentId === event.eventId);
                   return (
                     <div key={event.eventId || `${event.kind}-${event.createdUnixMs}`} className="rounded-[var(--fd-radius-lg)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] p-3">
                       <div className="flex items-center justify-between gap-3">
