@@ -77,7 +77,7 @@ main :: proc() {
 			fmt.println("usage: ham-ctl agents start <agent_instance_id>")
 			return
 		}
-		ctl_agents_start(cmd[idx], os.args, config_path, daemon_url, loaded.config.daemon.data_dir)
+		ctl_agents_start(cmd[idx], os.args, config_path, daemon_url)
 		return
 	}
 
@@ -147,57 +147,10 @@ ctl_agents_list :: proc(daemon_url: string) {
 	fmt.println(response.body)
 }
 
-ctl_agents_start :: proc(agent_instance_id: string, args: []string, config_path, daemon_url, data_dir: string) {
-	if has_flag(args, "--remote") {
-		ctl_agents_start_remote(agent_instance_id, args, config_path, remote_daemon_url(args, daemon_url))
-		return
-	}
-
+ctl_agents_start :: proc(agent_instance_id: string, args: []string, config_path, daemon_url: string) {
 	health_response, health_ok := http.get(daemon_url, contracts.ROUTE_HEALTH)
 	if !health_ok || health_response.status != 200 {
 		fmt.println(`{"ok":false,"message":"daemon is not reachable; start ham-daemon first"}`)
-		return
-	}
-
-	// Do not preflight duplicate status from /agents here. The agents list can
-	// contain stale records after a wrapper/terminal crash. Let wrapper -> daemon
-	// registration decide active_duplicate using daemon-side liveness checks.
-	wrapper_bin := option_value(args, "--wrapper-bin", default_wrapper_bin(args))
-	command := make([dynamic]string)
-	append(&command, wrapper_bin)
-	append(&command, "--config")
-	append(&command, config_path)
-	if agent := option_value(args, "--agent", ""); agent != "" {
-		append(&command, "--agent")
-		append(&command, agent)
-	}
-	agent_token := generate_agent_token()
-	append(&command, "--agent-token")
-	append(&command, agent_token)
-	append(&command, agent_instance_id)
-
-	if has_flag(args, "--detached") {
-		start_wrapper_detached(command[:], agent_instance_id, data_dir, agent_token)
-		return
-	}
-
-	process, err := os.process_start(os.Process_Desc{
-		command = command[:],
-		stdin = os.stdin,
-		stdout = os.stdout,
-		stderr = os.stderr,
-	})
-	if err != nil {
-		fmt.println(`{"ok":false,"message":"failed to start wrapper; ensure ham-wrapper is on PATH or pass --wrapper-bin"}`)
-		return
-	}
-	_, _ = os.process_wait(process)
-}
-
-ctl_agents_start_remote :: proc(agent_instance_id: string, args: []string, config_path, daemon_url: string) {
-	health_response, health_ok := http.get(daemon_url, contracts.ROUTE_HEALTH)
-	if !health_ok || health_response.status != 200 {
-		fmt.println(`{"ok":false,"message":"remote daemon is not reachable"}`)
 		return
 	}
 
@@ -725,57 +678,14 @@ has_flag :: proc(args: []string, name: string) -> bool {
 	return false
 }
 
-remote_daemon_url :: proc(args: []string, fallback: string) -> string {
-	for i := 0; i < len(args); i += 1 {
-		if args[i] == "--remote" {
-			if i + 1 < len(args) && !strings.has_prefix(args[i + 1], "--") {
-				return normalize_daemon_url(args[i + 1])
-			}
-			return fallback
-		}
-	}
-	return fallback
-}
+
 
 normalize_daemon_url :: proc(value: string) -> string {
 	if strings.has_prefix(value, "http://") do return value
 	return fmt.tprintf("http://%s", value)
 }
 
-start_wrapper_detached :: proc(command: []string, agent_instance_id, data_dir, agent_token: string) {
-	log_dir := fmt.tprintf("%s/logs", expand_home(data_dir))
-	_ = os.make_directory_all(log_dir)
-	log_path := fmt.tprintf("%s/wrapper-%s.log", log_dir, safe_path_part(agent_instance_id))
 
-	builder := strings.builder_make()
-	strings.write_string(&builder, "nohup")
-	for arg in command {
-		strings.write_string(&builder, " ")
-		strings.write_string(&builder, shell_quote(arg))
-	}
-	strings.write_string(&builder, " > ")
-	strings.write_string(&builder, shell_quote(log_path))
-	strings.write_string(&builder, " 2>&1 < /dev/null &")
-
-	state, _, stderr, err := os.process_exec(os.Process_Desc{command = []string{"sh", "-c", strings.to_string(builder)}}, context.allocator)
-	if err != nil || !state.success {
-		fmt.println(`{"ok":false,"message":"failed to start detached wrapper"}`)
-		if len(stderr) > 0 do fmt.println(string(stderr))
-		return
-	}
-
-	out := strings.builder_make()
-	strings.write_string(&out, "{\"ok\":true,\"mode\":\"detached\",\"agent_instance_id\":\"")
-	json_write_string(&out, agent_instance_id)
-	strings.write_string(&out, "\",\"conversation_id\":\"")
-	json_write_string(&out, conversation_id_for_instance(agent_instance_id))
-	strings.write_string(&out, "\",\"agent_token\":\"")
-	json_write_string(&out, agent_token)
-	strings.write_string(&out, "\",\"wrapper_log\":\"")
-	json_write_string(&out, log_path)
-	strings.write_string(&out, "\"}")
-	fmt.println(strings.to_string(out))
-}
 
 agent_active_in_clients :: proc(body, agent_instance_id: string) -> bool {
 	pattern := fmt.tprintf("\"agent_instance_id\":\"%s\"", agent_instance_id)
@@ -916,7 +826,7 @@ print_usage :: proc(config_path, daemon_url: string) {
 	fmt.println("commands:")
 	fmt.println("  health")
 	fmt.println("  agents list        (alias: list)")
-	fmt.println("  agents start <agent_instance_id> [--agent pi|claude] [--detached|--remote [host:port]] [--wrapper-bin path]  (alias: start)")
+	fmt.println("  agents start <agent_instance_id> [--agent pi|claude]  (alias: start)")
 	fmt.println("  agents create --name <agent_instance_id> [--provider pi|claude] [--tier cheap|normal|smart] [--display-name <name>] [--template <id>] [--project <id>]")
 	fmt.println("  agents update --id <agent_instance_id> [--tier cheap|normal|smart] [--display-name <name>] [--provider <profile>]")
 	fmt.println("  send --token <token> --to <agent_instance_id> --body <text>")

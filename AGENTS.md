@@ -327,38 +327,18 @@ The wrapper captures bounded pane text in memory only during the probe window. I
 ham-ctl health
 ham-ctl list
 ham-ctl agents list
-ham-ctl agents start <agent_instance_id> [--agent pi|claude] [--detached|--remote [host:port]]
+ham-ctl agents start <agent_instance_id> [--agent pi|claude]
 ham-ctl send --token <token> --to <agent_instance_id> --body <text>
 ham-ctl send --token <token> --to <agent_instance_id> --stdin
 ham-ctl inbox --token <token> [--limit N] [--include-read] [--json]
 ```
 
-### Local vs remote start
+### Daemon-managed agent start
 
-Foreground local start:
+All agent starts are managed by the daemon. When you run the `start` command, `ham-ctl` communicates with the daemon, which then launches the agent wrapper detached on the daemon machine:
 
 ```bash
 ham-ctl agents start pi-agent@a --agent pi
-```
-
-Local detached start:
-
-```bash
-ham-ctl agents start pi-agent@a --agent pi --detached
-```
-
-Remote daemon start:
-
-```bash
-ham-ctl agents start pi-agent@a --agent pi --remote host:49322
-```
-
-Remote semantics:
-
-```text
-ctl may be remote
-remote daemon launches local wrapper on daemon machine
-wrapper connects back to its local daemon via config
 ```
 
 Daemon endpoint:
