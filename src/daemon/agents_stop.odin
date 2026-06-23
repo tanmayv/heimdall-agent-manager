@@ -39,6 +39,8 @@ handle_agents_stop :: proc(client: net.TCP_Socket, body: string, request: string
 		return
 	}
 
+	agents[idx].stop_timeout_seconds = time_in_sec
+	agents[idx].stop_requested_unix_ms = router_now_unix_ms()
 	registry_update_startup(agent_instance_id, "stopping", "stop_requested", "Stop event sent to agent", "", "", "")
 	agent_lifecycle_emit(agent_instance_id, "stopping", "stop_requested")
 

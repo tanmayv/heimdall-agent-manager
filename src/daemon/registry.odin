@@ -35,6 +35,8 @@ Agent_Record :: struct {
 	exec_state: string,
 	exec_state_since_unix_ms: i64,
 	blocked_reason: string,
+	stop_timeout_seconds: int,
+	stop_requested_unix_ms: i64,
 	has_ws: bool,
 	ws_socket: net.TCP_Socket,
 }

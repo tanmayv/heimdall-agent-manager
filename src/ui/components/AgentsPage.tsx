@@ -8,6 +8,7 @@ const STATUS_DOT: Record<string, string> = {
   starting: 'bg-sky-400 shadow-sky-400/40',
   startup_blocked: 'bg-amber-400 shadow-amber-400/40',
   startup_failed: 'bg-red-400 shadow-red-400/40',
+  stopping: 'bg-amber-400 shadow-amber-400/40 animate-soft-pulse',
   offline: 'bg-[#555]/70',
 };
 
@@ -16,8 +17,35 @@ const STATUS_LABEL: Record<string, string> = {
   starting: 'Starting',
   startup_blocked: 'Blocked',
   startup_failed: 'Failed',
+  stopping: 'Stopping',
   offline: 'Known',
 };
+
+function StoppingLabel({ agent }: { agent: any }) {
+  const [remaining, setRemaining] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!agent.stopRequestedUnixMs || !agent.stopTimeoutSeconds) {
+      setRemaining(null);
+      return;
+    }
+
+    const calculateRemaining = () => {
+      const elapsedMs = Date.now() - agent.stopRequestedUnixMs;
+      const elapsedSec = Math.floor(elapsedMs / 1000);
+      const rem = Math.max(0, agent.stopTimeoutSeconds - elapsedSec);
+      setRemaining(rem);
+    };
+
+    calculateRemaining();
+    const interval = window.setInterval(calculateRemaining, 1000);
+    return () => window.clearInterval(interval);
+  }, [agent.stopRequestedUnixMs, agent.stopTimeoutSeconds]);
+
+  if (remaining === null) return <span>Stopping...</span>;
+  return <span>Stopping ({remaining}s)</span>;
+}
+
 
 function normalizeTemplate(t: any) {
   return {
@@ -310,8 +338,16 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                     <div className="flex items-center gap-2">
                       <span className={`h-2.5 w-2.5 shrink-0 rounded-full shadow ${STATUS_DOT[agent.status] ?? STATUS_DOT.offline} ${agent.status === 'connected' ? 'animate-soft-pulse' : ''}`} />
                       <p className="truncate text-sm font-semibold text-white">{agent.label}</p>
-                      <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${agent.status === 'connected' ? 'bg-emerald-500/20 text-emerald-300' : 'bg-[#333] text-[#888]'}`}>
-                        {STATUS_LABEL[agent.status] ?? 'Known'}
+                      <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
+                        agent.status === 'connected' ? 'bg-emerald-500/20 text-emerald-300' :
+                        agent.status === 'stopping' ? 'bg-amber-500/20 text-amber-300' :
+                        'bg-[#333] text-[#888]'
+                      }`}>
+                        {agent.status === 'stopping' ? (
+                          <StoppingLabel agent={agent} />
+                        ) : (
+                          STATUS_LABEL[agent.status] ?? 'Known'
+                        )}
                       </span>
                       <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${
                         (agent.modelTier || 'normal') === 'smart' ? 'bg-violet-500/20 text-violet-300' :
@@ -325,7 +361,15 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
                     <p className="mt-1 text-[11px] text-[#666]">Last seen {agent.lastSeen}</p>
                   </div>
                   <div className="flex shrink-0 gap-2">
-                    {agent.status === 'connected' ? (
+                    {agent.status === 'stopping' ? (
+                      <button
+                        type="button"
+                        disabled
+                        className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-1.5 text-[11px] text-amber-500/40 cursor-not-allowed"
+                      >
+                        Stopping…
+                      </button>
+                    ) : (agent.status === 'connected' || agent.status === 'idle' || agent.status === 'starting' || agent.status === 'startup_blocked') ? (
                       <button
                         type="button"
                         data-debug-id={`agent-stop-btn-${agent.id}`}

@@ -30,6 +30,8 @@ agent_lifecycle_emit :: proc(agent_instance_id, connection_state, reason: string
 	strings.write_string(&builder, `","exec_state":"`); json_write_string(&builder, agent.exec_state)
 	strings.write_string(&builder, `","exec_state_since_unix_ms":`); strings.write_string(&builder, fmt.tprintf("%d", agent.exec_state_since_unix_ms))
 	strings.write_string(&builder, `,"blocked_reason":"`); json_write_string(&builder, agent.blocked_reason)
+	strings.write_string(&builder, `","stop_timeout_seconds":`); strings.write_string(&builder, fmt.tprintf("%d", agent.stop_timeout_seconds))
+	strings.write_string(&builder, `,"stop_requested_unix_ms":`); strings.write_string(&builder, fmt.tprintf("%d", agent.stop_requested_unix_ms))
 	// Include project_id / project_name / model_tier so the UI doesn't lose them
 	// when the event arrives (lifecycle events were dropping these by overwriting
 	// the cached agent record with empty strings).
@@ -44,7 +46,7 @@ agent_lifecycle_emit :: proc(agent_instance_id, connection_state, reason: string
 			if pj := project_index(rec.project_id); pj >= 0 do project_name = project_records[pj].name
 		}
 	}
-	strings.write_string(&builder, `","project_id":"`); json_write_string(&builder, project_id)
+	strings.write_string(&builder, `,"project_id":"`); json_write_string(&builder, project_id)
 	strings.write_string(&builder, `","project_name":"`); json_write_string(&builder, project_name)
 	strings.write_string(&builder, `","model_tier":"`); json_write_string(&builder, model_tier)
 	strings.write_string(&builder, `"}`)

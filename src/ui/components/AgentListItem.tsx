@@ -8,6 +8,7 @@ const statusStyles = {
   startup_failed: 'bg-red-400 shadow-red-400/40',
   startup_unknown: 'bg-violet-400 shadow-violet-400/40',
   idle: 'bg-[var(--fd-hairline)] shadow-[var(--fd-hairline)]/30',
+  stopping: 'bg-amber-400 shadow-amber-400/40 animate-soft-pulse',
   offline: 'bg-[#999999]/70 shadow-[#999999]/20',
 };
 
@@ -18,6 +19,7 @@ const statusLabels = {
   startup_failed: 'Startup failed',
   startup_unknown: 'Startup unknown',
   idle: 'Connected (Idle)',
+  stopping: 'Stopping',
   offline: 'Offline',
 };
 
@@ -28,6 +30,34 @@ function defaultSuggestedFix(agent) {
   if (agent.status === 'startup_unknown') return 'Refresh agent status or inspect the wrapper log if startup does not complete.';
   return '';
 }
+
+import { useState, useEffect } from 'react';
+
+function StoppingLabel({ agent }: { agent: any }) {
+  const [remaining, setRemaining] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (!agent.stopRequestedUnixMs || !agent.stopTimeoutSeconds) {
+      setRemaining(null);
+      return;
+    }
+
+    const calculateRemaining = () => {
+      const elapsedMs = Date.now() - agent.stopRequestedUnixMs;
+      const elapsedSec = Math.floor(elapsedMs / 1000);
+      const rem = Math.max(0, agent.stopTimeoutSeconds - elapsedSec);
+      setRemaining(rem);
+    };
+
+    calculateRemaining();
+    const interval = window.setInterval(calculateRemaining, 1000);
+    return () => window.clearInterval(interval);
+  }, [agent.stopRequestedUnixMs, agent.stopTimeoutSeconds]);
+
+  if (remaining === null) return <span>Stopping...</span>;
+  return <span>Stopping ({remaining}s remaining)</span>;
+}
+
 
 const AgentListItem = memo(function AgentListItem({ 
   agent, 
@@ -87,7 +117,15 @@ const AgentListItem = memo(function AgentListItem({
             }`}>{agent.modelTier || 'normal'}</span>
           </div>
           <p className="framer-subtext mt-1 truncate">{agent.templateId || 'agent'} · {agent.providerProfile || 'provider'}</p>
-          <p className="framer-subtext mt-2 text-[#999]">{statusLabels[agent.status] || 'Known agent'} · Last seen {agent.lastSeen}</p>
+          <p className="framer-subtext mt-2 text-[#999]">
+            {agent.status === 'stopping' ? (
+              <StoppingLabel agent={agent} />
+            ) : (
+              statusLabels[agent.status] || 'Known agent'
+            )}
+            {' · '}
+            Last seen {agent.lastSeen}
+          </p>
           {startupIssue ? (
             <div className="mt-2 rounded-xl border border-amber-400/25 bg-amber-400/10 p-2 text-left text-[11px] leading-4 text-amber-100">
               <div className="flex items-start justify-between gap-2">
@@ -131,7 +169,15 @@ const AgentListItem = memo(function AgentListItem({
             </span>
           ) : null}
           
-          {isRunning ? (
+          {agent.status === 'stopping' ? (
+            <button
+              type="button"
+              disabled
+              className="rounded-md border border-amber-500/20 bg-amber-500/5 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-amber-400/40 cursor-not-allowed"
+            >
+              Stopping
+            </button>
+          ) : isRunning ? (
             <button
               type="button"
               data-debug-id={`agent-item-stop-btn-${agent.id}`}

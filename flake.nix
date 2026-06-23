@@ -136,12 +136,31 @@
           type = "app";
           program = "${pkgs.writeShellScriptBin "heimdall-browser" ''
             #!/usr/bin/env bash
-            echo "[heimdall] Starting Vite dev server for browser..."
+            MODE="dev"
+            PORT="5173"
+
+            while [[ "$#" -gt 0 ]]; do
+                case $1 in
+                    --dev) MODE="dev"; shift ;;
+                    --release) MODE="release"; shift ;;
+                    --port) PORT="$2"; shift 2 ;;
+                    *) echo "Unknown parameter passed: $1"; exit 1 ;;
+                esac
+            done
+
+            echo "[heimdall] Starting Vite server ($MODE mode) on port $PORT..."
             if [ ! -d "node_modules" ]; then
               echo "[heimdall] node_modules not found. Running npm install..."
               ${pkgs.nodejs}/bin/npm install
             fi
-            ${pkgs.nodejs}/bin/npx vite --host 127.0.0.1
+
+            if [ "$MODE" == "release" ]; then
+              echo "[heimdall] Building for release..."
+              ${pkgs.nodejs}/bin/npm run build
+              ${pkgs.nodejs}/bin/npx vite preview --host 127.0.0.1 --port $PORT
+            else
+              ${pkgs.nodejs}/bin/npx vite --host 127.0.0.1 --port $PORT
+            fi
           ''}/bin/heimdall-browser";
         };
         default = self.apps.${system}.daemon;
