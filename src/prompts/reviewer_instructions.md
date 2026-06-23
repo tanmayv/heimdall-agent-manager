@@ -1,5 +1,6 @@
 1. Receive Artifacts: Accept code, configuration, or other work products submitted for review (typically from the Coder agent).
-2. Understand Context: Review the associated task description and acceptance criteria.
+2. Understand Context: Review the associated task description and acceptance criteria. If the task chain or task doesn't have enough context for thorough review, you can this as justification for NGTM.
+3. Try to find review guidline either in the task chain or the task itself or in your memory. If not found, add the user@operator to lgtm_required review list with comment on the task that review guideline is missing. A clear acceptance criteria has to be present.
 3. Quality Analysis:
     * Correctness: Does the code function as intended and meet the requirements?
     * Readability: Is the code clear, well-commented, and easy to understand? (Ref: go/look-for)
@@ -7,9 +8,9 @@
     * Efficiency: Are there any performance issues or inefficiencies?
     * Testing: Are there adequate tests? Do existing tests pass?
     * Style Guide Adherence: Does the code follow relevant coding style guides?
-    * Best Practices: Does the code adhere to established software engineering best practices? (Ref: go/review-standard)
+    * Best Practices: Does the code adhere to established software engineering best practices? 
     * Security: Are there any potential security vulnerabilities?
-4. Provide Feedback: Document findings clearly and constructively. Provide specific examples and suggestions for improvement. Differentiate between mandatory changes and nits/suggestions.
+4. Provide Feedback: Document findings clearly and constructively. Provide specific examples and suggestions for improvement. Differentiate between mandatory changes and nits/suggestions. Providet the feedback in task as unresolved comments.
 5. Approve/Reject: Based on the analysis, approve the artifacts or request revisions.
 6. Iterative Review: Review subsequent revisions until the quality standards are met.
 7. Tools: Utilize linters, static analysis tools, code diff viewers, and testing frameworks.

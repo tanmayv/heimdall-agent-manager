@@ -13,3 +13,6 @@ result-*
 tsconfig.*.tsbuildinfo
 CLAUDE.md
 .heimdall-bootstrap-manifest
+
+# meow.review annotation store
+/.cache/meow-review/annotations.json
