@@ -89,8 +89,7 @@ const AgentSidebar = memo(function AgentSidebar({
   });
   const [isHovered, setIsHovered] = useState(false);
 
-  const expandedScrollRef = useRef<HTMLDivElement>(null);
-  const collapsedScrollRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   const togglePin = useCallback(() => {
     setIsPinned((prev) => {
@@ -108,8 +107,7 @@ const AgentSidebar = memo(function AgentSidebar({
 
   const handleMouseLeave = useCallback(() => {
     setIsHovered(false);
-    if (expandedScrollRef.current) expandedScrollRef.current.scrollTop = 0;
-    if (collapsedScrollRef.current) collapsedScrollRef.current.scrollTop = 0;
+    if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, []);
 
   const isExpanded = isPinned || isHovered;
@@ -403,9 +401,10 @@ const AgentSidebar = memo(function AgentSidebar({
         </button>
       </nav>
 
-      {/* Expanded Agent List View */}
-      <div className={`transition-all duration-300 ease-in-out flex-1 flex flex-col min-h-0 ${isExpanded ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden'}`}>
-        <div className="framer-topline mt-5 flex items-center justify-between">
+      {/* Unified Agent List View */}
+      <div className="flex-1 flex flex-col min-h-0 mt-5">
+        {/* Title Header: Only visible when expanded */}
+        <div className={`framer-topline flex items-center justify-between transition-all duration-300 ${isExpanded ? 'opacity-100 mb-3 h-7' : 'opacity-0 h-0 overflow-hidden mb-0'}`}>
           <span>Agents</span>
           <div className="flex items-center gap-2">
             <button
@@ -431,136 +430,132 @@ const AgentSidebar = memo(function AgentSidebar({
           </div>
         </div>
 
-        <div ref={expandedScrollRef} className="mt-3 flex flex-1 flex-col gap-3 overflow-y-auto pr-1">
+        {/* Scrollable List Container */}
+        <div ref={scrollRef} className="flex-1 overflow-y-auto pr-1 flex flex-col gap-4">
+          
+          {/* Unread Section (Unified list of morphing bubbles) */}
           {unreadAgents.length > 0 && (
-            <div className="space-y-1.5 pb-2 border-b border-[var(--fd-hairline)]/50">
-              <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-amber-500">Unread Messages</p>
-              <div className="flex flex-col gap-1.5">
-                {unreadAgents.map((agent) => (
-                  <button
-                    key={agent.id}
-                    type="button"
-                    data-debug-id={`unread-agent-nav-btn-${agent.id}`}
-                    onClick={() => onSelectAgent(agent.id)}
-                    className={`flex w-full items-center justify-between rounded-[var(--fd-radius-lg)] border px-3 py-1.5 text-left transition hover:border-[var(--fd-accent-blue)]/50 ${
-                      agent.id === selectedAgentId
-                        ? 'border-[var(--fd-accent-blue)] bg-[var(--fd-accent-blue)]/5'
-                        : 'border-[var(--fd-hairline)] bg-[var(--fd-surface-1)] hover:bg-[var(--fd-surface-2)]'
-                    }`}
-                  >
-                    <div className="min-w-0 flex-1 flex items-center gap-2">
-                      <span className={`h-2 w-2 rounded-full ${agentStatusColors[agent.status] || 'bg-gray-600'}`} />
-                      <span className="truncate text-xs font-semibold text-white">{agent.label}</span>
-                    </div>
-                    <span className="rounded-full bg-[var(--fd-accent-blue)] px-1.5 py-0.5 text-[9px] font-bold text-black shrink-0">
-                      {agent.unreadCount} unread
-                    </span>
-                  </button>
-                ))}
+            <div className="space-y-1.5 pb-3 border-b border-[var(--fd-hairline)]/50 flex flex-col">
+              <p className={`text-[9px] font-bold uppercase tracking-[0.15em] text-amber-500 transition-all duration-300 ${isExpanded ? 'opacity-100 mb-1 h-3' : 'opacity-0 h-0 overflow-hidden mb-0'}`}>
+                Unread Messages
+              </p>
+              <div className={`flex flex-col gap-2 transition-all duration-300 ${isExpanded ? 'items-stretch' : 'items-center'}`}>
+                {unreadAgents.map((agent) => {
+                  const firstLetter = (agent.label || agent.id || 'A')[0].toUpperCase();
+                  const isSelected = agent.id === selectedAgentId;
+                  const statusColor = agentStatusColors[agent.status] || 'bg-gray-600';
+                  return (
+                    <button
+                      key={agent.id}
+                      type="button"
+                      data-debug-id={`unread-agent-nav-btn-${agent.id}`}
+                      onClick={() => onSelectAgent(agent.id)}
+                      className={`relative flex items-center transition-all duration-300 border shrink-0 ${
+                        isExpanded
+                          ? 'w-full rounded-[var(--fd-radius-lg)] border-[var(--fd-hairline)] bg-[var(--fd-surface-1)] hover:bg-[var(--fd-surface-2)] hover:border-[var(--fd-accent-blue)]/50 p-2 px-3 gap-3 justify-start'
+                          : 'h-12 w-12 rounded-full border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] hover:border-white/20 justify-center'
+                      } ${isSelected && isExpanded ? 'border-[var(--fd-accent-blue)] bg-[var(--fd-accent-blue)]/5' : ''}`}
+                      title={`${agent.label || agent.id} (${agent.unreadCount} unread)`}
+                    >
+                      {/* Avatar */}
+                      <div className="relative flex-shrink-0">
+                        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--fd-accent-blue)]/20 text-xs font-bold text-[var(--fd-accent-blue)]">
+                          {firstLetter}
+                        </div>
+                        {/* Status dot in corner of avatar */}
+                        <span className={`absolute bottom-0.5 right-0.5 h-2.5 w-2.5 rounded-full border-2 border-[var(--fd-surface-1)] ${statusColor}`} />
+                      </div>
+
+                      {/* Text label details (only shown when expanded) */}
+                      <div className={`min-w-0 flex-1 text-left transition-all duration-300 ${isExpanded ? 'opacity-100 max-w-[200px]' : 'opacity-0 max-w-0 overflow-hidden'}`}>
+                        <span className="truncate text-xs font-semibold text-white block">{agent.label}</span>
+                        <span className="text-[10px] text-[#666] block truncate">Online</span>
+                      </div>
+
+                      {/* Unread Badge */}
+                      {isExpanded ? (
+                        <span className="rounded-full bg-[var(--fd-accent-blue)] px-1.5 py-0.5 text-[9px] font-bold text-black shrink-0">
+                          {agent.unreadCount} unread
+                        </span>
+                      ) : (
+                        <span className="absolute -top-1 -right-1 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-[var(--fd-accent-blue)] px-1.5 text-[9px] font-bold text-black shadow-sm">
+                          {agent.unreadCount}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
 
-          {agents.length ? (
-            projectGroups.map(([projectId, groupAgents]) => {
-              const collapsed = Boolean(collapsedProjects[projectId]);
-              const connectedCount = groupAgents.filter((agent) => agent.status === 'connected').length;
-              return (
-                <section key={projectId} className="space-y-1.5">
-                  <button
-                    type="button"
-                    data-debug-id={`project-group-toggle-${projectId}`}
-                    draggable={projectId !== 'unassigned'}
-                    onDragStart={(e) => handleDragStart(e, projectId)}
-                    onDragOver={(e) => handleDragOverProject(e, projectId)}
-                    onDragLeave={handleDragLeaveProject}
-                    onDrop={(e) => handleDrop(e, projectId)}
-                    onClick={() => toggleProjectGroup(projectId)}
-                    className={`flex w-full items-center justify-between rounded-[var(--fd-radius-lg)] border px-3 py-1.5 text-left transition hover:border-[var(--fd-accent-blue)]/50 ${
-                      dragOverProjectId === projectId
-                        ? 'border-[var(--fd-accent-blue)] bg-[var(--fd-surface-3)]'
-                        : 'border-[var(--fd-hairline)] bg-[var(--fd-surface-2)]'
-                    } ${
-                      projectId !== 'unassigned' ? 'cursor-grab active:cursor-grabbing' : ''
-                    }`}
-                  >
-                    <div className="min-w-0 flex-1 flex items-center gap-2">
-                      <span className="truncate text-[10px] font-semibold uppercase tracking-[0.15em] text-[#bbb]">{projectGroupLabel(projectId, projectsById, groupAgents)}</span>
-                      <span className="text-[9px] font-medium text-[#777] shrink-0">({groupAgents.length}/{connectedCount})</span>
-                    </div>
-                    <span className="text-xs text-[#777] ml-2 shrink-0">{collapsed ? '▸' : '▾'}</span>
-                  </button>
-                  {!collapsed ? groupAgents.map((agent) => (
-                    <div
-                      key={agent.id}
-                      draggable
-                      onDragStart={(e) => handleDragStartAgent(e, agent.id, projectId)}
-                      onDragOver={(e) => handleDragOverAgent(e, agent.id)}
-                      onDragLeave={handleDragLeaveAgent}
-                      onDrop={(e) => handleDropAgent(e, agent.id, projectId, groupAgents)}
-                      className={`cursor-grab active:cursor-grabbing rounded-[var(--fd-radius-lg)] border transition-all duration-200 ${
-                        dragOverAgentId === agent.id
-                          ? 'border-[var(--fd-accent-blue)] bg-[var(--fd-accent-blue)]/5'
-                          : 'border-transparent'
+          {/* Main project groups list (fades and collapses when sidebar is collapsed) */}
+          <div className={`transition-all duration-300 ease-in-out flex flex-col gap-3 ${isExpanded ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden pointer-events-none'}`}>
+            {agents.length ? (
+              projectGroups.map(([projectId, groupAgents]) => {
+                const collapsed = Boolean(collapsedProjects[projectId]);
+                const connectedCount = groupAgents.filter((agent) => agent.status === 'connected').length;
+                return (
+                  <section key={projectId} className="space-y-1.5">
+                    <button
+                      type="button"
+                      data-debug-id={`project-group-toggle-${projectId}`}
+                      draggable={projectId !== 'unassigned'}
+                      onDragStart={(e) => handleDragStart(e, projectId)}
+                      onDragOver={(e) => handleDragOverProject(e, projectId)}
+                      onDragLeave={handleDragLeaveProject}
+                      onDrop={(e) => handleDrop(e, projectId)}
+                      onClick={() => toggleProjectGroup(projectId)}
+                      className={`flex w-full items-center justify-between rounded-[var(--fd-radius-lg)] border px-3 py-1.5 text-left transition hover:border-[var(--fd-accent-blue)]/50 ${
+                        dragOverProjectId === projectId
+                          ? 'border-[var(--fd-accent-blue)] bg-[var(--fd-surface-3)]'
+                          : 'border-[var(--fd-hairline)] bg-[var(--fd-surface-2)]'
+                      } ${
+                        projectId !== 'unassigned' ? 'cursor-grab active:cursor-grabbing' : ''
                       }`}
                     >
-                      <AgentListItem
-                        agent={agent}
-                        selected={agent.id === selectedAgentId}
-                        onSelect={onSelectAgent}
-                        hideProject
-                        warningDismissed={dismissedWarnings.has(agent.id)}
-                        onDismissWarning={dismissWarning}
-                        onStart={onStartAgent}
-                        onStop={onStopAgent}
-                      />
-                    </div>
-                  )) : null}
-                </section>
-              );
-            })
-          ) : (
-            <div className="framer-card border border-dashed border-[var(--fd-hairline)] p-4 text-sm text-[#999]">
-              No connected or known agents reported by the daemon yet.
-            </div>
-          )}
-        </div>
-      </div>
+                      <div className="min-w-0 flex-1 flex items-center gap-2">
+                        <span className="truncate text-[10px] font-semibold uppercase tracking-[0.15em] text-[#bbb]">{projectGroupLabel(projectId, projectsById, groupAgents)}</span>
+                        <span className="text-[9px] font-medium text-[#777] shrink-0">({groupAgents.length}/{connectedCount})</span>
+                      </div>
+                      <span className="text-xs text-[#777] ml-2 shrink-0">{collapsed ? '▸' : '▾'}</span>
+                    </button>
+                    {!collapsed ? groupAgents.map((agent) => (
+                      <div
+                        key={agent.id}
+                        draggable
+                        onDragStart={(e) => handleDragStartAgent(e, agent.id, projectId)}
+                        onDragOver={(e) => handleDragOverAgent(e, agent.id)}
+                        onDragLeave={handleDragLeaveAgent}
+                        onDrop={(e) => handleDropAgent(e, agent.id, projectId, groupAgents)}
+                        className={`cursor-grab active:cursor-grabbing rounded-[var(--fd-radius-lg)] border transition-all duration-200 ${
+                          dragOverAgentId === agent.id
+                            ? 'border-[var(--fd-accent-blue)] bg-[var(--fd-accent-blue)]/5'
+                            : 'border-transparent'
+                        }`}
+                      >
+                        <AgentListItem
+                          agent={agent}
+                          selected={agent.id === selectedAgentId}
+                          onSelect={onSelectAgent}
+                          hideProject
+                          warningDismissed={dismissedWarnings.has(agent.id)}
+                          onDismissWarning={dismissWarning}
+                          onStart={onStartAgent}
+                          onStop={onStopAgent}
+                        />
+                      </div>
+                    )) : null}
+                  </section>
+                );
+              })
+            ) : (
+              <div className="framer-card border border-dashed border-[var(--fd-hairline)] p-4 text-sm text-[#999]">
+                No connected or known agents reported by the daemon yet.
+              </div>
+            )}
+          </div>
 
-      {/* Collapsed Agent List View */}
-      <div className={`transition-all duration-300 ease-in-out flex-1 flex flex-col min-h-0 ${!isExpanded ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden'}`}>
-        <div ref={collapsedScrollRef} className="mt-6 flex flex-1 flex-col items-center gap-4 overflow-y-auto">
-          {agents
-            .filter((agent) => agent.unreadCount > 0)
-            .map((agent) => {
-              const firstLetter = (agent.label || agent.id || 'A')[0].toUpperCase();
-              const isSelected = agent.id === selectedAgentId;
-              const statusColor = agentStatusColors[agent.status] || 'bg-gray-600';
-              return (
-                <button
-                  key={agent.id}
-                  type="button"
-                  data-debug-id={`collapsed-agent-btn-${agent.id}`}
-                  onClick={() => onSelectAgent(agent.id)}
-                  className={`relative flex h-12 w-12 items-center justify-center rounded-full transition-all border shrink-0 ${
-                    isSelected
-                      ? 'border-[var(--fd-accent-blue)] bg-[var(--fd-accent-blue)]/10'
-                      : 'border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] hover:border-white/20'
-                  }`}
-                  title={`${agent.label || agent.id} (${agent.unreadCount} unread)`}
-                >
-                  <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--fd-accent-blue)]/20 text-xs font-bold text-[var(--fd-accent-blue)]">
-                    {firstLetter}
-                  </div>
-                  <span className={`absolute bottom-0.5 right-0.5 h-3 w-3 rounded-full border-2 border-[var(--fd-surface-1)] ${statusColor}`} />
-                  {agent.unreadCount > 0 && (
-                    <span className="absolute -top-1 -right-1 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-[var(--fd-accent-blue)] px-1.5 text-[9px] font-bold text-black shadow-sm">
-                      {agent.unreadCount}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
         </div>
       </div>
       <div className={`mt-auto pt-3 border-t border-[var(--fd-hairline)] flex items-center ${isExpanded ? 'justify-start' : 'justify-center'}`}>
