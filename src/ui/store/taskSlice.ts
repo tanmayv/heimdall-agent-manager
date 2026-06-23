@@ -364,6 +364,12 @@ const taskSlice = createSlice({
       }
       state.chainTaskIds[chainId] = sortTaskIds(state.chainTaskIds[chainId], state.tasksById);
     },
+    updateChainStateDirectly(state: any, action) {
+      const chain = action.payload;
+      if (!chain) return;
+      const normalized = normalizeChain(chain);
+      state.chainsById[normalized.chainId] = normalized;
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -431,5 +437,5 @@ const taskSlice = createSlice({
   },
 });
 
-export const { selectChain, selectTask, toggleChainExpanded, taskEventReceived, updateTaskStateDirectly } = taskSlice.actions;
+export const { selectChain, selectTask, toggleChainExpanded, taskEventReceived, updateTaskStateDirectly, updateChainStateDirectly } = taskSlice.actions;
 export default taskSlice.reducer;

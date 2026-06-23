@@ -1,6 +1,9 @@
-import { useState, memo } from 'react';
-import { useDispatch } from 'react-redux';
+import { useState, memo, useEffect } from 'react';
+import { useDispatch, useSelector } from 'react-redux';
 import { sendMessageToSelectedAgent } from '../store/chatSlice';
+import { updateTaskStateDirectly, updateChainStateDirectly } from '../store/taskSlice';
+import { fetchMemoryDetail, refreshMemory } from '../store/memorySlice';
+import * as daemonApi from '../api/daemonApi';
 
 function isSafeUrl(url: string) {
   const trimmed = url.trim();
@@ -278,17 +281,192 @@ function parseReferences(text: string) {
 }
 
 function EntityCard({ id, type, session }: { id: string; type: 'task' | 'chain' | 'memory' | 'proposal'; session: any }) {
-  return (
-    <div className="w-full bg-[#141414]/90 border border-[#222] rounded-lg p-3 my-1.5 flex flex-col gap-1 text-xs select-text">
-      <div className="flex items-center justify-between">
-        <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
-          {type} card
-        </span>
-        <span className="font-mono text-[#777]">{id}</span>
+  const dispatch = useDispatch<any>();
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Retrieve selector based on type
+  const entity = useSelector((state: any) => {
+    if (type === 'task') {
+      return state.tasks.tasksById[id];
+    } else if (type === 'chain') {
+      return state.tasks.chainsById[id];
+    } else if (type === 'memory' || type === 'proposal') {
+      return Object.values(state.memory.recordsById).find(
+        (r: any) => r.proposalId === id || r.memoryId === id
+      );
+    }
+    return null;
+  });
+
+  useEffect(() => {
+    if (entity || loading || error) return;
+
+    async function loadEntity() {
+      setLoading(true);
+      setError(null);
+      try {
+        if (type === 'task') {
+          const res = await daemonApi.fetchTask({
+            daemonUrl: session.daemonUrl,
+            clientToken: session.clientToken,
+            taskId: id,
+          });
+          if (res?.task) {
+            dispatch(updateTaskStateDirectly(res.task));
+          } else {
+            throw new Error('Task details not found');
+          }
+        } else if (type === 'chain') {
+          const res = await daemonApi.fetchTaskChain({
+            daemonUrl: session.daemonUrl,
+            clientToken: session.clientToken,
+            chainId: id,
+          });
+          if (res?.chain) {
+            dispatch(updateChainStateDirectly(res.chain));
+          } else {
+            throw new Error('Chain details not found');
+          }
+        } else if (type === 'memory') {
+          await dispatch(fetchMemoryDetail(id)).unwrap();
+        } else if (type === 'proposal') {
+          // For proposal_ ID, refresh all memories to find it in records
+          await dispatch(refreshMemory()).unwrap();
+        }
+      } catch (e: any) {
+        console.error(`Failed to load ${type} reference ${id}:`, e);
+        setError(e?.message || `Failed to load ${type}`);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    loadEntity();
+  }, [id, type, entity, loading, error, session, dispatch]);
+
+  if (loading) {
+    return (
+      <div className="w-full bg-[#141414]/50 border border-[#222] rounded-lg p-3 my-1.5 flex flex-col gap-1 text-xs">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">
+            {type} reference
+          </span>
+          <span className="font-mono text-[#555]">{id}</span>
+        </div>
+        <p className="text-[#666] italic animate-pulse">Loading {type} details...</p>
       </div>
-      <p className="text-[#888] italic">Loading details for {id}...</p>
-    </div>
-  );
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="w-full bg-[#1a1212] border border-red-950/30 rounded-lg p-3 my-1.5 flex flex-col gap-1 text-xs text-red-200">
+        <div className="flex items-center justify-between border-b border-red-950/20 pb-1 mb-1">
+          <span className="text-[10px] font-bold text-red-400 uppercase tracking-wider">
+            {type} reference
+          </span>
+          <span className="font-mono text-red-400/60">{id}</span>
+        </div>
+        <p className="text-red-300/80">{error}</p>
+      </div>
+    );
+  }
+
+  if (!entity) return null;
+
+  if (type === 'task') {
+    const statusColors: Record<string, string> = {
+      planning: 'bg-zinc-800 border-zinc-700 text-zinc-300',
+      ready: 'bg-blue-950/20 border-blue-900/30 text-blue-300',
+      in_progress: 'bg-amber-950/20 border-amber-900/30 text-amber-300',
+      review_ready: 'bg-purple-950/20 border-purple-900/30 text-purple-300',
+      approved: 'bg-emerald-950/20 border-emerald-900/30 text-emerald-300',
+      blocked: 'bg-red-950/20 border-red-900/30 text-red-300',
+      cancelled: 'bg-zinc-900 border-zinc-800 text-zinc-500',
+    };
+    return (
+      <div className="w-full bg-[#1b1b1b]/80 border border-[#2c2c2c] rounded-lg p-3.5 my-1.5 flex flex-col gap-1 text-xs select-text text-white">
+        <div className="flex items-center justify-between border-b border-[#2c2c2c] pb-2 mb-2">
+          <span className="text-[10px] font-bold text-[#888] uppercase tracking-wider flex items-center gap-1.5">
+            📋 Task Card
+          </span>
+          <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase border ${statusColors[entity.status] || 'bg-zinc-800 border-zinc-700 text-zinc-300'}`}>
+            {entity.status}
+          </span>
+        </div>
+        <h4 className="font-semibold text-white truncate">{entity.title}</h4>
+        {entity.description && (
+          <p className="text-[#999] truncate mt-0.5">{entity.description}</p>
+        )}
+        {entity.assigneeAgentInstanceId && (
+          <p className="text-[10px] text-[#777] mt-1">
+            Assignee: <span className="text-[#aaa]">{entity.assigneeAgentInstanceId}</span>
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  if (type === 'chain') {
+    const statusColors: Record<string, string> = {
+      planning: 'bg-zinc-800 border-zinc-700 text-zinc-300',
+      in_progress: 'bg-blue-950/20 border-blue-900/30 text-blue-300',
+      reviewing: 'bg-amber-950/20 border-amber-900/30 text-amber-300',
+      completed: 'bg-emerald-950/20 border-emerald-900/30 text-emerald-300',
+    };
+    return (
+      <div className="w-full bg-[#1b1b1b]/80 border border-[#2c2c2c] rounded-lg p-3.5 my-1.5 flex flex-col gap-1 text-xs select-text text-white">
+        <div className="flex items-center justify-between border-b border-[#2c2c2c] pb-2 mb-2">
+          <span className="text-[10px] font-bold text-[#888] uppercase tracking-wider flex items-center gap-1.5">
+            🔗 Chain Card
+          </span>
+          <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase border ${statusColors[entity.status] || 'bg-zinc-800 border-zinc-700 text-zinc-300'}`}>
+            {entity.status}
+          </span>
+        </div>
+        <h4 className="font-semibold text-white truncate">{entity.title}</h4>
+        {entity.description && (
+          <p className="text-[#999] truncate mt-0.5">{entity.description}</p>
+        )}
+        {entity.evaluation && entity.evaluation !== 'unreviewed' && (
+          <p className="text-[10px] text-[#777] mt-1">
+            Evaluation: <span className={`font-semibold ${entity.evaluation === 'good' ? 'text-green-400' : 'text-red-400'}`}>{entity.evaluation}</span>
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  if (type === 'memory' || type === 'proposal') {
+    const statusColors: Record<string, string> = {
+      pending: 'bg-amber-950/20 border-amber-900/30 text-amber-300',
+      approved: 'bg-emerald-950/20 border-emerald-900/30 text-emerald-300',
+      rejected: 'bg-red-950/20 border-red-900/30 text-red-300',
+      active: 'bg-blue-950/20 border-blue-900/30 text-blue-300',
+      archived: 'bg-zinc-900 border-zinc-800 text-zinc-500',
+    };
+    return (
+      <div className="w-full bg-[#1b1b1b]/80 border border-[#2c2c2c] rounded-lg p-3.5 my-1.5 flex flex-col gap-1 text-xs select-text text-white">
+        <div className="flex items-center justify-between border-b border-[#2c2c2c] pb-2 mb-2">
+          <span className="text-[10px] font-bold text-[#888] uppercase tracking-wider flex items-center gap-1.5">
+            🧠 Memory Card
+          </span>
+          <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase border ${statusColors[entity.status] || 'bg-zinc-800 border-zinc-700 text-zinc-300'}`}>
+            {entity.status}
+          </span>
+        </div>
+        <h4 className="font-semibold text-white truncate">{entity.title}</h4>
+        <p className="text-[#999] truncate mt-0.5">{entity.body}</p>
+        <div className="flex items-center justify-between text-[10px] text-[#777] mt-2 border-t border-[#222] pt-2">
+          <span>Agent: <span className="text-[#aaa]">{entity.subjectAgent}</span></span>
+          <span className="uppercase tracking-wide">{entity.type} · {entity.scope}</span>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
 }
 
 function MessageBubble({ message, session }: { message: any; session: any }) {
