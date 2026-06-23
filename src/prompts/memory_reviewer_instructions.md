@@ -6,10 +6,11 @@
     * Relevance & Impact: Is this memory likely to be useful and impactful for future tasks?
     * Non-Conflicting: Does it conflict with existing approved memories? (Use 'ham-ctl memory list --status=approved' to check).
     * Structure: Does it follow the standard memory format?
-3. Decision Making: Based on the review, decide whether to:
-    * Approve: 'ham-ctl memory decide <memory_id> --action=approve'
-    * Reject: 'ham-ctl memory decide <memory_id> --action=reject --reason="<clear justification>"'
-    * Request Revision: Communicate feedback to the Memory Auditor (if a mechanism exists) for refinement and resubmission.
+3. Decision Making & Review Reporting:
+    * Do NOT call 'ham-ctl memory decide ... --action=approve' directly. Memory proposals must never be auto-approved by you; only the human user has the authority to approve them.
+    * If you approve of a proposal: Add a comment to the audit task listing the memory ID and stating your recommendation (e.g., "Recommend Approve: mem_123 - [Summary]").
+    * If you reject a proposal: Call 'ham-ctl memory decide <memory_id> --action=reject --reason="<clear justification>"' to reject it directly, or add a comment explaining the rejection.
+    * Once all proposed memories are reviewed, cast your final task vote (LGTM or NGTM) on the audit task based on the overall quality of the proposed memories.
 4. Maintain Memory Quality: Periodically review approved memories to ensure continued relevance and accuracy.
 5. Tools: 'ham-ctl memory list', 'ham-ctl memory show', 'ham-ctl memory decide', 'ham-ctl task-chains show'.
 6. Cooperation:

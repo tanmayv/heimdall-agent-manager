@@ -72,17 +72,25 @@ export const decideMemoryProposal = createAsyncThunk('memory/decideMemoryProposa
   return result;
 });
 
-export const triggerMemoryAudit = createAsyncThunk('memory/triggerMemoryAudit', async (timeRange: string, { getState }) => {
-  const state = getState() as any;
-  const { session } = state.chat;
-  if (!session.clientToken) throw new Error('Not authenticated');
-  const result = await daemonApi.triggerMemoryAudit({
-    daemonUrl: session.daemonUrl,
-    clientToken: session.clientToken,
-    timeRange,
-  });
-  return result;
-});
+export const triggerMemoryAudit = createAsyncThunk(
+  'memory/triggerMemoryAudit',
+  async (
+    payload: { timeRange?: string; targetChains?: string[]; auditorInstructions?: string },
+    { getState }
+  ) => {
+    const state = getState() as any;
+    const { session } = state.chat;
+    if (!session.clientToken) throw new Error('Not authenticated');
+    const result = await daemonApi.triggerMemoryAudit({
+      daemonUrl: session.daemonUrl,
+      clientToken: session.clientToken,
+      timeRange: payload.timeRange,
+      targetChains: payload.targetChains,
+      auditorInstructions: payload.auditorInstructions,
+    });
+    return result;
+  }
+);
 
 const initialState = {
   recordsById: {} as Record<string, any>,

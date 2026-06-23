@@ -492,12 +492,28 @@ export async function evaluateTaskChain({ daemonUrl, agentToken, clientInstanceI
   });
 }
 
-export async function triggerMemoryAudit({ daemonUrl, clientToken, timeRange }: { daemonUrl: string; clientToken: string; timeRange: string }) {
+export async function triggerMemoryAudit({
+  daemonUrl,
+  clientToken,
+  timeRange,
+  targetChains,
+  auditorInstructions,
+}: {
+  daemonUrl: string;
+  clientToken: string;
+  timeRange?: string;
+  targetChains?: string[];
+  auditorInstructions?: string;
+}) {
   const path = '/task-chains/audit';
   return requestJson(joinUrl(daemonUrl, path), {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${clientToken}` },
-    body: { time_range: timeRange }
+    body: {
+      time_range: timeRange,
+      target_chains: targetChains,
+      auditor_instructions: auditorInstructions,
+    }
   });
 }
 
@@ -506,5 +522,27 @@ export async function testAgentConnectivity({ daemonUrl, clientToken, providers 
     method: 'POST',
     headers: { 'Authorization': `Bearer ${clientToken || ''}` },
     body: providers ? { providers } : undefined
+  });
+}
+
+export async function fetchTaskChains({
+  daemonUrl,
+  clientToken,
+  status,
+  evaluation,
+  limit = 100,
+}: {
+  daemonUrl: string;
+  clientToken: string;
+  status?: string;
+  evaluation?: string;
+  limit?: number;
+}) {
+  let path = `/task-chains?limit=${limit}`;
+  if (status) path += `&status=${encodeURIComponent(status)}`;
+  if (evaluation) path += `&evaluation=${encodeURIComponent(evaluation)}`;
+  return requestJson(joinUrl(daemonUrl, path), {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${clientToken}` },
   });
 }

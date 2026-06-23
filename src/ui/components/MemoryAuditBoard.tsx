@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { triggerMemoryAudit, decideMemoryProposal, proposeMemoryChange, refreshMemory, clearActiveAudit } from '../store/memorySlice';
 import * as daemonApi from '../api/daemonApi';
+import { Trash2, Search, Sparkles, FolderOpen, Calendar, ShieldCheck } from 'lucide-react';
 
 const TIME_RANGES = [
   { value: '1h', label: 'Last 1 Hour' },
@@ -28,13 +29,40 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
   const [timeoutMin, setTimeoutMin] = useState('10');
   const [prefLoading, setPrefLoading] = useState(false);
 
+  // Mode and manual chains state
+  const [auditMode, setAuditMode] = useState<'timeframe' | 'manual'>('timeframe');
+  const [availableChains, setAvailableChains] = useState<any[]>([]);
+  const [selectedChains, setSelectedChains] = useState<any[]>([]);
+  const [auditorPrompt, setAuditorPrompt] = useState('');
+  const [chainsLoading, setChainsLoading] = useState(false);
+  const [chainSearch, setChainSearch] = useState('');
+
   // Refresh memories and fetch preferences on mount
   useEffect(() => {
     if (session.connected && session.clientToken) {
       dispatch(refreshMemory());
       fetchPrefs();
+      loadChains();
     }
   }, [dispatch, session.connected, session.clientToken]);
+
+  const loadChains = async () => {
+    setChainsLoading(true);
+    try {
+      const data = await daemonApi.fetchTaskChains({
+        daemonUrl: session.daemonUrl,
+        clientToken: session.clientToken,
+        limit: 150,
+      });
+      if (data?.chains) {
+        setAvailableChains(data.chains);
+      }
+    } catch (err) {
+      console.error('Failed to load task chains for memory audit manual list:', err);
+    } finally {
+      setChainsLoading(false);
+    }
+  };
 
   const fetchPrefs = async () => {
     setPrefLoading(true);
@@ -124,15 +152,29 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
   const auditorOptions = useMemo(() => Array.from(new Set([...knownAgentIds, auditorId])).filter(Boolean), [knownAgentIds, auditorId]);
   const reviewerOptions = useMemo(() => Array.from(new Set([...knownAgentIds, reviewerId])).filter(Boolean), [knownAgentIds, reviewerId]);
 
+  const filteredAvailable = useMemo(() => {
+    return availableChains.filter(
+      (c) =>
+        !selectedChains.some((sc) => sc.chain_id === c.chain_id) &&
+        (c.title?.toLowerCase().includes(chainSearch.toLowerCase()) ||
+          c.chain_id.toLowerCase().includes(chainSearch.toLowerCase()))
+    );
+  }, [availableChains, selectedChains, chainSearch]);
+
   const canTrigger = Boolean(session.clientToken) && 
                      session.connected && 
                      !auditLoading && 
                      (!activeAudit || activeAudit.status !== 'started') &&
-                     isConfigValid;
+                     isConfigValid &&
+                     (auditMode === 'timeframe' || selectedChains.length > 0);
 
   const handleTrigger = () => {
     if (!canTrigger) return;
-    dispatch(triggerMemoryAudit(timeRange));
+    dispatch(triggerMemoryAudit({
+      timeRange: auditMode === 'timeframe' ? timeRange : undefined,
+      targetChains: auditMode === 'manual' ? selectedChains.map((c) => c.chain_id) : undefined,
+      auditorInstructions: auditorPrompt.trim() || undefined,
+    }));
   };
 
   const handleDecide = async (proposalId: string, memoryId: string, decision: 'approve' | 'reject') => {
@@ -213,24 +255,150 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
             <div>
               <h3 className="text-sm font-bold text-white uppercase tracking-wider">Trigger Cognitive Audit</h3>
               <p className="text-[11px] text-[#666] mt-1 leading-relaxed">
-                Scan recently completed 'good' task chains and generate memory proposals using the system agents.
+                Scan task execution histories and generate memory proposals using the memory auditor agent.
               </p>
             </div>
-            
-            <div className="flex flex-col gap-2.5">
-              <label className="text-[10px] text-[#555] font-bold uppercase tracking-wider">Audit Timeframe</label>
-              <select
-                value={timeRange}
-                onChange={(e) => setTimeRange(e.target.value)}
-                className="framer-input px-3 py-2 text-sm w-full"
-                disabled={auditLoading}
+
+            {/* Mode Switcher Tabs */}
+            <div className="flex border-b border-[#222] p-0.5 bg-[#0a0a0a] rounded-lg">
+              <button
+                type="button"
+                onClick={() => setAuditMode('timeframe')}
+                className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-all ${
+                  auditMode === 'timeframe' ? 'bg-[#1a1a1a] text-white' : 'text-[#555] hover:text-[#aaa]'
+                }`}
               >
-                {TIME_RANGES.map((range) => (
-                  <option key={range.value} value={range.value}>
-                    {range.label}
-                  </option>
-                ))}
-              </select>
+                Timeframe
+              </button>
+              <button
+                type="button"
+                onClick={() => setAuditMode('manual')}
+                className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-all ${
+                  auditMode === 'manual' ? 'bg-[#1a1a1a] text-white' : 'text-[#555] hover:text-[#aaa]'
+                }`}
+              >
+                Manual Chains ({selectedChains.length})
+              </button>
+            </div>
+            
+            {auditMode === 'timeframe' ? (
+              <div className="flex flex-col gap-2.5">
+                <label className="text-[10px] text-[#555] font-bold uppercase tracking-wider">Audit Timeframe</label>
+                <select
+                  value={timeRange}
+                  onChange={(e) => setTimeRange(e.target.value)}
+                  className="framer-input px-3 py-2 text-sm w-full"
+                  disabled={auditLoading}
+                >
+                  {TIME_RANGES.map((range) => (
+                    <option key={range.value} value={range.value}>
+                      {range.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : (
+              <div className="flex flex-col gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[10px] text-[#555] font-bold uppercase tracking-wider">Search & Select Task Chains</label>
+                  <div className="relative">
+                    <Search className="absolute left-3 top-2.5 h-4 w-4 text-[#444]" />
+                    <input
+                      type="text"
+                      value={chainSearch}
+                      onChange={(e) => setChainSearch(e.target.value)}
+                      placeholder="Search chains by title or ID..."
+                      className="framer-input pl-9 pr-3 py-2 text-sm w-full font-sans"
+                      disabled={auditLoading || chainsLoading}
+                    />
+                  </div>
+                </div>
+
+                {/* Available Chains Dropdown/List */}
+                {filteredAvailable.length > 0 && (
+                  <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto border border-[#222] bg-[#070707] rounded-lg p-1.5">
+                    {filteredAvailable.slice(0, 10).map((chain) => (
+                      <button
+                        key={chain.chain_id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedChains([...selectedChains, chain]);
+                          setChainSearch('');
+                        }}
+                        className="flex flex-col items-start text-left w-full p-2 hover:bg-[#111] rounded-md transition-colors border border-transparent hover:border-[#222]"
+                      >
+                        <span className="text-xs text-white font-bold truncate w-full">{chain.title || 'Untitled Chain'}</span>
+                        <span className="text-[10px] text-[#555] font-mono mt-0.5 truncate w-full">
+                          {chain.chain_id} • Project: {chain.project_id || 'Global'}
+                        </span>
+                      </button>
+                    ))}
+                    {filteredAvailable.length > 10 && (
+                      <span className="text-[9px] text-[#444] text-center block py-1">
+                        + {filteredAvailable.length - 10} more results. Refine your search.
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {/* Selected Chains List */}
+                {selectedChains.length > 0 && (
+                  <div className="flex flex-col gap-2 mt-2">
+                    <label className="text-[10px] text-[#555] font-bold uppercase tracking-wider">Target Chains to Audit</label>
+                    <div className="flex flex-col gap-2 max-h-56 overflow-y-auto pr-1">
+                      {selectedChains.map((chain) => (
+                        <div
+                          key={chain.chain_id}
+                          className="flex items-center justify-between gap-3 p-2.5 bg-[#0e0e0e] border border-[#222] rounded-xl"
+                        >
+                          <div className="flex-1 min-w-0">
+                            <span className="text-xs text-white font-bold truncate block">{chain.title || 'Untitled Chain'}</span>
+                            {chain.final_summary && (
+                              <span className="text-[10px] text-[#777] block mt-0.5 line-clamp-1 italic">
+                                "{chain.final_summary}"
+                              </span>
+                            )}
+                            <div className="flex items-center gap-2 mt-1">
+                              <span className="text-[9px] text-[#555] font-mono truncate">{chain.chain_id}</span>
+                              <span className="text-[9px] text-[#555]">•</span>
+                              <span
+                                className={`text-[9px] font-bold uppercase px-1.5 py-0.2 rounded-md ${
+                                  chain.evaluation === 'good'
+                                    ? 'text-emerald-500 bg-emerald-500/10'
+                                    : chain.evaluation === 'bad'
+                                    ? 'text-red-500 bg-red-500/10'
+                                    : 'text-[#666] bg-[#222]'
+                                }`}
+                              >
+                                {chain.evaluation || 'none'}
+                              </span>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setSelectedChains(selectedChains.filter((c) => c.chain_id !== chain.chain_id))}
+                            className="text-[#666] hover:text-red-500 transition-colors p-1.5 hover:bg-red-500/5 rounded-lg"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Custom Guidelines Prompt */}
+            <div className="flex flex-col gap-1.5 mt-1">
+              <label className="text-[10px] text-[#555] font-bold uppercase tracking-wider">💡 Custom Auditor Prompt / Guidelines</label>
+              <textarea
+                value={auditorPrompt}
+                onChange={(e) => setAuditorPrompt(e.target.value)}
+                placeholder="e.g. Focus on checking Odin structure rules, compile-time #load directives, or ensuring error bounds checking..."
+                className="framer-input px-3 py-2 text-xs w-full min-h-[70px] resize-y font-sans leading-relaxed placeholder-[#444]"
+                disabled={auditLoading}
+              />
             </div>
 
             {/* Auditor Picker */}

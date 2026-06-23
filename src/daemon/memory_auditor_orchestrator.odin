@@ -35,9 +35,20 @@ handle_post_task_chain_audit :: proc(client: net.TCP_Socket, body: string, ctx: 
 		return
 	}
 
-	// 2. Parse time_range from body
-	time_range := extract_json_string(body, "time_range", "24h")
-	if time_range != "1h" && time_range != "24h" && time_range != "1d" && time_range != "7d" && time_range != "all" {
+	// 2. Parse request parameters
+	manual_chains := extract_json_string_array(body, "target_chains")
+	defer delete(manual_chains)
+
+	time_range := extract_json_string(body, "time_range", "")
+	auditor_instructions := extract_json_string(body, "auditor_instructions", "")
+	defer delete(auditor_instructions)
+
+	if len(manual_chains) == 0 && time_range == "" {
+		write_response(client, 400, "Bad Request", `{"ok":false,"message":"either 'target_chains' array or 'time_range' string must be provided"}`)
+		return
+	}
+
+	if time_range != "" && time_range != "1h" && time_range != "24h" && time_range != "1d" && time_range != "7d" && time_range != "all" {
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid time_range; expected 1h, 24h, 1d, 7d, or all"}`)
 		return
 	}
@@ -50,27 +61,38 @@ handle_post_task_chain_audit :: proc(client: net.TCP_Socket, body: string, ctx: 
 		return
 	}
 
-	// 4. Harvest completed, "good" evaluated task chains in the time range
-	since_ms := i64(0)
-	now := now_unix_ms()
-	if time_range != "all" {
-		since_ms = now - delta_unix_ms(time_range)
-	}
-
+	// 4. Determine target chains for the audit run
 	target_chains := make([dynamic]string, context.allocator)
 	defer delete(target_chains)
 
-	for i in 0..<task_chain_count {
-		chain := task_chains[i]
-		if chain.status != "completed" || chain.evaluation != "good" do continue
-		if time_range == "all" || chain.completed_at_unix_ms >= since_ms {
-			append(&target_chains, strings.clone(chain.chain_id))
+	now := now_unix_ms()
+
+	if len(manual_chains) > 0 {
+		for chain_id in manual_chains {
+			if idx := task_chain_index_of(chain_id); idx >= 0 {
+				append(&target_chains, strings.clone(chain_id))
+			} else {
+				write_response(client, 400, "Bad Request", fmt.tprintf("{{\"ok\":false,\"message\":\"specified task chain '%s' does not exist\"}}", chain_id))
+				return
+			}
+		}
+	} else {
+		since_ms := i64(0)
+		if time_range != "all" {
+			since_ms = now - delta_unix_ms(time_range)
+		}
+		for i in 0..<task_chain_count {
+			chain := task_chains[i]
+			if chain.status != "completed" || chain.evaluation != "good" do continue
+			if time_range == "all" || chain.completed_at_unix_ms >= since_ms {
+				append(&target_chains, strings.clone(chain.chain_id))
+			}
 		}
 	}
 
 	// 5. Handle empty targets
 	if len(target_chains) == 0 {
-		write_response(client, 200, "OK", `{"ok":true,"message":"No good task chains found in the selected time range.","target_chains_count":0}`)
+		write_response(client, 200, "OK", `{"ok":true,"message":"No task chains found for the selected audit target.","target_chains_count":0}`)
 		return
 	}
 
@@ -88,9 +110,11 @@ handle_post_task_chain_audit :: proc(client: net.TCP_Socket, body: string, ctx: 
 
 	// 7. Create Audit Run in database
 	audit_id := fmt.tprintf("audit_%d", now)
+	run_time_range := time_range
+	if run_time_range == "" do run_time_range = "manual"
 	run := Audit_Run{
 		audit_id           = strings.clone(audit_id),
-		time_range         = strings.clone(time_range),
+		time_range         = strings.clone(run_time_range),
 		status             = strings.clone("started"),
 		target_chains_json = target_chains_json,
 		started_at_unix_ms = now,
@@ -112,8 +136,8 @@ handle_post_task_chain_audit :: proc(client: net.TCP_Socket, body: string, ctx: 
 	// 9. Create Audit Task Chain in 'heimdall-system' project
 	system_project_id := "heimdall-system"
 	audit_chain_id := fmt.tprintf("chain-audit-%s", audit_id)
-	chain_title := fmt.tprintf("Memory Audit (%s) at %s", time_range, time.now())
-	chain_desc := fmt.tprintf("System-driven memory audit for task chains completed in the last %s.", time_range)
+	chain_title := fmt.tprintf("Memory Audit (%s) at %s", run_time_range, time.now())
+	chain_desc := fmt.tprintf("Cognitive memory audit for specified target task chains.")
 	
 	create_chain_res := task_service_create_chain(Task_Chain_Create_Command{
 		chain_id                      = strings.clone(audit_chain_id),
@@ -128,9 +152,18 @@ handle_post_task_chain_audit :: proc(client: net.TCP_Socket, body: string, ctx: 
 		return
 	}
 
-	// 10. Create Audit Task inside the chain
-	task_title := fmt.tprintf("Audit Task Chains: %s", time_range)
-	task_desc := fmt.tprintf("Please audit the following successful task chains: %s. Analyze their final summaries, tasks, and commits. Extract core guidelines, lessons learned, and expertise, and propose memories for the respective agents.", target_chains_json)
+	// 10. Build Audit Task description with user instructions
+	task_title := fmt.tprintf("Audit Task Chains: %s", run_time_range)
+	
+	task_desc_b := strings.builder_make()
+	strings.write_string(&task_desc_b, "Please audit the following task chains: ")
+	strings.write_string(&task_desc_b, target_chains_json)
+	strings.write_string(&task_desc_b, ". Analyze their final summaries, tasks, and commits. Extract core guidelines, lessons learned, and expertise, and propose memories for the respective agents.")
+	if len(auditor_instructions) > 0 {
+		strings.write_string(&task_desc_b, "\n\nUser Audit Guidelines / Focus Areas:\n")
+		strings.write_string(&task_desc_b, auditor_instructions)
+	}
+	task_desc := strings.to_string(task_desc_b)
 
 	create_task_res := task_service_create_task(Task_Create_Command{
 		chain_id                      = strings.clone(audit_chain_id),
