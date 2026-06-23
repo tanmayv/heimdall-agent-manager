@@ -1,5 +1,6 @@
 import { useMemo, useState, memo, useCallback } from 'react';
 import AgentListItem from './AgentListItem';
+import { MessageSquare, ClipboardList, Brain, History, Folder, Bot, Settings, Activity } from 'lucide-react';
 
 function projectGroupKey(agent) {
   return agent.projectId || 'unassigned';
@@ -219,24 +220,30 @@ const AgentSidebar = memo(function AgentSidebar({
         </div>
       </div>
 
-      <nav className="mt-4 grid grid-cols-2 gap-2">
+      <nav className="mt-4 flex flex-col gap-1.5">
         <button
           type="button"
           data-debug-id="nav-chat"
           onClick={onOpenChat}
-          className={`${activeView === 'chat' ? 'framer-pill bg-white' : 'framer-pill-secondary'} px-3 py-2 text-xs`}
+          className={`${activeView === 'chat' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center justify-between px-4 py-2.5 text-xs text-left`}
         >
-          Chat
+          <div className="flex items-center gap-3">
+            <MessageSquare className="h-4 w-4 shrink-0" />
+            <span>Chat</span>
+          </div>
         </button>
         <button
           type="button"
           data-debug-id="nav-tasks"
           onClick={onOpenTasks}
-          className={`${activeView === 'tasks' ? 'framer-pill bg-white' : 'framer-pill-secondary'} px-3 py-2 text-xs flex items-center justify-center gap-1.5`}
+          className={`${activeView === 'tasks' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center justify-between px-4 py-2.5 text-xs text-left`}
         >
-          <span>Tasks</span>
+          <div className="flex items-center gap-3">
+            <ClipboardList className="h-4 w-4 shrink-0" />
+            <span>Tasks</span>
+          </div>
           {Boolean(tasksBadgeCount) && tasksBadgeCount > 0 && (
-            <span className="bg-red-600 text-white rounded-full px-1.5 py-0.2 text-[10px] font-bold">
+            <span className="bg-red-600 text-white rounded-full px-1.5 py-0.5 text-[9px] font-extrabold shadow-sm">
               {tasksBadgeCount}
             </span>
           )}
@@ -245,51 +252,69 @@ const AgentSidebar = memo(function AgentSidebar({
           type="button"
           data-debug-id="nav-memory"
           onClick={onOpenMemory}
-          className={`${activeView === 'memory' ? 'framer-pill bg-white' : 'framer-pill-secondary'} px-3 py-2 text-xs`}
+          className={`${activeView === 'memory' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center justify-between px-4 py-2.5 text-xs text-left`}
         >
-          Memory
+          <div className="flex items-center gap-3">
+            <Brain className="h-4 w-4 shrink-0" />
+            <span>Memory</span>
+          </div>
         </button>
         <button
           type="button"
           data-debug-id="nav-memory-audit"
           onClick={onOpenMemoryAudit}
-          className={`${activeView === 'memoryAudit' ? 'framer-pill bg-white' : 'framer-pill-secondary'} px-3 py-2 text-xs`}
+          className={`${activeView === 'memoryAudit' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center justify-between px-4 py-2.5 text-xs text-left`}
         >
-          Memory Audit
+          <div className="flex items-center gap-3">
+            <History className="h-4 w-4 shrink-0" />
+            <span>Memory Audit</span>
+          </div>
         </button>
         <button
           type="button"
           data-debug-id="nav-projects"
           onClick={onOpenProjects}
-          className={`${activeView === 'projects' ? 'framer-pill bg-white' : 'framer-pill-secondary'} px-3 py-2 text-xs`}
+          className={`${activeView === 'projects' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center justify-between px-4 py-2.5 text-xs text-left`}
         >
-          Projects
+          <div className="flex items-center gap-3">
+            <Folder className="h-4 w-4 shrink-0" />
+            <span>Projects</span>
+          </div>
         </button>
         <button
           type="button"
           data-debug-id="nav-agents"
           onClick={onOpenAgents}
-          className={`${activeView === 'agents' ? 'framer-pill bg-white' : 'framer-pill-secondary'} px-3 py-2 text-xs`}
+          className={`${activeView === 'agents' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center justify-between px-4 py-2.5 text-xs text-left`}
         >
-          Agents
+          <div className="flex items-center gap-3">
+            <Bot className="h-4 w-4 shrink-0" />
+            <span>Agents</span>
+          </div>
         </button>
         <button
           type="button"
           data-debug-id="nav-settings"
           onClick={onOpenSettings}
-          className={`${activeView === 'settings' ? 'framer-pill bg-white' : 'framer-pill-secondary'} px-3 py-2 text-xs col-span-2`}
+          className={`${activeView === 'settings' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center justify-between px-4 py-2.5 text-xs text-left`}
         >
-          Settings
+          <div className="flex items-center gap-3">
+            <Settings className="h-4 w-4 shrink-0" />
+            <span>Settings</span>
+          </div>
         </button>
         <button
           type="button"
           data-debug-id="nav-audit"
           onClick={onToggleAudit}
-          className="framer-pill-secondary px-3 py-2 text-xs relative flex items-center justify-center gap-1.5 border border-[#333] hover:border-[#555] col-span-2 mt-1"
+          className="framer-pill-secondary w-full flex items-center justify-between px-4 py-2.5 text-xs text-left mt-1"
         >
-          <span>Task Chain Audit</span>
+          <div className="flex items-center gap-3">
+            <Activity className="h-4 w-4 shrink-0" />
+            <span>Task Chain Audit</span>
+          </div>
           {auditBadgeCount > 0 && (
-            <span className="bg-red-500 text-white text-[9px] font-extrabold px-1.5 py-0.5 rounded-full animate-pulse shadow-sm">
+            <span className="bg-red-500 text-white text-[9px] font-extrabold px-1.5 py-0.5 rounded-full animate-pulse shadow-sm animate-pulse">
               {auditBadgeCount}
             </span>
           )}
