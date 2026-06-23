@@ -15,6 +15,7 @@ import {
   updateSelectedChainStatus,
   updateSelectedTaskStatus,
   fetchTasksForChain,
+  resolveCommentOnSelectedTask,
 } from '../store/taskSlice';
 
 const STATUS_COLUMNS = [
@@ -134,6 +135,11 @@ const TaskCard = memo(function TaskCard({ task, taskId, bucket, handleDragStart,
         <StatusPill status={task?.status} />
       </div>
       <p className="framer-subtext mt-2 break-all text-xs">{taskId}</p>
+      {task?.unresolved_comment_count > 0 && (
+        <p className="mt-2 text-[11px] font-semibold text-red-400 flex items-center gap-1">
+          <span>⚠️ {task.unresolved_comment_count} unresolved comment{task.unresolved_comment_count > 1 ? 's' : ''}</span>
+        </p>
+      )}
     </button>
   );
 });
@@ -201,6 +207,7 @@ export default function TaskBoard({ session }) {
   const [createForm, setCreateForm] = useState(blankCreateForm);
   const [createChainForm, setCreateChainForm] = useState({ chainId: '', title: '', description: '', coordinatorAgentInstanceId: '', defaultReviewerAgentInstanceId: '' });
   const [commentBody, setCommentBody] = useState('');
+  const [commentAsUnresolved, setCommentAsUnresolved] = useState(true);
   const [statusForm, setStatusForm] = useState({ status: 'working', body: '' });
   const [assignmentAgent, setAssignmentAgent] = useState('');
   const [participantForm, setParticipantForm] = useState({ agentInstanceId: '', role: 'lgtm_required' });
@@ -360,7 +367,11 @@ export default function TaskBoard({ session }) {
     event.preventDefault();
     if (!canMutate || !selectedTask || !commentBody.trim()) return;
     runMutation(async () => {
-      await dispatch(addCommentToSelectedTask({ agentToken: agentToken.trim(), body: commentBody.trim() })).unwrap();
+      await dispatch(addCommentToSelectedTask({
+        agentToken: agentToken.trim(),
+        body: commentBody.trim(),
+        resolveImmediately: !commentAsUnresolved,
+      })).unwrap();
       setCommentBody('');
     });
   }
@@ -688,10 +699,114 @@ export default function TaskBoard({ session }) {
         <section className="min-h-0 flex-1 overflow-y-auto p-6">
           <div className="mx-auto max-w-4xl space-y-4">
             <div className="framer-card-xl p-5"><div className="flex items-start justify-between gap-4"><div><p className="framer-topline">Task detail</p><h3 className="mt-1 text-3xl font-bold text-white">{selectedTask.title}</h3><p className="framer-subtext mt-2 break-all text-xs">{selectedTask.taskId}</p></div><div className="flex flex-col items-end gap-2"><StatusPill status={selectedTask.status} />{!selectedTaskTerminal && <button type="button" data-debug-id="task-nudge-btn" onClick={handleNudgeTask} disabled={!canMutate || nudgeInFlight} className="framer-pill bg-white px-4 py-2 text-xs disabled:opacity-40">{nudgeInFlight ? 'Nudging…' : nudgeState.taskId === selectedTask.taskId && nudgeState.status === 'sent' ? 'Sent' : 'Nudge'}</button>}{nudgeState.taskId === selectedTask.taskId && nudgeState.message && <p className={`text-right text-xs ${nudgeState.status === 'error' ? 'text-red-200' : 'text-[#999]'}`}>{nudgeState.message}</p>}</div></div>{selectedTask.description && <p className="mt-4 whitespace-pre-wrap text-sm leading-6 text-[#d6d6d6]">{selectedTask.description}</p>}</div>
-            <div className="grid grid-cols-2 gap-3"><Field label="Assignee" value={selectedTask.assigneeAgentInstanceId} /><Field label="Reviewer" value={selectedTask.reviewerAgentInstanceId} /><Field label="Coordinator" value={selectedTask.coordinatorAgentInstanceId} /><Field label="Priority" value={selectedTask.priority} /><Field label="Created by" value={selectedTask.createdBy} /><Field label="Updated" value={formatTime(selectedTask.updatedAtUnixMs)} /></div>
-            <div className="framer-card p-4"><p className="framer-topline">Mutations</p><form onSubmit={handleComment} className="mt-3 flex gap-2"><input data-debug-id="task-comment-input" value={commentBody} onChange={(event) => setCommentBody(event.target.value)} placeholder="Add comment" className="framer-input min-w-0 flex-1 px-3 py-2 text-sm" /><button data-debug-id="task-comment-submit-btn" disabled={!canMutate || !commentBody.trim()} className="framer-pill bg-white disabled:opacity-40">Comment</button></form><form onSubmit={handleStatus} className="mt-2 grid grid-cols-[0.55fr_1fr_auto] gap-2"><input data-debug-id="task-status-input" value={statusForm.status} onChange={(event) => setStatusForm({ ...statusForm, status: event.target.value })} placeholder="status" className="framer-input px-3 py-2 text-sm" /><input data-debug-id="task-status-note-input" value={statusForm.body} onChange={(event) => setStatusForm({ ...statusForm, body: event.target.value })} placeholder="status note" className="framer-input px-3 py-2 text-sm" /><button data-debug-id="task-status-update-btn" disabled={!canMutate || !statusForm.status.trim() || !statusForm.body.trim()} className="framer-pill bg-white disabled:opacity-40">Update</button></form><form onSubmit={handleAssign} className="mt-2 grid grid-cols-[1fr_auto] gap-2"><AgentSelect debugId="task-assign-agent-select" value={assignmentAgent} onChange={setAssignmentAgent} agents={agentOptions} placeholder="New assignee" /><button data-debug-id="task-assign-submit-btn" disabled={!canMutate || !assignmentAgent.trim()} className="framer-pill bg-white disabled:opacity-40">Assign</button></form><form onSubmit={handleParticipant} className="mt-2 grid grid-cols-[1fr_0.55fr_auto] gap-2"><AgentSelect debugId="task-participant-agent-select" value={participantForm.agentInstanceId} onChange={(value) => setParticipantForm({ ...participantForm, agentInstanceId: value })} agents={agentOptions} placeholder="Participant" /><select data-debug-id="task-participant-role-select" value={participantForm.role} onChange={(event) => setParticipantForm({ ...participantForm, role: event.target.value })} className="framer-input px-3 py-2 text-sm"><option value="assignee">assignee</option><option value="lgtm_required">lgtm_required</option><option value="lgtm_optional">lgtm_optional</option><option value="coordinator">coordinator</option><option value="subscriber">subscriber</option></select><button data-debug-id="task-participant-submit-btn" disabled={!canMutate || !participantForm.agentInstanceId.trim()} className="framer-pill bg-white disabled:opacity-40">Add</button></form></div>
-            <div className="framer-card p-4"><p className="framer-topline">Participants</p><div className="mt-3 flex flex-wrap gap-2">{participants.length ? participants.map((participant, index) => <span key={`${participant.agentInstanceId}-${participant.role}-${index}`} className="framer-chip">{participant.role}: <span className="text-white">{participant.agentInstanceId}</span></span>) : <p className="framer-subtext text-sm">No participants recorded.</p>}</div></div>
-            <div className="framer-card p-4"><p className="framer-topline">Comments & status notes</p><div className="mt-3 space-y-3">{comments.length ? comments.map((event) => <div key={event.eventId || `${event.kind}-${event.createdUnixMs}`} className="rounded-[var(--fd-radius-lg)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] p-3"><div className="flex items-center justify-between gap-3"><p className="text-xs font-semibold text-white">{event.kind || 'Event'}</p><p className="framer-subtext text-xs">{formatTime(event.createdUnixMs)}</p></div><p className="framer-subtext mt-1 text-xs">{event.authorAgentInstanceId || 'unknown author'}</p>{event.body && <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[#d6d6d6]">{event.body}</p>}</div>) : <p className="framer-subtext text-sm">No comments or status notes for this task.</p>}</div></div>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Assignee" value={selectedTask.assigneeAgentInstanceId} />
+              <Field label="Reviewer" value={selectedTask.reviewerAgentInstanceId} />
+              <Field label="Coordinator" value={selectedTask.coordinatorAgentInstanceId} />
+              <Field label="Priority" value={selectedTask.priority} />
+              <Field label="Created by" value={selectedTask.createdBy} />
+              <Field label="Updated" value={formatTime(selectedTask.updatedAtUnixMs)} />
+            </div>
+            <div className="framer-card p-4">
+              <p className="framer-topline">Mutations</p>
+              <form onSubmit={handleComment} className="mt-3 flex gap-2">
+                <input data-debug-id="task-comment-input" value={commentBody} onChange={(event) => setCommentBody(event.target.value)} placeholder="Add comment" className="framer-input min-w-0 flex-1 px-3 py-2 text-sm" />
+                <button data-debug-id="task-comment-submit-btn" disabled={!canMutate || !commentBody.trim()} className="framer-pill bg-white disabled:opacity-40">Comment</button>
+              </form>
+              <div className="mt-1 flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  id="comment-unresolved-chk"
+                  checked={commentAsUnresolved}
+                  onChange={(e) => setCommentAsUnresolved(e.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                />
+                <label htmlFor="comment-unresolved-chk" className="text-xs text-[#999] select-none cursor-pointer">
+                  Add as unresolved comment (requires manual resolution to approve task)
+                </label>
+              </div>
+              <form onSubmit={handleStatus} className="mt-4 grid grid-cols-[0.55fr_1fr_auto] gap-2">
+                <select
+                  data-debug-id="task-status-select"
+                  value={statusForm.status}
+                  onChange={(event) => setStatusForm({ ...statusForm, status: event.target.value })}
+                  className="framer-input px-3 py-2 text-sm cursor-pointer"
+                >
+                  <option value="planning">planning</option>
+                  <option value="ready">ready</option>
+                  <option value="in_progress">in_progress</option>
+                  <option value="review_ready">review_ready</option>
+                  <option value="approved">approved</option>
+                  <option value="blocked">blocked</option>
+                  <option value="cancelled">cancelled</option>
+                </select>
+                <input data-debug-id="task-status-note-input" value={statusForm.body} onChange={(event) => setStatusForm({ ...statusForm, body: event.target.value })} placeholder="status note" className="framer-input px-3 py-2 text-sm" />
+                <button data-debug-id="task-status-update-btn" disabled={!canMutate || !statusForm.status.trim() || !statusForm.body.trim()} className="framer-pill bg-white disabled:opacity-40">Update</button>
+              </form>
+              <form onSubmit={handleAssign} className="mt-2 grid grid-cols-[1fr_auto] gap-2">
+                <AgentSelect debugId="task-assign-agent-select" value={assignmentAgent} onChange={setAssignmentAgent} agents={agentOptions} placeholder="New assignee" />
+                <button data-debug-id="task-assign-submit-btn" disabled={!canMutate || !assignmentAgent.trim()} className="framer-pill bg-white disabled:opacity-40">Assign</button>
+              </form>
+              <form onSubmit={handleParticipant} className="mt-2 grid grid-cols-[1fr_0.55fr_auto] gap-2">
+                <AgentSelect debugId="task-participant-agent-select" value={participantForm.agentInstanceId} onChange={(value) => setParticipantForm({ ...participantForm, agentInstanceId: value })} agents={agentOptions} placeholder="Participant" />
+                <select data-debug-id="task-participant-role-select" value={participantForm.role} onChange={(event) => setParticipantForm({ ...participantForm, role: event.target.value })} className="framer-input px-3 py-2 text-sm">
+                  <option value="assignee">assignee</option>
+                  <option value="lgtm_required">lgtm_required</option>
+                  <option value="lgtm_optional">lgtm_optional</option>
+                  <option value="coordinator">coordinator</option>
+                  <option value="subscriber">subscriber</option>
+                </select>
+                <button data-debug-id="task-participant-submit-btn" disabled={!canMutate || !participantForm.agentInstanceId.trim()} className="framer-pill bg-white disabled:opacity-40">Add</button>
+              </form>
+            </div>
+            <div className="framer-card p-4">
+              <p className="framer-topline">Participants</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {participants.length ? participants.map((participant, index) => <span key={`${participant.agentInstanceId}-${participant.role}-${index}`} className="framer-chip">{participant.role}: <span className="text-white">{participant.agentInstanceId}</span></span>) : <p className="framer-subtext text-sm">No participants recorded.</p>}
+              </div>
+            </div>
+            <div className="framer-card p-4">
+              <p className="framer-topline">Comments & status notes</p>
+              <div className="mt-3 space-y-3">
+                {comments.length ? comments.map((event) => {
+                  const isComment = event.kind === 'Task_Comment';
+                  const isUnresolved = isComment && (selectedTask?.unresolved_comments || []).some((uc: any) => uc.comment_id === event.commentId || uc.comment_id === event.eventId);
+                  return (
+                    <div key={event.eventId || `${event.kind}-${event.createdUnixMs}`} className="rounded-[var(--fd-radius-lg)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2">
+                          <p className="text-xs font-semibold text-white">{event.kind || 'Event'}</p>
+                          {isComment && (
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${isUnresolved ? 'bg-red-500/20 text-red-300' : 'bg-emerald-500/20 text-emerald-300'}`}>
+                              {isUnresolved ? 'Unresolved' : 'Resolved'}
+                            </span>
+                          )}
+                        </div>
+                        <p className="framer-subtext text-xs">{formatTime(event.createdUnixMs)}</p>
+                      </div>
+                      <p className="framer-subtext mt-1 text-xs">{event.authorAgentInstanceId || 'unknown author'}</p>
+                      {event.body && <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[#d6d6d6]">{event.body}</p>}
+                      {isComment && isUnresolved && canMutate && (
+                        <div className="mt-2.5 flex justify-end">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              runMutation(async () => {
+                                await dispatch(resolveCommentOnSelectedTask({ agentToken: agentToken.trim(), commentId: event.commentId || event.eventId })).unwrap();
+                              });
+                            }}
+                            disabled={mutating}
+                            className="text-xs text-[var(--fd-accent-blue)] font-medium hover:underline disabled:opacity-40"
+                          >
+                            Resolve Comment
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                }) : <p className="framer-subtext text-sm">No comments or status notes for this task.</p>}
+            </div>
+          </div>
           </div>
         </section>
       </>

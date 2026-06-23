@@ -23,6 +23,7 @@ handle_user_rpc :: proc(client: net.TCP_Socket, body: string) {
 	case "task_create": handle_user_rpc_task_create(client, body, user_id)
 	case "task_chain_create": handle_user_rpc_task_chain_create(client, body, user_id)
 	case "task_comment": handle_user_rpc_task_comment(client, body, user_id)
+	case "task_comment_resolve": handle_user_rpc_task_comment_resolve(client, body, user_id)
 	case "task_status": handle_user_rpc_task_status(client, body, user_id)
 	case "task_assign": handle_user_rpc_task_assign(client, body, user_id)
 	case "task_participant": handle_user_rpc_task_participant(client, body, user_id)
@@ -123,6 +124,16 @@ handle_user_rpc_task_chain_create :: proc(client: net.TCP_Socket, body, user_id:
 
 handle_user_rpc_task_comment :: proc(client: net.TCP_Socket, body, user_id: string) {
 	result := task_service_comment(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "body", ""), user_id)
+	write_task_service_response(client, result)
+}
+
+handle_user_rpc_task_comment_resolve :: proc(client: net.TCP_Socket, body, user_id: string) {
+	result := task_service_comment_resolve(Task_Comment_Resolve_Command{
+		task_id                  = extract_json_string(body, "task_id", ""),
+		chain_id                 = extract_json_string(body, "chain_id", ""),
+		comment_id               = extract_json_string(body, "comment_id", ""),
+		author_agent_instance_id = user_id,
+	})
 	write_task_service_response(client, result)
 }
 

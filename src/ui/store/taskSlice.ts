@@ -58,6 +58,7 @@ function normalizeEvent(event: any) {
     body: event.body || '',
     authorAgentInstanceId: event.author_agent_instance_id || '',
     createdUnixMs: Number(event.created_unix_ms || 0),
+    commentId: event.comment_id || '',
   };
 }
 
@@ -165,7 +166,30 @@ export const addCommentToSelectedTask = createAsyncThunk('tasks/addCommentToSele
   const state = getState() as any;
   const { session } = state.chat;
   const task = state.tasks.tasksById[payload.taskId || state.tasks.selectedTaskId];
-  await daemonApi.addTaskComment({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), taskId: task.taskId, chainId: task.chainId, body: payload.body });
+  const response = await daemonApi.addTaskComment({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), taskId: task.taskId, chainId: task.chainId, body: payload.body });
+  if (payload.resolveImmediately && response?.comment_id) {
+    await daemonApi.resolveTaskComment({
+      daemonUrl: session.daemonUrl,
+      ...taskMutationAuth(session, payload.agentToken),
+      taskId: task.taskId,
+      chainId: task.chainId,
+      commentId: response.comment_id,
+    });
+  }
+  await (dispatch as any)(fetchSelectedTaskLog(task.taskId));
+});
+
+export const resolveCommentOnSelectedTask = createAsyncThunk('tasks/resolveCommentOnSelectedTask', async (payload: any, { dispatch, getState }) => {
+  const state = getState() as any;
+  const { session } = state.chat;
+  const task = state.tasks.tasksById[payload.taskId || state.tasks.selectedTaskId];
+  await daemonApi.resolveTaskComment({
+    daemonUrl: session.daemonUrl,
+    ...taskMutationAuth(session, payload.agentToken),
+    taskId: task.taskId,
+    chainId: task.chainId,
+    commentId: payload.commentId,
+  });
   await (dispatch as any)(fetchSelectedTaskLog(task.taskId));
 });
 
