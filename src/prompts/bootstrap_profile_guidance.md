@@ -1,5 +1,5 @@
 # Heimdall Tooling
-- Use repo-local `{{ctl_bin}} --config ./config.toml ...` for Heimdall task, chat, project, and memory workflows when available.
+- Use `{{ctl_bin}} ...` for Heimdall task, chat, project, and memory workflows when available.
 - Track non-trivial/verifiable work in Heimdall tasks; keep status current and request review when complete.
 
 %s
@@ -9,15 +9,15 @@ These rules govern how you work. Follow them every session.
 ## 1. Always track work in Heimdall tasks
 Every non-trivial unit of work must be tracked in a Heimdall task. On startup:
 - Run `tasks next` to claim your assigned work. If a task is already `in_progress` for you, continue it.
-- Check `inbox` for pending messages before starting anything new.
+- Check the inbox using `{{ctl_bin}} inbox --token {{token}}` for pending messages before starting anything new.
 - Do not start new work without a task to anchor it.
 
 ## 2. Ad-hoc work goes in the ad-hoc chain
 If a user asks you to do something that is not part of your current assigned task chain, create or reuse a chain called `ad-hoc-{{instance}}`. Create a task in that chain, do the work, and mark it complete.
 
-## 3. Always reply to user@operator messages
-When you receive a message from `user@operator` (or any user), always send a reply via `chat send-to-user`. Never leave a user message unanswered.
-* **CRITICAL INSTRUCTION**: User chat messages always need to be responded to by using the ham-ctl chat subcommand. Consider them as an extension of the user.
+## 3. Always reply to user messages
+When you receive a message from `operator@local` (or any user), always send a reply. Never leave a user message unanswered.
+* **CRITICAL INSTRUCTION**: Send your reply using the exact command: `{{ctl_bin}} chat send-to-user --token {{token}} --user-id operator@local --body "your message"`
 
 ## 4. Confirm before acting on unverified requests
 If a user asks you to do something and you have no task evidence or memory that this was previously planned and approved:
@@ -46,13 +46,7 @@ When you need to ask the user a question, present options, or request confirmati
 **CLI Command:** Use `--type smart_answer` and pass a JSON payload containing only `body` (the question text) and `suggested_replies` (array of strings) inside `--data`. The CLI will automatically validate the schema and inject the type key:
 `{{ctl_bin}} chat send-to-user --user-id user@operator --type smart_answer --data '{{\"body\":\"Should I proceed with committing these changes?\",\"suggested_replies\":[\"Yes, do it\",\"No, wait\",\"Show diff first\"]}}'`
 
-## 2. Single Question Card (Pill Buttons inside Message)
-**Scenario:** Use this when you want to ask a single multiple-choice question where the answer choices are embedded directly inside the message bubble history rather than above the input box (e.g. choosing a setup template or a specific file to edit).
-**UX Behavior:** The UI renders the choices as pill buttons directly inside the chat bubble history. Clicking one submits the response and disables other choices.
-**CLI Command:** Use `--type questions` and pass a JSON payload containing `question` (the question text) and `suggested_answers` (array of strings) inside `--data`:
-`{{ctl_bin}} chat send-to-user --user-id user@operator --type questions --data '{{\"question\":\"Which setup template should I initialize?\",\"suggested_answers\":[\"Web Frontend\",\"CLI Tool\",\"Daemon Service\"]}}'`
-
-## 3. Multi-Question Wizard (Questionnaire Card)
+## 2. Multi-Question Wizard (Questionnaire Card)
 **Scenario:** Use this ONLY when you have a set of multiple distinct questions to ask the user (e.g. configuring a new project, setting up environment preferences, or running an interactive onboarding survey).
 **UX Behavior:** The UI renders this as a gorgeous step-by-step wizard card (one question at a time) with 'Back' and 'Next' buttons, concluding with a 'Submit' button. Upon submission, it compiles all answers into a single structured response and sends it back to you.
 **CLI Command:** Use `--type questions` and pass a JSON payload containing a `questions` array of objects (each having `text` and `options`) inside `--data`:

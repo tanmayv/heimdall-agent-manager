@@ -59,7 +59,7 @@ def main():
         print("[-] Missing bootstrap_profile_guidance key in preferences list.")
         sys.exit(1)
         
-    expected_substr = "* **CRITICAL INSTRUCTION**: User chat messages always need to be responded to by using the ham-ctl chat subcommand. Consider them as an extension of the user."
+    expected_substr = "* **CRITICAL INSTRUCTION**: Send your reply using the exact command: `{ctl_bin} chat send-to-user --token {token} --user-id operator@local --body \"your message\"`"
     if expected_substr not in guidance:
         print("[-] Critical instruction NOT found in bootstrap_profile_guidance template!")
         print("    Guidance content was:")
