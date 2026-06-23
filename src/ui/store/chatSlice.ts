@@ -117,6 +117,16 @@ function metadataOnlyAgent(agent: any) {
   };
 }
 
+function getStatusPriority(status: string): number {
+  switch (status) {
+    case 'connected': return 5;
+    case 'idle': return 4;
+    case 'startup_blocked': return 3;
+    case 'starting': return 2;
+    default: return 1;
+  }
+}
+
 // Merge persisted-and-live agent records from /agents with the UI's localStorage
 // cache (so the sidebar isn't blank during a daemon round-trip). /agents already
 // embeds live registry fields (connected, tmux_pane, startup_status, etc.) when
@@ -145,8 +155,12 @@ function mergeKnownAndLiveAgents(localKnownAgents: any[], daemonAgents: any[], d
   return Object.values(byId).sort((left: any, right: any) => {
     const diff = (left.order ?? 0) - (right.order ?? 0);
     if (diff !== 0) return diff;
-    if (left.status !== right.status) return left.status === 'connected' ? -1 : right.status === 'connected' ? 1 : left.status.localeCompare(right.status);
-    return (right.lastSeenUnixMs || 0) - (left.lastSeenUnixMs || 0);
+    const leftPriority = getStatusPriority(left.status);
+    const rightPriority = getStatusPriority(right.status);
+    if (leftPriority !== rightPriority) {
+      return rightPriority - leftPriority;
+    }
+    return (left.label || '').localeCompare(right.label || '');
   });
 }
 
@@ -396,8 +410,12 @@ const chatSlice = createSlice({
       state.agents.sort((left: any, right: any) => {
         const diff = (left.order ?? 0) - (right.order ?? 0);
         if (diff !== 0) return diff;
-        if (left.status !== right.status) return left.status === 'connected' ? -1 : right.status === 'connected' ? 1 : left.status.localeCompare(right.status);
-        return (right.lastSeenUnixMs || 0) - (left.lastSeenUnixMs || 0);
+        const leftPriority = getStatusPriority(left.status);
+        const rightPriority = getStatusPriority(right.status);
+        if (leftPriority !== rightPriority) {
+          return rightPriority - leftPriority;
+        }
+        return (left.label || '').localeCompare(right.label || '');
       });
       storeKnownAgents(state.agents);
     },
