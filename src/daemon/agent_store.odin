@@ -152,6 +152,7 @@ AGENT_TEMPLATE_MAX_MEMORY_TEMPLATES :: 16
 Agent_Template_Record :: struct {
 	template_id: string,
 	display_name: string,
+	description: string,
 	persona: string,
 	instructions: string,
 	role_hint: string,
@@ -173,6 +174,7 @@ Agent_Template_Event :: struct {
 	kind: Agent_Template_Event_Kind,
 	template_id: string,
 	display_name: string,
+	description: string,
 	persona: string,
 	instructions: string,
 	role_hint: string,
@@ -233,6 +235,7 @@ agent_template_apply_event :: proc(event: Agent_Template_Event) -> bool {
 	}
 	rec.template_id = strings.clone(event.template_id)
 	rec.display_name = strings.clone(event.display_name)
+	rec.description = strings.clone(event.description)
 	rec.persona = strings.clone(event.persona)
 	rec.instructions = strings.clone(event.instructions)
 	rec.role_hint = strings.clone(event.role_hint)
@@ -255,13 +258,13 @@ agent_template_index :: proc(template_id: string) -> int { for i in 0..<agent_te
 
 agent_template_event_clone :: proc(e: Agent_Template_Event) -> Agent_Template_Event {
 	out := e
-	out.event_id = strings.clone(e.event_id); out.template_id = strings.clone(e.template_id); out.display_name = strings.clone(e.display_name); out.persona = strings.clone(e.persona); out.instructions = strings.clone(e.instructions); out.role_hint = strings.clone(e.role_hint); out.parent_template_id = strings.clone(e.parent_template_id); out.default_provider_profile = strings.clone(e.default_provider_profile); out.bootstrap_defaults = strings.clone(e.bootstrap_defaults); out.suggested_model_tier = strings.clone(e.suggested_model_tier); out.author = strings.clone(e.author)
+	out.event_id = strings.clone(e.event_id); out.template_id = strings.clone(e.template_id); out.display_name = strings.clone(e.display_name); out.description = strings.clone(e.description); out.persona = strings.clone(e.persona); out.instructions = strings.clone(e.instructions); out.role_hint = strings.clone(e.role_hint); out.parent_template_id = strings.clone(e.parent_template_id); out.default_provider_profile = strings.clone(e.default_provider_profile); out.bootstrap_defaults = strings.clone(e.bootstrap_defaults); out.suggested_model_tier = strings.clone(e.suggested_model_tier); out.author = strings.clone(e.author)
 	for i in 0..<e.memory_template_count do out.memory_templates[i] = strings.clone(e.memory_templates[i])
 	return out
 }
 
 agent_template_event_json :: proc(event: Agent_Template_Event) -> string {
-	b := strings.builder_make(); strings.write_string(&b, `{"event_id":"`); json_write_string(&b, event.event_id); strings.write_string(&b, `","kind":"`); json_write_string(&b, fmt.tprintf("%v", event.kind)); strings.write_string(&b, `","template_id":"`); json_write_string(&b, event.template_id); strings.write_string(&b, `","display_name":"`); json_write_string(&b, event.display_name); strings.write_string(&b, `","persona":"`); json_write_string(&b, event.persona); strings.write_string(&b, `","instructions":"`); json_write_string(&b, event.instructions); strings.write_string(&b, `","role_hint":"`); json_write_string(&b, event.role_hint); strings.write_string(&b, `","parent_template_id":"`); json_write_string(&b, event.parent_template_id); strings.write_string(&b, `","default_provider_profile":"`); json_write_string(&b, event.default_provider_profile); strings.write_string(&b, `","bootstrap_defaults":"`); json_write_string(&b, event.bootstrap_defaults); strings.write_string(&b, `","suggested_model_tier":"`); json_write_string(&b, event.suggested_model_tier); strings.write_string(&b, `","author":"`); json_write_string(&b, event.author); strings.write_string(&b, `","created_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", event.created_unix_ms)); strings.write_string(&b, `,"memory_templates":[`)
+	b := strings.builder_make(); strings.write_string(&b, `{"event_id":"`); json_write_string(&b, event.event_id); strings.write_string(&b, `","kind":"`); json_write_string(&b, fmt.tprintf("%v", event.kind)); strings.write_string(&b, `","template_id":"`); json_write_string(&b, event.template_id); strings.write_string(&b, `","display_name":"`); json_write_string(&b, event.display_name); strings.write_string(&b, `","description":"`); json_write_string(&b, event.description); strings.write_string(&b, `","persona":"`); json_write_string(&b, event.persona); strings.write_string(&b, `","instructions":"`); json_write_string(&b, event.instructions); strings.write_string(&b, `","role_hint":"`); json_write_string(&b, event.role_hint); strings.write_string(&b, `","parent_template_id":"`); json_write_string(&b, event.parent_template_id); strings.write_string(&b, `","default_provider_profile":"`); json_write_string(&b, event.default_provider_profile); strings.write_string(&b, `","bootstrap_defaults":"`); json_write_string(&b, event.bootstrap_defaults); strings.write_string(&b, `","suggested_model_tier":"`); json_write_string(&b, event.suggested_model_tier); strings.write_string(&b, `","author":"`); json_write_string(&b, event.author); strings.write_string(&b, `","created_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", event.created_unix_ms)); strings.write_string(&b, `,"memory_templates":[`)
 	for i in 0..<event.memory_template_count { if i > 0 do strings.write_string(&b, `,`); strings.write_string(&b, `"`); json_write_string(&b, event.memory_templates[i]); strings.write_string(&b, `"`) }
 	strings.write_string(&b, `]}`); return strings.to_string(b)
 }
@@ -269,7 +272,7 @@ agent_template_event_json :: proc(event: Agent_Template_Event) -> string {
 agent_template_event_from_json :: proc(line: string) -> (Agent_Template_Event, bool) {
 	kind := Agent_Template_Event_Kind.Agent_Template_Upserted
 	if extract_json_string(line, "kind", "") == "Agent_Template_Archived" do kind = .Agent_Template_Archived
-	ev := Agent_Template_Event{event_id = extract_json_string(line, "event_id", ""), kind = kind, template_id = extract_json_string(line, "template_id", ""), display_name = extract_json_string(line, "display_name", ""), persona = extract_json_string(line, "persona", ""), instructions = extract_json_string(line, "instructions", ""), role_hint = extract_json_string(line, "role_hint", ""), parent_template_id = extract_json_string(line, "parent_template_id", ""), default_provider_profile = extract_json_string(line, "default_provider_profile", ""), bootstrap_defaults = extract_json_string(line, "bootstrap_defaults", ""), suggested_model_tier = extract_json_string(line, "suggested_model_tier", "normal"), author = extract_json_string(line, "author", ""), created_unix_ms = i64(extract_json_int(line, "created_unix_ms", 0))}
+	ev := Agent_Template_Event{event_id = extract_json_string(line, "event_id", ""), kind = kind, template_id = extract_json_string(line, "template_id", ""), display_name = extract_json_string(line, "display_name", ""), description = extract_json_string(line, "description", ""), persona = extract_json_string(line, "persona", ""), instructions = extract_json_string(line, "instructions", ""), role_hint = extract_json_string(line, "role_hint", ""), parent_template_id = extract_json_string(line, "parent_template_id", ""), default_provider_profile = extract_json_string(line, "default_provider_profile", ""), bootstrap_defaults = extract_json_string(line, "bootstrap_defaults", ""), suggested_model_tier = extract_json_string(line, "suggested_model_tier", "normal"), author = extract_json_string(line, "author", ""), created_unix_ms = i64(extract_json_int(line, "created_unix_ms", 0))}
 	agent_parse_string_array_field(line, "memory_templates", &ev.memory_templates, &ev.memory_template_count)
 	return ev, ev.template_id != ""
 }

@@ -687,10 +687,21 @@ extract_json_string :: proc(body, key, fallback: string) -> string {
 	if idx < 0 do return fallback
 
 	start := idx + len(pattern)
-	end := strings.index_byte(body[start:], '"')
-	if end < 0 do return fallback
+	end := start
+	escaped := false
+	for end < len(body) {
+		ch := body[end]
+		if escaped {
+			escaped = false
+		} else if ch == '\\' {
+			escaped = true
+		} else if ch == '"' {
+			return json_unescape(body[start:end])
+		}
+		end += 1
+	}
 
-	return json_unescape(body[start:start + end])
+	return fallback
 }
 
 json_unescape :: proc(value: string) -> string {

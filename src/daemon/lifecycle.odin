@@ -29,9 +29,12 @@ handle_register :: proc(client: net.TCP_Socket, body: string) {
 	// Daemon-spawned wrappers keep their issued token across daemon restarts, but the
 	// in-memory pending-token list does not. Allow a requested token for a fresh
 	// instance; still reject untrusted token replacement for an existing registry entry.
-	if requested_agent_token != "" && !registry_consume_pending_agent_token(agent_instance_id, requested_agent_token) && registry_agent_exists(agent_instance_id) {
-		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"untrusted pre-generated agent token"}`)
-		return
+	if requested_agent_token != "" && registry_agent_exists(agent_instance_id) {
+		idx := registry_find_agent(agent_instance_id)
+		if idx >= 0 && agents[idx].agent_token != requested_agent_token && !registry_consume_pending_agent_token(agent_instance_id, requested_agent_token) {
+			write_response(client, 401, "Unauthorized", `{"ok":false,"message":"untrusted pre-generated agent token"}`)
+			return
+		}
 	}
 
 	record := registry_register(

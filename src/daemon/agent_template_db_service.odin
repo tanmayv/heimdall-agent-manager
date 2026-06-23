@@ -50,6 +50,7 @@ agent_template_db_create_schema :: proc() -> bool {
 	CREATE TABLE IF NOT EXISTS agent_templates (
 		template_id TEXT PRIMARY KEY,
 		display_name TEXT NOT NULL,
+		description TEXT NOT NULL DEFAULT '',
 		persona TEXT NOT NULL,
 		instructions TEXT NOT NULL,
 		role_hint TEXT NOT NULL,
@@ -80,10 +81,10 @@ agent_template_db_create_schema :: proc() -> bool {
 agent_template_db_save :: proc(rec: Agent_Template_Record) -> bool {
 	stmt: sqlite3_stmt = nil
 	query := `INSERT OR REPLACE INTO agent_templates (
-		template_id, display_name, persona, instructions, role_hint,
+		template_id, display_name, description, persona, instructions, role_hint,
 		parent_template_id, default_provider_profile, bootstrap_defaults, suggested_model_tier,
 		memory_templates, created_unix_ms, updated_unix_ms, archived_at_unix_ms, is_customized
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	rc := sqlite3_prepare_v2(agent_template_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
@@ -102,18 +103,19 @@ agent_template_db_save :: proc(rec: Agent_Template_Record) -> bool {
 
 	task_db_bind_text(stmt, 1, rec.template_id)
 	task_db_bind_text(stmt, 2, rec.display_name)
-	task_db_bind_text(stmt, 3, rec.persona)
-	task_db_bind_text(stmt, 4, rec.instructions)
-	task_db_bind_text(stmt, 5, rec.role_hint)
-	task_db_bind_text(stmt, 6, rec.parent_template_id)
-	task_db_bind_text(stmt, 7, rec.default_provider_profile)
-	task_db_bind_text(stmt, 8, rec.bootstrap_defaults)
-	task_db_bind_text(stmt, 9, rec.suggested_model_tier)
-	task_db_bind_text(stmt, 10, mem_str)
-	sqlite3_bind_int64(stmt, 11, rec.created_unix_ms)
-	sqlite3_bind_int64(stmt, 12, rec.updated_unix_ms)
-	sqlite3_bind_int64(stmt, 13, rec.archived_at_unix_ms)
-	sqlite3_bind_int64(stmt, 14, rec.is_customized ? 1 : 0)
+	task_db_bind_text(stmt, 3, rec.description)
+	task_db_bind_text(stmt, 4, rec.persona)
+	task_db_bind_text(stmt, 5, rec.instructions)
+	task_db_bind_text(stmt, 6, rec.role_hint)
+	task_db_bind_text(stmt, 7, rec.parent_template_id)
+	task_db_bind_text(stmt, 8, rec.default_provider_profile)
+	task_db_bind_text(stmt, 9, rec.bootstrap_defaults)
+	task_db_bind_text(stmt, 10, rec.suggested_model_tier)
+	task_db_bind_text(stmt, 11, mem_str)
+	sqlite3_bind_int64(stmt, 12, rec.created_unix_ms)
+	sqlite3_bind_int64(stmt, 13, rec.updated_unix_ms)
+	sqlite3_bind_int64(stmt, 14, rec.archived_at_unix_ms)
+	sqlite3_bind_int64(stmt, 15, rec.is_customized ? 1 : 0)
 
 	rc = sqlite3_step(stmt)
 	if rc != SQLITE_DONE {
@@ -128,7 +130,7 @@ agent_template_db_load_all :: proc() -> bool {
 
 	stmt: sqlite3_stmt = nil
 	query := `SELECT 
-		template_id, display_name, persona, instructions, role_hint,
+		template_id, display_name, description, persona, instructions, role_hint,
 		parent_template_id, default_provider_profile, bootstrap_defaults, suggested_model_tier,
 		memory_templates, created_unix_ms, updated_unix_ms, archived_at_unix_ms, is_customized
 		FROM agent_templates`
@@ -146,15 +148,16 @@ agent_template_db_load_all :: proc() -> bool {
 		
 		rec.template_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 0))
 		rec.display_name = strings.clone_from_cstring(sqlite3_column_text(stmt, 1))
-		rec.persona = strings.clone_from_cstring(sqlite3_column_text(stmt, 2))
-		rec.instructions = strings.clone_from_cstring(sqlite3_column_text(stmt, 3))
-		rec.role_hint = strings.clone_from_cstring(sqlite3_column_text(stmt, 4))
-		rec.parent_template_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 5))
-		rec.default_provider_profile = strings.clone_from_cstring(sqlite3_column_text(stmt, 6))
-		rec.bootstrap_defaults = strings.clone_from_cstring(sqlite3_column_text(stmt, 7))
-		rec.suggested_model_tier = strings.clone_from_cstring(sqlite3_column_text(stmt, 8))
+		rec.description = strings.clone_from_cstring(sqlite3_column_text(stmt, 2))
+		rec.persona = strings.clone_from_cstring(sqlite3_column_text(stmt, 3))
+		rec.instructions = strings.clone_from_cstring(sqlite3_column_text(stmt, 4))
+		rec.role_hint = strings.clone_from_cstring(sqlite3_column_text(stmt, 5))
+		rec.parent_template_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 6))
+		rec.default_provider_profile = strings.clone_from_cstring(sqlite3_column_text(stmt, 7))
+		rec.bootstrap_defaults = strings.clone_from_cstring(sqlite3_column_text(stmt, 8))
+		rec.suggested_model_tier = strings.clone_from_cstring(sqlite3_column_text(stmt, 9))
 		
-		mem_str := strings.clone_from_cstring(sqlite3_column_text(stmt, 9))
+		mem_str := strings.clone_from_cstring(sqlite3_column_text(stmt, 10))
 		if mem_str != "" {
 			parts := strings.split(mem_str, ",")
 			rec.memory_template_count = 0
@@ -169,10 +172,10 @@ agent_template_db_load_all :: proc() -> bool {
 			rec.memory_template_count = 0
 		}
 		
-		rec.created_unix_ms = sqlite3_column_int64(stmt, 10)
-		rec.updated_unix_ms = sqlite3_column_int64(stmt, 11)
-		rec.archived_at_unix_ms = sqlite3_column_int64(stmt, 12)
-		rec.is_customized = sqlite3_column_int64(stmt, 13) != 0
+		rec.created_unix_ms = sqlite3_column_int64(stmt, 11)
+		rec.updated_unix_ms = sqlite3_column_int64(stmt, 12)
+		rec.archived_at_unix_ms = sqlite3_column_int64(stmt, 13)
+		rec.is_customized = sqlite3_column_int64(stmt, 14) != 0
 		
 		agent_template_record_count += 1
 	}
@@ -202,6 +205,7 @@ seed_default_templates_if_empty :: proc() {
 		agent_template_db_save(Agent_Template_Record{
 			template_id = "planner",
 			display_name = "Planner",
+			description = "Use this template for analytical strategist agents that decompose goals, map dependencies, and draft execution schedules.",
 			role_hint = "planning",
 			suggested_model_tier = "smart",
 			persona = `The Planner is a meticulous and far-sighted strategist, an expert in dissecting complex goals into manageable tasks and charting an optimal course for execution. They are deeply analytical, considering dependencies, potential risks, and resource allocation with precision. The Planner values clarity, efficiency, and predictability, striving to create a roadmap that minimizes ambiguity and maximizes the chances of successful and timely delivery. They are excellent communicators of complex plans, ensuring all stakeholders understand the proposed approach.`,
@@ -213,10 +217,12 @@ seed_default_templates_if_empty :: proc() {
 6. Resource Allocation: Suggest the types of agents (e.g., Coder, Tester) required for each task.
 7. Sequencing & Scheduling: Propose a logical sequence of tasks, potentially including parallel execution where possible. Provide an estimated timeline.
 8. Plan Documentation: Document the plan clearly and concisely, including task descriptions, dependencies, estimates, risks, and agent roles. Use a structured format.
-9. Communication: Present the plan to the Lead agent for review and approval. Be prepared to answer questions and refine the plan based on feedback.
-10. Tools: Utilize planning tools, dependency mapping techniques, and estimation models.
-11. Cooperation:
-    * Lead: Submit plans for review and refinement.
+9. Plan Discussion & Conversion: Discuss plans only with the user and convert approved plans into task chains.
+10. Task Validation: Task validation should be done by assigning a user to it (e.g., as a reviewer/lgtm_required participant), not by creating a new task with a reviewer agent as assignee.
+11. Tools: Utilize planning tools, dependency mapping techniques, and estimation models.
+12. Cooperation:
+    * User: Discuss plans directly, receive feedback, and obtain final approval.
+    * Lead: Lead agent coordinates execution of the resulting task chains.
     * Other Agents: The plan will guide the work of all other agents.`,
 			default_provider_profile = "pi",
 			created_unix_ms = now,
@@ -230,6 +236,7 @@ seed_default_templates_if_empty :: proc() {
 		agent_template_db_save(Agent_Template_Record{
 			template_id = "lead",
 			display_name = "Tech Lead",
+			description = "Use this template for coordinator agents that delegate tasks, track progress, resolve blockers, and consolidate results.",
 			role_hint = "leading",
 			suggested_model_tier = "smart",
 			persona = `The Lead is a dynamic coordinator and a servant leader, focused on orchestrating the team's efforts to achieve the planned goals. They are excellent communicators, facilitators, and problem-solvers, ensuring smooth collaboration between agents. The Lead agent monitors progress, removes impediments, and adapts the plan as needed, always keeping the end goal in sight. They are responsible for the overall execution flow and the integration of results from different agents.`,
@@ -259,6 +266,7 @@ seed_default_templates_if_empty :: proc() {
 		agent_template_db_save(Agent_Template_Record{
 			template_id = "reviewer",
 			display_name = "Reviewer",
+			description = "Use this template for quality gatekeeper agents that audit code readability, correctness, and style standards.",
 			role_hint = "reviewing",
 			suggested_model_tier = "smart",
 			persona = `The Reviewer is a meticulous guardian of quality, correctness, and adherence to standards. They possess a keen eye for detail and a deep understanding of best practices in software engineering. The Reviewer agent critically examines code, configurations, and other artifacts to ensure they meet the required quality bar, are free of defects, and align with architectural guidelines and style guides. They provide constructive feedback to help improve the work products.`,
@@ -292,6 +300,7 @@ seed_default_templates_if_empty :: proc() {
 		agent_template_db_save(Agent_Template_Record{
 			template_id = "coder",
 			display_name = "Coder",
+			description = "Use this template for implementation agents that write functional code, run tests, and address reviewer feedback.",
 			role_hint = "coding",
 			suggested_model_tier = "normal",
 			persona = `The Coder is a skilled and efficient implementer, translating designs and requirements into clean, functional, and well-tested code. They are proficient in relevant programming languages, frameworks, and tools. The Coder values writing high-quality code that is not only correct but also readable, maintainable, and robust. They are adept at debugging and refactoring.`,
@@ -322,6 +331,7 @@ seed_default_templates_if_empty :: proc() {
 		agent_template_db_save(Agent_Template_Record{
 			template_id = "tester",
 			display_name = "Tester",
+			description = "Use this template for validation agents that design test cases, execute suites, and report bugs.",
 			role_hint = "testing",
 			suggested_model_tier = "normal",
 			persona = `The Tester is a diligent and inquisitive quality advocate, focused on verifying that the system behaves as expected and uncovering potential issues. They are skilled in designing test cases, writing various types of tests (unit, integration, E2E), and meticulously executing them. The Tester thinks critically about edge cases, failure modes, and user scenarios to ensure comprehensive test coverage.`,
@@ -350,6 +360,7 @@ seed_default_templates_if_empty :: proc() {
 		agent_template_db_save(Agent_Template_Record{
 			template_id = "memory_auditor",
 			display_name = "Memory Auditor",
+			description = "Use this template for reflective agents that analyze task histories and logs to extract reusable learnings.",
 			role_hint = "auditing",
 			suggested_model_tier = "smart",
 			persona = `The Memory Auditor is a reflective and analytical agent, dedicated to learning from past actions and outcomes to improve future performance. It systematically examines task histories, execution logs, and agent interactions to identify patterns, insights, and knowledge gaps. The Auditor's goal is to distill valuable, reusable 'cognitive memories' that can guide better planning, execution, and decision-making within the Heimdall system.`,
@@ -379,6 +390,7 @@ seed_default_templates_if_empty :: proc() {
 		agent_template_db_save(Agent_Template_Record{
 			template_id = "memory_reviewer",
 			display_name = "Memory Reviewer",
+			description = "Use this template for decision-making agents that inspect and approve/reject proposed memories.",
 			role_hint = "reviewing",
 			suggested_model_tier = "smart",
 			persona = `The Memory Reviewer is a discerning and judicious gatekeeper of the system's cognitive memory. They critically evaluate proposed memories for accuracy, relevance, clarity, and potential impact. The Reviewer ensures that only high-quality, non-conflicting, and truly valuable insights are integrated into the Heimdall knowledge base. They are skilled in using command-line tools to inspect data and make informed decisions.`,
@@ -404,6 +416,28 @@ seed_default_templates_if_empty :: proc() {
 			is_customized = false,
 		})
 	}
+
+	// 8. Specialist
+	if exists, customized := agent_template_get_customized_status("specialist"); !exists || !customized {
+		agent_template_db_save(Agent_Template_Record{
+			template_id = "specialist",
+			display_name = "Specialist",
+			description = "Use this template for specialist service agents that act as domain experts, answering requester queries via task comments.",
+			role_hint = "specialist",
+			suggested_model_tier = "normal",
+			persona = `The Specialist is a domain-specific expert designed to act as a query service. They accept standalone or chain tasks containing query descriptions, process them, and output results using task comments, notifying the requester who reviewer-approves the task.`,
+			instructions = `1. Receive Query: Accept a query task where the requester is the reviewer.
+2. Process Request: Execute the query, research, or compilation task.
+3. Reply: Document findings and results in task comments.
+4. Complete: Move task to done (review_ready) to notify the requester for LGTM validation.
+5. Cooperation:
+   * Requester: Receives queries and returns comments.`,
+			default_provider_profile = "pi",
+			created_unix_ms = now,
+			updated_unix_ms = now,
+			is_customized = false,
+		})
+	}
 }
 
 agent_template_get_customized_status :: proc(template_id: string) -> (exists: bool, customized: bool) {
@@ -422,12 +456,12 @@ agent_template_get_customized_status :: proc(template_id: string) -> (exists: bo
 	return false, false
 }
 
-TEMPLATE_DB_SCHEMA_VERSION :: 1 // Version 1 adds 'is_customized' column
+TEMPLATE_DB_SCHEMA_VERSION :: 2 // Version 2 adds 'description' column
 
 agent_template_db_run_migrations :: proc() -> bool {
 	current_version := db_get_user_version(agent_template_db.db)
 	
-	if current_version < TEMPLATE_DB_SCHEMA_VERSION {
+	if current_version < 1 {
 		fmt.println("DB: Migrating templates.db to version 1 (adding is_customized)...")
 		if !db_execute(agent_template_db.db, "BEGIN TRANSACTION;") do return false
 		
@@ -448,6 +482,29 @@ agent_template_db_run_migrations :: proc() -> bool {
 		
 		if !db_execute(agent_template_db.db, "COMMIT;") do return false
 		fmt.println("DB: Migrated templates.db to version 1 successfully.")
+	}
+
+	if current_version < 2 {
+		fmt.println("DB: Migrating templates.db to version 2 (adding description)...")
+		if !db_execute(agent_template_db.db, "BEGIN TRANSACTION;") do return false
+		
+		if !db_has_column(agent_template_db.db, "agent_templates", "description") {
+			migrate_query := "ALTER TABLE agent_templates ADD COLUMN description TEXT NOT NULL DEFAULT ''"
+			if !db_execute(agent_template_db.db, migrate_query) {
+				_ = db_execute(agent_template_db.db, "ROLLBACK;")
+				return false
+			}
+		} else {
+			fmt.println("DB: Column 'description' already exists in 'agent_templates', skipping ALTER TABLE.")
+		}
+		
+		if !db_set_user_version(agent_template_db.db, 2) {
+			_ = db_execute(agent_template_db.db, "ROLLBACK;")
+			return false
+		}
+		
+		if !db_execute(agent_template_db.db, "COMMIT;") do return false
+		fmt.println("DB: Migrated templates.db to version 2 successfully.")
 	}
 	
 	return true

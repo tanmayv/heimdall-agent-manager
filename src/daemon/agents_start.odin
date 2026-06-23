@@ -427,6 +427,7 @@ handle_agent_template_create_update :: proc(client: net.TCP_Socket, body: string
 	ev.kind = .Agent_Template_Upserted
 	ev.template_id = template_id
 	ev.display_name = extract_json_string(body, "display_name", template_id)
+	ev.description = extract_json_string(body, "description", "")
 	ev.persona = extract_json_string(body, "persona", "")
 	ev.instructions = extract_json_string(body, "instructions", "")
 	ev.role_hint = extract_json_string(body, "role_hint", "")
@@ -521,6 +522,7 @@ handle_agent_instance_archive :: proc(client: net.TCP_Socket, body: string) {
 agent_template_record_json :: proc(builder: ^strings.Builder, rec: Agent_Template_Record) {
 	strings.write_string(builder, `{"template_id":"`); json_write_string(builder, rec.template_id)
 	strings.write_string(builder, `","display_name":"`); json_write_string(builder, rec.display_name)
+	strings.write_string(builder, `","description":"`); json_write_string(builder, rec.description)
 	strings.write_string(builder, `","persona":"`); json_write_string(builder, rec.persona)
 	strings.write_string(builder, `","instructions":"`); json_write_string(builder, rec.instructions)
 	strings.write_string(builder, `","role_hint":"`); json_write_string(builder, rec.role_hint)
