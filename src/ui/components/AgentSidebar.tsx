@@ -67,53 +67,68 @@ const AgentSidebar = memo(function AgentSidebar({
   console.log('[Render] AgentSidebar');
   const [collapsedProjects, setCollapsedProjects] = useState({});
   const [dismissedWarnings, setDismissedWarnings] = useState<Set<string>>(new Set());
-  const [draggedProjectId, setDraggedProjectId] = useState<string | null>(null);
-  const [draggedAgent, setDraggedAgent] = useState<{ id: string; projectId: string } | null>(null);
 
   const handleDragStart = useCallback((e: React.DragEvent, id: string) => {
     if (id === 'unassigned') return;
-    setDraggedProjectId(id);
+    console.log('Drag start project:', id);
     e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', `project:${id}`);
   }, []);
 
   const handleDrop = useCallback((e: React.DragEvent, targetId: string) => {
     e.preventDefault();
-    if (targetId === 'unassigned' || !draggedProjectId || draggedProjectId === targetId) return;
+    const rawData = e.dataTransfer.getData('text/plain');
+    console.log('Drop project target:', targetId, 'rawData:', rawData, 'projectIds:', projectIds);
+    if (!rawData.startsWith('project:')) return;
+    const sourceId = rawData.substring('project:'.length);
+    if (targetId === 'unassigned' || !sourceId || sourceId === targetId) return;
 
-    const sourceIndex = projectIds.indexOf(draggedProjectId);
+    const sourceIndex = projectIds.indexOf(sourceId);
     const targetIndex = projectIds.indexOf(targetId);
+    console.log('Indices source:', sourceIndex, 'target:', targetIndex);
     if (sourceIndex < 0 || targetIndex < 0) return;
 
     const newProjectIds = [...projectIds];
     newProjectIds.splice(sourceIndex, 1);
-    newProjectIds.splice(targetIndex, 0, draggedProjectId);
+    newProjectIds.splice(targetIndex, 0, sourceId);
 
+    console.log('Calling onReorderProjects with:', newProjectIds);
     onReorderProjects?.(newProjectIds);
-    setDraggedProjectId(null);
-  }, [projectIds, draggedProjectId, onReorderProjects]);
+  }, [projectIds, onReorderProjects]);
 
   const handleDragStartAgent = useCallback((e: React.DragEvent, id: string, projectId: string) => {
-    setDraggedAgent({ id, projectId });
+    console.log('Drag start agent:', id, 'project:', projectId);
     e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', `agent:${JSON.stringify({ id, projectId })}`);
   }, []);
 
   const handleDropAgent = useCallback((e: React.DragEvent, targetId: string, targetProjectId: string, groupAgents: any[]) => {
     e.preventDefault();
-    if (!draggedAgent || draggedAgent.id === targetId) return;
-    if (draggedAgent.projectId !== targetProjectId) return;
+    const rawData = e.dataTransfer.getData('text/plain');
+    console.log('Drop agent target:', targetId, 'project:', targetProjectId, 'rawData:', rawData);
+    if (!rawData.startsWith('agent:')) return;
+    const dataStr = rawData.substring('agent:'.length);
+    try {
+      const dragged = JSON.parse(dataStr) as { id: string; projectId: string };
+      if (!dragged || dragged.id === targetId) return;
+      if (dragged.projectId !== targetProjectId) return;
 
-    const agentIds = groupAgents.map((a) => a.id);
-    const sourceIndex = agentIds.indexOf(draggedAgent.id);
-    const targetIndex = agentIds.indexOf(targetId);
-    if (sourceIndex < 0 || targetIndex < 0) return;
+      const agentIds = groupAgents.map((a) => a.id);
+      const sourceIndex = agentIds.indexOf(dragged.id);
+      const targetIndex = agentIds.indexOf(targetId);
+      console.log('Agent indices source:', sourceIndex, 'target:', targetIndex);
+      if (sourceIndex < 0 || targetIndex < 0) return;
 
-    const newAgentIds = [...agentIds];
-    newAgentIds.splice(sourceIndex, 1);
-    newAgentIds.splice(targetIndex, 0, draggedAgent.id);
+      const newAgentIds = [...agentIds];
+      newAgentIds.splice(sourceIndex, 1);
+      newAgentIds.splice(targetIndex, 0, dragged.id);
 
-    onReorderAgents?.(newAgentIds);
-    setDraggedAgent(null);
-  }, [draggedAgent, onReorderAgents]);
+      console.log('Calling onReorderAgents with:', newAgentIds);
+      onReorderAgents?.(newAgentIds);
+    } catch (err) {
+      console.error('Failed to parse dragged agent data:', err);
+    }
+  }, [onReorderAgents]);
 
   const dismissWarning = useCallback((agentId: string) => {
     setDismissedWarnings((prev) => new Set([...prev, agentId]));
