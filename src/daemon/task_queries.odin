@@ -304,6 +304,20 @@ task_recompute_promotions :: proc(author: string) -> int {
 			}
 		}
 	}
+
+	// Trigger auto-claim for Ready tasks if the assignee's slot became free
+	for i in 0..<task_state_count {
+		assignee := task_states[i].assignee_agent_instance_id
+		if assignee == "" do continue
+		active := task_active_slot_blocker(assignee, "")
+		if active == "" {
+			best_ready := task_best_ready_task_for_assignee(assignee)
+			if best_ready != "" {
+				task_service_auto_claim(best_ready)
+			}
+		}
+	}
+
 	return changed
 }
 
@@ -321,6 +335,18 @@ task_best_promotion_candidate_for_assignee :: proc(assignee: string) -> string {
 		if state.assignee_agent_instance_id != assignee do continue
 		if !task_promotion_candidate(state) do continue
 		if !task_dependencies_satisfied(state.depends_on) do continue
+		if best_idx < 0 || task_state_orders_before(state, task_states[best_idx]) do best_idx = i
+	}
+	if best_idx < 0 do return ""
+	return task_states[best_idx].task_id
+}
+
+task_best_ready_task_for_assignee :: proc(assignee: string) -> string {
+	best_idx := -1
+	for i in 0..<task_state_count {
+		state := task_states[i]
+		if state.assignee_agent_instance_id != assignee do continue
+		if state.status != .Ready do continue
 		if best_idx < 0 || task_state_orders_before(state, task_states[best_idx]) do best_idx = i
 	}
 	if best_idx < 0 do return ""
