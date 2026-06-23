@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import AgentSidebar from './AgentSidebar';
 import ChatPane from './ChatPane';
@@ -39,6 +39,24 @@ import AuditSidebar from './AuditSidebar';
 
 const EMPTY_ARRAY: any[] = [];
 
+const STATUS_DOT: Record<string, string> = {
+  connected: 'bg-emerald-400 shadow-emerald-400/40',
+  starting: 'bg-sky-400 shadow-sky-400/40',
+  startup_blocked: 'bg-amber-400 shadow-amber-400/40',
+  startup_failed: 'bg-red-400 shadow-red-400/40',
+  stopping: 'bg-amber-400 shadow-amber-400/40 animate-soft-pulse',
+  offline: 'bg-[#555]/70',
+};
+
+const STATUS_LABEL: Record<string, string> = {
+  connected: 'Live',
+  starting: 'Starting',
+  startup_blocked: 'Blocked',
+  startup_failed: 'Failed',
+  stopping: 'Stopping',
+  offline: 'Known',
+};
+
 export default function App() {
   const renderStart = performance.now();
   useEffect(() => {
@@ -66,6 +84,9 @@ export default function App() {
   }, [session.connected, userPreferences]);
   const [view, setView] = useState<'chat' | 'settings' | 'tasks' | 'memory' | 'memoryAudit' | 'projects' | 'agents' | 'startAgent'>('chat');
   const [isAuditOpen, setIsAuditOpen] = useState(false);
+  const [isAgentSwitcherOpen, setIsAgentSwitcherOpen] = useState(false);
+  const [agentSearchQuery, setAgentSearchQuery] = useState('');
+  const [switcherSelectedIndex, setSwitcherSelectedIndex] = useState(0);
   const selectedAgentRef = useRef(selectedAgentId);
   const sessionRef = useRef(session);
 
@@ -76,6 +97,58 @@ export default function App() {
   useEffect(() => {
     selectedAgentRef.current = selectedAgentId;
   }, [selectedAgentId]);
+
+  // --- Agent Switcher (Ctrl+K) Logic ---
+  const filteredSwitcherAgents = useMemo(() => {
+    return (agents ?? []).filter((agent: any) =>
+      (agent.label || '').toLowerCase().includes(agentSearchQuery.toLowerCase())
+    );
+  }, [agents, agentSearchQuery]);
+
+  const handleSelectAgentFromSwitcher = useCallback((agent: any) => {
+    setIsAgentSwitcherOpen(false);
+    dispatch(selectAgent(agent.id));
+    setView('chat');
+  }, [dispatch]);
+
+  // Global Ctrl+K hotkey listener
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'k' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        setIsAgentSwitcherOpen((prev) => !prev);
+        setAgentSearchQuery('');
+        setSwitcherSelectedIndex(0);
+      }
+    };
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, []);
+
+  // Keyboard navigation when switcher is open
+  useEffect(() => {
+    if (!isAgentSwitcherOpen) return undefined;
+    const handleSwitcherKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setIsAgentSwitcherOpen(false);
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSwitcherSelectedIndex((prev) => (filteredSwitcherAgents.length ? (prev + 1) % filteredSwitcherAgents.length : 0));
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSwitcherSelectedIndex((prev) => (filteredSwitcherAgents.length ? (prev - 1 + filteredSwitcherAgents.length) % filteredSwitcherAgents.length : 0));
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const selected = filteredSwitcherAgents[switcherSelectedIndex];
+        if (selected) {
+          handleSelectAgentFromSwitcher(selected);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleSwitcherKeyDown);
+    return () => window.removeEventListener('keydown', handleSwitcherKeyDown);
+  }, [isAgentSwitcherOpen, filteredSwitcherAgents, switcherSelectedIndex, handleSelectAgentFromSwitcher]);
 
   const connectSession = () => {
     dispatch(registerSession())
@@ -373,6 +446,66 @@ export default function App() {
           )}
         </div>
         <AuditSidebar open={isAuditOpen} onClose={() => setIsAuditOpen(false)} />
+
+        {/* Agent Switcher (Ctrl+K) Modal */}
+        {isAgentSwitcherOpen && (
+          <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[999] flex items-start justify-center pt-24" onClick={() => setIsAgentSwitcherOpen(false)}>
+            <div 
+              className="bg-[var(--fd-surface-1)] border border-[var(--fd-hairline)] rounded-2xl w-full max-w-lg shadow-2xl flex flex-col max-h-[400px] overflow-hidden"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Search input */}
+              <input
+                autoFocus
+                type="text"
+                value={agentSearchQuery}
+                onChange={(e) => {
+                  setAgentSearchQuery(e.target.value);
+                  setSwitcherSelectedIndex(0);
+                }}
+                placeholder="Search agent instance by name..."
+                className="framer-input w-full border-0 border-b border-[var(--fd-hairline)] rounded-t-2xl px-4 py-3 bg-[#111] text-white text-sm placeholder-[#666] outline-none focus:ring-0"
+              />
+              
+              {/* Agent list */}
+              <div className="overflow-y-auto p-2 space-y-1 flex-1 min-h-0">
+                {filteredSwitcherAgents.length === 0 ? (
+                  <p className="text-center text-xs text-[#555] py-4">No matching agents found.</p>
+                ) : (
+                  filteredSwitcherAgents.map((agent: any, index: number) => {
+                    const isSelected = index === switcherSelectedIndex;
+                    const statusDotColor = STATUS_DOT[agent.status] ?? STATUS_DOT.offline;
+                    return (
+                      <button
+                        key={agent.id}
+                        type="button"
+                        onClick={() => handleSelectAgentFromSwitcher(agent)}
+                        className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-left text-sm transition-colors border ${
+                          isSelected 
+                            ? 'bg-[var(--fd-accent-blue)]/15 border-[var(--fd-accent-blue)]/30 text-white' 
+                            : 'bg-transparent border-transparent text-[#aaa] hover:bg-[var(--fd-surface-2)] hover:text-white'
+                        }`}
+                      >
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className={`h-2 w-2 shrink-0 rounded-full ${statusDotColor} ${agent.status === 'connected' ? 'animate-soft-pulse' : ''}`} />
+                          <span className="truncate font-medium">{agent.label}</span>
+                          <span className="text-[10px] text-[#555] truncate">({agent.id})</span>
+                        </div>
+                        <span className="text-[10px] text-[#666] uppercase tracking-wider font-semibold">{STATUS_LABEL[agent.status] ?? 'Offline'}</span>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+              
+              {/* Keyboard shortcuts footer */}
+              <div className="bg-[#111]/60 px-4 py-2 border-t border-[var(--fd-hairline)] flex justify-between items-center text-[10px] text-[#555]">
+                <span>Use ↑↓ arrows to navigate, Enter to select</span>
+                <span>ESC to close</span>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

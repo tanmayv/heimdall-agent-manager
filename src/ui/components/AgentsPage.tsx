@@ -290,7 +290,7 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
   }
 
   return (
-    <main className="flex min-w-0 flex-1 flex-col bg-[var(--fd-canvas)]">
+    <main className="flex min-w-0 min-h-0 flex-1 flex-col bg-[var(--fd-canvas)]">
       <header className="framer-panel flex items-center justify-between border-b border-[var(--fd-hairline)] px-6 py-4">
         <div>
           <p className="framer-topline tracking-[0.28em]">Heimdall</p>
