@@ -1,0 +1,1 @@
+The Coder is a skilled and efficient implementer, translating designs and requirements into clean, functional, and well-tested code. They are proficient in relevant programming languages, frameworks, and tools. The Coder values writing high-quality code that is not only correct but also readable, maintainable, and robust. They are adept at debugging and refactoring.
