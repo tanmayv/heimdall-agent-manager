@@ -16,6 +16,17 @@ function projectGroupLabel(projectId, projectsById, agentsInGroup) {
   return projectId;
 }
 
+const agentStatusColors: Record<string, string> = {
+  connected: 'bg-emerald-400',
+  starting: 'bg-sky-400',
+  startup_blocked: 'bg-amber-400',
+  startup_failed: 'bg-red-400',
+  startup_unknown: 'bg-violet-400',
+  idle: 'bg-gray-500',
+  stopping: 'bg-amber-400 animate-pulse',
+  offline: 'bg-gray-600',
+};
+
 interface AgentSidebarProps {
   agents: any[];
   projectsById: Record<string, any>;
@@ -378,7 +389,7 @@ const AgentSidebar = memo(function AgentSidebar({
         </button>
       </nav>
 
-      {isExpanded && (
+      {isExpanded ? (
         <>
           <div className="framer-topline mt-5 flex items-center justify-between">
             <span>Agents</span>
@@ -472,6 +483,40 @@ const AgentSidebar = memo(function AgentSidebar({
             )}
           </div>
         </>
+      ) : (
+        <div className="mt-6 flex flex-1 flex-col items-center gap-4 overflow-y-auto">
+          {agents
+            .filter((agent) => agent.unreadCount > 0)
+            .map((agent) => {
+              const firstLetter = (agent.label || agent.id || 'A')[0].toUpperCase();
+              const isSelected = agent.id === selectedAgentId;
+              const statusColor = agentStatusColors[agent.status] || 'bg-gray-600';
+              return (
+                <button
+                  key={agent.id}
+                  type="button"
+                  data-debug-id={`collapsed-agent-btn-${agent.id}`}
+                  onClick={() => onSelectAgent(agent.id)}
+                  className={`relative flex h-12 w-12 items-center justify-center rounded-full transition-all border shrink-0 ${
+                    isSelected
+                      ? 'border-[var(--fd-accent-blue)] bg-[var(--fd-accent-blue)]/10'
+                      : 'border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] hover:border-white/20'
+                  }`}
+                  title={`${agent.label || agent.id} (${agent.unreadCount} unread)`}
+                >
+                  <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[var(--fd-accent-blue)]/20 text-xs font-bold text-[var(--fd-accent-blue)]">
+                    {firstLetter}
+                  </div>
+                  <span className={`absolute bottom-0.5 right-0.5 h-3 w-3 rounded-full border-2 border-[var(--fd-surface-1)] ${statusColor}`} />
+                  {agent.unreadCount > 0 && (
+                    <span className="absolute -top-1 -right-1 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-[var(--fd-accent-blue)] px-1.5 text-[9px] font-bold text-black shadow-sm">
+                      {agent.unreadCount}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+        </div>
       )}
     </aside>
   );
