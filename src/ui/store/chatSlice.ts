@@ -139,7 +139,8 @@ function mergeKnownAndLiveAgents(localKnownAgents: any[], daemonAgents: any[], d
     if (!daemonAgent.id) continue;
     const existing = byId[daemonAgent.id] || {};
     const status = daemonAgent.status || daemonAgent.startupStatus || ((daemonAgent as any).connected ? 'connected' : 'offline');
-    byId[daemonAgent.id] = { ...existing, ...daemonAgent, status, known: true };
+    const unreadCount = existing.unreadCount || daemonAgent.unreadCount || 0;
+    byId[daemonAgent.id] = { ...existing, ...daemonAgent, status, unreadCount, known: true };
   }
   return Object.values(byId).sort((left: any, right: any) => {
     const diff = (left.order ?? 0) - (right.order ?? 0);
@@ -456,12 +457,17 @@ const chatSlice = createSlice({
         if (agent) agent.unreadCount = action.payload.unread_count ?? agent.unreadCount;
       }
     },
-    upsertKnownAgent(state, action) {
+     upsertKnownAgent(state, action) {
       const mapped: any = mapAgent(action.payload);
       if (!mapped.id) return;
       const existingIndex = state.agents.findIndex((agent) => agent.id === mapped.id);
-      if (existingIndex >= 0) state.agents[existingIndex] = { ...state.agents[existingIndex], ...mapped, known: true } as never;
-      else state.agents.unshift(mapped as never);
+      if (existingIndex >= 0) {
+        const existing: any = state.agents[existingIndex];
+        const unreadCount = existing.unreadCount || mapped.unreadCount || 0;
+        state.agents[existingIndex] = { ...existing, ...mapped, unreadCount, known: true } as never;
+      } else {
+        state.agents.unshift(mapped as never);
+      }
       storeKnownAgents(state.agents);
     },
     testStartReceived(state, action) {
