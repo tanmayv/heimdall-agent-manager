@@ -238,16 +238,6 @@ const AgentSidebar = memo(function AgentSidebar({
           ) : (
             <p className="framer-topline tracking-[0.28em] text-center w-full">H</p>
           )}
-          {isExpanded && (
-            <button
-              type="button"
-              onClick={togglePin}
-              className="text-[#666] hover:text-white transition-colors p-0.5 rounded"
-              title={isPinned ? 'Unpin sidebar' : 'Pin sidebar'}
-            >
-              {isPinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
-            </button>
-          )}
         </div>
         <div className={`mt-3 flex items-center rounded-[var(--fd-radius-lg)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] transition-all ${isExpanded ? 'gap-3 p-3' : 'justify-center p-2'}`}>
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--fd-accent-blue)]/20 text-xs font-bold text-[var(--fd-accent-blue)]" title={session?.userDisplayName || 'Operator'}>
@@ -518,6 +508,18 @@ const AgentSidebar = memo(function AgentSidebar({
             })}
         </div>
       )}
+      <div className={`mt-auto pt-3 border-t border-[var(--fd-hairline)] flex items-center ${isExpanded ? 'justify-start' : 'justify-center'}`}>
+        <button
+          type="button"
+          data-debug-id="toggle-pin-btn"
+          onClick={togglePin}
+          className={`flex items-center text-[#666] hover:text-white transition-colors ${isExpanded ? 'gap-2 text-xs' : ''}`}
+          title={isPinned ? 'Unpin sidebar' : 'Pin sidebar'}
+        >
+          {isPinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
+          {isExpanded && <span>{isPinned ? 'Collapse Sidebar' : 'Pin Sidebar'}</span>}
+        </button>
+      </div>
     </aside>
   );
 });
