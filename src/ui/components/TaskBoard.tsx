@@ -262,7 +262,12 @@ export default function TaskBoard({ session }) {
     }
     prevSelectedChainId.current = selectedChainId;
   }, [selectedChainId, selectedTaskId]);
-
+  useEffect(() => {
+    if (!selectedTaskId && !selectedChainId) {
+      setPage('overview');
+      setHistory([]);
+    }
+  }, [selectedTaskId, selectedChainId]);
   const [activeTab, setActiveTab] = useState<'board' | 'pending'>('board');
 
   const pendingApprovalTasks = useMemo(() => {
