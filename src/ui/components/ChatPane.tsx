@@ -154,11 +154,11 @@ export default function ChatPane({ agent, session }: { agent: any; session: any 
         <div className="framer-chip animate-halo-breathe">User: <span className="text-white">{session.userId}</span></div>
       </header>
 
-      <div className="relative flex-1 min-h-0">
+      <div className="relative flex-1 min-h-0 flex flex-col">
         <section
           ref={messageListRef}
           onScroll={onMessagesScroll}
-          className="h-full overflow-y-auto px-1 py-4 sm:px-2"
+          className="flex-1 min-h-0 overflow-y-auto px-1 py-4 sm:px-2"
         >
           <div className="w-full flex flex-col gap-3">
             {messages.length ? (
