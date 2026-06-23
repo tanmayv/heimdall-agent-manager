@@ -360,6 +360,11 @@ in
           default     = true;
           description = "Create a systemd user service (heimdall-daemon.service) that starts ham-daemon on login.";
         };
+        startOnBoot = lib.mkOption {
+          type        = lib.types.bool;
+          default     = false;
+          description = "Whether to start the daemon service automatically on boot/login. If false, the systemd user service is not registered.";
+        };
       };
       bindHost = lib.mkOption {
         type        = lib.types.str;
@@ -566,7 +571,7 @@ in
     xdg.configFile."heimdall/config.toml".source =
       tomlFormat.generate "heimdall-config.toml" configAttrs;
 
-    systemd.user.services.heimdall-daemon = lib.mkIf (cfg.daemon.enable && cfg.daemon.service.enable) {
+    systemd.user.services.heimdall-daemon = lib.mkIf (cfg.daemon.enable && cfg.daemon.service.enable && cfg.daemon.service.startOnBoot) {
       Unit = {
         Description = "Heimdall Agent Manager Daemon";
         After       = [ "network.target" ];

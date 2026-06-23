@@ -203,6 +203,7 @@ programs.heimdall = {
 |---|---|---|
 | `enable` | bool | `true` |
 | `service.enable` | bool | `true` |
+| `service.startOnBoot` | bool | `false` |
 | `bindHost` | str | `"127.0.0.1"` |
 | `port` | port | `49322` |
 | `dataDir` | str | `"~/.local/share/heimdall"` |
