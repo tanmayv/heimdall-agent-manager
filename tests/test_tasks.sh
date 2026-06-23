@@ -414,6 +414,48 @@ assert_field "T10 status=in_progress" "$UNBLK_SHOW" "status" "in_progress"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Cleanup
+# ─────────────────────────────────────────────────────────────────────────────
+echo "=== CLEANUP: Wiping test records to prevent database pollution ==="
+
+# 1. Archive the test agent via REST API
+echo "[*] Archiving test agent via REST API..."
+curl -s -X POST "$DAEMON_URL/agents/archive" \
+  -H "Content-Type: application/json" \
+  -d "{\"agent_instance_id\":\"$ME\"}" >/dev/null || true
+
+# 2. Delete tasks, chains, and participants from SQLite database
+DB_PATH="$HOME/.local/share/heimdall/tasks/task.db"
+if [ -f "$DB_PATH" ]; then
+  echo "[*] Wiping tasks, chains, votes, comments, and participants from SQLite..."
+  sqlite3 "$DB_PATH" <<EOF
+DELETE FROM task_participants WHERE chain_id IN (SELECT chain_id FROM task_chains WHERE project_id = 'project_$RUN_ID');
+DELETE FROM task_lgtm_votes WHERE chain_id IN (SELECT chain_id FROM task_chains WHERE project_id = 'project_$RUN_ID');
+DELETE FROM task_comments WHERE chain_id IN (SELECT chain_id FROM task_chains WHERE project_id = 'project_$RUN_ID');
+DELETE FROM tasks WHERE chain_id IN (SELECT chain_id FROM task_chains WHERE project_id = 'project_$RUN_ID');
+DELETE FROM task_chains WHERE project_id = 'project_$RUN_ID';
+EOF
+fi
+
+# 3. Clean up flat files (JSONL event logs) on disk for next daemon start
+PROJECT_LOG="$HOME/.local/share/heimdall/projects/events.jsonl"
+if [ -f "$PROJECT_LOG" ]; then
+  echo "[*] Removing test project events from flat file logs..."
+  grep -v "\"project_id\":\"project_$RUN_ID\"" "$PROJECT_LOG" > "${PROJECT_LOG}.tmp" || true
+  mv "${PROJECT_LOG}.tmp" "$PROJECT_LOG"
+fi
+
+AGENT_LOG="$HOME/.local/share/heimdall/agents/instance-events.jsonl"
+if [ -f "$AGENT_LOG" ]; then
+  echo "[*] Removing test agent events from flat file logs..."
+  grep -v "\"agent_instance_id\":\"$ME\"" "$AGENT_LOG" > "${AGENT_LOG}.tmp" || true
+  mv "${AGENT_LOG}.tmp" "$AGENT_LOG"
+fi
+
+echo "[+] Cleanup completed successfully!"
+echo ""
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Summary
 # ─────────────────────────────────────────────────────────────────────────────
 echo "════════════════════════════════════════════"

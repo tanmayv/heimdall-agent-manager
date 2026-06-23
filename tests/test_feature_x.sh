@@ -222,6 +222,46 @@ ARCHIVE=$(post /agents/templates/archive '{"template_id":"test-tester"}')
 assert_ok "archive test-tester template (cleanup)" "$ARCHIVE"
 
 # ============================================================
+# Cleanup
+# ============================================================
+echo "=== CLEANUP: Wiping test records to prevent database pollution ==="
+
+# 1. Archive the test agent via REST API
+echo "[*] Archiving test agent via REST API..."
+post /agents/archive "{\"agent_instance_id\":\"$TEST_AGENT_ID\"}" >/dev/null || true
+
+# 2. Delete tasks, chains, and participants from SQLite database
+DB_PATH="$HOME/.local/share/heimdall/tasks/task.db"
+if [ -f "$DB_PATH" ] && [ -n "${PROJ_ID:-}" ]; then
+  echo "[*] Wiping tasks, chains, votes, comments, and participants from SQLite..."
+  sqlite3 "$DB_PATH" <<EOF
+DELETE FROM task_participants WHERE chain_id IN (SELECT chain_id FROM task_chains WHERE project_id = '$PROJ_ID');
+DELETE FROM task_lgtm_votes WHERE chain_id IN (SELECT chain_id FROM task_chains WHERE project_id = '$PROJ_ID');
+DELETE FROM task_comments WHERE chain_id IN (SELECT chain_id FROM task_chains WHERE project_id = '$PROJ_ID');
+DELETE FROM tasks WHERE chain_id IN (SELECT chain_id FROM task_chains WHERE project_id = '$PROJ_ID');
+DELETE FROM task_chains WHERE project_id = '$PROJ_ID';
+EOF
+fi
+
+# 3. Clean up flat files (JSONL event logs) on disk for next daemon start
+PROJECT_LOG="$HOME/.local/share/heimdall/projects/events.jsonl"
+if [ -f "$PROJECT_LOG" ] && [ -n "${PROJ_ID:-}" ]; then
+  echo "[*] Removing test project events from flat file logs..."
+  grep -v "\"project_id\":\"$PROJ_ID\"" "$PROJECT_LOG" > "${PROJECT_LOG}.tmp" || true
+  mv "${PROJECT_LOG}.tmp" "$PROJECT_LOG"
+fi
+
+AGENT_LOG="$HOME/.local/share/heimdall/agents/instance-events.jsonl"
+if [ -f "$AGENT_LOG" ]; then
+  echo "[*] Removing test agent events from flat file logs..."
+  grep -v "\"agent_instance_id\":\"$TEST_AGENT_ID\"" "$AGENT_LOG" > "${AGENT_LOG}.tmp" || true
+  mv "${AGENT_LOG}.tmp" "$AGENT_LOG"
+fi
+
+echo "[+] Cleanup completed successfully!"
+echo ""
+
+# ============================================================
 # Summary
 # ============================================================
 
