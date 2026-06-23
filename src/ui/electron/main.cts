@@ -70,43 +70,6 @@ ipcMain.handle('odin-api:toggle-debug-server', async (_event, enable: boolean) =
   return { enabled: currentDebugPort !== 0, port: currentDebugPort, pid: process.pid };
 });
 
-ipcMain.handle('odin-api:request', async (_event, { url, method = 'GET', body, headers }) => {
-  const startTime = performance.now();
-  const timestamp = new Date().toISOString();
-  
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      method,
-      headers: { 
-        'Content-Type': 'application/json',
-        ...headers
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-  } catch (err: any) {
-    const duration = (performance.now() - startTime).toFixed(1);
-    console.log(`[API FETCH ERROR] ${timestamp} | ${method} ${url} | Failed to connect | Latency: ${duration}ms | Error: ${err.message}`);
-    throw err;
-  }
-
-  const text = await response.text();
-  const duration = (performance.now() - startTime).toFixed(1);
-  const bytes = Buffer.byteLength(text, 'utf8');
-
-  console.log(`[API FETCH] ${timestamp} | ${method} ${url} | Status: ${response.status} | Latency: ${duration}ms | Size: ${bytes} bytes`);
-
-  let data = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = { ok: false, message: text || 'Invalid JSON response' };
-  }
-  if (!response.ok) {
-    throw new Error(data?.message || `Daemon request failed with ${response.status}`);
-  }
-  return data;
-});
 
 app.whenReady().then(async () => {
   const daemonUrl = process.env.HEIMDALL_DAEMON_URL || 'http://127.0.0.1:49322';

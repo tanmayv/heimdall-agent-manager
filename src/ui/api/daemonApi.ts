@@ -48,9 +48,6 @@ type TaskAgentRequest = {
 };
 
 async function requestJson(url: string, { method = 'GET', body, headers, timeoutMs = DEFAULT_TIMEOUT_MS }: RequestOptions = {}): Promise<any> {
-  if (window.odinApi?.request) {
-    return window.odinApi.request({ url, method, body, headers });
-  }
 
   const controller = new AbortController();
   const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
