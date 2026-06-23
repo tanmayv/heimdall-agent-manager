@@ -413,7 +413,7 @@ const AgentSidebar = memo(function AgentSidebar({
                 const collapsed = Boolean(collapsedProjects[projectId]);
                 const connectedCount = groupAgents.filter((agent) => agent.status === 'connected').length;
                 return (
-                  <section key={projectId} className="space-y-2">
+                  <section key={projectId} className="space-y-1.5">
                     <button
                       type="button"
                       data-debug-id={`project-group-toggle-${projectId}`}
@@ -423,7 +423,7 @@ const AgentSidebar = memo(function AgentSidebar({
                       onDragLeave={handleDragLeaveProject}
                       onDrop={(e) => handleDrop(e, projectId)}
                       onClick={() => toggleProjectGroup(projectId)}
-                      className={`flex w-full items-center justify-between rounded-[var(--fd-radius-lg)] border px-3 py-2 text-left transition hover:border-[var(--fd-accent-blue)]/50 ${
+                      className={`flex w-full items-center justify-between rounded-[var(--fd-radius-lg)] border px-3 py-1.5 text-left transition hover:border-[var(--fd-accent-blue)]/50 ${
                         dragOverProjectId === projectId
                           ? 'border-[var(--fd-accent-blue)] bg-[var(--fd-surface-3)]'
                           : 'border-[var(--fd-hairline)] bg-[var(--fd-surface-2)]'
@@ -431,11 +431,11 @@ const AgentSidebar = memo(function AgentSidebar({
                         projectId !== 'unassigned' ? 'cursor-grab active:cursor-grabbing' : ''
                       }`}
                     >
-                      <span className="min-w-0">
-                        <span className="block truncate text-xs font-semibold uppercase tracking-[0.18em] text-white">{projectGroupLabel(projectId, projectsById, groupAgents)}</span>
-                        <span className="framer-subtext text-[11px]">{groupAgents.length} known · {connectedCount} live</span>
-                      </span>
-                      <span className="text-sm text-[#aaa]">{collapsed ? '▸' : '▾'}</span>
+                      <div className="min-w-0 flex-1 flex items-center gap-2">
+                        <span className="truncate text-[10px] font-semibold uppercase tracking-[0.15em] text-[#bbb]">{projectGroupLabel(projectId, projectsById, groupAgents)}</span>
+                        <span className="text-[9px] font-medium text-[#777] shrink-0">({groupAgents.length}/{connectedCount})</span>
+                      </div>
+                      <span className="text-xs text-[#777] ml-2 shrink-0">{collapsed ? '▸' : '▾'}</span>
                     </button>
                     {!collapsed ? groupAgents.map((agent) => (
                       <div
