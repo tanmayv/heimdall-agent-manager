@@ -699,7 +699,7 @@ export default function TaskBoard({ session }) {
   }
 
   return (
-    <main className="framer-panel flex min-w-0 flex-1 flex-col bg-[var(--fd-canvas)]">
+    <main className="framer-panel flex min-w-0 min-h-0 flex-1 flex-col bg-[var(--fd-canvas)]">
       {mutationError && <div className="border-b border-red-500/30 bg-red-500/10 px-6 py-2 text-sm text-red-100">{mutationError}</div>}
       {page === 'overview' && renderOverview()}
       {page === 'chain' && renderChainView()}
