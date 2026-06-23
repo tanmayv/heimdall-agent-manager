@@ -585,7 +585,7 @@ export default function TaskBoard({ session }) {
     return (
       <>
         {renderHeader(`Chain: ${selectedChain.title || selectedChain.chainId}`)}
-        <section className="min-h-0 flex-1 overflow-y-auto p-4">
+        <section className="min-h-0 flex-1 flex flex-col p-4">
           <div className="framer-card-xl mb-4 p-4">
             <div className="flex items-start justify-between gap-4"><div><p className="framer-topline">Chain detail</p><h3 className="mt-1 text-2xl font-bold text-white">{selectedChain.title || selectedChain.chainId}</h3><p className="framer-subtext mt-1 break-all text-xs">{selectedChain.chainId}</p></div><StatusPill status={selectedChain.status} /></div>
             <form onSubmit={handleChainMetadata} className="mt-4 grid gap-3">
@@ -597,7 +597,7 @@ export default function TaskBoard({ session }) {
             </form>
             <form onSubmit={handleChainStatus} className="mt-3 grid grid-cols-[0.55fr_1fr_auto] gap-2"><input data-debug-id="chain-status-input" value={chainStatusForm.status} onChange={(event) => setChainStatusForm({ ...chainStatusForm, status: event.target.value })} placeholder="status" className="framer-input px-3 py-2 text-sm" /><input data-debug-id="chain-status-summary" value={chainStatusForm.finalSummary} onChange={(event) => setChainStatusForm({ ...chainStatusForm, finalSummary: event.target.value })} placeholder="final summary" className="framer-input px-3 py-2 text-sm" /><button data-debug-id="chain-set-status-btn" disabled={!canMutate || !chainStatusForm.status.trim()} className="framer-pill bg-white disabled:opacity-40">Set status</button></form>
           </div>
-          <div className="grid min-h-[420px] grid-cols-4 gap-4">
+          <div className="grid grid-cols-4 gap-4 flex-1 min-h-0 overflow-hidden">
             {STATUS_COLUMNS.map((column) => renderColumn(column, [
               <button key={`${column.id}-add`} type="button" data-debug-id={`chain-add-task-btn-${column.id}`} onClick={() => openCreateTask('subtask')} className="framer-card mb-2 w-full border-dashed p-3 text-left text-sm text-[var(--fd-accent-blue)] hover:border-[var(--fd-accent-blue)]/50">+ Add task to chain</button>,
               ...tasksByBucket[column.id],
