@@ -29,7 +29,7 @@ task_status_terminal :: proc(status: Task_Status) -> bool {
 
 task_status_active_for_assignee :: proc(state: Task_State) -> bool {
 	#partial switch state.status {
-	case .Ready, .In_Progress, .Review_Ready:
+	case .In_Progress, .Review_Ready:
 		return true
 	case:
 		return false
