@@ -11,9 +11,22 @@ handle_user_ws :: proc(client: net.TCP_Socket, request: string) {
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid client_instance_id"}`)
 		return
 	}
-	if client_token == "" || user_client_find(client_instance_id) < 0 {
-		write_response(client, 404, "Not Found", `{"ok":false,"message":"unknown user client"}`)
+	if client_token == "" {
+		write_response(client, 400, "Bad Request", `{"ok":false,"message":"missing client token"}`)
 		return
+	}
+	if user_client_find(client_instance_id) < 0 {
+		itype, user_id := auth_db_get_identity(client_token)
+		if itype == "user" && user_id != "" {
+			_, ok, _ := user_client_register(user_id, client_instance_id, client_token)
+			if !ok {
+				write_response(client, 500, "Internal Error", `{"ok":false,"message":"failed to recover token registration"}`)
+				return
+			}
+		} else {
+			write_response(client, 404, "Not Found", `{"ok":false,"message":"unknown user client"}`)
+			return
+		}
 	}
 	key := extract_header(request, "Sec-WebSocket-Key")
 	if key == "" {
