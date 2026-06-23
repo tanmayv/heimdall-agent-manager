@@ -268,6 +268,12 @@ task_store_init :: proc(data_dir: string) {
 	if !task_db_load_all() {
 		fmt.println("ERROR: Failed to load task data from SQLite relational tables")
 	}
+
+	for i in 0..<task_state_count {
+		if task_states[i].status == .Ready {
+			task_service_auto_claim(task_states[i].task_id)
+		}
+	}
 }
 
 task_store_append_event :: proc(event: Task_Event) -> bool {
