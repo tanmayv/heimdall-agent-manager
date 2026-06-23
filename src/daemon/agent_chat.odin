@@ -14,9 +14,7 @@ agent_chat_notify_user_message :: proc(agent_instance_id, user_id, message_id: s
 	msg, ok := message_db_get_message(message_id)
 	send_escape := false
 	if ok {
-		if strings.has_prefix(msg.body, "\u001b") {
-			send_escape = true
-		}
+		send_escape = msg.interrupt
 		delete(msg.message_id)
 		delete(msg.user_id)
 		delete(msg.agent_instance_id)

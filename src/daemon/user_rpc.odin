@@ -56,9 +56,9 @@ handle_user_rpc_send_to_agent :: proc(client: net.TCP_Socket, body, user_id: str
 	agent_instance_id := extract_json_string(body, "agent_instance_id", "")
 	message_body := extract_json_string(body, "body", "")
 	interrupt := extract_json_bool(body, "interrupt", false)
-
-	if interrupt && !strings.has_prefix(message_body, "\u001b") {
-		message_body = fmt.tprintf("\u001b%s", message_body)
+	is_interrupt := interrupt || strings.has_prefix(message_body, "\u001b")
+	if strings.has_prefix(message_body, "\u001b") {
+		message_body = message_body[len("\u001b"):]
 	}
 
 	fmt.println("DEBUG: handle_user_rpc_send_to_agent called for user", user_id, "to agent", agent_instance_id)
@@ -71,7 +71,7 @@ handle_user_rpc_send_to_agent :: proc(client: net.TCP_Socket, body, user_id: str
 		write_response(client, 404, "Not Found", `{"ok":false,"message":"unknown agent"}`)
 		return
 	}
-	message_id, ok := chat_store_append_message(user_id, agent_instance_id, "user_to_agent", message_body)
+	message_id, ok := chat_store_append_message(user_id, agent_instance_id, "user_to_agent", message_body, is_interrupt)
 	fmt.println("DEBUG: chat_store_append_message returned message_id =", message_id, "ok =", ok)
 	if !ok {
 		fmt.printf("ERROR: send_to_agent failed: chat_store_append_message failed for user '%s' to agent '%s'\n", user_id, agent_instance_id)
@@ -253,6 +253,8 @@ chat_write_message_json :: proc(builder: ^strings.Builder, msg: Chat_Message) {
 	strings.write_string(builder, `,"delivery_failed_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", msg.delivery_failed_unix_ms))
 	strings.write_string(builder, `,"delivery_error":"`); json_write_string(builder, msg.delivery_error); strings.write_string(builder, `"`)
 	strings.write_string(builder, `,"created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", msg.created_unix_ms))
+	strings.write_string(builder, `,"interrupt":`)
+	strings.write_string(builder, "true" if msg.interrupt else "false")
 	strings.write_string(builder, `}`)
 }
 

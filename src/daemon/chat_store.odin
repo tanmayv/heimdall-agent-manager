@@ -18,6 +18,7 @@ Chat_Event :: struct {
 	delivery_failed_unix_ms: i64,
 	delivery_error: string,
 	created_unix_ms: i64,
+	interrupt: bool,
 }
 
 Chat_Message :: struct {
@@ -31,6 +32,7 @@ Chat_Message :: struct {
 	delivery_failed_unix_ms: i64,
 	delivery_error: string,
 	created_unix_ms: i64,
+	interrupt: bool,
 }
 
 chat_store_init :: proc(data_dir: string) {
@@ -58,6 +60,7 @@ chat_store_append_event :: proc(event: Chat_Event) -> bool {
 			delivery_failed_unix_ms = ev.delivery_failed_unix_ms,
 			delivery_error = ev.delivery_error,
 			created_unix_ms = ev.created_unix_ms,
+			interrupt = ev.interrupt,
 		}
 		if !message_db_insert(msg) {
 			fmt.println("chat_store_append_event: failed to insert message", ev.message_id)
@@ -98,7 +101,7 @@ chat_message_created :: proc(message_id: string) -> i64 {
 	return message_db_get_created_time(message_id)
 }
 
-chat_store_append_message :: proc(user_id, agent_instance_id, direction, body: string) -> (string, bool) {
+chat_store_append_message :: proc(user_id, agent_instance_id, direction, body: string, interrupt: bool) -> (string, bool) {
 	event := Chat_Event{
 		kind = .Message_Appended,
 		user_id = user_id,
@@ -106,6 +109,7 @@ chat_store_append_message :: proc(user_id, agent_instance_id, direction, body: s
 		direction = direction,
 		body = body,
 		created_unix_ms = router_now_unix_ms(),
+		interrupt = interrupt,
 	}
 
 	if event.created_unix_ms == 0 do event.created_unix_ms = router_now_unix_ms()

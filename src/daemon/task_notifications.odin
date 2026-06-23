@@ -190,7 +190,7 @@ task_notification_json :: proc(event: Task_Event, status: string) -> string {
 		strings.write_string(&b, `,"delivery_method":"`)
 		json_write_string(&b, task_nudge_delivery_method(event.body))
 		strings.write_string(&b, `","send_escape_prefix":`)
-		strings.write_string(&b, "true" if strings.index(event.body, "delivery=escape_prefixed_pane_or_ws") >= 0 else "false")
+		strings.write_string(&b, "false" if strings.index(event.body, "delivery=websocket_only") >= 0 else "true")
 	}
 
 	// Augment with full task payload if task_id is present

@@ -3,7 +3,7 @@ package main
 chat_append_agent_to_user :: proc(user_id, agent_instance_id, body: string) -> (string, bool) {
 	if user_id == "" || agent_instance_id == "" || body == "" do return "", false
 
-	message_id, ok := chat_store_append_message(user_id, agent_instance_id, "agent_to_user", body)
+	message_id, ok := chat_store_append_message(user_id, agent_instance_id, "agent_to_user", body, false)
 	if !ok || message_id == "" {
 		return "", false
 	}

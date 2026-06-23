@@ -517,7 +517,8 @@ handle_task_event :: proc(text, tmux_pane, agent_instance_id: string) {
 	)
 	defer delete(line)
 
-	escape_prefix := true
+	send_escape := extract_json_bool(text, "send_escape_prefix", false)
+	escape_prefix := send_escape || interrupt_val
 
 	if tmux.send_line_with_escape(tmux_pane, line, escape_prefix) {
 		fmt.println("notified agent pane", line)

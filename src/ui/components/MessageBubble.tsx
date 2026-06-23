@@ -511,8 +511,8 @@ function MessageBubble({ message, session }: { message: any; session: any }) {
   const [multiSubmitted, setMultiSubmitted] = useState(false);
 
   const isUser = message.author === 'user';
-  const isInterrupt = typeof message.body === 'string' && message.body.startsWith('\u001b');
-  const displayBody = isInterrupt ? message.body.slice(1) : (message.body || '');
+  const isInterrupt = !!message.interrupt || (typeof message.body === 'string' && message.body.startsWith('\u001b'));
+  const displayBody = (typeof message.body === 'string' && message.body.startsWith('\u001b')) ? message.body.slice(1) : (message.body || '');
 
   type MultiQuestion = {
     type: 'multi_question';

@@ -162,6 +162,7 @@ function mapMessage(message: any) {
     deliveredUnixMs,
     readAt: readUnixMs > 0 ? new Date(readUnixMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
     readUnixMs,
+    interrupt: !!message.interrupt,
   };
 }
 

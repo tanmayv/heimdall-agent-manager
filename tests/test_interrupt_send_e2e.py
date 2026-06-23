@@ -230,6 +230,22 @@ command = ["python3", "{repo_dir}/tests/key_logger.py", "{key_log_path}"]
             if normal_idx > 0:
                 assert log_lines[normal_idx-1] != "KEY: ESCAPE", "Unexpected ESCAPE key before normal message"
                 
+            # Verify database contents
+            import sqlite3
+            db_path = os.path.join(temp_home, "data", "chat", "messages.db")
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT body, interrupt FROM messages ORDER BY created_unix_ms DESC LIMIT 2")
+            rows = cursor.fetchall()
+            conn.close()
+            
+            print(f"[*] DB rows: {rows}")
+            assert len(rows) == 2, f"Expected 2 messages in DB, got {len(rows)}"
+            assert rows[0][0] == "hello_interrupt", f"Expected 'hello_interrupt', got '{rows[0][0]}'"
+            assert rows[0][1] == 1, f"Expected interrupt = 1, got {rows[0][1]}"
+            assert rows[1][0] == "hello_normal", f"Expected 'hello_normal', got '{rows[1][0]}'"
+            assert rows[1][1] == 0, f"Expected interrupt = 0, got {rows[1][1]}"
+
             print("[+] PASS: Interrupt Send E2E verification successful!")
         except AssertionError as ae:
             test_failed = True

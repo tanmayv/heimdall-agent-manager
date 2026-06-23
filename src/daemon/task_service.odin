@@ -525,7 +525,7 @@ task_service_ping_coordinator_for_chain_completion :: proc(chain_id: string) {
 		TASK_CHAIN_BEST_PRACTICES,
 	)
 
-	_, ok := chat_store_append_message("operator@local", chain.coordinator_agent_instance_id, "user_to_agent", message_body)
+	_, ok := chat_store_append_message("operator@local", chain.coordinator_agent_instance_id, "user_to_agent", message_body, false)
 	if !ok {
 		fmt.println("WARNING: Failed to append completion ping message to coordinator agent:", chain.coordinator_agent_instance_id)
 	} else {
