@@ -623,6 +623,34 @@ task_service_chain_status_command :: proc(cmd: Task_Chain_Status_Command) -> Tas
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append chain status failed"}`}
 	}
 	task_notify_event(status_event)
+
+	// Orchestrate member tasks based on the new chain status
+	if cmd.status == "completed" || cmd.status == "archived" || cmd.status == "planning" {
+		next_status := "cancelled" if (cmd.status == "completed" || cmd.status == "archived") else "planning"
+		body_text := "system_auto:chain_completed" if (cmd.status == "completed" || cmd.status == "archived") else "system_auto:chain_moved_to_planning"
+		next_status_val, _ := task_status_from_string(next_status)
+
+		for i in 0..<task_state_count {
+			state := task_states[i]
+			if state.chain_id != cmd.chain_id do continue
+			if task_status_terminal(state.status) do continue
+			if state.status == next_status_val do continue
+
+			event := Task_Event{
+				kind                     = .Task_Status_Changed,
+				task_id                  = state.task_id,
+				chain_id                 = state.chain_id,
+				status                   = next_status,
+				body                     = body_text,
+				author_agent_instance_id = cmd.author_agent_instance_id,
+			}
+			if task_store_append_event(event) {
+				task_notify_event(event)
+			}
+		}
+		task_recompute_promotions(cmd.author_agent_instance_id)
+	}
+
 	archive_ok := true
 	if cmd.status == "completed" || cmd.status == "archived" {
 		archive_ok = task_archive_chain_to_hub(cmd.chain_id)

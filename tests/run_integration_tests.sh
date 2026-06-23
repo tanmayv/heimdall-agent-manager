@@ -133,5 +133,14 @@ if ! python3 "$SCRIPT_DIR/test_user_rpc_comment_resolve.py" > "$TEMP_HOME/test_u
   exit 1
 fi
 
+echo "[*] Running chain status orchestration integration test..."
+if ! python3 "$SCRIPT_DIR/test_chain_status_orchestration.py" > "$TEMP_HOME/test_chain_status_orchestration.log" 2>&1; then
+  echo "[-] Error: test_chain_status_orchestration.py failed! Full test logs:"
+  cat "$TEMP_HOME/test_chain_status_orchestration.log" || true
+  echo "[-] Daemon logs:"
+  cat "$TEMP_HOME/daemon.log" || true
+  exit 1
+fi
+
 echo "[*] Integration tests completed successfully!"
 
