@@ -10,6 +10,13 @@
 
 set -euo pipefail
 
+if [ -n "${HEIMDALL_HOME:-}" ]; then
+  HEIMDALL_DATA_DIR="$HEIMDALL_HOME/.local/share/heimdall"
+else
+  HEIMDALL_DATA_DIR="$HOME/.local/share/heimdall"
+fi
+
+
 DAEMON="${1:-http://127.0.0.1:49322}"
 # Agent token for authenticated endpoints (projects/create, tasks/*, memory/*)
 AGENT_TOKEN="${AGENT_TOKEN:-agt_dadbba5b331bad510f62f454ef61c9f3e8fdf5091752f66012e83a39b67adac8}"
@@ -18,6 +25,7 @@ FAIL=0
 # Unique suffix per run to avoid 409 conflicts with still-connected agents
 RUN_ID="$(date +%s)"
 TEST_AGENT_ID="featurex${RUN_ID}@test-suite"
+
 
 # --- helpers ---
 
@@ -62,6 +70,10 @@ if ! echo "$HEALTH" | grep -q '"ok":true'; then
 fi
 echo "daemon ok: $DAEMON"
 echo ""
+
+# Register the agent first to establish a valid AGENT_TOKEN in a fresh daemon
+post /register "{\"agent_instance_id\":\"$TEST_AGENT_ID\",\"agent_token\":\"$AGENT_TOKEN\",\"display_name\":\"Feature X Tester\"}" >/dev/null
+
 
 # --- pre-test cleanup (handles partial runs from previous invocations) ---
 post /agents/templates/archive '{"template_id":"test-tester"}' >/dev/null 2>&1 || true
@@ -231,7 +243,7 @@ echo "[*] Archiving test agent via REST API..."
 post /agents/archive "{\"agent_instance_id\":\"$TEST_AGENT_ID\"}" >/dev/null || true
 
 # 2. Delete tasks, chains, and participants from SQLite database
-DB_PATH="$HOME/.local/share/heimdall/tasks/task.db"
+DB_PATH="$HEIMDALL_DATA_DIR/tasks/task.db"
 if [ -f "$DB_PATH" ] && [ -n "${PROJ_ID:-}" ]; then
   echo "[*] Wiping tasks, chains, votes, comments, and participants from SQLite..."
   sqlite3 "$DB_PATH" <<EOF
@@ -244,14 +256,14 @@ EOF
 fi
 
 # 3. Clean up flat files (JSONL event logs) on disk for next daemon start
-PROJECT_LOG="$HOME/.local/share/heimdall/projects/events.jsonl"
+PROJECT_LOG="$HEIMDALL_DATA_DIR/projects/events.jsonl"
 if [ -f "$PROJECT_LOG" ] && [ -n "${PROJ_ID:-}" ]; then
   echo "[*] Removing test project events from flat file logs..."
   grep -v "\"project_id\":\"$PROJ_ID\"" "$PROJECT_LOG" > "${PROJECT_LOG}.tmp" || true
   mv "${PROJECT_LOG}.tmp" "$PROJECT_LOG"
 fi
 
-AGENT_LOG="$HOME/.local/share/heimdall/agents/instance-events.jsonl"
+AGENT_LOG="$HEIMDALL_DATA_DIR/agents/instance-events.jsonl"
 if [ -f "$AGENT_LOG" ]; then
   echo "[*] Removing test agent events from flat file logs..."
   grep -v "\"agent_instance_id\":\"$TEST_AGENT_ID\"" "$AGENT_LOG" > "${AGENT_LOG}.tmp" || true

@@ -25,17 +25,17 @@ const STATUS_COLUMNS = [
 ];
 
 const TASK_STATUS_BY_COLUMN = {
-  planned: 'pending',
+  planned: 'planning',
   ready: 'ready',
-  working: 'working',
-  done: 'done',
+  working: 'in_progress',
+  done: 'approved',
 };
 
 const CHAIN_STATUS_BY_COLUMN = {
-  planned: 'planned',
+  planned: 'planning',
   ready: 'ready',
-  working: 'working',
-  done: 'done',
+  working: 'in_progress',
+  done: 'completed',
 };
 
 const blankCreateForm = {

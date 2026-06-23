@@ -59,7 +59,7 @@ smart = "opus"
 
 [wrapper.agent-cmd.pi.startup_detection]
 enabled = false
-ready_on_launch = true
+
 
 [wrapper.agent-cmd.claude]
 command = ["claude"]

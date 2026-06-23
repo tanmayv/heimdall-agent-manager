@@ -84,7 +84,6 @@ Wrapper_Config :: struct {
 
 Startup_Detection_Config :: struct {
 	enabled: bool,
-	ready_on_launch: bool,
 	startup_probe_seconds: int,
 	capture_interval_ms: int,
 	blocked_patterns: []string,
@@ -453,8 +452,6 @@ parse_startup_detection_key :: proc(name, key, value: string, cfg: ^Wrapper_Conf
 	switch key {
 	case "enabled":
 		sd.enabled = parse_bool(value)
-	case "ready_on_launch":
-		sd.ready_on_launch = parse_bool(value)
 	case "startup_probe_seconds":
 		if n, ok := strconv.parse_int(value); ok do sd.startup_probe_seconds = int(n)
 	case "capture_interval_ms":

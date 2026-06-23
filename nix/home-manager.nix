@@ -239,7 +239,6 @@ let
 
   mkStartupDetection = sd:
     { enabled = sd.enabled; }
-    // lib.optionalAttrs (sd.readyOnLaunch != null)          { ready_on_launch            = sd.readyOnLaunch; }
     // lib.optionalAttrs (sd.startupProbeSeconds != null)     { startup_probe_seconds       = sd.startupProbeSeconds; }
     // lib.optionalAttrs (sd.captureIntervalMs != null)       { capture_interval_ms         = sd.captureIntervalMs; }
     // lib.optionalAttrs (sd.autoEnterPatterns != [])         { auto_enter_patterns         = sd.autoEnterPatterns; }

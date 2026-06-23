@@ -310,7 +310,6 @@ Wrappers can classify provider startup without persisting raw terminal transcrip
 enabled = true
 startup_probe_seconds = 20
 capture_interval_ms = 500
-ready_patterns = ["> ", "How can I help"]
 blocked_patterns = ["Do you trust the files in this folder", "Claude needs your permission"]
 probe_prompt = ""
 probe_expect_echo = false

@@ -33,10 +33,18 @@ RUN_ID="$(date +%s)"
 
 # Prefer the Nix store ham-ctl written into config (has all commands),
 # fall back to repo binary for dev environments.
-HAM_CTL_BIN=$(grep 'ham_ctl_bin' ~/.config/heimdall/config.toml 2>/dev/null \
+if [ -n "${HEIMDALL_HOME:-}" ]; then
+  HEIMDALL_CONFIG_PATH="$HEIMDALL_HOME/config.toml"
+  HEIMDALL_DATA_DIR="$HEIMDALL_HOME/.local/share/heimdall"
+else
+  HEIMDALL_CONFIG_PATH="$HOME/.config/heimdall/config.toml"
+  HEIMDALL_DATA_DIR="$HOME/.local/share/heimdall"
+fi
+
+HAM_CTL_BIN=$(grep 'ham_ctl_bin' "$HEIMDALL_CONFIG_PATH" 2>/dev/null \
   | sed 's/.*= "\(.*\)"/\1/' | head -1)
 HAM_CTL_BIN="${HAM_CTL_BIN:-./bin/linux-x86_64/ham-ctl}"
-CTL="$HAM_CTL_BIN --config ~/.config/heimdall/config.toml"
+CTL="$HAM_CTL_BIN --config $HEIMDALL_CONFIG_PATH"
 
 PASS=0
 FAIL=0
@@ -70,8 +78,8 @@ assert_field()   {
 # ── health check ──────────────────────────────────────────────────────────────
 
 HEALTH=$(ctl health)
-is_ok "$HEALTH" || { echo "ERROR: daemon not reachable (check ~/.config/heimdall/config.toml)"; exit 1; }
-echo "daemon ok  run_id=$RUN_ID  config=~/.config/heimdall/config.toml"
+is_ok "$HEALTH" || { echo "ERROR: daemon not reachable (check $HEIMDALL_CONFIG_PATH)"; exit 1; }
+echo "daemon ok  run_id=$RUN_ID  config=$HEIMDALL_CONFIG_PATH"
 echo "ctl:       $HAM_CTL_BIN"
 
 # ── register a fresh test agent for this run ──────────────────────────────────
@@ -425,7 +433,7 @@ curl -s -X POST "$DAEMON_URL/agents/archive" \
   -d "{\"agent_instance_id\":\"$ME\"}" >/dev/null || true
 
 # 2. Delete tasks, chains, and participants from SQLite database
-DB_PATH="$HOME/.local/share/heimdall/tasks/task.db"
+DB_PATH="$HEIMDALL_DATA_DIR/tasks/task.db"
 if [ -f "$DB_PATH" ]; then
   echo "[*] Wiping tasks, chains, votes, comments, and participants from SQLite..."
   sqlite3 "$DB_PATH" <<EOF
@@ -438,14 +446,14 @@ EOF
 fi
 
 # 3. Clean up flat files (JSONL event logs) on disk for next daemon start
-PROJECT_LOG="$HOME/.local/share/heimdall/projects/events.jsonl"
+PROJECT_LOG="$HEIMDALL_DATA_DIR/projects/events.jsonl"
 if [ -f "$PROJECT_LOG" ]; then
   echo "[*] Removing test project events from flat file logs..."
   grep -v "\"project_id\":\"project_$RUN_ID\"" "$PROJECT_LOG" > "${PROJECT_LOG}.tmp" || true
   mv "${PROJECT_LOG}.tmp" "$PROJECT_LOG"
 fi
 
-AGENT_LOG="$HOME/.local/share/heimdall/agents/instance-events.jsonl"
+AGENT_LOG="$HEIMDALL_DATA_DIR/agents/instance-events.jsonl"
 if [ -f "$AGENT_LOG" ]; then
   echo "[*] Removing test agent events from flat file logs..."
   grep -v "\"agent_instance_id\":\"$ME\"" "$AGENT_LOG" > "${AGENT_LOG}.tmp" || true

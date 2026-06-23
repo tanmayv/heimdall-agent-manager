@@ -153,8 +153,9 @@ main :: proc() {
 	}
 	fmt.println("tmux_pane", launch.pane_id)
 	startup_status := "ready"
-	startup_reason_code := "ready_on_launch"
+	startup_reason_code := "launch_success"
 	startup_safe_diagnostic := "Startup detection disabled; assuming ready"
+
 
 	report_startup_status(cfg.daemon_url, registered_instance_id, "starting", "launch", "Agent process launched in tmux", selected_agent, cwd, launch.pane_id)
 	result := startup_probe_agent(agent_cmd.startup_detection, launch.pane_id)
@@ -194,7 +195,6 @@ Startup_Probe_Result :: struct {
 
 startup_probe_agent :: proc(cfg: cfg_lib.Startup_Detection_Config, pane_id: string, abort_flag: ^bool = nil) -> Startup_Probe_Result {
 	if !cfg.enabled {
-		if cfg.ready_on_launch do return Startup_Probe_Result{status = "ready", reason_code = "launch_success", safe_diagnostic = "Agent reported ready on successful launch"}
 		return Startup_Probe_Result{status = "disabled"}
 	}
 	if pane_id == "" do return Startup_Probe_Result{status = "startup_failed", reason_code = "missing_pane", safe_diagnostic = "tmux pane was not available for startup detection"}
@@ -468,7 +468,7 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 				fmt.println("ws message", text)
 			}
 		}
-		time.sleep(5 * time.Second)
+		time.sleep(10 * time.Second)
 	}
 }
 

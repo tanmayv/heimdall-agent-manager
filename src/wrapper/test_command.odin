@@ -320,7 +320,7 @@ step5_startup :: proc(state: ^Test_State, agent_cmd: cfg_lib.Agent_Command_Confi
 	sd := agent_cmd.startup_detection
 
 	if !sd.enabled {
-		detail = fmt.tprintf("disabled by config; ready_on_launch=%v", sd.ready_on_launch)
+		detail = "disabled by config"
 		return true, detail, "", false
 	}
 
