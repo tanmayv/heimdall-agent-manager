@@ -264,6 +264,8 @@ function MessageBubble({ message }: { message: any }) {
   const [multiSubmitted, setMultiSubmitted] = useState(false);
 
   const isUser = message.author === 'user';
+  const isInterrupt = typeof message.body === 'string' && message.body.startsWith('\u001b');
+  const displayBody = isInterrupt ? message.body.slice(1) : (message.body || '');
 
   type MultiQuestion = {
     type: 'multi_question';
@@ -334,7 +336,7 @@ function MessageBubble({ message }: { message: any }) {
         ? 'Questionnaire Card'
         : structuredQuestion
         ? structuredQuestion.question
-        : (message.body || '');
+        : displayBody;
       await copyMessageText(rawText);
       setCopyState('copied');
     } catch {
@@ -471,6 +473,15 @@ function MessageBubble({ message }: { message: any }) {
             </svg>
           )}
         </button>
+        {isInterrupt && (
+          <div className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider mb-2 border ${
+            isUser 
+              ? 'bg-black/10 border-black/20 text-black/80' 
+              : 'bg-[var(--fd-accent-blue)]/10 border-[var(--fd-accent-blue)]/20 text-[var(--fd-accent-blue)]'
+          }`}>
+            <span>⚡ Interrupt</span>
+          </div>
+        )}
         {multiQuestion ? (
           renderMultiQuestionCard(multiQuestion)
         ) : structuredQuestion ? (
@@ -502,7 +513,7 @@ function MessageBubble({ message }: { message: any }) {
         ) : smartAnswerBody ? (
           <MarkdownContent text={smartAnswerBody} />
         ) : (
-          <MarkdownContent text={message.body} />
+          <MarkdownContent text={displayBody} />
         )}
         <p className={`mt-2 flex items-center justify-end gap-2 text-xs ${isUser ? 'text-slate-900/70' : 'text-[#999]'}`}>
           <span>{message.timestamp}</span>
