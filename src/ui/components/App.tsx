@@ -34,7 +34,7 @@ import {
   startAgentInstance,
   stopAgentInstance,
 } from '../store/chatSlice';
-import { refreshTaskBoard, taskEventReceived, updateTaskStateDirectly, fetchUnreviewedChains } from '../store/taskSlice';
+import { refreshTaskBoard, taskEventReceived, updateTaskStateDirectly, updateChainStateDirectly, fetchUnreviewedChains } from '../store/taskSlice';
 import { memoryEventReceived, refreshMemory, auditStartedReceived, auditEndedReceived } from '../store/memorySlice';
 import { refreshProjects, reorderProjectsFromUi } from '../store/projectSlice';
 import * as daemonApi from '../api/daemonApi';
@@ -243,7 +243,11 @@ export default function App() {
           dispatch(taskEventReceived(payload));
           if (payload.task) {
             dispatch(updateTaskStateDirectly(payload.task));
-          } else {
+          }
+          if (payload.chain) {
+            dispatch(updateChainStateDirectly(payload.chain));
+          }
+          if (!payload.task && !payload.chain) {
             dispatch(refreshTaskBoard());
           }
           return;
