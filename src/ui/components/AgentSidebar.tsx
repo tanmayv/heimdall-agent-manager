@@ -1,4 +1,4 @@
-import { useMemo, useState, memo, useCallback } from 'react';
+import { useMemo, useState, memo, useCallback, useRef } from 'react';
 import AgentListItem from './AgentListItem';
 import { MessageSquare, ClipboardList, Brain, History, Folder, Bot, Settings, Activity, Pin, PinOff } from 'lucide-react';
 
@@ -89,6 +89,9 @@ const AgentSidebar = memo(function AgentSidebar({
   });
   const [isHovered, setIsHovered] = useState(false);
 
+  const expandedScrollRef = useRef<HTMLDivElement>(null);
+  const collapsedScrollRef = useRef<HTMLDivElement>(null);
+
   const togglePin = useCallback(() => {
     setIsPinned((prev) => {
       const next = !prev;
@@ -105,9 +108,15 @@ const AgentSidebar = memo(function AgentSidebar({
 
   const handleMouseLeave = useCallback(() => {
     setIsHovered(false);
+    if (expandedScrollRef.current) expandedScrollRef.current.scrollTop = 0;
+    if (collapsedScrollRef.current) collapsedScrollRef.current.scrollTop = 0;
   }, []);
 
   const isExpanded = isPinned || isHovered;
+
+  const unreadAgents = useMemo(() => {
+    return agents.filter((agent) => agent.unreadCount > 0);
+  }, [agents]);
 
   const handleDragOverProject = useCallback((e: React.DragEvent, id: string) => {
     if (id === 'unassigned') return;
@@ -407,7 +416,36 @@ const AgentSidebar = memo(function AgentSidebar({
             </div>
           </div>
 
-          <div className="mt-3 flex flex-1 flex-col gap-3 overflow-y-auto pr-1">
+          <div ref={expandedScrollRef} className="mt-3 flex flex-1 flex-col gap-3 overflow-y-auto pr-1">
+            {unreadAgents.length > 0 && (
+              <div className="space-y-1.5 pb-2 border-b border-[var(--fd-hairline)]/50">
+                <p className="text-[9px] font-bold uppercase tracking-[0.15em] text-amber-500">Unread Messages</p>
+                <div className="flex flex-col gap-1.5">
+                  {unreadAgents.map((agent) => (
+                    <button
+                      key={agent.id}
+                      type="button"
+                      data-debug-id={`unread-agent-nav-btn-${agent.id}`}
+                      onClick={() => onSelectAgent(agent.id)}
+                      className={`flex w-full items-center justify-between rounded-[var(--fd-radius-lg)] border px-3 py-1.5 text-left transition hover:border-[var(--fd-accent-blue)]/50 ${
+                        agent.id === selectedAgentId
+                          ? 'border-[var(--fd-accent-blue)] bg-[var(--fd-accent-blue)]/5'
+                          : 'border-[var(--fd-hairline)] bg-[var(--fd-surface-1)] hover:bg-[var(--fd-surface-2)]'
+                      }`}
+                    >
+                      <div className="min-w-0 flex-1 flex items-center gap-2">
+                        <span className={`h-2 w-2 rounded-full ${agentStatusColors[agent.status] || 'bg-gray-600'}`} />
+                        <span className="truncate text-xs font-semibold text-white">{agent.label}</span>
+                      </div>
+                      <span className="rounded-full bg-[var(--fd-accent-blue)] px-1.5 py-0.5 text-[9px] font-bold text-black shrink-0">
+                        {agent.unreadCount} unread
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             {agents.length ? (
               projectGroups.map(([projectId, groupAgents]) => {
                 const collapsed = Boolean(collapsedProjects[projectId]);
@@ -474,7 +512,7 @@ const AgentSidebar = memo(function AgentSidebar({
           </div>
         </>
       ) : (
-        <div className="mt-6 flex flex-1 flex-col items-center gap-4 overflow-y-auto">
+        <div ref={collapsedScrollRef} className="mt-6 flex flex-1 flex-col items-center gap-4 overflow-y-auto">
           {agents
             .filter((agent) => agent.unreadCount > 0)
             .map((agent) => {
