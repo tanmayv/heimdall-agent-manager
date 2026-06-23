@@ -56,10 +56,26 @@ function normalizeTemplate(t: any) {
     persona: t.persona || '',
     instructions: t.instructions || '',
     suggestedModelTier: t.suggested_model_tier || t.suggestedModelTier || 'normal',
+    description: t.description || '',
+    parentTemplateId: t.parent_template_id || t.parentTemplateId || '',
+    bootstrapDefaults: t.bootstrap_defaults || t.bootstrapDefaults || '',
+    memoryTemplates: t.memory_templates || t.memoryTemplates || [],
   };
 }
 
-const blankTemplate = { templateId: '', displayName: '', roleHint: '', defaultProviderProfile: '', persona: '', instructions: '', suggestedModelTier: 'normal' };
+const blankTemplate = {
+  templateId: '',
+  displayName: '',
+  roleHint: '',
+  defaultProviderProfile: '',
+  persona: '',
+  instructions: '',
+  suggestedModelTier: 'normal',
+  description: '',
+  parentTemplateId: '',
+  bootstrapDefaults: '',
+  memoryTemplates: [],
+};
 
 export default function AgentsPage({ session, onOpenStartAgent }: { session: any; onOpenStartAgent: () => void }) {
   const renderStart = performance.now();
@@ -257,6 +273,10 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
     setTemplateSaving(true);
     setTemplateFormError('');
     try {
+      const memoryTemplates = typeof formData.memoryTemplates === 'string'
+        ? formData.memoryTemplates.split(',').map((s: string) => s.trim()).filter(Boolean)
+        : (formData.memoryTemplates || []);
+
       await daemonApi.saveAgentTemplate({
         daemonUrl: session.daemonUrl,
         template: {
@@ -267,6 +287,10 @@ export default function AgentsPage({ session, onOpenStartAgent }: { session: any
           persona: formData.persona.trim(),
           instructions: formData.instructions.trim(),
           suggested_model_tier: formData.suggestedModelTier,
+          description: formData.description.trim(),
+          parent_template_id: formData.parentTemplateId.trim(),
+          bootstrap_defaults: formData.bootstrapDefaults.trim(),
+          memory_templates: memoryTemplates,
           update: !isNew,
         },
       });
@@ -703,6 +727,12 @@ function TemplateEditForm({
     persona: template.persona || '',
     instructions: template.instructions || '',
     suggestedModelTier: template.suggestedModelTier || 'normal',
+    description: template.description || '',
+    parentTemplateId: template.parentTemplateId || '',
+    bootstrapDefaults: template.bootstrapDefaults || '',
+    memoryTemplates: Array.isArray(template.memoryTemplates)
+      ? template.memoryTemplates.join(', ')
+      : template.memoryTemplates || '',
   });
 
   const isNew = !template.templateId;
@@ -726,6 +756,10 @@ function TemplateEditForm({
       <label className="block">
         <span className="framer-topline text-[10px]">Display name <span className="text-red-400">*</span></span>
         <input data-debug-id="template-form-display-name" value={form.displayName} onChange={(e) => setForm((f) => ({ ...f, displayName: e.target.value }))} placeholder="e.g. Coding agent" className="framer-input mt-1.5 w-full px-3 py-2 text-sm" />
+      </label>
+      <label className="block">
+        <span className="framer-topline text-[10px]">Description</span>
+        <textarea data-debug-id="template-form-description" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} rows={2} placeholder="Brief description of the template's purpose..." className="framer-input mt-1.5 w-full resize-none px-3 py-2 text-sm" />
       </label>
       <label className="block">
         <span className="framer-topline text-[10px]">Role hint</span>
@@ -756,6 +790,19 @@ function TemplateEditForm({
       <label className="block">
         <span className="framer-topline text-[10px]">Instructions</span>
         <textarea data-debug-id="template-form-instructions" value={form.instructions} onChange={(e) => setForm((f) => ({ ...f, instructions: e.target.value }))} rows={3} placeholder="Provide step-by-step operating guidelines or starter prompts..." className="framer-input mt-1.5 w-full resize-none px-3 py-2 text-sm" />
+      </label>
+      <label className="block">
+        <span className="framer-topline text-[10px]">Parent template ID</span>
+        <input data-debug-id="template-form-parent-id" value={form.parentTemplateId} onChange={(e) => setForm((f) => ({ ...f, parentTemplateId: e.target.value }))} placeholder="e.g. base" className="framer-input mt-1.5 w-full px-3 py-2 text-sm" />
+      </label>
+      <label className="block">
+        <span className="framer-topline text-[10px]">Bootstrap defaults</span>
+        <textarea data-debug-id="template-form-bootstrap-defaults" value={form.bootstrapDefaults} onChange={(e) => setForm((f) => ({ ...f, bootstrapDefaults: e.target.value }))} rows={3} placeholder="JSON or custom string overrides..." className="framer-input mt-1.5 w-full resize-none px-3 py-2 text-sm" />
+      </label>
+      <label className="block">
+        <span className="framer-topline text-[10px]">Memory templates</span>
+        <input data-debug-id="template-form-memory-templates" value={form.memoryTemplates} onChange={(e) => setForm((f) => ({ ...f, memoryTemplates: e.target.value }))} placeholder="e.g. tmpl1, tmpl2" className="framer-input mt-1.5 w-full px-3 py-2 text-sm" />
+        <p className="mt-1 text-[11px] text-[#777]">Comma-separated list of memory template keys.</p>
       </label>
       <div className="flex justify-end gap-2">
         <button type="button" data-debug-id="template-form-cancel-btn" onClick={onCancel} className="framer-pill-secondary">Cancel</button>
