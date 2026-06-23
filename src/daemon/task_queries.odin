@@ -88,6 +88,22 @@ task_coordinator_agent_instance_id :: proc(state: Task_State) -> string {
 	return task_chains[idx].coordinator_agent_instance_id
 }
 
+task_reviewer_agent_instance_id :: proc(state: Task_State) -> string {
+	for i in 0..<task_participant_count {
+		p := task_participants[i]
+		if p.task_id == state.task_id && p.role == "lgtm_required" {
+			return p.agent_instance_id
+		}
+	}
+	if state.chain_id != "" {
+		idx, found := task_existing_chain_index(state.chain_id)
+		if found && task_chains[idx].default_reviewer_agent_instance_id != "" {
+			return task_chains[idx].default_reviewer_agent_instance_id
+		}
+	}
+	return "operator@local"
+}
+
 // --- Active slot checks ---
 
 // Returns the task_id that blocks the assignee from taking another task (excludes excluding_task_id).
@@ -182,7 +198,7 @@ task_actor_has_role :: proc(state: Task_State, actor, role: string) -> bool {
 	case "assignee":
 		if state.assignee_agent_instance_id == actor do return true
 	case "coordinator":
-		if state.coordinator_agent_instance_id == actor do return true
+		if task_coordinator_agent_instance_id(state) == actor do return true
 	case:
 	}
 	for i in 0..<task_participant_count {
@@ -231,7 +247,8 @@ task_target_for_role :: proc(state: Task_State, role: string) -> string {
 	case "assignee":
 		if state.assignee_agent_instance_id != "" do return state.assignee_agent_instance_id
 	case "coordinator":
-		if state.coordinator_agent_instance_id != "" do return state.coordinator_agent_instance_id
+		coord := task_coordinator_agent_instance_id(state)
+		if coord != "" do return coord
 	case:
 	}
 	for i in 0..<task_participant_count {
@@ -395,7 +412,8 @@ task_write_state_json :: proc(builder: ^strings.Builder, state: Task_State) {
 	strings.write_string(builder, `","priority":"`);          json_write_string(builder, state.priority)
 	strings.write_string(builder, `","status":"`);            json_write_string(builder, task_status_to_string(state.status))
 	strings.write_string(builder, `","assignee_agent_instance_id":"`); json_write_string(builder, state.assignee_agent_instance_id)
-	strings.write_string(builder, `","coordinator_agent_instance_id":"`); json_write_string(builder, state.coordinator_agent_instance_id)
+	strings.write_string(builder, `","coordinator_agent_instance_id":"`); json_write_string(builder, task_coordinator_agent_instance_id(state))
+	strings.write_string(builder, `","reviewer_agent_instance_id":"`); json_write_string(builder, task_reviewer_agent_instance_id(state))
 	strings.write_string(builder, `","depends_on":"`);        json_write_string(builder, state.depends_on)
 	strings.write_string(builder, `","created_by":"`);        json_write_string(builder, state.created_by)
 	strings.write_string(builder, `","created_at_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", state.created_at_unix_ms))
@@ -427,6 +445,24 @@ task_write_state_json :: proc(builder: ^strings.Builder, state: Task_State) {
 			json_write_string(builder, p.agent_instance_id)
 			strings.write_string(builder, `","role":"`)
 			json_write_string(builder, p.role)
+			strings.write_string(builder, `"}`)
+		}
+	}
+	strings.write_string(builder, `]`)
+
+	strings.write_string(builder, `,"votes":[`)
+	first_vote := true
+	for i in 0..<task_lgtm_vote_count {
+		v := task_lgtm_votes[i]
+		if v.task_id == state.task_id {
+			if !first_vote do strings.write_string(builder, `,`)
+			first_vote = false
+			strings.write_string(builder, `{"reviewer_agent_instance_id":"`)
+			json_write_string(builder, v.reviewer_agent_instance_id)
+			strings.write_string(builder, `","approved":`)
+			strings.write_string(builder, "true" if v.approved else "false")
+			strings.write_string(builder, `,"comment":"`)
+			json_write_string(builder, v.comment)
 			strings.write_string(builder, `"}`)
 		}
 	}

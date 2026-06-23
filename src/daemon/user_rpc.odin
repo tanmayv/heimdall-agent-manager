@@ -27,6 +27,8 @@ handle_user_rpc :: proc(client: net.TCP_Socket, body: string) {
 	case "task_status": handle_user_rpc_task_status(client, body, user_id)
 	case "task_assign": handle_user_rpc_task_assign(client, body, user_id)
 	case "task_participant": handle_user_rpc_task_participant(client, body, user_id)
+	case "task_participant_remove": handle_user_rpc_task_participant_remove(client, body, user_id)
+	case "task_review_vote": handle_user_rpc_task_review_vote(client, body, user_id)
 	case "task_nudge": handle_user_rpc_task_nudge(client, body, user_id)
 	case "task_chain_update": handle_user_rpc_task_chain_update(client, body, user_id)
 	case "task_chain_status": handle_user_rpc_task_chain_status(client, body, user_id)
@@ -113,7 +115,7 @@ handle_user_rpc_task_log :: proc(client: net.TCP_Socket, body: string) {
 }
 
 handle_user_rpc_task_create :: proc(client: net.TCP_Socket, body, user_id: string) {
-	result := task_service_create_task(Task_Create_Command{task_id = extract_json_string(body, "task_id", ""), chain_id = extract_json_string(body, "chain_id", ""), project_id = extract_json_string(body, "project_id", ""), standalone = extract_json_bool(body, "standalone", false), title = extract_json_string(body, "title", ""), description = extract_json_string(body, "description", ""), acceptance_criteria = extract_json_string(body, "acceptance_criteria", ""), priority = extract_json_string(body, "priority", ""), status = extract_json_string(body, "status", ""), assignee_agent_instance_id = extract_json_string(body, "assignee_agent_instance_id", ""), coordinator_agent_instance_id = extract_json_string(body, "coordinator_agent_instance_id", ""), depends_on = extract_json_string(body, "depends_on", ""), created_by = user_id, author_agent_instance_id = user_id})
+	result := task_service_create_task(Task_Create_Command{task_id = extract_json_string(body, "task_id", ""), chain_id = extract_json_string(body, "chain_id", ""), project_id = extract_json_string(body, "project_id", ""), standalone = extract_json_bool(body, "standalone", false), title = extract_json_string(body, "title", ""), description = extract_json_string(body, "description", ""), acceptance_criteria = extract_json_string(body, "acceptance_criteria", ""), priority = extract_json_string(body, "priority", ""), status = extract_json_string(body, "status", ""), assignee_agent_instance_id = extract_json_string(body, "assignee_agent_instance_id", ""), depends_on = extract_json_string(body, "depends_on", ""), created_by = user_id, author_agent_instance_id = user_id})
 	write_task_service_response(client, result)
 }
 
@@ -254,5 +256,22 @@ handle_user_rpc_task_chain_evaluate :: proc(client: net.TCP_Socket, body, user_i
 		extract_json_string(body, "evaluation", ""),
 		user_id,
 	)
+	write_task_service_response(client, result)
+}
+
+handle_user_rpc_task_participant_remove :: proc(client: net.TCP_Socket, body, user_id: string) {
+	result := task_service_remove_participant(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "agent_instance_id", ""), extract_json_string(body, "role", ""), user_id)
+	write_task_service_response(client, result)
+}
+
+handle_user_rpc_task_review_vote :: proc(client: net.TCP_Socket, body, user_id: string) {
+	approved_val := extract_json_string(body, "result", "") == "lgtm"
+	result := task_service_review_vote(Task_Review_Vote_Command{
+		task_id                  = extract_json_string(body, "task_id", ""),
+		chain_id                 = extract_json_string(body, "chain_id", ""),
+		approved                 = approved_val,
+		comment                  = extract_json_string(body, "comment", ""),
+		author_agent_instance_id = user_id,
+	})
 	write_task_service_response(client, result)
 }

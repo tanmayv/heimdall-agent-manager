@@ -11,19 +11,20 @@ Task_Create_Command :: struct {
 	priority:                     string,
 	status:                       string,
 	assignee_agent_instance_id:   string,
-	coordinator_agent_instance_id: string,
+	reviewer_agent_instance_id:   string,
 	depends_on:                   string,
 	created_by:                   string,
 	author_agent_instance_id:     string,
 }
 
 Task_Chain_Create_Command :: struct {
-	chain_id:                      string,
-	project_id:                    string,
-	title:                         string,
-	description:                   string,
-	coordinator_agent_instance_id: string,
-	author_agent_instance_id:      string,
+	chain_id:                           string,
+	project_id:                         string,
+	title:                              string,
+	description:                        string,
+	coordinator_agent_instance_id:      string,
+	default_reviewer_agent_instance_id: string,
+	author_agent_instance_id:           string,
 }
 
 Task_Chain_Activate_Command :: struct {

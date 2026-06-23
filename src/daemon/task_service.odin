@@ -56,7 +56,7 @@ task_service_create_task :: proc(cmd: Task_Create_Command) -> Task_Service_Resul
 			title                       = cmd.title,
 			description                 = cmd.description,
 			status                      = "planning",
-			coordinator_agent_instance_id = cmd.coordinator_agent_instance_id,
+			coordinator_agent_instance_id = cmd.created_by,
 			author_agent_instance_id    = cmd.author_agent_instance_id,
 		}
 		if !task_store_append_event(chain_event) {
@@ -76,7 +76,7 @@ task_service_create_task :: proc(cmd: Task_Create_Command) -> Task_Service_Resul
 		priority                      = priority,
 		status                        = status,
 		assignee_agent_instance_id    = cmd.assignee_agent_instance_id,
-		coordinator_agent_instance_id = cmd.coordinator_agent_instance_id,
+		reviewer_agent_instance_id    = cmd.reviewer_agent_instance_id,
 		depends_on                    = cmd.depends_on,
 		created_by                    = cmd.created_by,
 		author_agent_instance_id      = cmd.author_agent_instance_id,
@@ -121,6 +121,7 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 		description                   = cmd.description,
 		status                        = "planning",
 		coordinator_agent_instance_id = cmd.coordinator_agent_instance_id,
+		reviewer_agent_instance_id    = cmd.default_reviewer_agent_instance_id,
 		author_agent_instance_id      = cmd.author_agent_instance_id,
 	}
 	if !task_store_append_event(event) {
@@ -313,6 +314,29 @@ task_service_participant_command :: proc(cmd: Task_Participant_Command) -> Task_
 	}
 	if !task_store_append_event(event) {
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append participant failed"}`}
+	}
+	task_notify_event(event)
+	return Task_Service_Result{ok = true, status_code = 200, message = `{"ok":true}`}
+}
+
+task_service_remove_participant :: proc(task_id, chain_id, agent_instance_id, role, author: string) -> Task_Service_Result {
+	return task_service_remove_participant_command(Task_Participant_Command{task_id = task_id, chain_id = chain_id, agent_instance_id = agent_instance_id, role = role, author_agent_instance_id = author})
+}
+
+task_service_remove_participant_command :: proc(cmd: Task_Participant_Command) -> Task_Service_Result {
+	if cmd.task_id == "" || cmd.agent_instance_id == "" || cmd.role == "" {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"participant removal requires task_id, agent_instance_id, and role"}`}
+	}
+	event := Task_Event{
+		kind                     = .Task_Participant_Removed,
+		task_id                  = cmd.task_id,
+		chain_id                 = cmd.chain_id,
+		agent_instance_id        = cmd.agent_instance_id,
+		role                     = cmd.role,
+		author_agent_instance_id = cmd.author_agent_instance_id,
+	}
+	if !task_store_append_event(event) {
+		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append participant removal failed"}`}
 	}
 	task_notify_event(event)
 	return Task_Service_Result{ok = true, status_code = 200, message = `{"ok":true}`}

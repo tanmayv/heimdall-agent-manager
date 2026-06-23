@@ -18,7 +18,7 @@ handle_task_create :: proc(client: net.TCP_Socket, body: string) {
 		priority                      = extract_json_string(body, "priority", ""),
 		status                        = extract_json_string(body, "status", ""),
 		assignee_agent_instance_id    = extract_json_string(body, "assignee_agent_instance_id", ""),
-		coordinator_agent_instance_id = extract_json_string(body, "coordinator_agent_instance_id", ""),
+		reviewer_agent_instance_id    = extract_json_string(body, "reviewer_agent_instance_id", ""),
 		depends_on                    = extract_json_string(body, "depends_on", ""),
 		created_by                    = author,
 		author_agent_instance_id      = author,
@@ -30,12 +30,13 @@ handle_task_chain_create :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
 	result := task_service_create_chain(Task_Chain_Create_Command{
-		chain_id                      = extract_json_string(body, "chain_id", ""),
-		project_id                    = extract_json_string(body, "project_id", ""),
-		title                         = extract_json_string(body, "title", ""),
-		description                   = extract_json_string(body, "description", ""),
-		coordinator_agent_instance_id = extract_json_string(body, "coordinator_agent_instance_id", ""),
-		author_agent_instance_id      = author,
+		chain_id                           = extract_json_string(body, "chain_id", ""),
+		project_id                         = extract_json_string(body, "project_id", ""),
+		title                              = extract_json_string(body, "title", ""),
+		description                        = extract_json_string(body, "description", ""),
+		coordinator_agent_instance_id      = extract_json_string(body, "coordinator_agent_instance_id", ""),
+		default_reviewer_agent_instance_id = extract_json_string(body, "default_reviewer_agent_instance_id", ""),
+		author_agent_instance_id           = author,
 	})
 	write_task_service_response(client, result)
 }
@@ -105,6 +106,13 @@ handle_task_participant :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
 	result := task_service_add_participant(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "agent_instance_id", ""), extract_json_string(body, "role", ""), author)
+	write_task_service_response(client, result)
+}
+
+handle_task_participant_remove :: proc(client: net.TCP_Socket, body: string) {
+	author, ok := task_author_from_body(client, body)
+	if !ok do return
+	result := task_service_remove_participant(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "agent_instance_id", ""), extract_json_string(body, "role", ""), author)
 	write_task_service_response(client, result)
 }
 

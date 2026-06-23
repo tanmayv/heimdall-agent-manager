@@ -30,6 +30,9 @@ task_projection_apply_event :: proc(event: Task_Event) -> bool {
 		if event.assignee_agent_instance_id != "" {
 			task_store_upsert_participant(event.task_id, event.chain_id, event.assignee_agent_instance_id, "assignee")
 		}
+		if event.reviewer_agent_instance_id != "" {
+			task_store_upsert_participant(event.task_id, event.chain_id, event.reviewer_agent_instance_id, "lgtm_required")
+		}
 
 	case .Task_Comment:
 		idx := task_state_index(event.task_id, event.chain_id)
@@ -68,6 +71,9 @@ task_projection_apply_event :: proc(event: Task_Event) -> bool {
 	case .Task_Participant_Added:
 		task_store_upsert_participant(event.task_id, event.chain_id, event.agent_instance_id, event.role)
 
+	case .Task_Participant_Removed:
+		task_store_remove_participant(event.task_id, event.agent_instance_id, event.role)
+
 	case .Task_Review_Vote:
 		task_store_upsert_lgtm_vote(Task_LGTM_Vote_State{
 			task_id                    = strings.clone(event.task_id),
@@ -83,12 +89,13 @@ task_projection_apply_event :: proc(event: Task_Event) -> bool {
 
 	case .Chain_Created:
 		idx := task_chain_index(event.chain_id)
-		task_chains[idx].project_id                    = strings.clone(event.project_id)
-		task_chains[idx].title                         = strings.clone(event.title)
-		task_chains[idx].description                   = strings.clone(event.description)
+		task_chains[idx].project_id                         = strings.clone(event.project_id)
+		task_chains[idx].title                              = strings.clone(event.title)
+		task_chains[idx].description                        = strings.clone(event.description)
 		if event.status != "" do task_chains[idx].status = strings.clone(event.status)
-		task_chains[idx].coordinator_agent_instance_id = strings.clone(event.coordinator_agent_instance_id)
-		task_chains[idx].created_at_unix_ms            = event.created_unix_ms
+		task_chains[idx].coordinator_agent_instance_id      = strings.clone(event.coordinator_agent_instance_id)
+		task_chains[idx].default_reviewer_agent_instance_id = strings.clone(event.reviewer_agent_instance_id)
+		task_chains[idx].created_at_unix_ms                 = event.created_unix_ms
 
 	case .Chain_Metadata_Updated:
 		idx := task_chain_index(event.chain_id)
@@ -165,6 +172,23 @@ task_store_upsert_participant :: proc(task_id, chain_id, agent_instance_id, role
 	task_participant_count += 1
 }
 
+task_store_remove_participant :: proc(task_id, agent_instance_id, role: string) {
+	for i in 0..<task_participant_count {
+		p := task_participants[i]
+		if p.task_id == task_id && p.agent_instance_id == agent_instance_id && p.role == role {
+			delete(p.task_id)
+			delete(p.chain_id)
+			delete(p.agent_instance_id)
+			delete(p.role)
+			for j in i..<task_participant_count - 1 {
+				task_participants[j] = task_participants[j + 1]
+			}
+			task_participant_count -= 1
+			break
+		}
+	}
+}
+
 task_store_append_comment :: proc(c: Task_Comment_State) {
 	if task_comment_count >= TASK_MAX_COMMENTS do return
 	task_comments[task_comment_count] = c
@@ -223,6 +247,7 @@ task_write_chain_json :: proc(builder: ^strings.Builder, chain: Task_Chain_State
 	strings.write_string(builder, `","description":"`);  json_write_string(builder, chain.description)
 	strings.write_string(builder, `","status":"`);       json_write_string(builder, chain.status)
 	strings.write_string(builder, `","coordinator_agent_instance_id":"`); json_write_string(builder, chain.coordinator_agent_instance_id)
+	strings.write_string(builder, `","default_reviewer_agent_instance_id":"`); json_write_string(builder, chain.default_reviewer_agent_instance_id)
 	strings.write_string(builder, `","final_summary":"`); json_write_string(builder, chain.final_summary)
 	strings.write_string(builder, `","created_at_unix_ms":`);   strings.write_string(builder, fmt.tprintf("%d", chain.created_at_unix_ms))
 	strings.write_string(builder, `,"completed_at_unix_ms":`);  strings.write_string(builder, fmt.tprintf("%d", chain.completed_at_unix_ms))

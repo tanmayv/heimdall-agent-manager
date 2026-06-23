@@ -18,6 +18,11 @@ function normalizeTask(task: any) {
     createdBy: task.created_by || '',
     createdAtUnixMs: Number(task.created_at_unix_ms || 0),
     updatedAtUnixMs: Number(task.updated_at_unix_ms || 0),
+    votes: (task.votes || []).map((v: any) => ({
+      reviewerAgentInstanceId: v.reviewer_agent_instance_id,
+      approved: Boolean(v.approved),
+      comment: v.comment || '',
+    })),
   };
 }
 
@@ -213,6 +218,22 @@ export const addParticipantToSelectedTask = createAsyncThunk('tasks/addParticipa
   const { session } = state.chat;
   const task = state.tasks.tasksById[payload.taskId || state.tasks.selectedTaskId];
   await daemonApi.addTaskParticipant({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), taskId: task.taskId, chainId: task.chainId, agentInstanceId: payload.agentInstanceId, role: payload.role });
+});
+
+export const removeParticipantFromSelectedTask = createAsyncThunk('tasks/removeParticipantFromSelectedTask', async (payload: any, { dispatch, getState }) => {
+  const state = getState() as any;
+  const { session } = state.chat;
+  const task = state.tasks.tasksById[payload.taskId || state.tasks.selectedTaskId];
+  await daemonApi.removeTaskParticipant({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), taskId: task.taskId, chainId: task.chainId, agentInstanceId: payload.agentInstanceId, role: payload.role });
+  await (dispatch as any)(fetchSelectedTaskLog(task.taskId));
+});
+
+export const voteOnSelectedTask = createAsyncThunk('tasks/voteOnSelectedTask', async (payload: any, { dispatch, getState }) => {
+  const state = getState() as any;
+  const { session } = state.chat;
+  const task = state.tasks.tasksById[payload.taskId || state.tasks.selectedTaskId];
+  await daemonApi.voteTask({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), taskId: task.taskId, chainId: task.chainId, approved: payload.approved, comment: payload.comment || 'Voted from UI.' });
+  await (dispatch as any)(fetchSelectedTaskLog(task.taskId));
 });
 
 export const nudgeSelectedTask = createAsyncThunk('tasks/nudgeSelectedTask', async (payload: any, { dispatch, getState }) => {

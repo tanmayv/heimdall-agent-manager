@@ -144,8 +144,7 @@ TASK1=$(ctl tasks create --token "$TOKEN" \
   --chain-id "$CHAIN_ID" \
   --title "Task Alpha" \
   --description "First task in smoke chain" \
-  --assignee "$ME" \
-  --coordinator "$ME")
+  --assignee "$ME")
 assert_ok "T1 create task" "$TASK1"
 TASK_ID=$(field "$TASK1" "task_id")
 echo "task:      $TASK_ID"
@@ -310,7 +309,7 @@ assert_ok "T6 create chain2" "$CHAIN2"
 C2=$(field "$CHAIN2" "chain_id")
 
 TASK2=$(ctl tasks create --token "$TOKEN" \
-  --chain-id "$C2" --title "ngtm Task" --assignee "$ME" --coordinator "$ME")
+  --chain-id "$C2" --title "ngtm Task" --assignee "$ME")
 assert_ok "T6 create task2" "$TASK2"
 T2=$(field "$TASK2" "task_id")
 

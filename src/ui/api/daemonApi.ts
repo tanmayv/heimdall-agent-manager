@@ -333,6 +333,14 @@ export async function addTaskParticipant({ daemonUrl, agentToken, clientInstance
   return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_participant', agentPath: '/tasks/participant', body: { task_id: taskId, chain_id: chainId || '', agent_instance_id: agentInstanceId, role } });
 }
 
+export async function removeTaskParticipant({ daemonUrl, agentToken, clientInstanceId, clientToken, taskId, chainId, agentInstanceId, role }: Partial<TaskAgentRequest & UserRpcRequest> & { taskId: string; chainId?: string; agentInstanceId: string; role: string }) {
+  return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_participant_remove', agentPath: '/tasks/participant/remove', body: { task_id: taskId, chain_id: chainId || '', agent_instance_id: agentInstanceId, role } });
+}
+
+export async function voteTask({ daemonUrl, agentToken, clientInstanceId, clientToken, taskId, chainId, approved, comment }: Partial<TaskAgentRequest & UserRpcRequest> & { taskId: string; chainId?: string; approved: boolean; comment: string }) {
+  return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_review_vote', agentPath: '/tasks/vote', body: { task_id: taskId, chain_id: chainId || '', result: approved ? 'lgtm' : 'ngtm', comment } });
+}
+
 export async function nudgeTask({ daemonUrl, agentToken, clientInstanceId, clientToken, taskId, chainId, body }: Partial<TaskAgentRequest & UserRpcRequest> & { taskId: string; chainId?: string; body: string }) {
   return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_nudge', agentPath: '/tasks/nudge', body: { task_id: taskId, chain_id: chainId || '', body } });
 }

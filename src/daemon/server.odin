@@ -403,6 +403,11 @@ handle_client :: proc(client: net.TCP_Socket) {
 		return
 	}
 
+	if strings.has_prefix(request, "POST /tasks/participant/remove ") {
+		handle_task_participant_remove(client, request_body(request))
+		return
+	}
+
 	if strings.has_prefix(request, "POST /tasks/participant ") {
 		handle_task_participant(client, request_body(request))
 		return

@@ -61,6 +61,7 @@ Task_Event_Kind :: enum {
 	Task_Status_Changed,
 	Task_Assigned,
 	Task_Participant_Added,
+	Task_Participant_Removed,
 	Task_Review_Vote,
 	Task_Nudged,
 	Task_Nudge_Failed,
@@ -75,26 +76,28 @@ Task_Event_Kind :: enum {
 }
 
 Task_Event :: struct {
-	event_id:                   string,
-	kind:                       Task_Event_Kind,
-	task_id:                    string,
-	chain_id:                   string,
-	title:                      string,
-	description:                string,
-	acceptance_criteria:        string,
-	priority:                   string,
-	status:                     string,
-	body:                       string,
-	comment_id:                 string,
-	vote_approved:              string, // "true" or "false" for Task_Review_Vote
-	project_id:                 string,
-	agent_instance_id:          string,
-	assignee_agent_instance_id: string,
-	depends_on:                 string,
-	role:                       string,
-	created_by:                 string,
-	author_agent_instance_id:   string,
-	created_unix_ms:            i64,
+	event_id:                      string,
+	kind:                          Task_Event_Kind,
+	task_id:                       string,
+	chain_id:                      string,
+	title:                         string,
+	description:                   string,
+	acceptance_criteria:           string,
+	priority:                      string,
+	status:                        string,
+	body:                          string,
+	comment_id:                    string,
+	vote_approved:                 string, // "true" or "false" for Task_Review_Vote
+	project_id:                    string,
+	agent_instance_id:             string,
+	assignee_agent_instance_id:    string,
+	reviewer_agent_instance_id:    string,
+	coordinator_agent_instance_id: string,
+	depends_on:                    string,
+	role:                          string,
+	created_by:                    string,
+	author_agent_instance_id:      string,
+	created_unix_ms:               i64,
 }
 
 Task_State :: struct {
@@ -140,19 +143,20 @@ Task_LGTM_Vote_State :: struct {
 }
 
 Task_Chain_State :: struct {
-	chain_id:                      string,
-	project_id:                    string,
-	title:                         string,
-	description:                   string,
-	status:                        string,
-	coordinator_agent_instance_id: string,
-	final_summary:                 string,
-	created_at_unix_ms:            i64,
-	completed_at_unix_ms:          i64,
-	archive_pending:               bool,
-	archived:                      bool,
-	evaluation:                    string,
-	last_audit_at_unix_ms:         i64,
+	chain_id:                           string,
+	project_id:                         string,
+	title:                              string,
+	description:                        string,
+	status:                             string,
+	coordinator_agent_instance_id:      string,
+	default_reviewer_agent_instance_id: string,
+	final_summary:                      string,
+	created_at_unix_ms:                 i64,
+	completed_at_unix_ms:               i64,
+	archive_pending:                    bool,
+	archived:                           bool,
+	evaluation:                         string,
+	last_audit_at_unix_ms:              i64,
 }
 
 task_events:            [TASK_MAX_EVENTS]Task_Event
@@ -302,6 +306,8 @@ task_event_clone :: proc(event: Task_Event) -> Task_Event {
 		project_id                  = strings.clone(event.project_id),
 		agent_instance_id           = strings.clone(event.agent_instance_id),
 		assignee_agent_instance_id  = strings.clone(event.assignee_agent_instance_id),
+		reviewer_agent_instance_id  = strings.clone(event.reviewer_agent_instance_id),
+		coordinator_agent_instance_id = strings.clone(event.coordinator_agent_instance_id),
 		depends_on                  = strings.clone(event.depends_on),
 		role                        = strings.clone(event.role),
 		created_by                  = strings.clone(event.created_by),
@@ -362,6 +368,8 @@ task_store_persist_projection_for_event :: proc(event: Task_Event) -> bool {
 				return task_db_save_participant(p)
 			}
 		}
+	case .Task_Participant_Removed:
+		return task_db_delete_participant(event.task_id, event.agent_instance_id, event.role)
 	case .Task_Comment:
 		if task_comment_count > 0 {
 			if !task_db_save_comment(task_comments[task_comment_count - 1]) do return false
@@ -420,6 +428,8 @@ task_event_json :: proc(event: Task_Event) -> string {
 	strings.write_string(&b, `","project_id":"`);       json_write_string(&b, event.project_id)
 	strings.write_string(&b, `","agent_instance_id":"`); json_write_string(&b, event.agent_instance_id)
 	strings.write_string(&b, `","assignee_agent_instance_id":"`); json_write_string(&b, event.assignee_agent_instance_id)
+	strings.write_string(&b, `","reviewer_agent_instance_id":"`); json_write_string(&b, event.reviewer_agent_instance_id)
+	strings.write_string(&b, `","coordinator_agent_instance_id":"`); json_write_string(&b, event.coordinator_agent_instance_id)
 	strings.write_string(&b, `","depends_on":"`);       json_write_string(&b, event.depends_on)
 	strings.write_string(&b, `","role":"`);             json_write_string(&b, event.role)
 	strings.write_string(&b, `","created_by":"`);       json_write_string(&b, event.created_by)
@@ -447,6 +457,8 @@ task_event_from_json :: proc(line: string) -> (Task_Event, bool) {
 		project_id                  = extract_json_string(line, "project_id", ""),
 		agent_instance_id           = extract_json_string(line, "agent_instance_id", ""),
 		assignee_agent_instance_id  = extract_json_string(line, "assignee_agent_instance_id", ""),
+		reviewer_agent_instance_id  = extract_json_string(line, "reviewer_agent_instance_id", ""),
+		coordinator_agent_instance_id = extract_json_string(line, "coordinator_agent_instance_id", ""),
 		depends_on                  = extract_json_string(line, "depends_on", ""),
 		role                        = extract_json_string(line, "role", ""),
 		created_by                  = extract_json_string(line, "created_by", ""),
@@ -458,24 +470,25 @@ task_event_from_json :: proc(line: string) -> (Task_Event, bool) {
 
 task_event_kind_from_string :: proc(value: string) -> Task_Event_Kind {
 	switch value {
-	case "Task_Created":          return .Task_Created
-	case "Task_Comment":          return .Task_Comment
-	case "Task_Comment_Resolved": return .Task_Comment_Resolved
-	case "Task_Status_Changed":   return .Task_Status_Changed
-	case "Task_Assigned":         return .Task_Assigned
-	case "Task_Participant_Added": return .Task_Participant_Added
-	case "Task_Review_Vote":      return .Task_Review_Vote
-	case "Task_Nudged":           return .Task_Nudged
-	case "Task_Nudge_Failed":     return .Task_Nudge_Failed
-	case "Chain_Created":         return .Chain_Created
-	case "Chain_Metadata_Updated": return .Chain_Metadata_Updated
-	case "Chain_Status_Changed":  return .Chain_Status_Changed
-	case "Chain_Final_Summary_Set": return .Chain_Final_Summary_Set
-	case "Chain_Completed":       return .Chain_Completed
-	case "Chain_Archive_Pending": return .Chain_Archive_Pending
-	case "Chain_Archived":        return .Chain_Archived
-	case "Chain_Evaluated":       return .Chain_Evaluated
-	case:                         return .Task_Comment
+	case "Task_Created":             return .Task_Created
+	case "Task_Comment":             return .Task_Comment
+	case "Task_Comment_Resolved":    return .Task_Comment_Resolved
+	case "Task_Status_Changed":      return .Task_Status_Changed
+	case "Task_Assigned":            return .Task_Assigned
+	case "Task_Participant_Added":   return .Task_Participant_Added
+	case "Task_Participant_Removed": return .Task_Participant_Removed
+	case "Task_Review_Vote":         return .Task_Review_Vote
+	case "Task_Nudged":              return .Task_Nudged
+	case "Task_Nudge_Failed":        return .Task_Nudge_Failed
+	case "Chain_Created":            return .Chain_Created
+	case "Chain_Metadata_Updated":   return .Chain_Metadata_Updated
+	case "Chain_Status_Changed":     return .Chain_Status_Changed
+	case "Chain_Final_Summary_Set":  return .Chain_Final_Summary_Set
+	case "Chain_Completed":          return .Chain_Completed
+	case "Chain_Archive_Pending":    return .Chain_Archive_Pending
+	case "Chain_Archived":           return .Chain_Archived
+	case "Chain_Evaluated":          return .Chain_Evaluated
+	case:                            return .Task_Comment
 	}
 }
 

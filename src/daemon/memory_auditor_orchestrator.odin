@@ -140,7 +140,6 @@ handle_post_task_chain_audit :: proc(client: net.TCP_Socket, body: string, ctx: 
 		description                   = strings.clone(task_desc),
 		status                        = "ready",
 		assignee_agent_instance_id   = strings.clone(auditor_agent_id),
-		coordinator_agent_instance_id = strings.clone(auditor_agent_id),
 		created_by                    = strings.clone(author),
 		author_agent_instance_id     = strings.clone(author),
 	})

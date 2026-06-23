@@ -65,6 +65,7 @@ task_db_create_schema :: proc() -> bool {
 		description TEXT NOT NULL,
 		status TEXT NOT NULL,
 		coordinator_agent_instance_id TEXT NOT NULL,
+		default_reviewer_agent_instance_id TEXT NOT NULL DEFAULT '',
 		final_summary TEXT NOT NULL,
 		created_at_unix_ms INTEGER NOT NULL,
 		completed_at_unix_ms INTEGER NOT NULL,
@@ -169,9 +170,9 @@ task_db_save_task :: proc(state: Task_State) -> bool {
 task_db_save_chain :: proc(chain: Task_Chain_State) -> bool {
 	stmt: sqlite3_stmt = nil
 	query := `INSERT OR REPLACE INTO task_chains (
-		chain_id, project_id, title, description, status, coordinator_agent_instance_id,
+		chain_id, project_id, title, description, status, coordinator_agent_instance_id, default_reviewer_agent_instance_id,
 		final_summary, created_at_unix_ms, completed_at_unix_ms, archive_pending, archived, evaluation, last_audit_at_unix_ms
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
@@ -186,13 +187,14 @@ task_db_save_chain :: proc(chain: Task_Chain_State) -> bool {
 	task_db_bind_text(stmt, 4, chain.description)
 	task_db_bind_text(stmt, 5, chain.status)
 	task_db_bind_text(stmt, 6, chain.coordinator_agent_instance_id)
-	task_db_bind_text(stmt, 7, chain.final_summary)
-	sqlite3_bind_int64(stmt, 8, chain.created_at_unix_ms)
-	sqlite3_bind_int64(stmt, 9, chain.completed_at_unix_ms)
-	sqlite3_bind_int64(stmt, 10, 1 if chain.archive_pending else 0)
-	sqlite3_bind_int64(stmt, 11, 1 if chain.archived else 0)
-	task_db_bind_text(stmt, 12, chain.evaluation)
-	sqlite3_bind_int64(stmt, 13, chain.last_audit_at_unix_ms)
+	task_db_bind_text(stmt, 7, chain.default_reviewer_agent_instance_id)
+	task_db_bind_text(stmt, 8, chain.final_summary)
+	sqlite3_bind_int64(stmt, 9, chain.created_at_unix_ms)
+	sqlite3_bind_int64(stmt, 10, chain.completed_at_unix_ms)
+	sqlite3_bind_int64(stmt, 11, 1 if chain.archive_pending else 0)
+	sqlite3_bind_int64(stmt, 12, 1 if chain.archived else 0)
+	task_db_bind_text(stmt, 13, chain.evaluation)
+	sqlite3_bind_int64(stmt, 14, chain.last_audit_at_unix_ms)
 
 	rc = sqlite3_step(stmt)
 	if rc != SQLITE_DONE {
@@ -286,6 +288,29 @@ task_db_save_participant :: proc(part: Task_Participant) -> bool {
 	return true
 }
 
+task_db_delete_participant :: proc(task_id, agent_instance_id, role: string) -> bool {
+	stmt: sqlite3_stmt = nil
+	query := "DELETE FROM task_participants WHERE task_id = ? AND agent_instance_id = ? AND role = ?"
+
+	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK {
+		fmt.println("task_db_delete_participant: prepare failed:", rc)
+		return false
+	}
+	defer sqlite3_finalize(stmt)
+
+	task_db_bind_text(stmt, 1, task_id)
+	task_db_bind_text(stmt, 2, agent_instance_id)
+	task_db_bind_text(stmt, 3, role)
+
+	rc = sqlite3_step(stmt)
+	if rc != SQLITE_DONE {
+		fmt.printf("task_db_delete_participant: step failed: %d (%s)\n", rc, sqlite3_errmsg(task_db.db))
+		return false
+	}
+	return true
+}
+
 task_db_load_all :: proc() -> bool {
 	task_projection_reset()
 
@@ -293,7 +318,7 @@ task_db_load_all :: proc() -> bool {
 	{
 		stmt: sqlite3_stmt = nil
 		query := `SELECT 
-			chain_id, project_id, title, description, status, coordinator_agent_instance_id,
+			chain_id, project_id, title, description, status, coordinator_agent_instance_id, default_reviewer_agent_instance_id,
 			final_summary, created_at_unix_ms, completed_at_unix_ms, archive_pending, archived, evaluation, last_audit_at_unix_ms
 			FROM task_chains`
 		rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
@@ -312,13 +337,14 @@ task_db_load_all :: proc() -> bool {
 			c.description = strings.clone_from_cstring(sqlite3_column_text(stmt, 3))
 			c.status = strings.clone_from_cstring(sqlite3_column_text(stmt, 4))
 			c.coordinator_agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 5))
-			c.final_summary = strings.clone_from_cstring(sqlite3_column_text(stmt, 6))
-			c.created_at_unix_ms = sqlite3_column_int64(stmt, 7)
-			c.completed_at_unix_ms = sqlite3_column_int64(stmt, 8)
-			c.archive_pending = sqlite3_column_int64(stmt, 9) != 0
-			c.archived = sqlite3_column_int64(stmt, 10) != 0
-			c.evaluation = strings.clone_from_cstring(sqlite3_column_text(stmt, 11))
-			c.last_audit_at_unix_ms = sqlite3_column_int64(stmt, 12)
+			c.default_reviewer_agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 6))
+			c.final_summary = strings.clone_from_cstring(sqlite3_column_text(stmt, 7))
+			c.created_at_unix_ms = sqlite3_column_int64(stmt, 8)
+			c.completed_at_unix_ms = sqlite3_column_int64(stmt, 9)
+			c.archive_pending = sqlite3_column_int64(stmt, 10) != 0
+			c.archived = sqlite3_column_int64(stmt, 11) != 0
+			c.evaluation = strings.clone_from_cstring(sqlite3_column_text(stmt, 12))
+			c.last_audit_at_unix_ms = sqlite3_column_int64(stmt, 13)
 			task_chain_count += 1
 		}
 	}
@@ -454,7 +480,7 @@ task_db_execute :: proc(query: string) -> bool {
 	return true
 }
 
-TASK_DB_SCHEMA_VERSION :: 2 // Version 1: evaluation, Version 2: last_audit_at_unix_ms
+TASK_DB_SCHEMA_VERSION :: 3 // Version 1: evaluation, Version 2: last_audit_at_unix_ms, Version 3: default_reviewer_agent_instance_id
 
 task_db_run_migrations :: proc() -> bool {
 	current_version := db_get_user_version(task_db.db)
@@ -484,7 +510,7 @@ task_db_run_migrations :: proc() -> bool {
 	
 	current_version = db_get_user_version(task_db.db)
 	
-	if current_version < TASK_DB_SCHEMA_VERSION {
+	if current_version < 2 {
 		fmt.println("DB: Migrating task.db to version 2 (adding last_audit_at_unix_ms)...")
 		if !db_execute(task_db.db, "BEGIN TRANSACTION;") do return false
 		
@@ -505,6 +531,31 @@ task_db_run_migrations :: proc() -> bool {
 		
 		if !db_execute(task_db.db, "COMMIT;") do return false
 		fmt.println("DB: Migrated task.db to version 2 successfully.")
+	}
+
+	current_version = db_get_user_version(task_db.db)
+
+	if current_version < TASK_DB_SCHEMA_VERSION {
+		fmt.println("DB: Migrating task.db to version 3 (adding default_reviewer_agent_instance_id)...")
+		if !db_execute(task_db.db, "BEGIN TRANSACTION;") do return false
+		
+		if !db_has_column(task_db.db, "task_chains", "default_reviewer_agent_instance_id") {
+			migrate_query := "ALTER TABLE task_chains ADD COLUMN default_reviewer_agent_instance_id TEXT NOT NULL DEFAULT '';"
+			if !db_execute(task_db.db, migrate_query) {
+				_ = db_execute(task_db.db, "ROLLBACK;")
+				return false
+			}
+		} else {
+			fmt.println("DB: Column 'default_reviewer_agent_instance_id' already exists in 'task_chains', skipping ALTER TABLE.")
+		}
+		
+		if !db_set_user_version(task_db.db, 3) {
+			_ = db_execute(task_db.db, "ROLLBACK;")
+			return false
+		}
+		
+		if !db_execute(task_db.db, "COMMIT;") do return false
+		fmt.println("DB: Migrated task.db to version 3 successfully.")
 	}
 	
 	return true

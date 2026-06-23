@@ -16,6 +16,8 @@ import {
   updateSelectedTaskStatus,
   fetchTasksForChain,
   resolveCommentOnSelectedTask,
+  removeParticipantFromSelectedTask,
+  voteOnSelectedTask,
 } from '../store/taskSlice';
 
 const STATUS_COLUMNS = [
@@ -47,7 +49,6 @@ const blankCreateForm = {
   status: 'ready',
   assigneeAgentInstanceId: '',
   reviewerAgentInstanceId: '',
-  coordinatorAgentInstanceId: '',
 };
 
 function formatTime(unixMs: number) {
@@ -208,6 +209,7 @@ export default function TaskBoard({ session }) {
   const [createChainForm, setCreateChainForm] = useState({ chainId: '', title: '', description: '', coordinatorAgentInstanceId: '', defaultReviewerAgentInstanceId: '' });
   const [commentBody, setCommentBody] = useState('');
   const [commentAsUnresolved, setCommentAsUnresolved] = useState(true);
+  const [voteComment, setVoteComment] = useState('');
   const [statusForm, setStatusForm] = useState({ status: 'working', body: '' });
   const [assignmentAgent, setAssignmentAgent] = useState('');
   const [participantForm, setParticipantForm] = useState({ agentInstanceId: '', role: 'lgtm_required' });
@@ -245,7 +247,7 @@ export default function TaskBoard({ session }) {
   const agentOptions = useMemo(() =>
     uniqueValues([
       ...(chatAgents ?? []).map((agent: any) => agent.id || agent.label),
-      ...Object.values(tasksById).flatMap((task: any) => [task.assigneeAgentInstanceId, task.reviewerAgentInstanceId, task.coordinatorAgentInstanceId]),
+      ...Object.values(tasksById).flatMap((task: any) => [task.assigneeAgentInstanceId, task.reviewerAgentInstanceId]),
       ...Object.values(participantsByTaskId).flatMap((items: any) => (items ?? []).map((participant: any) => participant.agentInstanceId)),
       ...Object.values(chainsById).flatMap((chain: any) => [chain.coordinatorAgentInstanceId, chain.defaultReviewerAgentInstanceId]),
     ]),
@@ -353,7 +355,6 @@ export default function TaskBoard({ session }) {
         standalone: createForm.mode === 'standalone',
         assignee_agent_instance_id: createForm.assigneeAgentInstanceId.trim(),
         reviewer_agent_instance_id: createForm.reviewerAgentInstanceId.trim(),
-        coordinator_agent_instance_id: createForm.coordinatorAgentInstanceId.trim(),
       })).unwrap();
       if (result?.chain_id || chainId) dispatch(selectChain(result?.chain_id || chainId));
       if (result?.task_id) dispatch(selectTask(result.task_id));
@@ -400,6 +401,13 @@ export default function TaskBoard({ session }) {
     runMutation(async () => {
       await dispatch(addParticipantToSelectedTask({ agentToken: agentToken.trim(), agentInstanceId: participantForm.agentInstanceId.trim(), role: participantForm.role.trim() })).unwrap();
       setParticipantForm({ ...participantForm, agentInstanceId: '' });
+    });
+  }
+
+  function dispatchVote(approved: boolean) {
+    runMutation(async () => {
+      await dispatch(voteOnSelectedTask({ approved, comment: voteComment.trim() || undefined })).unwrap();
+      setVoteComment('');
     });
   }
 
@@ -678,7 +686,6 @@ export default function TaskBoard({ session }) {
             <div className="mt-3 grid grid-cols-3 gap-3">
               <AgentSelect debugId="create-task-assignee-select" value={createForm.assigneeAgentInstanceId} onChange={(value) => setCreateForm({ ...createForm, assigneeAgentInstanceId: value })} agents={agentOptions} placeholder="No assignee" />
               <AgentSelect debugId="create-task-reviewer-select" value={createForm.reviewerAgentInstanceId} onChange={(value) => setCreateForm({ ...createForm, reviewerAgentInstanceId: value })} agents={agentOptions} placeholder="No reviewer" />
-              <AgentSelect debugId="create-task-coordinator-select" value={createForm.coordinatorAgentInstanceId} onChange={(value) => setCreateForm({ ...createForm, coordinatorAgentInstanceId: value })} agents={agentOptions} placeholder="No coordinator" />
             </div>
             <div className="mt-6 flex justify-end gap-3">
               <button type="button" data-debug-id="create-task-cancel-btn" onClick={back} className="framer-pill-secondary">Cancel</button>
@@ -693,6 +700,7 @@ export default function TaskBoard({ session }) {
 
   function renderTaskView() {
     if (!selectedTask) return renderOverview();
+    const taskCoordinator = chainsById[selectedTask.chainId]?.coordinatorAgentInstanceId || '';
     return (
       <>
         {renderHeader(`Task: ${selectedTask.title}`)}
@@ -702,7 +710,7 @@ export default function TaskBoard({ session }) {
             <div className="grid grid-cols-2 gap-3">
               <Field label="Assignee" value={selectedTask.assigneeAgentInstanceId} />
               <Field label="Reviewer" value={selectedTask.reviewerAgentInstanceId} />
-              <Field label="Coordinator" value={selectedTask.coordinatorAgentInstanceId} />
+              <Field label="Coordinator" value={taskCoordinator} />
               <Field label="Priority" value={selectedTask.priority} />
               <Field label="Created by" value={selectedTask.createdBy} />
               <Field label="Updated" value={formatTime(selectedTask.updatedAtUnixMs)} />
@@ -758,11 +766,76 @@ export default function TaskBoard({ session }) {
                 </select>
                 <button data-debug-id="task-participant-submit-btn" disabled={!canMutate || !participantForm.agentInstanceId.trim()} className="framer-pill bg-white disabled:opacity-40">Add</button>
               </form>
+              <div className="mt-4 border-t border-[#333] pt-4">
+                <p className="text-xs font-semibold text-[#888] uppercase tracking-wider">Cast Review Vote</p>
+                <form onSubmit={(e) => e.preventDefault()} className="mt-2 flex gap-2 items-center">
+                  <input
+                    data-debug-id="task-vote-comment"
+                    value={voteComment}
+                    onChange={(e) => setVoteComment(e.target.value)}
+                    placeholder="Optional review comment"
+                    className="framer-input min-w-0 flex-1 px-3 py-2 text-sm"
+                  />
+                  <button
+                    data-debug-id="task-vote-lgtm-btn"
+                    type="button"
+                    onClick={() => dispatchVote(true)}
+                    disabled={!canMutate}
+                    className="framer-pill bg-green-600 text-white font-semibold px-4 py-2 hover:bg-green-700 disabled:opacity-40"
+                  >
+                    LGTM
+                  </button>
+                  <button
+                    data-debug-id="task-vote-ngtm-btn"
+                    type="button"
+                    onClick={() => dispatchVote(false)}
+                    disabled={!canMutate}
+                    className="framer-pill bg-red-600 text-white font-semibold px-4 py-2 hover:bg-red-700 disabled:opacity-40"
+                  >
+                    NGTM
+                  </button>
+                </form>
+              </div>
             </div>
             <div className="framer-card p-4">
               <p className="framer-topline">Participants</p>
               <div className="mt-3 flex flex-wrap gap-2">
-                {participants.length ? participants.map((participant, index) => <span key={`${participant.agentInstanceId}-${participant.role}-${index}`} className="framer-chip">{participant.role}: <span className="text-white">{participant.agentInstanceId}</span></span>) : <p className="framer-subtext text-sm">No participants recorded.</p>}
+                {participants.length ? participants.map((participant, index) => {
+                  const vote = (selectedTask.votes || []).find((v: any) => v.reviewerAgentInstanceId === participant.agentInstanceId);
+                  const showVoteStatus = participant.role === 'lgtm_required' || participant.role === 'lgtm_optional';
+                  let voteBadge = null;
+                  if (showVoteStatus) {
+                    if (vote) {
+                      voteBadge = vote.approved ? (
+                        <span className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-900 text-green-300">LGTM</span>
+                      ) : (
+                        <span className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-900 text-red-300">NGTM</span>
+                      );
+                    } else {
+                      voteBadge = <span className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-gray-700 text-gray-400">PENDING</span>;
+                    }
+                  }
+
+                  return (
+                    <span key={`${participant.agentInstanceId}-${participant.role}-${index}`} className="framer-chip flex items-center gap-1.5">
+                      <span>{participant.role}: <span className="text-white">{participant.agentInstanceId}</span></span>
+                      {voteBadge}
+                      {canMutate && (
+                        <button
+                          onClick={() => {
+                            if (confirm(`Are you sure you want to remove ${participant.agentInstanceId} as ${participant.role}?`)) {
+                              runMutation(() => dispatch(removeParticipantFromSelectedTask({ agentInstanceId: participant.agentInstanceId, role: participant.role })));
+                            }
+                          }}
+                          className="ml-1 text-gray-500 hover:text-red-400 font-bold focus:outline-none"
+                          title="Remove Participant"
+                        >
+                          &times;
+                        </button>
+                      )}
+                    </span>
+                  );
+                }) : <p className="framer-subtext text-sm">No participants recorded.</p>}
               </div>
             </div>
             <div className="framer-card p-4">
