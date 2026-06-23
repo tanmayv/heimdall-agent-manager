@@ -333,21 +333,21 @@ export default function App() {
         <div className={`flex-1 min-w-0 min-h-0 h-full ${view === 'tasks' ? 'flex flex-col' : 'hidden'}`}>
           <TaskBoard session={session} />
         </div>
-        <div className={`flex-1 min-w-0 h-full ${view === 'memory' ? 'flex flex-col' : 'hidden'}`}>
+        <div className={`flex-1 min-w-0 min-h-0 h-full ${view === 'memory' ? 'flex flex-col' : 'hidden'}`}>
           <MemoryBoard session={session} agents={agents} />
         </div>
-        <div className={`flex-1 min-w-0 h-full ${view === 'memoryAudit' ? 'flex flex-col' : 'hidden'}`}>
+        <div className={`flex-1 min-w-0 min-h-0 h-full ${view === 'memoryAudit' ? 'flex flex-col' : 'hidden'}`}>
           <MemoryAuditBoard session={session} agents={agents} />
         </div>
-        <div className={`flex-1 min-w-0 h-full ${view === 'projects' ? 'flex flex-col' : 'hidden'}`}>
+        <div className={`flex-1 min-w-0 min-h-0 h-full ${view === 'projects' ? 'flex flex-col' : 'hidden'}`}>
           <ProjectsPage session={session} />
         </div>
-        <div className={`flex-1 min-w-0 h-full ${view === 'agents' ? 'flex flex-col' : 'hidden'}`}>
+        <div className={`flex-1 min-w-0 min-h-0 h-full ${view === 'agents' ? 'flex flex-col' : 'hidden'}`}>
           <AgentsPage session={session} onOpenStartAgent={handleOpenStartAgent} />
         </div>
 
         {/* Conditional Form Pages (Resets state on mount/unmount) */}
-        <div className={`flex-1 min-w-0 h-full ${view === 'startAgent' ? 'flex flex-col' : 'hidden'}`}>
+        <div className={`flex-1 min-w-0 min-h-0 h-full ${view === 'startAgent' ? 'flex flex-col' : 'hidden'}`}>
           {view === 'startAgent' && (
             <StartAgentPage
               session={session}
@@ -359,7 +359,7 @@ export default function App() {
             />
           )}
         </div>
-        <div className={`flex-1 min-w-0 h-full ${view === 'settings' ? 'flex flex-col' : 'hidden'}`}>
+        <div className={`flex-1 min-w-0 min-h-0 h-full ${view === 'settings' ? 'flex flex-col' : 'hidden'}`}>
           {view === 'settings' && (
             <SettingsPage
               session={session}
