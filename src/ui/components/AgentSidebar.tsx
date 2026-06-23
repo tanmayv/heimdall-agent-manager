@@ -18,6 +18,7 @@ function projectGroupLabel(projectId, projectsById, agentsInGroup) {
 interface AgentSidebarProps {
   agents: any[];
   projectsById: Record<string, any>;
+  projectIds: string[];
   selectedAgentId: string;
   session: any;
   activeView: string;
@@ -35,11 +36,14 @@ interface AgentSidebarProps {
   onOpenSettings: () => void;
   auditBadgeCount: number;
   onToggleAudit: () => void;
+  onReorderProjects?: (projectIds: string[]) => void;
+  onReorderAgents?: (agentIds: string[]) => void;
 }
 
 const AgentSidebar = memo(function AgentSidebar({
   agents,
   projectsById,
+  projectIds,
   selectedAgentId,
   session,
   activeView,
@@ -56,11 +60,60 @@ const AgentSidebar = memo(function AgentSidebar({
   onOpenStartAgent,
   onOpenSettings,
   auditBadgeCount,
-  onToggleAudit
+  onToggleAudit,
+  onReorderProjects,
+  onReorderAgents
 }: AgentSidebarProps) {
   console.log('[Render] AgentSidebar');
   const [collapsedProjects, setCollapsedProjects] = useState({});
   const [dismissedWarnings, setDismissedWarnings] = useState<Set<string>>(new Set());
+  const [draggedProjectId, setDraggedProjectId] = useState<string | null>(null);
+  const [draggedAgent, setDraggedAgent] = useState<{ id: string; projectId: string } | null>(null);
+
+  const handleDragStart = useCallback((e: React.DragEvent, id: string) => {
+    if (id === 'unassigned') return;
+    setDraggedProjectId(id);
+    e.dataTransfer.effectAllowed = 'move';
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent, targetId: string) => {
+    e.preventDefault();
+    if (targetId === 'unassigned' || !draggedProjectId || draggedProjectId === targetId) return;
+
+    const sourceIndex = projectIds.indexOf(draggedProjectId);
+    const targetIndex = projectIds.indexOf(targetId);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+
+    const newProjectIds = [...projectIds];
+    newProjectIds.splice(sourceIndex, 1);
+    newProjectIds.splice(targetIndex, 0, draggedProjectId);
+
+    onReorderProjects?.(newProjectIds);
+    setDraggedProjectId(null);
+  }, [projectIds, draggedProjectId, onReorderProjects]);
+
+  const handleDragStartAgent = useCallback((e: React.DragEvent, id: string, projectId: string) => {
+    setDraggedAgent({ id, projectId });
+    e.dataTransfer.effectAllowed = 'move';
+  }, []);
+
+  const handleDropAgent = useCallback((e: React.DragEvent, targetId: string, targetProjectId: string, groupAgents: any[]) => {
+    e.preventDefault();
+    if (!draggedAgent || draggedAgent.id === targetId) return;
+    if (draggedAgent.projectId !== targetProjectId) return;
+
+    const agentIds = groupAgents.map((a) => a.id);
+    const sourceIndex = agentIds.indexOf(draggedAgent.id);
+    const targetIndex = agentIds.indexOf(targetId);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+
+    const newAgentIds = [...agentIds];
+    newAgentIds.splice(sourceIndex, 1);
+    newAgentIds.splice(targetIndex, 0, draggedAgent.id);
+
+    onReorderAgents?.(newAgentIds);
+    setDraggedAgent(null);
+  }, [draggedAgent, onReorderAgents]);
 
   const dismissWarning = useCallback((agentId: string) => {
     setDismissedWarnings((prev) => new Set([...prev, agentId]));
@@ -233,8 +286,14 @@ const AgentSidebar = memo(function AgentSidebar({
                 <button
                   type="button"
                   data-debug-id={`project-group-toggle-${projectId}`}
+                  draggable={projectId !== 'unassigned'}
+                  onDragStart={(e) => handleDragStart(e, projectId)}
+                  onDragOver={(e) => projectId !== 'unassigned' && e.preventDefault()}
+                  onDrop={(e) => handleDrop(e, projectId)}
                   onClick={() => toggleProjectGroup(projectId)}
-                  className="flex w-full items-center justify-between rounded-[var(--fd-radius-lg)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-3 py-2 text-left transition hover:border-[var(--fd-accent-blue)]/50"
+                  className={`flex w-full items-center justify-between rounded-[var(--fd-radius-lg)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-3 py-2 text-left transition hover:border-[var(--fd-accent-blue)]/50 ${
+                    projectId !== 'unassigned' ? 'cursor-grab active:cursor-grabbing' : ''
+                  }`}
                 >
                   <span className="min-w-0">
                     <span className="block truncate text-xs font-semibold uppercase tracking-[0.18em] text-white">{projectGroupLabel(projectId, projectsById, groupAgents)}</span>
@@ -243,17 +302,25 @@ const AgentSidebar = memo(function AgentSidebar({
                   <span className="text-sm text-[#aaa]">{collapsed ? '▸' : '▾'}</span>
                 </button>
                 {!collapsed ? groupAgents.map((agent) => (
-                  <AgentListItem
+                  <div
                     key={agent.id}
-                    agent={agent}
-                    selected={agent.id === selectedAgentId}
-                    onSelect={onSelectAgent}
-                    hideProject
-                    warningDismissed={dismissedWarnings.has(agent.id)}
-                    onDismissWarning={dismissWarning}
-                    onStart={onStartAgent}
-                    onStop={onStopAgent}
-                  />
+                    draggable
+                    onDragStart={(e) => handleDragStartAgent(e, agent.id, projectId)}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => handleDropAgent(e, agent.id, projectId, groupAgents)}
+                    className="cursor-grab active:cursor-grabbing"
+                  >
+                    <AgentListItem
+                      agent={agent}
+                      selected={agent.id === selectedAgentId}
+                      onSelect={onSelectAgent}
+                      hideProject
+                      warningDismissed={dismissedWarnings.has(agent.id)}
+                      onDismissWarning={dismissWarning}
+                      onStart={onStartAgent}
+                      onStop={onStopAgent}
+                    />
+                  </div>
                 )) : null}
               </section>
             );

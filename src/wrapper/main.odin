@@ -1342,11 +1342,96 @@ project_bootstrap_context :: proc(daemon_url, agent_token: string, cfg: cfg_lib.
 	strings.write_string(&request, `","project_id":"`); json_write_string(&request, project_id)
 	strings.write_string(&request, `"}`)
 	response, ok := http.post(daemon_url, "/projects/show", strings.to_string(request))
+	project_context := ""
 	if ok && response.status == 200 {
-		formatted := format_project_bootstrap(response.body)
-		if formatted != "" do return formatted
+		project_context = format_project_bootstrap(response.body)
+	}
+
+	agents_context := ""
+	agents_response, agents_ok := http.get(daemon_url, fmt.tprintf("/agents?project_id=%s", project_id))
+	if agents_ok && agents_response.status == 200 {
+		agents_context = format_project_agents_bootstrap(agents_response.body)
+	}
+
+	if project_context != "" && agents_context != "" {
+		return strings.concatenate({project_context, "\n", agents_context})
+	} else if project_context != "" {
+		return project_context
 	}
 	return ""
+}
+
+format_project_agents_bootstrap :: proc(body: string) -> string {
+	start_arr := strings.index(body, `"agents":[`)
+	if start_arr < 0 do return ""
+	idx := start_arr + len(`"agents":[`)
+	
+	Agent_Bootstrap_Item :: struct {
+		instance_id: string,
+		role: string,
+		order: int,
+	}
+	
+	items: [dynamic]Agent_Bootstrap_Item
+	defer {
+		for item in items {
+			delete(item.instance_id)
+			delete(item.role)
+		}
+		delete(items)
+	}
+	
+	for {
+		start_obj_rel := strings.index_byte(body[idx:], '{')
+		if start_obj_rel < 0 do break
+		obj_start := idx + start_obj_rel
+		obj_end := json_object_end(body, obj_start)
+		if obj_end <= obj_start do break
+		
+		object := body[obj_start:obj_end]
+		
+		inst_id := extract_json_string(object, "agent_instance_id", "")
+		role := extract_json_string(object, "template_id", "")
+		order := extract_json_int(object, "order", 0)
+		
+		if inst_id != "" {
+			append(&items, Agent_Bootstrap_Item{
+				instance_id = strings.clone(inst_id),
+				role = strings.clone(role),
+				order = order,
+			})
+		}
+		
+		idx = obj_end
+	}
+	
+	if len(items) == 0 do return ""
+	
+	// Sort items by order ascending
+	for i in 0..<len(items) {
+		for j in i+1..<len(items) {
+			if items[i].order > items[j].order {
+				temp := items[i]
+				items[i] = items[j]
+				items[j] = temp
+			}
+		}
+	}
+	
+	builder := strings.builder_make()
+	strings.write_string(&builder, "Agents:\n")
+	for item in items {
+		strings.write_string(&builder, "- ")
+		strings.write_string(&builder, item.instance_id)
+		if item.role != "" {
+			strings.write_string(&builder, " (role: ")
+			strings.write_string(&builder, item.role)
+			strings.write_string(&builder, ")")
+		}
+		strings.write_string(&builder, "\n")
+	}
+	
+	return strings.to_string(builder)
 }
 
 format_project_bootstrap :: proc(body: string) -> string {

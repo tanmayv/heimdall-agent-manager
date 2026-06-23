@@ -33,7 +33,7 @@ import {
 } from '../store/chatSlice';
 import { refreshTaskBoard, taskEventReceived, updateTaskStateDirectly, fetchUnreviewedChains } from '../store/taskSlice';
 import { memoryEventReceived, refreshMemory, auditStartedReceived, auditEndedReceived } from '../store/memorySlice';
-import { refreshProjects } from '../store/projectSlice';
+import { refreshProjects, reorderProjectsFromUi } from '../store/projectSlice';
 import * as daemonApi from '../api/daemonApi';
 import AuditSidebar from './AuditSidebar';
 
@@ -65,7 +65,7 @@ export default function App() {
   });
   const dispatch = useDispatch<any>();
   const { agents, selectedAgentId, session, userPreferences } = useSelector((state: any) => state.chat);
-  const { projectsById } = useSelector((state: any) => state.projects);
+  const { projectsById, projectIds } = useSelector((state: any) => state.projects);
   const unreviewedChains = useSelector((state: any) => state.tasks.unreviewedChains || EMPTY_ARRAY);
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? null;
   
@@ -355,6 +355,24 @@ export default function App() {
     dispatch(refreshProjects());
   }, [dispatch]);
 
+  const handleReorderProjects = useCallback((newProjectIds: string[]) => {
+    dispatch(reorderProjectsFromUi(newProjectIds));
+  }, [dispatch]);
+
+  const handleReorderAgents = useCallback(async (agentIds: string[]) => {
+    try {
+      await daemonApi.reorderAgents({
+        daemonUrl: session.daemonUrl,
+        clientInstanceId: session.clientInstanceId,
+        clientToken: session.clientToken,
+        agentIds,
+      });
+      dispatch(refreshAgents());
+    } catch (err: any) {
+      console.error('Failed to reorder agents:', err);
+    }
+  }, [dispatch, session]);
+
   const handleOpenAgents = useCallback(() => {
     setView('agents');
   }, []);
@@ -381,6 +399,9 @@ export default function App() {
         <AgentSidebar
           agents={agents}
           projectsById={projectsById}
+          projectIds={projectIds}
+          onReorderProjects={handleReorderProjects}
+          onReorderAgents={handleReorderAgents}
           selectedAgentId={selectedAgentId}
           session={session}
           activeView={view}
