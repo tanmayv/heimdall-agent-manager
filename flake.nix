@@ -109,7 +109,9 @@
           default = self.packages.${system}.ham-daemon;
         });
 
-      apps = forAllSystems (system: {
+      apps = forAllSystems (system: 
+        let pkgs = pkgsFor system;
+        in {
         daemon = {
           type = "app";
           program = "${self.packages.${system}.ham-daemon}/bin/ham-daemon";
@@ -129,6 +131,18 @@
         heimdall = {
           type = "app";
           program = "${self.packages.${system}.heimdall}/bin/heimdall";
+        };
+        heimdall-browser = {
+          type = "app";
+          program = "${pkgs.writeShellScriptBin "heimdall-browser" ''
+            #!/usr/bin/env bash
+            echo "[heimdall] Starting Vite dev server for browser..."
+            if [ ! -d "node_modules" ]; then
+              echo "[heimdall] node_modules not found. Running npm install..."
+              ${pkgs.nodejs}/bin/npm install
+            fi
+            ${pkgs.nodejs}/bin/npx vite --host 127.0.0.1
+          ''}/bin/heimdall-browser";
         };
         default = self.apps.${system}.daemon;
       });
