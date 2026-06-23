@@ -131,13 +131,13 @@ export default function MemoryBoard({ session, agents = [] }: { session: any; ag
     });
   }, [dispatch, runMutation, selected?.proposalId, canMutate, decisionReason, selected?.memoryId]);
 
-  const counts = useMemo(() => 
+  const counts = useMemo(() =>
     MEMORY_STATUSES.map((status) => ({ status, count: recordIds.filter((id) => recordsById[id]?.status === status).length })),
     [recordIds, recordsById]
   );
 
   return (
-    <main className="flex min-w-0 h-full flex-col bg-[var(--fd-canvas)] overflow-hidden">
+    <main className="flex min-w-0 h-full flex-col bg-[var(--fd-canvas)] overflow-scroll">
       <header className="framer-panel flex items-center justify-between border-b border-[var(--fd-hairline)] px-6 py-4">
         <div>
           <p className="framer-topline tracking-[0.28em]">Memory</p>

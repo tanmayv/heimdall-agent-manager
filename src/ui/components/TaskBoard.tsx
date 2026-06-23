@@ -219,14 +219,14 @@ export default function TaskBoard({ session }) {
   }
 
 
-  const chainIds = useMemo(() => 
+  const chainIds = useMemo(() =>
     Object.keys(chainTaskIds).sort((left, right) => (chainsById[right]?.createdAtUnixMs || 0) - (chainsById[left]?.createdAtUnixMs || 0)),
     [chainTaskIds, chainsById]
   );
   const selectedChain = selectedChainId ? chainsById[selectedChainId] : null;
   const selectedTask = selectedTaskId ? tasksById[selectedTaskId] : null;
   const selectedEvents = selectedTaskId ? taskLogsByTaskId[selectedTaskId] ?? [] : [];
-  const comments = useMemo(() => 
+  const comments = useMemo(() =>
     selectedEvents.filter((event) => event.body || event.kind === 'Task_Comment'),
     [selectedEvents]
   );
@@ -234,8 +234,8 @@ export default function TaskBoard({ session }) {
   const selectedTaskTerminal = selectedTask ? isTerminalTaskStatus(selectedTask.status) : false;
   const canMutate = Boolean(session.clientToken) && session.connected && !mutating;
   const nudgeInFlight = nudgeState.taskId === selectedTaskId && nudgeState.status === 'sending';
-  
-  const agentOptions = useMemo(() => 
+
+  const agentOptions = useMemo(() =>
     uniqueValues([
       ...(chatAgents ?? []).map((agent: any) => agent.id || agent.label),
       ...Object.values(tasksById).flatMap((task: any) => [task.assigneeAgentInstanceId, task.reviewerAgentInstanceId, task.coordinatorAgentInstanceId]),
@@ -556,7 +556,7 @@ export default function TaskBoard({ session }) {
     return (
       <>
         {renderHeader('Task-chain Kanban overview')}
-        <section className="grid min-h-0 flex-1 grid-cols-4 gap-4 overflow-hidden p-4">
+        <section className="grid min-h-0 flex-1 grid-cols-4 gap-4 overflow-scroll p-4">
           {STATUS_COLUMNS.map((column) => renderColumn(column, chainsByBucket[column.id], 'chain'))}
         </section>
       </>
@@ -597,7 +597,7 @@ export default function TaskBoard({ session }) {
             </form>
             <form onSubmit={handleChainStatus} className="mt-3 grid grid-cols-[0.55fr_1fr_auto] gap-2"><input data-debug-id="chain-status-input" value={chainStatusForm.status} onChange={(event) => setChainStatusForm({ ...chainStatusForm, status: event.target.value })} placeholder="status" className="framer-input px-3 py-2 text-sm" /><input data-debug-id="chain-status-summary" value={chainStatusForm.finalSummary} onChange={(event) => setChainStatusForm({ ...chainStatusForm, finalSummary: event.target.value })} placeholder="final summary" className="framer-input px-3 py-2 text-sm" /><button data-debug-id="chain-set-status-btn" disabled={!canMutate || !chainStatusForm.status.trim()} className="framer-pill bg-white disabled:opacity-40">Set status</button></form>
           </div>
-          <div className="grid grid-cols-4 gap-4 flex-1 min-h-0 overflow-hidden">
+          <div className="grid grid-cols-4 gap-4 flex-1 min-h-0 overflow-scroll">
             {STATUS_COLUMNS.map((column) => renderColumn(column, [
               <button key={`${column.id}-add`} type="button" data-debug-id={`chain-add-task-btn-${column.id}`} onClick={() => openCreateTask('subtask')} className="framer-card mb-2 w-full border-dashed p-3 text-left text-sm text-[var(--fd-accent-blue)] hover:border-[var(--fd-accent-blue)]/50">+ Add task to chain</button>,
               ...tasksByBucket[column.id],
