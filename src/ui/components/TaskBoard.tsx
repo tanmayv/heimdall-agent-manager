@@ -524,10 +524,10 @@ export default function TaskBoard({ session }) {
           event.preventDefault();
           handleColumnDrop(kind, column.id);
         }}
-        className={`framer-card-xl min-w-0 p-3 transition-colors ${dropActive ? 'border-[var(--fd-accent-blue)] bg-[var(--fd-accent-blue)]/10' : ''}`}
+        className={`framer-card-xl min-w-0 p-3 transition-colors flex flex-col h-full ${dropActive ? 'border-[var(--fd-accent-blue)] bg-[var(--fd-accent-blue)]/10' : ''}`}
       >
         <div className="mb-3 flex items-center justify-between"><p className="framer-topline">{column.label}</p><span className="framer-chip">{cards.length}</span></div>
-        <div className="space-y-2 overflow-y-auto pr-1">
+        <div className="space-y-2 overflow-y-auto pr-1 flex-1 min-h-0">
           {cards.length ? cards : <p className="framer-subtext p-3 text-sm">Drop items here or drag from another column.</p>}
         </div>
       </div>

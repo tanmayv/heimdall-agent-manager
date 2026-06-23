@@ -330,7 +330,7 @@ export default function App() {
         <div className={`flex-1 min-w-0 min-h-0 h-full ${view === 'chat' ? 'flex flex-col' : 'hidden'}`}>
           <ChatPane agent={selectedAgent} session={session} />
         </div>
-        <div className={`flex-1 min-w-0 h-full ${view === 'tasks' ? 'flex flex-col' : 'hidden'}`}>
+        <div className={`flex-1 min-w-0 min-h-0 h-full ${view === 'tasks' ? 'flex flex-col' : 'hidden'}`}>
           <TaskBoard session={session} />
         </div>
         <div className={`flex-1 min-w-0 h-full ${view === 'memory' ? 'flex flex-col' : 'hidden'}`}>
