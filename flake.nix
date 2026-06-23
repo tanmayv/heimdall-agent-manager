@@ -66,7 +66,7 @@
         pname = "heimdall";
         version = appVersion;
         src = ./.;
-        npmDepsHash = "sha256-HGsFWlo7IUWrhJBqsmXDAmhGZ6dDEaZ39ZOi1cGg7eU=";
+        npmDepsHash = "sha256-TZJIsQ3ckX+WAZEcSrKcEni1Ah+GnUX/P1YN4oFnm1g=";
         nativeBuildInputs = [ pkgs.makeWrapper ];
         npmBuildScript = "build";
         npmFlags = [ "--ignore-scripts" ];
