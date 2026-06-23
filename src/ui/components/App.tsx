@@ -237,8 +237,10 @@ export default function App() {
         try {
           payload = JSON.parse(event.data);
         } catch {
+          console.warn("[WS USER CLIENT] failed to parse WS text message:", event.data);
           return;
         }
+        console.log("[WS USER CLIENT] message received:", payload);
         if (payload?.type === 'task_event') {
           dispatch(taskEventReceived(payload));
           if (payload.task) {
