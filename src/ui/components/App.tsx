@@ -68,6 +68,17 @@ export default function App() {
   const { agents, selectedAgentId, session, userPreferences } = useSelector((state: any) => state.chat);
   const { projectsById, projectIds } = useSelector((state: any) => state.projects);
   const unreviewedChains = useSelector((state: any) => state.tasks.unreviewedChains || EMPTY_ARRAY);
+  const tasksById = useSelector((state: any) => state.tasks.tasksById);
+  const tasksBadgeCount = useMemo(() => {
+    const userId = session.userId || 'operator@local';
+    return Object.values(tasksById).filter((task: any) => {
+      if (task.status !== 'review_ready') return false;
+      const isPart = (task.participants ?? []).some((p: any) => p.agentInstanceId === userId && (p.role === 'lgtm_required' || p.role === 'lgtm_optional'));
+      if (!isPart) return false;
+      const hasVoted = (task.votes ?? []).some((v: any) => v.reviewerAgentInstanceId === userId);
+      return !hasVoted;
+    }).length;
+  }, [tasksById, session.userId]);
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? null;
   
   const [showOnboarding, setShowOnboarding] = useState<boolean>(false);
@@ -409,6 +420,7 @@ export default function App() {
           onOpenStartAgent={handleOpenStartAgent}
           onOpenSettings={handleOpenSettings}
           auditBadgeCount={unreviewedChains.length}
+          tasksBadgeCount={tasksBadgeCount}
           onToggleAudit={handleToggleAudit}
         />
         {/* Persistent Dashboard Pages (Preserves DOM, State, and Scroll positions) */}

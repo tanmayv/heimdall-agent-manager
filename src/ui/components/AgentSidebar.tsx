@@ -35,6 +35,7 @@ interface AgentSidebarProps {
   onOpenStartAgent: () => void;
   onOpenSettings: () => void;
   auditBadgeCount: number;
+  tasksBadgeCount?: number;
   onToggleAudit: () => void;
   onReorderProjects?: (projectIds: string[]) => void;
   onReorderAgents?: (agentIds: string[]) => void;
@@ -60,6 +61,7 @@ const AgentSidebar = memo(function AgentSidebar({
   onOpenStartAgent,
   onOpenSettings,
   auditBadgeCount,
+  tasksBadgeCount = 0,
   onToggleAudit,
   onReorderProjects,
   onReorderAgents
@@ -230,9 +232,14 @@ const AgentSidebar = memo(function AgentSidebar({
           type="button"
           data-debug-id="nav-tasks"
           onClick={onOpenTasks}
-          className={`${activeView === 'tasks' ? 'framer-pill bg-white' : 'framer-pill-secondary'} px-3 py-2 text-xs`}
+          className={`${activeView === 'tasks' ? 'framer-pill bg-white' : 'framer-pill-secondary'} px-3 py-2 text-xs flex items-center justify-center gap-1.5`}
         >
-          Tasks
+          <span>Tasks</span>
+          {Boolean(tasksBadgeCount) && tasksBadgeCount > 0 && (
+            <span className="bg-red-600 text-white rounded-full px-1.5 py-0.2 text-[10px] font-bold">
+              {tasksBadgeCount}
+            </span>
+          )}
         </button>
         <button
           type="button"
