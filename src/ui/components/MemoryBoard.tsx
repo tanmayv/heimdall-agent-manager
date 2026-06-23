@@ -57,7 +57,11 @@ export default function MemoryBoard({ session, agents = [] }: { session: any; ag
   useEffect(() => {
     if (selectedMemoryId) dispatch(fetchMemoryDetail(selectedMemoryId));
   }, [dispatch, selectedMemoryId]);
-
+  useEffect(() => {
+    if (selectedMemoryId) {
+      setPage('list');
+    }
+  }, [selectedMemoryId]);
   // Form update helper is deleted because form state is now local to MemoryProposalForm component
 
   const openDetail = useCallback((memoryId: string) => {

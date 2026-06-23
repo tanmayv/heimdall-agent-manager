@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, memo } from 'react';
+import { useEffect, useState, useMemo, useRef, memo } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import {
   addCommentToSelectedTask,
@@ -244,6 +244,25 @@ export default function TaskBoard({ session }) {
   const canMutate = Boolean(session.clientToken) && session.connected && !mutating;
   const nudgeInFlight = nudgeState.taskId === selectedTaskId && nudgeState.status === 'sending';
 
+  const prevSelectedTaskId = useRef('');
+  const prevSelectedChainId = useRef('');
+
+  useEffect(() => {
+    if (selectedTaskId && selectedTaskId !== prevSelectedTaskId.current) {
+      setPage('task');
+      setHistory(['overview', 'chain']);
+    }
+    prevSelectedTaskId.current = selectedTaskId;
+  }, [selectedTaskId]);
+
+  useEffect(() => {
+    if (selectedChainId && !selectedTaskId && selectedChainId !== prevSelectedChainId.current) {
+      setPage('chain');
+      setHistory(['overview']);
+    }
+    prevSelectedChainId.current = selectedChainId;
+  }, [selectedChainId, selectedTaskId]);
+
   const [activeTab, setActiveTab] = useState<'board' | 'pending'>('board');
 
   const pendingApprovalTasks = useMemo(() => {
@@ -298,7 +317,14 @@ export default function TaskBoard({ session }) {
   function back() {
     setHistory((current) => {
       const next = [...current];
-      setPage(next.pop() || 'overview');
+      const prevPage = next.pop() || 'overview';
+      setPage(prevPage);
+      if (prevPage === 'chain') {
+        dispatch(selectTask(''));
+      } else if (prevPage === 'overview') {
+        dispatch(selectTask(''));
+        dispatch(selectChain(''));
+      }
       return next;
     });
   }

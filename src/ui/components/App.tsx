@@ -33,7 +33,7 @@ import {
   startAgentInstance,
   stopAgentInstance,
 } from '../store/chatSlice';
-import { refreshTaskBoard, taskEventReceived, updateTaskStateDirectly, fetchUnreviewedChains } from '../store/taskSlice';
+import { refreshTaskBoard, taskEventReceived, updateTaskStateDirectly, fetchUnreviewedChains, selectTask, selectChain } from '../store/taskSlice';
 import { memoryEventReceived, refreshMemory, auditStartedReceived, auditEndedReceived } from '../store/memorySlice';
 import { refreshProjects, reorderProjectsFromUi } from '../store/projectSlice';
 import * as daemonApi from '../api/daemonApi';
@@ -350,6 +350,8 @@ export default function App() {
   }, []);
 
   const handleOpenTasks = useCallback(() => {
+    dispatch(selectTask(''));
+    dispatch(selectChain(''));
     setView('tasks');
     dispatch(refreshTaskBoard());
   }, [dispatch]);
