@@ -252,7 +252,46 @@ async function copyMessageText(text: string) {
   }
 }
 
-function MessageBubble({ message }: { message: any }) {
+function parseReferences(text: string) {
+  const refs: Array<{ type: 'task' | 'chain' | 'memory' | 'proposal'; id: string }> = [];
+  if (typeof text !== 'string') return refs;
+  
+  const pattern = /\b(task-[a-f0-9]+|chain-[a-f0-9]+|mem_\d+|proposal_\d+)\b/gi;
+  let match;
+  const seen = new Set<string>();
+  while ((match = pattern.exec(text)) !== null) {
+    const refStr = match[1].toLowerCase();
+    if (seen.has(refStr)) continue;
+    seen.add(refStr);
+    
+    if (refStr.startsWith('task-')) {
+      refs.push({ type: 'task', id: refStr });
+    } else if (refStr.startsWith('chain-')) {
+      refs.push({ type: 'chain', id: refStr });
+    } else if (refStr.startsWith('mem_')) {
+      refs.push({ type: 'memory', id: refStr });
+    } else if (refStr.startsWith('proposal_')) {
+      refs.push({ type: 'proposal', id: refStr });
+    }
+  }
+  return refs;
+}
+
+function EntityCard({ id, type, session }: { id: string; type: 'task' | 'chain' | 'memory' | 'proposal'; session: any }) {
+  return (
+    <div className="w-full bg-[#141414]/90 border border-[#222] rounded-lg p-3 my-1.5 flex flex-col gap-1 text-xs select-text">
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+          {type} card
+        </span>
+        <span className="font-mono text-[#777]">{id}</span>
+      </div>
+      <p className="text-[#888] italic">Loading details for {id}...</p>
+    </div>
+  );
+}
+
+function MessageBubble({ message, session }: { message: any; session: any }) {
   console.log('[Render] MessageBubble', message.id);
   const dispatch = useDispatch<any>();
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
@@ -296,6 +335,14 @@ function MessageBubble({ message }: { message: any }) {
       // Fall back to plain markdown
     }
   }
+
+  let textToParse = displayBody;
+  if (structuredQuestion) {
+    textToParse = structuredQuestion.question;
+  } else if (smartAnswerBody) {
+    textToParse = smartAnswerBody;
+  }
+  const refs = parseReferences(textToParse);
 
   function handleAnswerClick(answer: string) {
     if (selectedAnswer) return;
@@ -514,6 +561,13 @@ function MessageBubble({ message }: { message: any }) {
           <MarkdownContent text={smartAnswerBody} />
         ) : (
           <MarkdownContent text={displayBody} />
+        )}
+        {refs.length > 0 && (
+          <div className="mt-3 space-y-2 border-t border-[#222] pt-2.5">
+            {refs.map((ref) => (
+              <EntityCard key={ref.id} id={ref.id} type={ref.type} session={session} />
+            ))}
+          </div>
         )}
         <p className={`mt-2 flex items-center justify-end gap-2 text-xs ${isUser ? 'text-slate-900/70' : 'text-[#999]'}`}>
           <span>{message.timestamp}</span>

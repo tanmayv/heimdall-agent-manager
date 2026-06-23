@@ -162,7 +162,7 @@ export default function ChatPane({ agent, session }: { agent: any; session: any 
         >
           <div className="w-full flex flex-col gap-3">
             {messages.length ? (
-              messages.map((message) => <MessageBubble key={message.id} message={message} />)
+              messages.map((message) => <MessageBubble key={message.id} message={message} session={session} />)
             ) : (
               <div className="framer-card framer-subtext text-center p-8 text-[#999]">
                 {agent ? 'No chat messages for this agent yet.' : 'Select a connected agent to view chat history.'}
