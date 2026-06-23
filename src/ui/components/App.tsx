@@ -34,7 +34,7 @@ import {
   stopAgentInstance,
 } from '../store/chatSlice';
 import { refreshTaskBoard, taskEventReceived, updateTaskStateDirectly, fetchUnreviewedChains, selectTask, selectChain } from '../store/taskSlice';
-import { memoryEventReceived, refreshMemory, auditStartedReceived, auditEndedReceived } from '../store/memorySlice';
+import { memoryEventReceived, refreshMemory, auditStartedReceived, auditEndedReceived, selectMemory } from '../store/memorySlice';
 import { refreshProjects, reorderProjectsFromUi } from '../store/projectSlice';
 import * as daemonApi from '../api/daemonApi';
 import AuditSidebar from './AuditSidebar';
@@ -97,6 +97,63 @@ export default function App() {
   }, [session.connected, userPreferences]);
   const view = useSelector((state: any) => state.chat.activeView);
   const setView = useCallback((val: any) => dispatch(setChatView(val)), [dispatch]);
+
+  const selectedTaskId = useSelector((state: any) => state.tasks.selectedTaskId);
+  const selectedChainId = useSelector((state: any) => state.tasks.selectedChainId);
+  const selectedMemoryId = useSelector((state: any) => state.memory.selectedMemoryId);
+
+  // 1. Mount / Browser back-forward popstate listener: sync URL to Redux
+  useEffect(() => {
+    function syncUrlToStore() {
+      const params = new URLSearchParams(window.location.search);
+      const urlView = params.get('view') || 'chat';
+      const urlAgentId = params.get('agentId') || '';
+      const urlTaskId = params.get('taskId') || '';
+      const urlChainId = params.get('chainId') || '';
+      const urlMemoryId = params.get('memoryId') || '';
+
+      dispatch(setChatView(urlView));
+      dispatch(selectAgent(urlAgentId));
+      dispatch(selectTask(urlTaskId));
+      dispatch(selectChain(urlChainId));
+      dispatch(selectMemory(urlMemoryId));
+    }
+
+    syncUrlToStore();
+
+    window.addEventListener('popstate', syncUrlToStore);
+    return () => window.removeEventListener('popstate', syncUrlToStore);
+  }, [dispatch]);
+
+  // 2. Redux state changes listener: sync Redux to URL (pushState)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    let changed = false;
+
+    const setParam = (key: string, value: string) => {
+      const current = params.get(key) || '';
+      if (current !== value) {
+        if (value) {
+          params.set(key, value);
+        } else {
+          params.delete(key);
+        }
+        changed = true;
+      }
+    };
+
+    setParam('view', view || 'chat');
+    setParam('agentId', selectedAgentId || '');
+    setParam('taskId', selectedTaskId || '');
+    setParam('chainId', selectedChainId || '');
+    setParam('memoryId', selectedMemoryId || '');
+
+    if (changed) {
+      const search = params.toString() ? `?${params.toString()}` : '';
+      const url = `${window.location.pathname}${search}`;
+      window.history.pushState(null, '', url);
+    }
+  }, [view, selectedAgentId, selectedTaskId, selectedChainId, selectedMemoryId]);
   const [isAuditOpen, setIsAuditOpen] = useState(false);
   const [isAgentSwitcherOpen, setIsAgentSwitcherOpen] = useState(false);
   const [agentSearchQuery, setAgentSearchQuery] = useState('');
