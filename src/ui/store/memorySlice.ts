@@ -87,7 +87,6 @@ export const triggerMemoryAudit = createAsyncThunk('memory/triggerMemoryAudit', 
 const initialState = {
   recordsById: {} as Record<string, any>,
   recordIds: [] as string[],
-  selectedMemoryId: '',
   historyById: {} as Record<string, any[]>,
   filters: { subjectAgent: '', type: '', status: '' },
   loading: false,
@@ -110,9 +109,6 @@ const memorySlice = createSlice({
   name: 'memory',
   initialState,
   reducers: {
-    selectMemory(state: any, action) {
-      state.selectedMemoryId = action.payload || '';
-    },
     setMemoryFilters(state: any, action) {
       state.filters = { ...state.filters, ...action.payload };
     },
@@ -177,8 +173,6 @@ const memorySlice = createSlice({
           });
         state.recordsById = recordsById;
         state.recordIds = recordIds;
-        if (state.selectedMemoryId && !recordsById[state.selectedMemoryId]) state.selectedMemoryId = '';
-        if (!state.selectedMemoryId) state.selectedMemoryId = recordIds[0] || '';
       })
       .addCase(refreshMemory.rejected, (state: any, action) => {
         state.loading = false;
@@ -210,5 +204,5 @@ const memorySlice = createSlice({
   },
 });
 
-export const { selectMemory, setMemoryFilters, memoryEventReceived, auditStartedReceived, auditEndedReceived, clearActiveAudit } = memorySlice.actions;
+export const { setMemoryFilters, memoryEventReceived, auditStartedReceived, auditEndedReceived, clearActiveAudit } = memorySlice.actions;
 export default memorySlice.reducer;

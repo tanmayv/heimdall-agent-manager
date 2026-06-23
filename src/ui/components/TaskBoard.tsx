@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo, useRef, memo } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
+import { useUrlParams } from './useUrlParams';
 import {
   addCommentToSelectedTask,
   addParticipantToSelectedTask,
@@ -9,8 +10,6 @@ import {
   fetchSelectedTaskLog,
   nudgeSelectedTask,
   refreshTaskBoard,
-  selectChain,
-  selectTask,
   updateSelectedChainMetadata,
   updateSelectedChainStatus,
   updateSelectedTaskStatus,
@@ -188,6 +187,10 @@ export default function TaskBoard({ session }) {
     console.log(`[Render Timer] TaskBoard took ${duration.toFixed(2)}ms`);
   });
   const dispatch = useDispatch<any>();
+  const [urlParams, setUrlParams] = useUrlParams();
+  const selectedTaskId = urlParams.taskId;
+  const selectedChainId = urlParams.chainId;
+
   const taskState = useSelector((state: any) => state.tasks);
   const chatAgents = useSelector((state: any) => state.chat.agents);
   const {
@@ -195,8 +198,6 @@ export default function TaskBoard({ session }) {
     tasksById,
     chainTaskIds,
     participantsByTaskId,
-    selectedChainId,
-    selectedTaskId,
     taskLogsByTaskId,
     loading,
     error,
@@ -325,23 +326,22 @@ export default function TaskBoard({ session }) {
       const prevPage = next.pop() || 'overview';
       setPage(prevPage);
       if (prevPage === 'chain') {
-        dispatch(selectTask(''));
+        setUrlParams({ taskId: '' });
       } else if (prevPage === 'overview') {
-        dispatch(selectTask(''));
-        dispatch(selectChain(''));
+        setUrlParams({ taskId: '', chainId: '' });
       }
       return next;
     });
   }
 
   function openChain(chainId: string) {
-    dispatch(selectChain(chainId));
+    setUrlParams({ chainId, taskId: '' });
     dispatch(fetchTasksForChain(chainId));
     go('chain');
   }
 
   function openTask(taskId: string) {
-    dispatch(selectTask(taskId));
+    setUrlParams({ taskId });
     go('task');
   }
 
@@ -379,7 +379,7 @@ export default function TaskBoard({ session }) {
         default_reviewer_agent_instance_id: createChainForm.defaultReviewerAgentInstanceId.trim(),
       })).unwrap();
       setCreateChainForm({ chainId: '', title: '', description: '', coordinatorAgentInstanceId: '', defaultReviewerAgentInstanceId: '' });
-      if (result?.chain_id) dispatch(selectChain(result.chain_id));
+      if (result?.chain_id) setUrlParams({ chainId: result.chain_id, taskId: '' });
       setPage('chain');
       setHistory(['overview']);
     });
@@ -400,8 +400,8 @@ export default function TaskBoard({ session }) {
         assignee_agent_instance_id: createForm.assigneeAgentInstanceId.trim(),
         reviewer_agent_instance_id: createForm.reviewerAgentInstanceId.trim(),
       })).unwrap();
-      if (result?.chain_id || chainId) dispatch(selectChain(result?.chain_id || chainId));
-      if (result?.task_id) dispatch(selectTask(result.task_id));
+      const nextChainId = result?.chain_id || chainId || '';
+      setUrlParams({ chainId: nextChainId, taskId: result?.task_id || '' });
       setCreateForm(blankCreateForm);
       setPage('task');
       setHistory(['overview', 'chain']);

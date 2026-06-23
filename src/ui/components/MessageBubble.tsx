@@ -1,8 +1,9 @@
 import { useState, memo, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { sendMessageToSelectedAgent, setView } from '../store/chatSlice';
-import { updateTaskStateDirectly, updateChainStateDirectly, selectTask, selectChain } from '../store/taskSlice';
-import { fetchMemoryDetail, refreshMemory, selectMemory } from '../store/memorySlice';
+import { updateUrlParams } from './useUrlParams';
+import { sendMessageToSelectedAgent } from '../store/chatSlice';
+import { updateTaskStateDirectly, updateChainStateDirectly } from '../store/taskSlice';
+import { fetchMemoryDetail, refreshMemory } from '../store/memorySlice';
 import * as daemonApi from '../api/daemonApi';
 
 function isSafeUrl(url: string) {
@@ -301,15 +302,12 @@ function EntityCard({ id, type, session }: { id: string; type: 'task' | 'chain' 
   const handleClick = (e: React.MouseEvent) => {
     if (window.getSelection()?.toString()) return;
     if (type === 'task') {
-      dispatch(selectTask(id));
-      dispatch(setView('tasks'));
+      updateUrlParams({ taskId: id, view: 'tasks' });
     } else if (type === 'chain') {
-      dispatch(selectChain(id));
-      dispatch(setView('tasks'));
+      updateUrlParams({ chainId: id, taskId: '', view: 'tasks' });
     } else if (type === 'memory' || type === 'proposal') {
       if (entity?.memoryId) {
-        dispatch(selectMemory(entity.memoryId));
-        dispatch(setView('memory'));
+        updateUrlParams({ memoryId: entity.memoryId, view: 'memory' });
       }
     }
   };

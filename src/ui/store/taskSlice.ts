@@ -73,12 +73,24 @@ function normalizeEvent(event: any) {
   };
 }
 
+function getActiveTaskId(payload: any): string {
+  if (payload?.taskId) return payload.taskId;
+  const params = new URLSearchParams(window.location.search);
+  return params.get('taskId') || '';
+}
+
+function getActiveChainId(payload: any): string {
+  if (payload?.chainId) return payload.chainId;
+  const params = new URLSearchParams(window.location.search);
+  return params.get('chainId') || '';
+}
+
 export const refreshTaskBoard = createAsyncThunk(
   'tasks/refreshTaskBoard',
   async (payload: { createdAfter?: number; createdBefore?: number } | void, { dispatch, getState }) => {
     const state = getState() as any;
     const { session } = state.chat;
-    const { selectedChainId } = state.tasks;
+    const selectedChainId = getActiveChainId(payload);
     if (!session.clientToken) return { chains: [], tasks: [], selectedChainId: '' };
 
     const args = (payload && typeof payload === 'object') ? payload : {};
@@ -142,7 +154,7 @@ export const fetchTasksForChain = createAsyncThunk('tasks/fetchTasksForChain', a
 export const fetchSelectedTaskLog = createAsyncThunk('tasks/fetchSelectedTaskLog', async (taskId: string | undefined, { getState }) => {
   const state = getState() as any;
   const { session } = state.chat;
-  const selectedTaskId = taskId || state.tasks.selectedTaskId;
+  const selectedTaskId = taskId || getActiveTaskId(null);
   if (!selectedTaskId || !session.clientToken) return { taskId: selectedTaskId, events: [] };
   const data = await daemonApi.fetchTaskLog({
     daemonUrl: session.daemonUrl,
@@ -176,7 +188,8 @@ export const createChainFromBoard = createAsyncThunk('tasks/createChainFromBoard
 export const addCommentToSelectedTask = createAsyncThunk('tasks/addCommentToSelectedTask', async (payload: any, { dispatch, getState }) => {
   const state = getState() as any;
   const { session } = state.chat;
-  const task = state.tasks.tasksById[payload.taskId || state.tasks.selectedTaskId];
+  const activeTaskId = getActiveTaskId(payload);
+  const task = state.tasks.tasksById[activeTaskId];
   const response = await daemonApi.addTaskComment({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), taskId: task.taskId, chainId: task.chainId, body: payload.body });
   if (payload.resolveImmediately && response?.comment_id) {
     await daemonApi.resolveTaskComment({
@@ -193,7 +206,8 @@ export const addCommentToSelectedTask = createAsyncThunk('tasks/addCommentToSele
 export const resolveCommentOnSelectedTask = createAsyncThunk('tasks/resolveCommentOnSelectedTask', async (payload: any, { dispatch, getState }) => {
   const state = getState() as any;
   const { session } = state.chat;
-  const task = state.tasks.tasksById[payload.taskId || state.tasks.selectedTaskId];
+  const activeTaskId = getActiveTaskId(payload);
+  const task = state.tasks.tasksById[activeTaskId];
   await daemonApi.resolveTaskComment({
     daemonUrl: session.daemonUrl,
     ...taskMutationAuth(session, payload.agentToken),
@@ -207,7 +221,8 @@ export const resolveCommentOnSelectedTask = createAsyncThunk('tasks/resolveComme
 export const updateSelectedTaskStatus = createAsyncThunk('tasks/updateSelectedTaskStatus', async (payload: any, { dispatch, getState }) => {
   const state = getState() as any;
   const { session } = state.chat;
-  const task = state.tasks.tasksById[payload.taskId || state.tasks.selectedTaskId];
+  const activeTaskId = getActiveTaskId(payload);
+  const task = state.tasks.tasksById[activeTaskId];
   await daemonApi.updateTaskStatus({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), taskId: task.taskId, chainId: task.chainId, status: payload.status, body: payload.body });
   await (dispatch as any)(fetchSelectedTaskLog(task.taskId));
 });
@@ -215,21 +230,24 @@ export const updateSelectedTaskStatus = createAsyncThunk('tasks/updateSelectedTa
 export const assignSelectedTask = createAsyncThunk('tasks/assignSelectedTask', async (payload: any, { dispatch, getState }) => {
   const state = getState() as any;
   const { session } = state.chat;
-  const task = state.tasks.tasksById[payload.taskId || state.tasks.selectedTaskId];
+  const activeTaskId = getActiveTaskId(payload);
+  const task = state.tasks.tasksById[activeTaskId];
   await daemonApi.assignTask({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), taskId: task.taskId, chainId: task.chainId, agentInstanceId: payload.agentInstanceId });
 });
 
 export const addParticipantToSelectedTask = createAsyncThunk('tasks/addParticipantToSelectedTask', async (payload: any, { dispatch, getState }) => {
   const state = getState() as any;
   const { session } = state.chat;
-  const task = state.tasks.tasksById[payload.taskId || state.tasks.selectedTaskId];
+  const activeTaskId = getActiveTaskId(payload);
+  const task = state.tasks.tasksById[activeTaskId];
   await daemonApi.addTaskParticipant({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), taskId: task.taskId, chainId: task.chainId, agentInstanceId: payload.agentInstanceId, role: payload.role });
 });
 
 export const removeParticipantFromSelectedTask = createAsyncThunk('tasks/removeParticipantFromSelectedTask', async (payload: any, { dispatch, getState }) => {
   const state = getState() as any;
   const { session } = state.chat;
-  const task = state.tasks.tasksById[payload.taskId || state.tasks.selectedTaskId];
+  const activeTaskId = getActiveTaskId(payload);
+  const task = state.tasks.tasksById[activeTaskId];
   await daemonApi.removeTaskParticipant({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), taskId: task.taskId, chainId: task.chainId, agentInstanceId: payload.agentInstanceId, role: payload.role });
   await (dispatch as any)(fetchSelectedTaskLog(task.taskId));
 });
@@ -237,7 +255,8 @@ export const removeParticipantFromSelectedTask = createAsyncThunk('tasks/removeP
 export const voteOnSelectedTask = createAsyncThunk('tasks/voteOnSelectedTask', async (payload: any, { dispatch, getState }) => {
   const state = getState() as any;
   const { session } = state.chat;
-  const task = state.tasks.tasksById[payload.taskId || state.tasks.selectedTaskId];
+  const activeTaskId = getActiveTaskId(payload);
+  const task = state.tasks.tasksById[activeTaskId];
   await daemonApi.voteTask({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), taskId: task.taskId, chainId: task.chainId, approved: payload.approved, comment: payload.comment || 'Voted from UI.' });
   await (dispatch as any)(fetchSelectedTaskLog(task.taskId));
 });
@@ -245,7 +264,8 @@ export const voteOnSelectedTask = createAsyncThunk('tasks/voteOnSelectedTask', a
 export const nudgeSelectedTask = createAsyncThunk('tasks/nudgeSelectedTask', async (payload: any, { dispatch, getState }) => {
   const state = getState() as any;
   const { session } = state.chat;
-  const task = state.tasks.tasksById[payload.taskId || state.tasks.selectedTaskId];
+  const activeTaskId = getActiveTaskId(payload);
+  const task = state.tasks.tasksById[activeTaskId];
   const result = await daemonApi.nudgeTask({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), taskId: task.taskId, chainId: task.chainId, body: payload.body });
   await (dispatch as any)(fetchSelectedTaskLog(task.taskId));
   return result;
@@ -254,14 +274,14 @@ export const nudgeSelectedTask = createAsyncThunk('tasks/nudgeSelectedTask', asy
 export const updateSelectedChainMetadata = createAsyncThunk('tasks/updateSelectedChainMetadata', async (payload: any, { dispatch, getState }) => {
   const state = getState() as any;
   const { session } = state.chat;
-  const chainId = payload.chainId || state.tasks.selectedChainId;
+  const chainId = getActiveChainId(payload);
   await daemonApi.updateTaskChain({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), chainId, title: payload.title, description: payload.description, coordinatorAgentInstanceId: payload.coordinatorAgentInstanceId, defaultReviewerAgentInstanceId: payload.defaultReviewerAgentInstanceId, finalSummary: payload.finalSummary });
 });
 
 export const updateSelectedChainStatus = createAsyncThunk('tasks/updateSelectedChainStatus', async (payload: any, { dispatch, getState }) => {
   const state = getState() as any;
   const { session } = state.chat;
-  const chainId = payload.chainId || state.tasks.selectedChainId;
+  const chainId = getActiveChainId(payload);
   await daemonApi.updateTaskChainStatus({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), chainId, status: payload.status, finalSummary: payload.finalSummary });
 });
 
@@ -298,8 +318,6 @@ const initialState = {
   tasksById: {},
   chainTaskIds: {},
   participantsByTaskId: {},
-  selectedChainId: '',
-  selectedTaskId: '',
   expandedChainIds: {},
   taskLogsByTaskId: {},
   loading: false,
@@ -320,18 +338,6 @@ const taskSlice = createSlice({
   name: 'tasks',
   initialState,
   reducers: {
-    selectChain(state: any, action) {
-      state.selectedChainId = action.payload || '';
-    },
-    selectTask(state: any, action) {
-      const taskId = action.payload || '';
-      state.selectedTaskId = taskId;
-      const task = taskId ? state.tasksById[taskId] : null;
-      if (task?.chainId) {
-        state.selectedChainId = task.chainId;
-        state.expandedChainIds[task.chainId] = true;
-      }
-    },
     toggleChainExpanded(state: any, action) {
       const chainId = action.payload;
       if (!chainId) return;
@@ -404,9 +410,6 @@ const taskSlice = createSlice({
         state.chainsById = chainsById;
         state.tasksById = tasksById;
         state.chainTaskIds = chainTaskIds;
-        
-        state.selectedChainId = targetChainId || action.payload.chains[0]?.chainId || '';
-        if (state.selectedTaskId && !tasksById[state.selectedTaskId]) state.selectedTaskId = '';
       })
       .addCase(refreshTaskBoard.rejected, (state: any, action) => {
         state.loading = false;
@@ -439,5 +442,5 @@ const taskSlice = createSlice({
   },
 });
 
-export const { selectChain, selectTask, toggleChainExpanded, taskEventReceived, updateTaskStateDirectly, updateChainStateDirectly } = taskSlice.actions;
+export const { toggleChainExpanded, taskEventReceived, updateTaskStateDirectly, updateChainStateDirectly } = taskSlice.actions;
 export default taskSlice.reducer;

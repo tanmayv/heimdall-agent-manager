@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo, memo, FormEvent, useCallback } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { decideMemoryProposal, fetchMemoryDetail, proposeMemoryChange, refreshMemory, selectMemory, setMemoryFilters } from '../store/memorySlice';
+import { useUrlParams } from './useUrlParams';
+import { decideMemoryProposal, fetchMemoryDetail, proposeMemoryChange, refreshMemory, setMemoryFilters } from '../store/memorySlice';
 import { handleKeyDownCtrlW } from '../utils/keyboard';
 
 const MEMORY_TYPES = ['fact', 'habit', 'episode', 'expertise', 'skill'];
@@ -40,7 +41,10 @@ export default function MemoryBoard({ session, agents = [] }: { session: any; ag
     console.log(`[Render Timer] MemoryBoard took ${duration.toFixed(2)}ms`);
   });
   const dispatch = useDispatch<any>();
-  const { recordsById, recordIds, selectedMemoryId, historyById, filters, loading, detailLoading, error } = useSelector((state: any) => state.memory);
+  const [urlParams, setUrlParams] = useUrlParams();
+  const selectedMemoryId = urlParams.memoryId;
+
+  const { recordsById, recordIds, historyById, filters, loading, detailLoading, error } = useSelector((state: any) => state.memory);
   const selected = selectedMemoryId ? recordsById[selectedMemoryId] : null;
   const history = selectedMemoryId ? historyById[selectedMemoryId] ?? [] : [];
   const [page, setPage] = useState<'list' | 'detail' | 'propose'>('list');
@@ -65,8 +69,8 @@ export default function MemoryBoard({ session, agents = [] }: { session: any; ag
   // Form update helper is deleted because form state is now local to MemoryProposalForm component
 
   const openDetail = useCallback((memoryId: string) => {
-    dispatch(selectMemory(memoryId));
-  }, [dispatch]);
+    setUrlParams({ memoryId });
+  }, [setUrlParams]);
 
   const openProposal = useCallback((action: string, record: any = selected) => {
     setMutationError('');

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
+import { useUrlParams } from './useUrlParams';
 import AgentSidebar from './AgentSidebar';
 import ChatPane from './ChatPane';
 import SettingsPage from './SettingsPage';
@@ -33,8 +34,8 @@ import {
   startAgentInstance,
   stopAgentInstance,
 } from '../store/chatSlice';
-import { refreshTaskBoard, taskEventReceived, updateTaskStateDirectly, fetchUnreviewedChains, selectTask, selectChain } from '../store/taskSlice';
-import { memoryEventReceived, refreshMemory, auditStartedReceived, auditEndedReceived, selectMemory } from '../store/memorySlice';
+import { refreshTaskBoard, taskEventReceived, updateTaskStateDirectly, fetchUnreviewedChains } from '../store/taskSlice';
+import { memoryEventReceived, refreshMemory, auditStartedReceived, auditEndedReceived } from '../store/memorySlice';
 import { refreshProjects, reorderProjectsFromUi } from '../store/projectSlice';
 import * as daemonApi from '../api/daemonApi';
 import AuditSidebar from './AuditSidebar';
@@ -66,7 +67,12 @@ export default function App() {
     console.log(`[Render Timer] App took ${duration.toFixed(2)}ms`);
   });
   const dispatch = useDispatch<any>();
-  const { agents, selectedAgentId, session, userPreferences } = useSelector((state: any) => state.chat);
+  const [urlParams, setUrlParams] = useUrlParams();
+  const view = urlParams.view;
+  const selectedAgentId = urlParams.agentId;
+  const setView = useCallback((val: any) => setUrlParams({ view: val }), [setUrlParams]);
+
+  const { agents, session, userPreferences } = useSelector((state: any) => state.chat);
   const { projectsById, projectIds } = useSelector((state: any) => state.projects);
   const unreviewedChains = useSelector((state: any) => state.tasks.unreviewedChains || EMPTY_ARRAY);
   const tasksById = useSelector((state: any) => state.tasks.tasksById);
@@ -95,65 +101,11 @@ export default function App() {
       }
     }
   }, [session.connected, userPreferences]);
-  const view = useSelector((state: any) => state.chat.activeView);
-  const setView = useCallback((val: any) => dispatch(setChatView(val)), [dispatch]);
 
-  const selectedTaskId = useSelector((state: any) => state.tasks.selectedTaskId);
-  const selectedChainId = useSelector((state: any) => state.tasks.selectedChainId);
-  const selectedMemoryId = useSelector((state: any) => state.memory.selectedMemoryId);
-
-  // 1. Mount / Browser back-forward popstate listener: sync URL to Redux
+  // Sync urlParams.agentId changes to Redux selectAgent state for backend thunk integrations
   useEffect(() => {
-    function syncUrlToStore() {
-      const params = new URLSearchParams(window.location.search);
-      const urlView = params.get('view') || 'chat';
-      const urlAgentId = params.get('agentId') || '';
-      const urlTaskId = params.get('taskId') || '';
-      const urlChainId = params.get('chainId') || '';
-      const urlMemoryId = params.get('memoryId') || '';
-
-      dispatch(setChatView(urlView));
-      dispatch(selectAgent(urlAgentId));
-      dispatch(selectTask(urlTaskId));
-      dispatch(selectChain(urlChainId));
-      dispatch(selectMemory(urlMemoryId));
-    }
-
-    syncUrlToStore();
-
-    window.addEventListener('popstate', syncUrlToStore);
-    return () => window.removeEventListener('popstate', syncUrlToStore);
-  }, [dispatch]);
-
-  // 2. Redux state changes listener: sync Redux to URL (pushState)
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    let changed = false;
-
-    const setParam = (key: string, value: string) => {
-      const current = params.get(key) || '';
-      if (current !== value) {
-        if (value) {
-          params.set(key, value);
-        } else {
-          params.delete(key);
-        }
-        changed = true;
-      }
-    };
-
-    setParam('view', view || 'chat');
-    setParam('agentId', selectedAgentId || '');
-    setParam('taskId', selectedTaskId || '');
-    setParam('chainId', selectedChainId || '');
-    setParam('memoryId', selectedMemoryId || '');
-
-    if (changed) {
-      const search = params.toString() ? `?${params.toString()}` : '';
-      const url = `${window.location.pathname}${search}`;
-      window.history.pushState(null, '', url);
-    }
-  }, [view, selectedAgentId, selectedTaskId, selectedChainId, selectedMemoryId]);
+    dispatch(selectAgent(selectedAgentId));
+  }, [dispatch, selectedAgentId]);
   const [isAuditOpen, setIsAuditOpen] = useState(false);
   const [isAgentSwitcherOpen, setIsAgentSwitcherOpen] = useState(false);
   const [agentSearchQuery, setAgentSearchQuery] = useState('');
@@ -178,9 +130,8 @@ export default function App() {
 
   const handleSelectAgentFromSwitcher = useCallback((agent: any) => {
     setIsAgentSwitcherOpen(false);
-    dispatch(selectAgent(agent.id));
-    setView('chat');
-  }, [dispatch]);
+    setUrlParams({ agentId: agent.id, view: 'chat' });
+  }, [setUrlParams]);
 
   // Global Ctrl+K hotkey listener
   useEffect(() => {
@@ -390,9 +341,8 @@ export default function App() {
   }, [dispatch]);
 
   const handleSelectAgent = useCallback((agentId: string) => {
-    dispatch(selectAgent(agentId));
-    setView('chat');
-  }, [dispatch]);
+    setUrlParams({ agentId, view: 'chat' });
+  }, [setUrlParams]);
 
   const handleStartAgent = useCallback((agent: any) => {
     dispatch(startAgentInstance(agent));
@@ -403,30 +353,28 @@ export default function App() {
   }, [dispatch]);
 
   const handleOpenChat = useCallback(() => {
-    setView('chat');
-  }, []);
+    setUrlParams({ view: 'chat' });
+  }, [setUrlParams]);
 
   const handleOpenTasks = useCallback(() => {
-    dispatch(selectTask(''));
-    dispatch(selectChain(''));
-    setView('tasks');
+    setUrlParams({ view: 'tasks', taskId: '', chainId: '' });
     dispatch(refreshTaskBoard());
-  }, [dispatch]);
+  }, [setUrlParams, dispatch]);
 
   const handleOpenMemory = useCallback(() => {
-    setView('memory');
+    setUrlParams({ view: 'memory', memoryId: '' });
     dispatch(refreshMemory());
-  }, [dispatch]);
+  }, [setUrlParams, dispatch]);
 
   const handleOpenMemoryAudit = useCallback(() => {
-    setView('memoryAudit');
+    setUrlParams({ view: 'memoryAudit' });
     dispatch(refreshMemory());
-  }, [dispatch]);
+  }, [setUrlParams, dispatch]);
 
   const handleOpenProjects = useCallback(() => {
-    setView('projects');
+    setUrlParams({ view: 'projects' });
     dispatch(refreshProjects());
-  }, [dispatch]);
+  }, [setUrlParams, dispatch]);
 
   const handleReorderProjects = useCallback((newProjectIds: string[]) => {
     dispatch(reorderProjectsFromUi(newProjectIds));
@@ -437,16 +385,16 @@ export default function App() {
   }, [dispatch]);
 
   const handleOpenAgents = useCallback(() => {
-    setView('agents');
-  }, []);
+    setUrlParams({ view: 'agents' });
+  }, [setUrlParams]);
 
   const handleOpenStartAgent = useCallback(() => {
-    setView('startAgent');
-  }, []);
+    setUrlParams({ view: 'startAgent' });
+  }, [setUrlParams]);
 
   const handleOpenSettings = useCallback(() => {
-    setView('settings');
-  }, []);
+    setUrlParams({ view: 'settings' });
+  }, [setUrlParams]);
 
   const handleToggleAudit = useCallback(() => {
     setIsAuditOpen((prev) => !prev);
