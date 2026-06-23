@@ -22,10 +22,14 @@ const Composer = memo(function Composer({ selectedAgent, disabled, onSubmit, sma
     }
   }
 
-  function handleSubmit(event?: React.FormEvent | React.KeyboardEvent) {
+  function handleSubmit(event?: React.FormEvent | React.KeyboardEvent, isInterrupt = false) {
     if (event) event.preventDefault();
-    const nextBody = textareaRef.current?.value.trim() || '';
+    let nextBody = textareaRef.current?.value.trim() || '';
     if (!selectedAgent || disabled || !nextBody) return;
+    
+    if (isInterrupt) {
+      nextBody = '\u001b' + nextBody;
+    }
     
     if (onSubmit) {
       onSubmit();
@@ -90,7 +94,7 @@ const Composer = memo(function Composer({ selectedAgent, disabled, onSubmit, sma
               handleKeyDownCtrlW(event as any);
               if (event.defaultPrevented) return;
               if (event.key === 'Enter' && event.ctrlKey) {
-                handleSubmit(event);
+                handleSubmit(event, event.shiftKey);
               }
             }}
             placeholder={selectedAgent ? `Message ${selectedAgent.id}...` : 'Select a connected agent to start chatting'}
