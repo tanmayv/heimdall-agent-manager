@@ -195,7 +195,7 @@ build_shell_command :: proc(cwd: string, command: []string) -> string {
 	builder := strings.builder_make()
 	strings.write_string(&builder, "cd ")
 	strings.write_string(&builder, shell_quote(cwd))
-	strings.write_string(&builder, " && ")
+	strings.write_string(&builder, " && ( ")
 
 	if len(command) == 0 {
 		strings.write_string(&builder, "pi")
@@ -206,6 +206,7 @@ build_shell_command :: proc(cwd: string, command: []string) -> string {
 		}
 	}
 
+	strings.write_string(&builder, " ); echo 'Agent exited. Press Enter to close...'; read")
 	return strings.to_string(builder)
 }
 
