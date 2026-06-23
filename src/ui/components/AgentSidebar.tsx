@@ -1,6 +1,6 @@
 import { useMemo, useState, memo, useCallback } from 'react';
 import AgentListItem from './AgentListItem';
-import { MessageSquare, ClipboardList, Brain, History, Folder, Bot, Settings, Activity } from 'lucide-react';
+import { MessageSquare, ClipboardList, Brain, History, Folder, Bot, Settings, Activity, Pin, PinOff } from 'lucide-react';
 
 function projectGroupKey(agent) {
   return agent.projectId || 'unassigned';
@@ -72,6 +72,31 @@ const AgentSidebar = memo(function AgentSidebar({
   const [dismissedWarnings, setDismissedWarnings] = useState<Set<string>>(new Set());
   const [dragOverProjectId, setDragOverProjectId] = useState<string | null>(null);
   const [dragOverAgentId, setDragOverAgentId] = useState<string | null>(null);
+
+  const [isPinned, setIsPinned] = useState(() => {
+    return localStorage.getItem('sidebar_pinned') !== 'false';
+  });
+  const [isHovered, setIsHovered] = useState(false);
+
+  const togglePin = useCallback(() => {
+    setIsPinned((prev) => {
+      const next = !prev;
+      localStorage.setItem('sidebar_pinned', String(next));
+      return next;
+    });
+  }, []);
+
+  const handleMouseEnter = useCallback(() => {
+    if (!isPinned) {
+      setIsHovered(true);
+    }
+  }, [isPinned]);
+
+  const handleMouseLeave = useCallback(() => {
+    setIsHovered(false);
+  }, []);
+
+  const isExpanded = isPinned || isHovered;
 
   const handleDragOverProject = useCallback((e: React.DragEvent, id: string) => {
     if (id === 'unassigned') return;
@@ -188,35 +213,59 @@ const AgentSidebar = memo(function AgentSidebar({
   }
 
   return (
-    <aside className="framer-panel flex h-full w-80 shrink-0 flex-col border-r border-[var(--fd-hairline)] p-4">
+    <aside
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+      className={`framer-panel flex h-full shrink-0 flex-col border-r border-[var(--fd-hairline)] p-4 transition-all duration-300 ease-in-out ${
+        isExpanded ? 'w-72' : 'w-20'
+      }`}
+    >
       <div className="mb-4">
-        <p className="framer-topline tracking-[0.28em]">Heimdall</p>
-        <div className="mt-3 flex items-center gap-3 rounded-[var(--fd-radius-lg)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] p-3">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--fd-accent-blue)]/20 text-xs font-bold text-[var(--fd-accent-blue)]">
+        <div className="flex items-center justify-between min-h-[20px]">
+          {isExpanded ? (
+            <p className="framer-topline tracking-[0.28em]">Heimdall</p>
+          ) : (
+            <p className="framer-topline tracking-[0.28em] text-center w-full">H</p>
+          )}
+          {isExpanded && (
+            <button
+              type="button"
+              onClick={togglePin}
+              className="text-[#666] hover:text-white transition-colors p-0.5 rounded"
+              title={isPinned ? 'Unpin sidebar' : 'Pin sidebar'}
+            >
+              {isPinned ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
+            </button>
+          )}
+        </div>
+        <div className={`mt-3 flex items-center rounded-[var(--fd-radius-lg)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] transition-all ${isExpanded ? 'gap-3 p-3' : 'justify-center p-2'}`}>
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--fd-accent-blue)]/20 text-xs font-bold text-[var(--fd-accent-blue)]" title={session?.userDisplayName || 'Operator'}>
             {(session?.userDisplayName || session?.userId || 'OP')[0].toUpperCase()}
           </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span className="truncate text-sm font-semibold text-white">
-                {session?.userDisplayName || 'Operator'}
+          {isExpanded && (
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="truncate text-sm font-semibold text-white">
+                  {session?.userDisplayName || 'Operator'}
+                </span>
+                <span
+                  className={`h-2 w-2 rounded-full shrink-0 ${
+                    session?.status === 'connected'
+                      ? (session?.wsStatus === 'connected' ? 'bg-emerald-400' : 'bg-amber-400')
+                      : 'bg-rose-500'
+                  }`}
+                  title={
+                    session?.status === 'connected'
+                      ? (session?.wsStatus === 'connected' ? 'Daemon + WS Connected' : 'Daemon Connected (No WS)')
+                      : 'Daemon Offline'
+                  }
+                />
+              </div>
+              <span className="block truncate text-xs text-[#aaa]">
+                {session?.userId || 'operator@local'}
               </span>
-              <span
-                className={`h-2 w-2 rounded-full shrink-0 ${
-                  session?.status === 'connected'
-                    ? (session?.wsStatus === 'connected' ? 'bg-emerald-400' : 'bg-amber-400')
-                    : 'bg-rose-500'
-                }`}
-                title={
-                  session?.status === 'connected'
-                    ? (session?.wsStatus === 'connected' ? 'Daemon + WS Connected' : 'Daemon Connected (No WS)')
-                    : 'Daemon Offline'
-                }
-              />
             </div>
-            <span className="block truncate text-xs text-[#aaa]">
-              {session?.userId || 'operator@local'}
-            </span>
-          </div>
+          )}
         </div>
       </div>
 
@@ -225,193 +274,205 @@ const AgentSidebar = memo(function AgentSidebar({
           type="button"
           data-debug-id="nav-chat"
           onClick={onOpenChat}
-          className={`${activeView === 'chat' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center justify-between px-4 py-2.5 text-xs text-left`}
+          className={`${activeView === 'chat' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5' : 'justify-center p-2.5'} text-xs text-left`}
         >
           <div className="flex items-center gap-3">
             <MessageSquare className="h-4 w-4 shrink-0" />
-            <span>Chat</span>
+            {isExpanded && <span>Chat</span>}
           </div>
         </button>
         <button
           type="button"
           data-debug-id="nav-tasks"
           onClick={onOpenTasks}
-          className={`${activeView === 'tasks' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center justify-between px-4 py-2.5 text-xs text-left`}
+          className={`${activeView === 'tasks' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5' : 'justify-center p-2.5 relative'} text-xs text-left`}
         >
           <div className="flex items-center gap-3">
             <ClipboardList className="h-4 w-4 shrink-0" />
-            <span>Tasks</span>
+            {isExpanded && <span>Tasks</span>}
           </div>
           {Boolean(tasksBadgeCount) && tasksBadgeCount > 0 && (
-            <span className="bg-red-600 text-white rounded-full px-1.5 py-0.5 text-[9px] font-extrabold shadow-sm">
-              {tasksBadgeCount}
-            </span>
+            isExpanded ? (
+              <span className="bg-red-600 text-white rounded-full px-1.5 py-0.5 text-[9px] font-extrabold shadow-sm">
+                {tasksBadgeCount}
+              </span>
+            ) : (
+              <span className="absolute top-1.5 right-1.5 h-2 w-2 bg-red-600 rounded-full shadow-sm" />
+            )
           )}
         </button>
         <button
           type="button"
           data-debug-id="nav-memory"
           onClick={onOpenMemory}
-          className={`${activeView === 'memory' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center justify-between px-4 py-2.5 text-xs text-left`}
+          className={`${activeView === 'memory' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5' : 'justify-center p-2.5'} text-xs text-left`}
         >
           <div className="flex items-center gap-3">
             <Brain className="h-4 w-4 shrink-0" />
-            <span>Memory</span>
+            {isExpanded && <span>Memory</span>}
           </div>
         </button>
         <button
           type="button"
           data-debug-id="nav-memory-audit"
           onClick={onOpenMemoryAudit}
-          className={`${activeView === 'memoryAudit' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center justify-between px-4 py-2.5 text-xs text-left`}
+          className={`${activeView === 'memoryAudit' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5' : 'justify-center p-2.5'} text-xs text-left`}
         >
           <div className="flex items-center gap-3">
             <History className="h-4 w-4 shrink-0" />
-            <span>Memory Audit</span>
+            {isExpanded && <span>Memory Audit</span>}
           </div>
         </button>
         <button
           type="button"
           data-debug-id="nav-projects"
           onClick={onOpenProjects}
-          className={`${activeView === 'projects' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center justify-between px-4 py-2.5 text-xs text-left`}
+          className={`${activeView === 'projects' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5' : 'justify-center p-2.5'} text-xs text-left`}
         >
           <div className="flex items-center gap-3">
             <Folder className="h-4 w-4 shrink-0" />
-            <span>Projects</span>
+            {isExpanded && <span>Projects</span>}
           </div>
         </button>
         <button
           type="button"
           data-debug-id="nav-agents"
           onClick={onOpenAgents}
-          className={`${activeView === 'agents' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center justify-between px-4 py-2.5 text-xs text-left`}
+          className={`${activeView === 'agents' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5' : 'justify-center p-2.5'} text-xs text-left`}
         >
           <div className="flex items-center gap-3">
             <Bot className="h-4 w-4 shrink-0" />
-            <span>Agents</span>
+            {isExpanded && <span>Agents</span>}
           </div>
         </button>
         <button
           type="button"
           data-debug-id="nav-settings"
           onClick={onOpenSettings}
-          className={`${activeView === 'settings' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center justify-between px-4 py-2.5 text-xs text-left`}
+          className={`${activeView === 'settings' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5' : 'justify-center p-2.5'} text-xs text-left`}
         >
           <div className="flex items-center gap-3">
             <Settings className="h-4 w-4 shrink-0" />
-            <span>Settings</span>
+            {isExpanded && <span>Settings</span>}
           </div>
         </button>
         <button
           type="button"
           data-debug-id="nav-audit"
           onClick={onToggleAudit}
-          className="framer-pill-secondary w-full flex items-center justify-between px-4 py-2.5 text-xs text-left mt-1"
+          className={`framer-pill-secondary w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5' : 'justify-center p-2.5 relative'} text-xs text-left mt-1`}
         >
           <div className="flex items-center gap-3">
             <Activity className="h-4 w-4 shrink-0" />
-            <span>Task Chain Audit</span>
+            {isExpanded && <span>Task Chain Audit</span>}
           </div>
           {auditBadgeCount > 0 && (
-            <span className="bg-red-500 text-white text-[9px] font-extrabold px-1.5 py-0.5 rounded-full animate-pulse shadow-sm animate-pulse">
-              {auditBadgeCount}
-            </span>
+            isExpanded ? (
+              <span className="bg-red-500 text-white text-[9px] font-extrabold px-1.5 py-0.5 rounded-full animate-pulse shadow-sm">
+                {auditBadgeCount}
+              </span>
+            ) : (
+              <span className="absolute top-1.5 right-1.5 h-2 w-2 bg-red-500 rounded-full animate-pulse shadow-sm" />
+            )
           )}
         </button>
       </nav>
 
-      <div className="framer-topline mt-5 flex items-center justify-between">
-        <span>Agents</span>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            data-debug-id="new-agent-btn"
-            onClick={onOpenStartAgent}
-            className="flex h-7 w-7 items-center justify-center rounded-full border border-[var(--fd-accent-blue)]/40 bg-[var(--fd-accent-blue)]/10 text-base leading-none text-[var(--fd-accent-blue)] transition  hover:bg-[var(--fd-accent-blue)] hover:text-black"
-            aria-label="Start new agent"
-            title="Start new agent"
-          >
-            <svg viewBox="0 0 16 16" aria-hidden="true" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
-              <path d="M8 3.5v9M3.5 8h9" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            data-debug-id="refresh-agents-btn"
-            onClick={handleRefresh}
-            className="framer-topline text-[11px] text-[var(--fd-accent-blue)] transition-colors duration-200 hover:text-white"
-          >
-            Refresh
-          </button>
-        </div>
-      </div>
-
-      <div className="mt-3 flex flex-1 flex-col gap-3 overflow-y-auto pr-1">
-        {agents.length ? (
-          projectGroups.map(([projectId, groupAgents]) => {
-            const collapsed = Boolean(collapsedProjects[projectId]);
-            const connectedCount = groupAgents.filter((agent) => agent.status === 'connected').length;
-            return (
-              <section key={projectId} className="space-y-2">
-                <button
-                  type="button"
-                  data-debug-id={`project-group-toggle-${projectId}`}
-                  draggable={projectId !== 'unassigned'}
-                  onDragStart={(e) => handleDragStart(e, projectId)}
-                  onDragOver={(e) => handleDragOverProject(e, projectId)}
-                  onDragLeave={handleDragLeaveProject}
-                  onDrop={(e) => handleDrop(e, projectId)}
-                  onClick={() => toggleProjectGroup(projectId)}
-                  className={`flex w-full items-center justify-between rounded-[var(--fd-radius-lg)] border px-3 py-2 text-left transition hover:border-[var(--fd-accent-blue)]/50 ${
-                    dragOverProjectId === projectId
-                      ? 'border-[var(--fd-accent-blue)] bg-[var(--fd-surface-3)]'
-                      : 'border-[var(--fd-hairline)] bg-[var(--fd-surface-2)]'
-                  } ${
-                    projectId !== 'unassigned' ? 'cursor-grab active:cursor-grabbing' : ''
-                  }`}
-                >
-                  <span className="min-w-0">
-                    <span className="block truncate text-xs font-semibold uppercase tracking-[0.18em] text-white">{projectGroupLabel(projectId, projectsById, groupAgents)}</span>
-                    <span className="framer-subtext text-[11px]">{groupAgents.length} known · {connectedCount} live</span>
-                  </span>
-                  <span className="text-sm text-[#aaa]">{collapsed ? '▸' : '▾'}</span>
-                </button>
-                {!collapsed ? groupAgents.map((agent) => (
-                  <div
-                    key={agent.id}
-                    draggable
-                    onDragStart={(e) => handleDragStartAgent(e, agent.id, projectId)}
-                    onDragOver={(e) => handleDragOverAgent(e, agent.id)}
-                    onDragLeave={handleDragLeaveAgent}
-                    onDrop={(e) => handleDropAgent(e, agent.id, projectId, groupAgents)}
-                    className={`cursor-grab active:cursor-grabbing rounded-[var(--fd-radius-lg)] border transition-all duration-200 ${
-                      dragOverAgentId === agent.id
-                        ? 'border-[var(--fd-accent-blue)] bg-[var(--fd-accent-blue)]/5'
-                        : 'border-transparent'
-                    }`}
-                  >
-                    <AgentListItem
-                      agent={agent}
-                      selected={agent.id === selectedAgentId}
-                      onSelect={onSelectAgent}
-                      hideProject
-                      warningDismissed={dismissedWarnings.has(agent.id)}
-                      onDismissWarning={dismissWarning}
-                      onStart={onStartAgent}
-                      onStop={onStopAgent}
-                    />
-                  </div>
-                )) : null}
-              </section>
-            );
-          })
-        ) : (
-          <div className="framer-card border border-dashed border-[var(--fd-hairline)] p-4 text-sm text-[#999]">
-            No connected or known agents reported by the daemon yet.
+      {isExpanded && (
+        <>
+          <div className="framer-topline mt-5 flex items-center justify-between">
+            <span>Agents</span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                data-debug-id="new-agent-btn"
+                onClick={onOpenStartAgent}
+                className="flex h-7 w-7 items-center justify-center rounded-full border border-[var(--fd-accent-blue)]/40 bg-[var(--fd-accent-blue)]/10 text-base leading-none text-[var(--fd-accent-blue)] transition  hover:bg-[var(--fd-accent-blue)] hover:text-black"
+                aria-label="Start new agent"
+                title="Start new agent"
+              >
+                <svg viewBox="0 0 16 16" aria-hidden="true" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+                  <path d="M8 3.5v9M3.5 8h9" />
+                </svg>
+              </button>
+              <button
+                type="button"
+                data-debug-id="refresh-agents-btn"
+                onClick={handleRefresh}
+                className="framer-topline text-[11px] text-[var(--fd-accent-blue)] transition-colors duration-200 hover:text-white"
+              >
+                Refresh
+              </button>
+            </div>
           </div>
-        )}
-      </div>
+
+          <div className="mt-3 flex flex-1 flex-col gap-3 overflow-y-auto pr-1">
+            {agents.length ? (
+              projectGroups.map(([projectId, groupAgents]) => {
+                const collapsed = Boolean(collapsedProjects[projectId]);
+                const connectedCount = groupAgents.filter((agent) => agent.status === 'connected').length;
+                return (
+                  <section key={projectId} className="space-y-2">
+                    <button
+                      type="button"
+                      data-debug-id={`project-group-toggle-${projectId}`}
+                      draggable={projectId !== 'unassigned'}
+                      onDragStart={(e) => handleDragStart(e, projectId)}
+                      onDragOver={(e) => handleDragOverProject(e, projectId)}
+                      onDragLeave={handleDragLeaveProject}
+                      onDrop={(e) => handleDrop(e, projectId)}
+                      onClick={() => toggleProjectGroup(projectId)}
+                      className={`flex w-full items-center justify-between rounded-[var(--fd-radius-lg)] border px-3 py-2 text-left transition hover:border-[var(--fd-accent-blue)]/50 ${
+                        dragOverProjectId === projectId
+                          ? 'border-[var(--fd-accent-blue)] bg-[var(--fd-surface-3)]'
+                          : 'border-[var(--fd-hairline)] bg-[var(--fd-surface-2)]'
+                      } ${
+                        projectId !== 'unassigned' ? 'cursor-grab active:cursor-grabbing' : ''
+                      }`}
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate text-xs font-semibold uppercase tracking-[0.18em] text-white">{projectGroupLabel(projectId, projectsById, groupAgents)}</span>
+                        <span className="framer-subtext text-[11px]">{groupAgents.length} known · {connectedCount} live</span>
+                      </span>
+                      <span className="text-sm text-[#aaa]">{collapsed ? '▸' : '▾'}</span>
+                    </button>
+                    {!collapsed ? groupAgents.map((agent) => (
+                      <div
+                        key={agent.id}
+                        draggable
+                        onDragStart={(e) => handleDragStartAgent(e, agent.id, projectId)}
+                        onDragOver={(e) => handleDragOverAgent(e, agent.id)}
+                        onDragLeave={handleDragLeaveAgent}
+                        onDrop={(e) => handleDropAgent(e, agent.id, projectId, groupAgents)}
+                        className={`cursor-grab active:cursor-grabbing rounded-[var(--fd-radius-lg)] border transition-all duration-200 ${
+                          dragOverAgentId === agent.id
+                            ? 'border-[var(--fd-accent-blue)] bg-[var(--fd-accent-blue)]/5'
+                            : 'border-transparent'
+                        }`}
+                      >
+                        <AgentListItem
+                          agent={agent}
+                          selected={agent.id === selectedAgentId}
+                          onSelect={onSelectAgent}
+                          hideProject
+                          warningDismissed={dismissedWarnings.has(agent.id)}
+                          onDismissWarning={dismissWarning}
+                          onStart={onStartAgent}
+                          onStop={onStopAgent}
+                        />
+                      </div>
+                    )) : null}
+                  </section>
+                );
+              })
+            ) : (
+              <div className="framer-card border border-dashed border-[var(--fd-hairline)] p-4 text-sm text-[#999]">
+                No connected or known agents reported by the daemon yet.
+              </div>
+            )}
+          </div>
+        </>
+      )}
     </aside>
   );
 });
