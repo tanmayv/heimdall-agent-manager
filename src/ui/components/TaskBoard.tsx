@@ -239,19 +239,32 @@ export default function TaskBoard({ session }) {
     selectedEvents.filter((event) => event.body || event.kind === 'Task_Comment'),
     [selectedEvents]
   );
-  const participants = selectedTaskId ? participantsByTaskId[selectedTaskId] ?? [] : [];
+  const participants = selectedTask ? selectedTask.participants ?? [] : [];
   const selectedTaskTerminal = selectedTask ? isTerminalTaskStatus(selectedTask.status) : false;
   const canMutate = Boolean(session.clientToken) && session.connected && !mutating;
   const nudgeInFlight = nudgeState.taskId === selectedTaskId && nudgeState.status === 'sending';
+
+  const [activeTab, setActiveTab] = useState<'board' | 'pending'>('board');
+
+  const pendingApprovalTasks = useMemo(() => {
+    const userId = session.userId || 'operator@local';
+    return Object.values(tasksById).filter((task: any) => {
+      if (task.status !== 'review_ready') return false;
+      const isPart = (task.participants ?? []).some((p: any) => p.agentInstanceId === userId && (p.role === 'lgtm_required' || p.role === 'lgtm_optional'));
+      if (!isPart) return false;
+      const hasVoted = (task.votes ?? []).some((v: any) => v.reviewerAgentInstanceId === userId);
+      return !hasVoted;
+    });
+  }, [tasksById, session.userId]);
 
   const agentOptions = useMemo(() =>
     uniqueValues([
       ...(chatAgents ?? []).map((agent: any) => agent.id || agent.label),
       ...Object.values(tasksById).flatMap((task: any) => [task.assigneeAgentInstanceId, task.reviewerAgentInstanceId]),
-      ...Object.values(participantsByTaskId).flatMap((items: any) => (items ?? []).map((participant: any) => participant.agentInstanceId)),
+      ...Object.values(tasksById).flatMap((task: any) => (task.participants ?? []).map((p: any) => p.agentInstanceId)),
       ...Object.values(chainsById).flatMap((chain: any) => [chain.coordinatorAgentInstanceId, chain.defaultReviewerAgentInstanceId]),
     ]),
-    [chatAgents, tasksById, participantsByTaskId, chainsById]
+    [chatAgents, tasksById, chainsById]
   );
 
   useEffect(() => {
@@ -495,10 +508,44 @@ export default function TaskBoard({ session }) {
   function renderHeader(subtitle: string) {
     return (
       <header className="border-b border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-6 py-4 flex items-center justify-between">
-        <div className="min-w-0">
-          <p className="framer-topline">Task workspace</p>
-          <h2 className="mt-1 truncate text-2xl framer-headline">Tasks</h2>
-          <p className="framer-subtext mt-1 truncate">{subtitle}</p>
+        <div className="flex items-center gap-4 min-w-0">
+          <div>
+            <p className="framer-topline">Task workspace</p>
+            <h2 className="mt-1 truncate text-2xl framer-headline">Tasks</h2>
+          </div>
+          {page === 'overview' && (
+            <div className="flex bg-[#222] p-0.5 rounded-md border border-[#333]">
+              <button
+                type="button"
+                data-debug-id="task-tab-board"
+                onClick={() => setActiveTab('board')}
+                className={`text-xs px-3 py-1.5 font-semibold rounded-md transition-all ${
+                  activeTab === 'board'
+                    ? 'bg-[#333] text-white'
+                    : 'text-gray-400 hover:text-white'
+                }`}
+              >
+                Board
+              </button>
+              <button
+                type="button"
+                data-debug-id="task-tab-pending"
+                onClick={() => setActiveTab('pending')}
+                className={`text-xs px-3 py-1.5 font-semibold rounded-md transition-all flex items-center gap-1.5 ${
+                  activeTab === 'pending'
+                    ? 'bg-[#333] text-white'
+                    : 'text-gray-400 hover:text-white'
+                }`}
+              >
+                <span>Pending Approvals</span>
+                {pendingApprovalTasks.length > 0 && (
+                  <span className="bg-red-600 text-white rounded-full px-1.5 py-0.2 text-[10px] font-bold">
+                    {pendingApprovalTasks.length}
+                  </span>
+                )}
+              </button>
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-2">
           {page === 'overview' && (
@@ -554,6 +601,48 @@ export default function TaskBoard({ session }) {
   };
 
   function renderOverview() {
+    if (activeTab === 'pending') {
+      return (
+        <>
+          {renderHeader('Review requests waiting for your approval')}
+          <section className="flex-1 overflow-y-auto p-6 space-y-4 max-w-4xl mx-auto w-full">
+            {pendingApprovalTasks.length ? (
+              pendingApprovalTasks.map((task: any) => {
+                const chain = chainsById[task.chainId] || { title: task.chainId };
+                return (
+                  <div
+                    key={task.taskId}
+                    data-debug-id={`pending-task-item-${task.taskId}`}
+                    onClick={() => openTask(task.taskId)}
+                    className="framer-card p-4 hover:border-[var(--fd-accent-blue)] cursor-pointer transition-all flex flex-col md:flex-row md:items-center justify-between gap-4"
+                  >
+                    <div className="space-y-1">
+                      <p className="text-xs text-[#999] tracking-wider uppercase">{chain.title}</p>
+                      <h4 className="text-base font-semibold text-white">{task.title}</h4>
+                      <p className="text-sm text-[#aaa] line-clamp-2">{task.description || 'No description provided.'}</p>
+                    </div>
+                    <div className="flex items-center gap-3 self-end md:self-auto">
+                      <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-yellow-900/40 text-yellow-300 border border-yellow-700/50">
+                        PENDING VOTE
+                      </span>
+                      <span className="framer-pill bg-white text-xs py-1 px-3">
+                        Vote
+                      </span>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="framer-card p-8 text-center space-y-2">
+                <p className="text-base text-[#ccc] font-medium">All caught up!</p>
+                <p className="text-xs text-[#888]">No review requests are currently pending your approval.</p>
+              </div>
+            )}
+          </section>
+        </>
+      );
+    }
+
     const chainsByBucket = STATUS_COLUMNS.reduce((acc, column) => ({ ...acc, [column.id]: [] }), {} as any);
     chainIds.forEach((chainId) => {
       const chain = chainsById[chainId] ?? { chainId, title: chainId, status: 'planned' };

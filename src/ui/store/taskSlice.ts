@@ -23,6 +23,10 @@ function normalizeTask(task: any) {
       approved: Boolean(v.approved),
       comment: v.comment || '',
     })),
+    participants: (task.participants || []).map((p: any) => ({
+      agentInstanceId: p.agent_instance_id,
+      role: p.role,
+    })),
   };
 }
 
