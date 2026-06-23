@@ -237,7 +237,7 @@ const AgentSidebar = memo(function AgentSidebar({
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       className={`framer-panel flex h-full shrink-0 flex-col border-r border-[var(--fd-hairline)] p-4 transition-all duration-300 ease-in-out ${
-        isExpanded ? 'w-72' : 'w-20'
+        isExpanded ? 'w-84' : 'w-20'
       }`}
     >
       <div className="mb-4">
@@ -279,31 +279,31 @@ const AgentSidebar = memo(function AgentSidebar({
         </div>
       </div>
 
-      <nav className="mt-4 flex flex-col gap-1.5">
+      <nav className="mt-4 flex flex-col gap-1.5 min-w-0">
         <button
           type="button"
           data-debug-id="nav-chat"
           onClick={onOpenChat}
-          className={`${activeView === 'chat' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5' : 'justify-center p-2.5'} text-xs text-left`}
+          className={`${activeView === 'chat' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5 min-w-0' : 'justify-center p-2.5'} text-xs text-left`}
         >
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 min-w-0">
             <MessageSquare className="h-4 w-4 shrink-0" />
-            {isExpanded && <span>Chat</span>}
+            {isExpanded && <span className="truncate">Chat</span>}
           </div>
         </button>
         <button
           type="button"
           data-debug-id="nav-tasks"
           onClick={onOpenTasks}
-          className={`${activeView === 'tasks' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5' : 'justify-center p-2.5 relative'} text-xs text-left`}
+          className={`${activeView === 'tasks' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5 min-w-0' : 'justify-center p-2.5 relative'} text-xs text-left`}
         >
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 min-w-0">
             <ClipboardList className="h-4 w-4 shrink-0" />
-            {isExpanded && <span>Tasks</span>}
+            {isExpanded && <span className="truncate">Tasks</span>}
           </div>
           {Boolean(tasksBadgeCount) && tasksBadgeCount > 0 && (
             isExpanded ? (
-              <span className="bg-red-600 text-white rounded-full px-1.5 py-0.5 text-[9px] font-extrabold shadow-sm">
+              <span className="bg-red-600 text-white rounded-full px-1.5 py-0.5 text-[9px] font-extrabold shadow-sm shrink-0">
                 {tasksBadgeCount}
               </span>
             ) : (
@@ -315,70 +315,70 @@ const AgentSidebar = memo(function AgentSidebar({
           type="button"
           data-debug-id="nav-memory"
           onClick={onOpenMemory}
-          className={`${activeView === 'memory' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5' : 'justify-center p-2.5'} text-xs text-left`}
+          className={`${activeView === 'memory' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5 min-w-0' : 'justify-center p-2.5'} text-xs text-left`}
         >
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 min-w-0">
             <Brain className="h-4 w-4 shrink-0" />
-            {isExpanded && <span>Memory</span>}
+            {isExpanded && <span className="truncate">Memory</span>}
           </div>
         </button>
         <button
           type="button"
           data-debug-id="nav-memory-audit"
           onClick={onOpenMemoryAudit}
-          className={`${activeView === 'memoryAudit' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5' : 'justify-center p-2.5'} text-xs text-left`}
+          className={`${activeView === 'memoryAudit' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5 min-w-0' : 'justify-center p-2.5'} text-xs text-left`}
         >
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 min-w-0">
             <History className="h-4 w-4 shrink-0" />
-            {isExpanded && <span>Memory Audit</span>}
+            {isExpanded && <span className="truncate">Memory Audit</span>}
           </div>
         </button>
         <button
           type="button"
           data-debug-id="nav-projects"
           onClick={onOpenProjects}
-          className={`${activeView === 'projects' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5' : 'justify-center p-2.5'} text-xs text-left`}
+          className={`${activeView === 'projects' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5 min-w-0' : 'justify-center p-2.5'} text-xs text-left`}
         >
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 min-w-0">
             <Folder className="h-4 w-4 shrink-0" />
-            {isExpanded && <span>Projects</span>}
+            {isExpanded && <span className="truncate">Projects</span>}
           </div>
         </button>
         <button
           type="button"
           data-debug-id="nav-agents"
           onClick={onOpenAgents}
-          className={`${activeView === 'agents' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5' : 'justify-center p-2.5'} text-xs text-left`}
+          className={`${activeView === 'agents' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5 min-w-0' : 'justify-center p-2.5'} text-xs text-left`}
         >
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 min-w-0">
             <Bot className="h-4 w-4 shrink-0" />
-            {isExpanded && <span>Agents</span>}
+            {isExpanded && <span className="truncate">Agents</span>}
           </div>
         </button>
         <button
           type="button"
           data-debug-id="nav-settings"
           onClick={onOpenSettings}
-          className={`${activeView === 'settings' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5' : 'justify-center p-2.5'} text-xs text-left`}
+          className={`${activeView === 'settings' ? 'framer-pill bg-white text-black' : 'framer-pill-secondary'} w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5 min-w-0' : 'justify-center p-2.5'} text-xs text-left`}
         >
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 min-w-0">
             <Settings className="h-4 w-4 shrink-0" />
-            {isExpanded && <span>Settings</span>}
+            {isExpanded && <span className="truncate">Settings</span>}
           </div>
         </button>
         <button
           type="button"
           data-debug-id="nav-audit"
           onClick={onToggleAudit}
-          className={`framer-pill-secondary w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5' : 'justify-center p-2.5 relative'} text-xs text-left mt-1`}
+          className={`framer-pill-secondary w-full flex items-center ${isExpanded ? 'justify-between px-4 py-2.5 min-w-0' : 'justify-center p-2.5 relative'} text-xs text-left mt-1`}
         >
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 min-w-0">
             <Activity className="h-4 w-4 shrink-0" />
-            {isExpanded && <span>Task Chain Audit</span>}
+            {isExpanded && <span className="truncate">Task Chain Audit</span>}
           </div>
           {auditBadgeCount > 0 && (
             isExpanded ? (
-              <span className="bg-red-500 text-white text-[9px] font-extrabold px-1.5 py-0.5 rounded-full animate-pulse shadow-sm">
+              <span className="bg-red-500 text-white text-[9px] font-extrabold px-1.5 py-0.5 rounded-full animate-pulse shadow-sm shrink-0">
                 {auditBadgeCount}
               </span>
             ) : (

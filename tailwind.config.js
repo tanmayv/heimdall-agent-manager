@@ -3,6 +3,9 @@ export default {
   content: ['./index.html', './src/ui/**/*.{ts,tsx}'],
   theme: {
     extend: {
+      spacing: {
+        84: '21rem',
+      },
       colors: {
         odin: {
           bg: '#0f172a',

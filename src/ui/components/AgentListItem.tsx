@@ -97,7 +97,7 @@ const AgentListItem = memo(function AgentListItem({
       >
         <div className="min-w-0 flex-1 text-left">
           {/* Line 1: Status dot, label, and tier icon indicator */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             <span
               className={`h-2 w-2 rounded-full shadow ${
                 agent.status === 'connected' ? 'animate-soft-pulse' : ''
@@ -125,7 +125,7 @@ const AgentListItem = memo(function AgentListItem({
 
           {/* Line 3: Last seen timestamp or compact inline warning */}
           {startupIssue ? (
-            <div className="flex items-center justify-between gap-1 text-[10px] text-amber-400 font-medium mt-0.5 w-full">
+            <div className="flex items-center justify-between gap-1 text-[10px] text-amber-400 font-medium mt-0.5 w-full min-w-0">
               <span className="truncate" title={suggestedFix}>⚠️ {agent.startupReason || 'Startup needs attention'}</span>
               {agent.status === 'startup_unknown' && onDismissWarning && (
                 <button
@@ -137,7 +137,7 @@ const AgentListItem = memo(function AgentListItem({
                 </button>
               )}
             </div>
-          ) : (
+          ) : agent.status === 'offline' ? null : (
             <p className="framer-subtext mt-0.5 text-[#777] text-[9px] truncate">
               Last seen {agent.lastSeen}
             </p>
