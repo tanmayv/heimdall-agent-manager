@@ -364,6 +364,7 @@ const initialState = {
   sending: false,
   testRuns: [] as any[],
   fetchingChatsByAgentId: {} as Record<string, boolean>,
+  activeView: 'chat' as 'chat' | 'settings' | 'tasks' | 'memory' | 'memoryAudit' | 'projects' | 'agents' | 'startAgent',
 };
 
 
@@ -373,6 +374,9 @@ const chatSlice = createSlice({
   reducers: {
     selectAgent(state, action) {
       state.selectedAgentId = action.payload;
+    },
+    setView(state, action) {
+      state.activeView = action.payload || 'chat';
     },
     reorderAgentsLocally(state, action) {
       const agentIds = action.payload;
@@ -746,6 +750,6 @@ const chatSlice = createSlice({
   },
 });
 
-export const { selectAgent, setDaemonUrl, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived, agentRuntimeEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage, reorderAgentsLocally } = chatSlice.actions;
+export const { selectAgent, setView, setDaemonUrl, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived, agentRuntimeEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage, reorderAgentsLocally } = chatSlice.actions;
 export default chatSlice.reducer;
 

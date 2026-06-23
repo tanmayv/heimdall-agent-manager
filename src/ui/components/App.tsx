@@ -18,6 +18,7 @@ import {
   registerSession,
   fetchPreferences,
   selectAgent,
+  setView as setChatView,
   updateSessionConfig,
   userWsConnected,
   userWsConnecting,
@@ -94,7 +95,8 @@ export default function App() {
       }
     }
   }, [session.connected, userPreferences]);
-  const [view, setView] = useState<'chat' | 'settings' | 'tasks' | 'memory' | 'memoryAudit' | 'projects' | 'agents' | 'startAgent'>('chat');
+  const view = useSelector((state: any) => state.chat.activeView);
+  const setView = useCallback((val: any) => dispatch(setChatView(val)), [dispatch]);
   const [isAuditOpen, setIsAuditOpen] = useState(false);
   const [isAgentSwitcherOpen, setIsAgentSwitcherOpen] = useState(false);
   const [agentSearchQuery, setAgentSearchQuery] = useState('');

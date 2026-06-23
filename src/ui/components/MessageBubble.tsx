@@ -1,8 +1,8 @@
 import { useState, memo, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { sendMessageToSelectedAgent } from '../store/chatSlice';
-import { updateTaskStateDirectly, updateChainStateDirectly } from '../store/taskSlice';
-import { fetchMemoryDetail, refreshMemory } from '../store/memorySlice';
+import { sendMessageToSelectedAgent, setView } from '../store/chatSlice';
+import { updateTaskStateDirectly, updateChainStateDirectly, selectTask, selectChain } from '../store/taskSlice';
+import { fetchMemoryDetail, refreshMemory, selectMemory } from '../store/memorySlice';
 import * as daemonApi from '../api/daemonApi';
 
 function isSafeUrl(url: string) {
@@ -298,7 +298,21 @@ function EntityCard({ id, type, session }: { id: string; type: 'task' | 'chain' 
     }
     return null;
   });
-
+  const handleClick = (e: React.MouseEvent) => {
+    if (window.getSelection()?.toString()) return;
+    if (type === 'task') {
+      dispatch(selectTask(id));
+      dispatch(setView('tasks'));
+    } else if (type === 'chain') {
+      dispatch(selectChain(id));
+      dispatch(setView('tasks'));
+    } else if (type === 'memory' || type === 'proposal') {
+      if (entity?.memoryId) {
+        dispatch(selectMemory(entity.memoryId));
+        dispatch(setView('memory'));
+      }
+    }
+  };
   useEffect(() => {
     if (entity || loading || error) return;
 
@@ -386,14 +400,20 @@ function EntityCard({ id, type, session }: { id: string; type: 'task' | 'chain' 
       cancelled: 'bg-zinc-900 border-zinc-800 text-zinc-500',
     };
     return (
-      <div className="w-full bg-[#1b1b1b]/80 border border-[#2c2c2c] rounded-lg p-3.5 my-1.5 flex flex-col gap-1 text-xs select-text text-white">
+      <div 
+        onClick={handleClick}
+        className="w-full bg-[#1b1b1b]/80 border border-[#2c2c2c] hover:border-[var(--fd-accent-blue)]/50 rounded-lg p-3.5 my-1.5 flex flex-col gap-1 text-xs select-text text-white cursor-pointer hover:bg-[#222]/50 transition-all active:scale-[0.99]"
+      >
         <div className="flex items-center justify-between border-b border-[#2c2c2c] pb-2 mb-2">
           <span className="text-[10px] font-bold text-[#888] uppercase tracking-wider flex items-center gap-1.5">
             📋 Task Card
           </span>
-          <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase border ${statusColors[entity.status] || 'bg-zinc-800 border-zinc-700 text-zinc-300'}`}>
-            {entity.status}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase border ${statusColors[entity.status] || 'bg-zinc-800 border-zinc-700 text-zinc-300'}`}>
+              {entity.status}
+            </span>
+            <span className="text-[9px] text-[var(--fd-accent-blue)] font-medium hover:underline">Open →</span>
+          </div>
         </div>
         <h4 className="font-semibold text-white truncate">{entity.title}</h4>
         {entity.description && (
@@ -416,14 +436,20 @@ function EntityCard({ id, type, session }: { id: string; type: 'task' | 'chain' 
       completed: 'bg-emerald-950/20 border-emerald-900/30 text-emerald-300',
     };
     return (
-      <div className="w-full bg-[#1b1b1b]/80 border border-[#2c2c2c] rounded-lg p-3.5 my-1.5 flex flex-col gap-1 text-xs select-text text-white">
+      <div 
+        onClick={handleClick}
+        className="w-full bg-[#1b1b1b]/80 border border-[#2c2c2c] hover:border-[var(--fd-accent-blue)]/50 rounded-lg p-3.5 my-1.5 flex flex-col gap-1 text-xs select-text text-white cursor-pointer hover:bg-[#222]/50 transition-all active:scale-[0.99]"
+      >
         <div className="flex items-center justify-between border-b border-[#2c2c2c] pb-2 mb-2">
           <span className="text-[10px] font-bold text-[#888] uppercase tracking-wider flex items-center gap-1.5">
             🔗 Chain Card
           </span>
-          <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase border ${statusColors[entity.status] || 'bg-zinc-800 border-zinc-700 text-zinc-300'}`}>
-            {entity.status}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase border ${statusColors[entity.status] || 'bg-zinc-800 border-zinc-700 text-zinc-300'}`}>
+              {entity.status}
+            </span>
+            <span className="text-[9px] text-[var(--fd-accent-blue)] font-medium hover:underline">Open →</span>
+          </div>
         </div>
         <h4 className="font-semibold text-white truncate">{entity.title}</h4>
         {entity.description && (
@@ -447,14 +473,20 @@ function EntityCard({ id, type, session }: { id: string; type: 'task' | 'chain' 
       archived: 'bg-zinc-900 border-zinc-800 text-zinc-500',
     };
     return (
-      <div className="w-full bg-[#1b1b1b]/80 border border-[#2c2c2c] rounded-lg p-3.5 my-1.5 flex flex-col gap-1 text-xs select-text text-white">
+      <div 
+        onClick={handleClick}
+        className="w-full bg-[#1b1b1b]/80 border border-[#2c2c2c] hover:border-[var(--fd-accent-blue)]/50 rounded-lg p-3.5 my-1.5 flex flex-col gap-1 text-xs select-text text-white cursor-pointer hover:bg-[#222]/50 transition-all active:scale-[0.99]"
+      >
         <div className="flex items-center justify-between border-b border-[#2c2c2c] pb-2 mb-2">
           <span className="text-[10px] font-bold text-[#888] uppercase tracking-wider flex items-center gap-1.5">
             🧠 Memory Card
           </span>
-          <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase border ${statusColors[entity.status] || 'bg-zinc-800 border-zinc-700 text-zinc-300'}`}>
-            {entity.status}
-          </span>
+          <div className="flex items-center gap-2">
+            <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold uppercase border ${statusColors[entity.status] || 'bg-zinc-800 border-zinc-700 text-zinc-300'}`}>
+              {entity.status}
+            </span>
+            <span className="text-[9px] text-[var(--fd-accent-blue)] font-medium hover:underline">Open →</span>
+          </div>
         </div>
         <h4 className="font-semibold text-white truncate">{entity.title}</h4>
         <p className="text-[#999] truncate mt-0.5">{entity.body}</p>
