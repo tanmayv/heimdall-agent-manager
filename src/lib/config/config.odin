@@ -8,6 +8,14 @@ import contracts "odin_test:contracts"
 CONFIG_PATH_FLAG :: "--config"
 
 default_config_path :: proc() -> string {
+	heimdall_home := os.get_env_alloc("HEIMDALL_HOME", context.allocator)
+	if heimdall_home != "" {
+		when ODIN_OS == .Windows {
+			return strings.concatenate({heimdall_home, "\\config.toml"})
+		} else {
+			return strings.concatenate({heimdall_home, "/config.toml"})
+		}
+	}
 	when ODIN_OS == .Windows {
 		appdata := os.get_env_alloc("APPDATA", context.allocator)
 		if appdata != "" do return strings.concatenate({appdata, "\\heimdall\\config.toml"})
@@ -169,12 +177,14 @@ load :: proc(path: string) -> (Load_Result, bool) {
 }
 
 expand_home :: proc(path: string) -> string {
+	home := os.get_env_alloc("HEIMDALL_HOME", context.allocator)
+	if home == "" {
+		home = os.get_env_alloc("HOME", context.allocator)
+	}
 	if path == "~" {
-		home := os.get_env_alloc("HOME", context.allocator)
 		if home != "" do return home
 	}
 	if strings.has_prefix(path, "~/") {
-		home := os.get_env_alloc("HOME", context.allocator)
 		if home != "" do return strings.concatenate({home, "/", path[2:]})
 	}
 	return path

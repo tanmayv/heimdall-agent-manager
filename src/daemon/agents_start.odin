@@ -382,12 +382,14 @@ parent_dir :: proc(path: string) -> string {
 }
 
 expand_home :: proc(path: string) -> string {
+	home := os.get_env_alloc("HEIMDALL_HOME", context.allocator)
+	if home == "" {
+		home = os.get_env_alloc("HOME", context.allocator)
+	}
 	if path == "~" {
-		home := os.get_env_alloc("HOME", context.allocator)
 		if home != "" do return home
 	}
 	if strings.has_prefix(path, "~/") {
-		home := os.get_env_alloc("HOME", context.allocator)
 		if home != "" do return fmt.tprintf("%s/%s", home, path[2:])
 	}
 	return path
