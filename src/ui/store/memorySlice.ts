@@ -44,7 +44,7 @@ export const refreshMemory = createAsyncThunk('memory/refreshMemory', async (_, 
   const { session } = state.chat;
   const { filters } = state.memory;
   if (!session.clientToken) return { records: [] };
-  const data = await daemonApi.listMemory({ ...auth(state), subjectAgent: filters.subjectAgent, type: filters.type, status: filters.status, includeAllStatuses: true });
+  const data = await daemonApi.listMemory({ ...auth(state), includeAllStatuses: true });
   return { records: (data.records ?? []).map(normalizeMemory) };
 });
 

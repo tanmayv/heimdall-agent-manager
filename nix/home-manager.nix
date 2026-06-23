@@ -575,6 +575,7 @@ in
         ExecStart = "${daemonPkg}/bin/ham-daemon";
         Restart    = "on-failure";
         RestartSec = "5s";
+        KillMode   = "process";
       };
       Install.WantedBy = [ "default.target" ];
     };

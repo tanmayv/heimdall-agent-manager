@@ -1720,7 +1720,7 @@ agent_identity_from_args :: proc(args: []string, fallback: string) -> string {
 			i += 1
 			continue
 		}
-		if args[i] == "--detach" do continue
+		if args[i] == "--detach" || args[i] == "--overwrite" do continue
 		return args[i]
 	}
 	return fallback
