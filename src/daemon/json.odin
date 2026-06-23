@@ -208,7 +208,11 @@ json_write_string :: proc(builder: ^strings.Builder, value: string) {
 		case '\t':
 			strings.write_string(builder, "\\t")
 		case:
-			strings.write_rune(builder, ch)
+			if ch < 32 {
+				strings.write_string(builder, fmt.tprintf("\\u%04x", ch))
+			} else {
+				strings.write_rune(builder, ch)
+			}
 		}
 	}
 }

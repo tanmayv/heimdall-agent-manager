@@ -500,7 +500,20 @@ HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X GET "$DAEMON_URL/task-chai
 [ "$HTTP_CODE" = "404" ] && pass "T12 non-existent chain returns 404" || fail "T12 non-existent chain returned $HTTP_CODE" "status code"
 
 echo ""
+# ─────────────────────────────────────────────────────────────────────────────
+# T13 — JSON control character escaping
+# ─────────────────────────────────────────────────────────────────────────────
+echo "=== T13: JSON control character escaping ==="
 
+CTRL_COMMENT=$(printf "Comment with escape \x1b character")
+ADD_CTRL_CMT=$(ctl tasks comment --token "$TOKEN" --task-id "$T2" --chain-id "$C2" --body "$CTRL_COMMENT")
+assert_ok "T13 add control character comment" "$ADD_CTRL_CMT"
+
+SHOW_CTRL_TASK=$(ctl tasks show --token "$TOKEN" --task-id "$T2")
+assert_ok "T13 show task with control character" "$SHOW_CTRL_TASK"
+assert_has "T13 has escaped escape code in JSON string" "$SHOW_CTRL_TASK" '\u001b'
+
+echo ""
 # ─────────────────────────────────────────────────────────────────────────────
 # Cleanup
 # ─────────────────────────────────────────────────────────────────────────────
