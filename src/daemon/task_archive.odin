@@ -55,7 +55,7 @@ task_chain_archive_snapshot_json :: proc(chain_id: string) -> string {
 		strings.write_string(&builder, `","title":"`); json_write_string(&builder, state.title)
 		strings.write_string(&builder, `","status":"`); json_write_string(&builder, task_status_to_string(state.status))
 		strings.write_string(&builder, `","assignee_agent_instance_id":"`); json_write_string(&builder, state.assignee_agent_instance_id)
-		strings.write_string(&builder, `","coordinator_agent_instance_id":"`); json_write_string(&builder, state.coordinator_agent_instance_id)
+		strings.write_string(&builder, `","coordinator_agent_instance_id":"`); json_write_string(&builder, task_coordinator_agent_instance_id(state))
 		strings.write_string(&builder, `"}`)
 	}
 	strings.write_string(&builder, `],"participants":[`)

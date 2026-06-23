@@ -89,8 +89,9 @@ memory_notify_event :: proc(event: contracts.Memory_Event) -> bool {
 	if source_task != "" {
 		if idx, ok := task_existing_state_index(source_task, ""); ok {
 			state := task_states[idx]
-			sent = task_notify_recipient_except(state.coordinator_agent_instance_id, payload, event.author) || sent
-			sent = task_notify_participants_by_role(state.task_id, state.chain_id, "coordinator", payload, state.coordinator_agent_instance_id, event.author) || sent
+			coord := task_coordinator_agent_instance_id(state)
+			sent = task_notify_recipient_except(coord, payload, event.author) || sent
+			sent = task_notify_participants_by_role(state.task_id, state.chain_id, "coordinator", payload, coord, event.author) || sent
 		}
 	}
 	return sent

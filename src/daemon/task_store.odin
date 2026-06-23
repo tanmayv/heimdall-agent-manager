@@ -90,7 +90,6 @@ Task_Event :: struct {
 	project_id:                 string,
 	agent_instance_id:          string,
 	assignee_agent_instance_id: string,
-	coordinator_agent_instance_id: string,
 	depends_on:                 string,
 	role:                       string,
 	created_by:                 string,
@@ -107,7 +106,6 @@ Task_State :: struct {
 	priority:                   string,
 	status:                     Task_Status,
 	assignee_agent_instance_id: string,
-	coordinator_agent_instance_id: string,
 	depends_on:                 string,
 	created_by:                 string,
 	created_at_unix_ms:         i64,
@@ -304,7 +302,6 @@ task_event_clone :: proc(event: Task_Event) -> Task_Event {
 		project_id                  = strings.clone(event.project_id),
 		agent_instance_id           = strings.clone(event.agent_instance_id),
 		assignee_agent_instance_id  = strings.clone(event.assignee_agent_instance_id),
-		coordinator_agent_instance_id = strings.clone(event.coordinator_agent_instance_id),
 		depends_on                  = strings.clone(event.depends_on),
 		role                        = strings.clone(event.role),
 		created_by                  = strings.clone(event.created_by),
@@ -423,7 +420,6 @@ task_event_json :: proc(event: Task_Event) -> string {
 	strings.write_string(&b, `","project_id":"`);       json_write_string(&b, event.project_id)
 	strings.write_string(&b, `","agent_instance_id":"`); json_write_string(&b, event.agent_instance_id)
 	strings.write_string(&b, `","assignee_agent_instance_id":"`); json_write_string(&b, event.assignee_agent_instance_id)
-	strings.write_string(&b, `","coordinator_agent_instance_id":"`); json_write_string(&b, event.coordinator_agent_instance_id)
 	strings.write_string(&b, `","depends_on":"`);       json_write_string(&b, event.depends_on)
 	strings.write_string(&b, `","role":"`);             json_write_string(&b, event.role)
 	strings.write_string(&b, `","created_by":"`);       json_write_string(&b, event.created_by)
@@ -451,7 +447,6 @@ task_event_from_json :: proc(line: string) -> (Task_Event, bool) {
 		project_id                  = extract_json_string(line, "project_id", ""),
 		agent_instance_id           = extract_json_string(line, "agent_instance_id", ""),
 		assignee_agent_instance_id  = extract_json_string(line, "assignee_agent_instance_id", ""),
-		coordinator_agent_instance_id = extract_json_string(line, "coordinator_agent_instance_id", ""),
 		depends_on                  = extract_json_string(line, "depends_on", ""),
 		role                        = extract_json_string(line, "role", ""),
 		created_by                  = extract_json_string(line, "created_by", ""),

@@ -52,7 +52,6 @@ task_db_create_schema :: proc() -> bool {
 		priority TEXT NOT NULL,
 		status TEXT NOT NULL,
 		assignee_agent_instance_id TEXT NOT NULL,
-		coordinator_agent_instance_id TEXT NOT NULL,
 		depends_on TEXT NOT NULL,
 		created_by TEXT NOT NULL,
 		created_at_unix_ms INTEGER NOT NULL,
@@ -135,9 +134,9 @@ task_db_save_task :: proc(state: Task_State) -> bool {
 	stmt: sqlite3_stmt = nil
 	query := `INSERT OR REPLACE INTO tasks (
 		task_id, chain_id, title, description, acceptance_criteria, priority, status,
-		assignee_agent_instance_id, coordinator_agent_instance_id, depends_on, created_by,
+		assignee_agent_instance_id, depends_on, created_by,
 		created_at_unix_ms, updated_at_unix_ms
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
@@ -154,11 +153,10 @@ task_db_save_task :: proc(state: Task_State) -> bool {
 	task_db_bind_text(stmt, 6, state.priority)
 	task_db_bind_text(stmt, 7, task_status_to_string(state.status))
 	task_db_bind_text(stmt, 8, state.assignee_agent_instance_id)
-	task_db_bind_text(stmt, 9, state.coordinator_agent_instance_id)
-	task_db_bind_text(stmt, 10, state.depends_on)
-	task_db_bind_text(stmt, 11, state.created_by)
-	sqlite3_bind_int64(stmt, 12, state.created_at_unix_ms)
-	sqlite3_bind_int64(stmt, 13, state.updated_at_unix_ms)
+	task_db_bind_text(stmt, 9, state.depends_on)
+	task_db_bind_text(stmt, 10, state.created_by)
+	sqlite3_bind_int64(stmt, 11, state.created_at_unix_ms)
+	sqlite3_bind_int64(stmt, 12, state.updated_at_unix_ms)
 
 	rc = sqlite3_step(stmt)
 	if rc != SQLITE_DONE {
@@ -330,7 +328,7 @@ task_db_load_all :: proc() -> bool {
 		stmt: sqlite3_stmt = nil
 		query := `SELECT 
 			task_id, chain_id, title, description, acceptance_criteria, priority, status,
-			assignee_agent_instance_id, coordinator_agent_instance_id, depends_on, created_by,
+			assignee_agent_instance_id, depends_on, created_by,
 			created_at_unix_ms, updated_at_unix_ms
 			FROM tasks`
 		rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
@@ -353,11 +351,10 @@ task_db_load_all :: proc() -> bool {
 			t.status, _ = task_status_from_string(status_str)
 			delete(status_str)
 			t.assignee_agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 7))
-			t.coordinator_agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 8))
-			t.depends_on = strings.clone_from_cstring(sqlite3_column_text(stmt, 9))
-			t.created_by = strings.clone_from_cstring(sqlite3_column_text(stmt, 10))
-			t.created_at_unix_ms = sqlite3_column_int64(stmt, 11)
-			t.updated_at_unix_ms = sqlite3_column_int64(stmt, 12)
+			t.depends_on = strings.clone_from_cstring(sqlite3_column_text(stmt, 8))
+			t.created_by = strings.clone_from_cstring(sqlite3_column_text(stmt, 9))
+			t.created_at_unix_ms = sqlite3_column_int64(stmt, 10)
+			t.updated_at_unix_ms = sqlite3_column_int64(stmt, 11)
 			task_state_count += 1
 		}
 	}

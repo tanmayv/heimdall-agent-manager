@@ -138,7 +138,7 @@ task_notify_role :: proc(state: Task_State, role, payload, author_agent_instance
 	primary := ""
 	switch role {
 	case "assignee":    primary = state.assignee_agent_instance_id
-	case "coordinator": primary = state.coordinator_agent_instance_id
+	case "coordinator": primary = task_coordinator_agent_instance_id(state)
 	case:
 	}
 	sent := task_notify_recipient_except(primary, payload, author_agent_instance_id)

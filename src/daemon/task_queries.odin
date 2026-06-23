@@ -81,6 +81,13 @@ task_depends_on_task :: proc(depends_on, task_id: string) -> bool {
 	return false
 }
 
+task_coordinator_agent_instance_id :: proc(state: Task_State) -> string {
+	if state.chain_id == "" do return ""
+	idx, found := task_existing_chain_index(state.chain_id)
+	if !found do return ""
+	return task_chains[idx].coordinator_agent_instance_id
+}
+
 // --- Active slot checks ---
 
 // Returns the task_id that blocks the assignee from taking another task (excludes excluding_task_id).

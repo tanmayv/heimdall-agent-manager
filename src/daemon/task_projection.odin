@@ -23,16 +23,12 @@ task_projection_apply_event :: proc(event: Task_Event) -> bool {
 			task_states[idx].status, _ = task_status_from_string(event.status)
 		}
 		task_states[idx].assignee_agent_instance_id  = strings.clone(event.assignee_agent_instance_id)
-		task_states[idx].coordinator_agent_instance_id = strings.clone(event.coordinator_agent_instance_id)
 		task_states[idx].depends_on                  = strings.clone(event.depends_on)
 		task_states[idx].created_by                  = strings.clone(event.created_by)
 		task_states[idx].created_at_unix_ms          = event.created_unix_ms
 		task_states[idx].updated_at_unix_ms          = event.created_unix_ms
 		if event.assignee_agent_instance_id != "" {
 			task_store_upsert_participant(event.task_id, event.chain_id, event.assignee_agent_instance_id, "assignee")
-		}
-		if event.coordinator_agent_instance_id != "" {
-			task_store_upsert_participant(event.task_id, event.chain_id, event.coordinator_agent_instance_id, "coordinator")
 		}
 
 	case .Task_Comment:
