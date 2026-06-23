@@ -2,7 +2,6 @@
 - Use `{{ctl_bin}} ...` for Heimdall task, chat, project, and memory workflows when available.
 - Track non-trivial/verifiable work in Heimdall tasks; keep status current and request review when complete.
 
-%s
 # Agent Operating Rules
 These rules govern how you work. Follow them every session.
 
@@ -36,6 +35,62 @@ To keep specs and guidelines auditable and clear for future agents:
 7. On boot/restart, agents must run `task-chains show` and inspect the status/comments of all preceding tasks in the chain to build a full picture of what has been built and what is pending (Chain History Auditing).
 8. Querying specialist agents: when you require information, reviews, code changes, or assistance from another agent, create a task in the chain assigned to that specialist agent and add yourself as a participant with the `lgtm_required` role (asker-as-reviewer pattern). This ensures structured tracking of the query.
 9. Direct messages/nudges are not reliable: direct chat messages or task nudges are not guaranteed to be delivered or handled reliably for blocked communication. Always use formal task assignments, status updates, and comments to communicate blockage or requests for action.
+
+# step-by-step instructions for task assignees and task reviewers, for possible actions for task their attention is need.:
+
+ham-ctl tasks done --token <your_token> --task-id <task_id> --comment "Summary of changes made, files modified, and test verification results"
+
+  ## 1. For a Task Assignee (when they finish their work, and current status is in_progress):
+
+  1. Run  tasks done : Submit the task for review by marking it completed. This automatically moves the task status to  review_ready  and notifies the reviewer:
+
+  2. Wait for Approval: Stand by. If the reviewer approves, the task moves to  approved . If they vote  ngtm  (reject), the task automatically reverts to  in_progress  for you
+  to make corrections.
+
+  reviewer is auto nudged when task done is called
+ Apart from marking a task as  done , a task assignee has the following options during execution:
+
+  ### 1. Mark the Task as Blocked ( blocked )
+
+  If you are blocked by an external dependency, a design blocker, or need clarification, you can flag the task as blocked:
+
+    ham-ctl tasks blocked --token <your_token> --task-id <task_id> --reason "Waiting on coordinator/PR approval/other task completion."
+
+  If you need to put the task on hold and prioritize a different task first, you can mark it as deferred:
+  This transitions the task status to  blocked  and alerts the coordinator.
+
+
+  ### 2. Defer the Task ( later )
+
+
+
+    ham-ctl tasks later --token <your_token> --task-id <task_id> --reason "Deferring to prioritize task-ABC first."
+
+  This transitions the task status to  planning  or  ready , releasing it from your active queue slot.
+    ham-ctl tasks comment --token <your_token> --task-id <task_id> --body "Question about the config schema: should we default to null?"
+next ready task will be auto assigned.
+  ### 3. Add Comments / Ask Questions ( comment )
+
+  If you want to discuss requirements, post logs, or ask questions without changing the task status, you can comment directly on the task:
+
+
+  ## 2. For a Task Reviewer (when a task is  review_ready ):
+
+  1. Audit the Changes:
+      • Inspect the code changes/diffs.
+      • Confirm all acceptance criteria in the task description are met. implementation plan can be often found in task chain description
+      • Verify that all integration tests ran and passed successfully.
+  2. Cast the Review Vote:
+      • To Approve (LGTM):
+        ham-ctl tasks vote --token <your_token> --task-id <task_id> --result lgtm --comment "Clear reason why task was approved referencing review guidelines and task description"
+        (When all required reviewers vote LGTM, the system automatically moves the task to  approved )
+      • To Request Changes (NGTM):
+        ham-ctl tasks vote --token <your_token> --task-id <task_id> --result ngtm --comment "State clearly what failed, what needs to be changed, or why the implementation is
+      incorrect."
+        (This automatically posts an unresolved comment on the task and reverts the status to  in_progress  so the assignee can fix it)
+
+    assignee is auto notified on casting a vote if ngtm.
+
 
 # Rich Interactive Messaging (Q&A Cards)
 When you need to ask the user a question, present options, or request confirmation, do NOT send plain text. Instead, use rich interactive cards so the user can answer with a single click. Choose the correct type below based on the scenario:
