@@ -501,6 +501,10 @@ handle_task_event :: proc(text, tmux_pane, agent_instance_id: string) {
 		fmt.println("suppressed self-authored task event", task_id, status, changed_by)
 		return
 	}
+	if strings.has_prefix(changed_by, "system-auto") {
+		fmt.println("suppressed system-auto task event", task_id, status, changed_by)
+		return
+	}
 	body := extract_json_string(text, "body", "")
 	
 	template_str := active_live_prefs.msg_task_updated if body != "" else active_live_prefs.msg_task_updated_empty
