@@ -160,5 +160,14 @@ if ! python3 "$SCRIPT_DIR/test_ui_pending_approvals.py" > "$TEMP_HOME/test_ui_pe
   exit 1
 fi
 
+echo "[*] Running UI reviewer merge integration test..."
+if ! python3 "$SCRIPT_DIR/test_ui_reviewer_merge.py" > "$TEMP_HOME/test_ui_reviewer_merge.log" 2>&1; then
+  echo "[-] Error: test_ui_reviewer_merge.py failed! Full test logs:"
+  cat "$TEMP_HOME/test_ui_reviewer_merge.log" || true
+  echo "[-] Daemon logs:"
+  cat "$TEMP_HOME/daemon.log" || true
+  exit 1
+fi
+
 echo "[*] Integration tests completed successfully!"
 

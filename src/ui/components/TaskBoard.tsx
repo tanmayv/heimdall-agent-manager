@@ -790,6 +790,8 @@ export default function TaskBoard({ session }) {
   function renderTaskView() {
     if (!selectedTask) return renderOverview();
     const taskCoordinator = chainsById[selectedTask.chainId]?.coordinatorAgentInstanceId || '';
+    const requiredReviewers = participants.filter((p: any) => p.role === 'lgtm_required');
+    const optionalReviewers = participants.filter((p: any) => p.role !== 'lgtm_required');
     return (
       <>
         {renderHeader(`Task: ${selectedTask.title}`)}
@@ -798,7 +800,6 @@ export default function TaskBoard({ session }) {
             <div className="framer-card-xl p-5"><div className="flex items-start justify-between gap-4"><div><p className="framer-topline">Task detail</p><h3 className="mt-1 text-3xl font-bold text-white">{selectedTask.title}</h3><p className="framer-subtext mt-2 break-all text-xs">{selectedTask.taskId}</p></div><div className="flex flex-col items-end gap-2"><StatusPill status={selectedTask.status} />{!selectedTaskTerminal && <button type="button" data-debug-id="task-nudge-btn" onClick={handleNudgeTask} disabled={!canMutate || nudgeInFlight} className="framer-pill bg-white px-4 py-2 text-xs disabled:opacity-40">{nudgeInFlight ? 'Nudging…' : nudgeState.taskId === selectedTask.taskId && nudgeState.status === 'sent' ? 'Sent' : 'Nudge'}</button>}{nudgeState.taskId === selectedTask.taskId && nudgeState.message && <p className={`text-right text-xs ${nudgeState.status === 'error' ? 'text-red-200' : 'text-[#999]'}`}>{nudgeState.message}</p>}</div></div>{selectedTask.description && <p className="mt-4 whitespace-pre-wrap text-sm leading-6 text-[#d6d6d6]">{selectedTask.description}</p>}</div>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Assignee" value={selectedTask.assigneeAgentInstanceId} />
-              <Field label="Reviewer" value={selectedTask.reviewerAgentInstanceId} />
               <Field label="Coordinator" value={taskCoordinator} />
               <Field label="Priority" value={selectedTask.priority} />
               <Field label="Created by" value={selectedTask.createdBy} />
@@ -887,26 +888,64 @@ export default function TaskBoard({ session }) {
               </div>
             </div>
             <div className="framer-card p-4">
-              <p className="framer-topline">Participants</p>
+              <p className="framer-topline">Required Reviewers</p>
               <div className="mt-3 flex flex-wrap gap-2">
-                {participants.length ? participants.map((participant, index) => {
+                {requiredReviewers.length ? requiredReviewers.map((participant, index) => {
                   const vote = (selectedTask.votes || []).find((v: any) => v.reviewerAgentInstanceId === participant.agentInstanceId);
-                  const showVoteStatus = participant.role === 'lgtm_required' || participant.role === 'lgtm_optional';
+                  const voteBadge = vote ? (
+                    vote.approved ? (
+                      <span className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-900 text-green-300">LGTM</span>
+                    ) : (
+                      <span className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-900 text-red-300">NGTM</span>
+                    )
+                  ) : (
+                    <span className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-gray-700 text-gray-400">PENDING</span>
+                  );
+
+                  return (
+                    <span key={`req-${participant.agentInstanceId}-${index}`} className="framer-chip flex items-center gap-1.5">
+                      <span className="text-white">{participant.agentInstanceId}</span>
+                      {voteBadge}
+                      {canMutate && (
+                        <button
+                          onClick={() => {
+                            if (confirm(`Are you sure you want to remove reviewer ${participant.agentInstanceId}?`)) {
+                              runMutation(() => dispatch(removeParticipantFromSelectedTask({ agentInstanceId: participant.agentInstanceId, role: participant.role })));
+                            }
+                          }}
+                          className="ml-1 text-gray-500 hover:text-red-400 font-bold focus:outline-none"
+                          title="Remove Reviewer"
+                        >
+                          &times;
+                        </button>
+                      )}
+                    </span>
+                  );
+                }) : <p className="framer-subtext text-sm">No required reviewers.</p>}
+              </div>
+            </div>
+
+            <div className="framer-card p-4">
+              <p className="framer-topline">Optional Reviewers & Participants</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                {optionalReviewers.length ? optionalReviewers.map((participant, index) => {
+                  const vote = (selectedTask.votes || []).find((v: any) => v.reviewerAgentInstanceId === participant.agentInstanceId);
+                  const isOptionalReviewer = participant.role === 'lgtm_optional';
                   let voteBadge = null;
-                  if (showVoteStatus) {
-                    if (vote) {
-                      voteBadge = vote.approved ? (
+                  if (isOptionalReviewer) {
+                    voteBadge = vote ? (
+                      vote.approved ? (
                         <span className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-green-900 text-green-300">LGTM</span>
                       ) : (
                         <span className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-900 text-red-300">NGTM</span>
-                      );
-                    } else {
-                      voteBadge = <span className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-gray-700 text-gray-400">PENDING</span>;
-                    }
+                      )
+                    ) : (
+                      <span className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-bold bg-gray-700 text-gray-400">PENDING</span>
+                    );
                   }
 
                   return (
-                    <span key={`${participant.agentInstanceId}-${participant.role}-${index}`} className="framer-chip flex items-center gap-1.5">
+                    <span key={`opt-${participant.agentInstanceId}-${index}`} className="framer-chip flex items-center gap-1.5">
                       <span>{participant.role}: <span className="text-white">{participant.agentInstanceId}</span></span>
                       {voteBadge}
                       {canMutate && (
@@ -924,7 +963,7 @@ export default function TaskBoard({ session }) {
                       )}
                     </span>
                   );
-                }) : <p className="framer-subtext text-sm">No participants recorded.</p>}
+                }) : <p className="framer-subtext text-sm">No optional participants.</p>}
               </div>
             </div>
             <div className="framer-card p-4">
