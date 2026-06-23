@@ -1,7 +1,7 @@
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const { pruneAndRegister, updatePort, deregister } = require('./instanceRegistry.cjs');
-const { startDebugServer } = require('./debugServer.cjs');
+const { startDebugServer, stopDebugServer } = require('./debugServer.cjs');
 
 // Bypass Nix sandbox GPU library mismatches on Linux to enable full hardware-accelerated rendering.
 if (process.platform === 'linux') {
@@ -48,6 +48,28 @@ ipcMain.handle('odin-api:pick-directory', async (event) => {
   return { ok: true, canceled: false, path: result.filePaths[0] };
 });
 
+let currentDebugPort = 0;
+
+ipcMain.handle('odin-api:get-debug-info', () => {
+  return { enabled: currentDebugPort !== 0, port: currentDebugPort, pid: process.pid };
+});
+
+ipcMain.handle('odin-api:toggle-debug-server', async (_event, enable: boolean) => {
+  if (enable) {
+    if (currentDebugPort === 0) {
+      currentDebugPort = await startDebugServer();
+      updatePort(currentDebugPort);
+    }
+  } else {
+    if (currentDebugPort !== 0) {
+      await stopDebugServer();
+      currentDebugPort = 0;
+      updatePort(0);
+    }
+  }
+  return { enabled: currentDebugPort !== 0, port: currentDebugPort, pid: process.pid };
+});
+
 ipcMain.handle('odin-api:request', async (_event, { url, method = 'GET', body, headers }) => {
   const startTime = performance.now();
   const timestamp = new Date().toISOString();
@@ -89,14 +111,11 @@ ipcMain.handle('odin-api:request', async (_event, { url, method = 'GET', body, h
 app.whenReady().then(async () => {
   const daemonUrl = process.env.HEIMDALL_DAEMON_URL || 'http://127.0.0.1:49322';
   pruneAndRegister(daemonUrl);
-
-  const debugPort = await startDebugServer();
-  updatePort(debugPort);
+  updatePort(0); // Explicitly 0 since disabled by default
 
   console.log('[heimdall] startup config:');
   console.log(`  daemon_url=${daemonUrl}`);
   console.log(`  daemon_url_source=${process.env.HEIMDALL_DAEMON_URL ? 'env' : 'default'}`);
-  console.log(`  debug_port=${debugPort}`);
   console.log(`  pid=${process.pid}`);
   console.log(`  platform=${process.platform}`);
   console.log(`  electron=${process.versions.electron}`);

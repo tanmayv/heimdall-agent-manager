@@ -68,6 +68,14 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
   const [knownAgents, setKnownAgents] = useState<any[]>([]);
   const [isSavingAuditing, setIsSavingAuditing] = useState(false);
 
+  const [debugInfo, setDebugInfo] = useState<{ enabled: boolean; port: number; pid: number } | null>(null);
+
+  useEffect(() => {
+    if ((window as any).odinApi?.getDebugInfo) {
+      (window as any).odinApi.getDebugInfo().then(setDebugInfo);
+    }
+  }, []);
+
   // Edit states for fields in the UI
   const [editValues, setEditValues] = useState<Record<string, string>>({});
   const [editInterrupts, setEditInterrupts] = useState<Record<string, boolean>>({});
@@ -322,6 +330,38 @@ export default function SettingsPage({ session, onReconnect, onBack }) {
             <div className="mt-4 text-[11px] text-[#777] leading-relaxed">
               <p>Session and connection details persist locally in Electron and are used across restarts.</p>
               <p className="mt-1">Changing user ID regenerates local client identity and credentials.</p>
+            </div>
+          </div>
+
+          {/* 2. Developer Options */}
+          <div className="framer-card p-6">
+            <h3 className="text-sm font-semibold text-[#888] uppercase tracking-wider mb-2">Developer Options</h3>
+            <p className="text-xs text-[#666] mb-4">Toggle advanced debugging features.</p>
+            
+            <div className="flex flex-col gap-3">
+              <label className="flex items-center text-sm font-bold text-white cursor-pointer select-none w-max">
+                <input
+                  type="checkbox"
+                  checked={debugInfo?.enabled || false}
+                  onChange={async () => {
+                    if (!debugInfo || !(window as any).odinApi?.toggleDebugServer) return;
+                    const nextState = !debugInfo.enabled;
+                    const res = await (window as any).odinApi.toggleDebugServer(nextState);
+                    setDebugInfo(res);
+                  }}
+                  className="mr-3 w-4 h-4 accent-[var(--fd-accent)]"
+                />
+                Enable Electron Debug Server
+              </label>
+
+              {debugInfo?.enabled && (
+                <div className="bg-[#101010] border border-[#222] p-3 rounded text-xs font-mono text-[#aaa]">
+                  <div className="flex flex-col gap-1">
+                    <div><span className="text-[#555]">URL:</span> <a href={`http://127.0.0.1:${debugInfo.port}`} target="_blank" rel="noreferrer" className="text-[var(--fd-accent)] hover:underline">http://127.0.0.1:{debugInfo.port}</a></div>
+                    <div><span className="text-[#555]">PID:</span> {debugInfo.pid}</div>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 

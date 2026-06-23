@@ -274,8 +274,14 @@ const routes: Array<{ method: string; path: string; handler: Handler }> = [
   },
 ];
 
+let activeServer: http.Server | null = null;
+
 export function startDebugServer(): Promise<number> {
   return new Promise((resolve, reject) => {
+    if (activeServer) {
+      const addr = activeServer.address() as { port: number };
+      return resolve(addr.port);
+    }
     const server = http.createServer(async (req, res) => {
       const method = req.method ?? 'GET';
       const url = (req.url ?? '/').split('?')[0];
@@ -302,10 +308,21 @@ export function startDebugServer(): Promise<number> {
     });
 
     server.listen(0, '127.0.0.1', () => {
+      activeServer = server;
       const addr = server.address() as { port: number };
       resolve(addr.port);
     });
 
     server.on('error', reject);
+  });
+}
+
+export function stopDebugServer(): Promise<void> {
+  return new Promise((resolve) => {
+    if (!activeServer) return resolve();
+    activeServer.close(() => {
+      activeServer = null;
+      resolve();
+    });
   });
 }
