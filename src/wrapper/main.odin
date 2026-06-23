@@ -73,7 +73,8 @@ main :: proc() {
 	window_name := wrapper_window_name(cfg.tmux_window_prefix, agent_instance_id)
 	cwd := resolve_agent_run_dir(cfg, agent_cmd, agent_cmd_ok, selected_agent, agent_instance_id)
 
-	if !handle_existing_agent_window(cfg.tmux_session, window_name) {
+	overwrite := has_flag(os.args, "--overwrite")
+	if !handle_existing_agent_window(cfg.tmux_session, window_name, overwrite) {
 		return
 	}
 
@@ -312,7 +313,7 @@ report_startup_status :: proc(daemon_url, agent_instance_id, status, reason_code
 	_, _ = http.post(daemon_url, "/startup", strings.to_string(builder))
 }
 
-handle_existing_agent_window :: proc(tmux_session, window_name: string) -> bool {
+handle_existing_agent_window :: proc(tmux_session, window_name: string, overwrite: bool) -> bool {
 	existing_pane := tmux.pane_for_window(tmux_session, window_name)
 	if existing_pane == "" do return true
 
@@ -322,6 +323,16 @@ handle_existing_agent_window :: proc(tmux_session, window_name: string) -> bool 
 	fmt.println("tmux_target", fmt.tprintf("%s:%s", tmux_session, window_name))
 	fmt.println("tmux_pane", existing_pane)
 	fmt.println("close_command", fmt.tprintf("tmux kill-window -t '%s:%s'", tmux_session, window_name))
+
+	if overwrite {
+		fmt.println("overwrite flag present; closing existing tmux window and continuing")
+		if !tmux.kill_window(tmux_session, window_name) {
+			fmt.println("failed to close existing tmux window; aborting before registration")
+			return false
+		}
+		return true
+	}
+
 	fmt.print("Close existing tmux window and continue? [y/N]: ")
 
 	if !read_yes_from_stdin() {

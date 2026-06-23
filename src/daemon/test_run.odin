@@ -454,7 +454,7 @@ launch_wrapper_for_test :: proc(agent_instance_id, provider, config_path, log_pa
 	b := strings.builder_make()
 	strings.write_string(&b, "nohup ")
 	strings.write_string(&b, shell_quote(wrapper_bin))
-	strings.write_string(&b, " --config ")
+	strings.write_string(&b, " --overwrite --config ")
 	strings.write_string(&b, shell_quote(config_path))
 	strings.write_string(&b, " --agent ")
 	strings.write_string(&b, shell_quote(provider))

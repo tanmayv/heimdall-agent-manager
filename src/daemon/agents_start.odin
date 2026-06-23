@@ -323,7 +323,7 @@ launch_wrapper_detached :: proc(agent_instance_id, selected_agent, config_path, 
 	builder := strings.builder_make()
 	strings.write_string(&builder, "nohup ")
 	strings.write_string(&builder, shell_quote(wrapper_bin))
-	strings.write_string(&builder, " --config ")
+	strings.write_string(&builder, " --overwrite --config ")
 	strings.write_string(&builder, shell_quote(config_path))
 	if selected_agent != "" {
 		strings.write_string(&builder, " --agent ")
