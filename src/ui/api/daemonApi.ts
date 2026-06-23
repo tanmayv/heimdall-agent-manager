@@ -253,6 +253,14 @@ export async function listTaskChains({ daemonUrl, clientToken, createdAfter, cre
   });
 }
 
+export async function fetchTaskChain({ daemonUrl, clientToken, chainId }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId: string }) {
+  const path = `/task-chains/${encodeURIComponent(chainId)}`;
+  return requestJson(joinUrl(daemonUrl, path), {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${clientToken}` }
+  });
+}
+
 export async function listChainTasks({ daemonUrl, clientToken, chainId }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId: string }) {
   const path = `/task-chains/${encodeURIComponent(chainId)}/tasks`;
   return requestJson(joinUrl(daemonUrl, path), {
