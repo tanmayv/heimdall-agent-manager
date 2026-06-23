@@ -14,6 +14,7 @@ import {
   chatEventReceived,
   fetchSelectedChat,
   refreshAgents,
+  reorderAgentsFromUi,
   registerSession,
   fetchPreferences,
   selectAgent,
@@ -359,19 +360,9 @@ export default function App() {
     dispatch(reorderProjectsFromUi(newProjectIds));
   }, [dispatch]);
 
-  const handleReorderAgents = useCallback(async (agentIds: string[]) => {
-    try {
-      await daemonApi.reorderAgents({
-        daemonUrl: session.daemonUrl,
-        clientInstanceId: session.clientInstanceId,
-        clientToken: session.clientToken,
-        agentIds,
-      });
-      dispatch(refreshAgents());
-    } catch (err: any) {
-      console.error('Failed to reorder agents:', err);
-    }
-  }, [dispatch, session]);
+  const handleReorderAgents = useCallback((agentIds: string[]) => {
+    dispatch(reorderAgentsFromUi(agentIds));
+  }, [dispatch]);
 
   const handleOpenAgents = useCallback(() => {
     setView('agents');

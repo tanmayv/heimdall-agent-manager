@@ -38,11 +38,18 @@ export const updateProjectFromUi = createAsyncThunk('projects/updateProjectFromU
 });
 
 export const reorderProjectsFromUi = createAsyncThunk('projects/reorderProjectsFromUi', async (projectIds: string[], { dispatch, getState }) => {
+  dispatch(projectSlice.actions.reorderProjectsLocally(projectIds));
   const state = getState() as any;
-  const result = await daemonApi.reorderProjects({ ...auth(state), projectIds });
-  await (dispatch as any)(refreshProjects());
-  return result;
+  try {
+    const result = await daemonApi.reorderProjects({ ...auth(state), projectIds });
+    await (dispatch as any)(refreshProjects());
+    return result;
+  } catch (err) {
+    await (dispatch as any)(refreshProjects());
+    throw err;
+  }
 });
+
 
 const initialState = {
   projectsById: {},
@@ -64,6 +71,16 @@ const projectSlice = createSlice({
     clearProjectError(state: any) {
       state.error = '';
     },
+    reorderProjectsLocally(state: any, action) {
+      const projectIds = action.payload;
+      state.projectIds = projectIds;
+      projectIds.forEach((id: string, index: number) => {
+        if (state.projectsById[id]) {
+          state.projectsById[id].order = index;
+        }
+      });
+    },
+
   },
   extraReducers: (builder) => {
     builder
@@ -147,5 +164,5 @@ const projectSlice = createSlice({
   },
 });
 
-export const { selectProject, clearProjectError } = projectSlice.actions;
+export const { selectProject, clearProjectError, reorderProjectsLocally } = projectSlice.actions;
 export default projectSlice.reducer;

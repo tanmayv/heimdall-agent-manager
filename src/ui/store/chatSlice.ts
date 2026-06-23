@@ -311,6 +311,29 @@ export const stopAgentInstance = createAsyncThunk('chat/stopAgentInstance', asyn
   dispatch(refreshAgents());
 });
 
+export const reorderAgentsFromUi = createAsyncThunk(
+  'chat/reorderAgentsFromUi',
+  async (agentIds: string[], { dispatch, getState }) => {
+    dispatch(chatSlice.actions.reorderAgentsLocally(agentIds));
+    const state = getState() as any;
+    const { session } = state.chat;
+    try {
+      const result = await daemonApi.reorderAgents({
+        daemonUrl: session.daemonUrl,
+        clientInstanceId: session.clientInstanceId,
+        clientToken: session.clientToken,
+        agentIds,
+      });
+      await (dispatch as any)(refreshAgents());
+      return result;
+    } catch (err) {
+      await (dispatch as any)(refreshAgents());
+      throw err;
+    }
+  }
+);
+
+
 function getAgentIdFromPayload(payload: any, selectedAgentId: string): string {
   if (typeof payload === 'string') return payload;
   if (payload && typeof payload === 'object') return payload.agentId || selectedAgentId;
@@ -351,6 +374,27 @@ const chatSlice = createSlice({
     selectAgent(state, action) {
       state.selectedAgentId = action.payload;
     },
+    reorderAgentsLocally(state, action) {
+      const agentIds = action.payload;
+      const agentsById = new Map<string, any>();
+      for (const agent of state.agents) {
+        agentsById.set(agent.id, agent);
+      }
+      agentIds.forEach((id: string, index: number) => {
+        const agent = agentsById.get(id);
+        if (agent) {
+          agent.order = index;
+        }
+      });
+      state.agents.sort((left: any, right: any) => {
+        const diff = (left.order ?? 0) - (right.order ?? 0);
+        if (diff !== 0) return diff;
+        if (left.status !== right.status) return left.status === 'connected' ? -1 : right.status === 'connected' ? 1 : left.status.localeCompare(right.status);
+        return (right.lastSeenUnixMs || 0) - (left.lastSeenUnixMs || 0);
+      });
+      storeKnownAgents(state.agents);
+    },
+
     setDaemonUrl(state, action) {
       state.session.daemonUrl = action.payload;
       setStoredValue('odin.daemonUrl', action.payload);
@@ -702,5 +746,6 @@ const chatSlice = createSlice({
   },
 });
 
-export const { selectAgent, setDaemonUrl, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived, agentRuntimeEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage } = chatSlice.actions;
+export const { selectAgent, setDaemonUrl, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived, agentRuntimeEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage, reorderAgentsLocally } = chatSlice.actions;
 export default chatSlice.reducer;
+

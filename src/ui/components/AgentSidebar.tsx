@@ -67,6 +67,28 @@ const AgentSidebar = memo(function AgentSidebar({
   console.log('[Render] AgentSidebar');
   const [collapsedProjects, setCollapsedProjects] = useState({});
   const [dismissedWarnings, setDismissedWarnings] = useState<Set<string>>(new Set());
+  const [dragOverProjectId, setDragOverProjectId] = useState<string | null>(null);
+  const [dragOverAgentId, setDragOverAgentId] = useState<string | null>(null);
+
+  const handleDragOverProject = useCallback((e: React.DragEvent, id: string) => {
+    if (id === 'unassigned') return;
+    e.preventDefault();
+    setDragOverProjectId(id);
+  }, []);
+
+  const handleDragLeaveProject = useCallback(() => {
+    setDragOverProjectId(null);
+  }, []);
+
+  const handleDragOverAgent = useCallback((e: React.DragEvent, id: string) => {
+    e.preventDefault();
+    setDragOverAgentId(id);
+  }, []);
+
+  const handleDragLeaveAgent = useCallback(() => {
+    setDragOverAgentId(null);
+  }, []);
+
 
   const handleDragStart = useCallback((e: React.DragEvent, id: string) => {
     if (id === 'unassigned') return;
@@ -77,6 +99,7 @@ const AgentSidebar = memo(function AgentSidebar({
 
   const handleDrop = useCallback((e: React.DragEvent, targetId: string) => {
     e.preventDefault();
+    setDragOverProjectId(null);
     const rawData = e.dataTransfer.getData('text/plain');
     console.log('Drop project target:', targetId, 'rawData:', rawData, 'projectIds:', projectIds);
     if (!rawData.startsWith('project:')) return;
@@ -104,6 +127,7 @@ const AgentSidebar = memo(function AgentSidebar({
 
   const handleDropAgent = useCallback((e: React.DragEvent, targetId: string, targetProjectId: string, groupAgents: any[]) => {
     e.preventDefault();
+    setDragOverAgentId(null);
     const rawData = e.dataTransfer.getData('text/plain');
     console.log('Drop agent target:', targetId, 'project:', targetProjectId, 'rawData:', rawData);
     if (!rawData.startsWith('agent:')) return;
@@ -303,10 +327,15 @@ const AgentSidebar = memo(function AgentSidebar({
                   data-debug-id={`project-group-toggle-${projectId}`}
                   draggable={projectId !== 'unassigned'}
                   onDragStart={(e) => handleDragStart(e, projectId)}
-                  onDragOver={(e) => projectId !== 'unassigned' && e.preventDefault()}
+                  onDragOver={(e) => handleDragOverProject(e, projectId)}
+                  onDragLeave={handleDragLeaveProject}
                   onDrop={(e) => handleDrop(e, projectId)}
                   onClick={() => toggleProjectGroup(projectId)}
-                  className={`flex w-full items-center justify-between rounded-[var(--fd-radius-lg)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-3 py-2 text-left transition hover:border-[var(--fd-accent-blue)]/50 ${
+                  className={`flex w-full items-center justify-between rounded-[var(--fd-radius-lg)] border px-3 py-2 text-left transition hover:border-[var(--fd-accent-blue)]/50 ${
+                    dragOverProjectId === projectId
+                      ? 'border-[var(--fd-accent-blue)] bg-[var(--fd-surface-3)]'
+                      : 'border-[var(--fd-hairline)] bg-[var(--fd-surface-2)]'
+                  } ${
                     projectId !== 'unassigned' ? 'cursor-grab active:cursor-grabbing' : ''
                   }`}
                 >
@@ -321,9 +350,14 @@ const AgentSidebar = memo(function AgentSidebar({
                     key={agent.id}
                     draggable
                     onDragStart={(e) => handleDragStartAgent(e, agent.id, projectId)}
-                    onDragOver={(e) => e.preventDefault()}
+                    onDragOver={(e) => handleDragOverAgent(e, agent.id)}
+                    onDragLeave={handleDragLeaveAgent}
                     onDrop={(e) => handleDropAgent(e, agent.id, projectId, groupAgents)}
-                    className="cursor-grab active:cursor-grabbing"
+                    className={`cursor-grab active:cursor-grabbing rounded-[var(--fd-radius-lg)] border transition-all duration-200 ${
+                      dragOverAgentId === agent.id
+                        ? 'border-[var(--fd-accent-blue)] bg-[var(--fd-accent-blue)]/5'
+                        : 'border-transparent'
+                    }`}
                   >
                     <AgentListItem
                       agent={agent}
