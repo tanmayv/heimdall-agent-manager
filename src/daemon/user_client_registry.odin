@@ -108,7 +108,9 @@ user_client_user_exists :: proc(user_id: string) -> bool {
 	for i in 0..<user_client_count {
 		if user_clients[i].user_id == user_id do return true
 	}
-	return false
+	token := auth_db_get_token("user", user_id)
+	defer delete(token)
+	return token != ""
 }
 
 user_client_has_ws :: proc(user_id: string) -> bool {
