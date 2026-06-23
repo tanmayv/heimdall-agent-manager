@@ -168,6 +168,13 @@ handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_C
 		return true
 	}
 
+	// GET /task-chains/{chain_id}
+	if len(ctx.segments) == 2 && ctx.segments[0] == "task-chains" && ctx.method == "GET" {
+		chain_id := ctx.segments[1]
+		handle_get_task_chain(client, chain_id, ctx)
+		return true
+	}
+
 	// POST /task-chains/audit
 	if len(ctx.segments) == 2 && ctx.segments[0] == "task-chains" && ctx.segments[1] == "audit" && ctx.method == "POST" {
 		handle_post_task_chain_audit(client, request_body(request), ctx)

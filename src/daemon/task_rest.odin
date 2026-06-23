@@ -69,6 +69,24 @@ handle_get_task_chains :: proc(client: net.TCP_Socket, ctx: ^Route_Context) {
 	write_response(client, 200, "OK", strings.to_string(b))
 }
 
+// GET /task-chains/{chain_id}
+handle_get_task_chain :: proc(client: net.TCP_Socket, chain_id: string, ctx: ^Route_Context) {
+	_, ok := rest_authorize(client, ctx)
+	if !ok do return
+
+	for i in 0..<task_chain_count {
+		if task_chains[i].chain_id == chain_id {
+			b := strings.builder_make()
+			strings.write_string(&b, `{"chain":`)
+			task_write_chain_json(&b, task_chains[i])
+			strings.write_string(&b, `}`)
+			write_response(client, 200, "OK", strings.to_string(b))
+			return
+		}
+	}
+	write_response(client, 404, "Not Found", `{"error":"not_found","message":"task chain not found"}`)
+}
+
 // GET /task-chains/{chain_id}/tasks
 handle_get_chain_tasks :: proc(client: net.TCP_Socket, chain_id: string, ctx: ^Route_Context) {
 	_, ok := rest_authorize(client, ctx)

@@ -476,6 +476,23 @@ assert_field "T11 C4 status reverted to in_progress" "$SHOW_C4_IN_PROG" "status"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
+# T12 — GET /task-chains/{chain_id}
+# ─────────────────────────────────────────────────────────────────────────────
+echo "=== T12: GET /task-chains/{chain_id} REST route ==="
+
+CHAIN_RESP=$(curl -sf -X GET "$DAEMON_URL/task-chains/$CHAIN_ID" \
+  -H "Authorization: Bearer $TOKEN")
+[ -n "$CHAIN_RESP" ] && pass "T12 fetch chain details via REST" || fail "T12 fetch chain details via REST" "$CHAIN_RESP"
+assert_field "T12 REST response has correct chain_id" "$CHAIN_RESP" "chain_id" "$CHAIN_ID"
+
+# Query a non-existent chain
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X GET "$DAEMON_URL/task-chains/non-existent-chain-id" \
+  -H "Authorization: Bearer $TOKEN")
+[ "$HTTP_CODE" = "404" ] && pass "T12 non-existent chain returns 404" || fail "T12 non-existent chain returned $HTTP_CODE" "status code"
+
+echo ""
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Cleanup
 # ─────────────────────────────────────────────────────────────────────────────
 echo "=== CLEANUP: Wiping test records to prevent database pollution ==="
