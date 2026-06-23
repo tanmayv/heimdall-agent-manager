@@ -25,12 +25,14 @@ export default function ChatPane({ agent, session }: { agent: any; session: any 
   const prevAgentIdRef = useRef(agent?.id ?? '');
   const wasNearBottomRef = useRef(true);
   const submitScrollPendingRef = useRef(false);
+  const prevScrollHeightRef = useRef(0);
   const [showNewMessagesToast, setShowNewMessagesToast] = useState(false);
 
   function getIsNearBottom() {
     const container = messageListRef.current;
     if (!container) return true;
-    const delta = container.scrollHeight - container.scrollTop - container.clientHeight;
+    const height = prevScrollHeightRef.current || container.scrollHeight;
+    const delta = height - container.scrollTop - container.clientHeight;
     return delta <= NEW_MESSAGE_THRESHOLD;
   }
 
@@ -128,6 +130,11 @@ export default function ChatPane({ agent, session }: { agent: any; session: any 
     submitScrollPendingRef.current = false;
     prevMessageCountRef.current = messages.length;
     prevAgentIdRef.current = currentAgentId;
+    
+    const container = messageListRef.current;
+    if (container) {
+      prevScrollHeightRef.current = container.scrollHeight;
+    }
   }, [agent?.id, messages]);
 
   const lastMessage = messages.length > 0 ? messages[messages.length - 1] : null;
