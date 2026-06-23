@@ -1,0 +1,226 @@
+[*] Created temporary HEIMDALL_HOME: /tmp/tmp.S5TEXCBDLp
+[*] Starting ham-daemon on port 49325...
+[*] Waiting for daemon to start...
+[*] Daemon is healthy!
+[*] Running tasks smoke test...
+[*] Running duplicate connection preference test...
+[*] Running templates seeding integration test...
+[-] Error: test_templates_seeding.py failed! Full test logs:
+[*] Fetching seeded agent templates from daemon...
+[*] Found 8 templates.
+[-] Template 'specialist' field 'persona' mismatch:
+    Expected: 'The Specialist is a domain-specific expert designed to act as a query service. They accept standalone or chain tasks containing query descriptions, process them, and output results using task comments, notifying the requester who reviewer-approves the task.'
+    Actual:   'The Specialist is a domain-specific expert designed to act as a query service. They accept standalone or chain tasks containing query descriptions, process them, and output results using task comments, notifying the requester who reviewer-approves the task.\n'
+[-] Template 'specialist' field 'instructions' mismatch:
+    Expected: '1. Receive Query: Accept a query task where the requester is the reviewer.\n2. Process Request: Execute the query, research, or compilation task.\n3. Reply: Document findings and results in task comments.\n4. Complete: Move task to done (review_ready) to notify the requester for LGTM validation.\n5. Cooperation:\n   * Requester: Receives queries and returns comments.'
+    Actual:   '1. Receive Query: Accept a query task where the requester is the reviewer.\n2. Process Request: Execute the query, research, or compilation task.\n3. Reply: Document findings and results in task comments.\n4. Complete: Move task to done (review_ready) to notify the requester for LGTM validation.\n5. Cooperation:\n   * Requester: Receives queries and returns comments.\n'
+[-] Validation failed with 2 errors.
+[-] Daemon logs:
+init registry_init 0.0ms
+init user_client_registry_init 0.1ms
+init message_provider 31.9ms
+memory_db_init: database initialized at /tmp/tmp.S5TEXCBDLp/data/memory/memory.db
+init memory_db_init 3.2ms
+init central_hub_init 0.0ms
+DB: Migrating task.db to version 1 (adding evaluation)...
+DB: Column 'evaluation' already exists in 'task_chains', skipping ALTER TABLE.
+DB: Migrated task.db to version 1 successfully.
+DB: Migrating task.db to version 2 (adding last_audit_at_unix_ms)...
+DB: Column 'last_audit_at_unix_ms' already exists in 'task_chains', skipping ALTER TABLE.
+DB: Migrated task.db to version 2 successfully.
+task_db_init: relational database initialized at /tmp/tmp.S5TEXCBDLp/data/tasks/task.db
+init task_store_init 7.7ms
+init project_store_init 0.5ms
+DB: Migrating templates.db to version 1 (adding is_customized)...
+DB: Column 'is_customized' already exists in 'agent_templates', skipping ALTER TABLE.
+DB: Migrated templates.db to version 1 successfully.
+DB: Migrating templates.db to version 2 (adding description)...
+DB: Column 'description' already exists in 'agent_templates', skipping ALTER TABLE.
+DB: Migrated templates.db to version 2 successfully.
+agent_template_db_init: database initialized at /tmp/tmp.S5TEXCBDLp/data/templates/templates.db
+agent_template_db: checking and seeding default templates...
+init agent_store_init 6.4ms
+message_db_init: database initialized at /tmp/tmp.S5TEXCBDLp/data/chat/messages.db
+init chat_store_init 3.3ms
+auth_db_init: database initialized at /tmp/tmp.S5TEXCBDLp/data/auth/tokens.db
+init auth_db_init 1.8ms
+user_pref_db_init: database initialized at /tmp/tmp.S5TEXCBDLp/data/preferences/preference.db
+init user_pref_db_init 1.0ms
+audit_db_init: database initialized at /tmp/tmp.S5TEXCBDLp/data/audits/audits.db
+init audit_db_init 2.1ms
+init router_adapter_init 0.0ms
+init hub_sync_init 0.0ms
+init message_queue_init 0.1ms
+init message_queue_start_worker 0.2ms
+init hub_sync_start_worker 0.0ms
+init task_nudge_scheduler_start 0.0ms
+init agent_startup_janitor_start 0.1ms
+init test_run_startup_sweep 9.3ms
+init backup_scheduler_start 0.2ms
+init TOTAL 67.8ms
+odin-daemon listening 127.0.0.1 49325
+[RPC TELEMETRY] 2026-06-23 14:32:14.927 | GET /health | Params:  | Status: 200 | Latency: 0.1ms | Size: 32 bytes | Body: {"ok":true,"protocol_version":1}
+[RPC TELEMETRY] 2026-06-23 14:32:14.946 | GET /health | Params:  | Status: 200 | Latency: 0.1ms | Size: 32 bytes | Body: {"ok":true,"protocol_version":1}
+DEBUG: auth_db_get_token no token found for agent smoketest@run1782225134
+DEBUG: auth_db_store_token for agent smoketest@run1782225134 token = agt_58fb4cba8a5de7e7 ...
+DEBUG: auth_db_store_token succeeded
+[RPC TELEMETRY] 2026-06-23 14:32:14.967 | POST /register | Params: {"agent_class":"smoketest","agent_instance_id":"smoketest@run1782225134","display_name":"Smoke 1782225134"} | Status: 200 | Latency: 1.7ms | Size: 9956 bytes
+DEBUG: auth_db_get_token no token found for user operator@local
+DEBUG: auth_db_store_token for user operator@local token = uct_4d89d75b1d46867f ...
+DEBUG: auth_db_store_token succeeded
+[RPC TELEMETRY] 2026-06-23 14:32:14.988 | POST /user-client/register | Params: {"user_id":"operator@local","client_instance_id":"test-client-run1782225134"} | Status: 200 | Latency: 0.9ms | Size: 173 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.000 | POST /projects/create | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","name":"Task Smoke 1782225134","description":"automated smoke test"} | Status: 200 | Latency: 0.4ms | Size: 68 bytes | Body: {"ok":true,"message":"created","project_id":"project_1782225135000"}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.024 | POST /task-chains/create | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","chain_id":"","project_id":"project_1782225135000","title":"Smoke Chain 1782225134","description":"Goal: verify ta... | Status: 200 | Latency: 1.1ms | Size: 62 bytes | Body: {"ok":true,"chain_id":"chain-19ef4e565af","status":"planning"}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.048 | POST /tasks/create | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","chain_id":"chain-19ef4e565af","title":"Task Alpha","description":"First task in smoke chain","status":"","priorit... | Status: 200 | Latency: 1.5ms | Size: 146 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.068 | POST /tasks/show | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e565c7"} | Status: 200 | Latency: 0.3ms | Size: 652 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.086 | POST /tasks/next | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2"} | Status: 200 | Latency: 0.3ms | Size: 23 bytes | Body: {"ok":true,"task":null}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1782225134' has no active WebSocket connection (connected=true)
+[RPC TELEMETRY] 2026-06-23 14:32:15.099 | POST /task-chains/activate | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","chain_id":"chain-19ef4e565af"} | Status: 200 | Latency: 2.0ms | Size: 11 bytes | Body: {"ok":true}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.111 | POST /task-chains/show | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","chain_id":"chain-19ef4e565af"} | Status: 200 | Latency: 0.3ms | Size: 510 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.132 | POST /tasks/show | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e565c7"} | Status: 200 | Latency: 0.2ms | Size: 655 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.152 | POST /tasks/next | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2"} | Status: 200 | Latency: 0.3ms | Size: 655 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.174 | POST /tasks/comment | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e565c7","chain_id":"chain-19ef4e565af","body":"Progress: starting implementation\n\nDecisions... | Status: 200 | Latency: 1.6ms | Size: 44 bytes | Body: {"ok":true,"comment_id":"cmt_1782225135172"}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.222 | POST /tasks/show | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e565c7"} | Status: 200 | Latency: 0.3ms | Size: 874 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.250 | POST /tasks/done | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e565c7","chain_id":"chain-19ef4e565af","body":"done"} | Status: 400 | Latency: 0.4ms | Size: 55 bytes | Body: {"ok":false,"message":"task has 1 unresolved comments"}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.266 | POST /tasks/comments | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e565c7","unresolved_only":true} | Status: 200 | Latency: 0.4ms | Size: 293 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.287 | POST /tasks/comment-resolve | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e565c7","chain_id":"chain-19ef4e565af","comment_id":"cmt_1782225135172"} | Status: 200 | Latency: 1.0ms | Size: 11 bytes | Body: {"ok":true}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.298 | POST /tasks/show | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e565c7"} | Status: 200 | Latency: 0.2ms | Size: 655 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.316 | POST /tasks/comments | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e565c7","unresolved_only":true} | Status: 200 | Latency: 0.3ms | Size: 25 bytes | Body: {"ok":true,"comments":[]}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.328 | POST /tasks/participant | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e565c7","chain_id":"chain-19ef4e565af","agent_instance_id":"smoketest@run1782225134","role":"... | Status: 200 | Latency: 1.1ms | Size: 11 bytes | Body: {"ok":true}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.339 | POST /tasks/status | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e565c7","chain_id":"chain-19ef4e565af","status":"review_ready","body":"illegal status change ... | Status: 403 | Latency: 0.3ms | Size: 72 bytes | Body: {"ok":false,"message":"manual status changes restricted to user tokens"}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1782225134' has no active WebSocket connection (connected=true)
+[RPC TELEMETRY] 2026-06-23 14:32:15.355 | POST /tasks/done | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e565c7","chain_id":"chain-19ef4e565af","body":"implementation complete, ready for review"} | Status: 200 | Latency: 1.0ms | Size: 11 bytes | Body: {"ok":true}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.367 | POST /tasks/show | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e565c7"} | Status: 200 | Latency: 1.0ms | Size: 727 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.381 | POST /tasks/log | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e565c7"} | Status: 200 | Latency: 0.4ms | Size: 3815 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1782225134' has no active WebSocket connection (connected=true)
+DEBUG: message_db_insert called for message_id = chatmsg_1782225135405 user_id = operator@local agent_instance_id = smoketest@run1782225134 direction = user_to_agent
+DEBUG: message_db_insert succeeded for chatmsg_1782225135405
+INFO: Successfully pinged coordinator agent smoketest@run1782225134 for chain completion of chain-19ef4e565af
+[RPC TELEMETRY] 2026-06-23 14:32:15.406 | POST /tasks/vote | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e565c7","chain_id":"chain-19ef4e565af","result":"lgtm","comment":"Logic is correct, tests pas... | Status: 200 | Latency: 3.1ms | Size: 11 bytes | Body: {"ok":true}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.424 | POST /tasks/show | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e565c7"} | Status: 200 | Latency: 0.3ms | Size: 723 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.443 | POST /task-chains/show | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","chain_id":"chain-19ef4e565af"} | Status: 200 | Latency: 0.3ms | Size: 508 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.457 | POST /task-chains/complete | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","chain_id":"chain-19ef4e565af","summary":"Integration tests complete"} | Status: 200 | Latency: 1.7ms | Size: 53 bytes | Body: {"ok":true,"archive_ok":false,"archive_pending":true}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.466 | POST /task-chains/show | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","chain_id":"chain-19ef4e565af"} | Status: 200 | Latency: 0.3ms | Size: 545 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.480 | POST /tasks/log | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e565c7"} | Status: 200 | Latency: 0.4ms | Size: 4880 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.496 | POST /task-chains/create | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","chain_id":"","project_id":"project_1782225135000","title":"ngtm Chain 1782225134","description":"Goal: test ngtm ... | Status: 200 | Latency: 1.0ms | Size: 62 bytes | Body: {"ok":true,"chain_id":"chain-19ef4e56788","status":"planning"}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.525 | POST /tasks/create | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","chain_id":"chain-19ef4e56788","title":"ngtm Task","description":"","status":"","priority":"","assignee_agent_inst... | Status: 200 | Latency: 2.5ms | Size: 146 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.543 | POST /tasks/participant | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e567a2","chain_id":"chain-19ef4e56788","agent_instance_id":"smoketest@run1782225134","role":"... | Status: 200 | Latency: 1.0ms | Size: 11 bytes | Body: {"ok":true}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1782225134' has no active WebSocket connection (connected=true)
+[RPC TELEMETRY] 2026-06-23 14:32:15.548 | POST /task-chains/activate | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","chain_id":"chain-19ef4e56788"} | Status: 200 | Latency: 1.6ms | Size: 11 bytes | Body: {"ok":true}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1782225134' has no active WebSocket connection (connected=true)
+[RPC TELEMETRY] 2026-06-23 14:32:15.552 | POST /tasks/done | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e567a2","chain_id":"chain-19ef4e56788","body":"ready"} | Status: 200 | Latency: 0.8ms | Size: 11 bytes | Body: {"ok":true}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1782225134' has no active WebSocket connection (connected=true)
+[RPC TELEMETRY] 2026-06-23 14:32:15.558 | POST /tasks/vote | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e567a2","chain_id":"chain-19ef4e56788","result":"ngtm","comment":"service.odin:42 — null ch... | Status: 200 | Latency: 2.8ms | Size: 11 bytes | Body: {"ok":true}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.568 | POST /tasks/show | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e567a2"} | Status: 200 | Latency: 0.3ms | Size: 700 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.580 | POST /tasks/nudge | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e567a2","chain_id":"chain-19ef4e56788","body":"Reminder: please address the ngtm comment befo... | Status: 200 | Latency: 0.3ms | Size: 77 bytes | Body: {"ok":true,"target_agent_instance_id":"smoketest@run1782225134","sent":false}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.589 | POST /tasks/log | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e567a2"} | Status: 200 | Latency: 0.3ms | Size: 4359 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.603 | POST /task-chains/create | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","chain_id":"","project_id":"project_1782225135000","title":"Conflict Chain 1782225134","description":"Goal: verify... | Status: 409 | Latency: 0.2ms | Size: 98 bytes | Body: {"ok":false,"message":"project already has an active chain","active_chain_id":"chain-19ef4e56788"}
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1782225134' has no active WebSocket connection (connected=true)
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1782225134' has no active WebSocket connection (connected=true)
+DEBUG: message_db_insert called for message_id = chatmsg_1782225135619 user_id = operator@local agent_instance_id = smoketest@run1782225134 direction = user_to_agent
+DEBUG: message_db_insert succeeded for chatmsg_1782225135619
+INFO: Successfully pinged coordinator agent smoketest@run1782225134 for chain completion of chain-19ef4e56788
+[RPC TELEMETRY] 2026-06-23 14:32:15.620 | POST /tasks/status | Params: {"agent_token":"uct_4d89d75b1d46867fe04f7dd853cc0ede07078c5d1c45c59d911381f433e9b0d7","task_id":"task-19ef4e567a2","chain_id":"chain-19ef4e56788","status":"cancelled","body":"cleanup T2"} | Status: 200 | Latency: 3.6ms | Size: 11 bytes | Body: {"ok":true}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.632 | POST /projects/create | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","name":"Deps Test 1782225134","description":"dependency ordering test"} | Status: 200 | Latency: 0.8ms | Size: 68 bytes | Body: {"ok":true,"message":"created","project_id":"project_1782225135631"}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.654 | POST /task-chains/create | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","chain_id":"","project_id":"project_1782225135631","title":"Deps Chain 1782225134","description":"Goal: verify dep... | Status: 200 | Latency: 0.8ms | Size: 62 bytes | Body: {"ok":true,"chain_id":"chain-19ef4e56826","status":"planning"}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.672 | POST /tasks/create | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","chain_id":"chain-19ef4e56826","title":"Step 1 (no deps)","description":"","status":"","priority":"","assignee_age... | Status: 200 | Latency: 1.7ms | Size: 146 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.689 | POST /tasks/participant | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e56836","chain_id":"chain-19ef4e56826","agent_instance_id":"smoketest@run1782225134","role":"... | Status: 200 | Latency: 0.9ms | Size: 11 bytes | Body: {"ok":true}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.695 | POST /tasks/create | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","chain_id":"chain-19ef4e56826","title":"Step 2 (depends on Step 1)","description":"","status":"","priority":"","as... | Status: 200 | Latency: 2.6ms | Size: 146 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1782225134' has no active WebSocket connection (connected=true)
+[RPC TELEMETRY] 2026-06-23 14:32:15.715 | POST /task-chains/activate | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","chain_id":"chain-19ef4e56826"} | Status: 200 | Latency: 1.8ms | Size: 11 bytes | Body: {"ok":true}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.719 | POST /tasks/show | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e5684d"} | Status: 200 | Latency: 0.2ms | Size: 567 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1782225134' has no active WebSocket connection (connected=true)
+[RPC TELEMETRY] 2026-06-23 14:32:15.729 | POST /tasks/done | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e56836","chain_id":"chain-19ef4e56826","body":"done"} | Status: 200 | Latency: 0.9ms | Size: 11 bytes | Body: {"ok":true}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1782225134' has no active WebSocket connection (connected=true)
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1782225134' has no active WebSocket connection (connected=true)
+[RPC TELEMETRY] 2026-06-23 14:32:15.736 | POST /tasks/vote | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e56836","chain_id":"chain-19ef4e56826","result":"lgtm","comment":"ok"} | Status: 200 | Latency: 3.0ms | Size: 11 bytes | Body: {"ok":true}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.741 | POST /tasks/show | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e5684d"} | Status: 200 | Latency: 0.3ms | Size: 570 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.753 | POST /tasks/blocked | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e5684d","chain_id":"chain-19ef4e56826","body":"waiting on external API key from ops team"} | Status: 200 | Latency: 0.8ms | Size: 11 bytes | Body: {"ok":true}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.761 | POST /tasks/show | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e5684d"} | Status: 200 | Latency: 0.2ms | Size: 566 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1782225134' has no active WebSocket connection (connected=true)
+[RPC TELEMETRY] 2026-06-23 14:32:15.773 | POST /tasks/later | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e5684d","chain_id":"chain-19ef4e56826","body":"API key received, resuming work"} | Status: 200 | Latency: 1.5ms | Size: 11 bytes | Body: {"ok":true}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.784 | POST /tasks/show | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e5684d"} | Status: 200 | Latency: 0.3ms | Size: 570 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: message_db_insert called for message_id = chatmsg_1782225135797 user_id = operator@local agent_instance_id = smoketest@run1782225134 direction = user_to_agent
+DEBUG: message_db_insert succeeded for chatmsg_1782225135797
+INFO: Successfully pinged coordinator agent smoketest@run1782225134 for chain completion of chain-19ef4e56826
+[RPC TELEMETRY] 2026-06-23 14:32:15.798 | POST /tasks/status | Params: {"agent_token":"uct_4d89d75b1d46867fe04f7dd853cc0ede07078c5d1c45c59d911381f433e9b0d7","task_id":"task-19ef4e5684d","chain_id":"chain-19ef4e56826","status":"approved","body":"manual approval of step 2"... | Status: 200 | Latency: 2.1ms | Size: 11 bytes | Body: {"ok":true}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.809 | POST /tasks/show | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e5684d"} | Status: 200 | Latency: 0.3ms | Size: 567 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.822 | POST /task-chains/show | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","chain_id":"chain-19ef4e56826"} | Status: 200 | Latency: 0.3ms | Size: 421 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1782225134' has no active WebSocket connection (connected=true)
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1782225134' has no active WebSocket connection (connected=true)
+[RPC TELEMETRY] 2026-06-23 14:32:15.838 | POST /tasks/comment | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e5684d","chain_id":"chain-19ef4e56826","body":"Wait, I found a major bug in the implementatio... | Status: 200 | Latency: 3.0ms | Size: 44 bytes | Body: {"ok":true,"comment_id":"cmt_1782225135835"}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.848 | POST /tasks/show | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","task_id":"task-19ef4e5684d"} | Status: 200 | Latency: 0.3ms | Size: 715 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = smoketest@run1782225134
+[RPC TELEMETRY] 2026-06-23 14:32:15.859 | POST /task-chains/show | Params: {"agent_token":"agt_58fb4cba8a5de7e74b833a1825b7befb9c8601d354c346931daae5fd703209b2","chain_id":"chain-19ef4e56826"} | Status: 200 | Latency: 0.2ms | Size: 423 bytes
+[RPC TELEMETRY] 2026-06-23 14:32:15.880 | POST /agents/archive | Params: {"agent_instance_id":"smoketest@run1782225134"} | Status: 404 | Latency: 0.1ms | Size: 40 bytes | Body: {"ok":false,"message":"agent not found"}
+DEBUG: auth_db_get_token no token found for agent test-dup-agent@default
+DEBUG: auth_db_store_token for agent test-dup-agent@default token = agt_e8cf36e0d637b2c3 ...
+DEBUG: auth_db_store_token succeeded
+[RPC TELEMETRY] 2026-06-23 14:32:15.956 | POST /register | Params: {"agent_class": "test-dup-agent", "agent_instance_id": "test-dup-agent@default", "display_name": "Test Dup"} | Status: 200 | Latency: 1.8ms | Size: 9956 bytes
+ws connected test-dup-agent@default
+WARNING: Active duplicate detected for agent test-dup-agent@default. Force-closing old socket to prefer new connection.
+ws disconnected test-dup-agent@default
+DEBUG: auth_db_get_token found token for agent test-dup-agent@default
+DEBUG: auth_db_store_token for agent test-dup-agent@default token = agt_e8cf36e0d637b2c3 ...
+DEBUG: auth_db_store_token succeeded
+[RPC TELEMETRY] 2026-06-23 14:32:15.961 | POST /register | Params: {"agent_class": "test-dup-agent", "agent_instance_id": "test-dup-agent@default", "display_name": "Test Dup"} | Status: 200 | Latency: 2.0ms | Size: 9956 bytes
+[RPC TELEMETRY] 2026-06-23 14:32:16.072 | GET /agents/templates | Params:  | Status: 200 | Latency: 1.9ms | Size: 17330 bytes
+[*] Shutting down ham-daemon (PID: 3010161)...
+[*] Cleaning up temporary directory...
