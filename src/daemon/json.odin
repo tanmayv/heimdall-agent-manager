@@ -39,25 +39,42 @@ json_value_start :: proc(body, key: string) -> int {
 
 json_unescape :: proc(value: string) -> string {
 	builder := strings.builder_make()
-	escaped := false
-	for ch in value {
-		if escaped {
-			switch ch {
-			case 'n': strings.write_rune(&builder, '\n')
-			case 'r': strings.write_rune(&builder, '\r')
-			case 't': strings.write_rune(&builder, '\t')
-			case '"': strings.write_rune(&builder, '"')
-			case '\\': strings.write_rune(&builder, '\\')
-			case: strings.write_rune(&builder, ch)
+	i := 0
+	for i < len(value) {
+		ch := value[i]
+		if ch == '\\' {
+			if i + 1 < len(value) {
+				next_ch := value[i + 1]
+				switch next_ch {
+				case 'n': strings.write_byte(&builder, '\n')
+				case 'r': strings.write_byte(&builder, '\r')
+				case 't': strings.write_byte(&builder, '\t')
+				case '"': strings.write_byte(&builder, '"')
+				case '\\': strings.write_byte(&builder, '\\')
+				case 'u':
+					if i + 5 < len(value) {
+						hex_str := value[i + 2 : i + 6]
+						val, ok := strconv.parse_int(hex_str, 16)
+						if ok {
+							strings.write_rune(&builder, rune(val))
+							i += 6
+							continue
+						}
+					}
+					strings.write_byte(&builder, 'u')
+				case:
+					strings.write_byte(&builder, next_ch)
+				}
+				i += 2
+			} else {
+				strings.write_byte(&builder, '\\')
+				i += 1
 			}
-			escaped = false
-		} else if ch == '\\' {
-			escaped = true
 		} else {
-			strings.write_rune(&builder, ch)
+			strings.write_byte(&builder, ch)
+			i += 1
 		}
 	}
-	if escaped do strings.write_rune(&builder, '\\')
 	return strings.to_string(builder)
 }
 
