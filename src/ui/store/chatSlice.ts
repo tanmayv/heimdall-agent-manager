@@ -212,7 +212,17 @@ export const saveUserPreference = createAsyncThunk(
 
 
 export const refreshAgents = createAsyncThunk('chat/refreshAgents', async (_, { getState }) => {
-  const { daemonUrl } = (getState() as any).chat.session;
+  const state = getState() as any;
+  const { daemonUrl } = state.chat.session;
+  
+  // Extract current in-memory unread counts to prevent background timer resets
+  const currentUnreadCounts: Record<string, number> = {};
+  if (state.chat?.agents) {
+    for (const a of state.chat.agents) {
+      if (a.id) currentUnreadCounts[a.id] = a.unreadCount || 0;
+    }
+  }
+
   const localKnown = loadKnownAgents();
   let daemonAgents: any[] = [];
   let daemonReachable = false;
@@ -223,6 +233,14 @@ export const refreshAgents = createAsyncThunk('chat/refreshAgents', async (_, { 
     daemonAgents = [];
   }
   const merged = mergeKnownAndLiveAgents(localKnown, daemonAgents, daemonReachable);
+
+  // Restore the live unread counts back onto the merged result
+  for (const a of merged as any[]) {
+    if (a.id && currentUnreadCounts[a.id] !== undefined) {
+      a.unreadCount = currentUnreadCounts[a.id];
+    }
+  }
+
   storeKnownAgents(merged);
   return merged;
 });
@@ -472,7 +490,10 @@ const chatSlice = createSlice({
       const agentId = action.payload?.agent_instance_id;
       if (agentId) {
         const agent = state.agents.find((item) => item.id === agentId);
-        if (agent) agent.unreadCount = action.payload.unread_count ?? agent.unreadCount;
+        if (agent) {
+          agent.unreadCount = action.payload.unread_count ?? agent.unreadCount;
+          storeKnownAgents(state.agents);
+        }
       }
     },
      upsertKnownAgent(state, action) {
