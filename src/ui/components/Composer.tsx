@@ -41,7 +41,7 @@ const Composer = memo(function Composer({ selectedAgent, disabled, onSubmit, sma
     setHasText(false);
     
     const tempId = `local_temp_${Date.now()}`;
-    dispatch(sendMessageToSelectedAgent({ body: nextBody, tempId }));
+    dispatch(sendMessageToSelectedAgent({ body: nextBody, tempId, interrupt: isInterrupt }));
   }
 
   function handleSmartReplyClick(replyText: string) {
@@ -102,14 +102,25 @@ const Composer = memo(function Composer({ selectedAgent, disabled, onSubmit, sma
           />
           <div className="flex items-center justify-between px-2 pb-1">
             <p className="framer-subtext">Messages send through /user-rpc send_to_agent</p>
-            <button
-              type="submit"
-              data-debug-id="send-message-btn"
-              disabled={!canSend}
-              className="framer-pill bg-white disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Send
-            </button>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                data-debug-id="interrupt-message-btn"
+                disabled={!canSend}
+                onClick={(e) => handleSubmit(e, true)}
+                className="framer-pill bg-red-600 hover:bg-red-700 text-white disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Interrupt
+              </button>
+              <button
+                type="submit"
+                data-debug-id="send-message-btn"
+                disabled={!canSend}
+                className="framer-pill bg-white disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Send
+              </button>
+            </div>
           </div>
         </div>
       </form>

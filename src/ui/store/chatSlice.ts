@@ -276,7 +276,7 @@ export const fetchSelectedChat = createAsyncThunk(
 
 export const sendMessageToSelectedAgent = createAsyncThunk(
   'chat/sendMessageToSelectedAgent',
-  async (payload: { body: string; tempId: string }, { getState }) => {
+  async (payload: { body: string; tempId: string; interrupt?: boolean }, { getState }) => {
     const { session, selectedAgentId } = (getState() as any).chat;
     const res = await daemonApi.sendToAgent({
       daemonUrl: session.daemonUrl,
@@ -284,6 +284,7 @@ export const sendMessageToSelectedAgent = createAsyncThunk(
       clientToken: session.clientToken,
       agentInstanceId: selectedAgentId,
       body: payload.body,
+      interrupt: payload.interrupt,
     });
     return { messageId: res.message_id };
   }

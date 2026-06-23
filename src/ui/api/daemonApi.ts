@@ -218,7 +218,7 @@ export async function fetchChat({ daemonUrl, clientToken, agentInstanceId, limit
 }
 
 
-export async function sendToAgent({ daemonUrl, clientInstanceId, clientToken, agentInstanceId, body }: AgentRequest & { body: string }) {
+export async function sendToAgent({ daemonUrl, clientInstanceId, clientToken, agentInstanceId, body, interrupt }: AgentRequest & { body: string; interrupt?: boolean }) {
   return requestJson(joinUrl(daemonUrl, '/user-rpc'), {
     method: 'POST',
     body: {
@@ -227,6 +227,7 @@ export async function sendToAgent({ daemonUrl, clientInstanceId, clientToken, ag
       client_token: clientToken,
       agent_instance_id: agentInstanceId,
       body,
+      interrupt,
     },
   });
 }

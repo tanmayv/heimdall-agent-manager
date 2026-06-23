@@ -55,6 +55,12 @@ handle_user_rpc :: proc(client: net.TCP_Socket, body: string) {
 handle_user_rpc_send_to_agent :: proc(client: net.TCP_Socket, body, user_id: string) {
 	agent_instance_id := extract_json_string(body, "agent_instance_id", "")
 	message_body := extract_json_string(body, "body", "")
+	interrupt := extract_json_bool(body, "interrupt", false)
+
+	if interrupt && !strings.has_prefix(message_body, "\u001b") {
+		message_body = fmt.tprintf("\u001b%s", message_body)
+	}
+
 	fmt.println("DEBUG: handle_user_rpc_send_to_agent called for user", user_id, "to agent", agent_instance_id)
 	if agent_instance_id == "" || message_body == "" {
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"send_to_agent requires agent_instance_id and body"}`)
