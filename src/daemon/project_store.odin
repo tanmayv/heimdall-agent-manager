@@ -9,9 +9,10 @@ PROJECT_MAX_EVENTS :: 4096
 PROJECT_MAX_ANCHORS :: 32
 
 Project_Anchor :: struct { type: string, value: string, note: string }
-Project_Record :: struct { project_id: string, name: string, description: string, anchors: [PROJECT_MAX_ANCHORS]Project_Anchor, anchor_count: int, created_unix_ms: i64, updated_unix_ms: i64 }
+Project_Record :: struct { project_id: string, name: string, description: string, anchors: [PROJECT_MAX_ANCHORS]Project_Anchor, anchor_count: int, created_unix_ms: i64, updated_unix_ms: i64, order: int }
 Project_Event_Kind :: enum { Project_Created, Project_Updated }
-Project_Event :: struct { event_id: string, kind: Project_Event_Kind, project_id: string, name: string, description: string, anchors: [PROJECT_MAX_ANCHORS]Project_Anchor, anchor_count: int, author: string, created_unix_ms: i64 }
+Project_Event :: struct { event_id: string, kind: Project_Event_Kind, project_id: string, name: string, description: string, anchors: [PROJECT_MAX_ANCHORS]Project_Anchor, anchor_count: int, author: string, created_unix_ms: i64, order: int }
+
 
 project_records: [PROJECT_MAX_PROJECTS]Project_Record
 project_record_count: int
@@ -74,6 +75,7 @@ project_apply_event :: proc(event: Project_Event) -> bool {
 	rec.name = strings.clone(event.name); rec.description = strings.clone(event.description); rec.anchor_count = event.anchor_count
 	for i in 0..<event.anchor_count do rec.anchors[i] = project_anchor_clone(event.anchors[i])
 	rec.updated_unix_ms = event.created_unix_ms
+	rec.order = event.order
 	return true
 }
 
@@ -82,7 +84,7 @@ project_event_clone :: proc(e: Project_Event) -> Project_Event { out := e; out.e
 project_anchor_clone :: proc(a: Project_Anchor) -> Project_Anchor { return Project_Anchor{type = strings.clone(a.type), value = strings.clone(a.value), note = strings.clone(a.note)} }
 
 project_event_json :: proc(event: Project_Event) -> string {
-	b := strings.builder_make(); strings.write_string(&b, `{"event_id":"`); json_write_string(&b, event.event_id); strings.write_string(&b, `","kind":"`); json_write_string(&b, fmt.tprintf("%v", event.kind)); strings.write_string(&b, `","project_id":"`); json_write_string(&b, event.project_id); strings.write_string(&b, `","name":"`); json_write_string(&b, event.name); strings.write_string(&b, `","description":"`); json_write_string(&b, event.description); strings.write_string(&b, `","author":"`); json_write_string(&b, event.author); strings.write_string(&b, `","created_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", event.created_unix_ms)); strings.write_string(&b, `,"anchors":[`)
+	b := strings.builder_make(); strings.write_string(&b, `{"event_id":"`); json_write_string(&b, event.event_id); strings.write_string(&b, `","kind":"`); json_write_string(&b, fmt.tprintf("%v", event.kind)); strings.write_string(&b, `","project_id":"`); json_write_string(&b, event.project_id); strings.write_string(&b, `","name":"`); json_write_string(&b, event.name); strings.write_string(&b, `","description":"`); json_write_string(&b, event.description); strings.write_string(&b, `","author":"`); json_write_string(&b, event.author); strings.write_string(&b, `","created_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", event.created_unix_ms)); strings.write_string(&b, fmt.tprintf(`,"order":%d`, event.order)); strings.write_string(&b, `,"anchors":[`)
 	for i in 0..<event.anchor_count { if i > 0 do strings.write_string(&b, `,`); project_write_anchor_json(&b, event.anchors[i]) }
 	strings.write_string(&b, `]}`); return strings.to_string(b)
 }
@@ -90,7 +92,7 @@ project_event_json :: proc(event: Project_Event) -> string {
 project_event_from_json :: proc(line: string) -> (Project_Event, bool) {
 	kind := Project_Event_Kind.Project_Created
 	if extract_json_string(line, "kind", "") == "Project_Updated" do kind = .Project_Updated
-	ev := Project_Event{event_id = extract_json_string(line, "event_id", ""), kind = kind, project_id = extract_json_string(line, "project_id", ""), name = extract_json_string(line, "name", ""), description = extract_json_string(line, "description", ""), author = extract_json_string(line, "author", ""), created_unix_ms = i64(extract_json_int(line, "created_unix_ms", 0))}
+	ev := Project_Event{event_id = extract_json_string(line, "event_id", ""), kind = kind, project_id = extract_json_string(line, "project_id", ""), name = extract_json_string(line, "name", ""), description = extract_json_string(line, "description", ""), author = extract_json_string(line, "author", ""), created_unix_ms = i64(extract_json_int(line, "created_unix_ms", 0)), order = extract_json_int(line, "order", 0)}
 	project_parse_anchors_into(line, &ev.anchors, &ev.anchor_count)
 	return ev, ev.project_id != ""
 }

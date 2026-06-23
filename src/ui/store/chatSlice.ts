@@ -91,6 +91,7 @@ function mapAgent(agent: any) {
     lastSeen: lastSeenUnixMs ? new Date(lastSeenUnixMs).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—',
     conversationId: agent.conversation_id || agent.conversationId,
     unreadCount: agent.unreadCount || 0,
+    order: agent.order ?? 0,
     projectId: agent.project_id || agent.projectId || '',
     projectName: agent.project_name || agent.projectName || '',
     templateId: agent.template_id || agent.templateId || '',
@@ -141,6 +142,8 @@ function mergeKnownAndLiveAgents(localKnownAgents: any[], daemonAgents: any[], d
     byId[daemonAgent.id] = { ...existing, ...daemonAgent, status, known: true };
   }
   return Object.values(byId).sort((left: any, right: any) => {
+    const diff = (left.order ?? 0) - (right.order ?? 0);
+    if (diff !== 0) return diff;
     if (left.status !== right.status) return left.status === 'connected' ? -1 : right.status === 'connected' ? 1 : left.status.localeCompare(right.status);
     return (right.lastSeenUnixMs || 0) - (left.lastSeenUnixMs || 0);
   });

@@ -274,6 +274,7 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 	strings.write_string(builder, `","created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.created_unix_ms))
 	strings.write_string(builder, `,"updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.updated_unix_ms))
 	strings.write_string(builder, `,"archived_at_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.archived_at_unix_ms))
+	strings.write_string(builder, `,"order":`); strings.write_string(builder, fmt.tprintf("%d", rec.order))
 	strings.write_string(builder, `,"conversation_id":"`); json_write_string(builder, conversation_id_for_instance(rec.agent_instance_id))
 	if live_idx := registry_find_agent(rec.agent_instance_id); live_idx >= 0 {
 		agent := agents[live_idx]
@@ -602,4 +603,35 @@ test_single_agent_command :: proc(name: string, command_slice: []string) -> (ok:
 	}
 	
 	return true, fmt.tprintf("Executable verified: %s", exe)
+}
+
+handle_agent_reorder :: proc(client: net.TCP_Socket, body: string) {
+	agent_ids := extract_json_string_array(body, "agent_ids")
+	defer {
+		for s in agent_ids do delete(s)
+		delete(agent_ids)
+	}
+	for id, order in agent_ids {
+		idx := agent_record_index_by_instance(id)
+		if idx < 0 do continue
+		rec := agent_instance_records[idx]
+		event := Agent_Instance_Event{
+			kind = .Agent_Instance_Upserted,
+			agent_record_id = rec.agent_record_id,
+			agent_instance_id = rec.agent_instance_id,
+			display_name = rec.display_name,
+			template_id = rec.template_id,
+			provider_profile = rec.provider_profile,
+			project_id = rec.project_id,
+			run_dir = rec.run_dir,
+			model_tier = rec.model_tier,
+			order = order,
+			author = "api",
+		}
+		if !agent_store_append_event(event) {
+			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent reorder event"}`)
+			return
+		}
+	}
+	write_response(client, 200, "OK", `{"ok":true,"message":"agents reordered"}`)
 }

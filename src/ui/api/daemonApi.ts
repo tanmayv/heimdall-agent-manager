@@ -40,6 +40,7 @@ export type Project = {
   anchors: ProjectAnchor[];
   createdUnixMs: number;
   updatedUnixMs: number;
+  order: number;
 };
 
 type TaskAgentRequest = {
@@ -395,6 +396,7 @@ export function normalizeProject(project: any): Project {
     })),
     createdUnixMs: Number(project.created_unix_ms || 0),
     updatedUnixMs: Number(project.updated_unix_ms || 0),
+    order: Number(project.order || 0),
   };
 }
 
@@ -414,6 +416,14 @@ export async function createProject({ daemonUrl, clientInstanceId, clientToken, 
 
 export async function updateProject({ daemonUrl, clientInstanceId, clientToken, projectId, name, description, anchors }: UserRpcRequest & { projectId: string; name?: string; description?: string; anchors?: ProjectAnchor[] }) {
   return userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action: 'project_update', body: { project_id: projectId, name: name || '', description: description || '', anchors: anchors || [] } });
+}
+
+export async function reorderProjects({ daemonUrl, clientInstanceId, clientToken, projectIds }: UserRpcRequest & { projectIds: string[] }) {
+  return userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action: 'project_reorder', body: { project_ids: projectIds } });
+}
+
+export async function reorderAgents({ daemonUrl, clientInstanceId, clientToken, agentIds }: UserRpcRequest & { agentIds: string[] }) {
+  return userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action: 'agent_reorder', body: { agent_ids: agentIds } });
 }
 
 export async function fetchPreferences({ daemonUrl, clientToken }: { daemonUrl: string; clientToken: string }) {

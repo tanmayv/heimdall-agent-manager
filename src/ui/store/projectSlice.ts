@@ -37,6 +37,13 @@ export const updateProjectFromUi = createAsyncThunk('projects/updateProjectFromU
   return result;
 });
 
+export const reorderProjectsFromUi = createAsyncThunk('projects/reorderProjectsFromUi', async (projectIds: string[], { dispatch, getState }) => {
+  const state = getState() as any;
+  const result = await daemonApi.reorderProjects({ ...auth(state), projectIds });
+  await (dispatch as any)(refreshProjects());
+  return result;
+});
+
 const initialState = {
   projectsById: {},
   projectIds: [],
@@ -68,7 +75,11 @@ const projectSlice = createSlice({
         state.loading = false;
         const projectsById: any = {};
         const projectIds = [...(action.payload.projects ?? [])]
-          .sort((left: any, right: any) => (right.updatedUnixMs || right.createdUnixMs || 0) - (left.updatedUnixMs || left.createdUnixMs || 0))
+          .sort((left: any, right: any) => {
+            const diff = (left.order ?? 0) - (right.order ?? 0);
+            if (diff !== 0) return diff;
+            return (right.updatedUnixMs || right.createdUnixMs || 0) - (left.updatedUnixMs || left.createdUnixMs || 0);
+          })
           .map((project: any) => {
             projectsById[project.projectId] = project;
             return project.projectId;
@@ -121,6 +132,17 @@ const projectSlice = createSlice({
       .addCase(updateProjectFromUi.rejected, (state: any, action) => {
         state.mutating = false;
         state.error = action.error.message || 'Failed to update project';
+      })
+      .addCase(reorderProjectsFromUi.pending, (state: any) => {
+        state.mutating = true;
+        state.error = '';
+      })
+      .addCase(reorderProjectsFromUi.fulfilled, (state: any) => {
+        state.mutating = false;
+      })
+      .addCase(reorderProjectsFromUi.rejected, (state: any, action) => {
+        state.mutating = false;
+        state.error = action.error.message || 'Failed to reorder projects';
       });
   },
 });

@@ -80,9 +80,13 @@ const AgentSidebar = memo(function AgentSidebar({
     return Array.from(groups.entries()).sort(([left], [right]) => {
       if (left === 'unassigned') return 1;
       if (right === 'unassigned') return -1;
+      const leftOrder = projectsById?.[left]?.order ?? 0;
+      const rightOrder = projectsById?.[right]?.order ?? 0;
+      const diff = leftOrder - rightOrder;
+      if (diff !== 0) return diff;
       return left.localeCompare(right);
     });
-  }, [agents]);
+  }, [agents, projectsById]);
 
   function toggleProjectGroup(projectId) {
     setCollapsedProjects((current) => ({ ...current, [projectId]: !current[projectId] }));

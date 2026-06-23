@@ -195,3 +195,42 @@ json_write_string :: proc(builder: ^strings.Builder, value: string) {
 		}
 	}
 }
+
+extract_json_string_array :: proc(body, key: string) -> [dynamic]string {
+	arr := make([dynamic]string)
+	start := json_value_start(body, key)
+	if start < 0 || start >= len(body) || body[start] != '[' do return arr
+	idx := start + 1
+	for idx < len(body) {
+		for idx < len(body) && (body[idx] == ' ' || body[idx] == '\t' || body[idx] == '\n' || body[idx] == '\r') {
+			idx += 1
+		}
+		if idx >= len(body) do break
+		if body[idx] == ']' {
+			break
+		}
+		if body[idx] == '"' {
+			idx += 1
+			str_start := idx
+			escaped := false
+			for idx < len(body) {
+				ch := body[idx]
+				if escaped {
+					escaped = false
+				} else if ch == '\\' {
+					escaped = true
+				} else if ch == '"' {
+					append(&arr, json_unescape(body[str_start:idx]))
+					idx += 1
+					break
+				}
+				idx += 1
+			}
+		} else if body[idx] == ',' {
+			idx += 1
+		} else {
+			idx += 1
+		}
+	}
+	return arr
+}

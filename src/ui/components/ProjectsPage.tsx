@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, memo, FormEvent, useCallback } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { createProjectFromUi, fetchProjectDetail, refreshProjects, selectProject, updateProjectFromUi } from '../store/projectSlice';
+import { createProjectFromUi, fetchProjectDetail, refreshProjects, selectProject, updateProjectFromUi, reorderProjectsFromUi } from '../store/projectSlice';
 import * as daemonApi from '../api/daemonApi';
 import type { ProjectAnchor } from '../api/daemonApi';
 
@@ -161,6 +161,52 @@ export default function ProjectsPage({ session }: { session: any }) {
     }
   }, [selectedProjectId, agentBusy, session.daemonUrl, refreshProjectAgents, selectedProject]);
 
+  const [draggedProjectId, setDraggedProjectId] = useState<string | null>(null);
+
+  const handleDragStartProject = useCallback((e: React.DragEvent, id: string) => {
+    setDraggedProjectId(id);
+    e.dataTransfer.effectAllowed = 'move';
+  }, []);
+
+  const handleDropProject = useCallback((e: React.DragEvent, targetId: string) => {
+    e.preventDefault();
+    if (!draggedProjectId || draggedProjectId === targetId) return;
+
+    const sourceIndex = projectIds.indexOf(draggedProjectId);
+    const targetIndex = projectIds.indexOf(targetId);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+
+    const newProjectIds = [...projectIds];
+    newProjectIds.splice(sourceIndex, 1);
+    newProjectIds.splice(targetIndex, 0, draggedProjectId);
+
+    dispatch(reorderProjectsFromUi(newProjectIds));
+    setDraggedProjectId(null);
+  }, [projectIds, draggedProjectId, dispatch]);
+
+  const handleReorderProjectAgents = useCallback(async (agentIds: string[]) => {
+    setAgentBusy(true);
+    setAgentError('');
+    try {
+      const idMap = new Map(projectAgents.map((a, idx) => [agentInstanceId(a), a]));
+      const newAgents = agentIds.map(id => idMap.get(id)).filter(Boolean);
+      setProjectAgents(newAgents);
+
+      await daemonApi.reorderAgents({
+        daemonUrl: session.daemonUrl,
+        clientInstanceId: session.clientInstanceId,
+        clientToken: session.clientToken,
+        agentIds,
+      });
+      await refreshProjectAgents(selectedProjectId);
+    } catch (err: any) {
+      setAgentError(err?.message || 'Failed to reorder agents');
+      await refreshProjectAgents(selectedProjectId);
+    } finally {
+      setAgentBusy(false);
+    }
+  }, [projectAgents, selectedProjectId, session.daemonUrl, session.clientInstanceId, session.clientToken, refreshProjectAgents]);
+
   const availableExistingAgents = useMemo(() => {
     return allAgents.filter((agent) => !projectAgents.some((projectAgent) => (agentRecordId(projectAgent) && agentRecordId(projectAgent) === agentRecordId(agent)) || (agentInstanceId(projectAgent) && agentInstanceId(projectAgent) === agentInstanceId(agent))));
   }, [allAgents, projectAgents]);
@@ -195,7 +241,17 @@ export default function ProjectsPage({ session }: { session: any }) {
               {projectIds.map((projectId) => {
                 const project = projectsById[projectId];
                 return (
-                  <button key={projectId} type="button" data-debug-id={`project-list-item-${projectId}`} onClick={() => dispatch(selectProject(projectId))} className={`framer-card w-full p-4 text-left transition  ${selectedProjectId === projectId ? 'border-[var(--fd-accent-blue)]' : ''}`}>
+                  <button
+                    key={projectId}
+                    type="button"
+                    data-debug-id={`project-list-item-${projectId}`}
+                    draggable
+                    onDragStart={(e) => handleDragStartProject(e, projectId)}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => handleDropProject(e, projectId)}
+                    onClick={() => dispatch(selectProject(projectId))}
+                    className={`framer-card w-full p-4 text-left transition cursor-grab active:cursor-grabbing ${selectedProjectId === projectId ? 'border-[var(--fd-accent-blue)]' : ''}`}
+                  >
                     <p className="font-semibold text-white">{project.name || project.projectId}</p>
                     <p className="mt-1 break-all text-xs text-[#999]">{project.projectId}</p>
                     <p className="mt-2 line-clamp-2 text-sm text-[#bbb]">{project.description || 'No description'}</p>
@@ -237,6 +293,7 @@ export default function ProjectsPage({ session }: { session: any }) {
                     onRemoveAgent={handleRemoveProjectAgent}
                     onAddExistingAgent={handleAddExistingAgent}
                     onStartNewAgent={handleStartProjectAgent}
+                    onReorderAgents={handleReorderProjectAgents}
                   />
                 </>
               ) : <p className="text-sm text-[#999]">Select a project to view details.</p>}
@@ -417,6 +474,7 @@ interface ProjectAgentsManagerProps {
   onRemoveAgent: (agent: any) => void;
   onAddExistingAgent: (agentId: string) => void;
   onStartNewAgent: (formData: any) => void;
+  onReorderAgents: (agentIds: string[]) => Promise<void>;
 }
 
 function ProjectAgentsManager({
@@ -431,7 +489,8 @@ function ProjectAgentsManager({
   onRefresh,
   onRemoveAgent,
   onAddExistingAgent,
-  onStartNewAgent
+  onStartNewAgent,
+  onReorderAgents
 }: ProjectAgentsManagerProps) {
   console.log('[Render] ProjectAgentsManager', projectId);
   const [existingAgentId, setExistingAgentId] = useState('');
@@ -468,6 +527,30 @@ function ProjectAgentsManager({
     setNewAgentForm((current) => ({ ...current, displayName: '' }));
   };
 
+  const [draggedAgentId, setDraggedAgentId] = useState<string | null>(null);
+
+  const handleDragStartAgent = (e: React.DragEvent, id: string) => {
+    setDraggedAgentId(id);
+    e.dataTransfer.effectAllowed = 'move';
+  };
+
+  const handleDropAgent = (e: React.DragEvent, targetId: string) => {
+    e.preventDefault();
+    if (!draggedAgentId || draggedAgentId === targetId) return;
+
+    const agentIds = projectAgents.map(agentInstanceId);
+    const sourceIndex = agentIds.indexOf(draggedAgentId);
+    const targetIndex = agentIds.indexOf(targetId);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+
+    const newAgentIds = [...agentIds];
+    newAgentIds.splice(sourceIndex, 1);
+    newAgentIds.splice(targetIndex, 0, draggedAgentId);
+
+    onReorderAgents(newAgentIds);
+    setDraggedAgentId(null);
+  };
+
   return (
     <section className="mt-6 space-y-4 border-t border-[var(--fd-hairline)] pt-5">
       <div className="flex items-center justify-between gap-3">
@@ -479,15 +562,25 @@ function ProjectAgentsManager({
       </div>
       {agentError ? <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">{agentError}</div> : null}
       <div className="space-y-2">
-        {projectAgents.length ? projectAgents.map((agent) => (
-          <div key={agentRecordId(agent) || agentInstanceId(agent)} className="framer-card flex items-start justify-between gap-3 p-3">
-            <div className="min-w-0">
-              <p className="truncate text-sm font-semibold text-white">{agentDisplayName(agent)}</p>
-              <p className="mt-1 text-xs text-[#999]">Template {agentTemplateId(agent) || '—'} · Provider {agentProvider(agent) || '—'}</p>
+        {projectAgents.length ? projectAgents.map((agent) => {
+          const id = agentInstanceId(agent);
+          return (
+            <div
+              key={agentRecordId(agent) || id}
+              draggable
+              onDragStart={(e) => handleDragStartAgent(e, id)}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => handleDropAgent(e, id)}
+              className="framer-card flex items-start justify-between gap-3 p-3 cursor-grab active:cursor-grabbing"
+            >
+              <div className="min-w-0">
+                <p className="truncate text-sm font-semibold text-white">{agentDisplayName(agent)}</p>
+                <p className="mt-1 text-xs text-[#999]">Template {agentTemplateId(agent) || '—'} · Provider {agentProvider(agent) || '—'}</p>
+              </div>
+              <button type="button" data-debug-id="project-agent-remove-btn" onClick={() => onRemoveAgent(agent)} disabled={agentBusy} className="framer-pill-secondary px-3 py-2 text-xs disabled:opacity-40">Remove</button>
             </div>
-            <button type="button" data-debug-id="project-agent-remove-btn" onClick={() => onRemoveAgent(agent)} disabled={agentBusy} className="framer-pill-secondary px-3 py-2 text-xs disabled:opacity-40">Remove</button>
-          </div>
-        )) : <div className="framer-card border-dashed p-4 text-sm text-[#999]">No agents are associated with this project yet.</div>}
+          );
+        }) : <div className="framer-card border-dashed p-4 text-sm text-[#999]">No agents are associated with this project yet.</div>}
       </div>
 
       <div className="grid gap-3 lg:grid-cols-2">

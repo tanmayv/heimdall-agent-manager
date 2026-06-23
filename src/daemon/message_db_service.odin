@@ -543,9 +543,9 @@ message_db_fetch_unread :: proc(user_id, agent_instance_id, direction: string, l
 message_db_count_unread :: proc(user_id, agent_instance_id: string) -> int {
 	stmt: sqlite3_stmt = nil
 
-	user_to_agent_read, agent_to_user_read := message_db_get_last_read_status(user_id, agent_instance_id)
+	last_read := message_db_get_last_read_for_direction(user_id, agent_instance_id, "agent_to_user")
 
-	query := `SELECT COUNT(*) FROM messages WHERE user_id = ? AND agent_instance_id = ? AND ((direction = 'user_to_agent' AND created_unix_ms > ?) OR (direction = 'agent_to_user' AND created_unix_ms > ?))`
+	query := `SELECT COUNT(*) FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = 'agent_to_user' AND created_unix_ms > ?`
 
 	rc := sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
@@ -556,8 +556,7 @@ message_db_count_unread :: proc(user_id, agent_instance_id: string) -> int {
 
 	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), i32(len(user_id)), SQLITE_TRANSIENT)
 	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), i32(len(agent_instance_id)), SQLITE_TRANSIENT)
-	sqlite3_bind_int64(stmt, 3, user_to_agent_read)
-	sqlite3_bind_int64(stmt, 4, agent_to_user_read)
+	sqlite3_bind_int64(stmt, 3, last_read)
 
 	if sqlite3_step(stmt) == SQLITE_ROW {
 		return int(sqlite3_column_int64(stmt, 0))

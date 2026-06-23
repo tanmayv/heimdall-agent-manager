@@ -246,8 +246,15 @@ assert_field "T5 task=approved"   "$SHOW2" "status" "approved"
 
 CSHOW2=$(ctl task-chains show --token "$TOKEN" --chain-id "$CHAIN_ID")
 CHAIN_STATUS=$(field "$CSHOW2" "status")
-[ "$CHAIN_STATUS" = "completed" ] && pass "T5 chain auto-completed" \
-  || fail "T5 chain not completed (status=$CHAIN_STATUS)" "$CSHOW2"
+[ "$CHAIN_STATUS" = "reviewing" ] && pass "T5 chain status=reviewing" \
+  || fail "T5 chain not in reviewing (status=$CHAIN_STATUS)" "$CSHOW2"
+
+# Manually complete the chain as the coordinator
+COMP=$(ctl task-chains complete --token "$TOKEN" --chain "$CHAIN_ID" --summary "Integration tests complete")
+assert_ok "T5 complete chain" "$COMP"
+
+CSHOW3=$(ctl task-chains show --token "$TOKEN" --chain-id "$CHAIN_ID")
+assert_field "T5 chain status=completed" "$CSHOW3" "status" "completed"
 
 LOG2=$(ctl tasks log --token "$TOKEN" --task-id "$TASK_ID")
 assert_has "T5 log has Task_Review_Vote" "$LOG2" "Task_Review_Vote"
@@ -269,7 +276,7 @@ assert_ok "T6 create chain2" "$CHAIN2"
 C2=$(field "$CHAIN2" "chain_id")
 
 TASK2=$(ctl tasks create --token "$TOKEN" \
-  --chain-id "$C2" --title "ngtm Task" --assignee "$ME")
+  --chain-id "$C2" --title "ngtm Task" --assignee "$ME" --coordinator "$ME")
 assert_ok "T6 create task2" "$TASK2"
 T2=$(field "$TASK2" "task_id")
 
@@ -321,6 +328,10 @@ CHAIN3=$(ctl task-chains create --token "$TOKEN" \
   --coordinator "$ME")
 assert_not_ok "T8 chain creation blocked by active chain" "$CHAIN3"
 assert_has    "T8 error names active chain"               "$CHAIN3" "active_chain_id"
+
+# Clean up T2 from C2 so assignee is free
+CLEAN_T2=$(ctl tasks status --token "$TOKEN" --task-id "$T2" --chain-id "$C2" --status cancelled --body "cleanup T2")
+assert_ok "T8 cleanup T2" "$CLEAN_T2"
 
 echo ""
 

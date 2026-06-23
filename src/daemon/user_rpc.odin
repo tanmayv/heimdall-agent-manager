@@ -42,6 +42,8 @@ handle_user_rpc :: proc(client: net.TCP_Socket, body: string) {
 	case "project_show": out, status := project_show_json(extract_json_string(body, "project_id", "")); if status == 404 { write_response(client, 404, "Not Found", out) } else { write_response(client, 200, "OK", out) }
 	case "project_create": write_project_service_response(client, project_create(body, user_id))
 	case "project_update": write_project_service_response(client, project_update(body, user_id))
+	case "project_reorder": write_project_service_response(client, project_reorder(body, user_id))
+	case "agent_reorder": handle_agent_reorder(client, body)
 	case:
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"unsupported user-rpc action"}`)
 	}
