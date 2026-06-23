@@ -98,6 +98,7 @@ Task_Event :: struct {
 	created_by:                    string,
 	author_agent_instance_id:      string,
 	created_unix_ms:               i64,
+	interrupt:                     bool,
 }
 
 Task_State :: struct {
@@ -319,6 +320,7 @@ task_event_clone :: proc(event: Task_Event) -> Task_Event {
 		created_by                  = strings.clone(event.created_by),
 		author_agent_instance_id    = strings.clone(event.author_agent_instance_id),
 		created_unix_ms             = event.created_unix_ms,
+		interrupt                   = event.interrupt,
 	}
 }
 

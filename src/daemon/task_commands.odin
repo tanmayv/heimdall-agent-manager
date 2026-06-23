@@ -82,6 +82,7 @@ Task_Nudge_Command :: struct {
 	chain_id:                 string,
 	body:                     string,
 	author_agent_instance_id: string,
+	interrupt:                bool,
 }
 
 Task_Chain_Update_Command :: struct {

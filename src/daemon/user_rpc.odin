@@ -161,7 +161,12 @@ handle_user_rpc_task_participant :: proc(client: net.TCP_Socket, body, user_id: 
 }
 
 handle_user_rpc_task_nudge :: proc(client: net.TCP_Socket, body, user_id: string) {
-	result := task_service_nudge(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "body", ""), user_id)
+	task_id := extract_json_string(body, "task_id", "")
+	chain_id := extract_json_string(body, "chain_id", "")
+	nudge_body := extract_json_string(body, "body", "")
+	interrupt := extract_json_bool(body, "interrupt", false)
+
+	result := task_service_nudge(task_id, chain_id, nudge_body, user_id, interrupt)
 	write_task_service_response(client, result)
 }
 

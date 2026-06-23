@@ -191,7 +191,67 @@ command = ["python3", "{repo_dir}/tests/key_logger.py", "{key_log_path}"]
             
         time.sleep(12.0)
         
-        # 8. Read and verify key_log.txt
+        # 8. Create project, chain, and task for nudge testing
+        print("[*] Creating project, chain, and task for nudge testing...")
+        proj = request_post("/projects/create", {
+            "agent_token": agent_token,
+            "name": "Nudge Test Project",
+            "description": "testing task nudge interrupts"
+        })
+        project_id = proj.get("project_id")
+        
+        chain = request_post("/task-chains/create", {
+            "agent_token": agent_token,
+            "project_id": project_id,
+            "title": "Nudge Chain",
+            "description": "test",
+            "coordinator_agent_instance_id": "test-agent@default"
+        })
+        chain_id = chain.get("chain_id")
+        
+        task_res = request_post("/tasks/create", {
+            "agent_token": agent_token,
+            "chain_id": chain_id,
+            "title": "Nudge Task",
+            "assignee_agent_instance_id": "test-agent@default"
+        })
+        task_id = task_res.get("task_id")
+        
+        # 9. Send normal nudge (interrupt=False)
+        print("[*] Sending normal task nudge...")
+        nudge_res1 = request_post("/user-rpc", {
+            "client_instance_id": "test-client-e2e",
+            "client_token": client_token,
+            "action": "task_nudge",
+            "task_id": task_id,
+            "chain_id": chain_id,
+            "body": "normal_nudge_body",
+            "interrupt": False
+        })
+        if not nudge_res1.get("ok"):
+            print("[-] Failed to send normal nudge:", nudge_res1)
+            sys.exit(1)
+            
+        time.sleep(12.0)
+        
+        # 10. Send interrupt nudge (interrupt=True)
+        print("[*] Sending interrupt task nudge...")
+        nudge_res2 = request_post("/user-rpc", {
+            "client_instance_id": "test-client-e2e",
+            "client_token": client_token,
+            "action": "task_nudge",
+            "task_id": task_id,
+            "chain_id": chain_id,
+            "body": "interrupt_nudge_body",
+            "interrupt": True
+        })
+        if not nudge_res2.get("ok"):
+            print("[-] Failed to send interrupt nudge:", nudge_res2)
+            sys.exit(1)
+            
+        time.sleep(12.0)
+
+        # 11. Read and verify key_log.txt
         with open(key_log_path, "r") as f:
             log_lines = f.read().splitlines()
             
@@ -202,6 +262,10 @@ command = ["python3", "{repo_dir}/tests/key_logger.py", "{key_log_path}"]
         normal_idx = -1
         interrupt_idx = -1
         escape_before_interrupt = False
+
+        normal_nudge_idx = -1
+        interrupt_nudge_idx = -1
+        escape_before_interrupt_nudge = False
         
         for i, line in enumerate(log_lines):
             if ("CHAR: 1" in line or "CHAR: 2" in line) and i + 10 < len(log_lines):
@@ -219,8 +283,25 @@ command = ["python3", "{repo_dir}/tests/key_logger.py", "{key_log_path}"]
                     interrupt_idx = i
                     if i > 0 and log_lines[i-1] == "KEY: ESCAPE":
                         escape_before_interrupt = True
+
+            if ("CHAR: T" in line) and i + 60 < len(log_lines):
+                chars = []
+                for j in range(80):
+                    if i+j >= len(log_lines):
+                        break
+                    l = log_lines[i+j]
+                    if "CHAR: " in l:
+                        chars.append(l.split("CHAR: ")[1][0])
+                word = "".join(chars)
+                if "normal_nudge_body" in word:
+                    normal_nudge_idx = i
+                elif "interrupt_nudge_body" in word:
+                    interrupt_nudge_idx = i
+                    if i > 0 and log_lines[i-1] == "KEY: ESCAPE":
+                        escape_before_interrupt_nudge = True
                         
         print(f"[*] normal_idx={normal_idx}, interrupt_idx={interrupt_idx}, escape_before_interrupt={escape_before_interrupt}")
+        print(f"[*] normal_nudge_idx={normal_nudge_idx}, interrupt_nudge_idx={interrupt_nudge_idx}, escape_before_interrupt_nudge={escape_before_interrupt_nudge}")
         
         try:
             assert normal_idx != -1, "Could not find normal message '1 User Chat' in log"
@@ -229,6 +310,13 @@ command = ["python3", "{repo_dir}/tests/key_logger.py", "{key_log_path}"]
             
             if normal_idx > 0:
                 assert log_lines[normal_idx-1] != "KEY: ESCAPE", "Unexpected ESCAPE key before normal message"
+
+            assert normal_nudge_idx != -1, "Could not find normal nudge message in log"
+            assert interrupt_nudge_idx != -1, "Could not find interrupt nudge message in log"
+            assert escape_before_interrupt_nudge, "Expected ESCAPE key immediately before interrupt nudge message"
+            
+            if normal_nudge_idx > 0:
+                assert log_lines[normal_nudge_idx-1] != "KEY: ESCAPE", "Unexpected ESCAPE key before normal nudge message"
                 
             # Verify database contents
             import sqlite3
@@ -245,7 +333,7 @@ command = ["python3", "{repo_dir}/tests/key_logger.py", "{key_log_path}"]
             assert rows[0][1] == 1, f"Expected interrupt = 1, got {rows[0][1]}"
             assert rows[1][0] == "hello_normal", f"Expected 'hello_normal', got '{rows[1][0]}'"
             assert rows[1][1] == 0, f"Expected interrupt = 0, got {rows[1][1]}"
-
+ 
             print("[+] PASS: Interrupt Send E2E verification successful!")
         except AssertionError as ae:
             test_failed = True

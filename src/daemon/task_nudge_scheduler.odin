@@ -62,6 +62,7 @@ task_nudge_scheduler_tick :: proc() -> int {
 			body                     = body,
 			agent_instance_id        = target,
 			author_agent_instance_id = "task-nudge-scheduler",
+			interrupt                = task_nudge_cfg.nudge_send_escape_prefix,
 		}
 		if task_store_append_event(event) {
 			if kind == .Task_Nudged do task_notify_event(event)

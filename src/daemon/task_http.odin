@@ -166,7 +166,12 @@ handle_task_review_vote :: proc(client: net.TCP_Socket, body: string) {
 handle_task_nudge :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
-	result := task_service_nudge(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "body", ""), author)
+	task_id := extract_json_string(body, "task_id", "")
+	chain_id := extract_json_string(body, "chain_id", "")
+	nudge_body := extract_json_string(body, "body", "")
+	interrupt := extract_json_bool(body, "interrupt", false)
+
+	result := task_service_nudge(task_id, chain_id, nudge_body, author, interrupt)
 	write_task_service_response(client, result)
 }
 

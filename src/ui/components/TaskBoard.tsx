@@ -526,7 +526,7 @@ export default function TaskBoard({ session }) {
     if (!canMutate || !selectedTask || selectedTaskTerminal || nudgeInFlight) return;
     setMutationError('');
     setNudgeState({ taskId: selectedTask.taskId, status: 'sending', message: 'Sending nudge…' });
-    dispatch(nudgeSelectedTask({ agentToken: agentToken.trim(), body: `Nudge requested from Heimdall for ${selectedTask.taskId}` }))
+    dispatch(nudgeSelectedTask({ agentToken: agentToken.trim(), body: `Nudge requested from Heimdall for ${selectedTask.taskId}`, interrupt: true }))
       .unwrap()
       .then((result) => {
         const target = result?.target_agent_instance_id ? ` to ${result.target_agent_instance_id}` : '';

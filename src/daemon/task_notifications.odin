@@ -127,6 +127,7 @@ task_notify_reviewer_rotation :: proc(reviewer: string) {
 			status            = "review_ready",
 			agent_instance_id = reviewer,
 			body              = fmt.tprintf("You have a pending review on task %s", state.task_id),
+			interrupt         = true,
 		}
 		task_store_append_event(event)
 		task_notify_event(event)
@@ -190,7 +191,7 @@ task_notification_json :: proc(event: Task_Event, status: string) -> string {
 		strings.write_string(&b, `,"delivery_method":"`)
 		json_write_string(&b, task_nudge_delivery_method(event.body))
 		strings.write_string(&b, `","send_escape_prefix":`)
-		strings.write_string(&b, "false" if strings.index(event.body, "delivery=websocket_only") >= 0 else "true")
+		strings.write_string(&b, "true" if event.interrupt else "false")
 	}
 
 	// Augment with full task payload if task_id is present

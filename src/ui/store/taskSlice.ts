@@ -266,7 +266,7 @@ export const nudgeSelectedTask = createAsyncThunk('tasks/nudgeSelectedTask', asy
   const { session } = state.chat;
   const activeTaskId = getActiveTaskId(payload);
   const task = state.tasks.tasksById[activeTaskId];
-  const result = await daemonApi.nudgeTask({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), taskId: task.taskId, chainId: task.chainId, body: payload.body });
+  const result = await daemonApi.nudgeTask({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), taskId: task.taskId, chainId: task.chainId, body: payload.body, interrupt: payload.interrupt });
   await (dispatch as any)(fetchSelectedTaskLog(task.taskId));
   return result;
 });

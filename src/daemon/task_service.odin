@@ -533,8 +533,8 @@ task_service_ping_coordinator_for_chain_completion :: proc(chain_id: string) {
 	}
 }
 
-task_service_nudge :: proc(task_id, chain_id, body, author: string) -> Task_Service_Result {
-	return task_service_nudge_command(Task_Nudge_Command{task_id = task_id, chain_id = chain_id, body = body, author_agent_instance_id = author})
+task_service_nudge :: proc(task_id, chain_id, body, author: string, interrupt: bool) -> Task_Service_Result {
+	return task_service_nudge_command(Task_Nudge_Command{task_id = task_id, chain_id = chain_id, body = body, author_agent_instance_id = author, interrupt = interrupt})
 }
 
 task_service_nudge_command :: proc(cmd: Task_Nudge_Command) -> Task_Service_Result {
@@ -561,6 +561,7 @@ task_service_nudge_command :: proc(cmd: Task_Nudge_Command) -> Task_Service_Resu
 		body                     = cmd.body,
 		agent_instance_id        = target,
 		author_agent_instance_id = cmd.author_agent_instance_id,
+		interrupt                = cmd.interrupt,
 	}
 	if !task_store_append_event(event) {
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append task nudge failed"}`}
