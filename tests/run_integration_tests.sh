@@ -178,5 +178,16 @@ if ! python3 "$SCRIPT_DIR/test_ui_sidebar_badge.py" > "$TEMP_HOME/test_ui_sideba
   exit 1
 fi
 
+echo "[*] Running memory proposal UAF integration test..."
+if ! python3 "$SCRIPT_DIR/test_memory_proposal_uaf.py" > "$TEMP_HOME/test_memory_proposal_uaf.log" 2>&1; then
+  echo "[-] Error: test_memory_proposal_uaf.py failed! Full test logs:"
+  cat "$TEMP_HOME/test_memory_proposal_uaf.log" || true
+  echo "[-] Daemon logs:"
+  cat "$TEMP_HOME/daemon.log" || true
+  cp "$TEMP_HOME/data/memory/memory.db" "$REPO_DIR/failed_memory.db" || true
+  cp "$TEMP_HOME/daemon.log" "$REPO_DIR/failed_daemon.log" || true
+  exit 1
+fi
+
 echo "[*] Integration tests completed successfully!"
 

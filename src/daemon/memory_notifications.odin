@@ -76,7 +76,7 @@ memory_append_event :: proc(event: contracts.Memory_Event) -> contracts.Memory_A
 
 memory_notify_event :: proc(event: contracts.Memory_Event) -> bool {
 	rec, found := memory_find_record(event.memory_id, true)
-	if found do defer memory_record_free(rec)
+	defer if found do memory_record_free(rec)
 
 	payload := memory_notification_json(event, rec, found)
 	user_client_fanout_all_ws_text(payload)

@@ -11,17 +11,44 @@ Memory_Service_Result :: struct {
 }
 
 memory_service_propose :: proc(action, body, author: string) -> Memory_Service_Result {
-	subject := extract_json_string(body, "subject_agent", extract_json_string(body, "agent", ""))
+	subject := extract_json_string(body, "subject_agent", "")
+	if subject == "" {
+		delete(subject)
+		subject = extract_json_string(body, "agent", "")
+	}
+	fmt.printf("DEBUG memory_service_propose: extracted subject = '%s'\n", subject)
+	defer delete(subject)
+
 	scope := extract_json_string(body, "scope", "")
+	defer delete(scope)
 	type_text := extract_json_string(body, "type", "")
+	defer delete(type_text)
 	title := extract_json_string(body, "title", "")
+	defer delete(title)
 	memory_body := extract_json_string(body, "body", "")
-	target_id := extract_json_string(body, "memory_id", extract_json_string(body, "target_memory_id", ""))
+	defer delete(memory_body)
+
+	target_id := extract_json_string(body, "memory_id", "")
+	if target_id == "" {
+		delete(target_id)
+		target_id = extract_json_string(body, "target_memory_id", "")
+	}
+	defer delete(target_id)
+
 	expected_version := extract_json_int(body, "expected_version", 0)
 	reason := extract_json_string(body, "reason", "")
+	defer delete(reason)
 	evidence := extract_json_string(body, "evidence", "")
+	defer delete(evidence)
 	source_task_id := extract_json_string(body, "source_task_id", "")
+	defer delete(source_task_id)
 	metadata_json := extract_json_string(body, "metadata_json", "")
+	defer delete(metadata_json)
+
+	proposal_id: string
+	defer delete(proposal_id)
+	memory_id: string
+	defer delete(memory_id)
 
 	mem_type, type_ok := memory_type_parse(type_text)
 	if (action == "edit" || action == "archive") && target_id == "" do return memory_error(400, "memory_id required")
@@ -33,17 +60,20 @@ memory_service_propose :: proc(action, body, author: string) -> Memory_Service_R
 	if action == "rollback" && target_id == "" do return memory_error(400, "memory_id required")
 
 	target := contracts.Memory_Record{}
+	defer if action != "new" && target.memory_id != "" do memory_record_free(target)
 	if action != "new" {
 		found: bool
 		target, found = memory_find_record(target_id, true)
 		if !found do return memory_error(404, "memory not found")
-		defer memory_record_free(target)
 		if target.version != expected_version do return memory_error(409, "memory version mismatch")
 		if action != "archive" {
 			if action == "rollback" {
-				title = target.title
-				memory_body = target.body
-				type_text = memory_type_string_service(target.type)
+				delete(title)
+				title = strings.clone(target.title)
+				delete(memory_body)
+				memory_body = strings.clone(target.body)
+				delete(type_text)
+				type_text = strings.clone(memory_type_string_service(target.type))
 				mem_type = target.type
 				type_ok = true
 			} else if type_text == "" {
@@ -55,19 +85,34 @@ memory_service_propose :: proc(action, body, author: string) -> Memory_Service_R
 	if !type_ok && action != "archive" do return memory_error(400, "invalid memory type")
 	if mem_type == .Skill && !memory_skill_valid(memory_body) do return memory_error(400, "malformed skill")
 
-	proposal_id := memory_generate_id("proposal")
-	memory_id := memory_generate_id("mem")
+	proposal_id = memory_generate_id("proposal")
+	memory_id = memory_generate_id("mem")
 	proposal_version := 1
 	if action != "new" do proposal_version = target.version
-	if action == "new" do target_id = memory_id
-	if action == "new" do metadata_json = memory_metadata_with_action(metadata_json, action, "")
+	if action == "new" {
+		delete(target_id)
+		target_id = strings.clone(memory_id)
+	}
+	if action == "new" {
+		new_metadata_json := memory_metadata_with_action(metadata_json, action, "")
+		delete(metadata_json)
+		metadata_json = new_metadata_json
+	}
 	if action != "new" {
-		subject = target.subject_agent
-		scope = target.scope
+		delete(subject)
+		subject = strings.clone(target.subject_agent)
+		delete(scope)
+		scope = strings.clone(target.scope)
 		if action == "archive" {
-			mem_type = target.type; title = target.title; memory_body = target.body
+			mem_type = target.type
+			delete(title)
+			title = strings.clone(target.title)
+			delete(memory_body)
+			memory_body = strings.clone(target.body)
 		}
-		metadata_json = memory_metadata_with_action(metadata_json, action, target.memory_id)
+		new_metadata_json := memory_metadata_with_action(metadata_json, action, target.memory_id)
+		delete(metadata_json)
+		metadata_json = new_metadata_json
 	}
 	event := contracts.Memory_Event{kind = .Memory_Proposed, memory_id = memory_id, proposal_id = proposal_id, subject_agent = subject, scope = scope, type = mem_type, title = title, body = memory_body, status = .Pending, reason = reason, evidence = evidence, metadata_json = metadata_json, author = author, source_task_id = source_task_id, version = proposal_version}
 	resp := memory_append_event(event)

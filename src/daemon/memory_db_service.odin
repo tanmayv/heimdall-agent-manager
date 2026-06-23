@@ -333,25 +333,36 @@ memory_db_archive_active_expertise :: proc(subject_agent, scope, keep_memory_id:
 memory_db_parse_record :: proc(stmt: sqlite3_stmt) -> contracts.Memory_Record {
 	type_str := strings.clone_from_cstring(sqlite3_column_text(stmt, 4))
 	status_str := strings.clone_from_cstring(sqlite3_column_text(stmt, 7))
-	defer delete(type_str)
-	defer delete(status_str)
 
 	type_val, _ := memory_type_parse(type_str)
 	status_val, _ := memory_status_parse(status_str)
+	memory_id := strings.clone_from_cstring(sqlite3_column_text(stmt, 0))
+	proposal_id := strings.clone_from_cstring(sqlite3_column_text(stmt, 1))
+	subject_agent := strings.clone_from_cstring(sqlite3_column_text(stmt, 2))
+	scope := strings.clone_from_cstring(sqlite3_column_text(stmt, 3))
+	title := strings.clone_from_cstring(sqlite3_column_text(stmt, 5))
+	body := strings.clone_from_cstring(sqlite3_column_text(stmt, 6))
+	reason := strings.clone_from_cstring(sqlite3_column_text(stmt, 8))
+	evidence := strings.clone_from_cstring(sqlite3_column_text(stmt, 9))
+	metadata_json := strings.clone_from_cstring(sqlite3_column_text(stmt, 10))
+	source_task_id := strings.clone_from_cstring(sqlite3_column_text(stmt, 11))
+
+	delete(type_str)
+	delete(status_str)
 
 	return contracts.Memory_Record{
-		memory_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 0)),
-		proposal_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 1)),
-		subject_agent = strings.clone_from_cstring(sqlite3_column_text(stmt, 2)),
-		scope = strings.clone_from_cstring(sqlite3_column_text(stmt, 3)),
+		memory_id = memory_id,
+		proposal_id = proposal_id,
+		subject_agent = subject_agent,
+		scope = scope,
 		type = type_val,
-		title = strings.clone_from_cstring(sqlite3_column_text(stmt, 5)),
-		body = strings.clone_from_cstring(sqlite3_column_text(stmt, 6)),
+		title = title,
+		body = body,
 		status = status_val,
-		reason = strings.clone_from_cstring(sqlite3_column_text(stmt, 8)),
-		evidence = strings.clone_from_cstring(sqlite3_column_text(stmt, 9)),
-		metadata_json = strings.clone_from_cstring(sqlite3_column_text(stmt, 10)),
-		source_task_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 11)),
+		reason = reason,
+		evidence = evidence,
+		metadata_json = metadata_json,
+		source_task_id = source_task_id,
 		version = int(sqlite3_column_int64(stmt, 12)),
 		created_unix_ms = sqlite3_column_int64(stmt, 13),
 		updated_unix_ms = sqlite3_column_int64(stmt, 14),
