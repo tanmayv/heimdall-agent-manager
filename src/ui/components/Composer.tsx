@@ -98,7 +98,7 @@ const Composer = memo(function Composer({ selectedAgent, disabled, onSubmit, sma
               }
             }}
             placeholder={selectedAgent ? `Message ${selectedAgent.id}...` : 'Select a connected agent to start chatting'}
-            className="framer-input max-h-32 w-full resize-none rounded-[var(--fd-radius-md)] border-0 bg-transparent px-3 py-2 text-sm shadow-none focus:shadow-none placeholder:text-[#999]"
+            className="framer-input max-h-32 w-full resize-y rounded-[var(--fd-radius-md)] border-0 bg-transparent px-3 py-2 text-sm shadow-none focus:shadow-none placeholder:text-[#999]"
           />
           <div className="flex items-center justify-between px-2 pb-1">
             <p className="framer-subtext">Messages send through /user-rpc send_to_agent</p>

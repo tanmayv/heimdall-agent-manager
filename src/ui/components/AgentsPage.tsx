@@ -759,7 +759,7 @@ function TemplateEditForm({
       </label>
       <label className="block">
         <span className="framer-topline text-[10px]">Description</span>
-        <textarea data-debug-id="template-form-description" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} rows={2} placeholder="Brief description of the template's purpose..." className="framer-input mt-1.5 w-full resize-none px-3 py-2 text-sm" />
+        <textarea data-debug-id="template-form-description" value={form.description} onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))} rows={2} placeholder="Brief description of the template's purpose..." className="framer-input mt-1.5 w-full resize-y px-3 py-2 text-sm" />
       </label>
       <label className="block">
         <span className="framer-topline text-[10px]">Role hint</span>
@@ -785,11 +785,11 @@ function TemplateEditForm({
       </label>
       <label className="block">
         <span className="framer-topline text-[10px]">Persona</span>
-        <textarea data-debug-id="template-form-persona" value={form.persona} onChange={(e) => setForm((f) => ({ ...f, persona: e.target.value }))} rows={3} placeholder="Describe the agent's persona and behavioral style..." className="framer-input mt-1.5 w-full resize-none px-3 py-2 text-sm" />
+        <textarea data-debug-id="template-form-persona" value={form.persona} onChange={(e) => setForm((f) => ({ ...f, persona: e.target.value }))} rows={3} placeholder="Describe the agent's persona and behavioral style..." className="framer-input mt-1.5 w-full resize-y px-3 py-2 text-sm" />
       </label>
       <label className="block">
         <span className="framer-topline text-[10px]">Instructions</span>
-        <textarea data-debug-id="template-form-instructions" value={form.instructions} onChange={(e) => setForm((f) => ({ ...f, instructions: e.target.value }))} rows={3} placeholder="Provide step-by-step operating guidelines or starter prompts..." className="framer-input mt-1.5 w-full resize-none px-3 py-2 text-sm" />
+        <textarea data-debug-id="template-form-instructions" value={form.instructions} onChange={(e) => setForm((f) => ({ ...f, instructions: e.target.value }))} rows={3} placeholder="Provide step-by-step operating guidelines or starter prompts..." className="framer-input mt-1.5 w-full resize-y px-3 py-2 text-sm" />
       </label>
       <label className="block">
         <span className="framer-topline text-[10px]">Parent template ID</span>
@@ -797,7 +797,7 @@ function TemplateEditForm({
       </label>
       <label className="block">
         <span className="framer-topline text-[10px]">Bootstrap defaults</span>
-        <textarea data-debug-id="template-form-bootstrap-defaults" value={form.bootstrapDefaults} onChange={(e) => setForm((f) => ({ ...f, bootstrapDefaults: e.target.value }))} rows={3} placeholder="JSON or custom string overrides..." className="framer-input mt-1.5 w-full resize-none px-3 py-2 text-sm" />
+        <textarea data-debug-id="template-form-bootstrap-defaults" value={form.bootstrapDefaults} onChange={(e) => setForm((f) => ({ ...f, bootstrapDefaults: e.target.value }))} rows={3} placeholder="JSON or custom string overrides..." className="framer-input mt-1.5 w-full resize-y px-3 py-2 text-sm" />
       </label>
       <label className="block">
         <span className="framer-topline text-[10px]">Memory templates</span>
