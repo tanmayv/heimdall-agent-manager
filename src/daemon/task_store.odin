@@ -4,6 +4,42 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 
+Task_Status :: enum {
+	Planning,
+	Ready,
+	In_Progress,
+	Review_Ready,
+	Approved,
+	Blocked,
+	Cancelled,
+}
+
+task_status_to_string :: proc(status: Task_Status) -> string {
+	switch status {
+	case .Planning: return "planning"
+	case .Ready: return "ready"
+	case .In_Progress: return "in_progress"
+	case .Review_Ready: return "review_ready"
+	case .Approved: return "approved"
+	case .Blocked: return "blocked"
+	case .Cancelled: return "cancelled"
+	}
+	return "unknown"
+}
+
+task_status_from_string :: proc(s: string) -> (status: Task_Status, ok: bool) {
+	switch s {
+	case "planning": return .Planning, true
+	case "ready": return .Ready, true
+	case "in_progress": return .In_Progress, true
+	case "review_ready": return .Review_Ready, true
+	case "approved": return .Approved, true
+	case "blocked": return .Blocked, true
+	case "cancelled": return .Cancelled, true
+	}
+	return .Planning, false
+}
+
 TASK_MAX_EVENTS      :: 20000
 TASK_MAX_TASKS       :: 2048
 TASK_MAX_CHAINS      :: 512
@@ -69,7 +105,7 @@ Task_State :: struct {
 	description:                string,
 	acceptance_criteria:        string,
 	priority:                   string,
-	status:                     string,
+	status:                     Task_Status,
 	assignee_agent_instance_id: string,
 	coordinator_agent_instance_id: string,
 	depends_on:                 string,
@@ -468,7 +504,7 @@ task_store_recover_stuck_system_chains :: proc() {
 			
 			for j in 0..<task_state_count {
 				task := &task_states[j]
-				if task.chain_id == chain.chain_id && task.status != "approved" && task.status != "cancelled" {
+				if task.chain_id == chain.chain_id && task.status != .Approved && task.status != .Cancelled {
 					fmt.printfln("task_store_recover_stuck_system_chains: cancelling stuck task %s in chain %s", task.task_id, chain.chain_id)
 					task_event := Task_Event{
 						kind                     = .Task_Status_Changed,
@@ -479,7 +515,7 @@ task_store_recover_stuck_system_chains :: proc() {
 						author_agent_instance_id = "daemon-recovery",
 					}
 					if task_store_append_event(task_event) {
-						task.status = "cancelled"
+						task.status = .Cancelled
 						task.updated_at_unix_ms = now
 					}
 				}

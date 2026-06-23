@@ -58,7 +58,7 @@ ctl() { $CTL "$@" 2>&1; }
 
 # JSON field extractor — always exits 0 (avoids set -e traps on grep no-match)
 field() {
-  echo "$1" | grep -o "\"$2\":\"[^\"]*\"" | head -1 | sed 's/.*":"\(.*\)"/\1/' || true
+  echo "$1" | grep -o -E "\"$2\":(\"[^\"]*\"|[0-9]+)" | head -1 | sed -E 's/.*":("([^"]*)"|([0-9]+))/\2\3/' || true
 }
 
 is_ok()     { echo "$1" | grep -q '"ok":true'; }
@@ -96,8 +96,18 @@ if [ -z "$TOKEN" ]; then
   echo "ERROR: failed to register test agent ($REG)"
   exit 1
 fi
+
+USER_REG=$(curl -sf -X POST "$DAEMON_URL/user-client/register" \
+  -H "Content-Type: application/json" \
+  -d "{\"user_id\":\"operator@local\",\"client_instance_id\":\"test-client-run${RUN_ID}\"}")
+USER_TOKEN=$(field "$USER_REG" "client_token")
+if [ -z "$USER_TOKEN" ]; then
+  echo "ERROR: failed to register test user ($USER_REG)"
+  exit 1
+fi
 echo "agent:     $ME"
 echo "token:     ${TOKEN:0:16}..."
+echo "user_token: ${USER_TOKEN:0:16}..."
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -193,6 +203,15 @@ assert_ok "T3 add comment" "$CMT"
 CMT_ID=$(field "$CMT" "comment_id")
 [ -n "$CMT_ID" ] && pass "T3 comment_id returned ($CMT_ID)" || fail "T3 comment_id missing" "$CMT"
 
+SHOW_CMT=$(ctl tasks show --token "$TOKEN" --task-id "$TASK_ID")
+assert_field "T3 tasks show has unresolved_comment_count=1" "$SHOW_CMT" "unresolved_comment_count" "1"
+assert_has "T3 tasks show has unresolved_comments list with cmt_id" "$SHOW_CMT" "\"comment_id\":\"$CMT_ID\""
+assert_has "T3 tasks show has unresolved_comments list with body" "$SHOW_CMT" "starting implementation"
+
+TRY_DONE=$(ctl tasks done --token "$TOKEN" --task-id "$TASK_ID" --chain-id "$CHAIN_ID" --comment "done")
+assert_not_ok "T3 transition to done blocked by unresolved comments" "$TRY_DONE"
+assert_has "T3 error mentions unresolved comments" "$TRY_DONE" "has 1 unresolved comments"
+
 UNRESOLVED=$(ctl tasks comments --token "$TOKEN" --task-id "$TASK_ID" --unresolved)
 assert_ok  "T3 fetch unresolved ok"            "$UNRESOLVED"
 assert_has "T3 one unresolved comment present" "$UNRESOLVED" "\"comment_id\":\"$CMT_ID\""
@@ -201,6 +220,10 @@ assert_not_has "T3 comment not yet resolved"   "$UNRESOLVED" '"resolved":true'
 RESOLVE=$(ctl tasks comment-resolve --token "$TOKEN" \
   --task-id "$TASK_ID" --chain-id "$CHAIN_ID" --comment-id "$CMT_ID")
 assert_ok "T3 resolve comment" "$RESOLVE"
+
+SHOW_CMT2=$(ctl tasks show --token "$TOKEN" --task-id "$TASK_ID")
+assert_field "T3 tasks show has unresolved_comment_count=0" "$SHOW_CMT2" "unresolved_comment_count" "0"
+assert_not_has "T3 tasks show has no unresolved_comments details" "$SHOW_CMT2" "\"comment_id\":\"$CMT_ID\""
 
 UNRESOLVED2=$(ctl tasks comments --token "$TOKEN" --task-id "$TASK_ID" --unresolved)
 assert_not_has "T3 zero unresolved after resolve" "$UNRESOLVED2" "\"comment_id\":\"$CMT_ID\""
@@ -217,15 +240,18 @@ PART=$(ctl tasks participant --token "$TOKEN" \
   --agent-instance-id "$ME" --role lgtm_required)
 assert_ok "T4 add lgtm_required participant" "$PART"
 
-# Ensure task is in_progress before setting review_ready
-ctl tasks status --token "$TOKEN" \
+# Verify that manual status changes from agent token are blocked
+BLOCKED_MANUAL=$(ctl tasks status --token "$TOKEN" \
   --task-id "$TASK_ID" --chain-id "$CHAIN_ID" \
-  --status in_progress --body "working on it" >/dev/null 2>&1 || true
+  --status review_ready --body "illegal status change request")
+assert_not_ok "T4 agent manual status change is blocked" "$BLOCKED_MANUAL"
+assert_has "T4 agent manual status error" "$BLOCKED_MANUAL" "restricted to user tokens"
 
-RR=$(ctl tasks status --token "$TOKEN" \
+# Transition using intent subcommand
+RR=$(ctl tasks done --token "$TOKEN" \
   --task-id "$TASK_ID" --chain-id "$CHAIN_ID" \
-  --status review_ready --body "implementation complete, ready for review")
-assert_ok "T4 set review_ready" "$RR"
+  --comment "implementation complete, ready for review")
+assert_ok "T4 set review_ready via tasks done" "$RR"
 
 # tasks status returns {"ok":true}; verify via show
 RR_SHOW=$(ctl tasks show --token "$TOKEN" --task-id "$TASK_ID")
@@ -292,9 +318,9 @@ ctl tasks participant --token "$TOKEN" \
   --task-id "$T2" --chain-id "$C2" \
   --agent-instance-id "$ME" --role lgtm_required >/dev/null
 ctl task-chains activate --token "$TOKEN" --chain-id "$C2" >/dev/null
-ctl tasks status --token "$TOKEN" \
+ctl tasks done --token "$TOKEN" \
   --task-id "$T2" --chain-id "$C2" \
-  --status review_ready --body "ready" >/dev/null
+  --comment "ready" >/dev/null
 
 NGTM=$(ctl tasks vote --token "$TOKEN" \
   --task-id "$T2" --chain-id "$C2" \
@@ -338,7 +364,7 @@ assert_not_ok "T8 chain creation blocked by active chain" "$CHAIN3"
 assert_has    "T8 error names active chain"               "$CHAIN3" "active_chain_id"
 
 # Clean up T2 from C2 so assignee is free
-CLEAN_T2=$(ctl tasks status --token "$TOKEN" --task-id "$T2" --chain-id "$C2" --status cancelled --body "cleanup T2")
+CLEAN_T2=$(ctl tasks status --token "$USER_TOKEN" --task-id "$T2" --chain-id "$C2" --status cancelled --body "cleanup T2")
 assert_ok "T8 cleanup T2" "$CLEAN_T2"
 
 echo ""
@@ -383,9 +409,8 @@ SHOW_DT2=$(ctl tasks show --token "$TOKEN" --task-id "$DT2")
 assert_field "T9 step2 still planning after activate" "$SHOW_DT2" "status" "planning"
 
 # Complete step1: in_progress → review_ready → lgtm → approved
-ctl tasks status --token "$TOKEN" \
-  --task-id "$DT1" --chain-id "$C4" \
-  --status review_ready --body "done" >/dev/null
+ctl tasks done --token "$TOKEN" \
+  --task-id "$DT1" --chain-id "$C4" --comment "done" >/dev/null
 ctl tasks vote --token "$TOKEN" \
   --task-id "$DT1" --chain-id "$C4" \
   --result lgtm --comment "ok" >/dev/null
@@ -405,19 +430,49 @@ echo ""
 # ─────────────────────────────────────────────────────────────────────────────
 echo "=== T10: blocked / unblock ==="
 
-BLK=$(ctl tasks status --token "$TOKEN" \
+BLK=$(ctl tasks blocked --token "$TOKEN" \
   --task-id "$DT2" --chain-id "$C4" \
-  --status blocked --body "waiting on external API key from ops team")
+  --reason "waiting on external API key from ops team")
 assert_ok "T10 set blocked" "$BLK"
 BLK_SHOW=$(ctl tasks show --token "$TOKEN" --task-id "$DT2")
 assert_field "T10 status=blocked" "$BLK_SHOW" "status" "blocked"
 
-UNBLK=$(ctl tasks status --token "$TOKEN" \
+UNBLK=$(ctl tasks later --token "$TOKEN" \
   --task-id "$DT2" --chain-id "$C4" \
-  --status in_progress --body "API key received, resuming work")
+  --reason "API key received, resuming work")
 assert_ok "T10 unblock" "$UNBLK"
 UNBLK_SHOW=$(ctl tasks show --token "$TOKEN" --task-id "$DT2")
 assert_field "T10 status=in_progress" "$UNBLK_SHOW" "status" "in_progress"
+
+echo ""
+
+# ─────────────────────────────────────────────────────────────────────────────
+# T11 — Comment revert approved task to ready
+# ─────────────────────────────────────────────────────────────────────────────
+echo "=== T11: comment revert approved task to ready ==="
+
+# 1. Approve DT2 manually using USER_TOKEN
+APP_DT2=$(ctl tasks status --token "$USER_TOKEN" --task-id "$DT2" --chain-id "$C4" --status approved --body "manual approval of step 2")
+assert_ok "T11 approve DT2" "$APP_DT2"
+
+# 2. Verify DT2 is approved and chain C4 is reviewing
+SHOW_DT2_APP=$(ctl tasks show --token "$TOKEN" --task-id "$DT2")
+assert_field "T11 DT2 status=approved" "$SHOW_DT2_APP" "status" "approved"
+
+SHOW_C4_REV=$(ctl task-chains show --token "$TOKEN" --chain-id "$C4")
+assert_field "T11 C4 status=reviewing" "$SHOW_C4_REV" "status" "reviewing"
+
+# 3. Add an unresolved comment to DT2
+CMT_REV=$(ctl tasks comment --token "$TOKEN" --task-id "$DT2" --chain-id "$C4" --body "Wait, I found a major bug in the implementation!")
+assert_ok "T11 add comment to approved task" "$CMT_REV"
+
+# 4. Verify task has reverted to in_progress (via auto-claim from ready)
+SHOW_DT2_REV=$(ctl tasks show --token "$TOKEN" --task-id "$DT2")
+assert_field "T11 DT2 status reverted to in_progress" "$SHOW_DT2_REV" "status" "in_progress"
+
+# 5. Verify chain has reverted to in_progress
+SHOW_C4_IN_PROG=$(ctl task-chains show --token "$TOKEN" --chain-id "$C4")
+assert_field "T11 C4 status reverted to in_progress" "$SHOW_C4_IN_PROG" "status" "in_progress"
 
 echo ""
 

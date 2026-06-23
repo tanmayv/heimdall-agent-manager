@@ -58,7 +58,7 @@ task_nudge_scheduler_tick :: proc() -> int {
 			kind                     = kind,
 			task_id                  = state.task_id,
 			chain_id                 = state.chain_id,
-			status                   = state.status,
+			status                   = task_status_to_string(state.status),
 			body                     = body,
 			agent_instance_id        = target,
 			author_agent_instance_id = "task-nudge-scheduler",
@@ -71,13 +71,13 @@ task_nudge_scheduler_tick :: proc() -> int {
 	return changed
 }
 
-task_nudge_threshold_seconds :: proc(status: string) -> int {
-	switch status {
-	case "ready":
+task_nudge_threshold_seconds :: proc(status: Task_Status) -> int {
+	#partial switch status {
+	case .Ready:
 		return task_nudge_cfg.nudge_ready_after_seconds
-	case "review_ready":
+	case .Review_Ready:
 		return task_nudge_cfg.nudge_review_after_seconds
-	case "in_progress":
+	case .In_Progress:
 		return task_nudge_cfg.nudge_working_stale_after_seconds
 	case:
 		return 0
@@ -100,17 +100,20 @@ task_scheduled_nudge_body :: proc(state: Task_State, target: string) -> string {
 	delivery := "ws_fallback"
 	if task_nudge_cfg.nudge_send_escape_prefix do delivery = "escape_prefixed_pane_or_ws"
 	action := "please continue work or move to blocked"
-	switch state.status {
-	case "ready":
+	#partial switch state.status {
+	case .Ready:
 		action = "task is ready to be worked on"
-	case "review_ready":
+	case .Review_Ready:
 		action = "waiting on your review"
-	case "in_progress":
+	case .In_Progress:
 		action = "please continue work or move to blocked"
+	case:
+		break
 	}
 	unresolved := task_unresolved_comments(state.task_id)
+	defer delete(unresolved)
 	b := strings.builder_make()
-	strings.write_string(&b, fmt.tprintf("Task %s: %s. status=%s delivery=%s target=%s", state.task_id, action, state.status, delivery, target))
+	strings.write_string(&b, fmt.tprintf("Task %s: %s. status=%s delivery=%s target=%s", state.task_id, action, task_status_to_string(state.status), delivery, target))
 	if len(unresolved) > 0 {
 		strings.write_string(&b, fmt.tprintf(" unresolved_comments=%d", len(unresolved)))
 		limit := len(unresolved)

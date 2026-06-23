@@ -189,6 +189,42 @@ task_service_comment_command :: proc(cmd: Task_Comment_Command) -> Task_Service_
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append task comment failed"}`}
 	}
 	task_notify_event(event)
+
+	if idx, found := task_existing_state_index(cmd.task_id, cmd.chain_id); found {
+		state := task_states[idx]
+		if state.status == .Approved {
+			back_event := Task_Event{
+				kind                     = .Task_Status_Changed,
+				task_id                  = cmd.task_id,
+				chain_id                 = state.chain_id,
+				status                   = "ready",
+				body                     = fmt.tprintf("reverted to ready due to unresolved comment: %s", cmd.body),
+				author_agent_instance_id = "system-comment-revert",
+			}
+			if task_store_append_event(back_event) {
+				task_notify_event(back_event)
+				if state.chain_id != "" {
+					if c_idx, c_found := task_existing_chain_index(state.chain_id); c_found {
+						if task_chains[c_idx].status == "reviewing" {
+							chain_event := Task_Event{
+								kind                     = .Chain_Status_Changed,
+								chain_id                 = state.chain_id,
+								status                   = "in_progress",
+								body                     = "reverted chain to in_progress due to task comment revert",
+								author_agent_instance_id = "system-comment-revert",
+							}
+							if task_store_append_event(chain_event) {
+								task_notify_event(chain_event)
+							}
+						}
+					}
+				}
+				task_recompute_promotions("system-comment-revert")
+				task_service_auto_claim(cmd.task_id)
+			}
+		}
+	}
+
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"comment_id":"`); json_write_string(&b, comment_id); strings.write_string(&b, `"}`)
 	return Task_Service_Result{ok = true, status_code = 200, message = strings.to_string(b)}
@@ -298,7 +334,22 @@ task_service_status_command :: proc(cmd: Task_Status_Command) -> Task_Service_Re
 		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"task not found"}`}
 	}
 	state := task_states[idx]
-	if !task_status_change_authorized(state, cmd.status, cmd.author_agent_instance_id) {
+	status_val, ok := task_status_from_string(cmd.status)
+	if !ok {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"invalid task status"}`}
+	}
+	if status_val == .Review_Ready || status_val == .Approved {
+		unresolved := task_unresolved_comments(cmd.task_id)
+		defer delete(unresolved)
+		if len(unresolved) > 0 {
+			return Task_Service_Result{
+				ok = false,
+				status_code = 400,
+				message = fmt.tprintf(`{{"ok":false,"message":"task has %d unresolved comments"}}`, len(unresolved)),
+			}
+		}
+	}
+	if !task_status_change_authorized(state, status_val, cmd.author_agent_instance_id) {
 		return Task_Service_Result{ok = false, status_code = 403, message = `{"ok":false,"message":"not authorized for task status transition"}`}
 	}
 	event := Task_Event{
@@ -315,6 +366,9 @@ task_service_status_command :: proc(cmd: Task_Status_Command) -> Task_Service_Re
 	task_notify_event(event)
 
 	task_recompute_promotions(cmd.author_agent_instance_id)
+	if cmd.status == "ready" {
+		task_service_auto_claim(cmd.task_id)
+	}
 	task_service_try_auto_complete_chain(cmd.chain_id)
 	if cmd.status == "review_ready" {
 		task_notify_all_lgtm_required(cmd.task_id, cmd.chain_id)
@@ -331,7 +385,7 @@ task_service_review_vote :: proc(cmd: Task_Review_Vote_Command) -> Task_Service_
 		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"task not found"}`}
 	}
 	state := task_states[idx]
-	if state.status != "review_ready" {
+	if state.status != .Review_Ready {
 		return Task_Service_Result{ok = false, status_code = 409, message = `{"ok":false,"message":"can only vote on review_ready tasks"}`}
 	}
 	is_required  := task_actor_has_role(state, cmd.author_agent_instance_id, "lgtm_required")
@@ -396,7 +450,7 @@ task_service_auto_claim :: proc(task_id: string) {
 	idx, found := task_existing_state_index(task_id, "")
 	if !found do return
 	state := task_states[idx]
-	if state.status != "ready" do return
+	if state.status != .Ready do return
 	assignee := state.assignee_agent_instance_id
 	if assignee == "" do return
 	if task_active_slot_blocker(assignee, task_id) != "" do return
@@ -479,7 +533,7 @@ task_service_nudge_command :: proc(cmd: Task_Nudge_Command) -> Task_Service_Resu
 		kind                     = .Task_Nudged,
 		task_id                  = state.task_id,
 		chain_id                 = state.chain_id,
-		status                   = state.status,
+		status                   = task_status_to_string(state.status),
 		body                     = cmd.body,
 		agent_instance_id        = target,
 		author_agent_instance_id = cmd.author_agent_instance_id,

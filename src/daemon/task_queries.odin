@@ -19,33 +19,29 @@ agents_first_by_role_hint :: proc(role_hint, project_id: string) -> string {
 // --- Status predicates ---
 
 task_status_allowed :: proc(status: string) -> bool {
-	switch status {
-	case "planning", "ready", "in_progress", "review_ready", "approved", "blocked", "cancelled":
-		return true
-	case:
-		return false
-	}
+	_, ok := task_status_from_string(status)
+	return ok
 }
 
-task_status_terminal :: proc(status: string) -> bool {
-	return status == "approved" || status == "cancelled"
+task_status_terminal :: proc(status: Task_Status) -> bool {
+	return status == .Approved || status == .Cancelled
 }
 
 task_status_active_for_assignee :: proc(state: Task_State) -> bool {
-	switch state.status {
-	case "ready", "in_progress", "review_ready":
+	#partial switch state.status {
+	case .Ready, .In_Progress, .Review_Ready:
 		return true
 	case:
 		return false
 	}
 }
 
-task_status_complete :: proc(status: string) -> bool {
-	return status == "approved"
+task_status_complete :: proc(status: Task_Status) -> bool {
+	return status == .Approved
 }
 
 task_state_satisfies_dependency :: proc(state: Task_State) -> bool {
-	return state.status == "approved"
+	return state.status == .Approved
 }
 
 // --- Dependency helpers ---
@@ -106,7 +102,7 @@ task_reviewer_active_slot_blocker :: proc(reviewer, excluding_task_id: string) -
 	for i in 0..<task_state_count {
 		state := task_states[i]
 		if state.task_id == excluding_task_id do continue
-		if state.status != "review_ready" do continue
+		if state.status != .Review_Ready do continue
 		if !task_actor_has_role(state, reviewer, "lgtm_required") && !task_actor_has_role(state, reviewer, "lgtm_optional") do continue
 		if task_reviewer_has_voted(state.task_id, reviewer) do continue
 		return state.task_id
@@ -195,27 +191,26 @@ task_actor_can_override :: proc(state: Task_State, actor: string) -> bool {
 	return task_actor_is_user(actor) || task_actor_has_role(state, actor, "coordinator")
 }
 
-task_status_change_authorized :: proc(state: Task_State, next_status, actor: string) -> bool {
+task_status_change_authorized :: proc(state: Task_State, next_status: Task_Status, actor: string) -> bool {
 	if task_actor_can_override(state, actor) do return true
 	switch next_status {
-	case "in_progress", "review_ready", "blocked":
+	case .Ready, .In_Progress, .Review_Ready, .Blocked:
 		return task_actor_has_role(state, actor, "assignee")
-	case "cancelled":
-		return false
-	case:
+	case .Cancelled, .Approved, .Planning:
 		return false
 	}
+	return false
 }
 
 // --- Target routing ---
 
-task_nudge_target_for_status :: proc(state: Task_State, status: string) -> string {
-	switch status {
-	case "ready", "in_progress", "blocked":
+task_nudge_target_for_status :: proc(state: Task_State, status: Task_Status) -> string {
+	#partial switch status {
+	case .Ready, .In_Progress, .Blocked:
 		return task_target_for_role(state, "assignee")
-	case "review_ready":
+	case .Review_Ready:
 		return task_target_for_role(state, "lgtm_required")
-	case "approved":
+	case .Approved:
 		return task_target_for_role(state, "coordinator")
 	case:
 		target := task_target_for_role(state, "assignee")
@@ -267,7 +262,8 @@ task_recompute_promotions :: proc(author: string) -> int {
 				}
 			}
 		}
-		if state.status == status do continue
+		status_val, _ := task_status_from_string(status)
+		if state.status == status_val do continue
 		event := Task_Event{
 			kind                     = .Task_Status_Changed,
 			task_id                  = state.task_id,
@@ -288,8 +284,8 @@ task_recompute_promotions :: proc(author: string) -> int {
 }
 
 task_promotion_candidate :: proc(state: Task_State) -> bool {
-	if state.status == "planning" do return true
-	if state.status != "blocked" do return false
+	if state.status == .Planning do return true
+	if state.status != .Blocked do return false
 	return task_system_block_kind(state) == TASK_SYSTEM_BLOCK_DEPENDENCY ||
 	       task_system_block_kind(state) == TASK_SYSTEM_BLOCK_ASSIGNEE_ACTIVE
 }
@@ -329,7 +325,7 @@ TASK_SYSTEM_BLOCK_DEPENDENCY     :: "dependency"
 TASK_SYSTEM_BLOCK_ASSIGNEE_ACTIVE :: "assignee_active_task"
 
 task_system_block_kind :: proc(state: Task_State) -> string {
-	if state.status != "blocked" do return ""
+	if state.status != .Blocked do return ""
 	// The block kind is stored in the last status-change comment body
 	for i := task_event_count - 1; i >= 0; i -= 1 {
 		ev := task_events[i]
@@ -383,13 +379,14 @@ task_log_json :: proc(task_id: string) -> string {
 
 task_write_state_json :: proc(builder: ^strings.Builder, state: Task_State) {
 	unresolved := task_unresolved_comments(state.task_id)
+	defer delete(unresolved)
 	strings.write_string(builder, `{"task_id":"`);            json_write_string(builder, state.task_id)
 	strings.write_string(builder, `","chain_id":"`);          json_write_string(builder, state.chain_id)
 	strings.write_string(builder, `","title":"`);             json_write_string(builder, state.title)
 	strings.write_string(builder, `","description":"`);       json_write_string(builder, state.description)
 	strings.write_string(builder, `","acceptance_criteria":"`); json_write_string(builder, state.acceptance_criteria)
 	strings.write_string(builder, `","priority":"`);          json_write_string(builder, state.priority)
-	strings.write_string(builder, `","status":"`);            json_write_string(builder, state.status)
+	strings.write_string(builder, `","status":"`);            json_write_string(builder, task_status_to_string(state.status))
 	strings.write_string(builder, `","assignee_agent_instance_id":"`); json_write_string(builder, state.assignee_agent_instance_id)
 	strings.write_string(builder, `","coordinator_agent_instance_id":"`); json_write_string(builder, state.coordinator_agent_instance_id)
 	strings.write_string(builder, `","depends_on":"`);        json_write_string(builder, state.depends_on)
@@ -398,6 +395,19 @@ task_write_state_json :: proc(builder: ^strings.Builder, state: Task_State) {
 	strings.write_string(builder, `,"updated_at_unix_ms":`);  strings.write_string(builder, fmt.tprintf("%d", state.updated_at_unix_ms))
 	strings.write_string(builder, `,"unresolved_comment_count":`); strings.write_string(builder, fmt.tprintf("%d", len(unresolved)))
 	
+	strings.write_string(builder, `,"unresolved_comments":[`)
+	for c, idx in unresolved {
+		if idx > 0 do strings.write_string(builder, `,`)
+		strings.write_string(builder, `{"comment_id":"`)
+		json_write_string(builder, c.comment_id)
+		strings.write_string(builder, `","body":"`)
+		json_write_string(builder, c.body)
+		strings.write_string(builder, `","author_agent_instance_id":"`)
+		json_write_string(builder, c.author_agent_instance_id)
+		strings.write_string(builder, `"}`)
+	}
+	strings.write_string(builder, `]`)
+
 	// Serialize participants list
 	strings.write_string(builder, `,"participants":[`)
 	first_part := true

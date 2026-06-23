@@ -413,6 +413,21 @@ handle_client :: proc(client: net.TCP_Socket) {
 		return
 	}
 
+	if strings.has_prefix(request, "POST /tasks/done ") {
+		handle_task_done(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /tasks/blocked ") {
+		handle_task_blocked(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /tasks/later ") {
+		handle_task_later(client, request_body(request))
+		return
+	}
+
 	if strings.has_prefix(request, "POST /tasks/vote ") {
 		handle_task_review_vote(client, request_body(request))
 		return

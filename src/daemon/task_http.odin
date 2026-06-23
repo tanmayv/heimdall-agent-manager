@@ -109,9 +109,34 @@ handle_task_participant :: proc(client: net.TCP_Socket, body: string) {
 }
 
 handle_task_status :: proc(client: net.TCP_Socket, body: string) {
+	author, is_user, ok := task_author_and_type_from_body(client, body)
+	if !ok do return
+	if !is_user {
+		write_response(client, 403, "Forbidden", `{"ok":false,"message":"manual status changes restricted to user tokens"}`)
+		return
+	}
+	result := task_service_set_status(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "status", ""), extract_json_string(body, "body", ""), author)
+	write_task_service_response(client, result)
+}
+
+handle_task_done :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
-	result := task_service_set_status(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "status", ""), extract_json_string(body, "body", ""), author)
+	result := task_service_set_status(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), "review_ready", extract_json_string(body, "body", "Done."), author)
+	write_task_service_response(client, result)
+}
+
+handle_task_blocked :: proc(client: net.TCP_Socket, body: string) {
+	author, ok := task_author_from_body(client, body)
+	if !ok do return
+	result := task_service_set_status(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), "blocked", extract_json_string(body, "body", "Blocked."), author)
+	write_task_service_response(client, result)
+}
+
+handle_task_later :: proc(client: net.TCP_Socket, body: string) {
+	author, ok := task_author_from_body(client, body)
+	if !ok do return
+	result := task_service_set_status(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), "ready", extract_json_string(body, "body", "Later/Deferred."), author)
 	write_task_service_response(client, result)
 }
 
@@ -258,6 +283,16 @@ task_author_from_body :: proc(client: net.TCP_Socket, body: string) -> (string, 
 	return iid, true
 }
 
+task_author_and_type_from_body :: proc(client: net.TCP_Socket, body: string) -> (id: string, is_user: bool, ok: bool) {
+	token := extract_json_string(body, "agent_token", "")
+	itype, iid := auth_db_get_identity(token)
+	if itype == "" || iid == "" {
+		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"invalid agent token"}`)
+		return "", false, false
+	}
+	return iid, itype == "user", true
+}
+
 write_task_service_response :: proc(client: net.TCP_Socket, result: Task_Service_Result) {
 	status_text := "OK"
 	if result.status_code == 400 do status_text = "Bad Request"
@@ -307,14 +342,14 @@ task_store_state_json :: proc() -> string {
 task_claim_next_for_agent :: proc(agent_instance_id: string) -> (Task_State, bool) {
 	for i in 0..<task_state_count {
 		state := task_states[i]
-		if state.status != "in_progress" do continue
+		if state.status != .In_Progress do continue
 		if state.assignee_agent_instance_id != agent_instance_id do continue
 		return state, true
 	}
 	// Also check ready (may not have been auto-claimed yet)
 	for i in 0..<task_state_count {
 		state := task_states[i]
-		if state.status != "ready" do continue
+		if state.status != .Ready do continue
 		if state.assignee_agent_instance_id != "" && state.assignee_agent_instance_id != agent_instance_id do continue
 		if !task_dependencies_satisfied(state.depends_on) do continue
 		if task_active_slot_blocker(agent_instance_id, state.task_id) != "" do continue

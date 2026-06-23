@@ -84,6 +84,17 @@ get_preference_default :: proc(key: string, agent_class := "") -> (value: string
 			"1. Do NOT start the work.\n" +
 			"2. Send the user a plan of action via `chat send-to-user` describing what you will do and why.\n" +
 			"3. Wait for confirmation before proceeding.\n\n" +
+			"## 5. Document Artifacts and Follow-up in Tasks\n" +
+			"To keep specs and guidelines auditable and clear for future agents:\n" +
+			"1. Chain-wide artifacts, specifications, and plans must be captured in the task chain description. On startup, agents must read this description via `task-chains show` to align on goals (Chain-level Specifications).\n" +
+			"2. Task-specific specifications must be captured in the task description.\n" +
+			"3. Follow-up items, notes, git commit hashes, and progress updates must be captured in task comments. Do not rely on local conversation history; task comments serve as the source of truth if the agent process restarts (Continuous Progress Logging).\n" +
+			"4. Tasks with unresolved comments cannot be marked as done.\n" +
+			"5. Reviewer LGTM and NGTM votes automatically post resolved/unresolved comments on the task. To resubmit, the assignee must first resolve all unresolved comments using `comment-resolve`.\n" +
+			"6. To request updates or redo an approved task, reviewers/users must add an unresolved comment, which automatically reverts the task to ready.\n" +
+			"7. On boot/restart, agents must run `task-chains show` and inspect the status/comments of all preceding tasks in the chain to build a full picture of what has been built and what is pending (Chain History Auditing).\n" +
+			"8. Querying specialist agents: when you require information, reviews, code changes, or assistance from another agent, create a task in the chain assigned to that specialist agent and add yourself as a participant with the `lgtm_required` role (asker-as-reviewer pattern). This ensures structured tracking of the query.\n" +
+			"9. Direct messages/nudges are not reliable: direct chat messages or task nudges are not guaranteed to be delivered or handled reliably for blocked communication. Always use formal task assignments, status updates, and comments to communicate blockage or requests for action.\n\n" +
 			"# Rich Interactive Messaging (Q&A Cards)\n" +
 			"When you need to ask the user a question, present options, or request confirmation, do NOT send plain text. Instead, use rich interactive cards so the user can answer with a single click. Choose the correct type below based on the scenario:\n\n" +
 			"## 1. Smart Replies (Highly Encouraged & Default for Simple Queries)\n" +

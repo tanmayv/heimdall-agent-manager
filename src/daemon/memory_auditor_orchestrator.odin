@@ -302,7 +302,7 @@ audit_janitor_tick :: proc() {
 	task_state := task_states[idx]
 	assignee := task_state.assignee_agent_instance_id
 
-	if task_state.status == "ready" || task_state.status == "in_progress" {
+	if task_state.status == .Ready || task_state.status == .In_Progress {
 		agent_idx := agent_record_index_by_instance(assignee)
 		if agent_idx >= 0 {
 			agent := agents[agent_idx]
@@ -313,14 +313,14 @@ audit_janitor_tick :: proc() {
 			}
 			
 			// If unclaimed for more than 120 seconds, mark stale
-			if task_state.status == "ready" && elapsed_sec >= 120 {
+			if task_state.status == .Ready && elapsed_sec >= 120 {
 				fmt.printfln("AUDIT FAILED: Auditor agent %s failed to claim task within 120s. Failing run %s.", assignee, active_run.audit_id)
 				memory_auditor_conclude_audit(active_run.audit_id, "failed", "agent_startup_stale")
 				return
 			}
 
 			// If agent went offline during active working, fail run
-			if task_state.status == "in_progress" && !agent.connected && elapsed_sec >= 30 {
+			if task_state.status == .In_Progress && !agent.connected && elapsed_sec >= 30 {
 				fmt.printfln("AUDIT FAILED: Auditor agent %s went offline during execution. Failing run %s.", assignee, active_run.audit_id)
 				memory_auditor_conclude_audit(active_run.audit_id, "failed", "agent_went_offline")
 				return

@@ -53,7 +53,7 @@ task_chain_archive_snapshot_json :: proc(chain_id: string) -> string {
 		first = false
 		strings.write_string(&builder, `{"task_id":"`); json_write_string(&builder, state.task_id)
 		strings.write_string(&builder, `","title":"`); json_write_string(&builder, state.title)
-		strings.write_string(&builder, `","status":"`); json_write_string(&builder, state.status)
+		strings.write_string(&builder, `","status":"`); json_write_string(&builder, task_status_to_string(state.status))
 		strings.write_string(&builder, `","assignee_agent_instance_id":"`); json_write_string(&builder, state.assignee_agent_instance_id)
 		strings.write_string(&builder, `","coordinator_agent_instance_id":"`); json_write_string(&builder, state.coordinator_agent_instance_id)
 		strings.write_string(&builder, `"}`)

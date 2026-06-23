@@ -271,8 +271,12 @@ registry_agent_active_for_duplicate :: proc(agent_instance_id: string) -> bool {
 		heartbeat_recent := now - agents[idx].last_seen_unix_ms < DUPLICATE_HEARTBEAT_FRESH_MS
 		ws_send_ok := ws_send_text(agents[idx].ws_socket, `{"type":"duplicate_check"}`)
 		if ws_send_ok && heartbeat_recent {
-			agents[idx].connected = true
-			return true
+			fmt.printfln("WARNING: Active duplicate detected for agent %s. Force-closing old socket to prefer new connection.", agent_instance_id)
+			net.shutdown(agents[idx].ws_socket, .Both)
+			net.close(agents[idx].ws_socket)
+			agents[idx].has_ws = false
+			agents[idx].connected = false
+			return false
 		}
 		agents[idx].has_ws = false
 		agents[idx].connected = false

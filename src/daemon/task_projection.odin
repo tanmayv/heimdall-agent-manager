@@ -19,7 +19,9 @@ task_projection_apply_event :: proc(event: Task_Event) -> bool {
 		task_states[idx].description                 = strings.clone(event.description)
 		task_states[idx].acceptance_criteria         = strings.clone(event.acceptance_criteria)
 		task_states[idx].priority                    = strings.clone(event.priority)
-		if event.status != "" do task_states[idx].status = strings.clone(event.status)
+		if event.status != "" {
+			task_states[idx].status, _ = task_status_from_string(event.status)
+		}
 		task_states[idx].assignee_agent_instance_id  = strings.clone(event.assignee_agent_instance_id)
 		task_states[idx].coordinator_agent_instance_id = strings.clone(event.coordinator_agent_instance_id)
 		task_states[idx].depends_on                  = strings.clone(event.depends_on)
@@ -58,7 +60,7 @@ task_projection_apply_event :: proc(event: Task_Event) -> bool {
 
 	case .Task_Status_Changed:
 		idx := task_state_index(event.task_id, event.chain_id)
-		task_states[idx].status             = strings.clone(event.status)
+		task_states[idx].status, _             = task_status_from_string(event.status)
 		task_states[idx].updated_at_unix_ms = event.created_unix_ms
 
 	case .Task_Assigned:
@@ -203,7 +205,7 @@ task_state_index :: proc(task_id, chain_id: string) -> int {
 	idx := task_state_count
 	if idx >= TASK_MAX_TASKS do return TASK_MAX_TASKS - 1
 	task_state_count += 1
-	task_states[idx] = Task_State{task_id = strings.clone(task_id), chain_id = strings.clone(chain_id), status = "planning"}
+	task_states[idx] = Task_State{task_id = strings.clone(task_id), chain_id = strings.clone(chain_id), status = .Planning}
 	return idx
 }
 

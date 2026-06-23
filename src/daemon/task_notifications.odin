@@ -8,7 +8,7 @@ task_notify_event :: proc(event: Task_Event) -> bool {
 	if event.task_id != "" {
 		idx   := task_state_index(event.task_id, event.chain_id)
 		state := task_states[idx]
-		if status == "" do status = state.status
+		if status == "" do status = task_status_to_string(state.status)
 		payload := task_notification_json(event, status)
 		user_client_fanout_all_ws_text(payload)
 		
@@ -71,7 +71,6 @@ task_notify_by_status :: proc(state: Task_State, status, author_agent_instance_i
 		sent = task_notify_role(state, "coordinator", payload, author_agent_instance_id) || sent
 	case "blocked":
 		sent = task_notify_role(state, "assignee", payload, author_agent_instance_id) || sent
-		sent = task_notify_role(state, "coordinator", payload, author_agent_instance_id) || sent
 	case "cancelled":
 		sent = task_notify_role(state, "assignee", payload, author_agent_instance_id) || sent
 		sent = task_notify_role(state, "coordinator", payload, author_agent_instance_id) || sent
@@ -117,7 +116,7 @@ task_notify_reviewer_rotation :: proc(reviewer: string) {
 	if reviewer == "" do return
 	for i in 0..<task_state_count {
 		state := task_states[i]
-		if state.status != "review_ready" do continue
+		if state.status != .Review_Ready do continue
 		if !task_actor_has_role(state, reviewer, "lgtm_required") do continue
 		if task_reviewer_has_voted(state.task_id, reviewer) do continue
 		if task_reviewer_active_slot_blocker(reviewer, state.task_id) != "" do continue
