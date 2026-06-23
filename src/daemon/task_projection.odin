@@ -33,6 +33,7 @@ task_projection_apply_event :: proc(event: Task_Event) -> bool {
 		if event.reviewer_agent_instance_id != "" {
 			task_store_upsert_participant(event.task_id, event.chain_id, event.reviewer_agent_instance_id, "lgtm_required")
 		}
+		task_store_clear_task_votes(event.task_id)
 
 	case .Task_Comment:
 		idx := task_state_index(event.task_id, event.chain_id)
@@ -61,6 +62,9 @@ task_projection_apply_event :: proc(event: Task_Event) -> bool {
 		idx := task_state_index(event.task_id, event.chain_id)
 		task_states[idx].status, _             = task_status_from_string(event.status)
 		task_states[idx].updated_at_unix_ms = event.created_unix_ms
+		if event.status == "in_progress" || event.status == "review_ready" {
+			task_store_clear_task_votes(event.task_id)
+		}
 
 	case .Task_Assigned:
 		idx := task_state_index(event.task_id, event.chain_id)
@@ -216,6 +220,27 @@ task_store_upsert_lgtm_vote :: proc(vote: Task_LGTM_Vote_State) {
 		created_unix_ms            = vote.created_unix_ms,
 	}
 	task_lgtm_vote_count += 1
+}
+
+task_store_clear_task_votes :: proc(task_id: string) {
+	write_idx := 0
+	for read_idx in 0..<task_lgtm_vote_count {
+		v := task_lgtm_votes[read_idx]
+		if v.task_id == task_id {
+			delete(v.task_id)
+			delete(v.chain_id)
+			delete(v.reviewer_agent_instance_id)
+			delete(v.role)
+			delete(v.comment)
+		} else {
+			task_lgtm_votes[write_idx] = v
+			write_idx += 1
+		}
+	}
+	for i in write_idx..<task_lgtm_vote_count {
+		task_lgtm_votes[i] = {}
+	}
+	task_lgtm_vote_count = write_idx
 }
 
 task_state_index :: proc(task_id, chain_id: string) -> int {

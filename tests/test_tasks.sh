@@ -328,6 +328,15 @@ assert_ok "T6 ngtm vote accepted" "$NGTM"
 
 SHOW3=$(ctl tasks show --token "$TOKEN" --task-id "$T2")
 assert_field "T6 task returned to in_progress" "$SHOW3" "status" "in_progress"
+assert_has "T6 task has ngtm vote before resubmitting" "$SHOW3" '"reviewer_agent_instance_id":"smoketest@run'
+
+# Resubmit task (status changes to review_ready)
+DONE2=$(ctl tasks done --token "$TOKEN" --task-id "$T2" --chain-id "$C2" --comment "fixed missing null check")
+assert_ok "T6 resubmit task done" "$DONE2"
+
+SHOW4=$(ctl tasks show --token "$TOKEN" --task-id "$T2")
+assert_field "T6 task promoted to review_ready" "$SHOW4" "status" "review_ready"
+assert_has "T6 task votes are cleared on resubmit" "$SHOW4" '"votes":[]'
 
 echo ""
 

@@ -76,6 +76,8 @@ export DAEMON_URL="http://127.0.0.1:49325"
 if ! bash "$SCRIPT_DIR/test_tasks.sh" > "$TEMP_HOME/test_tasks.log" 2>&1; then
   echo "[-] Error: test_tasks.sh failed! Full test logs:"
   cat "$TEMP_HOME/test_tasks.log" || true
+  echo "[-] Daemon logs:"
+  cat "$TEMP_HOME/daemon.log" || true
   exit 1
 fi
 
