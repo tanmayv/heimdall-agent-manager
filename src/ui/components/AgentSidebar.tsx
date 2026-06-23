@@ -235,7 +235,7 @@ const AgentSidebar = memo(function AgentSidebar({
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       className={`framer-panel flex h-full shrink-0 flex-col border-r border-[var(--fd-hairline)] p-4 transition-all duration-300 ease-in-out ${
-        isExpanded ? 'w-84' : 'w-20'
+        isExpanded ? 'w-84 min-w-[21rem] max-w-[21rem]' : 'w-20 min-w-[5rem] max-w-[5rem]'
       }`}
     >
       <div className="mb-4">
@@ -402,16 +402,16 @@ const AgentSidebar = memo(function AgentSidebar({
       </nav>
 
       {/* Unified Agent List View */}
-      <div className="flex-1 flex flex-col min-h-0 mt-5">
+      <div className="flex-1 flex flex-col min-h-0 mt-5 w-full">
         {/* Title Header: Only visible when expanded */}
-        <div className={`framer-topline flex items-center justify-between transition-all duration-300 ${isExpanded ? 'opacity-100 mb-3 h-7' : 'opacity-0 h-0 overflow-hidden mb-0'}`}>
+        <div className={`framer-topline flex items-center justify-between transition-all duration-300 w-full ${isExpanded ? 'opacity-100 mb-3 h-7' : 'opacity-0 h-0 overflow-hidden mb-0'}`}>
           <span>Agents</span>
           <div className="flex items-center gap-2">
             <button
               type="button"
               data-debug-id="new-agent-btn"
               onClick={onOpenStartAgent}
-              className="flex h-7 w-7 items-center justify-center rounded-full border border-[var(--fd-accent-blue)]/40 bg-[var(--fd-accent-blue)]/10 text-base leading-none text-[var(--fd-accent-blue)] transition  hover:bg-[var(--fd-accent-blue)] hover:text-black"
+              className="flex h-7 w-7 items-center justify-center rounded-full border border-[var(--fd-accent-blue)]/40 bg-[var(--fd-accent-blue)]/10 text-base leading-none text-[var(--fd-accent-blue)] transition  hover:bg-[var(--fd-accent-blue)] hover:text-black shrink-0"
               aria-label="Start new agent"
               title="Start new agent"
             >
@@ -423,7 +423,7 @@ const AgentSidebar = memo(function AgentSidebar({
               type="button"
               data-debug-id="refresh-agents-btn"
               onClick={handleRefresh}
-              className="framer-topline text-[11px] text-[var(--fd-accent-blue)] transition-colors duration-200 hover:text-white"
+              className="framer-topline text-[11px] text-[var(--fd-accent-blue)] transition-colors duration-200 hover:text-white shrink-0"
             >
               Refresh
             </button>
@@ -431,15 +431,15 @@ const AgentSidebar = memo(function AgentSidebar({
         </div>
 
         {/* Scrollable List Container */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto pr-1 flex flex-col gap-4">
+        <div ref={scrollRef} className="flex-1 overflow-y-auto pr-1 flex flex-col gap-4 w-full min-w-0">
           
           {/* Unread Section (Unified list of morphing bubbles) */}
           {unreadAgents.length > 0 && (
-            <div className="space-y-1.5 pb-3 border-b border-[var(--fd-hairline)]/50 flex flex-col">
+            <div className="space-y-1.5 pb-3 border-b border-[var(--fd-hairline)]/50 flex flex-col w-full min-w-0">
               <p className={`text-[9px] font-bold uppercase tracking-[0.15em] text-amber-500 transition-all duration-300 ${isExpanded ? 'opacity-100 mb-1 h-3' : 'opacity-0 h-0 overflow-hidden mb-0'}`}>
                 Unread Messages
               </p>
-              <div className={`flex flex-col gap-2 transition-all duration-300 ${isExpanded ? 'items-stretch' : 'items-center'}`}>
+              <div className={`flex flex-col gap-2 transition-all duration-300 w-full ${isExpanded ? 'items-stretch' : 'items-center'}`}>
                 {unreadAgents.map((agent) => {
                   const firstLetter = (agent.label || agent.id || 'A')[0].toUpperCase();
                   const isSelected = agent.id === selectedAgentId;
@@ -490,13 +490,13 @@ const AgentSidebar = memo(function AgentSidebar({
           )}
 
           {/* Main project groups list (fades and collapses when sidebar is collapsed) */}
-          <div className={`transition-all duration-300 ease-in-out flex flex-col gap-3 ${isExpanded ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden pointer-events-none'}`}>
+          <div className={`transition-all duration-300 ease-in-out flex flex-col gap-3 w-full min-w-0 ${isExpanded ? 'opacity-100' : 'opacity-0 h-0 overflow-hidden pointer-events-none'}`}>
             {agents.length ? (
               projectGroups.map(([projectId, groupAgents]) => {
                 const collapsed = Boolean(collapsedProjects[projectId]);
                 const connectedCount = groupAgents.filter((agent) => agent.status === 'connected').length;
                 return (
-                  <section key={projectId} className="space-y-1.5">
+                  <section key={projectId} className="space-y-1.5 w-full min-w-0">
                     <button
                       type="button"
                       data-debug-id={`project-group-toggle-${projectId}`}
@@ -528,7 +528,7 @@ const AgentSidebar = memo(function AgentSidebar({
                         onDragOver={(e) => handleDragOverAgent(e, agent.id)}
                         onDragLeave={handleDragLeaveAgent}
                         onDrop={(e) => handleDropAgent(e, agent.id, projectId, groupAgents)}
-                        className={`cursor-grab active:cursor-grabbing rounded-[var(--fd-radius-lg)] border transition-all duration-200 ${
+                        className={`w-full min-w-0 cursor-grab active:cursor-grabbing rounded-[var(--fd-radius-lg)] border transition-all duration-200 ${
                           dragOverAgentId === agent.id
                             ? 'border-[var(--fd-accent-blue)] bg-[var(--fd-accent-blue)]/5'
                             : 'border-transparent'
@@ -550,7 +550,7 @@ const AgentSidebar = memo(function AgentSidebar({
                 );
               })
             ) : (
-              <div className="framer-card border border-dashed border-[var(--fd-hairline)] p-4 text-sm text-[#999]">
+              <div className="framer-card border border-dashed border-[var(--fd-hairline)] p-4 text-sm text-[#999] w-full">
                 No connected or known agents reported by the daemon yet.
               </div>
             )}
