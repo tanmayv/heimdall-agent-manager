@@ -166,7 +166,45 @@ task_notify_recipient_except :: proc(agent_instance_id, payload, skip_agent_inst
 
 task_notify_recipient :: proc(agent_instance_id, payload: string) -> bool {
 	if agent_instance_id == "" do return false
-	return registry_send_ws_text(agent_instance_id, payload)
+	ok := registry_send_ws_text(agent_instance_id, payload)
+	if !ok {
+		append(&pending_notifications, Pending_Notification{
+			agent_instance_id = strings.clone(agent_instance_id),
+			payload           = strings.clone(payload),
+		})
+		fmt.printf("WARNING: failed to send WS to agent '%s'. Queued notification.\n", agent_instance_id)
+	}
+	return true
+}
+
+Pending_Notification :: struct {
+	agent_instance_id: string,
+	payload:           string,
+}
+
+pending_notifications: [dynamic]Pending_Notification
+
+task_notifications_flush_queue :: proc(agent_instance_id: string) {
+	if agent_instance_id == "" do return
+	
+	write_idx := 0
+	for i in 0..<len(pending_notifications) {
+		pn := pending_notifications[i]
+		if pn.agent_instance_id == agent_instance_id {
+			sent := registry_send_ws_text(pn.agent_instance_id, pn.payload)
+			if !sent {
+				pending_notifications[write_idx] = pn
+				write_idx += 1
+			} else {
+				delete(pn.agent_instance_id)
+				delete(pn.payload)
+			}
+		} else {
+			pending_notifications[write_idx] = pn
+			write_idx += 1
+		}
+	}
+	resize(&pending_notifications, write_idx)
 }
 
 task_notification_json :: proc(event: Task_Event, status: string) -> string {
@@ -190,9 +228,12 @@ task_notification_json :: proc(event: Task_Event, status: string) -> string {
 	if event.kind == .Task_Nudged {
 		strings.write_string(&b, `,"delivery_method":"`)
 		json_write_string(&b, task_nudge_delivery_method(event.body))
-		strings.write_string(&b, `","send_escape_prefix":`)
-		strings.write_string(&b, "true" if event.interrupt else "false")
+		strings.write_string(&b, `"`)
 	}
+	strings.write_string(&b, `,"interrupt":`)
+	strings.write_string(&b, "true" if event.interrupt else "false")
+	strings.write_string(&b, `,"send_escape_prefix":`)
+	strings.write_string(&b, "true" if event.interrupt else "false")
 
 	// Augment with full task payload if task_id is present
 	if event.task_id != "" {

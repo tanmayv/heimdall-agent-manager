@@ -25,6 +25,7 @@ handle_ws :: proc(client: net.TCP_Socket, request: string) {
 
 	write_ws_upgrade(client, ws_accept_key(key))
 	registry_set_ws(agent_instance_id, client)
+	task_notifications_flush_queue(agent_instance_id)
 	agent_lifecycle_emit(agent_instance_id, "connected", "websocket_connected")
 	fmt.println("ws connected", agent_instance_id)
 	ws_read_loop(strings.clone(agent_instance_id), client)
