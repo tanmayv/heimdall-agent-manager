@@ -163,8 +163,15 @@ def main():
             "assignee_agent_instance_id": "test-orch-agent@default"
         })
         task_c_id = task_c_res.get("task_id")
+
+        task_d_res = request_post("/tasks/create", {
+            "agent_token": agent_token,
+            "chain_id": chain2_id,
+            "title": "Task D"
+        })
+        task_d_id = task_d_res.get("task_id")
     except Exception as e:
-        print("[-] Second chain / Task C creation failed:", e)
+        print("[-] Second chain / Tasks creation failed:", e)
         sys.exit(1)
 
     print("[*] Activating second chain...")
@@ -180,12 +187,15 @@ def main():
         print("[-] Chain 2 activation request failed:", e)
         sys.exit(1)
 
-    # Verify Task C is active
+    # Verify Task C is active, Task D is ready (since it has no assignee to auto-claim)
     try:
         show_c = request_post("/tasks/show", {"agent_token": agent_token, "task_id": task_c_id})
         assert_status("Task C status after activation", "in_progress", show_c.get("task", {}).get("status"))
+
+        show_d = request_post("/tasks/show", {"agent_token": agent_token, "task_id": task_d_id})
+        assert_status("Task D status after activation", "ready", show_d.get("task", {}).get("status"))
     except Exception as e:
-        print("[-] Verification of Task C after activation failed:", e)
+        print("[-] Verification of Task C/D after activation failed:", e)
         sys.exit(1)
 
     # Revert Chain 2 status back to planning
@@ -203,12 +213,15 @@ def main():
         print("[-] Chain 2 revert request failed:", e)
         sys.exit(1)
 
-    # Verify Task C is reverted to planning status
+    # Verify Task C and D are reverted to planning status
     try:
         show_c = request_post("/tasks/show", {"agent_token": agent_token, "task_id": task_c_id})
         assert_status("Task C status after chain reverted to planning", "planning", show_c.get("task", {}).get("status"))
+
+        show_d = request_post("/tasks/show", {"agent_token": agent_token, "task_id": task_d_id})
+        assert_status("Task D status after chain reverted to planning", "planning", show_d.get("task", {}).get("status"))
     except Exception as e:
-        print("[-] Verification of Task C after planning reversion failed:", e)
+        print("[-] Verification of Task C/D after planning reversion failed:", e)
         sys.exit(1)
 
     # 8. Transition Chain 2 back to in_progress via status REST endpoint
@@ -226,12 +239,56 @@ def main():
         print("[-] Chain 2 transition to in_progress request failed:", e)
         sys.exit(1)
 
-    # Verify Task C is promoted back to in_progress (via ready -> in_progress)
+    # Verify Task C is promoted back to in_progress (via ready -> in_progress) and Task D is ready
     try:
         show_c = request_post("/tasks/show", {"agent_token": agent_token, "task_id": task_c_id})
         assert_status("Task C status after chain transitioned to in_progress", "in_progress", show_c.get("task", {}).get("status"))
+
+        show_d = request_post("/tasks/show", {"agent_token": agent_token, "task_id": task_d_id})
+        assert_status("Task D status after chain transitioned to in_progress", "ready", show_d.get("task", {}).get("status"))
     except Exception as e:
-        print("[-] Verification of Task C after in_progress transition failed:", e)
+        print("[-] Verification of Task C/D after in_progress transition failed:", e)
+        sys.exit(1)
+
+    # 9. Transition Chain 2 to ready status via status REST endpoint
+    # Revert to planning first
+    print("[*] Reverting Chain 2 back to planning status for ready transition test...")
+    try:
+        revert_res = request_post("/task-chains/status", {
+            "agent_token": agent_token,
+            "chain_id": chain2_id,
+            "status": "planning"
+        })
+        if not revert_res.get("ok"):
+            print("[-] Chain 2 revert failed:", revert_res)
+            sys.exit(1)
+    except Exception as e:
+        print("[-] Chain 2 revert request failed:", e)
+        sys.exit(1)
+
+    print("[*] Transitioning Chain 2 to ready status...")
+    try:
+        revert_res = request_post("/task-chains/status", {
+            "agent_token": agent_token,
+            "chain_id": chain2_id,
+            "status": "ready"
+        })
+        if not revert_res.get("ok"):
+            print("[-] Chain 2 transition to ready failed:", revert_res)
+            sys.exit(1)
+    except Exception as e:
+        print("[-] Chain 2 transition to ready request failed:", e)
+        sys.exit(1)
+
+    # Verify Task C is promoted back to in_progress (since slot is free) and Task D is ready
+    try:
+        show_c = request_post("/tasks/show", {"agent_token": agent_token, "task_id": task_c_id})
+        assert_status("Task C status after chain transitioned to ready", "in_progress", show_c.get("task", {}).get("status"))
+
+        show_d = request_post("/tasks/show", {"agent_token": agent_token, "task_id": task_d_id})
+        assert_status("Task D status after chain transitioned to ready", "ready", show_d.get("task", {}).get("status"))
+    except Exception as e:
+        print("[-] Verification of Task C/D after ready transition failed:", e)
         sys.exit(1)
 
     print("[+] CHAIN STATUS ORCHESTRATION TEST PASSED!")
