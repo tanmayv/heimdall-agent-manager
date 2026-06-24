@@ -185,7 +185,20 @@ def main():
         if (notification.get("type") == "task_event" and 
             notification.get("event") == "Task_Nudged" and 
             "Nudge message to offline agent" in notification.get("body", "")):
-            print("[+] SUCCESS: Queued offline notification received successfully!")
+            # Check event_id, created_unix_ms, interrupt
+            evt_id = notification.get("event_id")
+            created = notification.get("created_unix_ms")
+            inter = notification.get("interrupt")
+            if not isinstance(evt_id, str) or not evt_id.startswith("taskevt_"):
+                print("[-] FAIL: event_id is invalid:", evt_id)
+                sys.exit(1)
+            if not isinstance(created, int) or created <= 0:
+                print("[-] FAIL: created_unix_ms is invalid:", created)
+                sys.exit(1)
+            if inter is not True:
+                print("[-] FAIL: interrupt is not True:", inter)
+                sys.exit(1)
+            print("[+] SUCCESS: Queued offline notification with event_id, created_unix_ms, and interrupt received successfully!")
         else:
             print("[-] FAIL: Received unexpected notification:", notification)
             sys.exit(1)

@@ -4,23 +4,42 @@ import "core:fmt"
 import "core:strings"
 
 task_notify_event :: proc(event: Task_Event) -> bool {
-	status := event.status
-	if event.task_id != "" {
-		idx   := task_state_index(event.task_id, event.chain_id)
+	ev := event
+	if task_event_count > 0 {
+		last_ev := task_events[task_event_count - 1]
+		if last_ev.kind == ev.kind && last_ev.task_id == ev.task_id && last_ev.chain_id == ev.chain_id {
+			ev.event_id = last_ev.event_id
+			ev.created_unix_ms = last_ev.created_unix_ms
+			ev.interrupt = last_ev.interrupt
+		}
+	}
+	if ev.event_id == "" {
+		ev.event_id = strings.clone(fmt.tprintf("taskevt_%d", router_now_unix_ms()))
+	}
+	if ev.created_unix_ms == 0 {
+		ev.created_unix_ms = router_now_unix_ms()
+	}
+	if !ev.interrupt && (ev.kind == .Task_Status_Changed || ev.kind == .Task_Nudged) {
+		ev.interrupt = true
+	}
+
+	status := ev.status
+	if ev.task_id != "" {
+		idx   := task_state_index(ev.task_id, ev.chain_id)
 		state := task_states[idx]
 		if status == "" do status = task_status_to_string(state.status)
-		payload := task_notification_json(event, status)
+		payload := task_notification_json(ev, status)
 		user_client_fanout_all_ws_text(payload)
 		
 		// E2E Cognitive Memory Audit Hooks
-		if strings.has_prefix(event.chain_id, "chain-audit-") {
+		if strings.has_prefix(ev.chain_id, "chain-audit-") {
 			if status == "approved" && strings.has_prefix(state.title, "5.") {
 				// The final audit task is approved! Auto-complete the task chain!
-				fmt.printfln("SYSTEM: Final audit task in chain '%s' approved. Auto-completing the audit chain...", event.chain_id)
-				_ = task_service_complete_chain(event.chain_id, "Cognitive memory audit completed and curated successfully.", "system-auto-complete")
+				fmt.printfln("SYSTEM: Final audit task in chain '%s' approved. Auto-completing the audit chain...", ev.chain_id)
+				_ = task_service_complete_chain(ev.chain_id, "Cognitive memory audit completed and curated successfully.", "system-auto-complete")
 			} else if status == "review_ready" {
 				system_project_id := "heimdall-system"
-				author := event.author_agent_instance_id
+				author := ev.author_agent_instance_id
 				if author == "" || author == "system" || author == "system-review-vote" || author == "system-auto-approve" {
 					author = "operator@local" // fallback to resolve preferences
 				}
@@ -34,18 +53,18 @@ task_notify_event :: proc(event: Task_Event) -> bool {
 				memory_auditor_start_agent(reviewer_agent_id, "memory_reviewer", reviewer_provider_profile, reviewer_model_tier, system_project_id)
 			}
 		}
-		if event.kind == .Task_Nudged {
-			return task_notify_recipient_except(event.agent_instance_id, payload, event.author_agent_instance_id)
+		if ev.kind == .Task_Nudged {
+			return task_notify_recipient_except(ev.agent_instance_id, payload, ev.author_agent_instance_id)
 		}
-		return task_notify_by_status(state, status, event.author_agent_instance_id, payload)
+		return task_notify_by_status(state, status, ev.author_agent_instance_id, payload)
 	}
-	payload := task_notification_json(event, status)
+	payload := task_notification_json(ev, status)
 	user_client_fanout_all_ws_text(payload)
 
 	// E2E Cognitive Memory Audit Hooks on Chain Completion
-	if event.kind == .Chain_Completed && strings.has_prefix(event.chain_id, "chain-audit-") {
-		audit_id := event.chain_id[len("chain-audit-"):]
-		fmt.printfln("SYSTEM: Audit chain '%s' completed. Concluding the memory audit...", event.chain_id)
+	if ev.kind == .Chain_Completed && strings.has_prefix(ev.chain_id, "chain-audit-") {
+		audit_id := ev.chain_id[len("chain-audit-"):]
+		fmt.printfln("SYSTEM: Audit chain '%s' completed. Concluding the memory audit...", ev.chain_id)
 		memory_auditor_conclude_audit(audit_id, "completed", "")
 	}
 	return true
@@ -223,7 +242,10 @@ task_notification_json :: proc(event: Task_Event, status: string) -> string {
 	json_write_string(&b, event.agent_instance_id)
 	strings.write_string(&b, `","body":"`)
 	json_write_string(&b, task_notification_summary(event))
-	strings.write_string(&b, `"`)
+	strings.write_string(&b, `","event_id":"`)
+	json_write_string(&b, event.event_id)
+	strings.write_string(&b, `","created_unix_ms":`)
+	strings.write_string(&b, fmt.tprintf("%d", event.created_unix_ms))
 	
 	if event.kind == .Task_Nudged {
 		strings.write_string(&b, `,"delivery_method":"`)
