@@ -213,7 +213,7 @@ export default function ProjectsPage({ session }: { session: any }) {
   }, [allAgents, projectAgents]);
 
   return (
-    <main className="flex min-w-0 flex-1 flex-col bg-[var(--fd-canvas)]">
+    <main className="flex min-w-0 h-full flex-col bg-[var(--fd-canvas)] overflow-scroll">
       <header className="framer-panel flex items-center justify-between border-b border-[var(--fd-hairline)] px-6 py-4">
         <div>
           <p className="framer-topline tracking-[0.28em]">Projects</p>
@@ -238,7 +238,7 @@ export default function ProjectsPage({ session }: { session: any }) {
           />
         ) : (
           <div className="grid h-full min-h-0 grid-cols-[minmax(300px,0.9fr)_minmax(420px,1.3fr)] gap-5 overflow-hidden">
-            <div className="space-y-2 overflow-y-auto pr-1">
+            <div className="h-full min-h-0 overflow-y-auto pr-1 space-y-2">
               {projectIds.map((projectId) => {
                 const project = projectsById[projectId];
                 return (
@@ -262,7 +262,7 @@ export default function ProjectsPage({ session }: { session: any }) {
               })}
               {!projectIds.length ? <div className="framer-card border-dashed p-5 text-sm text-[#999]">No projects yet. Create one to get started.</div> : null}
             </div>
-            <div className="framer-card-xl overflow-y-auto p-5">
+            <div className="framer-card-xl h-full min-h-0 overflow-y-auto p-5">
               {selectedProject ? (
                 <>
                   <div className="flex items-start justify-between gap-4">
