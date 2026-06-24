@@ -218,5 +218,14 @@ if ! python3 "$SCRIPT_DIR/test_offline_queue_e2e.py" > "$TEMP_HOME/test_offline_
   exit 1
 fi
 
+echo "[*] Running wrapper run directory timestamp suffix integration test..."
+if ! python3 "$SCRIPT_DIR/test_wrapper_timestamp_run_dir.py" > "$TEMP_HOME/test_wrapper_timestamp_run_dir.log" 2>&1; then
+  echo "[-] Error: test_wrapper_timestamp_run_dir.py failed! Full test logs:"
+  cat "$TEMP_HOME/test_wrapper_timestamp_run_dir.log" || true
+  echo "[-] Daemon logs:"
+  cat "$TEMP_HOME/daemon.log" || true
+  exit 1
+fi
+
 echo "[*] Integration tests completed successfully!"
 

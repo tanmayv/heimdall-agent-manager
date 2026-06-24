@@ -517,7 +517,7 @@ handle_task_event :: proc(text, tmux_pane, agent_instance_id: string) {
 	)
 	defer delete(line)
 
-	send_escape := extract_json_bool(text, "send_escape_prefix", false)
+	send_escape := extract_json_bool(text, "interrupt", false) || extract_json_bool(text, "send_escape_prefix", false)
 	escape_prefix := send_escape || interrupt_val
 
 	if tmux.send_line_with_escape(tmux_pane, line, escape_prefix) {
@@ -567,7 +567,7 @@ handle_user_chat_event :: proc(text, tmux_pane: string) {
 	user_id := extract_json_string(text, "user_id", "unknown")
 	pending_count := extract_json_int(text, "pending_count", 1)
 	if pending_count <= 0 do pending_count = 1
-	send_escape := extract_json_bool(text, "send_escape_prefix", false)
+	send_escape := extract_json_bool(text, "interrupt", false) || extract_json_bool(text, "send_escape_prefix", false)
 
 	line := template_live_message(
 		active_live_prefs.msg_user_chat,
@@ -851,7 +851,9 @@ resolve_agent_run_dir :: proc(cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Ag
 	if agent_name == "" do agent_name = cfg.agent_name
 
 	base := resolve_working_dir(root)
-	cwd := join_path3(base, safe_slug(project), safe_slug(agent_name))
+	ts := time.to_unix_nanoseconds(time.now()) / 1_000_000
+	agent_name_with_ts := fmt.tprintf("%s-%d", agent_name, ts)
+	cwd := join_path3(base, safe_slug(project), safe_slug(agent_name_with_ts))
 	_ = os.make_directory_all(cwd)
 	return cwd
 }
