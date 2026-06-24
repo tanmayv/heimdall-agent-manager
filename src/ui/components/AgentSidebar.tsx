@@ -1,6 +1,6 @@
 import { useMemo, useState, memo, useCallback, useRef } from 'react';
 import AgentListItem from './AgentListItem';
-import { MessageSquare, ClipboardList, Brain, History, Folder, Bot, Settings, Activity, Pin, PinOff } from 'lucide-react';
+import { MessageSquare, ClipboardList, Brain, History, Folder, Bot, Settings, Activity, Pin, PinOff, RotateCw } from 'lucide-react';
 
 function projectGroupKey(agent) {
   return agent.projectId || 'unassigned';
@@ -423,9 +423,10 @@ const AgentSidebar = memo(function AgentSidebar({
               type="button"
               data-debug-id="refresh-agents-btn"
               onClick={handleRefresh}
-              className="framer-topline text-[11px] text-[var(--fd-accent-blue)] transition-colors duration-200 hover:text-white shrink-0"
+              className="flex h-7 w-7 items-center justify-center rounded-full border border-[var(--fd-hairline)] bg-[var(--fd-surface-1)] text-[#aaa] hover:text-white transition-colors shrink-0"
+              title="Refresh Agents"
             >
-              Refresh
+              <RotateCw className="h-3.5 w-3.5" />
             </button>
           </div>
         </div>
@@ -474,11 +475,11 @@ const AgentSidebar = memo(function AgentSidebar({
 
                       {/* Unread Badge */}
                       {isExpanded ? (
-                        <span className="rounded-full bg-[var(--fd-accent-blue)] px-1.5 py-0.5 text-[9px] font-bold text-black shrink-0">
+                        <span className="rounded-full bg-rose-500 px-1.5 py-0.5 text-[9px] font-extrabold text-white shrink-0 shadow-sm">
                           {agent.unreadCount} unread
                         </span>
                       ) : (
-                        <span className="absolute -top-1 -right-1 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-[var(--fd-accent-blue)] px-1.5 text-[9px] font-bold text-black shadow-sm">
+                        <span className="absolute -top-1 -right-1 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-rose-500 px-1.5 text-[9px] font-extrabold text-white shadow-sm">
                           {agent.unreadCount}
                         </span>
                       )}

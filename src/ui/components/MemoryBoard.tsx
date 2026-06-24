@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo, memo, FormEvent, useCallback } from 'reac
 import { useDispatch, useSelector } from 'react-redux';
 import { useUrlParams } from './useUrlParams';
 import { decideMemoryProposal, fetchMemoryDetail, proposeMemoryChange, refreshMemory, setMemoryFilters } from '../store/memorySlice';
+import { RotateCw } from 'lucide-react';
 import { handleKeyDownCtrlW } from '../utils/keyboard';
 
 const MEMORY_TYPES = ['fact', 'habit', 'episode', 'expertise', 'skill'];
@@ -153,7 +154,7 @@ export default function MemoryBoard({ session, agents = [] }: { session: any; ag
         </div>
         <div className="flex gap-2">
           {page !== 'list' ? <button type="button" data-debug-id="memory-back-btn" onClick={() => setPage('list')} className="framer-pill-secondary">Back</button> : null}
-          <button type="button" data-debug-id="memory-refresh-btn" onClick={() => dispatch(refreshMemory())} className="framer-pill-secondary" disabled={loading}>Refresh</button>
+          <button type="button" data-debug-id="memory-refresh-btn" onClick={() => dispatch(refreshMemory())} className="flex h-9 w-9 items-center justify-center rounded-full border border-[var(--fd-hairline)] bg-[var(--fd-surface-1)] text-[#aaa] hover:text-white transition-colors shrink-0" disabled={loading} title="Refresh memories"><RotateCw className="h-4 w-4" /></button>
           <button type="button" data-debug-id="memory-new-proposal-btn" onClick={() => openProposal('new', null)} className="framer-pill" disabled={!session.clientToken}>+ Proposal</button>
         </div>
       </header>

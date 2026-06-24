@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { triggerMemoryAudit, decideMemoryProposal, proposeMemoryChange, refreshMemory, clearActiveAudit } from '../store/memorySlice';
 import * as daemonApi from '../api/daemonApi';
-import { Trash2, Search, Sparkles, FolderOpen, Calendar, ShieldCheck } from 'lucide-react';
+import { Trash2, Search, Sparkles, FolderOpen, Calendar, ShieldCheck, RotateCw } from 'lucide-react';
 
 const TIME_RANGES = [
   { value: '1h', label: 'Last 1 Hour' },
@@ -238,10 +238,11 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
           <button
             type="button"
             onClick={() => dispatch(refreshMemory())}
-            className="framer-pill-secondary"
+            className="flex h-9 w-9 items-center justify-center rounded-full border border-[var(--fd-hairline)] bg-[var(--fd-surface-1)] text-[#aaa] hover:text-white transition-colors shrink-0"
             disabled={auditLoading}
+            title="Refresh memory proposals"
           >
-            Refresh
+            <RotateCw className="h-4 w-4" />
           </button>
         </div>
       </header>

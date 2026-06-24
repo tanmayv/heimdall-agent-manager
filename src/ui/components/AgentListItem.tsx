@@ -147,7 +147,7 @@ const AgentListItem = memo(function AgentListItem({
         {/* Actions Column */}
         <div className="flex flex-col items-end justify-center gap-1.5 shrink-0 self-center">
           {agent.unreadCount > 0 && (
-            <span className="rounded-full bg-[var(--fd-accent-blue)] px-1.5 py-0.5 text-[9px] font-bold text-black min-w-[16px] text-center">
+            <span className="rounded-full bg-rose-500 px-1.5 py-0.5 text-[9px] font-extrabold text-white min-w-[16px] text-center shadow-sm">
               {agent.unreadCount}
             </span>
           )}

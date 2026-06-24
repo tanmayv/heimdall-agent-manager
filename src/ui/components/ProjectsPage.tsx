@@ -2,6 +2,7 @@ import { useEffect, useState, useMemo, memo, FormEvent, useCallback } from 'reac
 import { useDispatch, useSelector } from 'react-redux';
 import { createProjectFromUi, fetchProjectDetail, refreshProjects, selectProject, updateProjectFromUi, reorderProjectsFromUi } from '../store/projectSlice';
 import * as daemonApi from '../api/daemonApi';
+import { RotateCw } from 'lucide-react';
 import type { ProjectAnchor } from '../api/daemonApi';
 
 const blankAnchor: ProjectAnchor = { type: '', value: '', note: '' };
@@ -558,7 +559,7 @@ function ProjectAgentsManager({
           <p className="framer-topline">Project agents</p>
           <p className="mt-1 text-sm text-[#999]">Agents associated with this project_id. Durable ids are daemon-generated and hidden from entry.</p>
         </div>
-        <button type="button" data-debug-id="project-agents-refresh-btn" onClick={onRefresh} className="framer-pill-secondary px-3 py-2 text-xs">Refresh</button>
+        <button type="button" data-debug-id="project-agents-refresh-btn" onClick={onRefresh} className="flex h-8 w-8 items-center justify-center rounded-full border border-[var(--fd-hairline)] bg-[var(--fd-surface-1)] text-[#aaa] hover:text-white transition-colors shrink-0" title="Refresh project agents"><RotateCw className="h-3.5 w-3.5" /></button>
       </div>
       {agentError ? <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">{agentError}</div> : null}
       <div className="space-y-2">
