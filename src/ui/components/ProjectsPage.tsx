@@ -226,7 +226,7 @@ export default function ProjectsPage({ session }: { session: any }) {
         </div>
       </header>
 
-      <section className={`min-h-0 flex-1 p-6 ${page === 'create' ? 'overflow-y-auto' : 'flex flex-col'}`}>
+      <section className={`min-h-0 flex-1 overflow-hidden p-6 ${page === 'create' ? 'overflow-y-auto' : 'flex flex-col'}`}>
         {error ? <div className="mb-4 rounded-2xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">{error}</div> : null}
         {pickerError ? <div className="mb-4 rounded-2xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100">{pickerError}</div> : null}
 
@@ -237,7 +237,7 @@ export default function ProjectsPage({ session }: { session: any }) {
             onCancel={handleCancelCreate}
           />
         ) : (
-          <div className="grid min-h-0 flex-1 grid-cols-[minmax(300px,0.9fr)_minmax(420px,1.3fr)] gap-5">
+          <div className="grid h-full min-h-0 grid-cols-[minmax(300px,0.9fr)_minmax(420px,1.3fr)] gap-5 overflow-hidden">
             <div className="space-y-2 overflow-y-auto pr-1">
               {projectIds.map((projectId) => {
                 const project = projectsById[projectId];
