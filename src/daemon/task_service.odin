@@ -395,6 +395,25 @@ task_service_status_command :: proc(cmd: Task_Status_Command) -> Task_Service_Re
 	}
 	task_service_try_auto_complete_chain(cmd.chain_id)
 	if cmd.status == "review_ready" {
+		// Reviewer Gating Constraint: halt active tasks for required reviewers
+		has_required_participants := false
+		for i in 0..<task_participant_count {
+			p := task_participants[i]
+			if p.task_id == cmd.task_id && p.role == "lgtm_required" {
+				has_required_participants = true
+				task_service_halt_active_tasks_for_agent(p.agent_instance_id)
+			}
+		}
+		if !has_required_participants {
+			// Find task state for default reviewer lookup
+			task_idx, found := task_existing_state_index(cmd.task_id, cmd.chain_id)
+			if found {
+				default_rev := task_reviewer_agent_instance_id(task_states[task_idx])
+				if default_rev != "" && default_rev != "operator@local" {
+					task_service_halt_active_tasks_for_agent(default_rev)
+				}
+			}
+		}
 		task_notify_all_lgtm_required(cmd.task_id, cmd.chain_id)
 	}
 	return Task_Service_Result{ok = true, status_code = 200, message = `{"ok":true}`}
@@ -450,6 +469,7 @@ task_service_review_vote :: proc(cmd: Task_Review_Vote_Command) -> Task_Service_
 	} else if task_all_required_lgtms_approved(cmd.task_id) {
 		task_service_auto_approve(cmd.task_id, cmd.chain_id)
 	}
+	task_recompute_promotions(cmd.author_agent_instance_id)
 	task_notify_reviewer_rotation(cmd.author_agent_instance_id)
 	return Task_Service_Result{ok = true, status_code = 200, message = `{"ok":true}`}
 }
@@ -742,3 +762,25 @@ task_service_evaluate_chain :: proc(chain_id, evaluation, author: string) -> Tas
 	task_notify_event(event)
 	return Task_Service_Result{ok = true, status_code = 200, message = `{"ok":true}`}
 }
+
+task_service_halt_active_tasks_for_agent :: proc(agent_id: string) {
+	if agent_id == "" do return
+	for i in 0..<task_state_count {
+		state := task_states[i]
+		if state.assignee_agent_instance_id != agent_id do continue
+		if state.status != .In_Progress do continue
+		
+		event := Task_Event{
+			kind                     = .Task_Status_Changed,
+			task_id                  = state.task_id,
+			chain_id                 = state.chain_id,
+			status                   = "blocked",
+			body                     = "system_block:assignee_active_task:pending_reviews_exist",
+			author_agent_instance_id = "system-reviewer-gate",
+		}
+		if task_store_append_event(event) {
+			task_notify_event(event)
+		}
+	}
+}
+

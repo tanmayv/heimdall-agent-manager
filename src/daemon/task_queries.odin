@@ -109,6 +109,16 @@ task_reviewer_agent_instance_id :: proc(state: Task_State) -> string {
 // Returns the task_id that blocks the assignee from taking another task (excludes excluding_task_id).
 task_active_slot_blocker :: proc(assignee, excluding_task_id: string) -> string {
 	if assignee == "" do return ""
+
+	// Reviewer gating constraint: pending reviews block new tasks
+	for i in 0..<task_state_count {
+		state := task_states[i]
+		if state.status != .Review_Ready do continue
+		if !task_actor_has_role(state, assignee, "lgtm_required") do continue
+		if task_reviewer_has_voted(state.task_id, assignee) do continue
+		return "pending_reviews_exist"
+	}
+
 	for i in 0..<task_state_count {
 		state := task_states[i]
 		if state.task_id == excluding_task_id do continue
