@@ -14,15 +14,22 @@ PROMPT_AUDIT_TASK_3    :: #load("../prompts/memory_audit_task_3.md", string)
 PROMPT_AUDIT_TASK_4    :: #load("../prompts/memory_audit_task_4.md", string)
 PROMPT_AUDIT_TASK_5    :: #load("../prompts/memory_audit_task_5.md", string)
 
+safe_replace :: proc(s, old, new: string) -> string {
+	res, _ := strings.replace_all(s, old, new)
+	if raw_data(res) != raw_data(s) {
+		delete(s)
+	}
+	return res
+}
+
 populate_prompt_template :: proc(template_str, timeframe, target_chains, instructions: string) -> string {
-	res1, _ := strings.replace_all(template_str, "{{TIMEFRAME}}", timeframe)
-	res2, _ := strings.replace_all(res1, "{{TARGET_CHAINS}}", target_chains)
-	delete(res1)
+	current := strings.clone(template_str)
+	current = safe_replace(current, "{{TIMEFRAME}}", timeframe)
+	current = safe_replace(current, "{{TARGET_CHAINS}}", target_chains)
 	inst := instructions
 	if inst == "" do inst = "None"
-	res3, _ := strings.replace_all(res2, "{{AUDITOR_INSTRUCTIONS}}", inst)
-	delete(res2)
-	return res3
+	current = safe_replace(current, "{{AUDITOR_INSTRUCTIONS}}", inst)
+	return current
 }
 
 handle_post_task_chain_audit :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
