@@ -29,6 +29,9 @@ task_service_create_task :: proc(cmd: Task_Create_Command) -> Task_Service_Resul
 	if cmd.title == "" {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"task create requires title"}`}
 	}
+	if cmd.assignee_agent_instance_id != "" && cmd.assignee_agent_instance_id == cmd.reviewer_agent_instance_id {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"assignee cannot be the reviewer"}`}
+	}
 	task_id := task_generate_id()
 	status := cmd.status
 	if status == "" do status = "planning"
@@ -271,6 +274,9 @@ task_service_assign_command :: proc(cmd: Task_Assign_Command) -> Task_Service_Re
 		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"task not found"}`}
 	}
 	state := task_states[idx]
+	if task_actor_has_role(state, cmd.agent_instance_id, "lgtm_required") {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"agent is already a reviewer"}`}
+	}
 	if task_status_active_for_assignee(state) {
 		if active := task_active_slot_blocker(cmd.agent_instance_id, state.task_id); active != "" {
 			return task_gating_error("assignee_active_task", "assignee already has an active task", active)
@@ -303,6 +309,17 @@ task_service_participant_command :: proc(cmd: Task_Participant_Command) -> Task_
 	case "assignee", "lgtm_required", "lgtm_optional", "coordinator", "subscriber":
 	case:
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"role must be assignee, lgtm_required, lgtm_optional, coordinator, or subscriber"}`}
+	}
+	idx, found := task_existing_state_index(cmd.task_id, cmd.chain_id)
+	if !found {
+		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"task not found"}`}
+	}
+	state := task_states[idx]
+	if cmd.role == "lgtm_required" && state.assignee_agent_instance_id == cmd.agent_instance_id {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"assignee cannot be a required reviewer"}`}
+	}
+	if cmd.role == "assignee" && task_actor_has_role(state, cmd.agent_instance_id, "lgtm_required") {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"reviewer cannot be the assignee"}`}
 	}
 	event := Task_Event{
 		kind                     = .Task_Participant_Added,
@@ -432,6 +449,9 @@ task_service_review_vote :: proc(cmd: Task_Review_Vote_Command) -> Task_Service_
 		return Task_Service_Result{ok = false, status_code = 409, message = `{"ok":false,"message":"can only vote on review_ready tasks"}`}
 	}
 	is_required  := task_actor_has_role(state, cmd.author_agent_instance_id, "lgtm_required")
+	if !is_required && cmd.author_agent_instance_id == task_reviewer_agent_instance_id(state) {
+		is_required = true
+	}
 	is_optional  := task_actor_has_role(state, cmd.author_agent_instance_id, "lgtm_optional")
 	can_override := task_actor_can_override(state, cmd.author_agent_instance_id)
 	if !is_required && !is_optional && !can_override {

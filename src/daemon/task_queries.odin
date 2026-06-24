@@ -98,7 +98,10 @@ task_reviewer_agent_instance_id :: proc(state: Task_State) -> string {
 	if state.chain_id != "" {
 		idx, found := task_existing_chain_index(state.chain_id)
 		if found && task_chains[idx].default_reviewer_agent_instance_id != "" {
-			return task_chains[idx].default_reviewer_agent_instance_id
+			default_rev := task_chains[idx].default_reviewer_agent_instance_id
+			if default_rev != state.assignee_agent_instance_id {
+				return default_rev
+			}
 		}
 	}
 	return "operator@local"
@@ -165,6 +168,22 @@ task_all_required_lgtms_approved :: proc(task_id: string) -> bool {
 			if v.task_id == task_id && v.reviewer_agent_instance_id == p.agent_instance_id && v.approved {
 				approved_count += 1
 				break
+			}
+		}
+	}
+	if required_count == 0 {
+		idx, found := task_existing_state_index(task_id, "")
+		if found {
+			default_rev := task_reviewer_agent_instance_id(task_states[idx])
+			if default_rev != "" {
+				required_count = 1
+				for j in 0..<task_lgtm_vote_count {
+					v := task_lgtm_votes[j]
+					if v.task_id == task_id && v.reviewer_agent_instance_id == default_rev && v.approved {
+						approved_count = 1
+						break
+					}
+				}
 			}
 		}
 	}
@@ -345,6 +364,8 @@ task_best_promotion_candidate_for_assignee :: proc(assignee: string) -> string {
 		if state.assignee_agent_instance_id != assignee do continue
 		if !task_promotion_candidate(state) do continue
 		if !task_dependencies_satisfied(state.depends_on) do continue
+		chain_idx, chain_found := task_existing_chain_index(state.chain_id)
+		if chain_found && task_chains[chain_idx].status == "planning" do continue
 		if best_idx < 0 || task_state_orders_before(state, task_states[best_idx]) do best_idx = i
 	}
 	if best_idx < 0 do return ""

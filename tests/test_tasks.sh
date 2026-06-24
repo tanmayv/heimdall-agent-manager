@@ -97,6 +97,16 @@ if [ -z "$TOKEN" ]; then
   exit 1
 fi
 
+REV="smoketest-rev@run${RUN_ID}"
+REG_REV=$(curl -sf -X POST "$DAEMON_URL/register" \
+  -H "Content-Type: application/json" \
+  -d "{\"agent_class\":\"smoketest-rev\",\"agent_instance_id\":\"${REV}\",\"display_name\":\"Smoke Reviewer ${RUN_ID}\"}")
+TOKEN_REV=$(field "$REG_REV" "agent_token")
+if [ -z "$TOKEN_REV" ]; then
+  echo "ERROR: failed to register test reviewer agent ($REG_REV)"
+  exit 1
+fi
+
 USER_REG=$(curl -sf -X POST "$DAEMON_URL/user-client/register" \
   -H "Content-Type: application/json" \
   -d "{\"user_id\":\"operator@local\",\"client_instance_id\":\"test-client-run${RUN_ID}\"}")
@@ -236,7 +246,7 @@ echo "=== T4: review_ready + lgtm_required notification ==="
 
 PART=$(ctl tasks participant --token "$TOKEN" \
   --task-id "$TASK_ID" --chain-id "$CHAIN_ID" \
-  --agent-instance-id "$ME" --role lgtm_required)
+  --agent-instance-id "$REV" --role lgtm_required)
 assert_ok "T4 add lgtm_required participant" "$PART"
 
 # Verify that manual status changes from agent token are blocked
@@ -268,7 +278,7 @@ echo ""
 # ─────────────────────────────────────────────────────────────────────────────
 echo "=== T5: lgtm vote → auto-approve → chain complete ==="
 
-VOTE=$(ctl tasks vote --token "$TOKEN" \
+VOTE=$(ctl tasks vote --token "$TOKEN_REV" \
   --task-id "$TASK_ID" --chain-id "$CHAIN_ID" \
   --result lgtm --comment "Logic is correct, tests pass, good to merge")
 assert_ok "T5 lgtm vote accepted" "$VOTE"
@@ -315,20 +325,20 @@ T2=$(field "$TASK2" "task_id")
 
 ctl tasks participant --token "$TOKEN" \
   --task-id "$T2" --chain-id "$C2" \
-  --agent-instance-id "$ME" --role lgtm_required >/dev/null
+  --agent-instance-id "$REV" --role lgtm_required >/dev/null
 ctl task-chains activate --token "$TOKEN" --chain-id "$C2" >/dev/null
 ctl tasks done --token "$TOKEN" \
   --task-id "$T2" --chain-id "$C2" \
   --comment "ready" >/dev/null
 
-NGTM=$(ctl tasks vote --token "$TOKEN" \
+NGTM=$(ctl tasks vote --token "$TOKEN_REV" \
   --task-id "$T2" --chain-id "$C2" \
   --result ngtm --comment "service.odin:42 — null check missing before calling Parse()")
 assert_ok "T6 ngtm vote accepted" "$NGTM"
 
 SHOW3=$(ctl tasks show --token "$TOKEN" --task-id "$T2")
 assert_field "T6 task returned to in_progress" "$SHOW3" "status" "in_progress"
-assert_has "T6 task has ngtm vote before resubmitting" "$SHOW3" '"reviewer_agent_instance_id":"smoketest@run'
+assert_has "T6 task has ngtm vote before resubmitting" "$SHOW3" '"reviewer_agent_instance_id":"smoketest-rev@run'
 
 # Resubmit task (status changes to review_ready)
 DONE2=$(ctl tasks done --token "$TOKEN" --task-id "$T2" --chain-id "$C2" --comment "fixed missing null check")
@@ -402,7 +412,7 @@ DT1=$(field "$DT1_RESP" "task_id")
 
 ctl tasks participant --token "$TOKEN" \
   --task-id "$DT1" --chain-id "$C4" \
-  --agent-instance-id "$ME" --role lgtm_required >/dev/null
+  --agent-instance-id "$REV" --role lgtm_required >/dev/null
 
 DT2_RESP=$(ctl tasks create --token "$TOKEN" \
   --chain-id "$C4" --title "Step 2 (depends on Step 1)" \
@@ -419,7 +429,7 @@ assert_field "T9 step2 still planning after activate" "$SHOW_DT2" "status" "plan
 # Complete step1: in_progress → review_ready → lgtm → approved
 ctl tasks done --token "$TOKEN" \
   --task-id "$DT1" --chain-id "$C4" --comment "done" >/dev/null
-ctl tasks vote --token "$TOKEN" \
+ctl tasks vote --token "$TOKEN_REV" \
   --task-id "$DT1" --chain-id "$C4" \
   --result lgtm --comment "ok" >/dev/null
 

@@ -200,5 +200,14 @@ if ! python3 "$SCRIPT_DIR/test_reviewer_gating.py" > "$TEMP_HOME/test_reviewer_g
   exit 1
 fi
 
+echo "[*] Running reviewer assignee conflict e2e integration test..."
+if ! python3 "$SCRIPT_DIR/test_reviewer_assignee_conflict_e2e.py" > "$TEMP_HOME/test_reviewer_assignee_conflict_e2e.log" 2>&1; then
+  echo "[-] Error: test_reviewer_assignee_conflict_e2e.py failed! Full test logs:"
+  cat "$TEMP_HOME/test_reviewer_assignee_conflict_e2e.log" || true
+  echo "[-] Daemon logs:"
+  cat "$TEMP_HOME/daemon.log" || true
+  exit 1
+fi
+
 echo "[*] Integration tests completed successfully!"
 
