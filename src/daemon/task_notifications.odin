@@ -14,9 +14,9 @@ task_notify_event :: proc(event: Task_Event) -> bool {
 		
 		// E2E Cognitive Memory Audit Hooks
 		if strings.has_prefix(event.chain_id, "chain-audit-") {
-			if status == "approved" {
-				// The audit task is approved! Auto-complete the task chain!
-				fmt.printfln("SYSTEM: Audit task in chain '%s' approved. Auto-completing the audit chain...", event.chain_id)
+			if status == "approved" && strings.has_prefix(state.title, "5.") {
+				// The final audit task is approved! Auto-complete the task chain!
+				fmt.printfln("SYSTEM: Final audit task in chain '%s' approved. Auto-completing the audit chain...", event.chain_id)
 				_ = task_service_complete_chain(event.chain_id, "Cognitive memory audit completed and curated successfully.", "system-auto-complete")
 			} else if status == "review_ready" {
 				system_project_id := "heimdall-system"

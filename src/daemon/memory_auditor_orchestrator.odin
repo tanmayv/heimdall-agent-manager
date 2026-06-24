@@ -7,6 +7,24 @@ import "core:strings"
 import "core:time"
 import cfg_lib "odin_test:lib/config"
 
+PROMPT_AUDIT_CHAIN_DESC :: #load("../prompts/memory_audit_chain_description.md", string)
+PROMPT_AUDIT_TASK_1    :: #load("../prompts/memory_audit_task_1.md", string)
+PROMPT_AUDIT_TASK_2    :: #load("../prompts/memory_audit_task_2.md", string)
+PROMPT_AUDIT_TASK_3    :: #load("../prompts/memory_audit_task_3.md", string)
+PROMPT_AUDIT_TASK_4    :: #load("../prompts/memory_audit_task_4.md", string)
+PROMPT_AUDIT_TASK_5    :: #load("../prompts/memory_audit_task_5.md", string)
+
+populate_prompt_template :: proc(template_str, timeframe, target_chains, instructions: string) -> string {
+	res1, _ := strings.replace_all(template_str, "{{TIMEFRAME}}", timeframe)
+	res2, _ := strings.replace_all(res1, "{{TARGET_CHAINS}}", target_chains)
+	delete(res1)
+	inst := instructions
+	if inst == "" do inst = "None"
+	res3, _ := strings.replace_all(res2, "{{AUDITOR_INSTRUCTIONS}}", inst)
+	delete(res2)
+	return res3
+}
+
 handle_post_task_chain_audit :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
 	author, ok := rest_authorize(client, ctx)
 	if !ok do return
@@ -137,13 +155,12 @@ handle_post_task_chain_audit :: proc(client: net.TCP_Socket, body: string, ctx: 
 	system_project_id := "heimdall-system"
 	audit_chain_id := fmt.tprintf("chain-audit-%s", audit_id)
 	chain_title := fmt.tprintf("Memory Audit (%s) at %s", run_time_range, time.now())
-	chain_desc := fmt.tprintf("Cognitive memory audit for specified target task chains.")
 	
 	create_chain_res := task_service_create_chain(Task_Chain_Create_Command{
 		chain_id                      = strings.clone(audit_chain_id),
 		project_id                    = strings.clone(system_project_id),
 		title                         = strings.clone(chain_title),
-		description                   = strings.clone(chain_desc),
+		description                   = strings.clone(PROMPT_AUDIT_CHAIN_DESC),
 		coordinator_agent_instance_id = strings.clone(auditor_agent_id),
 		author_agent_instance_id     = strings.clone(author),
 	})
@@ -152,42 +169,122 @@ handle_post_task_chain_audit :: proc(client: net.TCP_Socket, body: string, ctx: 
 		return
 	}
 
-	// 10. Build Audit Task description with user instructions
-	task_title := fmt.tprintf("Audit Task Chains: %s", run_time_range)
-	
-	task_desc_b := strings.builder_make()
-	strings.write_string(&task_desc_b, "Please audit the following task chains: ")
-	strings.write_string(&task_desc_b, target_chains_json)
-	strings.write_string(&task_desc_b, ". Analyze their final summaries, tasks, and commits. Extract core guidelines, lessons learned, and expertise, and propose memories for the respective agents.")
-	if len(auditor_instructions) > 0 {
-		strings.write_string(&task_desc_b, "\n\nUser Audit Guidelines / Focus Areas:\n")
-		strings.write_string(&task_desc_b, auditor_instructions)
-	}
-	task_desc := strings.to_string(task_desc_b)
-
-	create_task_res := task_service_create_task(Task_Create_Command{
+	// 10. Create Task 1: Discover completed chains
+	t1_desc := populate_prompt_template(PROMPT_AUDIT_TASK_1, run_time_range, target_chains_json, auditor_instructions)
+	defer delete(t1_desc)
+	t1_res := task_service_create_task(Task_Create_Command{
 		chain_id                      = strings.clone(audit_chain_id),
 		project_id                    = strings.clone(system_project_id),
-		standalone                    = false,
-		title                         = strings.clone(task_title),
-		description                   = strings.clone(task_desc),
-		status                        = "ready",
+		title                         = strings.clone("1. Discover completed chains"),
+		description                   = strings.clone(t1_desc),
+		status                        = "planning",
 		assignee_agent_instance_id   = strings.clone(auditor_agent_id),
+		reviewer_agent_instance_id   = strings.clone(reviewer_agent_id),
 		created_by                    = strings.clone(author),
-		author_agent_instance_id     = strings.clone(author),
+		author_agent_instance_id      = strings.clone(author),
 	})
-	if !create_task_res.ok {
-		write_response(client, 500, "Internal Server Error", fmt.tprintf("{{\"ok\":false,\"message\":\"failed to create audit task: %s\"}}", create_task_res.message))
+	if !t1_res.ok {
+		write_response(client, 500, "Internal Server Error", fmt.tprintf("{\"ok\":false,\"message\":\"failed to create task 1: %s\"}", t1_res.message))
 		return
 	}
+	t1_id := extract_json_string(t1_res.message, "task_id", "")
+	defer delete(t1_id)
 
-	generated_task_id := extract_json_string(create_task_res.message, "task_id", "")
-	defer delete(generated_task_id)
+	// Create Task 2: Filter target chains
+	t2_desc := populate_prompt_template(PROMPT_AUDIT_TASK_2, run_time_range, target_chains_json, auditor_instructions)
+	defer delete(t2_desc)
+	t2_res := task_service_create_task(Task_Create_Command{
+		chain_id                      = strings.clone(audit_chain_id),
+		project_id                    = strings.clone(system_project_id),
+		title                         = strings.clone("2. Filter target chains"),
+		description                   = strings.clone(t2_desc),
+		status                        = "planning",
+		assignee_agent_instance_id   = strings.clone(auditor_agent_id),
+		reviewer_agent_instance_id   = strings.clone(reviewer_agent_id),
+		depends_on                    = strings.clone(t1_id),
+		created_by                    = strings.clone(author),
+		author_agent_instance_id      = strings.clone(author),
+	})
+	if !t2_res.ok {
+		write_response(client, 500, "Internal Server Error", fmt.tprintf("{\"ok\":false,\"message\":\"failed to create task 2: %s\"}", t2_res.message))
+		return
+	}
+	t2_id := extract_json_string(t2_res.message, "task_id", "")
+	defer delete(t2_id)
 
-	// 11. Add Memory Reviewer as a reviewer participant
-	add_part_res := task_service_add_participant(generated_task_id, audit_chain_id, reviewer_agent_id, "lgtm_required", author)
-	if !add_part_res.ok {
-		write_response(client, 500, "Internal Server Error", fmt.tprintf("{{\"ok\":false,\"message\":\"failed to add Memory Reviewer participant: %s\"}}", add_part_res.message))
+	// Create Task 3: Deep analysis of chains
+	t3_desc := populate_prompt_template(PROMPT_AUDIT_TASK_3, run_time_range, target_chains_json, auditor_instructions)
+	defer delete(t3_desc)
+	t3_res := task_service_create_task(Task_Create_Command{
+		chain_id                      = strings.clone(audit_chain_id),
+		project_id                    = strings.clone(system_project_id),
+		title                         = strings.clone("3. Deep analysis of chains"),
+		description                   = strings.clone(t3_desc),
+		status                        = "planning",
+		assignee_agent_instance_id   = strings.clone(auditor_agent_id),
+		reviewer_agent_instance_id   = strings.clone(reviewer_agent_id),
+		depends_on                    = strings.clone(t2_id),
+		created_by                    = strings.clone(author),
+		author_agent_instance_id      = strings.clone(author),
+	})
+	if !t3_res.ok {
+		write_response(client, 500, "Internal Server Error", fmt.tprintf("{\"ok\":false,\"message\":\"failed to create task 3: %s\"}", t3_res.message))
+		return
+	}
+	t3_id := extract_json_string(t3_res.message, "task_id", "")
+	defer delete(t3_id)
+
+	// Create Task 4: Compile memory recommendations
+	t4_desc := populate_prompt_template(PROMPT_AUDIT_TASK_4, run_time_range, target_chains_json, auditor_instructions)
+	defer delete(t4_desc)
+	t4_res := task_service_create_task(Task_Create_Command{
+		chain_id                      = strings.clone(audit_chain_id),
+		project_id                    = strings.clone(system_project_id),
+		title                         = strings.clone("4. Compile memory recommendations"),
+		description                   = strings.clone(t4_desc),
+		status                        = "planning",
+		assignee_agent_instance_id   = strings.clone(auditor_agent_id),
+		reviewer_agent_instance_id   = strings.clone(reviewer_agent_id),
+		depends_on                    = strings.clone(t3_id),
+		created_by                    = strings.clone(author),
+		author_agent_instance_id      = strings.clone(author),
+	})
+	if !t4_res.ok {
+		write_response(client, 500, "Internal Server Error", fmt.tprintf("{\"ok\":false,\"message\":\"failed to create task 4: %s\"}", t4_res.message))
+		return
+	}
+	t4_id := extract_json_string(t4_res.message, "task_id", "")
+	defer delete(t4_id)
+
+	// Create Task 5: Propose approved memories
+	t5_desc := populate_prompt_template(PROMPT_AUDIT_TASK_5, run_time_range, target_chains_json, auditor_instructions)
+	defer delete(t5_desc)
+	t5_res := task_service_create_task(Task_Create_Command{
+		chain_id                      = strings.clone(audit_chain_id),
+		project_id                    = strings.clone(system_project_id),
+		title                         = strings.clone("5. Propose approved memories"),
+		description                   = strings.clone(t5_desc),
+		status                        = "planning",
+		assignee_agent_instance_id   = strings.clone(auditor_agent_id),
+		reviewer_agent_instance_id   = strings.clone(reviewer_agent_id),
+		depends_on                    = strings.clone(t4_id),
+		created_by                    = strings.clone(author),
+		author_agent_instance_id      = strings.clone(author),
+	})
+	if !t5_res.ok {
+		write_response(client, 500, "Internal Server Error", fmt.tprintf("{\"ok\":false,\"message\":\"failed to create task 5: %s\"}", t5_res.message))
+		return
+	}
+	t5_id := extract_json_string(t5_res.message, "task_id", "")
+	defer delete(t5_id)
+
+	// 11. Activate the audit chain! (This promotes Task 1 to ready and initiates auto-promotion flow)
+	activate_res := task_service_activate_chain(Task_Chain_Activate_Command{
+		chain_id                 = strings.clone(audit_chain_id),
+		author_agent_instance_id = strings.clone(author),
+	})
+	if !activate_res.ok {
+		write_response(client, 500, "Internal Server Error", fmt.tprintf("{\"ok\":false,\"message\":\"failed to activate audit chain: %s\"}", activate_res.message))
 		return
 	}
 
@@ -197,12 +294,12 @@ handle_post_task_chain_audit :: proc(client: net.TCP_Socket, body: string, ctx: 
 		return
 	}
 
-	// 12. Broadcast WebSocket Event
+	// 13. Broadcast WebSocket Event
 	audit_start_event_broadcast(audit_id, time_range, target_chains_json)
 
-	// 13. Return Success to Caller
+	// 14. Return Success to Caller
 	write_response(client, 200, "OK", fmt.tprintf("{{\"ok\":true,\"audit_id\":\"%s\",\"target_chains_count\":%d,\"audit_task_id\":\"%s\",\"audit_chain_id\":\"%s\"}}", 
-		audit_id, len(target_chains), generated_task_id, audit_chain_id))
+		audit_id, len(target_chains), t1_id, audit_chain_id))
 }
 
 memory_auditor_start_agent :: proc(agent_instance_id, template_id, provider_profile, model_tier, project_id: string) -> bool {
@@ -321,13 +418,14 @@ audit_janitor_tick :: proc() {
 	task_found := false
 	for i in 0..<task_state_count {
 		if task_states[i].chain_id == audit_chain_id {
-			idx = i
-			task_found = true
-			break
+			if task_states[i].status == .Ready || task_states[i].status == .In_Progress {
+				idx = i
+				task_found = true
+				break
+			}
 		}
 	}
 	if !task_found {
-		memory_auditor_conclude_audit(active_run.audit_id, "failed", "audit_task_missing")
 		return
 	}
 	

@@ -36,6 +36,38 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
   const [auditorPrompt, setAuditorPrompt] = useState('');
   const [chainsLoading, setChainsLoading] = useState(false);
   const [chainSearch, setChainSearch] = useState('');
+  const [auditTasks, setAuditTasks] = useState<any[]>([]);
+
+  // Load tasks for active audit chain
+  useEffect(() => {
+    if (!activeAudit || activeAudit.status !== 'started' || !session.clientToken) {
+      setAuditTasks([]);
+      return;
+    }
+    
+    let intervalId: number;
+    const fetchAuditTasks = async () => {
+      try {
+        const chainId = `chain-audit-${activeAudit.auditId}`;
+        const data = await daemonApi.listChainTasks({
+          daemonUrl: session.daemonUrl,
+          clientToken: session.clientToken,
+          chainId,
+        });
+        if (data?.tasks) {
+          // Sort them chronologically/by dependency sequence (1, 2, 3, 4, 5)
+          const sorted = [...data.tasks].sort((a, b) => a.title.localeCompare(b.title));
+          setAuditTasks(sorted);
+        }
+      } catch (err) {
+        console.error('Failed to fetch active audit tasks:', err);
+      }
+    };
+
+    fetchAuditTasks();
+    intervalId = window.setInterval(fetchAuditTasks, 3000);
+    return () => clearInterval(intervalId);
+  }, [activeAudit, session.clientToken, session.daemonUrl]);
 
   // Refresh memories and fetch preferences on mount
   useEffect(() => {
@@ -506,17 +538,59 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
                   <p className="text-[11px] text-[#888] mt-1">ID: {activeAudit.auditId}</p>
 
                   {activeAudit.status === 'started' && (
-                    <div className="mt-4 space-y-3 animate-fade-in">
+                    <div className="mt-4 space-y-4 animate-fade-in">
                       <div className="flex items-center gap-2">
                         <div className="w-4 h-4 border-2 border-t-transparent border-amber-500 rounded-full animate-spin shrink-0" />
                         <span className="text-xs text-[#aaa]">
-                          Memory Auditor agent is active. Scanning task chains...
+                          Memory Auditor agent is running the audit pipeline:
                         </span>
                       </div>
+
+                      {/* Stepper / Task List */}
+                      {auditTasks.length > 0 && (
+                        <div className="flex flex-col gap-2 bg-[#0c0c0c] border border-[#151515] p-3 rounded-xl">
+                          {auditTasks.map((t) => {
+                            const status = t.status || 'planning';
+                            const isCurrent = status === 'ready' || status === 'in_progress' || status === 'review_ready';
+                            return (
+                              <div key={t.id || t.taskId} className="flex items-center justify-between gap-3 text-xs">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span className={`h-2 w-2 rounded-full shrink-0 ${
+                                    status === 'approved'
+                                      ? 'bg-emerald-500'
+                                      : status === 'review_ready'
+                                      ? 'bg-purple-500 animate-pulse'
+                                      : status === 'in_progress' || status === 'ready'
+                                      ? 'bg-amber-500 animate-pulse'
+                                      : 'bg-[#222]'
+                                  }`} />
+                                  <span className={`truncate font-medium ${isCurrent ? 'text-white font-bold' : 'text-[#777]'}`}>
+                                    {t.title}
+                                  </span>
+                                </div>
+                                <span className={`text-[10px] font-mono uppercase px-1.5 py-0.5 rounded ${
+                                  status === 'approved'
+                                    ? 'text-emerald-400 bg-emerald-500/10'
+                                    : status === 'review_ready'
+                                    ? 'text-purple-400 bg-purple-500/10'
+                                    : status === 'in_progress'
+                                    ? 'text-amber-400 bg-amber-500/10 animate-pulse'
+                                    : status === 'ready'
+                                    ? 'text-yellow-400 bg-yellow-500/10'
+                                    : 'text-[#555] bg-[#151515]'
+                                }`}>
+                                  {status === 'review_ready' ? 'reviewing' : status}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+
                       {activeAudit.targetChains.length > 0 && (
                         <div className="bg-[#0c0c0c] border border-[#151515] p-2.5 rounded-lg">
                           <span className="text-[9px] text-[#555] font-bold uppercase block tracking-wider">
-                            Harvesting target chains
+                            Target Chains to Audit
                           </span>
                           <div className="flex flex-wrap gap-1.5 mt-1.5">
                             {activeAudit.targetChains.map((c) => (
