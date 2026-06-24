@@ -211,6 +211,29 @@ def main():
         print("[-] Verification of Task C after planning reversion failed:", e)
         sys.exit(1)
 
+    # 8. Transition Chain 2 back to in_progress via status REST endpoint
+    print("[*] Transitioning Chain 2 back to in_progress status...")
+    try:
+        revert_res = request_post("/task-chains/status", {
+            "agent_token": agent_token,
+            "chain_id": chain2_id,
+            "status": "in_progress"
+        })
+        if not revert_res.get("ok"):
+            print("[-] Chain 2 transition to in_progress failed:", revert_res)
+            sys.exit(1)
+    except Exception as e:
+        print("[-] Chain 2 transition to in_progress request failed:", e)
+        sys.exit(1)
+
+    # Verify Task C is promoted back to in_progress (via ready -> in_progress)
+    try:
+        show_c = request_post("/tasks/show", {"agent_token": agent_token, "task_id": task_c_id})
+        assert_status("Task C status after chain transitioned to in_progress", "in_progress", show_c.get("task", {}).get("status"))
+    except Exception as e:
+        print("[-] Verification of Task C after in_progress transition failed:", e)
+        sys.exit(1)
+
     print("[+] CHAIN STATUS ORCHESTRATION TEST PASSED!")
     sys.exit(0)
 

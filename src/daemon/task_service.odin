@@ -674,6 +674,8 @@ task_service_chain_status_command :: proc(cmd: Task_Chain_Status_Command) -> Tas
 			}
 		}
 		task_recompute_promotions(cmd.author_agent_instance_id)
+	} else if cmd.status == "in_progress" || cmd.status == "ready" {
+		task_recompute_promotions(cmd.author_agent_instance_id)
 	}
 
 	archive_ok := true
