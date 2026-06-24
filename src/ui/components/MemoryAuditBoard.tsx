@@ -2,7 +2,8 @@ import { useState, useMemo, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { triggerMemoryAudit, decideMemoryProposal, proposeMemoryChange, refreshMemory, clearActiveAudit } from '../store/memorySlice';
 import * as daemonApi from '../api/daemonApi';
-import { Trash2, Search, Sparkles, FolderOpen, Calendar, ShieldCheck, RotateCw } from 'lucide-react';
+import { Trash2, Search, Sparkles, FolderOpen, Calendar, ShieldCheck, RotateCw, ExternalLink } from 'lucide-react';
+import { updateUrlParams } from './useUrlParams';
 
 const TIME_RANGES = [
   { value: '1h', label: 'Last 1 Hour' },
@@ -535,7 +536,16 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
                         : 'Audit Run Completed'}
                     </h4>
                   </div>
-                  <p className="text-[11px] text-[#888] mt-1">ID: {activeAudit.auditId}</p>
+                  <div className="flex items-center gap-2 mt-1.5">
+                    <p className="text-[11px] text-[#888]">ID: {activeAudit.auditId}</p>
+                    <button
+                      onClick={() => updateUrlParams({ chainId: `chain-audit-${activeAudit.auditId}`, taskId: '', view: 'tasks' })}
+                      className="text-[10px] text-amber-500 hover:text-amber-400 hover:underline flex items-center gap-1 font-mono bg-amber-500/5 border border-amber-500/10 px-1.5 py-0.5 rounded transition-all"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                      View Task Chain
+                    </button>
+                  </div>
 
                   {activeAudit.status === 'started' && (
                     <div className="mt-4 space-y-4 animate-fade-in">
