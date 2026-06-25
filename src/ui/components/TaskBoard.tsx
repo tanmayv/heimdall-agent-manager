@@ -161,6 +161,27 @@ function defaultChainId(title: string) {
   return `chain-${slug}-${Date.now().toString(16)}`;
 }
 
+function formatNotActionableReason(reason: string) {
+  if (!reason) return '—';
+  if (reason === 'waiting_for_promotion') return 'Waiting to be promoted into the queue.';
+  if (reason === 'queued') return 'Queued for later.';
+  if (reason === 'unassigned') return 'No assignee yet.';
+  if (reason === 'assignee_pending_review') return 'Assignee still owes a review on another task.';
+  if (reason === 'awaiting_user_review') return 'Waiting for a user review.';
+  if (reason === 'approved') return 'Already approved.';
+  if (reason === 'cancelled') return 'Task is cancelled.';
+  if (reason === 'manual_block') return 'Manually blocked.';
+  if (reason.startsWith('chain_')) return `Blocked by chain state: ${reason.slice('chain_'.length)}.`;
+  if (reason.startsWith('deps_unmet:')) return `Dependencies not yet approved: ${reason.slice('deps_unmet:'.length)}.`;
+  if (reason.startsWith('assignee_busy:')) return `Assignee is busy with: ${reason.slice('assignee_busy:'.length)}.`;
+  if (reason.startsWith('queued_behind:')) return `Queued behind higher-priority task: ${reason.slice('queued_behind:'.length)}.`;
+  if (reason.startsWith('awaiting_review:')) return `Waiting for review from: ${reason.slice('awaiting_review:'.length)}.`;
+  if (reason.startsWith('reviewer_busy:')) return `Reviewer is currently busy with: ${reason.slice('reviewer_busy:'.length)}.`;
+  if (reason.startsWith('manual_block:')) return `Blocked: ${reason.slice('manual_block:'.length)}.`;
+  if (reason.startsWith('system_block:')) return reason;
+  return reason;
+}
+
 function AgentSelect({ value, onChange, agents, placeholder = 'Select agent', debugId }: { value: string; onChange: (value: string) => void; agents: string[]; placeholder?: string; debugId?: string }) {
   return (
     <select data-debug-id={debugId} value={value} onChange={(event) => onChange(event.target.value)} className="framer-input w-full px-3 py-2 text-sm">
@@ -870,7 +891,7 @@ export default function TaskBoard({ session }) {
               <Field label="Priority" value={selectedTask.priority} />
               <Field label="Created by" value={selectedTask.createdBy} />
               <Field label="Updated" value={formatTime(selectedTask.updatedAtUnixMs)} />
-              <Field label="Why not actionable" value={selectedTask.notActionableReason || '—'} />
+              <Field label="Why not actionable" value={formatNotActionableReason(selectedTask.notActionableReason)} />
             </div>
             <div className="framer-card p-4">
               <p className="framer-topline">Workflow actions</p>

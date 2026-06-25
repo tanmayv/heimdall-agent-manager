@@ -287,6 +287,30 @@ task_notification_json :: proc(event: Task_Event, status: string) -> string {
 
 task_notification_summary :: proc(event: Task_Event) -> string {
 	body := strings.trim_space(event.body)
+	if strings.has_prefix(body, "system_auto:chain_paused") {
+		body = "Chain paused. Stop active work on this task; it has been moved back to queued."
+	} else if strings.has_prefix(body, "system_auto:chain_moved_to_planning") {
+		body = "Chain moved to planning. Stop active work on this task; it has been moved back to queued."
+	} else if strings.has_prefix(body, "system_queue:assignee_busy:") {
+		blocker := body[len("system_queue:assignee_busy:"):]
+		if blocker == "pending_reviews_exist" {
+			body = "Queued for later because you still owe a review on another task."
+		} else if blocker != "" {
+			body = fmt.tprintf("Queued for later because another task currently has priority: %s", blocker)
+		} else {
+			body = "Queued for later because another task currently has priority."
+		}
+	} else if strings.has_prefix(body, "system_auto:deps_cleared") {
+		body = "Task is queued and ready to be picked up when you are free."
+	} else if strings.has_prefix(body, "system_auto:auto_claimed") {
+		body = "Task auto-claimed. This is now your current active task."
+	} else if strings.has_prefix(body, "ngtm by ") {
+		body = fmt.tprintf("Review requested changes: %s", body)
+	} else if strings.has_prefix(body, "system_auto:all_lgtm_required_approved") {
+		body = "Task approved by all required reviewers."
+	} else if strings.has_prefix(body, "task is ready for your review") {
+		body = "A task is ready for your review. Review it now if you are free."
+	}
 	if body == "" {
 		#partial switch event.kind {
 		case .Task_Assigned:

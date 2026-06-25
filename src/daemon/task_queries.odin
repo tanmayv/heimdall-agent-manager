@@ -477,7 +477,8 @@ task_not_actionable_reason :: proc(state: Task_State) -> string {
 			return strings.concatenate({"deps_unmet:", dep})
 		}
 		body := task_latest_status_body(state.task_id)
-		if body != "" do return body
+		if strings.has_prefix(body, "system_block:") do return body
+		if body != "" do return strings.concatenate({"manual_block:", body})
 		return "manual_block"
 	case .Approved:
 		return "approved"
