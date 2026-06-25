@@ -43,6 +43,7 @@ Config :: struct {
 
 Daemon_Config :: struct {
 	bind_host: string,
+	advertise_host: string,
 	port: u16,
 	data_dir: string,
 	daemon_id: string,
@@ -290,6 +291,8 @@ parse_daemon_key :: proc(key, value: string, cfg: ^Daemon_Config) {
 	switch key {
 	case "bind_host":
 		cfg.bind_host = parse_string(value)
+	case "advertise_host":
+		cfg.advertise_host = parse_string(value)
 	case "port":
 		if port, ok := strconv.parse_int(value); ok {
 			cfg.port = u16(port)
@@ -564,6 +567,7 @@ strip_comment :: proc(line: string) -> string {
 default_config :: proc() -> Config {
 	cfg: Config
 	cfg.daemon.bind_host = "127.0.0.1"
+	cfg.daemon.advertise_host = ""
 	cfg.daemon.port = 49322
 	cfg.daemon.data_dir = "~/.local/share/heimdall"
 	cfg.daemon.daemon_id = "local-daemon"

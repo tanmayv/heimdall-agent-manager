@@ -120,6 +120,8 @@ extract_json_bool :: proc(body, key: string, fallback: bool) -> bool {
 
 register_response_json :: proc(record: Agent_Record, template_instructions, prefs_json: string) -> string {
 	builder := strings.builder_make()
+	ws_host := server_bind_host
+	if server_config.daemon.advertise_host != "" do ws_host = server_config.daemon.advertise_host
 	strings.write_string(&builder, "{\"agent_instance_id\":\"")
 	strings.write_string(&builder, record.agent_instance_id)
 	strings.write_string(&builder, "\",\"agent_class\":\"")
@@ -129,7 +131,7 @@ register_response_json :: proc(record: Agent_Record, template_instructions, pref
 	strings.write_string(&builder, "\",\"reconnect_token\":\"rt_")
 	strings.write_string(&builder, record.agent_instance_id)
 	strings.write_string(&builder, "\",\"ws_url\":\"ws://")
-	strings.write_string(&builder, server_bind_host)
+	strings.write_string(&builder, ws_host)
 	strings.write_string(&builder, ":")
 	strings.write_string(&builder, fmt.tprintf("%d", server_port))
 	strings.write_string(&builder, "/ws/")

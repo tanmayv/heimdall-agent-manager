@@ -1,5 +1,8 @@
 [daemon]
 bind_host = "127.0.0.1"
+# When wrappers run on other machines, set advertise_host to an address they can reach.
+# Example: advertise_host = "192.168.1.50" or "daemon.example.internal"
+advertise_host = ""
 port = 49322
 data_dir = "~/.local/share/heimdall"
 wrapper_bin = "./result-wrapper/bin/ham-wrapper"

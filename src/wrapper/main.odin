@@ -70,6 +70,13 @@ main :: proc() {
 		fmt.printfln("hint: add [wrapper.agent-cmd.%s] to your config, or pass --agent <configured-name>", selected_agent)
 		return
 	}
+	effective_project_id := override_project_id
+	if effective_project_id == "" do effective_project_id = agent_cmd.project
+	if effective_project_id == "" do effective_project_id = cfg.project
+	if effective_project_id != "" {
+		agent_cmd.project = effective_project_id
+		cfg.project = effective_project_id
+	}
 	window_name := wrapper_window_name(cfg.tmux_window_prefix, agent_instance_id)
 	cwd := resolve_agent_run_dir(cfg, agent_cmd, agent_cmd_ok, selected_agent, agent_instance_id)
 
@@ -131,13 +138,6 @@ main :: proc() {
 	fmt.println("working_dir", cwd)
 
 	if !is_test_token(agent_token) {
-		// Daemon passes the agent record's actual project_id via --project-id so
-		// the bootstrap reflects the *current* project, not the per-provider
-		// default in config.toml.
-		if override_project_id != "" {
-			agent_cmd.project = override_project_id
-			cfg.project = override_project_id
-		}
 		generate_bootstrap_files(cwd, loaded.path, cfg, agent_cmd, selected_agent, registered_instance_id, display_name, cfg.daemon_url, agent_token, template_instructions)
 	}
 
@@ -184,7 +184,7 @@ main :: proc() {
 	}
 
 	initial_exec_state := "running"
-	heartbeat_loop(cfg.daemon_url, agent_class, registered_instance_id, display_name, agent_token, launch.pane_id, stop_message, selected_agent, model_tier, override_project_id, cwd, initial_exec_state, startup_status, startup_reason_code, startup_safe_diagnostic, cfg.tmux_session, window_name, &ws_conn)
+	heartbeat_loop(cfg.daemon_url, agent_class, registered_instance_id, display_name, agent_token, launch.pane_id, stop_message, selected_agent, model_tier, effective_project_id, cwd, initial_exec_state, startup_status, startup_reason_code, startup_safe_diagnostic, cfg.tmux_session, window_name, &ws_conn)
 }
 
 Startup_Probe_Result :: struct {
@@ -818,7 +818,7 @@ has_flag :: proc(args: []string, flag: string) -> bool {
 
 print_usage :: proc() {
 	fmt.println("ham-wrapper", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
-	fmt.println("usage: ham-wrapper [--config <path>] [--agent <name>] [--agent-token <token>] [--detach] [--version] [--help] [agent|agent@suffix]")
+	fmt.println("usage: ham-wrapper [--config <path>] [--agent <name>] [--agent-token <token>] [--project-id <id>] [--detach] [--version] [--help] [agent|agent@suffix]")
 }
 
 resolve_working_dir :: proc(path: string) -> string {
