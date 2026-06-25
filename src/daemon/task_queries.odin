@@ -206,7 +206,7 @@ task_active_chain_for_project :: proc(project_id: string) -> string {
 	for i in 0..<task_chain_count {
 		c := task_chains[i]
 		if c.project_id != project_id do continue
-		if c.status == "planning" || c.status == "in_progress" || c.status == "blocked" {
+		if c.status == "planning" || c.status == "in_progress" || c.status == "blocked" || c.status == "paused" {
 			return c.chain_id
 		}
 	}

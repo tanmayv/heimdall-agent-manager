@@ -529,7 +529,7 @@ task_service_try_auto_complete_chain :: proc(chain_id: string) {
 	if chain_id == "" do return
 	chain_idx, found := task_existing_chain_index(chain_id)
 	if !found do return
-	if task_chains[chain_idx].status == "reviewing" || task_chains[chain_idx].status == "completed" || task_chains[chain_idx].status == "archived" do return
+	if task_chains[chain_idx].status == "reviewing" || task_chains[chain_idx].status == "paused" || task_chains[chain_idx].status == "completed" || task_chains[chain_idx].status == "archived" do return
 	if !task_all_chain_tasks_terminal(chain_id) do return
 	event := Task_Event{
 		kind                     = .Chain_Status_Changed,
@@ -702,16 +702,28 @@ task_service_chain_status_command :: proc(cmd: Task_Chain_Status_Command) -> Tas
 	task_notify_event(status_event)
 
 	// Orchestrate member tasks based on the new chain status
-	if cmd.status == "completed" || cmd.status == "archived" || cmd.status == "planning" {
-		next_status := "cancelled" if (cmd.status == "completed" || cmd.status == "archived") else "planning"
-		body_text := "system_auto:chain_completed" if (cmd.status == "completed" || cmd.status == "archived") else "system_auto:chain_moved_to_planning"
-		next_status_val, _ := task_status_from_string(next_status)
-
+	if cmd.status == "completed" || cmd.status == "archived" || cmd.status == "planning" || cmd.status == "paused" {
 		for i in 0..<task_state_count {
 			state := task_states[i]
 			if state.chain_id != cmd.chain_id do continue
 			if task_status_terminal(state.status) do continue
-			if state.status == next_status_val do continue
+
+			next_status := ""
+			body_text := ""
+			if cmd.status == "completed" || cmd.status == "archived" {
+				next_status = "cancelled"
+				body_text = "system_auto:chain_completed"
+			} else if cmd.status == "planning" || cmd.status == "paused" {
+				if state.status == .In_Progress {
+					next_status = "queued"
+					body_text = "system_auto:chain_moved_to_planning" if cmd.status == "planning" else "system_auto:chain_paused"
+				} else if state.status == .Queued {
+					body_text = "system_auto:chain_moved_to_planning" if cmd.status == "planning" else "system_auto:chain_paused"
+				}
+			}
+			if next_status == "" do continue
+			next_status_val, _ := task_status_from_string(next_status)
+			if state.status == next_status_val && body_text == "" do continue
 
 			event := Task_Event{
 				kind                     = .Task_Status_Changed,

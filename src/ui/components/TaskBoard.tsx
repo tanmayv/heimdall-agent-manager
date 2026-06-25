@@ -761,6 +761,7 @@ export default function TaskBoard({ session }) {
               <p className="text-xs font-semibold text-[#888] uppercase tracking-wider">Chain actions</p>
               <div className="mt-3 flex flex-wrap gap-2">
                 <button type="button" data-debug-id="chain-action-start-btn" onClick={() => runChainIntent('in_progress', 'Chain activated from UI.')} disabled={!canMutate} className="framer-pill bg-white disabled:opacity-40">Start chain</button>
+                <button type="button" data-debug-id="chain-action-pause-btn" onClick={() => runChainIntent('paused', 'Chain paused from UI.')} disabled={!canMutate} className="framer-pill-secondary disabled:opacity-40">Pause chain</button>
                 <button type="button" data-debug-id="chain-action-plan-btn" onClick={() => runChainIntent('planning', 'Chain moved back to planning from UI.')} disabled={!canMutate} className="framer-pill-secondary disabled:opacity-40">Move to planning</button>
                 <button type="button" data-debug-id="chain-action-block-btn" onClick={() => runChainIntent('blocked', 'Chain marked blocked from UI.')} disabled={!canMutate} className="framer-pill-secondary disabled:opacity-40">Mark blocked</button>
               </div>
