@@ -689,20 +689,57 @@ export default function TaskBoard({ session }) {
                     key={task.taskId}
                     data-debug-id={`pending-task-item-${task.taskId}`}
                     onClick={() => openTask(task.taskId)}
-                    className="framer-card p-4 hover:border-[var(--fd-accent-blue)] cursor-pointer transition-all flex flex-col md:flex-row md:items-center justify-between gap-4"
+                    className="framer-card p-4 hover:border-[var(--fd-accent-blue)] cursor-pointer transition-all flex flex-col gap-4"
                   >
-                    <div className="space-y-1">
-                      <p className="text-xs text-[#999] tracking-wider uppercase">{chain.title}</p>
-                      <h4 className="text-base font-semibold text-white">{task.title}</h4>
-                      <p className="text-sm text-[#aaa] line-clamp-2">{task.description || 'No description provided.'}</p>
+                    <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                      <div className="space-y-1">
+                        <p className="text-xs text-[#999] tracking-wider uppercase">{chain.title}</p>
+                        <h4 className="text-base font-semibold text-white">{task.title}</h4>
+                        <p className="text-sm text-[#aaa] line-clamp-2">{task.description || 'No description provided.'}</p>
+                      </div>
+                      <div className="flex items-center gap-3 self-end md:self-auto">
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-yellow-900/40 text-yellow-300 border border-yellow-700/50">
+                          PENDING VOTE
+                        </span>
+                        <span className="framer-pill bg-white text-xs py-1 px-3">
+                          Open
+                        </span>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-3 self-end md:self-auto">
-                      <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-yellow-900/40 text-yellow-300 border border-yellow-700/50">
-                        PENDING VOTE
-                      </span>
-                      <span className="framer-pill bg-white text-xs py-1 px-3">
-                        Vote
-                      </span>
+                    <div className="border-t border-[#333] pt-3 flex flex-wrap gap-2" onClick={(event) => event.stopPropagation()}>
+                      <button
+                        type="button"
+                        data-debug-id={`pending-task-approve-btn-${task.taskId}`}
+                        disabled={!canMutate}
+                        onClick={() => runMutation(async () => {
+                          await dispatch(voteOnSelectedTask({ taskId: task.taskId, approved: true, comment: 'Approved from pending review queue.' })).unwrap();
+                        })}
+                        className="framer-pill bg-green-600 text-white disabled:opacity-40"
+                      >
+                        Approve
+                      </button>
+                      <button
+                        type="button"
+                        data-debug-id={`pending-task-request-changes-btn-${task.taskId}`}
+                        disabled={!canMutate}
+                        onClick={() => runMutation(async () => {
+                          await dispatch(voteOnSelectedTask({ taskId: task.taskId, approved: false, comment: 'Requested changes from pending review queue.' })).unwrap();
+                        })}
+                        className="framer-pill bg-red-600 text-white disabled:opacity-40"
+                      >
+                        Request changes
+                      </button>
+                      <button
+                        type="button"
+                        data-debug-id={`pending-task-escalate-review-btn-${task.taskId}`}
+                        disabled={!canMutate}
+                        onClick={() => runMutation(async () => {
+                          await dispatch(nudgeSelectedTask({ taskId: task.taskId, body: `Escalated from review queue for ${task.taskId}`, interrupt: true })).unwrap();
+                        })}
+                        className="framer-pill-secondary disabled:opacity-40"
+                      >
+                        Escalate
+                      </button>
                     </div>
                   </div>
                 );
