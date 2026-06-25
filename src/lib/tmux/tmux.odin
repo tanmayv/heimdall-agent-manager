@@ -104,6 +104,7 @@ send_line_with_escape :: proc(pane_id, text: string, escape_prefix: bool) -> boo
 		escape_cmd := []string{"tmux", "send-keys", "-t", pane_id, "Escape"}
 		state, _, _, err := os.process_exec(os.Process_Desc{command = escape_cmd}, context.allocator)
 		if err != nil || !state.success do return false
+		time.sleep(1 * time.Second)
 	}
 	send_text_cmd := []string{"tmux", "send-keys", "-t", pane_id, "-l", text}
 	state, _, _, err := os.process_exec(os.Process_Desc{command = send_text_cmd}, context.allocator)

@@ -80,9 +80,11 @@ write_response :: proc(client: net.TCP_Socket, status: int, status_text, body: s
 
 	if current_telemetry != nil {
 		t := current_telemetry
-		duration := time.duration_milliseconds(time.tick_diff(t.start_tick, time.tick_now()))
+		// ponytail: skip telemetry for heartbeat routes to avoid cluttering daemon logs
+		if t.path != "/heartbeat" && t.path != "/user-client/heartbeat" {
+			duration := time.duration_milliseconds(time.tick_diff(t.start_tick, time.tick_now()))
 
-		now := time.now()
+			now := time.now()
 		y, mo, d := time.date(now)
 		h, mi, s := time.clock_from_time(now)
 		ms := (time.to_unix_nanoseconds(now) / 1_000_000) % 1000
@@ -107,5 +109,6 @@ write_response :: proc(client: net.TCP_Socket, status: int, status_text, body: s
 			len(body),
 			body_log,
 		)
+		}
 	}
 }

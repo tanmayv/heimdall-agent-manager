@@ -281,8 +281,16 @@ task_store_append_event :: proc(event: Task_Event) -> bool {
 	ev := event
 	if ev.event_id == "" do ev.event_id = strings.clone(fmt.tprintf("taskevt_%d", router_now_unix_ms()))
 	if ev.created_unix_ms == 0 do ev.created_unix_ms = router_now_unix_ms()
+	// ponytail: default interrupt=true on append so we don't have to touch 15 different caller sites
+	if ev.kind == .Task_Status_Changed || ev.kind == .Task_Nudged {
+		ev.interrupt = true
+	}
 	if !task_store_apply_event(ev) do return false
 	
+	// ponytail: print task event to stdout for verification and diagnostics
+	fmt.printfln("[TASK EVENT] Kind: %v | Task ID: %s | Chain ID: %s | Status: %s | Author: %s | Body: %s",
+		ev.kind, ev.task_id, ev.chain_id, ev.status, ev.author_agent_instance_id, ev.body)
+
 	// Write the projected state directly to the respective SQLite table
 	return task_store_persist_projection_for_event(ev)
 }

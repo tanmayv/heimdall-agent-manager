@@ -30,6 +30,8 @@ agent_chat_notify_user_message :: proc(agent_instance_id, user_id, message_id: s
 	json_write_string(&builder, message_id)
 	strings.write_string(&builder, `","pending_count":`)
 	strings.write_string(&builder, fmt.tprintf("%d", chat_unread_for_agent(user_id, agent_instance_id)))
+	strings.write_string(&builder, `,"interrupt":`)
+	strings.write_string(&builder, send_escape ? "true" : "false")
 	strings.write_string(&builder, `,"send_escape_prefix":`)
 	strings.write_string(&builder, send_escape ? "true" : "false")
 	strings.write_string(&builder, `}`)
