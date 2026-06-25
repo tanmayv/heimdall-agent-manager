@@ -86,12 +86,13 @@ Task_Nudge_Command :: struct {
 }
 
 Task_Chain_Update_Command :: struct {
-	chain_id:                      string,
-	title:                         string,
-	description:                   string,
-	coordinator_agent_instance_id: string,
-	final_summary:                 string,
-	author_agent_instance_id:      string,
+	chain_id:                           string,
+	title:                              string,
+	description:                        string,
+	coordinator_agent_instance_id:      string,
+	default_reviewer_agent_instance_id: string,
+	final_summary:                      string,
+	author_agent_instance_id:           string,
 }
 
 Task_Chain_Status_Command :: struct {

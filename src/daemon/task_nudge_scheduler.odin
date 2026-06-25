@@ -35,11 +35,13 @@ task_nudge_scheduler_tick :: proc() -> int {
 	changed := 0
 	for i in 0..<task_state_count {
 		state     := task_states[i]
+		if !task_chain_allows_execution(state.chain_id) do continue
 		threshold := task_nudge_threshold_seconds(state.status)
 		if threshold <= 0 do continue
 		if state.updated_at_unix_ms == 0 do continue
 		if now - state.updated_at_unix_ms < i64(threshold) * 1000 do continue
 		target := task_nudge_target_for_status(state, state.status)
+		if state.status == .Review_Ready && target != "" && task_reviewer_active_slot_blocker(target, state.task_id) != "" do continue
 		last   := task_last_nudge_unix_ms(state.task_id, target)
 		cooldown := task_nudge_cfg.nudge_cooldown_seconds
 		if cooldown <= 0 do cooldown = 300
@@ -74,7 +76,7 @@ task_nudge_scheduler_tick :: proc() -> int {
 
 task_nudge_threshold_seconds :: proc(status: Task_Status) -> int {
 	#partial switch status {
-	case .Ready:
+	case .Queued:
 		return task_nudge_cfg.nudge_ready_after_seconds
 	case .Review_Ready:
 		return task_nudge_cfg.nudge_review_after_seconds
@@ -102,8 +104,8 @@ task_scheduled_nudge_body :: proc(state: Task_State, target: string) -> string {
 	if task_nudge_cfg.nudge_send_escape_prefix do delivery = "escape_prefixed_pane_or_ws"
 	action := "please continue work or move to blocked"
 	#partial switch state.status {
-	case .Ready:
-		action = "task is ready to be worked on"
+	case .Queued:
+		action = "task is queued and ready to be worked on"
 	case .Review_Ready:
 		action = "waiting on your review"
 	case .In_Progress:

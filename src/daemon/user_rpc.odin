@@ -171,7 +171,7 @@ handle_user_rpc_task_nudge :: proc(client: net.TCP_Socket, body, user_id: string
 }
 
 handle_user_rpc_task_chain_update :: proc(client: net.TCP_Socket, body, user_id: string) {
-	result := task_service_update_chain(Task_Chain_Update_Command{chain_id = extract_json_string(body, "chain_id", ""), title = extract_json_string(body, "title", ""), description = extract_json_string(body, "description", ""), coordinator_agent_instance_id = extract_json_string(body, "coordinator_agent_instance_id", ""), final_summary = extract_json_string(body, "final_summary", ""), author_agent_instance_id = user_id})
+	result := task_service_update_chain(Task_Chain_Update_Command{chain_id = extract_json_string(body, "chain_id", ""), title = extract_json_string(body, "title", ""), description = extract_json_string(body, "description", ""), coordinator_agent_instance_id = extract_json_string(body, "coordinator_agent_instance_id", ""), default_reviewer_agent_instance_id = extract_json_string(body, "default_reviewer_agent_instance_id", ""), final_summary = extract_json_string(body, "final_summary", ""), author_agent_instance_id = user_id})
 	write_task_service_response(client, result)
 }
 

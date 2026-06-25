@@ -144,7 +144,7 @@ handle_task_blocked :: proc(client: net.TCP_Socket, body: string) {
 handle_task_later :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
-	result := task_service_set_status(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), "ready", extract_json_string(body, "body", "Later/Deferred."), author)
+	result := task_service_set_status(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), "queued", extract_json_string(body, "body", "Later/Deferred."), author)
 	write_task_service_response(client, result)
 }
 
@@ -179,12 +179,13 @@ handle_task_chain_update :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
 	result := task_service_update_chain(Task_Chain_Update_Command{
-		chain_id                      = extract_json_string(body, "chain_id", ""),
-		title                         = extract_json_string(body, "title", ""),
-		description                   = extract_json_string(body, "description", ""),
-		coordinator_agent_instance_id = extract_json_string(body, "coordinator_agent_instance_id", ""),
-		final_summary                 = extract_json_string(body, "final_summary", ""),
-		author_agent_instance_id      = author,
+		chain_id                           = extract_json_string(body, "chain_id", ""),
+		title                              = extract_json_string(body, "title", ""),
+		description                        = extract_json_string(body, "description", ""),
+		coordinator_agent_instance_id      = extract_json_string(body, "coordinator_agent_instance_id", ""),
+		default_reviewer_agent_instance_id = extract_json_string(body, "default_reviewer_agent_instance_id", ""),
+		final_summary                      = extract_json_string(body, "final_summary", ""),
+		author_agent_instance_id           = author,
 	})
 	write_task_service_response(client, result)
 }
@@ -362,7 +363,8 @@ task_claim_next_for_agent :: proc(agent_instance_id: string) -> (Task_State, boo
 	// Also check ready (may not have been auto-claimed yet)
 	for i in 0..<task_state_count {
 		state := task_states[i]
-		if state.status != .Ready do continue
+		if state.status != .Queued do continue
+		if !task_chain_allows_execution(state.chain_id) do continue
 		if state.assignee_agent_instance_id != "" && state.assignee_agent_instance_id != agent_instance_id do continue
 		if !task_dependencies_satisfied(state.depends_on) do continue
 		if task_active_slot_blocker(agent_instance_id, state.task_id) != "" do continue

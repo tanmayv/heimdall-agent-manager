@@ -425,7 +425,7 @@ audit_janitor_tick :: proc() {
 	task_found := false
 	for i in 0..<task_state_count {
 		if task_states[i].chain_id == audit_chain_id {
-			if task_states[i].status == .Ready || task_states[i].status == .In_Progress {
+			if task_states[i].status == .Queued || task_states[i].status == .In_Progress {
 				idx = i
 				task_found = true
 				break
@@ -439,7 +439,7 @@ audit_janitor_tick :: proc() {
 	task_state := task_states[idx]
 	assignee := task_state.assignee_agent_instance_id
 
-	if task_state.status == .Ready || task_state.status == .In_Progress {
+	if task_state.status == .Queued || task_state.status == .In_Progress {
 		agent_idx := agent_record_index_by_instance(assignee)
 		if agent_idx >= 0 {
 			agent := agents[agent_idx]
@@ -450,7 +450,7 @@ audit_janitor_tick :: proc() {
 			}
 			
 			// If unclaimed for more than 120 seconds, mark stale
-			if task_state.status == .Ready && elapsed_sec >= 120 {
+			if task_state.status == .Queued && elapsed_sec >= 120 {
 				fmt.printfln("AUDIT FAILED: Auditor agent %s failed to claim task within 120s. Failing run %s.", assignee, active_run.audit_id)
 				memory_auditor_conclude_audit(active_run.audit_id, "failed", "agent_startup_stale")
 				return

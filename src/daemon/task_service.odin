@@ -32,6 +32,9 @@ task_service_create_task :: proc(cmd: Task_Create_Command) -> Task_Service_Resul
 	if cmd.assignee_agent_instance_id != "" && cmd.assignee_agent_instance_id == cmd.reviewer_agent_instance_id {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"assignee cannot be the reviewer"}`}
 	}
+	if cmd.assignee_agent_instance_id != "" && cmd.reviewer_agent_instance_id == "" && cmd.chain_id != "" && task_chain_default_reviewer_agent_instance_id(cmd.chain_id) == cmd.assignee_agent_instance_id {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"assignee cannot be the default reviewer"}`}
+	}
 	task_id := task_generate_id()
 	status := cmd.status
 	if status == "" do status = "planning"
@@ -104,6 +107,9 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 	}
 	if cmd.coordinator_agent_instance_id == "" {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"chain create requires coordinator_agent_instance_id"}`}
+	}
+	if cmd.default_reviewer_agent_instance_id != "" && cmd.default_reviewer_agent_instance_id == cmd.coordinator_agent_instance_id {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"default reviewer cannot equal coordinator"}`}
 	}
 	if cmd.project_id != "" {
 		if active := task_active_chain_for_project(cmd.project_id); active != "" {
@@ -201,7 +207,7 @@ task_service_comment_command :: proc(cmd: Task_Comment_Command) -> Task_Service_
 				kind                     = .Task_Status_Changed,
 				task_id                  = cmd.task_id,
 				chain_id                 = state.chain_id,
-				status                   = "ready",
+				status                   = "queued",
 				body                     = fmt.tprintf("reverted to ready due to unresolved comment: %s", cmd.body),
 				author_agent_instance_id = "system-comment-revert",
 			}
@@ -274,8 +280,11 @@ task_service_assign_command :: proc(cmd: Task_Assign_Command) -> Task_Service_Re
 		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"task not found"}`}
 	}
 	state := task_states[idx]
-	if task_actor_has_role(state, cmd.agent_instance_id, "lgtm_required") {
+	if task_actor_has_role(state, cmd.agent_instance_id, "lgtm_required") || task_actor_has_role(state, cmd.agent_instance_id, "lgtm_optional") {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"agent is already a reviewer"}`}
+	}
+	if task_chain_default_reviewer_agent_instance_id(state.chain_id) == cmd.agent_instance_id {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"assignee cannot be the default reviewer"}`}
 	}
 	if task_status_active_for_assignee(state) {
 		if active := task_active_slot_blocker(cmd.agent_instance_id, state.task_id); active != "" {
@@ -315,11 +324,14 @@ task_service_participant_command :: proc(cmd: Task_Participant_Command) -> Task_
 		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"task not found"}`}
 	}
 	state := task_states[idx]
-	if cmd.role == "lgtm_required" && state.assignee_agent_instance_id == cmd.agent_instance_id {
-		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"assignee cannot be a required reviewer"}`}
+	if (cmd.role == "lgtm_required" || cmd.role == "lgtm_optional") && state.assignee_agent_instance_id == cmd.agent_instance_id {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"assignee cannot be a reviewer"}`}
 	}
-	if cmd.role == "assignee" && task_actor_has_role(state, cmd.agent_instance_id, "lgtm_required") {
+	if cmd.role == "assignee" && (task_actor_has_role(state, cmd.agent_instance_id, "lgtm_required") || task_actor_has_role(state, cmd.agent_instance_id, "lgtm_optional")) {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"reviewer cannot be the assignee"}`}
+	}
+	if cmd.role == "assignee" && task_chain_default_reviewer_agent_instance_id(state.chain_id) == cmd.agent_instance_id {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"default reviewer cannot be the assignee"}`}
 	}
 	event := Task_Event{
 		kind                     = .Task_Participant_Added,
@@ -407,30 +419,11 @@ task_service_status_command :: proc(cmd: Task_Status_Command) -> Task_Service_Re
 	task_notify_event(event)
 
 	task_recompute_promotions(cmd.author_agent_instance_id)
-	if cmd.status == "ready" {
+	if cmd.status == "queued" || cmd.status == "ready" {
 		task_service_auto_claim(cmd.task_id)
 	}
 	task_service_try_auto_complete_chain(cmd.chain_id)
 	if cmd.status == "review_ready" {
-		// Reviewer Gating Constraint: halt active tasks for required reviewers
-		has_required_participants := false
-		for i in 0..<task_participant_count {
-			p := task_participants[i]
-			if p.task_id == cmd.task_id && p.role == "lgtm_required" {
-				has_required_participants = true
-				task_service_halt_active_tasks_for_agent(p.agent_instance_id)
-			}
-		}
-		if !has_required_participants {
-			// Find task state for default reviewer lookup
-			task_idx, found := task_existing_state_index(cmd.task_id, cmd.chain_id)
-			if found {
-				default_rev := task_reviewer_agent_instance_id(task_states[task_idx])
-				if default_rev != "" && default_rev != "operator@local" {
-					task_service_halt_active_tasks_for_agent(default_rev)
-				}
-			}
-		}
 		task_notify_all_lgtm_required(cmd.task_id, cmd.chain_id)
 	}
 	return Task_Service_Result{ok = true, status_code = 200, message = `{"ok":true}`}
@@ -514,7 +507,8 @@ task_service_auto_claim :: proc(task_id: string) {
 	idx, found := task_existing_state_index(task_id, "")
 	if !found do return
 	state := task_states[idx]
-	if state.status != .Ready do return
+	if state.status != .Queued do return
+	if !task_chain_allows_execution(state.chain_id) do return
 	assignee := state.assignee_agent_instance_id
 	if assignee == "" do return
 	if task_active_slot_blocker(assignee, task_id) != "" do return
@@ -618,9 +612,26 @@ task_service_update_chain :: proc(cmd: Task_Chain_Update_Command) -> Task_Servic
 	if cmd.chain_id == "" {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"chain update requires chain_id"}`}
 	}
-	_, found := task_existing_chain_index(cmd.chain_id)
+	chain_idx, found := task_existing_chain_index(cmd.chain_id)
 	if !found {
 		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"chain not found"}`}
+	}
+	new_coordinator := cmd.coordinator_agent_instance_id
+	if new_coordinator == "" do new_coordinator = task_chains[chain_idx].coordinator_agent_instance_id
+	new_default_reviewer := cmd.default_reviewer_agent_instance_id
+	if new_default_reviewer == "" do new_default_reviewer = task_chains[chain_idx].default_reviewer_agent_instance_id
+	if new_default_reviewer != "" && new_default_reviewer == new_coordinator {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"default reviewer cannot equal coordinator"}`}
+	}
+	if new_default_reviewer != "" {
+		for i in 0..<task_state_count {
+			state := task_states[i]
+			if state.chain_id != cmd.chain_id do continue
+			if task_status_terminal(state.status) do continue
+			if state.assignee_agent_instance_id == new_default_reviewer {
+				return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"default reviewer cannot be the assignee of an active task in the chain"}`}
+			}
+		}
 	}
 	event := Task_Event{
 		kind                          = .Chain_Metadata_Updated,
@@ -628,6 +639,7 @@ task_service_update_chain :: proc(cmd: Task_Chain_Update_Command) -> Task_Servic
 		title                         = cmd.title,
 		description                   = cmd.description,
 		coordinator_agent_instance_id = cmd.coordinator_agent_instance_id,
+		reviewer_agent_instance_id    = cmd.default_reviewer_agent_instance_id,
 		author_agent_instance_id      = cmd.author_agent_instance_id,
 	}
 	if !task_store_append_event(event) {
@@ -714,7 +726,7 @@ task_service_chain_status_command :: proc(cmd: Task_Chain_Status_Command) -> Tas
 			}
 		}
 		task_recompute_promotions(cmd.author_agent_instance_id)
-	} else if cmd.status == "in_progress" || cmd.status == "ready" {
+	} else if cmd.status == "in_progress" || cmd.status == "queued" || cmd.status == "ready" {
 		task_recompute_promotions(cmd.author_agent_instance_id)
 	}
 

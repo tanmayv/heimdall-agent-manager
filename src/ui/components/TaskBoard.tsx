@@ -20,22 +20,21 @@ import {
 } from '../store/taskSlice';
 
 const STATUS_COLUMNS = [
-  { id: 'planned', label: 'Planned' },
-  { id: 'ready', label: 'Ready' },
+  { id: 'planned', label: 'Planning' },
+  { id: 'ready', label: 'Queued' },
   { id: 'working', label: 'Working' },
-  { id: 'done', label: 'Done' },
+  { id: 'done', label: 'In review / Done' },
 ];
 
 const TASK_STATUS_BY_COLUMN = {
   planned: 'planning',
-  ready: 'ready',
+  ready: 'queued',
   working: 'in_progress',
-  done: 'approved',
+  done: 'review_ready',
 };
 
 const CHAIN_STATUS_BY_COLUMN = {
   planned: 'planning',
-  ready: 'ready',
   working: 'in_progress',
   done: 'completed',
 };
@@ -45,7 +44,7 @@ const blankCreateForm = {
   title: '',
   description: '',
   priority: 'normal',
-  status: 'ready',
+  status: 'queued',
   assigneeAgentInstanceId: '',
   reviewerAgentInstanceId: '',
 };
@@ -57,9 +56,9 @@ function formatTime(unixMs: number) {
 
 function statusBucket(status: string) {
   const value = (status || '').toLowerCase();
-  if (['done', 'good', 'validated', 'approved', 'completed', 'archived', 'cancelled'].some((item) => value.includes(item))) return 'done';
-  if (['working', 'claimed', 'in_progress', 'review', 'blocked'].some((item) => value.includes(item))) return 'working';
-  if (['ready', 'open', 'needs_improvements'].some((item) => value.includes(item))) return 'ready';
+  if (['done', 'good', 'validated', 'approved', 'completed', 'archived', 'cancelled', 'review_ready'].some((item) => value.includes(item))) return 'done';
+  if (['working', 'claimed', 'in_progress', 'blocked'].some((item) => value.includes(item))) return 'working';
+  if (['queued', 'ready', 'open', 'needs_improvements'].some((item) => value.includes(item))) return 'ready';
   return 'planned';
 }
 
@@ -430,6 +429,20 @@ export default function TaskBoard({ session }) {
     });
   }
 
+  function runTaskIntent(status: string, body: string) {
+    if (!canMutate || !selectedTask) return;
+    runMutation(async () => {
+      await dispatch(updateSelectedTaskStatus({ agentToken: agentToken.trim(), status, body })).unwrap();
+    });
+  }
+
+  function runChainIntent(status: string, finalSummary = '') {
+    if (!canMutate || !selectedChain) return;
+    runMutation(async () => {
+      await dispatch(updateSelectedChainStatus({ agentToken: agentToken.trim(), chainId: selectedChain.chainId, status, finalSummary })).unwrap();
+    });
+  }
+
   function handleAssign(event) {
     event.preventDefault();
     if (!canMutate || !selectedTask || !assignmentAgent.trim()) return;
@@ -485,7 +498,17 @@ export default function TaskBoard({ session }) {
 
   function defaultDragSummary(kind: 'task' | 'chain', status: string) {
     const actor = session.userId || 'user';
-    return kind === 'task' ? `Task moved to ${status} by ${actor}` : `Task chain moved to ${status} by ${actor}`;
+    if (kind === 'task') {
+      if (status === 'queued') return `Queued for later by ${actor}`;
+      if (status === 'in_progress') return `Started work by ${actor}`;
+      if (status === 'review_ready') return `Submitted for review by ${actor}`;
+      if (status === 'planning') return `Moved back to planning by ${actor}`;
+      return `Task moved to ${status} by ${actor}`;
+    }
+    if (status === 'planning') return `Chain moved to planning by ${actor}`;
+    if (status === 'in_progress') return `Chain activated by ${actor}`;
+    if (status === 'completed') return `Chain completed by ${actor}`;
+    return `Task chain moved to ${status} by ${actor}`;
   }
 
   function handleDragStart(kind: 'task' | 'chain', id: string, fromBucket: string) {
@@ -734,7 +757,18 @@ export default function TaskBoard({ session }) {
               <textarea data-debug-id="chain-edit-final-summary" value={chainForm.finalSummary} onChange={(event) => setChainForm({ ...chainForm, finalSummary: event.target.value })} placeholder="Final summary" rows={2} className="framer-input resize-y px-3 py-2 text-sm" />
               <div className="flex flex-wrap gap-2"><button data-debug-id="chain-save-metadata-btn" disabled={!canMutate} className="framer-pill bg-white disabled:opacity-40">Save metadata</button></div>
             </form>
-            <form onSubmit={handleChainStatus} className="mt-3 grid grid-cols-[0.55fr_1fr_auto] gap-2"><input data-debug-id="chain-status-input" value={chainStatusForm.status} onChange={(event) => setChainStatusForm({ ...chainStatusForm, status: event.target.value })} placeholder="status" className="framer-input px-3 py-2 text-sm" /><input data-debug-id="chain-status-summary" value={chainStatusForm.finalSummary} onChange={(event) => setChainStatusForm({ ...chainStatusForm, finalSummary: event.target.value })} placeholder="final summary" className="framer-input px-3 py-2 text-sm" /><button data-debug-id="chain-set-status-btn" disabled={!canMutate || !chainStatusForm.status.trim()} className="framer-pill bg-white disabled:opacity-40">Set status</button></form>
+            <div className="mt-4 border-t border-[#333] pt-4">
+              <p className="text-xs font-semibold text-[#888] uppercase tracking-wider">Chain actions</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button type="button" data-debug-id="chain-action-start-btn" onClick={() => runChainIntent('in_progress', 'Chain activated from UI.')} disabled={!canMutate} className="framer-pill bg-white disabled:opacity-40">Start chain</button>
+                <button type="button" data-debug-id="chain-action-plan-btn" onClick={() => runChainIntent('planning', 'Chain moved back to planning from UI.')} disabled={!canMutate} className="framer-pill-secondary disabled:opacity-40">Move to planning</button>
+                <button type="button" data-debug-id="chain-action-block-btn" onClick={() => runChainIntent('blocked', 'Chain marked blocked from UI.')} disabled={!canMutate} className="framer-pill-secondary disabled:opacity-40">Mark blocked</button>
+              </div>
+              <div className="mt-3 grid grid-cols-[1fr_auto] gap-2">
+                <input data-debug-id="chain-status-summary" value={chainStatusForm.finalSummary} onChange={(event) => setChainStatusForm({ ...chainStatusForm, finalSummary: event.target.value })} placeholder="final summary for completion" className="framer-input px-3 py-2 text-sm" />
+                <button type="button" data-debug-id="chain-action-complete-btn" onClick={() => runChainIntent('completed', chainStatusForm.finalSummary.trim())} disabled={!canMutate || !chainStatusForm.finalSummary.trim()} className="framer-pill bg-white disabled:opacity-40">Complete chain</button>
+              </div>
+            </div>
           </div>
           <div className="grid grid-cols-4 gap-4 flex-1 min-h-0 overflow-scroll">
             {STATUS_COLUMNS.map((column) => renderColumn(column, [
@@ -835,9 +869,10 @@ export default function TaskBoard({ session }) {
               <Field label="Priority" value={selectedTask.priority} />
               <Field label="Created by" value={selectedTask.createdBy} />
               <Field label="Updated" value={formatTime(selectedTask.updatedAtUnixMs)} />
+              <Field label="Why not actionable" value={selectedTask.notActionableReason || '—'} />
             </div>
             <div className="framer-card p-4">
-              <p className="framer-topline">Mutations</p>
+              <p className="framer-topline">Workflow actions</p>
               <form onSubmit={handleComment} className="mt-3 flex gap-2">
                 <input data-debug-id="task-comment-input" value={commentBody} onChange={(event) => setCommentBody(event.target.value)} placeholder="Add comment" className="framer-input min-w-0 flex-1 px-3 py-2 text-sm" />
                 <button data-debug-id="task-comment-submit-btn" disabled={!canMutate || !commentBody.trim()} className="framer-pill bg-white disabled:opacity-40">Comment</button>
@@ -854,24 +889,37 @@ export default function TaskBoard({ session }) {
                   Add as unresolved comment (requires manual resolution to approve task)
                 </label>
               </div>
-              <form onSubmit={handleStatus} className="mt-4 grid grid-cols-[0.55fr_1fr_auto] gap-2">
-                <select
-                  data-debug-id="task-status-select"
-                  value={statusForm.status}
-                  onChange={(event) => setStatusForm({ ...statusForm, status: event.target.value })}
-                  className="framer-input px-3 py-2 text-sm cursor-pointer"
-                >
-                  <option value="planning">planning</option>
-                  <option value="ready">ready</option>
-                  <option value="in_progress">in_progress</option>
-                  <option value="review_ready">review_ready</option>
-                  <option value="approved">approved</option>
-                  <option value="blocked">blocked</option>
-                  <option value="cancelled">cancelled</option>
-                </select>
-                <input data-debug-id="task-status-note-input" value={statusForm.body} onChange={(event) => setStatusForm({ ...statusForm, body: event.target.value })} placeholder="status note" className="framer-input px-3 py-2 text-sm" />
-                <button data-debug-id="task-status-update-btn" disabled={!canMutate || !statusForm.status.trim() || !statusForm.body.trim()} className="framer-pill bg-white disabled:opacity-40">Update</button>
-              </form>
+              <div className="mt-4 border-t border-[#333] pt-4">
+                <p className="text-xs font-semibold text-[#888] uppercase tracking-wider">Task actions</p>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button type="button" data-debug-id="task-action-start-btn" onClick={() => runTaskIntent('in_progress', 'Started work from UI.')} disabled={!canMutate || selectedTask.status === 'in_progress'} className="framer-pill bg-white disabled:opacity-40">Start work</button>
+                  <button type="button" data-debug-id="task-action-queue-btn" onClick={() => runTaskIntent('queued', 'Queued for later from UI.')} disabled={!canMutate || selectedTask.status === 'queued'} className="framer-pill-secondary disabled:opacity-40">Queue for later</button>
+                  <button type="button" data-debug-id="task-action-block-btn" onClick={() => runTaskIntent('blocked', 'Blocked from UI.')} disabled={!canMutate || selectedTaskTerminal} className="framer-pill-secondary disabled:opacity-40">Mark blocked</button>
+                  <button type="button" data-debug-id="task-action-review-btn" onClick={() => runTaskIntent('review_ready', 'Submitted for review from UI.')} disabled={!canMutate || selectedTaskTerminal} className="framer-pill-secondary disabled:opacity-40">Submit for review</button>
+                  <button type="button" data-debug-id="task-action-cancel-btn" onClick={() => runTaskIntent('cancelled', 'Cancelled from UI.')} disabled={!canMutate || selectedTaskTerminal} className="framer-pill-secondary disabled:opacity-40">Cancel task</button>
+                </div>
+              </div>
+              <details className="mt-4 border-t border-[#333] pt-4">
+                <summary className="cursor-pointer text-xs font-semibold uppercase tracking-wider text-[#888]">Advanced manual status</summary>
+                <form onSubmit={handleStatus} className="mt-3 grid grid-cols-[0.55fr_1fr_auto] gap-2">
+                  <select
+                    data-debug-id="task-status-select"
+                    value={statusForm.status}
+                    onChange={(event) => setStatusForm({ ...statusForm, status: event.target.value })}
+                    className="framer-input px-3 py-2 text-sm cursor-pointer"
+                  >
+                    <option value="planning">planning</option>
+                    <option value="queued">queued</option>
+                    <option value="in_progress">in_progress</option>
+                    <option value="review_ready">review_ready</option>
+                    <option value="approved">approved</option>
+                    <option value="blocked">blocked</option>
+                    <option value="cancelled">cancelled</option>
+                  </select>
+                  <input data-debug-id="task-status-note-input" value={statusForm.body} onChange={(event) => setStatusForm({ ...statusForm, body: event.target.value })} placeholder="status note" className="framer-input px-3 py-2 text-sm" />
+                  <button data-debug-id="task-status-update-btn" disabled={!canMutate || !statusForm.status.trim() || !statusForm.body.trim()} className="framer-pill bg-white disabled:opacity-40">Update</button>
+                </form>
+              </details>
               <form onSubmit={handleAssign} className="mt-2 grid grid-cols-[1fr_auto] gap-2">
                 <AgentSelect debugId="task-assign-agent-select" value={assignmentAgent} onChange={setAssignmentAgent} agents={agentOptions} placeholder="New assignee" />
                 <button data-debug-id="task-assign-submit-btn" disabled={!canMutate || !assignmentAgent.trim()} className="framer-pill bg-white disabled:opacity-40">Assign</button>
@@ -888,7 +936,20 @@ export default function TaskBoard({ session }) {
                 <button data-debug-id="task-participant-submit-btn" disabled={!canMutate || !participantForm.agentInstanceId.trim()} className="framer-pill bg-white disabled:opacity-40">Add</button>
               </form>
               <div className="mt-4 border-t border-[#333] pt-4">
-                <p className="text-xs font-semibold text-[#888] uppercase tracking-wider">Cast Review Vote</p>
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs font-semibold text-[#888] uppercase tracking-wider">Review actions</p>
+                  {selectedTask.status === 'review_ready' && !selectedTaskTerminal && (
+                    <button
+                      type="button"
+                      data-debug-id="task-escalate-review-btn"
+                      onClick={handleNudgeTask}
+                      disabled={!canMutate || nudgeInFlight}
+                      className="framer-pill-secondary disabled:opacity-40"
+                    >
+                      Escalate review
+                    </button>
+                  )}
+                </div>
                 <form onSubmit={(e) => e.preventDefault()} className="mt-2 flex gap-2 items-center">
                   <input
                     data-debug-id="task-vote-comment"
@@ -904,7 +965,7 @@ export default function TaskBoard({ session }) {
                     disabled={!canMutate}
                     className="framer-pill bg-green-600 text-white font-semibold px-4 py-2 hover:bg-green-700 disabled:opacity-40"
                   >
-                    LGTM
+                    Approve
                   </button>
                   <button
                     data-debug-id="task-vote-ngtm-btn"
@@ -913,7 +974,7 @@ export default function TaskBoard({ session }) {
                     disabled={!canMutate}
                     className="framer-pill bg-red-600 text-white font-semibold px-4 py-2 hover:bg-red-700 disabled:opacity-40"
                   >
-                    NGTM
+                    Request changes
                   </button>
                 </form>
               </div>

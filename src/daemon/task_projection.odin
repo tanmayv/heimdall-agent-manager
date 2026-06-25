@@ -108,6 +108,9 @@ task_projection_apply_event :: proc(event: Task_Event) -> bool {
 		if event.coordinator_agent_instance_id != "" {
 			task_chains[idx].coordinator_agent_instance_id = strings.clone(event.coordinator_agent_instance_id)
 		}
+		if event.reviewer_agent_instance_id != "" {
+			task_chains[idx].default_reviewer_agent_instance_id = strings.clone(event.reviewer_agent_instance_id)
+		}
 
 	case .Chain_Status_Changed:
 		idx := task_chain_index(event.chain_id)

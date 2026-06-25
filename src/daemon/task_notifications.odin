@@ -75,17 +75,12 @@ task_notify_by_status :: proc(state: Task_State, status, author_agent_instance_i
 	switch status {
 	case "planning":
 		sent = task_notify_role(state, "coordinator", payload, author_agent_instance_id) || sent
-	case "ready", "in_progress":
+	case "queued", "in_progress":
 		sent = task_notify_role(state, "assignee", payload, author_agent_instance_id) || sent
 	case "review_ready":
-		// Notify all lgtm_required participants
-		for i in 0..<task_participant_count {
-			p := task_participants[i]
-			if p.task_id != state.task_id && (state.chain_id == "" || p.chain_id != state.chain_id) do continue
-			if p.role != "lgtm_required" do continue
-			if p.agent_instance_id == author_agent_instance_id do continue
-			sent = task_notify_recipient(p.agent_instance_id, payload) || sent
-		}
+		// Agent review notifications are dispatched explicitly by
+		// task_notify_all_lgtm_required so we can enforce one-active-review-at-a-time
+		// without duplicating or prematurely sending review work.
 	case "approved":
 		sent = task_notify_role(state, "coordinator", payload, author_agent_instance_id) || sent
 	case "blocked":
@@ -119,15 +114,24 @@ task_notify_all_lgtm_required :: proc(task_id, chain_id: string) {
 		status   = "review_ready",
 		body     = "task is ready for your review",
 	}, "review_ready")
+	has_required := false
 	for i in 0..<task_participant_count {
 		p := task_participants[i]
 		if p.task_id != task_id && (chain_id == "" || p.chain_id != chain_id) do continue
 		if p.role != "lgtm_required" do continue
+		has_required = true
 		if task_reviewer_has_voted(task_id, p.agent_instance_id) do continue
 		if task_reviewer_active_slot_blocker(p.agent_instance_id, task_id) != "" do continue
 		task_notify_recipient(p.agent_instance_id, payload)
 	}
-	_ = state
+	if !has_required {
+		default_reviewer := task_reviewer_agent_instance_id(state)
+		if default_reviewer != "" && default_reviewer != "operator@local" {
+			if !task_reviewer_has_voted(task_id, default_reviewer) && task_reviewer_active_slot_blocker(default_reviewer, task_id) == "" {
+				task_notify_recipient(default_reviewer, payload)
+			}
+		}
+	}
 }
 
 // After a reviewer submits a vote, nudge them about their next pending review_ready task.
@@ -136,7 +140,11 @@ task_notify_reviewer_rotation :: proc(reviewer: string) {
 	for i in 0..<task_state_count {
 		state := task_states[i]
 		if state.status != .Review_Ready do continue
-		if !task_actor_has_role(state, reviewer, "lgtm_required") do continue
+		is_required := task_actor_has_role(state, reviewer, "lgtm_required")
+		if !is_required {
+			is_required = task_reviewer_agent_instance_id(state) == reviewer
+		}
+		if !is_required do continue
 		if task_reviewer_has_voted(state.task_id, reviewer) do continue
 		if task_reviewer_active_slot_blocker(reviewer, state.task_id) != "" do continue
 		event := Task_Event{

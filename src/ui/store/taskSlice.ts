@@ -18,6 +18,7 @@ function normalizeTask(task: any) {
     createdBy: task.created_by || '',
     createdAtUnixMs: Number(task.created_at_unix_ms || 0),
     updatedAtUnixMs: Number(task.updated_at_unix_ms || 0),
+    notActionableReason: task.not_actionable_reason || '',
     votes: (task.votes || []).map((v: any) => ({
       reviewerAgentInstanceId: v.reviewer_agent_instance_id,
       approved: Boolean(v.approved),

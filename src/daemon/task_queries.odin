@@ -88,6 +88,13 @@ task_coordinator_agent_instance_id :: proc(state: Task_State) -> string {
 	return task_chains[idx].coordinator_agent_instance_id
 }
 
+task_chain_default_reviewer_agent_instance_id :: proc(chain_id: string) -> string {
+	if chain_id == "" do return ""
+	idx, found := task_existing_chain_index(chain_id)
+	if !found do return ""
+	return task_chains[idx].default_reviewer_agent_instance_id
+}
+
 task_reviewer_agent_instance_id :: proc(state: Task_State) -> string {
 	for i in 0..<task_participant_count {
 		p := task_participants[i]
@@ -95,14 +102,9 @@ task_reviewer_agent_instance_id :: proc(state: Task_State) -> string {
 			return p.agent_instance_id
 		}
 	}
-	if state.chain_id != "" {
-		idx, found := task_existing_chain_index(state.chain_id)
-		if found && task_chains[idx].default_reviewer_agent_instance_id != "" {
-			default_rev := task_chains[idx].default_reviewer_agent_instance_id
-			if default_rev != state.assignee_agent_instance_id {
-				return default_rev
-			}
-		}
+	default_rev := task_chain_default_reviewer_agent_instance_id(state.chain_id)
+	if default_rev != "" && default_rev != state.assignee_agent_instance_id {
+		return default_rev
 	}
 	return "operator@local"
 }
@@ -192,6 +194,13 @@ task_all_required_lgtms_approved :: proc(task_id: string) -> bool {
 
 // --- Chain queries ---
 
+task_chain_allows_execution :: proc(chain_id: string) -> bool {
+	if chain_id == "" do return true
+	idx, found := task_existing_chain_index(chain_id)
+	if !found do return true
+	return task_chains[idx].status == "in_progress"
+}
+
 task_active_chain_for_project :: proc(project_id: string) -> string {
 	if project_id == "" do return ""
 	for i in 0..<task_chain_count {
@@ -246,7 +255,7 @@ task_actor_can_override :: proc(state: Task_State, actor: string) -> bool {
 task_status_change_authorized :: proc(state: Task_State, next_status: Task_Status, actor: string) -> bool {
 	if task_actor_can_override(state, actor) do return true
 	switch next_status {
-	case .Ready, .In_Progress, .Review_Ready, .Blocked:
+	case .Queued, .In_Progress, .Review_Ready, .Blocked:
 		return task_actor_has_role(state, actor, "assignee")
 	case .Cancelled, .Approved, .Planning:
 		return false
@@ -258,9 +267,11 @@ task_status_change_authorized :: proc(state: Task_State, next_status: Task_Statu
 
 task_nudge_target_for_status :: proc(state: Task_State, status: Task_Status) -> string {
 	#partial switch status {
-	case .Ready, .In_Progress, .Blocked:
+	case .Queued, .In_Progress, .Blocked:
 		return task_target_for_role(state, "assignee")
 	case .Review_Ready:
+		reviewer := task_reviewer_agent_instance_id(state)
+		if reviewer != "operator@local" do return reviewer
 		return task_target_for_role(state, "lgtm_required")
 	case .Approved:
 		return task_target_for_role(state, "coordinator")
@@ -297,21 +308,18 @@ task_recompute_promotions :: proc(author: string) -> int {
 		state := task_states[i]
 		if !task_promotion_candidate(state) do continue
 		if !task_dependencies_satisfied(state.depends_on) do continue
-		chain_idx, chain_found := task_existing_chain_index(state.chain_id)
-		if chain_found && task_chains[chain_idx].status == "planning" do continue
+		if !task_chain_allows_execution(state.chain_id) do continue
 		assignee := state.assignee_agent_instance_id
-		status := "ready"
+		status := "queued"
 		body := "system_auto:deps_cleared"
 		if assignee != "" {
 			active_blocker := task_active_slot_blocker(assignee, state.task_id)
 			if active_blocker != "" {
-				status = "blocked"
-				body   = strings.concatenate({"system_block:assignee_active_task:", active_blocker})
+				body = strings.concatenate({"system_queue:assignee_busy:", active_blocker})
 			} else {
 				best := task_best_promotion_candidate_for_assignee(assignee)
 				if best != "" && best != state.task_id {
-					status = "blocked"
-					body   = strings.concatenate({"system_block:assignee_active_task:", best})
+					body = strings.concatenate({"system_queue:assignee_busy:", best})
 				}
 			}
 		}
@@ -328,7 +336,7 @@ task_recompute_promotions :: proc(author: string) -> int {
 		if task_store_append_event(event) {
 			task_notify_event(event)
 			changed += 1
-			if status == "ready" {
+			if status == "queued" {
 				task_service_auto_claim(state.task_id)
 			}
 		}
@@ -364,8 +372,7 @@ task_best_promotion_candidate_for_assignee :: proc(assignee: string) -> string {
 		if state.assignee_agent_instance_id != assignee do continue
 		if !task_promotion_candidate(state) do continue
 		if !task_dependencies_satisfied(state.depends_on) do continue
-		chain_idx, chain_found := task_existing_chain_index(state.chain_id)
-		if chain_found && task_chains[chain_idx].status == "planning" do continue
+		if !task_chain_allows_execution(state.chain_id) do continue
 		if best_idx < 0 || task_state_orders_before(state, task_states[best_idx]) do best_idx = i
 	}
 	if best_idx < 0 do return ""
@@ -377,7 +384,8 @@ task_best_ready_task_for_assignee :: proc(assignee: string) -> string {
 	for i in 0..<task_state_count {
 		state := task_states[i]
 		if state.assignee_agent_instance_id != assignee do continue
-		if state.status != .Ready do continue
+		if state.status != .Queued do continue
+		if !task_chain_allows_execution(state.chain_id) do continue
 		if best_idx < 0 || task_state_orders_before(state, task_states[best_idx]) do best_idx = i
 	}
 	if best_idx < 0 do return ""
@@ -416,6 +424,68 @@ task_system_block_kind :: proc(state: Task_State) -> string {
 		return "manual"
 	}
 	return "manual"
+}
+
+task_latest_status_body :: proc(task_id: string) -> string {
+	for i := task_event_count - 1; i >= 0; i -= 1 {
+		ev := task_events[i]
+		if ev.task_id != task_id || ev.kind != .Task_Status_Changed do continue
+		return ev.body
+	}
+	return ""
+}
+
+task_chain_status_for_task :: proc(state: Task_State) -> string {
+	if state.chain_id == "" do return ""
+	idx, found := task_existing_chain_index(state.chain_id)
+	if !found do return ""
+	return task_chains[idx].status
+}
+
+task_not_actionable_reason :: proc(state: Task_State) -> string {
+	chain_status := task_chain_status_for_task(state)
+	if chain_status != "" && chain_status != "in_progress" {
+		return strings.concatenate({"chain_", chain_status})
+	}
+	#partial switch state.status {
+	case .Planning:
+		return "waiting_for_promotion"
+	case .Queued:
+		if dep := task_dependency_blocking_ids(state.depends_on); dep != "" {
+			return strings.concatenate({"deps_unmet:", dep})
+		}
+		if state.assignee_agent_instance_id == "" do return "unassigned"
+		if blocker := task_active_slot_blocker(state.assignee_agent_instance_id, state.task_id); blocker != "" {
+			if blocker == "pending_reviews_exist" do return "assignee_pending_review"
+			return strings.concatenate({"assignee_busy:", blocker})
+		}
+		if best := task_best_promotion_candidate_for_assignee(state.assignee_agent_instance_id); best != "" && best != state.task_id {
+			return strings.concatenate({"queued_behind:", best})
+		}
+		return "queued"
+	case .In_Progress:
+		return ""
+	case .Review_Ready:
+		reviewer := task_reviewer_agent_instance_id(state)
+		if reviewer == "operator@local" do return "awaiting_user_review"
+		if blocker := task_reviewer_active_slot_blocker(reviewer, state.task_id); blocker != "" {
+			return strings.concatenate({"reviewer_busy:", blocker})
+		}
+		return strings.concatenate({"awaiting_review:", reviewer})
+	case .Blocked:
+		if dep := task_dependency_blocking_ids(state.depends_on); dep != "" {
+			return strings.concatenate({"deps_unmet:", dep})
+		}
+		body := task_latest_status_body(state.task_id)
+		if body != "" do return body
+		return "manual_block"
+	case .Approved:
+		return "approved"
+	case .Cancelled:
+		return "cancelled"
+	case:
+		return ""
+	}
 }
 
 // --- Comment queries ---
@@ -475,7 +545,8 @@ task_write_state_json :: proc(builder: ^strings.Builder, state: Task_State) {
 	strings.write_string(builder, `","created_by":"`);        json_write_string(builder, state.created_by)
 	strings.write_string(builder, `","created_at_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", state.created_at_unix_ms))
 	strings.write_string(builder, `,"updated_at_unix_ms":`);  strings.write_string(builder, fmt.tprintf("%d", state.updated_at_unix_ms))
-	strings.write_string(builder, `,"unresolved_comment_count":`); strings.write_string(builder, fmt.tprintf("%d", len(unresolved)))
+	strings.write_string(builder, `,"not_actionable_reason":"`); json_write_string(builder, task_not_actionable_reason(state))
+	strings.write_string(builder, `","unresolved_comment_count":`); strings.write_string(builder, fmt.tprintf("%d", len(unresolved)))
 	
 	strings.write_string(builder, `,"unresolved_comments":[`)
 	for c, idx in unresolved {

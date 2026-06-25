@@ -6,7 +6,7 @@ import "core:strings"
 
 Task_Status :: enum {
 	Planning,
-	Ready,
+	Queued,
 	In_Progress,
 	Review_Ready,
 	Approved,
@@ -17,7 +17,7 @@ Task_Status :: enum {
 task_status_to_string :: proc(status: Task_Status) -> string {
 	switch status {
 	case .Planning: return "planning"
-	case .Ready: return "ready"
+	case .Queued: return "queued"
 	case .In_Progress: return "in_progress"
 	case .Review_Ready: return "review_ready"
 	case .Approved: return "approved"
@@ -30,7 +30,7 @@ task_status_to_string :: proc(status: Task_Status) -> string {
 task_status_from_string :: proc(s: string) -> (status: Task_Status, ok: bool) {
 	switch s {
 	case "planning": return .Planning, true
-	case "ready": return .Ready, true
+	case "queued", "ready": return .Queued, true
 	case "in_progress": return .In_Progress, true
 	case "review_ready": return .Review_Ready, true
 	case "approved": return .Approved, true
@@ -47,12 +47,12 @@ TASK_MAX_PARTICIPANTS :: 4096
 TASK_MAX_COMMENTS    :: 8192
 TASK_MAX_VOTES       :: 2048
 
-// Task statuses: planning → ready → in_progress → review_ready → approved
+// Task statuses: planning → queued → in_progress → review_ready → approved
 // blocked and cancelled are reachable from most states.
-// All transitions except planning→ready and review_ready→approved are manual.
-// planning→ready is automatic (deps satisfied + chain active).
+// All transitions except planning→queued and review_ready→approved are manual.
+// planning→queued is automatic (deps satisfied + chain active).
 // review_ready→approved is automatic (all lgtm_required have voted approved).
-// ready→in_progress is automatic (assignee has no other active task).
+// queued→in_progress is automatic (assignee has no other active task).
 
 Task_Event_Kind :: enum {
 	Task_Created,
@@ -271,7 +271,7 @@ task_store_init :: proc(data_dir: string) {
 	}
 
 	for i in 0..<task_state_count {
-		if task_states[i].status == .Ready {
+		if task_states[i].status == .Queued {
 			task_service_auto_claim(task_states[i].task_id)
 		}
 	}
