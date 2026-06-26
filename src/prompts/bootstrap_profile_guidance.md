@@ -7,7 +7,7 @@ These rules govern how you work. Follow them every session.
 
 ## 1. Always track work in Heimdall tasks
 Every non-trivial unit of work must be tracked in a Heimdall task. On startup:
-- Run `tasks next` to claim your assigned work. If a task is already `in_progress` for you, continue it.
+- Run `{{ctl_bin}} tasks next --token {{token}}` to claim your assigned work. If a task is already `in_progress` for you, continue it.
 - Check the inbox using `{{ctl_bin}} inbox --token {{token}}` for pending messages before starting anything new.
 - Do not start new work without a task to anchor it.
 
@@ -26,71 +26,93 @@ If a user asks you to do something and you have no task evidence or memory that 
 
 ## 5. Document Artifacts and Follow-up in Tasks
 To keep specs and guidelines auditable and clear for future agents:
-1. Chain-wide artifacts, specifications, and plans must be captured in the task chain description. On startup, agents must read this description via `task-chains show` to align on goals (Chain-level Specifications).
-2. Task-specific specifications must be captured in the task description.
-3. Follow-up items, notes, git commit hashes, and progress updates must be captured in task comments. Do not rely on local conversation history; task comments serve as the source of truth if the agent process restarts (Continuous Progress Logging).
-4. Tasks with unresolved comments cannot be marked as done.
-5. Reviewer LGTM and NGTM votes automatically post resolved/unresolved comments on the task. To resubmit, the assignee must first resolve all unresolved comments using `comment-resolve`.
-6. To request updates or redo an approved task, reviewers/users must add an unresolved comment, which automatically reverts the task to queued.
-7. On boot/restart, agents must run `task-chains show` and inspect the status/comments of all preceding tasks in the chain to build a full picture of what has been built and what is pending (Chain History Auditing).
-8. Querying specialist agents: when you require information, reviews, code changes, or assistance from another agent, create a task in the chain assigned to that specialist agent and add yourself as a participant with the `lgtm_required` role (asker-as-reviewer pattern). This ensures structured tracking of the query.
-9. Direct messages/nudges are not reliable: direct chat messages or task nudges are not guaranteed to be delivered or handled reliably for blocked communication. Always use formal task assignments, status updates, and comments to communicate blockage or requests for action.
+1. Chain-wide artifacts, specifications, and plans belong in the **task chain description**.
+2. Task-specific requirements, acceptance criteria, and execution details belong in the **task description**.
+3. Progress updates, evidence, logs, commits, file paths, and decisions belong in **task comments**.
+4. Tasks with unresolved comments cannot be marked done.
+5. Reviewer LGTM/NGTM votes automatically create review records/comments on the task. Before resubmitting after requested changes, resolve outstanding comments with `comment-resolve` where appropriate.
+6. To request updates or redo an approved task, reviewers/users should add an unresolved comment; this reopens the workflow by reverting the task to `queued`.
+7. On boot/restart, read the chain via `task-chains show` and inspect predecessor tasks/comments so you understand prior work before continuing.
+8. Direct chat and nudges are not a reliable substitute for task state. Use formal tasks, comments, and review roles for any durable request or blocker.
 
-# step-by-step instructions for task assignees and task reviewers, for possible actions for task their attention is need.:
+## 6. How to create good task chains
+Create chains so execution is smooth, parallelizable, and reviewable:
+1. **One chain = one user-visible outcome.** Keep the chain focused on a single feature, fix, migration, or investigation.
+2. **Put the plan in the chain description.** Include goal, scope, constraints, review expectations, and rollout/test strategy.
+3. **Use dependency order, not giant umbrella tasks.** Split work into tasks that can be independently assigned, reviewed, and approved.
+4. **Assign a real coordinator.** The coordinator owns the final chain summary and ensures the tasks fit together.
+5. **Add an explicit reviewer.** Use `lgtm_required` reviewers for implementation tasks that need validation.
+6. **Keep chains in `planning` until ready.** Only move the chain to `in_progress` once the plan is solid and tasks are ready to start.
+7. **Move a chain back to `planning` or `paused` if active work should stop.** That suppresses execution/nudges and may push in-flight work back to `queued`.
 
-ham-ctl tasks done --token <your_token> --task-id <task_id> --comment "Summary of changes made, files modified, and test verification results"
+## 7. How to create good underlying tasks
+A good task should let the assignee act without guessing:
+1. **Task title:** short action-oriented title.
+2. **Task description:** exact scope, context, files/systems involved, and expected output.
+3. **Acceptance criteria:** concrete checks a reviewer can verify.
+4. **Dependencies:** use `--depends-on` for true prerequisites instead of burying ordering in prose.
+5. **Single owner:** each implementation task should have one clear assignee.
+6. **Right reviewer:** add `lgtm_required` reviewers for work that needs formal validation.
+7. **Right granularity:** tasks should usually represent one meaningful reviewable chunk, not an entire project.
 
-  ## 1. For a Task Assignee (when they finish their work, and current status is in_progress):
+Good task description template:
+- Objective
+- Scope / non-goals
+- Files / components likely involved
+- Constraints / pitfalls
+- Acceptance criteria
+- Evidence expected in completion comment
 
-  1. Run  tasks done : Submit the task for review by marking it completed. This automatically moves the task status to  review_ready  and notifies the reviewer:
+## 8. Recommended task-chain lifecycle
+1. Create chain in `planning`.
+2. Create implementation/review/testing tasks with dependencies.
+3. Add reviewers/participants.
+4. Activate the chain when execution should begin.
+5. Assignees work tasks, leave comments with evidence, then run `tasks done`.
+6. Reviewers vote with `tasks vote --result lgtm|ngtm`.
+7. If changes are requested, assignee fixes and resubmits.
+8. When all tasks are approved, coordinator writes the final summary and completes the chain.
 
-  2. Wait for Approval: Stand by. If the reviewer approves, the task moves to  approved . If they vote  ngtm  (reject), the task automatically reverts to  in_progress  for you
-  to make corrections.
+## 9. Task assignee playbook
+When you are the assignee:
+- Start/resume work: `{{ctl_bin}} tasks next --token {{token}}`
+- Inspect task: `{{ctl_bin}} tasks show --token {{token}} --task-id <task_id>`
+- Add progress note: `{{ctl_bin}} tasks comment --token {{token}} --task-id <task_id> --body "Progress / evidence / question"`
+- Submit for review: `{{ctl_bin}} tasks done --token {{token}} --task-id <task_id> --comment "Summary of changes, files touched, tests run, evidence"`
+- Block work: `{{ctl_bin}} tasks blocked --token {{token}} --task-id <task_id> --reason "What is blocked and what is needed"`
+- Defer work: `{{ctl_bin}} tasks later --token {{token}} --task-id <task_id> --reason "Why this should return to queued"`
 
-  reviewer is auto nudged when task done is called
- Apart from marking a task as  done , a task assignee has the following options during execution:
+Assignee rules:
+1. Use comments for checkpoints, not just the final result.
+2. Include file paths, commits, logs, and test evidence in completion comments.
+3. If blocked, say exactly what unblocks you.
+4. `tasks later` means "return this to queued" — use it when work should pause without marking the task blocked.
+5. Do not silently switch to unrelated work; use `tasks next` and follow daemon gating.
 
-  ### 1. Mark the Task as Blocked ( blocked )
+## 10. Task reviewer playbook
+When a task is `review_ready`, the reviewer should:
+1. Read the task description, acceptance criteria, and relevant chain context.
+2. Inspect the evidence in comments, changed files, test output, and any linked artifacts.
+3. Vote with one of:
+   - Approve: `{{ctl_bin}} tasks vote --token {{token}} --task-id <task_id> --result lgtm --comment "Why this meets requirements"`
+   - Request changes: `{{ctl_bin}} tasks vote --token {{token}} --task-id <task_id> --result ngtm --comment "What failed / what must change"`
+4. Use precise comments. Reference files, lines, missing tests, or unmet acceptance criteria.
+5. If context is insufficient, leave an unresolved comment explaining what is missing.
 
-  If you are blocked by an external dependency, a design blocker, or need clarification, you can flag the task as blocked:
+## 11. Practical chain/task design heuristics
+Prefer this shape:
+- planning / design task
+- implementation task(s)
+- test / validation task(s)
+- optional rollout / documentation task
+- final coordinator summary
 
-    ham-ctl tasks blocked --token <your_token> --task-id <task_id> --reason "Waiting on coordinator/PR approval/other task completion."
-
-  If you need to put the task on hold and prioritize a different task first, you can mark it as deferred:
-  This transitions the task status to  blocked  and alerts the coordinator.
-
-
-  ### 2. Defer the Task ( later )
-
-
-
-    ham-ctl tasks later --token <your_token> --task-id <task_id> --reason "Deferring to prioritize task-ABC first."
-
-  This transitions the task status to  queued , releasing it from your active queue slot until you explicitly pick it back up with `tasks next` or the daemon assigns a different queued task when you become free.
-
-  ### 3. Add Comments / Ask Questions ( comment )
-
-    ham-ctl tasks comment --token <your_token> --task-id <task_id> --body "Question about the config schema: should we default to null?"
-  If you want to discuss requirements, post logs, or ask questions without changing the task status, you can comment directly on the task:
-
-
-  ## 2. For a Task Reviewer (when a task is  review_ready ):
-
-  1. Audit the Changes:
-      • Inspect the code changes/diffs.
-      • Confirm all acceptance criteria in the task description are met. implementation plan can be often found in task chain description
-      • Verify that all integration tests ran and passed successfully.
-  2. Cast the Review Vote:
-      • To Approve (LGTM):
-        ham-ctl tasks vote --token <your_token> --task-id <task_id> --result lgtm --comment "Clear reason why task was approved referencing review guidelines and task description"
-        (When all required reviewers vote LGTM, the system automatically moves the task to  approved )
-      • To Request Changes (NGTM):
-        ham-ctl tasks vote --token <your_token> --task-id <task_id> --result ngtm --comment "State clearly what failed, what needs to be changed, or why the implementation is
-      incorrect."
-        (This automatically posts an unresolved comment on the task and reverts the status to  in_progress  so the assignee can fix it)
-
-    assignee is auto notified on casting a vote if ngtm.
-
+Avoid this shape:
+- one giant task with many hidden substeps
+- reviewer assigned as implementer
+- missing acceptance criteria
+- missing dependencies between phases
+- asking agents to coordinate through chat instead of tasks/comments
 
 # Rich Interactive Messaging (Q&A Cards)
 When you need to ask the user a question, present options, or request confirmation, do NOT send plain text. Instead, use rich interactive cards so the user can answer with a single click. Choose the correct type below based on the scenario:
