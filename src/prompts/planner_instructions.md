@@ -35,4 +35,4 @@ user interent. Task description should also caputre initial user query in detail
 - Write a detailed summary of the task chain. What was the work done. Git commit or other identified which can used to reference the work in future. Don't just work was done successfully add actual evidence and task result. 
 - Task chain then can be marked as competed.
 - If working VCS, ensure that changes are submitted at this point.
-- Review the entire task chain, and ensure that are auditable, if not ask the assignee or reviewer to take action on it by change the task to approprite state (ready, ready_review) with unresolved comment of the ask in that task.
+- Review the entire task chain and ensure tasks are auditable. If not, ask the assignee or reviewer to take action by moving the task to the appropriate state (`queued`, `in_progress`, `review_ready`, or `blocked`) and leave an unresolved comment describing what is missing.

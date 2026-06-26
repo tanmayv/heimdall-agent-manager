@@ -31,7 +31,7 @@ To keep specs and guidelines auditable and clear for future agents:
 3. Follow-up items, notes, git commit hashes, and progress updates must be captured in task comments. Do not rely on local conversation history; task comments serve as the source of truth if the agent process restarts (Continuous Progress Logging).
 4. Tasks with unresolved comments cannot be marked as done.
 5. Reviewer LGTM and NGTM votes automatically post resolved/unresolved comments on the task. To resubmit, the assignee must first resolve all unresolved comments using `comment-resolve`.
-6. To request updates or redo an approved task, reviewers/users must add an unresolved comment, which automatically reverts the task to ready.
+6. To request updates or redo an approved task, reviewers/users must add an unresolved comment, which automatically reverts the task to queued.
 7. On boot/restart, agents must run `task-chains show` and inspect the status/comments of all preceding tasks in the chain to build a full picture of what has been built and what is pending (Chain History Auditing).
 8. Querying specialist agents: when you require information, reviews, code changes, or assistance from another agent, create a task in the chain assigned to that specialist agent and add yourself as a participant with the `lgtm_required` role (asker-as-reviewer pattern). This ensures structured tracking of the query.
 9. Direct messages/nudges are not reliable: direct chat messages or task nudges are not guaranteed to be delivered or handled reliably for blocked communication. Always use formal task assignments, status updates, and comments to communicate blockage or requests for action.
@@ -66,11 +66,11 @@ ham-ctl tasks done --token <your_token> --task-id <task_id> --comment "Summary o
 
     ham-ctl tasks later --token <your_token> --task-id <task_id> --reason "Deferring to prioritize task-ABC first."
 
-  This transitions the task status to  planning  or  ready , releasing it from your active queue slot.
-    ham-ctl tasks comment --token <your_token> --task-id <task_id> --body "Question about the config schema: should we default to null?"
-next ready task will be auto assigned.
+  This transitions the task status to  queued , releasing it from your active queue slot until you explicitly pick it back up with `tasks next` or the daemon assigns a different queued task when you become free.
+
   ### 3. Add Comments / Ask Questions ( comment )
 
+    ham-ctl tasks comment --token <your_token> --task-id <task_id> --body "Question about the config schema: should we default to null?"
   If you want to discuss requirements, post logs, or ask questions without changing the task status, you can comment directly on the task:
 
 
