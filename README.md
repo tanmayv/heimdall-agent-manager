@@ -66,6 +66,63 @@ Heimdall implements a continuous, background curation cycle to harvest and persi
 
 ---
 
+## ✅ Task Workflow
+
+```mermaid
+flowchart TD
+    A[Task created<br/>default: planning] --> B{Dependencies met<br/>and chain in_progress?}
+    B -- No --> A
+    B -- Yes --> Q[queued]
+    Q --> C{Assignee has no active<br/>task pending validation?}
+    C -- Yes --> IP[in_progress]
+    C -- No --> Q
+    IP --> L[tasks later<br/>back to queued]
+    L --> Q
+    IP --> BL[blocked]
+    BL --> Q
+    IP --> RR[review_ready]
+    RR --> RV{Required reviewer vote}
+    RV -- NGTM --> IP
+    RV -- LGTM from all required --> AP[approved]
+    AP --> CH{All chain tasks terminal?}
+    CH -- Yes --> CR[chain reviewing / completed by coordinator]
+```
+
+## 🤖 Auto-Claim Rules
+
+```mermaid
+flowchart TD
+    R[task_recompute_promotions] --> P{Task promotable?}
+    P -- No --> X[skip]
+    P -- Yes --> D{Deps satisfied and chain in_progress?}
+    D -- No --> X
+    D -- Yes --> Q[Set task to queued]
+    Q --> S{Assignee slot free?}
+    S -- No --> B[Keep queued with reason<br/>assignee_busy / queued_behind]
+    S -- Yes --> AC[Auto-claim to in_progress]
+    M[Manual tasks next] --> MC[Claim best queued task explicitly]
+    T[Manual tasks later] --> K[Leave current task queued<br/>do not instantly re-auto-claim]
+```
+
+## 🔔 Nudge System
+
+```mermaid
+flowchart TD
+    N[Scheduler tick] --> E{Chain executable?<br/>status == in_progress}
+    E -- No --> SKIP[No auto-claim / no nudges]
+    E -- Yes --> TS{Task status}
+    TS -- queued --> NA[Notify assignee when free / ready]
+    TS -- in_progress --> NW[Work-stale nudge to assignee]
+    TS -- review_ready --> NR[Review nudge to reviewer]
+    TS -- blocked --> NB[Escalation / blocked visibility]
+    NR --> G{Reviewer busy reviewing another task?}
+    G -- Yes --> HOLD[Delay reviewer nudge]
+    G -- No --> SEND[Send nudge]
+    PZ[Chain paused or planning] --> STOP[Stop-work / suppress nudges]
+```
+
+---
+
 ## 🛠️ Local Development
 
 For developers making changes to Heimdall:

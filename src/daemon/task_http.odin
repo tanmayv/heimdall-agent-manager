@@ -368,7 +368,17 @@ task_claim_next_for_agent :: proc(agent_instance_id: string) -> (Task_State, boo
 		if state.assignee_agent_instance_id != "" && state.assignee_agent_instance_id != agent_instance_id do continue
 		if !task_dependencies_satisfied(state.depends_on) do continue
 		if task_active_slot_blocker(agent_instance_id, state.task_id) != "" do continue
-		task_service_auto_claim(state.task_id)
+		event := Task_Event{
+			kind                     = .Task_Status_Changed,
+			task_id                  = state.task_id,
+			chain_id                 = state.chain_id,
+			status                   = "in_progress",
+			body                     = "system_auto:auto_claimed",
+			author_agent_instance_id = "system-auto-claim",
+		}
+		if task_store_append_event(event) {
+			task_notify_event(event)
+		}
 		return task_states[task_state_index(state.task_id, state.chain_id)], true
 	}
 	return Task_State{}, false

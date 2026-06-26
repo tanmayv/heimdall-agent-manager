@@ -131,6 +131,13 @@ main :: proc() {
 		fmt.println("registration response missing ws_url")
 		return
 	}
+	if effective_project_id != "" {
+		if !validate_project_exists(cfg.daemon_url, agent_token, effective_project_id) {
+			fmt.println("invalid project_id", effective_project_id)
+			fmt.println("wrapper startup aborted before tmux launch; create the project first or remove --project-id / wrapper.project")
+			return
+		}
+	}
 
 	fmt.println("starting tmux agent")
 	fmt.println("tmux_session", cfg.tmux_session)
@@ -1392,6 +1399,16 @@ bootstrap_profile_guidance :: proc(profile, file_name: string) -> string {
 	strings.write_string(&builder, "  --title <new-title> --body <new-body> --reason <why> --evidence <source>\n")
 	strings.write_string(&builder, "```\n")
 	return strings.to_string(builder)
+}
+
+validate_project_exists :: proc(daemon_url, agent_token, project_id: string) -> bool {
+	if project_id == "" do return true
+	request := strings.builder_make()
+	strings.write_string(&request, `{"agent_token":"`); json_write_string(&request, agent_token)
+	strings.write_string(&request, `","project_id":"`); json_write_string(&request, project_id)
+	strings.write_string(&request, `"}`)
+	response, ok := http.post(daemon_url, "/projects/show", strings.to_string(request))
+	return ok && response.status == 200
 }
 
 project_bootstrap_context :: proc(daemon_url, agent_token: string, cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Command_Config) -> string {

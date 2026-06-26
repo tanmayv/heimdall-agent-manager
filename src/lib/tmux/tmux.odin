@@ -18,7 +18,6 @@ ensure_agent_window :: proc(session, window, cwd: string, command: []string) -> 
 		new_window_cmd := []string{"tmux", "new-window", "-t", session, "-n", window, shell_command}
 		state, _, stderr, err := os.process_exec(os.Process_Desc{command = new_window_cmd}, context.allocator)
 		if err != nil || !state.success {
-			// Assume the window already exists for the POC.
 			if len(stderr) > 0 {
 				fmt.println("tmux new-window skipped", string(stderr))
 			}
@@ -27,10 +26,24 @@ ensure_agent_window :: proc(session, window, cwd: string, command: []string) -> 
 		new_session_cmd := []string{"tmux", "new-session", "-d", "-s", session, "-n", window, shell_command}
 		state, _, stderr, err := os.process_exec(os.Process_Desc{command = new_session_cmd}, context.allocator)
 		if err != nil || !state.success {
-			if len(stderr) > 0 {
+			if has_session(session) {
+				fmt.println("tmux new-session raced; session already exists", session)
+			} else if len(stderr) > 0 {
 				fmt.println("tmux new-session failed", string(stderr))
 			}
 		}
+	}
+
+	for tries := 0; tries < 5; tries += 1 {
+		pane_id := pane_for_window(session, window)
+		if pane_id != "" {
+			return Launch_Result{session = session, window = window, pane_id = pane_id}, true
+		}
+		if tries == 0 && has_session(session) {
+			new_window_cmd := []string{"tmux", "new-window", "-t", session, "-n", window, shell_command}
+			_, _, _, _ = os.process_exec(os.Process_Desc{command = new_window_cmd}, context.allocator)
+		}
+		time.sleep(150 * time.Millisecond)
 	}
 
 	pane_id := pane_for_window(session, window)

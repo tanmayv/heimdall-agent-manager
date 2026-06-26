@@ -418,9 +418,18 @@ task_service_status_command :: proc(cmd: Task_Status_Command) -> Task_Service_Re
 	}
 	task_notify_event(event)
 
+	manual_defer := (cmd.status == "queued" || cmd.status == "ready") && state.status == .In_Progress && task_actor_has_role(state, cmd.author_agent_instance_id, "assignee")
+	defer_assignee := state.assignee_agent_instance_id
+
 	task_recompute_promotions(cmd.author_agent_instance_id)
 	if cmd.status == "queued" || cmd.status == "ready" {
-		task_service_auto_claim(cmd.task_id)
+		if manual_defer {
+			if next_task := task_best_ready_task_for_assignee_excluding(defer_assignee, cmd.task_id); next_task != "" {
+				task_service_auto_claim(next_task)
+			}
+		} else {
+			task_service_auto_claim(cmd.task_id)
+		}
 	}
 	task_service_try_auto_complete_chain(cmd.chain_id)
 	if cmd.status == "review_ready" {
@@ -508,6 +517,7 @@ task_service_auto_claim :: proc(task_id: string) {
 	if !found do return
 	state := task_states[idx]
 	if state.status != .Queued do return
+	if !task_ready_allows_auto_claim(state) do return
 	if !task_chain_allows_execution(state.chain_id) do return
 	assignee := state.assignee_agent_instance_id
 	if assignee == "" do return

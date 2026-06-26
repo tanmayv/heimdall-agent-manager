@@ -380,10 +380,15 @@ task_best_promotion_candidate_for_assignee :: proc(assignee: string) -> string {
 }
 
 task_best_ready_task_for_assignee :: proc(assignee: string) -> string {
+	return task_best_ready_task_for_assignee_excluding(assignee, "")
+}
+
+task_best_ready_task_for_assignee_excluding :: proc(assignee, exclude_task_id: string) -> string {
 	best_idx := -1
 	for i in 0..<task_state_count {
 		state := task_states[i]
 		if state.assignee_agent_instance_id != assignee do continue
+		if exclude_task_id != "" && state.task_id == exclude_task_id do continue
 		if state.status != .Queued do continue
 		if !task_chain_allows_execution(state.chain_id) do continue
 		if best_idx < 0 || task_state_orders_before(state, task_states[best_idx]) do best_idx = i
@@ -433,6 +438,16 @@ task_latest_status_body :: proc(task_id: string) -> string {
 		return ev.body
 	}
 	return ""
+}
+
+task_ready_allows_auto_claim :: proc(state: Task_State) -> bool {
+	if state.status != .Queued do return false
+	body := task_latest_status_body(state.task_id)
+	if body == "" do return true
+	if strings.has_prefix(body, "system_auto:") do return true
+	if strings.has_prefix(body, "system_queue:") do return true
+	if strings.has_prefix(body, "reverted to ready due to unresolved comment:") do return true
+	return false
 }
 
 task_chain_status_for_task :: proc(state: Task_State) -> string {
