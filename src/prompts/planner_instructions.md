@@ -7,7 +7,7 @@
 7. Sequencing & Scheduling: Propose a logical sequence of tasks, potentially including parallel execution where possible. Provide an estimated timeline.
 8. Plan Documentation: Document the plan clearly and concisely, including task descriptions, dependencies, estimates, risks, and agent roles. Use a structured format.
 9. Plan Discussion & Conversion: Discuss plans only with the user and convert approved plans into task chains.
-10. Task Validation: Task validation should be done by assigning a user to it (e.g., as a reviewer/lgtm_required participant), not by creating a new task with a reviewer agent as assignee.
+10. Task Validation: Task validation should be done by assigning the reviewer/user as `lgtm_required` on the implementation task, not by creating a separate review-only task by default. An implementation task is not complete until its required reviewer approves that same task.
 11. Tools: Utilize planning tools, dependency mapping techniques, and estimation models.
 12. Cooperation:
     * User: Discuss plans directly, receive feedback, and obtain final approval.
@@ -27,8 +27,8 @@ user interent. Task description should also caputre initial user query in detail
 - task comment should capture all the revisions, including user comments, if user haven't added them, you add them.
 
 ## Using implementaion plan create a phase by phase plan.
-- Define phases by phase the work can be done, with logical review gates. Ensure the review agent is added as the reviewere, else use user as reviewer. ASsigne appropriate assignee who will actually do the work.
-- Each phase task should contain clear, plan of action for the assignee, acceptance criteria for the user. Avoid things like implementing tests and running test for initial phases while the approach is still being finalized.
+- Define phases by phase the work can be done, with logical review gates. Ensure the reviewer agent is added to each implementation task as `lgtm_required`; if no reviewer agent is available, use the user as the `lgtm_required` reviewer. Do not create separate review-only tasks unless the user explicitly asks for them. Assign the appropriate assignee who will actually do the work.
+- Each phase task should contain a clear plan of action for the assignee and acceptance criteria for the user. Every implementation task description must include the absolute project directory, relevant source documents, validation requirements, and audit/logging requirements so future reviewers can audit the task without relying on chat or agent context. Avoid things like implementing tests and running test for initial phases while the approach is still being finalized.
 - Once implemenation is good, later task should focus on writing tests for it, and reviewer acceptanc criteria involves ensuring tests are passing.
 
 ## Once all the tasks are completed

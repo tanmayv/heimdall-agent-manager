@@ -11,8 +11,33 @@ Launch_Result :: struct {
 	pane_id: string,
 }
 
+Session_Lock :: struct {
+	path: string,
+	held: bool,
+}
+
 ensure_agent_window :: proc(session, window, cwd: string, command: []string) -> (Launch_Result, bool) {
+	lock := acquire_session_lock(session)
+	defer release_session_lock(lock)
+	return ensure_agent_window_unlocked(session, window, cwd, command)
+}
+
+ensure_agent_window_unlocked :: proc(session, window, cwd: string, command: []string) -> (Launch_Result, bool) {
 	shell_command := build_shell_command(cwd, command)
+
+	if !has_session(session) {
+		// Create a stable bootstrap window first. Agent windows are always created
+		// through the same new-window path, avoiding first-agent special cases.
+		new_session_cmd := []string{"tmux", "new-session", "-d", "-s", session, "-n", "heimdall-bootstrap"}
+		state, _, stderr, err := os.process_exec(os.Process_Desc{command = new_session_cmd}, context.allocator)
+		if err != nil || !state.success {
+			if has_session(session) {
+				fmt.println("tmux new-session raced; session already exists", session)
+			} else if len(stderr) > 0 {
+				fmt.println("tmux new-session failed", string(stderr))
+			}
+		}
+	}
 
 	if has_session(session) {
 		new_window_cmd := []string{"tmux", "new-window", "-t", session, "-n", window, shell_command}
@@ -20,16 +45,6 @@ ensure_agent_window :: proc(session, window, cwd: string, command: []string) -> 
 		if err != nil || !state.success {
 			if len(stderr) > 0 {
 				fmt.println("tmux new-window skipped", string(stderr))
-			}
-		}
-	} else {
-		new_session_cmd := []string{"tmux", "new-session", "-d", "-s", session, "-n", window, shell_command}
-		state, _, stderr, err := os.process_exec(os.Process_Desc{command = new_session_cmd}, context.allocator)
-		if err != nil || !state.success {
-			if has_session(session) {
-				fmt.println("tmux new-session raced; session already exists", session)
-			} else if len(stderr) > 0 {
-				fmt.println("tmux new-session failed", string(stderr))
 			}
 		}
 	}
@@ -159,6 +174,8 @@ kill_pane :: proc(pane_id: string) -> bool {
 }
 
 kill_window :: proc(session, window: string) -> bool {
+	lock := acquire_session_lock(session)
+	defer release_session_lock(lock)
 	window_id := window_id_for_window(session, window)
 	if window_id == "" do return false
 	cmd := []string{"tmux", "kill-window", "-t", window_id}
@@ -221,6 +238,52 @@ build_shell_command :: proc(cwd: string, command: []string) -> string {
 	}
 
 	strings.write_string(&builder, " ); echo 'Agent exited. Press Enter to close...'; read")
+	return strings.to_string(builder)
+}
+
+acquire_session_lock :: proc(session: string) -> Session_Lock {
+	lock_path := session_lock_path(session)
+	_ = os.make_directory_all(parent_dir(lock_path))
+	for tries := 0; tries < 300; tries += 1 {
+		err := os.make_directory(lock_path)
+		if err == nil {
+			return Session_Lock{path = lock_path, held = true}
+		}
+		time.sleep(100 * time.Millisecond)
+	}
+	fmt.println("tmux session lock timed out; continuing without lock", lock_path)
+	return Session_Lock{path = lock_path, held = false}
+}
+
+release_session_lock :: proc(lock: Session_Lock) {
+	if !lock.held || lock.path == "" do return
+	_ = os.remove(lock.path)
+}
+
+session_lock_path :: proc(session: string) -> string {
+	data_dir := os.get_env_alloc("HEIMDALL_HOME", context.allocator)
+	if data_dir == "" {
+		home := os.get_env_alloc("HOME", context.allocator)
+		if home != "" do data_dir = fmt.tprintf("%s/.local/share/heimdall", home)
+	}
+	if data_dir == "" do data_dir = ".heimdall"
+	return fmt.tprintf("%s/locks/tmux-%s.lock", data_dir, safe_lock_part(session))
+}
+
+parent_dir :: proc(path: string) -> string {
+	slash := strings.last_index_byte(path, '/')
+	if slash <= 0 do return "."
+	return path[:slash]
+}
+
+safe_lock_part :: proc(value: string) -> string {
+	builder := strings.builder_make()
+	for ch in value {
+		switch ch {
+		case 'a'..='z', 'A'..='Z', '0'..='9', '_', '-', '@', '.': strings.write_rune(&builder, ch)
+		case: strings.write_string(&builder, "_")
+		}
+	}
 	return strings.to_string(builder)
 }
 

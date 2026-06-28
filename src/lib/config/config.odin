@@ -24,7 +24,7 @@ default_config_path :: proc() -> string {
 		xdg := os.get_env_alloc("XDG_CONFIG_HOME", context.allocator)
 		if xdg != "" do return strings.concatenate({xdg, "/heimdall/config.toml"})
 		home := os.get_env_alloc("HOME", context.allocator)
-		if home != "" do return strings.concatenate({home, "/Library/Application Support/heimdall/config.toml"})
+		if home != "" do return strings.concatenate({home, "/.config/heimdall/config.toml"})
 		return "config.toml"
 	} else {
 		xdg := os.get_env_alloc("XDG_CONFIG_HOME", context.allocator)

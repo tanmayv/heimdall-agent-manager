@@ -573,11 +573,14 @@ function MessageBubble({ message, session }: { message: any; session: any }) {
     dispatch(sendMessageToSelectedAgent({ body: summary, tempId }));
   }
 
+  const isDeliveryFailed = Number(message.deliveryFailedUnixMs || 0) > 0;
   const deliveryLabel = isUser
     ? (message.sending
       ? 'Sending...'
       : message.error
       ? 'Failed'
+      : isDeliveryFailed
+      ? 'Delivery failed'
       : message.readUnixMs > 0
       ? 'Read'
       : message.deliveredUnixMs > 0
@@ -779,7 +782,15 @@ function MessageBubble({ message, session }: { message: any; session: any }) {
         )}
         <p className={`mt-2 flex items-center justify-end gap-2 text-xs ${isUser ? 'text-slate-900/70' : 'text-[#999]'}`}>
           <span>{message.timestamp}</span>
-          {deliveryLabel ? <span aria-label={`Message ${deliveryLabel.toLowerCase()}`}>{deliveryLabel}</span> : null}
+          {deliveryLabel ? (
+            <span
+              aria-label={`Message ${deliveryLabel.toLowerCase()}`}
+              title={isDeliveryFailed && message.deliveryError ? message.deliveryError : undefined}
+              className={isDeliveryFailed ? 'font-semibold text-red-900' : undefined}
+            >
+              {deliveryLabel}
+            </span>
+          ) : null}
         </p>
       </div>
     </div>

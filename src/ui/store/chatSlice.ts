@@ -90,7 +90,7 @@ function mapAgent(agent: any) {
     lastSeenUnixMs,
     lastSeen: lastSeenUnixMs ? new Date(lastSeenUnixMs).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—',
     conversationId: agent.conversation_id || agent.conversationId,
-    unreadCount: agent.unreadCount || 0,
+    unreadCount: Number(agent.unread_count ?? agent.unreadCount ?? 0),
     order: agent.order ?? 0,
     projectId: agent.project_id || agent.projectId || '',
     projectName: agent.project_name || agent.projectName || '',
@@ -145,11 +145,13 @@ function mergeKnownAndLiveAgents(localKnownAgents: any[], daemonAgents: any[], d
     if (daemonReachable && !daemonIds.has(agent.id)) continue;
     byId[agent.id] = { ...agent, status: 'offline', startupStatus: '', known: true };
   }
-  for (const daemonAgent of daemonAgents.map(mapAgent)) {
+  for (const rawDaemonAgent of daemonAgents) {
+    const daemonAgent = mapAgent(rawDaemonAgent);
     if (!daemonAgent.id) continue;
     const existing = byId[daemonAgent.id] || {};
     const status = daemonAgent.status || daemonAgent.startupStatus || ((daemonAgent as any).connected ? 'connected' : 'offline');
-    const unreadCount = existing.unreadCount || daemonAgent.unreadCount || 0;
+    const hasDaemonUnread = rawDaemonAgent.unread_count !== undefined || rawDaemonAgent.unreadCount !== undefined;
+    const unreadCount = hasDaemonUnread ? daemonAgent.unreadCount : (existing.unreadCount || 0);
     byId[daemonAgent.id] = { ...existing, ...daemonAgent, status, unreadCount, known: true };
   }
   return Object.values(byId).sort((left: any, right: any) => {
@@ -166,19 +168,54 @@ function mergeKnownAndLiveAgents(localKnownAgents: any[], daemonAgents: any[], d
 
 function mapMessage(message: any) {
   const createdTime = message.created_unix_ms ? new Date(message.created_unix_ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
-  const deliveredUnixMs = Number(message.delivered_unix_ms || 0);
-  const readUnixMs = Number(message.read_unix_ms || 0);
+  const deliveredUnixMs = Number(message.delivered_unix_ms ?? message.deliveredUnixMs ?? 0);
+  const readUnixMs = Number(message.read_unix_ms ?? message.readUnixMs ?? 0);
+  const deliveryFailedUnixMs = Number(message.delivery_failed_unix_ms ?? message.deliveryFailedUnixMs ?? 0);
   return {
-    id: message.message_id,
-    author: message.direction === 'user_to_agent' ? 'user' : 'agent',
+    id: message.message_id ?? message.id,
+    author: message.direction === 'user_to_agent' || message.author === 'user' ? 'user' : 'agent',
     body: message.body,
-    timestamp: createdTime,
-    deliveredAt: deliveredUnixMs > 0 ? new Date(deliveredUnixMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+    timestamp: createdTime || message.timestamp || '',
+    deliveredAt: deliveredUnixMs > 0 ? new Date(deliveredUnixMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : (message.deliveredAt || ''),
     deliveredUnixMs,
-    readAt: readUnixMs > 0 ? new Date(readUnixMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+    readAt: readUnixMs > 0 ? new Date(readUnixMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : (message.readAt || ''),
     readUnixMs,
+    deliveryFailedAt: deliveryFailedUnixMs > 0 ? new Date(deliveryFailedUnixMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : (message.deliveryFailedAt || ''),
+    deliveryFailedUnixMs,
+    deliveryError: message.delivery_error ?? message.deliveryError ?? '',
     interrupt: !!message.interrupt,
   };
+}
+
+function mergeMessage(existing: any, incoming: any) {
+  const merged = { ...existing, ...incoming };
+  return {
+    ...merged,
+    body: incoming.body ?? existing.body,
+    timestamp: incoming.timestamp || existing.timestamp,
+    sending: false,
+    error: incoming.deliveryFailedUnixMs > 0 ? false : (existing.error && !incoming.id ? existing.error : false),
+  };
+}
+
+function mergeMessages(existingMessages: any[], incomingMessages: any[]) {
+  const result = [...existingMessages];
+  for (const incoming of incomingMessages) {
+    const byId = result.findIndex((m: any) => m.id === incoming.id);
+    if (byId >= 0) {
+      result[byId] = mergeMessage(result[byId], incoming);
+      continue;
+    }
+    const optimisticIndex = incoming.author === 'user'
+      ? result.findIndex((m: any) => m.author === 'user' && m.body === incoming.body && (m.sending || String(m.id).startsWith('local_temp_')))
+      : -1;
+    if (optimisticIndex >= 0) {
+      result[optimisticIndex] = mergeMessage(result[optimisticIndex], incoming);
+    } else {
+      result.push(incoming);
+    }
+  }
+  return result;
 }
 
 export const registerSession = createAsyncThunk('chat/registerSession', async (_, { getState }) => {
@@ -215,14 +252,6 @@ export const refreshAgents = createAsyncThunk('chat/refreshAgents', async (_, { 
   const state = getState() as any;
   const { daemonUrl } = state.chat.session;
   
-  // Extract current in-memory unread counts to prevent background timer resets
-  const currentUnreadCounts: Record<string, number> = {};
-  if (state.chat?.agents) {
-    for (const a of state.chat.agents) {
-      if (a.id) currentUnreadCounts[a.id] = a.unreadCount || 0;
-    }
-  }
-
   const localKnown = loadKnownAgents();
   let daemonAgents: any[] = [];
   let daemonReachable = false;
@@ -233,13 +262,6 @@ export const refreshAgents = createAsyncThunk('chat/refreshAgents', async (_, { 
     daemonAgents = [];
   }
   const merged = mergeKnownAndLiveAgents(localKnown, daemonAgents, daemonReachable);
-
-  // Restore the live unread counts back onto the merged result
-  for (const a of merged as any[]) {
-    if (a.id && currentUnreadCounts[a.id] !== undefined) {
-      a.unreadCount = currentUnreadCounts[a.id];
-    }
-  }
 
   storeKnownAgents(merged);
   return merged;
@@ -586,33 +608,7 @@ const chatSlice = createSlice({
       if (!state.chats[agentId]) {
         state.chats[agentId] = [];
       }
-      const mapped = mapMessage(message);
-
-      // Resolve race condition: if this is a user message from us, check if there is an
-      // optimistic temporary message already in the chat list matching the body.
-      if (mapped.author === 'user') {
-        const optimisticIndex = state.chats[agentId].findIndex(
-          (m: any) => m.author === 'user' && m.body === mapped.body && (m.sending || String(m.id).startsWith('local_temp_'))
-        );
-        if (optimisticIndex >= 0) {
-          // Upgrade the optimistic message in-place to the real database ID and clear sending state
-          state.chats[agentId][optimisticIndex] = {
-            ...state.chats[agentId][optimisticIndex],
-            id: mapped.id,
-            sending: false,
-            timestamp: mapped.timestamp,
-            deliveredUnixMs: mapped.deliveredUnixMs,
-            deliveredAt: mapped.deliveredAt,
-            readUnixMs: mapped.readUnixMs,
-            readAt: mapped.readAt,
-          } as any;
-          return;
-        }
-      }
-
-      if (!state.chats[agentId].some((m: any) => m.id === mapped.id)) {
-        state.chats[agentId].push(mapped);
-      }
+      state.chats[agentId] = mergeMessages(state.chats[agentId], [mapMessage(message)]);
     },
     agentRuntimeEventReceived(state, action) {
       const payload = action.payload || {};
@@ -726,11 +722,13 @@ const chatSlice = createSlice({
             state.chats[payloadAgentId] = [];
           }
           if (isAppend) {
-            // Prepend older paginated messages to the top
-            state.chats[payloadAgentId] = [...messages, ...state.chats[payloadAgentId]];
+            // Prepend older paginated messages to the top, but merge duplicates/status updates.
+            state.chats[payloadAgentId] = mergeMessages(messages, state.chats[payloadAgentId]);
           } else {
-            // Initial load - replace
-            state.chats[payloadAgentId] = messages;
+            // Initial load - daemon truth plus any still-unmatched optimistic sends.
+            const optimistic = state.chats[payloadAgentId].filter((m: any) => m.sending || String(m.id).startsWith('local_temp_'));
+            const unmatchedOptimistic = optimistic.filter((local: any) => !messages.some((server: any) => server.id === local.id || (server.author === local.author && server.body === local.body)));
+            state.chats[payloadAgentId] = [...messages, ...unmatchedOptimistic];
           }
           state.chatsCursor[payloadAgentId] = nextCursor;
           state.chatsHasMore[payloadAgentId] = nextCursor > 0;

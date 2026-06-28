@@ -156,6 +156,7 @@ main :: proc() {
 	launch, launch_ok := tmux.ensure_agent_window(cfg.tmux_session, window_name, cwd, command)
 	if !launch_ok {
 		fmt.println("failed to launch or find tmux window")
+		report_startup_status(cfg.daemon_url, registered_instance_id, "startup_failed", "tmux_launch_failed", "failed to launch or find tmux window", selected_agent, cwd, "")
 		return
 	}
 	fmt.println("tmux_pane", launch.pane_id)
