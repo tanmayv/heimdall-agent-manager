@@ -435,7 +435,11 @@ task_service_status_command :: proc(cmd: Task_Status_Command) -> Task_Service_Re
 	if cmd.status == "review_ready" {
 		task_notify_all_lgtm_required(cmd.task_id, cmd.chain_id)
 	}
-	return Task_Service_Result{ok = true, status_code = 200, message = `{"ok":true}`}
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"task_id":"`); json_write_string(&b, cmd.task_id)
+	strings.write_string(&b, `","status":"`); json_write_string(&b, cmd.status)
+	strings.write_string(&b, `"}`)
+	return Task_Service_Result{ok = true, status_code = 200, message = strings.to_string(b)}
 }
 
 task_service_review_vote :: proc(cmd: Task_Review_Vote_Command) -> Task_Service_Result {

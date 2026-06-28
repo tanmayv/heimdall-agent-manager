@@ -174,6 +174,7 @@ task_lgtm_votes:        [TASK_MAX_VOTES]Task_LGTM_Vote_State
 task_lgtm_vote_count:   int
 task_store_dir:         string
 task_events_path:       string
+task_db_ready:          bool
 
 task_store_init :: proc(data_dir: string) {
 	task_event_count = 0
@@ -183,8 +184,9 @@ task_store_init :: proc(data_dir: string) {
 	_ = os.make_directory_all(task_store_dir)
 
 	// 1. Initialize the SQLite task database
-	if !task_db_init(data_dir) {
-		fmt.println("WARNING: task_db_init failed, task events will not persist across restarts")
+	task_db_ready = task_db_init(data_dir)
+	if !task_db_ready {
+		fmt.println("WARNING: task_db_init failed; task changes will be accepted in-memory only for this daemon run")
 		return
 	}
 
@@ -291,8 +293,15 @@ task_store_append_event :: proc(event: Task_Event) -> bool {
 	fmt.printfln("[TASK EVENT] Kind: %v | Task ID: %s | Chain ID: %s | Status: %s | Author: %s | Body: %s",
 		ev.kind, ev.task_id, ev.chain_id, ev.status, ev.author_agent_instance_id, ev.body)
 
-	// Write the projected state directly to the respective SQLite table
-	return task_store_persist_projection_for_event(ev)
+	if !task_db_ready {
+		return true
+	}
+	// Write the projected state directly to the respective SQLite table.
+	if !task_store_persist_projection_for_event(ev) {
+		// ponytail: persistence happens after the in-memory projection; don't report a false user failure after accepting the task event.
+		fmt.printfln("WARNING: task event accepted but SQLite projection persist failed | Kind: %v | Task ID: %s | Chain ID: %s", ev.kind, ev.task_id, ev.chain_id)
+	}
+	return true
 }
 
 task_store_apply_event :: proc(event: Task_Event) -> bool {
