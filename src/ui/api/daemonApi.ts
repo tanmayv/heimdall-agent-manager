@@ -185,10 +185,12 @@ export async function archiveAgent({ daemonUrl, agentRecordId, agentInstanceId }
   });
 }
 
-export async function stopAgent({ daemonUrl, agentInstanceId }: { daemonUrl: string; agentInstanceId: string }) {
+export async function stopAgent({ daemonUrl, agentInstanceId, timeInSec }: { daemonUrl: string; agentInstanceId: string; timeInSec?: number }) {
+  const body: any = { agent_instance_id: agentInstanceId };
+  if (timeInSec !== undefined) body.time_in_sec = timeInSec;
   return requestJson(joinUrl(daemonUrl, '/agents/stop'), {
     method: 'POST',
-    body: { agent_instance_id: agentInstanceId },
+    body,
   });
 }
 

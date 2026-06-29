@@ -1,8 +1,11 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import { fetchSelectedChat } from '../store/chatSlice';
+import { fetchSelectedChat, refreshAgents, startAgentInstance, stopAgentInstance } from '../store/chatSlice';
+import { refreshTaskBoard } from '../store/taskSlice';
+import { updateUrlParams } from './useUrlParams';
 import Composer from './Composer';
 import MessageBubble from './MessageBubble';
+import * as daemonApi from '../api/daemonApi';
 
 const NEW_MESSAGE_THRESHOLD = 48;
 
@@ -20,6 +23,8 @@ export default function ChatPane({ agent, session }: { agent: any; session: any 
   const chatsCursor = useSelector((state: any) => state.chat.chatsCursor);
   const chatsHasMore = useSelector((state: any) => state.chat.chatsHasMore);
   const [fetchingMore, setFetchingMore] = useState(false);
+  const [agentAction, setAgentAction] = useState<'start' | 'stop' | 'force-stop' | 'active-task' | ''>('');
+  const [agentActionMessage, setAgentActionMessage] = useState('');
   const messageListRef = useRef(null);
   const prevMessageCountRef = useRef(messages.length);
   const prevAgentIdRef = useRef(agent?.id ?? '');
@@ -96,6 +101,75 @@ export default function ChatPane({ agent, session }: { agent: any; session: any 
   function onScrollToBottomClick() {
     scrollToBottom('smooth');
     setShowNewMessagesToast(false);
+  }
+
+  const agentStatus = agent?.status || '';
+  const agentIsRunning = ['connected', 'idle', 'running', 'startup_blocked'].includes(agentStatus);
+  const agentIsStarting = agentStatus === 'starting';
+  const agentIsStopping = agentStatus === 'stopping';
+  const canStartAgent = !!agent?.id && !agentIsRunning && !agentIsStarting && !agentIsStopping;
+  const canStopAgent = !!agent?.id && (agentIsRunning || agentIsStarting || agentIsStopping);
+
+  async function runAgentAction(action: 'start' | 'stop' | 'force-stop') {
+    if (!agent?.id || agentAction) return;
+    setAgentAction(action);
+    setAgentActionMessage('');
+    try {
+      if (action === 'start') {
+        await dispatch(startAgentInstance(agent)).unwrap();
+        setAgentActionMessage('Start requested.');
+      } else if (action === 'stop') {
+        await dispatch(stopAgentInstance(agent.id)).unwrap();
+        setAgentActionMessage('Stop requested.');
+      } else {
+        await daemonApi.stopAgent({ daemonUrl: session.daemonUrl, agentInstanceId: agent.id, timeInSec: 1 });
+        dispatch(refreshAgents());
+        setAgentActionMessage('Force stop requested.');
+      }
+    } catch (err: any) {
+      setAgentActionMessage(err?.message || `Failed to ${action.replace('-', ' ')} agent.`);
+    } finally {
+      setAgentAction('');
+    }
+  }
+
+  function normalizeTask(task: any) {
+    return {
+      taskId: task.task_id || task.taskId || '',
+      chainId: task.chain_id || task.chainId || '',
+      title: task.title || '',
+      status: task.status || '',
+      assigneeAgentInstanceId: task.assignee_agent_instance_id || task.assigneeAgentInstanceId || '',
+      updatedAtUnixMs: Number(task.updated_at_unix_ms || task.updatedAtUnixMs || 0),
+    };
+  }
+
+  async function viewActiveTask() {
+    if (!agent?.id || agentAction) return;
+    setAgentAction('active-task');
+    setAgentActionMessage('');
+    try {
+      const data = await daemonApi.listTasks({
+        daemonUrl: session.daemonUrl,
+        clientToken: session.clientToken,
+        limit: 500,
+      });
+      const activeTasks = (data.tasks || [])
+        .map(normalizeTask)
+        .filter((task: any) => task.assigneeAgentInstanceId === agent.id && task.status === 'in_progress')
+        .sort((left: any, right: any) => right.updatedAtUnixMs - left.updatedAtUnixMs);
+      const activeTask = activeTasks[0];
+      if (!activeTask) {
+        setAgentActionMessage('No active in-progress task for this agent.');
+        return;
+      }
+      updateUrlParams({ view: 'tasks', chainId: activeTask.chainId, taskId: activeTask.taskId });
+      dispatch(refreshTaskBoard({}));
+    } catch (err: any) {
+      setAgentActionMessage(err?.message || 'Failed to find active task.');
+    } finally {
+      setAgentAction('');
+    }
   }
 
   async function onMessagesScroll() {
@@ -214,9 +288,49 @@ export default function ChatPane({ agent, session }: { agent: any; session: any 
         <div className="min-w-0">
           <p className="framer-topline">Selected agent</p>
           <h2 className="mt-1 truncate text-2xl framer-headline">{agent?.label ?? 'No agent selected'}</h2>
-          <p className="framer-subtext mt-1 truncate">{agent ? `${agent.templateId || 'agent'} · ${agent.providerProfile || 'provider'}` : 'Choose an agent from the sidebar'}</p>
+          <p className="framer-subtext mt-1 truncate">{agent ? `${agent.templateId || 'agent'} · ${agent.providerProfile || 'provider'} · ${agentStatus || 'unknown'}` : 'Choose an agent from the sidebar'}</p>
+          {agentActionMessage && <p className="mt-2 text-xs text-[#bdbdbd]">{agentActionMessage}</p>}
         </div>
-        <div className="framer-chip animate-halo-breathe">User: <span className="text-white">{session.userId}</span></div>
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+          <button
+            type="button"
+            data-debug-id="chat-agent-start-btn"
+            onClick={() => runAgentAction('start')}
+            disabled={!canStartAgent || !!agentAction}
+            className="framer-pill bg-white px-3 py-2 text-xs disabled:opacity-40"
+          >
+            {agentAction === 'start' ? 'Starting…' : 'Start'}
+          </button>
+          <button
+            type="button"
+            data-debug-id="chat-agent-stop-btn"
+            onClick={() => runAgentAction('stop')}
+            disabled={!canStopAgent || !!agentAction}
+            className="framer-pill-secondary px-3 py-2 text-xs disabled:opacity-40"
+          >
+            {agentAction === 'stop' ? 'Stopping…' : 'Stop'}
+          </button>
+          <button
+            type="button"
+            data-debug-id="chat-agent-force-stop-btn"
+            onClick={() => runAgentAction('force-stop')}
+            disabled={!canStopAgent || !!agentAction}
+            className="framer-pill-secondary px-3 py-2 text-xs text-red-100 disabled:opacity-40"
+            title="Send a stop request with a 1 second timeout."
+          >
+            {agentAction === 'force-stop' ? 'Forcing…' : 'Force Stop'}
+          </button>
+          <button
+            type="button"
+            data-debug-id="chat-agent-active-task-btn"
+            onClick={viewActiveTask}
+            disabled={!agent?.id || !session.clientToken || !!agentAction}
+            className="framer-pill-secondary px-3 py-2 text-xs disabled:opacity-40"
+          >
+            {agentAction === 'active-task' ? 'Finding…' : 'View Active Task'}
+          </button>
+          <div className="framer-chip animate-halo-breathe">User: <span className="text-white">{session.userId}</span></div>
+        </div>
       </header>
 
       <div className="relative flex-1 min-h-0 flex flex-col">
