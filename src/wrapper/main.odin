@@ -502,19 +502,25 @@ handle_message_event :: proc(text, tmux_pane: string) {
 	}
 }
 
+task_event_is_auto_claim :: proc(status, changed_by, body: string) -> bool {
+	if status != "in_progress" do return false
+	if changed_by == "system-auto-claim" do return true
+	return strings.has_prefix(body, "Task auto-claimed") || strings.has_prefix(body, "system_auto:auto_claimed")
+}
+
 handle_task_event :: proc(text, tmux_pane, agent_instance_id: string) {
 	task_id := extract_json_string(text, "task_id", "unknown")
 	status := extract_json_string(text, "status", "updated")
 	changed_by := extract_json_string(text, "changed_by", "unknown")
+	body := extract_json_string(text, "body", "")
 	if changed_by == agent_instance_id {
 		fmt.println("suppressed self-authored task event", task_id, status, changed_by)
 		return
 	}
-	if strings.has_prefix(changed_by, "system-auto") {
+	if strings.has_prefix(changed_by, "system-auto") && !task_event_is_auto_claim(status, changed_by, body) {
 		fmt.println("suppressed system-auto task event", task_id, status, changed_by)
 		return
 	}
-	body := extract_json_string(text, "body", "")
 	
 	template_str := active_live_prefs.msg_task_updated if body != "" else active_live_prefs.msg_task_updated_empty
 	interrupt_val := active_live_prefs.msg_task_updated_int if body != "" else active_live_prefs.msg_task_updated_empty_int
