@@ -5,6 +5,10 @@ import "core:strconv"
 import "core:strings"
 import contracts "odin_test:contracts"
 
+json_has_key :: proc(body, key: string) -> bool {
+	return json_value_start(body, key) >= 0
+}
+
 extract_json_string :: proc(body, key, fallback: string) -> string {
 	start := json_value_start(body, key)
 	if start < 0 || start >= len(body) || body[start] != '"' do return fallback

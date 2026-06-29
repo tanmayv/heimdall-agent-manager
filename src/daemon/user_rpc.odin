@@ -152,7 +152,7 @@ handle_user_rpc_task_status :: proc(client: net.TCP_Socket, body, user_id: strin
 }
 
 handle_user_rpc_task_update :: proc(client: net.TCP_Socket, body, user_id: string) {
-	result := task_service_update_task(Task_Update_Command{task_id = extract_json_string(body, "task_id", ""), chain_id = extract_json_string(body, "chain_id", ""), title = extract_json_string(body, "title", ""), description = extract_json_string(body, "description", ""), author_agent_instance_id = user_id})
+	result := task_service_update_task(Task_Update_Command{task_id = extract_json_string(body, "task_id", ""), chain_id = extract_json_string(body, "chain_id", ""), title = extract_json_string(body, "title", ""), description = extract_json_string(body, "description", ""), description_present = json_has_key(body, "description"), author_agent_instance_id = user_id})
 	write_task_service_response(client, result)
 }
 

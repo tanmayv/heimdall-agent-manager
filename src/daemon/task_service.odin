@@ -382,13 +382,15 @@ task_service_update_task :: proc(cmd: Task_Update_Command) -> Task_Service_Resul
 	current := task_states[idx]
 	title := cmd.title
 	if title == "" do title = current.title
-	audit_body := fmt.tprintf("description updated by %s; old=%s; new=%s", cmd.author_agent_instance_id, current.description, cmd.description)
+	description := current.description
+	if cmd.description_present do description = cmd.description
+	audit_body := fmt.tprintf("metadata updated by %s; old_description=%s; new_description=%s", cmd.author_agent_instance_id, current.description, description)
 	event := Task_Event{
 		kind                     = .Task_Metadata_Updated,
 		task_id                  = cmd.task_id,
 		chain_id                 = current.chain_id,
 		title                    = title,
-		description              = cmd.description,
+		description              = description,
 		body                     = audit_body,
 		author_agent_instance_id = cmd.author_agent_instance_id,
 	}
@@ -398,7 +400,7 @@ task_service_update_task :: proc(cmd: Task_Update_Command) -> Task_Service_Resul
 	task_notify_event(event)
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"task_id":"`); json_write_string(&b, cmd.task_id)
-	strings.write_string(&b, `","description":"`); json_write_string(&b, cmd.description)
+	strings.write_string(&b, `","description":"`); json_write_string(&b, description)
 	strings.write_string(&b, `"}`)
 	return Task_Service_Result{ok = true, status_code = 200, message = strings.to_string(b)}
 }

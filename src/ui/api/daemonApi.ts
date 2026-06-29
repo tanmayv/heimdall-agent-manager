@@ -335,7 +335,10 @@ export async function updateTaskStatus({ daemonUrl, agentToken, clientInstanceId
 }
 
 export async function updateTask({ daemonUrl, agentToken, clientInstanceId, clientToken, taskId, chainId, title, description }: Partial<TaskAgentRequest & UserRpcRequest> & { taskId: string; chainId?: string; title?: string; description?: string }) {
-  return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_update', agentPath: '/tasks/update', body: { task_id: taskId, chain_id: chainId || '', title: title || '', description: description || '' } });
+  const body: any = { task_id: taskId, chain_id: chainId || '' };
+  if (title !== undefined) body.title = title;
+  if (description !== undefined) body.description = description;
+  return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_update', agentPath: '/tasks/update', body });
 }
 
 export async function assignTask({ daemonUrl, agentToken, clientInstanceId, clientToken, taskId, chainId, agentInstanceId }: Partial<TaskAgentRequest & UserRpcRequest> & { taskId: string; chainId?: string; agentInstanceId: string }) {

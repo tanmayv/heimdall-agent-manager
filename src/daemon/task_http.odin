@@ -135,6 +135,7 @@ handle_task_update :: proc(client: net.TCP_Socket, body: string) {
 		chain_id                 = extract_json_string(body, "chain_id", ""),
 		title                    = extract_json_string(body, "title", ""),
 		description              = extract_json_string(body, "description", ""),
+		description_present      = json_has_key(body, "description"),
 		author_agent_instance_id = author,
 	})
 	write_task_service_response(client, result)

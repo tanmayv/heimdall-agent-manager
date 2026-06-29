@@ -56,6 +56,12 @@ UPDATE_TASK_RES="$("${CTL[@]}" tasks update --token "$TOKEN" --task-id "$TASK_ID
 [ "$(printf '%s' "$UPDATE_TASK_RES" | json_field ok)" = "True" ] || { echo "task update failed: $UPDATE_TASK_RES" >&2; exit 1; }
 TASK_SHOW="$("${CTL[@]}" tasks show --token "$TOKEN" --task-id "$TASK_ID")"
 [ "$(printf '%s' "$TASK_SHOW" | task_field description)" = "$TASK_DESC2" ] || { echo "task description not updated: $TASK_SHOW" >&2; exit 1; }
+TASK_TITLE2="description task renamed $RUN_ID"
+TITLE_ONLY_RES="$("${CTL[@]}" tasks update --token "$TOKEN" --task-id "$TASK_ID" --title "$TASK_TITLE2")"
+[ "$(printf '%s' "$TITLE_ONLY_RES" | json_field ok)" = "True" ] || { echo "task title-only update failed: $TITLE_ONLY_RES" >&2; exit 1; }
+TASK_SHOW="$("${CTL[@]}" tasks show --token "$TOKEN" --task-id "$TASK_ID")"
+[ "$(printf '%s' "$TASK_SHOW" | task_field title)" = "$TASK_TITLE2" ] || { echo "task title not updated: $TASK_SHOW" >&2; exit 1; }
+[ "$(printf '%s' "$TASK_SHOW" | task_field description)" = "$TASK_DESC2" ] || { echo "title-only update clobbered task description: $TASK_SHOW" >&2; exit 1; }
 TASK_LOG="$("${CTL[@]}" tasks log --token "$TOKEN" --task-id "$TASK_ID")"
 printf '%s' "$TASK_LOG" | grep -q 'Task_Metadata_Updated' || { echo "task update event missing: $TASK_LOG" >&2; exit 1; }
 

@@ -45,6 +45,7 @@ Task_Update_Command :: struct {
 	chain_id:                 string,
 	title:                    string,
 	description:              string,
+	description_present:      bool,
 	author_agent_instance_id: string,
 }
 
