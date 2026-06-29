@@ -58,7 +58,7 @@ handle_agent_rpc_send_to_user :: proc(client: net.TCP_Socket, body, from_agent_i
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"send_to_user requires valid user_id and body"}`)
 		return
 	}
-	if !user_client_user_exists(user_id) {
+	if !user_client_user_exists(user_id) && user_id != server_config.daemon.user_id {
 		write_response(client, 404, "Not Found", `{"ok":false,"message":"unknown user_id"}`)
 		return
 	}
