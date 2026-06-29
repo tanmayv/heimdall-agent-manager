@@ -25,7 +25,7 @@ These are behavioral/process mistakes observed while managing chains. They shoul
 
 > After any `ham-ctl tasks create` failure, do not retry immediately. First run `tasks list`, `tasks show`, or `task-chains show` to verify whether the task was actually persisted. If a task exists, continue from that task id. If accidental tasks were created and agent cannot cancel them, notify the operator and document cleanup needs.
 
-**Status:** Added to this tracker; should be added to planner bootstrap/prompt.
+**Status:** Added to tracker; partially mitigated by process. Keep as prompt guidance until all bootstrap/planner instructions explicitly mention checking task state after ambiguous create failures.
 
 ### MISTAKE-002: Creating separate review tasks instead of assigning reviewer approval to the implementation task
 
@@ -35,7 +35,7 @@ These are behavioral/process mistakes observed while managing chains. They shoul
 
 > Do not create separate review-only tasks by default. Add the reviewer agent as `lgtm_required` on each implementation task. Treat implementation tasks as incomplete until reviewer LGTM is recorded on that same task.
 
-**Status:** Applied to current planning process; should be added to planner/coder/reviewer prompts.
+**Status:** Fixed in prompts. Planner instructions and bootstrap guidance now require reviewers as `lgtm_required` on implementation tasks and discourage separate review-only tasks by default.
 
 ### MISTAKE-003: Not capturing project directory and source documents directly in task descriptions
 
@@ -45,7 +45,7 @@ These are behavioral/process mistakes observed while managing chains. They shoul
 
 > Every implementation task description must include the absolute project directory, relevant source doc(s), expected audit notes, and validation requirements. Do not assume the assignee knows the repo path from conversation context.
 
-**Status:** Applied to current Phase 1 task and future task drafts.
+**Status:** Fixed in planner prompt/process. Planner instructions now require task-chain drafts and task descriptions to include absolute project directory, source docs, validation requirements, and audit/logging requirements.
 
 ### MISTAKE-004: Planner created test tasks inside a real chain while debugging task creation behavior
 
@@ -77,13 +77,15 @@ These are behavioral/process mistakes observed while managing chains. They shoul
 
 > To submit work for review, first check whether the active `ham-ctl` supports `tasks done`. If available, use `tasks done --token <token> --task-id <id> --comment <summary/evidence>`. If unavailable, log completion/evidence in task comments and notify the planner/operator that the current CLI cannot move the task to `review_ready` with an agent token.
 
-**Status:** Mitigated locally on 2026-06-28. Built a fresh repo `ham-ctl` at `/nix/store/2jz1a08g2788jryxk7l8q3ql16yix5i9-ham-ctl-0.1.0/bin/ham-ctl` and updated `~/.config/heimdall/config.toml` `ham_ctl_bin` to that binary. New agent bootstraps should now expose `tasks done`. Consider making this durable through Home Manager/release packaging so future generations do not regress.
+**Status:** Fixed/deployed. Home Manager config now points generated bootstraps at a `ham-ctl` that exposes `tasks done`; subsequent agent task submissions used `tasks done` successfully.
 
 ## Bugs
 
 ### BUG-001: `tasks create` can return failure while still creating the task
 
-**Status:** Open
+**Status:** Fixed / validate if it regresses
+
+**Fixed by:** `ea44473` (Fix task create and done success responses), validated with `tests/test_task_create_done_response.sh` against a latest isolated daemon.
 
 **Observed while:** Creating the chat window audit implementation chain.
 
@@ -202,7 +204,9 @@ These are behavioral/process mistakes observed while managing chains. They shoul
 
 ### BUG-004: `tasks done` can return failure while still moving task to `review_ready`
 
-**Status:** Open
+**Status:** Fixed / validate if it regresses
+
+**Fixed by:** `ea44473` (Fix task create and done success responses), validated with `tests/test_task_create_done_response.sh` against a latest isolated daemon and later live `tasks done` submissions returning `ok:true/status=review_ready`.
 
 **Observed while:** Coder submitted Phase 1 of the chat window audit implementation for review.
 
@@ -255,7 +259,9 @@ These are behavioral/process mistakes observed while managing chains. They shoul
 
 ### BUG-005: Task does not auto-approve after all required reviewers vote LGTM
 
-**Status:** Open
+**Status:** Fixed / validate if it regresses
+
+**Fixed by:** `2139bd1` (Fix task vote auto-approval response coverage), validated with `tests/test_task_vote_auto_approval.sh`; later live tasks auto-approved after reviewer LGTM.
 
 **Observed while:** Reviewer approved Phase 1 of the chat window audit implementation.
 
@@ -374,7 +380,7 @@ These are behavioral/process mistakes observed while managing chains. They shoul
 
 ### BUG-007: Agent inbox `--include-read` does not clear unread notifications and unread-count semantics need per-direction/per-channel clarity
 
-**Status:** Open
+**Status:** Prompt-level mitigation applied; model/design clarification still open
 
 **Observed while:** Planner was reading direct agent-to-agent coordination messages from reviewer/coder.
 
@@ -447,7 +453,7 @@ These counts should not clobber or infer from one another. Fetch/read behavior s
 
 ### BUG-008: Task created in an already-active chain remains `planning/waiting_for_promotion`
 
-**Status:** Open / needs verification
+**Status:** Open / likely code issue
 
 **Observed while:** Continuing the core task workflow chain after restarting onto Home Manager/latest daemon, ctl, and wrapper paths.
 
@@ -486,3 +492,52 @@ These counts should not clobber or infer from one another. Fetch/read behavior s
 
 - Use direct `ham-ctl send` coordination to the assignee instead of `tasks nudge` while the task remains planning.
 - Avoid relying on nudges for planning tasks, per intended nudge behavior.
+
+---
+
+### BUG-009: Auto-claim task event can be suppressed, leaving free agents unaware of newly assigned in-progress work
+
+**Status:** Open
+
+**Observed while:** Creating `task-19f13dfd271` for chat-window agent controls.
+
+**Impact:** High. A task can be correctly promoted to `in_progress` for an idle assignee, but the assignee may not visibly react until a later manual/operator nudge. This makes it look like task assignment/nudge failed even though task state is correct.
+
+**Observed behavior:**
+
+- Task `task-19f13dfd271` was created, chain activated, and task auto-claimed:
+  - `Task_Status_Changed` to `queued` with `system_auto:deps_cleared`
+  - `Task_Status_Changed` to `in_progress` with `system_auto:auto_claimed`
+- Planner nudge was also recorded as `Task_Nudged` and CLI returned sent=true.
+- Coder did not start/acknowledge until a later operator nudge.
+
+**Likely cause / contributing factor:**
+
+- Wrapper task-event handling currently suppresses all events whose `changed_by` starts with `system-auto`:
+  ```odin
+  if strings.has_prefix(changed_by, "system-auto") {
+      fmt.println("suppressed system-auto task event", task_id, status, changed_by)
+      return
+  }
+  ```
+- That suppresses the important `system-auto-claim` notification, even though it is exactly the event that tells an idle assignee “this is now your current active task.”
+- If a subsequent manual nudge is missed, delayed, or not surfaced clearly, the agent may remain idle despite having an in-progress task.
+
+**How to recreate:**
+
+1. Ensure an assignee agent is idle and connected.
+2. Create and activate a chain with a task assigned to that agent.
+3. Observe task log showing `system_auto:auto_claimed`.
+4. Check whether the agent receives a visible task-start notification without requiring an additional user/operator nudge.
+
+**Expected behavior:**
+
+- Auto-claim should reliably notify the assignee that the task is now their active work.
+- Wrapper should not suppress `system-auto-claim` events targeted to the assignee.
+- If task nudge delivery succeeds at daemon level but the agent does not visibly receive it, logs should expose where delivery failed.
+
+**Potential fixes:**
+
+- In wrapper, suppress only noisy system-auto events, not `system_auto:auto_claimed` for the target assignee.
+- Add delivery/audit visibility for task notifications vs pane injection.
+- Consider direct-message fallback for newly auto-claimed tasks if pane notification fails.
