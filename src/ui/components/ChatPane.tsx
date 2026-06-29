@@ -26,6 +26,12 @@ export default function ChatPane({ agent, session }: { agent: any; session: any 
   const wasNearBottomRef = useRef(true);
   const submitScrollPendingRef = useRef(false);
   const prevScrollHeightRef = useRef(0);
+  const initialBottomScrollPendingRef = useRef(!!agent?.id);
+  const initialBottomScrollCompleteRef = useRef(false);
+  const userScrollIntentRef = useRef(false);
+  const userScrolledAfterInitialRef = useRef(false);
+  const programmaticScrollRef = useRef(false);
+  const prependScrollRestoreRef = useRef<number | null>(null);
   const [showNewMessagesToast, setShowNewMessagesToast] = useState(false);
 
   function getIsNearBottom() {
@@ -42,16 +48,38 @@ export default function ChatPane({ agent, session }: { agent: any; session: any 
     return container.scrollHeight > container.clientHeight;
   }
 
+  function markProgrammaticScroll() {
+    programmaticScrollRef.current = true;
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        programmaticScrollRef.current = false;
+      });
+    });
+  }
+
   function scrollToBottom(behavior: 'auto' | 'smooth' = 'auto') {
     const container = messageListRef.current;
     if (!container) return;
+    markProgrammaticScroll();
     container.scrollTo({ top: container.scrollHeight, behavior });
     wasNearBottomRef.current = true;
   }
 
-  function scrollToBottomAfterLayout(behavior: 'auto' | 'smooth' = 'auto') {
+  function scrollToBottomAfterLayout(behavior: 'auto' | 'smooth' = 'auto', onComplete?: () => void) {
     scrollToBottom(behavior);
-    window.requestAnimationFrame(() => scrollToBottom(behavior));
+    window.requestAnimationFrame(() => {
+      scrollToBottom(behavior);
+      window.requestAnimationFrame(() => {
+        scrollToBottom(behavior);
+        onComplete?.();
+      });
+    });
+  }
+
+  function markUserScrollIntent() {
+    if (initialBottomScrollCompleteRef.current && !programmaticScrollRef.current) {
+      userScrollIntentRef.current = true;
+    }
   }
 
   function onComposerSubmit() {
@@ -77,14 +105,26 @@ export default function ChatPane({ agent, session }: { agent: any; session: any 
       setShowNewMessagesToast(false);
     }
 
+    if (userScrollIntentRef.current && !programmaticScrollRef.current) {
+      userScrolledAfterInitialRef.current = true;
+      userScrollIntentRef.current = false;
+    }
+
     const container = messageListRef.current;
-    if (container && container.scrollTop === 0 && agent?.id) {
+    if (
+      container &&
+      container.scrollTop === 0 &&
+      agent?.id &&
+      initialBottomScrollCompleteRef.current &&
+      userScrolledAfterInitialRef.current
+    ) {
       const hasMore = chatsHasMore[agent.id] ?? false;
       const cursor = chatsCursor[agent.id] ?? 0;
 
       if (hasMore && cursor > 0 && !fetchingMore) {
         setFetchingMore(true);
         const prevScrollHeight = container.scrollHeight;
+        prependScrollRestoreRef.current = prevScrollHeight;
         try {
           await dispatch(fetchSelectedChat({
             agentId: agent.id,
@@ -94,9 +134,12 @@ export default function ChatPane({ agent, session }: { agent: any; session: any 
 
           window.requestAnimationFrame(() => {
             const newScrollHeight = container.scrollHeight;
+            markProgrammaticScroll();
             container.scrollTop = newScrollHeight - prevScrollHeight;
+            prependScrollRestoreRef.current = null;
           });
         } catch (e) {
+          prependScrollRestoreRef.current = null;
           console.error('Failed to fetch older messages:', e);
         } finally {
           setFetchingMore(false);
@@ -113,7 +156,22 @@ export default function ChatPane({ agent, session }: { agent: any; session: any 
     const messageAdded = messages.length > previousCount;
 
     if (agentChanged) {
+      initialBottomScrollPendingRef.current = !!currentAgentId;
+      initialBottomScrollCompleteRef.current = false;
+      userScrollIntentRef.current = false;
+      userScrolledAfterInitialRef.current = false;
       setShowNewMessagesToast(false);
+    }
+
+    if (prependScrollRestoreRef.current !== null) {
+      setShowNewMessagesToast(false);
+    } else if (initialBottomScrollPendingRef.current && currentAgentId && messages.length > 0) {
+      setShowNewMessagesToast(false);
+      scrollToBottomAfterLayout('auto', () => {
+        initialBottomScrollPendingRef.current = false;
+        initialBottomScrollCompleteRef.current = true;
+      });
+    } else if (agentChanged && currentAgentId && messages.length === 0) {
       scrollToBottomAfterLayout('auto');
     } else if (messageAdded) {
       if (submitScrollPendingRef.current || wasNearBottomRef.current) {
@@ -165,6 +223,10 @@ export default function ChatPane({ agent, session }: { agent: any; session: any 
         <section
           ref={messageListRef}
           onScroll={onMessagesScroll}
+          onWheel={markUserScrollIntent}
+          onTouchMove={markUserScrollIntent}
+          onPointerDown={markUserScrollIntent}
+          onKeyDown={markUserScrollIntent}
           className="flex-1 min-h-0 overflow-y-auto px-1 py-4 sm:px-2"
         >
           <div className="w-full flex flex-col gap-3">
