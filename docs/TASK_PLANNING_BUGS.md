@@ -442,3 +442,47 @@ These counts should not clobber or infer from one another. Fetch/read behavior s
 - To clear agent-to-agent unread notifications, run `ham-ctl inbox --token <agent-token> --json` without `--include-read`.
 - Use `--include-read` only for history/debug inspection, not acknowledgement.
 - Update bootstrap/prompt examples so unread notifications show the no-`--include-read` command.
+
+---
+
+### BUG-008: Task created in an already-active chain remains `planning/waiting_for_promotion`
+
+**Status:** Open / needs verification
+
+**Observed while:** Continuing the core task workflow chain after restarting onto Home Manager/latest daemon, ctl, and wrapper paths.
+
+**Impact:** Medium. A coordinator may add a new task to an already-active chain and expect it to auto-promote/claim, but the task remains in `planning` with `not_actionable_reason: waiting_for_promotion`. Because nudges intentionally do not operate on planning tasks/chains, the coordinator must use direct messages to start work.
+
+**Observed behavior:**
+
+- Chain `chain-19f0f575d0e` was `in_progress`.
+- Created task `task-19f110f5c62` in that chain with no dependencies and assignee `coder-Heimdall-System@heimdall-system`.
+- `tasks create` returned `ok:true`.
+- `tasks show` reported:
+  - `status: planning`
+  - `not_actionable_reason: waiting_for_promotion`
+- Re-running `task-chains activate` failed with `only planning chains can be activated`, because the chain was already in progress.
+- Waiting briefly did not promote the task.
+
+**How to recreate:**
+
+1. Use a chain already in `in_progress`.
+2. Create a new no-dependency task in that chain:
+   ```bash
+   ham-ctl tasks create --token <token> --chain-id <active-chain-id> --title "new task" --assignee <agent>
+   ```
+3. Run:
+   ```bash
+   ham-ctl tasks show --token <token> --task-id <new-task-id>
+   ```
+4. Check whether status remains `planning/waiting_for_promotion` instead of promoting to queued/in_progress.
+
+**Expected behavior:**
+
+- A newly-created task in an already-active chain with satisfied dependencies should promote to `queued` or `in_progress` according to normal auto-claim rules, or
+- The system should require an explicit supported command to promote newly appended tasks in active chains, and CLI/help should document that workflow.
+
+**Current workaround:**
+
+- Use direct `ham-ctl send` coordination to the assignee instead of `tasks nudge` while the task remains planning.
+- Avoid relying on nudges for planning tasks, per intended nudge behavior.
