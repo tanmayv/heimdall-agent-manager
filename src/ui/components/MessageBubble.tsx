@@ -11,9 +11,14 @@ function isSafeUrl(url: string) {
   return /^(https?:|mailto:)/i.test(trimmed) || trimmed.startsWith('/') || trimmed.startsWith('#');
 }
 
+function splitTrailingUrlPunctuation(url: string) {
+  const match = url.match(/^(.+?)([.,!?;:]+)?$/);
+  return { href: match?.[1] || url, trailing: match?.[2] || '' };
+}
+
 function renderInlineMarkdown(text: string, keyPrefix: string) {
   const nodes = [];
-  const pattern = /(`[^`]+`|\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*]+)\*|_([^_]+)_)/g;
+  const pattern = /(`[^`]+`|\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)|https?:\/\/[^\s<>()]+|\*\*([^*]+)\*\*|__([^_]+)__|\*([^*]+)\*|_([^_]+)_)/g;
   let lastIndex = 0;
   let match;
 
@@ -27,10 +32,18 @@ function renderInlineMarkdown(text: string, keyPrefix: string) {
     } else if (match[2] && match[3]) {
       const href = match[3];
       nodes.push(isSafeUrl(href) ? (
-        <a key={key} href={href} target="_blank" rel="noreferrer">
+        <a key={key} href={href} target="_blank" rel="noreferrer noopener">
           {renderInlineMarkdown(match[2], `${key}-link`)}
         </a>
       ) : match[2]);
+    } else if (/^https?:\/\//i.test(token)) {
+      const { href, trailing } = splitTrailingUrlPunctuation(token);
+      nodes.push(isSafeUrl(href) ? (
+        <a key={key} href={href} target="_blank" rel="noreferrer noopener">
+          {href}
+        </a>
+      ) : token);
+      if (trailing) nodes.push(trailing);
     } else if (match[4] || match[5]) {
       nodes.push(<strong key={key}>{renderInlineMarkdown(match[4] || match[5], `${key}-strong`)}</strong>);
     } else if (match[6] || match[7]) {
