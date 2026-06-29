@@ -305,3 +305,140 @@ These are behavioral/process mistakes observed while managing chains. They shoul
 - Planner/operator must inspect votes manually.
 - Treat a `review_ready` task with all required LGTM votes as logically approved for coordination, but note the daemon state mismatch.
 - If manual status changes are required, ask a user-token holder/operator to move or repair the task state.
+
+---
+
+### BUG-006: Blocked chain still prevents creating a new project chain
+
+**Status:** Open
+
+**Observed while:** Pausing the chat window audit implementation chain to prioritize core task create/done/vote fixes.
+
+**Impact:** Medium to high. A coordinator cannot create a replacement/urgent chain in the same project after pausing the current chain with `status: blocked`, because the daemon still treats the blocked chain as the project's active chain.
+
+**Observed behavior:**
+
+- Paused chain `chain-19f0f0e8c1c` using:
+  ```bash
+  ham-ctl task-chains status --token <planner-token> --chain-id chain-19f0f0e8c1c --status blocked --final-summary "Paused..."
+  ```
+- `task-chains show` confirmed:
+  - `status: blocked`
+- Attempted to create a new project chain:
+  ```bash
+  ham-ctl task-chains create --token <planner-token> --title "Unblock core task create done vote and description editing" --project-id heimdall-system --coordinator planner-Heimdall-System@heimdall-system
+  ```
+- Daemon returned:
+  ```json
+  {"ok":false,"message":"project already has an active chain","active_chain_id":"chain-19f0f0e8c1c"}
+  ```
+
+**How to recreate:**
+
+1. Create/activate a chain for a project.
+2. Move that chain to `blocked`.
+3. Try to create another chain with the same `project-id`.
+4. Observe that the blocked chain is still considered active.
+
+**Expected behavior:**
+
+- Either `blocked` should be a true paused/non-active state that allows a replacement active chain, or
+- There should be a dedicated `paused`/`superseded` chain state, or
+- The error message should clarify that blocked chains still occupy the project's active-chain slot and provide an intended workflow.
+
+**Current workaround:**
+
+- Create the urgent chain without a `project-id` and include the project directory/context explicitly in task descriptions.
+- This preserves execution but weakens project-level grouping/auditability.
+
+---
+
+### PROCESS-001: Nudges intentionally do not run for planning/done task chains
+
+**Status:** Intended behavior / prompt-process note
+
+**Clarified by operator:** Nudges are intentionally limited to task chains that are not in `planning` or `done` state. We want nudges not to happen for task chains in planning mode.
+
+**Rationale:** Planning chains are not yet approved/active work. Nudging agents from a planning chain can cause premature execution or coordination noise before the user-approved plan is activated. Done chains should also not generate new work nudges.
+
+**Prompt improvement:**
+
+> Before using `tasks nudge`, check the task chain status. Do not expect or attempt nudges for chains in `planning` or `done`. If a plan is approved and work should start, activate the chain first. If the chain should remain planning, use direct `ham-ctl send` messages only for meta-coordination, not execution nudges.
+
+**Current workflow:**
+
+- Keep planning chains quiet until approval/activation.
+- Use direct messages for exceptional coordination while task-chain state bugs are being repaired.
+
+---
+
+### BUG-007: Agent inbox `--include-read` does not clear unread notifications and unread-count semantics need per-direction/per-channel clarity
+
+**Status:** Open
+
+**Observed while:** Planner was reading direct agent-to-agent coordination messages from reviewer/coder.
+
+**Impact:** Medium. Notification bubbles continued to report messages such as `8 Unread Messages from reviewer-Heimdall-System@heimdall-system` even after the planner fetched messages with `ham-ctl inbox --include-read --json`. This creates coordination noise and makes it look like the planner has not read messages.
+
+**Observed behavior:**
+
+- Running:
+  ```bash
+  ham-ctl inbox --token <planner-token> --include-read --limit 150 --json
+  ```
+  returned messages, many with `read:false`, but did not clear the unread count.
+- Running inbox without `--include-read` later cleared them:
+  ```bash
+  ham-ctl inbox --token <planner-token> --limit 100 --json
+  ```
+- A second non-include-read fetch then returned no messages.
+
+**Likely cause:**
+
+- Agent inbox fetch maps to `fetch_messages` with `include_read=true`.
+- `message_service_process_fetch` intentionally skips marking messages read when `include_read` is true:
+  ```odin
+  if request.include_read do continue // include_read may return old reads; avoid duplicate read receipts.
+  ```
+- This means `--include-read` is an inspection mode, not a read/ack mode, but the CLI/notification wording makes this easy to misunderstand.
+
+**Required model clarification:**
+
+Unread counts should be independently tracked for each communication direction/channel:
+
+1. `user -> agent` unread count for agent user-chat notifications.
+2. `agent -> user` unread count for user/client chat badges.
+3. `agent -> agent` unread count for agent inbox/direct coordination messages.
+
+These counts should not clobber or infer from one another. Fetch/read behavior should update only the appropriate direction/channel.
+
+**How to recreate:**
+
+1. Send agent-to-agent messages to an agent.
+2. Observe wrapper notification with unread count.
+3. Fetch with:
+   ```bash
+   ham-ctl inbox --token <agent-token> --include-read --json
+   ```
+4. Observe messages are returned but unread notification/count may remain.
+5. Fetch with:
+   ```bash
+   ham-ctl inbox --token <agent-token> --json
+   ```
+6. Observe unread messages are marked read and subsequent unread fetch returns empty.
+
+**Expected behavior options:**
+
+- Option A: Document/rename `--include-read` as read-only history mode and make notifications tell agents to fetch without `--include-read` to acknowledge messages.
+- Option B: Add an explicit `--mark-read` or `--ack` flag for inbox fetches, independent of include-read history mode.
+- Option C: Make `--include-read` still mark currently unread messages as read while including historical read messages, if that is the desired UX.
+
+**Prompt-level fix:**
+
+> Agents should not use `--include-read` by default when responding to unread inbox notifications. For normal inbox handling and acknowledgement, run `ham-ctl inbox --token <agent-token> --json` without `--include-read`. Use `--include-read` only when explicitly inspecting history/debugging already-read messages.
+
+**Current workaround:**
+
+- To clear agent-to-agent unread notifications, run `ham-ctl inbox --token <agent-token> --json` without `--include-read`.
+- Use `--include-read` only for history/debug inspection, not acknowledgement.
+- Update bootstrap/prompt examples so unread notifications show the no-`--include-read` command.
