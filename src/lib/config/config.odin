@@ -77,6 +77,7 @@ Wrapper_Config :: struct {
 	tmux_session: string,
 	tmux_window_prefix: string,
 	agent_run_dir: string,
+	use_random_dir: bool,
 	project: string,
 	memory_templates: []string,
 	stop_message: string,
@@ -122,6 +123,8 @@ Agent_Command_Config :: struct {
 	prompt_flags: []string,
 	starter_prompt: string,
 	agent_run_dir: string,
+	use_random_dir: bool,
+	use_random_dir_set: bool,
 	project: string,
 	bootstrap: Bootstrap_Config,
 	models: Model_Tiers_Config,
@@ -359,6 +362,8 @@ parse_wrapper_key :: proc(key, value: string, cfg: ^Wrapper_Config) {
 		cfg.tmux_window_prefix = parse_string(value)
 	case "agent_run_dir":
 		cfg.agent_run_dir = expand_home(parse_string(value))
+	case "use_random_dir":
+		cfg.use_random_dir = parse_bool(value)
 	case "project":
 		cfg.project = parse_string(value)
 	case "memory_templates":
@@ -402,6 +407,9 @@ parse_agent_command_key :: proc(name, key, value: string, cfg: ^Wrapper_Config) 
 		cfg.agent_commands[idx].starter_prompt = parse_string(value)
 	case "agent_run_dir":
 		cfg.agent_commands[idx].agent_run_dir = expand_home(parse_string(value))
+	case "use_random_dir":
+		cfg.agent_commands[idx].use_random_dir = parse_bool(value)
+		cfg.agent_commands[idx].use_random_dir_set = true
 	case "project":
 		cfg.agent_commands[idx].project = parse_string(value)
 	case "memory_templates":
@@ -598,6 +606,7 @@ default_config :: proc() -> Config {
 	cfg.wrapper.tmux_session = "ham-agents"
 	cfg.wrapper.tmux_window_prefix = "agent"
 	cfg.wrapper.agent_run_dir = ""
+	cfg.wrapper.use_random_dir = false
 	cfg.wrapper.project = "default"
 	cfg.wrapper.memory_templates = nil
 

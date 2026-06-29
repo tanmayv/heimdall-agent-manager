@@ -31,13 +31,16 @@ command = ["pi"]
 tmux_session = "ham-agents"
 tmux_window_prefix = "agent"
 # Optional managed runtime cwd root. When set, wrappers run agents in
-# <agent_run_dir>/<project>/<agent-instance-id> with safe path slugging.
+# <agent_run_dir>/<project>/<agent-instance-id>-<timestamp> with safe path slugging.
+# Set use_random_dir=true to use <agent_run_dir>/<project>/<random-slug> instead.
 agent_run_dir = "~/.local/share/heimdall/agent-runs"
+use_random_dir = false
 project = "default"
 # Active approved memory templates to inject into new agent starter prompts. Entries may match template memory_id, title, or scope.
 memory_templates = []
 # Optional per-provider managed run-dir/bootstrap controls.
 # agent_run_dir = "~/.local/share/heimdall/agent-runs"
+# use_random_dir = false
 # project = "default"
 # bootstrap_profile = "pi" # pi|claude|codex or custom profile name
 

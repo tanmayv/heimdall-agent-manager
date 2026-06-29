@@ -183,6 +183,11 @@ let
         default     = [];
         description = "Memory template IDs/titles to inject into agent starter prompts.";
       };
+      useRandomDir = lib.mkOption {
+        type        = lib.types.nullOr lib.types.bool;
+        default     = null;
+        description = "Override wrapper.useRandomDir for this agent command. When true, run dirs use a random basename under agentRunDir/project.";
+      };
       yoloFlags = lib.mkOption {
         type        = lib.types.listOf lib.types.str;
         default     = [];
@@ -250,6 +255,7 @@ let
   mkAgentCmd = ac:
     { command = ac.command; yolo_flags = ac.yoloFlags; prompt_flags = ac.promptFlags; }
     // lib.optionalAttrs (ac.project != null)           { project          = ac.project; }
+    // lib.optionalAttrs (ac.useRandomDir != null)      { use_random_dir   = ac.useRandomDir; }
     // lib.optionalAttrs (ac.memoryTemplates != [])     { memory_templates = ac.memoryTemplates; }
     // lib.optionalAttrs (ac.starterPrompt != null)     { starter_prompt   = ac.starterPrompt; }
     // (let bs = mkBootstrap ac.bootstrap; in lib.optionalAttrs (bs != {}) { bootstrap = bs; })
@@ -286,8 +292,9 @@ let
       memory_templates    = w.memoryTemplates;
     }
     // lib.optionalAttrs (w.hamCtlBin != null)      { ham_ctl_bin   = w.hamCtlBin; }
-    // lib.optionalAttrs (w.command != [])          { command       = w.command; }
-    // lib.optionalAttrs (w.agentRunDir != null)    { agent_run_dir = w.agentRunDir; }
+    // lib.optionalAttrs (w.command != [])          { command        = w.command; }
+    // lib.optionalAttrs (w.agentRunDir != null)    { agent_run_dir  = w.agentRunDir; }
+    // lib.optionalAttrs (w.useRandomDir != null)   { use_random_dir = w.useRandomDir; }
     // lib.optionalAttrs (w.agentCommands != {})    { "agent-cmd"   = lib.mapAttrs (_: mkAgentCmd) w.agentCommands; };
 
   configAttrs =
@@ -486,7 +493,12 @@ in
       agentRunDir = lib.mkOption {
         type        = lib.types.nullOr lib.types.str;
         default     = "~/.local/share/heimdall/agent-runs";
-        description = "Root for agent run dirs: <agentRunDir>/<project-slug>/<instance-id>. Null disables managed run dirs.";
+        description = "Root for agent run dirs. Default basename is <instance-id>-<timestamp>; with useRandomDir it is a random slug.";
+      };
+      useRandomDir = lib.mkOption {
+        type        = lib.types.nullOr lib.types.bool;
+        default     = null;
+        description = "When true, ham-wrapper creates <agentRunDir>/<project>/<random-slug> instead of including the agent instance ID in the run-dir basename.";
       };
       project = lib.mkOption {
         type        = lib.types.str;

@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:math/rand"
 import "core:os"
 import "core:strconv"
 import "core:strings"
@@ -859,11 +860,48 @@ resolve_agent_run_dir :: proc(cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Ag
 	if agent_name == "" do agent_name = cfg.agent_name
 
 	base := resolve_working_dir(root)
+	project_dir := join_path(base, safe_slug(project))
+	_ = os.make_directory_all(project_dir)
+
+	use_random_dir := cfg.use_random_dir
+	if agent_cmd_ok && agent_cmd.use_random_dir_set do use_random_dir = agent_cmd.use_random_dir
+	if use_random_dir {
+		for attempt in 0..<16 {
+			name := random_run_dir_name()
+			cwd := join_path(project_dir, name)
+			if !os.exists(cwd) {
+				_ = os.make_directory_all(cwd)
+				return cwd
+			}
+			_ = attempt
+		}
+	}
+
 	ts := time.to_unix_nanoseconds(time.now()) / 1_000_000
 	agent_name_with_ts := fmt.tprintf("%s-%d", agent_name, ts)
-	cwd := join_path3(base, safe_slug(project), safe_slug(agent_name_with_ts))
+	cwd := join_path(project_dir, safe_slug(agent_name_with_ts))
 	_ = os.make_directory_all(cwd)
 	return cwd
+}
+
+random_run_dir_name :: proc() -> string {
+	bytes: [8]byte
+	if rand.read(bytes[:]) != len(bytes) {
+		now := u64(time.to_unix_nanoseconds(time.now()))
+		for i in 0..<len(bytes) {
+			bytes[i] = byte((now >> uint((i % 8) * 8)) & 0xff)
+		}
+	}
+	builder := strings.builder_make()
+	strings.write_string(&builder, "run-")
+	for b in bytes do hex_write_byte(&builder, b)
+	return strings.to_string(builder)
+}
+
+hex_write_byte :: proc(builder: ^strings.Builder, b: byte) {
+	digits := "0123456789abcdef"
+	strings.write_byte(builder, digits[int((b >> 4) & 0x0f)])
+	strings.write_byte(builder, digits[int(b & 0x0f)])
 }
 
 join_path3 :: proc(a, b, c: string) -> string {
