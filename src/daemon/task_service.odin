@@ -497,7 +497,15 @@ task_service_review_vote :: proc(cmd: Task_Review_Vote_Command) -> Task_Service_
 	}
 	task_recompute_promotions(cmd.author_agent_instance_id)
 	task_notify_reviewer_rotation(cmd.author_agent_instance_id)
-	return Task_Service_Result{ok = true, status_code = 200, message = `{"ok":true}`}
+	result_status := "review_ready"
+	if updated_idx, updated_found := task_existing_state_index(cmd.task_id, cmd.chain_id); updated_found {
+		result_status = task_status_to_string(task_states[updated_idx].status)
+	}
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"task_id":"`); json_write_string(&b, cmd.task_id)
+	strings.write_string(&b, `","status":"`); json_write_string(&b, result_status)
+	strings.write_string(&b, `"}`)
+	return Task_Service_Result{ok = true, status_code = 200, message = strings.to_string(b)}
 }
 
 task_service_auto_approve :: proc(task_id, chain_id: string) {
