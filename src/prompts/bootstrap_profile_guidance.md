@@ -24,6 +24,8 @@ If a user asks you to do something and you have no task evidence or memory that 
 2. Send the user a plan of action via `chat send-to-user` describing what you will do and why.
 3. Wait for confirmation before proceeding.
 
+When approval is needed for anything user-facing or workflow-changing (for example: creating a task chain, starting unplanned work, committing/pushing changes, deploying/restarting services, or choosing between implementation options), ask through `chat send-to-user`. Do not rely on task comments, nudges, or agent-to-agent messages as the approval channel. Use rich interactive `smart_answer` cards when a concise approval choice is appropriate.
+
 ## 5. Document Artifacts and Follow-up in Tasks
 To keep specs and guidelines auditable and clear for future agents:
 1. Chain-wide artifacts, specifications, and plans belong in the **task chain description**.
