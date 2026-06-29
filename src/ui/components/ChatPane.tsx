@@ -23,7 +23,7 @@ export default function ChatPane({ agent, session }: { agent: any; session: any 
   const chatsCursor = useSelector((state: any) => state.chat.chatsCursor);
   const chatsHasMore = useSelector((state: any) => state.chat.chatsHasMore);
   const [fetchingMore, setFetchingMore] = useState(false);
-  const [agentAction, setAgentAction] = useState<'start' | 'stop' | 'force-stop' | 'active-task' | ''>('');
+  const [agentAction, setAgentAction] = useState<'start' | 'stop' | 'force-stop' | 'restart' | 'active-task' | ''>('');
   const [agentActionMessage, setAgentActionMessage] = useState('');
   const messageListRef = useRef(null);
   const prevMessageCountRef = useRef(messages.length);
@@ -109,8 +109,27 @@ export default function ChatPane({ agent, session }: { agent: any; session: any 
   const agentIsStopping = agentStatus === 'stopping';
   const canStartAgent = !!agent?.id && !agentIsRunning && !agentIsStarting && !agentIsStopping;
   const canStopAgent = !!agent?.id && (agentIsRunning || agentIsStarting || agentIsStopping);
+  const canRestartAgent = canStopAgent && !agentIsStopping;
 
-  async function runAgentAction(action: 'start' | 'stop' | 'force-stop') {
+  function sleep(ms: number) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
+  }
+
+  async function waitForAgentStopped(agentId: string) {
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      await sleep(500);
+      try {
+        const res = await daemonApi.showAgent({ daemonUrl: session.daemonUrl, agentInstanceId: agentId });
+        const latest = res?.agent || {};
+        const latestStatus = latest.startup_status || latest.startupStatus || '';
+        if (latest.connected === false || latestStatus === 'stopped' || latestStatus === 'offline') return;
+      } catch {
+        return;
+      }
+    }
+  }
+
+  async function runAgentAction(action: 'start' | 'stop' | 'force-stop' | 'restart') {
     if (!agent?.id || agentAction) return;
     setAgentAction(action);
     setAgentActionMessage('');
@@ -121,10 +140,16 @@ export default function ChatPane({ agent, session }: { agent: any; session: any 
       } else if (action === 'stop') {
         await dispatch(stopAgentInstance(agent.id)).unwrap();
         setAgentActionMessage('Stop requested.');
-      } else {
+      } else if (action === 'force-stop') {
         await daemonApi.stopAgent({ daemonUrl: session.daemonUrl, agentInstanceId: agent.id, timeInSec: 1 });
         dispatch(refreshAgents());
         setAgentActionMessage('Force stop requested.');
+      } else {
+        await daemonApi.stopAgent({ daemonUrl: session.daemonUrl, agentInstanceId: agent.id, timeInSec: 1 });
+        setAgentActionMessage('Restart requested. Waiting for stop before starting again…');
+        await waitForAgentStopped(agent.id);
+        await dispatch(startAgentInstance(agent)).unwrap();
+        setAgentActionMessage('Restart requested. A fresh run is starting.');
       }
     } catch (err: any) {
       setAgentActionMessage(err?.message || `Failed to ${action.replace('-', ' ')} agent.`);
@@ -319,6 +344,16 @@ export default function ChatPane({ agent, session }: { agent: any; session: any 
             title="Send a stop request with a 1 second timeout."
           >
             {agentAction === 'force-stop' ? 'Forcing…' : 'Force Stop'}
+          </button>
+          <button
+            type="button"
+            data-debug-id="chat-agent-restart-btn"
+            onClick={() => runAgentAction('restart')}
+            disabled={!canRestartAgent || !!agentAction}
+            className="framer-pill-secondary px-3 py-2 text-xs disabled:opacity-40"
+            title="Force stop this agent, then start the same agent again with a fresh run directory."
+          >
+            {agentAction === 'restart' ? 'Restarting…' : 'Restart'}
           </button>
           <button
             type="button"
