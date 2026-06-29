@@ -3,6 +3,7 @@ import * as daemonApi from '../api/daemonApi';
 
 const DEFAULT_DAEMON_URL = 'http://127.0.0.1:49322';
 const DEFAULT_USER_ID = 'operator@local';
+const DAEMON_PROFILES_KEY = 'odin.daemonProfiles';
 
 function getStoredValue(key: string, fallback: string): string {
   try {
@@ -17,6 +18,47 @@ function setStoredValue(key: string, value: string): void {
     window.localStorage.setItem(key, value);
   } catch {
     // Local storage is only a convenience for this UI session.
+  }
+}
+
+function normalizeDaemonUrl(value: string): string {
+  return (value || '').trim().replace(/\/$/, '');
+}
+
+function daemonLabelForUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return parsed.host || url;
+  } catch {
+    return url;
+  }
+}
+
+function normalizeDaemonProfiles(items: any[], activeUrl: string) {
+  const byUrl: Record<string, any> = {};
+  for (const item of items || []) {
+    const url = normalizeDaemonUrl(item?.url || item?.daemonUrl || '');
+    if (!url) continue;
+    byUrl[url] = { label: String(item?.label || daemonLabelForUrl(url)), url };
+  }
+  if (activeUrl && !byUrl[activeUrl]) byUrl[activeUrl] = { label: daemonLabelForUrl(activeUrl), url: activeUrl };
+  if (!byUrl[DEFAULT_DAEMON_URL]) byUrl[DEFAULT_DAEMON_URL] = { label: 'Local daemon', url: DEFAULT_DAEMON_URL };
+  return Object.values(byUrl).sort((left: any, right: any) => (left.label || '').localeCompare(right.label || ''));
+}
+
+function loadDaemonProfiles(activeUrl: string) {
+  try {
+    return normalizeDaemonProfiles(JSON.parse(window.localStorage.getItem(DAEMON_PROFILES_KEY) || '[]'), activeUrl);
+  } catch {
+    return normalizeDaemonProfiles([], activeUrl);
+  }
+}
+
+function storeDaemonProfiles(profiles: any[]) {
+  try {
+    window.localStorage.setItem(DAEMON_PROFILES_KEY, JSON.stringify(profiles));
+  } catch {
+    // Local daemon profiles are a UI convenience.
   }
 }
 
@@ -397,9 +439,12 @@ function getAgentIdFromPayload(payload: any, selectedAgentId: string): string {
   return selectedAgentId;
 }
 
+const initialDaemonUrl = normalizeDaemonUrl(getStoredValue('odin.daemonUrl', DEFAULT_DAEMON_URL)) || DEFAULT_DAEMON_URL;
+
 const initialState = {
+  daemonProfiles: loadDaemonProfiles(initialDaemonUrl),
   session: {
-    daemonUrl: getStoredValue('odin.daemonUrl', DEFAULT_DAEMON_URL),
+    daemonUrl: initialDaemonUrl,
     userId: getStoredValue('odin.userId', DEFAULT_USER_ID),
     userDisplayName: getStoredValue('odin.userDisplayName', ''),
     clientInstanceId: createClientInstanceId(),
@@ -461,12 +506,21 @@ const chatSlice = createSlice({
     },
 
     setDaemonUrl(state, action) {
-      state.session.daemonUrl = action.payload;
-      setStoredValue('odin.daemonUrl', action.payload);
+      const daemonUrl = normalizeDaemonUrl(action.payload) || DEFAULT_DAEMON_URL;
+      state.session.daemonUrl = daemonUrl;
+      setStoredValue('odin.daemonUrl', daemonUrl);
+    },
+    addDaemonProfile(state, action) {
+      const daemonUrl = normalizeDaemonUrl(action.payload?.daemonUrl || action.payload?.url || '');
+      if (!daemonUrl) return;
+      const profile = { label: String(action.payload?.label || daemonLabelForUrl(daemonUrl)), url: daemonUrl };
+      state.daemonProfiles = normalizeDaemonProfiles([...state.daemonProfiles, profile], daemonUrl);
+      storeDaemonProfiles(state.daemonProfiles);
     },
     updateSessionConfig(state, action) {
-      const daemonUrl = action.payload.daemonUrl?.trim() || DEFAULT_DAEMON_URL;
+      const daemonUrl = normalizeDaemonUrl(action.payload.daemonUrl) || DEFAULT_DAEMON_URL;
       const userId = action.payload.userId?.trim() || DEFAULT_USER_ID;
+      const daemonChanged = daemonUrl !== state.session.daemonUrl;
       const userChanged = userId !== state.session.userId;
       state.session.daemonUrl = daemonUrl;
       state.session.userId = userId;
@@ -475,12 +529,23 @@ const chatSlice = createSlice({
       state.session.wsConnected = false;
       state.session.wsStatus = 'idle';
       state.session.error = '';
-      if (userChanged) {
+      if (daemonChanged || userChanged) {
         state.session.clientInstanceId = newClientInstanceId();
         state.session.clientToken = '';
+        state.session.lastChatEvent = null;
+        state.agents = [];
+        state.chats = {};
+        state.chatsCursor = {};
+        state.chatsHasMore = {};
+        state.fetchingChatsByAgentId = {};
+        state.selectedAgentId = '';
+        state.testRuns = [];
         setStoredValue('odin.clientInstanceId', state.session.clientInstanceId);
         setStoredValue('odin.clientToken', '');
+        storeKnownAgents([]);
       }
+      state.daemonProfiles = normalizeDaemonProfiles(state.daemonProfiles, daemonUrl);
+      storeDaemonProfiles(state.daemonProfiles);
       setStoredValue('odin.daemonUrl', daemonUrl);
       setStoredValue('odin.userId', userId);
     },
@@ -795,6 +860,6 @@ const chatSlice = createSlice({
   },
 });
 
-export const { selectAgent, setView, setDaemonUrl, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived, agentRuntimeEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage, reorderAgentsLocally } = chatSlice.actions;
+export const { selectAgent, setView, setDaemonUrl, addDaemonProfile, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived, agentRuntimeEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage, reorderAgentsLocally } = chatSlice.actions;
 export default chatSlice.reducer;
 

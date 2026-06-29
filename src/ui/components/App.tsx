@@ -33,6 +33,7 @@ import {
   appendMessage,
   startAgentInstance,
   stopAgentInstance,
+  addDaemonProfile,
 } from '../store/chatSlice';
 import { refreshTaskBoard, taskEventReceived, updateTaskStateDirectly, updateChainStateDirectly, fetchUnreviewedChains } from '../store/taskSlice';
 import { memoryEventReceived, refreshMemory, auditStartedReceived, auditEndedReceived } from '../store/memorySlice';
@@ -72,7 +73,7 @@ export default function App() {
   const selectedAgentId = urlParams.agentId;
   const setView = useCallback((val: any) => setUrlParams({ view: val }), [setUrlParams]);
 
-  const { agents, session, userPreferences } = useSelector((state: any) => state.chat);
+  const { agents, session, userPreferences, daemonProfiles } = useSelector((state: any) => state.chat);
   const { projectsById, projectIds } = useSelector((state: any) => state.projects);
   const unreviewedChains = useSelector((state: any) => state.tasks.unreviewedChains || EMPTY_ARRAY);
   const tasksById = useSelector((state: any) => state.tasks.tasksById);
@@ -87,6 +88,9 @@ export default function App() {
     }).length;
   }, [tasksById, session.userId]);
   const selectedAgent = agents.find((agent) => agent.id === selectedAgentId) ?? null;
+  const [newDaemonUrl, setNewDaemonUrl] = useState('');
+  const [newDaemonLabel, setNewDaemonLabel] = useState('');
+  const [showDaemonAdd, setShowDaemonAdd] = useState(false);
   
   const [showOnboarding, setShowOnboarding] = useState<boolean>(false);
 
@@ -183,6 +187,23 @@ export default function App() {
       })
       .catch(() => undefined);
   };
+
+  const switchDaemon = useCallback((daemonUrl: string) => {
+    if (!daemonUrl || daemonUrl === session.daemonUrl) return;
+    setUrlParams({ agentId: '', taskId: '', chainId: '' });
+    dispatch(updateSessionConfig({ daemonUrl, userId: session.userId }));
+    window.setTimeout(connectSession, 0);
+  }, [dispatch, session.daemonUrl, session.userId, setUrlParams]);
+
+  const addDaemon = useCallback(() => {
+    const daemonUrl = newDaemonUrl.trim();
+    if (!daemonUrl) return;
+    dispatch(addDaemonProfile({ daemonUrl, label: newDaemonLabel.trim() }));
+    setShowDaemonAdd(false);
+    setNewDaemonUrl('');
+    setNewDaemonLabel('');
+    switchDaemon(daemonUrl.replace(/\/$/, ''));
+  }, [dispatch, newDaemonLabel, newDaemonUrl, switchDaemon]);
 
   useEffect(() => {
     connectSession();
@@ -412,6 +433,29 @@ export default function App() {
 
   return (
     <div className="h-screen overflow-hidden bg-[var(--fd-canvas)] text-white">
+      <div className="fixed right-4 top-3 z-50 flex max-w-[min(720px,calc(100vw-2rem))] flex-wrap items-center justify-end gap-2 rounded-full border border-[var(--fd-hairline)] bg-[var(--fd-surface-2)]/95 px-3 py-2 shadow-lg backdrop-blur">
+        <span className="framer-topline text-[10px]">Daemon</span>
+        <select
+          data-debug-id="daemon-profile-select"
+          value={session.daemonUrl}
+          onChange={(event) => switchDaemon(event.target.value)}
+          className="framer-input max-w-[260px] px-2 py-1 text-xs"
+          title={session.daemonUrl}
+        >
+          {(daemonProfiles || []).map((profile: any) => (
+            <option key={profile.url} value={profile.url}>{profile.label || profile.url}</option>
+          ))}
+        </select>
+        <span className={`h-2 w-2 rounded-full ${session.connected ? 'bg-emerald-400' : session.status === 'error' || session.wsStatus === 'error' ? 'bg-red-400' : 'bg-amber-400'}`} title={session.error || session.status} />
+        <button type="button" data-debug-id="daemon-profile-add-toggle" onClick={() => setShowDaemonAdd((prev) => !prev)} className="framer-pill-secondary px-2 py-1 text-xs">+ Daemon</button>
+        {showDaemonAdd && (
+          <div className="flex flex-wrap items-center gap-2">
+            <input value={newDaemonLabel} onChange={(event) => setNewDaemonLabel(event.target.value)} placeholder="Label" className="framer-input w-24 px-2 py-1 text-xs" />
+            <input value={newDaemonUrl} onChange={(event) => setNewDaemonUrl(event.target.value)} placeholder="http://127.0.0.1:49322" className="framer-input w-52 px-2 py-1 text-xs" />
+            <button type="button" data-debug-id="daemon-profile-add-btn" onClick={addDaemon} className="framer-pill bg-white px-2 py-1 text-xs">Add</button>
+          </div>
+        )}
+      </div>
       <div className="flex h-full">
         <AgentSidebar
           agents={agents}
