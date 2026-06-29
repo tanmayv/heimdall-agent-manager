@@ -5,15 +5,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "src" / "ui" / "components" / "App.tsx"
+SIDEBAR = ROOT / "src" / "ui" / "components" / "AgentSidebar.tsx"
 CHAT_SLICE = ROOT / "src" / "ui" / "store" / "chatSlice.ts"
 
 
 def main() -> None:
     app = APP.read_text()
+    sidebar = SIDEBAR.read_text()
     chat = CHAT_SLICE.read_text()
 
-    assert "daemon-profile-select" in app, "App should render daemon profile dropdown"
-    assert "daemon-profile-add-btn" in app, "App should include basic add daemon flow"
+    assert "fixed right-4 top-3" not in app, "App should not render a floating daemon switcher"
+    assert "sidebar-user-daemon-dropdown" in sidebar, "Sidebar user label should open daemon/user dropdown"
+    assert "daemon-profile-option-" in sidebar, "Sidebar should render daemon options by label"
+    assert "daemon-profile-add-btn" in sidebar, "Sidebar dropdown should include basic add daemon flow"
+    assert "profile.label || 'Daemon'" in sidebar, "Primary daemon selection UI should use friendly labels"
+    assert "title={profile.url}" in sidebar, "Raw URL should be relegated to secondary tooltip/detail"
     assert "switchDaemon" in app and "updateSessionConfig" in app, "Switching should update session config"
     assert "setUrlParams({ agentId: '', taskId: '', chainId: '' })" in app, "Switch should clear daemon-specific selection params"
     assert "connectSession" in app, "Switch should reconnect/re-register after changing daemon"

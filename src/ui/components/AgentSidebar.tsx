@@ -33,6 +33,10 @@ interface AgentSidebarProps {
   projectIds: string[];
   selectedAgentId: string;
   session: any;
+  daemonProfiles?: any[];
+  activeDaemonUrl?: string;
+  onSwitchDaemon?: (daemonUrl: string) => void;
+  onAddDaemonProfile?: (daemonUrl: string, label: string) => void;
   activeView: string;
   onSelectAgent: (agentId: string) => void;
   onRefreshAgents: () => void;
@@ -59,6 +63,10 @@ const AgentSidebar = memo(function AgentSidebar({
   projectIds,
   selectedAgentId,
   session,
+  daemonProfiles = [],
+  activeDaemonUrl = '',
+  onSwitchDaemon,
+  onAddDaemonProfile,
   activeView,
   onSelectAgent,
   onRefreshAgents,
@@ -83,6 +91,10 @@ const AgentSidebar = memo(function AgentSidebar({
   const [dismissedWarnings, setDismissedWarnings] = useState<Set<string>>(new Set());
   const [dragOverProjectId, setDragOverProjectId] = useState<string | null>(null);
   const [dragOverAgentId, setDragOverAgentId] = useState<string | null>(null);
+  const [daemonMenuOpen, setDaemonMenuOpen] = useState(false);
+  const [showDaemonAdd, setShowDaemonAdd] = useState(false);
+  const [newDaemonLabel, setNewDaemonLabel] = useState('');
+  const [newDaemonUrl, setNewDaemonUrl] = useState('');
 
   const [isPinned, setIsPinned] = useState(() => {
     return localStorage.getItem('sidebar_pinned') !== 'false';
@@ -208,6 +220,20 @@ const AgentSidebar = memo(function AgentSidebar({
     setDismissedWarnings(new Set());
     onRefreshAgents();
   }, [onRefreshAgents]);
+
+  const activeDaemonProfile = useMemo(() => {
+    return daemonProfiles.find((profile) => profile.url === activeDaemonUrl) || daemonProfiles[0] || { label: 'Local daemon', url: activeDaemonUrl };
+  }, [activeDaemonUrl, daemonProfiles]);
+
+  const handleAddDaemon = useCallback(() => {
+    const daemonUrl = newDaemonUrl.trim();
+    if (!daemonUrl) return;
+    onAddDaemonProfile?.(daemonUrl, newDaemonLabel.trim());
+    setNewDaemonLabel('');
+    setNewDaemonUrl('');
+    setShowDaemonAdd(false);
+    setDaemonMenuOpen(false);
+  }, [newDaemonLabel, newDaemonUrl, onAddDaemonProfile]);
   const projectGroups = useMemo(() => {
     const groups = new Map();
     for (const agent of agents) {
@@ -247,32 +273,72 @@ const AgentSidebar = memo(function AgentSidebar({
             H
           </p>
         </div>
-        <div className={`mt-3 flex items-center rounded-[var(--fd-radius-lg)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] transition-all duration-300 ease-in-out ${isExpanded ? 'p-3' : 'p-2 justify-center'}`}>
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--fd-accent-blue)]/20 text-xs font-bold text-[var(--fd-accent-blue)] shrink-0" title={session?.userDisplayName || 'Operator'}>
-            {(session?.userDisplayName || session?.userId || 'OP')[0].toUpperCase()}
-          </div>
-          <div className={`min-w-0 flex-1 transition-all duration-300 ease-in-out ${isExpanded ? 'opacity-100 max-w-[200px] ml-3' : 'opacity-0 max-w-0 overflow-hidden ml-0'}`}>
-            <div className="flex items-center gap-2 min-w-0">
-              <span className="truncate text-sm font-semibold text-white">
-                {session?.userDisplayName || 'Operator'}
-              </span>
-              <span
-                className={`h-2 w-2 rounded-full shrink-0 ${
-                  session?.status === 'connected'
-                    ? (session?.wsStatus === 'connected' ? 'bg-emerald-400' : 'bg-amber-400')
-                    : 'bg-rose-500'
-                }`}
-                title={
-                  session?.status === 'connected'
-                    ? (session?.wsStatus === 'connected' ? 'Daemon + WS Connected' : 'Daemon Connected (No WS)')
-                    : 'Daemon Offline'
-                }
-              />
+        <div className="relative">
+          <button
+            type="button"
+            data-debug-id="sidebar-user-daemon-dropdown"
+            onClick={() => setDaemonMenuOpen((prev) => !prev)}
+            className={`mt-3 flex w-full items-center rounded-[var(--fd-radius-lg)] border border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] text-left transition-all duration-300 ease-in-out hover:border-[var(--fd-accent-blue)]/50 ${isExpanded ? 'p-3' : 'p-2 justify-center'}`}
+            title={`${activeDaemonProfile?.label || 'Daemon'} · ${activeDaemonProfile?.url || activeDaemonUrl}`}
+          >
+            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[var(--fd-accent-blue)]/20 text-xs font-bold text-[var(--fd-accent-blue)] shrink-0" title={session?.userDisplayName || 'Operator'}>
+              {(session?.userDisplayName || session?.userId || 'OP')[0].toUpperCase()}
             </div>
-            <span className="block truncate text-xs text-[#aaa]">
-              {session?.userId || 'operator@local'}
-            </span>
-          </div>
+            <div className={`min-w-0 flex-1 transition-all duration-300 ease-in-out ${isExpanded ? 'opacity-100 max-w-[200px] ml-3' : 'opacity-0 max-w-0 overflow-hidden ml-0'}`}>
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="truncate text-sm font-semibold text-white">
+                  {session?.userDisplayName || 'Operator'}
+                </span>
+                <span
+                  className={`h-2 w-2 rounded-full shrink-0 ${
+                    session?.status === 'connected'
+                      ? (session?.wsStatus === 'connected' ? 'bg-emerald-400' : 'bg-amber-400')
+                      : 'bg-rose-500'
+                  }`}
+                  title={
+                    session?.status === 'connected'
+                      ? (session?.wsStatus === 'connected' ? 'Daemon + WS Connected' : 'Daemon Connected (No WS)')
+                      : 'Daemon Offline'
+                  }
+                />
+              </div>
+              <span className="block truncate text-xs text-[#aaa]">
+                {activeDaemonProfile?.label || 'Local daemon'}
+              </span>
+            </div>
+            <span className={`text-[#aaa] transition-all duration-300 ease-in-out ${isExpanded ? 'opacity-100 ml-2' : 'opacity-0 w-0 overflow-hidden'}`}>▾</span>
+          </button>
+          {daemonMenuOpen && isExpanded && (
+            <div className="absolute left-0 right-0 top-full z-50 mt-2 rounded-2xl border border-[var(--fd-hairline)] bg-[var(--fd-surface-1)] p-3 shadow-2xl">
+              <p className="framer-topline text-[10px]">User</p>
+              <p className="truncate text-sm font-semibold text-white">{session?.userDisplayName || session?.userId || 'Operator'}</p>
+              <p className="framer-topline mt-3 text-[10px]">Active daemon</p>
+              <div className="mt-2 flex flex-col gap-1">
+                {daemonProfiles.map((profile) => (
+                  <button
+                    key={profile.url}
+                    type="button"
+                    data-debug-id={`daemon-profile-option-${profile.label || profile.url}`}
+                    onClick={() => { onSwitchDaemon?.(profile.url); setDaemonMenuOpen(false); }}
+                    className={`rounded-xl px-3 py-2 text-left text-sm transition-colors ${profile.url === activeDaemonUrl ? 'bg-white text-black' : 'bg-[var(--fd-surface-2)] text-white hover:bg-[var(--fd-surface-3)]'}`}
+                    title={profile.url}
+                  >
+                    <span className="block truncate font-medium">{profile.label || 'Daemon'}</span>
+                    {profile.url === activeDaemonUrl && <span className="block text-[10px] opacity-70">Current</span>}
+                  </button>
+                ))}
+              </div>
+              {showDaemonAdd ? (
+                <div className="mt-3 flex flex-col gap-2">
+                  <input value={newDaemonLabel} onChange={(event) => setNewDaemonLabel(event.target.value)} placeholder="Label" className="framer-input px-3 py-2 text-xs" />
+                  <input value={newDaemonUrl} onChange={(event) => setNewDaemonUrl(event.target.value)} placeholder="Daemon URL" className="framer-input px-3 py-2 text-xs" />
+                  <button type="button" data-debug-id="daemon-profile-add-btn" onClick={handleAddDaemon} className="framer-pill bg-white px-3 py-2 text-xs">Add daemon</button>
+                </div>
+              ) : (
+                <button type="button" data-debug-id="daemon-profile-add-toggle" onClick={() => setShowDaemonAdd(true)} className="framer-pill-secondary mt-3 w-full px-3 py-2 text-xs">+ Add daemon</button>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
