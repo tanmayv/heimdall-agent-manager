@@ -59,6 +59,7 @@ Task_Event_Kind :: enum {
 	Task_Comment,
 	Task_Comment_Resolved,
 	Task_Status_Changed,
+	Task_Metadata_Updated,
 	Task_Assigned,
 	Task_Participant_Added,
 	Task_Participant_Removed,
@@ -370,7 +371,7 @@ task_store_persist_projection_for_event :: proc(event: Task_Event) -> bool {
 				if !task_db_save_participant(p) do return false
 			}
 		}
-	case .Task_Status_Changed:
+	case .Task_Status_Changed, .Task_Metadata_Updated:
 		idx := task_state_index_of(event.task_id)
 		if idx >= 0 {
 			return task_db_save_task(task_states[idx])
@@ -499,6 +500,7 @@ task_event_kind_from_string :: proc(value: string) -> Task_Event_Kind {
 	case "Task_Comment":             return .Task_Comment
 	case "Task_Comment_Resolved":    return .Task_Comment_Resolved
 	case "Task_Status_Changed":      return .Task_Status_Changed
+	case "Task_Metadata_Updated":    return .Task_Metadata_Updated
 	case "Task_Assigned":            return .Task_Assigned
 	case "Task_Participant_Added":   return .Task_Participant_Added
 	case "Task_Participant_Removed": return .Task_Participant_Removed

@@ -371,6 +371,38 @@ task_service_remove_participant_command :: proc(cmd: Task_Participant_Command) -
 	return Task_Service_Result{ok = true, status_code = 200, message = `{"ok":true}`}
 }
 
+task_service_update_task :: proc(cmd: Task_Update_Command) -> Task_Service_Result {
+	if cmd.task_id == "" {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"task update requires task_id"}`}
+	}
+	idx, found := task_existing_state_index(cmd.task_id, cmd.chain_id)
+	if !found {
+		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"task not found"}`}
+	}
+	current := task_states[idx]
+	title := cmd.title
+	if title == "" do title = current.title
+	audit_body := fmt.tprintf("description updated by %s; old=%s; new=%s", cmd.author_agent_instance_id, current.description, cmd.description)
+	event := Task_Event{
+		kind                     = .Task_Metadata_Updated,
+		task_id                  = cmd.task_id,
+		chain_id                 = current.chain_id,
+		title                    = title,
+		description              = cmd.description,
+		body                     = audit_body,
+		author_agent_instance_id = cmd.author_agent_instance_id,
+	}
+	if !task_store_append_event(event) {
+		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append task update failed"}`}
+	}
+	task_notify_event(event)
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"task_id":"`); json_write_string(&b, cmd.task_id)
+	strings.write_string(&b, `","description":"`); json_write_string(&b, cmd.description)
+	strings.write_string(&b, `"}`)
+	return Task_Service_Result{ok = true, status_code = 200, message = strings.to_string(b)}
+}
+
 task_service_set_status :: proc(task_id, chain_id, status, body, author: string) -> Task_Service_Result {
 	return task_service_status_command(Task_Status_Command{task_id = task_id, chain_id = chain_id, status = status, body = body, author_agent_instance_id = author})
 }
@@ -655,11 +687,13 @@ task_service_update_chain :: proc(cmd: Task_Chain_Update_Command) -> Task_Servic
 			}
 		}
 	}
+	audit_body := fmt.tprintf("chain metadata updated by %s; old_description=%s; new_description=%s", cmd.author_agent_instance_id, task_chains[chain_idx].description, cmd.description)
 	event := Task_Event{
 		kind                          = .Chain_Metadata_Updated,
 		chain_id                      = cmd.chain_id,
 		title                         = cmd.title,
 		description                   = cmd.description,
+		body                          = audit_body,
 		coordinator_agent_instance_id = cmd.coordinator_agent_instance_id,
 		reviewer_agent_instance_id    = cmd.default_reviewer_agent_instance_id,
 		author_agent_instance_id      = cmd.author_agent_instance_id,

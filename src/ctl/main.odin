@@ -298,7 +298,7 @@ remote_start_request_json :: proc(agent_instance_id, agent, config_path: string)
 
 ctl_tasks :: proc(daemon_url, action: string, args: []string) {
 	token := option_value(args, "--token", "")
-	if token == "" { fmt.println("usage: ham-ctl tasks <create|list|next|show|log|comment|comment-resolve|comments|status|done|blocked|later|assign|participant|vote|nudge> --token <token> ..."); return }
+	if token == "" { fmt.println("usage: ham-ctl tasks <create|list|next|show|log|comment|comment-resolve|comments|status|update|done|blocked|later|assign|participant|vote|nudge> --token <token> ..."); return }
 	path := ""
 	body := strings.builder_make()
 	strings.write_string(&body, `{"agent_token":"`); json_write_string(&body, token); strings.write_string(&body, `"`)
@@ -341,6 +341,10 @@ ctl_tasks :: proc(daemon_url, action: string, args: []string) {
 		path = "/tasks/status"
 		strings.write_string(&body, `,"status":"`); json_write_string(&body, option_value(args, "--status", "")); strings.write_string(&body, `"`)
 		strings.write_string(&body, `,"body":"`);   json_write_string(&body, option_value(args, "--body", ""));   strings.write_string(&body, `"`)
+	case "update":
+		path = "/tasks/update"
+		strings.write_string(&body, `,"title":"`); json_write_string(&body, option_value(args, "--title", "")); strings.write_string(&body, `"`)
+		strings.write_string(&body, `,"description":"`); json_write_string(&body, option_value(args, "--description", "")); strings.write_string(&body, `"`)
 	case "done":
 		path = "/tasks/done"
 		strings.write_string(&body, `,"body":"`);   json_write_string(&body, option_value(args, "--body", option_value(args, "--comment", "Done.")));   strings.write_string(&body, `"`)
@@ -365,7 +369,7 @@ ctl_tasks :: proc(daemon_url, action: string, args: []string) {
 		path = "/tasks/nudge"
 		strings.write_string(&body, `,"body":"`); json_write_string(&body, option_value(args, "--body", "")); strings.write_string(&body, `"`)
 	case:
-		fmt.println("usage: ham-ctl tasks <create|list|next|show|log|comment|comment-resolve|comments|status|done|blocked|later|assign|participant|vote|nudge>"); return
+		fmt.println("usage: ham-ctl tasks <create|list|next|show|log|comment|comment-resolve|comments|status|update|done|blocked|later|assign|participant|vote|nudge>"); return
 	}
 	strings.write_string(&body, `}`)
 	response, ok := http.post(daemon_url, path, strings.to_string(body))
@@ -375,7 +379,7 @@ ctl_tasks :: proc(daemon_url, action: string, args: []string) {
 
 ctl_task_chains :: proc(daemon_url, action: string, args: []string) {
 	token := option_value(args, "--token", "")
-	if token == "" { fmt.println("usage: ham-ctl task-chains <create|activate|status|complete|show|retry-archives> --token <token> ..."); return }
+	if token == "" { fmt.println("usage: ham-ctl task-chains <create|activate|update|status|complete|show|retry-archives> --token <token> ..."); return }
 	path := "/task-chains/retry-archives"
 	body := strings.builder_make()
 	strings.write_string(&body, `{"agent_token":"`); json_write_string(&body, token); strings.write_string(&body, `"`)
@@ -389,6 +393,13 @@ ctl_task_chains :: proc(daemon_url, action: string, args: []string) {
 	} else if action == "activate" {
 		path = "/task-chains/activate"
 		strings.write_string(&body, `,"chain_id":"`); json_write_string(&body, option_value(args, "--chain-id", option_value(args, "--chain", ""))); strings.write_string(&body, `"`)
+	} else if action == "update" {
+		path = "/task-chains/update"
+		strings.write_string(&body, `,"chain_id":"`); json_write_string(&body, option_value(args, "--chain-id", option_value(args, "--chain", ""))); strings.write_string(&body, `"`)
+		strings.write_string(&body, `,"title":"`); json_write_string(&body, option_value(args, "--title", "")); strings.write_string(&body, `"`)
+		strings.write_string(&body, `,"description":"`); json_write_string(&body, option_value(args, "--description", "")); strings.write_string(&body, `"`)
+		strings.write_string(&body, `,"coordinator_agent_instance_id":"`); json_write_string(&body, option_value(args, "--coordinator-agent-instance-id", option_value(args, "--coordinator", ""))); strings.write_string(&body, `"`)
+		strings.write_string(&body, `,"default_reviewer_agent_instance_id":"`); json_write_string(&body, option_value(args, "--reviewer", "")); strings.write_string(&body, `"`)
 	} else if action == "status" {
 		path = "/task-chains/status"
 		strings.write_string(&body, `,"chain_id":"`);      json_write_string(&body, option_value(args, "--chain-id", option_value(args, "--chain", ""))); strings.write_string(&body, `"`)
@@ -402,7 +413,7 @@ ctl_task_chains :: proc(daemon_url, action: string, args: []string) {
 		path = "/task-chains/show"
 		strings.write_string(&body, `,"chain_id":"`); json_write_string(&body, option_value(args, "--chain-id", option_value(args, "--chain", ""))); strings.write_string(&body, `"`)
 	} else if action != "retry-archives" {
-		fmt.println("usage: ham-ctl task-chains <create|activate|status|complete|show|retry-archives>"); return
+		fmt.println("usage: ham-ctl task-chains <create|activate|update|status|complete|show|retry-archives>"); return
 	}
 	strings.write_string(&body, `}`)
 	response, ok := http.post(daemon_url, path, strings.to_string(body))
@@ -650,7 +661,7 @@ command_tokens :: proc(args: []string) -> [dynamic]string {
 	cmd := make([dynamic]string)
 	for i := 1; i < len(args); i += 1 {
 		arg := args[i]
-		if arg == cfg_lib.CONFIG_PATH_FLAG || arg == "--daemon-url" || arg == "--wrapper-bin" || arg == "--agent" || arg == "--token" || arg == "--to" || arg == "--body" || arg == "--limit" || arg == "--task-id" || arg == "--task" || arg == "--chain-id" || arg == "--chain" || arg == "--status" || arg == "--agent-instance-id" || arg == "--role" || arg == "--final-summary" || arg == "--summary" || arg == "--user-id" || arg == "--client-instance-id" || arg == "--message-id" || arg == "--result" || arg == "--comment" || arg == "--title" || arg == "--description" || arg == "--priority" || arg == "--assignee-agent-instance-id" || arg == "--assignee" || arg == "--coordinator-agent-instance-id" || arg == "--coordinator" || arg == "--comment-id" || arg == "--depends-on" || arg == "--subject-agent" || arg == "--scope" || arg == "--type" || arg == "--memory-id" || arg == "--memory" || arg == "--proposal-id" || arg == "--decision" || arg == "--reason" || arg == "--evidence" || arg == "--source-task-id" || arg == "--source-task" || arg == "--expected-version" || arg == "--project-id" || arg == "--project" || arg == "--name" || arg == "--anchor-type" || arg == "--anchor-value" || arg == "--anchor-note" || arg == "--cursor" {
+		if arg == cfg_lib.CONFIG_PATH_FLAG || arg == "--daemon-url" || arg == "--wrapper-bin" || arg == "--agent" || arg == "--token" || arg == "--to" || arg == "--body" || arg == "--limit" || arg == "--task-id" || arg == "--task" || arg == "--chain-id" || arg == "--chain" || arg == "--status" || arg == "--agent-instance-id" || arg == "--role" || arg == "--final-summary" || arg == "--summary" || arg == "--user-id" || arg == "--client-instance-id" || arg == "--message-id" || arg == "--result" || arg == "--comment" || arg == "--title" || arg == "--description" || arg == "--priority" || arg == "--assignee-agent-instance-id" || arg == "--assignee" || arg == "--coordinator-agent-instance-id" || arg == "--coordinator" || arg == "--reviewer" || arg == "--comment-id" || arg == "--depends-on" || arg == "--subject-agent" || arg == "--scope" || arg == "--type" || arg == "--memory-id" || arg == "--memory" || arg == "--proposal-id" || arg == "--decision" || arg == "--reason" || arg == "--evidence" || arg == "--source-task-id" || arg == "--source-task" || arg == "--expected-version" || arg == "--project-id" || arg == "--project" || arg == "--name" || arg == "--anchor-type" || arg == "--anchor-value" || arg == "--anchor-note" || arg == "--cursor" {
 			i += 1
 			continue
 		}
@@ -844,6 +855,7 @@ print_usage :: proc(config_path, daemon_url: string) {
 	fmt.println("  tasks comment-resolve --token <token> --task-id <id> --comment-id <id>")
 	fmt.println("  tasks comments --token <token> --task-id <id> [--unresolved]")
 	fmt.println("  tasks status --token <token> --task-id <id> --status <status> --body <text>   (restricted to user tokens)")
+	fmt.println("  tasks update --token <token> --task-id <id> [--title <text>] [--description <text>]")
 	fmt.println("  tasks done --token <token> --task-id <id> [--comment <text>]")
 	fmt.println("  tasks blocked --token <token> --task-id <id> [--reason <text>]")
 	fmt.println("  tasks later --token <token> --task-id <id> [--reason <text>]")
@@ -853,6 +865,7 @@ print_usage :: proc(config_path, daemon_url: string) {
 	fmt.println("  tasks nudge --token <token> --task-id <id> --body <text>")
 	fmt.println("  task-chains create --token <token> --title <title> [--project-id <id>] [--coordinator <agent>]")
 	fmt.println("  task-chains activate --token <token> --chain-id <id>    (planning → in_progress, tasks begin auto-promoting)")
+	fmt.println("  task-chains update --token <token> --chain-id <id> [--title <text>] [--description <text>] [--coordinator <agent>] [--reviewer <agent>]")
 	fmt.println("  task-chains status --token <token> --chain-id <id> --status <status> [--final-summary <text>]")
 	fmt.println("  task-chains complete --token <token> --chain <id> --summary <text>")
 	fmt.println("  task-chains show --token <token> --chain-id <id>")

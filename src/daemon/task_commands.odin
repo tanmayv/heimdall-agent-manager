@@ -40,6 +40,14 @@ Task_Status_Command :: struct {
 	author_agent_instance_id: string,
 }
 
+Task_Update_Command :: struct {
+	task_id:                  string,
+	chain_id:                 string,
+	title:                    string,
+	description:              string,
+	author_agent_instance_id: string,
+}
+
 Task_Comment_Command :: struct {
 	task_id:                  string,
 	chain_id:                 string,

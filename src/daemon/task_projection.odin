@@ -66,6 +66,12 @@ task_projection_apply_event :: proc(event: Task_Event) -> bool {
 			task_store_clear_task_votes(event.task_id)
 		}
 
+	case .Task_Metadata_Updated:
+		idx := task_state_index(event.task_id, event.chain_id)
+		if event.title != "" do task_states[idx].title = strings.clone(event.title)
+		task_states[idx].description = strings.clone(event.description)
+		task_states[idx].updated_at_unix_ms = event.created_unix_ms
+
 	case .Task_Assigned:
 		idx := task_state_index(event.task_id, event.chain_id)
 		task_states[idx].assignee_agent_instance_id = strings.clone(event.agent_instance_id)

@@ -228,6 +228,17 @@ export const updateSelectedTaskStatus = createAsyncThunk('tasks/updateSelectedTa
   await (dispatch as any)(fetchSelectedTaskLog(task.taskId));
 });
 
+export const updateSelectedTaskMetadata = createAsyncThunk('tasks/updateSelectedTaskMetadata', async (payload: any, { dispatch, getState }) => {
+  const state = getState() as any;
+  const { session } = state.chat;
+  const activeTaskId = getActiveTaskId(payload);
+  const task = state.tasks.tasksById[activeTaskId];
+  await daemonApi.updateTask({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), taskId: task.taskId, chainId: task.chainId, title: payload.title, description: payload.description });
+  await (dispatch as any)(fetchSelectedTaskLog(task.taskId));
+  const data = await daemonApi.fetchTask({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, taskId: task.taskId });
+  return data.task ? normalizeTask(data.task) : null;
+});
+
 export const assignSelectedTask = createAsyncThunk('tasks/assignSelectedTask', async (payload: any, { dispatch, getState }) => {
   const state = getState() as any;
   const { session } = state.chat;
@@ -432,6 +443,14 @@ const taskSlice = createSlice({
         
         state.chainTaskIds[chainId] = tasks.map((t: any) => t.taskId);
         state.chainTaskIds[chainId] = sortTaskIds(state.chainTaskIds[chainId], state.tasksById);
+      })
+      .addCase(updateSelectedTaskMetadata.fulfilled, (state: any, action) => {
+        const task = action.payload;
+        if (!task) return;
+        state.tasksById[task.taskId] = task;
+        if (task.chainId && state.chainTaskIds[task.chainId]) {
+          state.chainTaskIds[task.chainId] = sortTaskIds(state.chainTaskIds[task.chainId], state.tasksById);
+        }
       })
       .addCase(fetchUnreviewedChains.fulfilled, (state: any, action) => {
         state.unreviewedChains = action.payload;

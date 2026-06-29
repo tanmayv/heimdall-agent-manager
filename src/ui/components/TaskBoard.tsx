@@ -12,6 +12,7 @@ import {
   refreshTaskBoard,
   updateSelectedChainMetadata,
   updateSelectedChainStatus,
+  updateSelectedTaskMetadata,
   updateSelectedTaskStatus,
   fetchTasksForChain,
   resolveCommentOnSelectedTask,
@@ -232,6 +233,7 @@ export default function TaskBoard({ session }) {
   const [commentAsUnresolved, setCommentAsUnresolved] = useState(true);
   const [voteComment, setVoteComment] = useState('');
   const [statusForm, setStatusForm] = useState({ status: 'working', body: '' });
+  const [taskForm, setTaskForm] = useState({ title: '', description: '' });
   const [assignmentAgent, setAssignmentAgent] = useState('');
   const [participantForm, setParticipantForm] = useState({ agentInstanceId: '', role: 'lgtm_required' });
   const [chainForm, setChainForm] = useState({ title: '', description: '', coordinatorAgentInstanceId: '', defaultReviewerAgentInstanceId: '', finalSummary: '' });
@@ -334,6 +336,11 @@ export default function TaskBoard({ session }) {
     });
     setChainStatusForm({ status: selectedChain.status || 'active', finalSummary: selectedChain.finalSummary || '' });
   }, [selectedChainId, selectedChain?.updatedAtUnixMs]);
+
+  useEffect(() => {
+    if (!selectedTask) return;
+    setTaskForm({ title: selectedTask.title || '', description: selectedTask.description || '' });
+  }, [selectedTaskId, selectedTask?.updatedAtUnixMs]);
 
   function go(nextPage: typeof page) {
     setHistory((current) => [...current, page]);
@@ -501,6 +508,19 @@ export default function TaskBoard({ session }) {
         coordinatorAgentInstanceId: chainForm.coordinatorAgentInstanceId.trim(),
         defaultReviewerAgentInstanceId: chainForm.defaultReviewerAgentInstanceId.trim(),
         finalSummary: chainForm.finalSummary.trim(),
+      })).unwrap();
+    });
+  }
+
+  function handleTaskMetadata(event) {
+    event.preventDefault();
+    if (!canMutate || !selectedTask || !taskForm.title.trim()) return;
+    runMutation(async () => {
+      await dispatch(updateSelectedTaskMetadata({
+        agentToken: agentToken.trim(),
+        taskId: selectedTask.taskId,
+        title: taskForm.title.trim(),
+        description: taskForm.description.trim(),
       })).unwrap();
     });
   }
@@ -921,7 +941,14 @@ export default function TaskBoard({ session }) {
         {renderHeader(`Task: ${selectedTask.title}`)}
         <section className="min-h-0 flex-1 overflow-y-auto p-6">
           <div className="mx-auto max-w-4xl space-y-4">
-            <div className="framer-card-xl p-5"><div className="flex items-start justify-between gap-4"><div><p className="framer-topline">Task detail</p><h3 className="mt-1 text-3xl font-bold text-white">{selectedTask.title}</h3><p className="framer-subtext mt-2 break-all text-xs">{selectedTask.taskId}</p></div><div className="flex flex-col items-end gap-2"><StatusPill status={selectedTask.status} />{!selectedTaskTerminal && <button type="button" data-debug-id="task-nudge-btn" onClick={handleNudgeTask} disabled={!canMutate || nudgeInFlight} className="framer-pill bg-white px-4 py-2 text-xs disabled:opacity-40">{nudgeInFlight ? 'Nudging…' : nudgeState.taskId === selectedTask.taskId && nudgeState.status === 'sent' ? 'Sent' : 'Nudge'}</button>}{nudgeState.taskId === selectedTask.taskId && nudgeState.message && <p className={`text-right text-xs ${nudgeState.status === 'error' ? 'text-red-200' : 'text-[#999]'}`}>{nudgeState.message}</p>}</div></div>{selectedTask.description && <p className="mt-4 whitespace-pre-wrap text-sm leading-6 text-[#d6d6d6]">{selectedTask.description}</p>}</div>
+            <div className="framer-card-xl p-5">
+              <div className="flex items-start justify-between gap-4"><div><p className="framer-topline">Task detail</p><h3 className="mt-1 text-3xl font-bold text-white">{selectedTask.title}</h3><p className="framer-subtext mt-2 break-all text-xs">{selectedTask.taskId}</p></div><div className="flex flex-col items-end gap-2"><StatusPill status={selectedTask.status} />{!selectedTaskTerminal && <button type="button" data-debug-id="task-nudge-btn" onClick={handleNudgeTask} disabled={!canMutate || nudgeInFlight} className="framer-pill bg-white px-4 py-2 text-xs disabled:opacity-40">{nudgeInFlight ? 'Nudging…' : nudgeState.taskId === selectedTask.taskId && nudgeState.status === 'sent' ? 'Sent' : 'Nudge'}</button>}{nudgeState.taskId === selectedTask.taskId && nudgeState.message && <p className={`text-right text-xs ${nudgeState.status === 'error' ? 'text-red-200' : 'text-[#999]'}`}>{nudgeState.message}</p>}</div></div>
+              <form onSubmit={handleTaskMetadata} className="mt-4 grid gap-3">
+                <input data-debug-id="task-edit-title" value={taskForm.title} onChange={(event) => setTaskForm({ ...taskForm, title: event.target.value })} placeholder="Task title" className="framer-input px-3 py-2 text-sm" />
+                <textarea data-debug-id="task-edit-description" value={taskForm.description} onChange={(event) => setTaskForm({ ...taskForm, description: event.target.value })} placeholder="Task description" rows={5} className="framer-input resize-y px-3 py-2 text-sm" />
+                <div><button data-debug-id="task-save-metadata-btn" disabled={!canMutate || !taskForm.title.trim()} className="framer-pill bg-white disabled:opacity-40">Save task metadata</button></div>
+              </form>
+            </div>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Assignee" value={selectedTask.assigneeAgentInstanceId} />
               <Field label="Coordinator" value={taskCoordinator} />

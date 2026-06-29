@@ -127,6 +127,19 @@ handle_task_status :: proc(client: net.TCP_Socket, body: string) {
 	write_task_service_response(client, result)
 }
 
+handle_task_update :: proc(client: net.TCP_Socket, body: string) {
+	author, ok := task_author_from_body(client, body)
+	if !ok do return
+	result := task_service_update_task(Task_Update_Command{
+		task_id                  = extract_json_string(body, "task_id", ""),
+		chain_id                 = extract_json_string(body, "chain_id", ""),
+		title                    = extract_json_string(body, "title", ""),
+		description              = extract_json_string(body, "description", ""),
+		author_agent_instance_id = author,
+	})
+	write_task_service_response(client, result)
+}
+
 handle_task_done :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
@@ -279,7 +292,16 @@ handle_task_chain_show :: proc(client: net.TCP_Socket, body: string) {
 			b := strings.builder_make()
 			strings.write_string(&b, `{"ok":true,"chain":`)
 			task_write_chain_json(&b, task_chains[i])
-			strings.write_string(&b, `}`)
+			strings.write_string(&b, `,"events":[`)
+			first := true
+			for j in 0..<task_event_count {
+				event := task_events[j]
+				if event.chain_id != chain_id || event.task_id != "" do continue
+				if !first do strings.write_string(&b, `,`)
+				first = false
+				strings.write_string(&b, task_event_json(event))
+			}
+			strings.write_string(&b, `]}`)
 			write_response(client, 200, "OK", strings.to_string(b))
 			return
 		}
