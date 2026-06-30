@@ -193,45 +193,23 @@ task_notify_recipient_except :: proc(agent_instance_id, payload, skip_agent_inst
 
 task_notify_recipient :: proc(agent_instance_id, payload: string) -> bool {
 	if agent_instance_id == "" do return false
+	event_id := notification_outbox_insert_pending(agent_instance_id, payload)
 	ok := registry_send_ws_text(agent_instance_id, payload)
+	if event_id != "" {
+		_ = notification_outbox_mark_attempt(agent_instance_id, event_id, ok)
+	}
 	if !ok {
-		append(&pending_notifications, Pending_Notification{
-			agent_instance_id = strings.clone(agent_instance_id),
-			payload           = strings.clone(payload),
-		})
-		fmt.printf("WARNING: failed to send WS to agent '%s'. Queued notification.\n", agent_instance_id)
+		fmt.printf("WARNING: failed to send WS to agent '%s'. Queued durable notification.\n", agent_instance_id)
 	}
 	return true
 }
 
-Pending_Notification :: struct {
-	agent_instance_id: string,
-	payload:           string,
-}
-
-pending_notifications: [dynamic]Pending_Notification
-
 task_notifications_flush_queue :: proc(agent_instance_id: string) {
 	if agent_instance_id == "" do return
-	
-	write_idx := 0
-	for i in 0..<len(pending_notifications) {
-		pn := pending_notifications[i]
-		if pn.agent_instance_id == agent_instance_id {
-			sent := registry_send_ws_text(pn.agent_instance_id, pn.payload)
-			if !sent {
-				pending_notifications[write_idx] = pn
-				write_idx += 1
-			} else {
-				delete(pn.agent_instance_id)
-				delete(pn.payload)
-			}
-		} else {
-			pending_notifications[write_idx] = pn
-			write_idx += 1
-		}
+	delivered := notification_outbox_replay_pending(agent_instance_id)
+	if delivered > 0 {
+		fmt.printf("INFO: replayed %d durable task notifications to agent '%s'.\n", delivered, agent_instance_id)
 	}
-	resize(&pending_notifications, write_idx)
 }
 
 task_notification_json :: proc(event: Task_Event, status: string) -> string {

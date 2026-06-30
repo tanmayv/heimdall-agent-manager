@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Controlled robust-delivery repro for task notification loss across daemon restart.
+"""Regression for durable task notification replay across daemon restart.
 
 Safe to run: starts an isolated ham-daemon on localhost with a temporary data_dir,
 registers synthetic user/agent IDs, and removes its temp directory unless
@@ -269,13 +269,11 @@ def main() -> None:
     print(json.dumps(result, indent=2, sort_keys=True))
     if not baseline["delivered_on_reconnect"]:
         raise SystemExit("baseline failed: offline queued task nudge was not delivered without restart")
-    if restart["delivered_on_reconnect"]:
-        raise SystemExit("unexpected: restart case delivered in-memory pending task nudge")
+    if not restart["delivered_on_reconnect"]:
+        raise SystemExit("restart case failed: durable pending task nudge was not delivered after daemon restart")
     if not restart["task_state_recovered_after_restart"]:
         raise SystemExit("restart case did not recover task state; repro setup invalid")
-    if restart["task_log_nudge_events_after_reconnect"] != 0:
-        raise SystemExit("unexpected: restart case recovered task nudge event history")
-    print("DELIVERY RESTART REPRO OBSERVED EXPECTED LOSS")
+    print("DELIVERY RESTART REPRO PASSED")
 
 
 if __name__ == "__main__":

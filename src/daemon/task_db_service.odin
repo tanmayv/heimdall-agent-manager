@@ -104,10 +104,22 @@ task_db_create_schema :: proc() -> bool {
 		PRIMARY KEY (task_id, agent_instance_id, role)
 	);
 
+	CREATE TABLE IF NOT EXISTS task_notification_outbox (
+		recipient_agent_instance_id TEXT NOT NULL,
+		event_id TEXT NOT NULL,
+		payload TEXT NOT NULL,
+		created_unix_ms INTEGER NOT NULL,
+		delivered_unix_ms INTEGER NOT NULL DEFAULT 0,
+		attempts INTEGER NOT NULL DEFAULT 0,
+		last_attempt_unix_ms INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (recipient_agent_instance_id, event_id)
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_tasks_chain ON tasks(chain_id);
 	CREATE INDEX IF NOT EXISTS idx_comments_task ON task_comments(task_id);
 	CREATE INDEX IF NOT EXISTS idx_votes_task ON task_lgtm_votes(task_id);
 	CREATE INDEX IF NOT EXISTS idx_participants_task ON task_participants(task_id);
+	CREATE INDEX IF NOT EXISTS idx_task_notification_outbox_pending ON task_notification_outbox(recipient_agent_instance_id, delivered_unix_ms, created_unix_ms);
 	`
 
 	errmsg: cstring = nil

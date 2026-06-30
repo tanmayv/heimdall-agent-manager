@@ -4,6 +4,12 @@ Date: 2026-06-29
 Task: `task-19f148cea3c`  
 Scope clarification: recommendations in this document are tied to observed behavior, logs, code path analysis, or runnable repro commands. No implementation changes are proposed solely from code inspection.
 
+## Implementation update
+
+Task `task-19f17572451` implements the immediate hardening target from this audit: a durable per-agent task notification outbox in SQLite (`task_notification_outbox`). Task notifications are inserted before websocket delivery, attempted live for low latency, and replayed on agent websocket reconnect with bounded batches and delivered-row retention cleanup. The updated `tests/repro_delivery_restart_loss.py` now expects the restart-before-reconnect case to deliver the pending `Task_Nudged` notification and prints `DELIVERY RESTART REPRO PASSED`.
+
+Scope note: this fixes the audited agent task/nudge notification-loss path. It does not convert the whole task system to a durable task event journal; consequently `/tasks/log` may still lack historical `Task_Nudged` rows after restart even though the reconnect notification is replayed from the outbox. Chat messages already use durable message storage/fetch paths, as noted below.
+
 ## Executive summary
 
 A controlled local repro found a concrete restart-loss failure mode for task/nudge delivery:
