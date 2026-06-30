@@ -115,11 +115,23 @@ task_db_create_schema :: proc() -> bool {
 		PRIMARY KEY (recipient_agent_instance_id, event_id)
 	);
 
+	CREATE TABLE IF NOT EXISTS task_events (
+		journal_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+		event_id TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		task_id TEXT NOT NULL,
+		chain_id TEXT NOT NULL,
+		created_unix_ms INTEGER NOT NULL,
+		event_json TEXT NOT NULL
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_tasks_chain ON tasks(chain_id);
 	CREATE INDEX IF NOT EXISTS idx_comments_task ON task_comments(task_id);
 	CREATE INDEX IF NOT EXISTS idx_votes_task ON task_lgtm_votes(task_id);
 	CREATE INDEX IF NOT EXISTS idx_participants_task ON task_participants(task_id);
 	CREATE INDEX IF NOT EXISTS idx_task_notification_outbox_pending ON task_notification_outbox(recipient_agent_instance_id, delivered_unix_ms, created_unix_ms);
+	CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, journal_seq);
+	CREATE INDEX IF NOT EXISTS idx_task_events_chain ON task_events(chain_id, journal_seq);
 	`
 
 	errmsg: cstring = nil
@@ -300,6 +312,60 @@ task_db_save_participant :: proc(part: Task_Participant) -> bool {
 	return true
 }
 
+task_db_save_event :: proc(event: Task_Event) -> bool {
+	if event.event_id == "" do return false
+	stmt: sqlite3_stmt = nil
+	query := `INSERT INTO task_events (
+		event_id, kind, task_id, chain_id, created_unix_ms, event_json
+	) VALUES (?, ?, ?, ?, ?, ?)`
+
+	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK {
+		fmt.println("task_db_save_event: prepare failed:", rc)
+		return false
+	}
+	defer sqlite3_finalize(stmt)
+
+	task_db_bind_text(stmt, 1, event.event_id)
+	task_db_bind_text(stmt, 2, fmt.tprintf("%v", event.kind))
+	task_db_bind_text(stmt, 3, event.task_id)
+	task_db_bind_text(stmt, 4, event.chain_id)
+	sqlite3_bind_int64(stmt, 5, event.created_unix_ms)
+	event_json := task_event_json(event)
+	defer delete(event_json)
+	task_db_bind_text(stmt, 6, event_json)
+
+	rc = sqlite3_step(stmt)
+	if rc != SQLITE_DONE {
+		fmt.printf("task_db_save_event: step failed: %d (%s)\n", rc, sqlite3_errmsg(task_db.db))
+		return false
+	}
+	return true
+}
+
+task_db_load_event_journal :: proc() -> bool {
+	task_event_count = 0
+	stmt: sqlite3_stmt = nil
+	query := `SELECT event_json FROM task_events ORDER BY journal_seq ASC`
+	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK {
+		fmt.println("task_db_load_event_journal: prepare failed:", rc)
+		return false
+	}
+	defer sqlite3_finalize(stmt)
+
+	for sqlite3_step(stmt) == SQLITE_ROW {
+		if task_event_count >= TASK_MAX_EVENTS do break
+		event_json := strings.clone_from_cstring(sqlite3_column_text(stmt, 0))
+		event, ok := task_event_from_json(event_json)
+		delete(event_json)
+		if !ok do continue
+		task_events[task_event_count] = task_event_clone(event)
+		task_event_count += 1
+	}
+	return true
+}
+
 task_db_delete_participant :: proc(task_id, agent_instance_id, role: string) -> bool {
 	stmt: sqlite3_stmt = nil
 	query := "DELETE FROM task_participants WHERE task_id = ? AND agent_instance_id = ? AND role = ?"
@@ -473,6 +539,12 @@ task_db_load_all :: proc() -> bool {
 			p.role = strings.clone_from_cstring(sqlite3_column_text(stmt, 3))
 			task_participant_count += 1
 		}
+	}
+
+	// 6. Load append-only task event journal for task logs and event-derived scheduling metadata.
+	if !task_db_load_event_journal() {
+		fmt.println("task_db_load_all: failed to load task event journal")
+		return false
 	}
 
 	return true

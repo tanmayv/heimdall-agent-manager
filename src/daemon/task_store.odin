@@ -245,6 +245,16 @@ task_store_init :: proc(data_dir: string) {
 					}
 				}
 			}
+			// Migrate append-only event journal so task logs and event-derived
+			// scheduling metadata survive the JSONL -> SQLite transition.
+			if migrated_ok {
+				for i in 0..<task_event_count {
+					if !task_db_save_event(task_events[i]) {
+						migrated_ok = false
+						break
+					}
+				}
+			}
 
 			if migrated_ok {
 				_ = task_db_execute("COMMIT;")
@@ -296,6 +306,9 @@ task_store_append_event :: proc(event: Task_Event) -> bool {
 
 	if !task_db_ready {
 		return true
+	}
+	if !task_db_save_event(ev) {
+		fmt.printfln("WARNING: task event accepted but SQLite event journal persist failed | Kind: %v | Task ID: %s | Chain ID: %s", ev.kind, ev.task_id, ev.chain_id)
 	}
 	// Write the projected state directly to the respective SQLite table.
 	if !task_store_persist_projection_for_event(ev) {
@@ -461,6 +474,7 @@ task_event_json :: proc(event: Task_Event) -> string {
 	strings.write_string(&b, `","created_by":"`);       json_write_string(&b, event.created_by)
 	strings.write_string(&b, `","author_agent_instance_id":"`); json_write_string(&b, event.author_agent_instance_id)
 	strings.write_string(&b, `","created_unix_ms":`);   strings.write_string(&b, fmt.tprintf("%d", event.created_unix_ms))
+	strings.write_string(&b, `,"interrupt":`);           strings.write_string(&b, "true" if event.interrupt else "false")
 	strings.write_string(&b, `}`)
 	return strings.to_string(b)
 }
@@ -490,6 +504,7 @@ task_event_from_json :: proc(line: string) -> (Task_Event, bool) {
 		created_by                  = extract_json_string(line, "created_by", ""),
 		author_agent_instance_id    = extract_json_string(line, "author_agent_instance_id", ""),
 		created_unix_ms             = i64(extract_json_int(line, "created_unix_ms", 0)),
+		interrupt                   = extract_json_bool(line, "interrupt", false),
 	}
 	return event, kind_text != ""
 }
