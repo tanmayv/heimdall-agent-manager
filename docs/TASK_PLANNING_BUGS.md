@@ -541,3 +541,58 @@ These counts should not clobber or infer from one another. Fetch/read behavior s
 - In wrapper, suppress only noisy system-auto events, not `system_auto:auto_claimed` for the target assignee.
 - Add delivery/audit visibility for task notifications vs pane injection.
 - Consider direct-message fallback for newly auto-claimed tasks if pane notification fails.
+
+---
+
+### BUG-010: Task nudges can report `sent:true` even when not delivered to the agent pane
+
+**Status:** Open
+
+**Observed while:** Nudging `task-19f187b2a40` for `coder-Heimdall-System@heimdall-system`.
+
+**Impact:** High. Planner/operator/UI sees a successful nudge response, but the target agent may not receive a visible pane notification and can remain idle on an `in_progress` task.
+
+**Observed behavior:**
+
+- Task `task-19f187b2a40` was `in_progress` and assigned to `coder-Heimdall-System@heimdall-system`.
+- Coder wrapper process and tmux pane were running and connected enough to receive user chat notifications.
+- UI/manual task nudge returned success, e.g. `sent:true`.
+- Daemon log showed the task nudge was accepted, but WebSocket delivery failed:
+  ```text
+  [TASK EVENT] Kind: Task_Nudged | Task ID: task-19f187b2a40 ...
+  ERROR: registry_send_ws_text failed: socket write error to agent 'coder-Heimdall-System@heimdall-system' WebSocket
+  WARNING: failed to send WS to agent 'coder-Heimdall-System@heimdall-system'. Queued notification.
+  ... Body: {"ok":true,"target_agent_instance_id":"coder-Heimdall-System@heimdall-system","sent":true}
+  ```
+- A separate user chat message to the same agent did surface in the wrapper pane, proving the wrapper/pane was alive and that this was specific to task nudge delivery path/state.
+
+**Likely cause / contributing factors:**
+
+- Task nudge delivery treats “queued after failed WS send” as success and returns `sent:true`, even though the agent did not receive the nudge immediately.
+- The registry can contain a stale/broken task WebSocket connection for an otherwise running wrapper.
+- Live daemon may not have the durable outbox deployment active yet; observed task DB did not contain `task_notification_outbox` at the time of investigation.
+- Current API response does not distinguish `delivered`, `queued`, and `failed` delivery states.
+
+**Expected behavior:**
+
+- If live WS write fails, the API should not report plain `sent:true`.
+- Response should expose delivery state, e.g.:
+  - `delivery_state: "delivered"`
+  - `delivery_state: "queued"`
+  - `delivery_state: "failed"`
+- Queued durable notifications should replay on wrapper reconnect.
+- UI/planner should be able to see whether the agent actually received the nudge or whether it is pending replay.
+
+**Suggested fixes:**
+
+1. Update task nudge API response semantics to distinguish delivered vs queued.
+2. Ensure durable outbox migration/deployment is active in the running daemon.
+3. Add stale WebSocket detection/cleanup when `registry_send_ws_text` fails.
+4. Add a regression test:
+   - connected agent has stale/broken task WS
+   - task nudge returns `queued`, not `sent:true`
+   - after reconnect, queued nudge is replayed
+5. Add observability for pane injection outcome if possible:
+   - daemon WS send result
+   - wrapper received task event
+   - wrapper `tmux.send_line_with_escape` success/failure

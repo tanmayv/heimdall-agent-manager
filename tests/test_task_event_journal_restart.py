@@ -9,6 +9,7 @@ KEEP_HEIMDALL_TEST_TMP=1 is set.
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -107,6 +108,16 @@ def main() -> None:
     proc = log = None
     try:
         proc, log = start_daemon(repo, temp_dir)
+
+        # Simulate production task.db files created by an older schema revision
+        # that included a NOT NULL tasks.coordinator_agent_instance_id column.
+        # Current Task_State no longer stores this field, so task saves must
+        # still supply a compatibility value or tasks persist in memory only
+        # and disappear after daemon restart.
+        db_path = Path(temp_dir) / "data" / "tasks" / "task.db"
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("ALTER TABLE tasks ADD COLUMN coordinator_agent_instance_id TEXT NOT NULL DEFAULT ''")
+            conn.commit()
 
         user = request("/user-client/register", {"user_id": USER_ID, "client_instance_id": "journal-user"})
         user_token = user["client_token"]

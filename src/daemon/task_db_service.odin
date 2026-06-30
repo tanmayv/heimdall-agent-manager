@@ -157,11 +157,19 @@ task_db_bind_text :: proc(stmt: sqlite3_stmt, index: int, val: string) {
 
 task_db_save_task :: proc(state: Task_State) -> bool {
 	stmt: sqlite3_stmt = nil
+	has_legacy_coordinator_column := db_has_column(task_db.db, "tasks", "coordinator_agent_instance_id")
 	query := `INSERT OR REPLACE INTO tasks (
 		task_id, chain_id, title, description, acceptance_criteria, priority, status,
 		assignee_agent_instance_id, depends_on, created_by,
 		created_at_unix_ms, updated_at_unix_ms
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	if has_legacy_coordinator_column {
+		query = `INSERT OR REPLACE INTO tasks (
+			task_id, chain_id, title, description, acceptance_criteria, priority, status,
+			assignee_agent_instance_id, coordinator_agent_instance_id, depends_on, created_by,
+			created_at_unix_ms, updated_at_unix_ms
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	}
 
 	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
@@ -178,10 +186,18 @@ task_db_save_task :: proc(state: Task_State) -> bool {
 	task_db_bind_text(stmt, 6, state.priority)
 	task_db_bind_text(stmt, 7, task_status_to_string(state.status))
 	task_db_bind_text(stmt, 8, state.assignee_agent_instance_id)
-	task_db_bind_text(stmt, 9, state.depends_on)
-	task_db_bind_text(stmt, 10, state.created_by)
-	sqlite3_bind_int64(stmt, 11, state.created_at_unix_ms)
-	sqlite3_bind_int64(stmt, 12, state.updated_at_unix_ms)
+	if has_legacy_coordinator_column {
+		task_db_bind_text(stmt, 9, task_db_coordinator_for_task_state(state))
+		task_db_bind_text(stmt, 10, state.depends_on)
+		task_db_bind_text(stmt, 11, state.created_by)
+		sqlite3_bind_int64(stmt, 12, state.created_at_unix_ms)
+		sqlite3_bind_int64(stmt, 13, state.updated_at_unix_ms)
+	} else {
+		task_db_bind_text(stmt, 9, state.depends_on)
+		task_db_bind_text(stmt, 10, state.created_by)
+		sqlite3_bind_int64(stmt, 11, state.created_at_unix_ms)
+		sqlite3_bind_int64(stmt, 12, state.updated_at_unix_ms)
+	}
 
 	rc = sqlite3_step(stmt)
 	if rc != SQLITE_DONE {
@@ -189,6 +205,18 @@ task_db_save_task :: proc(state: Task_State) -> bool {
 		return false
 	}
 	return true
+}
+
+// Older task.db files created before task coordinators moved fully onto chains
+// still have tasks.coordinator_agent_instance_id as a NOT NULL column. Newer
+// code no longer stores that field on Task_State, so writes must supply a
+// compatibility value or task projection persistence silently fails and tasks
+// disappear after daemon restart.
+task_db_coordinator_for_task_state :: proc(state: Task_State) -> string {
+	for i in 0..<task_chain_count {
+		if task_chains[i].chain_id == state.chain_id do return task_chains[i].coordinator_agent_instance_id
+	}
+	return ""
 }
 
 task_db_save_chain :: proc(chain: Task_Chain_State) -> bool {
