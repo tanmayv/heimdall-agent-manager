@@ -386,6 +386,10 @@ registry_send_ws_text :: proc(agent_instance_id, text: string) -> bool {
 		fmt.printf("WARNING: registry_send_ws_text failed: agent '%s' has no active WebSocket connection (connected=%t)\n", agent_instance_id, agent.connected)
 		return false
 	}
+	if len(text) > 4090 {
+		fmt.printf("ERROR: registry_send_ws_text failed: payload too large for agent '%s' WebSocket (bytes=%d limit=4090)\n", agent_instance_id, len(text))
+		return false
+	}
 	ok := ws_send_text(agent.ws_socket, text)
 	if !ok {
 		fmt.printf("ERROR: registry_send_ws_text failed: socket write error to agent '%s' WebSocket\n", agent_instance_id)

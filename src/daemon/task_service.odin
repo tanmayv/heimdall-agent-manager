@@ -640,10 +640,13 @@ task_service_nudge_command :: proc(cmd: Task_Nudge_Command) -> Task_Service_Resu
 	if !task_store_append_event(event) {
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append task nudge failed"}`}
 	}
-	sent := task_notify_event(event)
+	live_delivered := task_notify_event(event)
+	durable_queued := target != cmd.author_agent_instance_id
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"target_agent_instance_id":"`); json_write_string(&b, target)
-	strings.write_string(&b, `","sent":`); strings.write_string(&b, "true" if sent else "false")
+	strings.write_string(&b, `","sent":`); strings.write_string(&b, "true" if live_delivered else "false")
+	strings.write_string(&b, `,"live_delivered":`); strings.write_string(&b, "true" if live_delivered else "false")
+	strings.write_string(&b, `,"durable_queued":`); strings.write_string(&b, "true" if durable_queued else "false")
 	strings.write_string(&b, `}`)
 	return Task_Service_Result{ok = true, status_code = 200, message = strings.to_string(b)}
 }

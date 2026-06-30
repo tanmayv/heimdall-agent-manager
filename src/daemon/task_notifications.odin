@@ -29,6 +29,7 @@ task_notify_event :: proc(event: Task_Event) -> bool {
 		state := task_states[idx]
 		if status == "" do status = task_status_to_string(state.status)
 		payload := task_notification_json(ev, status)
+		agent_payload := task_notification_agent_json(ev, status)
 		user_client_fanout_all_ws_text(payload)
 		
 		// E2E Cognitive Memory Audit Hooks
@@ -54,9 +55,9 @@ task_notify_event :: proc(event: Task_Event) -> bool {
 			}
 		}
 		if ev.kind == .Task_Nudged {
-			return task_notify_recipient_except(ev.agent_instance_id, payload, ev.author_agent_instance_id)
+			return task_notify_recipient_except(ev.agent_instance_id, agent_payload, ev.author_agent_instance_id)
 		}
-		return task_notify_by_status(state, status, ev.author_agent_instance_id, payload)
+		return task_notify_by_status(state, status, ev.author_agent_instance_id, agent_payload)
 	}
 	payload := task_notification_json(ev, status)
 	user_client_fanout_all_ws_text(payload)
@@ -107,7 +108,7 @@ task_notify_all_lgtm_required :: proc(task_id, chain_id: string) {
 	idx, found := task_existing_state_index(task_id, chain_id)
 	if !found do return
 	state   := task_states[idx]
-	payload := task_notification_json(Task_Event{
+	payload := task_notification_agent_json(Task_Event{
 		kind     = .Task_Status_Changed,
 		task_id  = task_id,
 		chain_id = chain_id,
@@ -201,7 +202,7 @@ task_notify_recipient :: proc(agent_instance_id, payload: string) -> bool {
 	if !ok {
 		fmt.printf("WARNING: failed to send WS to agent '%s'. Queued durable notification.\n", agent_instance_id)
 	}
-	return true
+	return ok
 }
 
 task_notifications_flush_queue :: proc(agent_instance_id: string) {
@@ -212,36 +213,47 @@ task_notifications_flush_queue :: proc(agent_instance_id: string) {
 	}
 }
 
-task_notification_json :: proc(event: Task_Event, status: string) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, `{"type":"task_event","event":"`)
-	json_write_string(&b, fmt.tprintf("%v", event.kind))
-	strings.write_string(&b, `","task_id":"`)
-	json_write_string(&b, event.task_id)
-	strings.write_string(&b, `","chain_id":"`)
-	json_write_string(&b, event.chain_id)
-	strings.write_string(&b, `","status":"`)
-	json_write_string(&b, status)
-	strings.write_string(&b, `","changed_by":"`)
-	json_write_string(&b, event.author_agent_instance_id)
-	strings.write_string(&b, `","target_agent_instance_id":"`)
-	json_write_string(&b, event.agent_instance_id)
-	strings.write_string(&b, `","body":"`)
-	json_write_string(&b, task_notification_summary(event))
-	strings.write_string(&b, `","event_id":"`)
-	json_write_string(&b, event.event_id)
-	strings.write_string(&b, `","created_unix_ms":`)
-	strings.write_string(&b, fmt.tprintf("%d", event.created_unix_ms))
+task_notification_write_base_json :: proc(b: ^strings.Builder, event: Task_Event, status: string) {
+	strings.write_string(b, `{"type":"task_event","event":"`)
+	json_write_string(b, fmt.tprintf("%v", event.kind))
+	strings.write_string(b, `","task_id":"`)
+	json_write_string(b, event.task_id)
+	strings.write_string(b, `","chain_id":"`)
+	json_write_string(b, event.chain_id)
+	strings.write_string(b, `","status":"`)
+	json_write_string(b, status)
+	strings.write_string(b, `","changed_by":"`)
+	json_write_string(b, event.author_agent_instance_id)
+	strings.write_string(b, `","target_agent_instance_id":"`)
+	json_write_string(b, event.agent_instance_id)
+	strings.write_string(b, `","body":"`)
+	json_write_string(b, task_notification_summary(event))
+	strings.write_string(b, `","event_id":"`)
+	json_write_string(b, event.event_id)
+	strings.write_string(b, `","created_unix_ms":`)
+	strings.write_string(b, fmt.tprintf("%d", event.created_unix_ms))
 	
 	if event.kind == .Task_Nudged {
-		strings.write_string(&b, `,"delivery_method":"`)
-		json_write_string(&b, task_nudge_delivery_method(event.body))
-		strings.write_string(&b, `"`)
+		strings.write_string(b, `,"delivery_method":"`)
+		json_write_string(b, task_nudge_delivery_method(event.body))
+		strings.write_string(b, `"`)
 	}
-	strings.write_string(&b, `,"interrupt":`)
-	strings.write_string(&b, "true" if event.interrupt else "false")
-	strings.write_string(&b, `,"send_escape_prefix":`)
-	strings.write_string(&b, "true" if event.interrupt else "false")
+	strings.write_string(b, `,"interrupt":`)
+	strings.write_string(b, "true" if event.interrupt else "false")
+	strings.write_string(b, `,"send_escape_prefix":`)
+	strings.write_string(b, "true" if event.interrupt else "false")
+}
+
+task_notification_agent_json :: proc(event: Task_Event, status: string) -> string {
+	b := strings.builder_make()
+	task_notification_write_base_json(&b, event, status)
+	strings.write_string(&b, `}`)
+	return strings.to_string(b)
+}
+
+task_notification_json :: proc(event: Task_Event, status: string) -> string {
+	b := strings.builder_make()
+	task_notification_write_base_json(&b, event, status)
 
 	// Augment with full task payload if task_id is present
 	if event.task_id != "" {
