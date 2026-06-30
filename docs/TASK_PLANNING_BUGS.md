@@ -316,7 +316,7 @@ These are behavioral/process mistakes observed while managing chains. They shoul
 
 ### BUG-006: Blocked chain still prevents creating a new project chain
 
-**Status:** Open
+**Status:** Fixed by multi-active-chain scheduling
 
 **Observed while:** Pausing the chat window audit implementation chain to prioritize core task create/done/vote fixes.
 
@@ -346,16 +346,16 @@ These are behavioral/process mistakes observed while managing chains. They shoul
 3. Try to create another chain with the same `project-id`.
 4. Observe that the blocked chain is still considered active.
 
-**Expected behavior:**
+**Expected/current behavior:**
 
-- Either `blocked` should be a true paused/non-active state that allows a replacement active chain, or
-- There should be a dedicated `paused`/`superseded` chain state, or
-- The error message should clarify that blocked chains still occupy the project's active-chain slot and provide an intended workflow.
+- Multiple chains in the same project may be `in_progress` simultaneously.
+- Chain activation is scoped to the chain itself, not a single project-wide active slot.
+- Assignee-slot scheduling prevents duplicate work for one assignee: `in_progress` and `review_ready` tasks occupy the slot until terminal approval/cancellation, while eligible queued work across all active chains waits.
+- When several queued tasks are available for a free assignee, selection is deterministic: priority first, then creation timestamp, then task id.
 
 **Current workaround:**
 
-- Create the urgent chain without a `project-id` and include the project directory/context explicitly in task descriptions.
-- This preserves execution but weakens project-level grouping/auditability.
+- No workaround needed after the multi-active-chain fix. Urgent/replacement work can stay associated with the real project id and rely on assignee-slot scheduling for execution order.
 
 ---
 

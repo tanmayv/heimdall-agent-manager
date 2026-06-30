@@ -9,7 +9,7 @@
 #   5.  lgtm vote → auto-approve → chain auto-complete
 #   6.  ngtm vote → task returns to in_progress
 #   7.  Manual nudge persisted to task event log
-#   8.  One-active-per-project guard (chain creation blocked by active chain)
+#   8.  Multiple same-project active chains with assignee-slot scheduling
 #   9.  depends_on ordering — step2 stays planning until step1 is approved
 #  10.  blocked / unblock transition
 #
@@ -367,23 +367,48 @@ assert_has "T7 nudge body in log"  "$NLOG" "Reminder"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# T8 — One-active-per-project guard
-# Daemon blocks chain creation (and activation) when a chain is in_progress
-# for the same project. C2 is still in_progress (T6 ngtm'd its task).
+# T8 — Multiple active chains in one project + assignee-slot scheduling
+# C2 is still in_progress with T2 in review_ready, so ME's assignee slot is
+# occupied. A second same-project chain may still be created and activated;
+# its task must wait queued until T2 reaches a terminal state.
 # ─────────────────────────────────────────────────────────────────────────────
-echo "=== T8: one-active-per-project guard ==="
+echo "=== T8: multi-active chains + assignee-slot scheduling ==="
 
 CHAIN3=$(ctl task-chains create --token "$TOKEN" \
   --project-id "$PROJ_ID" \
-  --title "Conflict Chain $RUN_ID" \
-  --description "Goal: verify conflict guard" \
+  --title "Parallel Chain $RUN_ID" \
+  --description "Goal: verify same-project multi-active scheduling" \
   --coordinator "$ME")
-assert_not_ok "T8 chain creation blocked by active chain" "$CHAIN3"
-assert_has    "T8 error names active chain"               "$CHAIN3" "active_chain_id"
+assert_ok "T8 create second active-chain candidate in same project" "$CHAIN3"
+C3=$(field "$CHAIN3" "chain_id")
 
-# Clean up T2 from C2 so assignee is free
-CLEAN_T2=$(ctl tasks status --token "$USER_TOKEN" --task-id "$T2" --chain-id "$C2" --status cancelled --body "cleanup T2")
-assert_ok "T8 cleanup T2" "$CLEAN_T2"
+TASK3=$(ctl tasks create --token "$TOKEN" \
+  --chain-id "$C3" --title "parallel task waits for assignee slot" --assignee "$ME")
+assert_ok "T8 create task in second chain" "$TASK3"
+T3=$(field "$TASK3" "task_id")
+
+ACT3=$(ctl task-chains activate --token "$TOKEN" --chain-id "$C3")
+assert_ok "T8 activate second same-project chain while C2 active" "$ACT3"
+
+SHOW_T2_BUSY=$(ctl tasks show --token "$TOKEN" --task-id "$T2")
+assert_field "T8 existing task still review_ready and occupies slot" "$SHOW_T2_BUSY" "status" "review_ready"
+SHOW_T3_WAIT=$(ctl tasks show --token "$TOKEN" --task-id "$T3")
+assert_field "T8 second-chain task queued while assignee slot occupied" "$SHOW_T3_WAIT" "status" "queued"
+assert_has "T8 second-chain task explains assignee busy" "$SHOW_T3_WAIT" "assignee_busy"
+
+# Approve T2 so ME's assignee slot is free; T3 should auto-claim.
+APPROVE_T2=$(ctl tasks vote --token "$TOKEN_REV" \
+  --task-id "$T2" --chain-id "$C2" \
+  --result lgtm --comment "ok to free assignee slot")
+assert_ok "T8 approve existing review_ready task" "$APPROVE_T2"
+SHOW_T2_APPROVED=$(ctl tasks show --token "$TOKEN" --task-id "$T2")
+assert_field "T8 existing task approved and frees slot" "$SHOW_T2_APPROVED" "status" "approved"
+SHOW_T3_ACTIVE=$(ctl tasks show --token "$TOKEN" --task-id "$T3")
+assert_field "T8 queued second-chain task auto-claims after reviewer approval" "$SHOW_T3_ACTIVE" "status" "in_progress"
+
+# Clean up T3 before dependency tests reuse the same assignee.
+CLEAN_T3=$(ctl tasks status --token "$USER_TOKEN" --task-id "$T3" --chain-id "$C3" --status cancelled --body "cleanup T3")
+assert_ok "T8 cleanup T3" "$CLEAN_T3"
 
 echo ""
 

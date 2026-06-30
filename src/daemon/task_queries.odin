@@ -383,6 +383,9 @@ task_best_ready_task_for_assignee :: proc(assignee: string) -> string {
 	return task_best_ready_task_for_assignee_excluding(assignee, "")
 }
 
+// Deterministic assignee-slot selection across all active chains: among queued,
+// dependency-satisfied tasks for the same assignee, choose by priority first,
+// then created_at_unix_ms, then task_id. Chain/project id is not a limiter.
 task_best_ready_task_for_assignee_excluding :: proc(assignee, exclude_task_id: string) -> string {
 	best_idx := -1
 	for i in 0..<task_state_count {
@@ -390,6 +393,8 @@ task_best_ready_task_for_assignee_excluding :: proc(assignee, exclude_task_id: s
 		if state.assignee_agent_instance_id != assignee do continue
 		if exclude_task_id != "" && state.task_id == exclude_task_id do continue
 		if state.status != .Queued do continue
+		if !task_dependencies_satisfied(state.depends_on) do continue
+		if !task_ready_allows_auto_claim(state) do continue
 		if !task_chain_allows_execution(state.chain_id) do continue
 		if best_idx < 0 || task_state_orders_before(state, task_states[best_idx]) do best_idx = i
 	}

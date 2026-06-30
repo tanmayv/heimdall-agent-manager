@@ -158,7 +158,8 @@ handle_task_blocked :: proc(client: net.TCP_Socket, body: string) {
 handle_task_later :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
-	result := task_service_set_status(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), "queued", extract_json_string(body, "body", "Later/Deferred."), author)
+	reason := extract_json_string(body, "body", "Later/Deferred.")
+	result := task_service_set_status(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), "queued", strings.concatenate({"system_auto:manual_unblocked:", reason}), author)
 	write_task_service_response(client, result)
 }
 

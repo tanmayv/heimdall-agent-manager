@@ -111,15 +111,6 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 	if cmd.default_reviewer_agent_instance_id != "" && cmd.default_reviewer_agent_instance_id == cmd.coordinator_agent_instance_id {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"default reviewer cannot equal coordinator"}`}
 	}
-	if cmd.project_id != "" {
-		if active := task_active_chain_for_project(cmd.project_id); active != "" {
-			b := strings.builder_make()
-			strings.write_string(&b, `{"ok":false,"message":"project already has an active chain","active_chain_id":"`)
-			json_write_string(&b, active)
-			strings.write_string(&b, `"}`)
-			return Task_Service_Result{ok = false, status_code = 409, message = strings.to_string(b)}
-		}
-	}
 	chain_id := cmd.chain_id
 	if chain_id == "" do chain_id = task_generate_chain_id()
 	event := Task_Event{
@@ -154,15 +145,6 @@ task_service_activate_chain :: proc(cmd: Task_Chain_Activate_Command) -> Task_Se
 	chain := task_chains[chain_idx]
 	if chain.status != "planning" {
 		return Task_Service_Result{ok = false, status_code = 409, message = `{"ok":false,"message":"only planning chains can be activated"}`}
-	}
-	if chain.project_id != "" {
-		if active := task_active_chain_for_project(chain.project_id); active != "" && active != cmd.chain_id {
-			b := strings.builder_make()
-			strings.write_string(&b, `{"ok":false,"message":"project already has an active chain","active_chain_id":"`)
-			json_write_string(&b, active)
-			strings.write_string(&b, `"}`)
-			return Task_Service_Result{ok = false, status_code = 409, message = strings.to_string(b)}
-		}
 	}
 	event := Task_Event{
 		kind                     = .Chain_Status_Changed,
@@ -563,10 +545,12 @@ task_service_auto_claim :: proc(task_id: string) {
 	if !found do return
 	state := task_states[idx]
 	if state.status != .Queued do return
+	if !task_dependencies_satisfied(state.depends_on) do return
 	if !task_ready_allows_auto_claim(state) do return
 	if !task_chain_allows_execution(state.chain_id) do return
 	assignee := state.assignee_agent_instance_id
 	if assignee == "" do return
+	if best_ready := task_best_ready_task_for_assignee(assignee); best_ready != "" && best_ready != task_id do return
 	if task_active_slot_blocker(assignee, task_id) != "" do return
 	event := Task_Event{
 		kind                     = .Task_Status_Changed,
