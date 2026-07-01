@@ -197,12 +197,28 @@ let
       promptFlags = lib.mkOption {
         type        = lib.types.listOf lib.types.str;
         default     = [];
-        description = "Flags that precede the starter prompt positional argument.";
+        description = "Flags that precede the starter prompt positional argument when promptDelivery is flag-injection.";
       };
       starterPrompt = lib.mkOption {
         type        = lib.types.nullOr lib.types.str;
         default     = null;
         description = "Starter prompt template. {ctl_bin} and {token} are interpolated at launch time.";
+      };
+      promptDelivery = lib.mkOption {
+        type        = lib.types.enum [ "flag-injection" "tmux" "none" ];
+        default     = "flag-injection";
+        description = "How to deliver the starter prompt: flag-injection appends promptFlags and the prompt to argv, tmux injects into the pane after launch, none disables prompt delivery.";
+      };
+      promptTmuxDelayMs = lib.mkOption {
+        type        = lib.types.nullOr lib.types.int;
+        default     = null;
+        example     = 1500;
+        description = "Delay before tmux prompt injection when promptDelivery is tmux. Null uses the wrapper default.";
+      };
+      promptTmuxEnter = lib.mkOption {
+        type        = lib.types.nullOr lib.types.bool;
+        default     = null;
+        description = "Whether tmux prompt injection sends Enter after typing the prompt. Null uses the wrapper default.";
       };
       bootstrap = lib.mkOption {
         type        = bootstrapType;
@@ -253,11 +269,13 @@ let
     // lib.optionalAttrs (sd.sanitizedReasonMapping != [])    { sanitized_reason_mapping    = sd.sanitizedReasonMapping; };
 
   mkAgentCmd = ac:
-    { command = ac.command; yolo_flags = ac.yoloFlags; prompt_flags = ac.promptFlags; }
-    // lib.optionalAttrs (ac.project != null)           { project          = ac.project; }
-    // lib.optionalAttrs (ac.useRandomDir != null)      { use_random_dir   = ac.useRandomDir; }
-    // lib.optionalAttrs (ac.memoryTemplates != [])     { memory_templates = ac.memoryTemplates; }
-    // lib.optionalAttrs (ac.starterPrompt != null)     { starter_prompt   = ac.starterPrompt; }
+    { command = ac.command; yolo_flags = ac.yoloFlags; prompt_flags = ac.promptFlags; prompt_delivery = ac.promptDelivery; }
+    // lib.optionalAttrs (ac.project != null)             { project              = ac.project; }
+    // lib.optionalAttrs (ac.useRandomDir != null)        { use_random_dir       = ac.useRandomDir; }
+    // lib.optionalAttrs (ac.memoryTemplates != [])       { memory_templates     = ac.memoryTemplates; }
+    // lib.optionalAttrs (ac.starterPrompt != null)       { starter_prompt       = ac.starterPrompt; }
+    // lib.optionalAttrs (ac.promptTmuxDelayMs != null)   { prompt_tmux_delay_ms = ac.promptTmuxDelayMs; }
+    // lib.optionalAttrs (ac.promptTmuxEnter != null)     { prompt_tmux_enter    = ac.promptTmuxEnter; }
     // (let bs = mkBootstrap ac.bootstrap; in lib.optionalAttrs (bs != {}) { bootstrap = bs; })
     // { models    = mkModels ac.models; }
     // lib.optionalAttrs (ac.startupDetection != null)  { startup_detection = mkStartupDetection ac.startupDetection; };

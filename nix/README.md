@@ -87,6 +87,9 @@ programs.heimdall = {
         yoloFlags      = [];
         promptFlags    = [];
         starterPrompt  = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap file (AGENTS.md or CLAUDE.md) for context, identity, and what you can do.";
+        # promptDelivery defaults to "flag-injection": append promptFlags and
+        # the rendered starterPrompt to the launch argv.
+        promptDelivery = "flag-injection";
 
         # bootstrap section only needed for per-file overrides (name, content, dir)
         # All three files (AGENTS_MD, MEMORY_MD, SKILLS) are always generated.
@@ -110,6 +113,14 @@ programs.heimdall = {
         yoloFlags     = [ "--dangerously-skip-permissions" ];
         promptFlags   = [];
         starterPrompt = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap file (AGENTS.md or CLAUDE.md) for context, identity, and what you can do.";
+
+        # For CLIs that do not accept a startup prompt via argv/flags, use
+        # tmux fallback delivery. The wrapper launches the command normally,
+        # waits promptTmuxDelayMs, then types the rendered prompt into the pane.
+        # promptTmuxEnter controls whether Enter is sent after typing.
+        # promptDelivery    = "tmux";
+        # promptTmuxDelayMs = 1500;
+        # promptTmuxEnter   = true;
 
         bootstrap = {
           agentsMd = {
@@ -246,6 +257,9 @@ programs.heimdall = {
 | `yoloFlags` | list of str | `[]` |
 | `promptFlags` | list of str | `[]` |
 | `starterPrompt` | str \| null | `null` |
+| `promptDelivery` | `"flag-injection"`, `"tmux"`, or `"none"` | `"flag-injection"` |
+| `promptTmuxDelayMs` | int \| null | `null` (wrapper default: 1500 ms) |
+| `promptTmuxEnter` | bool \| null | `null` (wrapper default: true) |
 | `bootstrap.agentsMd.{name,content}` | see above | `null` (defaults: AGENTS.md or CLAUDE.md, all sections) |
 | `bootstrap.memoryMd.name` | str \| null | `null` |
 | `bootstrap.skills.{relativeDir,filename}` | str \| null | `null` |

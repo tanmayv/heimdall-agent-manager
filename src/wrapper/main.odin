@@ -167,6 +167,7 @@ main :: proc() {
 
 
 	report_startup_status(cfg.daemon_url, registered_instance_id, "starting", "launch", "Agent process launched in tmux", selected_agent, cwd, launch.pane_id)
+	deliver_tmux_starter_prompt(agent_cmd, cfg.daemon_url, registered_instance_id, display_name, conversation_id, agent_token, launch.pane_id)
 	result := startup_probe_agent(agent_cmd.startup_detection, launch.pane_id)
 	if result.status != "disabled" {
 		startup_status = result.status
@@ -1489,6 +1490,48 @@ template_display_name :: proc(display_name, agent_class, agent_instance_id, sele
 	return templated
 }
 
+prompt_delivery_for_agent :: proc(agent_cmd: cfg_lib.Agent_Command_Config) -> string {
+	delivery := agent_cmd.prompt_delivery
+	if delivery == "tmux" || delivery == "none" || delivery == "flag-injection" do return delivery
+	return "flag-injection"
+}
+
+prompt_tmux_delay_for_agent :: proc(agent_cmd: cfg_lib.Agent_Command_Config) -> int {
+	if agent_cmd.prompt_tmux_delay_ms > 0 do return agent_cmd.prompt_tmux_delay_ms
+	return 1500
+}
+
+prompt_tmux_enter_for_agent :: proc(agent_cmd: cfg_lib.Agent_Command_Config) -> bool {
+	if agent_cmd.prompt_tmux_enter_set do return agent_cmd.prompt_tmux_enter
+	return true
+}
+
+starter_prompt_template_for_agent :: proc(agent_cmd: cfg_lib.Agent_Command_Config, agent_token: string) -> string {
+	if is_test_token(agent_token) do return TEST_AGENT_STARTER_PROMPT
+	if agent_cmd.starter_prompt != "" do return agent_cmd.starter_prompt
+	return active_live_prefs.starter_prompt
+}
+
+render_starter_prompt_for_agent :: proc(agent_cmd: cfg_lib.Agent_Command_Config, daemon_url, agent_instance_id, display_name, conversation_id, agent_token: string) -> string {
+	template := starter_prompt_template_for_agent(agent_cmd, agent_token)
+	if template == "" do return ""
+	return template_string(template, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
+}
+
+deliver_tmux_starter_prompt :: proc(agent_cmd: cfg_lib.Agent_Command_Config, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, pane_id: string) {
+	if prompt_delivery_for_agent(agent_cmd) != "tmux" do return
+	prompt := render_starter_prompt_for_agent(agent_cmd, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
+	if prompt == "" do return
+	delay_ms := prompt_tmux_delay_for_agent(agent_cmd)
+	if delay_ms > 0 do time.sleep(time.Duration(delay_ms) * time.Millisecond)
+	enter := prompt_tmux_enter_for_agent(agent_cmd)
+	if tmux.send_text(pane_id, prompt, enter) {
+		fmt.println("tmux prompt delivery sent pane", pane_id, "enter", enter)
+	} else {
+		fmt.println("tmux prompt delivery failed pane", pane_id)
+	}
+}
+
 build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, model_tier: string) -> []string {
 	agent_command_name := selected_agent
 	if agent_command_name == "" do agent_command_name = command_name_for_agent(cfg.command, cfg.agent_name)
@@ -1496,8 +1539,13 @@ build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_
 		if agent_cmd.name == agent_command_name {
 			base := agent_cmd.command
 			if len(base) == 0 do base = cfg.command
-			count := len(base) + len(agent_cmd.yolo_flags) + len(agent_cmd.prompt_flags)
-			if active_live_prefs.starter_prompt != "" do count += 1
+			delivery := prompt_delivery_for_agent(agent_cmd)
+			inject_prompt_via_flags := delivery == "flag-injection"
+			count := len(base) + len(agent_cmd.yolo_flags)
+			if inject_prompt_via_flags {
+				count += len(agent_cmd.prompt_flags)
+				if starter_prompt_template_for_agent(agent_cmd, agent_token) != "" do count += 1
+			}
 			result := make([dynamic]string, 0, count)
 			append_templated_args(&result, base, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
 			append_templated_args(&result, agent_cmd.yolo_flags, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
@@ -1514,14 +1562,10 @@ build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_
 			} else if model_tier != "" {
 				fmt.println("model_flag_missing no models.flag configured for", agent_command_name)
 			}
-			append_templated_args(&result, agent_cmd.prompt_flags, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
-			if is_test_token(agent_token) {
-				// Test agents get a minimal one-shot prompt; skip memory guidance.
-				prompt := template_string(TEST_AGENT_STARTER_PROMPT, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
-				append(&result, prompt)
-			} else if active_live_prefs.starter_prompt != "" {
-				prompt := template_string(active_live_prefs.starter_prompt, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
-				append(&result, prompt)
+			if inject_prompt_via_flags {
+				append_templated_args(&result, agent_cmd.prompt_flags, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
+				prompt := render_starter_prompt_for_agent(agent_cmd, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
+				if prompt != "" do append(&result, prompt)
 			}
 			return result[:]
 		}

@@ -125,6 +125,19 @@ send_line :: proc(pane_id, text: string) -> bool {
 	return send_line_with_escape(pane_id, text, false)
 }
 
+send_text :: proc(pane_id, text: string, enter := false) -> bool {
+	if pane_id == "" do return false
+	ensure_not_copy_mode(pane_id)
+	send_text_cmd := []string{"tmux", "send-keys", "-t", pane_id, "-l", text}
+	state, _, _, err := os.process_exec(os.Process_Desc{command = send_text_cmd}, context.allocator)
+	if err != nil || !state.success do return false
+	if !enter do return true
+	time.sleep(300 * time.Millisecond)
+	enter_cmd := []string{"tmux", "send-keys", "-t", pane_id, "Enter"}
+	state, _, _, err = os.process_exec(os.Process_Desc{command = enter_cmd}, context.allocator)
+	return err == nil && state.success
+}
+
 send_line_with_escape :: proc(pane_id, text: string, escape_prefix: bool) -> bool {
 	if pane_id == "" do return false
 	ensure_not_copy_mode(pane_id)

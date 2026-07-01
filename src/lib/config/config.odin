@@ -122,6 +122,10 @@ Agent_Command_Config :: struct {
 	yolo_flags: []string,
 	prompt_flags: []string,
 	starter_prompt: string,
+	prompt_delivery: string,
+	prompt_tmux_delay_ms: int,
+	prompt_tmux_enter: bool,
+	prompt_tmux_enter_set: bool,
 	agent_run_dir: string,
 	use_random_dir: bool,
 	use_random_dir_set: bool,
@@ -405,6 +409,13 @@ parse_agent_command_key :: proc(name, key, value: string, cfg: ^Wrapper_Config) 
 		cfg.agent_commands[idx].prompt_flags = parse_string_array(value)
 	case "starter_prompt":
 		cfg.agent_commands[idx].starter_prompt = parse_string(value)
+	case "prompt_delivery":
+		cfg.agent_commands[idx].prompt_delivery = parse_string(value)
+	case "prompt_tmux_delay_ms":
+		if n, ok := strconv.parse_int(value); ok do cfg.agent_commands[idx].prompt_tmux_delay_ms = int(n)
+	case "prompt_tmux_enter":
+		cfg.agent_commands[idx].prompt_tmux_enter = parse_bool(value)
+		cfg.agent_commands[idx].prompt_tmux_enter_set = true
 	case "agent_run_dir":
 		cfg.agent_commands[idx].agent_run_dir = expand_home(parse_string(value))
 	case "use_random_dir":
