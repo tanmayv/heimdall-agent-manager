@@ -3,6 +3,12 @@ package main
 import "core:fmt"
 import "core:strings"
 
+Task_Notification_Delivery :: struct {
+	live_delivered: bool,
+	durable_queued: bool,
+	failed: bool,
+}
+
 task_notify_event :: proc(event: Task_Event) -> bool {
 	ev := event
 	if task_event_count > 0 {
@@ -192,17 +198,34 @@ task_notify_recipient_except :: proc(agent_instance_id, payload, skip_agent_inst
 	return task_notify_recipient(agent_instance_id, payload)
 }
 
+task_notify_recipient_delivery_except :: proc(agent_instance_id, payload, skip_agent_instance_id: string) -> Task_Notification_Delivery {
+	if agent_instance_id == skip_agent_instance_id do return Task_Notification_Delivery{}
+	return task_notify_recipient_delivery(agent_instance_id, payload)
+}
+
 task_notify_recipient :: proc(agent_instance_id, payload: string) -> bool {
-	if agent_instance_id == "" do return false
+	return task_notify_recipient_delivery(agent_instance_id, payload).live_delivered
+}
+
+task_notify_recipient_delivery :: proc(agent_instance_id, payload: string) -> Task_Notification_Delivery {
+	if agent_instance_id == "" do return Task_Notification_Delivery{failed = true}
 	event_id := notification_outbox_insert_pending(agent_instance_id, payload)
 	ok := registry_send_ws_text(agent_instance_id, payload)
 	if event_id != "" {
 		_ = notification_outbox_mark_attempt(agent_instance_id, event_id, ok)
 	}
-	if !ok {
-		fmt.printf("WARNING: failed to send WS to agent '%s'. Queued durable notification.\n", agent_instance_id)
+	queued := false
+	if !ok && event_id != "" {
+		queued = notification_outbox_pending_exists(agent_instance_id, event_id)
 	}
-	return ok
+	if !ok {
+		if queued {
+			fmt.printf("WARNING: failed to send WS to agent '%s'. Queued durable notification.\n", agent_instance_id)
+		} else {
+			fmt.printf("ERROR: failed to send WS to agent '%s' and durable queue is unavailable.\n", agent_instance_id)
+		}
+	}
+	return Task_Notification_Delivery{live_delivered = ok, durable_queued = queued, failed = !ok && !queued}
 }
 
 task_notifications_flush_queue :: proc(agent_instance_id: string) {
@@ -211,6 +234,37 @@ task_notifications_flush_queue :: proc(agent_instance_id: string) {
 	if delivered > 0 {
 		fmt.printf("INFO: replayed %d durable task notifications to agent '%s'.\n", delivered, agent_instance_id)
 	}
+}
+
+task_notify_nudge_delivery :: proc(event: Task_Event) -> Task_Notification_Delivery {
+	ev := event
+	if task_event_count > 0 {
+		last_ev := task_events[task_event_count - 1]
+		if last_ev.kind == ev.kind && last_ev.task_id == ev.task_id && last_ev.chain_id == ev.chain_id {
+			ev.event_id = last_ev.event_id
+			ev.created_unix_ms = last_ev.created_unix_ms
+			ev.interrupt = last_ev.interrupt
+		}
+	}
+	if ev.event_id == "" {
+		ev.event_id = strings.clone(fmt.tprintf("taskevt_%d", router_now_unix_ms()))
+	}
+	if ev.created_unix_ms == 0 {
+		ev.created_unix_ms = router_now_unix_ms()
+	}
+	if !ev.interrupt do ev.interrupt = true
+
+	status := ev.status
+	if ev.task_id != "" {
+		idx   := task_state_index(ev.task_id, ev.chain_id)
+		state := task_states[idx]
+		if status == "" do status = task_status_to_string(state.status)
+		payload := task_notification_json(ev, status)
+		agent_payload := task_notification_agent_json(ev, status)
+		user_client_fanout_all_ws_text(payload)
+		return task_notify_recipient_delivery_except(ev.agent_instance_id, agent_payload, ev.author_agent_instance_id)
+	}
+	return Task_Notification_Delivery{failed = true}
 }
 
 task_notification_write_base_json :: proc(b: ^strings.Builder, event: Task_Event, status: string) {

@@ -44,6 +44,21 @@ notification_outbox_insert_pending :: proc(recipient_agent_instance_id, payload:
 	return event_id
 }
 
+notification_outbox_pending_exists :: proc(recipient_agent_instance_id, event_id: string) -> bool {
+	if recipient_agent_instance_id == "" || event_id == "" || !task_db_ready do return false
+	stmt: sqlite3_stmt = nil
+	query := `SELECT 1 FROM task_notification_outbox WHERE recipient_agent_instance_id = ? AND event_id = ? AND delivered_unix_ms = 0 LIMIT 1`
+	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK {
+		fmt.println("notification_outbox_pending_exists: prepare failed:", rc)
+		return false
+	}
+	defer sqlite3_finalize(stmt)
+	task_db_bind_text(stmt, 1, recipient_agent_instance_id)
+	task_db_bind_text(stmt, 2, event_id)
+	return sqlite3_step(stmt) == SQLITE_ROW
+}
+
 notification_outbox_mark_attempt :: proc(recipient_agent_instance_id, event_id: string, delivered: bool) -> bool {
 	if recipient_agent_instance_id == "" || event_id == "" || !task_db_ready do return false
 	stmt: sqlite3_stmt = nil

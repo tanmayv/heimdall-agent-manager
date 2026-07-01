@@ -640,15 +640,25 @@ task_service_nudge_command :: proc(cmd: Task_Nudge_Command) -> Task_Service_Resu
 	if !task_store_append_event(event) {
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append task nudge failed"}`}
 	}
-	live_delivered := task_notify_event(event)
-	durable_queued := target != cmd.author_agent_instance_id
+	delivery := task_notify_nudge_delivery(event)
+	delivery_state := "skipped"
+	if delivery.live_delivered {
+		delivery_state = "delivered"
+	} else if delivery.durable_queued {
+		delivery_state = "queued"
+	} else if delivery.failed {
+		delivery_state = "failed"
+	}
 	b := strings.builder_make()
-	strings.write_string(&b, `{"ok":true,"target_agent_instance_id":"`); json_write_string(&b, target)
-	strings.write_string(&b, `","sent":`); strings.write_string(&b, "true" if live_delivered else "false")
-	strings.write_string(&b, `,"live_delivered":`); strings.write_string(&b, "true" if live_delivered else "false")
-	strings.write_string(&b, `,"durable_queued":`); strings.write_string(&b, "true" if durable_queued else "false")
-	strings.write_string(&b, `}`)
-	return Task_Service_Result{ok = true, status_code = 200, message = strings.to_string(b)}
+	strings.write_string(&b, `{"ok":`); strings.write_string(&b, "false" if delivery.failed else "true")
+	strings.write_string(&b, `,"target_agent_instance_id":"`); json_write_string(&b, target)
+	strings.write_string(&b, `","sent":`); strings.write_string(&b, "true" if delivery.live_delivered else "false")
+	strings.write_string(&b, `,"live_delivered":`); strings.write_string(&b, "true" if delivery.live_delivered else "false")
+	strings.write_string(&b, `,"durable_queued":`); strings.write_string(&b, "true" if delivery.durable_queued else "false")
+	strings.write_string(&b, `,"failed":`); strings.write_string(&b, "true" if delivery.failed else "false")
+	strings.write_string(&b, `,"delivery_state":"`); json_write_string(&b, delivery_state)
+	strings.write_string(&b, `"}`)
+	return Task_Service_Result{ok = !delivery.failed, status_code = 200 if !delivery.failed else 500, message = strings.to_string(b)}
 }
 
 task_service_update_chain :: proc(cmd: Task_Chain_Update_Command) -> Task_Service_Result {

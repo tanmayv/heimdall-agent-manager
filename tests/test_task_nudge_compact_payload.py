@@ -193,8 +193,10 @@ def main() -> None:
                 raise SystemExit(f"nudge failed: {nudge}")
             if nudge.get("sent") is not True or nudge.get("live_delivered") is not True:
                 raise SystemExit(f"nudge was not reported live-delivered: {nudge}")
-            if nudge.get("durable_queued") is not True:
-                raise SystemExit(f"nudge did not report durable queue eligibility: {nudge}")
+            if nudge.get("delivery_state") != "delivered":
+                raise SystemExit(f"nudge did not report delivered state: {nudge}")
+            if nudge.get("durable_queued") is not False or nudge.get("failed") is not False:
+                raise SystemExit(f"live delivery should not report queued/failed: {nudge}")
 
             frame = recv_ws_text(sock)
             if not frame:

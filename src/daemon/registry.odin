@@ -363,6 +363,10 @@ registry_set_ws :: proc(agent_instance_id: string, socket: net.TCP_Socket) -> bo
 
 registry_clear_ws :: proc(agent_instance_id: string) {
 	if idx := registry_find_agent(agent_instance_id); idx >= 0 {
+		if agents[idx].has_ws {
+			net.shutdown(agents[idx].ws_socket, .Both)
+			net.close(agents[idx].ws_socket)
+		}
 		agents[idx].has_ws = false
 		agents[idx].connected = false
 		agents[idx].last_seen_unix_ms = now_unix_ms()
@@ -372,6 +376,20 @@ registry_clear_ws :: proc(agent_instance_id: string) {
 			agents[idx].startup_safe_diagnostic = "Agent disconnected before reporting startup status"
 			agents[idx].startup_updated_unix_ms = agents[idx].last_seen_unix_ms
 		}
+	}
+}
+
+registry_mark_ws_stale :: proc(agent_instance_id, reason: string) {
+	if idx := registry_find_agent(agent_instance_id); idx >= 0 {
+		if agents[idx].has_ws {
+			net.shutdown(agents[idx].ws_socket, .Both)
+			net.close(agents[idx].ws_socket)
+		}
+		agents[idx].has_ws = false
+		// Keep heartbeat/process liveness separate from notification WS liveness:
+		// a wrapper can still be heartbeating while its stored WS handle is stale.
+		agents[idx].last_seen_unix_ms = now_unix_ms()
+		fmt.printf("WARNING: cleared stale WebSocket for agent '%s' after failed send (%s)\n", agent_instance_id, reason)
 	}
 }
 
@@ -393,6 +411,8 @@ registry_send_ws_text :: proc(agent_instance_id, text: string) -> bool {
 	ok := ws_send_text(agent.ws_socket, text)
 	if !ok {
 		fmt.printf("ERROR: registry_send_ws_text failed: socket write error to agent '%s' WebSocket\n", agent_instance_id)
+		registry_mark_ws_stale(agent_instance_id, "socket_write_failed")
+		agent_lifecycle_emit(agent_instance_id, "ws_stale", "socket_write_failed")
 	}
 	return ok
 }
