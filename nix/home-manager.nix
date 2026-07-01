@@ -520,8 +520,8 @@ in
       };
       project = lib.mkOption {
         type        = lib.types.str;
-        default     = "default";
-        description = "Default project ID for new agent instances.";
+        default     = "";
+        description = "Default project ID for new agent instances. Empty means no project association.";
       };
       memoryTemplates = lib.mkOption {
         type        = lib.types.listOf lib.types.str;
