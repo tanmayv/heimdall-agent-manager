@@ -245,6 +245,10 @@ export default function App() {
       socket.onopen = () => {
         dispatch(userWsConnected());
         dispatch(refreshAgents());
+        const selected = selectedAgentRef.current;
+        if (selected) {
+          dispatch(fetchSelectedChat(selected));
+        }
       };
 
       socket.onmessage = (event) => {
