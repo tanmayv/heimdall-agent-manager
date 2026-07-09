@@ -270,6 +270,7 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
         <div className="flex gap-2">
           <button
             type="button"
+            data-debug-id="memory-audit-refresh-btn"
             onClick={() => dispatch(refreshMemory())}
             className="flex h-9 w-9 items-center justify-center rounded-full border border-[var(--fd-hairline)] bg-[var(--fd-surface-1)] text-[#aaa] hover:text-white transition-colors shrink-0"
             disabled={auditLoading}
@@ -297,6 +298,7 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
             <div className="flex border-b border-[#222] p-0.5 bg-[#0a0a0a] rounded-lg">
               <button
                 type="button"
+                data-debug-id="memory-audit-mode-timeframe"
                 onClick={() => setAuditMode('timeframe')}
                 className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-all ${
                   auditMode === 'timeframe' ? 'bg-[#1a1a1a] text-white' : 'text-[#555] hover:text-[#aaa]'
@@ -306,6 +308,7 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
               </button>
               <button
                 type="button"
+                data-debug-id="memory-audit-mode-manual"
                 onClick={() => setAuditMode('manual')}
                 className={`flex-1 py-1.5 text-xs font-bold rounded-md transition-all ${
                   auditMode === 'manual' ? 'bg-[#1a1a1a] text-white' : 'text-[#555] hover:text-[#aaa]'
@@ -319,6 +322,7 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
               <div className="flex flex-col gap-2.5">
                 <label className="text-[10px] text-[#555] font-bold uppercase tracking-wider">Audit Timeframe</label>
                 <select
+                  data-debug-id="memory-audit-time-range"
                   value={timeRange}
                   onChange={(e) => setTimeRange(e.target.value)}
                   className="framer-input px-3 py-2 text-sm w-full"
@@ -339,6 +343,7 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
                     <Search className="absolute left-3 top-2.5 h-4 w-4 text-[#444]" />
                     <input
                       type="text"
+                      data-debug-id="memory-audit-chain-search"
                       value={chainSearch}
                       onChange={(e) => setChainSearch(e.target.value)}
                       placeholder="Search chains by title or ID..."
@@ -355,6 +360,7 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
                       <button
                         key={chain.chain_id}
                         type="button"
+                        data-debug-id={`memory-audit-chain-select-${chain.chain_id}`}
                         onClick={() => {
                           setSelectedChains([...selectedChains, chain]);
                           setChainSearch('');
@@ -410,6 +416,7 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
                           </div>
                           <button
                             type="button"
+                            data-debug-id={`memory-audit-chain-remove-${chain.chain_id}`}
                             onClick={() => setSelectedChains(selectedChains.filter((c) => c.chain_id !== chain.chain_id))}
                             className="text-[#666] hover:text-red-500 transition-colors p-1.5 hover:bg-red-500/5 rounded-lg"
                           >
@@ -427,6 +434,7 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
             <div className="flex flex-col gap-1.5 mt-1">
               <label className="text-[10px] text-[#555] font-bold uppercase tracking-wider">💡 Custom Auditor Prompt / Guidelines</label>
               <textarea
+                data-debug-id="memory-audit-auditor-prompt"
                 value={auditorPrompt}
                 onChange={(e) => setAuditorPrompt(e.target.value)}
                 placeholder="e.g. Focus on checking Odin structure rules, compile-time #load directives, or ensuring error bounds checking..."
@@ -439,6 +447,7 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
             <div className="flex flex-col gap-2">
               <label className="text-[10px] text-[#555] font-bold uppercase tracking-wider">🔍 Memory Auditor Agent</label>
               <select
+                data-debug-id="memory-audit-auditor-select"
                 value={auditorId}
                 onChange={(e) => handlePrefChange('memory_auditor_agent_id', e.target.value)}
                 className="framer-input px-3 py-2 text-sm w-full font-sans"
@@ -455,6 +464,7 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
             <div className="flex flex-col gap-2">
               <label className="text-[10px] text-[#555] font-bold uppercase tracking-wider">⚖️ Memory Reviewer Agent</label>
               <select
+                data-debug-id="memory-audit-reviewer-select"
                 value={reviewerId}
                 onChange={(e) => handlePrefChange('memory_reviewer_agent_id', e.target.value)}
                 className="framer-input px-3 py-2 text-sm w-full font-sans"
@@ -472,6 +482,7 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
               <label className="text-[10px] text-[#555] font-bold uppercase tracking-wider">⏱️ Audit Execution Timeout (minutes)</label>
               <input
                 type="number"
+                data-debug-id="memory-audit-timeout-min"
                 min="1"
                 max="120"
                 value={timeoutMin}
@@ -494,6 +505,7 @@ export default function MemoryAuditBoard({ session, agents = [] }: { session: an
 
             <button
               type="button"
+              data-debug-id="memory-audit-trigger-btn"
               onClick={handleTrigger}
               className={`w-full py-2.5 rounded-xl font-bold text-sm transition-[transform,colors] duration-200 ${
                 canTrigger

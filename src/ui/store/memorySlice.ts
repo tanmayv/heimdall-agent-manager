@@ -139,7 +139,7 @@ const memorySlice = createSlice({
         state.activeAudit.status = action.payload.status || 'completed';
         state.activeAudit.completedAtUnixMs = action.payload.completed_at_unix_ms || Date.now();
         if (action.payload.status === 'failed') {
-          state.activeAudit.error = action.payload.reason || 'Unknown audit failure';
+          state.activeAudit.error = action.payload.reason || action.payload.failure_reason || 'Unknown audit failure';
         }
       } else {
         // If we missed the start event (e.g. page refresh), create a completed stub
@@ -150,7 +150,7 @@ const memorySlice = createSlice({
           targetChains: [],
           startedAtUnixMs: Date.now() - 5000,
           completedAtUnixMs: action.payload.completed_at_unix_ms || Date.now(),
-          error: action.payload.status === 'failed' ? (action.payload.reason || 'Unknown audit failure') : undefined,
+          error: action.payload.status === 'failed' ? (action.payload.reason || action.payload.failure_reason || 'Unknown audit failure') : undefined,
         };
       }
       state.auditLoading = false;
@@ -202,8 +202,21 @@ const memorySlice = createSlice({
         state.auditLoading = true;
         state.error = '';
       })
-      .addCase(triggerMemoryAudit.fulfilled, (state: any) => {
+      .addCase(triggerMemoryAudit.fulfilled, (state: any, action) => {
         state.error = '';
+        state.auditLoading = false;
+        if (action.payload?.audit_id) {
+          if (!state.activeAudit || state.activeAudit.auditId !== action.payload.audit_id) {
+            state.activeAudit = {
+              auditId: action.payload.audit_id || '',
+              timeRange: action.meta.arg.timeRange || (action.meta.arg.targetChains?.length ? 'manual' : ''),
+              status: 'started',
+              targetChains: action.meta.arg.targetChains || [],
+              startedAtUnixMs: Date.now(),
+            };
+          }
+          state.auditLoading = state.activeAudit?.status === 'started';
+        }
       })
       .addCase(triggerMemoryAudit.rejected, (state: any, action) => {
         state.auditLoading = false;
