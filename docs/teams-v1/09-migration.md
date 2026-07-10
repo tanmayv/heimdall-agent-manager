@@ -4,7 +4,21 @@ Existing data must survive this refactor. Migration runs once, gated by an env f
 
 ## Trigger
 
-Daemon startup: if `HEIMDALL_MIGRATE_V1=1` is set **and** the `teams` table is empty and `task_chains.team_id` column is null-populated only, run the migration. Otherwise skip.
+Daemon startup: if `HEIMDALL_MIGRATE_V1=1` is set, run the migration planner unless a durable migration marker says Teams v1 migration already completed successfully.
+
+The trigger must **not** require the `teams` table to be empty. Earlier Teams v1 tasks may pre-create rows such as `swe-team-legacy` or attach the in-flight `Introduce Teams model` chain before the wholesale migration runs. Those rows are expected inputs, not a reason to skip migration.
+
+Skip only when all of the following are true:
+
+1. A completed marker row/file exists for migration key `teams-v1`.
+2. No legacy rows remain that require migration, including:
+   - active `agent_instance_records` without `team_id`,
+   - `task_chains` with null `team_id`,
+   - memory rows with empty or legacy `scope` / `subject_key`,
+   - project anchors outside the closed vocabulary.
+3. The previous report exists and is readable.
+
+Otherwise, run idempotent section handlers. Each section uses natural keys and already-migrated checks (`INSERT OR IGNORE`, "only update when null/legacy", and mapping tables) so reruns avoid duplicate inserts while still finishing partially completed migrations.
 
 Report: `<data_dir>/migrations/teams-v1-<timestamp>.report.md`.
 
@@ -103,8 +117,9 @@ Deletion of these keys is scheduled for Task 17.
 ## Idempotency
 
 - Every insert uses `INSERT OR IGNORE` on natural keys.
-- Every rewrite guarded by "already set" check.
-- Rerun is a no-op after successful first run.
+- Every rewrite guarded by "already set" / "still legacy" checks.
+- Pre-created rows such as `swe-team-legacy` are treated as existing target rows and reused rather than duplicated.
+- Rerun is a no-op after a successful first run with no remaining legacy rows.
 - If migration fails midway, transactions roll back per section. Partial state on 9.1/9.3 is safe to rerun.
 
 ## Report file
@@ -141,7 +156,7 @@ Reviewer confirms by diffing before/after listings; risk-analyst signs off on Ta
 
 ## Migration invariant mapping
 
-- **MIG-1** maps to the env-gated trigger and idempotency rules above.
+- **MIG-1** maps to the env-gated trigger, durable completion marker, legacy-row detection, and idempotency rules above. It explicitly allows migration to run even when early Teams v1 rows such as `swe-team-legacy` already exist.
 - **MIG-2** maps to the Markdown report requirement under `<data_dir>/migrations/`.
 - **MIG-3** maps to the anchor migration rule that preserves dropped anchors in `project.description`.
 - **MIG-4** maps to the rollback requirement that Task 14 begins by backing up `data_dir`.
