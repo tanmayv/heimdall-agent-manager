@@ -519,3 +519,24 @@ registry_agent_live :: proc(agent_instance_id: string) -> bool {
 	return agents[idx].connected && now - agents[idx].last_seen_unix_ms < DUPLICATE_HEARTBEAT_FRESH_MS
 }
 
+
+registry_list_json :: proc() -> string {
+	builder := strings.builder_make()
+	strings.write_string(&builder, `{"agents":[`)
+	for i in 0..<agent_count {
+		if i > 0 do strings.write_byte(&builder, ',')
+		a := agents[i]
+		strings.write_string(&builder, `{"agent_instance_id":"`); json_write_string(&builder, a.agent_instance_id)
+		strings.write_string(&builder, `","agent_class":"`); json_write_string(&builder, a.agent_class)
+		strings.write_string(&builder, `","conversation_id":"`); json_write_string(&builder, a.conversation_id)
+		strings.write_string(&builder, `","display_name":"`); json_write_string(&builder, a.display_name)
+		strings.write_string(&builder, fmt.tprintf(`","connected":%v,"has_ws":%v,"last_seen_unix_ms":%d`, a.connected, a.has_ws, a.last_seen_unix_ms))
+		strings.write_string(&builder, `,"startup_status":"`); json_write_string(&builder, a.startup_status)
+		strings.write_string(&builder, `","provider_profile":"`); json_write_string(&builder, a.provider_profile)
+		strings.write_string(&builder, `","provider_tier":"`); json_write_string(&builder, a.provider_tier)
+		strings.write_string(&builder, `","project_id":"`); json_write_string(&builder, a.project_id)
+		strings.write_string(&builder, `"}`)
+	}
+	strings.write_string(&builder, `]}`)
+	return strings.to_string(builder)
+}

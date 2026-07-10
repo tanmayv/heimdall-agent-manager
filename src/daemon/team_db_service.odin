@@ -74,20 +74,20 @@ PRAGMA user_version = 1;
 		if !team_db_exec(db_path, `CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_chain_id ON teams(chain_id);`) do return false
 	}
 
-	if !db_has_column(db_path, "teams", "chain_id") {
+	if !team_db_has_column(db_path, "teams", "chain_id") {
 		if !team_db_exec(db_path, `ALTER TABLE teams ADD COLUMN chain_id TEXT NOT NULL DEFAULT '';`) do return false
 	}
-	if !db_has_column(db_path, "team_members", "is_user_proxy") {
+	if !team_db_has_column(db_path, "team_members", "is_user_proxy") {
 		if !team_db_exec(db_path, `ALTER TABLE team_members ADD COLUMN is_user_proxy INTEGER DEFAULT 0;`) do return false
 	}
-	if !db_has_column(db_path, "team_members", "route_to") {
+	if !team_db_has_column(db_path, "team_members", "route_to") {
 		if !team_db_exec(db_path, `ALTER TABLE team_members ADD COLUMN route_to TEXT;`) do return false
 	}
 	if !team_db_exec(db_path, `CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_chain_id ON teams(chain_id);`) do return false
 	return team_db_exec(db_path, fmt.tprintf("PRAGMA user_version = %d;", TEAM_DB_USER_VERSION))
 }
 
-db_has_column :: proc(db_path, table_name, column_name: string) -> bool {
+team_db_has_column :: proc(db_path, table_name, column_name: string) -> bool {
 	out, ok := team_db_query(db_path, fmt.tprintf("PRAGMA table_info(%s);", table_name))
 	if !ok do return false
 	needle := fmt.tprintf("|%s|", column_name)

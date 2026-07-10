@@ -531,12 +531,12 @@ memory_ctl_add_filter_fields :: proc(body: ^strings.Builder, args: []string) {
 
 ctl_chains :: proc(daemon_url, action: string, args: []string) {
 	if action != "focus" {
-		fmt.println("usage: bc-odinctl chains focus --chain <chain_id> [--json]")
+		fmt.println("usage: ham-ctl chains focus --chain <chain_id> [--json]")
 		return
 	}
 	chain_id := option_value(args, "--chain", option_value(args, "--chain-id", ""))
 	if chain_id == "" {
-		fmt.println("usage: bc-odinctl chains focus --chain <chain_id> [--json]")
+		fmt.println("usage: ham-ctl chains focus --chain <chain_id> [--json]")
 		return
 	}
 	response, ok := http.post(daemon_url, fmt.tprintf("/task-chains/%s/focus", chain_id), "{}")
@@ -563,11 +563,11 @@ ctl_teams :: proc(daemon_url, action: string, args: []string) {
 		if query != "" do path = fmt.tprintf("%s?%s", path, query)
 	case "show", "show-members":
 		team_id := option_value(args, "--team", option_value(args, "--team-id", ""))
-		if team_id == "" { fmt.println("usage: bc-odinctl teams show|show-members --team <team_id> [--json]"); return }
+		if team_id == "" { fmt.println("usage: ham-ctl teams show|show-members --team <team_id> [--json]"); return }
 		path = fmt.tprintf("/teams/%s", team_id)
 		if action == "show-members" do path = fmt.tprintf("%s/members", path)
 	case:
-		fmt.println("usage: bc-odinctl teams <list|show|show-members> [--json]")
+		fmt.println("usage: ham-ctl teams <list|show|show-members> [--json]")
 		return
 	}
 	response, ok := http.get(daemon_url, path)

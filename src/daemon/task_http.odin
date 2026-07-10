@@ -36,7 +36,6 @@ handle_task_chain_create :: proc(client: net.TCP_Socket, body: string) {
 		project_id                         = project_id,
 		title                              = extract_json_string(body, "title", ""),
 		description                        = extract_json_string(body, "description", ""),
-		status                             = extract_json_string(body, "status", ""),
 		coordinator_agent_instance_id      = extract_json_string(body, "coordinator_agent_instance_id", ""),
 		default_reviewer_agent_instance_id = extract_json_string(body, "default_reviewer_agent_instance_id", ""),
 		author_agent_instance_id           = author,
