@@ -19,14 +19,12 @@ Implements the pre-flight anchor audit requested by `task-19f4b58f2ab`, using th
 
 | Project ID | Project name | Current anchor type | Current anchor value | Note | Proposed teams-v1 anchor | Proposed value | Migration action | Reversible mapping note |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `project_1781875425386` | `Deep Dive Research` | `directory` | `/Users/tanmayvijay/Documents/superwhisper` | `Project Code Directory` | `git_repo` | `/Users/tanmayvijay/Documents/superwhisper` | Rename anchor type from `directory` → `git_repo`; preserve value and note in migration report. | Original type/value/note are fully preserved by this table, so the rewrite can be reversed if needed. |
+| `project_1781875425386` | `Deep Dive Research` | `directory` | `/Users/tanmayvijay/Documents/superwhisper` | `Project Code Directory` | description prose | n/a | Append `[migrated anchor]  directory: /Users/tanmayvijay/Documents/superwhisper  (note: Project Code Directory)` to `description`; drop structured anchor. | Original type/value/note are preserved in description prose and this table, so the rewrite can be reversed if needed. |
 | `heimdall-agent-manager` | `Heimdall Agent Manager` | `directory` | `/Users/tanmayvijay/heimdall-agent-manager` | `User-confirmed project directory` | `git_repo` | `/Users/tanmayvijay/heimdall-agent-manager` | Rename anchor type from `directory` → `git_repo`; preserve value and note in migration report. | Original type/value/note are fully preserved by this table, so the rewrite can be reversed if needed. |
 
 ## Anchors that will move into description prose
 
-None from the current live anchor inventory.
-
-All anchors currently in use are `directory` anchors that appear to denote repository roots, so they map directly to the closed-vocabulary `git_repo` anchor without losing information.
+- `project_1781875425386` (`Deep Dive Research`): legacy `directory` anchor `/Users/tanmayvijay/Documents/superwhisper` is not a git repository (`git -C ... rev-parse --is-inside-work-tree` fails), so it must be preserved as description prose rather than coerced into `git_repo`.
 
 ## Projects with no anchors today
 
@@ -46,9 +44,9 @@ These projects currently have no anchors and therefore require no anchor rewrite
 ## Notes for migration execution
 
 1. `directory` is the only legacy anchor type currently in use.
-2. For the current inventory, `directory` should map to `git_repo` when the anchor note/value indicates a project code root.
+2. For the current inventory, `directory` should map to `git_repo` only when the path is validated as a repository root.
 3. No current anchor requires splitting into multiple closed-vocabulary anchors.
-4. No current anchor requires description-only fallback to satisfy the closed vocabulary.
+4. The non-repo `Deep Dive Research` anchor requires description-only fallback to satisfy the closed vocabulary without semantic coercion.
 5. The mapping is reversible because the original project ID, anchor type, anchor value, and anchor note are all captured above.
 
 ## Follow-up observations (non-blocking)

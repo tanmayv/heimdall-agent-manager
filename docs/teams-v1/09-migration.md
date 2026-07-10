@@ -95,10 +95,10 @@ Persist a mapping table `memory_migration_map(memory_id, old_scope, old_subject,
 For every project, walk anchors:
 
 - Anchor `type` in closed vocabulary (`git_repo`, `base_ref`, `vcs_kind`, `worktree_root`, `docs`, `scratch`): keep as-is.
-- Anchor `type = "directory"` (the old free-form default): rewrite to `git_repo` if a `.git` or `.jj` directory exists at the path; else move to `docs` (with the original `note` preserved) if it looks like a docs path; else move to `scratch`.
+- Anchor `type = "directory"` (the old free-form default): rewrite to `git_repo` only when the path is validated as a repo root (`.git` or `.jj`) or appears in the approved pre-flight mapping in [`anchor-migration.md`](./anchor-migration.md). If repo classification is uncertain, append `"[migrated anchor]  directory: <value>  (note: <note>)"` to `project.description`, then drop the structured anchor. Do **not** coerce paths to `docs` or `scratch` from path substrings alone.
 - Anchor `type` outside the vocabulary: append `"[migrated anchor]  <type>: <value>  (note: <note>)"` line to `project.description`, then drop the anchor.
 
-Emit a per-project entry in the report file listing every transformation.
+Emit a per-project entry in the report file listing every transformation. The report plus [`anchor-migration.md`](./anchor-migration.md) must be sufficient to reconstruct the original `type`/`value`/`note` for any dropped anchor.
 
 ### 9.6 VCS workspace pre-provisioning
 
