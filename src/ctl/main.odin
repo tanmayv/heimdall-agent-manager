@@ -111,6 +111,16 @@ main :: proc() {
 		return
 	}
 
+	if len(cmd) >= 2 && cmd[0] == "chains" {
+		ctl_chains(daemon_url, cmd[1], os.args)
+		return
+	}
+
+	if len(cmd) >= 2 && cmd[0] == "teams" {
+		ctl_teams(daemon_url, cmd[1], os.args)
+		return
+	}
+
 	if len(cmd) >= 2 && cmd[0] == "users" {
 		ctl_users(daemon_url, cmd[1], os.args)
 		return
@@ -389,11 +399,14 @@ ctl_task_chains :: proc(daemon_url, action: string, args: []string) {
 	strings.write_string(&body, `{"agent_token":"`); json_write_string(&body, token); strings.write_string(&body, `"`)
 	if action == "create" {
 		path = "/task-chains/create"
-		strings.write_string(&body, `,"chain_id":"`);   json_write_string(&body, option_value(args, "--chain-id", option_value(args, "--chain", ""))); strings.write_string(&body, `"`)
+		strings.write_string(&body, `,"chain_id":"`); json_write_string(&body, option_value(args, "--chain-id", option_value(args, "--chain", ""))); strings.write_string(&body, `"`)
 		strings.write_string(&body, `,"project_id":"`); json_write_string(&body, option_value(args, "--project-id", option_value(args, "--project", ""))); strings.write_string(&body, `"`)
-		strings.write_string(&body, `,"title":"`);       json_write_string(&body, option_value(args, "--title", ""));       strings.write_string(&body, `"`)
+		strings.write_string(&body, `,"kind":"`); json_write_string(&body, option_value(args, "--kind", "")); strings.write_string(&body, `"`)
+		strings.write_string(&body, `,"title":"`); json_write_string(&body, option_value(args, "--title", "")); strings.write_string(&body, `"`)
 		strings.write_string(&body, `,"description":"`); json_write_string(&body, option_value(args, "--description", "")); strings.write_string(&body, `"`)
+		strings.write_string(&body, `,"status":"`); json_write_string(&body, option_value(args, "--status", "planning")); strings.write_string(&body, `"`)
 		strings.write_string(&body, `,"coordinator_agent_instance_id":"`); json_write_string(&body, option_value(args, "--coordinator-agent-instance-id", option_value(args, "--coordinator", ""))); strings.write_string(&body, `"`)
+		strings.write_string(&body, `,"default_reviewer_agent_instance_id":"`); json_write_string(&body, option_value(args, "--reviewer", "")); strings.write_string(&body, `"`)
 	} else if action == "activate" {
 		path = "/task-chains/activate"
 		strings.write_string(&body, `,"chain_id":"`); json_write_string(&body, option_value(args, "--chain-id", option_value(args, "--chain", ""))); strings.write_string(&body, `"`)
@@ -514,6 +527,92 @@ memory_ctl_add_filter_fields :: proc(body: ^strings.Builder, args: []string) {
 	if status := option_value(args, "--status", ""); status != "" { strings.write_string(body, `,"status":"`); json_write_string(body, status); strings.write_string(body, `"`) }
 	if has_flag(args, "--all") do strings.write_string(body, `,"include_all_statuses":true`)
 }
+
+
+ctl_chains :: proc(daemon_url, action: string, args: []string) {
+	if action != "focus" {
+		fmt.println("usage: bc-odinctl chains focus --chain <chain_id> [--json]")
+		return
+	}
+	chain_id := option_value(args, "--chain", option_value(args, "--chain-id", ""))
+	if chain_id == "" {
+		fmt.println("usage: bc-odinctl chains focus --chain <chain_id> [--json]")
+		return
+	}
+	response, ok := http.post(daemon_url, fmt.tprintf("/task-chains/%s/focus", chain_id), "{}")
+	if !ok { fmt.println(`{"ok":false,"message":"chains focus failed"}`); return }
+	if has_flag(args, "--json") { fmt.println(response.body); return }
+	fmt.println("chain focus", extract_json_string(response.body, "chain_id", chain_id), extract_json_string(response.body, "action", "unknown"), extract_json_string(response.body, "reason", ""))
+}
+
+ctl_teams :: proc(daemon_url, action: string, args: []string) {
+	if action == "start" {
+		fmt.println("usage: teams start is not supported; create or focus a chain instead")
+		return
+	}
+	path := ""
+	switch action {
+	case "list":
+		path = "/teams"
+		query := ""
+		if project_id := option_value(args, "--project-id", option_value(args, "--project", "")); project_id != "" do query = fmt.tprintf("project_id=%s", project_id)
+		if status := option_value(args, "--status", ""); status != "" {
+			if query != "" do query = fmt.tprintf("%s&", query)
+			query = fmt.tprintf("%sstatus=%s", query, status)
+		}
+		if query != "" do path = fmt.tprintf("%s?%s", path, query)
+	case "show", "show-members":
+		team_id := option_value(args, "--team", option_value(args, "--team-id", ""))
+		if team_id == "" { fmt.println("usage: bc-odinctl teams show|show-members --team <team_id> [--json]"); return }
+		path = fmt.tprintf("/teams/%s", team_id)
+		if action == "show-members" do path = fmt.tprintf("%s/members", path)
+	case:
+		fmt.println("usage: bc-odinctl teams <list|show|show-members> [--json]")
+		return
+	}
+	response, ok := http.get(daemon_url, path)
+	if !ok { fmt.println(`{"ok":false,"message":"teams request failed"}`); return }
+	if has_flag(args, "--json") { fmt.println(response.body); return }
+	ctl_print_teams_human(action, response.body)
+}
+
+ctl_print_teams_human :: proc(action, body: string) {
+	if action == "list" {
+		printed := false
+		for object, ok, next := next_json_object_with_key(body, "team_id", 0); ok; object, ok, next = next_json_object_with_key(body, "team_id", next) {
+			fmt.println("team", extract_json_string(object, "team_id", ""), extract_json_string(object, "kind", ""), extract_json_string(object, "status", ""), "chain", extract_json_string(object, "chain_id", ""))
+			printed = true
+		}
+		if !printed do fmt.println("teams none")
+		return
+	}
+	if action == "show" {
+		fmt.println("team", extract_json_string(body, "team_id", "none"), extract_json_string(body, "kind", ""), extract_json_string(body, "status", ""), "chain", extract_json_string(body, "chain_id", ""))
+		return
+	}
+	printed := false
+	for object, ok, next := next_json_object_with_key(body, "role_key", 0); ok; object, ok, next = next_json_object_with_key(body, "role_key", next) {
+		fmt.println("member", extract_json_string(object, "role_key", ""), "index", extract_json_string(object, "role_index", "0"), "agent", extract_json_string(object, "agent_record_id", "null"), "status", extract_json_string(object, "lifecycle_status", ""))
+		printed = true
+	}
+	if !printed do fmt.println("members none")
+}
+
+next_json_object_with_key :: proc(body, key: string, offset: int) -> (string, bool, int) {
+	if offset >= len(body) do return "", false, len(body)
+	pattern := fmt.tprintf(`"%s":`, key)
+	key_rel := strings.index(body[offset:], pattern)
+	if key_rel < 0 do return "", false, len(body)
+	key_idx := offset + key_rel
+	start := key_idx
+	for start > 0 && body[start] != '{' do start -= 1
+	if body[start] != '{' do return "", false, len(body)
+	end_rel := strings.index(body[key_idx:], "}")
+	if end_rel < 0 do return "", false, len(body)
+	end := key_idx + end_rel + 1
+	return body[start:end], true, end
+}
+
 
 ctl_users :: proc(daemon_url, action: string, args: []string) {
 	body := strings.builder_make()
