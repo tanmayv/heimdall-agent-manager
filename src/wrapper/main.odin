@@ -121,6 +121,9 @@ main :: proc() {
 	ws_url := extract_json_string(register_response.body, "ws_url", "")
 	agent_token := extract_json_string(register_response.body, "agent_token", "")
 	template_instructions := extract_json_string(register_response.body, "template_instructions", "")
+	team_id := extract_json_string(register_response.body, "team_id", "")
+	role_key := extract_json_string(register_response.body, "role_key", "")
+	role_index := extract_json_int(register_response.body, "role_index", 0)
 	prefs_obj := extract_json_object(register_response.body, "preferences")
 	defer if prefs_obj != "" do delete(prefs_obj)
 	apply_preferences_json(prefs_obj)
@@ -146,7 +149,7 @@ main :: proc() {
 	fmt.println("working_dir", cwd)
 
 	if !is_test_token(agent_token) {
-		generate_bootstrap_files(cwd, loaded.path, cfg, agent_cmd, selected_agent, registered_instance_id, display_name, cfg.daemon_url, agent_token, template_instructions)
+		generate_bootstrap_files(cwd, loaded.path, cfg, agent_cmd, selected_agent, registered_instance_id, display_name, cfg.daemon_url, agent_token, template_instructions, team_id, role_key, role_index)
 	}
 
 	stop_message := cfg.stop_message
@@ -1010,11 +1013,13 @@ parse_into_memory_records :: proc(body: string, memory_templates: []string, temp
 	}
 }
 
-generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Command_Config, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, template_instructions: string) {
+generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Command_Config, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, template_instructions, team_id, role_key: string, role_index: int) {
 	profile := bootstrap_profile(agent_cmd, selected_agent)
 	memory_templates := agent_cmd.memory_templates
 	if len(memory_templates) == 0 do memory_templates = cfg.memory_templates
 	project_context := project_bootstrap_context(daemon_url, agent_token, cfg, agent_cmd)
+	team_context, chain_id := team_bootstrap_context(daemon_url, team_id)
+	chain_context, workspace_context := task_chain_bootstrap_context(daemon_url, agent_token, chain_id)
 	memories := fetch_all_active_memories(daemon_url, agent_token, agent_instance_id, memory_templates)
 
 	written := make([dynamic]string)
@@ -1026,20 +1031,16 @@ generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_
 		if name == "" {
 			if profile == "claude" { name = "CLAUDE.md" } else { name = "AGENTS.md" }
 		}
-		content_sections := fc.content
-		if len(content_sections) == 0 {
-			content_sections = []string{"IDENTITY", "GUIDANCE", "PROJECT", "MEMORY"}
-		}
 		path := join_path(cwd, name)
 		if can_write_managed_file(path) {
-			text := build_agents_md(name, profile, content_sections, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path, memories[:], project_context, true, template_instructions)
+			text := build_agents_md(name, profile, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path, memories[:], project_context, chain_context, team_context, workspace_context, has_reference_memories(memories[:]), template_instructions, team_id, role_key, role_index)
 			write_managed_file(path, text)
 			append(&written, name)
 		}
 	}
 
-	// MEMORY_MD
-	{
+	// MEMORY_MD only when Fact/Episode references exist.
+	if has_reference_memories(memories[:]) {
 		fc := agent_cmd.bootstrap.features["MEMORY_MD"]
 		name := fc.name
 		if name == "" do name = "MEMORY.md"
@@ -1068,6 +1069,86 @@ generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_
 	write_manifest(cwd, written[:])
 }
 
+team_bootstrap_context :: proc(daemon_url, team_id: string) -> (string, string) {
+	if team_id == "" do return "", ""
+	response, ok := http.get(daemon_url, fmt.tprintf("/teams/%s", team_id))
+	if !ok || response.status != 200 do return "", ""
+	chain_id := extract_json_string(response.body, "chain_id", "")
+	b := strings.builder_make()
+	strings.write_string(&b, "- team_id: "); strings.write_string(&b, extract_json_string(response.body, "team_id", team_id)); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- kind: "); strings.write_string(&b, extract_json_string(response.body, "kind", "")); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- status: "); strings.write_string(&b, extract_json_string(response.body, "status", "")); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- Roster:\n")
+	idx := 0
+	for {
+		start_rel := strings.index(response.body[idx:], `{"team_id":"`)
+		if start_rel < 0 do break
+		start := idx + start_rel
+		end := json_object_end(response.body, start)
+		if end <= start do break
+		object := response.body[start:end]
+		if extract_json_string(object, "role_key", "") != "" {
+			strings.write_string(&b, "  - "); strings.write_string(&b, extract_json_string(object, "role_key", ""))
+			strings.write_string(&b, "["); strings.write_string(&b, fmt.tprintf("%d", extract_json_int(object, "role_index", 0))); strings.write_string(&b, "] ")
+			strings.write_string(&b, extract_json_string(object, "lifecycle_status", "idle")); strings.write_string(&b, "\n")
+		}
+		idx = end
+	}
+	return strings.to_string(b), chain_id
+}
+
+task_chain_bootstrap_context :: proc(daemon_url, agent_token, chain_id: string) -> (string, string) {
+	if chain_id == "" do return "", ""
+	body := strings.builder_make()
+	strings.write_string(&body, `{"agent_token":"`); json_write_string(&body, agent_token)
+	strings.write_string(&body, `","chain_id":"`); json_write_string(&body, chain_id)
+	strings.write_string(&body, `"}`)
+	response, ok := http.post(daemon_url, "/task-chains/show", strings.to_string(body))
+	if !ok || response.status != 200 do return "", ""
+	b := strings.builder_make()
+	strings.write_string(&b, "- chain_id: "); strings.write_string(&b, extract_json_string(response.body, "chain_id", chain_id)); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- title: "); strings.write_string(&b, extract_json_string(response.body, "title", "")); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- description: "); strings.write_string(&b, extract_json_string(response.body, "description", "")); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- coordinator: "); strings.write_string(&b, extract_json_string(response.body, "coordinator_agent_instance_id", "")); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- default_reviewer: "); strings.write_string(&b, extract_json_string(response.body, "default_reviewer_agent_instance_id", "")); strings.write_string(&b, "\n")
+	tasks_response, tasks_ok := http.get(daemon_url, fmt.tprintf("/task-chains/%s/tasks", chain_id))
+	if tasks_ok && tasks_response.status == 200 {
+		strings.write_string(&b, "- Task counts: planning="); strings.write_string(&b, fmt.tprintf("%d", count_json_status(tasks_response.body, "planning")))
+		strings.write_string(&b, " ready="); strings.write_string(&b, fmt.tprintf("%d", count_json_status(tasks_response.body, "queued") + count_json_status(tasks_response.body, "ready")))
+		strings.write_string(&b, " in-progress="); strings.write_string(&b, fmt.tprintf("%d", count_json_status(tasks_response.body, "in_progress")))
+		strings.write_string(&b, " review-ready="); strings.write_string(&b, fmt.tprintf("%d", count_json_status(tasks_response.body, "review_ready")))
+		strings.write_string(&b, " done="); strings.write_string(&b, fmt.tprintf("%d", count_json_status(tasks_response.body, "approved") + count_json_status(tasks_response.body, "completed")))
+		strings.write_string(&b, "\n")
+	}
+	return strings.to_string(b), workspace_bootstrap_context(response.body)
+}
+
+workspace_bootstrap_context :: proc(chain_body: string) -> string {
+	workspace_id := extract_json_string(chain_body, "vcs_workspace_id", "")
+	if workspace_id == "" do return ""
+	b := strings.builder_make()
+	strings.write_string(&b, "- workspace_id: "); strings.write_string(&b, workspace_id); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- path: "); strings.write_string(&b, extract_json_string(chain_body, "path", "")); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- vcs_kind: "); strings.write_string(&b, extract_json_string(chain_body, "vcs_kind", "")); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- branch_or_change: "); strings.write_string(&b, extract_json_string(chain_body, "branch_or_change", "")); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- base_ref: "); strings.write_string(&b, extract_json_string(chain_body, "base_ref", "")); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- Do not cd outside this workspace. Do not push; merge is user-approved. Use `ham-ctl workspace pull` to sync base.\n")
+	return strings.to_string(b)
+}
+
+count_json_status :: proc(body, status: string) -> int {
+	count := 0
+	needle := fmt.tprintf(`"status":"%s"`, status)
+	idx := 0
+	for {
+		rel := strings.index(body[idx:], needle)
+		if rel < 0 do break
+		count += 1
+		idx += rel + len(needle)
+	}
+	return count
+}
+
 content_section_enabled :: proc(sections: []string, section: string) -> bool {
 	if len(sections) == 0 do return true
 	for item in sections {
@@ -1076,42 +1157,58 @@ content_section_enabled :: proc(sections: []string, section: string) -> bool {
 	return false
 }
 
-build_agents_md :: proc(name, profile: string, content_sections: []string, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path: string, memories: []Memory_Record, project_context: string, has_memory_md: bool, template_instructions: string) -> string {
+build_agents_md :: proc(name, profile: string, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path: string, memories: []Memory_Record, project_context, chain_context, team_context, workspace_context: string, has_memory_md: bool, template_instructions, team_id, role_key: string, role_index: int) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, active_live_prefs.bootstrap_header); strings.write_string(&b, "\n")
 	strings.write_string(&b, bootstrap_title(name, profile)); strings.write_string(&b, "\n\n")
-	if content_section_enabled(content_sections, "IDENTITY") {
-		strings.write_string(&b, "FIRST RUN: `")
-		strings.write_string(&b, effective_ctl_bin())
-		strings.write_string(&b, " --daemon-url ")
-		strings.write_string(&b, daemon_url)
-		strings.write_string(&b, " --token ")
-		strings.write_string(&b, agent_token)
-		strings.write_string(&b, " start-success` — this tells Heimdall you are alive. Do this before anything else. (No --config needed; ham-ctl finds it at ~/.config/heimdall/config.toml. Run this command verbatim from any directory.)\n\n")
-		strings.write_string(&b, "- Display name: "); strings.write_string(&b, display_name); strings.write_string(&b, "\n")
-		strings.write_string(&b, "- Agent instance: "); strings.write_string(&b, agent_instance_id); strings.write_string(&b, "\n")
-		strings.write_string(&b, "- Provider/profile: "); strings.write_string(&b, selected_agent); strings.write_string(&b, " / "); strings.write_string(&b, profile); strings.write_string(&b, "\n")
-		strings.write_string(&b, "- Daemon URL: "); strings.write_string(&b, daemon_url); strings.write_string(&b, "\n")
-		strings.write_string(&b, "- This file is generated by Heimdall and is overwritten on agent start. Unmanaged files are preserved.\n")
-		if template_instructions != "" {
-			strings.write_string(&b, "\n# Template Instructions\n")
-			strings.write_string(&b, template_instructions)
-			strings.write_string(&b, "\n")
-		}
+
+	strings.write_string(&b, "# You\n")
+	strings.write_string(&b, "- display_name: "); strings.write_string(&b, display_name); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- agent_instance_id: "); strings.write_string(&b, agent_instance_id); strings.write_string(&b, "\n")
+	if role_key != "" { strings.write_string(&b, "- role_key: "); strings.write_string(&b, role_key); strings.write_string(&b, "\n") }
+	strings.write_string(&b, "- role_index: "); strings.write_string(&b, fmt.tprintf("%d", role_index)); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- provider/profile: "); strings.write_string(&b, selected_agent); strings.write_string(&b, " / "); strings.write_string(&b, profile); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- agent_token: "); strings.write_string(&b, agent_token); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- start-success: `"); strings.write_string(&b, effective_ctl_bin()); strings.write_string(&b, " --daemon-url "); strings.write_string(&b, daemon_url); strings.write_string(&b, " --token "); strings.write_string(&b, agent_token); strings.write_string(&b, " start-success`\n\n")
+
+	strings.write_string(&b, "# Project\n")
+	if project_context != "" { strings.write_string(&b, project_context); strings.write_string(&b, "\n") } else { strings.write_string(&b, "- project_id: unknown\n- VCS bindings: none\n\n") }
+
+	strings.write_string(&b, "# Task Chain\n")
+	if chain_context != "" { strings.write_string(&b, chain_context) } else { strings.write_string(&b, "- chain_id: unknown\n- Current task: use `ham-ctl tasks next --token <token>` to claim assigned work.\n") }
+	strings.write_string(&b, "\n")
+
+	strings.write_string(&b, "# Team\n")
+	if team_context != "" { strings.write_string(&b, team_context) } else if team_id != "" { strings.write_string(&b, "- team_id: "); strings.write_string(&b, team_id); strings.write_string(&b, "\n") }
+	strings.write_string(&b, "- Coordinator owns user-facing decisions; route those through the coordinator.\n")
+	strings.write_string(&b, "- Agents shut down after 30 minutes idle unless task, mention, or nudge keeps them alive.\n\n")
+
+	if workspace_context != "" {
+		strings.write_string(&b, "# Workspace\n")
+		strings.write_string(&b, workspace_context)
+		strings.write_string(&b, "\n")
 	}
-	if content_section_enabled(content_sections, "GUIDANCE") {
-		templated_guidance := template_guidance_string(active_live_prefs.bootstrap_profile_guidance, profile, name, agent_instance_id)
-		strings.write_string(&b, templated_guidance)
-		delete(templated_guidance)
+
+	mem_str := render_memory_for_agents_md(memories, has_memory_md)
+	if mem_str != "" {
+		strings.write_string(&b, "# Memory\nOnly active approved memory is included. Pending/rejected/archived are excluded.\n")
+		strings.write_string(&b, mem_str)
+		strings.write_string(&b, "\n")
 	}
-	if content_section_enabled(content_sections, "PROJECT") && project_context != "" {
-		strings.write_string(&b, project_context)
-	}
-	if content_section_enabled(content_sections, "MEMORY") {
-		mem_str := render_memory_for_agents_md(memories, has_memory_md)
-		if mem_str != "" do strings.write_string(&b, mem_str)
-	}
+
+	strings.write_string(&b, "# Tools\n")
+	strings.write_string(&b, "- `ham-ctl tasks next|show|comment|done --token <token>` for task work.\n")
+	strings.write_string(&b, "- `ham-ctl chat send-to-user --token <token> --user-id operator@local --body <text>` for user replies.\n")
+	strings.write_string(&b, "- `ham-ctl teams show --team <team_id>` and `ham-ctl chains focus --chain <chain_id>` for team context.\n")
+	strings.write_string(&b, "- Full workflow guide: `ham-ctl help work-guide`.\n")
 	return strings.to_string(b)
+}
+
+has_reference_memories :: proc(memories: []Memory_Record) -> bool {
+	for m in memories {
+		if m.type_text == "fact" || m.type_text == "episode" do return true
+	}
+	return false
 }
 
 render_memory_for_agents_md :: proc(memories: []Memory_Record, has_memory_md: bool) -> string {
@@ -1611,72 +1708,6 @@ memory_cli_guidance :: proc(agent_token: string) -> string {
 	write_ctl(&builder, bin, " memory history --token ")
 	strings.write_string(&builder, agent_token)
 	strings.write_string(&builder, " --memory-id <id>.\n")
-	return strings.to_string(builder)
-}
-
-active_memory_bootstrap :: proc(daemon_url, agent_token, agent_instance_id: string, memory_templates: []string) -> string {
-	builder := strings.builder_make()
-	if len(memory_templates) > 0 {
-		all_request := strings.builder_make()
-		strings.write_string(&all_request, `{"agent_token":"`); json_write_string(&all_request, agent_token)
-		strings.write_string(&all_request, `","action":"memory_list","status":"active"}`)
-		all_response, all_ok := http.post(daemon_url, contracts.ROUTE_AGENT_RPC, strings.to_string(all_request))
-		if all_ok && all_response.status == 200 {
-			strings.write_string(&builder, format_active_memory_bootstrap(all_response.body, memory_templates, true))
-		}
-	}
-	request := strings.builder_make()
-	strings.write_string(&request, `{"agent_token":"`); json_write_string(&request, agent_token)
-	strings.write_string(&request, `","action":"memory_list","subject_agent":"`); json_write_string(&request, agent_instance_id)
-	strings.write_string(&request, `","status":"active"}`)
-	response, ok := http.post(daemon_url, contracts.ROUTE_AGENT_RPC, strings.to_string(request))
-	if ok && response.status == 200 do strings.write_string(&builder, format_active_memory_bootstrap(response.body, memory_templates, false))
-	return strings.to_string(builder)
-}
-
-format_active_memory_bootstrap :: proc(body: string, memory_templates: []string, templates_only: bool) -> string {
-	builder := strings.builder_make()
-	wrote_header := false
-	wrote_skills := false
-	idx := 0
-	for {
-		start_rel := strings.index(body[idx:], `{"memory_id":"`)
-		if start_rel < 0 do break
-		start := idx + start_rel
-		end := json_object_end(body, start)
-		if end <= start do break
-		object := body[start:end]
-		status := extract_json_string(object, "status", "")
-		type_text := extract_json_string(object, "type", "fact")
-		// When templates_only=false, skip template memories already shown in the templates section
-		already_shown_as_template := !templates_only && type_text == "template" && len(memory_templates) > 0 && memory_template_matches(object, memory_templates)
-		if status == "active" && !already_shown_as_template && (!templates_only || (type_text == "template" && memory_template_matches(object, memory_templates))) {
-			if !wrote_header {
-				if templates_only {
-					strings.write_string(&builder, "\n\n# Active Approved Memory Templates\nOnly configured, approved active template memories are included here; pending, rejected, and archived templates are excluded.\n")
-				} else {
-					strings.write_string(&builder, "\n\n# Active Approved Memory\nOnly active approved memory is included here; pending, rejected, and archived proposals are excluded.\n")
-				}
-				wrote_header = true
-			}
-			title := extract_json_string(object, "title", "")
-			memory_body := extract_json_string(object, "body", "")
-			if type_text == "skill" {
-				if !wrote_skills {
-					strings.write_string(&builder, "\n## Skills\n")
-					wrote_skills = true
-				}
-				strings.write_string(&builder, "\n### "); strings.write_string(&builder, title); strings.write_string(&builder, "\n")
-				strings.write_string(&builder, memory_body); strings.write_string(&builder, "\n")
-			} else {
-				strings.write_string(&builder, "\n- "); strings.write_string(&builder, type_text); strings.write_string(&builder, ": ")
-				if title != "" { strings.write_string(&builder, title); strings.write_string(&builder, " — ") }
-				strings.write_string(&builder, memory_body); strings.write_string(&builder, "\n")
-			}
-		}
-		idx = end
-	}
-	if !wrote_header do return ""
 	return strings.to_string(builder)
 }
 

@@ -50,6 +50,11 @@ main :: proc() {
 		return
 	}
 
+	if cmd[0] == "help" {
+		ctl_help(cmd[:])
+		return
+	}
+
 	if cmd[0] == "health" {
 		ctl_health(daemon_url)
 		return
@@ -137,6 +142,14 @@ main :: proc() {
 	}
 
 	print_usage(loaded.path, daemon_url)
+}
+
+ctl_help :: proc(cmd: []string) {
+	if len(cmd) >= 2 && cmd[1] == "work-guide" {
+		fmt.println(strings.trim_space(#load("../prompts/bootstrap_profile_guidance.md", string)))
+		return
+	}
+	fmt.println("usage: ham-ctl help work-guide")
 }
 
 ctl_health :: proc(daemon_url: string) {
