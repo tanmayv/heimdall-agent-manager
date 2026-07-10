@@ -126,6 +126,11 @@ main :: proc() {
 		return
 	}
 
+	if len(cmd) >= 2 && cmd[0] == "workspace" {
+		ctl_workspace(daemon_url, cmd[1], os.args)
+		return
+	}
+
 	if len(cmd) >= 2 && cmd[0] == "users" {
 		ctl_users(daemon_url, cmd[1], os.args)
 		return
@@ -420,6 +425,7 @@ ctl_task_chains :: proc(daemon_url, action: string, args: []string) {
 		strings.write_string(&body, `,"status":"`); json_write_string(&body, option_value(args, "--status", "planning")); strings.write_string(&body, `"`)
 		strings.write_string(&body, `,"coordinator_agent_instance_id":"`); json_write_string(&body, option_value(args, "--coordinator-agent-instance-id", option_value(args, "--coordinator", ""))); strings.write_string(&body, `"`)
 		strings.write_string(&body, `,"default_reviewer_agent_instance_id":"`); json_write_string(&body, option_value(args, "--reviewer", "")); strings.write_string(&body, `"`)
+		if has_flag(args, "--no-vcs") { strings.write_string(&body, `,"wants_vcs":false`) }
 	} else if action == "activate" {
 		path = "/task-chains/activate"
 		strings.write_string(&body, `,"chain_id":"`); json_write_string(&body, option_value(args, "--chain-id", option_value(args, "--chain", ""))); strings.write_string(&body, `"`)
@@ -448,6 +454,34 @@ ctl_task_chains :: proc(daemon_url, action: string, args: []string) {
 	strings.write_string(&body, `}`)
 	response, ok := http.post(daemon_url, path, strings.to_string(body))
 	if !ok { fmt.println(`{"ok":false,"message":"task-chain request failed"}`); return }
+	fmt.println(response.body)
+}
+
+ctl_workspace :: proc(daemon_url, action: string, args: []string) {
+	token := option_value(args, "--token", "")
+	if token == "" { fmt.println("usage: ham-ctl workspace <show|diff|pull|merge|forget|refresh> --token <token> --chain <id>"); return }
+	chain_id := option_value(args, "--chain", option_value(args, "--chain-id", ""))
+	path := fmt.tprintf("/chains/%s/workspace", chain_id)
+	use_get := action == "show" || action == "diff" || (action == "merge" && !has_flag(args, "--execute"))
+	if action == "diff" do path = fmt.tprintf("/chains/%s/workspace/diff?file=%s&agent_token=%s", chain_id, option_value(args, "--file", ""), token)
+	else if action == "pull" || action == "pull-base" do path = fmt.tprintf("/chains/%s/workspace/pull-base", chain_id)
+	else if action == "merge" && !has_flag(args, "--execute") do path = fmt.tprintf("/chains/%s/workspace/merge-preview?agent_token=%s&target=%s", chain_id, token, option_value(args, "--target", ""))
+	else if action == "merge" && has_flag(args, "--execute") do path = fmt.tprintf("/chains/%s/workspace/merge", chain_id)
+	else if action == "forget" || action == "archive" do path = fmt.tprintf("/chains/%s/workspace/archive", chain_id)
+	else if action == "refresh" do path = fmt.tprintf("/chains/%s/workspace/refresh", chain_id)
+	else if action != "show" { fmt.println("usage: ham-ctl workspace <show|diff|pull|merge|forget|refresh>"); return }
+	if use_get {
+		if action == "show" do path = fmt.tprintf("/chains/%s/workspace?agent_token=%s", chain_id, token)
+		response, ok := http.get(daemon_url, path); if !ok { fmt.println(`{"ok":false,"message":"workspace request failed"}`); return }; fmt.println(response.body); return
+	}
+	body := strings.builder_make()
+	strings.write_string(&body, `{"agent_token":"`); json_write_string(&body, token); strings.write_string(&body, `"`)
+	if file := option_value(args, "--file", ""); file != "" { strings.write_string(&body, `,"file":"`); json_write_string(&body, file); strings.write_string(&body, `"`) }
+	if target := option_value(args, "--target", ""); target != "" { strings.write_string(&body, `,"target":"`); json_write_string(&body, target); strings.write_string(&body, `"`) }
+	if has_flag(args, "--force") { strings.write_string(&body, `,"force":true`) }
+	strings.write_string(&body, `}`)
+	response, ok := http.post(daemon_url, path, strings.to_string(body))
+	if !ok { fmt.println(`{"ok":false,"message":"workspace request failed"}`); return }
 	fmt.println(response.body)
 }
 

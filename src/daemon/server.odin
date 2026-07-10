@@ -71,6 +71,8 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 	agent_store_init(server_data_dir); time_step("agent_store_init", &step)
 	chat_store_init(server_data_dir); time_step("chat_store_init", &step)
 	_ = team_service_init(server_data_dir); time_step("team_service_init", &step)
+	if !vcs_db_init(server_data_dir) { fmt.println("WARNING: vcs_db_init failed, workspaces will not persist") }
+	time_step("vcs_db_init", &step)
 	if !auth_db_init(server_data_dir) {
 		fmt.println("WARNING: auth_db_init failed, tokens will not persist across daemon restarts")
 	}
@@ -519,6 +521,14 @@ handle_client :: proc(client: net.TCP_Socket) {
 		return
 	}
 
+	if strings.has_prefix(request, "POST /workspace/show ") { handle_workspace_show(client, request_body(request)); return }
+	if strings.has_prefix(request, "POST /workspace/diff ") { handle_workspace_diff(client, request_body(request)); return }
+	if strings.has_prefix(request, "POST /workspace/refresh ") { handle_workspace_refresh(client, request_body(request)); return }
+	if strings.has_prefix(request, "POST /workspace/pull-base ") { handle_workspace_pull_base(client, request_body(request)); return }
+	if strings.has_prefix(request, "POST /workspace/merge-preview ") { handle_workspace_merge_preview(client, request_body(request)); return }
+	if strings.has_prefix(request, "POST /workspace/merge ") { handle_workspace_merge(client, request_body(request)); return }
+	if strings.has_prefix(request, "POST /workspace/archive ") { handle_workspace_archive(client, request_body(request)); return }
+
 	if strings.has_prefix(request, "POST /backup/trigger ") {
 		handle_backup_trigger(client, request_body(request))
 		return
@@ -545,6 +555,7 @@ handle_client :: proc(client: net.TCP_Socket) {
 	}
 
 	if handle_teams_request(client, request) do return
+	if handle_workspace_request(client, request) do return
 
 	write_response(client, 404, "Not Found", `{"ok":false,"message":"not found"}`)
 }

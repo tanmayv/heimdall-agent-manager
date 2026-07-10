@@ -26,6 +26,7 @@ Task_Chain_Create_Command :: struct {
 	description:                        string,
 	coordinator_agent_instance_id:      string,
 	default_reviewer_agent_instance_id: string,
+	wants_vcs:                          bool,
 	author_agent_instance_id:           string,
 }
 

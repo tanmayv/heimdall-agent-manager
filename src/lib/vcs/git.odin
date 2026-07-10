@@ -81,7 +81,10 @@ git_workspace_pull_base :: proc(handle: Vcs_Workspace_Handle) -> (bool, string) 
 git_merge_preview :: proc(handle: Vcs_Workspace_Handle, target: string) -> (Vcs_Merge_Preview, bool, string) {
 	effective_target := target
 	if effective_target == "" do effective_target = handle.base_ref
-	cmds := []string{fmt.tprintf("git -C <repo> switch %s", effective_target), fmt.tprintf("git -C <repo> merge --no-ff %s", handle.branch_or_change), fmt.tprintf("git -C <repo> push origin %s", effective_target)}
+	cmds := make([dynamic]string)
+	append(&cmds, strings.clone(fmt.tprintf("git -C <repo> switch %s", effective_target)))
+	append(&cmds, strings.clone(fmt.tprintf("git -C <repo> merge --no-ff %s", handle.branch_or_change)))
+	append(&cmds, strings.clone(fmt.tprintf("git -C <repo> push origin %s", effective_target)))
 	_, _, _ = vcs_run([]string{"git", "-C", handle.path, "fetch", "origin", effective_target})
 	base_ref := fmt.tprintf("origin/%s", effective_target)
 	_, remote_ok, _ := vcs_run([]string{"git", "-C", handle.path, "rev-parse", "--verify", base_ref})
@@ -94,9 +97,9 @@ git_merge_preview :: proc(handle: Vcs_Workspace_Handle, target: string) -> (Vcs_
 			trimmed := strings.trim_space(line)
 			if trimmed != "" do append(&conflicts, strings.clone(trimmed))
 		}
-		return Vcs_Merge_Preview{can_fast_forward = false, conflicts = conflicts[:], commands = cmds, summary = fmt.tprintf("Merge preview found %d conflict(s)", len(conflicts))}, true, "git merge preview ok"
+		return Vcs_Merge_Preview{can_fast_forward = false, conflicts = conflicts[:], commands = cmds[:], summary = fmt.tprintf("Merge preview found %d conflict(s)", len(conflicts))}, true, "git merge preview ok"
 	}
-	return Vcs_Merge_Preview{can_fast_forward = true, conflicts = conflicts[:], commands = cmds, summary = fmt.tprintf("Merge preview clean for %s into %s", handle.branch_or_change, effective_target)}, true, "git merge preview ok"
+	return Vcs_Merge_Preview{can_fast_forward = true, conflicts = conflicts[:], commands = cmds[:], summary = fmt.tprintf("Merge preview clean for %s into %s", handle.branch_or_change, effective_target)}, true, "git merge preview ok"
 }
 
 git_apply_numstat :: proc(handle: Vcs_Workspace_Handle, files: ^[dynamic]Vcs_File_Change, revspec: string) {

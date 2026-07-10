@@ -37,6 +37,7 @@ handle_task_chain_create :: proc(client: net.TCP_Socket, body: string) {
 		description                        = extract_json_string(body, "description", ""),
 		coordinator_agent_instance_id      = extract_json_string(body, "coordinator_agent_instance_id", ""),
 		default_reviewer_agent_instance_id = extract_json_string(body, "default_reviewer_agent_instance_id", ""),
+		wants_vcs                          = extract_json_bool(body, "wants_vcs", true),
 		author_agent_instance_id           = author,
 	})
 	write_task_service_response(client, result)

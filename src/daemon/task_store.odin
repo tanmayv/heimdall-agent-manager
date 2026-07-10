@@ -91,6 +91,7 @@ Task_Event :: struct {
 	vote_approved:                 string, // "true" or "false" for Task_Review_Vote
 	project_id:                    string,
 	team_id:                       string,
+	vcs_workspace_id:              string,
 	agent_instance_id:             string,
 	assignee_agent_instance_id:    string,
 	reviewer_agent_instance_id:    string,
@@ -149,6 +150,7 @@ Task_Chain_State :: struct {
 	chain_id:                           string,
 	project_id:                         string,
 	team_id:                            string,
+	vcs_workspace_id:                   string,
 	title:                              string,
 	description:                        string,
 	status:                             string,
@@ -345,6 +347,7 @@ task_event_clone :: proc(event: Task_Event) -> Task_Event {
 		vote_approved               = strings.clone(event.vote_approved),
 		project_id                  = strings.clone(event.project_id),
 		team_id                     = strings.clone(event.team_id),
+		vcs_workspace_id            = strings.clone(event.vcs_workspace_id),
 		agent_instance_id           = strings.clone(event.agent_instance_id),
 		assignee_agent_instance_id  = strings.clone(event.assignee_agent_instance_id),
 		reviewer_agent_instance_id  = strings.clone(event.reviewer_agent_instance_id),
@@ -469,6 +472,7 @@ task_event_json :: proc(event: Task_Event) -> string {
 	strings.write_string(&b, `","vote_approved":"`);    json_write_string(&b, event.vote_approved)
 	strings.write_string(&b, `","project_id":"`);       json_write_string(&b, event.project_id)
 	strings.write_string(&b, `","team_id":"`);          json_write_string(&b, event.team_id)
+	strings.write_string(&b, `","vcs_workspace_id":"`); json_write_string(&b, event.vcs_workspace_id)
 	strings.write_string(&b, `","agent_instance_id":"`); json_write_string(&b, event.agent_instance_id)
 	strings.write_string(&b, `","assignee_agent_instance_id":"`); json_write_string(&b, event.assignee_agent_instance_id)
 	strings.write_string(&b, `","reviewer_agent_instance_id":"`); json_write_string(&b, event.reviewer_agent_instance_id)
@@ -500,6 +504,7 @@ task_event_from_json :: proc(line: string) -> (Task_Event, bool) {
 		vote_approved               = extract_json_string(line, "vote_approved", ""),
 		project_id                  = extract_json_string(line, "project_id", ""),
 		team_id                     = extract_json_string(line, "team_id", ""),
+		vcs_workspace_id            = extract_json_string(line, "vcs_workspace_id", ""),
 		agent_instance_id           = extract_json_string(line, "agent_instance_id", ""),
 		assignee_agent_instance_id  = extract_json_string(line, "assignee_agent_instance_id", ""),
 		reviewer_agent_instance_id  = extract_json_string(line, "reviewer_agent_instance_id", ""),

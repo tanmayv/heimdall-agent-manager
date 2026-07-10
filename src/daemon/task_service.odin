@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import "core:strings"
+import vcs "odin_test:lib/vcs"
 
 TASK_CHAIN_BEST_PRACTICES :: `## Task Chain Best Practices
 
@@ -120,11 +121,21 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 	if team_id == "" {
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"team allocation failed"}`}
 	}
+	workspace_id := ""
+	if cmd.wants_vcs {
+		if workspace, workspace_ok, workspace_msg := task_service_maybe_provision_workspace(cmd.project_id, chain_id, team_id, cmd.title); workspace_ok {
+			workspace_id = workspace.workspace_id
+		} else if workspace_msg != "no vcs" {
+			_ = team_service_archive(team_id, "workspace_provision_failed")
+			return Task_Service_Result{ok = false, status_code = 500, message = task_service_error_json(workspace_msg)}
+		}
+	}
 	event := Task_Event{
 		kind                          = .Chain_Created,
 		chain_id                      = chain_id,
 		project_id                    = cmd.project_id,
 		team_id                       = team_id,
+		vcs_workspace_id              = workspace_id,
 		title                         = cmd.title,
 		description                   = cmd.description,
 		status                        = "planning",
@@ -133,14 +144,84 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 		author_agent_instance_id      = cmd.author_agent_instance_id,
 	}
 	if !task_store_append_event(event) {
+		if workspace_id != "" do task_service_cleanup_workspace(chain_id)
+		_ = team_service_archive(team_id, "chain_create_failed")
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append chain create failed"}`}
 	}
 	task_notify_event(event)
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"chain_id":"`); json_write_string(&b, chain_id)
 	strings.write_string(&b, `","team_id":"`); json_write_string(&b, team_id)
+	strings.write_string(&b, `","vcs_workspace_id":"`); json_write_string(&b, workspace_id)
 	strings.write_string(&b, `","status":"planning"}`)
 	return Task_Service_Result{ok = true, status_code = 200, message = strings.to_string(b)}
+}
+
+task_service_cleanup_workspace :: proc(chain_id: string) {
+	if rec, ok := vcs_db_workspace_for_chain(chain_id); ok {
+		backend := vcs.vcs_backend_for(vcs_handle_from_record(rec).kind)
+		_, _ = backend.workspace_remove(vcs_handle_from_record(rec), true)
+		_ = vcs_db_delete_workspace(chain_id)
+	}
+}
+
+task_service_error_json :: proc(message: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":false,"message":"`); json_write_string(&b, message); strings.write_string(&b, `"}`)
+	return strings.to_string(b)
+}
+
+task_service_maybe_provision_workspace :: proc(project_id, chain_id, team_id, title: string) -> (Vcs_Workspace_Record, bool, string) {
+	project_idx := project_index(project_id)
+	if project_idx < 0 do return Vcs_Workspace_Record{}, false, "no vcs"
+	project := project_records[project_idx]
+	kind := project_anchor_value(project, "vcs_kind", "auto")
+	repo := project_anchor_value(project, "git_repo", "")
+	if kind == "none" || repo == "" do return Vcs_Workspace_Record{}, false, "no vcs"
+	backend_kind := vcs.Vcs_Kind.Git
+	if kind == "jj" do backend_kind = .Jj
+	if kind == "auto" {
+		jj_detected := vcs.vcs_backend_for(.Jj).detect(repo)
+		if jj_detected.ok do backend_kind = .Jj
+		else do backend_kind = .Git
+	}
+	backend := vcs.vcs_backend_for(backend_kind)
+	detected := backend.detect(repo)
+	if !detected.ok do return Vcs_Workspace_Record{}, false, detected.message
+	base_ref := project_anchor_value(project, "base_ref", detected.base_ref)
+	if base_ref == "" do base_ref = detected.base_ref
+	root := project_anchor_value(project, "worktree_root", fmt.tprintf("/tmp/heimdall-worktrees/%s", project_id))
+	name := fmt.tprintf("team/%s/%s", team_id, task_chain_slug(title, chain_id))
+	handle, ok, msg := backend.workspace_add(detected.repo_root, name, base_ref, root)
+	if !ok do return Vcs_Workspace_Record{}, false, msg
+	now := router_now_unix_ms()
+	rec := Vcs_Workspace_Record{workspace_id=fmt.tprintf("ws_%s", chain_id), chain_id=chain_id, project_id=project_id, vcs_kind="git", path=handle.path, branch_or_change=handle.branch_or_change, base_ref=handle.base_ref, status="clean", created_unix_ms=now, updated_unix_ms=now}
+	if backend_kind == .Jj do rec.vcs_kind = "jj"
+	if !vcs_db_insert_workspace(rec) {
+		_, _ = backend.workspace_remove(handle, true)
+		return Vcs_Workspace_Record{}, false, "persist workspace failed"
+	}
+	return rec, true, "ok"
+}
+
+project_anchor_value :: proc(project: Project_Record, anchor_type, default_value: string) -> string {
+	for i in 0..<project.anchor_count { if project.anchors[i].type == anchor_type do return project.anchors[i].value }
+	return default_value
+}
+
+task_chain_slug :: proc(title, chain_id: string) -> string {
+	b := strings.builder_make()
+	for r in strings.to_lower(title) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') do strings.write_rune(&b, r)
+		else if r == '-' || r == '_' || r == ' ' do strings.write_byte(&b, '-')
+		if len(strings.to_string(b)) >= 40 do break
+	}
+	out := strings.trim(strings.to_string(b), "-")
+	if out == "" {
+		if len(chain_id) > 8 do return chain_id[len(chain_id)-8:]
+		return chain_id
+	}
+	return strings.clone(out)
 }
 
 task_service_activate_chain :: proc(cmd: Task_Chain_Activate_Command) -> Task_Service_Result {

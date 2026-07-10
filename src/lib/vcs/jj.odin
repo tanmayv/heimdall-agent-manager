@@ -79,7 +79,10 @@ jj_workspace_pull_base :: proc(handle: Vcs_Workspace_Handle) -> (bool, string) {
 jj_merge_preview :: proc(handle: Vcs_Workspace_Handle, target: string) -> (Vcs_Merge_Preview, bool, string) {
 	effective_target := target
 	if effective_target == "" do effective_target = handle.base_ref
-	cmds := []string{fmt.tprintf("jj -R <repo> workspace forget %s", handle.branch_or_change), fmt.tprintf("jj -R <repo> rebase -r @ -d %s", effective_target), "jj -R <repo> git push --branch main"}
+	cmds := make([dynamic]string)
+	append(&cmds, strings.clone(fmt.tprintf("jj -R <repo> workspace forget %s", handle.branch_or_change)))
+	append(&cmds, strings.clone(fmt.tprintf("jj -R <repo> rebase -r @ -d %s", effective_target)))
+	append(&cmds, strings.clone("jj -R <repo> git push --branch main"))
 	conflicts := make([dynamic]string)
 	out, ok, msg := vcs_run([]string{"jj", "-R", handle.path, "rebase", "-r", "@", "-d", effective_target, "--dry-run"})
 	if !ok {
@@ -88,9 +91,9 @@ jj_merge_preview :: proc(handle: Vcs_Workspace_Handle, target: string) -> (Vcs_M
 			if strings.contains(trimmed, "conflict") do append(&conflicts, strings.clone(trimmed))
 		}
 		if len(conflicts) == 0 do append(&conflicts, strings.clone(msg))
-		return Vcs_Merge_Preview{can_fast_forward = false, conflicts = conflicts[:], commands = cmds, summary = fmt.tprintf("jj preview found %d conflict marker(s)", len(conflicts))}, true, "jj merge preview ok"
+		return Vcs_Merge_Preview{can_fast_forward = false, conflicts = conflicts[:], commands = cmds[:], summary = fmt.tprintf("jj preview found %d conflict marker(s)", len(conflicts))}, true, "jj merge preview ok"
 	}
-	return Vcs_Merge_Preview{can_fast_forward = len(conflicts) == 0, conflicts = conflicts[:], commands = cmds, summary = fmt.tprintf("Preview jj rebase onto %s", effective_target)}, true, "jj merge preview ok"
+	return Vcs_Merge_Preview{can_fast_forward = len(conflicts) == 0, conflicts = conflicts[:], commands = cmds[:], summary = fmt.tprintf("Preview jj rebase onto %s", effective_target)}, true, "jj merge preview ok"
 }
 
 jj_apply_stat :: proc(handle: Vcs_Workspace_Handle, files: ^[dynamic]Vcs_File_Change) {
