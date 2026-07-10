@@ -103,6 +103,7 @@
           ham-wrapper = mkOdinPackage pkgs odin "ham-wrapper" "src/wrapper";
           ham-ctl = mkOdinCtlPackage pkgs odin;
           ham-test-agent = mkOdinPackage pkgs odin "ham-test-agent" "src/test_agent";
+          ham-team-kinds-test = mkOdinPackage pkgs odin "ham-team-kinds-test" "tests";
           heimdall = mkOdinUiPackage pkgs;
           bc-agent-wrapper = self.packages.${system}.ham-wrapper;
           bc-test-agent = self.packages.${system}.ham-test-agent;

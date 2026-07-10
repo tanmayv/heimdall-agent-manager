@@ -43,9 +43,11 @@ Team_Kind_Def :: struct {
     display_name:      string,
     description:       string,
     roles:             []Team_Role_Slot,
-    memory_templates:  []string,          // template memory ids/titles
+    memory_templates:  []string,          // template memory ids/titles when fixed for the kind
+    memory_templates_inherit_from_role: string, // optional role key for kinds like solo that inherit from another kind mapping
     scaffolds:         []Team_Chain_Scaffold, // first is default
     wants_vcs:         bool,
+    wants_vcs_follows_project: bool,      // optional flag for kinds like solo that mirror project vcs_kind by default
     idle_shutdown_ms:  int,               // default 30*60*1000; can override
 }
 ```
@@ -158,8 +160,8 @@ A team of one, backed by a synthetic `user_proxy` reviewer that routes approvals
 | worker | (chosen at chain create, one of `coder` / `specialist`) | 1 | normal | pi |
 | user_proxy (reviewer) | — synthetic — | 1 | — | — |
 
-- **`wants_vcs`** — follows project's `vcs_kind`; user can toggle in `+ New chain` modal.
-- **Memory templates**: inherits from the worker's underlying kind mapping.
+- **`wants_vcs`** — follows project's `vcs_kind`; user can toggle in `+ New chain` modal. In the baked registry this is represented by `wants_vcs_follows_project = true` rather than a fixed `wants_vcs = true|false` value.
+- **Memory templates**: inherits from the worker's underlying kind mapping. In the baked registry this is represented by `memory_templates_inherit_from_role = "worker"` rather than a fixed `memory_templates` list.
 - **Scaffolds**:
   - **`solo`** — plan → work → user-review → summary
 - The `user_proxy` member has `agent_record_id = NULL`, `is_user_proxy = true`, `route_to = "operator@local"`. LGTM votes on tasks reviewed by `user_proxy` come from smart-reply cards to operator.
