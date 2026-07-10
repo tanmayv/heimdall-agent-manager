@@ -36,6 +36,7 @@
         version = appVersion;
         src = ./.;
         nativeBuildInputs = [ odin pkgs.makeWrapper ];
+        buildInputs = runtimeInputs;
         dontConfigure = true;
         dontInstall = true;
         buildPhase = ''

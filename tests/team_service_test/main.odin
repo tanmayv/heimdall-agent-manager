@@ -2,6 +2,7 @@ package team_service_test
 
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import daemon "odin_test:daemon"
 
 main :: proc() {
@@ -37,6 +38,28 @@ main :: proc() {
 	archived := daemon.team_service_show(coding_id)
 	check(archived.team.status == "archived", "archive should set team status")
 	check(!daemon.team_service_archive("missing-team", "unit-test"), "archive should fail for missing team")
+
+	// user_proxy reviewer flow: operator smart-reply LGTM is recorded as the
+	// synthetic user_proxy review and auto-approves the review_ready task.
+	daemon.chat_store_init(data_dir)
+	daemon.task_store_init(data_dir)
+	chain_res := daemon.task_service_create_chain(daemon.Task_Chain_Create_Command{chain_id = "chain-proxy", project_id = "proj", kind = "solo", title = "Proxy chain", coordinator_agent_instance_id = "coord@solo", author_agent_instance_id = "coord@solo"})
+	check(chain_res.ok, "proxy chain create failed")
+	task_res := daemon.task_service_create_task(daemon.Task_Create_Command{chain_id = "chain-proxy", title = "Proxy reviewed task", status = "in_progress", assignee_agent_instance_id = "worker@solo", reviewer_agent_instance_id = "user_proxy", author_agent_instance_id = "coord@solo", created_by = "coord@solo"})
+	check(task_res.ok, "proxy task create failed")
+	task_id := daemon.extract_json_string(task_res.message, "task_id", "")
+	check(task_id != "", "proxy task id missing")
+	done_res := daemon.task_service_set_status(task_id, "chain-proxy", "review_ready", "ready for user review", "worker@solo")
+	check(done_res.ok, "proxy task review_ready failed")
+	ordinary_chat := daemon.task_service_user_proxy_review_reply("operator@local", "coord@solo", "LGTM, but also check X")
+	check(!ordinary_chat.ok, "ordinary coordinator chat must not be consumed as user_proxy vote")
+	vote_builder := strings.builder_make()
+	strings.write_string(&vote_builder, `{"action":"user_proxy_review","task_id":"`)
+	strings.write_string(&vote_builder, task_id)
+	strings.write_string(&vote_builder, `","result":"lgtm"}`)
+	vote_res := daemon.task_service_user_proxy_review_reply("operator@local", "coord@solo", strings.to_string(vote_builder))
+	check(vote_res.ok, "operator user_proxy LGTM failed")
+	check(daemon.extract_json_string(vote_res.message, "status", "") == "approved", "operator user_proxy LGTM should approve task")
 }
 
 count_user_proxy :: proc(members: []daemon.Team_Member_Record) -> int {

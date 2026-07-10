@@ -268,11 +268,16 @@ task_notify_all_lgtm_required :: proc(task_id, chain_id: string) {
 	}, "review_ready")
 	has_required   := false
 	notified_count := 0
+	user_proxy_required := false
 	for i in 0..<task_participant_count {
 		p := task_participants[i]
 		if p.task_id != task_id do continue
 		if p.role != "lgtm_required" do continue
 		has_required = true
+		if p.agent_instance_id == "user_proxy" {
+			user_proxy_required = true
+			continue
+		}
 		if task_reviewer_has_voted(task_id, p.agent_instance_id) do continue
 		if task_reviewer_active_slot_blocker(p.agent_instance_id, task_id) != "" do continue
 		task_notify_recipient(p.agent_instance_id, payload)
@@ -282,9 +287,13 @@ task_notify_all_lgtm_required :: proc(task_id, chain_id: string) {
 		fmt.printfln("NOTIFY: task=%s chain=%s status=review_ready lgtm_required_notified=%d", task_id, chain_id, notified_count)
 		return
 	}
+	if user_proxy_required {
+		fmt.printfln("NOTIFY: task=%s chain=%s status=review_ready user_proxy_routed_to_operator=true", task_id, chain_id)
+		return
+	}
 	// Fallback chain: default reviewer → coordinator → operator@local (durable).
 	default_reviewer := task_reviewer_agent_instance_id(state)
-	if default_reviewer != "" && default_reviewer != "operator@local" {
+	if default_reviewer != "" && default_reviewer != "operator@local" && default_reviewer != "user_proxy" {
 		if !task_reviewer_has_voted(task_id, default_reviewer) && task_reviewer_active_slot_blocker(default_reviewer, task_id) == "" {
 			task_notify_recipient(default_reviewer, payload)
 			fmt.printfln("NOTIFY: task=%s chain=%s status=review_ready fallback=default_reviewer=%s has_required=%t", task_id, chain_id, default_reviewer, has_required)

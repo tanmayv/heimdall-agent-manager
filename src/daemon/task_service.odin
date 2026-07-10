@@ -459,6 +459,7 @@ task_service_status_command :: proc(cmd: Task_Status_Command) -> Task_Service_Re
 	task_service_try_auto_complete_chain(cmd.chain_id)
 	if cmd.status == "review_ready" {
 		task_notify_all_lgtm_required(cmd.task_id, cmd.chain_id)
+		task_notify_user_proxy_review_requests(cmd.task_id, cmd.chain_id)
 	}
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"task_id":"`); json_write_string(&b, cmd.task_id)
@@ -479,11 +480,15 @@ task_service_review_vote :: proc(cmd: Task_Review_Vote_Command) -> Task_Service_
 	if state.status != .Review_Ready {
 		return Task_Service_Result{ok = false, status_code = 409, message = `{"ok":false,"message":"can only vote on review_ready tasks"}`}
 	}
-	is_required  := task_actor_has_role(state, cmd.author_agent_instance_id, "lgtm_required")
-	if !is_required && cmd.author_agent_instance_id == task_reviewer_agent_instance_id(state) {
+	vote_author := cmd.author_agent_instance_id
+	if proxy_reviewer, proxy_ok := task_user_proxy_reviewer_for(state, cmd.author_agent_instance_id); proxy_ok {
+		vote_author = proxy_reviewer
+	}
+	is_required  := task_actor_has_role(state, vote_author, "lgtm_required")
+	if !is_required && vote_author == task_reviewer_agent_instance_id(state) {
 		is_required = true
 	}
-	is_optional  := task_actor_has_role(state, cmd.author_agent_instance_id, "lgtm_optional")
+	is_optional  := task_actor_has_role(state, vote_author, "lgtm_optional")
 	can_override := task_actor_can_override(state, cmd.author_agent_instance_id)
 	if !is_required && !is_optional && !can_override {
 		return Task_Service_Result{ok = false, status_code = 403, message = `{"ok":false,"message":"not a reviewer for this task"}`}
@@ -498,20 +503,19 @@ task_service_review_vote :: proc(cmd: Task_Review_Vote_Command) -> Task_Service_
 		vote_approved            = vote_approved_str,
 		role                     = role,
 		body                     = cmd.comment,
-		author_agent_instance_id = cmd.author_agent_instance_id,
+		author_agent_instance_id = vote_author,
 	}
 	if !task_store_append_event(event) {
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append review vote failed"}`}
 	}
 	task_notify_event(event)
 	if !cmd.approved {
-		// NGTM: move back to in_progress so assignee can fix
 		back_event := Task_Event{
 			kind                     = .Task_Status_Changed,
 			task_id                  = cmd.task_id,
 			chain_id                 = cmd.chain_id,
 			status                   = "in_progress",
-			body                     = fmt.tprintf("ngtm by %s: %s", cmd.author_agent_instance_id, cmd.comment),
+			body                     = fmt.tprintf("ngtm by %s: %s", vote_author, cmd.comment),
 			author_agent_instance_id = "system-review-vote",
 		}
 		if task_store_append_event(back_event) {
@@ -520,8 +524,8 @@ task_service_review_vote :: proc(cmd: Task_Review_Vote_Command) -> Task_Service_
 	} else if task_all_required_lgtms_approved(cmd.task_id) {
 		task_service_auto_approve(cmd.task_id, cmd.chain_id)
 	}
-	task_recompute_promotions(cmd.author_agent_instance_id)
-	task_notify_reviewer_rotation(cmd.author_agent_instance_id)
+	task_recompute_promotions(vote_author)
+	task_notify_reviewer_rotation(vote_author)
 	result_status := "review_ready"
 	if updated_idx, updated_found := task_existing_state_index(cmd.task_id, cmd.chain_id); updated_found {
 		result_status = task_status_to_string(task_states[updated_idx].status)
@@ -531,6 +535,98 @@ task_service_review_vote :: proc(cmd: Task_Review_Vote_Command) -> Task_Service_
 	strings.write_string(&b, `","status":"`); json_write_string(&b, result_status)
 	strings.write_string(&b, `"}`)
 	return Task_Service_Result{ok = true, status_code = 200, message = strings.to_string(b)}
+}
+
+task_user_proxy_reviewer_for :: proc(state: Task_State, user_id: string) -> (string, bool) {
+	if user_id == "" do return "", false
+	chain_idx, chain_found := task_existing_chain_index(state.chain_id)
+	if !chain_found do return "", false
+	team_id := task_chains[chain_idx].team_id
+	if team_id == "" {
+		team, ok := team_db_get_team_by_chain_id(team_service_db, state.chain_id)
+		if !ok do return "", false
+		team_id = team.team_id
+	}
+	members := team_db_list_members(team_service_db, team_id)
+	for member in members {
+		if !member.is_user_proxy do continue
+		if member.route_to != user_id do continue
+		for i in 0..<task_participant_count {
+			p := task_participants[i]
+			if p.task_id != state.task_id do continue
+			if p.role != "lgtm_required" && p.role != "lgtm_optional" do continue
+			if p.agent_instance_id == member.role_key || p.agent_instance_id == member.route_to || (member.agent_record_id != "" && p.agent_instance_id == member.agent_record_id) {
+				return p.agent_instance_id, true
+			}
+		}
+	}
+	return "", false
+}
+
+task_notify_user_proxy_review_requests :: proc(task_id, chain_id: string) {
+	idx, found := task_existing_state_index(task_id, chain_id)
+	if !found do return
+	state := task_states[idx]
+	chain_idx, chain_found := task_existing_chain_index(state.chain_id)
+	if !chain_found do return
+	chain := task_chains[chain_idx]
+	team_id := chain.team_id
+	if team_id == "" {
+		team, ok := team_db_get_team_by_chain_id(team_service_db, state.chain_id)
+		if !ok do return
+		team_id = team.team_id
+	}
+	members := team_db_list_members(team_service_db, team_id)
+	for member in members {
+		if !member.is_user_proxy || member.route_to == "" do continue
+		if !task_actor_has_role(state, member.role_key, "lgtm_required") && !task_actor_has_role(state, member.route_to, "lgtm_required") do continue
+		sender := chain.coordinator_agent_instance_id
+		if sender == "" do sender = "user_proxy"
+		body := task_user_proxy_review_card_json(state)
+		message_id, ok := chat_store_append_message(member.route_to, sender, "agent_to_user", body, true)
+		if ok do chat_event_fanout(member.route_to, sender, message_id, "agent_to_user")
+	}
+}
+
+task_user_proxy_review_card_json :: proc(state: Task_State) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"type":"smart_answer","body":"Review task `)
+	json_write_string(&b, state.task_id)
+	strings.write_string(&b, `: `)
+	json_write_string(&b, state.title)
+	strings.write_string(&b, `","suggested_replies":[`)
+	strings.write_string(&b, `"{\"action\":\"user_proxy_review\",\"task_id\":\"`); json_write_string(&b, state.task_id); strings.write_string(&b, `\",\"result\":\"lgtm\"}"`)
+	strings.write_string(&b, `,"{\"action\":\"user_proxy_review\",\"task_id\":\"`); json_write_string(&b, state.task_id); strings.write_string(&b, `\",\"result\":\"ngtm\"}"`)
+	strings.write_string(&b, `]}`)
+	return strings.to_string(b)
+}
+
+task_service_user_proxy_review_reply :: proc(user_id, coordinator_agent_instance_id, reply: string) -> Task_Service_Result {
+	if extract_json_string(reply, "action", "") != "user_proxy_review" {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"not a user_proxy review reply"}`}
+	}
+	task_id := extract_json_string(reply, "task_id", "")
+	result := extract_json_string(reply, "result", "")
+	approved := result == "lgtm"
+	rejected := result == "ngtm"
+	if task_id == "" || (!approved && !rejected) {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"invalid user_proxy review reply"}`}
+	}
+	idx, found := task_existing_state_index(task_id, "")
+	if !found do return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"task not found"}`}
+	state := task_states[idx]
+	if state.status != .Review_Ready do return Task_Service_Result{ok = false, status_code = 409, message = `{"ok":false,"message":"task is not pending review"}`}
+	chain_idx, chain_found := task_existing_chain_index(state.chain_id)
+	if !chain_found do return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"chain not found"}`}
+	if coordinator_agent_instance_id != "" && task_chains[chain_idx].coordinator_agent_instance_id != coordinator_agent_instance_id {
+		return Task_Service_Result{ok = false, status_code = 403, message = `{"ok":false,"message":"reply coordinator mismatch"}`}
+	}
+	if _, ok := task_user_proxy_reviewer_for(state, user_id); !ok {
+		return Task_Service_Result{ok = false, status_code = 403, message = `{"ok":false,"message":"user is not the user_proxy reviewer"}`}
+	}
+	comment := "operator user_proxy LGTM"
+	if rejected do comment = "operator user_proxy NGTM"
+	return task_service_review_vote(Task_Review_Vote_Command{task_id = state.task_id, chain_id = state.chain_id, approved = approved, comment = comment, author_agent_instance_id = user_id})
 }
 
 task_service_auto_approve :: proc(task_id, chain_id: string) {

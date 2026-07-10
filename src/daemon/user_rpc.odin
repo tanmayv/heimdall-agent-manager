@@ -67,6 +67,10 @@ handle_user_rpc_send_to_agent :: proc(client: net.TCP_Socket, body, user_id: str
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"send_to_agent requires agent_instance_id and body"}`)
 		return
 	}
+	if proxy_result := task_service_user_proxy_review_reply(user_id, agent_instance_id, message_body); proxy_result.ok {
+		write_task_service_response(client, proxy_result)
+		return
+	}
 	if !valid_agent_instance_id(agent_instance_id) || !registry_agent_exists(agent_instance_id) {
 		fmt.printf("WARNING: send_to_agent failed: agent '%s' is unknown or unregistered (requested by user '%s')\n", agent_instance_id, user_id)
 		write_response(client, 404, "Not Found", `{"ok":false,"message":"unknown agent"}`)
