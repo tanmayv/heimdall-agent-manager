@@ -1,0 +1,124 @@
+package vcs
+
+import "core:fmt"
+import "core:os"
+import "core:strconv"
+import "core:strings"
+
+git_detect :: proc(repo_path: string) -> Vcs_Detect_Result {
+	root, ok, msg := vcs_run([]string{"git", "-C", repo_path, "rev-parse", "--show-toplevel"})
+	if !ok do return Vcs_Detect_Result{kind = .Git, ok = false, message = msg}
+	base, base_ok, _ := vcs_run([]string{"git", "-C", repo_path, "symbolic-ref", "--short", "HEAD"})
+	if !base_ok || base == "" do base = "main"
+	return Vcs_Detect_Result{kind = .Git, repo_root = root, base_ref = base, ok = true, message = "git repository detected"}
+}
+
+git_workspace_add :: proc(repo, name, base_ref, worktree_root: string) -> (Vcs_Workspace_Handle, bool, string) {
+	effective_base := base_ref
+	if effective_base == "" do effective_base = "main"
+	path := vcs_workspace_path(worktree_root, name)
+	_ = os.make_directory_all(vcs_workspace_parent(path))
+	_, _, _ = vcs_run([]string{"git", "-C", repo, "fetch", "--quiet", "origin", effective_base})
+	_, ok, msg := vcs_run([]string{"git", "-C", repo, "worktree", "add", path, "-b", name, effective_base})
+	if !ok {
+		_, ok, msg = vcs_run([]string{"git", "-C", repo, "worktree", "add", path, name})
+		if !ok do return Vcs_Workspace_Handle{}, false, msg
+	}
+	return Vcs_Workspace_Handle{path = path, branch_or_change = name, base_ref = effective_base, kind = .Git}, true, "git worktree created"
+}
+
+git_workspace_remove :: proc(handle: Vcs_Workspace_Handle, force: bool) -> (bool, string) {
+	cmd := []string{"git", "-C", handle.path, "worktree", "remove", handle.path}
+	if force do cmd = []string{"git", "-C", handle.path, "worktree", "remove", "--force", handle.path}
+	ok, msg := vcs_run_ok(cmd)
+	if !ok && !force do return false, msg
+	if force {
+		_, _ = vcs_run_ok([]string{"git", "-C", handle.path, "branch", "-D", handle.branch_or_change})
+	}
+	return true, "git worktree removed"
+}
+
+git_workspace_status :: proc(handle: Vcs_Workspace_Handle) -> (Vcs_Status, bool, string) {
+	out, ok, msg := vcs_run([]string{"git", "-C", handle.path, "status", "--porcelain=v1", "-uall"})
+	if !ok do return Vcs_Status{}, false, msg
+	files := make([dynamic]Vcs_File_Change)
+	modified, added, deleted, untracked, conflicted := 0, 0, 0, 0, 0
+	for line in strings.split(out, "\n") {
+		if strings.trim_space(line) == "" do continue
+		status := strings.trim_space(line[:2])
+		path := strings.trim_space(line[3:])
+		if strings.contains(status, "U") || status == "AA" || status == "DD" { conflicted += 1 }
+		else if strings.contains(status, "A") { added += 1 }
+		else if strings.contains(status, "D") { deleted += 1 }
+		else if strings.contains(status, "?") { untracked += 1 }
+		else { modified += 1 }
+		append(&files, Vcs_File_Change{path = strings.clone(path), status = strings.clone(status)})
+	}
+	git_apply_numstat(handle, &files, fmt.tprintf("%s...HEAD", handle.base_ref))
+	ahead, behind := 0, 0
+	counts, counts_ok, _ := vcs_run([]string{"git", "-C", handle.path, "rev-list", "--left-right", "--count", fmt.tprintf("%s...HEAD", handle.base_ref)})
+	if counts_ok {
+		parts := strings.fields(counts)
+		if len(parts) >= 2 {
+			if n, n_ok := strconv.parse_int(parts[0]); n_ok do behind = int(n)
+			if n, n_ok := strconv.parse_int(parts[1]); n_ok do ahead = int(n)
+		}
+	}
+	return Vcs_Status{ahead_commits = ahead, behind_commits = behind, files = files[:], is_conflicted = conflicted > 0, summary_line = vcs_summary_from_files(files[:], 0)}, true, "git status ok"
+}
+
+git_workspace_diff :: proc(handle: Vcs_Workspace_Handle, path: string) -> (string, bool, string) {
+	out, ok, msg := vcs_run([]string{"git", "-C", handle.path, "diff", fmt.tprintf("%s...HEAD", handle.base_ref), "--", path})
+	if !ok do return "", false, msg
+	return vcs_truncate_diff(out), true, "git diff ok"
+}
+
+git_workspace_pull_base :: proc(handle: Vcs_Workspace_Handle) -> (bool, string) {
+	_, _ = vcs_run_ok([]string{"git", "-C", handle.path, "fetch", "origin", handle.base_ref})
+	return vcs_run_ok([]string{"git", "-C", handle.path, "rebase", fmt.tprintf("origin/%s", handle.base_ref)})
+}
+
+git_merge_preview :: proc(handle: Vcs_Workspace_Handle, target: string) -> (Vcs_Merge_Preview, bool, string) {
+	effective_target := target
+	if effective_target == "" do effective_target = handle.base_ref
+	cmds := []string{fmt.tprintf("git -C <repo> switch %s", effective_target), fmt.tprintf("git -C <repo> merge --no-ff %s", handle.branch_or_change), fmt.tprintf("git -C <repo> push origin %s", effective_target)}
+	_, _, _ = vcs_run([]string{"git", "-C", handle.path, "fetch", "origin", effective_target})
+	base_ref := fmt.tprintf("origin/%s", effective_target)
+	_, remote_ok, _ := vcs_run([]string{"git", "-C", handle.path, "rev-parse", "--verify", base_ref})
+	if !remote_ok do base_ref = effective_target
+	branch_ref := handle.branch_or_change
+	out, ok, _ := vcs_run([]string{"git", "-C", handle.path, "merge-tree", "--write-tree", "--name-only", base_ref, branch_ref})
+	conflicts := make([dynamic]string)
+	if !ok {
+		for line in strings.split(out, "\n") {
+			trimmed := strings.trim_space(line)
+			if trimmed != "" do append(&conflicts, strings.clone(trimmed))
+		}
+		return Vcs_Merge_Preview{can_fast_forward = false, conflicts = conflicts[:], commands = cmds, summary = fmt.tprintf("Merge preview found %d conflict(s)", len(conflicts))}, true, "git merge preview ok"
+	}
+	return Vcs_Merge_Preview{can_fast_forward = true, conflicts = conflicts[:], commands = cmds, summary = fmt.tprintf("Merge preview clean for %s into %s", handle.branch_or_change, effective_target)}, true, "git merge preview ok"
+}
+
+git_apply_numstat :: proc(handle: Vcs_Workspace_Handle, files: ^[dynamic]Vcs_File_Change, revspec: string) {
+	out, ok, _ := vcs_run([]string{"git", "-C", handle.path, "diff", "--numstat", revspec})
+	if !ok do return
+	for line in strings.split(out, "\n") {
+		parts := strings.fields(line)
+		if len(parts) < 3 do continue
+		path := parts[2]
+		adds := 0; dels := 0
+		if n, n_ok := strconv.parse_int(parts[0]); n_ok do adds = int(n)
+		if n, n_ok := strconv.parse_int(parts[1]); n_ok do dels = int(n)
+		found := false
+		for i in 0..<len(files^) {
+			if files^[i].path == path {
+				files^[i].adds = adds; files^[i].dels = dels; found = true
+			}
+		}
+		if !found do append(files, Vcs_File_Change{path = strings.clone(path), status = "", adds = adds, dels = dels})
+	}
+}
+
+git_merge_execute :: proc(handle: Vcs_Workspace_Handle, target: string) -> (bool, string) {
+	return false, "merge_execute is intentionally not wired to automation; operator action required"
+}

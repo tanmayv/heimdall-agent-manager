@@ -124,6 +124,7 @@
           ham-team-kinds-test = mkOdinPackage pkgs odin "ham-team-kinds-test" "tests";
           ham-team-db-service-test = mkOdinPackageWithRuntime pkgs odin "ham-team-db-service-test" "tests/team_db_service_test" [ pkgs.sqlite ];
           ham-team-service-test = mkOdinPackageWithRuntime pkgs odin "ham-team-service-test" "tests/team_service_test" [ pkgs.sqlite ];
+          ham-vcs-backend-test = mkOdinPackageWithRuntime pkgs odin "ham-vcs-backend-test" "tests/vcs_backend_test" [ pkgs.git pkgs.jujutsu ];
           heimdall = mkOdinUiPackage pkgs;
           bc-agent-wrapper = self.packages.${system}.ham-wrapper;
           bc-test-agent = self.packages.${system}.ham-test-agent;
