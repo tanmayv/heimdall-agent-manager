@@ -25,9 +25,10 @@ task_notify_event :: proc(event: Task_Event) -> bool {
 	if ev.created_unix_ms == 0 {
 		ev.created_unix_ms = router_now_unix_ms()
 	}
-	if !ev.interrupt && (ev.kind == .Task_Status_Changed || ev.kind == .Task_Nudged) {
-		ev.interrupt = true
-	}
+	// Task notifications can be frequent. Do not force interrupt=true here;
+	// wrappers should deliver task-event text without Escape unless a future
+	// explicit user-facing control opts in. This prevents task notification
+	// storms from aborting active agent generations.
 
 	status := ev.status
 	if ev.task_id != "" {
@@ -77,39 +78,183 @@ task_notify_event :: proc(event: Task_Event) -> bool {
 	return true
 }
 
-task_notify_by_status :: proc(state: Task_State, status, author_agent_instance_id, payload: string) -> bool {
-	sent := false
+// Actionable recipient roles for each task status transition. Kept as
+// package-level slices so task_notification_policy_for_status can return them
+// safely (Odin refuses to return stack-allocated slice literals).
+//
+// review_ready is intentionally NOT in this table: it is dispatched separately
+// by task_notify_all_lgtm_required so we can enforce one-active-review-at-a-time
+// and skip already-voted reviewers.
+@(private="file")
+TASK_NOTIFY_ROLES_COORDINATOR := [1]string{"coordinator"}
+@(private="file")
+TASK_NOTIFY_ROLES_ASSIGNEE := [1]string{"assignee"}
+@(private="file")
+TASK_NOTIFY_ROLES_ASSIGNEE_COORDINATOR := [2]string{"assignee", "coordinator"}
+
+// task_notification_policy_for_status returns:
+//   actionable_roles      — the closed set of roles that need this notification
+//   actionable_required   — true when the status has real-world consequences
+//                           that must reach someone (never silently dropped).
+task_notification_policy_for_status :: proc(status: string) -> (actionable_roles: []string, actionable_required: bool) {
 	switch status {
 	case "planning":
-		sent = task_notify_role(state, "coordinator", payload, author_agent_instance_id) || sent
+		return TASK_NOTIFY_ROLES_COORDINATOR[:], true
 	case "queued", "in_progress":
-		sent = task_notify_role(state, "assignee", payload, author_agent_instance_id) || sent
+		return TASK_NOTIFY_ROLES_ASSIGNEE[:], true
 	case "review_ready":
-		// Agent review notifications are dispatched explicitly by
-		// task_notify_all_lgtm_required so we can enforce one-active-review-at-a-time
-		// without duplicating or prematurely sending review work.
+		return nil, false
 	case "approved":
-		sent = task_notify_role(state, "coordinator", payload, author_agent_instance_id) || sent
+		// Assignee must know their task landed; coordinator must know closeout
+		// is actionable (chain-19f4b3d0617 RCA fix).
+		return TASK_NOTIFY_ROLES_ASSIGNEE_COORDINATOR[:], true
 	case "blocked":
-		sent = task_notify_role(state, "assignee", payload, author_agent_instance_id) || sent
+		return TASK_NOTIFY_ROLES_ASSIGNEE_COORDINATOR[:], true
 	case "cancelled":
-		sent = task_notify_role(state, "assignee", payload, author_agent_instance_id) || sent
-		sent = task_notify_role(state, "coordinator", payload, author_agent_instance_id) || sent
+		return TASK_NOTIFY_ROLES_ASSIGNEE_COORDINATOR[:], true
 	case:
-		sent = task_notify_role(state, "coordinator", payload, author_agent_instance_id) || sent
+		return TASK_NOTIFY_ROLES_COORDINATOR[:], true
 	}
-	// Fan out to all subscribers regardless of status
+}
+
+// Collect the concrete agent_instance_id set for a task-role, honoring:
+//   - the primary role holder (state.assignee_agent_instance_id, chain coordinator)
+//   - every task participant with that role
+// The returned slice is caller-owned and must be delete()d.
+task_recipients_for_role :: proc(state: Task_State, role: string) -> [dynamic]string {
+	out := make([dynamic]string)
+	switch role {
+	case "assignee":
+		if state.assignee_agent_instance_id != "" do append(&out, state.assignee_agent_instance_id)
+	case "coordinator":
+		c := task_coordinator_agent_instance_id(state)
+		if c != "" do append(&out, c)
+	}
 	for i in 0..<task_participant_count {
 		p := task_participants[i]
-		if p.task_id != state.task_id && (state.chain_id == "" || p.chain_id != state.chain_id) do continue
-		if p.role != "subscriber" do continue
-		if p.agent_instance_id == author_agent_instance_id do continue
-		sent = task_notify_recipient(p.agent_instance_id, payload) || sent
+		if p.task_id != state.task_id do continue
+		if p.role != role do continue
+		if p.agent_instance_id == "" do continue
+		append(&out, p.agent_instance_id)
 	}
-	return sent
+	return out
+}
+
+// Central recipient-set builder for a task status transition.
+// Guarantees the returned set contains no duplicates and no empty ids.
+// The author is NOT removed here; callers apply that skip at send time so we
+// can log per-agent decisions and still emit a fallback when the set collapses.
+task_actionable_recipients :: proc(state: Task_State, status: string) -> (recipients: [dynamic]string, reasons: map[string]string, required: bool) {
+	roles, needs := task_notification_policy_for_status(status)
+	required = needs
+	recipients = make([dynamic]string)
+	reasons = make(map[string]string)
+	seen := make(map[string]bool); defer delete(seen)
+
+	for role in roles {
+		role_recips := task_recipients_for_role(state, role)
+		defer delete(role_recips)
+		for r in role_recips {
+			if r == "" do continue
+			if seen[r] do continue
+			seen[r] = true
+			append(&recipients, r)
+			reasons[r] = role
+		}
+	}
+
+	// Subscribers are always included but reason=subscriber so we can filter later.
+	for i in 0..<task_participant_count {
+		p := task_participants[i]
+		if p.task_id != state.task_id do continue
+		if p.role != "subscriber" do continue
+		if p.agent_instance_id == "" do continue
+		if seen[p.agent_instance_id] do continue
+		seen[p.agent_instance_id] = true
+		append(&recipients, p.agent_instance_id)
+		reasons[p.agent_instance_id] = "subscriber"
+	}
+	return
+}
+
+// Fallback used when the actionable set is empty after skipping the author.
+// Order: chain default reviewer, chain coordinator, operator@local. The first
+// non-empty, non-author id wins. If no live recipient exists we still queue to
+// operator@local via the durable outbox so the event is never lost.
+task_notify_fallback :: proc(state: Task_State, payload, author: string) -> (recipient: string, ok: bool) {
+	candidates := []string{
+		task_chain_default_reviewer_agent_instance_id(state.chain_id),
+		task_coordinator_agent_instance_id(state),
+		"operator@local",
+	}
+	for c in candidates {
+		if c == "" || c == author do continue
+		_ = task_notify_recipient(c, payload)
+		return c, true
+	}
+	// Last resort: durable-queue to operator@local so the event has an audit trail.
+	_ = notification_outbox_insert_pending("operator@local", payload)
+	return "operator@local", false
+}
+
+task_notify_by_status :: proc(state: Task_State, status, author_agent_instance_id, payload: string) -> bool {
+	recipients, reasons, required := task_actionable_recipients(state, status)
+	defer {
+		delete(recipients)
+		delete(reasons)
+	}
+
+	sent_actionable   := 0
+	sent_subscribers  := 0
+	skipped_self      := 0
+
+	for r in recipients {
+		if r == author_agent_instance_id {
+			skipped_self += 1
+			continue
+		}
+		if task_notify_recipient(r, payload) {
+			if reasons[r] == "subscriber" {
+				sent_subscribers += 1
+			} else {
+				sent_actionable += 1
+			}
+		} else {
+			// Failure to send live is not a routing failure: the durable outbox
+			// already captured the event inside task_notify_recipient. Count it
+			// as actionable-covered so the fallback does not double-notify.
+			if reasons[r] == "subscriber" {
+				sent_subscribers += 1
+			} else {
+				sent_actionable += 1
+			}
+		}
+	}
+
+	if required && sent_actionable == 0 {
+		fallback_recipient, fallback_live := task_notify_fallback(state, payload, author_agent_instance_id)
+		fmt.printfln(
+			"NOTIFY: task=%s chain=%s status=%s actionable_empty=true fallback=%s fallback_live=%t author=%s",
+			state.task_id, state.chain_id, status, fallback_recipient, fallback_live, author_agent_instance_id,
+		)
+		return true
+	}
+
+	fmt.printfln(
+		"NOTIFY: task=%s chain=%s status=%s actionable_sent=%d subscribers_sent=%d skipped_self=%d author=%s",
+		state.task_id, state.chain_id, status, sent_actionable, sent_subscribers, skipped_self, author_agent_instance_id,
+	)
+	return sent_actionable + sent_subscribers > 0
 }
 
 // Notify all lgtm_required participants for a task that just became review_ready.
+// Guarantees at least one recipient will hear about the transition:
+//   1. Every unblocked lgtm_required participant.
+//   2. If none of them is unblocked (all voted/slot-blocked), the chain's
+//      default_reviewer.
+//   3. If that too is empty or already-voted, the chain coordinator.
+//   4. Failing all of the above, durable-queue to operator@local so the event
+//      is never silently dropped.
 task_notify_all_lgtm_required :: proc(task_id, chain_id: string) {
 	idx, found := task_existing_state_index(task_id, chain_id)
 	if !found do return
@@ -121,24 +266,39 @@ task_notify_all_lgtm_required :: proc(task_id, chain_id: string) {
 		status   = "review_ready",
 		body     = "task is ready for your review",
 	}, "review_ready")
-	has_required := false
+	has_required   := false
+	notified_count := 0
 	for i in 0..<task_participant_count {
 		p := task_participants[i]
-		if p.task_id != task_id && (chain_id == "" || p.chain_id != chain_id) do continue
+		if p.task_id != task_id do continue
 		if p.role != "lgtm_required" do continue
 		has_required = true
 		if task_reviewer_has_voted(task_id, p.agent_instance_id) do continue
 		if task_reviewer_active_slot_blocker(p.agent_instance_id, task_id) != "" do continue
 		task_notify_recipient(p.agent_instance_id, payload)
+		notified_count += 1
 	}
-	if !has_required {
-		default_reviewer := task_reviewer_agent_instance_id(state)
-		if default_reviewer != "" && default_reviewer != "operator@local" {
-			if !task_reviewer_has_voted(task_id, default_reviewer) && task_reviewer_active_slot_blocker(default_reviewer, task_id) == "" {
-				task_notify_recipient(default_reviewer, payload)
-			}
+	if notified_count > 0 {
+		fmt.printfln("NOTIFY: task=%s chain=%s status=review_ready lgtm_required_notified=%d", task_id, chain_id, notified_count)
+		return
+	}
+	// Fallback chain: default reviewer → coordinator → operator@local (durable).
+	default_reviewer := task_reviewer_agent_instance_id(state)
+	if default_reviewer != "" && default_reviewer != "operator@local" {
+		if !task_reviewer_has_voted(task_id, default_reviewer) && task_reviewer_active_slot_blocker(default_reviewer, task_id) == "" {
+			task_notify_recipient(default_reviewer, payload)
+			fmt.printfln("NOTIFY: task=%s chain=%s status=review_ready fallback=default_reviewer=%s has_required=%t", task_id, chain_id, default_reviewer, has_required)
+			return
 		}
 	}
+	coord := task_coordinator_agent_instance_id(state)
+	if coord != "" && coord != "operator@local" {
+		task_notify_recipient(coord, payload)
+		fmt.printfln("NOTIFY: task=%s chain=%s status=review_ready fallback=coordinator=%s has_required=%t", task_id, chain_id, coord, has_required)
+		return
+	}
+	_ = notification_outbox_insert_pending("operator@local", payload)
+	fmt.printfln("NOTIFY: task=%s chain=%s status=review_ready fallback=operator_durable has_required=%t", task_id, chain_id, has_required)
 }
 
 // After a reviewer submits a vote, nudge them about their next pending review_ready task.
@@ -187,7 +347,7 @@ task_notify_participants_by_role :: proc(task_id, chain_id, role, payload, skip_
 		if p.role != role do continue
 		if p.agent_instance_id == skip_agent_instance_id do continue
 		if p.agent_instance_id == author_agent_instance_id do continue
-		if p.task_id != task_id && (chain_id == "" || p.chain_id != chain_id) do continue
+		if p.task_id != task_id do continue
 		sent = task_notify_recipient(p.agent_instance_id, payload) || sent
 	}
 	return sent
@@ -252,7 +412,8 @@ task_notify_nudge_delivery :: proc(event: Task_Event) -> Task_Notification_Deliv
 	if ev.created_unix_ms == 0 {
 		ev.created_unix_ms = router_now_unix_ms()
 	}
-	if !ev.interrupt do ev.interrupt = true
+	// Manual/scheduled nudges are still task notifications; keep them
+	// non-interrupting by default to avoid aborting active agent work.
 
 	status := ev.status
 	if ev.task_id != "" {

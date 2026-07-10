@@ -503,11 +503,12 @@ handle_message_event :: proc(text, tmux_pane: string) {
 	}
 }
 
-task_event_is_auto_claim :: proc(status, changed_by, body: string) -> bool {
-	if status != "in_progress" do return false
-	if changed_by == "system-auto-claim" do return true
-	return strings.has_prefix(body, "Task auto-claimed") || strings.has_prefix(body, "system_auto:auto_claimed")
-}
+// Wrapper-side task-event filtering was removed as part of chain-19f4b3d0617
+// closeout. The daemon is now the sole authority on whether a task event is
+// generated and who receives it (source-side routing). The wrapper delivers
+// every task_event it receives to the agent pane, except events it authored
+// itself (self-authored suppression stays: an agent should not be notified
+// of its own actions).
 
 handle_task_event :: proc(text, tmux_pane, agent_instance_id: string) {
 	task_id := extract_json_string(text, "task_id", "unknown")
@@ -516,10 +517,6 @@ handle_task_event :: proc(text, tmux_pane, agent_instance_id: string) {
 	body := extract_json_string(text, "body", "")
 	if changed_by == agent_instance_id {
 		fmt.println("suppressed self-authored task event", task_id, status, changed_by)
-		return
-	}
-	if strings.has_prefix(changed_by, "system-auto") && !task_event_is_auto_claim(status, changed_by, body) {
-		fmt.println("suppressed system-auto task event", task_id, status, changed_by)
 		return
 	}
 	
@@ -533,8 +530,12 @@ handle_task_event :: proc(text, tmux_pane, agent_instance_id: string) {
 	)
 	defer delete(line)
 
-	send_escape := extract_json_bool(text, "interrupt", false) || extract_json_bool(text, "send_escape_prefix", false)
-	escape_prefix := send_escape || interrupt_val
+	// Task notifications can be high volume (auto-claims, status changes, nudges).
+	// Do not send an Escape prefix for task events: it interrupts the agent's
+	// current generation and can create notification storms when many task
+	// updates arrive. The line itself is still delivered so agents can observe
+	// relevant task changes without aborting in-flight work.
+	escape_prefix := false
 
 	if tmux.send_line_with_escape(tmux_pane, line, escape_prefix) {
 		fmt.println("notified agent pane", line)
