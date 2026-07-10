@@ -1,6 +1,6 @@
 # 01 · The three-noun model
 
-The user only ever thinks about **projects** and **task chains**. Teams and agents are internal plumbing that materialize when work needs them.
+The user-facing conceptual model has exactly three nouns: **projects**, **teams**, and **task chains**. Agents are internal plumbing that materialize when work needs them.
 
 ## The three nouns
 
@@ -8,15 +8,16 @@ The user only ever thinks about **projects** and **task chains**. Teams and agen
 PROJECT      A body of work with optional VCS binding (repo + base ref).
              Long-lived. Owns anchors and durable project memory.
 
+TEAM         The fixed-role group behind one task chain. A team is visible as
+             kind + roster + live/idle status, but the user never starts it
+             directly; it materializes with the chain and boots lazily.
+
 TASK CHAIN   One focused effort inside a project (feature, bugfix, research
              question, refactor). The unit the user tracks and the unit the
              VCS workspace is attached to.
-
-AGENT        A member of the (lazy) team behind a chain. Not directly created
-             by the user. Boots when work requires it.
 ```
 
-Teams exist as a concept but are **not** a user-facing noun on the main path. Team instances live and die with their chain. Users only see the *effect* of a team: the roster on the chain view showing who's live and who's available to boot.
+Agents are members of the lazy team behind a chain. They are not directly created by the user on the main path; they boot when work requires them. Team instances live and die with their chain, and the main UI shows the team as the chain's kind/roster/status rather than as a separate startable resource.
 
 ## What the user does
 
