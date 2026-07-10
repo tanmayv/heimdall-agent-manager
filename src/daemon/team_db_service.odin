@@ -1,0 +1,158 @@
+package main
+
+import "core:fmt"
+import "core:os"
+import "core:strconv"
+import "core:strings"
+
+TEAM_DB_USER_VERSION :: 1
+
+Team_DB :: struct {
+	data_dir: string,
+	teams_dir: string,
+	db_path: string,
+}
+
+Team_Record :: struct {
+	team_id: string,
+	project_id: string,
+	kind: string,
+	status: string,
+	created_unix_ms: i64,
+	updated_unix_ms: i64,
+	chain_id: string,
+}
+
+Team_Member_Record :: struct {
+	team_id: string,
+	role_key: string,
+	role_index: int,
+	agent_record_id: string,
+	is_user_proxy: bool,
+	route_to: string,
+}
+
+team_db_init :: proc(data_dir: string) -> (Team_DB, bool) {
+	db := Team_DB{
+		data_dir = strings.clone(data_dir),
+		teams_dir = strings.clone(fmt.tprintf("%s/teams", data_dir)),
+		db_path = strings.clone(fmt.tprintf("%s/teams/teams.db", data_dir)),
+	}
+	_ = os.make_directory_all(db.teams_dir)
+	return db, team_db_migrate(db.db_path)
+}
+
+team_db_migrate :: proc(db_path: string) -> bool {
+	version := team_db_user_version(db_path)
+	if version < 1 {
+		if !team_db_exec(db_path, `
+CREATE TABLE IF NOT EXISTS teams (
+	team_id TEXT PRIMARY KEY,
+	project_id TEXT,
+	kind TEXT,
+	status TEXT,
+	created_unix_ms INTEGER,
+	updated_unix_ms INTEGER,
+	chain_id TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS team_members (
+	team_id TEXT,
+	role_key TEXT,
+	role_index INTEGER,
+	agent_record_id TEXT,
+	is_user_proxy INTEGER DEFAULT 0,
+	route_to TEXT,
+	PRIMARY KEY (team_id, role_key, role_index)
+);
+PRAGMA user_version = 1;
+`) {
+			return false
+		}
+	}
+
+	if !db_has_column(db_path, "teams", "chain_id") {
+		if !team_db_exec(db_path, `ALTER TABLE teams ADD COLUMN chain_id TEXT NOT NULL DEFAULT '';`) do return false
+	}
+	if !db_has_column(db_path, "team_members", "is_user_proxy") {
+		if !team_db_exec(db_path, `ALTER TABLE team_members ADD COLUMN is_user_proxy INTEGER DEFAULT 0;`) do return false
+	}
+	if !db_has_column(db_path, "team_members", "route_to") {
+		if !team_db_exec(db_path, `ALTER TABLE team_members ADD COLUMN route_to TEXT;`) do return false
+	}
+	return team_db_exec(db_path, fmt.tprintf("PRAGMA user_version = %d;", TEAM_DB_USER_VERSION))
+}
+
+db_has_column :: proc(db_path, table_name, column_name: string) -> bool {
+	out, ok := team_db_query(db_path, fmt.tprintf("PRAGMA table_info(%s);", table_name))
+	if !ok do return false
+	needle := fmt.tprintf("|%s|", column_name)
+	return strings.contains(out, needle)
+}
+
+team_db_insert_team :: proc(db: Team_DB, team: Team_Record) -> bool {
+	return team_db_exec(db.db_path, fmt.tprintf(
+		"INSERT OR REPLACE INTO teams (team_id, project_id, kind, status, created_unix_ms, updated_unix_ms, chain_id) VALUES (%s, %s, %s, %s, %d, %d, %s);",
+		sql_text(team.team_id), sql_text(team.project_id), sql_text(team.kind), sql_text(team.status), team.created_unix_ms, team.updated_unix_ms, sql_text(team.chain_id),
+	))
+}
+
+team_db_insert_member :: proc(db: Team_DB, member: Team_Member_Record) -> bool {
+	user_proxy := 0
+	if member.is_user_proxy do user_proxy = 1
+	return team_db_exec(db.db_path, fmt.tprintf(
+		"INSERT OR REPLACE INTO team_members (team_id, role_key, role_index, agent_record_id, is_user_proxy, route_to) VALUES (%s, %s, %d, %s, %d, %s);",
+		sql_text(member.team_id), sql_text(member.role_key), member.role_index, sql_nullable_text(member.agent_record_id), user_proxy, sql_text(member.route_to),
+	))
+}
+
+team_db_count_teams :: proc(db: Team_DB) -> int {
+	return team_db_count(db.db_path, "teams")
+}
+
+team_db_count_members :: proc(db: Team_DB) -> int {
+	return team_db_count(db.db_path, "team_members")
+}
+
+team_db_count :: proc(db_path, table_name: string) -> int {
+	out, ok := team_db_query(db_path, fmt.tprintf("SELECT COUNT(*) FROM %s;", table_name))
+	if !ok do return -1
+	value, parsed_ok := strconv.parse_int(strings.trim_space(out))
+	if !parsed_ok do return -1
+	return int(value)
+}
+
+team_db_user_version :: proc(db_path: string) -> int {
+	out, ok := team_db_query(db_path, "PRAGMA user_version;")
+	if !ok do return 0
+	value, parsed_ok := strconv.parse_int(strings.trim_space(out))
+	if !parsed_ok do return 0
+	return int(value)
+}
+
+team_db_exec :: proc(db_path, sql: string) -> bool {
+	_, ok := team_db_query(db_path, sql)
+	return ok
+}
+
+team_db_query :: proc(db_path, sql: string) -> (string, bool) {
+	cmd := []string{"sqlite3", db_path, sql}
+	state, stdout, _, err := os.process_exec(os.Process_Desc{command = cmd}, context.allocator)
+	if err != nil || !state.success do return "", false
+	return string(stdout), true
+}
+
+sql_nullable_text :: proc(value: string) -> string {
+	if value == "" do return "NULL"
+	return sql_text(value)
+}
+
+sql_text :: proc(value: string) -> string {
+	builder := strings.builder_make()
+	strings.write_byte(&builder, '\'')
+	for ch in value {
+		if ch == '\'' do strings.write_byte(&builder, '\'')
+		strings.write_rune(&builder, ch)
+	}
+	strings.write_byte(&builder, '\'')
+	return strings.to_string(builder)
+}

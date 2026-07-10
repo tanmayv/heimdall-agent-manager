@@ -31,18 +31,44 @@
         '';
       };
 
-      mkOdinDaemonPackage = pkgs: odin: pkgs.stdenv.mkDerivation {
-        pname = "ham-daemon";
+      mkOdinPackageWithRuntime = pkgs: odin: name: srcDir: runtimeInputs: pkgs.stdenv.mkDerivation {
+        pname = name;
         version = appVersion;
         src = ./.;
-        nativeBuildInputs = [ odin ];
-        buildInputs = [ pkgs.sqlite ];
+        nativeBuildInputs = [ odin pkgs.makeWrapper ];
         dontConfigure = true;
         dontInstall = true;
         buildPhase = ''
           runHook preBuild
           mkdir -p $out/bin
+          odin build ${srcDir} -collection:odin_test=src -out:$out/bin/${name}
+          wrapProgram $out/bin/${name} --prefix PATH : ${pkgs.lib.makeBinPath runtimeInputs}
+          runHook postBuild
+        '';
+      };
+
+      mkOdinDaemonPackage = pkgs: odin: pkgs.stdenv.mkDerivation {
+        pname = "ham-daemon";
+        version = appVersion;
+        src = ./.;
+<<<<<<< HEAD
+        nativeBuildInputs = [ odin ];
+        buildInputs = [ pkgs.sqlite ];
+=======
+        nativeBuildInputs = [ odin pkgs.makeWrapper ];
+>>>>>>> 90f9cd3 (Add teams db schema service)
+        dontConfigure = true;
+        dontInstall = true;
+        buildPhase = ''
+          runHook preBuild
+          mkdir -p $out/bin
+<<<<<<< HEAD
           odin build src/daemon -collection:odin_test=src -out:$out/bin/ham-daemon
+=======
+          odin build src/daemon -collection:odin_test=src -out:$out/bin/bc-odin-daemon
+          wrapProgram $out/bin/bc-odin-daemon --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.sqlite ]}
+          odin build src/wrapper -collection:odin_test=src -out:$out/bin/bc-agent-wrapper
+>>>>>>> 90f9cd3 (Add teams db schema service)
           runHook postBuild
         '';
       };
@@ -104,6 +130,7 @@
           ham-ctl = mkOdinCtlPackage pkgs odin;
           ham-test-agent = mkOdinPackage pkgs odin "ham-test-agent" "src/test_agent";
           ham-team-kinds-test = mkOdinPackage pkgs odin "ham-team-kinds-test" "tests";
+          ham-team-db-service-test = mkOdinPackageWithRuntime pkgs odin "ham-team-db-service-test" "tests/team_db_service_test" [ pkgs.sqlite ];
           heimdall = mkOdinUiPackage pkgs;
           bc-agent-wrapper = self.packages.${system}.ham-wrapper;
           bc-test-agent = self.packages.${system}.ham-test-agent;
