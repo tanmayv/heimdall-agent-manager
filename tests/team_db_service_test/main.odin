@@ -12,7 +12,7 @@ main :: proc() {
 	db, ok := daemon.team_db_init(data_dir)
 	check(ok, "fresh team_db_init failed")
 	check(file_exists(db.db_path), "fresh init did not create teams.db")
-	check(daemon.team_db_user_version(db.db_path) == 1, "fresh init did not set user_version")
+	check(daemon.team_db_user_version(db.db_path) == 2, "fresh init did not set user_version")
 	check(daemon.db_has_column(db.db_path, "teams", "chain_id"), "teams.chain_id missing")
 	check(daemon.db_has_column(db.db_path, "team_members", "is_user_proxy"), "team_members.is_user_proxy missing")
 	check(daemon.db_has_column(db.db_path, "team_members", "route_to"), "team_members.route_to missing")
@@ -22,7 +22,7 @@ main :: proc() {
 
 	reopened, reopened_ok := daemon.team_db_init(data_dir)
 	check(reopened_ok, "reopen team_db_init failed")
-	check(daemon.team_db_user_version(reopened.db_path) == 1, "reopen changed user_version")
+	check(daemon.team_db_user_version(reopened.db_path) == 2, "reopen changed user_version")
 	check(daemon.team_db_count_teams(reopened) == 1, "reopen did not preserve team row")
 	check(daemon.team_db_count_members(reopened) == 1, "reopen did not preserve member row")
 
