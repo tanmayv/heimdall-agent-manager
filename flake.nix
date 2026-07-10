@@ -116,6 +116,47 @@
           type = "app";
           program = "${self.packages.${system}.ham-daemon}/bin/ham-daemon";
         };
+        # daemon-with-wrapper: builds the current ham-wrapper alongside the
+        # ham-daemon, refreshes ./result-wrapper -> the freshly built store
+        # path, and launches the daemon with ./config.toml. Use this in place
+        # of `nix run .#ham-daemon` when you want a one-shot "latest daemon +
+        # latest wrapper" boot without hand-managing the symlink.
+        #
+        # Extra args (e.g. --config /elsewhere.toml, --port ...) are forwarded.
+        daemon-with-wrapper = {
+          type = "app";
+          program = "${pkgs.writeShellScriptBin "ham-daemon-with-wrapper" ''
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            HAM_DAEMON="${self.packages.${system}.ham-daemon}/bin/ham-daemon"
+            HAM_WRAPPER_DIR="${self.packages.${system}.ham-wrapper}"
+
+            # Refresh ./result-wrapper -> latest wrapper store path so the
+            # repo's config.toml (wrapper_bin = ./result-wrapper/bin/ham-wrapper)
+            # resolves to the just-built binary. Only do this when run from
+            # a directory that already has a result-wrapper (i.e. the repo);
+            # otherwise skip silently so the daemon still starts.
+            if [ -L result-wrapper ] || [ ! -e result-wrapper ]; then
+              ln -sfn "$HAM_WRAPPER_DIR" result-wrapper
+              echo "[ham-daemon-with-wrapper] refreshed ./result-wrapper -> $HAM_WRAPPER_DIR"
+            fi
+
+            # If no --config flag was passed and a repo config exists, use it.
+            HAS_CONFIG=0
+            for arg in "$@"; do
+              if [ "$arg" = "--config" ]; then HAS_CONFIG=1; break; fi
+            done
+            if [ "$HAS_CONFIG" -eq 0 ] && [ -f "$PWD/config.toml" ]; then
+              set -- --config "$PWD/config.toml" "$@"
+              echo "[ham-daemon-with-wrapper] using $PWD/config.toml"
+            fi
+
+            echo "[ham-daemon-with-wrapper] daemon: $HAM_DAEMON"
+            echo "[ham-daemon-with-wrapper] wrapper: $HAM_WRAPPER_DIR/bin/ham-wrapper"
+            exec "$HAM_DAEMON" "$@"
+          ''}/bin/ham-daemon-with-wrapper";
+        };
         wrapper = {
           type = "app";
           program = "${self.packages.${system}.ham-wrapper}/bin/ham-wrapper";
