@@ -257,6 +257,7 @@ handle_task_next :: proc(client: net.TCP_Socket, body: string) {
 		write_response(client, 200, "OK", `{"ok":true,"task":null}`)
 		return
 	}
+	_ = agent_store_set_current_task(author, state.task_id)
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"task":`)
 	task_write_state_json(&b, state)

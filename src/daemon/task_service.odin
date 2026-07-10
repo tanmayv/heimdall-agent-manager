@@ -523,6 +523,9 @@ task_service_status_command :: proc(cmd: Task_Status_Command) -> Task_Service_Re
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append task status failed"}`}
 	}
 	task_notify_event(event)
+	if cmd.status == "review_ready" || cmd.status == "blocked" || cmd.status == "queued" || cmd.status == "ready" || cmd.status == "approved" {
+		_ = agent_store_clear_current_task(cmd.author_agent_instance_id)
+	}
 
 	manual_defer := (cmd.status == "queued" || cmd.status == "ready") && state.status == .In_Progress && task_actor_has_role(state, cmd.author_agent_instance_id, "assignee")
 	defer_assignee := state.assignee_agent_instance_id
@@ -590,6 +593,7 @@ task_service_review_vote :: proc(cmd: Task_Review_Vote_Command) -> Task_Service_
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append review vote failed"}`}
 	}
 	task_notify_event(event)
+	_ = agent_store_clear_current_task(cmd.author_agent_instance_id)
 	if !cmd.approved {
 		back_event := Task_Event{
 			kind                     = .Task_Status_Changed,

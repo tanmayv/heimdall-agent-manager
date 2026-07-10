@@ -71,6 +71,7 @@ task_nudge_scheduler_tick :: proc() -> int {
 			changed += 1
 		}
 	}
+	changed += task_autoscaler_tick(now)
 	return changed
 }
 
@@ -135,4 +136,120 @@ task_nudge_delivery_method :: proc(body: string) -> string {
 	if strings.index(body, "delivery=escape_prefixed_pane_or_ws") >= 0 do return "escape_prefixed_pane_or_ws"
 	if strings.index(body, "delivery=ws_fallback") >= 0 do return "ws_fallback"
 	return "ws"
+}
+
+TEAM_BOOT_LEASE_MAX :: 128
+Team_Boot_Lease :: struct { team_id: string, holder_agent_instance_id: string, acquired_at_unix_ms: i64, last_boot_at_unix_ms: i64 }
+team_boot_leases: [TEAM_BOOT_LEASE_MAX]Team_Boot_Lease
+team_boot_lease_count: int
+
+task_autoscaler_tick :: proc(now: i64) -> int {
+	changed := 0
+	for i in 0..<task_state_count {
+		state := task_states[i]
+		if state.status != .Queued && state.status != .Review_Ready do continue
+		chain_idx, found := task_existing_chain_index(state.chain_id)
+		if !found do continue
+		chain := task_chains[chain_idx]
+		if chain.status != "in_progress" do continue
+		target := state.assignee_agent_instance_id
+		priority := "normal"
+		if state.status == .Review_Ready { target = task_reviewer_agent_instance_id(state); priority = "high" }
+		if target == "" || target == "user_proxy" do continue
+		if task_autoscaler_ensure_agent(chain, target, state.task_id, priority, now) do changed += 1
+	}
+	changed += task_autoscaler_idle_shutdown(now)
+	return changed
+}
+
+task_autoscaler_ensure_agent :: proc(chain: Task_Chain_State, agent_instance_id, task_id, priority: string, now: i64) -> bool {
+	if agent_instance_id == "" do return false
+	if idx := registry_find_agent(agent_instance_id); idx >= 0 {
+		if agents[idx].connected || agents[idx].has_ws || agents[idx].startup_status == "starting" || agents[idx].startup_status == "ready" {
+			_ = agent_store_touch_needed(agent_instance_id)
+			return false
+		}
+	}
+	lease_idx := task_autoscaler_lease_index(chain.team_id)
+	if lease_idx >= 0 {
+		lease := &team_boot_leases[lease_idx]
+		if now - lease.acquired_at_unix_ms < 90_000 && lease.holder_agent_instance_id != agent_instance_id do return false
+		if now - lease.last_boot_at_unix_ms < 30_000 do return false
+	} else {
+		if team_boot_lease_count >= TEAM_BOOT_LEASE_MAX do return false
+		lease_idx = team_boot_lease_count; team_boot_lease_count += 1
+		team_boot_leases[lease_idx].team_id = strings.clone(chain.team_id)
+	}
+	lease := &team_boot_leases[lease_idx]
+	lease.holder_agent_instance_id = strings.clone(agent_instance_id)
+	lease.acquired_at_unix_ms = now
+	lease.last_boot_at_unix_ms = now
+	_ = agent_store_touch_needed(agent_instance_id)
+	if task_autoscaler_launch_agent(chain, agent_instance_id) {
+		_ = team_db_update_team_status(team_service_db, chain.team_id, "warming")
+		return true
+	}
+	return false
+}
+
+task_autoscaler_launch_agent :: proc(chain: Task_Chain_State, agent_instance_id: string) -> bool {
+	template_id := derive_agent_class(agent_instance_id)
+	display_name := agent_instance_id
+	provider_profile := "pi"
+	model_tier := "normal"
+	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 {
+		rec := agent_instance_records[idx]
+		if rec.template_id != "" do template_id = rec.template_id
+		if rec.display_name != "" do display_name = rec.display_name
+		if rec.provider_profile != "" do provider_profile = rec.provider_profile
+		if rec.model_tier != "" do model_tier = rec.model_tier
+	}
+	rec_id, final_tier, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, provider_profile, chain.project_id, "", model_tier)
+	if !upsert_ok || rec_id == "" do return false
+	agent_token := generate_agent_token()
+	registry_add_pending_agent_token(agent_instance_id, agent_token)
+	return launch_wrapper_detached(agent_instance_id, provider_profile, server_config_path, wrapper_log_path(agent_instance_id), agent_token, display_name, final_tier, chain.project_id)
+}
+
+task_autoscaler_idle_shutdown :: proc(now: i64) -> int {
+	grace := task_nudge_cfg.team_idle_shutdown_seconds
+	if grace <= 0 do grace = 1800
+	changed := 0
+	for i in 0..<agent_instance_record_count {
+		rec := agent_instance_records[i]
+		if rec.agent_instance_id == "" || rec.current_task_id != "" do continue
+		idx := registry_find_agent(rec.agent_instance_id)
+		if idx < 0 || !agents[idx].has_ws do continue
+		if task_autoscaler_has_unread_mentions(rec.agent_instance_id, rec.last_needed_at_unix_ms) do continue
+		last := rec.last_needed_at_unix_ms
+		if agents[idx].last_seen_unix_ms > last do last = agents[idx].last_seen_unix_ms
+		if last == 0 || now - last < i64(grace) * 1000 do continue
+		if ok, _, _ := agents_stop_request(rec.agent_instance_id, 30); ok { changed += 1 }
+	}
+	return changed
+}
+
+task_autoscaler_has_unread_mentions :: proc(agent_instance_id: string, since_unix_ms: i64) -> bool {
+	if chat_has_unread_direction("operator@local", agent_instance_id, "user_to_agent") do return true
+	out, ok := task_db_query_pending_notification_count(agent_instance_id)
+	if ok && out > 0 do return true
+	mention := fmt.tprintf("@%s", agent_instance_id)
+	for i in 0..<task_comment_count {
+		c := task_comments[i]
+		if c.resolved do continue
+		if since_unix_ms > 0 && c.created_unix_ms <= since_unix_ms do continue
+		if strings.contains(c.body, agent_instance_id) || strings.contains(c.body, mention) do return true
+	}
+	for i in 0..<task_event_count {
+		e := task_events[i]
+		if e.agent_instance_id != agent_instance_id do continue
+		if since_unix_ms > 0 && e.created_unix_ms <= since_unix_ms do continue
+		if e.kind == .Task_Nudged || e.kind == .Task_Nudge_Failed do return true
+	}
+	return false
+}
+
+task_autoscaler_lease_index :: proc(team_id: string) -> int {
+	for i in 0..<team_boot_lease_count { if team_boot_leases[i].team_id == team_id do return i }
+	return -1
 }

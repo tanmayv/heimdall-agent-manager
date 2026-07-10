@@ -62,6 +62,7 @@ Daemon_Config :: struct {
 	nudge_restart_grace_seconds: int,
 	nudge_send_escape_prefix: bool,
 	startup_stale_after_seconds: int,
+	team_idle_shutdown_seconds: int,
 	wrapper_bin: string,
 }
 
@@ -338,6 +339,8 @@ parse_daemon_key :: proc(key, value: string, cfg: ^Daemon_Config) {
 		cfg.nudge_send_escape_prefix = parse_bool(value)
 	case "startup_stale_after_seconds":
 		if n, ok := strconv.parse_int(value); ok do cfg.startup_stale_after_seconds = int(n)
+	case "team_idle_shutdown_seconds":
+		if n, ok := strconv.parse_int(value); ok do cfg.team_idle_shutdown_seconds = int(n)
 	case "wrapper_bin":
 		cfg.wrapper_bin = parse_string(value)
 	case:
@@ -605,6 +608,7 @@ default_config :: proc() -> Config {
 	cfg.daemon.nudge_restart_grace_seconds = 60
 	cfg.daemon.nudge_send_escape_prefix = false
 	cfg.daemon.startup_stale_after_seconds = 120
+	cfg.daemon.team_idle_shutdown_seconds = 1800
 
 	cfg.wrapper.daemon_url = "http://127.0.0.1:49322"
 	cfg.wrapper.credentials_path = "~/.local/share/heimdall/wrapper-credentials.json"

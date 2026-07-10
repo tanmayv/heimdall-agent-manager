@@ -24,6 +24,9 @@ Agent_Instance_Record :: struct {
 	created_unix_ms: i64,
 	updated_unix_ms: i64,
 	archived_at_unix_ms: i64,
+	current_task_id: string,
+	current_task_since: i64,
+	last_needed_at_unix_ms: i64,
 	order: int,
 }
 
@@ -39,6 +42,9 @@ Agent_Instance_Event :: struct {
 	project_id: string,
 	run_dir: string,
 	model_tier: string,
+	current_task_id: string,
+	current_task_since: i64,
+	last_needed_at_unix_ms: i64,
 	author: string,
 	created_unix_ms: i64,
 	order: int,
@@ -108,6 +114,14 @@ agent_store_apply_event :: proc(event: Agent_Instance_Event) -> bool {
 	tier := event.model_tier
 	if tier == "" do tier = "normal"
 	rec.model_tier = strings.clone(tier)
+	if event.current_task_since == -1 {
+		rec.current_task_id = ""
+		rec.current_task_since = 0
+	} else if event.current_task_id != "" || event.current_task_since != 0 {
+		rec.current_task_id = strings.clone(event.current_task_id)
+		rec.current_task_since = event.current_task_since
+	}
+	if event.last_needed_at_unix_ms != 0 do rec.last_needed_at_unix_ms = event.last_needed_at_unix_ms
 	if rec.created_unix_ms == 0 do rec.created_unix_ms = event.created_unix_ms
 	rec.updated_unix_ms = event.created_unix_ms
 	rec.order = event.order
@@ -117,16 +131,16 @@ agent_store_apply_event :: proc(event: Agent_Instance_Event) -> bool {
 agent_record_index :: proc(agent_record_id: string) -> int { for i in 0..<agent_instance_record_count { if agent_instance_records[i].agent_record_id == agent_record_id do return i }; return -1 }
 agent_record_index_by_instance :: proc(agent_instance_id: string) -> int { for i in 0..<agent_instance_record_count { if agent_instance_records[i].agent_instance_id == agent_instance_id do return i }; return -1 }
 
-agent_instance_event_clone :: proc(e: Agent_Instance_Event) -> Agent_Instance_Event { out := e; out.event_id = strings.clone(e.event_id); out.agent_record_id = strings.clone(e.agent_record_id); out.agent_instance_id = strings.clone(e.agent_instance_id); out.display_name = strings.clone(e.display_name); out.template_id = strings.clone(e.template_id); out.provider_profile = strings.clone(e.provider_profile); out.project_id = strings.clone(e.project_id); out.run_dir = strings.clone(e.run_dir); out.model_tier = strings.clone(e.model_tier); out.author = strings.clone(e.author); return out }
+agent_instance_event_clone :: proc(e: Agent_Instance_Event) -> Agent_Instance_Event { out := e; out.event_id = strings.clone(e.event_id); out.agent_record_id = strings.clone(e.agent_record_id); out.agent_instance_id = strings.clone(e.agent_instance_id); out.display_name = strings.clone(e.display_name); out.template_id = strings.clone(e.template_id); out.provider_profile = strings.clone(e.provider_profile); out.project_id = strings.clone(e.project_id); out.run_dir = strings.clone(e.run_dir); out.model_tier = strings.clone(e.model_tier); out.current_task_id = strings.clone(e.current_task_id); out.author = strings.clone(e.author); return out }
 
 agent_instance_event_json :: proc(event: Agent_Instance_Event) -> string {
-	b := strings.builder_make(); strings.write_string(&b, `{"event_id":"`); json_write_string(&b, event.event_id); strings.write_string(&b, `","kind":"`); json_write_string(&b, fmt.tprintf("%v", event.kind)); strings.write_string(&b, `","agent_record_id":"`); json_write_string(&b, event.agent_record_id); strings.write_string(&b, `","agent_instance_id":"`); json_write_string(&b, event.agent_instance_id); strings.write_string(&b, `","display_name":"`); json_write_string(&b, event.display_name); strings.write_string(&b, `","template_id":"`); json_write_string(&b, event.template_id); strings.write_string(&b, `","provider_profile":"`); json_write_string(&b, event.provider_profile); strings.write_string(&b, `","project_id":"`); json_write_string(&b, event.project_id); strings.write_string(&b, `","run_dir":"`); json_write_string(&b, event.run_dir); strings.write_string(&b, `","model_tier":"`); json_write_string(&b, event.model_tier); strings.write_string(&b, `","order":`); strings.write_string(&b, fmt.tprintf("%d", event.order)); strings.write_string(&b, `,"author":"`); json_write_string(&b, event.author); strings.write_string(&b, `","created_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", event.created_unix_ms)); strings.write_string(&b, `}`); return strings.to_string(b)
+	b := strings.builder_make(); strings.write_string(&b, `{"event_id":"`); json_write_string(&b, event.event_id); strings.write_string(&b, `","kind":"`); json_write_string(&b, fmt.tprintf("%v", event.kind)); strings.write_string(&b, `","agent_record_id":"`); json_write_string(&b, event.agent_record_id); strings.write_string(&b, `","agent_instance_id":"`); json_write_string(&b, event.agent_instance_id); strings.write_string(&b, `","display_name":"`); json_write_string(&b, event.display_name); strings.write_string(&b, `","template_id":"`); json_write_string(&b, event.template_id); strings.write_string(&b, `","provider_profile":"`); json_write_string(&b, event.provider_profile); strings.write_string(&b, `","project_id":"`); json_write_string(&b, event.project_id); strings.write_string(&b, `","run_dir":"`); json_write_string(&b, event.run_dir); strings.write_string(&b, `","model_tier":"`); json_write_string(&b, event.model_tier); strings.write_string(&b, `","current_task_id":"`); json_write_string(&b, event.current_task_id); strings.write_string(&b, `","current_task_since":`); strings.write_string(&b, fmt.tprintf("%d", event.current_task_since)); strings.write_string(&b, `,"last_needed_at_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", event.last_needed_at_unix_ms)); strings.write_string(&b, `,"order":`); strings.write_string(&b, fmt.tprintf("%d", event.order)); strings.write_string(&b, `,"author":"`); json_write_string(&b, event.author); strings.write_string(&b, `","created_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", event.created_unix_ms)); strings.write_string(&b, `}`); return strings.to_string(b)
 }
 
 agent_instance_event_from_json :: proc(line: string) -> (Agent_Instance_Event, bool) {
 	kind := Agent_Instance_Event_Kind.Agent_Instance_Upserted
 	if extract_json_string(line, "kind", "") == "Agent_Instance_Archived" do kind = .Agent_Instance_Archived
-	ev := Agent_Instance_Event{event_id = extract_json_string(line, "event_id", ""), kind = kind, agent_record_id = extract_json_string(line, "agent_record_id", ""), agent_instance_id = extract_json_string(line, "agent_instance_id", ""), display_name = extract_json_string(line, "display_name", ""), template_id = extract_json_string(line, "template_id", ""), provider_profile = extract_json_string(line, "provider_profile", ""), project_id = extract_json_string(line, "project_id", ""), run_dir = extract_json_string(line, "run_dir", ""), model_tier = extract_json_string(line, "model_tier", ""), author = extract_json_string(line, "author", ""), created_unix_ms = i64(extract_json_int(line, "created_unix_ms", 0)), order = extract_json_int(line, "order", 0)}
+	ev := Agent_Instance_Event{event_id = extract_json_string(line, "event_id", ""), kind = kind, agent_record_id = extract_json_string(line, "agent_record_id", ""), agent_instance_id = extract_json_string(line, "agent_instance_id", ""), display_name = extract_json_string(line, "display_name", ""), template_id = extract_json_string(line, "template_id", ""), provider_profile = extract_json_string(line, "provider_profile", ""), project_id = extract_json_string(line, "project_id", ""), run_dir = extract_json_string(line, "run_dir", ""), model_tier = extract_json_string(line, "model_tier", ""), current_task_id = extract_json_string(line, "current_task_id", ""), current_task_since = i64(extract_json_int(line, "current_task_since", 0)), last_needed_at_unix_ms = i64(extract_json_int(line, "last_needed_at_unix_ms", 0)), author = extract_json_string(line, "author", ""), created_unix_ms = i64(extract_json_int(line, "created_unix_ms", 0)), order = extract_json_int(line, "order", 0)}
 	return ev, ev.agent_record_id != "" || ev.agent_instance_id != ""
 }
 
@@ -316,3 +330,24 @@ parse_json_array_string :: proc(value: string) -> string {
 	if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' do return v[1:len(v)-1]
 	return v
 }
+
+agent_store_update_work_state :: proc(agent_instance_id, current_task_id: string, set_current: bool, touch_needed: bool) -> bool {
+	idx := agent_record_index_by_instance(agent_instance_id)
+	if idx < 0 do return false
+	rec := agent_instance_records[idx]
+	now := router_now_unix_ms()
+	event := Agent_Instance_Event{kind=.Agent_Instance_Upserted, agent_record_id=rec.agent_record_id, agent_instance_id=rec.agent_instance_id, display_name=rec.display_name, template_id=rec.template_id, provider_profile=rec.provider_profile, project_id=rec.project_id, run_dir=rec.run_dir, model_tier=rec.model_tier, current_task_id=rec.current_task_id, current_task_since=rec.current_task_since, last_needed_at_unix_ms=rec.last_needed_at_unix_ms, author="autoscaler"}
+	if set_current {
+		event.current_task_id = current_task_id
+		event.current_task_since = now
+	}
+	if current_task_id == "" && set_current {
+		event.current_task_since = -1
+	}
+	if touch_needed do event.last_needed_at_unix_ms = now
+	return agent_store_append_event(event)
+}
+
+agent_store_touch_needed :: proc(agent_instance_id: string) -> bool { return agent_store_update_work_state(agent_instance_id, "", false, true) }
+agent_store_set_current_task :: proc(agent_instance_id, task_id: string) -> bool { return agent_store_update_work_state(agent_instance_id, task_id, true, true) }
+agent_store_clear_current_task :: proc(agent_instance_id: string) -> bool { return agent_store_update_work_state(agent_instance_id, "", true, true) }

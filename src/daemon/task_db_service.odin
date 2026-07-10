@@ -585,6 +585,17 @@ task_db_load_all :: proc() -> bool {
 	return true
 }
 
+task_db_query_pending_notification_count :: proc(agent_instance_id: string) -> (int, bool) {
+	stmt: sqlite3_stmt = nil
+	query := `SELECT COUNT(*) FROM task_notification_outbox WHERE recipient_agent_instance_id = ? AND delivered_unix_ms = 0`
+	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK do return 0, false
+	defer sqlite3_finalize(stmt)
+	task_db_bind_text(stmt, 1, agent_instance_id)
+	if sqlite3_step(stmt) != SQLITE_ROW do return 0, false
+	return int(sqlite3_column_int64(stmt, 0)), true
+}
+
 task_db_execute :: proc(query: string) -> bool {
 	errmsg: cstring = nil
 	rc := sqlite3_exec(task_db.db, cstring(raw_data(query)), nil, nil, &errmsg)
