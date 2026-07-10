@@ -20,6 +20,8 @@ Task_Create_Command :: struct {
 Task_Chain_Create_Command :: struct {
 	chain_id:                           string,
 	project_id:                         string,
+	kind:                               string,
+	team_id:                            string,
 	title:                              string,
 	description:                        string,
 	coordinator_agent_instance_id:      string,

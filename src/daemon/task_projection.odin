@@ -100,6 +100,7 @@ task_projection_apply_event :: proc(event: Task_Event) -> bool {
 	case .Chain_Created:
 		idx := task_chain_index(event.chain_id)
 		task_chains[idx].project_id                         = strings.clone(event.project_id)
+		task_chains[idx].team_id                            = strings.clone(task_chain_team_id_for_event(event))
 		task_chains[idx].title                              = strings.clone(event.title)
 		task_chains[idx].description                        = strings.clone(event.description)
 		if event.status != "" do task_chains[idx].status = strings.clone(event.status)
@@ -263,6 +264,22 @@ task_state_index :: proc(task_id, chain_id: string) -> int {
 	return idx
 }
 
+task_chain_legacy_team_id :: proc(chain_id, coordinator_agent_instance_id: string) -> string {
+	if chain_id == "chain-teams-v1" do return "swe-team-legacy"
+	if coordinator_agent_instance_id != "" do return fmt.tprintf("legacy-%s", coordinator_agent_instance_id)
+	return fmt.tprintf("legacy-unassigned-%s", chain_id)
+}
+
+task_chain_team_id_for_event :: proc(event: Task_Event) -> string {
+	if event.team_id != "" do return event.team_id
+	return task_chain_legacy_team_id(event.chain_id, event.coordinator_agent_instance_id)
+}
+
+task_chain_effective_team_id :: proc(chain: Task_Chain_State) -> string {
+	if chain.team_id != "" do return chain.team_id
+	return task_chain_legacy_team_id(chain.chain_id, chain.coordinator_agent_instance_id)
+}
+
 task_chain_index :: proc(chain_id: string) -> int {
 	for i in 0..<task_chain_count {
 		if task_chains[i].chain_id == chain_id do return i
@@ -277,6 +294,7 @@ task_chain_index :: proc(chain_id: string) -> int {
 task_write_chain_json :: proc(builder: ^strings.Builder, chain: Task_Chain_State) {
 	strings.write_string(builder, `{"chain_id":"`);      json_write_string(builder, chain.chain_id)
 	strings.write_string(builder, `","project_id":"`);   json_write_string(builder, chain.project_id)
+	strings.write_string(builder, `","team_id":"`);      json_write_string(builder, task_chain_effective_team_id(chain))
 	strings.write_string(builder, `","title":"`);        json_write_string(builder, chain.title)
 	strings.write_string(builder, `","description":"`);  json_write_string(builder, chain.description)
 	strings.write_string(builder, `","status":"`);       json_write_string(builder, chain.status)

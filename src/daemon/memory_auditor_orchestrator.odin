@@ -166,6 +166,7 @@ handle_post_task_chain_audit :: proc(client: net.TCP_Socket, body: string, ctx: 
 	create_chain_res := task_service_create_chain(Task_Chain_Create_Command{
 		chain_id                      = strings.clone(audit_chain_id),
 		project_id                    = strings.clone(system_project_id),
+		kind                          = "coding",
 		title                         = strings.clone(chain_title),
 		description                   = strings.clone(PROMPT_AUDIT_CHAIN_DESC),
 		coordinator_agent_instance_id = strings.clone(auditor_agent_id),

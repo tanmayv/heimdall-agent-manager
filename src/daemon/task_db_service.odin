@@ -61,6 +61,7 @@ task_db_create_schema :: proc() -> bool {
 	CREATE TABLE IF NOT EXISTS task_chains (
 		chain_id TEXT PRIMARY KEY,
 		project_id TEXT NOT NULL,
+		team_id TEXT NOT NULL DEFAULT '',
 		title TEXT NOT NULL,
 		description TEXT NOT NULL,
 		status TEXT NOT NULL,
@@ -222,9 +223,9 @@ task_db_coordinator_for_task_state :: proc(state: Task_State) -> string {
 task_db_save_chain :: proc(chain: Task_Chain_State) -> bool {
 	stmt: sqlite3_stmt = nil
 	query := `INSERT OR REPLACE INTO task_chains (
-		chain_id, project_id, title, description, status, coordinator_agent_instance_id, default_reviewer_agent_instance_id,
+		chain_id, project_id, team_id, title, description, status, coordinator_agent_instance_id, default_reviewer_agent_instance_id,
 		final_summary, created_at_unix_ms, completed_at_unix_ms, archive_pending, archived, evaluation, last_audit_at_unix_ms
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
@@ -235,18 +236,19 @@ task_db_save_chain :: proc(chain: Task_Chain_State) -> bool {
 
 	task_db_bind_text(stmt, 1, chain.chain_id)
 	task_db_bind_text(stmt, 2, chain.project_id)
-	task_db_bind_text(stmt, 3, chain.title)
-	task_db_bind_text(stmt, 4, chain.description)
-	task_db_bind_text(stmt, 5, chain.status)
-	task_db_bind_text(stmt, 6, chain.coordinator_agent_instance_id)
-	task_db_bind_text(stmt, 7, chain.default_reviewer_agent_instance_id)
-	task_db_bind_text(stmt, 8, chain.final_summary)
-	sqlite3_bind_int64(stmt, 9, chain.created_at_unix_ms)
-	sqlite3_bind_int64(stmt, 10, chain.completed_at_unix_ms)
-	sqlite3_bind_int64(stmt, 11, 1 if chain.archive_pending else 0)
-	sqlite3_bind_int64(stmt, 12, 1 if chain.archived else 0)
-	task_db_bind_text(stmt, 13, chain.evaluation)
-	sqlite3_bind_int64(stmt, 14, chain.last_audit_at_unix_ms)
+	task_db_bind_text(stmt, 3, task_chain_effective_team_id(chain))
+	task_db_bind_text(stmt, 4, chain.title)
+	task_db_bind_text(stmt, 5, chain.description)
+	task_db_bind_text(stmt, 6, chain.status)
+	task_db_bind_text(stmt, 7, chain.coordinator_agent_instance_id)
+	task_db_bind_text(stmt, 8, chain.default_reviewer_agent_instance_id)
+	task_db_bind_text(stmt, 9, chain.final_summary)
+	sqlite3_bind_int64(stmt, 10, chain.created_at_unix_ms)
+	sqlite3_bind_int64(stmt, 11, chain.completed_at_unix_ms)
+	sqlite3_bind_int64(stmt, 12, 1 if chain.archive_pending else 0)
+	sqlite3_bind_int64(stmt, 13, 1 if chain.archived else 0)
+	task_db_bind_text(stmt, 14, chain.evaluation)
+	sqlite3_bind_int64(stmt, 15, chain.last_audit_at_unix_ms)
 
 	rc = sqlite3_step(stmt)
 	if rc != SQLITE_DONE {
@@ -424,7 +426,7 @@ task_db_load_all :: proc() -> bool {
 	{
 		stmt: sqlite3_stmt = nil
 		query := `SELECT 
-			chain_id, project_id, title, description, status, coordinator_agent_instance_id, default_reviewer_agent_instance_id,
+			chain_id, project_id, team_id, title, description, status, coordinator_agent_instance_id, default_reviewer_agent_instance_id,
 			final_summary, created_at_unix_ms, completed_at_unix_ms, archive_pending, archived, evaluation, last_audit_at_unix_ms
 			FROM task_chains`
 		rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
@@ -439,18 +441,20 @@ task_db_load_all :: proc() -> bool {
 			c := &task_chains[task_chain_count]
 			c.chain_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 0))
 			c.project_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 1))
-			c.title = strings.clone_from_cstring(sqlite3_column_text(stmt, 2))
-			c.description = strings.clone_from_cstring(sqlite3_column_text(stmt, 3))
-			c.status = strings.clone_from_cstring(sqlite3_column_text(stmt, 4))
-			c.coordinator_agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 5))
-			c.default_reviewer_agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 6))
-			c.final_summary = strings.clone_from_cstring(sqlite3_column_text(stmt, 7))
-			c.created_at_unix_ms = sqlite3_column_int64(stmt, 8)
-			c.completed_at_unix_ms = sqlite3_column_int64(stmt, 9)
-			c.archive_pending = sqlite3_column_int64(stmt, 10) != 0
-			c.archived = sqlite3_column_int64(stmt, 11) != 0
-			c.evaluation = strings.clone_from_cstring(sqlite3_column_text(stmt, 12))
-			c.last_audit_at_unix_ms = sqlite3_column_int64(stmt, 13)
+			c.team_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 2))
+			if c.team_id == "" do c.team_id = strings.clone(task_chain_legacy_team_id(c.chain_id, strings.clone_from_cstring(sqlite3_column_text(stmt, 6))))
+			c.title = strings.clone_from_cstring(sqlite3_column_text(stmt, 3))
+			c.description = strings.clone_from_cstring(sqlite3_column_text(stmt, 4))
+			c.status = strings.clone_from_cstring(sqlite3_column_text(stmt, 5))
+			c.coordinator_agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 6))
+			c.default_reviewer_agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 7))
+			c.final_summary = strings.clone_from_cstring(sqlite3_column_text(stmt, 8))
+			c.created_at_unix_ms = sqlite3_column_int64(stmt, 9)
+			c.completed_at_unix_ms = sqlite3_column_int64(stmt, 10)
+			c.archive_pending = sqlite3_column_int64(stmt, 11) != 0
+			c.archived = sqlite3_column_int64(stmt, 12) != 0
+			c.evaluation = strings.clone_from_cstring(sqlite3_column_text(stmt, 13))
+			c.last_audit_at_unix_ms = sqlite3_column_int64(stmt, 14)
 			task_chain_count += 1
 		}
 	}
@@ -592,7 +596,12 @@ task_db_execute :: proc(query: string) -> bool {
 	return true
 }
 
-TASK_DB_SCHEMA_VERSION :: 3 // Version 1: evaluation, Version 2: last_audit_at_unix_ms, Version 3: default_reviewer_agent_instance_id
+TASK_DB_SCHEMA_VERSION :: 4 // Version 1: evaluation, Version 2: last_audit_at_unix_ms, Version 3: default_reviewer_agent_instance_id, Version 4: team_id
+
+task_db_backfill_team_ids :: proc() -> bool {
+	if !db_has_column(task_db.db, "task_chains", "team_id") do return true
+	return db_execute(task_db.db, "UPDATE task_chains SET team_id = CASE WHEN chain_id = 'chain-teams-v1' THEN 'swe-team-legacy' WHEN coordinator_agent_instance_id != '' THEN 'legacy-' || coordinator_agent_instance_id ELSE 'legacy-unassigned-' || chain_id END WHERE team_id = '' OR team_id = 'legacy-unassigned';")
+}
 
 task_db_run_migrations :: proc() -> bool {
 	current_version := db_get_user_version(task_db.db)
@@ -647,7 +656,7 @@ task_db_run_migrations :: proc() -> bool {
 
 	current_version = db_get_user_version(task_db.db)
 
-	if current_version < TASK_DB_SCHEMA_VERSION {
+	if current_version < 3 {
 		fmt.println("DB: Migrating task.db to version 3 (adding default_reviewer_agent_instance_id)...")
 		if !db_execute(task_db.db, "BEGIN TRANSACTION;") do return false
 		
@@ -668,6 +677,34 @@ task_db_run_migrations :: proc() -> bool {
 		
 		if !db_execute(task_db.db, "COMMIT;") do return false
 		fmt.println("DB: Migrated task.db to version 3 successfully.")
+	}
+
+	current_version = db_get_user_version(task_db.db)
+
+	if current_version >= TASK_DB_SCHEMA_VERSION {
+		if !task_db_backfill_team_ids() do return false
+	}
+
+	if current_version < TASK_DB_SCHEMA_VERSION {
+		fmt.println("DB: Migrating task.db to version 4 (adding/backfilling team_id)...")
+		if !db_execute(task_db.db, "BEGIN TRANSACTION;") do return false
+
+		if !db_has_column(task_db.db, "task_chains", "team_id") {
+			if !db_execute(task_db.db, "ALTER TABLE task_chains ADD COLUMN team_id TEXT NOT NULL DEFAULT '';") {
+				_ = db_execute(task_db.db, "ROLLBACK;")
+				return false
+			}
+		}
+		if !task_db_backfill_team_ids() {
+			_ = db_execute(task_db.db, "ROLLBACK;")
+			return false
+		}
+		if !db_set_user_version(task_db.db, TASK_DB_SCHEMA_VERSION) {
+			_ = db_execute(task_db.db, "ROLLBACK;")
+			return false
+		}
+		if !db_execute(task_db.db, "COMMIT;") do return false
+		fmt.println("DB: Migrated task.db to version 4 successfully.")
 	}
 	
 	return true

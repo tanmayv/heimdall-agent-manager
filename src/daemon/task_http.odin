@@ -29,30 +29,16 @@ handle_task_create :: proc(client: net.TCP_Socket, body: string) {
 handle_task_chain_create :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
-	chain_id := extract_json_string(body, "chain_id", "")
-	project_id := extract_json_string(body, "project_id", "")
 	result := task_service_create_chain(Task_Chain_Create_Command{
-		chain_id                           = chain_id,
-		project_id                         = project_id,
+		chain_id                           = extract_json_string(body, "chain_id", ""),
+		project_id                         = extract_json_string(body, "project_id", ""),
+		kind                               = extract_json_string(body, "kind", ""),
 		title                              = extract_json_string(body, "title", ""),
 		description                        = extract_json_string(body, "description", ""),
 		coordinator_agent_instance_id      = extract_json_string(body, "coordinator_agent_instance_id", ""),
 		default_reviewer_agent_instance_id = extract_json_string(body, "default_reviewer_agent_instance_id", ""),
 		author_agent_instance_id           = author,
 	})
-	if result.ok {
-		kind := extract_json_string(body, "kind", "")
-		if project_id != "" && kind != "" {
-			team_id := team_service_create_for_chain(project_id, chain_id, kind, "")
-			if team_id != "" {
-				builder := strings.builder_make()
-				strings.write_string(&builder, `{"ok":true,"chain_id":"`); json_write_string(&builder, chain_id)
-				strings.write_string(&builder, `","team_id":"`); json_write_string(&builder, team_id)
-				strings.write_string(&builder, `"}`)
-				result.message = strings.to_string(builder)
-			}
-		}
-	}
 	write_task_service_response(client, result)
 }
 

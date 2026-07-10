@@ -111,12 +111,20 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 	if cmd.default_reviewer_agent_instance_id != "" && cmd.default_reviewer_agent_instance_id == cmd.coordinator_agent_instance_id {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"default reviewer cannot equal coordinator"}`}
 	}
+	if cmd.kind == "" {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"chain create requires kind"}`}
+	}
 	chain_id := cmd.chain_id
 	if chain_id == "" do chain_id = task_generate_chain_id()
+	team_id := team_service_create_for_chain(cmd.project_id, chain_id, cmd.kind, "")
+	if team_id == "" {
+		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"team allocation failed"}`}
+	}
 	event := Task_Event{
 		kind                          = .Chain_Created,
 		chain_id                      = chain_id,
 		project_id                    = cmd.project_id,
+		team_id                       = team_id,
 		title                         = cmd.title,
 		description                   = cmd.description,
 		status                        = "planning",
@@ -130,6 +138,7 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 	task_notify_event(event)
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"chain_id":"`); json_write_string(&b, chain_id)
+	strings.write_string(&b, `","team_id":"`); json_write_string(&b, team_id)
 	strings.write_string(&b, `","status":"planning"}`)
 	return Task_Service_Result{ok = true, status_code = 200, message = strings.to_string(b)}
 }
