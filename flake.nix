@@ -51,24 +51,15 @@
         pname = "ham-daemon";
         version = appVersion;
         src = ./.;
-<<<<<<< HEAD
-        nativeBuildInputs = [ odin ];
-        buildInputs = [ pkgs.sqlite ];
-=======
         nativeBuildInputs = [ odin pkgs.makeWrapper ];
->>>>>>> 90f9cd3 (Add teams db schema service)
+        buildInputs = [ pkgs.sqlite ];
         dontConfigure = true;
         dontInstall = true;
         buildPhase = ''
           runHook preBuild
           mkdir -p $out/bin
-<<<<<<< HEAD
           odin build src/daemon -collection:odin_test=src -out:$out/bin/ham-daemon
-=======
-          odin build src/daemon -collection:odin_test=src -out:$out/bin/bc-odin-daemon
-          wrapProgram $out/bin/bc-odin-daemon --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.sqlite ]}
-          odin build src/wrapper -collection:odin_test=src -out:$out/bin/bc-agent-wrapper
->>>>>>> 90f9cd3 (Add teams db schema service)
+          wrapProgram $out/bin/ham-daemon --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.sqlite ]}
           runHook postBuild
         '';
       };
