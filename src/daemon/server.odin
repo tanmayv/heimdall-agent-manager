@@ -70,6 +70,7 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 	project_store_init(server_data_dir); time_step("project_store_init", &step)
 	agent_store_init(server_data_dir); time_step("agent_store_init", &step)
 	chat_store_init(server_data_dir); time_step("chat_store_init", &step)
+	_ = team_service_init(server_data_dir); time_step("team_service_init", &step)
 	if !auth_db_init(server_data_dir) {
 		fmt.println("WARNING: auth_db_init failed, tokens will not persist across daemon restarts")
 	}
@@ -537,6 +538,13 @@ handle_client :: proc(client: net.TCP_Socket) {
 		handle_task_list(client)
 		return
 	}
+
+	if strings.has_prefix(request, "GET /clients ") {
+		write_response(client, 200, "OK", registry_list_json())
+		return
+	}
+
+	if handle_teams_request(client, request) do return
 
 	write_response(client, 404, "Not Found", `{"ok":false,"message":"not found"}`)
 }
