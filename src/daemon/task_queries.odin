@@ -252,6 +252,11 @@ task_actor_can_override :: proc(state: Task_State, actor: string) -> bool {
 	return task_actor_is_user(actor) || task_actor_has_role(state, actor, "coordinator")
 }
 
+task_force_advance_authorized :: proc(state: Task_State, actor: string) -> bool {
+	if task_actor_is_user(actor) do return true
+	return actor != "" && actor == task_coordinator_agent_instance_id(state)
+}
+
 task_status_change_authorized :: proc(state: Task_State, next_status: Task_Status, actor: string) -> bool {
 	if task_actor_can_override(state, actor) do return true
 	switch next_status {

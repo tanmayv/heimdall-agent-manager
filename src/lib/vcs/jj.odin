@@ -31,6 +31,8 @@ jj_workspace_add :: proc(repo, name, base_ref, worktree_root: string) -> (Vcs_Wo
 jj_workspace_remove :: proc(handle: Vcs_Workspace_Handle, force: bool) -> (bool, string) {
 	_, _, _ = vcs_run([]string{"jj", "-R", handle.path, "workspace", "forget", handle.branch_or_change})
 	if !force {
+		ok, msg := vcs_write_kept_marker(handle, "", "", "jj workspace remove keep")
+		if !ok do return false, msg
 		return true, "jj workspace forgotten; files kept"
 	}
 	_, _, _ = vcs_run([]string{"rm", "-rf", handle.path})
@@ -134,5 +136,14 @@ jj_count_log :: proc(repo_path, revset: string) -> int {
 }
 
 jj_merge_execute :: proc(handle: Vcs_Workspace_Handle, target: string) -> (bool, string) {
-	return false, "merge_execute is intentionally not wired to automation; operator action required"
+	// Operator-gated local integration only. Rebase the workspace change onto
+	// <target>; never push automatically (INV-4). The git push recipe stays a
+	// manual command shown in merge_preview.commands[].
+	effective_target := target
+	if effective_target == "" do effective_target = handle.base_ref
+	if effective_target == "" do effective_target = "trunk()"
+	if r_ok, r_msg := vcs_run_ok([]string{"jj", "-R", handle.path, "rebase", "-r", "@", "-d", effective_target}); !r_ok {
+		return false, r_msg
+	}
+	return true, "jj change rebased onto target locally; push manually when ready"
 }

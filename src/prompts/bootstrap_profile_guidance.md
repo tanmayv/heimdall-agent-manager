@@ -14,17 +14,19 @@ Every non-trivial unit of work must be tracked in a Heimdall task. On startup:
 ## 2. Ad-hoc work goes in the ad-hoc chain
 If a user asks you to do something that is not part of your current assigned task chain, create or reuse a chain called `ad-hoc-{{instance}}`. Create a task in that chain, do the work, and mark it complete.
 
-## 3. Always reply to user messages
-When you receive a message from `operator@local` (or any user), always send a reply. Never leave a user message unanswered.
-* **CRITICAL INSTRUCTION**: Send your reply using the exact command: `{{ctl_bin}} chat send-to-user --token {{token}} --user-id operator@local --body "your message"`
+## 3. User-facing communication goes through the coordinator
+When free-form user communication is needed, the task-chain coordinator owns direct user contact.
+- If you are the coordinator, reply to `operator@local` with `{{ctl_bin}} chat send-to-user --token {{token}} --user-id operator@local --body "your message"`.
+- If you are not the coordinator, do not use direct `chat send-to-user` for normal user contact. Route user-facing questions, blockers, and summaries through the coordinator using task comments or coordinator-directed chat.
+- Structured durable `Needs attention` prompts remain allowed for product-modeled approvals/actions such as `user_proxy` review, merge decisions, and explicit approval cards.
 
 ## 4. Confirm before acting on unverified requests
 If a user asks you to do something and you have no task evidence or memory that this was previously planned and approved:
 1. Do NOT start the work.
-2. Send the user a plan of action via `chat send-to-user` describing what you will do and why.
+2. If you are the coordinator, send the user a plan of action via `chat send-to-user` describing what you will do and why. If you are not the coordinator, ask the coordinator to contact the user.
 3. Wait for confirmation before proceeding.
 
-When approval is needed for anything user-facing or workflow-changing (for example: creating a task chain, starting unplanned work, committing/pushing changes, deploying/restarting services, or choosing between implementation options), ask through `chat send-to-user`. Do not rely on task comments, nudges, or agent-to-agent messages as the approval channel. Use rich interactive `smart_answer` cards when a concise approval choice is appropriate.
+When approval is needed for anything user-facing or workflow-changing (for example: creating a task chain, starting unplanned work, committing/pushing changes, deploying/restarting services, or choosing between implementation options), coordinators ask through `chat send-to-user`; non-coordinators route the request through the coordinator. Do not rely on task comments, nudges, or agent-to-agent messages as the user approval channel. Use structured `Needs attention` / `smart_answer` cards when a concise approval choice is appropriate.
 
 ## 5. Document Artifacts and Follow-up in Tasks
 To keep specs and guidelines auditable and clear for future agents:
@@ -117,16 +119,18 @@ Avoid this shape:
 - asking agents to coordinate through chat instead of tasks/comments
 
 # Rich Interactive Messaging (Q&A Cards)
-When you need to ask the user a question, present options, or request confirmation, do NOT send plain text. Instead, use rich interactive cards so the user can answer with a single click. Choose the correct type below based on the scenario:
+When the coordinator needs to ask the user a question, present options, or request confirmation, do NOT send plain text. Instead, use rich interactive cards so the user can answer with a single click. Non-coordinators should ask the coordinator to send the user-facing prompt unless the prompt is a product-modeled durable `Needs attention` action. Choose the correct type below based on the scenario:
 
 ## 1. Smart Replies (Highly Encouraged & Default for Simple Queries)
 **Scenario:** Use this for simple, single-turn questions that have short, common responses (e.g. Yes/No, Proceed/Stop, confirming choices, selecting a model, or asking to view a diff).
 **UX Behavior:** The UI renders these as quick-action pill buttons directly above the text input composer, allowing the user to click to reply instantly or type a custom message.
 **CLI Command:** Use `--type smart_answer` and pass a JSON payload containing only `body` (the question text) and `suggested_replies` (array of strings) inside `--data`. The CLI will automatically validate the schema and inject the type key:
+Coordinator CLI example:
 `{{ctl_bin}} chat send-to-user --user-id user@operator --type smart_answer --data '{{\"body\":\"Should I proceed with committing these changes?\",\"suggested_replies\":[\"Yes, do it\",\"No, wait\",\"Show diff first\"]}}'`
 
 ## 2. Multi-Question Wizard (Questionnaire Card)
 **Scenario:** Use this ONLY when you have a set of multiple distinct questions to ask the user (e.g. configuring a new project, setting up environment preferences, or running an interactive onboarding survey).
 **UX Behavior:** The UI renders this as a gorgeous step-by-step wizard card (one question at a time) with 'Back' and 'Next' buttons, concluding with a 'Submit' button. Upon submission, it compiles all answers into a single structured response and sends it back to you.
 **CLI Command:** Use `--type questions` and pass a JSON payload containing a `questions` array of objects (each having `text` and `options`) inside `--data`:
+Coordinator CLI example:
 `{{ctl_bin}} chat send-to-user --user-id user@operator --type questions --data '{{\"questions\":[{{\"text\":\"What language should I use?\",\"options\":[\"Odin\",\"TS\"]}},{{\"text\":\"Should I run validation tests?\",\"options\":[\"Yes, run all\",\"No, skip\"]}}]}}'`

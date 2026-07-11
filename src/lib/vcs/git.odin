@@ -123,5 +123,25 @@ git_apply_numstat :: proc(handle: Vcs_Workspace_Handle, files: ^[dynamic]Vcs_Fil
 }
 
 git_merge_execute :: proc(handle: Vcs_Workspace_Handle, target: string) -> (bool, string) {
-	return false, "merge_execute is intentionally not wired to automation; operator action required"
+	// Operator-gated local merge only. The branch is checked out in the linked
+	// worktree, so we merge it into <target> in the main working tree.
+	// Per INV-4 we never push automatically; the push recipe stays a manual
+	// command shown in merge_preview.commands[].
+	effective_target := target
+	if effective_target == "" do effective_target = handle.base_ref
+	if effective_target == "" do effective_target = "main"
+	common, ok, msg := vcs_run([]string{"git", "-C", handle.path, "rev-parse", "--git-common-dir"})
+	if !ok do return false, msg
+	repo_root := common
+	if strings.has_suffix(repo_root, "/.git") do repo_root = repo_root[:len(repo_root) - len("/.git")]
+	else if repo_root == ".git" do repo_root = strings.clone(".")
+	if sw_ok, sw_msg := vcs_run_ok([]string{"git", "-C", repo_root, "switch", effective_target}); !sw_ok {
+		return false, sw_msg
+	}
+	merge_msg := fmt.tprintf("Merge %s into %s (heimdall)", handle.branch_or_change, effective_target)
+	if m_ok, m_msg := vcs_run_ok([]string{"git", "-C", repo_root, "merge", "--no-ff", "-m", merge_msg, handle.branch_or_change}); !m_ok {
+		_, _ = vcs_run_ok([]string{"git", "-C", repo_root, "merge", "--abort"})
+		return false, m_msg
+	}
+	return true, "git merge completed locally; push manually when ready"
 }

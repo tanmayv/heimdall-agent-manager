@@ -59,14 +59,20 @@ def main():
         print("[-] Missing bootstrap_profile_guidance key in preferences list.")
         sys.exit(1)
         
-    expected_substr = "* **CRITICAL INSTRUCTION**: Send your reply using the exact command: `{ctl_bin} chat send-to-user --token {token} --user-id operator@local --body \"your message\"`"
+    expected_substr = "If you are the coordinator, reply to `operator@local` with `{ctl_bin} chat send-to-user --token {token} --user-id operator@local --body \"your message\"`."
     if expected_substr not in guidance:
-        print("[-] Critical instruction NOT found in bootstrap_profile_guidance template!")
+        print("[-] Coordinator-owned user contact instruction NOT found in bootstrap_profile_guidance template!")
         print("    Guidance content was:")
         print(guidance)
         sys.exit(1)
         
-    print("[+] Bootstrap preferences critical instruction verified successfully!")
+    if "If you are not the coordinator, do not use direct `chat send-to-user` for normal user contact." not in guidance:
+        print("[-] Non-coordinator user-contact routing instruction NOT found in bootstrap_profile_guidance template!")
+        print("    Guidance content was:")
+        print(guidance)
+        sys.exit(1)
+
+    print("[+] Bootstrap preferences coordinator-only user contact guidance verified successfully!")
     sys.exit(0)
 
 if __name__ == "__main__":

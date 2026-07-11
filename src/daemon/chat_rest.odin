@@ -74,7 +74,8 @@ handle_get_chat_messages :: proc(client: net.TCP_Socket, agent_id: string, ctx: 
 		if val, parse_ok := strconv.parse_i64(cursor_str); parse_ok do cursor = val
 	}
 
-	messages := message_db_fetch_cursor_paginated(user_id, agent_instance_id, limit, cursor)
+	chain_id := query_param_value(ctx.query, "chain_id")
+	messages := message_db_fetch_cursor_paginated_for_chain(user_id, agent_instance_id, chain_id, limit, cursor)
 	defer free_chat_messages(messages)
 
 	// Calculate next_cursor

@@ -87,6 +87,12 @@ app.whenReady().then(async () => {
 
   createWindow();
 
+  if (process.env.HEIMDALL_UI_DEBUG === '1') {
+    currentDebugPort = await startDebugServer();
+    updatePort(currentDebugPort);
+    console.log(`[heimdall] debug_server_port=${currentDebugPort}`);
+  }
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });

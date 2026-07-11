@@ -955,27 +955,40 @@ Memory_Record :: struct {
 	is_configured_template: bool,
 }
 
-fetch_all_active_memories :: proc(daemon_url, agent_token, agent_instance_id: string, memory_templates: []string) -> [dynamic]Memory_Record {
+fetch_all_active_memories :: proc(daemon_url, agent_token, team_id, project_id: string, memory_templates: []string) -> [dynamic]Memory_Record {
 	result := make([dynamic]Memory_Record)
 	configured_ids := make(map[string]bool)
 
 	if len(memory_templates) > 0 {
 		req := strings.builder_make()
 		strings.write_string(&req, `{"agent_token":"`); json_write_string(&req, agent_token)
-		strings.write_string(&req, `","action":"memory_list","status":"active"}`)
+		strings.write_string(&req, `","action":"memory_list","scope":"template","status":"active"}`)
 		resp, ok := http.post(daemon_url, contracts.ROUTE_AGENT_RPC, strings.to_string(req))
 		if ok && resp.status == 200 {
 			parse_into_memory_records(resp.body, memory_templates, true, &result, &configured_ids)
 		}
 	}
 
-	req2 := strings.builder_make()
-	strings.write_string(&req2, `{"agent_token":"`); json_write_string(&req2, agent_token)
-	strings.write_string(&req2, `","action":"memory_list","subject_agent":"`); json_write_string(&req2, agent_instance_id)
-	strings.write_string(&req2, `","status":"active"}`)
-	resp2, ok2 := http.post(daemon_url, contracts.ROUTE_AGENT_RPC, strings.to_string(req2))
-	if ok2 && resp2.status == 200 {
-		parse_into_memory_records(resp2.body, memory_templates, false, &result, &configured_ids)
+	if project_id != "" {
+		req := strings.builder_make()
+		strings.write_string(&req, `{"agent_token":"`); json_write_string(&req, agent_token)
+		strings.write_string(&req, `","action":"memory_list","scope":"project","subject_key":"`); json_write_string(&req, fmt.tprintf("pr:%s", project_id))
+		strings.write_string(&req, `","status":"active"}`)
+		resp, ok := http.post(daemon_url, contracts.ROUTE_AGENT_RPC, strings.to_string(req))
+		if ok && resp.status == 200 {
+			parse_into_memory_records(resp.body, memory_templates, false, &result, &configured_ids)
+		}
+	}
+
+	if team_id != "" && project_id != "" {
+		req := strings.builder_make()
+		strings.write_string(&req, `{"agent_token":"`); json_write_string(&req, agent_token)
+		strings.write_string(&req, `","action":"memory_list","scope":"team_project","subject_key":"`); json_write_string(&req, fmt.tprintf("tp:%s:%s", team_id, project_id))
+		strings.write_string(&req, `","status":"active"}`)
+		resp, ok := http.post(daemon_url, contracts.ROUTE_AGENT_RPC, strings.to_string(req))
+		if ok && resp.status == 200 {
+			parse_into_memory_records(resp.body, memory_templates, false, &result, &configured_ids)
+		}
 	}
 
 	return result
@@ -1017,10 +1030,12 @@ generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_
 	profile := bootstrap_profile(agent_cmd, selected_agent)
 	memory_templates := agent_cmd.memory_templates
 	if len(memory_templates) == 0 do memory_templates = cfg.memory_templates
+	project_id := agent_cmd.project
+	if project_id == "" do project_id = cfg.project
 	project_context := project_bootstrap_context(daemon_url, agent_token, cfg, agent_cmd)
 	team_context, chain_id := team_bootstrap_context(daemon_url, team_id)
 	chain_context, workspace_context := task_chain_bootstrap_context(daemon_url, agent_token, chain_id)
-	memories := fetch_all_active_memories(daemon_url, agent_token, agent_instance_id, memory_templates)
+	memories := fetch_all_active_memories(daemon_url, agent_token, team_id, project_id, memory_templates)
 
 	written := make([dynamic]string)
 
@@ -1159,6 +1174,8 @@ content_section_enabled :: proc(sections: []string, section: string) -> bool {
 
 build_agents_md :: proc(name, profile: string, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path: string, memories: []Memory_Record, project_context, chain_context, team_context, workspace_context: string, has_memory_md: bool, template_instructions, team_id, role_key: string, role_index: int) -> string {
 	b := strings.builder_make()
+	is_team_member := team_id != "" || role_key != ""
+	is_coordinator := !is_team_member || role_key == "coordinator"
 	strings.write_string(&b, active_live_prefs.bootstrap_header); strings.write_string(&b, "\n")
 	strings.write_string(&b, bootstrap_title(name, profile)); strings.write_string(&b, "\n\n")
 
@@ -1180,7 +1197,14 @@ build_agents_md :: proc(name, profile: string, selected_agent, agent_instance_id
 
 	strings.write_string(&b, "# Team\n")
 	if team_context != "" { strings.write_string(&b, team_context) } else if team_id != "" { strings.write_string(&b, "- team_id: "); strings.write_string(&b, team_id); strings.write_string(&b, "\n") }
-	strings.write_string(&b, "- Coordinator owns user-facing decisions; route those through the coordinator.\n")
+	if is_coordinator {
+		strings.write_string(&b, "- You are the coordinator for free-form user contact: summarize/forward team needs to the operator when needed.\n")
+		strings.write_string(&b, "- Team members route user-facing decisions through you; consolidate and ask the user only when necessary.\n")
+	} else {
+		strings.write_string(&b, "- Coordinator owns user-facing decisions; route free-form user communication through the coordinator.\n")
+		strings.write_string(&b, "- Do not use direct `chat send-to-user` for normal user contact. Use task comments or coordinator-directed chat instead.\n")
+	}
+	strings.write_string(&b, "- Structured Needs attention prompts remain allowed for product-modeled approvals/actions such as user_proxy review and merge decisions.\n")
 	strings.write_string(&b, "- Agents shut down after 30 minutes idle unless task, mention, or nudge keeps them alive.\n\n")
 
 	if workspace_context != "" {
@@ -1198,7 +1222,12 @@ build_agents_md :: proc(name, profile: string, selected_agent, agent_instance_id
 
 	strings.write_string(&b, "# Tools\n")
 	strings.write_string(&b, "- `ham-ctl tasks next|show|comment|done --token <token>` for task work.\n")
-	strings.write_string(&b, "- `ham-ctl chat send-to-user --token <token> --user-id operator@local --body <text>` for user replies.\n")
+	if is_coordinator {
+		strings.write_string(&b, "- `ham-ctl chat send-to-user --token <token> --user-id operator@local --body <text>` for coordinator-owned user replies.\n")
+	} else {
+		strings.write_string(&b, "- For user-facing questions, comment/nudge the coordinator; the coordinator owns free-form user replies.\n")
+	}
+	strings.write_string(&b, "- Structured Needs attention approval/action prompts are allowed when the product models them durably.\n")
 	strings.write_string(&b, "- `ham-ctl teams show --team <team_id>` and `ham-ctl chains focus --chain <chain_id>` for team context.\n")
 	strings.write_string(&b, "- Full workflow guide: `ham-ctl help work-guide`.\n")
 	return strings.to_string(b)
@@ -1685,7 +1714,7 @@ memory_cli_guidance :: proc(agent_token: string) -> string {
 	strings.write_string(&builder, "Examples: ")
 	write_ctl(&builder, bin, " memory propose new --token ")
 	strings.write_string(&builder, agent_token)
-	strings.write_string(&builder, " --subject-agent <agent> --type fact|habit|episode|expertise|skill|template --title <title> --body <body> --reason <why> --evidence <task-or-source>; ")
+	strings.write_string(&builder, " --scope team_project --team <team_id> --project <project_id> --type fact|habit|episode|expertise|skill|template --title <title> --body <body> --reason <why> --evidence <task-or-source>; ")
 	write_ctl(&builder, bin, " memory propose edit --token ")
 	strings.write_string(&builder, agent_token)
 	strings.write_string(&builder, " --memory-id <id> --expected-version <n> --title <title> --body <body> --reason <why> --evidence <source>; ")

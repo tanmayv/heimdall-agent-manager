@@ -29,12 +29,16 @@ handle_task_create :: proc(client: net.TCP_Socket, body: string) {
 handle_task_chain_create :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
+	description := extract_json_string(body, "description", "")
+	if description == "" do description = extract_json_string(body, "goal", "")
 	result := task_service_create_chain(Task_Chain_Create_Command{
 		chain_id                           = extract_json_string(body, "chain_id", ""),
 		project_id                         = extract_json_string(body, "project_id", ""),
 		kind                               = extract_json_string(body, "kind", ""),
 		title                              = extract_json_string(body, "title", ""),
-		description                        = extract_json_string(body, "description", ""),
+		description                        = description,
+		scaffold                           = extract_json_string(body, "scaffold", ""),
+		no_scaffold                        = extract_json_bool(body, "no_scaffold", false),
 		coordinator_agent_instance_id      = extract_json_string(body, "coordinator_agent_instance_id", ""),
 		default_reviewer_agent_instance_id = extract_json_string(body, "default_reviewer_agent_instance_id", ""),
 		wants_vcs                          = extract_json_bool(body, "wants_vcs", true),
@@ -121,11 +125,12 @@ handle_task_participant_remove :: proc(client: net.TCP_Socket, body: string) {
 handle_task_status :: proc(client: net.TCP_Socket, body: string) {
 	author, is_user, ok := task_author_and_type_from_body(client, body)
 	if !ok do return
-	if !is_user {
-		write_response(client, 403, "Forbidden", `{"ok":false,"message":"manual status changes restricted to user tokens"}`)
+	force := extract_json_bool(body, "force", false)
+	if !is_user && !force {
+		write_response(client, 403, "Forbidden", `{"ok":false,"message":"manual status changes restricted to user tokens unless force is used by coordinator"}`)
 		return
 	}
-	result := task_service_set_status(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "status", ""), extract_json_string(body, "body", ""), author)
+	result := task_service_status_command(Task_Status_Command{task_id = extract_json_string(body, "task_id", ""), chain_id = extract_json_string(body, "chain_id", ""), status = extract_json_string(body, "status", ""), body = extract_json_string(body, "body", ""), force = force, author_agent_instance_id = author})
 	write_task_service_response(client, result)
 }
 
@@ -146,7 +151,10 @@ handle_task_update :: proc(client: net.TCP_Socket, body: string) {
 handle_task_done :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
-	result := task_service_set_status(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), "review_ready", extract_json_string(body, "body", "Done."), author)
+	force := extract_json_bool(body, "force", false)
+	status := "review_ready"
+	if force do status = "approved"
+	result := task_service_status_command(Task_Status_Command{task_id = extract_json_string(body, "task_id", ""), chain_id = extract_json_string(body, "chain_id", ""), status = status, body = extract_json_string(body, "body", "Done."), force = force, author_agent_instance_id = author})
 	write_task_service_response(client, result)
 }
 

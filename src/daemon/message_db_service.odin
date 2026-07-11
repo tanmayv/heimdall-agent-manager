@@ -124,6 +124,12 @@ message_db_init :: proc(data_dir: string) -> bool {
 		return false
 	}
 
+	if !message_db_migrate_chain_schema() {
+		fmt.println("message_db_init: failed to migrate chain schema")
+		sqlite3_close(message_db.db)
+		return false
+	}
+
 	fmt.println("message_db_init: database initialized at", db_path)
 	return true
 }
@@ -137,6 +143,15 @@ message_db_migrate_interrupt_schema :: proc() -> bool {
 	return true
 }
 
+message_db_migrate_chain_schema :: proc() -> bool {
+	if !message_db_has_column("messages", "chain_id") {
+		if !message_db_add_column("messages", "chain_id TEXT NOT NULL DEFAULT ''") {
+			return false
+		}
+	}
+	return message_db_execute("CREATE INDEX IF NOT EXISTS idx_messages_chain ON messages(chain_id, user_id, agent_instance_id, created_unix_ms);")
+}
+
 message_db_create_schema :: proc() -> bool {
 	schema := `
 	CREATE TABLE IF NOT EXISTS messages (
@@ -145,6 +160,7 @@ message_db_create_schema :: proc() -> bool {
 		agent_instance_id TEXT NOT NULL,
 		direction TEXT NOT NULL,
 		body TEXT NOT NULL,
+		chain_id TEXT NOT NULL DEFAULT '',
 		delivered_unix_ms INTEGER DEFAULT 0,
 		delivery_failed_unix_ms INTEGER DEFAULT 0,
 		delivery_error TEXT,
@@ -247,15 +263,24 @@ message_db_execute :: proc(query: string) -> bool {
 	return true
 }
 
+message_db_bind_text :: proc(stmt: sqlite3_stmt, index: int, val: string) {
+	ptr := cstring(raw_data(val))
+	if ptr == nil {
+		sqlite3_bind_text(stmt, c.int(index), "", 0, SQLITE_TRANSIENT)
+	} else {
+		sqlite3_bind_text(stmt, c.int(index), ptr, i32(len(val)), SQLITE_TRANSIENT)
+	}
+}
+
 message_db_insert :: proc(msg: Chat_Message) -> bool {
 	fmt.println("DEBUG: message_db_insert called for message_id =", msg.message_id, "user_id =", msg.user_id, "agent_instance_id =", msg.agent_instance_id, "direction =", msg.direction, "interrupt =", msg.interrupt)
 	stmt: sqlite3_stmt = nil
 
 	query := fmt.tprintf(
 		`INSERT INTO messages
-		(message_id, user_id, agent_instance_id, direction, body,
+		(message_id, user_id, agent_instance_id, direction, body, chain_id,
 		 delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms, interrupt)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 
 	rc := sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil)
@@ -265,16 +290,17 @@ message_db_insert :: proc(msg: Chat_Message) -> bool {
 	}
 	defer sqlite3_finalize(stmt)
 
-	sqlite3_bind_text(stmt, 1, cstring(raw_data(msg.message_id)), i32(len(msg.message_id)), SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 2, cstring(raw_data(msg.user_id)), i32(len(msg.user_id)), SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 3, cstring(raw_data(msg.agent_instance_id)), i32(len(msg.agent_instance_id)), SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 4, cstring(raw_data(msg.direction)), i32(len(msg.direction)), SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 5, cstring(raw_data(msg.body)), i32(len(msg.body)), SQLITE_TRANSIENT)
-	sqlite3_bind_int64(stmt, 6, msg.delivered_unix_ms)
-	sqlite3_bind_int64(stmt, 7, msg.delivery_failed_unix_ms)
-	sqlite3_bind_text(stmt, 8, cstring(raw_data(msg.delivery_error)), i32(len(msg.delivery_error)), SQLITE_TRANSIENT)
-	sqlite3_bind_int64(stmt, 9, msg.created_unix_ms)
-	sqlite3_bind_int64(stmt, 10, 1 if msg.interrupt else 0)
+	message_db_bind_text(stmt, 1, msg.message_id)
+	message_db_bind_text(stmt, 2, msg.user_id)
+	message_db_bind_text(stmt, 3, msg.agent_instance_id)
+	message_db_bind_text(stmt, 4, msg.direction)
+	message_db_bind_text(stmt, 5, msg.body)
+	message_db_bind_text(stmt, 6, msg.chain_id)
+	sqlite3_bind_int64(stmt, 7, msg.delivered_unix_ms)
+	sqlite3_bind_int64(stmt, 8, msg.delivery_failed_unix_ms)
+	message_db_bind_text(stmt, 9, msg.delivery_error)
+	sqlite3_bind_int64(stmt, 10, msg.created_unix_ms)
+	sqlite3_bind_int64(stmt, 11, 1 if msg.interrupt else 0)
 
 	rc = sqlite3_step(stmt)
 	if rc != SQLITE_DONE {
@@ -399,10 +425,8 @@ message_db_get_last_read_status :: proc(user_id, agent_instance_id: string) -> (
 		user_to_agent_read = sqlite3_column_int64(stmt, 0)
 		agent_to_user_read = sqlite3_column_int64(stmt, 1)
 		legacy_read := sqlite3_column_int64(stmt, 2)
-		if user_to_agent_read == 0 {
+		if user_to_agent_read == 0 && agent_to_user_read == 0 && legacy_read > 0 {
 			user_to_agent_read = legacy_read
-		}
-		if agent_to_user_read == 0 {
 			agent_to_user_read = legacy_read
 		}
 		fmt.println("DEBUG: message_db_get_last_read_status for", user_id, agent_instance_id, "= [", user_to_agent_read, ",", agent_to_user_read, "]")
@@ -437,15 +461,15 @@ message_db_fetch_all :: proc(user_id, agent_instance_id: string, direction: stri
 	query: string
 	if direction == "user_to_agent" || direction == "agent_to_user" {
 		if cursor > 0 {
-			query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = ? AND created_unix_ms > ? ORDER BY created_unix_ms ASC LIMIT ?`
+			query = `SELECT message_id, user_id, agent_instance_id, direction, body, chain_id, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = ? AND created_unix_ms > ? ORDER BY created_unix_ms ASC LIMIT ?`
 		} else {
-			query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = ? ORDER BY created_unix_ms ASC LIMIT ?`
+			query = `SELECT message_id, user_id, agent_instance_id, direction, body, chain_id, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = ? ORDER BY created_unix_ms ASC LIMIT ?`
 		}
 	} else {
 		if cursor > 0 {
-			query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND created_unix_ms > ? ORDER BY created_unix_ms ASC LIMIT ?`
+			query = `SELECT message_id, user_id, agent_instance_id, direction, body, chain_id, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND created_unix_ms > ? ORDER BY created_unix_ms ASC LIMIT ?`
 		} else {
-			query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? ORDER BY created_unix_ms ASC LIMIT ?`
+			query = `SELECT message_id, user_id, agent_instance_id, direction, body, chain_id, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? ORDER BY created_unix_ms ASC LIMIT ?`
 		}
 	}
 
@@ -477,11 +501,12 @@ message_db_fetch_all :: proc(user_id, agent_instance_id: string, direction: stri
 			agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 2)),
 			direction = strings.clone_from_cstring(sqlite3_column_text(stmt, 3)),
 			body = strings.clone_from_cstring(sqlite3_column_text(stmt, 4)),
-			delivered_unix_ms = sqlite3_column_int64(stmt, 5),
+			chain_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 5)),
+			delivered_unix_ms = sqlite3_column_int64(stmt, 6),
 			read_unix_ms = 0,
-			delivery_failed_unix_ms = sqlite3_column_int64(stmt, 6),
-			delivery_error = strings.clone_from_cstring(sqlite3_column_text(stmt, 7)),
-			created_unix_ms = sqlite3_column_int64(stmt, 8),
+			delivery_failed_unix_ms = sqlite3_column_int64(stmt, 7),
+			delivery_error = strings.clone_from_cstring(sqlite3_column_text(stmt, 8)),
+			created_unix_ms = sqlite3_column_int64(stmt, 9),
 		}
 		append(&messages, msg)
 	}
@@ -503,11 +528,11 @@ message_db_fetch_unread :: proc(user_id, agent_instance_id, direction: string, l
 
 	query: string
 	if direction == "user_to_agent" {
-		query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = 'user_to_agent' AND created_unix_ms > ? ORDER BY created_unix_ms ASC LIMIT ?`
+		query = `SELECT message_id, user_id, agent_instance_id, direction, body, chain_id, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = 'user_to_agent' AND created_unix_ms > ? ORDER BY created_unix_ms ASC LIMIT ?`
 	} else if direction == "agent_to_user" {
-		query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = 'agent_to_user' AND created_unix_ms > ? ORDER BY created_unix_ms ASC LIMIT ?`
+		query = `SELECT message_id, user_id, agent_instance_id, direction, body, chain_id, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = 'agent_to_user' AND created_unix_ms > ? ORDER BY created_unix_ms ASC LIMIT ?`
 	} else {
-		query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND ((direction = 'user_to_agent' AND created_unix_ms > ?) OR (direction = 'agent_to_user' AND created_unix_ms > ?)) ORDER BY created_unix_ms ASC LIMIT ?`
+		query = `SELECT message_id, user_id, agent_instance_id, direction, body, chain_id, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND ((direction = 'user_to_agent' AND created_unix_ms > ?) OR (direction = 'agent_to_user' AND created_unix_ms > ?)) ORDER BY created_unix_ms ASC LIMIT ?`
 	}
 
 	rc := sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil)
@@ -543,11 +568,12 @@ message_db_fetch_unread :: proc(user_id, agent_instance_id, direction: string, l
 			agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 2)),
 			direction = strings.clone_from_cstring(sqlite3_column_text(stmt, 3)),
 			body = strings.clone_from_cstring(sqlite3_column_text(stmt, 4)),
-			delivered_unix_ms = sqlite3_column_int64(stmt, 5),
+			chain_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 5)),
+			delivered_unix_ms = sqlite3_column_int64(stmt, 6),
 			read_unix_ms = 0,
-			delivery_failed_unix_ms = sqlite3_column_int64(stmt, 6),
-			delivery_error = strings.clone_from_cstring(sqlite3_column_text(stmt, 7)),
-			created_unix_ms = sqlite3_column_int64(stmt, 8),
+			delivery_failed_unix_ms = sqlite3_column_int64(stmt, 7),
+			delivery_error = strings.clone_from_cstring(sqlite3_column_text(stmt, 8)),
+			created_unix_ms = sqlite3_column_int64(stmt, 9),
 		}
 		fmt.println("DEBUG: Found unread message:", msg.message_id, "created at", msg.created_unix_ms)
 		append(&messages, msg)
@@ -720,14 +746,24 @@ message_db_get_max_unread_timestamp :: proc(user_id, agent_instance_id, directio
 }
 
 message_db_fetch_cursor_paginated :: proc(user_id, agent_instance_id: string, limit: int = 50, cursor: i64 = 0) -> [dynamic]Chat_Message {
+	return message_db_fetch_cursor_paginated_for_chain(user_id, agent_instance_id, "", limit, cursor)
+}
+
+message_db_fetch_cursor_paginated_for_chain :: proc(user_id, agent_instance_id, chain_id: string, limit: int = 50, cursor: i64 = 0) -> [dynamic]Chat_Message {
 	messages := make([dynamic]Chat_Message)
 	stmt: sqlite3_stmt = nil
 
 	query: string
-	if cursor > 0 {
-		query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms, interrupt FROM messages WHERE user_id = ? AND agent_instance_id = ? AND created_unix_ms < ? ORDER BY created_unix_ms DESC LIMIT ?`
+	if chain_id != "" {
+		if cursor > 0 {
+			query = `SELECT message_id, user_id, agent_instance_id, direction, body, chain_id, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms, interrupt FROM messages WHERE user_id = ? AND agent_instance_id = ? AND chain_id = ? AND created_unix_ms < ? ORDER BY created_unix_ms DESC LIMIT ?`
+		} else {
+			query = `SELECT message_id, user_id, agent_instance_id, direction, body, chain_id, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms, interrupt FROM messages WHERE user_id = ? AND agent_instance_id = ? AND chain_id = ? ORDER BY created_unix_ms DESC LIMIT ?`
+		}
+	} else if cursor > 0 {
+		query = `SELECT message_id, user_id, agent_instance_id, direction, body, chain_id, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms, interrupt FROM messages WHERE user_id = ? AND agent_instance_id = ? AND created_unix_ms < ? ORDER BY created_unix_ms DESC LIMIT ?`
 	} else {
-		query = `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms, interrupt FROM messages WHERE user_id = ? AND agent_instance_id = ? ORDER BY created_unix_ms DESC LIMIT ?`
+		query = `SELECT message_id, user_id, agent_instance_id, direction, body, chain_id, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms, interrupt FROM messages WHERE user_id = ? AND agent_instance_id = ? ORDER BY created_unix_ms DESC LIMIT ?`
 	}
 
 	rc := sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil)
@@ -740,7 +776,15 @@ message_db_fetch_cursor_paginated :: proc(user_id, agent_instance_id: string, li
 	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), i32(len(user_id)), SQLITE_TRANSIENT)
 	sqlite3_bind_text(stmt, 2, cstring(raw_data(agent_instance_id)), i32(len(agent_instance_id)), SQLITE_TRANSIENT)
 
-	if cursor > 0 {
+	if chain_id != "" {
+		sqlite3_bind_text(stmt, 3, cstring(raw_data(chain_id)), i32(len(chain_id)), SQLITE_TRANSIENT)
+		if cursor > 0 {
+			sqlite3_bind_int64(stmt, 4, cursor)
+			sqlite3_bind_int64(stmt, 5, i64(limit))
+		} else {
+			sqlite3_bind_int64(stmt, 4, i64(limit))
+		}
+	} else if cursor > 0 {
 		sqlite3_bind_int64(stmt, 3, cursor)
 		sqlite3_bind_int64(stmt, 4, i64(limit))
 	} else {
@@ -754,12 +798,13 @@ message_db_fetch_cursor_paginated :: proc(user_id, agent_instance_id: string, li
 			agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 2)),
 			direction = strings.clone_from_cstring(sqlite3_column_text(stmt, 3)),
 			body = strings.clone_from_cstring(sqlite3_column_text(stmt, 4)),
-			delivered_unix_ms = sqlite3_column_int64(stmt, 5),
+			chain_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 5)),
+			delivered_unix_ms = sqlite3_column_int64(stmt, 6),
 			read_unix_ms = 0,
-			delivery_failed_unix_ms = sqlite3_column_int64(stmt, 6),
-			delivery_error = strings.clone_from_cstring(sqlite3_column_text(stmt, 7)),
-			created_unix_ms = sqlite3_column_int64(stmt, 8),
-			interrupt = sqlite3_column_int64(stmt, 9) != 0,
+			delivery_failed_unix_ms = sqlite3_column_int64(stmt, 7),
+			delivery_error = strings.clone_from_cstring(sqlite3_column_text(stmt, 8)),
+			created_unix_ms = sqlite3_column_int64(stmt, 9),
+			interrupt = sqlite3_column_int64(stmt, 10) != 0,
 		}
 		append(&messages, msg)
 	}
@@ -769,7 +814,7 @@ message_db_fetch_cursor_paginated :: proc(user_id, agent_instance_id: string, li
 
 message_db_get_message :: proc(message_id: string) -> (Chat_Message, bool) {
 	stmt: sqlite3_stmt = nil
-	query := `SELECT message_id, user_id, agent_instance_id, direction, body, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms, interrupt FROM messages WHERE message_id = ?`
+	query := `SELECT message_id, user_id, agent_instance_id, direction, body, chain_id, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms, interrupt FROM messages WHERE message_id = ?`
 
 	rc := sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
@@ -787,12 +832,13 @@ message_db_get_message :: proc(message_id: string) -> (Chat_Message, bool) {
 			agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 2)),
 			direction = strings.clone_from_cstring(sqlite3_column_text(stmt, 3)),
 			body = strings.clone_from_cstring(sqlite3_column_text(stmt, 4)),
-			delivered_unix_ms = sqlite3_column_int64(stmt, 5),
+			chain_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 5)),
+			delivered_unix_ms = sqlite3_column_int64(stmt, 6),
 			read_unix_ms = 0,
-			delivery_failed_unix_ms = sqlite3_column_int64(stmt, 6),
-			delivery_error = strings.clone_from_cstring(sqlite3_column_text(stmt, 7)),
-			created_unix_ms = sqlite3_column_int64(stmt, 8),
-			interrupt = sqlite3_column_int64(stmt, 9) != 0,
+			delivery_failed_unix_ms = sqlite3_column_int64(stmt, 7),
+			delivery_error = strings.clone_from_cstring(sqlite3_column_text(stmt, 8)),
+			created_unix_ms = sqlite3_column_int64(stmt, 9),
+			interrupt = sqlite3_column_int64(stmt, 10) != 0,
 		}
 		return msg, true
 	}

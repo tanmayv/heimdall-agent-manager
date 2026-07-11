@@ -12,17 +12,19 @@ main :: proc() {
 	db, ok := daemon.team_db_init(data_dir)
 	check(ok, "fresh team_db_init failed")
 	check(file_exists(db.db_path), "fresh init did not create teams.db")
-	check(daemon.team_db_user_version(db.db_path) == 2, "fresh init did not set user_version")
+	check(daemon.team_db_user_version(db.db_path) == 3, "fresh init did not set user_version")
 	check(daemon.team_db_has_column(db.db_path, "teams", "chain_id"), "teams.chain_id missing")
+	check(daemon.team_db_has_column(db.db_path, "team_members", "team_member_id"), "team_members.team_member_id missing")
+	check(daemon.team_db_has_column(db.db_path, "team_members", "agent_instance_id"), "team_members.agent_instance_id missing")
 	check(daemon.team_db_has_column(db.db_path, "team_members", "is_user_proxy"), "team_members.is_user_proxy missing")
 	check(daemon.team_db_has_column(db.db_path, "team_members", "route_to"), "team_members.route_to missing")
 
 	check(daemon.team_db_insert_team(db, daemon.Team_Record{team_id = "team-test", project_id = "proj", kind = "solo", status = "idle", created_unix_ms = 1, updated_unix_ms = 2, chain_id = "chain-test"}), "insert team failed")
-	check(daemon.team_db_insert_member(db, daemon.Team_Member_Record{team_id = "team-test", role_key = "user_proxy", role_index = 0, is_user_proxy = true, route_to = "operator@local"}), "insert member failed")
+	check(daemon.team_db_insert_member(db, daemon.Team_Member_Record{team_member_id = "team-test:user_proxy:0", team_id = "team-test", role_key = "user_proxy", role_index = 0, is_user_proxy = true, route_to = "operator@local"}), "insert member failed")
 
 	reopened, reopened_ok := daemon.team_db_init(data_dir)
 	check(reopened_ok, "reopen team_db_init failed")
-	check(daemon.team_db_user_version(reopened.db_path) == 2, "reopen changed user_version")
+	check(daemon.team_db_user_version(reopened.db_path) == 3, "reopen changed user_version")
 	check(daemon.team_db_count_teams(reopened) == 1, "reopen did not preserve team row")
 	check(daemon.team_db_count_members(reopened) == 1, "reopen did not preserve member row")
 

@@ -35,6 +35,7 @@ memory_append_event :: proc(event: contracts.Memory_Event) -> contracts.Memory_A
 		rec.proposal_id = strings.clone(ev.proposal_id)
 		rec.subject_agent = strings.clone(ev.subject_agent)
 		rec.scope = strings.clone(ev.scope)
+		rec.subject_key = strings.clone(ev.subject_key)
 		rec.type = ev.type
 		rec.title = strings.clone(ev.title)
 		rec.body = strings.clone(ev.body)
@@ -47,7 +48,7 @@ memory_append_event :: proc(event: contracts.Memory_Event) -> contracts.Memory_A
 		rec.updated_unix_ms = ev.created_unix_ms
 	case .Memory_Approved:
 		if rec.type == .Expertise {
-			memory_db_archive_active_expertise(rec.subject_agent, rec.scope, rec.memory_id, ev.created_unix_ms)
+			memory_db_archive_active_expertise(rec.scope, rec.subject_key, rec.memory_id, ev.created_unix_ms)
 		}
 		rec.status = .Active
 		rec.version += 1
@@ -100,6 +101,7 @@ memory_notify_event :: proc(event: contracts.Memory_Event) -> bool {
 memory_notification_json :: proc(event: contracts.Memory_Event, rec: contracts.Memory_Record, found: bool) -> string {
 	subject := event.subject_agent
 	scope := event.scope
+	subject_key := event.subject_key
 	type_text := memory_type_string_service(event.type)
 	status := memory_status_string_service(event.status)
 	source_task := event.source_task_id
@@ -107,6 +109,7 @@ memory_notification_json :: proc(event: contracts.Memory_Event, rec: contracts.M
 	if found {
 		if subject == "" do subject = rec.subject_agent
 		if scope == "" do scope = rec.scope
+		if subject_key == "" do subject_key = rec.subject_key
 		type_text = memory_type_string_service(rec.type)
 		status = memory_status_string_service(rec.status)
 		if source_task == "" do source_task = rec.source_task_id
@@ -118,6 +121,7 @@ memory_notification_json :: proc(event: contracts.Memory_Event, rec: contracts.M
 	strings.write_string(&builder, `","proposal_id":"`); json_write_string(&builder, event.proposal_id)
 	strings.write_string(&builder, `","subject_agent":"`); json_write_string(&builder, subject)
 	strings.write_string(&builder, `","scope":"`); json_write_string(&builder, scope)
+	strings.write_string(&builder, `","subject_key":"`); json_write_string(&builder, subject_key)
 	strings.write_string(&builder, `","memory_type":"`); json_write_string(&builder, type_text)
 	strings.write_string(&builder, `","status":"`); json_write_string(&builder, status)
 	strings.write_string(&builder, `","changed_by":"`); json_write_string(&builder, event.author)

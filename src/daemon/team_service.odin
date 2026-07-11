@@ -19,7 +19,7 @@ team_service_init :: proc(data_dir: string) -> bool {
 	return true
 }
 
-team_service_create_for_chain :: proc(project_id, chain_id, kind_key, name: string) -> string {
+team_service_create_for_chain :: proc(project_id, chain_id, kind_key, name, coordinator_agent_instance_id: string) -> string {
 	if !team_service_ready do return ""
 	kind := team_kind_get(kind_key)
 	if kind == nil do return ""
@@ -34,10 +34,14 @@ team_service_create_for_chain :: proc(project_id, chain_id, kind_key, name: stri
 
 	for role in kind.roles {
 		for idx in 0..<role.count {
-			member := Team_Member_Record{team_id = team_id, role_key = role.role_key, role_index = idx}
+			member := Team_Member_Record{team_member_id = team_service_member_id(team_id, role.role_key, idx), team_id = team_id, role_key = role.role_key, role_index = idx, agent_instance_id = team_service_member_agent_instance_id(team_id, role.role_key, idx)}
+			if role.role_key == "coordinator" && idx == 0 && coordinator_agent_instance_id != "" {
+				member.agent_instance_id = coordinator_agent_instance_id
+			}
 			if role.role_key == "user_proxy" {
 				member.is_user_proxy = true
 				member.route_to = "operator@local"
+				member.agent_instance_id = ""
 			}
 			append(&members, member)
 		}
@@ -66,6 +70,14 @@ team_service_archive :: proc(team_id, reason: string) -> bool {
 	ok := team_db_update_team_status(team_service_db, team_id, "archived")
 	if !ok do fmt.println("team_service_archive failed", team_id, reason)
 	return ok
+}
+
+team_service_member_id :: proc(team_id, role_key: string, role_index: int) -> string {
+	return fmt.tprintf("%s:%s:%d", team_id, role_key, role_index)
+}
+
+team_service_member_agent_instance_id :: proc(team_id, role_key: string, role_index: int) -> string {
+	return fmt.tprintf("%s-%d@%s", safe_team_id_part(role_key), role_index + 1, safe_team_id_part(team_id))
 }
 
 team_service_team_id :: proc(chain_id, name: string) -> string {

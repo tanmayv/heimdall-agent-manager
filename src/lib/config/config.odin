@@ -1,5 +1,6 @@
 package config
 
+import "core:fmt"
 import "core:os"
 import "core:strconv"
 import "core:strings"
@@ -202,6 +203,7 @@ parse_config :: proc(content: string, cfg: ^Config) {
 	section := Section.None
 	current_agent_command := ""
 	current_bootstrap_feature := ""
+	legacy_warned := make([dynamic]string)
 	lines := strings.split(content, "\n")
 
 	for raw_line in lines {
@@ -272,6 +274,7 @@ parse_config :: proc(content: string, cfg: ^Config) {
 
 		key := strings.trim_space(line[:eq])
 		value := strings.trim_space(line[eq + 1:])
+		if legacy_config_key_warned(section, current_agent_command, current_bootstrap_feature, key, &legacy_warned) do continue
 
 		#partial switch section {
 		case .Daemon:
@@ -293,6 +296,32 @@ parse_config :: proc(content: string, cfg: ^Config) {
 		case:
 		}
 	}
+}
+
+legacy_config_key_warned :: proc(section: Section, agent_name, bootstrap_feature, key: string, warned: ^[dynamic]string) -> bool {
+	legacy_key := ""
+	#partial switch section {
+	case .Wrapper:
+		if key == "project" || key == "memory_templates" || key == "default_agent" {
+			legacy_key = strings.concatenate({"wrapper.", key})
+		}
+	case .Wrapper_Agent_Command:
+		if key == "project" || key == "memory_templates" {
+			legacy_key = strings.concatenate({"wrapper.agent-cmd.", agent_name, ".", key})
+		}
+	case .Wrapper_Agent_Bootstrap_Feature:
+		if key == "content" {
+			legacy_key = strings.concatenate({"wrapper.agent-cmd.", agent_name, ".bootstrap.", bootstrap_feature, ".content"})
+		}
+	case:
+	}
+	if legacy_key == "" do return false
+	for seen in warned^ {
+		if seen == legacy_key do return true
+	}
+	append(warned, strings.clone(legacy_key))
+	fmt.printfln("WARN deprecated config key ignored: %s", legacy_key)
+	return true
 }
 
 parse_daemon_key :: proc(key, value: string, cfg: ^Daemon_Config) {
@@ -355,8 +384,6 @@ parse_wrapper_key :: proc(key, value: string, cfg: ^Wrapper_Config) {
 		cfg.credentials_path = expand_home(parse_string(value))
 	case "agent_name":
 		cfg.agent_name = parse_string(value)
-	case "default_agent":
-		cfg.default_agent = parse_string(value)
 	case "display_name":
 		cfg.display_name = parse_string(value)
 	case "requested_access_mode":
@@ -371,10 +398,6 @@ parse_wrapper_key :: proc(key, value: string, cfg: ^Wrapper_Config) {
 		cfg.agent_run_dir = expand_home(parse_string(value))
 	case "use_random_dir":
 		cfg.use_random_dir = parse_bool(value)
-	case "project":
-		cfg.project = parse_string(value)
-	case "memory_templates":
-		cfg.memory_templates = parse_string_array(value)
 	case "stop_message":
 		cfg.stop_message = parse_string(value)
 	case "ham_ctl_bin":
@@ -424,10 +447,6 @@ parse_agent_command_key :: proc(name, key, value: string, cfg: ^Wrapper_Config) 
 	case "use_random_dir":
 		cfg.agent_commands[idx].use_random_dir = parse_bool(value)
 		cfg.agent_commands[idx].use_random_dir_set = true
-	case "project":
-		cfg.agent_commands[idx].project = parse_string(value)
-	case "memory_templates":
-		cfg.agent_commands[idx].memory_templates = parse_string_array(value)
 	case "stop_message":
 		cfg.agent_commands[idx].stop_message = parse_string(value)
 	case:
@@ -445,8 +464,6 @@ parse_bootstrap_feature_key :: proc(name, feature, key, value: string, cfg: ^Wra
 	switch key {
 	case "name":
 		fc.name = parse_string(value)
-	case "content":
-		fc.content = parse_string_array(value)
 	case "relative_dir":
 		fc.relative_dir = parse_string(value)
 	case "filename":

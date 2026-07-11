@@ -1,0 +1,52 @@
+WARN deprecated config key ignored: wrapper.default_agent
+WARN deprecated config key ignored: wrapper.memory_templates
+WARN deprecated config key ignored: wrapper.project
+WARN deprecated config key ignored: wrapper.agent-cmd.pi.memory_templates
+WARN deprecated config key ignored: wrapper.agent-cmd.pi.project
+WARN deprecated config key ignored: wrapper.agent-cmd.claude.bootstrap.AGENTS_MD.content
+init registry_init 0.1ms
+init user_client_registry_init 0.1ms
+init message_provider 185.3ms
+memory_db_init: database initialized at /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-vnfzu7mu/data/memory/memory.db
+init memory_db_init 2.7ms
+init central_hub_init 0.1ms
+task_db_init: relational database initialized at /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-vnfzu7mu/data/tasks/task.db
+init task_store_init 10.3ms
+init project_store_init 3.7ms
+agent_template_db_init: database initialized at /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-vnfzu7mu/data/templates/templates.db
+agent_template_db: checking and seeding default templates...
+init agent_store_init 123.3ms
+message_db_init: database initialized at /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-vnfzu7mu/data/chat/messages.db
+init chat_store_init 7.0ms
+init team_service_init 479.5ms
+init teams_v1_migration_maybe_run 0.1ms
+init vcs_db_init 45.7ms
+auth_db_init: database initialized at /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-vnfzu7mu/data/auth/tokens.db
+init auth_db_init 6.1ms
+user_pref_db_init: database initialized at /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-vnfzu7mu/data/preferences/preference.db
+init user_pref_db_init 0.9ms
+audit_db_init: database initialized at /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-vnfzu7mu/data/audits/audits.db
+init audit_db_init 1.0ms
+init router_adapter_init 0.0ms
+init hub_sync_init 0.1ms
+init message_queue_init 0.1ms
+init message_queue_start_worker 0.1ms
+init hub_sync_start_worker 0.0ms
+init task_nudge_scheduler_start 0.0ms
+init agent_startup_janitor_start 0.0ms
+init test_run_startup_sweep 33.2ms
+init backup_scheduler_start 0.1ms
+init TOTAL 899.5ms
+odin-daemon listening 127.0.0.1 49422
+[RPC TELEMETRY] 2026-07-11 00:04:05.364 | GET /health | Params:  | Status: 200 | Latency: 0.1ms | Size: 32 bytes | Body: {"ok":true,"protocol_version":1}
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_store_token for user operator@local token = uct_95065220b58e724a ...
+DEBUG: auth_db_store_token succeeded
+user-ws connected heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+TOKEN RECOVERY: Found persisted agent token, recovering agent pi@task18-e2e
+DEBUG: auth_db_store_token for agent pi@task18-e2e token = agt_7837b7d2833d9dcb ...
+DEBUG: auth_db_store_token succeeded
+[RPC TELEMETRY] 2026-07-11 00:04:07.582 | POST /memory/list | Params: {"agent_token": "agt_7837b7d2833d9dcbef755889f3933ff2c6a195d533d331825f46558d2360cc47", "scope": "team_project", "team_id": "team-chain-19f4e7cffcf", "project_id": "project_1783728241729"} | Status: 200 | Latency: 5.4ms | Size: 24 bytes | Body: {"ok":true,"records":[]}
+user-ws received heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3 8 bytes
+user-ws disconnected heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3

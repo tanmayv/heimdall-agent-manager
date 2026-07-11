@@ -3,6 +3,7 @@ package vcs
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:time"
 
 Vcs_Kind :: enum { None, Git, Jj }
 
@@ -102,6 +103,31 @@ vcs_workspace_parent :: proc(path: string) -> string {
 	idx := strings.last_index(path, "/")
 	if idx < 0 do return "."
 	return strings.clone(path[:idx])
+}
+
+vcs_write_kept_marker :: proc(handle: Vcs_Workspace_Handle, chain_id, workspace_id, reason: string) -> (bool, string) {
+	if handle.path == "" do return false, "workspace path missing"
+	_ = os.make_directory_all(handle.path)
+	marker := fmt.tprintf("%s/.heimdall-kept", strings.trim_right(handle.path, "/"))
+	kind := "none"
+	switch handle.kind {
+	case .Git: kind = "git"
+	case .Jj: kind = "jj"
+	case .None: kind = "none"
+	}
+	body := strings.builder_make()
+	strings.write_string(&body, "# Heimdall kept workspace marker\n")
+	strings.write_string(&body, fmt.tprintf("chain_id=%s\n", chain_id))
+	strings.write_string(&body, fmt.tprintf("workspace_id=%s\n", workspace_id))
+	strings.write_string(&body, fmt.tprintf("vcs_kind=%s\n", kind))
+	strings.write_string(&body, fmt.tprintf("path=%s\n", handle.path))
+	strings.write_string(&body, fmt.tprintf("branch_or_change=%s\n", handle.branch_or_change))
+	strings.write_string(&body, fmt.tprintf("timestamp_unix_ms=%d\n", time.to_unix_nanoseconds(time.now()) / 1_000_000))
+	strings.write_string(&body, fmt.tprintf("reason=%s\n", reason))
+	if os.write_entire_file(marker, strings.to_string(body)) != nil {
+		return false, "failed to write kept marker"
+	}
+	return true, "kept marker written"
 }
 
 vcs_summary_line :: proc(modified, added, deleted, untracked, conflicted: int) -> string {

@@ -126,6 +126,9 @@ register_response_json :: proc(record: Agent_Record, template_instructions, pref
 	builder := strings.builder_make()
 	ws_host := server_bind_host
 	if server_config.daemon.advertise_host != "" do ws_host = server_config.daemon.advertise_host
+	team_id, role_key, role_index := register_response_team_membership(record)
+	defer delete(team_id)
+	defer delete(role_key)
 	strings.write_string(&builder, "{\"agent_instance_id\":\"")
 	strings.write_string(&builder, record.agent_instance_id)
 	strings.write_string(&builder, "\",\"agent_class\":\"")
@@ -144,6 +147,13 @@ register_response_json :: proc(record: Agent_Record, template_instructions, pref
 	strings.write_string(&builder, record.agent_instance_id)
 	strings.write_string(&builder, "\",\"agent_token\":\"")
 	json_write_string(&builder, record.agent_token)
+	if team_id != "" {
+		strings.write_string(&builder, "\",\"team_id\":\"")
+		json_write_string(&builder, team_id)
+		strings.write_string(&builder, "\",\"role_key\":\"")
+		json_write_string(&builder, role_key)
+		strings.write_string(&builder, fmt.tprintf("\",\"role_index\":%d", role_index))
+	}
 	if template_instructions != "" {
 		strings.write_string(&builder, "\",\"template_instructions\":\"")
 		json_write_string(&builder, template_instructions)
@@ -156,6 +166,23 @@ register_response_json :: proc(record: Agent_Record, template_instructions, pref
 		strings.write_string(&builder, "\"}")
 	}
 	return strings.to_string(builder)
+}
+
+register_response_team_membership :: proc(record: Agent_Record) -> (string, string, int) {
+	agent_record_id := ""
+	if idx := agent_record_index_by_instance(record.agent_instance_id); idx >= 0 do agent_record_id = agent_instance_records[idx].agent_record_id
+	if agent_record_id == "" do return strings.clone(""), strings.clone(""), 0
+
+	teams := team_db_list_teams(team_service_db, "", "")
+	for team in teams {
+		members := team_db_list_members(team_service_db, team.team_id)
+		for member in members {
+			if member.agent_record_id == agent_record_id {
+				return strings.clone(team.team_id), strings.clone(member.role_key), member.role_index
+			}
+		}
+	}
+	return strings.clone(""), strings.clone(""), 0
 }
 
 send_message_response_json :: proc(response: contracts.Send_Message_Response, pending_count: int) -> string {

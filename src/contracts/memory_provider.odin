@@ -37,6 +37,7 @@ Memory_Event :: struct {
 	proposal_id: string,
 	subject_agent: string,
 	scope: string,
+	subject_key: string,
 	type: Memory_Type,
 	title: string,
 	body: string,
@@ -55,6 +56,7 @@ Memory_Record :: struct {
 	proposal_id: string,
 	subject_agent: string,
 	scope: string,
+	subject_key: string,
 	type: Memory_Type,
 	title: string,
 	body: string,
@@ -86,6 +88,7 @@ Memory_Replay_Response :: struct {
 Memory_List_Request :: struct {
 	subject_agent: string,
 	scope: string,
+	subject_key: string,
 	status: Memory_Status,
 	include_all_statuses: bool,
 }

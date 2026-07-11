@@ -40,6 +40,9 @@ function normalizeChain(chain: any) {
     title: chain.title || '',
     description: chain.description || '',
     status: chain.status || 'active',
+    projectId: chain.project_id || chain.projectId || '',
+    vcsWorkspaceId: chain.vcs_workspace_id || chain.vcsWorkspaceId || '',
+    teamId: chain.team_id || chain.teamId || '',
     coordinatorAgentInstanceId: chain.coordinator_agent_instance_id || '',
     defaultReviewerAgentInstanceId: chain.default_reviewer_agent_instance_id || '',
     finalSummary: chain.final_summary || '',
@@ -271,6 +274,15 @@ export const voteOnSelectedTask = createAsyncThunk('tasks/voteOnSelectedTask', a
   const task = state.tasks.tasksById[activeTaskId];
   await daemonApi.voteTask({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), taskId: task.taskId, chainId: task.chainId, approved: payload.approved, comment: payload.comment || 'Voted from UI.' });
   await (dispatch as any)(fetchSelectedTaskLog(task.taskId));
+});
+
+export const voteOnAttentionTask = createAsyncThunk('tasks/voteOnAttentionTask', async (payload: { taskId: string; chainId: string; approved: boolean; comment?: string }, { dispatch, getState }) => {
+  const state = getState() as any;
+  const { session } = state.chat;
+  await daemonApi.voteTask({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, taskId: payload.taskId, chainId: payload.chainId, approved: payload.approved, comment: payload.comment || (payload.approved ? 'Approved from Needs attention.' : 'Rejected from Needs attention.') });
+  await (dispatch as any)(fetchTasksForChain(payload.chainId));
+  await (dispatch as any)(refreshTaskBoard());
+  return { taskId: payload.taskId, chainId: payload.chainId, approved: payload.approved };
 });
 
 export const nudgeSelectedTask = createAsyncThunk('tasks/nudgeSelectedTask', async (payload: any, { dispatch, getState }) => {

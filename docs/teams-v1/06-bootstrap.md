@@ -44,12 +44,19 @@ Sections are always emitted in this order. Empty sections are omitted (e.g. no `
 - Coordinator name
 - Reviewer(s) for the chain (default_reviewer_agent_instance_id + any role-mapped reviewers)
 - Number of tasks in each state (planned, ready, in-progress, review-ready, done)
+- For the initial coordinator discovery task, explicit instructions to:
+  - greet/contact the user in chain chat,
+  - explain the selected team kind and roster/roles,
+  - ask concise clarification questions,
+  - update/rename the chain title and description after the goal is clear,
+  - create downstream tasks/dependencies or apply a task-bundle template.
 
 ### 6.4 `# Team`
 
 - Team id, kind, status (`live | warming | idle`)
 - Full roster with role_key, role_index, `live | idle | archived`
 - Coordinator name repeated (emphasis: "route user-facing decisions through the coordinator")
+- Coordinator role note: the coordinator is the authoritative workflow lead for discovery, planning, delegation, progression, status synthesis, and final handoff. On a new chain, the coordinator's first ready task is discovery: clarify the user's goal, explain the team, update the chain title/description, and create/apply downstream work. Coordinator-owned control-plane gates remain visible; the coordinator may use explicit audited `--force` only when they own the gate and no user/product approval is required.
 - Reminder: agents shut down after **30 min idle** unless a task, mention, or nudge keeps them alive.
 
 ### 6.5 `# Workspace` (only if VCS)
@@ -112,3 +119,10 @@ That's the only remaining knob. `content` is dropped from the schema.
 - **BS-3** `# Team` roster reflects team_member rows at render time (not stale cache).
 - **BS-4** `# Tools` never exceeds 400 lines of Markdown. Longer content lives in `ham-ctl help work-guide`.
 - **BS-5** Token count for a `coding` role member's `AGENTS.md` is ≤ 30% of pre-refactor size (measured on Task 9).
+- **BS-6** Non-coordinator bootstraps must not present direct free-form user chat as normal workflow; they route user-facing communication through the coordinator. Coordinator bootstraps own free-form user contact. Structured `Needs attention` prompts remain allowed.
+- **WF-1** Coordinator bootstraps present explicit audited `--force` as a coordinator-only escape hatch for coordinator-owned workflow gates.
+- **WF-2** Worker implementation/fix/refactor tasks remain review-gated; force never fabricates LGTM votes.
+- **WF-3** Bootstrap for a newly created chain assumes title/goal may be placeholders and the coordinator owns discovery/clarification.
+- **WF-4** New chains bootstrap from one ready coordinator discovery task, not a full generated scaffold.
+- **WF-5** Task-bundle templates are coordinator/operator helpers applied after creation.
+- **WF-6** Discovery task guidance includes clarify goal, explain roles, update chain metadata, and create/apply downstream tasks.

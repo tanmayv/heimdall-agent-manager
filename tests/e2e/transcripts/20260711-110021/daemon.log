@@ -1,0 +1,626 @@
+WARN deprecated config key ignored: wrapper.default_agent
+WARN deprecated config key ignored: wrapper.memory_templates
+WARN deprecated config key ignored: wrapper.project
+WARN deprecated config key ignored: wrapper.agent-cmd.pi.memory_templates
+WARN deprecated config key ignored: wrapper.agent-cmd.pi.project
+WARN deprecated config key ignored: wrapper.agent-cmd.claude.bootstrap.AGENTS_MD.content
+init registry_init 0.0ms
+init user_client_registry_init 0.0ms
+init message_provider 65.5ms
+memory_db_init: database initialized at /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-q9uhjxsy/data/memory/memory.db
+init memory_db_init 25.9ms
+init central_hub_init 0.1ms
+DB: Migrating task.db to version 1 (adding evaluation)...
+DB: Column 'evaluation' already exists in 'task_chains', skipping ALTER TABLE.
+DB: Migrated task.db to version 1 successfully.
+DB: Migrating task.db to version 2 (adding last_audit_at_unix_ms)...
+DB: Column 'last_audit_at_unix_ms' already exists in 'task_chains', skipping ALTER TABLE.
+DB: Migrated task.db to version 2 successfully.
+DB: Migrating task.db to version 3 (adding default_reviewer_agent_instance_id)...
+DB: Column 'default_reviewer_agent_instance_id' already exists in 'task_chains', skipping ALTER TABLE.
+DB: Migrated task.db to version 3 successfully.
+DB: Migrating task.db to version 4 (adding/backfilling team_id)...
+DB: Migrated task.db to version 4 successfully.
+DB: Migrating task.db to version 5 (adding vcs_workspace_id)...
+DB: Migrated task.db to version 5 successfully.
+task_db_init: relational database initialized at /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-q9uhjxsy/data/tasks/task.db
+init task_store_init 36.6ms
+init project_store_init 2.4ms
+DB: Migrating templates.db to version 1 (adding is_customized)...
+DB: Column 'is_customized' already exists in 'agent_templates', skipping ALTER TABLE.
+DB: Migrated templates.db to version 1 successfully.
+DB: Migrating templates.db to version 2 (adding description)...
+DB: Column 'description' already exists in 'agent_templates', skipping ALTER TABLE.
+DB: Migrated templates.db to version 2 successfully.
+agent_template_db_init: database initialized at /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-q9uhjxsy/data/templates/templates.db
+agent_template_db: checking and seeding default templates...
+init agent_store_init 34.2ms
+message_db_init: database initialized at /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-q9uhjxsy/data/chat/messages.db
+init chat_store_init 11.9ms
+init team_service_init 499.3ms
+init teams_v1_migration_maybe_run 0.1ms
+init vcs_db_init 81.5ms
+auth_db_init: database initialized at /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-q9uhjxsy/data/auth/tokens.db
+init auth_db_init 7.6ms
+user_pref_db_init: database initialized at /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-q9uhjxsy/data/preferences/preference.db
+init user_pref_db_init 2.6ms
+audit_db_init: database initialized at /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-q9uhjxsy/data/audits/audits.db
+init audit_db_init 8.8ms
+init router_adapter_init 0.0ms
+init hub_sync_init 0.0ms
+init message_queue_init 0.0ms
+init message_queue_start_worker 0.0ms
+init hub_sync_start_worker 0.0ms
+init task_nudge_scheduler_start 0.0ms
+init agent_startup_janitor_start 0.0ms
+init test_run_startup_sweep 35.8ms
+init backup_scheduler_start 0.1ms
+init TOTAL 812.6ms
+odin-daemon listening 127.0.0.1 49422
+[RPC TELEMETRY] 2026-07-11 05:30:31.642 | GET /health | Params:  | Status: 200 | Latency: 0.1ms | Size: 32 bytes | Body: {"ok":true,"protocol_version":1}
+DEBUG: auth_db_get_token no token found for user operator@local
+DEBUG: auth_db_store_token for user operator@local token = uct_6304ca67c216f956 ...
+DEBUG: auth_db_store_token succeeded
+[RPC TELEMETRY] 2026-07-11 05:30:31.647 | POST /user-client/register | Params: {"user_id": "operator@local", "client_instance_id": "task18-canonical-ui"} | Status: 200 | Latency: 2.8ms | Size: 167 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:30:32.030 | POST /projects/create | Params: {"agent_token": "uct_6304ca67c216f95635b0f9c750f12532e9cdb317d64163cfb5b45ea35b81a778", "name": "Task18 real pi coding project", "description": "Task 18 isolated UI E2E project", "anchors": [{"type": ... | Status: 200 | Latency: 2.0ms | Size: 54 bytes | Body: {"ok":true,"message":"created","project_id":"default"}
+[RPC TELEMETRY] 2026-07-11 05:30:32.040 | POST /agents/create | Params: {"agent_instance_id": "pi@task18-e2e", "display_name": "Task18 Coordinator", "template_id": "lead", "provider_profile": "pi", "project_id": "default", "model_tier": "cheap"} | Status: 200 | Latency: 4.5ms | Size: 656 bytes
+DEBUG: auth_db_store_token for user operator@local token = uct_95065220b58e724a ...
+DEBUG: auth_db_store_token succeeded
+[RPC TELEMETRY] 2026-07-11 05:30:49.149 | POST /user-client/register | Params: {"user_id":"operator@local","client_instance_id":"heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3","client_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 9.9ms | Size: 193 bytes
+user-ws connected heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:30:49.173 | GET /task-chains | Params: limit=100&offset=0 | Status: 200 | Latency: 0.4ms | Size: 29 bytes | Body: {"chains":[],"total_count":0}
+[RPC TELEMETRY] 2026-07-11 05:30:49.221 | POST /user-rpc | Params: {"action":"project_list","client_instance_id":"heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3","client_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 0.2ms | Size: 484 bytes
+[RPC TELEMETRY] 2026-07-11 05:30:49.228 | GET /agents | Params:  | Status: 200 | Latency: 1.3ms | Size: 639 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:30:49.241 | GET /preferences | Params:  | Status: 200 | Latency: 10.6ms | Size: 28595 bytes
+[RPC TELEMETRY] 2026-07-11 05:30:49.247 | POST /user-rpc | Params: {"action":"project_list","client_instance_id":"heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3","client_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 0.1ms | Size: 484 bytes
+[RPC TELEMETRY] 2026-07-11 05:30:49.262 | GET /agents | Params:  | Status: 200 | Latency: 0.2ms | Size: 639 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:30:49.276 | GET /preferences | Params:  | Status: 200 | Latency: 12.6ms | Size: 28595 bytes
+[TASK EVENT] Kind: Chain_Created | Task ID:  | Chain ID: chain-19f4fa82cc2 | Status: planning | Author: operator@local | Body: 
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:30:49.512 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 1.4ms | Size: 43 bytes | Body: {"chain_id":"chain-19f4fa82cc2","tasks":[]}
+[TASK EVENT] Kind: Task_Created | Task ID: task-19f4fa82d5e | Chain ID: chain-19f4fa82cc2 | Status: planning | Author: operator@local | Body: 
+WARNING: registry_send_ws_text failed: agent 'pi@task18-e2e' not found in registry
+WARNING: failed to send WS to agent 'pi@task18-e2e'. Queued durable notification.
+NOTIFY: task=task-19f4fa82d5e chain=chain-19f4fa82cc2 status=planning actionable_sent=1 subscribers_sent=0 skipped_self=0 author=operator@local
+[TASK EVENT] Kind: Task_Created | Task ID: task-19f4fa82d5f | Chain ID: chain-19f4fa82cc2 | Status: planning | Author: operator@local | Body: 
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:30:49.597 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 3.5ms | Size: 1739 bytes
+WARNING: registry_send_ws_text failed: agent 'pi@task18-e2e' not found in registry
+WARNING: failed to send WS to agent 'pi@task18-e2e'. Queued durable notification.
+NOTIFY: task=task-19f4fa82d5f chain=chain-19f4fa82cc2 status=planning actionable_sent=1 subscribers_sent=0 skipped_self=0 author=operator@local
+[TASK EVENT] Kind: Task_Created | Task ID: task-19f4fa82d60 | Chain ID: chain-19f4fa82cc2 | Status: planning | Author: operator@local | Body: 
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:30:49.635 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 0.7ms | Size: 2627 bytes
+WARNING: registry_send_ws_text failed: agent 'pi@task18-e2e' not found in registry
+WARNING: failed to send WS to agent 'pi@task18-e2e'. Queued durable notification.
+NOTIFY: task=task-19f4fa82d60 chain=chain-19f4fa82cc2 status=planning actionable_sent=1 subscribers_sent=0 skipped_self=0 author=operator@local
+[TASK EVENT] Kind: Task_Created | Task ID: task-19f4fa82d61 | Chain ID: chain-19f4fa82cc2 | Status: planning | Author: operator@local | Body: 
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:30:49.676 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 0.6ms | Size: 3555 bytes
+WARNING: registry_send_ws_text failed: agent 'pi@task18-e2e' not found in registry
+WARNING: failed to send WS to agent 'pi@task18-e2e'. Queued durable notification.
+NOTIFY: task=task-19f4fa82d61 chain=chain-19f4fa82cc2 status=planning actionable_sent=1 subscribers_sent=0 skipped_self=0 author=operator@local
+[TASK EVENT] Kind: Task_Created | Task ID: task-19f4fa82d62 | Chain ID: chain-19f4fa82cc2 | Status: planning | Author: operator@local | Body: 
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:30:49.706 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 0.9ms | Size: 4346 bytes
+WARNING: registry_send_ws_text failed: agent 'pi@task18-e2e' not found in registry
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+WARNING: failed to send WS to agent 'pi@task18-e2e'. Queued durable notification.
+NOTIFY: task=task-19f4fa82d62 chain=chain-19f4fa82cc2 status=planning actionable_sent=1 subscribers_sent=0 skipped_self=0 author=operator@local
+[RPC TELEMETRY] 2026-07-11 05:30:49.725 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 0.6ms | Size: 4346 bytes
+[RPC TELEMETRY] 2026-07-11 05:30:49.725 | POST /user-rpc | Params: {"action":"task_chain_create","client_instance_id":"heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3","client_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a","project_id":"d... | Status: 200 | Latency: 314.8ms | Size: 119 bytes
+[TASK EVENT] Kind: Chain_Status_Changed | Task ID:  | Chain ID: chain-19f4fa82cc2 | Status: in_progress | Author: operator@local | Body: 
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:30:49.760 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 6.5ms | Size: 4381 bytes
+[RPC TELEMETRY] 2026-07-11 05:30:49.775 | GET /agents | Params:  | Status: 200 | Latency: 10.2ms | Size: 651 bytes
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f4fa82d5e | Chain ID: chain-19f4fa82cc2 | Status: queued | Author: operator@local | Body: system_auto:deps_cleared
+WARNING: registry_send_ws_text failed: agent 'pi@task18-e2e' not found in registry
+WARNING: failed to send WS to agent 'pi@task18-e2e'. Queued durable notification.
+NOTIFY: task=task-19f4fa82d5e chain=chain-19f4fa82cc2 status=queued actionable_sent=1 subscribers_sent=0 skipped_self=0 author=operator@local
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f4fa82d5e | Chain ID: chain-19f4fa82cc2 | Status: in_progress | Author: system-auto-claim | Body: system_auto:auto_claimed
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:30:49.828 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 0.9ms | Size: 4363 bytes
+WARNING: registry_send_ws_text failed: agent 'pi@task18-e2e' not found in registry
+WARNING: failed to send WS to agent 'pi@task18-e2e'. Queued durable notification.
+NOTIFY: task=task-19f4fa82d5e chain=chain-19f4fa82cc2 status=in_progress actionable_sent=1 subscribers_sent=0 skipped_self=0 author=system-auto-claim
+[RPC TELEMETRY] 2026-07-11 05:30:49.837 | POST /user-rpc | Params: {"action":"task_chain_status","client_instance_id":"heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3","client_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a","chain_id":"cha... | Status: 200 | Latency: 105.1ms | Size: 29 bytes | Body: {"ok":true,"archive_ok":true}
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:30:49.845 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 0.9ms | Size: 4363 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:30:49.850 | GET /task-chains | Params: limit=100&offset=0 | Status: 200 | Latency: 0.3ms | Size: 563 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:30:49.855 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 0.7ms | Size: 4363 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:30:49.863 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 1.0ms | Size: 4363 bytes
+[RPC TELEMETRY] 2026-07-11 05:30:49.985 | GET /health | Params:  | Status: 200 | Latency: 0.1ms | Size: 32 bytes | Body: {"ok":true,"protocol_version":1}
+DEBUG: auth_db_store_token for agent pi@task18-e2e token = agt_9ab7a7dd9c774bed ...
+DEBUG: auth_db_store_token succeeded
+[RPC TELEMETRY] 2026-07-11 05:30:50.035 | GET /agents | Params:  | Status: 200 | Latency: 0.2ms | Size: 803 bytes
+[RPC TELEMETRY] 2026-07-11 05:30:50.123 | POST /register | Params: {"protocol_version":1,"agent_class":"pi","agent_instance_id":"pi@task18-e2e","display_name":"Task18 Coordinator","agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365"} | Status: 200 | Latency: 115.0ms | Size: 16663 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 05:30:50.133 | POST /projects/show | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365","project_id":"default"} | Status: 200 | Latency: 0.3ms | Size: 220 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 05:30:50.136 | POST /projects/show | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365","project_id":"default"} | Status: 200 | Latency: 0.3ms | Size: 220 bytes
+[RPC TELEMETRY] 2026-07-11 05:30:50.137 | GET /agents | Params: project_id=default | Status: 200 | Latency: 0.1ms | Size: 803 bytes
+[RPC TELEMETRY] 2026-07-11 05:30:50.139 | POST /agent-rpc | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365","action":"memory_list","scope":"project","subject_key":"pr:default","status":"active"} | Status: 200 | Latency: 0.4ms | Size: 24 bytes | Body: {"ok":true,"records":[]}
+[RPC TELEMETRY] 2026-07-11 05:30:50.410 | POST /startup | Params: {"agent_instance_id":"pi@task18-e2e","startup_status":"starting","reason_code":"launch","safe_diagnostic":"Agent process launched in tmux","provider_profile":"pi","run_dir":"/var/folders/7c/wyz3jh6j65... | Status: 200 | Latency: 2.1ms | Size: 11 bytes | Body: {"ok":true}
+[RPC TELEMETRY] 2026-07-11 05:30:50.448 | GET /agents | Params:  | Status: 200 | Latency: 0.2ms | Size: 967 bytes
+INFO: replayed 7 durable task notifications to agent 'pi@task18-e2e'.
+ws connected pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 05:30:50.590 | GET /agents | Params:  | Status: 200 | Latency: 0.1ms | Size: 967 bytes
+[RPC TELEMETRY] 2026-07-11 05:30:50.678 | GET /agents | Params:  | Status: 200 | Latency: 0.2ms | Size: 1000 bytes
+[RPC TELEMETRY] 2026-07-11 05:30:50.691 | GET /agents | Params:  | Status: 200 | Latency: 0.2ms | Size: 1000 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:30:51.124 | POST /task-chains/show | Params: {"agent_token":"uct_6304ca67c216f95635b0f9c750f12532e9cdb317d64163cfb5b45ea35b81a778","chain_id":"chain-19f4fa82cc2"} | Status: 200 | Latency: 1.2ms | Size: 1818 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:30:51.200 | POST /task-chains/show | Params: {"agent_token":"uct_6304ca67c216f95635b0f9c750f12532e9cdb317d64163cfb5b45ea35b81a778","chain_id":"chain-19f4fa82cc2"} | Status: 200 | Latency: 0.3ms | Size: 1818 bytes
+[RPC TELEMETRY] 2026-07-11 05:30:51.209 | GET /agents | Params:  | Status: 200 | Latency: 0.1ms | Size: 1000 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:30:51.314 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 0.6ms | Size: 4363 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:30:51.320 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.6ms | Size: 78 bytes | Body: {"user_id":"operator@local","agent_instance_id":"pi@task18-e2e","messages":[]}
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:30:51.371 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 1.4ms | Size: 78 bytes | Body: {"user_id":"operator@local","agent_instance_id":"pi@task18-e2e","messages":[]}
+[RPC TELEMETRY] 2026-07-11 05:30:51.454 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 139.6ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:30:51.480 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 159.9ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:30:51.484 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 116.0ms | Size: 146 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:30:51.576 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 256.1ms | Size: 1012 bytes
+[RPC TELEMETRY] 2026-07-11 05:30:51.603 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 114.5ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:30:51.793 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 205.0ms | Size: 1012 bytes
+[RPC TELEMETRY] 2026-07-11 05:31:00.537 | POST /agent-rpc | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365","action":"start_success"} | Status: 200 | Latency: 0.2ms | Size: 64 bytes | Body: {"ok":true,"agent_instance_id":"pi@task18-e2e","status":"ready"}
+[RPC TELEMETRY] 2026-07-11 05:31:00.548 | GET /agents | Params:  | Status: 200 | Latency: 0.2ms | Size: 999 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:00.558 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 5.2ms | Size: 78 bytes | Body: {"user_id":"operator@local","agent_instance_id":"pi@task18-e2e","messages":[]}
+[RPC TELEMETRY] 2026-07-11 05:31:00.624 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 67.8ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:31:00.627 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 72.1ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:31:00.675 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 115.8ms | Size: 1012 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 05:31:02.223 | POST /tasks/next | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365"} | Status: 200 | Latency: 5.3ms | Size: 773 bytes
+[RPC TELEMETRY] 2026-07-11 05:31:02.239 | GET /agents | Params:  | Status: 200 | Latency: 0.2ms | Size: 1027 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:02.243 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.5ms | Size: 78 bytes | Body: {"user_id":"operator@local","agent_instance_id":"pi@task18-e2e","messages":[]}
+[RPC TELEMETRY] 2026-07-11 05:31:02.336 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 94.2ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:31:02.342 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 101.8ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:31:02.366 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 123.1ms | Size: 1012 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 05:31:04.865 | POST /tasks/show | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365"} | Status: 404 | Latency: 1.2ms | Size: 39 bytes | Body: {"ok":false,"message":"task not found"}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 05:31:06.106 | POST /tasks/next | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365"} | Status: 200 | Latency: 1.8ms | Size: 773 bytes
+[RPC TELEMETRY] 2026-07-11 05:31:06.119 | GET /agents | Params:  | Status: 200 | Latency: 0.3ms | Size: 1027 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:06.122 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.6ms | Size: 78 bytes | Body: {"user_id":"operator@local","agent_instance_id":"pi@task18-e2e","messages":[]}
+[RPC TELEMETRY] 2026-07-11 05:31:06.182 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 60.7ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:31:06.189 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 68.9ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:31:06.210 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 87.0ms | Size: 1012 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 05:31:10.692 | POST /tasks/list | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365"} | Status: 200 | Latency: 1.3ms | Size: 5989 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 05:31:11.829 | POST /task-chains/show | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365","chain_id":"chain-19f4fa82cc2"} | Status: 200 | Latency: 0.8ms | Size: 1818 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 05:31:13.241 | POST /tasks/log | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365","task_id":"task-19f4fa82d5e"} | Status: 200 | Latency: 0.3ms | Size: 1976 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 05:31:16.076 | POST /tasks/show | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365","task_id":"task-19f4fa82d61"} | Status: 200 | Latency: 0.5ms | Size: 953 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 05:31:17.004 | POST /tasks/log | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365","task_id":"task-19f4fa82d60"} | Status: 200 | Latency: 0.3ms | Size: 847 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:19.183 | GET /task-chains | Params: limit=100&offset=0 | Status: 200 | Latency: 0.7ms | Size: 563 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:19.189 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 0.9ms | Size: 4363 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:19.204 | POST /user-rpc | Params: {"action":"project_list","client_instance_id":"heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3","client_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 0.2ms | Size: 484 bytes
+[RPC TELEMETRY] 2026-07-11 05:31:19.204 | GET /agents | Params:  | Status: 200 | Latency: 1.2ms | Size: 1027 bytes
+[RPC TELEMETRY] 2026-07-11 05:31:19.216 | GET /preferences | Params:  | Status: 200 | Latency: 12.7ms | Size: 28595 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:19.226 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 0.8ms | Size: 4363 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:21.426 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.7ms | Size: 78 bytes | Body: {"user_id":"operator@local","agent_instance_id":"pi@task18-e2e","messages":[]}
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:21.475 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 49.1ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:31:21.489 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 62.4ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:31:21.546 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 116.7ms | Size: 1012 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 05:31:24.553 | POST /tasks/show | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365","task_id":"task-19f4fa82d62"} | Status: 200 | Latency: 0.7ms | Size: 816 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 05:31:25.786 | POST /tasks/list | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365"} | Status: 200 | Latency: 1.0ms | Size: 5989 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 05:31:35.826 | POST /tasks/next | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365"} | Status: 200 | Latency: 4.2ms | Size: 773 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:35.856 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.5ms | Size: 78 bytes | Body: {"user_id":"operator@local","agent_instance_id":"pi@task18-e2e","messages":[]}
+[RPC TELEMETRY] 2026-07-11 05:31:35.876 | GET /agents | Params:  | Status: 200 | Latency: 3.3ms | Size: 1027 bytes
+[RPC TELEMETRY] 2026-07-11 05:31:35.960 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 114.3ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:31:35.970 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 121.1ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:31:36.016 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 150.1ms | Size: 1012 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 05:31:46.586 | POST /tasks/log | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365","task_id":"task-19f4fa82d5e"} | Status: 200 | Latency: 0.5ms | Size: 1976 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:49.263 | GET /task-chains | Params: limit=100&offset=0 | Status: 200 | Latency: 0.5ms | Size: 563 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:49.268 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 0.9ms | Size: 4363 bytes
+[RPC TELEMETRY] 2026-07-11 05:31:49.279 | GET /agents | Params:  | Status: 200 | Latency: 0.2ms | Size: 1027 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:49.283 | POST /user-rpc | Params: {"action":"project_list","client_instance_id":"heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3","client_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 2.7ms | Size: 484 bytes
+[RPC TELEMETRY] 2026-07-11 05:31:49.291 | GET /preferences | Params:  | Status: 200 | Latency: 10.8ms | Size: 28595 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:49.305 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 1.0ms | Size: 4363 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:51.396 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.4ms | Size: 78 bytes | Body: {"user_id":"operator@local","agent_instance_id":"pi@task18-e2e","messages":[]}
+[RPC TELEMETRY] 2026-07-11 05:31:51.473 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 78.3ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:31:51.481 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 86.8ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:31:51.562 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 165.7ms | Size: 1012 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[TASK EVENT] Kind: Task_Comment | Task ID: task-19f4fa82d5e | Chain ID:  | Status:  | Author: pi@task18-e2e | Body: Plan: define a tiny README-only change, then let implementation/review/validate flow run. Steps: 1) inspect target README in chain workspace, 2) add minimal doc-only line noting Task18 verification note, 3) validate git diff is README-only and tests pass (if present), 4) hand off to reviewer for approvals, 5) finish with summary task once verify passes.
+WARNING: registry_send_ws_text failed: agent 'operator@local' not found in registry
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:51.604 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 0.5ms | Size: 4805 bytes
+WARNING: failed to send WS to agent 'operator@local'. Queued durable notification.
+NOTIFY: task=task-19f4fa82d5e chain=chain-19f4fa82cc2 status=in_progress actionable_empty=true fallback=operator@local fallback_live=true author=pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 05:31:51.605 | POST /tasks/comment | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365","task_id":"task-19f4fa82d5e","body":"Plan: define a tiny README-only change, then let implementation/review/valida... | Status: 200 | Latency: 43.0ms | Size: 44 bytes | Body: {"ok":true,"comment_id":"cmt_1783747911563"}
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:51.627 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.4ms | Size: 78 bytes | Body: {"user_id":"operator@local","agent_instance_id":"pi@task18-e2e","messages":[]}
+[RPC TELEMETRY] 2026-07-11 05:31:51.731 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 127.8ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:31:51.751 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 125.3ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:31:51.823 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 192.3ms | Size: 1012 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 05:31:52.745 | POST /tasks/done | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365","task_id":"task-19f4fa82d5e","body":"Plan completed; implementation can proceed with README-only change and follow... | Status: 400 | Latency: 0.4ms | Size: 55 bytes | Body: {"ok":false,"message":"task has 1 unresolved comments"}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[TASK EVENT] Kind: Task_Comment_Resolved | Task ID: task-19f4fa82d5e | Chain ID:  | Status:  | Author: pi@task18-e2e | Body: 
+[RPC TELEMETRY] 2026-07-11 05:31:54.180 | POST /tasks/comment-resolve | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365","task_id":"task-19f4fa82d5e","comment_id":"cmt_1783747911563"} | Status: 200 | Latency: 7.9ms | Size: 11 bytes | Body: {"ok":true}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f4fa82d5e | Chain ID:  | Status: review_ready | Author: pi@task18-e2e | Body: Plan completed; implementation can proceed with README-only change and follow reviewer/validate sequence.
+NOTIFY: task=task-19f4fa82d5e chain=chain-19f4fa82cc2 status=review_ready actionable_sent=0 subscribers_sent=0 skipped_self=0 author=pi@task18-e2e
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f4fa82d5e | Chain ID:  | Status: approved | Author: system-auto-approve | Body: system_auto:all_lgtm_required_approved
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:55.207 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 1.0ms | Size: 4368 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:55.242 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.4ms | Size: 78 bytes | Body: {"user_id":"operator@local","agent_instance_id":"pi@task18-e2e","messages":[]}
+NOTIFY: task=task-19f4fa82d5e chain=chain-19f4fa82cc2 status=approved actionable_sent=1 subscribers_sent=0 skipped_self=0 author=system-auto-approve
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f4fa82d5f | Chain ID: chain-19f4fa82cc2 | Status: queued | Author: system-auto-approve | Body: system_auto:deps_cleared
+[RPC TELEMETRY] 2026-07-11 05:31:55.261 | GET /agents | Params:  | Status: 200 | Latency: 0.2ms | Size: 999 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:55.307 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 0.7ms | Size: 4351 bytes
+WARNING: registry_send_ws_text failed: agent 'coder-1@team-chain-19f4fa82cc2' not found in registry
+WARNING: failed to send WS to agent 'coder-1@team-chain-19f4fa82cc2'. Queued durable notification.
+NOTIFY: task=task-19f4fa82d5f chain=chain-19f4fa82cc2 status=queued actionable_sent=1 subscribers_sent=0 skipped_self=0 author=system-auto-approve
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f4fa82d5f | Chain ID: chain-19f4fa82cc2 | Status: in_progress | Author: system-auto-claim | Body: system_auto:auto_claimed
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:55.325 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.6ms | Size: 78 bytes | Body: {"user_id":"operator@local","agent_instance_id":"pi@task18-e2e","messages":[]}
+[RPC TELEMETRY] 2026-07-11 05:31:55.340 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 140.8ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:31:55.347 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 117.8ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+WARNING: registry_send_ws_text failed: agent 'coder-1@team-chain-19f4fa82cc2' not found in registry
+[RPC TELEMETRY] 2026-07-11 05:31:55.358 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 116.3ms | Size: 146 bytes
+WARNING: failed to send WS to agent 'coder-1@team-chain-19f4fa82cc2'. Queued durable notification.
+NOTIFY: task=task-19f4fa82d5f chain=chain-19f4fa82cc2 status=in_progress actionable_sent=1 subscribers_sent=0 skipped_self=0 author=system-auto-claim
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:55.362 | POST /tasks/done | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365","task_id":"task-19f4fa82d5e","body":"Plan completed; implementation can proceed with README-only change and follow... | Status: 200 | Latency: 186.0ms | Size: 64 bytes | Body: {"ok":true,"task_id":"task-19f4fa82d5e","status":"review_ready"}
+[RPC TELEMETRY] 2026-07-11 05:31:55.364 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 1.2ms | Size: 4350 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:55.372 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 6.0ms | Size: 78 bytes | Body: {"user_id":"operator@local","agent_instance_id":"pi@task18-e2e","messages":[]}
+[RPC TELEMETRY] 2026-07-11 05:31:55.391 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 130.9ms | Size: 146 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:55.400 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 3.5ms | Size: 4350 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:55.401 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.5ms | Size: 78 bytes | Body: {"user_id":"operator@local","agent_instance_id":"pi@task18-e2e","messages":[]}
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:55.440 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 3.2ms | Size: 78 bytes | Body: {"user_id":"operator@local","agent_instance_id":"pi@task18-e2e","messages":[]}
+[RPC TELEMETRY] 2026-07-11 05:31:55.464 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 125.0ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:31:55.467 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 99.8ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:31:55.471 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 228.0ms | Size: 1012 bytes
+[RPC TELEMETRY] 2026-07-11 05:31:55.493 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 97.2ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:55.595 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 97.6ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:55.616 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 141.2ms | Size: 1012 bytes
+[RPC TELEMETRY] 2026-07-11 05:31:55.687 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 76.3ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:31:55.753 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 59.4ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:31:55.756 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 108.9ms | Size: 1012 bytes
+[RPC TELEMETRY] 2026-07-11 05:31:55.892 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 126.5ms | Size: 1012 bytes
+[RPC TELEMETRY] 2026-07-11 05:31:56.016 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 112.8ms | Size: 1012 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 05:31:56.624 | POST /tasks/list | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365"} | Status: 200 | Latency: 0.5ms | Size: 5977 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 05:32:06.629 | POST /tasks/show | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365","task_id":"task-19f4fa82d5e"} | Status: 200 | Latency: 0.5ms | Size: 778 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 05:32:08.127 | POST /tasks/list | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365"} | Status: 200 | Latency: 1.6ms | Size: 5977 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:19.195 | GET /task-chains | Params: limit=100&offset=0 | Status: 200 | Latency: 0.7ms | Size: 563 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:19.224 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 3.4ms | Size: 4350 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:19.262 | GET /agents | Params:  | Status: 200 | Latency: 0.3ms | Size: 999 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:19.264 | POST /user-rpc | Params: {"action":"project_list","client_instance_id":"heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3","client_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 4.3ms | Size: 484 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:19.284 | GET /preferences | Params:  | Status: 200 | Latency: 15.0ms | Size: 28595 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:19.338 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 0.8ms | Size: 4350 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: message_db_insert called for message_id = chatmsg_1783747939374 user_id = operator@local agent_instance_id = pi@task18-e2e direction = user_to_agent interrupt = false
+DEBUG: message_db_insert succeeded for chatmsg_1783747939374
+DEBUG: message_db_get_last_read_status for operator@local pi@task18-e2e = [0,0] (no row)
+DEBUG: message_db_get_last_read_status for operator@local pi@task18-e2e = [0,0] (no row)
+[RPC TELEMETRY] 2026-07-11 05:32:19.382 | POST /chat/send-to-coordinator | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a","chain_id":"chain-19f4fa82cc2","body":"Please coordinate the tiny README change, review, and merge-ready handoff."... | Status: 200 | Latency: 16.3ms | Size: 150 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:19.430 | GET /agents | Params:  | Status: 200 | Latency: 0.3ms | Size: 999 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:19.432 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.9ms | Size: 396 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: message_db_get_last_read_status for operator@local pi@task18-e2e = [0,0] (no row)
+DEBUG: message_db_mark_conversation_read set operator@local pi@task18-e2e to 1783747939478 for agent_to_user
+DEBUG: message_db_get_last_read_status for operator@local pi@task18-e2e = [ 0 , 1783747939478 ]
+[RPC TELEMETRY] 2026-07-11 05:32:19.504 | POST /user-rpc | Params: {"action":"mark_read","client_instance_id":"heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3","client_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a","agent_instance_id":"pi... | Status: 200 | Latency: 26.4ms | Size: 40 bytes | Body: {"ok":true,"read_unix_ms":1783747939478}
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:19.507 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 2.0ms | Size: 396 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:19.546 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.7ms | Size: 396 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:19.574 | GET /chats/pi%40task18-e2e/messages | Params: limit=50 | Status: 200 | Latency: 0.5ms | Size: 396 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:19.592 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 151.8ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:19.594 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 159.9ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:19.607 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 171.2ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:19.649 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 104.5ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:19.670 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 238.5ms | Size: 1012 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:19.758 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 141.9ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:19.872 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 92.2ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:32:19.906 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 194.4ms | Size: 1012 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:20.035 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 123.7ms | Size: 1012 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:21.374 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 13.3ms | Size: 396 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:21.458 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 99.9ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:21.479 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 119.5ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:32:21.544 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 186.1ms | Size: 1012 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:21.561 | GET /agents | Params:  | Status: 200 | Latency: 0.2ms | Size: 999 bytes
+DEBUG: message_db_get_last_read_status for operator@local pi@task18-e2e = [ 0 , 1783747939478 ]
+DEBUG: message_db_fetch_unread for operator@local pi@task18-e2e last_read user_to_agent = 0 agent_to_user= 1783747939478 direction= user_to_agent limit= 50 cursor= 0
+DEBUG: Query bound with user_id = operator@local agent_instance_id = pi@task18-e2e
+DEBUG: Found unread message: chatmsg_1783747939374 created at 1783747939374
+DEBUG: message_db_fetch_unread returning 1 messages
+DEBUG: message_db_get_last_read_status for operator@local pi@task18-e2e = [ 0 , 1783747939478 ]
+DEBUG: message_db_get_last_read_status for operator@local pi@task18-e2e = [ 0 , 1783747939478 ]
+DEBUG: message_db_get_last_read_status for operator@local pi@task18-e2e = [ 0 , 1783747939478 ]
+DEBUG: message_db_mark_conversation_read set operator@local pi@task18-e2e to 1783747939374 for user_to_agent
+DEBUG: message_db_get_last_read_status for operator@local pi@task18-e2e = [ 1783747939374 , 1783747939478 ]
+[RPC TELEMETRY] 2026-07-11 05:32:28.494 | POST /agent-rpc | Params: {"agent_token":"agt_9ab7a7dd9c774bed4d16613030e82e908558991d2d60e52b515b3d5854bcc365","user_id":"operator@local","action":"fetch_user_chat","unread_only":true,"limit":3} | Status: 200 | Latency: 13.4ms | Size: 406 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: message_db_get_last_read_status for operator@local pi@task18-e2e = [ 1783747939374 , 1783747939478 ]
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: message_db_mark_conversation_read set operator@local pi@task18-e2e to 1783747948518 for agent_to_user
+DEBUG: message_db_get_last_read_status for operator@local pi@task18-e2e = [ 1783747939374 , 1783747948518 ]
+[RPC TELEMETRY] 2026-07-11 05:32:28.533 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 15.2ms | Size: 396 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:28.533 | POST /user-rpc | Params: {"action":"mark_read","client_instance_id":"heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3","client_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a","agent_instance_id":"pi... | Status: 200 | Latency: 15.1ms | Size: 40 bytes | Body: {"ok":true,"read_unix_ms":1783747948518}
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:28.590 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.7ms | Size: 396 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:28.594 | GET /chats/pi%40task18-e2e/messages | Params: limit=50 | Status: 200 | Latency: 0.6ms | Size: 396 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:28.716 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 196.2ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:32:28.716 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 207.4ms | Size: 146 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:28.749 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 160.0ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:28.785 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 262.2ms | Size: 1012 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:28.794 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 62.5ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:32:28.877 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 87.8ms | Size: 1012 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:32.341 | GET /health | Params:  | Status: 200 | Latency: 0.0ms | Size: 32 bytes | Body: {"ok":true,"protocol_version":1}
+DEBUG: auth_db_store_token for agent coder-1@team-chain-19f4fa82cc2 token = agt_934c482e8fb4af0a ...
+DEBUG: auth_db_store_token succeeded
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:32.378 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.7ms | Size: 396 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:32.379 | GET /agents | Params:  | Status: 200 | Latency: 0.2ms | Size: 1818 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:32.459 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 84.2ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:32:32.484 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 110.2ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:32.540 | POST /register | Params: {"protocol_version":1,"agent_class":"coder-1","agent_instance_id":"coder-1@team-chain-19f4fa82cc2","display_name":"coder-1@team-chain-19f4fa82cc2","agent_token":"agt_934c482e8fb4af0af1602fafac4f14a2fc... | Status: 200 | Latency: 195.3ms | Size: 14790 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = coder-1@team-chain-19f4fa82cc2
+[RPC TELEMETRY] 2026-07-11 05:32:32.552 | POST /projects/show | Params: {"agent_token":"agt_934c482e8fb4af0af1602fafac4f14a2fc46b52dbba2ade0e8ef836a993e0eae","project_id":"default"} | Status: 200 | Latency: 0.3ms | Size: 220 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:32.559 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 183.3ms | Size: 1014 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = coder-1@team-chain-19f4fa82cc2
+[RPC TELEMETRY] 2026-07-11 05:32:32.569 | POST /projects/show | Params: {"agent_token":"agt_934c482e8fb4af0af1602fafac4f14a2fc46b52dbba2ade0e8ef836a993e0eae","project_id":"default"} | Status: 200 | Latency: 1.8ms | Size: 220 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:32.576 | GET /agents | Params: project_id=default | Status: 200 | Latency: 0.1ms | Size: 1818 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:32.579 | POST /agent-rpc | Params: {"agent_token":"agt_934c482e8fb4af0af1602fafac4f14a2fc46b52dbba2ade0e8ef836a993e0eae","action":"memory_list","scope":"project","subject_key":"pr:default","status":"active"} | Status: 200 | Latency: 0.4ms | Size: 24 bytes | Body: {"ok":true,"records":[]}
+[RPC TELEMETRY] 2026-07-11 05:32:32.760 | POST /startup | Params: {"agent_instance_id":"coder-1@team-chain-19f4fa82cc2","startup_status":"starting","reason_code":"launch","safe_diagnostic":"Agent process launched in tmux","provider_profile":"pi","run_dir":"/private/... | Status: 200 | Latency: 1.2ms | Size: 11 bytes | Body: {"ok":true}
+[RPC TELEMETRY] 2026-07-11 05:32:32.766 | GET /agents | Params:  | Status: 200 | Latency: 0.5ms | Size: 2007 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:32.771 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.5ms | Size: 396 bytes
+INFO: replayed 2 durable task notifications to agent 'coder-1@team-chain-19f4fa82cc2'.
+ws connected coder-1@team-chain-19f4fa82cc2
+[RPC TELEMETRY] 2026-07-11 05:32:32.824 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 57.2ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:32.836 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 66.4ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:32:32.844 | GET /agents | Params:  | Status: 200 | Latency: 1.9ms | Size: 2007 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:32.847 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 3.2ms | Size: 396 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:32.902 | GET /agents | Params:  | Status: 200 | Latency: 0.3ms | Size: 2040 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:32.925 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 157.2ms | Size: 1014 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:32.944 | GET /agents | Params:  | Status: 200 | Latency: 7.0ms | Size: 2040 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:32.947 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 9.6ms | Size: 396 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:32.963 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 120.6ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:32.978 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 132.0ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:32.989 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 4.4ms | Size: 396 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:33.013 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 109.3ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:33.022 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 114.2ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:33.083 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 86.7ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:33.101 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 138.4ms | Size: 1014 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:33.165 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 77.8ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:32:33.261 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 143.8ms | Size: 1014 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:33.377 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 106.7ms | Size: 1014 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:44.193 | POST /agent-rpc | Params: {"agent_token":"agt_934c482e8fb4af0af1602fafac4f14a2fc46b52dbba2ade0e8ef836a993e0eae","action":"start_success"} | Status: 200 | Latency: 0.1ms | Size: 81 bytes | Body: {"ok":true,"agent_instance_id":"coder-1@team-chain-19f4fa82cc2","status":"ready"}
+[RPC TELEMETRY] 2026-07-11 05:32:44.222 | GET /agents | Params:  | Status: 200 | Latency: 0.2ms | Size: 2039 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:44.227 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.8ms | Size: 396 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:44.341 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 118.9ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:44.344 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 114.5ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:32:44.426 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 198.9ms | Size: 1014 bytes
+DEBUG: message_db_get_last_read_status for operator@local coder-1@team-chain-19f4fa82cc2 = [0,0] (no row)
+[RPC TELEMETRY] 2026-07-11 05:32:47.384 | GET /agents | Params:  | Status: 200 | Latency: 0.3ms | Size: 2051 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:47.387 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 3.2ms | Size: 396 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:47.569 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 182.7ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:47.576 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 190.1ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:32:47.617 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 233.9ms | Size: 1014 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:49.228 | GET /task-chains | Params: limit=100&offset=0 | Status: 200 | Latency: 0.6ms | Size: 563 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:49.233 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 0.4ms | Size: 4350 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:49.245 | POST /user-rpc | Params: {"action":"project_list","client_instance_id":"heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3","client_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 0.2ms | Size: 484 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:49.249 | GET /agents | Params:  | Status: 200 | Latency: 0.3ms | Size: 2051 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:49.263 | GET /preferences | Params:  | Status: 200 | Latency: 13.7ms | Size: 28595 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:49.272 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 0.4ms | Size: 4350 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:51.374 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 2.5ms | Size: 396 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:51.459 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 89.7ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:51.462 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 92.3ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:32:51.592 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 220.9ms | Size: 1014 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = coder-1@team-chain-19f4fa82cc2
+[RPC TELEMETRY] 2026-07-11 05:32:53.192 | POST /tasks/show | Params: {"agent_token":"agt_934c482e8fb4af0af1602fafac4f14a2fc46b52dbba2ade0e8ef836a993e0eae"} | Status: 404 | Latency: 0.3ms | Size: 39 bytes | Body: {"ok":false,"message":"task not found"}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = coder-1@team-chain-19f4fa82cc2
+[RPC TELEMETRY] 2026-07-11 05:32:58.810 | POST /tasks/next | Params: {"agent_token":"agt_934c482e8fb4af0af1602fafac4f14a2fc46b52dbba2ade0e8ef836a993e0eae"} | Status: 200 | Latency: 4.2ms | Size: 938 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:58.820 | GET /agents | Params:  | Status: 200 | Latency: 0.2ms | Size: 2079 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:58.820 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.5ms | Size: 396 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:32:58.882 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 61.0ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:32:58.895 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 72.6ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:32:58.916 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 96.0ms | Size: 1014 bytes
+[RPC TELEMETRY] 2026-07-11 05:33:02.603 | GET /agents | Params:  | Status: 200 | Latency: 0.2ms | Size: 2079 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:33:02.615 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 4.6ms | Size: 396 bytes
+[RPC TELEMETRY] 2026-07-11 05:33:02.671 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 69.9ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:33:02.675 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 68.5ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:33:02.728 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 108.4ms | Size: 1014 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:33:17.668 | GET /agents | Params:  | Status: 200 | Latency: 0.3ms | Size: 2079 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:33:17.685 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 8.4ms | Size: 396 bytes
+[RPC TELEMETRY] 2026-07-11 05:33:17.723 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 54.1ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:33:17.734 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 67.5ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:33:17.762 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 91.3ms | Size: 1014 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:33:19.264 | GET /task-chains | Params: limit=100&offset=0 | Status: 200 | Latency: 0.5ms | Size: 563 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:33:19.270 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 0.7ms | Size: 4350 bytes
+[RPC TELEMETRY] 2026-07-11 05:33:19.280 | GET /agents | Params:  | Status: 200 | Latency: 0.3ms | Size: 2079 bytes
+[RPC TELEMETRY] 2026-07-11 05:33:19.281 | POST /user-rpc | Params: {"action":"project_list","client_instance_id":"heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3","client_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 1.1ms | Size: 484 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:33:19.287 | GET /preferences | Params:  | Status: 200 | Latency: 6.5ms | Size: 28595 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:33:19.300 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 0.4ms | Size: 4350 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:33:21.445 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 23.6ms | Size: 396 bytes
+[RPC TELEMETRY] 2026-07-11 05:33:21.468 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 48.7ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:33:21.478 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 56.0ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:33:21.505 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 83.2ms | Size: 1014 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:33:32.779 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 7.1ms | Size: 396 bytes
+[RPC TELEMETRY] 2026-07-11 05:33:32.784 | GET /agents | Params:  | Status: 200 | Latency: 0.8ms | Size: 2079 bytes
+[RPC TELEMETRY] 2026-07-11 05:33:32.847 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 87.0ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:33:32.860 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 96.4ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:33:33.364 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 585.8ms | Size: 1014 bytes
+[RPC TELEMETRY] 2026-07-11 05:33:47.833 | GET /agents | Params:  | Status: 200 | Latency: 0.5ms | Size: 2079 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:33:47.869 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.6ms | Size: 396 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:33:47.977 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 141.7ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:33:48.017 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 147.4ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:33:48.042 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 173.2ms | Size: 1014 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:33:49.272 | GET /task-chains | Params: limit=100&offset=0 | Status: 200 | Latency: 0.3ms | Size: 563 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:33:49.288 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 0.5ms | Size: 4350 bytes
+[RPC TELEMETRY] 2026-07-11 05:33:49.301 | POST /user-rpc | Params: {"action":"project_list","client_instance_id":"heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3","client_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 0.2ms | Size: 484 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:33:49.302 | GET /agents | Params:  | Status: 200 | Latency: 0.3ms | Size: 2079 bytes
+[RPC TELEMETRY] 2026-07-11 05:33:49.310 | GET /preferences | Params:  | Status: 200 | Latency: 7.4ms | Size: 28595 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:33:49.336 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 1.0ms | Size: 4350 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:33:51.419 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.6ms | Size: 396 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:33:51.481 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 64.0ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:33:51.482 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 62.7ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:33:51.596 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 177.5ms | Size: 1014 bytes
+[RPC TELEMETRY] 2026-07-11 05:34:02.928 | GET /agents | Params:  | Status: 200 | Latency: 0.3ms | Size: 2079 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:34:02.947 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 10.3ms | Size: 396 bytes
+[RPC TELEMETRY] 2026-07-11 05:34:02.993 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 64.8ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:34:02.998 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 68.6ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:34:03.047 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 113.2ms | Size: 1014 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:34:18.023 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.7ms | Size: 396 bytes
+[RPC TELEMETRY] 2026-07-11 05:34:18.023 | GET /agents | Params:  | Status: 200 | Latency: 0.3ms | Size: 2079 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:34:18.087 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 63.7ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:34:18.099 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 73.9ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:34:18.164 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 144.0ms | Size: 1014 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:34:19.239 | GET /task-chains | Params: limit=100&offset=0 | Status: 200 | Latency: 0.4ms | Size: 563 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:34:19.260 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 0.8ms | Size: 4350 bytes
+[RPC TELEMETRY] 2026-07-11 05:34:19.294 | POST /user-rpc | Params: {"action":"project_list","client_instance_id":"heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3","client_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 0.2ms | Size: 484 bytes
+[RPC TELEMETRY] 2026-07-11 05:34:19.296 | GET /agents | Params:  | Status: 200 | Latency: 0.4ms | Size: 2079 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:34:19.307 | GET /preferences | Params:  | Status: 200 | Latency: 11.0ms | Size: 28595 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:34:19.325 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 1.6ms | Size: 4350 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:34:21.350 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.6ms | Size: 396 bytes
+[RPC TELEMETRY] 2026-07-11 05:34:21.411 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 63.1ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:34:21.415 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 65.9ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:34:21.470 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 120.4ms | Size: 1014 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:34:33.121 | GET /agents | Params:  | Status: 200 | Latency: 0.3ms | Size: 2079 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:34:33.125 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.6ms | Size: 396 bytes
+[RPC TELEMETRY] 2026-07-11 05:34:33.208 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 87.5ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:34:33.222 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 100.5ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:34:33.262 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 136.9ms | Size: 1014 bytes
+[RPC TELEMETRY] 2026-07-11 05:34:48.220 | GET /agents | Params:  | Status: 200 | Latency: 0.2ms | Size: 2079 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:34:48.223 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 0.7ms | Size: 396 bytes
+[RPC TELEMETRY] 2026-07-11 05:34:48.286 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 65.9ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:34:48.292 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 70.1ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:34:48.339 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 97.3ms | Size: 1014 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:34:49.273 | GET /task-chains | Params: limit=100&offset=0 | Status: 200 | Latency: 1.6ms | Size: 563 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:34:49.284 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 1.3ms | Size: 4350 bytes
+[RPC TELEMETRY] 2026-07-11 05:34:49.303 | GET /agents | Params:  | Status: 200 | Latency: 0.4ms | Size: 2079 bytes
+[RPC TELEMETRY] 2026-07-11 05:34:49.303 | POST /user-rpc | Params: {"action":"project_list","client_instance_id":"heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3","client_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 0.3ms | Size: 484 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:34:49.314 | GET /preferences | Params:  | Status: 200 | Latency: 9.0ms | Size: 28595 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:34:49.323 | GET /task-chains/chain-19f4fa82cc2/tasks | Params:  | Status: 200 | Latency: 0.9ms | Size: 4350 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 05:34:51.422 | GET /chats/pi%40task18-e2e/messages | Params: limit=50&chain_id=chain-19f4fa82cc2 | Status: 200 | Latency: 11.7ms | Size: 396 bytes
+[RPC TELEMETRY] 2026-07-11 05:34:51.482 | POST /task-chains/chain-19f4fa82cc2/focus | Params: {"agent_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 78.9ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-11 05:34:51.482 | GET /chains/chain-19f4fa82cc2/workspace | Params: agent_token=uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a | Status: 200 | Latency: 74.9ms | Size: 44 bytes | Body: {"ok":false,"message":"workspace not found"}
+[RPC TELEMETRY] 2026-07-11 05:34:51.555 | GET /teams/team-chain-19f4fa82cc2 | Params:  | Status: 200 | Latency: 143.8ms | Size: 1014 bytes

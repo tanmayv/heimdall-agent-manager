@@ -13,6 +13,7 @@ Chat_Event :: struct {
 	agent_instance_id: string,
 	direction: string,
 	body: string,
+	chain_id: string,
 	delivered_unix_ms: i64,
 	read_unix_ms: i64,
 	delivery_failed_unix_ms: i64,
@@ -27,6 +28,7 @@ Chat_Message :: struct {
 	agent_instance_id: string,
 	direction: string,
 	body: string,
+	chain_id: string,
 	delivered_unix_ms: i64,
 	read_unix_ms: i64,
 	delivery_failed_unix_ms: i64,
@@ -55,6 +57,7 @@ chat_store_append_event :: proc(event: Chat_Event) -> bool {
 			agent_instance_id = ev.agent_instance_id,
 			direction = ev.direction,
 			body = ev.body,
+			chain_id = ev.chain_id,
 			delivered_unix_ms = ev.delivered_unix_ms,
 			read_unix_ms = ev.read_unix_ms,
 			delivery_failed_unix_ms = ev.delivery_failed_unix_ms,
@@ -102,12 +105,17 @@ chat_message_created :: proc(message_id: string) -> i64 {
 }
 
 chat_store_append_message :: proc(user_id, agent_instance_id, direction, body: string, interrupt: bool) -> (string, bool) {
+	return chat_store_append_message_with_chain(user_id, agent_instance_id, direction, body, interrupt, "")
+}
+
+chat_store_append_message_with_chain :: proc(user_id, agent_instance_id, direction, body: string, interrupt: bool, chain_id: string) -> (string, bool) {
 	event := Chat_Event{
 		kind = .Message_Appended,
 		user_id = user_id,
 		agent_instance_id = agent_instance_id,
 		direction = direction,
 		body = body,
+		chain_id = chain_id,
 		created_unix_ms = router_now_unix_ms(),
 		interrupt = interrupt,
 	}

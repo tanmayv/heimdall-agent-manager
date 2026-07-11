@@ -345,9 +345,38 @@ agent_store_update_work_state :: proc(agent_instance_id, current_task_id: string
 		event.current_task_since = -1
 	}
 	if touch_needed do event.last_needed_at_unix_ms = now
-	return agent_store_append_event(event)
+	ok := agent_store_append_event(event)
+	if ok {
+		if updated_idx := agent_record_index_by_instance(agent_instance_id); updated_idx >= 0 do agent_store_emit_agent_update(agent_instance_records[updated_idx])
+	}
+	return ok
 }
 
 agent_store_touch_needed :: proc(agent_instance_id: string) -> bool { return agent_store_update_work_state(agent_instance_id, "", false, true) }
 agent_store_set_current_task :: proc(agent_instance_id, task_id: string) -> bool { return agent_store_update_work_state(agent_instance_id, task_id, true, true) }
 agent_store_clear_current_task :: proc(agent_instance_id: string) -> bool { return agent_store_update_work_state(agent_instance_id, "", true, true) }
+
+agent_store_emit_agent_update :: proc(rec: Agent_Instance_Record) {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"type":"agent_update","agent_instance_id":"`); json_write_string(&b, rec.agent_instance_id)
+	strings.write_string(&b, `","agent_record_id":"`); json_write_string(&b, rec.agent_record_id)
+	strings.write_string(&b, `","display_name":"`); json_write_string(&b, rec.display_name)
+	strings.write_string(&b, `","current_task_id":"`); json_write_string(&b, rec.current_task_id)
+	strings.write_string(&b, `","current_task_since":`); strings.write_string(&b, fmt.tprintf("%d", rec.current_task_since))
+	strings.write_string(&b, `,"state":"`); json_write_string(&b, agent_store_agent_state(rec))
+	strings.write_string(&b, `"}`)
+	user_client_fanout_all_ws_text(strings.to_string(b))
+}
+
+agent_store_agent_state :: proc(rec: Agent_Instance_Record) -> string {
+	if idx := registry_find_agent(rec.agent_instance_id); idx >= 0 {
+		agent := agents[idx]
+		if agent.stop_requested_unix_ms != 0 do return "shutting_down"
+		if agent.blocked_reason != "" || agent.exec_state == "blocked" do return "blocked"
+		if rec.current_task_id != "" do return "live"
+		if agent.startup_status == "starting" do return "warming"
+		return "idle"
+	}
+	if rec.current_task_id != "" do return "live"
+	return "idle"
+}

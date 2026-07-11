@@ -5,7 +5,7 @@ import "core:os"
 import "core:strconv"
 import "core:strings"
 
-TEAM_DB_USER_VERSION :: 2
+TEAM_DB_USER_VERSION :: 3
 
 Team_DB :: struct {
 	data_dir: string,
@@ -24,9 +24,11 @@ Team_Record :: struct {
 }
 
 Team_Member_Record :: struct {
+	team_member_id: string,
 	team_id: string,
 	role_key: string,
 	role_index: int,
+	agent_instance_id: string,
 	agent_record_id: string,
 	is_user_proxy: bool,
 	route_to: string,
@@ -56,9 +58,11 @@ CREATE TABLE IF NOT EXISTS teams (
 	chain_id TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS team_members (
+	team_member_id TEXT,
 	team_id TEXT,
 	role_key TEXT,
 	role_index INTEGER,
+	agent_instance_id TEXT,
 	agent_record_id TEXT,
 	is_user_proxy INTEGER DEFAULT 0,
 	route_to TEXT,
@@ -73,6 +77,22 @@ PRAGMA user_version = 1;
 	if version < 2 {
 		if !team_db_exec(db_path, `CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_chain_id ON teams(chain_id);`) do return false
 	}
+	if version < 3 {
+		if !team_db_has_column(db_path, "team_members", "is_user_proxy") {
+			if !team_db_exec(db_path, `ALTER TABLE team_members ADD COLUMN is_user_proxy INTEGER DEFAULT 0;`) do return false
+		}
+		if !team_db_has_column(db_path, "team_members", "route_to") {
+			if !team_db_exec(db_path, `ALTER TABLE team_members ADD COLUMN route_to TEXT;`) do return false
+		}
+		if !team_db_has_column(db_path, "team_members", "team_member_id") {
+			if !team_db_exec(db_path, `ALTER TABLE team_members ADD COLUMN team_member_id TEXT NOT NULL DEFAULT '';`) do return false
+		}
+		if !team_db_has_column(db_path, "team_members", "agent_instance_id") {
+			if !team_db_exec(db_path, `ALTER TABLE team_members ADD COLUMN agent_instance_id TEXT NOT NULL DEFAULT '';`) do return false
+		}
+		if !team_db_exec(db_path, `UPDATE team_members SET team_member_id = team_id || ':' || role_key || ':' || role_index WHERE team_member_id = '';`) do return false
+		if !team_db_exec(db_path, `UPDATE team_members SET agent_instance_id = role_key || '-' || (role_index + 1) || '@' || team_id WHERE agent_instance_id = '' AND is_user_proxy = 0;`) do return false
+	}
 
 	if !team_db_has_column(db_path, "teams", "chain_id") {
 		if !team_db_exec(db_path, `ALTER TABLE teams ADD COLUMN chain_id TEXT NOT NULL DEFAULT '';`) do return false
@@ -83,7 +103,15 @@ PRAGMA user_version = 1;
 	if !team_db_has_column(db_path, "team_members", "route_to") {
 		if !team_db_exec(db_path, `ALTER TABLE team_members ADD COLUMN route_to TEXT;`) do return false
 	}
+	if !team_db_has_column(db_path, "team_members", "team_member_id") {
+		if !team_db_exec(db_path, `ALTER TABLE team_members ADD COLUMN team_member_id TEXT NOT NULL DEFAULT '';`) do return false
+	}
+	if !team_db_has_column(db_path, "team_members", "agent_instance_id") {
+		if !team_db_exec(db_path, `ALTER TABLE team_members ADD COLUMN agent_instance_id TEXT NOT NULL DEFAULT '';`) do return false
+	}
 	if !team_db_exec(db_path, `CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_chain_id ON teams(chain_id);`) do return false
+	if !team_db_exec(db_path, `CREATE UNIQUE INDEX IF NOT EXISTS idx_team_members_member_id ON team_members(team_member_id);`) do return false
+	if !team_db_exec(db_path, `CREATE UNIQUE INDEX IF NOT EXISTS idx_team_members_agent_instance_id ON team_members(agent_instance_id) WHERE agent_instance_id != '';`) do return false
 	return team_db_exec(db_path, fmt.tprintf("PRAGMA user_version = %d;", TEAM_DB_USER_VERSION))
 }
 
@@ -130,12 +158,26 @@ team_db_create_team_with_members :: proc(db: Team_DB, team: Team_Record, members
 }
 
 team_db_insert_member_sql :: proc(member: Team_Member_Record) -> string {
+	m := team_member_with_identity_defaults(member)
 	user_proxy := 0
-	if member.is_user_proxy do user_proxy = 1
+	if m.is_user_proxy do user_proxy = 1
 	return fmt.tprintf(
-		"INSERT OR REPLACE INTO team_members (team_id, role_key, role_index, agent_record_id, is_user_proxy, route_to) VALUES (%s, %s, %d, %s, %d, %s);",
-		sql_text(member.team_id), sql_text(member.role_key), member.role_index, sql_nullable_text(member.agent_record_id), user_proxy, sql_text(member.route_to),
+		"INSERT OR REPLACE INTO team_members (team_member_id, team_id, role_key, role_index, agent_instance_id, agent_record_id, is_user_proxy, route_to) VALUES (%s, %s, %s, %d, %s, %s, %d, %s);",
+		sql_text(m.team_member_id), sql_text(m.team_id), sql_text(m.role_key), m.role_index, sql_text(m.agent_instance_id), sql_nullable_text(m.agent_record_id), user_proxy, sql_text(m.route_to),
 	)
+}
+
+team_member_with_identity_defaults :: proc(member: Team_Member_Record) -> Team_Member_Record {
+	m := member
+	if m.team_member_id == "" do m.team_member_id = team_service_member_id(m.team_id, m.role_key, m.role_index)
+	if m.agent_instance_id == "" && !m.is_user_proxy {
+		if idx := agent_record_index(m.agent_record_id); idx >= 0 {
+			m.agent_instance_id = agent_instance_records[idx].agent_instance_id
+		} else {
+			m.agent_instance_id = team_service_member_agent_instance_id(m.team_id, m.role_key, m.role_index)
+		}
+	}
+	return m
 }
 
 team_db_get_team :: proc(db: Team_DB, team_id: string) -> (Team_Record, bool) {
@@ -172,7 +214,7 @@ team_db_list_teams :: proc(db: Team_DB, project_id, status: string) -> []Team_Re
 }
 
 team_db_list_members :: proc(db: Team_DB, team_id: string) -> []Team_Member_Record {
-	out, ok := team_db_query(db.db_path, fmt.tprintf("SELECT team_id, role_key, role_index, COALESCE(agent_record_id, ''), is_user_proxy, COALESCE(route_to, '') FROM team_members WHERE team_id = %s ORDER BY role_key, role_index;", sql_text(team_id)))
+	out, ok := team_db_query(db.db_path, fmt.tprintf("SELECT COALESCE(team_member_id, ''), team_id, role_key, role_index, COALESCE(agent_instance_id, ''), COALESCE(agent_record_id, ''), is_user_proxy, COALESCE(route_to, '') FROM team_members WHERE team_id = %s ORDER BY role_key, role_index;", sql_text(team_id)))
 	if !ok do return nil
 	rows := [dynamic]Team_Member_Record{}
 	for line in strings.split(out, "\n") {
@@ -226,11 +268,11 @@ team_record_from_line :: proc(line: string) -> (Team_Record, bool) {
 
 team_member_from_line :: proc(line: string) -> (Team_Member_Record, bool) {
 	parts := strings.split(line, "|")
-	if len(parts) < 6 do return Team_Member_Record{}, false
-	role_index, ok_index := strconv.parse_int(parts[2])
-	is_user_proxy, ok_proxy := strconv.parse_int(parts[4])
+	if len(parts) < 8 do return Team_Member_Record{}, false
+	role_index, ok_index := strconv.parse_int(parts[3])
+	is_user_proxy, ok_proxy := strconv.parse_int(parts[6])
 	if !ok_index || !ok_proxy do return Team_Member_Record{}, false
-	return Team_Member_Record{team_id = strings.clone(parts[0]), role_key = strings.clone(parts[1]), role_index = int(role_index), agent_record_id = strings.clone(parts[3]), is_user_proxy = is_user_proxy != 0, route_to = strings.clone(parts[5])}, true
+	return Team_Member_Record{team_member_id = strings.clone(parts[0]), team_id = strings.clone(parts[1]), role_key = strings.clone(parts[2]), role_index = int(role_index), agent_instance_id = strings.clone(parts[4]), agent_record_id = strings.clone(parts[5]), is_user_proxy = is_user_proxy != 0, route_to = strings.clone(parts[7])}, true
 }
 
 team_db_exec :: proc(db_path, sql: string) -> bool {

@@ -89,7 +89,9 @@ Boot request is idempotent: if the agent is already `booting` or `live`, the req
 - An agent is a shutdown candidate when:
   - `current_task_id IS NULL` and
   - no unread mentions in comments, chats, or nudges targeting it, and
-  - `now - max(last_needed_at_unix_ms, last_heartbeat_at_unix_ms) > grace`.
+  - `now - last_needed_at_unix_ms > grace`.
+- Heartbeats prove liveness only; they do **not** defer idle shutdown by themselves, otherwise a healthy idle wrapper would never age out.
+- For wrappers that have not yet received any explicit `last_needed_at_unix_ms` bump, the implementation may use the wrapper startup timestamp as a one-time fallback anchor until the first explicit need signal is recorded.
 - Shutdown path: nudge scheduler emits `agent_stop_request` → `agents_stop.handle_agents_stop` runs. Wrapper cleans up its tmux window on exit.
 - Persistent state (memory rows, task state, VCS worktree) is untouched.
 
@@ -166,11 +168,13 @@ tick:
 
 `ensure_agent`:
 
-1. Look up team-member row for `(team_id, role_key)` or `(team_id, agent_instance_id)`.
-2. If agent is `live`, update `last_needed_at_unix_ms` and return.
-3. If team_instance is `archived`, refuse.
-4. If a boot lease is held, queue this request with the priority.
-5. Else acquire lease and call `agents_start_launch` with the resolved provider/tier from `Team_Kind_Def`.
+1. Look up the durable team-member row by `team_member_id` or by the scoped tuple `(team_id, role_key, role_index)`; direct `agent_instance_id` assignment is accepted only after validating it belongs to the chain's `team_id`.
+2. Use the row's persisted `agent_instance_id` for runtime routing. Generated team-member agent IDs are globally unique and stable for the slot: `<role-key>-<role-index+1>@<team-id>` (for example `coder-2@team-abc123`).
+3. Route by durable slot identity, not by parsing display/agent strings or by global role lookup; `role_key` is a pool hint, while `team_member_id`/`team_id` identify the durable slot.
+4. If agent is `live`, update `last_needed_at_unix_ms` and return.
+5. If team_instance is `archived`, refuse.
+6. If a boot lease is held, queue this request with the priority.
+7. Else acquire lease and call `agents_start_launch` with the resolved provider/tier from `Team_Kind_Def`.
 
 ## `current_task_id` bookkeeping
 
@@ -213,16 +217,21 @@ Used by:
 
 ## Order of operations at chain create
 
+Default chain creation is team-type-first and active-ready by default:
+
 ```
-POST /task-chains {project_id, kind, title, description, scaffold?, wants_vcs?}
+POST /task-chains {project_id, kind, title?, description?/goal?, wants_vcs?}
   1. Validate kind against Team_Kind_Def registry.
   2. Insert team_instance(row, status=latent).
   3. Insert team_member rows (one per role slot × count), agent_record_id=NULL.
      For solo: user_proxy member with is_user_proxy=true.
   4. If project.vcs_kind != "none" and wants_vcs: provision VCS workspace (04-vcs.md).
-  5. Insert task_chain row with team_id, project_id, vcs_workspace_id?, status=planning.
-  6. If scaffold selected: create scaffold tasks (02-team-kinds.md §Scaffold rendering).
-  7. Return chain_id + team_id + workspace_path (if any).
+  5. Insert task_chain row with team_id, project_id, vcs_workspace_id?, status=in_progress (active).
+     If title is omitted, use a placeholder such as `New coding chain` / `Untitled coding chain`.
+  6. Create exactly one initial coordinator discovery task in `ready` state.
+  7. Return chain_id + team_id + workspace_path (if any) + discovery task id.
 ```
 
-At this point **zero agents are running**. Coordinator boots on first user chat or on chain-view focus.
+The initial discovery task is assigned to the chain coordinator and asks them to contact the user in chain chat, clarify the goal, explain the selected team kind/roles, update chain title/description once clear, and create downstream tasks or apply a task-bundle template.
+
+At this point the scheduler has a concrete `ready` coordinator task, so coordinator boot is deterministic and does not rely on a separate `Start team` action. Legacy create-time `scaffold` fields may be accepted as compatibility shims, but default creation does not generate a full task graph.

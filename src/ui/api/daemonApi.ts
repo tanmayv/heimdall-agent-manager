@@ -120,6 +120,11 @@ export async function listKnownAgents({ daemonUrl, projectId = '' }: { daemonUrl
   return data.agents ?? data.records ?? [];
 }
 
+export async function fetchTeam({ daemonUrl, teamId }: { daemonUrl: string; teamId: string }) {
+  if (!teamId) return null;
+  return requestJson(joinUrl(daemonUrl, `/teams/${encodeURIComponent(teamId)}`));
+}
+
 export async function listAgentProviders({ daemonUrl }: { daemonUrl: string }) {
   const data = await requestJson(joinUrl(daemonUrl, '/agents/providers'));
   return data.providers ?? [];
@@ -208,10 +213,13 @@ export async function disassociateAgentFromProject({ daemonUrl, agentRecordId, a
   });
 }
 
-export async function fetchChat({ daemonUrl, clientToken, agentInstanceId, limit = 50, cursor = 0 }: Partial<AgentRequest> & { limit?: number; cursor?: number }) {
+export async function fetchChat({ daemonUrl, clientToken, agentInstanceId, limit = 50, cursor = 0, chainId = '' }: Partial<AgentRequest> & { limit?: number; cursor?: number; chainId?: string }) {
   let path = `/chats/${encodeURIComponent(agentInstanceId || '')}/messages?limit=${limit}`;
   if (cursor > 0) {
     path += `&cursor=${cursor}`;
+  }
+  if (chainId) {
+    path += `&chain_id=${encodeURIComponent(chainId)}`;
   }
   return requestJson(joinUrl(daemonUrl, path), {
     method: 'GET',
@@ -231,6 +239,13 @@ export async function sendToAgent({ daemonUrl, clientInstanceId, clientToken, ag
       body,
       interrupt,
     },
+  });
+}
+
+export async function sendToCoordinator({ daemonUrl, clientInstanceId, clientToken, chainId, body }: UserRpcRequest & { chainId: string; body: string }) {
+  return requestJson(joinUrl(daemonUrl, '/chat/send-to-coordinator'), {
+    method: 'POST',
+    body: { agent_token: clientToken, chain_id: chainId, body, client_instance_id: clientInstanceId },
   });
 }
 
@@ -262,6 +277,27 @@ export async function fetchTaskChain({ daemonUrl, clientToken, chainId }: Omit<U
     method: 'GET',
     headers: { 'Authorization': `Bearer ${clientToken}` }
   });
+}
+
+export async function focusTaskChain({ daemonUrl, clientToken, chainId }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId: string }) {
+  return requestJson(joinUrl(daemonUrl, `/task-chains/${encodeURIComponent(chainId)}/focus`), {
+    method: 'POST',
+    body: { agent_token: clientToken },
+  });
+}
+
+export async function fetchWorkspace({ daemonUrl, clientToken, chainId }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId: string }) {
+  return requestJson(joinUrl(daemonUrl, `/chains/${encodeURIComponent(chainId)}/workspace?agent_token=${encodeURIComponent(clientToken)}`));
+}
+
+export async function previewWorkspaceMerge({ daemonUrl, clientToken, chainId }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId: string }) {
+  return requestJson(joinUrl(daemonUrl, `/chains/${encodeURIComponent(chainId)}/workspace/merge-preview?agent_token=${encodeURIComponent(clientToken)}`));
+}
+
+export async function fetchWorkspaceDiff({ daemonUrl, clientToken, chainId, file = '' }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId: string; file?: string }) {
+  let path = `/chains/${encodeURIComponent(chainId)}/workspace/diff?agent_token=${encodeURIComponent(clientToken)}`;
+  if (file) path += `&file=${encodeURIComponent(file)}`;
+  return requestJson(joinUrl(daemonUrl, path));
 }
 
 export async function listChainTasks({ daemonUrl, clientToken, chainId }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId: string }) {

@@ -139,7 +139,7 @@ task_nudge_delivery_method :: proc(body: string) -> string {
 }
 
 TEAM_BOOT_LEASE_MAX :: 128
-Team_Boot_Lease :: struct { team_id: string, holder_agent_instance_id: string, acquired_at_unix_ms: i64, last_boot_at_unix_ms: i64 }
+Team_Boot_Lease :: struct { team_id: string, holder_agent_instance_id: string, priority: string, acquired_at_unix_ms: i64, last_boot_at_unix_ms: i64 }
 team_boot_leases: [TEAM_BOOT_LEASE_MAX]Team_Boot_Lease
 team_boot_lease_count: int
 
@@ -147,7 +147,7 @@ task_autoscaler_tick :: proc(now: i64) -> int {
 	changed := 0
 	for i in 0..<task_state_count {
 		state := task_states[i]
-		if state.status != .Queued && state.status != .Review_Ready do continue
+		if state.status != .Queued && state.status != .Review_Ready && state.status != .In_Progress do continue
 		chain_idx, found := task_existing_chain_index(state.chain_id)
 		if !found do continue
 		chain := task_chains[chain_idx]
@@ -156,25 +156,43 @@ task_autoscaler_tick :: proc(now: i64) -> int {
 		priority := "normal"
 		if state.status == .Review_Ready { target = task_reviewer_agent_instance_id(state); priority = "high" }
 		if target == "" || target == "user_proxy" do continue
+		if target == chain.coordinator_agent_instance_id do continue
 		if task_autoscaler_ensure_agent(chain, target, state.task_id, priority, now) do changed += 1
 	}
 	changed += task_autoscaler_idle_shutdown(now)
 	return changed
 }
 
+task_autoscaler_ensure_chain_coordinator :: proc(chain_id, reason, priority: string) -> bool {
+	chain_idx, found := task_existing_chain_index(chain_id)
+	if !found do return false
+	chain := task_chains[chain_idx]
+	if chain.status == "archived" do return false
+	coordinator := chain.coordinator_agent_instance_id
+	if coordinator == "" || coordinator == "user_proxy" do return false
+	boot_priority := priority
+	if boot_priority == "" do boot_priority = "high"
+	return task_autoscaler_ensure_agent(chain, coordinator, reason, boot_priority, router_now_unix_ms())
+}
+
 task_autoscaler_ensure_agent :: proc(chain: Task_Chain_State, agent_instance_id, task_id, priority: string, now: i64) -> bool {
 	if agent_instance_id == "" do return false
+	boot_priority := priority
+	if boot_priority == "" do boot_priority = "normal"
+	if boot_priority == "low" && task_autoscaler_team_has_high_priority_boot(chain.team_id) do return false
 	if idx := registry_find_agent(agent_instance_id); idx >= 0 {
 		if agents[idx].connected || agents[idx].has_ws || agents[idx].startup_status == "starting" || agents[idx].startup_status == "ready" {
 			_ = agent_store_touch_needed(agent_instance_id)
 			return false
 		}
 	}
+	incoming_rank := task_autoscaler_boot_priority_rank(boot_priority)
 	lease_idx := task_autoscaler_lease_index(chain.team_id)
 	if lease_idx >= 0 {
 		lease := &team_boot_leases[lease_idx]
-		if now - lease.acquired_at_unix_ms < 90_000 && lease.holder_agent_instance_id != agent_instance_id do return false
-		if now - lease.last_boot_at_unix_ms < 30_000 do return false
+		existing_rank := task_autoscaler_boot_priority_rank(lease.priority)
+		if now - lease.acquired_at_unix_ms < 90_000 && lease.holder_agent_instance_id != agent_instance_id && incoming_rank <= existing_rank do return false
+		if now - lease.last_boot_at_unix_ms < 30_000 && incoming_rank <= existing_rank do return false
 	} else {
 		if team_boot_lease_count >= TEAM_BOOT_LEASE_MAX do return false
 		lease_idx = team_boot_lease_count; team_boot_lease_count += 1
@@ -182,11 +200,36 @@ task_autoscaler_ensure_agent :: proc(chain: Task_Chain_State, agent_instance_id,
 	}
 	lease := &team_boot_leases[lease_idx]
 	lease.holder_agent_instance_id = strings.clone(agent_instance_id)
+	lease.priority = strings.clone(boot_priority)
 	lease.acquired_at_unix_ms = now
 	lease.last_boot_at_unix_ms = now
 	_ = agent_store_touch_needed(agent_instance_id)
 	if task_autoscaler_launch_agent(chain, agent_instance_id) {
 		_ = team_db_update_team_status(team_service_db, chain.team_id, "warming")
+		return true
+	}
+	return false
+}
+
+task_autoscaler_boot_priority_rank :: proc(priority: string) -> int {
+	if priority == "high" do return 3
+	if priority == "low" do return 1
+	return 2
+}
+
+task_autoscaler_team_has_high_priority_boot :: proc(team_id: string) -> bool {
+	for i in 0..<task_state_count {
+		state := task_states[i]
+		if state.status != .Review_Ready do continue
+		chain_idx, found := task_existing_chain_index(state.chain_id)
+		if !found do continue
+		chain := task_chains[chain_idx]
+		if chain.team_id != team_id || chain.status != "in_progress" do continue
+		target := task_reviewer_agent_instance_id(state)
+		if target == "" || target == "user_proxy" do continue
+		if idx := registry_find_agent(target); idx >= 0 {
+			if agents[idx].connected || agents[idx].has_ws || agents[idx].startup_status == "starting" || agents[idx].startup_status == "ready" do continue
+		}
 		return true
 	}
 	return false
@@ -212,21 +255,45 @@ task_autoscaler_launch_agent :: proc(chain: Task_Chain_State, agent_instance_id:
 }
 
 task_autoscaler_idle_shutdown :: proc(now: i64) -> int {
-	grace := task_nudge_cfg.team_idle_shutdown_seconds
-	if grace <= 0 do grace = 1800
 	changed := 0
 	for i in 0..<agent_instance_record_count {
 		rec := agent_instance_records[i]
 		if rec.agent_instance_id == "" || rec.current_task_id != "" do continue
+		if task_autoscaler_agent_is_active_chain_coordinator(rec.agent_instance_id) do continue
 		idx := registry_find_agent(rec.agent_instance_id)
 		if idx < 0 || !agents[idx].has_ws do continue
 		if task_autoscaler_has_unread_mentions(rec.agent_instance_id, rec.last_needed_at_unix_ms) do continue
 		last := rec.last_needed_at_unix_ms
-		if agents[idx].last_seen_unix_ms > last do last = agents[idx].last_seen_unix_ms
+		if last == 0 do last = agents[idx].startup_updated_unix_ms
+		if last == 0 do last = agents[idx].last_seen_unix_ms
+		grace := task_autoscaler_idle_shutdown_seconds(rec.agent_instance_id)
 		if last == 0 || now - last < i64(grace) * 1000 do continue
 		if ok, _, _ := agents_stop_request(rec.agent_instance_id, 30); ok { changed += 1 }
 	}
 	return changed
+}
+
+task_autoscaler_agent_is_active_chain_coordinator :: proc(agent_instance_id: string) -> bool {
+	for i in 0..<task_chain_count {
+		chain := task_chains[i]
+		if chain.coordinator_agent_instance_id == agent_instance_id && chain.status != "archived" do return true
+	}
+	return false
+}
+
+task_autoscaler_idle_shutdown_seconds :: proc(agent_instance_id: string) -> int {
+	grace := task_nudge_cfg.team_idle_shutdown_seconds
+	if grace <= 0 do grace = 1800
+	for i in 0..<task_state_count {
+		state := task_states[i]
+		if state.chain_id == "" || task_status_terminal(state.status) do continue
+		if state.assignee_agent_instance_id != agent_instance_id && !task_actor_has_role(state, agent_instance_id, "lgtm_required") && !task_actor_has_role(state, agent_instance_id, "lgtm_optional") && !task_actor_has_role(state, agent_instance_id, "coordinator") do continue
+		team, ok := team_db_get_team_by_chain_id(team_service_db, state.chain_id)
+		if !ok do continue
+		kind := team_kind_get(team.kind)
+		if kind != nil && kind.idle_shutdown_ms > 0 do return kind.idle_shutdown_ms / 1000
+	}
+	return grace
 }
 
 task_autoscaler_has_unread_mentions :: proc(agent_instance_id: string, since_unix_ms: i64) -> bool {

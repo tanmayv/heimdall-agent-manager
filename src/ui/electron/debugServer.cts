@@ -208,6 +208,16 @@ const routes: Array<{ method: string; path: string; handler: Handler }> = [
     },
   },
   {
+    method: 'GET',
+    path: '/screenshot',
+    handler: async () => {
+      const win = getWindow();
+      if (!win) return { ok: false, message: 'no window' };
+      const image = await win.capturePage();
+      return { ok: true, mime: 'image/png', dataUrl: `data:image/png;base64,${image.toPNG().toString('base64')}` };
+    },
+  },
+  {
     method: 'POST',
     path: '/highlight',
     handler: async (body) => {

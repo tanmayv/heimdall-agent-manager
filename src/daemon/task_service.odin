@@ -71,6 +71,12 @@ task_service_create_task :: proc(cmd: Task_Create_Command) -> Task_Service_Resul
 		}
 		created_chain = true
 	}
+	if cmd.assignee_agent_instance_id != "" && !task_agent_instance_allowed_for_chain(chain_id, cmd.assignee_agent_instance_id) {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"assignee is not a member of this chain team"}`}
+	}
+	if cmd.reviewer_agent_instance_id != "" && !task_agent_instance_allowed_for_chain(chain_id, cmd.reviewer_agent_instance_id) {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"reviewer is not a member of this chain team"}`}
+	}
 	priority := cmd.priority
 	if priority == "" do priority = "normal"
 	event := Task_Event{
@@ -103,27 +109,36 @@ task_service_create_task :: proc(cmd: Task_Create_Command) -> Task_Service_Resul
 }
 
 task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Service_Result {
-	if cmd.title == "" {
-		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"chain create requires title"}`}
-	}
-	if cmd.coordinator_agent_instance_id == "" {
-		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"chain create requires coordinator_agent_instance_id"}`}
-	}
-	if cmd.default_reviewer_agent_instance_id != "" && cmd.default_reviewer_agent_instance_id == cmd.coordinator_agent_instance_id {
-		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"default reviewer cannot equal coordinator"}`}
-	}
 	if cmd.kind == "" {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"chain create requires kind"}`}
 	}
+	kind := team_kind_get(cmd.kind)
+	if kind == nil {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"unknown team kind"}`}
+	}
+	chain_title := cmd.title
+	if chain_title == "" do chain_title = task_service_default_chain_title(kind)
 	chain_id := cmd.chain_id
 	if chain_id == "" do chain_id = task_generate_chain_id()
-	team_id := team_service_create_for_chain(cmd.project_id, chain_id, cmd.kind, "")
+	team_id := team_service_create_for_chain(cmd.project_id, chain_id, cmd.kind, "", cmd.coordinator_agent_instance_id)
 	if team_id == "" {
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"team allocation failed"}`}
 	}
+	coordinator_agent_instance_id := cmd.coordinator_agent_instance_id
+	if coordinator_agent_instance_id == "" {
+		coordinator_agent_instance_id = task_service_chain_member_for_role(team_id, "coordinator")
+	}
+	if coordinator_agent_instance_id == "" {
+		_ = team_service_archive(team_id, "coordinator_missing")
+		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"coordinator allocation failed"}`}
+	}
+	if cmd.default_reviewer_agent_instance_id != "" && cmd.default_reviewer_agent_instance_id == coordinator_agent_instance_id {
+		_ = team_service_archive(team_id, "invalid_default_reviewer")
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"default reviewer cannot equal coordinator"}`}
+	}
 	workspace_id := ""
 	if cmd.wants_vcs {
-		if workspace, workspace_ok, workspace_msg := task_service_maybe_provision_workspace(cmd.project_id, chain_id, team_id, cmd.title); workspace_ok {
+		if workspace, workspace_ok, workspace_msg := task_service_maybe_provision_workspace(cmd.project_id, chain_id, team_id, chain_title); workspace_ok {
 			workspace_id = workspace.workspace_id
 		} else if workspace_msg != "no vcs" {
 			_ = team_service_archive(team_id, "workspace_provision_failed")
@@ -136,10 +151,10 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 		project_id                    = cmd.project_id,
 		team_id                       = team_id,
 		vcs_workspace_id              = workspace_id,
-		title                         = cmd.title,
+		title                         = chain_title,
 		description                   = cmd.description,
-		status                        = "planning",
-		coordinator_agent_instance_id = cmd.coordinator_agent_instance_id,
+		status                        = "in_progress",
+		coordinator_agent_instance_id = coordinator_agent_instance_id,
 		reviewer_agent_instance_id    = cmd.default_reviewer_agent_instance_id,
 		author_agent_instance_id      = cmd.author_agent_instance_id,
 	}
@@ -149,12 +164,266 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append chain create failed"}`}
 	}
 	task_notify_event(event)
+	discovery_task_id := task_service_create_coordinator_discovery_task(chain_id, chain_title, cmd.description, kind, coordinator_agent_instance_id, cmd.author_agent_instance_id)
+	if discovery_task_id == "" {
+		if workspace_id != "" do task_service_cleanup_workspace(chain_id)
+		_ = team_service_archive(team_id, "discovery_task_create_failed")
+		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append coordinator discovery task failed"}`}
+	}
+	if cmd.scaffold != "" && !cmd.no_scaffold {
+		legacy_cmd := cmd
+		legacy_cmd.title = chain_title
+		if ok, msg := task_service_create_chain_scaffold(chain_id, team_id, legacy_cmd, kind); !ok {
+			if workspace_id != "" do task_service_cleanup_workspace(chain_id)
+			_ = team_service_archive(team_id, "scaffold_create_failed")
+			return Task_Service_Result{ok = false, status_code = 500, message = task_service_error_json(msg)}
+		}
+	}
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"chain_id":"`); json_write_string(&b, chain_id)
 	strings.write_string(&b, `","team_id":"`); json_write_string(&b, team_id)
 	strings.write_string(&b, `","vcs_workspace_id":"`); json_write_string(&b, workspace_id)
-	strings.write_string(&b, `","status":"planning"}`)
+	strings.write_string(&b, `","discovery_task_id":"`); json_write_string(&b, discovery_task_id)
+	strings.write_string(&b, `","coordinator_agent_instance_id":"`); json_write_string(&b, coordinator_agent_instance_id)
+	strings.write_string(&b, `","status":"in_progress"}`)
 	return Task_Service_Result{ok = true, status_code = 200, message = strings.to_string(b)}
+}
+
+task_service_default_chain_title :: proc(kind: ^Team_Kind_Def) -> string {
+	if kind == nil do return "New task chain"
+	if kind.display_name != "" do return fmt.tprintf("New %s chain", kind.display_name)
+	if kind.key != "" do return fmt.tprintf("New %s chain", kind.key)
+	return "New task chain"
+}
+
+task_service_chain_member_for_role :: proc(team_id, role_key: string) -> string {
+	members := team_db_list_members(team_service_db, team_id)
+	for member in members {
+		if member.role_key != role_key do continue
+		if member.agent_instance_id != "" do return member.agent_instance_id
+		return team_service_member_agent_instance_id(team_id, member.role_key, member.role_index)
+	}
+	return ""
+}
+
+task_service_create_coordinator_discovery_task :: proc(chain_id, chain_title, chain_description: string, kind: ^Team_Kind_Def, coordinator_agent_instance_id, author: string) -> string {
+	task_id := task_generate_id()
+	kind_name := "team"
+	if kind != nil && kind.display_name != "" do kind_name = kind.display_name
+	description := task_service_coordinator_discovery_description(chain_title, chain_description, kind_name)
+	event := Task_Event{
+		kind                       = .Task_Created,
+		task_id                    = task_id,
+		chain_id                   = chain_id,
+		title                      = "Discover goal and plan next tasks",
+		description                = description,
+		priority                   = "normal",
+		status                     = "ready",
+		assignee_agent_instance_id = coordinator_agent_instance_id,
+		created_by                 = author,
+		author_agent_instance_id   = author,
+	}
+	if !task_store_append_event(event) do return ""
+	task_notify_event(event)
+	return task_id
+}
+
+task_service_coordinator_discovery_description :: proc(chain_title, chain_description, kind_name: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "Initial coordinator discovery task for a newly created task chain.\n\n")
+	strings.write_string(&b, "## Context\n")
+	strings.write_string(&b, "- Team kind: "); strings.write_string(&b, kind_name); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- Current chain title: "); strings.write_string(&b, chain_title); strings.write_string(&b, "\n")
+	if chain_description != "" {
+		strings.write_string(&b, "- Initial goal/description: "); strings.write_string(&b, chain_description); strings.write_string(&b, "\n")
+	} else {
+		strings.write_string(&b, "- Initial goal/description: not provided yet.\n")
+	}
+	strings.write_string(&b, "\n## Instructions\n")
+	strings.write_string(&b, "1. Contact the user in chain chat and explain the selected team kind and roles.\n")
+	strings.write_string(&b, "2. Clarify the user's goal with concise questions if title/goal are missing or vague.\n")
+	strings.write_string(&b, "3. Rename/update the chain title and description once the goal is clear.\n")
+	strings.write_string(&b, "4. Create downstream tasks/dependencies or apply an appropriate task-bundle template.\n")
+	strings.write_string(&b, "5. Keep free-form user contact routed through the coordinator.\n")
+	return strings.to_string(b)
+}
+
+Task_Scaffold_Build_Task :: struct {
+	key: string,
+	task_id: string,
+	title: string,
+	description: string,
+	assignee_agent_instance_id: string,
+	reviewer_agent_instance_ids: []string,
+	depends_on: string,
+}
+
+Task_Scaffold_Role_Counter :: struct {
+	role_key: string,
+	next: int,
+}
+
+task_service_create_chain_scaffold :: proc(chain_id, team_id: string, cmd: Task_Chain_Create_Command, kind: ^Team_Kind_Def) -> (bool, string) {
+	if kind == nil do return false, "unknown team kind"
+	scaffold_idx := 0
+	if cmd.scaffold != "" {
+		scaffold_idx = -1
+		for i in 0..<len(kind.scaffolds) {
+			if kind.scaffolds[i].key == cmd.scaffold {
+				scaffold_idx = i
+				break
+			}
+		}
+		if scaffold_idx < 0 do return false, fmt.tprintf("unknown scaffold %s for kind %s", cmd.scaffold, kind.key)
+	}
+	if len(kind.scaffolds) == 0 do return true, "ok"
+	scaffold := kind.scaffolds[scaffold_idx]
+	members := team_db_list_members(team_service_db, team_id)
+	role_counters := [dynamic]Task_Scaffold_Role_Counter{}
+	task_id_base := router_now_unix_ms()
+	built := [dynamic]Task_Scaffold_Build_Task{}
+	defer delete(role_counters)
+	defer delete(built)
+	for i in 0..<len(scaffold.tasks) {
+		def := scaffold.tasks[i]
+		assignee, ok := task_service_scaffold_pick_assignee(team_id, kind.key, cmd, members, &role_counters, def.role_key)
+		if !ok do return false, fmt.tprintf("missing assignee for scaffold role %s", def.role_key)
+		reviewers := task_service_scaffold_reviewers(team_id, kind.key, cmd, members, def.reviewer_role)
+		if def.reviewer_role != "" && len(reviewers) == 0 do return false, fmt.tprintf("missing reviewer for scaffold role %s", def.reviewer_role)
+		append(&built, Task_Scaffold_Build_Task{
+			key = strings.clone(def.key),
+			task_id = task_service_next_scaffold_task_id(task_id_base, built[:]),
+			title = task_service_scaffold_interpolate(def.title_template, cmd.title, cmd.project_id, kind.display_name),
+			description = task_service_scaffold_description(def.description_key, def.key, cmd.title, kind.display_name),
+			assignee_agent_instance_id = assignee,
+			reviewer_agent_instance_ids = reviewers,
+		})
+	}
+	for i in 0..<len(scaffold.tasks) {
+		if len(scaffold.tasks[i].depends_on) == 0 do continue
+		deps := strings.builder_make()
+		first := true
+		for dep_key in scaffold.tasks[i].depends_on {
+			dep_id := ""
+			for j in 0..<len(built) {
+				if built[j].key == dep_key {
+					dep_id = built[j].task_id
+					break
+				}
+			}
+			if dep_id == "" do return false, fmt.tprintf("unknown scaffold dependency %s", dep_key)
+			if !first do strings.write_string(&deps, ",")
+			first = false
+			strings.write_string(&deps, dep_id)
+		}
+		built[i].depends_on = strings.clone(strings.to_string(deps))
+	}
+	for i in 0..<len(built) {
+		reviewer := ""
+		if len(built[i].reviewer_agent_instance_ids) > 0 do reviewer = built[i].reviewer_agent_instance_ids[0]
+		event := Task_Event{
+			kind = .Task_Created,
+			task_id = built[i].task_id,
+			chain_id = chain_id,
+			title = built[i].title,
+			description = built[i].description,
+			priority = "normal",
+			status = "planning",
+			assignee_agent_instance_id = built[i].assignee_agent_instance_id,
+			reviewer_agent_instance_id = reviewer,
+			depends_on = built[i].depends_on,
+			created_by = cmd.author_agent_instance_id,
+			author_agent_instance_id = cmd.author_agent_instance_id,
+		}
+		if !task_store_append_event(event) do return false, "append scaffold task create failed"
+		task_notify_event(event)
+		for j in 1..<len(built[i].reviewer_agent_instance_ids) {
+			p_event := Task_Event{
+				kind = .Task_Participant_Added,
+				task_id = built[i].task_id,
+				chain_id = chain_id,
+				agent_instance_id = built[i].reviewer_agent_instance_ids[j],
+				role = "lgtm_required",
+				author_agent_instance_id = cmd.author_agent_instance_id,
+			}
+			if !task_store_append_event(p_event) do return false, "append scaffold reviewer failed"
+			task_notify_event(p_event)
+		}
+	}
+	return true, "ok"
+}
+
+task_service_next_scaffold_task_id :: proc(base: i64, built: []Task_Scaffold_Build_Task) -> string {
+	for i in 0..<1000 {
+		candidate := fmt.tprintf("task-%x", base + i64(i))
+		duplicate := false
+		for j in 0..<len(built) {
+			if built[j].task_id == candidate {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate do continue
+		if !task_id_exists(candidate) do return candidate
+	}
+	return task_generate_id()
+}
+
+task_service_scaffold_pick_assignee :: proc(team_id, kind_key: string, cmd: Task_Chain_Create_Command, members: []Team_Member_Record, counters: ^[dynamic]Task_Scaffold_Role_Counter, role_key: string) -> (string, bool) {
+	matches := [dynamic]Team_Member_Record{}
+	defer delete(matches)
+	for member in members {
+		if member.role_key == role_key do append(&matches, member)
+	}
+	if len(matches) == 0 do return "", false
+	counter_idx := -1
+	for i in 0..<len(counters^) {
+		if counters^[i].role_key == role_key {
+			counter_idx = i
+			break
+		}
+	}
+	if counter_idx < 0 {
+		append(counters, Task_Scaffold_Role_Counter{role_key = strings.clone(role_key)})
+		counter_idx = len(counters^) - 1
+	}
+	pick := counters^[counter_idx].next % len(matches)
+	counters^[counter_idx].next += 1
+	return task_service_scaffold_member_agent_instance_id(team_id, kind_key, cmd, matches[pick]), true
+}
+
+task_service_scaffold_reviewers :: proc(team_id, kind_key: string, cmd: Task_Chain_Create_Command, members: []Team_Member_Record, role_key: string) -> []string {
+	out := [dynamic]string{}
+	for member in members {
+		if member.role_key != role_key do continue
+		agent_instance_id := task_service_scaffold_member_agent_instance_id(team_id, kind_key, cmd, member)
+		duplicate := false
+		for existing in out {
+			if existing == agent_instance_id {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate do append(&out, agent_instance_id)
+	}
+	return out[:]
+}
+
+task_service_scaffold_member_agent_instance_id :: proc(team_id, kind_key: string, cmd: Task_Chain_Create_Command, member: Team_Member_Record) -> string {
+	if member.is_user_proxy do return "user_proxy"
+	if member.agent_instance_id != "" do return member.agent_instance_id
+	return team_service_member_agent_instance_id(team_id, member.role_key, member.role_index)
+}
+
+task_service_scaffold_interpolate :: proc(template, chain_title, project_name, team_kind: string) -> string {
+	out, _ := strings.replace_all(template, "{chain_title}", chain_title)
+	out, _ = strings.replace_all(out, "{project_name}", project_name)
+	out, _ = strings.replace_all(out, "{team_kind}", team_kind)
+	return out
+}
+
+task_service_scaffold_description :: proc(description_key, task_key, chain_title, team_kind: string) -> string {
+	return fmt.tprintf("Auto-generated scaffold task.\n\n- scaffold: `%s`\n- task: `%s`\n- chain: `%s`\n- team kind: `%s`", description_key, task_key, chain_title, team_kind)
 }
 
 task_service_cleanup_workspace :: proc(chain_id: string) {
@@ -246,6 +515,7 @@ task_service_activate_chain :: proc(cmd: Task_Chain_Activate_Command) -> Task_Se
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append chain activate failed"}`}
 	}
 	task_notify_event(event)
+	_ = task_autoscaler_ensure_chain_coordinator(cmd.chain_id, "chain_activate", "high")
 	task_recompute_promotions(cmd.author_agent_instance_id)
 	return Task_Service_Result{ok = true, status_code = 200, message = `{"ok":true}`}
 }
@@ -358,6 +628,9 @@ task_service_assign_command :: proc(cmd: Task_Assign_Command) -> Task_Service_Re
 	if task_chain_default_reviewer_agent_instance_id(state.chain_id) == cmd.agent_instance_id {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"assignee cannot be the default reviewer"}`}
 	}
+	if !task_agent_instance_allowed_for_chain(state.chain_id, cmd.agent_instance_id) {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"agent is not a member of this chain team"}`}
+	}
 	if task_status_active_for_assignee(state) {
 		if active := task_active_slot_blocker(cmd.agent_instance_id, state.task_id); active != "" {
 			return task_gating_error("assignee_active_task", "assignee already has an active task", active)
@@ -405,6 +678,9 @@ task_service_participant_command :: proc(cmd: Task_Participant_Command) -> Task_
 	if cmd.role == "assignee" && task_chain_default_reviewer_agent_instance_id(state.chain_id) == cmd.agent_instance_id {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"default reviewer cannot be the assignee"}`}
 	}
+	if !task_agent_instance_allowed_for_chain(state.chain_id, cmd.agent_instance_id) {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"agent is not a member of this chain team"}`}
+	}
 	event := Task_Event{
 		kind                     = .Task_Participant_Added,
 		task_id                  = cmd.task_id,
@@ -418,6 +694,22 @@ task_service_participant_command :: proc(cmd: Task_Participant_Command) -> Task_
 	}
 	task_notify_event(event)
 	return Task_Service_Result{ok = true, status_code = 200, message = `{"ok":true}`}
+}
+
+task_agent_instance_allowed_for_chain :: proc(chain_id, agent_instance_id: string) -> bool {
+	if agent_instance_id == "" do return false
+	if agent_instance_id == "user_proxy" do return true
+	chain_idx, chain_found := task_existing_chain_index(chain_id)
+	if !chain_found do return true
+	chain := task_chains[chain_idx]
+	if agent_instance_id == chain.coordinator_agent_instance_id || agent_instance_id == chain.default_reviewer_agent_instance_id do return true
+	if chain.team_id == "" do return true
+	members := team_db_list_members(team_service_db, chain.team_id)
+	for member in members {
+		if member.agent_instance_id != "" && member.agent_instance_id == agent_instance_id do return true
+		if member.route_to != "" && member.route_to == agent_instance_id do return true
+	}
+	return false
 }
 
 task_service_remove_participant :: proc(task_id, chain_id, agent_instance_id, role, author: string) -> Task_Service_Result {
@@ -497,26 +789,39 @@ task_service_status_command :: proc(cmd: Task_Status_Command) -> Task_Service_Re
 	if !ok {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"invalid task status"}`}
 	}
-	if status_val == .Review_Ready || status_val == .Approved {
-		unresolved := task_unresolved_comments(cmd.task_id)
-		defer delete(unresolved)
-		if len(unresolved) > 0 {
-			return Task_Service_Result{
-				ok = false,
-				status_code = 400,
-				message = fmt.tprintf(`{{"ok":false,"message":"task has %d unresolved comments"}}`, len(unresolved)),
+	if cmd.force {
+		if status_val != .Approved {
+			return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"force only supports approved status"}`}
+		}
+		if !task_force_advance_authorized(state, cmd.author_agent_instance_id) {
+			return Task_Service_Result{ok = false, status_code = 403, message = `{"ok":false,"message":"force requires chain coordinator or operator"}`}
+		}
+	} else {
+		if status_val == .Review_Ready || status_val == .Approved {
+			unresolved := task_unresolved_comments(cmd.task_id)
+			defer delete(unresolved)
+			if len(unresolved) > 0 {
+				return Task_Service_Result{
+					ok = false,
+					status_code = 400,
+					message = fmt.tprintf(`{{"ok":false,"message":"task has %d unresolved comments"}}`, len(unresolved)),
+				}
 			}
 		}
+		if !task_status_change_authorized(state, status_val, cmd.author_agent_instance_id) {
+			return Task_Service_Result{ok = false, status_code = 403, message = `{"ok":false,"message":"not authorized for task status transition"}`}
+		}
 	}
-	if !task_status_change_authorized(state, status_val, cmd.author_agent_instance_id) {
-		return Task_Service_Result{ok = false, status_code = 403, message = `{"ok":false,"message":"not authorized for task status transition"}`}
+	event_body := cmd.body
+	if cmd.force {
+		event_body = fmt.tprintf("FORCE_REVIEW_BYPASS task_id=%s chain_id=%s coordinator_id=%s prior_status=%s new_status=%s reason=%s timestamp_unix_ms=%d", cmd.task_id, state.chain_id, cmd.author_agent_instance_id, task_status_to_string(state.status), cmd.status, cmd.body, router_now_unix_ms())
 	}
 	event := Task_Event{
 		kind                     = .Task_Status_Changed,
 		task_id                  = cmd.task_id,
-		chain_id                 = cmd.chain_id,
+		chain_id                 = state.chain_id,
 		status                   = cmd.status,
-		body                     = cmd.body,
+		body                     = event_body,
 		author_agent_instance_id = cmd.author_agent_instance_id,
 	}
 	if !task_store_append_event(event) {
@@ -540,10 +845,10 @@ task_service_status_command :: proc(cmd: Task_Status_Command) -> Task_Service_Re
 			task_service_auto_claim(cmd.task_id)
 		}
 	}
-	task_service_try_auto_complete_chain(cmd.chain_id)
+	task_service_try_auto_complete_chain(state.chain_id)
 	if cmd.status == "review_ready" {
-		task_notify_all_lgtm_required(cmd.task_id, cmd.chain_id)
-		task_notify_user_proxy_review_requests(cmd.task_id, cmd.chain_id)
+		task_notify_all_lgtm_required(cmd.task_id, state.chain_id)
+		task_notify_user_proxy_review_requests(cmd.task_id, state.chain_id)
 	}
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"task_id":"`); json_write_string(&b, cmd.task_id)
@@ -668,7 +973,7 @@ task_notify_user_proxy_review_requests :: proc(task_id, chain_id: string) {
 		sender := chain.coordinator_agent_instance_id
 		if sender == "" do sender = "user_proxy"
 		body := task_user_proxy_review_card_json(state)
-		message_id, ok := chat_store_append_message(member.route_to, sender, "agent_to_user", body, true)
+		message_id, ok := chat_store_append_message_with_chain(member.route_to, sender, "agent_to_user", body, true, state.chain_id)
 		if ok do chat_event_fanout(member.route_to, sender, message_id, "agent_to_user")
 	}
 }
@@ -789,7 +1094,7 @@ task_service_ping_coordinator_for_chain_completion :: proc(chain_id: string) {
 		TASK_CHAIN_BEST_PRACTICES,
 	)
 
-	_, ok := chat_store_append_message("operator@local", chain.coordinator_agent_instance_id, "user_to_agent", message_body, false)
+	_, ok := chat_store_append_message_with_chain("operator@local", chain.coordinator_agent_instance_id, "user_to_agent", message_body, false, chain_id)
 	if !ok {
 		fmt.println("WARNING: Failed to append completion ping message to coordinator agent:", chain.coordinator_agent_instance_id)
 	} else {
@@ -945,6 +1250,7 @@ task_service_chain_status_command :: proc(cmd: Task_Chain_Status_Command) -> Tas
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append chain status failed"}`}
 	}
 	task_notify_event(status_event)
+	if cmd.status == "in_progress" do _ = task_autoscaler_ensure_chain_coordinator(cmd.chain_id, "chain_status_in_progress", "high")
 
 	// Orchestrate member tasks based on the new chain status
 	if cmd.status == "completed" || cmd.status == "archived" || cmd.status == "planning" || cmd.status == "paused" {
@@ -985,6 +1291,12 @@ task_service_chain_status_command :: proc(cmd: Task_Chain_Status_Command) -> Tas
 		task_recompute_promotions(cmd.author_agent_instance_id)
 	} else if cmd.status == "in_progress" || cmd.status == "queued" || cmd.status == "ready" {
 		task_recompute_promotions(cmd.author_agent_instance_id)
+	}
+
+	// Task 16: on completion, archive team immediately for non-VCS chains or
+	// surface a merge decision for VCS chains (docs/teams-v1/03-lifecycle.md §3.4/§3.5).
+	if cmd.status == "completed" {
+		merge_lifecycle_on_chain_completed(cmd.chain_id, cmd.author_agent_instance_id)
 	}
 
 	archive_ok := true

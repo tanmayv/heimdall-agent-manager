@@ -24,6 +24,8 @@ Task_Chain_Create_Command :: struct {
 	team_id:                            string,
 	title:                              string,
 	description:                        string,
+	scaffold:                           string,
+	no_scaffold:                        bool,
 	coordinator_agent_instance_id:      string,
 	default_reviewer_agent_instance_id: string,
 	wants_vcs:                          bool,
@@ -40,6 +42,7 @@ Task_Status_Command :: struct {
 	chain_id:                 string,
 	status:                   string,
 	body:                     string,
+	force:                    bool,
 	author_agent_instance_id: string,
 }
 

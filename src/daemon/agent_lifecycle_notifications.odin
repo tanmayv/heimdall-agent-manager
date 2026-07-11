@@ -38,10 +38,16 @@ agent_lifecycle_emit :: proc(agent_instance_id, connection_state, reason: string
 	project_name := ""
 	model_tier := ""
 	project_id := agent.project_id
+	current_task_id := ""
+	current_task_since: i64 = 0
+	state := "idle"
 	if pidx := agent_record_index_by_instance(agent.agent_instance_id); pidx >= 0 {
 		rec := agent_instance_records[pidx]
 		if project_id == "" do project_id = rec.project_id
 		model_tier = rec.model_tier
+		current_task_id = rec.current_task_id
+		current_task_since = rec.current_task_since
+		state = agent_store_agent_state(rec)
 		if rec.project_id != "" {
 			if pj := project_index(rec.project_id); pj >= 0 do project_name = project_records[pj].name
 		}
@@ -49,6 +55,9 @@ agent_lifecycle_emit :: proc(agent_instance_id, connection_state, reason: string
 	strings.write_string(&builder, `,"project_id":"`); json_write_string(&builder, project_id)
 	strings.write_string(&builder, `","project_name":"`); json_write_string(&builder, project_name)
 	strings.write_string(&builder, `","model_tier":"`); json_write_string(&builder, model_tier)
+	strings.write_string(&builder, `","current_task_id":"`); json_write_string(&builder, current_task_id)
+	strings.write_string(&builder, `","current_task_since":`); strings.write_string(&builder, fmt.tprintf("%d", current_task_since))
+	strings.write_string(&builder, `,"state":"`); json_write_string(&builder, state)
 	strings.write_string(&builder, `"}`)
 	user_client_fanout_all_ws_text(strings.to_string(builder))
 }

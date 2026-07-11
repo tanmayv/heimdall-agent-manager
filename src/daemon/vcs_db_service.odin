@@ -67,6 +67,19 @@ vcs_db_workspace_for_chain :: proc(chain_id: string) -> (Vcs_Workspace_Record, b
 	return Vcs_Workspace_Record{workspace_id=strings.clone(parts[0]), chain_id=strings.clone(parts[1]), project_id=strings.clone(parts[2]), vcs_kind=strings.clone(parts[3]), path=strings.clone(parts[4]), branch_or_change=strings.clone(parts[5]), base_ref=strings.clone(parts[6]), status=strings.clone(parts[7]), keep_on_archive=parts[8] == "1", created_unix_ms=i64(extract_int(parts[9])), updated_unix_ms=i64(extract_int(parts[10]))}, true
 }
 
+vcs_db_merge_pending_workspaces :: proc() -> []Vcs_Workspace_Record {
+	out, ok := vcs_db_query("SELECT workspace_id,chain_id,project_id,vcs_kind,path,branch_or_change,base_ref,status,keep_on_archive,created_unix_ms,updated_unix_ms FROM vcs_workspaces WHERE status='merge_pending' ORDER BY updated_unix_ms;")
+	if !ok do return nil
+	recs := make([dynamic]Vcs_Workspace_Record)
+	for line in strings.split(strings.trim_space(out), "\n") {
+		if strings.trim_space(line) == "" do continue
+		parts := strings.split(line, "|")
+		if len(parts) < 11 do continue
+		append(&recs, Vcs_Workspace_Record{workspace_id=strings.clone(parts[0]), chain_id=strings.clone(parts[1]), project_id=strings.clone(parts[2]), vcs_kind=strings.clone(parts[3]), path=strings.clone(parts[4]), branch_or_change=strings.clone(parts[5]), base_ref=strings.clone(parts[6]), status=strings.clone(parts[7]), keep_on_archive=parts[8] == "1", created_unix_ms=i64(extract_int(parts[9])), updated_unix_ms=i64(extract_int(parts[10]))})
+	}
+	return recs[:]
+}
+
 vcs_db_update_status :: proc(chain_id, status: string) -> bool {
 	return vcs_db_exec(fmt.tprintf("UPDATE vcs_workspaces SET status=%s, updated_unix_ms=%d WHERE chain_id=%s;", sql_text(status), router_now_unix_ms(), sql_text(chain_id)))
 }

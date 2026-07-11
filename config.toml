@@ -24,7 +24,6 @@ wrapper_bin = "./result-wrapper/bin/ham-wrapper"
 daemon_url = "http://127.0.0.1:49322"
 credentials_path = "~/.local/share/heimdall/wrapper-credentials.json"
 agent_name = "pi"
-default_agent = "pi"
 display_name = "{instance}"
 requested_access_mode = "main"
 command = ["pi"]
@@ -35,13 +34,9 @@ tmux_window_prefix = "agent"
 # Set use_random_dir=true to use <agent_run_dir>/<project>/<random-slug> instead.
 agent_run_dir = "~/.local/share/heimdall/agent-runs"
 use_random_dir = false
-project = "default"
-# Active approved memory templates to inject into new agent starter prompts. Entries may match template memory_id, title, or scope.
-memory_templates = []
 # Optional per-provider managed run-dir/bootstrap controls.
 # agent_run_dir = "~/.local/share/heimdall/agent-runs"
 # use_random_dir = false
-# project = "default"
 # bootstrap_profile = "pi" # pi|claude|codex or custom profile name
 
 # Per-agent-command launch customization. The wrapper selects this section by
@@ -49,8 +44,6 @@ memory_templates = []
 # when wrapper.command is empty.
 [wrapper.agent-cmd.pi]
 command = ["pi"]
-project = "project_1781933146508"
-memory_templates = ["bootstrap-guidance"]
 yolo_flags = []
 # pi accepts the starter prompt as a positional arg:
 #   pi "prompt"
@@ -82,7 +75,6 @@ starter_prompt = "First, run: {ctl_bin} --token {token} start-success. Then read
 
 [wrapper.agent-cmd.claude.bootstrap.AGENTS_MD]
 name = "AGENTS.md"
-content = ["IDENTITY", "GUIDANCE", "PROJECT", "MEMORY"]
 
 [wrapper.agent-cmd.claude.bootstrap.MEMORY_MD]
 name = "MEMORY.md"

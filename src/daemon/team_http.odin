@@ -63,6 +63,12 @@ handle_teams_request :: proc(client: net.TCP_Socket, request: string) -> bool {
 		} else if team.status == "live" {
 			reason = "team_live"
 		}
+		if team.status == "latent" || team.status == "idle" {
+			if task_autoscaler_ensure_chain_coordinator(chain_id, "chain_focus_low_priority", "low") {
+				action = "boot_requested"
+				reason = "coordinator_warm_on_focus_low_priority"
+			}
+		}
 		write_response(client, 200, "OK", team_focus_response_json(chain_id, team.team_id, team.status, action, reason))
 		return true
 	}
@@ -164,13 +170,21 @@ team_focus_response_json :: proc(chain_id, team_id, team_status, action, reason:
 }
 
 write_member_json :: proc(builder: ^strings.Builder, member: Team_Member_Record) {
-	strings.write_string(builder, `{"team_id":"`); json_write_string(builder, member.team_id)
+	strings.write_string(builder, `{"team_member_id":"`); json_write_string(builder, member.team_member_id)
+	strings.write_string(builder, `","team_id":"`); json_write_string(builder, member.team_id)
 	strings.write_string(builder, `","role_key":"`); json_write_string(builder, member.role_key)
 	strings.write_string(builder, fmt.tprintf(`","role_index":%d,"agent_record_id":`, member.role_index))
 	if member.agent_record_id == "" {
 		strings.write_string(builder, "null")
 	} else {
 		strings.write_byte(builder, '"'); json_write_string(builder, member.agent_record_id); strings.write_byte(builder, '"')
+	}
+	strings.write_string(builder, `,"agent_instance_id":`)
+	member_agent_instance_id := team_member_agent_instance_id(member)
+	if member_agent_instance_id != "" {
+		strings.write_byte(builder, '"'); json_write_string(builder, member_agent_instance_id); strings.write_byte(builder, '"')
+	} else {
+		strings.write_string(builder, "null")
 	}
 	strings.write_string(builder, fmt.tprintf(`,"is_user_proxy":%v,"route_to":"`, member.is_user_proxy))
 	json_write_string(builder, member.route_to)
@@ -179,7 +193,28 @@ write_member_json :: proc(builder: ^strings.Builder, member: Team_Member_Record)
 	strings.write_string(builder, `"}`)
 }
 
+team_member_agent_instance_id :: proc(member: Team_Member_Record) -> string {
+	if member.agent_instance_id != "" do return member.agent_instance_id
+	if idx := agent_record_index(member.agent_record_id); idx >= 0 do return agent_instance_records[idx].agent_instance_id
+	if member.role_key == "coordinator" {
+		for i in 0..<task_chain_count {
+			chain := task_chains[i]
+			if chain.team_id == member.team_id do return chain.coordinator_agent_instance_id
+		}
+	}
+	return ""
+}
+
 member_lifecycle_status :: proc(member: Team_Member_Record) -> string {
-	if member.agent_record_id == "" do return "missing"
+	agent_instance_id := team_member_agent_instance_id(member)
+	if agent_instance_id == "" do return "missing"
+	live_idx := registry_find_agent(agent_instance_id)
+	if live_idx < 0 do return "offline"
+	agent := agents[live_idx]
+	if agent.connected || agent.has_ws do return "connected"
+	if agent.startup_status == "starting" do return "starting"
+	if agent.startup_status == "startup_blocked" do return "startup_blocked"
+	if agent.startup_status == "startup_failed" do return "startup_failed"
+	if agent.startup_status == "ready" do return "ready"
 	return "idle"
 }

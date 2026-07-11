@@ -115,7 +115,14 @@ handle_workspace_merge_for_chain :: proc(client: net.TCP_Socket, body, chain_id:
 	rec, found := vcs_db_workspace_for_chain(chain_id); if !found { write_response(client, 404, "Not Found", `{"ok":false,"message":"workspace not found"}`); return }
 	backend := vcs.vcs_backend_for(vcs_handle_from_record(rec).kind); ok2, msg := backend.merge_execute(vcs_handle_from_record(rec), target)
 	if !ok2 { write_response(client, 409, "Conflict", workspace_error_json(msg)); return }
-	write_response(client, 200, "OK", `{"ok":true}`)
+	// Task 16: operator merge succeeded → remove the worktree (kept only if
+	// keep_on_archive), clear merge_pending, and archive team (§3.5).
+	if !rec.keep_on_archive {
+		_, _ = backend.workspace_remove(vcs_handle_from_record(rec), true)
+	}
+	_ = vcs_db_update_status(chain_id, "merged")
+	merge_lifecycle_finalize_decision(chain_id)
+	write_response(client, 200, "OK", `{"ok":true,"message":"merged locally; worktree removed"}`)
 }
 
 handle_workspace_archive :: proc(client: net.TCP_Socket, body: string) {
@@ -129,9 +136,19 @@ handle_workspace_archive_for_chain :: proc(client: net.TCP_Socket, body, chain_i
 	if !is_user { write_response(client, 403, "Forbidden", `{"ok":false,"message":"workspace archive requires user token"}`); return }
 	force := extract_json_bool(body, "force", false)
 	rec, found := vcs_db_workspace_for_chain(chain_id); if !found { write_response(client, 404, "Not Found", `{"ok":false,"message":"workspace not found"}`); return }
-	backend := vcs.vcs_backend_for(vcs_handle_from_record(rec).kind); ok2, msg := backend.workspace_remove(vcs_handle_from_record(rec), force)
-	if !ok2 { write_response(client, 500, "Internal Server Error", workspace_error_json(msg)); return }
-	_ = vcs_db_update_status(chain_id, "archived")
+	keep := extract_json_bool(body, "keep", false)
+	handle := vcs_handle_from_record(rec)
+	backend := vcs.vcs_backend_for(handle.kind)
+	if keep {
+		ok2, msg := vcs.vcs_write_kept_marker(handle, chain_id, rec.workspace_id, "operator keep-worktree archive decision")
+		if !ok2 { write_response(client, 500, "Internal Server Error", workspace_error_json(msg)); return }
+	} else {
+		ok2, msg := backend.workspace_remove(handle, force)
+		if !ok2 { write_response(client, 500, "Internal Server Error", workspace_error_json(msg)); return }
+	}
+	// Task 16: keep/abandon decision recorded → archive team (§3.5).
+	_ = vcs_db_update_status(chain_id, "kept" if keep else "archived")
+	merge_lifecycle_finalize_decision(chain_id)
 	write_response(client, 200, "OK", `{"ok":true}`)
 }
 

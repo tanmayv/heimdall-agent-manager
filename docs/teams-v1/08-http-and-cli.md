@@ -19,13 +19,17 @@ There is intentionally no `POST /teams/start` on the main path; team allocation 
 ### Task chains (extended)
 
 ```
-POST /task-chains                  {project_id, kind, title, description,
-                                    scaffold?, wants_vcs?, no_scaffold?}
-                                   → returns chain_id + team_id + workspace_path?
+POST /task-chains                  {project_id, kind, title?, description?/goal?, wants_vcs?}
+                                   → returns chain_id + team_id + workspace_path? + discovery_task_id?
 POST /task-chains/{id}/focus       warm-on-focus signal (boots coordinator low-priority)
+POST /task-chains/{id}/task-bundles/apply
+                                   {template_key, variables?}
+                                   → appends a coordinator-selected task bundle to an existing chain
 ```
 
-Existing `GET /task-chains`, `POST /task-chains/status`, etc. are unchanged.
+Default `POST /task-chains` is active/ready by default: it creates the team, optional workspace, active chain row, and exactly one ready coordinator discovery task. Legacy `scaffold` / `no_scaffold` fields may remain accepted temporarily for compatibility, but clients should not require or send a scaffold in the main creation flow.
+
+Existing `GET /task-chains`, `POST /task-chains/status`, `POST /task-chains/update`, etc. remain available; coordinators use update to rename/refine title/description after discovery.
 
 ### VCS workspace
 
@@ -52,11 +56,15 @@ GET  /chat inbox                   filters by chain_id when provided
 
 Heartbeat and register responses gain:
 
+- `team_member_id` (durable team slot identity)
 - `team_id`
 - `role_key`
 - `role_index`
+- `agent_instance_id` (runtime route for the team slot; generated as `<role-key>-<role-index+1>@<team-id>` for daemon-created members)
 - `chain_id` (current active chain the agent is booted for)
 - `workspace_path` (if any)
+
+Team/member routing uses `team_member_id`/`team_id` and the persisted `agent_instance_id`; clients must not infer routing by parsing display names or role strings.
 
 WS `agent_update` event gains `current_task_id`, `state ∈ {live, warming, idle, blocked, shutting_down}`.
 
@@ -76,8 +84,9 @@ Powers the UI badge count and the `Needs attention` tab in one call.
 ```
 ham-ctl chains list [--project <id>]
 ham-ctl chains show --chain <id>
-ham-ctl chains create --project <id> --title "..." --kind coding [--scaffold feature] [--no-vcs]
+ham-ctl chains create --project <id> --kind coding [--title "..."] [--description "..."] [--no-vcs]
 ham-ctl chains focus --chain <id>              # warm-on-focus signal
+ham-ctl chains task-bundle apply --chain <id> --template feature
 
 ham-ctl teams list [--project <id>]            # read-only
 ham-ctl teams show --team <id>
@@ -98,7 +107,7 @@ ham-ctl attention reject  --item <id> --body "..."
 The following commands are deleted or hidden behind Settings/debug:
 
 ```
-ham-ctl agents start          — replaced by chains create (solo/other kinds)
+ham-ctl agents start          — replaced by chains create (team type first)
 ham-ctl teams start           — removed; allocation is automatic
 ```
 
@@ -167,4 +176,5 @@ Deprecation policy (Task 17):
 - **API-1** `POST /teams/start` does not exist. Team creation only via `POST /task-chains`.
 - **API-2** All VCS write endpoints require the operator token; agent tokens can only call read endpoints.
 - **API-3** Chat messages from `operator@local` are always routed to the chain's coordinator; the daemon rejects `to = <other agent>` from operator on the main path (settings/debug endpoint exempt).
+- **API-4** Normal free-form user contact is coordinator-owned: non-coordinator agents route user-facing communication through the coordinator, while durable structured `Needs attention` prompts remain allowed for approvals/actions.
 - **CFG-1** No new `config.toml` key requires per-agent tuning; team-kind defaults cover the common path.

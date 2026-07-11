@@ -121,6 +121,7 @@ function mapAgent(agent: any) {
 
   return {
     id: agent.agent_instance_id || agent.agentInstanceId || agent.id,
+    agentRecordId: agent.agent_record_id || agent.agentRecordId || '',
     label: agent.display_name || agent.displayName || agent.alias || agent.agent_instance_id || agent.id,
     status,
     startupStatus,
@@ -144,6 +145,9 @@ function mapAgent(agent: any) {
     execState,
     execStateSinceUnixMs,
     blockedReason,
+    currentTaskId: agent.current_task_id || agent.currentTaskId || '',
+    currentTaskSince: Number(agent.current_task_since ?? agent.currentTaskSince ?? 0),
+    state: agent.state || '',
   };
 }
 
@@ -289,6 +293,16 @@ export const saveUserPreference = createAsyncThunk(
   }
 );
 
+
+export const refreshSettingsCatalog = createAsyncThunk('chat/refreshSettingsCatalog', async (_, { getState }) => {
+  const state = getState() as any;
+  const { daemonUrl } = state.chat.session;
+  const [templates, providers] = await Promise.all([
+    daemonApi.listAgentTemplates({ daemonUrl }).catch(() => []),
+    daemonApi.listAgentProviders({ daemonUrl }).catch(() => []),
+  ]);
+  return { templates, providers };
+});
 
 export const refreshAgents = createAsyncThunk('chat/refreshAgents', async (_, { getState }) => {
   const state = getState() as any;
@@ -439,7 +453,7 @@ function getAgentIdFromPayload(payload: any, selectedAgentId: string): string {
   return selectedAgentId;
 }
 
-const initialDaemonUrl = normalizeDaemonUrl(getStoredValue('odin.daemonUrl', DEFAULT_DAEMON_URL)) || DEFAULT_DAEMON_URL;
+const initialDaemonUrl = normalizeDaemonUrl((window as any).odinApi?.daemonUrl || getStoredValue('odin.daemonUrl', DEFAULT_DAEMON_URL)) || DEFAULT_DAEMON_URL;
 
 const initialState = {
   daemonProfiles: loadDaemonProfiles(initialDaemonUrl),
@@ -458,6 +472,8 @@ const initialState = {
   },
   preferences: [] as any[],
   userPreferences: {} as Record<string, string>,
+  settingsTemplates: [] as any[],
+  settingsProviders: [] as any[],
   selectedAgentId: '',
   agents: [],
   chats: {},
@@ -760,6 +776,10 @@ const chatSlice = createSlice({
         state.session.connected = false;
         state.session.wsStatus = 'error';
         state.session.error = action.error.message || 'Failed to register user client';
+      })
+      .addCase(refreshSettingsCatalog.fulfilled, (state: any, action) => {
+        state.settingsTemplates = action.payload.templates || [];
+        state.settingsProviders = action.payload.providers || [];
       })
       .addCase(refreshAgents.fulfilled, (state, action) => {
         state.agents = action.payload;

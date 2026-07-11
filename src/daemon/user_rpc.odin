@@ -131,7 +131,9 @@ handle_user_rpc_task_create :: proc(client: net.TCP_Socket, body, user_id: strin
 }
 
 handle_user_rpc_task_chain_create :: proc(client: net.TCP_Socket, body, user_id: string) {
-	result := task_service_create_chain(Task_Chain_Create_Command{chain_id = extract_json_string(body, "chain_id", ""), project_id = extract_json_string(body, "project_id", ""), kind = extract_json_string(body, "kind", ""), title = extract_json_string(body, "title", ""), description = extract_json_string(body, "description", ""), coordinator_agent_instance_id = extract_json_string(body, "coordinator_agent_instance_id", ""), author_agent_instance_id = user_id})
+	description := extract_json_string(body, "description", "")
+	if description == "" do description = extract_json_string(body, "goal", "")
+	result := task_service_create_chain(Task_Chain_Create_Command{chain_id = extract_json_string(body, "chain_id", ""), project_id = extract_json_string(body, "project_id", ""), kind = extract_json_string(body, "kind", ""), title = extract_json_string(body, "title", ""), description = description, scaffold = extract_json_string(body, "scaffold", ""), no_scaffold = extract_json_bool(body, "no_scaffold", false), coordinator_agent_instance_id = extract_json_string(body, "coordinator_agent_instance_id", ""), default_reviewer_agent_instance_id = extract_json_string(body, "default_reviewer_agent_instance_id", ""), wants_vcs = extract_json_bool(body, "wants_vcs", true), author_agent_instance_id = user_id})
 	write_task_service_response(client, result)
 }
 
@@ -151,7 +153,7 @@ handle_user_rpc_task_comment_resolve :: proc(client: net.TCP_Socket, body, user_
 }
 
 handle_user_rpc_task_status :: proc(client: net.TCP_Socket, body, user_id: string) {
-	result := task_service_set_status(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "status", ""), extract_json_string(body, "body", ""), user_id)
+	result := task_service_status_command(Task_Status_Command{task_id = extract_json_string(body, "task_id", ""), chain_id = extract_json_string(body, "chain_id", ""), status = extract_json_string(body, "status", ""), body = extract_json_string(body, "body", ""), force = extract_json_bool(body, "force", false), author_agent_instance_id = user_id})
 	write_task_service_response(client, result)
 }
 
@@ -218,7 +220,7 @@ chat_send_response_json :: proc(message_id: string, fanout_count: int) -> string
 	return strings.to_string(builder)
 }
 
-chat_fetch_json :: proc(user_id, agent_instance_id: string, unread_only: bool = true, direction: string = "", limit: int = 50, cursor: i64 = 0) -> string {
+chat_fetch_json :: proc(user_id, agent_instance_id: string, unread_only: bool = true, direction: string = "", limit: int = 50, cursor: i64 = 0, chain_id: string = "") -> string {
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"ok":true,"user_id":"`); json_write_string(&builder, user_id)
 	strings.write_string(&builder, `","agent_instance_id":"`); json_write_string(&builder, agent_instance_id)
@@ -233,6 +235,7 @@ chat_fetch_json :: proc(user_id, agent_instance_id: string, unread_only: bool = 
 
 	first := true
 	for msg in messages {
+		if chain_id != "" && msg.chain_id != chain_id do continue
 		if !first do strings.write_string(&builder, `,`)
 		first = false
 		chat_write_message_json(&builder, msg)
@@ -263,6 +266,7 @@ chat_write_message_json :: proc(builder: ^strings.Builder, msg: Chat_Message) {
 	strings.write_string(builder, `{"message_id":"`); json_write_string(builder, msg.message_id)
 	strings.write_string(builder, `","direction":"`); json_write_string(builder, msg.direction)
 	strings.write_string(builder, `","body":"`); json_write_string(builder, msg.body)
+	strings.write_string(builder, `","chain_id":"`); json_write_string(builder, msg.chain_id)
 	strings.write_string(builder, `","delivered_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", msg.delivered_unix_ms))
 	strings.write_string(builder, `,"read_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", msg.read_unix_ms))
 	strings.write_string(builder, `,"delivery_failed_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", msg.delivery_failed_unix_ms))

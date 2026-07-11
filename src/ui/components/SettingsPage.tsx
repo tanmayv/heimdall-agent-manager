@@ -1,591 +1,166 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { useDispatch } from 'react-redux';
-import { saveUserPreference } from '../store/chatSlice';
+import { useEffect, useMemo, useState } from 'react';
+import { useDispatch, useSelector } from 'react-redux';
 import SessionConfig from './SessionConfig';
-import * as daemonApi from '../api/daemonApi';
+import { fetchPreferences, fetchSelectedChat, refreshSettingsCatalog, selectAgent, sendMessageToSelectedAgent } from '../store/chatSlice';
+import { refreshMemory } from '../store/memorySlice';
 
-type Preference = {
-  key: string;
-  value: string;
-  interrupt: boolean;
-  is_custom: boolean;
-  default_value: string;
-  default_interrupt: boolean;
-};
+const SETTINGS_ITEMS = [
+  { key: 'templates', label: 'Agent templates' },
+  { key: 'kinds', label: 'Team kinds' },
+  { key: 'providers', label: 'Providers & model tiers' },
+  { key: 'memory', label: 'Memory browser' },
+  { key: 'agents', label: 'Agents (raw registry)' },
+  { key: 'direct-chat', label: 'Direct agent chat (debug)' },
+  { key: 'daemon', label: 'Daemon connection' },
+];
 
-const PLACEHOLDERS: Record<string, string[]> = {
-  starter_prompt: ['{ctl_bin}', '{token}', '{daemon_url}'],
-  bootstrap_header: [],
-  bootstrap_title: ['{file_name}', '{profile}'],
-  bootstrap_profile_guidance: ['{ctl_bin}', '{file_name}', '{profile}', '{instance}'],
-  msg_agent_message: ['{pending_count}', '{from_agent_id}'],
-  msg_task_updated: ['{task_id}', '{status}', '{changed_by}', '{body}'],
-  msg_task_updated_empty: ['{task_id}', '{status}', '{changed_by}'],
-  msg_memory_updated: ['{memory_id}', '{event}', '{changed_by}', '{subject_agent}', '{status}', '{ctl_bin}'],
-  msg_memory_proposal_updated: ['{proposal_id}', '{memory_id}', '{event}', '{changed_by}', '{subject_agent}', '{ctl_bin}'],
-  msg_user_chat: ['{pending_count}', '{user_id}', '{ctl_bin}'],
-  msg_token_refreshed: ['{new_token}', '{ctl_bin}', '{daemon_url}'],
-  msg_stop_requested: ['{time}'],
-};
+const TEAM_KINDS = [
+  { key: 'coding', label: 'Coding', vcs: 'default on', scaffolds: ['feature', 'bugfix', 'refactor'] },
+  { key: 'research', label: 'Research', vcs: 'default off', scaffolds: ['report', 'spike'] },
+  { key: 'debugging', label: 'Debugging', vcs: 'default on', scaffolds: ['bug', 'incident'] },
+  { key: 'data-analysis', label: 'Data analysis', vcs: 'default on', scaffolds: ['analysis'] },
+  { key: 'writing', label: 'Writing', vcs: 'default on', scaffolds: ['article'] },
+  { key: 'ops', label: 'Ops', vcs: 'default on', scaffolds: ['chore'] },
+  { key: 'solo', label: 'Solo', vcs: 'project default', scaffolds: ['solo'] },
+];
 
-const KEY_LABELS: Record<string, string> = {
-  starter_prompt: 'Starter Prompt',
-  bootstrap_header: 'Bootstrap File Header',
-  bootstrap_title: 'Bootstrap File Title',
-  bootstrap_profile_guidance: 'Bootstrap Profile Guidance (Operating Rules)',
-  msg_agent_message: 'Inter-Agent Message Notification',
-  msg_task_updated: 'Task Status Updated (With Comment)',
-  msg_task_updated_empty: 'Task Status Updated (Empty Comment)',
-  msg_memory_updated: 'Memory Record Updated',
-  msg_memory_proposal_updated: 'Memory Proposal Submitted',
-  msg_user_chat: 'New User Chat Message Notification',
-  msg_token_refreshed: 'Daemon Token Refreshed Warning',
-  msg_stop_requested: 'Graceful Stop Requested Warning',
-};
+function normalizeTemplate(template: any) {
+  return {
+    id: template.template_id || template.templateId || template.id || '',
+    name: template.display_name || template.displayName || template.name || template.template_id || '',
+    role: template.role_hint || template.roleHint || '',
+    provider: template.default_provider_profile || template.defaultProviderProfile || '',
+    tier: template.suggested_model_tier || template.suggestedModelTier || '',
+  };
+}
 
-const KEY_DESCRIPTIONS: Record<string, string> = {
-  starter_prompt: 'The very first prompt sent to the agent tmux window to kick off execution.',
-  bootstrap_header: 'The HTML comment marker written at the top of all Heimdall-managed workspace files.',
-  bootstrap_title: 'The primary H1 title written at the top of AGENTS.md or CLAUDE.md.',
-  bootstrap_profile_guidance: 'The extensive guidelines, rules, and CLI references written into the bootstrap file.',
-  msg_agent_message: 'Injected into the agent pane when another agent sends an inbox message.',
-  msg_task_updated: 'Injected when an assigned task status changes, containing a comment body.',
-  msg_task_updated_empty: 'Injected when an assigned task status changes, without any comment body.',
-  msg_memory_updated: 'Injected when a factual memory record is added or updated.',
-  msg_memory_proposal_updated: 'Injected when a new memory proposal is submitted and awaiting review.',
-  msg_user_chat: 'Injected when you send a direct message to the agent from this UI.',
-  msg_token_refreshed: 'Injected if the daemon restarts and re-authenticates the wrapper with a fresh token.',
-  msg_stop_requested: 'Injected when you request a graceful shutdown from this UI.',
-};
-
-export default function SettingsPage({ session, onReconnect, onBack }) {
+export default function SettingsPage({ session, onReconnect, onBack }: any) {
   const dispatch = useDispatch<any>();
-  const [preferences, setPreferences] = useState<Preference[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [savingKey, setSavingKey] = useState<string | null>(null);
-  const [resettingKey, setResettingKey] = useState<string | null>(null);
-  const [knownAgents, setKnownAgents] = useState<any[]>([]);
-  const [isSavingAuditing, setIsSavingAuditing] = useState(false);
-
+  const { agents, preferences, session: reduxSession, settingsTemplates, settingsProviders, chats, sending } = useSelector((state: any) => state.chat);
+  const { recordsById, recordIds, loading: memoryLoading } = useSelector((state: any) => state.memory);
+  const [selected, setSelected] = useState('templates');
+  const [directAgentId, setDirectAgentId] = useState('');
+  const [directDraft, setDirectDraft] = useState('');
   const [debugInfo, setDebugInfo] = useState<{ enabled: boolean; port: number; pid: number } | null>(null);
 
+  const effectiveSession = reduxSession || session;
+
   useEffect(() => {
-    if ((window as any).odinApi?.getDebugInfo) {
-      (window as any).odinApi.getDebugInfo().then(setDebugInfo);
-    }
+    if (!effectiveSession?.daemonUrl) return;
+    dispatch(refreshSettingsCatalog()).catch(() => undefined);
+    dispatch(fetchPreferences()).catch(() => undefined);
+    dispatch(refreshMemory()).catch(() => undefined);
+  }, [dispatch, effectiveSession?.daemonUrl, effectiveSession?.clientToken]);
+
+  useEffect(() => {
+    if ((window as any).odinApi?.getDebugInfo) (window as any).odinApi.getDebugInfo().then(setDebugInfo);
   }, []);
 
-  // Edit states for fields in the UI
-  const [editValues, setEditValues] = useState<Record<string, string>>({});
-  const [editInterrupts, setEditInterrupts] = useState<Record<string, boolean>>({});
-  const [resettingSetup, setResettingSetup] = useState(false);
-
-  const textareasRef = useRef<Record<string, HTMLTextAreaElement | null>>({});
-
-  // Fetch preferences ONLY on component mount, satisfying the lazy-fetch constraint
   useEffect(() => {
-    if (session?.daemonUrl && session?.clientToken) {
-      fetchPrefs();
-      fetchKnownAgents();
-    }
-  }, [session?.daemonUrl, session?.clientToken]);
+    if (!directAgentId && agents[0]?.id) setDirectAgentId(agents[0].id);
+  }, [agents, directAgentId]);
 
-  const fetchKnownAgents = async () => {
-    try {
-      const list = await daemonApi.listKnownAgents({ daemonUrl: session.daemonUrl });
-      setKnownAgents(list);
-    } catch (err) {
-      console.error('Failed to fetch known agents:', err);
-    }
-  };
+  useEffect(() => {
+    if (!directAgentId) return;
+    dispatch(selectAgent(directAgentId));
+    dispatch(fetchSelectedChat({ agentId: directAgentId })).catch(() => undefined);
+  }, [dispatch, directAgentId]);
 
-  const fetchPrefs = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await daemonApi.fetchPreferences({
-        daemonUrl: session.daemonUrl,
-        clientToken: session.clientToken,
-      });
-      if (data?.preferences) {
-        setPreferences(data.preferences);
-        // Initialize edit buffers
-        const vals: Record<string, string> = {};
-        const ints: Record<string, boolean> = {};
-        data.preferences.forEach((p: Preference) => {
-          vals[p.key] = p.value;
-          ints[p.key] = p.interrupt;
-        });
-        setEditValues(vals);
-        setEditInterrupts(ints);
-      }
-    } catch (err: any) {
-      setError(err?.message || 'Failed to fetch user preferences');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleSave = async (key: string) => {
-    setSavingKey(key);
-    try {
-      const data = await daemonApi.savePreference({
-        daemonUrl: session.daemonUrl,
-        clientToken: session.clientToken,
-        key,
-        value: editValues[key] ?? '',
-        interrupt: editInterrupts[key] ?? false,
-      });
-      if (data?.ok && data?.preference) {
-        // Update local preferences list state
-        setPreferences(prev =>
-          prev.map(p => (p.key === key ? data.preference : p))
-        );
-      }
-    } catch (err: any) {
-      alert(`Error saving preference: ${err?.message || 'Unknown error'}`);
-    } finally {
-      setSavingKey(null);
-    }
-  };
-
-  const handleReset = async (key: string) => {
-    if (!confirm('Are you sure you want to reset this template back to its default value?')) {
-      return;
-    }
-    setResettingKey(key);
-    try {
-      const data = await daemonApi.resetPreference({
-        daemonUrl: session.daemonUrl,
-        clientToken: session.clientToken,
-        key,
-      });
-      if (data?.ok && data?.preference) {
-        setPreferences(prev =>
-          prev.map(p => (p.key === key ? data.preference : p))
-        );
-        setEditValues(prev => ({ ...prev, [key]: data.preference.value }));
-        setEditInterrupts(prev => ({ ...prev, [key]: data.preference.interrupt }));
-      }
-    } catch (err: any) {
-      alert(`Error resetting preference: ${err?.message || 'Unknown error'}`);
-    } finally {
-      setResettingKey(null);
-    }
-  };
-
-  const handleBadgeClick = (key: string, badge: string) => {
-    const textarea = textareasRef.current[key];
-    if (!textarea) return;
-
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    const text = editValues[key] ?? '';
-    const newText = text.substring(0, start) + badge + text.substring(end);
-
-    setEditValues(prev => ({ ...prev, [key]: newText }));
-
-    // Refocus and place cursor after the inserted badge
-    setTimeout(() => {
-      textarea.focus();
-      textarea.setSelectionRange(start + badge.length, start + badge.length);
-    }, 0);
-  };
-
-  const auditingKeys = [
-    'memory_auditor_enabled',
-    'memory_auditor_agent_id',
-    'memory_auditor_model_tier',
-    'memory_auditor_provider_profile',
-    'memory_reviewer_agent_id',
-    'memory_reviewer_model_tier',
-    'memory_reviewer_provider_profile'
-  ];
-
-  const bootstrapPrefs = preferences.filter(p =>
-    ['starter_prompt', 'bootstrap_header', 'bootstrap_title', 'bootstrap_profile_guidance'].includes(p.key)
-  );
-
-  const livePrefs = preferences.filter(p =>
-    !['starter_prompt', 'bootstrap_header', 'bootstrap_title', 'bootstrap_profile_guidance', 'backup_dir', ...auditingKeys].includes(p.key)
-  );
-
-  const handleSaveAuditingConfig = async () => {
-    setIsSavingAuditing(true);
-    try {
-      const promises = auditingKeys.map(key =>
-        daemonApi.savePreference({
-          daemonUrl: session.daemonUrl,
-          clientToken: session.clientToken,
-          key,
-          value: editValues[key] ?? '',
-          interrupt: false,
-        })
-      );
-      const results = await Promise.all(promises);
-      setPreferences(prev => {
-        let updated = [...prev];
-        results.forEach(res => {
-          if (res?.ok && res?.preference) {
-            updated = updated.map(p => (p.key === res.preference.key ? res.preference : p));
-          }
-        });
-        return updated;
-      });
-      alert('Cognitive Memory Auditing configuration saved successfully!');
-    } catch (err: any) {
-      alert(`Error saving auditing config: ${err?.message || 'Unknown error'}`);
-    } finally {
-      setIsSavingAuditing(false);
-    }
-  };
-
-  const hasAuditingChanged = auditingKeys.some(key => {
-    const pref = preferences.find(p => p.key === key);
-    return pref ? (editValues[key] ?? '') !== pref.value : false;
-  });
-
-  const knownAgentIds = knownAgents.map(a => a.agent_instance_id);
-  const configuredAuditor = editValues['memory_auditor_agent_id'] || '';
-  const configuredReviewer = editValues['memory_reviewer_agent_id'] || '';
-
-  const isAuditorKnown = configuredAuditor !== '' && knownAgentIds.includes(configuredAuditor);
-  const isReviewerKnown = configuredReviewer !== '' && knownAgentIds.includes(configuredReviewer);
-  const canEnableAuditing = isAuditorKnown && isReviewerKnown;
-
-  const auditorOptions = Array.from(new Set([...knownAgentIds, configuredAuditor])).filter(Boolean);
-  const reviewerOptions = Array.from(new Set([...knownAgentIds, configuredReviewer])).filter(Boolean);
-
-  const [backingUp, setBackingUp] = useState(false);
-
-  const handleTriggerBackup = async () => {
-    setBackingUp(true);
-    try {
-      const response = await fetch(`${session.daemonUrl}/backup/trigger`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          client_token: session.clientToken,
-          agent_token: session.clientToken,
-        }),
-      });
-      const data = await response.json();
-      if (response.ok && data.ok) {
-        alert(data.message || 'Database backup completed successfully!');
-      } else {
-        alert(`Backup failed: ${data.message || 'Unknown error'}`);
-      }
-    } catch (err: any) {
-      alert(`Network error triggering backup: ${err?.message || 'Unknown error'}`);
-    } finally {
-      setBackingUp(false);
-    }
-  };
-
-  const handleRerunSetup = async () => {
-    if (!confirm('Are you sure you want to rerun the first-time setup wizard? You will be immediately redirected to the onboarding flow.')) {
-      return;
-    }
-    setResettingSetup(true);
-    try {
-      await dispatch(saveUserPreference({
-        key: 'setup_completed',
-        value: 'false',
-        interrupt: false,
-      })).unwrap();
-    } catch (err: any) {
-      alert(`Failed to reset setup: ${err?.message || 'Unknown error'}`);
-    } finally {
-      setResettingSetup(false);
-    }
-  };
+  const templates = useMemo(() => (settingsTemplates || []).map(normalizeTemplate).filter((item: any) => item.id), [settingsTemplates]);
+  const providers = useMemo(() => (settingsProviders || []).map((item: any) => typeof item === 'string' ? { name: item } : item).filter((item: any) => item?.name), [settingsProviders]);
+  const memoryRecords = useMemo(() => (recordIds || []).map((id: string) => recordsById[id]).filter(Boolean), [recordIds, recordsById]);
+  const visiblePreferences = (preferences || []).slice(0, 12);
+  const directMessages = chats[directAgentId] || [];
 
   return (
-    <main className="framer-panel flex min-w-0 min-h-0 h-full flex-1 flex-col bg-[var(--fd-canvas)]">
-      <header className="flex items-center justify-between border-b border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] px-6 py-4">
+    <main className="h-full min-h-0 bg-[#08090b] text-zinc-100">
+      <header className="flex items-center justify-between border-b border-white/10 bg-[#0d0f14] px-6 py-4">
         <div>
-          <p className="framer-topline">Settings</p>
-          <h2 className="mt-1 truncate text-2xl font-bold text-white">Daemon + User preferences</h2>
-          <p className="framer-subtext mt-1">Manage connection details, notification templates, and operating rules</p>
+          <div className="text-xs uppercase tracking-[0.24em] text-zinc-500">Settings</div>
+          <h1 className="mt-1 text-2xl font-semibold">System, debug, and daemon views</h1>
+          <p className="mt-1 text-sm text-zinc-500">Moved legacy top-level tabs into this Settings surface. Data is hydrated by shared Redux/HTTP loads.</p>
         </div>
-        <button
-          type="button"
-          data-debug-id="settings-back-btn"
-          onClick={onBack}
-          className="framer-pill-secondary px-4 py-2 text-xs"
-        >
-          Back to chat
-        </button>
+        <button data-debug-id="settings-back-btn" type="button" onClick={onBack} className="rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15">Back</button>
       </header>
 
-      <section className="flex-1 overflow-y-auto px-6 py-6">
-        <div className="w-full max-w-3xl space-y-6">
-          {/* 1. Connection Config */}
-          <div className="framer-card p-6">
-            <h3 className="text-sm font-semibold text-[#888] uppercase tracking-wider mb-4">Connection Config</h3>
-            <SessionConfig session={session} onReconnect={onReconnect} />
-            <div className="mt-4 text-[11px] text-[#777] leading-relaxed">
-              <p>Session and connection details persist locally in Electron and are used across restarts.</p>
-              <p className="mt-1">Changing user ID regenerates local client identity and credentials.</p>
-            </div>
-          </div>
-
-          {/* 2. Developer Options */}
-          <div className="framer-card p-6">
-            <h3 className="text-sm font-semibold text-[#888] uppercase tracking-wider mb-2">Developer Options</h3>
-            <p className="text-xs text-[#666] mb-4">Toggle advanced debugging features.</p>
-            
-            <div className="flex flex-col gap-3">
-              <label className="flex items-center text-sm font-bold text-white cursor-pointer select-none w-max">
-                <input
-                  type="checkbox"
-                  checked={debugInfo?.enabled || false}
-                  onChange={async () => {
-                    if (!debugInfo || !(window as any).odinApi?.toggleDebugServer) return;
-                    const nextState = !debugInfo.enabled;
-                    const res = await (window as any).odinApi.toggleDebugServer(nextState);
-                    setDebugInfo(res);
-                  }}
-                  className="mr-3 w-4 h-4 accent-[var(--fd-accent)]"
-                />
-                Enable Electron Debug Server
-              </label>
-
-              {debugInfo?.enabled && (
-                <div className="bg-[#101010] border border-[#222] p-3 rounded text-xs font-mono text-[#aaa]">
-                  <div className="flex flex-col gap-1">
-                    <div><span className="text-[#555]">URL:</span> <a href={`http://127.0.0.1:${debugInfo.port}`} target="_blank" rel="noreferrer" className="text-[var(--fd-accent)] hover:underline">http://127.0.0.1:{debugInfo.port}</a></div>
-                    <div><span className="text-[#555]">PID:</span> {debugInfo.pid}</div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-
-
-          {/* 3. User Preferences */}
-          <div className="framer-card p-6">
-            <h3 className="text-sm font-semibold text-[#888] uppercase tracking-wider mb-2">User Preferences</h3>
-            <p className="text-xs text-[#666] mb-4">Customize the templates and behaviors Heimdall uses to prompt and notify your active agents.</p>
-
-            {loading && (
-              <div className="flex items-center justify-center py-8 text-xs text-[#888]">
-                <div className="animate-spin mr-2 h-4 w-4 border-2 border-t-transparent border-[var(--fd-accent)] rounded-full"></div>
-                Loading preferences...
-              </div>
-            )}
-
-            {error && (
-              <div className="border border-red-500/20 bg-red-500/5 text-red-400 text-xs p-3 rounded mb-4">
-                {error}
-              </div>
-            )}
-
-            {!loading && preferences.length > 0 && (
-              <div className="space-y-6">
-                {/* A. Group 1: Bootstrap & Starter Templates */}
-                <div>
-                  <h4 className="text-xs font-bold text-white border-b border-[var(--fd-hairline)] pb-2 mb-4">
-                    📁 Group 1: Workspace Bootstrap & Starter Templates
-                  </h4>
-                  <div className="space-y-4">
-                    {bootstrapPrefs.map(pref => renderPrefCard(pref))}
-                  </div>
-                </div>
-
-                {/* B. Group 2: Live Notification Templates */}
-                <div className="mt-8">
-                  <h4 className="text-xs font-bold text-white border-b border-[var(--fd-hairline)] pb-2 mb-4">
-                    📂 Group 2: Live Active Notification Templates
-                  </h4>
-                  <div className="space-y-4">
-                    {livePrefs.map(pref => renderPrefCard(pref, true))}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* 4. Database Backups */}
-          <div className="framer-card p-6">
-            <h3 className="text-sm font-semibold text-[#888] uppercase tracking-wider mb-2">🗄️ Database Backups</h3>
-            <p className="text-xs text-[#666] mb-4">
-              Backup all local SQLite databases (tasks, template registry, chat history, preferences, and memories) to a secure dated folder. 
-              The daemon automatically takes a scheduled backup once every day in the background.
-            </p>
-
-            <div className="space-y-4">
-              {/* Backup Dir Input */}
-              <div className="flex flex-col gap-2">
-                <label className="text-[10px] text-[#555] font-bold uppercase tracking-wider">💾 Backup Destination Directory</label>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={editValues['backup_dir'] ?? ''}
-                    onChange={(e) => setEditValues(prev => ({ ...prev, backup_dir: e.target.value }))}
-                    onBlur={async () => {
-                      const val = editValues['backup_dir'] ?? '';
-                      try {
-                        await daemonApi.savePreference({
-                          daemonUrl: session.daemonUrl,
-                          clientToken: session.clientToken,
-                          key: 'backup_dir',
-                          value: val,
-                          interrupt: false,
-                        });
-                      } catch (err) {
-                        console.error('Failed to save backup_dir preference:', err);
-                      }
-                    }}
-                    className="framer-input px-3 py-2 text-xs w-full font-mono"
-                    placeholder="e.g. ~/heimdall-backups"
-                  />
-                </div>
-                <span className="text-[10px] text-[#555] italic">Home directory (~) will be expanded automatically on the backend.</span>
-              </div>
-
-              {/* Trigger Backup Button */}
-              <div className="pt-2">
-                <button
-                  type="button"
-                  onClick={handleTriggerBackup}
-                  disabled={backingUp}
-                  className={`px-4 py-2.5 rounded-xl font-bold text-xs transition-[transform,colors] duration-200 ${
-                    backingUp
-                      ? 'bg-[#111] border border-[#222] text-[#444] pointer-events-none'
-                      : 'bg-white text-black hover:bg-[#e0e0e0] '
-                  }`}
-                >
-                  {backingUp ? (
-                    <div className="flex items-center justify-center">
-                      <div className="animate-spin mr-2 h-3.5 w-3.5 border-2 border-t-transparent border-white rounded-full"></div>
-                      Backing up...
-                    </div>
-                  ) : (
-                    'Backup Databases Now'
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* 5. Onboarding & Setup */}
-          <div className="framer-card p-6 border border-amber-500/10 bg-amber-500/5">
-            <h3 className="text-sm font-semibold text-[#888] uppercase tracking-wider mb-2">🛡️ Setup & Onboarding</h3>
-            <p className="text-xs text-[#666] mb-4">
-              Rerun the interactive onboarding wizard to configure your daemon connection IP, set your friendly operator display name, specify your database backup folder, and re-verify your agent connectivity tests.
-            </p>
-            <div className="pt-2">
-              <button
-                type="button"
-                onClick={handleRerunSetup}
-                disabled={resettingSetup}
-                 className="px-4 py-2.5 rounded-xl font-bold text-xs bg-amber-500 text-black hover:bg-amber-400  transition-[transform,colors] duration-200"
-              >
-                {resettingSetup ? 'Resetting Setup...' : 'Rerun Setup Wizard'}
-              </button>
-            </div>
-          </div>
-
-        </div>
-      </section>
-    </main>
-  );
-
-  function renderPrefCard(pref: Preference, showInterruptToggle = false) {
-    const key = pref.key;
-    const value = editValues[key] ?? '';
-    const interrupt = editInterrupts[key] ?? false;
-    const isSaving = savingKey === key;
-    const isResetting = resettingKey === key;
-    const hasChanged = value !== pref.value || (showInterruptToggle && interrupt !== pref.interrupt);
-
-    return (
-      <div key={key} className="framer-card bg-[#181818] p-4 border border-[var(--fd-hairline)] hover:border-[#333] transition-colors">
-        <div className="flex items-start justify-between">
-          <div>
-            <h5 className="text-xs font-bold text-white flex items-center">
-              {KEY_LABELS[key] || key}
-              {pref.is_custom && (
-                <span className="ml-2 bg-[var(--fd-accent)]/10 border border-[var(--fd-accent)]/20 text-[var(--fd-accent)] text-[9px] px-1.5 py-0.5 rounded font-normal uppercase">
-                  Customized
-                </span>
-              )}
-            </h5>
-            <p className="text-[11px] text-[#666] mt-1">{KEY_DESCRIPTIONS[key] || ''}</p>
-          </div>
-          
-          {pref.is_custom && (
-            <button
-              type="button"
-              disabled={isResetting || isSaving}
-              onClick={() => handleReset(key)}
-              className="text-[10px] text-[#999] hover:text-red-400 transition-colors ml-4"
-            >
-              {isResetting ? 'Resetting...' : 'Reset Default'}
-            </button>
-          )}
-        </div>
-
-        {/* Placeholders helper badges */}
-        {PLACEHOLDERS[key] && PLACEHOLDERS[key].length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mt-3 mb-2">
-            <span className="text-[10px] text-[#555] self-center mr-1">Insert Badge:</span>
-            {PLACEHOLDERS[key].map(placeholder => (
-              <button
-                key={placeholder}
-                type="button"
-                onClick={() => handleBadgeClick(key, placeholder)}
-                className="bg-[#222] hover:bg-[#333] border border-[#2c2c2c] text-[var(--fd-accent)] text-[10px] px-2 py-0.5 rounded font-mono transition-colors"
-              >
-                {placeholder}
-              </button>
+      <div className="grid h-[calc(100%-73px)] grid-cols-[240px_minmax(0,1fr)]">
+        <nav className="border-r border-white/10 bg-[#0d0f14] p-3">
+          <div className="space-y-1">
+            {SETTINGS_ITEMS.map((item) => (
+              <button key={item.key} data-debug-id={`settings-nav-${item.key}`} onClick={() => setSelected(item.key)} className={`w-full rounded-xl px-3 py-2 text-left text-sm ${selected === item.key ? 'bg-white text-black' : 'bg-white/5 text-zinc-300 hover:bg-white/10'}`}>{item.label}</button>
             ))}
           </div>
-        )}
-
-        <div className="mt-3 space-y-3">
-          <textarea
-            ref={el => { textareasRef.current[key] = el; }}
-            value={value}
-            onChange={e => setEditValues(prev => ({ ...prev, [key]: e.target.value }))}
-            className="w-full bg-[#101010] border border-[#222] focus:border-[var(--fd-accent)] text-xs text-white p-2.5 rounded font-mono focus:outline-none resize-y min-h-[60px] leading-relaxed"
-            placeholder="Type your custom template here..."
-            rows={key === 'bootstrap_profile_guidance' ? 12 : 2}
-          />
-
-          <div className="flex items-center justify-between mt-2 pt-1">
-            {showInterruptToggle ? (
-              <label className="flex items-center text-xs text-[#888] cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={interrupt}
-                  onChange={e => setEditInterrupts(prev => ({ ...prev, [key]: e.target.checked }))}
-                  className="mr-2 accent-[var(--fd-accent)]"
-                />
-                <span>Interrupt Active Agent (Prefix with Escape)</span>
-              </label>
-            ) : (
-              <div></div>
-            )}
-
-            <button
-              type="button"
-              disabled={isSaving || isResetting || !hasChanged}
-              onClick={() => handleSave(key)}
-              className={`framer-pill-primary px-4 py-1.5 text-[11px] font-semibold transition-[transform,colors] duration-200 ${
-                hasChanged ? 'opacity-100 ' : 'opacity-40 cursor-not-allowed'
-              }`}
-            >
-              {isSaving ? 'Saving...' : 'Save Override'}
-            </button>
+          <div className="mt-4 rounded-xl bg-white/[0.04] p-3 text-[11px] text-zinc-500">
+            Freshness: Home-level periodic and WebSocket refreshes keep agents/tasks/chains current; Settings mounts dispatch HTTP-backed Redux loads for templates, preferences, and memory.
           </div>
-        </div>
+        </nav>
+
+        <section className="min-w-0 overflow-y-auto p-6">
+          {selected === 'templates' && <TemplatesPanel templates={templates} />}
+          {selected === 'kinds' && <TeamKindsPanel />}
+          {selected === 'providers' && <ProvidersPanel providers={providers} preferences={visiblePreferences} />}
+          {selected === 'memory' && <MemoryPanel records={memoryRecords} loading={memoryLoading} />}
+          {selected === 'agents' && <AgentsPanel agents={agents} />}
+          {selected === 'direct-chat' && <DirectChatPanel agents={agents} agentId={directAgentId} setAgentId={setDirectAgentId} messages={directMessages} draft={directDraft} setDraft={setDirectDraft} sending={sending} onSend={() => { const body = directDraft.trim(); if (!body || !directAgentId) return; dispatch(sendMessageToSelectedAgent({ body, tempId: `settings_${Date.now()}` })); setDirectDraft(''); }} />}
+          {selected === 'daemon' && <DaemonPanel session={effectiveSession} onReconnect={onReconnect} debugInfo={debugInfo} setDebugInfo={setDebugInfo} />}
+        </section>
       </div>
-    );
-  }
+    </main>
+  );
 }
+
+function Panel({ title, subtitle, children }: any) {
+  return <div className="mx-auto max-w-5xl"><div className="mb-5"><h2 className="text-3xl font-semibold">{title}</h2><p className="mt-1 text-sm text-zinc-500">{subtitle}</p></div>{children}</div>;
+}
+
+function TemplatesPanel({ templates }: any) {
+  return <Panel title="Agent templates" subtitle="Template registry moved from the legacy Agents tab. Read-only list for this UI pass."><div className="grid gap-3">{templates.length === 0 ? <Empty text="No templates loaded." /> : templates.map((template: any) => <Card key={template.id}><div className="font-semibold">{template.name || template.id}</div><div className="mt-1 text-sm text-zinc-500">{template.id} · role {template.role || '—'} · provider {template.provider || '—'} · tier {template.tier || '—'}</div></Card>)}</div></Panel>;
+}
+
+function TeamKindsPanel() {
+  return <Panel title="Team kinds" subtitle="Closed-set daemon team kinds. Read-only."><div className="grid gap-3 md:grid-cols-2">{TEAM_KINDS.map((kind) => <Card key={kind.key}><div className="flex items-center justify-between"><div className="font-semibold">{kind.label}</div><span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-zinc-400">{kind.key}</span></div><div className="mt-2 text-sm text-zinc-500">VCS: {kind.vcs}</div><div className="mt-2 flex flex-wrap gap-1">{kind.scaffolds.map((scaffold) => <span key={scaffold} className="rounded-full bg-sky-400/10 px-2 py-0.5 text-xs text-sky-200">{scaffold}</span>)}</div></Card>)}</div></Panel>;
+}
+
+function ProvidersPanel({ providers, preferences }: any) {
+  return <Panel title="Providers & model tiers" subtitle="Provider profiles and relevant preference snapshot."><div className="grid gap-4 lg:grid-cols-2"><Card><h3 className="font-semibold">Providers</h3><div className="mt-3 space-y-2">{providers.length === 0 ? <div className="text-sm text-zinc-500">No providers loaded.</div> : providers.map((provider: any) => <div key={provider.name} className="rounded-lg bg-black/20 px-3 py-2 text-sm">{provider.name}</div>)}</div></Card><Card><h3 className="font-semibold">Preference snapshot</h3><div className="mt-3 space-y-2">{preferences.length === 0 ? <div className="text-sm text-zinc-500">No preferences loaded.</div> : preferences.map((pref: any) => <div key={pref.key} className="rounded-lg bg-black/20 px-3 py-2 text-sm"><div className="text-zinc-300">{pref.key}</div><div className="truncate text-xs text-zinc-500">{String(pref.value || '')}</div></div>)}</div></Card></div></Panel>;
+}
+
+function MemoryPanel({ records, loading }: any) {
+  return <Panel title="Memory browser" subtitle="Redux-backed memory records; refreshed on Settings mount and memory events.">{loading ? <Empty text="Loading memory…" /> : <div className="grid gap-3">{records.length === 0 ? <Empty text="No memory records loaded." /> : records.slice(0, 50).map((record: any) => <Card key={record.memoryId || record.id}><div className="font-semibold">{record.title || record.memoryId || record.id}</div><div className="mt-1 text-sm text-zinc-500">{record.scope || 'scope'} · {record.type || 'type'} · {record.status || 'status'}</div><div className="mt-2 line-clamp-3 text-sm text-zinc-300">{record.body || record.content || ''}</div></Card>)}</div>}</Panel>;
+}
+
+function AgentsPanel({ agents }: any) {
+  return <Panel title="Agents (raw registry)" subtitle="Debug view of daemon agent registry, moved from the old Agents top-level tab."><div className="grid gap-3">{agents.length === 0 ? <Empty text="No agents loaded." /> : agents.map((agent: any) => <Card key={agent.id}><div className="flex items-center justify-between gap-3"><div className="font-semibold">{agent.label || agent.id}</div><span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-zinc-400">{agent.state || agent.status || 'unknown'}</span></div><div className="mt-1 text-xs text-zinc-500">{agent.id} · project {agent.projectId || '—'} · current task {agent.currentTaskId || 'idle'}</div></Card>)}</div></Panel>;
+}
+
+function DirectChatPanel({ agents, agentId, setAgentId, messages, draft, setDraft, sending, onSend }: any) {
+  return (
+    <Panel title="Direct agent chat (debug)" subtitle="Debug affordance only. Main-path chat remains chain coordinator-only.">
+      <Card>
+        <label className="text-sm text-zinc-300">
+          Agent
+          <select data-debug-id="settings-direct-chat-agent-select" value={agentId} onChange={(event) => setAgentId(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none">
+            <option value="">Select agent</option>
+            {agents.map((agent: any) => <option key={agent.id} value={agent.id}>{agent.label || agent.id}</option>)}
+          </select>
+        </label>
+        <div data-debug-id="settings-direct-chat-feed" className="mt-4 max-h-80 min-h-48 overflow-y-auto rounded-xl bg-black/20 p-3">
+          {messages.length === 0 ? <div className="text-sm text-zinc-500">No direct debug messages loaded.</div> : messages.map((message: any, index: number) => (
+            <div key={message.id || message.messageId || index} className={`mb-2 rounded-xl px-3 py-2 text-sm ${message.direction === 'user_to_agent' || message.author === 'user' ? 'ml-8 bg-sky-500/15 text-sky-100' : 'mr-8 bg-white/5 text-zinc-200'}`}>{message.body}</div>
+          ))}
+        </div>
+        <div className="mt-3 flex gap-2">
+          <input data-debug-id="settings-direct-chat-input" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') onSend(); }} placeholder="Debug direct message to selected agent…" className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
+          <button data-debug-id="settings-direct-chat-send-btn" type="button" onClick={onSend} disabled={sending || !agentId || !draft.trim()} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:opacity-50">{sending ? 'Sending…' : 'Send'}</button>
+        </div>
+      </Card>
+    </Panel>
+  );
+}
+
+function DaemonPanel({ session, onReconnect, debugInfo, setDebugInfo }: any) {
+  return <Panel title="Daemon connection" subtitle="Connection profile and Electron debug server."><div className="grid gap-4 lg:grid-cols-2"><Card><SessionConfig session={session} onReconnect={onReconnect} /></Card><Card><h3 className="font-semibold">Electron debug server</h3><label className="mt-4 flex items-center gap-3 text-sm text-zinc-300"><input type="checkbox" checked={Boolean(debugInfo?.enabled)} onChange={async () => { if (!debugInfo || !(window as any).odinApi?.toggleDebugServer) return; setDebugInfo(await (window as any).odinApi.toggleDebugServer(!debugInfo.enabled)); }} />Enabled</label>{debugInfo?.enabled && <div className="mt-3 rounded-xl bg-black/20 p-3 font-mono text-xs text-zinc-400">http://127.0.0.1:{debugInfo.port}<br />pid {debugInfo.pid}</div>}</Card></div></Panel>;
+}
+
+function Card({ children }: any) { return <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">{children}</div>; }
+function Empty({ text }: { text: string }) { return <div className="rounded-2xl border border-dashed border-white/10 p-5 text-sm text-zinc-500">{text}</div>; }

@@ -71,6 +71,7 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 	agent_store_init(server_data_dir); time_step("agent_store_init", &step)
 	chat_store_init(server_data_dir); time_step("chat_store_init", &step)
 	_ = team_service_init(server_data_dir); time_step("team_service_init", &step)
+	teams_v1_migration_maybe_run(server_data_dir); time_step("teams_v1_migration_maybe_run", &step)
 	if !vcs_db_init(server_data_dir) { fmt.println("WARNING: vcs_db_init failed, workspaces will not persist") }
 	time_step("vcs_db_init", &step)
 	if !auth_db_init(server_data_dir) {
@@ -209,6 +210,10 @@ handle_client :: proc(client: net.TCP_Socket) {
 	if strings.has_prefix(request, "POST /agent-rpc ") {
 		handle_agent_rpc(client, request_body(request))
 		return
+	}
+
+	if strings.has_prefix(request, "POST /chat/") || strings.has_prefix(request, "GET /chat/") {
+		if handle_chat_request(client, request) do return
 	}
 
 	if strings.has_prefix(request, "GET /agents/templates ") {
@@ -551,6 +556,11 @@ handle_client :: proc(client: net.TCP_Socket) {
 
 	if strings.has_prefix(request, "GET /clients ") {
 		write_response(client, 200, "OK", registry_list_json())
+		return
+	}
+
+	if strings.has_prefix(request, "GET /attention ") || strings.has_prefix(request, "GET /attention?") {
+		handle_attention(client, request)
 		return
 	}
 

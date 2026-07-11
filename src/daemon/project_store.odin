@@ -27,8 +27,6 @@ project_store_init :: proc(data_dir: string) {
 	project_events_path = strings.clone(fmt.tprintf("%s/events.jsonl", project_store_dir))
 	_ = os.make_directory_all(project_store_dir)
 	project_store_replay()
-	migrate_flag := os.get_env_alloc("HEIMDALL_MIGRATE_V1", context.allocator)
-	if migrate_flag == "1" do project_migrate_anchors(expand_home(data_dir))
 
 	// Ensure the default system project exists
 	if project_index("heimdall-system") < 0 {
@@ -113,18 +111,13 @@ project_parse_anchors_into :: proc(body: string, anchors: ^[PROJECT_MAX_ANCHORS]
 
 project_write_anchor_json :: proc(b: ^strings.Builder, a: Project_Anchor) { strings.write_string(b, `{"type":"`); json_write_string(b, a.type); strings.write_string(b, `","value":"`); json_write_string(b, a.value); strings.write_string(b, `","note":"`); json_write_string(b, a.note); strings.write_string(b, `"}`) }
 
-project_migrate_anchors :: proc(data_dir: string) {
-	migrations_dir := fmt.tprintf("%s/migrations", data_dir)
-	_ = os.make_directory_all(migrations_dir)
-	report_path := fmt.tprintf("%s/teams-v1-anchor-%d.report.md", migrations_dir, router_now_unix_ms())
-	report := strings.builder_make()
-	strings.write_string(&report, "# Teams v1 anchor migration\n\n")
-	changed_any := false
+project_migrate_anchors_into_report :: proc(report: ^strings.Builder) -> int {
+	changed_count := 0
 	for i in 0..<project_record_count {
 		current := project_records[i]
 		event := Project_Event{kind = .Project_Updated, project_id = current.project_id, name = current.name, description = current.description, author = "system-anchor-migration", order = current.order}
 		changed := false
-		strings.write_string(&report, "## "); strings.write_string(&report, current.project_id); strings.write_string(&report, "\n")
+		strings.write_string(report, "## "); strings.write_string(report, current.project_id); strings.write_string(report, "\n")
 		for j in 0..<current.anchor_count {
 			a := current.anchors[j]
 			if project_anchor_type_allowed(a.type) {
@@ -132,20 +125,20 @@ project_migrate_anchors :: proc(data_dir: string) {
 				continue
 			}
 			changed = true
-			changed_any = true
+			changed_count += 1
 			if a.type == "directory" && project_directory_anchor_maps_to_git_repo(current.project_id, a.value) {
 				event.anchors[event.anchor_count] = Project_Anchor{type = "git_repo", value = strings.clone(a.value), note = strings.clone(a.note)}; event.anchor_count += 1
-				strings.write_string(&report, "- directory -> git_repo: "); strings.write_string(&report, a.value); strings.write_string(&report, "\n")
+				strings.write_string(report, "- directory -> git_repo: "); strings.write_string(report, a.value); strings.write_string(report, "\n")
 			} else {
 				event.description = project_append_migrated_anchor_description(event.description, a)
-				strings.write_string(&report, "- moved anchor into description: "); strings.write_string(&report, a.type); strings.write_string(&report, " = "); strings.write_string(&report, a.value); strings.write_string(&report, "\n")
+				strings.write_string(report, "- moved anchor into description: "); strings.write_string(report, a.type); strings.write_string(report, " = "); strings.write_string(report, a.value); strings.write_string(report, "\n")
 			}
 		}
-		if !changed do strings.write_string(&report, "- no changes\n")
-		strings.write_string(&report, "\n")
+		if !changed do strings.write_string(report, "- no changes\n")
+		strings.write_string(report, "\n")
 		if changed do _ = project_store_append_event(event)
 	}
-	if changed_any { _ = os.write_entire_file(report_path, strings.to_string(report)) }
+	return changed_count
 }
 
 project_directory_anchor_maps_to_git_repo :: proc(project_id, value: string) -> bool {
