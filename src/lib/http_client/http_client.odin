@@ -51,10 +51,15 @@ request :: proc(method, base_url, path, body: string) -> (Response, bool) {
 	raw := string(data[:])
 	response_body := raw
 	if idx := strings.index(raw, "\r\n\r\n"); idx >= 0 {
+		headers := raw[:idx]
 		response_body = raw[idx + 4:]
-		content_length := response_content_length(raw[:idx])
-		if content_length >= 0 && len(response_body) > content_length {
-			response_body = response_body[:content_length]
+		if response_transfer_chunked(headers) {
+			response_body = response_decode_chunked_body(response_body)
+		} else {
+			content_length := response_content_length(headers)
+			if content_length >= 0 && len(response_body) > content_length {
+				response_body = response_body[:content_length]
+			}
 		}
 	}
 
@@ -85,6 +90,57 @@ response_content_length :: proc(headers: string) -> int {
 		}
 	}
 	return -1
+}
+
+response_transfer_chunked :: proc(headers: string) -> bool {
+	header_text := headers
+	for line in strings.split_lines_iterator(&header_text) {
+		if strings.has_prefix(line, "Transfer-Encoding:") || strings.has_prefix(line, "transfer-encoding:") {
+			return strings.contains(strings.to_lower(line), "chunked")
+		}
+	}
+	return false
+}
+
+response_decode_chunked_body :: proc(body: string) -> string {
+	b := strings.builder_make()
+	pos := 0
+	for pos < len(body) {
+		line_end := strings.index(body[pos:], "\r\n")
+		if line_end < 0 do break
+		size_line := strings.trim_space(body[pos:pos + line_end])
+		if semi := strings.index(size_line, ";"); semi >= 0 do size_line = size_line[:semi]
+		size, ok := parse_hex_size(size_line)
+		if !ok do break
+		pos += line_end + 2
+		if size == 0 do break
+		if pos + size > len(body) do break
+		strings.write_string(&b, body[pos:pos + size])
+		pos += size
+		if pos + 2 <= len(body) && body[pos:pos + 2] == "\r\n" do pos += 2
+	}
+	return strings.to_string(b)
+}
+
+parse_hex_size :: proc(text: string) -> (int, bool) {
+	trimmed := strings.trim_space(text)
+	if trimmed == "" do return 0, false
+	value := 0
+	for i in 0..<len(trimmed) {
+		ch := trimmed[i]
+		digit := -1
+		if ch >= '0' && ch <= '9' {
+			digit = int(ch - '0')
+		} else if ch >= 'a' && ch <= 'f' {
+			digit = int(ch - 'a') + 10
+		} else if ch >= 'A' && ch <= 'F' {
+			digit = int(ch - 'A') + 10
+		} else {
+			return 0, false
+		}
+		value = value * 16 + digit
+	}
+	return value, true
 }
 
 parse_base_url :: proc(base_url: string) -> (host: string, port: u16, ok: bool) {

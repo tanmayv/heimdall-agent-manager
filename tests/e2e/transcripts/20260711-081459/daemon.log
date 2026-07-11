@@ -1,0 +1,134 @@
+WARN deprecated config key ignored: wrapper.default_agent
+WARN deprecated config key ignored: wrapper.memory_templates
+WARN deprecated config key ignored: wrapper.project
+WARN deprecated config key ignored: wrapper.agent-cmd.pi.memory_templates
+WARN deprecated config key ignored: wrapper.agent-cmd.pi.project
+WARN deprecated config key ignored: wrapper.agent-cmd.claude.bootstrap.AGENTS_MD.content
+init registry_init 0.0ms
+init user_client_registry_init 0.1ms
+init message_provider 47.8ms
+memory_db_init: database initialized at /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-dwghr3vw/data/memory/memory.db
+init memory_db_init 16.2ms
+init central_hub_init 0.1ms
+DB: Migrating task.db to version 1 (adding evaluation)...
+DB: Column 'evaluation' already exists in 'task_chains', skipping ALTER TABLE.
+DB: Migrated task.db to version 1 successfully.
+DB: Migrating task.db to version 2 (adding last_audit_at_unix_ms)...
+DB: Column 'last_audit_at_unix_ms' already exists in 'task_chains', skipping ALTER TABLE.
+DB: Migrated task.db to version 2 successfully.
+DB: Migrating task.db to version 3 (adding default_reviewer_agent_instance_id)...
+DB: Column 'default_reviewer_agent_instance_id' already exists in 'task_chains', skipping ALTER TABLE.
+DB: Migrated task.db to version 3 successfully.
+DB: Migrating task.db to version 4 (adding/backfilling team_id)...
+DB: Migrated task.db to version 4 successfully.
+DB: Migrating task.db to version 5 (adding vcs_workspace_id)...
+DB: Migrated task.db to version 5 successfully.
+task_db_init: relational database initialized at /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-dwghr3vw/data/tasks/task.db
+init task_store_init 56.3ms
+init project_store_init 1.5ms
+DB: Migrating templates.db to version 1 (adding is_customized)...
+DB: Column 'is_customized' already exists in 'agent_templates', skipping ALTER TABLE.
+DB: Migrated templates.db to version 1 successfully.
+DB: Migrating templates.db to version 2 (adding description)...
+DB: Column 'description' already exists in 'agent_templates', skipping ALTER TABLE.
+DB: Migrated templates.db to version 2 successfully.
+agent_template_db_init: database initialized at /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-dwghr3vw/data/templates/templates.db
+agent_template_db: checking and seeding default templates...
+init agent_store_init 30.2ms
+message_db_init: database initialized at /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-dwghr3vw/data/chat/messages.db
+init chat_store_init 8.3ms
+init team_service_init 291.2ms
+init teams_v1_migration_maybe_run 0.1ms
+init vcs_db_init 37.2ms
+auth_db_init: database initialized at /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-dwghr3vw/data/auth/tokens.db
+init auth_db_init 5.4ms
+user_pref_db_init: database initialized at /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-dwghr3vw/data/preferences/preference.db
+init user_pref_db_init 3.4ms
+audit_db_init: database initialized at /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-dwghr3vw/data/audits/audits.db
+init audit_db_init 10.2ms
+init router_adapter_init 0.0ms
+init hub_sync_init 0.0ms
+init message_queue_init 0.0ms
+init message_queue_start_worker 0.0ms
+init hub_sync_start_worker 0.0ms
+init task_nudge_scheduler_start 0.0ms
+init agent_startup_janitor_start 0.0ms
+init test_run_startup_sweep 25.0ms
+init backup_scheduler_start 0.1ms
+init TOTAL 533.3ms
+odin-daemon listening 127.0.0.1 49422
+[RPC TELEMETRY] 2026-07-11 02:45:08.339 | GET /health | Params:  | Status: 200 | Latency: 0.0ms | Size: 32 bytes | Body: {"ok":true,"protocol_version":1}
+DEBUG: auth_db_get_token no token found for user operator@local
+DEBUG: auth_db_store_token for user operator@local token = uct_29db744addc6714d ...
+DEBUG: auth_db_store_token succeeded
+[RPC TELEMETRY] 2026-07-11 02:45:08.347 | POST /user-client/register | Params: {"user_id": "operator@local", "client_instance_id": "task18-canonical-ui"} | Status: 200 | Latency: 1.9ms | Size: 167 bytes
+DEBUG: auth_db_get_token no token found for agent pi@task18-e2e
+DEBUG: auth_db_store_token for agent pi@task18-e2e token = agt_063b2a481c7a76bd ...
+DEBUG: auth_db_store_token succeeded
+[RPC TELEMETRY] 2026-07-11 02:45:08.355 | POST /register | Params: {"agent_class": "pi", "agent_instance_id": "pi@task18-e2e", "display_name": "Task18 Coordinator", "template_id": "lead", "provider_profile": "pi", "project_id": "task18-project", "model_tier": "cheap"... | Status: 200 | Latency: 5.9ms | Size: 14329 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 02:45:08.705 | POST /projects/create | Params: {"agent_token": "agt_063b2a481c7a76bdace83104fe442f1ebf67222bd0413a338b836293e33a54f2", "name": "Task18 real pi coding project", "description": "Task 18 isolated UI E2E project", "anchors": [{"type": ... | Status: 200 | Latency: 2.2ms | Size: 68 bytes | Body: {"ok":true,"message":"created","project_id":"project_1783737908703"}
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 02:45:23.810 | POST /projects/create | Params: {"agent_token": "agt_063b2a481c7a76bdace83104fe442f1ebf67222bd0413a338b836293e33a54f2", "name": "Default project", "description": "Task 18 isolated UI E2E project", "anchors": [{"type": "vcs_kind", "v... | Status: 200 | Latency: 1.9ms | Size: 54 bytes | Body: {"ok":true,"message":"created","project_id":"default"}
+[RPC TELEMETRY] 2026-07-11 02:45:23.886 | GET /health | Params:  | Status: 200 | Latency: 0.1ms | Size: 32 bytes | Body: {"ok":true,"protocol_version":1}
+DEBUG: auth_db_get_token found token for agent pi@task18-e2e
+DEBUG: auth_db_store_token for agent pi@task18-e2e token = agt_063b2a481c7a76bd ...
+DEBUG: auth_db_store_token succeeded
+[RPC TELEMETRY] 2026-07-11 02:45:23.910 | POST /register | Params: {"protocol_version":1,"agent_class":"pi","agent_instance_id":"pi@task18-e2e","display_name":"pi@task18-e2e"} | Status: 200 | Latency: 18.2ms | Size: 14329 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 02:45:23.918 | POST /projects/show | Params: {"agent_token":"agt_063b2a481c7a76bdace83104fe442f1ebf67222bd0413a338b836293e33a54f2","project_id":"default"} | Status: 200 | Latency: 0.3ms | Size: 206 bytes
+DEBUG: auth_db_get_identity found token, identity_type = agent identity_id = pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 02:45:23.921 | POST /projects/show | Params: {"agent_token":"agt_063b2a481c7a76bdace83104fe442f1ebf67222bd0413a338b836293e33a54f2","project_id":"default"} | Status: 200 | Latency: 0.2ms | Size: 206 bytes
+[RPC TELEMETRY] 2026-07-11 02:45:23.922 | GET /agents | Params: project_id=default | Status: 200 | Latency: 0.1ms | Size: 23 bytes | Body: {"ok":true,"agents":[]}
+[RPC TELEMETRY] 2026-07-11 02:45:23.924 | POST /agent-rpc | Params: {"agent_token":"agt_063b2a481c7a76bdace83104fe442f1ebf67222bd0413a338b836293e33a54f2","action":"memory_list","scope":"project","subject_key":"pr:default","status":"active"} | Status: 200 | Latency: 0.4ms | Size: 24 bytes | Body: {"ok":true,"records":[]}
+DEBUG: auth_db_store_token for user operator@local token = uct_95065220b58e724a ...
+DEBUG: auth_db_store_token succeeded
+[RPC TELEMETRY] 2026-07-11 02:45:24.109 | POST /user-client/register | Params: {"user_id":"operator@local","client_instance_id":"heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3","client_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 5.0ms | Size: 193 bytes
+user-ws connected heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 02:45:24.146 | GET /task-chains | Params: limit=100&offset=0 | Status: 200 | Latency: 0.3ms | Size: 29 bytes | Body: {"chains":[],"total_count":0}
+[RPC TELEMETRY] 2026-07-11 02:45:24.179 | POST /user-rpc | Params: {"action":"project_list","client_instance_id":"heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3","client_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 0.3ms | Size: 683 bytes
+[RPC TELEMETRY] 2026-07-11 02:45:24.184 | GET /agents | Params:  | Status: 200 | Latency: 0.2ms | Size: 419 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 02:45:24.204 | POST /user-rpc | Params: {"action":"project_list","client_instance_id":"heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3","client_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 0.2ms | Size: 683 bytes
+[RPC TELEMETRY] 2026-07-11 02:45:24.208 | GET /preferences | Params:  | Status: 200 | Latency: 18.0ms | Size: 27853 bytes
+[RPC TELEMETRY] 2026-07-11 02:45:24.212 | GET /agents | Params:  | Status: 200 | Latency: 0.2ms | Size: 419 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 02:45:24.237 | GET /preferences | Params:  | Status: 200 | Latency: 14.3ms | Size: 27853 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 02:45:40.678 | GET /task-chains | Params: limit=100&offset=0 | Status: 200 | Latency: 0.5ms | Size: 29 bytes | Body: {"chains":[],"total_count":0}
+[RPC TELEMETRY] 2026-07-11 02:45:40.691 | POST /user-rpc | Params: {"action":"project_list","client_instance_id":"heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3","client_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 0.2ms | Size: 683 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 02:45:40.695 | GET /agents | Params:  | Status: 200 | Latency: 0.1ms | Size: 419 bytes
+[RPC TELEMETRY] 2026-07-11 02:45:40.697 | GET /preferences | Params:  | Status: 200 | Latency: 5.1ms | Size: 27853 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 02:45:54.236 | GET /task-chains | Params: limit=100&offset=0 | Status: 200 | Latency: 0.3ms | Size: 29 bytes | Body: {"chains":[],"total_count":0}
+[RPC TELEMETRY] 2026-07-11 02:45:54.244 | POST /user-rpc | Params: {"action":"project_list","client_instance_id":"heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3","client_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 0.1ms | Size: 683 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 02:45:54.247 | GET /agents | Params:  | Status: 200 | Latency: 0.1ms | Size: 419 bytes
+[RPC TELEMETRY] 2026-07-11 02:45:54.255 | GET /preferences | Params:  | Status: 200 | Latency: 9.2ms | Size: 27853 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 02:46:07.524 | GET /task-chains | Params: limit=100&offset=0 | Status: 200 | Latency: 0.5ms | Size: 29 bytes | Body: {"chains":[],"total_count":0}
+[RPC TELEMETRY] 2026-07-11 02:46:07.542 | POST /user-rpc | Params: {"action":"project_list","client_instance_id":"heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3","client_token":"uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a"} | Status: 200 | Latency: 0.1ms | Size: 683 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 02:46:07.545 | GET /agents | Params:  | Status: 200 | Latency: 0.1ms | Size: 419 bytes
+[RPC TELEMETRY] 2026-07-11 02:46:07.554 | GET /preferences | Params:  | Status: 200 | Latency: 8.6ms | Size: 27853 bytes
+[RPC TELEMETRY] 2026-07-11 02:46:18.750 | POST /startup | Params: {"agent_instance_id":"pi@task18-e2e","startup_status":"starting","reason_code":"launch","safe_diagnostic":"Agent process launched in tmux","provider_profile":"pi","run_dir":"/var/folders/7c/wyz3jh6j65... | Status: 200 | Latency: 0.3ms | Size: 11 bytes | Body: {"ok":true}
+[RPC TELEMETRY] 2026-07-11 02:46:18.765 | GET /agents | Params:  | Status: 200 | Latency: 0.2ms | Size: 582 bytes
+ws connected pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 02:46:18.810 | GET /agents | Params:  | Status: 200 | Latency: 0.7ms | Size: 582 bytes
+[RPC TELEMETRY] 2026-07-11 02:46:18.847 | GET /agents | Params:  | Status: 200 | Latency: 0.1ms | Size: 967 bytes
+[RPC TELEMETRY] 2026-07-11 02:46:18.853 | GET /agents | Params:  | Status: 200 | Latency: 0.2ms | Size: 967 bytes
+DEBUG: message_db_get_last_read_status for operator@local pi@task18-e2e = [0,0] (no row)
+DEBUG: message_db_get_last_read_status for operator@local pi@task18-e2e = [0,0] (no row)
+DEBUG: message_db_get_last_read_status for operator@local pi@task18-e2e = [0,0] (no row)
+[RPC TELEMETRY] 2026-07-11 02:46:21.138 | GET /agents | Params:  | Status: 200 | Latency: 0.2ms | Size: 961 bytes
+DEBUG: message_db_get_last_read_status for operator@local pi@task18-e2e = [0,0] (no row)
+DEBUG: message_db_get_last_read_status for operator@local pi@task18-e2e = [0,0] (no row)
+[RPC TELEMETRY] 2026-07-11 02:46:23.336 | GET /agents | Params:  | Status: 200 | Latency: 0.4ms | Size: 961 bytes
+ws disconnected pi@task18-e2e
+[RPC TELEMETRY] 2026-07-11 02:46:23.990 | GET /agents | Params:  | Status: 200 | Latency: 0.2ms | Size: 963 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[RPC TELEMETRY] 2026-07-11 02:46:24.320 | GET /task-chains | Params: limit=100&offset=0 | Status: 200 | Latency: 2.3ms | Size: 29 bytes | Body: {"chains":[],"total_count":0}
+user-ws received heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3 8 bytes
+user-ws disconnected heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3

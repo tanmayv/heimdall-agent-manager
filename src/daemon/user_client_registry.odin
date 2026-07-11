@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:math/rand"
 import "core:net"
 import "core:strings"
@@ -28,7 +29,18 @@ user_client_register :: proc(user_id, client_instance_id, requested_token: strin
 	if !valid_user_id(user_id) do return User_Client_Record{}, false, "invalid user_id"
 	if !valid_client_instance_id(client_instance_id) do return User_Client_Record{}, false, "invalid client_instance_id"
 	token := requested_token
-	if token == "" do token = generate_client_token()
+	if token == "" {
+		// Try to recover token from persistent storage
+		token = auth_db_get_token("user", user_id)
+		if token == "" {
+			// No stored token found, generate new one
+			token = generate_client_token()
+		}
+	}
+	// Always store the token (insert or replace) so it persists in the DB and is queryable
+	if !auth_db_store_token(token, "user", user_id, now_unix_ms()) {
+		fmt.println("WARNING: failed to store user token for", user_id)
+	}
 	if idx := user_client_find(client_instance_id); idx >= 0 {
 		if user_clients[idx].user_id != user_id do return User_Client_Record{}, false, "client_instance_id belongs to another user"
 		user_clients[idx].client_token = strings.clone(token)
@@ -47,8 +59,27 @@ user_client_heartbeat :: proc(client_instance_id, client_token: string) -> bool 
 	if idx := user_client_find(client_instance_id); idx >= 0 && user_clients[idx].client_token == client_token {
 		user_clients[idx].connected = true
 		user_clients[idx].last_seen_unix_ms = now_unix_ms()
+		// Update last_seen in persistent storage
+		auth_db_update_last_seen(client_token, user_clients[idx].last_seen_unix_ms)
 		return true
 	}
+
+	// Token not in registry, check database for recovery after daemon restart
+	itype, user_id := auth_db_get_identity(client_token)
+	if itype == "user" && user_id != "" {
+		fmt.println("TOKEN RECOVERY: Found persisted user token, recovering user", user_id)
+		// Re-register user with recovered token
+		_, ok, _ := user_client_register(user_id, client_instance_id, client_token)
+		if ok {
+			// Update last_seen
+			if idx := user_client_find(client_instance_id); idx >= 0 {
+				user_clients[idx].last_seen_unix_ms = now_unix_ms()
+				auth_db_update_last_seen(client_token, user_clients[idx].last_seen_unix_ms)
+			}
+			return true
+		}
+	}
+
 	return false
 }
 
@@ -59,11 +90,56 @@ user_client_user_for_token :: proc(client_instance_id, client_token: string) -> 
 	return ""
 }
 
+user_client_id_for_token :: proc(client_token: string) -> string {
+	for i in 0..<user_client_count {
+		if user_clients[i].client_token == client_token {
+			return user_clients[i].user_id
+		}
+	}
+	// Check persistent database for token recovery
+	itype, iid := auth_db_get_identity(client_token)
+	if itype == "user" && iid != "" {
+		return iid
+	}
+	return ""
+}
+
+user_client_user_exists :: proc(user_id: string) -> bool {
+	for i in 0..<user_client_count {
+		if user_clients[i].user_id == user_id do return true
+	}
+	token := auth_db_get_token("user", user_id)
+	defer delete(token)
+	return token != ""
+}
+
+user_client_has_ws :: proc(user_id: string) -> bool {
+	for i in 0..<user_client_count {
+		if user_clients[i].user_id == user_id && user_clients[i].has_ws do return true
+	}
+	return false
+}
+
 user_client_fanout_ws_text :: proc(user_id, text: string) -> int {
 	sent := 0
 	for i in 0..<user_client_count {
 		client := &user_clients[i]
 		if client.user_id != user_id || !client.has_ws do continue
+		if ws_send_text(client.ws_socket, text) {
+			sent += 1
+		} else {
+			client.has_ws = false
+			client.connected = false
+		}
+	}
+	return sent
+}
+
+user_client_fanout_all_ws_text :: proc(text: string) -> int {
+	sent := 0
+	for i in 0..<user_client_count {
+		client := &user_clients[i]
+		if !client.has_ws do continue
 		if ws_send_text(client.ws_socket, text) {
 			sent += 1
 		} else {
@@ -174,4 +250,11 @@ user_client_error_json :: proc(message: string) -> string {
 	json_write_string(&builder, message)
 	strings.write_string(&builder, `"}`)
 	return strings.to_string(builder)
+}
+
+user_client_get_first_registered_user_id :: proc() -> string {
+	if user_client_count > 0 {
+		return user_clients[0].user_id
+	}
+	return ""
 }

@@ -1,0 +1,89 @@
+[ctl]
+daemon_url = "http://127.0.0.1:49322"
+
+[daemon]
+bind_host = "127.0.0.1"
+data_dir = "~/.local/share/heimdall-teams-v1-test"
+default_agent_provider_profile = "pi"
+default_agent_model_tier = "normal"
+nudge_cooldown_seconds = 300
+nudge_enabled = true
+nudge_interval_seconds = 60
+nudge_need_improvements_after_seconds = 300
+nudge_ready_after_seconds = 300
+nudge_restart_grace_seconds = 60
+nudge_review_after_seconds = 300
+nudge_send_escape_prefix = true
+nudge_working_stale_after_seconds = 900
+port = 49422
+startup_stale_after_seconds = 120
+wrapper_bin = "/nix/store/djnvnb6h4vswzn6icaq0124wzypks0nd-ham-wrapper-0.1.0/bin/ham-wrapper"
+
+[guide_agent]
+enabled = false
+autostart = false
+restart_if_stopped = false
+agent_instance_id = "guide@heimdall"
+template_id = "guide"
+provider_profile = "pi"
+model_tier = "smart"
+
+[wrapper]
+agent_name = "pi"
+agent_run_dir = "~/.local/share/heimdall/agent-runs"
+command = ["pi"]
+credentials_path = "~/.local/share/heimdall/wrapper-credentials.json"
+daemon_url = "http://127.0.0.1:49322"
+default_agent = "pi"
+display_name = "{instance}"
+ham_ctl_bin = "/nix/store/k77vhi5hhrgnmx0yv04b4f20cn41ckqf-ham-ctl-0.1.0/bin/ham-ctl"
+memory_templates = []
+project = "default"
+requested_access_mode = "main"
+tmux_session = "ham-agents"
+tmux_window_prefix = "agent"
+
+[wrapper.agent-cmd.pi]
+command = ["pi"]
+memory_templates = ["bootstrap-guidance"]
+project = "project_1781933146508"
+prompt_flags = []
+starter_prompt = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap file (AGENTS.md or CLAUDE.md) for context, identity, and what you can do."
+yolo_flags = []
+
+[wrapper.agent-cmd.pi.models]
+cheap = "openai-codex/gpt-5.4"
+flag = "--model"
+normal = "openai-codex/gpt-5.4"
+smart = "openai-codex/gpt-5.5"
+
+[wrapper.agent-cmd.pi.startup_detection]
+enabled = false
+
+[wrapper.agent-cmd.claude]
+# Claude subscription via pi + pi-anthropic-oauth.
+# Launches pi, not the Claude Code CLI — anthropic models selected via --model.
+command = ["pi"]
+yolo_flags = []
+prompt_flags = []
+starter_prompt = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap file (AGENTS.md or CLAUDE.md) for context, identity, and what you can do."
+
+[wrapper.agent-cmd.claude.bootstrap.AGENTS_MD]
+name = "AGENTS.md"
+content = ["IDENTITY", "GUIDANCE", "PROJECT", "MEMORY"]
+
+[wrapper.agent-cmd.claude.bootstrap.MEMORY_MD]
+name = "MEMORY.md"
+
+[wrapper.agent-cmd.claude.bootstrap.SKILLS]
+relative_dir = "skills"
+filename = "SKILL.md"
+
+[wrapper.agent-cmd.claude.models]
+flag = "--model"
+cheap  = "anthropic/claude-sonnet-4-6"
+normal = "anthropic/claude-sonnet-4-6"
+smart  = "anthropic/claude-opus-4-8"
+
+[wrapper.agent-cmd.claude.startup_detection]
+enabled = false

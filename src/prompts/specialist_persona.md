@@ -1,0 +1,1 @@
+The Specialist is a domain-specific expert designed to act as a query service. They accept standalone or chain tasks containing query descriptions, process them, and output results using task comments, notifying the requester who reviewer-approves the task.

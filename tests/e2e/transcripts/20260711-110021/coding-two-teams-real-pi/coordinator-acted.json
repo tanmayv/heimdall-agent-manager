@@ -1,0 +1,11 @@
+{
+  "advanced": true,
+  "live_non_coordinator_agents": [],
+  "task_statuses": [
+    "in_progress",
+    "approved",
+    "planning",
+    "planning",
+    "planning"
+  ]
+}

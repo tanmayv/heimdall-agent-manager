@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>From Odin POC to Heimdall AI Manager — Development Timeline</title>
+  <style>
+    :root {
+      --bg: #07111f;
+      --panel: #0c182b;
+      --panel2: #101f36;
+      --ink: #edf6ff;
+      --muted: #9db0c9;
+      --accent: #74d8ff;
+      --accent2: #b797ff;
+      --good: #70e6a8;
+      --warn: #ffd36b;
+      --bad: #ff8f9e;
+      --line: rgba(255,255,255,.12);
+      --shadow: 0 24px 70px rgba(0,0,0,.45);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 15% 12%, rgba(116,216,255,.18), transparent 36rem),
+        radial-gradient(circle at 85% 18%, rgba(183,151,255,.16), transparent 34rem),
+        linear-gradient(180deg, #050a13, var(--bg) 30%, #050814);
+    }
+    .deck { height: 100vh; overflow-y: scroll; scroll-snap-type: y mandatory; }
+    section.slide {
+      min-height: 100vh;
+      scroll-snap-align: start;
+      padding: 6vh 7vw;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      position: relative;
+      border-bottom: 1px solid var(--line);
+    }
+    .slide::after {
+      content: attr(data-slide);
+      position: absolute;
+      right: 2rem;
+      bottom: 1.25rem;
+      color: rgba(237,246,255,.35);
+      font-size: .9rem;
+    }
+    h1, h2, h3 { margin: 0 0 1rem; line-height: 1.05; letter-spacing: -.04em; }
+    h1 { font-size: clamp(3.6rem, 9vw, 8.5rem); max-width: 12ch; }
+    h2 { font-size: clamp(2.4rem, 5vw, 5.4rem); max-width: 15ch; }
+    h3 { font-size: clamp(1.35rem, 2.2vw, 2.2rem); color: var(--accent); }
+    p, li { font-size: clamp(1rem, 1.45vw, 1.35rem); line-height: 1.5; color: var(--muted); }
+    strong { color: var(--ink); }
+    .lede { font-size: clamp(1.25rem, 2vw, 2rem); max-width: 50rem; color: #dbeaff; }
+    .eyebrow { color: var(--accent); text-transform: uppercase; letter-spacing: .18em; font-weight: 800; font-size: .86rem; margin-bottom: 1rem; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.1rem; margin-top: 1.5rem; }
+    .grid.three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .card {
+      background: linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.035));
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 1.25rem;
+      box-shadow: var(--shadow);
+    }
+    .card p, .card li { font-size: 1rem; }
+    .tag { display: inline-flex; gap: .45rem; align-items: center; border: 1px solid var(--line); border-radius: 999px; padding: .35rem .7rem; color: var(--muted); margin: .15rem; background: rgba(255,255,255,.04); }
+    .task { color: var(--accent); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .92em; }
+    .status-good { color: var(--good); }
+    .status-warn { color: var(--warn); }
+    .timeline { margin-top: 2rem; border-left: 3px solid rgba(116,216,255,.35); padding-left: 1.3rem; max-width: 78rem; }
+    .event { position: relative; margin: 0 0 1.15rem; padding: .9rem 1rem; background: rgba(255,255,255,.045); border: 1px solid var(--line); border-radius: 16px; }
+    .event::before { content:""; position:absolute; left:-1.72rem; top:1.2rem; width:.8rem; height:.8rem; border-radius:50%; background: var(--accent); box-shadow: 0 0 0 5px rgba(116,216,255,.12); }
+    .event .date { color: var(--accent2); font-weight: 800; font-size: .9rem; letter-spacing: .05em; }
+    .event p { margin: .35rem 0 0; font-size: 1rem; }
+    table { width: 100%; border-collapse: collapse; overflow: hidden; border-radius: 18px; margin-top: 1.5rem; background: rgba(255,255,255,.04); }
+    th, td { border-bottom: 1px solid var(--line); padding: .85rem; text-align: left; vertical-align: top; color: var(--muted); }
+    th { color: var(--ink); background: rgba(116,216,255,.08); }
+    td:first-child { color: var(--accent); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9rem; }
+    .quote { border-left: 5px solid var(--accent); padding-left: 1.2rem; max-width: 62rem; color: #dcecff; font-size: clamp(1.25rem, 2vw, 2rem); }
+    .big-number { font-size: clamp(4rem, 10vw, 9rem); font-weight: 900; line-height: .9; color: var(--accent); letter-spacing: -.08em; }
+    .footer-note { position: absolute; left: 7vw; bottom: 1.25rem; color: rgba(237,246,255,.35); font-size: .9rem; }
+    code { color: #dff7ff; background: rgba(116,216,255,.08); border: 1px solid rgba(116,216,255,.15); border-radius: .4rem; padding: .08rem .32rem; }
+    @media (max-width: 900px) { .grid, .grid.three { grid-template-columns: 1fr; } section.slide { padding: 4rem 1.2rem; } }
+    @media print { .deck { height: auto; overflow: visible; } section.slide { page-break-after: always; min-height: 100vh; } }
+  </style>
+</head>
+<body>
+<main class="deck">
+  <section class="slide" data-slide="01">
+    <div class="eyebrow">An auditable build story</div>
+    <h1>From Odin POC to Heimdall AI Manager</h1>
+    <p class="lede">A timeline reconstructed from task chains, review gates, working state, and memory milestones.</p>
+    <p class="footer-note">Generated from Broccoli Comms task history by odin-lead.</p>
+  </section>
+
+  <section class="slide" data-slide="02">
+    <div class="eyebrow">The experiment</div>
+    <h2>Can tasks and memory reconstruct a product timeline?</h2>
+    <p class="lede">Yes. The project history is not just commits. It includes intent, sequencing, blockers, reviewer outcomes, runtime restarts, and the reasoning that shaped the next task.</p>
+    <div class="grid three">
+      <div class="card"><h3>Tasks</h3><p>Capture goals, owners, dependencies, statuses, result summaries, and review decisions.</p></div>
+      <div class="card"><h3>Memory</h3><p>Preserves reusable facts, habits, project context, and agent bootstrap knowledge across restarts.</p></div>
+      <div class="card"><h3>Reviews</h3><p>Turn claims into validated milestones, including explicit need-improvements when reality diverges from plan.</p></div>
+    </div>
+  </section>
+
+  <section class="slide" data-slide="03">
+    <div class="eyebrow">Executive summary</div>
+    <h2>The project evolved in four arcs</h2>
+    <div class="grid">
+      <div class="card"><h3>1. POC daemon foundations</h3><p>Odin began by separating transport, command handling, router, message bus, and durable task behavior.</p></div>
+      <div class="card"><h3>2. User-facing agent OS</h3><p>Electron chat, task UI, notifications, unread state, markdown, and runtime restart flows made the system operable.</p></div>
+      <div class="card"><h3>3. Memory and project intelligence</h3><p>Approved memory, templates, project anchors, bootstrap context, and memory UI made agents less amnesiac.</p></div>
+      <div class="card"><h3>4. Rebrand into Heimdall</h3><p>The product identity shifted from an Odin testbed to Heimdall AI Manager: a connector and manager for agent companies.</p></div>
+    </div>
+  </section>
+
+  <section class="slide" data-slide="04">
+    <div class="eyebrow">Origin arc</div>
+    <h2>Odin POC: make the daemon modular</h2>
+    <p class="quote">The earliest validated arc was about avoiding a transport-bound daemon. Business logic had to survive new interfaces, routing, and future distributed operation.</p>
+    <div class="timeline">
+      <div class="event"><div class="date">2026-06-18 10:57 — <span class="task">task-51f03f714a7a</span></div><p><strong>Plan transport-agnostic daemon/router refactor.</strong> Established the design principle that daemon business logic should not be tied to one transport.</p></div>
+      <div class="event"><div class="date">10:58–11:00 — <span class="task">task-9d0c943aa693</span>, <span class="task">task-5c041f038c40</span>, <span class="task">task-fb160353cf80</span>, <span class="task">task-29ac8054e4f1</span></div><p><strong>Four implementation phases.</strong> Command/service refactor, message/event bus extraction, router envelope stubs, and central router POC integration were all validated through reviewer gates.</p></div>
+    </div>
+  </section>
+
+  <section class="slide" data-slide="05">
+    <div class="eyebrow">Insight</div>
+    <h2>The architecture kept moving toward auditability</h2>
+    <p class="lede">Each later feature reused the same pattern: append events, replay projection, notify metadata, fetch details on demand, validate with reviewer.</p>
+    <div class="grid three">
+      <div class="card"><h3>Transport-agnostic core</h3><p>Made it possible to add CLI, HTTP, WS, user RPC, and wrappers without duplicating core behavior.</p></div>
+      <div class="card"><h3>Append-only stores</h3><p>Tasks, memory, and projects become reconstructable from events, not ephemeral chat.</p></div>
+      <div class="card"><h3>Reviewer gates</h3><p>Validated status changes turned work into evidence-backed milestones.</p></div>
+    </div>
+  </section>
+
+  <section class="slide" data-slide="06">
+    <div class="eyebrow">Task system arc</div>
+    <h2>Tasks became the coordination substrate</h2>
+    <table>
+      <thead><tr><th>Task</th><th>Milestone</th><th>Why it mattered</th></tr></thead>
+      <tbody>
+        <tr><td>task-bba66a3884c7</td><td>Local durable task store and chain archive model</td><td>Introduced durable local task state and chain-level summaries.</td></tr>
+        <tr><td>task-26a4a77f8c8d</td><td>Rich event-sourced task/chain model</td><td>Made tasks auditable and replayable rather than transient commands.</td></tr>
+        <tr><td>task-a8a872e7a490</td><td>Roles, review workflow, notifications</td><td>Added social structure: assignee, reviewer, verifier, coordinator.</td></tr>
+        <tr><td>task-5a08df44e53d</td><td>Dependencies, next/show/query/log APIs</td><td>Enabled agents to ask “what should I work on next?” reliably.</td></tr>
+        <tr><td>task-b9bccc7846c2</td><td>Chain completion/archive milestone</td><td>Gave long workflows a bounded end and durable summary.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="slide" data-slide="07">
+    <div class="eyebrow">UI arc</div>
+    <h2>Electron made the system legible</h2>
+    <div class="timeline">
+      <div class="event"><div class="date">14:58 — <span class="task">task-800c992c605f</span></div><p>Planned Electron user chat: identity, client registry, lifecycle, chat store, user RPC, user WS fanout, agent-facing chat, wrapper notifications, and ctl commands.</p></div>
+      <div class="event"><div class="date">15:06 — <span class="task">task-0063c969aad2</span></div><p>Planned minimal Electron React UI across four phases: skeleton, daemon API integration, WebSocket events, and local session persistence.</p></div>
+      <div class="event"><div class="date">16:14–18:41</div><p>Polish cycle: WS error handling, chat read state, bubble alignment, settings, unread count fixes, markdown rendering, copy action, toasts, scroll behavior, and notification style.</p></div>
+    </div>
+  </section>
+
+  <section class="slide" data-slide="08">
+    <div class="eyebrow">Roadblock #1</div>
+    <h2>Runtime visibility was not just code — it was startup ordering</h2>
+    <p class="lede">Agents could be connected at the daemon while the UI still failed to display them. The task history captured that the fix was operational: relaunch UI after agents were connected.</p>
+    <div class="grid">
+      <div class="card"><h3>Evidence</h3><p><span class="task">task-fd7890693916</span> restarted daemon, agents, and UI. <span class="task">task-a2e6fa9fad5e</span> found UI had connected before agents were successfully started.</p></div>
+      <div class="card"><h3>Lesson</h3><p>Task history preserves not only final code but runtime playbooks: check <code>/health</code>, check <code>/clients</code>, clear stale tmux windows, then relaunch UI if needed.</p></div>
+    </div>
+  </section>
+
+  <section class="slide" data-slide="09">
+    <div class="eyebrow">Memory arc</div>
+    <h2>Agents stopped starting from nothing</h2>
+    <p class="quote">The memory work turned “new agent amnesia” into a product problem with provider contracts, service rules, UI, runtime bootstrap, templates, and project context.</p>
+    <table>
+      <thead><tr><th>Task</th><th>Milestone</th><th>Validation highlight</th></tr></thead>
+      <tbody>
+        <tr><td>task-681b633a15ad</td><td>Plan agent memory management</td><td>Defined proposal-first memory direction.</td></tr>
+        <tr><td>task-26542cbc5cae</td><td>MemoryProvider + local append-only store</td><td>Fixed append atomicity: durable log append before in-memory projection.</td></tr>
+        <tr><td>task-7ca7bfde0c68</td><td>Memory service rules and CLI/RPC</td><td>Validated propose/edit/archive/rollback/decide and auth hardening.</td></tr>
+        <tr><td>task-efe9925a216b</td><td>Runtime notifications and bootstrap</td><td>Metadata-only memory_event notifications; approved active memory only.</td></tr>
+        <tr><td>task-b10454b782ed</td><td>Electron Memory UI</td><td>List/detail/propose/approve/history flows in the UI.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="slide" data-slide="10">
+    <div class="eyebrow">Roadblock #2</div>
+    <h2>Memory correctness required harsh review gates</h2>
+    <div class="grid three">
+      <div class="card"><h3>Atomicity</h3><p>The reviewer caught that failed durable appends could mutate projection. The fix made durable append happen before projection.</p></div>
+      <div class="card"><h3>Auth</h3><p>Direct <code>/memory/*</code> routes were hardened to require valid agent or client credentials.</p></div>
+      <div class="card"><h3>Scope inheritance</h3><p>Edit and rollback proposals had to preserve subject/scope so bootstrap could resolve the right active memory.</p></div>
+    </div>
+    <p class="lede">This is exactly what task+review history is good at: it records not just success, but the failure modes that made the final design safer.</p>
+  </section>
+
+  <section class="slide" data-slide="11">
+    <div class="eyebrow">Project intelligence</div>
+    <h2>From cwd to logical project</h2>
+    <p class="lede">The project model deliberately avoided overfitting to a single directory. A project is a logical workspace with anchors.</p>
+    <div class="grid">
+      <div class="card"><h3><span class="task">task-dfadea190b97</span></h3><p>Implemented durable Project records with <code>project_id</code>, name, description, and loose anchors.</p></div>
+      <div class="card"><h3>ProjectAnchor</h3><p>Exactly <code>type</code>, <code>value</code>, and <code>note</code>. Type is arbitrary: directory, git_repo, file, URL, custom.</p></div>
+    </div>
+    <p>This matters because future memory and bootstrap resolution can be project-aware without pretending every project is one cwd.</p>
+  </section>
+
+  <section class="slide" data-slide="12">
+    <div class="eyebrow">Template memory</div>
+    <h2>A new reviewer should not be born blank</h2>
+    <p class="lede"><span class="task">task-f6f8ede4b0ee</span> added <strong>template</strong> memory so agents can be configured with reusable starter memory.</p>
+    <div class="grid three">
+      <div class="card"><h3>Approved only</h3><p>Bootstrap includes approved active templates, not pending/rejected/archived ones.</p></div>
+      <div class="card"><h3>Agent config</h3><p>Wrapper/global and per-agent command memory templates can be configured.</p></div>
+      <div class="card"><h3>Role seeding</h3><p>Future agents can inherit “reviewer,” “coder,” or “coordinator” defaults without manual retraining.</p></div>
+    </div>
+  </section>
+
+  <section class="slide" data-slide="13">
+    <div class="eyebrow">Chat reliability</div>
+    <h2>Delivery semantics became explicit</h2>
+    <p class="lede"><span class="task">task-ee4260b5b6b4</span> hardened <code>send-to-user</code>: <code>ok=true</code> must mean a persisted, non-empty message id exists.</p>
+    <div class="grid">
+      <div class="card"><h3>Synchronous failure</h3><p>Invalid or unknown user IDs fail before append; no fake success with empty <code>message_id</code>.</p></div>
+      <div class="card"><h3>Async failure</h3><p>If WS delivery later fails, daemon records <code>Delivery_Failed</code> with timestamp and error and emits metadata-only notification.</p></div>
+    </div>
+  </section>
+
+  <section class="slide" data-slide="14">
+    <div class="eyebrow">Packaging arc</div>
+    <h2>Home Manager made the product installable</h2>
+    <div class="timeline">
+      <div class="event"><div class="date"><span class="task">task-49469e1baa8c</span></div><p>Added Home Manager module and fixed reproducible UI package using <code>buildNpmPackage</code> and fixed dependency hash.</p></div>
+      <div class="event"><div class="date"><span class="task">task-32c118c4bb5b</span></div><p>Renamed package outputs and Home Manager namespace to Heimdall: <code>programs.heimdall</code>, <code>ham-daemon</code>, <code>ham-wrapper</code>, <code>ham-ctl</code>, <code>heimdall</code>.</p></div>
+    </div>
+  </section>
+
+  <section class="slide" data-slide="15">
+    <div class="eyebrow">Roadblock #3</div>
+    <h2>The rename worked in Nix, but broke local dev</h2>
+    <p class="lede">Reviewer caught a classic migration gap: prompts said <code>./bin/ham-ctl</code>, but the repo-local <code>./bin</code> still only had old <code>bc-*</code> binaries.</p>
+    <div class="grid">
+      <div class="card"><h3>Need improvements</h3><p><span class="task">task-5c2f6dce40d0</span> returned to ready until repo-local <code>ham-*</code> paths existed.</p></div>
+      <div class="card"><h3>Validated fix</h3><p>Added <code>./bin/ham-daemon</code>, <code>ham-wrapper</code>, <code>ham-ctl</code>, and <code>ham-test-agent</code> symlinks, then smoked local health.</p></div>
+    </div>
+  </section>
+
+  <section class="slide" data-slide="16">
+    <div class="eyebrow">Rebrand arc</div>
+    <h2>Odin becomes Heimdall AI Manager</h2>
+    <div class="grid">
+      <div class="card"><h3>Why Heimdall?</h3><p>The product is about connecting agents, users, tasks, and memory — a guardian/router between worlds.</p></div>
+      <div class="card"><h3>Why “AI Manager”?</h3><p>The long-term concept is a company of AI agents with distinct roles, managed through task chains, memory, and handoffs.</p></div>
+    </div>
+    <p><span class="task">task-03bc466b543c</span> planned the rename. <span class="task">task-5c2f6dce40d0</span> implemented <code>ham-*</code> binaries and Heimdall UI. <span class="task">task-2509d7ba762c</span> tracks renaming the directory to <code>heimdall-ai-manager</code>.</p>
+  </section>
+
+  <section class="slide" data-slide="17">
+    <div class="eyebrow">Market learning</div>
+    <h2>The Reddit report sharpened the product thesis</h2>
+    <p class="lede">The multi-agent pain point report became <span class="task">task-f267422097e2</span>, which produced <code>About.md</code>.</p>
+    <table>
+      <thead><tr><th>Pain point</th><th>Heimdall answer</th></tr></thead>
+      <tbody>
+        <tr><td>Coordination overhead</td><td>Task chains, explicit roles, dependencies, review gates.</td></tr>
+        <tr><td>Memory drift</td><td>Approved memory, templates, project-scoped context.</td></tr>
+        <tr><td>Debugging difficulty</td><td>Working state, result summaries, reviewer decisions, event history.</td></tr>
+        <tr><td>Context pollution</td><td>Clean bootstrap, planned managed run dirs, scoped memory.</td></tr>
+        <tr><td>Parallel conflicts</td><td>Dependencies now; future worktrees/file ownership hints.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="slide" data-slide="18">
+    <div class="eyebrow">How the timeline was reconstructed</div>
+    <h2>The data model is the story</h2>
+    <div class="grid three">
+      <div class="card"><h3>Goal</h3><p>Task titles/descriptions reveal what the team intended.</p></div>
+      <div class="card"><h3>Order</h3><p><code>created_at</code>, dependencies, and task chains reveal sequence.</p></div>
+      <div class="card"><h3>Outcome</h3><p>Status and result show done vs validated vs need-improvements.</p></div>
+      <div class="card"><h3>Evidence</h3><p>Result summaries capture commands, checks, smoke tests, and exact blockers.</p></div>
+      <div class="card"><h3>Memory</h3><p>Approved memory tells future agents what mattered enough to keep.</p></div>
+      <div class="card"><h3>Handoffs</h3><p>Reviewer/verifier transitions show accountability.</p></div>
+    </div>
+  </section>
+
+  <section class="slide" data-slide="19">
+    <div class="eyebrow">Milestone map</div>
+    <h2>Condensed development timeline</h2>
+    <div class="timeline">
+      <div class="event"><div class="date">1. Router and daemon POC</div><p>Transport-agnostic command services, event bus, router envelopes, and central router POC.</p></div>
+      <div class="event"><div class="date">2. Durable tasks</div><p>Event-sourced task store, roles, dependencies, chain summaries, notifications, and UI management.</p></div>
+      <div class="event"><div class="date">3. Electron operator surface</div><p>User chat, agent list, WebSocket events, unread states, markdown messages, settings, and task Kanban navigation.</p></div>
+      <div class="event"><div class="date">4. Memory system</div><p>Provider abstraction, append-only events, proposal/decision workflow, UI, bootstrap, templates.</p></div>
+      <div class="event"><div class="date">5. Project model</div><p>Logical project with loose anchors and durable replay.</p></div>
+      <div class="event"><div class="date">6. Packaging and runtime</div><p>Home Manager, reproducible UI package, repo-local binaries, restart playbooks.</p></div>
+      <div class="event"><div class="date">7. Heimdall identity</div><p>ham-* binaries, Heimdall Electron app, About.md, directory rename plan.</p></div>
+    </div>
+  </section>
+
+  <section class="slide" data-slide="20">
+    <div class="eyebrow">My summary</div>
+    <h2>The hidden achievement is not a feature — it is a workflow</h2>
+    <p class="lede">The strongest product signal is that Heimdall is already being built by the kind of multi-agent process it wants to manage.</p>
+    <div class="grid">
+      <div class="card"><h3>Self-hosting behavior</h3><p>Lead creates chains, coder implements, reviewer blocks/validates, UI agent owns UI, memory persists learnings.</p></div>
+      <div class="card"><h3>Observable learning</h3><p>Roadblocks became future checks: durable append ordering, auth hardening, repo-local rename paths, async delivery failure events.</p></div>
+    </div>
+  </section>
+
+  <section class="slide" data-slide="21">
+    <div class="eyebrow">What is worth highlighting publicly</div>
+    <h2>Four demo-worthy moments</h2>
+    <div class="grid">
+      <div class="card"><h3>1. Need-improvements loops</h3><p>Reviewer catches issues, task returns to ready, coder fixes, review validates. This is agent QA, not blind autonomy.</p></div>
+      <div class="card"><h3>2. Memory bootstrap</h3><p>New agents can inherit approved memory/templates rather than raw chat history or tribal knowledge.</p></div>
+      <div class="card"><h3>3. Runtime recovery</h3><p>Task history reconstructs exact restart and visibility fixes across daemon, wrappers, tmux, agents, UI.</p></div>
+      <div class="card"><h3>4. Rebrand safety</h3><p>The rename chain includes compatibility aliases, Home Manager namespace migration, docs, local bin path smokes, and final validation.</p></div>
+    </div>
+  </section>
+
+  <section class="slide" data-slide="22">
+    <div class="eyebrow">Open threads</div>
+    <h2>Where the story goes next</h2>
+    <table>
+      <thead><tr><th>Task</th><th>Future capability</th><th>Why it matters</th></tr></thead>
+      <tbody>
+        <tr><td>task-2509d7ba762c</td><td>Directory rename to <code>heimdall-ai-manager</code></td><td>Completes product identity and local developer ergonomics.</td></tr>
+        <tr><td>task-ebb9c3a5ed37</td><td>Docs/prompts/migration updates</td><td>Aligns all operator-facing guidance with Heimdall.</td></tr>
+        <tr><td>task-d8bdd8fa533c</td><td>Managed agent run dirs + bootstrap files</td><td>Clean per-agent workspaces generated from memory/templates/project context.</td></tr>
+        <tr><td>task-984817254c74</td><td>Distributed orchestration / hub event log</td><td>Extends local coordination across machines and remote assignees.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section class="slide" data-slide="23">
+    <div class="eyebrow">Closing thesis</div>
+    <h2>Heimdall turns multi-agent chaos into an accountable system</h2>
+    <p class="quote">The project timeline proves the product thesis: when every agent action is tied to tasks, memory, review, and validation, you can reconstruct how a complex system came to exist — and debug where it went wrong.</p>
+    <p class="lede">That is the promise of Heimdall AI Manager: not more agents, but better-managed agents.</p>
+  </section>
+</main>
+<script>
+  document.addEventListener('keydown', (e) => {
+    const deck = document.querySelector('.deck');
+    const h = window.innerHeight;
+    if (['ArrowDown', 'PageDown', ' '].includes(e.key)) { e.preventDefault(); deck.scrollBy({top: h, behavior: 'smooth'}); }
+    if (['ArrowUp', 'PageUp'].includes(e.key)) { e.preventDefault(); deck.scrollBy({top: -h, behavior: 'smooth'}); }
+    if (e.key === 'Home') deck.scrollTo({top: 0, behavior: 'smooth'});
+    if (e.key === 'End') deck.scrollTo({top: deck.scrollHeight, behavior: 'smooth'});
+  });
+</script>
+</body>
+</html>

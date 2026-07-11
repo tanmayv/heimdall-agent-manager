@@ -3,9 +3,16 @@ node_modules/
 dist/
 electron-dist/
 .run-logs/
+.nix-build-links/
+bin/
 result
 result-*
 ~
 .vscode/
 .DS_Store
 tsconfig.*.tsbuildinfo
+CLAUDE.md
+.heimdall-bootstrap-manifest
+
+# meow.review annotation store
+/.cache/meow-review/annotations.json

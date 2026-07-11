@@ -1,0 +1,37 @@
+================================================================================
+STARTING COGNITIVE HARVESTING & MEMORY PROPOSAL VERIFICATION
+================================================================================
+🟢 Operator Client Token Registered.
+🟢 Active Agents Registered: Coder=coder-1782153542@default, Reviewer=reviewer-1782153542@default
+
+--- Step 2: Seeding Task Chains ---
+   Seeded Good Chain: 'chain_good_1782153542'
+   Seeded Bad Chain: 'chain_bad_1782153542'
+   Seeded Unreviewed Chain: 'chain_unreviewed_1782153542'
+
+--- Step 3: Triggering Audit & Verifying Harvesting ---
+🟢 Memory Audit Triggered. ID: audit_1782153542702
+🟢 Verification SUCCESS: Selective harvesting is correct!
+   Harvested Target: 'chain_good_1782153542' (Included)
+   Ignored Target:  'chain_bad_1782153542' (Excluded)
+   Ignored Target:  'chain_unreviewed_1782153542' (Excluded)
+
+--- Step 4: Proposing Memory ---
+   Resolved Memory Auditor token.
+🟢 Memory Proposed successfully! Proposal ID: proposal_1782153542803
+🟢 Proposal verified in memory.db! Status: 'pending', Title: 'Exact String Length Bindings'
+
+--- Step 5: Reviewing & Approving Memory ---
+   Resolved Memory Reviewer token.
+🟢 Memory Approved successfully!
+🟢 Memory is now ACTIVE in memory.db! ID: mem_1782153542803
+
+--- Step 6: Concluding Audit & Verifying Metadata Nudges ---
+🟢 Auditor transitioned task to review_ready.
+🟢 Reviewer approved task (LGTM).
+🟢 Target Chain 'chain_good_1782153542' metadata successfully updated!
+   last_audit_at_unix_ms: 1782153542935 (Tue Jun 23 00:09:02 2026)
+
+================================================================================
+ALL COGNITIVE HARVESTING & PROPOSAL VERIFICATIONS PASSED SUCCESSFULLY! 🟢
+================================================================================

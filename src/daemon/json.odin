@@ -5,6 +5,10 @@ import "core:strconv"
 import "core:strings"
 import contracts "odin_test:contracts"
 
+json_has_key :: proc(body, key: string) -> bool {
+	return json_value_start(body, key) >= 0
+}
+
 extract_json_string :: proc(body, key, fallback: string) -> string {
 	start := json_value_start(body, key)
 	if start < 0 || start >= len(body) || body[start] != '"' do return fallback
@@ -39,25 +43,42 @@ json_value_start :: proc(body, key: string) -> int {
 
 json_unescape :: proc(value: string) -> string {
 	builder := strings.builder_make()
-	escaped := false
-	for ch in value {
-		if escaped {
-			switch ch {
-			case 'n': strings.write_rune(&builder, '\n')
-			case 'r': strings.write_rune(&builder, '\r')
-			case 't': strings.write_rune(&builder, '\t')
-			case '"': strings.write_rune(&builder, '"')
-			case '\\': strings.write_rune(&builder, '\\')
-			case: strings.write_rune(&builder, ch)
+	i := 0
+	for i < len(value) {
+		ch := value[i]
+		if ch == '\\' {
+			if i + 1 < len(value) {
+				next_ch := value[i + 1]
+				switch next_ch {
+				case 'n': strings.write_byte(&builder, '\n')
+				case 'r': strings.write_byte(&builder, '\r')
+				case 't': strings.write_byte(&builder, '\t')
+				case '"': strings.write_byte(&builder, '"')
+				case '\\': strings.write_byte(&builder, '\\')
+				case 'u':
+					if i + 5 < len(value) {
+						hex_str := value[i + 2 : i + 6]
+						val, ok := strconv.parse_int(hex_str, 16)
+						if ok {
+							strings.write_rune(&builder, rune(val))
+							i += 6
+							continue
+						}
+					}
+					strings.write_byte(&builder, 'u')
+				case:
+					strings.write_byte(&builder, next_ch)
+				}
+				i += 2
+			} else {
+				strings.write_byte(&builder, '\\')
+				i += 1
 			}
-			escaped = false
-		} else if ch == '\\' {
-			escaped = true
 		} else {
-			strings.write_rune(&builder, ch)
+			strings.write_byte(&builder, ch)
+			i += 1
 		}
 	}
-	if escaped do strings.write_rune(&builder, '\\')
 	return strings.to_string(builder)
 }
 
@@ -77,6 +98,22 @@ extract_json_int :: proc(body, key: string, fallback: int) -> int {
 	return fallback
 }
 
+extract_json_i64 :: proc(body, key: string, fallback: i64) -> i64 {
+	start := json_value_start(body, key)
+	if start < 0 do return fallback
+	end := start
+	for end < len(body) {
+		ch := body[end]
+		if ch < '0' || ch > '9' do break
+		end += 1
+	}
+	if end == start do return fallback
+	if value, ok := strconv.parse_i64(body[start:end]); ok {
+		return value
+	}
+	return fallback
+}
+
 extract_json_bool :: proc(body, key: string, fallback: bool) -> bool {
 	start := json_value_start(body, key)
 	if start < 0 do return fallback
@@ -85,8 +122,13 @@ extract_json_bool :: proc(body, key: string, fallback: bool) -> bool {
 	return fallback
 }
 
-register_response_json :: proc(record: Agent_Record) -> string {
+register_response_json :: proc(record: Agent_Record, template_instructions, prefs_json: string) -> string {
 	builder := strings.builder_make()
+	ws_host := server_bind_host
+	if server_config.daemon.advertise_host != "" do ws_host = server_config.daemon.advertise_host
+	team_id, role_key, role_index := register_response_team_membership(record)
+	defer delete(team_id)
+	defer delete(role_key)
 	strings.write_string(&builder, "{\"agent_instance_id\":\"")
 	strings.write_string(&builder, record.agent_instance_id)
 	strings.write_string(&builder, "\",\"agent_class\":\"")
@@ -96,7 +138,7 @@ register_response_json :: proc(record: Agent_Record) -> string {
 	strings.write_string(&builder, "\",\"reconnect_token\":\"rt_")
 	strings.write_string(&builder, record.agent_instance_id)
 	strings.write_string(&builder, "\",\"ws_url\":\"ws://")
-	strings.write_string(&builder, server_bind_host)
+	strings.write_string(&builder, ws_host)
 	strings.write_string(&builder, ":")
 	strings.write_string(&builder, fmt.tprintf("%d", server_port))
 	strings.write_string(&builder, "/ws/")
@@ -105,8 +147,42 @@ register_response_json :: proc(record: Agent_Record) -> string {
 	strings.write_string(&builder, record.agent_instance_id)
 	strings.write_string(&builder, "\",\"agent_token\":\"")
 	json_write_string(&builder, record.agent_token)
-	strings.write_string(&builder, "\"}")
+	if team_id != "" {
+		strings.write_string(&builder, "\",\"team_id\":\"")
+		json_write_string(&builder, team_id)
+		strings.write_string(&builder, "\",\"role_key\":\"")
+		json_write_string(&builder, role_key)
+		strings.write_string(&builder, fmt.tprintf("\",\"role_index\":%d", role_index))
+	}
+	if template_instructions != "" {
+		strings.write_string(&builder, "\",\"template_instructions\":\"")
+		json_write_string(&builder, template_instructions)
+	}
+	if prefs_json != "" {
+		strings.write_string(&builder, "\",\"preferences\":")
+		strings.write_string(&builder, prefs_json)
+		strings.write_string(&builder, "}")
+	} else {
+		strings.write_string(&builder, "\"}")
+	}
 	return strings.to_string(builder)
+}
+
+register_response_team_membership :: proc(record: Agent_Record) -> (string, string, int) {
+	agent_record_id := ""
+	if idx := agent_record_index_by_instance(record.agent_instance_id); idx >= 0 do agent_record_id = agent_instance_records[idx].agent_record_id
+	if agent_record_id == "" do return strings.clone(""), strings.clone(""), 0
+
+	teams := team_db_list_teams(team_service_db, "", "")
+	for team in teams {
+		members := team_db_list_members(team_service_db, team.team_id)
+		for member in members {
+			if member.agent_record_id == agent_record_id {
+				return strings.clone(team.team_id), strings.clone(member.role_key), member.role_index
+			}
+		}
+	}
+	return strings.clone(""), strings.clone(""), 0
 }
 
 send_message_response_json :: proc(response: contracts.Send_Message_Response, pending_count: int) -> string {
@@ -165,7 +241,50 @@ json_write_string :: proc(builder: ^strings.Builder, value: string) {
 		case '\t':
 			strings.write_string(builder, "\\t")
 		case:
-			strings.write_rune(builder, ch)
+			if ch < 32 {
+				strings.write_string(builder, fmt.tprintf("\\u%04x", ch))
+			} else {
+				strings.write_rune(builder, ch)
+			}
 		}
 	}
+}
+
+extract_json_string_array :: proc(body, key: string) -> [dynamic]string {
+	arr := make([dynamic]string)
+	start := json_value_start(body, key)
+	if start < 0 || start >= len(body) || body[start] != '[' do return arr
+	idx := start + 1
+	for idx < len(body) {
+		for idx < len(body) && (body[idx] == ' ' || body[idx] == '\t' || body[idx] == '\n' || body[idx] == '\r') {
+			idx += 1
+		}
+		if idx >= len(body) do break
+		if body[idx] == ']' {
+			break
+		}
+		if body[idx] == '"' {
+			idx += 1
+			str_start := idx
+			escaped := false
+			for idx < len(body) {
+				ch := body[idx]
+				if escaped {
+					escaped = false
+				} else if ch == '\\' {
+					escaped = true
+				} else if ch == '"' {
+					append(&arr, json_unescape(body[str_start:idx]))
+					idx += 1
+					break
+				}
+				idx += 1
+			}
+		} else if body[idx] == ',' {
+			idx += 1
+		} else {
+			idx += 1
+		}
+	}
+	return arr
 }

@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:math/rand"
 import "core:os"
 import "core:strconv"
 import "core:strings"
@@ -11,9 +12,21 @@ import http "odin_test:lib/http_client"
 import tmux "odin_test:lib/tmux"
 import ws "odin_test:lib/ws"
 
+// Test agents use a minimal one-shot prompt. The prompt uses the same {ctl_bin},
+// {daemon_url}, and {token} substitutions as the normal starter_prompt template.
+TEST_AGENT_STARTER_PROMPT :: "You are a Heimdall test agent. Your only task:\n\nRun exactly this shell command:\n{ctl_bin} --daemon-url {daemon_url} --token {token} start-success\n\nIf the command exits 0, you are done — say \"TEST OK\" and stop.\nIf it errors, print the error verbatim and stop.\nDo not perform any other action. Do not write files. Do not read files."
+
+is_test_token :: proc(token: string) -> bool {
+	return strings.has_prefix(token, "agt_test_")
+}
+
 main :: proc() {
+	initialize_default_preferences()
+	if len(os.args) > 1 && os.args[1] == "test" {
+		os.exit(run_test_command(os.args))
+	}
 	if has_flag(os.args, "--version") {
-		fmt.println("bc-agent-wrapper", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
+		fmt.println("ham-wrapper", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
 		return
 	}
 	if has_flag(os.args, "--help") || has_flag(os.args, "-h") {
@@ -34,6 +47,7 @@ main :: proc() {
 	}
 
 	cfg := loaded.config.wrapper
+	if cfg.ham_ctl_bin != "" do g_ctl_bin = cfg.ham_ctl_bin
 	selected_agent := option_value(os.args, "--agent", cfg.default_agent)
 	if selected_agent == "" do selected_agent = cfg.agent_name
 	requested_agent_token := option_value(os.args, "--agent-token", "")
@@ -44,21 +58,53 @@ main :: proc() {
 		return
 	}
 
+	override_project_id := option_value(os.args, "--project-id", "")
+	model_tier := option_value(os.args, "--tier", "normal")
+	if model_tier != "cheap" && model_tier != "normal" && model_tier != "smart" {
+		fmt.println("invalid --tier value; expected cheap, normal, or smart; got:", model_tier)
+		return
+	}
+
+	agent_cmd, agent_cmd_ok := selected_agent_command(cfg, selected_agent)
+	if !agent_cmd_ok {
+		fmt.println("error: no agent-cmd config found for agent", selected_agent)
+		fmt.printfln("hint: add [wrapper.agent-cmd.%s] to your config, or pass --agent <configured-name>", selected_agent)
+		return
+	}
+	effective_project_id := override_project_id
+	if effective_project_id == "" do effective_project_id = agent_cmd.project
+	if effective_project_id == "" do effective_project_id = cfg.project
+	if effective_project_id != "" {
+		agent_cmd.project = effective_project_id
+		cfg.project = effective_project_id
+	}
 	window_name := wrapper_window_name(cfg.tmux_window_prefix, agent_instance_id)
-	cwd := resolve_working_dir(cfg.working_dir)
+	cwd := resolve_agent_run_dir(cfg, agent_cmd, agent_cmd_ok, selected_agent, agent_instance_id)
+	launch_start_ms := wrapper_now_unix_ms()
+	wrapper_launch_log("start", agent_instance_id, launch_start_ms)
+	fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d elapsed_ms=0 stage=identity_resolved agent=%s class=%s selected_agent=%s project=%s tier=%s session=%s window=%s cwd=%s", launch_start_ms, agent_instance_id, agent_class, selected_agent, effective_project_id, model_tier, cfg.tmux_session, window_name, cwd)
 
-	if !handle_existing_agent_window(cfg.tmux_session, window_name) {
+	overwrite := has_flag(os.args, "--overwrite")
+	if !handle_existing_agent_window(cfg.tmux_session, window_name, overwrite) {
+		wrapper_launch_log("existing_window_abort", agent_instance_id, launch_start_ms)
 		return
 	}
+	wrapper_launch_log("existing_window_checked", agent_instance_id, launch_start_ms)
 
+	display_name := option_value(os.args, "--display-name", template_display_name(cfg.display_name, agent_class, agent_instance_id, selected_agent))
+
+	wrapper_launch_log("daemon_health_begin", agent_instance_id, launch_start_ms)
 	response, health_ok := http.get(cfg.daemon_url, contracts.ROUTE_HEALTH)
+	fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=daemon_health_done agent=%s ok=%t status=%d", wrapper_now_unix_ms(), wrapper_now_unix_ms() - launch_start_ms, agent_instance_id, health_ok, response.status)
 	if !health_ok || response.status != 200 {
-		fmt.println("daemon is not reachable; start bc-odin-daemon first")
+		fmt.println("daemon is not reachable; start ham-daemon first")
 		return
 	}
 
-	register_body := register_request_json(agent_class, agent_instance_id, cfg.display_name, requested_agent_token)
+	register_body := register_request_json(agent_class, agent_instance_id, display_name, requested_agent_token)
+	wrapper_launch_log("register_begin", agent_instance_id, launch_start_ms)
 	register_response, register_ok := http.post(cfg.daemon_url, contracts.ROUTE_REGISTER, register_body)
+	fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=register_done agent=%s ok=%t status=%d response_bytes=%d", wrapper_now_unix_ms(), wrapper_now_unix_ms() - launch_start_ms, agent_instance_id, register_ok, register_response.status, len(register_response.body))
 	if !register_ok || register_response.status != 200 {
 		fmt.println("registration failed")
 		if register_ok {
@@ -68,12 +114,14 @@ main :: proc() {
 		return
 	}
 
-	fmt.println("bc-agent-wrapper", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
+	fmt.println("ham-wrapper", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
 	fmt.println("config", loaded.path)
 	fmt.println("daemon_url", cfg.daemon_url)
 	fmt.println("agent_class", agent_class)
 	fmt.println("agent_instance_id", agent_instance_id)
 	fmt.println("selected_agent", selected_agent)
+	fmt.println("display_name", display_name)
+	fmt.println("model_tier", model_tier)
 	fmt.println("daemon_health", response.body)
 	fmt.println("registered", register_response.body)
 
@@ -81,6 +129,13 @@ main :: proc() {
 	conversation_id := extract_json_string(register_response.body, "conversation_id", "")
 	ws_url := extract_json_string(register_response.body, "ws_url", "")
 	agent_token := extract_json_string(register_response.body, "agent_token", "")
+	template_instructions := extract_json_string(register_response.body, "template_instructions", "")
+	team_id := extract_json_string(register_response.body, "team_id", "")
+	role_key := extract_json_string(register_response.body, "role_key", "")
+	role_index := extract_json_int(register_response.body, "role_index", 0)
+	prefs_obj := extract_json_object(register_response.body, "preferences")
+	defer if prefs_obj != "" do delete(prefs_obj)
+	apply_preferences_json(prefs_obj)
 	if registered_instance_id == "" {
 		fmt.println("registration response missing agent_instance_id")
 		return
@@ -89,31 +144,230 @@ main :: proc() {
 		fmt.println("registration response missing ws_url")
 		return
 	}
+	if effective_project_id != "" {
+		wrapper_launch_log("project_validate_begin", registered_instance_id, launch_start_ms)
+		if !validate_project_exists(cfg.daemon_url, agent_token, effective_project_id) {
+			fmt.println("invalid project_id", effective_project_id)
+			fmt.println("wrapper startup aborted before tmux launch; create the project first or remove --project-id / wrapper.project")
+			return
+		}
+		wrapper_launch_log("project_validate_done", registered_instance_id, launch_start_ms)
+	}
 
 	fmt.println("starting tmux agent")
 	fmt.println("tmux_session", cfg.tmux_session)
 	fmt.println("tmux_window", window_name)
 	fmt.println("working_dir", cwd)
 
-	command := build_agent_command(cfg, selected_agent, cfg.daemon_url, registered_instance_id, conversation_id, agent_token)
+	if !is_test_token(agent_token) {
+		wrapper_launch_log("bootstrap_files_begin", registered_instance_id, launch_start_ms)
+		generate_bootstrap_files(cwd, loaded.path, cfg, agent_cmd, selected_agent, registered_instance_id, display_name, cfg.daemon_url, agent_token, template_instructions, team_id, role_key, role_index)
+		wrapper_launch_log("bootstrap_files_done", registered_instance_id, launch_start_ms)
+	}
+
+	stop_message := cfg.stop_message
+	if agent_cmd.stop_message != "" do stop_message = agent_cmd.stop_message
+	if stop_message == "" do stop_message = "Agent stop requested. You have {time} seconds to complete your current work and checkpoint before shutdown."
+
+	command := build_agent_command(cfg, selected_agent, cfg.daemon_url, registered_instance_id, display_name, conversation_id, agent_token, model_tier)
+	wrapper_launch_log("agent_command_built", registered_instance_id, launch_start_ms)
+	wrapper_launch_log("tmux_ensure_begin", registered_instance_id, launch_start_ms)
 	launch, launch_ok := tmux.ensure_agent_window(cfg.tmux_session, window_name, cwd, command)
+	fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=tmux_ensure_done agent=%s ok=%t pane=%s", wrapper_now_unix_ms(), wrapper_now_unix_ms() - launch_start_ms, registered_instance_id, launch_ok, launch.pane_id)
 	if !launch_ok {
 		fmt.println("failed to launch or find tmux window")
+		report_startup_status(cfg.daemon_url, registered_instance_id, "startup_failed", "tmux_launch_failed", "failed to launch or find tmux window", selected_agent, cwd, "")
 		return
 	}
 	fmt.println("tmux_pane", launch.pane_id)
+	startup_status := "ready"
+	startup_reason_code := "launch_success"
+	startup_safe_diagnostic := "Startup detection disabled; assuming ready"
 
+
+	startup_report_begin := wrapper_now_unix_ms()
+	report_startup_status(cfg.daemon_url, registered_instance_id, "starting", "launch", "Agent process launched in tmux", selected_agent, cwd, launch.pane_id)
+	fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=startup_report_starting_done agent=%s report_ms=%d", wrapper_now_unix_ms(), wrapper_now_unix_ms() - launch_start_ms, registered_instance_id, wrapper_now_unix_ms() - startup_report_begin)
+	wrapper_launch_log("starter_prompt_begin", registered_instance_id, launch_start_ms)
+	deliver_tmux_starter_prompt(agent_cmd, cfg.daemon_url, registered_instance_id, display_name, conversation_id, agent_token, launch.pane_id)
+	wrapper_launch_log("starter_prompt_done", registered_instance_id, launch_start_ms)
+	wrapper_launch_log("startup_probe_begin", registered_instance_id, launch_start_ms)
+	result := startup_probe_agent(agent_cmd.startup_detection, launch.pane_id)
+	wrapper_launch_log("startup_probe_done", registered_instance_id, launch_start_ms)
+	if result.status != "disabled" {
+		startup_status = result.status
+		startup_reason_code = result.reason_code
+		startup_safe_diagnostic = result.safe_diagnostic
+		fmt.println("startup_status", result.status)
+		if result.reason_code != "" do fmt.println("startup_reason_code", result.reason_code)
+		if result.safe_diagnostic != "" do fmt.println("startup_diagnostic", result.safe_diagnostic)
+		report_startup_status(cfg.daemon_url, registered_instance_id, result.status, result.reason_code, result.safe_diagnostic, selected_agent, cwd, launch.pane_id)
+		if result.status == "startup_blocked" {
+			_ = tmux.rename_window_for_pane(launch.pane_id, fmt.tprintf("[Blocked] %s", window_name))
+		} else {
+			_ = tmux.rename_window_for_pane(launch.pane_id, window_name)
+		}
+	} else {
+		_ = tmux.rename_window_for_pane(launch.pane_id, window_name)
+	}
+
+	wrapper_launch_log("ws_connect_begin", registered_instance_id, launch_start_ms)
 	ws_conn, ws_ok := ws.connect(ws_url)
+	fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=ws_connect_done agent=%s ok=%t", wrapper_now_unix_ms(), wrapper_now_unix_ms() - launch_start_ms, registered_instance_id, ws_ok)
 	if ws_ok {
 		fmt.println("ws connected", ws_url)
 	} else {
 		fmt.println("ws connection failed", ws_url)
 	}
 
-	heartbeat_loop(cfg.daemon_url, agent_class, registered_instance_id, cfg.display_name, agent_token, launch.pane_id, &ws_conn)
+	initial_exec_state := "running"
+	wrapper_launch_log("heartbeat_loop_enter", registered_instance_id, launch_start_ms)
+	heartbeat_loop(cfg.daemon_url, agent_class, registered_instance_id, display_name, agent_token, launch.pane_id, stop_message, selected_agent, model_tier, effective_project_id, cwd, initial_exec_state, startup_status, startup_reason_code, startup_safe_diagnostic, cfg.tmux_session, window_name, &ws_conn)
 }
 
-handle_existing_agent_window :: proc(tmux_session, window_name: string) -> bool {
+Startup_Probe_Result :: struct {
+	status: string,
+	reason_code: string,
+	safe_diagnostic: string,
+}
+
+wrapper_now_unix_ms :: proc() -> i64 {
+	return time.to_unix_nanoseconds(time.now()) / 1_000_000
+}
+
+wrapper_launch_log :: proc(stage, agent_instance_id: string, start_ms: i64 = 0) {
+	now := wrapper_now_unix_ms()
+	if start_ms > 0 {
+		fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=%s agent=%s", now, now - start_ms, stage, agent_instance_id)
+	} else {
+		fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d stage=%s agent=%s", now, stage, agent_instance_id)
+	}
+}
+
+startup_probe_agent :: proc(cfg: cfg_lib.Startup_Detection_Config, pane_id: string, abort_flag: ^bool = nil) -> Startup_Probe_Result {
+	if !cfg.enabled {
+		return Startup_Probe_Result{status = "disabled"}
+	}
+	if pane_id == "" do return Startup_Probe_Result{status = "startup_failed", reason_code = "missing_pane", safe_diagnostic = "tmux pane was not available for startup detection"}
+
+	probe_seconds := cfg.startup_probe_seconds
+	if probe_seconds <= 0 do probe_seconds = 15
+	interval_ms := cfg.capture_interval_ms
+	if interval_ms <= 0 do interval_ms = 500
+	probe_window_ns := i64(probe_seconds) * i64(time.Second)
+	deadline := time.to_unix_nanoseconds(time.now()) + probe_window_ns
+	auto_enter_cooldown_until: i64 = 0
+	iteration := 0
+	fmt.println("startup_probe begin pane", pane_id, "probe_seconds", probe_seconds, "interval_ms", interval_ms, "auto_enter_patterns", len(cfg.auto_enter_patterns), "blocked_patterns", len(cfg.blocked_patterns))
+	for p, i in cfg.auto_enter_patterns {
+		pk := ""
+		if i < len(cfg.auto_enter_pre_keys) do pk = cfg.auto_enter_pre_keys[i]
+		fmt.printf("  auto_enter[%d]=%q pre_key=%q\n", i, p, pk)
+	}
+	for p, i in cfg.blocked_patterns do fmt.printf("  blocked[%d]=%q\n", i, p)
+
+	for time.to_unix_nanoseconds(time.now()) <= deadline {
+		if abort_flag != nil && abort_flag^ do break
+		if !tmux.pane_exists(pane_id) do return Startup_Probe_Result{status = "startup_failed", reason_code = "pane_exited", safe_diagnostic = "tmux pane exited during startup detection"}
+		pane_text, ok := tmux.capture_pane_text(pane_id, 80)
+		if !ok do return Startup_Probe_Result{status = "startup_failed", reason_code = "capture_failed", safe_diagnostic = "tmux pane capture failed during startup detection"}
+		iteration += 1
+		if iteration == 1 || iteration % 10 == 0 {
+			preview_len := len(pane_text)
+			if preview_len > 400 do preview_len = 400
+			fmt.printf("startup_probe iter=%d pane_text_len=%d tail=%q\n", iteration, len(pane_text), pane_text[len(pane_text)-preview_len:])
+		}
+		now_ns := time.to_unix_nanoseconds(time.now())
+		if now_ns >= auto_enter_cooldown_until {
+			if idx := first_matching_pattern(pane_text, cfg.auto_enter_patterns); idx >= 0 {
+				pre_key := ""
+				if idx < len(cfg.auto_enter_pre_keys) do pre_key = cfg.auto_enter_pre_keys[idx]
+				fmt.println("startup auto_enter matched idx", idx, "pattern", cfg.auto_enter_patterns[idx], "pre_key", pre_key)
+				if pre_key != "" {
+					pre_cmd := []string{"tmux", "send-keys", "-t", pane_id, pre_key}
+					_, _, _, _ = os.process_exec(os.Process_Desc{command = pre_cmd}, context.allocator)
+					// Tiny pause so the TUI registers the navigation before Enter
+					time.sleep(150 * time.Millisecond)
+				}
+				enter_cmd := []string{"tmux", "send-keys", "-t", pane_id, "Enter"}
+				_, _, _, _ = os.process_exec(os.Process_Desc{command = enter_cmd}, context.allocator)
+				// Cool down so the same buffered prompt text doesn't retrigger
+				// before the TUI repaints. Extend deadline by the original probe
+				// window so dismissing a prompt doesn't eat the ready budget.
+				if pre_key != "" {
+					fmt.println("startup auto_enter sent pre_key", pre_key)
+				}
+				fmt.println("startup auto_enter sent Enter; cooldown 2s; deadline extended by", probe_seconds, "s")
+				auto_enter_cooldown_until = now_ns + i64(2) * i64(time.Second)
+				deadline = now_ns + probe_window_ns
+				time.sleep(time.Duration(interval_ms) * time.Millisecond)
+				continue
+			}
+		}
+		if idx := first_matching_pattern(pane_text, cfg.blocked_patterns); idx >= 0 {
+			fmt.println("startup blocked matched idx", idx, "pattern", cfg.blocked_patterns[idx])
+			return Startup_Probe_Result{status = "startup_blocked", reason_code = startup_reason_code("blocked", idx, cfg.blocked_patterns[idx]), safe_diagnostic = startup_safe_diagnostic(cfg, idx, "Startup blocked by configured provider prompt")}
+		}
+		time.sleep(time.Duration(interval_ms) * time.Millisecond)
+	}
+
+	fmt.println("startup_probe timeout after", iteration, "iterations; no pattern matched")
+	status := "startup_unknown"
+	if cfg.startup_unknown_is_blocked do status = "startup_blocked"
+	return Startup_Probe_Result{status = status, reason_code = "no_pattern_matched", safe_diagnostic = "No configured startup pattern matched before timeout"}
+}
+
+first_matching_pattern :: proc(text: string, patterns: []string) -> int {
+	for pattern, i in patterns {
+		if pattern == "" do continue
+		if strings.index(text, pattern) >= 0 do return i
+	}
+	return -1
+}
+
+startup_reason_code :: proc(prefix: string, idx: int, pattern: string) -> string {
+	code := strings.builder_make()
+	strings.write_string(&code, prefix)
+	strings.write_string(&code, "_")
+	strings.write_string(&code, fmt.tprintf("%d", idx))
+	for ch in pattern {
+		switch ch {
+		case 'a'..='z', 'A'..='Z', '0'..='9':
+			strings.write_rune(&code, ch)
+		case ' ', '-', '_':
+			strings.write_string(&code, "_")
+		case:
+		}
+	}
+	return strings.to_string(code)
+}
+
+startup_safe_diagnostic :: proc(cfg: cfg_lib.Startup_Detection_Config, idx: int, fallback: string) -> string {
+	if idx >= 0 && idx < len(cfg.sanitized_reason_mapping) {
+		entry := cfg.sanitized_reason_mapping[idx]
+		if eq := strings.index_byte(entry, '='); eq >= 0 && eq < len(entry) - 1 do return entry[eq + 1:]
+		if entry != "" do return entry
+	}
+	return fallback
+}
+
+report_startup_status :: proc(daemon_url, agent_instance_id, status, reason_code, safe_diagnostic, provider_profile, run_dir, tmux_pane: string) {
+	start_ms := wrapper_now_unix_ms()
+	fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d stage=startup_report_post_begin agent=%s status=%s reason=%s pane=%s", start_ms, agent_instance_id, status, reason_code, tmux_pane)
+	builder := strings.builder_make()
+	strings.write_string(&builder, `{"agent_instance_id":"`); json_write_string(&builder, agent_instance_id)
+	strings.write_string(&builder, `","startup_status":"`); json_write_string(&builder, status)
+	strings.write_string(&builder, `","reason_code":"`); json_write_string(&builder, reason_code)
+	strings.write_string(&builder, `","safe_diagnostic":"`); json_write_string(&builder, safe_diagnostic)
+	strings.write_string(&builder, `","provider_profile":"`); json_write_string(&builder, provider_profile)
+	strings.write_string(&builder, `","run_dir":"`); json_write_string(&builder, run_dir)
+	strings.write_string(&builder, `","tmux_pane":"`); json_write_string(&builder, tmux_pane)
+	strings.write_string(&builder, `"}`)
+	response, ok := http.post(daemon_url, "/startup", strings.to_string(builder))
+	fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=startup_report_post_done agent=%s status=%s ok=%t http_status=%d", wrapper_now_unix_ms(), wrapper_now_unix_ms() - start_ms, agent_instance_id, status, ok, response.status)
+}
+
+handle_existing_agent_window :: proc(tmux_session, window_name: string, overwrite: bool) -> bool {
 	existing_pane := tmux.pane_for_window(tmux_session, window_name)
 	if existing_pane == "" do return true
 
@@ -123,6 +377,16 @@ handle_existing_agent_window :: proc(tmux_session, window_name: string) -> bool 
 	fmt.println("tmux_target", fmt.tprintf("%s:%s", tmux_session, window_name))
 	fmt.println("tmux_pane", existing_pane)
 	fmt.println("close_command", fmt.tprintf("tmux kill-window -t '%s:%s'", tmux_session, window_name))
+
+	if overwrite {
+		fmt.println("overwrite flag present; closing existing tmux window and continuing")
+		if !tmux.kill_window(tmux_session, window_name) {
+			fmt.println("failed to close existing tmux window; aborting before registration")
+			return false
+		}
+		return true
+	}
+
 	fmt.print("Close existing tmux window and continue? [y/N]: ")
 
 	if !read_yes_from_stdin() {
@@ -147,20 +411,77 @@ read_yes_from_stdin :: proc() -> bool {
 	return answer == "y" || answer == "Y" || answer == "yes" || answer == "YES"
 }
 
-heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name, agent_token, tmux_pane: string, ws_conn: ^ws.Connection) {
+heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name, agent_token, tmux_pane, stop_message, provider_profile, provider_tier, project_id, run_dir, initial_exec_state, initial_startup_status, initial_startup_reason_code, initial_startup_safe_diagnostic, tmux_session, window_name: string, ws_conn: ^ws.Connection) {
 	fmt.println("heartbeat started", agent_instance_id)
+	current_token := agent_token
 	failed_heartbeats := 0
+	exec_state := initial_exec_state
+	if exec_state == "" do exec_state = "running"
+	exec_state_since := time.to_unix_nanoseconds(time.now()) / 1_000_000
+	pid := os.get_pid()
+
+	current_startup_status := initial_startup_status
+	current_startup_reason_code := initial_startup_reason_code
+	current_startup_safe_diagnostic := initial_startup_safe_diagnostic
+
 	for {
 		if !tmux.pane_exists(tmux_pane) {
 			fmt.println("agent tmux pane missing; stopping wrapper", tmux_pane)
 			return
 		}
 
-		body := heartbeat_request_json(agent_instance_id, tmux_pane)
+		// Self-healing WebSocket reconnection: if the WebSocket connection was severed
+		// (e.g. due to daemon restart), re-register and reconnect immediately!
+		if !ws_conn.connected {
+			fmt.println("WebSocket disconnected; attempting to reconnect...", agent_instance_id)
+			if new_ws_url, new_token, reconnected := reregister_and_reconnect_ws(daemon_url, agent_class, agent_instance_id, display_name, current_token, ws_conn); reconnected {
+				fmt.println("WebSocket successfully reconnected!", agent_instance_id, new_ws_url)
+				current_token = new_token
+				failed_heartbeats = 0
+				notify_agent_token_refreshed(tmux_pane, daemon_url, new_token, agent_instance_id)
+			} else {
+				fmt.println("WebSocket reconnection attempt failed; will retry", agent_instance_id)
+			}
+		}
+
+		body := heartbeat_request_json(agent_instance_id, current_token, display_name, provider_profile, provider_tier, project_id, tmux_pane, run_dir, exec_state, "", current_startup_status, current_startup_reason_code, current_startup_safe_diagnostic, pid, exec_state_since)
 		response, ok := http.post(daemon_url, contracts.ROUTE_HEARTBEAT, body)
 		if ok && response.status == 200 {
 			failed_heartbeats = 0
 			fmt.println("heartbeat ok", agent_instance_id)
+			log_heartbeat_corrections(response.body, agent_instance_id)
+
+			// Parse corrections to dynamically capture startup status overrides from the daemon
+			if corr_idx := strings.index(response.body, `"corrections":{`); corr_idx >= 0 {
+				corr_block := response.body[corr_idx:]
+				if new_status := extract_json_string(corr_block, "startup_status", ""); new_status != "" {
+					fmt.println("HEARTBEAT CORRECTION: startup_status corrected to", new_status)
+					current_startup_status = strings.clone(new_status)
+					if new_reason := extract_json_string(corr_block, "startup_reason_code", ""); new_reason != "" {
+						current_startup_reason_code = strings.clone(new_reason)
+					}
+					if new_diag := extract_json_string(corr_block, "startup_safe_diagnostic", ""); new_diag != "" {
+						current_startup_safe_diagnostic = strings.clone(new_diag)
+					}
+				}
+			}
+		} else if ok && response.status == 401 {
+			// Token not found in registry (daemon restarted). Re-register fresh to
+			// get the token back into the daemon's in-memory registry.
+			fmt.println("heartbeat token_not_found; re-registering", agent_instance_id)
+			if new_ws_url, new_token, reconnected := reregister_and_reconnect_ws(daemon_url, agent_class, agent_instance_id, display_name, current_token, ws_conn); reconnected {
+				fmt.println("re-registered", agent_instance_id, new_ws_url)
+				current_token = new_token
+				failed_heartbeats = 0
+				notify_agent_token_refreshed(tmux_pane, daemon_url, new_token, agent_instance_id)
+			} else {
+				fmt.println("re-register failed", agent_instance_id)
+				failed_heartbeats += 1
+			}
+		} else if ok && response.status == 400 {
+			// Distinguish project_not_found / missing_required so operator sees it.
+			fmt.println("heartbeat rejected", agent_instance_id, response.body)
+			failed_heartbeats += 1
 		} else {
 			failed_heartbeats += 1
 			fmt.println("heartbeat failed", agent_instance_id)
@@ -168,9 +489,11 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 
 		if failed_heartbeats >= 3 {
 			fmt.println("heartbeat failed repeatedly; re-registering", agent_instance_id)
-			if new_ws_url, reconnected := reregister_and_reconnect_ws(daemon_url, agent_class, agent_instance_id, display_name, agent_token, ws_conn); reconnected {
+			if new_ws_url, new_token, reconnected := reregister_and_reconnect_ws(daemon_url, agent_class, agent_instance_id, display_name, current_token, ws_conn); reconnected {
 				fmt.println("reconnected", agent_instance_id, new_ws_url)
+				current_token = new_token
 				failed_heartbeats = 0
+				notify_agent_token_refreshed(tmux_pane, daemon_url, new_token, agent_instance_id)
 			} else {
 				fmt.println("reconnect attempt failed", agent_instance_id)
 			}
@@ -179,12 +502,19 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 		if text, got_message := ws.poll_text(ws_conn); got_message {
 			if strings.index(text, `"type":"duplicate_check"`) >= 0 {
 				// internal control message; do not surface as an agent message
+			} else if strings.index(text, `"type":"stop_event"`) >= 0 {
+				fmt.println("stop event", text)
+				handle_stop_event(text, tmux_pane, tmux_session, window_name, agent_instance_id, stop_message, ws_conn)
+				return
 			} else if strings.index(text, `"type":"message_event"`) >= 0 {
 				fmt.println("message event", text)
 				handle_message_event(text, tmux_pane)
 			} else if strings.index(text, `"type":"task_event"`) >= 0 {
 				fmt.println("task event", text)
-				handle_task_event(text, tmux_pane)
+				handle_task_event(text, tmux_pane, agent_instance_id)
+			} else if strings.index(text, `"type":"memory_event"`) >= 0 {
+				fmt.println("memory event", text)
+				handle_memory_event(text, tmux_pane, agent_instance_id)
 			} else if strings.index(text, `"type":"user_chat_event"`) >= 0 {
 				fmt.println("user chat event", text)
 				handle_user_chat_event(text, tmux_pane)
@@ -192,7 +522,7 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 				fmt.println("ws message", text)
 			}
 		}
-		time.sleep(5 * time.Second)
+		time.sleep(10 * time.Second)
 	}
 }
 
@@ -203,19 +533,91 @@ handle_message_event :: proc(text, tmux_pane: string) {
 	from_agent_instance_id := extract_json_string(text, "from_agent_instance_id", "unknown")
 	if pending_count <= 0 do pending_count = 1
 
-	line := fmt.tprintf("%d Unread Messages from %s.", pending_count, from_agent_instance_id)
-	if tmux.send_line(tmux_pane, line) {
+	line := template_live_message(
+		active_live_prefs.msg_agent_message,
+		pending_count, from_agent_instance_id,
+		"", "", "", "", "", "", "", "", "", "", 0,
+	)
+	defer delete(line)
+
+	if tmux.send_line_with_escape(tmux_pane, line, active_live_prefs.msg_agent_message_int) {
 		fmt.println("notified agent pane", line)
 	} else {
 		fmt.println("failed to notify agent pane", line)
 	}
 }
 
-handle_task_event :: proc(text, tmux_pane: string) {
+// Wrapper-side task-event filtering was removed as part of chain-19f4b3d0617
+// closeout. The daemon is now the sole authority on whether a task event is
+// generated and who receives it (source-side routing). The wrapper delivers
+// every task_event it receives to the agent pane, except events it authored
+// itself (self-authored suppression stays: an agent should not be notified
+// of its own actions).
+
+handle_task_event :: proc(text, tmux_pane, agent_instance_id: string) {
 	task_id := extract_json_string(text, "task_id", "unknown")
 	status := extract_json_string(text, "status", "updated")
-	line := fmt.tprintf("Task %s %s.", task_id, status)
-	if tmux.send_line(tmux_pane, line) {
+	changed_by := extract_json_string(text, "changed_by", "unknown")
+	body := extract_json_string(text, "body", "")
+	if changed_by == agent_instance_id {
+		fmt.println("suppressed self-authored task event", task_id, status, changed_by)
+		return
+	}
+	
+	template_str := active_live_prefs.msg_task_updated if body != "" else active_live_prefs.msg_task_updated_empty
+	interrupt_val := active_live_prefs.msg_task_updated_int if body != "" else active_live_prefs.msg_task_updated_empty_int
+
+	line := template_live_message(
+		template_str,
+		0, "",
+		task_id, status, changed_by, body, "", "", "", "", "", "", 0,
+	)
+	defer delete(line)
+
+	// Task notifications can be high volume (auto-claims, status changes, nudges).
+	// Do not send an Escape prefix for task events: it interrupts the agent's
+	// current generation and can create notification storms when many task
+	// updates arrive. The line itself is still delivered so agents can observe
+	// relevant task changes without aborting in-flight work.
+	escape_prefix := false
+
+	if tmux.send_line_with_escape(tmux_pane, line, escape_prefix) {
+		fmt.println("notified agent pane", line)
+	} else {
+		fmt.println("failed to notify agent pane", line)
+	}
+}
+
+handle_memory_event :: proc(text, tmux_pane, agent_instance_id: string) {
+	changed_by := extract_json_string(text, "changed_by", "unknown")
+	if changed_by == agent_instance_id {
+		fmt.println("suppressed self-authored memory event", extract_json_string(text, "memory_id", ""), changed_by)
+		return
+	}
+	event := extract_json_string(text, "event", "memory_updated")
+	memory_id := extract_json_string(text, "memory_id", "unknown")
+	proposal_id := extract_json_string(text, "proposal_id", "")
+	subject_agent := extract_json_string(text, "subject_agent", "")
+	status := extract_json_string(text, "status", "")
+
+	template_str := active_live_prefs.msg_memory_updated
+	interrupt_val := active_live_prefs.msg_memory_updated_int
+	target_id := memory_id
+
+	if proposal_id != "" && (status == "pending" || strings.index(event, "Proposed") >= 0) {
+		template_str = active_live_prefs.msg_memory_proposal_updated
+		interrupt_val = active_live_prefs.msg_memory_proposal_updated_int
+		target_id = proposal_id
+	}
+
+	line := template_live_message(
+		template_str,
+		0, "",
+		"", "", changed_by, "", target_id, event, subject_agent, "", "", "", 0,
+	)
+	defer delete(line)
+
+	if tmux.send_line_with_escape(tmux_pane, line, interrupt_val) {
 		fmt.println("notified agent pane", line)
 	} else {
 		fmt.println("failed to notify agent pane", line)
@@ -226,17 +628,69 @@ handle_user_chat_event :: proc(text, tmux_pane: string) {
 	user_id := extract_json_string(text, "user_id", "unknown")
 	pending_count := extract_json_int(text, "pending_count", 1)
 	if pending_count <= 0 do pending_count = 1
-	line := fmt.tprintf("%d User Chat Messages from %s.", pending_count, user_id)
-	if tmux.send_line(tmux_pane, line) {
+	send_escape := extract_json_bool(text, "interrupt", false) || extract_json_bool(text, "send_escape_prefix", false)
+
+	line := template_live_message(
+		active_live_prefs.msg_user_chat,
+		pending_count, "",
+		"", "", "", "", "", "", "", user_id, "", "", 0,
+	)
+	defer delete(line)
+
+	escape_prefix := send_escape || active_live_prefs.msg_user_chat_int
+	if tmux.send_line_with_escape(tmux_pane, line, escape_prefix) {
 		fmt.println("notified agent pane", line)
 	} else {
 		fmt.println("failed to notify agent pane", line)
 	}
 }
 
-reregister_and_reconnect_ws :: proc(daemon_url, agent_class, agent_instance_id, display_name, agent_token: string, ws_conn: ^ws.Connection) -> (string, bool) {
+notify_agent_token_refreshed :: proc(tmux_pane, daemon_url, new_token, agent_instance_id: string) {
+	line := template_live_message(
+		active_live_prefs.msg_token_refreshed,
+		0, "",
+		"", "", "", "", "", "", "", "", new_token, daemon_url, 0,
+	)
+	defer delete(line)
+
+	fmt.println("token_refreshed: notifying agent pane", tmux_pane)
+	_ = tmux.send_line_with_escape(tmux_pane, line, active_live_prefs.msg_token_refreshed_int)
+}
+
+handle_stop_event :: proc(text, tmux_pane, tmux_session, window_name, agent_instance_id, stop_message: string, ws_conn: ^ws.Connection) {
+	time_in_sec := extract_json_int(text, "time_in_sec", 30)
+	
+	line := template_live_message(
+		active_live_prefs.msg_stop_requested,
+		0, "",
+		"", "", "", "", "", "", "", "", "", "", time_in_sec,
+	)
+	defer delete(line)
+
+	fmt.println("stop: sending escape and message to pane", tmux_pane)
+	_ = tmux.send_line_with_escape(tmux_pane, line, active_live_prefs.msg_stop_requested_int)
+	fmt.println("stop: waiting", time_in_sec, "seconds")
+	time.sleep(time.Duration(time_in_sec) * time.Second)
+	fmt.println("stop: killing pane", tmux_pane)
+	_ = tmux.kill_pane(tmux_pane)
+	fmt.println("stop: killing window", tmux_session, window_name)
+	_ = tmux.kill_window(tmux_session, window_name)
+	fmt.println("stop: sending stop_done via WS")
+	report_stop_done(ws_conn, agent_instance_id)
+	fmt.println("stop: done, wrapper exiting")
+}
+
+report_stop_done :: proc(ws_conn: ^ws.Connection, agent_instance_id: string) {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"type":"stop_done","agent_instance_id":"`)
+	json_write_string(&b, agent_instance_id)
+	strings.write_string(&b, `"}`)
+	_ = ws.send_text(ws_conn, strings.to_string(b))
+}
+
+reregister_and_reconnect_ws :: proc(daemon_url, agent_class, agent_instance_id, display_name, agent_token: string, ws_conn: ^ws.Connection) -> (new_ws_url: string, new_token: string, ok: bool) {
 	response, health_ok := http.get(daemon_url, contracts.ROUTE_HEALTH)
-	if !health_ok || response.status != 200 do return "", false
+	if !health_ok || response.status != 200 do return "", "", false
 
 	register_body := register_request_json(agent_class, agent_instance_id, display_name, agent_token)
 	register_response, register_ok := http.post(daemon_url, contracts.ROUTE_REGISTER, register_body)
@@ -244,27 +698,55 @@ reregister_and_reconnect_ws :: proc(daemon_url, agent_class, agent_instance_id, 
 		if register_ok {
 			fmt.println("re-registration failed", register_response.status, register_response.body)
 		}
-		return "", false
+		return "", "", false
 	}
 
-	new_ws_url := extract_json_string(register_response.body, "ws_url", "")
-	if new_ws_url == "" do return "", false
+	ws_url := extract_json_string(register_response.body, "ws_url", "")
+	token  := extract_json_string(register_response.body, "agent_token", agent_token)
+	prefs_obj := extract_json_object(register_response.body, "preferences")
+	defer if prefs_obj != "" do delete(prefs_obj)
+	apply_preferences_json(prefs_obj)
+	if ws_url == "" do return "", "", false
 
 	ws.close(ws_conn)
-	new_conn, ws_ok := ws.connect(new_ws_url)
-	if !ws_ok do return new_ws_url, false
+	new_conn, ws_ok := ws.connect(ws_url)
+	if !ws_ok do return ws_url, token, false
 	ws_conn^ = new_conn
-	return new_ws_url, true
+	return ws_url, token, true
 }
 
-heartbeat_request_json :: proc(agent_instance_id, tmux_pane: string) -> string {
-	builder := strings.builder_make()
-	strings.write_string(&builder, "{\"agent_instance_id\":\"")
-	strings.write_string(&builder, agent_instance_id)
-	strings.write_string(&builder, "\",\"tmux_pane\":\"")
-	strings.write_string(&builder, tmux_pane)
-	strings.write_string(&builder, "\"}")
-	return strings.to_string(builder)
+heartbeat_request_json :: proc(agent_instance_id, agent_token, display_name, provider_profile, provider_tier, project_id, tmux_pane, run_dir, exec_state, blocked_reason, startup_status, startup_reason_code, startup_safe_diagnostic: string, pid: int, exec_state_since_unix_ms: i64) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"agent_instance_id":"`); json_write_string(&b, agent_instance_id)
+	strings.write_string(&b, `","agent_token":"`); json_write_string(&b, agent_token)
+	strings.write_string(&b, `","display_name":"`); json_write_string(&b, display_name)
+	strings.write_string(&b, `","provider_profile":"`); json_write_string(&b, provider_profile)
+	strings.write_string(&b, `","provider_tier":"`); json_write_string(&b, provider_tier)
+	strings.write_string(&b, `","project_id":"`); json_write_string(&b, project_id)
+	strings.write_string(&b, `","tmux_pane":"`); json_write_string(&b, tmux_pane)
+	strings.write_string(&b, `","run_dir":"`); json_write_string(&b, run_dir)
+	strings.write_string(&b, `","exec_state":"`); json_write_string(&b, exec_state)
+	strings.write_string(&b, `","blocked_reason":"`); json_write_string(&b, blocked_reason)
+	strings.write_string(&b, `","startup_status":"`); json_write_string(&b, startup_status)
+	strings.write_string(&b, `","startup_reason_code":"`); json_write_string(&b, startup_reason_code)
+	strings.write_string(&b, `","startup_safe_diagnostic":"`); json_write_string(&b, startup_safe_diagnostic)
+	strings.write_string(&b, `","pid":`); strings.write_string(&b, fmt.tprintf("%d", pid))
+	strings.write_string(&b, `,"exec_state_since_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", exec_state_since_unix_ms))
+	strings.write_string(&b, `}`)
+	return strings.to_string(b)
+}
+
+// log_heartbeat_corrections prints any fields the daemon corrected. For now we
+// only log — applying corrections to running wrapper state is deferred.
+log_heartbeat_corrections :: proc(body, agent_instance_id: string) {
+	idx := strings.index(body, `"corrections":{`)
+	if idx < 0 do return
+	start := idx + len(`"corrections":{`)
+	end := strings.index_byte(body[start:], '}')
+	if end <= 0 do return
+	contents := body[start:start + end]
+	if strings.trim_space(contents) == "" do return
+	fmt.println("heartbeat corrections", agent_instance_id, contents)
 }
 
 extract_json_string :: proc(body, key, fallback: string) -> string {
@@ -273,10 +755,75 @@ extract_json_string :: proc(body, key, fallback: string) -> string {
 	if idx < 0 do return fallback
 
 	start := idx + len(pattern)
-	end := strings.index_byte(body[start:], '"')
-	if end < 0 do return fallback
+	end := start
+	escaped := false
+	for end < len(body) {
+		ch := body[end]
+		if escaped {
+			escaped = false
+		} else if ch == '\\' {
+			escaped = true
+		} else if ch == '"' {
+			return json_unescape(body[start:end])
+		}
+		end += 1
+	}
 
-	return strings.clone(body[start:start + end])
+	return fallback
+}
+
+json_unescape :: proc(value: string) -> string {
+	builder := strings.builder_make()
+	i := 0
+	for i < len(value) {
+		ch := value[i]
+		if ch == '\\' {
+			if i + 1 < len(value) {
+				next_ch := value[i + 1]
+				switch next_ch {
+				case 'n': strings.write_byte(&builder, '\n')
+				case 'r': strings.write_byte(&builder, '\r')
+				case 't': strings.write_byte(&builder, '\t')
+				case '"': strings.write_byte(&builder, '"')
+				case '\\': strings.write_byte(&builder, '\\')
+				case 'u':
+					if i + 5 < len(value) {
+						hex_str := value[i + 2 : i + 6]
+						val, ok := strconv.parse_int(hex_str, 16)
+						if ok {
+							strings.write_rune(&builder, rune(val))
+							i += 6
+							continue
+						}
+					}
+					strings.write_byte(&builder, 'u')
+				case:
+					strings.write_byte(&builder, next_ch)
+				}
+				i += 2
+			} else {
+				strings.write_byte(&builder, '\\')
+				i += 1
+			}
+		} else {
+			strings.write_byte(&builder, ch)
+			i += 1
+		}
+	}
+	return strings.to_string(builder)
+}
+
+json_write_string :: proc(builder: ^strings.Builder, value: string) {
+	for ch in value {
+		switch ch {
+		case '\\': strings.write_string(builder, "\\\\")
+		case '"': strings.write_string(builder, "\\\"")
+		case '\n': strings.write_string(builder, "\\n")
+		case '\r': strings.write_string(builder, "\\r")
+		case '\t': strings.write_string(builder, "\\t")
+		case: strings.write_rune(builder, ch)
+		}
+	}
 }
 
 extract_json_int :: proc(body, key: string, fallback: int) -> int {
@@ -296,6 +843,17 @@ extract_json_int :: proc(body, key: string, fallback: int) -> int {
 	return int(parsed)
 }
 
+extract_json_bool :: proc(body, key: string, fallback: bool) -> bool {
+	pattern := fmt.tprintf("\"%s\":", key)
+	idx := strings.index(body, pattern)
+	if idx < 0 do return fallback
+	start := idx + len(pattern)
+	val_str := strings.trim_space(body[start:])
+	if strings.has_prefix(val_str, "true") do return true
+	if strings.has_prefix(val_str, "false") do return false
+	return fallback
+}
+
 start_detached :: proc(args: []string) {
 	child_args := make([dynamic]string)
 	append(&child_args, args[0])
@@ -309,7 +867,7 @@ start_detached :: proc(args: []string) {
 		fmt.println("failed to detach wrapper")
 		return
 	}
-	fmt.println("detached bc-agent-wrapper pid", process.handle)
+	fmt.println("detached ham-wrapper pid", process.handle)
 }
 
 has_flag :: proc(args: []string, flag: string) -> bool {
@@ -320,14 +878,793 @@ has_flag :: proc(args: []string, flag: string) -> bool {
 }
 
 print_usage :: proc() {
-	fmt.println("bc-agent-wrapper", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
-	fmt.println("usage: bc-agent-wrapper [--config <path>] [--agent <name>] [--agent-token <token>] [--detach] [--version] [--help] [agent|agent@suffix]")
+	fmt.println("ham-wrapper", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
+	fmt.println("usage: ham-wrapper [--config <path>] [--agent <name>] [--agent-token <token>] [--project-id <id>] [--detach] [--version] [--help] [agent|agent@suffix]")
 }
 
 resolve_working_dir :: proc(path: string) -> string {
-	absolute, err := os.get_absolute_path(path, context.allocator)
-	if err != nil do return path
+	expanded := cfg_lib.expand_home(path)
+	absolute, err := os.get_absolute_path(expanded, context.allocator)
+	if err != nil do return expanded
 	return absolute
+}
+
+selected_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent: string) -> (cfg_lib.Agent_Command_Config, bool) {
+	name := selected_agent
+	if name == "" do name = command_name_for_agent(cfg.command, cfg.agent_name)
+	for agent_cmd in cfg.agent_commands {
+		if agent_cmd.name == name do return agent_cmd, true
+	}
+	return cfg_lib.Agent_Command_Config{}, false
+}
+
+resolve_agent_run_dir :: proc(cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Command_Config, agent_cmd_ok: bool, selected_agent, agent_instance_id: string) -> string {
+	root := cfg.agent_run_dir
+	if agent_cmd_ok && agent_cmd.agent_run_dir != "" do root = agent_cmd.agent_run_dir
+	if root == "" do return resolve_working_dir(".")
+
+	project := cfg.project
+	if agent_cmd_ok && agent_cmd.project != "" do project = agent_cmd.project
+	if project == "" do project = "default"
+
+	agent_name := agent_instance_id
+	if agent_name == "" do agent_name = selected_agent
+	if agent_name == "" do agent_name = cfg.agent_name
+
+	base := resolve_working_dir(root)
+	project_dir := join_path(base, safe_slug(project))
+	_ = os.make_directory_all(project_dir)
+
+	use_random_dir := cfg.use_random_dir
+	if agent_cmd_ok && agent_cmd.use_random_dir_set do use_random_dir = agent_cmd.use_random_dir
+	if use_random_dir {
+		for attempt in 0..<16 {
+			name := random_run_dir_name()
+			cwd := join_path(project_dir, name)
+			if !os.exists(cwd) {
+				_ = os.make_directory_all(cwd)
+				return cwd
+			}
+			_ = attempt
+		}
+	}
+
+	ts := time.to_unix_nanoseconds(time.now()) / 1_000_000
+	agent_name_with_ts := fmt.tprintf("%s-%d", agent_name, ts)
+	cwd := join_path(project_dir, safe_slug(agent_name_with_ts))
+	_ = os.make_directory_all(cwd)
+	return cwd
+}
+
+random_run_dir_name :: proc() -> string {
+	bytes: [8]byte
+	if rand.read(bytes[:]) != len(bytes) {
+		now := u64(time.to_unix_nanoseconds(time.now()))
+		for i in 0..<len(bytes) {
+			bytes[i] = byte((now >> uint((i % 8) * 8)) & 0xff)
+		}
+	}
+	builder := strings.builder_make()
+	strings.write_string(&builder, "run-")
+	for b in bytes do hex_write_byte(&builder, b)
+	return strings.to_string(builder)
+}
+
+hex_write_byte :: proc(builder: ^strings.Builder, b: byte) {
+	digits := "0123456789abcdef"
+	strings.write_byte(builder, digits[int((b >> 4) & 0x0f)])
+	strings.write_byte(builder, digits[int(b & 0x0f)])
+}
+
+join_path3 :: proc(a, b, c: string) -> string {
+	sep := "/"
+	left := a
+	if strings.has_suffix(left, "/") do sep = ""
+	return strings.concatenate({left, sep, b, "/", c})
+}
+
+safe_slug :: proc(value: string) -> string {
+	builder := strings.builder_make()
+	last_dash := false
+	for i in 0..<len(value) {
+		ch := value[i]
+		valid := (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9')
+		if valid {
+			strings.write_byte(&builder, ch)
+			last_dash = false
+		} else if !last_dash {
+			strings.write_byte(&builder, '-')
+			last_dash = true
+		}
+	}
+	slug := strings.to_string(builder)
+	slug = strings.trim(slug, "-")
+	if slug == "" do return "unnamed"
+	if slug == "." || slug == ".." do return "unnamed"
+	return slug
+}
+
+BOOTSTRAP_HEADER :: "<!-- HEIMDALL-MANAGED-BOOTSTRAP v1: safe to overwrite -->"
+BOOTSTRAP_MANIFEST :: ".heimdall-bootstrap-manifest"
+
+Memory_Record :: struct {
+	memory_id:             string,
+	type_text:             string,
+	title:                 string,
+	body:                  string,
+	scope:                 string,
+	is_configured_template: bool,
+}
+
+fetch_all_active_memories :: proc(daemon_url, agent_token, team_id, project_id: string, memory_templates: []string) -> [dynamic]Memory_Record {
+	result := make([dynamic]Memory_Record)
+	configured_ids := make(map[string]bool)
+
+	if len(memory_templates) > 0 {
+		req := strings.builder_make()
+		strings.write_string(&req, `{"agent_token":"`); json_write_string(&req, agent_token)
+		strings.write_string(&req, `","action":"memory_list","scope":"template","status":"active"}`)
+		resp, ok := http.post(daemon_url, contracts.ROUTE_AGENT_RPC, strings.to_string(req))
+		if ok && resp.status == 200 {
+			parse_into_memory_records(resp.body, memory_templates, true, &result, &configured_ids)
+		}
+	}
+
+	if project_id != "" {
+		req := strings.builder_make()
+		strings.write_string(&req, `{"agent_token":"`); json_write_string(&req, agent_token)
+		strings.write_string(&req, `","action":"memory_list","scope":"project","subject_key":"`); json_write_string(&req, fmt.tprintf("pr:%s", project_id))
+		strings.write_string(&req, `","status":"active"}`)
+		resp, ok := http.post(daemon_url, contracts.ROUTE_AGENT_RPC, strings.to_string(req))
+		if ok && resp.status == 200 {
+			parse_into_memory_records(resp.body, memory_templates, false, &result, &configured_ids)
+		}
+	}
+
+	if team_id != "" && project_id != "" {
+		req := strings.builder_make()
+		strings.write_string(&req, `{"agent_token":"`); json_write_string(&req, agent_token)
+		strings.write_string(&req, `","action":"memory_list","scope":"team_project","subject_key":"`); json_write_string(&req, fmt.tprintf("tp:%s:%s", team_id, project_id))
+		strings.write_string(&req, `","status":"active"}`)
+		resp, ok := http.post(daemon_url, contracts.ROUTE_AGENT_RPC, strings.to_string(req))
+		if ok && resp.status == 200 {
+			parse_into_memory_records(resp.body, memory_templates, false, &result, &configured_ids)
+		}
+	}
+
+	return result
+}
+
+parse_into_memory_records :: proc(body: string, memory_templates: []string, templates_only: bool, result: ^[dynamic]Memory_Record, configured_ids: ^map[string]bool) {
+	idx := 0
+	for {
+		start_rel := strings.index(body[idx:], `{"memory_id":"`)
+		if start_rel < 0 do break
+		start := idx + start_rel
+		end := json_object_end(body, start)
+		if end <= start do break
+		object := body[start:end]
+
+		status := extract_json_string(object, "status", "")
+		if status != "active" { idx = end; continue }
+
+		type_text := extract_json_string(object, "type", "fact")
+		memory_id := extract_json_string(object, "memory_id", "")
+		title := extract_json_string(object, "title", "")
+		body_text := extract_json_string(object, "body", "")
+		scope := extract_json_string(object, "scope", "")
+		is_configured_template := type_text == "template" && memory_template_matches(object, memory_templates)
+
+		if templates_only {
+			if !is_configured_template { idx = end; continue }
+			configured_ids^[memory_id] = true
+			append(result, Memory_Record{memory_id = memory_id, type_text = type_text, title = title, body = body_text, scope = scope, is_configured_template = true})
+		} else {
+			if _, seen := configured_ids^[memory_id]; seen { idx = end; continue }
+			append(result, Memory_Record{memory_id = memory_id, type_text = type_text, title = title, body = body_text, scope = scope, is_configured_template = false})
+		}
+		idx = end
+	}
+}
+
+generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Command_Config, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, template_instructions, team_id, role_key: string, role_index: int) {
+	profile := bootstrap_profile(agent_cmd, selected_agent)
+	memory_templates := agent_cmd.memory_templates
+	if len(memory_templates) == 0 do memory_templates = cfg.memory_templates
+	project_id := agent_cmd.project
+	if project_id == "" do project_id = cfg.project
+	project_context := project_bootstrap_context(daemon_url, agent_token, cfg, agent_cmd)
+	team_context, chain_id := team_bootstrap_context(daemon_url, team_id)
+	chain_context, workspace_context := task_chain_bootstrap_context(daemon_url, agent_token, chain_id)
+	memories := fetch_all_active_memories(daemon_url, agent_token, team_id, project_id, memory_templates)
+
+	written := make([dynamic]string)
+
+	// AGENTS_MD (CLAUDE.md for claude profile, AGENTS.md otherwise)
+	{
+		fc := agent_cmd.bootstrap.features["AGENTS_MD"]
+		name := fc.name
+		if name == "" {
+			if profile == "claude" { name = "CLAUDE.md" } else { name = "AGENTS.md" }
+		}
+		path := join_path(cwd, name)
+		if can_write_managed_file(path) {
+			text := build_agents_md(name, profile, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path, memories[:], project_context, chain_context, team_context, workspace_context, has_reference_memories(memories[:]), template_instructions, team_id, role_key, role_index)
+			write_managed_file(path, text)
+			append(&written, name)
+		}
+	}
+
+	// MEMORY_MD only when Fact/Episode references exist.
+	if has_reference_memories(memories[:]) {
+		fc := agent_cmd.bootstrap.features["MEMORY_MD"]
+		name := fc.name
+		if name == "" do name = "MEMORY.md"
+		path := join_path(cwd, name)
+		if can_write_managed_file(path) {
+			text := build_memory_md(memories[:])
+			write_managed_file(path, text)
+			append(&written, name)
+		}
+	}
+
+	// SKILLS
+	{
+		fc := agent_cmd.bootstrap.features["SKILLS"]
+		rel_dir := fc.relative_dir
+		if rel_dir == "" do rel_dir = "skills"
+		filename := fc.filename
+		if filename == "" do filename = "SKILL.md"
+		skill_paths := write_skills(cwd, rel_dir, filename, memories[:])
+		for p in skill_paths {
+			append(&written, p)
+		}
+	}
+
+	// Guide-only product handbook. This is intentionally a concrete file in the
+	// guide run directory so the singleton guide can read stable Heimdall-specific
+	// operating guidance without giving that context to ordinary project agents.
+	if agent_instance_id == "guide@heimdall" {
+		name := "guide-agent.md"
+		path := join_path(cwd, name)
+		if can_write_managed_file(path) {
+			write_managed_file(path, strings.trim_space(#load("../prompts/guide-agent.md", string)))
+			append(&written, name)
+		}
+	}
+
+	cleanup_removed_bootstrap_files(cwd, written[:])
+	write_manifest(cwd, written[:])
+}
+
+team_bootstrap_context :: proc(daemon_url, team_id: string) -> (string, string) {
+	if team_id == "" do return "", ""
+	response, ok := http.get(daemon_url, fmt.tprintf("/teams/%s", team_id))
+	if !ok || response.status != 200 do return "", ""
+	chain_id := extract_json_string(response.body, "chain_id", "")
+	b := strings.builder_make()
+	strings.write_string(&b, "- team_id: "); strings.write_string(&b, extract_json_string(response.body, "team_id", team_id)); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- kind: "); strings.write_string(&b, extract_json_string(response.body, "kind", "")); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- status: "); strings.write_string(&b, extract_json_string(response.body, "status", "")); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- Roster:\n")
+	idx := 0
+	for {
+		start_rel := strings.index(response.body[idx:], `{"team_id":"`)
+		if start_rel < 0 do break
+		start := idx + start_rel
+		end := json_object_end(response.body, start)
+		if end <= start do break
+		object := response.body[start:end]
+		if extract_json_string(object, "role_key", "") != "" {
+			strings.write_string(&b, "  - "); strings.write_string(&b, extract_json_string(object, "role_key", ""))
+			strings.write_string(&b, "["); strings.write_string(&b, fmt.tprintf("%d", extract_json_int(object, "role_index", 0))); strings.write_string(&b, "] ")
+			strings.write_string(&b, extract_json_string(object, "lifecycle_status", "idle")); strings.write_string(&b, "\n")
+		}
+		idx = end
+	}
+	return strings.to_string(b), chain_id
+}
+
+task_chain_bootstrap_context :: proc(daemon_url, agent_token, chain_id: string) -> (string, string) {
+	if chain_id == "" do return "", ""
+	body := strings.builder_make()
+	strings.write_string(&body, `{"agent_token":"`); json_write_string(&body, agent_token)
+	strings.write_string(&body, `","chain_id":"`); json_write_string(&body, chain_id)
+	strings.write_string(&body, `"}`)
+	response, ok := http.post(daemon_url, "/task-chains/show", strings.to_string(body))
+	if !ok || response.status != 200 do return "", ""
+	b := strings.builder_make()
+	strings.write_string(&b, "- chain_id: "); strings.write_string(&b, extract_json_string(response.body, "chain_id", chain_id)); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- title: "); strings.write_string(&b, extract_json_string(response.body, "title", "")); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- description: "); strings.write_string(&b, extract_json_string(response.body, "description", "")); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- coordinator: "); strings.write_string(&b, extract_json_string(response.body, "coordinator_agent_instance_id", "")); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- default_reviewer: "); strings.write_string(&b, extract_json_string(response.body, "default_reviewer_agent_instance_id", "")); strings.write_string(&b, "\n")
+	tasks_response, tasks_ok := http.get(daemon_url, fmt.tprintf("/task-chains/%s/tasks", chain_id))
+	if tasks_ok && tasks_response.status == 200 {
+		strings.write_string(&b, "- Task counts: planning="); strings.write_string(&b, fmt.tprintf("%d", count_json_status(tasks_response.body, "planning")))
+		strings.write_string(&b, " ready="); strings.write_string(&b, fmt.tprintf("%d", count_json_status(tasks_response.body, "queued") + count_json_status(tasks_response.body, "ready")))
+		strings.write_string(&b, " in-progress="); strings.write_string(&b, fmt.tprintf("%d", count_json_status(tasks_response.body, "in_progress")))
+		strings.write_string(&b, " review-ready="); strings.write_string(&b, fmt.tprintf("%d", count_json_status(tasks_response.body, "review_ready")))
+		strings.write_string(&b, " done="); strings.write_string(&b, fmt.tprintf("%d", count_json_status(tasks_response.body, "approved") + count_json_status(tasks_response.body, "completed")))
+		strings.write_string(&b, "\n")
+	}
+	return strings.to_string(b), workspace_bootstrap_context(response.body)
+}
+
+workspace_bootstrap_context :: proc(chain_body: string) -> string {
+	workspace_id := extract_json_string(chain_body, "vcs_workspace_id", "")
+	if workspace_id == "" do return ""
+	b := strings.builder_make()
+	strings.write_string(&b, "- workspace_id: "); strings.write_string(&b, workspace_id); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- path: "); strings.write_string(&b, extract_json_string(chain_body, "path", "")); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- vcs_kind: "); strings.write_string(&b, extract_json_string(chain_body, "vcs_kind", "")); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- branch_or_change: "); strings.write_string(&b, extract_json_string(chain_body, "branch_or_change", "")); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- base_ref: "); strings.write_string(&b, extract_json_string(chain_body, "base_ref", "")); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- Do not cd outside this workspace. Do not push; merge is user-approved. Use `ham-ctl workspace pull` to sync base.\n")
+	return strings.to_string(b)
+}
+
+count_json_status :: proc(body, status: string) -> int {
+	count := 0
+	needle := fmt.tprintf(`"status":"%s"`, status)
+	idx := 0
+	for {
+		rel := strings.index(body[idx:], needle)
+		if rel < 0 do break
+		count += 1
+		idx += rel + len(needle)
+	}
+	return count
+}
+
+content_section_enabled :: proc(sections: []string, section: string) -> bool {
+	if len(sections) == 0 do return true
+	for item in sections {
+		if item == section || item == "ALL" || item == "all" do return true
+	}
+	return false
+}
+
+build_agents_md :: proc(name, profile: string, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path: string, memories: []Memory_Record, project_context, chain_context, team_context, workspace_context: string, has_memory_md: bool, template_instructions, team_id, role_key: string, role_index: int) -> string {
+	b := strings.builder_make()
+	is_team_member := team_id != "" || role_key != ""
+	is_coordinator := !is_team_member || role_key == "coordinator"
+	strings.write_string(&b, active_live_prefs.bootstrap_header); strings.write_string(&b, "\n")
+	strings.write_string(&b, bootstrap_title(name, profile)); strings.write_string(&b, "\n\n")
+
+	strings.write_string(&b, "# You\n")
+	strings.write_string(&b, "- display_name: "); strings.write_string(&b, display_name); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- agent_instance_id: "); strings.write_string(&b, agent_instance_id); strings.write_string(&b, "\n")
+	if role_key != "" { strings.write_string(&b, "- role_key: "); strings.write_string(&b, role_key); strings.write_string(&b, "\n") }
+	strings.write_string(&b, "- role_index: "); strings.write_string(&b, fmt.tprintf("%d", role_index)); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- provider/profile: "); strings.write_string(&b, selected_agent); strings.write_string(&b, " / "); strings.write_string(&b, profile); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- agent_token: "); strings.write_string(&b, agent_token); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- start-success: `"); strings.write_string(&b, effective_ctl_bin()); strings.write_string(&b, " --daemon-url "); strings.write_string(&b, daemon_url); strings.write_string(&b, " --token "); strings.write_string(&b, agent_token); strings.write_string(&b, " start-success`\n")
+	if agent_instance_id == "guide@heimdall" {
+		strings.write_string(&b, "- guide handbook: read `guide-agent.md` after start-success; it is the guide-only Heimdall product/runbook context.\n")
+	}
+	strings.write_string(&b, "\n")
+
+	strings.write_string(&b, "# Project\n")
+	if project_context != "" { strings.write_string(&b, project_context); strings.write_string(&b, "\n") } else { strings.write_string(&b, "- project_id: unknown\n- VCS bindings: none\n\n") }
+
+	strings.write_string(&b, "# Task Chain\n")
+	if chain_context != "" { strings.write_string(&b, chain_context) } else { strings.write_string(&b, "- chain_id: unknown\n- Current task: use `ham-ctl tasks next --token <token>` to claim assigned work.\n") }
+	strings.write_string(&b, "\n")
+
+	strings.write_string(&b, "# Team\n")
+	if team_context != "" { strings.write_string(&b, team_context) } else if team_id != "" { strings.write_string(&b, "- team_id: "); strings.write_string(&b, team_id); strings.write_string(&b, "\n") }
+	if is_coordinator {
+		strings.write_string(&b, "- You are the coordinator for free-form user contact: summarize/forward team needs to the operator when needed.\n")
+		strings.write_string(&b, "- Use chain-scoped user replies (`chat send-to-user --chain-id <chain_id>`) when the reply belongs to a task chain, so it appears in coordinator chat and direct chat.\n")
+		strings.write_string(&b, "- Team members route user-facing decisions through you; consolidate, resolve locally when possible, and ask the user only when necessary.\n")
+	} else {
+		strings.write_string(&b, "- Coordinator owns user-facing decisions; route free-form user communication through the coordinator.\n")
+		strings.write_string(&b, "- Do not use direct `chat send-to-user` for normal user contact. Use task comments or coordinator-directed chat instead; chain-context sends are redirected to the coordinator, not the user.\n")
+	}
+	strings.write_string(&b, "- Structured Needs attention prompts remain allowed for product-modeled approvals/actions such as user_proxy review and merge decisions.\n")
+	strings.write_string(&b, "- Agents shut down after 30 minutes idle unless task, mention, or nudge keeps them alive.\n\n")
+
+	if is_coordinator {
+		strings.write_string(&b, "# Coordinator Instructions\n")
+		strings.write_string(&b, strings.trim_space(#load("../prompts/coordinator_instructions.md", string)))
+		strings.write_string(&b, "\n\n")
+	}
+
+	if workspace_context != "" {
+		strings.write_string(&b, "# Workspace\n")
+		strings.write_string(&b, workspace_context)
+		strings.write_string(&b, "\n")
+	}
+
+	mem_str := render_memory_for_agents_md(memories, has_memory_md)
+	if mem_str != "" {
+		strings.write_string(&b, "# Memory\nOnly active approved memory is included. Pending/rejected/archived are excluded.\n")
+		strings.write_string(&b, mem_str)
+		strings.write_string(&b, "\n")
+	}
+
+	strings.write_string(&b, "# Tools\n")
+	strings.write_string(&b, "- `ham-ctl tasks next|show|comment|done --token <token>` for task work.\n")
+	if is_coordinator {
+		strings.write_string(&b, "- `ham-ctl chat send-to-user --token <token> --user-id operator@local --chain-id <chain_id> --body <text>` for coordinator-owned chain replies.\n")
+	} else {
+		strings.write_string(&b, "- For user-facing questions, comment/nudge the coordinator; the coordinator owns free-form user replies.\n")
+	}
+	strings.write_string(&b, "- Structured Needs attention approval/action prompts are allowed when the product models them durably.\n")
+	strings.write_string(&b, "- `ham-ctl teams show --team <team_id>` and `ham-ctl chains focus --chain <chain_id>` for team context.\n")
+	strings.write_string(&b, "- Full workflow guide: `ham-ctl help work-guide`.\n")
+	return strings.to_string(b)
+}
+
+has_reference_memories :: proc(memories: []Memory_Record) -> bool {
+	for m in memories {
+		if m.type_text == "fact" || m.type_text == "episode" do return true
+	}
+	return false
+}
+
+render_memory_for_agents_md :: proc(memories: []Memory_Record, has_memory_md: bool) -> string {
+	b := strings.builder_make()
+
+	// Configured template memories
+	wrote_tpl := false
+	for m in memories {
+		if !m.is_configured_template do continue
+		if !wrote_tpl {
+			strings.write_string(&b, "\n\n# Active Approved Memory Templates\nOnly configured, approved active template memories are included here; pending, rejected, and archived templates are excluded.\n")
+			wrote_tpl = true
+		}
+		strings.write_string(&b, "\n- template: ")
+		if m.title != "" { strings.write_string(&b, m.title); strings.write_string(&b, " — ") }
+		strings.write_string(&b, m.body); strings.write_string(&b, "\n")
+	}
+
+	// Active memory section — inline types (EXPERTISE, HABIT) and reference types (FACT, EPISODE)
+	wrote_active := false
+
+	inline_types := []string{"expertise", "habit"}
+	for type_name in inline_types {
+		for m in memories {
+			if m.is_configured_template do continue
+			if m.type_text != type_name do continue
+			if !wrote_active {
+				strings.write_string(&b, "\n\n# Active Approved Memory\nOnly active approved memory is included here; pending, rejected, and archived proposals are excluded.\n")
+				wrote_active = true
+			}
+			strings.write_string(&b, "\n- "); strings.write_string(&b, type_name); strings.write_string(&b, ": ")
+			if m.title != "" { strings.write_string(&b, m.title); strings.write_string(&b, " — ") }
+			strings.write_string(&b, m.body); strings.write_string(&b, "\n")
+		}
+	}
+
+	ref_types := []string{"fact", "episode"}
+	for type_name in ref_types {
+		for m in memories {
+			if m.is_configured_template do continue
+			if m.type_text != type_name do continue
+			if !wrote_active {
+				strings.write_string(&b, "\n\n# Active Approved Memory\nOnly active approved memory is included here; pending, rejected, and archived proposals are excluded.\n")
+				wrote_active = true
+			}
+			if has_memory_md {
+				slug := safe_slug(m.title)
+				strings.write_string(&b, "\n- "); strings.write_string(&b, type_name); strings.write_string(&b, ": ")
+				strings.write_string(&b, m.title)
+				strings.write_string(&b, " — see [MEMORY.md#"); strings.write_string(&b, slug)
+				strings.write_string(&b, "](MEMORY.md#"); strings.write_string(&b, slug); strings.write_string(&b, ")\n")
+			} else {
+				strings.write_string(&b, "\n- "); strings.write_string(&b, type_name); strings.write_string(&b, ": ")
+				if m.title != "" { strings.write_string(&b, m.title); strings.write_string(&b, " — ") }
+				strings.write_string(&b, m.body); strings.write_string(&b, "\n")
+			}
+		}
+	}
+
+	if !wrote_tpl && !wrote_active do return ""
+	return strings.to_string(b)
+}
+
+build_memory_md :: proc(memories: []Memory_Record) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, active_live_prefs.bootstrap_header); strings.write_string(&b, "\n")
+	strings.write_string(&b, "# Memory\n\n")
+	strings.write_string(&b, "Full bodies of FACT and EPISODE memories. Regenerated each agent start.\n")
+	wrote_any := false
+	for m in memories {
+		if m.type_text != "fact" && m.type_text != "episode" do continue
+		if m.is_configured_template do continue
+		slug := safe_slug(m.title)
+		strings.write_string(&b, "\n## "); strings.write_string(&b, m.title)
+		strings.write_string(&b, " {#"); strings.write_string(&b, slug); strings.write_string(&b, "}\n\n")
+		strings.write_string(&b, m.body); strings.write_string(&b, "\n")
+		wrote_any = true
+	}
+	if !wrote_any {
+		strings.write_string(&b, "\n_(No fact or episode memories active.)_\n")
+	}
+	return strings.to_string(b)
+}
+
+write_skills :: proc(cwd, rel_dir, filename: string, memories: []Memory_Record) -> []string {
+	written := make([dynamic]string)
+	for m in memories {
+		if m.type_text != "skill" do continue
+		slug := safe_slug(m.title)
+		skill_dir_rel := join_path(rel_dir, slug)
+		skill_dir_abs := join_path(cwd, skill_dir_rel)
+		_ = os.make_directory_all(skill_dir_abs)
+		file_rel := join_path(skill_dir_rel, filename)
+		file_abs := join_path(skill_dir_abs, filename)
+		if can_write_managed_file(file_abs) {
+			content_b := strings.builder_make()
+			strings.write_string(&content_b, active_live_prefs.bootstrap_header); strings.write_string(&content_b, "\n")
+			strings.write_string(&content_b, m.body); strings.write_string(&content_b, "\n")
+			write_managed_file(file_abs, strings.to_string(content_b))
+			append(&written, file_rel)
+		}
+	}
+	return written[:]
+}
+
+cleanup_removed_bootstrap_files :: proc(cwd: string, files: []string) {
+	manifest_path := join_path(cwd, BOOTSTRAP_MANIFEST)
+	data, err := os.read_entire_file(manifest_path, context.allocator)
+	if err != nil do return
+	lines := strings.split(string(data), "\n")
+	for line in lines {
+		name := strings.trim_space(line)
+		if name == "" || name == BOOTSTRAP_HEADER do continue
+		if !safe_relative_path(name) do continue
+		keep := false
+		for file_name in files {
+			if file_name == name { keep = true; break }
+		}
+		if keep do continue
+		path := join_path(cwd, name)
+		if file_has_managed_header(path) {
+			_ = os.remove(path)
+		}
+	}
+}
+
+write_manifest :: proc(cwd: string, files: []string) {
+	builder := strings.builder_make()
+	strings.write_string(&builder, active_live_prefs.bootstrap_header); strings.write_string(&builder, "\n")
+	for file_name in files {
+		if safe_relative_path(file_name) {
+			strings.write_string(&builder, file_name); strings.write_string(&builder, "\n")
+		}
+	}
+	write_managed_file(join_path(cwd, BOOTSTRAP_MANIFEST), strings.to_string(builder))
+}
+
+can_write_managed_file :: proc(path: string) -> bool {
+	data, err := os.read_entire_file(path, context.allocator)
+	if err != nil do return true
+	return strings.has_prefix(string(data), BOOTSTRAP_HEADER) || strings.has_prefix(string(data), active_live_prefs.bootstrap_header)
+}
+
+file_has_managed_header :: proc(path: string) -> bool {
+	data, err := os.read_entire_file(path, context.allocator)
+	if err != nil do return false
+	return strings.has_prefix(string(data), BOOTSTRAP_HEADER) || strings.has_prefix(string(data), active_live_prefs.bootstrap_header)
+}
+
+write_managed_file :: proc(path, content: string) {
+	parent := parent_dir(path)
+	if parent != "" do _ = os.make_directory_all(parent)
+	tmp := strings.concatenate({path, ".tmp"})
+	if os.write_entire_file(tmp, content) == nil {
+		_ = os.rename(tmp, path)
+	}
+}
+
+bootstrap_profile :: proc(agent_cmd: cfg_lib.Agent_Command_Config, selected_agent: string) -> string {
+	name := selected_agent
+	if name == "" do name = agent_cmd.name
+	if name == "claude" || strings.has_prefix(name, "claude-") do return "claude"
+	if name == "codex" || strings.has_prefix(name, "codex-") do return "codex"
+	return "pi"
+}
+
+bootstrap_title :: proc(file_name, profile: string) -> string {
+	if active_live_prefs.bootstrap_title != "" && active_live_prefs.bootstrap_title != "# Agent bootstrap for Heimdall AI Manager" {
+		return active_live_prefs.bootstrap_title
+	}
+	if strings.has_suffix(file_name, "CLAUDE.md") || profile == "claude" do return "# Claude bootstrap for Heimdall AI Manager"
+	if profile == "codex" do return "# Codex AGENTS.md bootstrap for Heimdall AI Manager"
+	return "# Agent bootstrap for Heimdall AI Manager"
+}
+
+template_guidance_string :: proc(raw: string, profile, file_name, agent_instance_id: string) -> string {
+	res := replace_all(raw, "{ctl_bin}", effective_ctl_bin())
+	res = replace_all(res, "{profile}", profile)
+	res = replace_all(res, "{file_name}", file_name)
+	res = replace_all(res, "{instance}", agent_instance_id)
+	return res
+}
+
+default_bootstrap_profile_guidance :: proc(profile: string) -> string {
+	profile_desc := "- Pi profile: this generated `AGENTS.md` is the primary run-directory instruction file. Read inbox/task state before beginning new work.\n"
+	if profile == "claude" {
+		profile_desc = "- Claude profile: this generated `CLAUDE.md` is the primary local instruction file. Keep tool/reference notes concise and fetch details through Heimdall CLI/RPC when needed.\n"
+	} else if profile == "codex" {
+		profile_desc = "- Codex profile: this generated `AGENTS.md` follows repository-agent instruction conventions. Prefer scoped, auditable edits and run relevant validation before handoff.\n"
+	}
+	return fmt.tprintf(strings.trim_space(#load("../prompts/bootstrap_profile_guidance.md", string)), profile_desc)
+}
+
+validate_project_exists :: proc(daemon_url, agent_token, project_id: string) -> bool {
+	if project_id == "" do return true
+	request := strings.builder_make()
+	strings.write_string(&request, `{"agent_token":"`); json_write_string(&request, agent_token)
+	strings.write_string(&request, `","project_id":"`); json_write_string(&request, project_id)
+	strings.write_string(&request, `"}`)
+	response, ok := http.post(daemon_url, "/projects/show", strings.to_string(request))
+	return ok && response.status == 200
+}
+
+project_bootstrap_context :: proc(daemon_url, agent_token: string, cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Command_Config) -> string {
+	project_id := agent_cmd.project
+	if project_id == "" do project_id = cfg.project
+	if project_id == "" do return ""
+	request := strings.builder_make()
+	strings.write_string(&request, `{"agent_token":"`); json_write_string(&request, agent_token)
+	strings.write_string(&request, `","project_id":"`); json_write_string(&request, project_id)
+	strings.write_string(&request, `"}`)
+	response, ok := http.post(daemon_url, "/projects/show", strings.to_string(request))
+	project_context := ""
+	if ok && response.status == 200 {
+		project_context = format_project_bootstrap(response.body)
+	}
+
+	agents_context := ""
+	agents_response, agents_ok := http.get(daemon_url, fmt.tprintf("/agents?project_id=%s", project_id))
+	if agents_ok && agents_response.status == 200 {
+		agents_context = format_project_agents_bootstrap(agents_response.body)
+	}
+
+	if project_context != "" && agents_context != "" {
+		return strings.concatenate({project_context, "\n", agents_context})
+	} else if project_context != "" {
+		return project_context
+	}
+	return ""
+}
+
+format_project_agents_bootstrap :: proc(body: string) -> string {
+	start_arr := strings.index(body, `"agents":[`)
+	if start_arr < 0 do return ""
+	idx := start_arr + len(`"agents":[`)
+	
+	Agent_Bootstrap_Item :: struct {
+		instance_id: string,
+		role: string,
+		order: int,
+	}
+	
+	items: [dynamic]Agent_Bootstrap_Item
+	defer {
+		for item in items {
+			delete(item.instance_id)
+			delete(item.role)
+		}
+		delete(items)
+	}
+	
+	for {
+		start_obj_rel := strings.index_byte(body[idx:], '{')
+		if start_obj_rel < 0 do break
+		obj_start := idx + start_obj_rel
+		obj_end := json_object_end(body, obj_start)
+		if obj_end <= obj_start do break
+		
+		object := body[obj_start:obj_end]
+		
+		inst_id := extract_json_string(object, "agent_instance_id", "")
+		role := extract_json_string(object, "template_id", "")
+		order := extract_json_int(object, "order", 0)
+		
+		if inst_id != "" {
+			append(&items, Agent_Bootstrap_Item{
+				instance_id = strings.clone(inst_id),
+				role = strings.clone(role),
+				order = order,
+			})
+		}
+		
+		idx = obj_end
+	}
+	
+	if len(items) == 0 do return ""
+	
+	// Sort items by order ascending
+	for i in 0..<len(items) {
+		for j in i+1..<len(items) {
+			if items[i].order > items[j].order {
+				temp := items[i]
+				items[i] = items[j]
+				items[j] = temp
+			}
+		}
+	}
+	
+	builder := strings.builder_make()
+	strings.write_string(&builder, "Agents:\n")
+	for item in items {
+		strings.write_string(&builder, "- ")
+		strings.write_string(&builder, item.instance_id)
+		if item.role != "" {
+			strings.write_string(&builder, " (role: ")
+			strings.write_string(&builder, item.role)
+			strings.write_string(&builder, ")")
+		}
+		strings.write_string(&builder, "\n")
+	}
+	
+	return strings.to_string(builder)
+}
+
+format_project_bootstrap :: proc(body: string) -> string {
+	start := strings.index(body, `"project":`)
+	if start < 0 do return ""
+	obj_start_rel := strings.index(body[start:], `{`)
+	if obj_start_rel < 0 do return ""
+	obj_start := start + obj_start_rel
+	obj_end := json_object_end(body, obj_start)
+	if obj_end <= obj_start do return ""
+	object := body[obj_start:obj_end]
+	project_id := extract_json_string(object, "project_id", "")
+	name := extract_json_string(object, "name", "")
+	description := extract_json_string(object, "description", "")
+	builder := strings.builder_make()
+	strings.write_string(&builder, "\n\n# Project Context\n")
+	if name != "" { strings.write_string(&builder, "Project: "); strings.write_string(&builder, name); strings.write_string(&builder, "\n") }
+	if project_id != "" { strings.write_string(&builder, "Project ID: "); strings.write_string(&builder, project_id); strings.write_string(&builder, "\n") }
+	if description != "" { strings.write_string(&builder, "Description: "); strings.write_string(&builder, description); strings.write_string(&builder, "\n") }
+	strings.write_string(&builder, "Anchors are loose metadata only; do not over-interpret them as mandatory cwd/git/agent links.\n")
+	idx := 0
+	wrote_anchors := false
+	for {
+		start_rel := strings.index(object[idx:], `{"type":"`)
+		if start_rel < 0 do break
+		anchor_start := idx + start_rel
+		anchor_end := json_object_end(object, anchor_start)
+		if anchor_end <= anchor_start do break
+		anchor := object[anchor_start:anchor_end]
+		if !wrote_anchors { strings.write_string(&builder, "Anchors:\n"); wrote_anchors = true }
+		strings.write_string(&builder, "- "); strings.write_string(&builder, extract_json_string(anchor, "type", "anchor")); strings.write_string(&builder, ": "); strings.write_string(&builder, extract_json_string(anchor, "value", ""))
+		note := extract_json_string(anchor, "note", "")
+		if note != "" { strings.write_string(&builder, " — "); strings.write_string(&builder, note) }
+		strings.write_string(&builder, "\n")
+		idx = anchor_end
+	}
+	return strings.to_string(builder)
+}
+
+safe_relative_path :: proc(path: string) -> bool {
+	if path == "" do return false
+	if strings.has_prefix(path, "/") do return false
+	parts := strings.split(path, "/")
+	for part in parts {
+		if part == "" || part == "." || part == ".." do return false
+	}
+	return true
+}
+
+join_path :: proc(a, b: string) -> string {
+	if strings.has_suffix(a, "/") do return strings.concatenate({a, b})
+	return strings.concatenate({a, "/", b})
+}
+
+parent_dir :: proc(path: string) -> string {
+	last := -1
+	for i in 0..<len(path) {
+		if path[i] == '/' do last = i
+	}
+	if last <= 0 do return ""
+	return path[:last]
 }
 
 wrapper_window_name :: proc(prefix, agent_instance_id: string) -> string {
@@ -335,26 +1672,168 @@ wrapper_window_name :: proc(prefix, agent_instance_id: string) -> string {
 	return fmt.aprintf("%s-%s", prefix, agent_instance_id)
 }
 
-build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_url, agent_instance_id, conversation_id, agent_token: string) -> []string {
+template_display_name :: proc(display_name, agent_class, agent_instance_id, selected_agent: string) -> string {
+	if display_name == "" do return agent_instance_id
+	templated := replace_all(display_name, "{agent_class}", agent_class)
+	templated = replace_all(templated, "{agent}", selected_agent)
+	templated = replace_all(templated, "{agent_instance_id}", agent_instance_id)
+	templated = replace_all(templated, "{instance}", agent_instance_id)
+	return templated
+}
+
+prompt_delivery_for_agent :: proc(agent_cmd: cfg_lib.Agent_Command_Config) -> string {
+	delivery := agent_cmd.prompt_delivery
+	if delivery == "tmux" || delivery == "none" || delivery == "flag-injection" do return delivery
+	return "flag-injection"
+}
+
+prompt_tmux_delay_for_agent :: proc(agent_cmd: cfg_lib.Agent_Command_Config) -> int {
+	if agent_cmd.prompt_tmux_delay_ms > 0 do return agent_cmd.prompt_tmux_delay_ms
+	return 1500
+}
+
+prompt_tmux_enter_for_agent :: proc(agent_cmd: cfg_lib.Agent_Command_Config) -> bool {
+	if agent_cmd.prompt_tmux_enter_set do return agent_cmd.prompt_tmux_enter
+	return true
+}
+
+starter_prompt_template_for_agent :: proc(agent_cmd: cfg_lib.Agent_Command_Config, agent_token: string) -> string {
+	if is_test_token(agent_token) do return TEST_AGENT_STARTER_PROMPT
+	if agent_cmd.starter_prompt != "" do return agent_cmd.starter_prompt
+	return active_live_prefs.starter_prompt
+}
+
+render_starter_prompt_for_agent :: proc(agent_cmd: cfg_lib.Agent_Command_Config, daemon_url, agent_instance_id, display_name, conversation_id, agent_token: string) -> string {
+	template := starter_prompt_template_for_agent(agent_cmd, agent_token)
+	if template == "" do return ""
+	return template_string(template, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
+}
+
+deliver_tmux_starter_prompt :: proc(agent_cmd: cfg_lib.Agent_Command_Config, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, pane_id: string) {
+	if prompt_delivery_for_agent(agent_cmd) != "tmux" do return
+	prompt := render_starter_prompt_for_agent(agent_cmd, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
+	if prompt == "" do return
+	delay_ms := prompt_tmux_delay_for_agent(agent_cmd)
+	if delay_ms > 0 do time.sleep(time.Duration(delay_ms) * time.Millisecond)
+	enter := prompt_tmux_enter_for_agent(agent_cmd)
+	if tmux.send_text(pane_id, prompt, enter) {
+		fmt.println("tmux prompt delivery sent pane", pane_id, "enter", enter)
+	} else {
+		fmt.println("tmux prompt delivery failed pane", pane_id)
+	}
+}
+
+build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, model_tier: string) -> []string {
 	agent_command_name := selected_agent
 	if agent_command_name == "" do agent_command_name = command_name_for_agent(cfg.command, cfg.agent_name)
 	for agent_cmd in cfg.agent_commands {
 		if agent_cmd.name == agent_command_name {
 			base := agent_cmd.command
 			if len(base) == 0 do base = cfg.command
-			count := len(base) + len(agent_cmd.yolo_flags) + len(agent_cmd.prompt_flags)
-			if agent_cmd.starter_prompt != "" do count += 1
+			delivery := prompt_delivery_for_agent(agent_cmd)
+			inject_prompt_via_flags := delivery == "flag-injection"
+			count := len(base) + len(agent_cmd.yolo_flags)
+			if inject_prompt_via_flags {
+				count += len(agent_cmd.prompt_flags)
+				if starter_prompt_template_for_agent(agent_cmd, agent_token) != "" do count += 1
+			}
 			result := make([dynamic]string, 0, count)
-			append_templated_args(&result, base, daemon_url, agent_instance_id, conversation_id, agent_token)
-			append_templated_args(&result, agent_cmd.yolo_flags, daemon_url, agent_instance_id, conversation_id, agent_token)
-			append_templated_args(&result, agent_cmd.prompt_flags, daemon_url, agent_instance_id, conversation_id, agent_token)
-			if agent_cmd.starter_prompt != "" {
-				append(&result, template_string(agent_cmd.starter_prompt, daemon_url, agent_instance_id, conversation_id, agent_token))
+			append_templated_args(&result, base, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
+			append_templated_args(&result, agent_cmd.yolo_flags, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
+			// Model tier flag
+			if agent_cmd.models.flag != "" {
+				model_value := cfg_lib.resolve_model_value(agent_cmd.models, model_tier)
+				if model_value != "" {
+					append(&result, agent_cmd.models.flag)
+					append(&result, model_value)
+					fmt.println("model_value", model_value)
+				} else {
+					fmt.println("model_tier_unavailable tier", model_tier, "has no mapping for", agent_command_name)
+				}
+			} else if model_tier != "" {
+				fmt.println("model_flag_missing no models.flag configured for", agent_command_name)
+			}
+			if inject_prompt_via_flags {
+				append_templated_args(&result, agent_cmd.prompt_flags, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
+				prompt := render_starter_prompt_for_agent(agent_cmd, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
+				if prompt != "" do append(&result, prompt)
 			}
 			return result[:]
 		}
 	}
-	return template_command(cfg.command, daemon_url, agent_instance_id, conversation_id, agent_token)
+	return template_command(cfg.command, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
+}
+
+memory_cli_guidance :: proc(agent_token: string) -> string {
+	builder := strings.builder_make()
+	bin := effective_ctl_bin()
+	write_ctl :: proc(b: ^strings.Builder, bin, suffix: string) {
+		strings.write_string(b, bin)
+		strings.write_string(b, suffix)
+	}
+	strings.write_string(&builder, "\n\n# Memory CLI\n")
+	strings.write_string(&builder, "Use the absolute `")
+	strings.write_string(&builder, bin)
+	strings.write_string(&builder, "` memory commands with your token for durable memory proposals and review. Approved active memory is what affects runtime behavior; pending, rejected, and archived proposals do not. Template memories are reusable starter memory for configured agents/roles and follow the same propose/approve/version/archive/rollback lifecycle. Proposal reason/evidence are proposal-only review metadata and should not be copied into runtime memory bodies. Skill memories must use structured body text with at least name: and description:.\n")
+	strings.write_string(&builder, "Examples: ")
+	write_ctl(&builder, bin, " memory propose new --token ")
+	strings.write_string(&builder, agent_token)
+	strings.write_string(&builder, " --scope team_project --team <team_id> --project <project_id> --type fact|habit|episode|expertise|skill|template --title <title> --body <body> --reason <why> --evidence <task-or-source>; ")
+	write_ctl(&builder, bin, " memory propose edit --token ")
+	strings.write_string(&builder, agent_token)
+	strings.write_string(&builder, " --memory-id <id> --expected-version <n> --title <title> --body <body> --reason <why> --evidence <source>; ")
+	write_ctl(&builder, bin, " memory propose archive --token ")
+	strings.write_string(&builder, agent_token)
+	strings.write_string(&builder, " --memory-id <id> --expected-version <n> --reason <why> --evidence <source>; ")
+	write_ctl(&builder, bin, " memory propose rollback --token ")
+	strings.write_string(&builder, agent_token)
+	strings.write_string(&builder, " --memory-id <id> --expected-version <n> --reason <why> --evidence <source>.\n")
+	strings.write_string(&builder, "Review/query: ")
+	write_ctl(&builder, bin, " memory decide --token ")
+	strings.write_string(&builder, agent_token)
+	strings.write_string(&builder, " --proposal-id <proposal_id> --decision approve|reject; ")
+	write_ctl(&builder, bin, " memory list --token ")
+	strings.write_string(&builder, agent_token)
+	strings.write_string(&builder, " --status active|pending|archived|rejected|all; ")
+	write_ctl(&builder, bin, " memory show --token ")
+	strings.write_string(&builder, agent_token)
+	strings.write_string(&builder, " --memory-id <id>; ")
+	write_ctl(&builder, bin, " memory history --token ")
+	strings.write_string(&builder, agent_token)
+	strings.write_string(&builder, " --memory-id <id>.\n")
+	return strings.to_string(builder)
+}
+
+memory_template_matches :: proc(object: string, memory_templates: []string) -> bool {
+	memory_id := extract_json_string(object, "memory_id", "")
+	title := extract_json_string(object, "title", "")
+	scope := extract_json_string(object, "scope", "")
+	for item in memory_templates {
+		if item == memory_id || item == title || item == scope do return true
+	}
+	return false
+}
+
+json_object_end :: proc(body: string, start: int) -> int {
+	depth := 0
+	in_string := false
+	escaped := false
+	for i := start; i < len(body); i += 1 {
+		ch := body[i]
+		if in_string {
+			if escaped { escaped = false; continue }
+			if ch == '\\' { escaped = true; continue }
+			if ch == '"' do in_string = false
+			continue
+		}
+		if ch == '"' { in_string = true; continue }
+		if ch == '{' do depth += 1
+		if ch == '}' {
+			depth -= 1
+			if depth == 0 do return i + 1
+		}
+	}
+	return -1
 }
 
 command_name_for_agent :: proc(command: []string, agent_class: string) -> string {
@@ -363,27 +1842,41 @@ command_name_for_agent :: proc(command: []string, agent_class: string) -> string
 	return agent_class
 }
 
-append_templated_args :: proc(result: ^[dynamic]string, args: []string, daemon_url, agent_instance_id, conversation_id, agent_token: string) {
+append_templated_args :: proc(result: ^[dynamic]string, args: []string, daemon_url, agent_instance_id, display_name, conversation_id, agent_token: string) {
 	for arg in args {
-		append(result, template_string(arg, daemon_url, agent_instance_id, conversation_id, agent_token))
+		append(result, template_string(arg, daemon_url, agent_instance_id, display_name, conversation_id, agent_token))
 	}
 }
 
-template_command :: proc(command: []string, daemon_url, agent_instance_id, conversation_id, agent_token: string) -> []string {
+template_command :: proc(command: []string, daemon_url, agent_instance_id, display_name, conversation_id, agent_token: string) -> []string {
 	result := make([]string, len(command))
 	for i in 0..<len(command) {
-		result[i] = template_string(command[i], daemon_url, agent_instance_id, conversation_id, agent_token)
+		result[i] = template_string(command[i], daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
 	}
 	return result
 }
 
-template_string :: proc(value, daemon_url, agent_instance_id, conversation_id, agent_token: string) -> string {
+// Compile-time fallback path for ham-ctl. Set ham_ctl_bin in config.toml to override at runtime.
+HAM_CTL_BIN :: "ham-ctl"
+
+// Runtime ctl bin path resolved from config at startup. Falls back to HAM_CTL_BIN when empty.
+g_ctl_bin: string
+
+effective_ctl_bin :: proc() -> string {
+	if g_ctl_bin != "" do return g_ctl_bin
+	return HAM_CTL_BIN
+}
+
+template_string :: proc(value, daemon_url, agent_instance_id, display_name, conversation_id, agent_token: string) -> string {
+	ctl_bin := effective_ctl_bin()
 	templated := replace_all(value, "{daemon_url}", daemon_url)
 	templated = replace_all(templated, "{agent_instance_id}", agent_instance_id)
+	templated = replace_all(templated, "{display_name}", display_name)
 	templated = replace_all(templated, "{instance}", agent_instance_id)
 	templated = replace_all(templated, "{conversation_id}", conversation_id)
 	templated = replace_all(templated, "{agent_token}", agent_token)
 	templated = replace_all(templated, "{token}", agent_token)
+	templated = replace_all(templated, "{ctl_bin}", ctl_bin)
 	return templated
 }
 
@@ -457,12 +1950,177 @@ option_value :: proc(args: []string, name, fallback: string) -> string {
 
 agent_identity_from_args :: proc(args: []string, fallback: string) -> string {
 	for i := 1; i < len(args); i += 1 {
-		if args[i] == cfg_lib.CONFIG_PATH_FLAG || args[i] == "--agent" || args[i] == "--agent-token" {
+		if args[i] == cfg_lib.CONFIG_PATH_FLAG || args[i] == "--agent" || args[i] == "--agent-token" || args[i] == "--display-name" || args[i] == "--tier" || args[i] == "--project-id" {
 			i += 1
 			continue
 		}
-		if args[i] == "--detach" do continue
+		if args[i] == "--detach" || args[i] == "--overwrite" do continue
 		return args[i]
 	}
 	return fallback
+}
+
+Live_Preferences :: struct {
+	starter_prompt:                  string,
+	bootstrap_header:                string,
+	bootstrap_title:                 string,
+	bootstrap_profile_guidance:      string,
+	msg_agent_message:               string,
+	msg_agent_message_int:           bool,
+	msg_task_updated:                string,
+	msg_task_updated_int:            bool,
+	msg_task_updated_empty:          string,
+	msg_task_updated_empty_int:      bool,
+	msg_memory_updated:              string,
+	msg_memory_updated_int:          bool,
+	msg_memory_proposal_updated:     string,
+	msg_memory_proposal_updated_int: bool,
+	msg_user_chat:                   string,
+	msg_user_chat_int:               bool,
+	msg_token_refreshed:             string,
+	msg_token_refreshed_int:         bool,
+	msg_stop_requested:              string,
+	msg_stop_requested_int:          bool,
+}
+
+active_live_prefs: Live_Preferences
+
+initialize_default_preferences :: proc() {
+	active_live_prefs.starter_prompt = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap file (AGENTS.md or CLAUDE.md) for context, identity, and what you can do."
+	active_live_prefs.bootstrap_header = "<!-- HEIMDALL-MANAGED-BOOTSTRAP v1: safe to overwrite -->"
+	active_live_prefs.bootstrap_title = "# Agent bootstrap for Heimdall AI Manager"
+	active_live_prefs.bootstrap_profile_guidance = default_bootstrap_profile_guidance("pi")
+	active_live_prefs.msg_agent_message = "{pending_count} Unread Messages from {from_agent_id}."
+	active_live_prefs.msg_agent_message_int = false
+	active_live_prefs.msg_task_updated = "Task {task_id} {status} by {changed_by}: {body}"
+	active_live_prefs.msg_task_updated_int = false
+	active_live_prefs.msg_task_updated_empty = "Task {task_id} {status} by {changed_by}."
+	active_live_prefs.msg_task_updated_empty_int = false
+	active_live_prefs.msg_memory_updated = "Memory {memory_id} {event} by {changed_by} for {subject_agent} ({status}). Fetch details with: {ctl_bin} memory show --token <your token> --memory-id {memory_id}"
+	active_live_prefs.msg_memory_updated_int = false
+	active_live_prefs.msg_memory_proposal_updated = "Memory proposal {proposal_id} {event} by {changed_by} for {subject_agent}. Review with: {ctl_bin} memory history --token <your token> --memory-id {memory_id}"
+	active_live_prefs.msg_memory_proposal_updated_int = false
+	active_live_prefs.msg_user_chat = "{pending_count} User Chat Messages from {user_id}. Read with: {ctl_bin} chat fetch-user --token <your token> --user-id {user_id}"
+	active_live_prefs.msg_user_chat_int = true
+	active_live_prefs.msg_token_refreshed = "SYSTEM: Heimdall daemon restarted and issued a new agent token. Your previous token is invalid. New token: {new_token} — update all pending ham-ctl commands to use this token. Run: {ctl_bin} --daemon-url {daemon_url} --token {new_token} start-success"
+	active_live_prefs.msg_token_refreshed_int = true
+	active_live_prefs.msg_stop_requested = "SYSTEM: Stop requested. You have {time} seconds to save your work."
+	active_live_prefs.msg_stop_requested_int = true
+}
+
+apply_preferences_json :: proc(prefs_json: string) {
+	if prefs_json == "" do return
+
+	update_pref_string :: proc(field: ^string, prefs_json, key, fallback: string) {
+		val := extract_json_string(prefs_json, key, "")
+		if val != "" {
+			field^ = strings.clone(val)
+		}
+	}
+
+	update_pref_bool :: proc(field: ^bool, prefs_json, key: string, fallback: bool) {
+		pattern := fmt.tprintf("\"%s\":", key)
+		idx := strings.index(prefs_json, pattern)
+		if idx >= 0 {
+			start := idx + len(pattern)
+			if strings.has_prefix(prefs_json[start:], "true") {
+				field^ = true
+			} else if strings.has_prefix(prefs_json[start:], "false") {
+				field^ = false
+			}
+		}
+	}
+
+	update_pref_string(&active_live_prefs.starter_prompt, prefs_json, "starter_prompt", active_live_prefs.starter_prompt)
+	update_pref_string(&active_live_prefs.bootstrap_header, prefs_json, "bootstrap_header", active_live_prefs.bootstrap_header)
+	update_pref_string(&active_live_prefs.bootstrap_title, prefs_json, "bootstrap_title", active_live_prefs.bootstrap_title)
+	update_pref_string(&active_live_prefs.bootstrap_profile_guidance, prefs_json, "bootstrap_profile_guidance", active_live_prefs.bootstrap_profile_guidance)
+	
+	update_pref_string(&active_live_prefs.msg_agent_message, prefs_json, "msg_agent_message", active_live_prefs.msg_agent_message)
+	update_pref_bool(&active_live_prefs.msg_agent_message_int, prefs_json, "msg_agent_message_interrupt", active_live_prefs.msg_agent_message_int)
+	
+	update_pref_string(&active_live_prefs.msg_task_updated, prefs_json, "msg_task_updated", active_live_prefs.msg_task_updated)
+	update_pref_bool(&active_live_prefs.msg_task_updated_int, prefs_json, "msg_task_updated_interrupt", active_live_prefs.msg_task_updated_int)
+	
+	update_pref_string(&active_live_prefs.msg_task_updated_empty, prefs_json, "msg_task_updated_empty", active_live_prefs.msg_task_updated_empty)
+	update_pref_bool(&active_live_prefs.msg_task_updated_empty_int, prefs_json, "msg_task_updated_empty_interrupt", active_live_prefs.msg_task_updated_empty_int)
+	
+	update_pref_string(&active_live_prefs.msg_memory_updated, prefs_json, "msg_memory_updated", active_live_prefs.msg_memory_updated)
+	update_pref_bool(&active_live_prefs.msg_memory_updated_int, prefs_json, "msg_memory_updated_interrupt", active_live_prefs.msg_memory_updated_int)
+	
+	update_pref_string(&active_live_prefs.msg_memory_proposal_updated, prefs_json, "msg_memory_proposal_updated", active_live_prefs.msg_memory_proposal_updated)
+	update_pref_bool(&active_live_prefs.msg_memory_proposal_updated_int, prefs_json, "msg_memory_proposal_updated_interrupt", active_live_prefs.msg_memory_proposal_updated_int)
+	
+	update_pref_string(&active_live_prefs.msg_user_chat, prefs_json, "msg_user_chat", active_live_prefs.msg_user_chat)
+	update_pref_bool(&active_live_prefs.msg_user_chat_int, prefs_json, "msg_user_chat_interrupt", active_live_prefs.msg_user_chat_int)
+	
+	update_pref_string(&active_live_prefs.msg_token_refreshed, prefs_json, "msg_token_refreshed", active_live_prefs.msg_token_refreshed)
+	update_pref_bool(&active_live_prefs.msg_token_refreshed_int, prefs_json, "msg_token_refreshed_interrupt", active_live_prefs.msg_token_refreshed_int)
+	
+	update_pref_string(&active_live_prefs.msg_stop_requested, prefs_json, "msg_stop_requested", active_live_prefs.msg_stop_requested)
+	update_pref_bool(&active_live_prefs.msg_stop_requested_int, prefs_json, "msg_stop_requested_interrupt", active_live_prefs.msg_stop_requested_int)
+}
+
+extract_json_object :: proc(body, key: string) -> string {
+	pattern := fmt.tprintf("\"%s\":", key)
+	idx := strings.index(body, pattern)
+	if idx < 0 do return ""
+
+	start := idx + len(pattern)
+	brace_count := 0
+	in_string := false
+	escaped := false
+	
+	i := start
+	for i < len(body) {
+		ch := body[i]
+		if escaped {
+			escaped = false
+			i += 1
+			continue
+		}
+		if ch == '\\' && in_string {
+			escaped = true
+			i += 1
+			continue
+		}
+		if ch == '"' {
+			in_string = !in_string
+		}
+		
+		if !in_string {
+			if ch == '{' {
+				brace_count += 1
+			} else if ch == '}' {
+				brace_count -= 1
+				if brace_count == 0 {
+					return strings.clone(body[start : i + 1])
+				}
+			}
+		}
+		i += 1
+	}
+	return ""
+}
+
+template_live_message :: proc(template_str: string, pending_count: int, from_agent_id, task_id, status, changed_by, body, memory_id, event, subject_agent, user_id, new_token, daemon_url: string, time_val: int, allocator := context.allocator) -> string {
+	context.allocator = context.temp_allocator
+	
+	res := replace_all(template_str, "{pending_count}", fmt.tprintf("%d", pending_count))
+	res = replace_all(res, "{from_agent_id}", from_agent_id)
+	res = replace_all(res, "{task_id}", task_id)
+	res = replace_all(res, "{status}", status)
+	res = replace_all(res, "{changed_by}", changed_by)
+	res = replace_all(res, "{body}", body)
+	res = replace_all(res, "{memory_id}", memory_id)
+	res = replace_all(res, "{proposal_id}", memory_id)
+	res = replace_all(res, "{event}", event)
+	res = replace_all(res, "{subject_agent}", subject_agent)
+	res = replace_all(res, "{user_id}", user_id)
+	res = replace_all(res, "{new_token}", new_token)
+	res = replace_all(res, "{daemon_url}", daemon_url)
+	res = replace_all(res, "{time}", fmt.tprintf("%d", time_val))
+	res = replace_all(res, "{ctl_bin}", effective_ctl_bin())
+	
+	return strings.clone(res, allocator)
 }

@@ -1,0 +1,109 @@
+{
+  "chainView": {
+    "chatByChainId": {},
+    "diffOpenByChainId": {},
+    "error": "",
+    "focusByChainId": {},
+    "focusedChainId": "",
+    "lastFocusedAt": 0,
+    "lastHttpLoadByChainId": {},
+    "lastLocalAction": "",
+    "lastPeriodicRefreshByChainId": {},
+    "lastWsRefreshReason": "",
+    "loading": false,
+    "mergePreviewByChainId": {},
+    "optimisticMessagesByChainId": {},
+    "sideSheetAgentId": "",
+    "sideSheetByAgentId": {},
+    "teamByChainId": {},
+    "workspaceByChainId": {}
+  },
+  "chat": {
+    "activeView": "chat",
+    "agents": [],
+    "chats": {},
+    "chatsCursor": {},
+    "chatsHasMore": {},
+    "daemonProfiles": [
+      {
+        "label": "127.0.0.1:49422",
+        "url": "http://127.0.0.1:49422"
+      },
+      {
+        "label": "Local daemon",
+        "url": "http://127.0.0.1:49322"
+      }
+    ],
+    "fetchingChatsByAgentId": {},
+    "preferences": [],
+    "selectedAgentId": "",
+    "sending": false,
+    "session": {
+      "clientInstanceId": "heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3",
+      "clientToken": "uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a",
+      "connected": false,
+      "daemonUrl": "http://127.0.0.1:49422",
+      "error": "",
+      "lastChatEvent": null,
+      "status": "connecting",
+      "userDisplayName": "Tanmay (Mac)",
+      "userId": "operator@local",
+      "wsConnected": false,
+      "wsStatus": "idle"
+    },
+    "settingsProviders": [],
+    "settingsTemplates": [],
+    "testRuns": [],
+    "userPreferences": {}
+  },
+  "home": {
+    "lastCreatedChainId": "",
+    "lastHttpLoadUnixMs": 0,
+    "lastLocalAction": "",
+    "lastPeriodicRefreshUnixMs": 0,
+    "lastWsRefreshReason": "",
+    "newChainCreating": false,
+    "newChainError": "",
+    "newChainModalOpen": false,
+    "selectedChainId": "",
+    "selectedProjectId": "",
+    "surface": "home"
+  },
+  "memory": {
+    "activeAudit": null,
+    "auditLoading": false,
+    "detailLoading": false,
+    "error": "",
+    "filters": {
+      "status": "",
+      "subjectAgent": "",
+      "type": ""
+    },
+    "historyById": {},
+    "lastMemoryEvent": null,
+    "loading": false,
+    "recordIds": [],
+    "recordsById": {}
+  },
+  "projects": {
+    "detailLoading": false,
+    "error": "",
+    "loading": false,
+    "mutating": false,
+    "projectIds": [],
+    "projectsById": {},
+    "selectedProjectId": ""
+  },
+  "tasks": {
+    "chainTaskIds": {},
+    "chainsById": {},
+    "error": "",
+    "expandedChainIds": {},
+    "lastTaskEvent": null,
+    "loading": false,
+    "participantsByTaskId": {},
+    "taskLogsByTaskId": {},
+    "tasksById": {},
+    "unreviewedChains": []
+  }
+}

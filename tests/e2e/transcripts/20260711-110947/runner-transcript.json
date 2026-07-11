@@ -1,0 +1,836 @@
+{
+  "artifacts_dir": "/Users/tanmayvijay/hmg-teams-v1/tests/e2e/transcripts/20260711-110947",
+  "credentials_source": "generated-isolated-empty",
+  "isolated_config": "/var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-su4hqsh8/config.toml",
+  "isolated_credentials_path": "/Users/tanmayvijay/hmg-teams-v1/tests/e2e/transcripts/20260711-110947/isolated/wrapper-credentials.json",
+  "isolated_daemon_url": "http://127.0.0.1:49422",
+  "isolated_data_dir": "/var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-su4hqsh8/data",
+  "ok": false,
+  "results": [
+    {
+      "artifacts": {
+        "chain_activation": "/Users/tanmayvijay/hmg-teams-v1/tests/e2e/transcripts/20260711-110947/coding-two-teams-real-pi/chain-activation.json",
+        "coordinator_boot_on_activation": "/Users/tanmayvijay/hmg-teams-v1/tests/e2e/transcripts/20260711-110947/coding-two-teams-real-pi/coordinator-boot-on-activation.json"
+      },
+      "blockers": [
+        "coordinator composer did not appear after opening chain (retried)"
+      ],
+      "ok": false,
+      "requires_real_codex": true,
+      "requires_ui": true,
+      "scenario_id": "coding-two-teams-real-pi",
+      "status": "failed",
+      "steps": [
+        {
+          "detail": {
+            "result": "/var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-su4hqsh8/coding-two-teams/repo"
+          },
+          "name": "use isolated git repo",
+          "ok": true,
+          "ts_unix_ms": 1783748409835
+        },
+        {
+          "detail": {
+            "result": "default"
+          },
+          "name": "use git-backed project prepared before UI load",
+          "ok": true,
+          "ts_unix_ms": 1783748409835
+        },
+        {
+          "detail": {
+            "result": {
+              "debugId": "home-new-chain-btn",
+              "rect": {
+                "h": 48,
+                "w": 133,
+                "x": 1387,
+                "y": 32
+              },
+              "selector": "[data-debug-id=\"home-new-chain-btn\"]",
+              "tag": "BUTTON",
+              "text": "+ New chain",
+              "type": "submit",
+              "visible": true
+            }
+          },
+          "name": "wait for Home new-chain button",
+          "ok": true,
+          "ts_unix_ms": 1783748410234
+        },
+        {
+          "detail": {
+            "result": {
+              "found": true,
+              "index": 0,
+              "ok": true,
+              "tag": "BUTTON",
+              "text": "+ New chain",
+              "total": 1
+            }
+          },
+          "name": "open new-chain modal for Task18 real pi coding flow",
+          "ok": true,
+          "ts_unix_ms": 1783748410268
+        },
+        {
+          "detail": {
+            "result": {
+              "found": [
+                {
+                  "tag": "OPTION",
+                  "text": "Default project"
+                }
+              ],
+              "query": "[data-debug-id=\"new-chain-project-select\"] option[value=\"default\"]"
+            }
+          },
+          "name": "wait for project option default",
+          "ok": true,
+          "ts_unix_ms": 1783748410286
+        },
+        {
+          "detail": {
+            "result": {
+              "found": true,
+              "ok": true,
+              "value": "default"
+            }
+          },
+          "name": "select project default",
+          "ok": true,
+          "ts_unix_ms": 1783748410304
+        },
+        {
+          "detail": {
+            "result": {
+              "found": true,
+              "ok": true,
+              "value": "Task18 real pi coding flow"
+            }
+          },
+          "name": "enter title for Task18 real pi coding flow",
+          "ok": true,
+          "ts_unix_ms": 1783748410336
+        },
+        {
+          "detail": {
+            "result": {
+              "found": true,
+              "ok": true,
+              "value": "Use real pi/Codex agents to make a tiny README change and complete review/merge flow."
+            }
+          },
+          "name": "enter goal for Task18 real pi coding flow",
+          "ok": true,
+          "ts_unix_ms": 1783748410373
+        },
+        {
+          "detail": {
+            "result": {
+              "found": true,
+              "ok": true,
+              "value": "coding"
+            }
+          },
+          "name": "select coding kind",
+          "ok": true,
+          "ts_unix_ms": 1783748410389
+        },
+        {
+          "detail": {
+            "result": {
+              "found": true,
+              "index": 0,
+              "ok": true,
+              "tag": "BUTTON",
+              "text": "Create chain",
+              "total": 1
+            }
+          },
+          "name": "submit chain Task18 real pi coding flow via UI",
+          "ok": true,
+          "ts_unix_ms": 1783748410398
+        },
+        {
+          "detail": {
+            "result": {
+              "chainView": {
+                "chatByChainId": {},
+                "diffOpenByChainId": {},
+                "error": "",
+                "focusByChainId": {},
+                "focusedChainId": "",
+                "lastFocusedAt": 0,
+                "lastHttpLoadByChainId": {},
+                "lastLocalAction": "",
+                "lastPeriodicRefreshByChainId": {},
+                "lastWsRefreshReason": "",
+                "loading": false,
+                "mergePreviewByChainId": {},
+                "optimisticMessagesByChainId": {},
+                "sideSheetAgentId": "",
+                "sideSheetByAgentId": {},
+                "teamByChainId": {},
+                "workspaceByChainId": {}
+              },
+              "chat": {
+                "activeView": "chat",
+                "agents": [
+                  {
+                    "agentRecordId": "",
+                    "blockedReason": "",
+                    "currentTaskId": "",
+                    "currentTaskSince": 0,
+                    "execState": "",
+                    "execStateSinceUnixMs": 0,
+                    "id": "pi@task18-e2e",
+                    "known": true,
+                    "label": "Task18 Coordinator",
+                    "lastSeen": "Jul 11, 11:10 AM",
+                    "lastSeenUnixMs": 1783748411472,
+                    "logPath": "",
+                    "modelTier": "cheap",
+                    "order": 0,
+                    "projectId": "default",
+                    "projectName": "Task18 real pi coding project",
+                    "providerProfile": "pi",
+                    "roleHint": "",
+                    "runDir": "",
+                    "startupReason": "register",
+                    "startupStatus": "starting",
+                    "startupSuggestedFix": "",
+                    "state": "warming",
+                    "status": "starting",
+                    "templateId": "lead",
+                    "tmuxTarget": "",
+                    "unreadCount": 0
+                  }
+                ],
+                "chats": {},
+                "chatsCursor": {},
+                "chatsHasMore": {},
+                "daemonProfiles": [
+                  {
+                    "label": "127.0.0.1:49422",
+                    "url": "http://127.0.0.1:49422"
+                  },
+                  {
+                    "label": "Local daemon",
+                    "url": "http://127.0.0.1:49322"
+                  }
+                ],
+                "fetchingChatsByAgentId": {},
+                "preferences": [
+                  {
+                    "default_interrupt": false,
+                    "default_value": "First, run: /nix/store/dcb4sl8hfrzsih4g6cf004xy8w3nh3ar-ham-ctl-0.1.0/bin/ham-ctl --config /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-su4hqsh8/config.toml --daemon-url http://127.0.0.1:49422 --token {token} start-success. For every later ham-ctl command in this isolated E2E, include both --config /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-su4hqsh8/config.toml and --daemon-url http://127.0.0.1:49422. Then read AGENTS.md for context and claim assigned work if present.",
+                    "interrupt": false,
+                    "is_custom": false,
+                    "key": "starter_prompt",
+                    "value": "First, run: /nix/store/dcb4sl8hfrzsih4g6cf004xy8w3nh3ar-ham-ctl-0.1.0/bin/ham-ctl --config /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-su4hqsh8/config.toml --daemon-url http://127.0.0.1:49422 --token {token} start-success. For every later ham-ctl command in this isolated E2E, include both --config /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-su4hqsh8/config.toml and --daemon-url http://127.0.0.1:49422. Then read AGENTS.md for context and claim assigned work if present."
+                  },
+                  {
+                    "default_interrupt": false,
+                    "default_value": "<!-- HEIMDALL-MANAGED-BOOTSTRAP v1: safe to overwrite -->",
+                    "interrupt": false,
+                    "is_custom": false,
+                    "key": "bootstrap_header",
+                    "value": "<!-- HEIMDALL-MANAGED-BOOTSTRAP v1: safe to overwrite -->"
+                  },
+                  {
+                    "default_interrupt": false,
+                    "default_value": "# Agent bootstrap for Heimdall AI Manager",
+                    "interrupt": false,
+                    "is_custom": false,
+                    "key": "bootstrap_title",
+                    "value": "# Agent bootstrap for Heimdall AI Manager"
+                  },
+                  {
+                    "default_interrupt": false,
+                    "default_value": "# Heimdall Tooling\n- Use `{ctl_bin} ...` for Heimdall task, chat, project, and memory workflows when available.\n- Track non-trivial/verifiable work in Heimdall tasks; keep status current and request review when complete.\n\n# Agent Operating Rules\nThese rules govern how you work. Follow them every session.\n\n## 1. Always track work in Heimdall tasks\nEvery non-trivial unit of work must be tracked in a Heimdall task. On startup:\n- Run `{ctl_bin} tasks next --token {token}` to claim your assigned work. If a task is already `in_progress` for you, continue it.\n- Check the inbox using `{ctl_bin} inbox --token {token}` for pending messages before starting anything new.\n- Do not start new work without a task to anchor it.\n\n## 2. Ad-hoc work goes in the ad-hoc chain\nIf a user asks you to do something that is not part of your current assigned task chain, create or reuse a chain called `ad-hoc-{instance}`. Create a task in that chain, do the work, and mark it complete.\n\n## 3. User-facing communication goes through the coordinator\nWhen free-form user communication is needed, the task-chain coordinator owns direct user contact.\n- If you are the coordinator, reply to `operator@local` with `{ctl_bin} chat send-to-user --token {token} --user-id operator@local --body \"your message\"`.\n- If you are not the coordinator, do not use direct `chat send-to-user` for normal user contact. Route user-facing questions, blockers, and summaries through the coordinator using task comments or coordinator-directed chat.\n- Structured durable `Needs attention` prompts remain allowed for product-modeled approvals/actions such as `user_proxy` review, merge decisions, and explicit approval cards.\n\n## 4. Confirm before acting on unverified requests\nIf a user asks you to do something and you have no task evidence or memory that this was previously planned and approved:\n1. Do NOT start the work.\n2. If you are the coordinator, send the user a plan of action via `chat send-to-user` describing what you will do and why. If you are not the coordinator, ask the coordinator to contact the user.\n3. Wait for confirmation before proceeding.\n\nWhen approval is needed for anything user-facing or workflow-changing (for example: creating a task chain, starting unplanned work, committing/pushing changes, deploying/restarting services, or choosing between implementation options), coordinators ask through `chat send-to-user`; non-coordinators route the request through the coordinator. Do not rely on task comments, nudges, or agent-to-agent messages as the user approval channel. Use structured `Needs attention` / `smart_answer` cards when a concise approval choice is appropriate.\n\n## 5. Document Artifacts and Follow-up in Tasks\nTo keep specs and guidelines auditable and clear for future agents:\n1. Chain-wide artifacts, specifications, and plans belong in the **task chain description**.\n2. Task-specific requirements, acceptance criteria, and execution details belong in the **task description**.\n3. Progress updates, evidence, logs, commits, file paths, and decisions belong in **task comments**.\n4. Tasks with unresolved comments cannot be marked done.\n5. Reviewer LGTM/NGTM votes automatically create review records/comments on the task. Before resubmitting after requested changes, resolve outstanding comments with `comment-resolve` where appropriate.\n6. To request updates or redo an approved task, reviewers/users should add an unresolved comment; this reopens the workflow by reverting the task to `queued`.\n7. On boot/restart, read the chain via `task-chains show` and inspect predecessor tasks/comments so you understand prior work before continuing.\n8. Direct chat and nudges are not a reliable substitute for task state. Use formal tasks, comments, and review roles for any durable request or blocker.\n\n## 6. How to create good task chains\nCreate chains so execution is smooth, parallelizable, and reviewable:\n1. **One chain = one user-visible outcome.** Keep the chain focused on a single feature, fix, migration, or investigation.\n2. **Put the plan in the chain description.** Include goal, scope, constraints, review expectations, and rollout/test strategy.\n3. **Use dependency order, not giant umbrella tasks.** Split work into tasks that can be independently assigned, reviewed, and approved.\n4. **Assign a real coordinator.** The coordinator owns the final chain summary and ensures the tasks fit together.\n5. **Add an explicit reviewer.** Use `lgtm_required` reviewers for implementation tasks that need validation.\n6. **Keep chains in `planning` until ready.** Only move the chain to `in_progress` once the plan is solid and tasks are ready to start.\n7. **Move a chain back to `planning` or `paused` if active work should stop.** That suppresses execution/nudges and may push in-flight work back to `queued`.\n\n## 7. How to create good underlying tasks\nA good task should let the assignee act without guessing:\n1. **Task title:** short action-oriented title.\n2. **Task description:** exact scope, context, files/systems involved, and expected output.\n3. **Acceptance criteria:** concrete checks a reviewer can verify.\n4. **Dependencies:** use `--depends-on` for true prerequisites instead of burying ordering in prose.\n5. **Single owner:** each implementation task should have one clear assignee.\n6. **Right reviewer:** add `lgtm_required` reviewers for work that needs formal validation.\n7. **Right granularity:** tasks should usually represent one meaningful reviewable chunk, not an entire project.\n\nGood task description template:\n- Objective\n- Scope / non-goals\n- Files / components likely involved\n- Constraints / pitfalls\n- Acceptance criteria\n- Evidence expected in completion comment\n\n## 8. Recommended task-chain lifecycle\n1. Create chain in `planning`.\n2. Create implementation/review/testing tasks with dependencies.\n3. Add reviewers/participants.\n4. Activate the chain when execution should begin.\n5. Assignees work tasks, leave comments with evidence, then run `tasks done`.\n6. Reviewers vote with `tasks vote --result lgtm|ngtm`.\n7. If changes are requested, assignee fixes and resubmits.\n8. When all tasks are approved, coordinator writes the final summary and completes the chain.\n\n## 9. Task assignee playbook\nWhen you are the assignee:\n- Start/resume work: `{ctl_bin} tasks next --token {token}`\n- Inspect task: `{ctl_bin} tasks show --token {token} --task-id <task_id>`\n- Add progress note: `{ctl_bin} tasks comment --token {token} --task-id <task_id> --body \"Progress / evidence / question\"`\n- Submit for review: `{ctl_bin} tasks done --token {token} --task-id <task_id> --comment \"Summary of changes, files touched, tests run, evidence\"`\n- Block work: `{ctl_bin} tasks blocked --token {token} --task-id <task_id> --reason \"What is blocked and what is needed\"`\n- Defer work: `{ctl_bin} tasks later --token {token} --task-id <task_id> --reason \"Why this should return to queued\"`\n\nAssignee rules:\n1. Use comments for checkpoints, not just the final result.\n2. Include file paths, commits, logs, and test evidence in completion comments.\n3. If blocked, say exactly what unblocks you.\n4. `tasks later` means \"return this to queued\" \u2014 use it when work should pause without marking the task blocked.\n5. Do not silently switch to unrelated work; use `tasks next` and follow daemon gating.\n\n## 10. Task reviewer playbook\nWhen a task is `review_ready`, the reviewer should:\n1. Read the task description, acceptance criteria, and relevant chain context.\n2. Inspect the evidence in comments, changed files, test output, and any linked artifacts.\n3. Vote with one of:\n   - Approve: `{ctl_bin} tasks vote --token {token} --task-id <task_id> --result lgtm --comment \"Why this meets requirements\"`\n   - Request changes: `{ctl_bin} tasks vote --token {token} --task-id <task_id> --result ngtm --comment \"What failed / what must change\"`\n4. Use precise comments. Reference files, lines, missing tests, or unmet acceptance criteria.\n5. If context is insufficient, leave an unresolved comment explaining what is missing.\n\n## 11. Practical chain/task design heuristics\nPrefer this shape:\n- planning / design task\n- implementation task(s)\n- test / validation task(s)\n- optional rollout / documentation task\n- final coordinator summary\n\nAvoid this shape:\n- one giant task with many hidden substeps\n- reviewer assigned as implementer\n- missing acceptance criteria\n- missing dependencies between phases\n- asking agents to coordinate through chat instead of tasks/comments\n\n# Rich Interactive Messaging (Q&A Cards)\nWhen the coordinator needs to ask the user a question, present options, or request confirmation, do NOT send plain text. Instead, use rich interactive cards so the user can answer with a single click. Non-coordinators should ask the coordinator to send the user-facing prompt unless the prompt is a product-modeled durable `Needs attention` action. Choose the correct type below based on the scenario:\n\n## 1. Smart Replies (Highly Encouraged & Default for Simple Queries)\n**Scenario:** Use this for simple, single-turn questions that have short, common responses (e.g. Yes/No, Proceed/Stop, confirming choices, selecting a model, or asking to view a diff).\n**UX Behavior:** The UI renders these as quick-action pill buttons directly above the text input composer, allowing the user to click to reply instantly or type a custom message.\n**CLI Command:** Use `--type smart_answer` and pass a JSON payload containing only `body` (the question text) and `suggested_replies` (array of strings) inside `--data`. The CLI will automatically validate the schema and inject the type key:\nCoordinator CLI example:\n`{ctl_bin} chat send-to-user --user-id user@operator --type smart_answer --data '{\\\"body\\\":\\\"Should I proceed with committing these changes?\\\",\\\"suggested_replies\\\":[\\\"Yes, do it\\\",\\\"No, wait\\\",\\\"Show diff first\\\"]}'`\n\n## 2. Multi-Question Wizard (Questionnaire Card)\n**Scenario:** Use this ONLY when you have a set of multiple distinct questions to ask the user (e.g. configuring a new project, setting up environment preferences, or running an interactive onboarding survey).\n**UX Behavior:** The UI renders this as a gorgeous step-by-step wizard card (one question at a time) with 'Back' and 'Next' buttons, concluding with a 'Submit' button. Upon submission, it compiles all answers into a single structured response and sends it back to you.\n**CLI Command:** Use `--type questions` and pass a JSON payload containing a `questions` array of objects (each having `text` and `options`) inside `--data`:\nCoordinator CLI example:\n`{ctl_bin} chat send-to-user --user-id user@operator --type questions --data '{\\\"questions\\\":[{\\\"text\\\":\\\"What language should I use?\\\",\\\"options\\\":[\\\"Odin\\\",\\\"TS\\\"]},{\\\"text\\\":\\\"Should I run validation tests?\\\",\\\"options\\\":[\\\"Yes, run all\\\",\\\"No, skip\\\"]}]}'`%!(EXTRA - Pi profile: this generated `AGENTS.md` is the primary run-directory instruction file. Read inbox/task state before beginning new work.\n)",
+                    "interrupt": false,
+                    "is_custom": false,
+                    "key": "bootstrap_profile_guidance",
+                    "value": "# Heimdall Tooling\n- Use `{ctl_bin} ...` for Heimdall task, chat, project, and memory workflows when available.\n- Track non-trivial/verifiable work in Heimdall tasks; keep status current and request review when complete.\n\n# Agent Operating Rules\nThese rules govern how you work. Follow them every session.\n\n## 1. Always track work in Heimdall tasks\nEvery non-trivial unit of work must be tracked in a Heimdall task. On startup:\n- Run `{ctl_bin} tasks next --token {token}` to claim your assigned work. If a task is already `in_progress` for you, continue it.\n- Check the inbox using `{ctl_bin} inbox --token {token}` for pending messages before starting anything new.\n- Do not start new work without a task to anchor it.\n\n## 2. Ad-hoc work goes in the ad-hoc chain\nIf a user asks you to do something that is not part of your current assigned task chain, create or reuse a chain called `ad-hoc-{instance}`. Create a task in that chain, do the work, and mark it complete.\n\n## 3. User-facing communication goes through the coordinator\nWhen free-form user communication is needed, the task-chain coordinator owns direct user contact.\n- If you are the coordinator, reply to `operator@local` with `{ctl_bin} chat send-to-user --token {token} --user-id operator@local --body \"your message\"`.\n- If you are not the coordinator, do not use direct `chat send-to-user` for normal user contact. Route user-facing questions, blockers, and summaries through the coordinator using task comments or coordinator-directed chat.\n- Structured durable `Needs attention` prompts remain allowed for product-modeled approvals/actions such as `user_proxy` review, merge decisions, and explicit approval cards.\n\n## 4. Confirm before acting on unverified requests\nIf a user asks you to do something and you have no task evidence or memory that this was previously planned and approved:\n1. Do NOT start the work.\n2. If you are the coordinator, send the user a plan of action via `chat send-to-user` describing what you will do and why. If you are not the coordinator, ask the coordinator to contact the user.\n3. Wait for confirmation before proceeding.\n\nWhen approval is needed for anything user-facing or workflow-changing (for example: creating a task chain, starting unplanned work, committing/pushing changes, deploying/restarting services, or choosing between implementation options), coordinators ask through `chat send-to-user`; non-coordinators route the request through the coordinator. Do not rely on task comments, nudges, or agent-to-agent messages as the user approval channel. Use structured `Needs attention` / `smart_answer` cards when a concise approval choice is appropriate.\n\n## 5. Document Artifacts and Follow-up in Tasks\nTo keep specs and guidelines auditable and clear for future agents:\n1. Chain-wide artifacts, specifications, and plans belong in the **task chain description**.\n2. Task-specific requirements, acceptance criteria, and execution details belong in the **task description**.\n3. Progress updates, evidence, logs, commits, file paths, and decisions belong in **task comments**.\n4. Tasks with unresolved comments cannot be marked done.\n5. Reviewer LGTM/NGTM votes automatically create review records/comments on the task. Before resubmitting after requested changes, resolve outstanding comments with `comment-resolve` where appropriate.\n6. To request updates or redo an approved task, reviewers/users should add an unresolved comment; this reopens the workflow by reverting the task to `queued`.\n7. On boot/restart, read the chain via `task-chains show` and inspect predecessor tasks/comments so you understand prior work before continuing.\n8. Direct chat and nudges are not a reliable substitute for task state. Use formal tasks, comments, and review roles for any durable request or blocker.\n\n## 6. How to create good task chains\nCreate chains so execution is smooth, parallelizable, and reviewable:\n1. **One chain = one user-visible outcome.** Keep the chain focused on a single feature, fix, migration, or investigation.\n2. **Put the plan in the chain description.** Include goal, scope, constraints, review expectations, and rollout/test strategy.\n3. **Use dependency order, not giant umbrella tasks.** Split work into tasks that can be independently assigned, reviewed, and approved.\n4. **Assign a real coordinator.** The coordinator owns the final chain summary and ensures the tasks fit together.\n5. **Add an explicit reviewer.** Use `lgtm_required` reviewers for implementation tasks that need validation.\n6. **Keep chains in `planning` until ready.** Only move the chain to `in_progress` once the plan is solid and tasks are ready to start.\n7. **Move a chain back to `planning` or `paused` if active work should stop.** That suppresses execution/nudges and may push in-flight work back to `queued`.\n\n## 7. How to create good underlying tasks\nA good task should let the assignee act without guessing:\n1. **Task title:** short action-oriented title.\n2. **Task description:** exact scope, context, files/systems involved, and expected output.\n3. **Acceptance criteria:** concrete checks a reviewer can verify.\n4. **Dependencies:** use `--depends-on` for true prerequisites instead of burying ordering in prose.\n5. **Single owner:** each implementation task should have one clear assignee.\n6. **Right reviewer:** add `lgtm_required` reviewers for work that needs formal validation.\n7. **Right granularity:** tasks should usually represent one meaningful reviewable chunk, not an entire project.\n\nGood task description template:\n- Objective\n- Scope / non-goals\n- Files / components likely involved\n- Constraints / pitfalls\n- Acceptance criteria\n- Evidence expected in completion comment\n\n## 8. Recommended task-chain lifecycle\n1. Create chain in `planning`.\n2. Create implementation/review/testing tasks with dependencies.\n3. Add reviewers/participants.\n4. Activate the chain when execution should begin.\n5. Assignees work tasks, leave comments with evidence, then run `tasks done`.\n6. Reviewers vote with `tasks vote --result lgtm|ngtm`.\n7. If changes are requested, assignee fixes and resubmits.\n8. When all tasks are approved, coordinator writes the final summary and completes the chain.\n\n## 9. Task assignee playbook\nWhen you are the assignee:\n- Start/resume work: `{ctl_bin} tasks next --token {token}`\n- Inspect task: `{ctl_bin} tasks show --token {token} --task-id <task_id>`\n- Add progress note: `{ctl_bin} tasks comment --token {token} --task-id <task_id> --body \"Progress / evidence / question\"`\n- Submit for review: `{ctl_bin} tasks done --token {token} --task-id <task_id> --comment \"Summary of changes, files touched, tests run, evidence\"`\n- Block work: `{ctl_bin} tasks blocked --token {token} --task-id <task_id> --reason \"What is blocked and what is needed\"`\n- Defer work: `{ctl_bin} tasks later --token {token} --task-id <task_id> --reason \"Why this should return to queued\"`\n\nAssignee rules:\n1. Use comments for checkpoints, not just the final result.\n2. Include file paths, commits, logs, and test evidence in completion comments.\n3. If blocked, say exactly what unblocks you.\n4. `tasks later` means \"return this to queued\" \u2014 use it when work should pause without marking the task blocked.\n5. Do not silently switch to unrelated work; use `tasks next` and follow daemon gating.\n\n## 10. Task reviewer playbook\nWhen a task is `review_ready`, the reviewer should:\n1. Read the task description, acceptance criteria, and relevant chain context.\n2. Inspect the evidence in comments, changed files, test output, and any linked artifacts.\n3. Vote with one of:\n   - Approve: `{ctl_bin} tasks vote --token {token} --task-id <task_id> --result lgtm --comment \"Why this meets requirements\"`\n   - Request changes: `{ctl_bin} tasks vote --token {token} --task-id <task_id> --result ngtm --comment \"What failed / what must change\"`\n4. Use precise comments. Reference files, lines, missing tests, or unmet acceptance criteria.\n5. If context is insufficient, leave an unresolved comment explaining what is missing.\n\n## 11. Practical chain/task design heuristics\nPrefer this shape:\n- planning / design task\n- implementation task(s)\n- test / validation task(s)\n- optional rollout / documentation task\n- final coordinator summary\n\nAvoid this shape:\n- one giant task with many hidden substeps\n- reviewer assigned as implementer\n- missing acceptance criteria\n- missing dependencies between phases\n- asking agents to coordinate through chat instead of tasks/comments\n\n# Rich Interactive Messaging (Q&A Cards)\nWhen the coordinator needs to ask the user a question, present options, or request confirmation, do NOT send plain text. Instead, use rich interactive cards so the user can answer with a single click. Non-coordinators should ask the coordinator to send the user-facing prompt unless the prompt is a product-modeled durable `Needs attention` action. Choose the correct type below based on the scenario:\n\n## 1. Smart Replies (Highly Encouraged & Default for Simple Queries)\n**Scenario:** Use this for simple, single-turn questions that have short, common responses (e.g. Yes/No, Proceed/Stop, confirming choices, selecting a model, or asking to view a diff).\n**UX Behavior:** The UI renders these as quick-action pill buttons directly above the text input composer, allowing the user to click to reply instantly or type a custom message.\n**CLI Command:** Use `--type smart_answer` and pass a JSON payload containing only `body` (the question text) and `suggested_replies` (array of strings) inside `--data`. The CLI will automatically validate the schema and inject the type key:\nCoordinator CLI example:\n`{ctl_bin} chat send-to-user --user-id user@operator --type smart_answer --data '{\\\"body\\\":\\\"Should I proceed with committing these changes?\\\",\\\"suggested_replies\\\":[\\\"Yes, do it\\\",\\\"No, wait\\\",\\\"Show diff first\\\"]}'`\n\n## 2. Multi-Question Wizard (Questionnaire Card)\n**Scenario:** Use this ONLY when you have a set of multiple distinct questions to ask the user (e.g. configuring a new project, setting up environment preferences, or running an interactive onboarding survey).\n**UX Behavior:** The UI renders this as a gorgeous step-by-step wizard card (one question at a time) with 'Back' and 'Next' buttons, concluding with a 'Submit' button. Upon submission, it compiles all answers into a single structured response and sends it back to you.\n**CLI Command:** Use `--type questions` and pass a JSON payload containing a `questions` array of objects (each having `text` and `options`) inside `--data`:\nCoordinator CLI example:\n`{ctl_bin} chat send-to-user --user-id user@operator --type questions --data '{\\\"questions\\\":[{\\\"text\\\":\\\"What language should I use?\\\",\\\"options\\\":[\\\"Odin\\\",\\\"TS\\\"]},{\\\"text\\\":\\\"Should I run validation tests?\\\",\\\"options\\\":[\\\"Yes, run all\\\",\\\"No, skip\\\"]}]}'`%!(EXTRA - Pi profile: this generated `AGENTS.md` is the primary run-directory instruction file. Read inbox/task state before beginning new work.\n)"
+                  },
+                  {
+                    "default_interrupt": false,
+                    "default_value": "{pending_count} Unread Messages from {from_agent_id}.",
+                    "interrupt": false,
+                    "is_custom": false,
+                    "key": "msg_agent_message",
+                    "value": "{pending_count} Unread Messages from {from_agent_id}."
+                  },
+                  {
+                    "default_interrupt": false,
+                    "default_value": "Task {task_id} {status} by {changed_by}: {body}",
+                    "interrupt": false,
+                    "is_custom": false,
+                    "key": "msg_task_updated",
+                    "value": "Task {task_id} {status} by {changed_by}: {body}"
+                  },
+                  {
+                    "default_interrupt": false,
+                    "default_value": "Task {task_id} {status} by {changed_by}.",
+                    "interrupt": false,
+                    "is_custom": false,
+                    "key": "msg_task_updated_empty",
+                    "value": "Task {task_id} {status} by {changed_by}."
+                  },
+                  {
+                    "default_interrupt": false,
+                    "default_value": "Memory {memory_id} {event} by {changed_by} for {subject_agent} ({status}). Fetch details with: {ctl_bin} memory show --token <your token> --memory-id {memory_id}",
+                    "interrupt": false,
+                    "is_custom": false,
+                    "key": "msg_memory_updated",
+                    "value": "Memory {memory_id} {event} by {changed_by} for {subject_agent} ({status}). Fetch details with: {ctl_bin} memory show --token <your token> --memory-id {memory_id}"
+                  },
+                  {
+                    "default_interrupt": false,
+                    "default_value": "Memory proposal {proposal_id} {event} by {changed_by} for {subject_agent}. Review with: {ctl_bin} memory history --token <your token> --memory-id {memory_id}",
+                    "interrupt": false,
+                    "is_custom": false,
+                    "key": "msg_memory_proposal_updated",
+                    "value": "Memory proposal {proposal_id} {event} by {changed_by} for {subject_agent}. Review with: {ctl_bin} memory history --token <your token> --memory-id {memory_id}"
+                  },
+                  {
+                    "default_interrupt": true,
+                    "default_value": "{pending_count} User Chat Messages from {user_id}. Read with: {ctl_bin} chat fetch-user --token <your token> --user-id {user_id}",
+                    "interrupt": true,
+                    "is_custom": false,
+                    "key": "msg_user_chat",
+                    "value": "{pending_count} User Chat Messages from {user_id}. Read with: {ctl_bin} chat fetch-user --token <your token> --user-id {user_id}"
+                  },
+                  {
+                    "default_interrupt": true,
+                    "default_value": "SYSTEM: Heimdall daemon restarted and issued a new agent token. Your previous token is invalid. New token: {new_token} \u2014 update all pending ham-ctl commands to use this token. Run: {ctl_bin} --daemon-url {daemon_url} --token {new_token} start-success",
+                    "interrupt": true,
+                    "is_custom": false,
+                    "key": "msg_token_refreshed",
+                    "value": "SYSTEM: Heimdall daemon restarted and issued a new agent token. Your previous token is invalid. New token: {new_token} \u2014 update all pending ham-ctl commands to use this token. Run: {ctl_bin} --daemon-url {daemon_url} --token {new_token} start-success"
+                  },
+                  {
+                    "default_interrupt": true,
+                    "default_value": "SYSTEM: Stop requested. You have {time} seconds to save your work.",
+                    "interrupt": true,
+                    "is_custom": false,
+                    "key": "msg_stop_requested",
+                    "value": "SYSTEM: Stop requested. You have {time} seconds to save your work."
+                  },
+                  {
+                    "default_interrupt": false,
+                    "default_value": "true",
+                    "interrupt": false,
+                    "is_custom": false,
+                    "key": "memory_auditor_enabled",
+                    "value": "true"
+                  },
+                  {
+                    "default_interrupt": false,
+                    "default_value": "memory-auditor@default",
+                    "interrupt": false,
+                    "is_custom": false,
+                    "key": "memory_auditor_agent_id",
+                    "value": "memory-auditor@default"
+                  },
+                  {
+                    "default_interrupt": false,
+                    "default_value": "smart",
+                    "interrupt": false,
+                    "is_custom": false,
+                    "key": "memory_auditor_model_tier",
+                    "value": "smart"
+                  },
+                  {
+                    "default_interrupt": false,
+                    "default_value": "pi",
+                    "interrupt": false,
+                    "is_custom": false,
+                    "key": "memory_auditor_provider_profile",
+                    "value": "pi"
+                  },
+                  {
+                    "default_interrupt": false,
+                    "default_value": "10",
+                    "interrupt": false,
+                    "is_custom": false,
+                    "key": "memory_auditor_timeout_min",
+                    "value": "10"
+                  },
+                  {
+                    "default_interrupt": false,
+                    "default_value": "memory-reviewer@heimdall",
+                    "interrupt": false,
+                    "is_custom": false,
+                    "key": "memory_reviewer_agent_id",
+                    "value": "memory-reviewer@heimdall"
+                  },
+                  {
+                    "default_interrupt": false,
+                    "default_value": "smart",
+                    "interrupt": false,
+                    "is_custom": false,
+                    "key": "memory_reviewer_model_tier",
+                    "value": "smart"
+                  },
+                  {
+                    "default_interrupt": false,
+                    "default_value": "pi",
+                    "interrupt": false,
+                    "is_custom": false,
+                    "key": "memory_reviewer_provider_profile",
+                    "value": "pi"
+                  },
+                  {
+                    "default_interrupt": false,
+                    "default_value": "~/heimdall-backups",
+                    "interrupt": false,
+                    "is_custom": false,
+                    "key": "backup_dir",
+                    "value": "~/heimdall-backups"
+                  },
+                  {
+                    "default_interrupt": false,
+                    "default_value": "",
+                    "interrupt": false,
+                    "is_custom": false,
+                    "key": "user_display_name",
+                    "value": ""
+                  },
+                  {
+                    "default_interrupt": false,
+                    "default_value": "false",
+                    "interrupt": false,
+                    "is_custom": false,
+                    "key": "setup_completed",
+                    "value": "false"
+                  },
+                  {
+                    "default_interrupt": false,
+                    "default_value": "~/agent_knowledge",
+                    "interrupt": false,
+                    "is_custom": false,
+                    "key": "memory_auditor_dir",
+                    "value": "~/agent_knowledge"
+                  }
+                ],
+                "selectedAgentId": "pi@task18-e2e",
+                "sending": false,
+                "session": {
+                  "clientInstanceId": "heimdall-1417df0d-3a7c-4977-9d06-e1e86110bde3",
+                  "clientToken": "uct_95065220b58e724ab08810974db85dfce70445b99d2efc290f237a9bc277171a",
+                  "connected": true,
+                  "daemonUrl": "http://127.0.0.1:49422",
+                  "error": "",
+                  "lastChatEvent": null,
+                  "status": "connected",
+                  "userDisplayName": "Tanmay (Mac)",
+                  "userId": "operator@local",
+                  "wsConnected": true,
+                  "wsStatus": "connected"
+                },
+                "settingsProviders": [],
+                "settingsTemplates": [],
+                "testRuns": [],
+                "userPreferences": {
+                  "backup_dir": "~/heimdall-backups",
+                  "bootstrap_header": "<!-- HEIMDALL-MANAGED-BOOTSTRAP v1: safe to overwrite -->",
+                  "bootstrap_profile_guidance": "# Heimdall Tooling\n- Use `{ctl_bin} ...` for Heimdall task, chat, project, and memory workflows when available.\n- Track non-trivial/verifiable work in Heimdall tasks; keep status current and request review when complete.\n\n# Agent Operating Rules\nThese rules govern how you work. Follow them every session.\n\n## 1. Always track work in Heimdall tasks\nEvery non-trivial unit of work must be tracked in a Heimdall task. On startup:\n- Run `{ctl_bin} tasks next --token {token}` to claim your assigned work. If a task is already `in_progress` for you, continue it.\n- Check the inbox using `{ctl_bin} inbox --token {token}` for pending messages before starting anything new.\n- Do not start new work without a task to anchor it.\n\n## 2. Ad-hoc work goes in the ad-hoc chain\nIf a user asks you to do something that is not part of your current assigned task chain, create or reuse a chain called `ad-hoc-{instance}`. Create a task in that chain, do the work, and mark it complete.\n\n## 3. User-facing communication goes through the coordinator\nWhen free-form user communication is needed, the task-chain coordinator owns direct user contact.\n- If you are the coordinator, reply to `operator@local` with `{ctl_bin} chat send-to-user --token {token} --user-id operator@local --body \"your message\"`.\n- If you are not the coordinator, do not use direct `chat send-to-user` for normal user contact. Route user-facing questions, blockers, and summaries through the coordinator using task comments or coordinator-directed chat.\n- Structured durable `Needs attention` prompts remain allowed for product-modeled approvals/actions such as `user_proxy` review, merge decisions, and explicit approval cards.\n\n## 4. Confirm before acting on unverified requests\nIf a user asks you to do something and you have no task evidence or memory that this was previously planned and approved:\n1. Do NOT start the work.\n2. If you are the coordinator, send the user a plan of action via `chat send-to-user` describing what you will do and why. If you are not the coordinator, ask the coordinator to contact the user.\n3. Wait for confirmation before proceeding.\n\nWhen approval is needed for anything user-facing or workflow-changing (for example: creating a task chain, starting unplanned work, committing/pushing changes, deploying/restarting services, or choosing between implementation options), coordinators ask through `chat send-to-user`; non-coordinators route the request through the coordinator. Do not rely on task comments, nudges, or agent-to-agent messages as the user approval channel. Use structured `Needs attention` / `smart_answer` cards when a concise approval choice is appropriate.\n\n## 5. Document Artifacts and Follow-up in Tasks\nTo keep specs and guidelines auditable and clear for future agents:\n1. Chain-wide artifacts, specifications, and plans belong in the **task chain description**.\n2. Task-specific requirements, acceptance criteria, and execution details belong in the **task description**.\n3. Progress updates, evidence, logs, commits, file paths, and decisions belong in **task comments**.\n4. Tasks with unresolved comments cannot be marked done.\n5. Reviewer LGTM/NGTM votes automatically create review records/comments on the task. Before resubmitting after requested changes, resolve outstanding comments with `comment-resolve` where appropriate.\n6. To request updates or redo an approved task, reviewers/users should add an unresolved comment; this reopens the workflow by reverting the task to `queued`.\n7. On boot/restart, read the chain via `task-chains show` and inspect predecessor tasks/comments so you understand prior work before continuing.\n8. Direct chat and nudges are not a reliable substitute for task state. Use formal tasks, comments, and review roles for any durable request or blocker.\n\n## 6. How to create good task chains\nCreate chains so execution is smooth, parallelizable, and reviewable:\n1. **One chain = one user-visible outcome.** Keep the chain focused on a single feature, fix, migration, or investigation.\n2. **Put the plan in the chain description.** Include goal, scope, constraints, review expectations, and rollout/test strategy.\n3. **Use dependency order, not giant umbrella tasks.** Split work into tasks that can be independently assigned, reviewed, and approved.\n4. **Assign a real coordinator.** The coordinator owns the final chain summary and ensures the tasks fit together.\n5. **Add an explicit reviewer.** Use `lgtm_required` reviewers for implementation tasks that need validation.\n6. **Keep chains in `planning` until ready.** Only move the chain to `in_progress` once the plan is solid and tasks are ready to start.\n7. **Move a chain back to `planning` or `paused` if active work should stop.** That suppresses execution/nudges and may push in-flight work back to `queued`.\n\n## 7. How to create good underlying tasks\nA good task should let the assignee act without guessing:\n1. **Task title:** short action-oriented title.\n2. **Task description:** exact scope, context, files/systems involved, and expected output.\n3. **Acceptance criteria:** concrete checks a reviewer can verify.\n4. **Dependencies:** use `--depends-on` for true prerequisites instead of burying ordering in prose.\n5. **Single owner:** each implementation task should have one clear assignee.\n6. **Right reviewer:** add `lgtm_required` reviewers for work that needs formal validation.\n7. **Right granularity:** tasks should usually represent one meaningful reviewable chunk, not an entire project.\n\nGood task description template:\n- Objective\n- Scope / non-goals\n- Files / components likely involved\n- Constraints / pitfalls\n- Acceptance criteria\n- Evidence expected in completion comment\n\n## 8. Recommended task-chain lifecycle\n1. Create chain in `planning`.\n2. Create implementation/review/testing tasks with dependencies.\n3. Add reviewers/participants.\n4. Activate the chain when execution should begin.\n5. Assignees work tasks, leave comments with evidence, then run `tasks done`.\n6. Reviewers vote with `tasks vote --result lgtm|ngtm`.\n7. If changes are requested, assignee fixes and resubmits.\n8. When all tasks are approved, coordinator writes the final summary and completes the chain.\n\n## 9. Task assignee playbook\nWhen you are the assignee:\n- Start/resume work: `{ctl_bin} tasks next --token {token}`\n- Inspect task: `{ctl_bin} tasks show --token {token} --task-id <task_id>`\n- Add progress note: `{ctl_bin} tasks comment --token {token} --task-id <task_id> --body \"Progress / evidence / question\"`\n- Submit for review: `{ctl_bin} tasks done --token {token} --task-id <task_id> --comment \"Summary of changes, files touched, tests run, evidence\"`\n- Block work: `{ctl_bin} tasks blocked --token {token} --task-id <task_id> --reason \"What is blocked and what is needed\"`\n- Defer work: `{ctl_bin} tasks later --token {token} --task-id <task_id> --reason \"Why this should return to queued\"`\n\nAssignee rules:\n1. Use comments for checkpoints, not just the final result.\n2. Include file paths, commits, logs, and test evidence in completion comments.\n3. If blocked, say exactly what unblocks you.\n4. `tasks later` means \"return this to queued\" \u2014 use it when work should pause without marking the task blocked.\n5. Do not silently switch to unrelated work; use `tasks next` and follow daemon gating.\n\n## 10. Task reviewer playbook\nWhen a task is `review_ready`, the reviewer should:\n1. Read the task description, acceptance criteria, and relevant chain context.\n2. Inspect the evidence in comments, changed files, test output, and any linked artifacts.\n3. Vote with one of:\n   - Approve: `{ctl_bin} tasks vote --token {token} --task-id <task_id> --result lgtm --comment \"Why this meets requirements\"`\n   - Request changes: `{ctl_bin} tasks vote --token {token} --task-id <task_id> --result ngtm --comment \"What failed / what must change\"`\n4. Use precise comments. Reference files, lines, missing tests, or unmet acceptance criteria.\n5. If context is insufficient, leave an unresolved comment explaining what is missing.\n\n## 11. Practical chain/task design heuristics\nPrefer this shape:\n- planning / design task\n- implementation task(s)\n- test / validation task(s)\n- optional rollout / documentation task\n- final coordinator summary\n\nAvoid this shape:\n- one giant task with many hidden substeps\n- reviewer assigned as implementer\n- missing acceptance criteria\n- missing dependencies between phases\n- asking agents to coordinate through chat instead of tasks/comments\n\n# Rich Interactive Messaging (Q&A Cards)\nWhen the coordinator needs to ask the user a question, present options, or request confirmation, do NOT send plain text. Instead, use rich interactive cards so the user can answer with a single click. Non-coordinators should ask the coordinator to send the user-facing prompt unless the prompt is a product-modeled durable `Needs attention` action. Choose the correct type below based on the scenario:\n\n## 1. Smart Replies (Highly Encouraged & Default for Simple Queries)\n**Scenario:** Use this for simple, single-turn questions that have short, common responses (e.g. Yes/No, Proceed/Stop, confirming choices, selecting a model, or asking to view a diff).\n**UX Behavior:** The UI renders these as quick-action pill buttons directly above the text input composer, allowing the user to click to reply instantly or type a custom message.\n**CLI Command:** Use `--type smart_answer` and pass a JSON payload containing only `body` (the question text) and `suggested_replies` (array of strings) inside `--data`. The CLI will automatically validate the schema and inject the type key:\nCoordinator CLI example:\n`{ctl_bin} chat send-to-user --user-id user@operator --type smart_answer --data '{\\\"body\\\":\\\"Should I proceed with committing these changes?\\\",\\\"suggested_replies\\\":[\\\"Yes, do it\\\",\\\"No, wait\\\",\\\"Show diff first\\\"]}'`\n\n## 2. Multi-Question Wizard (Questionnaire Card)\n**Scenario:** Use this ONLY when you have a set of multiple distinct questions to ask the user (e.g. configuring a new project, setting up environment preferences, or running an interactive onboarding survey).\n**UX Behavior:** The UI renders this as a gorgeous step-by-step wizard card (one question at a time) with 'Back' and 'Next' buttons, concluding with a 'Submit' button. Upon submission, it compiles all answers into a single structured response and sends it back to you.\n**CLI Command:** Use `--type questions` and pass a JSON payload containing a `questions` array of objects (each having `text` and `options`) inside `--data`:\nCoordinator CLI example:\n`{ctl_bin} chat send-to-user --user-id user@operator --type questions --data '{\\\"questions\\\":[{\\\"text\\\":\\\"What language should I use?\\\",\\\"options\\\":[\\\"Odin\\\",\\\"TS\\\"]},{\\\"text\\\":\\\"Should I run validation tests?\\\",\\\"options\\\":[\\\"Yes, run all\\\",\\\"No, skip\\\"]}]}'`%!(EXTRA - Pi profile: this generated `AGENTS.md` is the primary run-directory instruction file. Read inbox/task state before beginning new work.\n)",
+                  "bootstrap_title": "# Agent bootstrap for Heimdall AI Manager",
+                  "memory_auditor_agent_id": "memory-auditor@default",
+                  "memory_auditor_dir": "~/agent_knowledge",
+                  "memory_auditor_enabled": "true",
+                  "memory_auditor_model_tier": "smart",
+                  "memory_auditor_provider_profile": "pi",
+                  "memory_auditor_timeout_min": "10",
+                  "memory_reviewer_agent_id": "memory-reviewer@heimdall",
+                  "memory_reviewer_model_tier": "smart",
+                  "memory_reviewer_provider_profile": "pi",
+                  "msg_agent_message": "{pending_count} Unread Messages from {from_agent_id}.",
+                  "msg_memory_proposal_updated": "Memory proposal {proposal_id} {event} by {changed_by} for {subject_agent}. Review with: {ctl_bin} memory history --token <your token> --memory-id {memory_id}",
+                  "msg_memory_updated": "Memory {memory_id} {event} by {changed_by} for {subject_agent} ({status}). Fetch details with: {ctl_bin} memory show --token <your token> --memory-id {memory_id}",
+                  "msg_stop_requested": "SYSTEM: Stop requested. You have {time} seconds to save your work.",
+                  "msg_task_updated": "Task {task_id} {status} by {changed_by}: {body}",
+                  "msg_task_updated_empty": "Task {task_id} {status} by {changed_by}.",
+                  "msg_token_refreshed": "SYSTEM: Heimdall daemon restarted and issued a new agent token. Your previous token is invalid. New token: {new_token} \u2014 update all pending ham-ctl commands to use this token. Run: {ctl_bin} --daemon-url {daemon_url} --token {new_token} start-success",
+                  "msg_user_chat": "{pending_count} User Chat Messages from {user_id}. Read with: {ctl_bin} chat fetch-user --token <your token> --user-id {user_id}",
+                  "setup_completed": "false",
+                  "starter_prompt": "First, run: /nix/store/dcb4sl8hfrzsih4g6cf004xy8w3nh3ar-ham-ctl-0.1.0/bin/ham-ctl --config /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-su4hqsh8/config.toml --daemon-url http://127.0.0.1:49422 --token {token} start-success. For every later ham-ctl command in this isolated E2E, include both --config /var/folders/7c/wyz3jh6j651_pzm_8j1fg29400y8lt/T/heimdall-task18-e2e-su4hqsh8/config.toml and --daemon-url http://127.0.0.1:49422. Then read AGENTS.md for context and claim assigned work if present.",
+                  "user_display_name": ""
+                }
+              },
+              "home": {
+                "lastCreatedChainId": "chain-19f4fb0bc1c",
+                "lastHttpLoadUnixMs": 1783748410380,
+                "lastLocalAction": "createdChain:chain-19f4fb0bc1c",
+                "lastPeriodicRefreshUnixMs": 0,
+                "lastWsRefreshReason": "agent_lifecycle_changed:pi@task18-e2e",
+                "newChainCreating": false,
+                "newChainError": "",
+                "newChainModalOpen": false,
+                "selectedChainId": "",
+                "selectedProjectId": "default",
+                "surface": "home"
+              },
+              "memory": {
+                "activeAudit": null,
+                "auditLoading": false,
+                "detailLoading": false,
+                "error": "",
+                "filters": {
+                  "status": "",
+                  "subjectAgent": "",
+                  "type": ""
+                },
+                "historyById": {},
+                "lastMemoryEvent": null,
+                "loading": false,
+                "recordIds": [],
+                "recordsById": {}
+              },
+              "projects": {
+                "detailLoading": false,
+                "error": "",
+                "loading": false,
+                "mutating": false,
+                "projectIds": [
+                  "default",
+                  "heimdall-system"
+                ],
+                "projectsById": {
+                  "default": {
+                    "anchors": [],
+                    "createdUnixMs": 1783748397066,
+                    "description": "Task 18 isolated UI E2E project",
+                    "name": "Task18 real pi coding project",
+                    "order": 0,
+                    "projectId": "default",
+                    "updatedUnixMs": 1783748397066
+                  },
+                  "heimdall-system": {
+                    "anchors": [],
+                    "createdUnixMs": 1783748395413,
+                    "description": "Internal system project for cognitive optimization, cognitive audits, and automated memory reviews.",
+                    "name": "Heimdall System",
+                    "order": 0,
+                    "projectId": "heimdall-system",
+                    "updatedUnixMs": 1783748395413
+                  }
+                },
+                "selectedProjectId": "default"
+              },
+              "tasks": {
+                "chainTaskIds": {
+                  "chain-19f4fb0bc1c": [
+                    "task-19f4fb0bd0e",
+                    "task-19f4fb0bd12",
+                    "task-19f4fb0bd11",
+                    "task-19f4fb0bd10",
+                    "task-19f4fb0bd0f"
+                  ]
+                },
+                "chainsById": {
+                  "chain-19f4fb0bc1c": {
+                    "archivePending": false,
+                    "archived": false,
+                    "chainId": "chain-19f4fb0bc1c",
+                    "completedAtUnixMs": 0,
+                    "coordinatorAgentInstanceId": "pi@task18-e2e",
+                    "createdAtUnixMs": 1783748410549,
+                    "defaultReviewerAgentInstanceId": "",
+                    "description": "Use real pi/Codex agents to make a tiny README change and complete review/merge flow.",
+                    "evaluation": "unreviewed",
+                    "finalSummary": "",
+                    "id": "chain-19f4fb0bc1c",
+                    "projectId": "default",
+                    "status": "in_progress",
+                    "teamId": "team-chain-19f4fb0bc1c",
+                    "title": "Task18 real pi coding flow",
+                    "vcsWorkspaceId": ""
+                  }
+                },
+                "error": "",
+                "expandedChainIds": {},
+                "lastTaskEvent": {
+                  "body": "Task auto-claimed. This is now your current active task.",
+                  "chain": {
+                    "archive_pending": false,
+                    "archived": false,
+                    "chain_id": "chain-19f4fb0bc1c",
+                    "completed_at_unix_ms": 0,
+                    "coordinator_agent_instance_id": "pi@task18-e2e",
+                    "created_at_unix_ms": 1783748410549,
+                    "default_reviewer_agent_instance_id": "",
+                    "description": "Use real pi/Codex agents to make a tiny README change and complete review/merge flow.",
+                    "evaluation": "unreviewed",
+                    "final_summary": "",
+                    "last_audit_at_unix_ms": 0,
+                    "project_id": "default",
+                    "status": "in_progress",
+                    "team_id": "team-chain-19f4fb0bc1c",
+                    "title": "Task18 real pi coding flow",
+                    "vcs_workspace_id": ""
+                  },
+                  "chain_id": "chain-19f4fb0bc1c",
+                  "changed_by": "system-auto-claim",
+                  "created_unix_ms": 1783748410895,
+                  "event": "Task_Status_Changed",
+                  "event_id": "taskevt_1783748410895",
+                  "interrupt": true,
+                  "send_escape_prefix": true,
+                  "status": "in_progress",
+                  "target_agent_instance_id": "",
+                  "task": {
+                    "acceptance_criteria": "",
+                    "assignee_agent_instance_id": "pi@task18-e2e",
+                    "chain_id": "chain-19f4fb0bc1c",
+                    "coordinator_agent_instance_id": "pi@task18-e2e",
+                    "created_at_unix_ms": 1783748410638,
+                    "created_by": "operator@local",
+                    "depends_on": "",
+                    "description": "Auto-generated scaffold task.\n\n- scaffold: `scaffold-coding-plan`\n- task: `plan`\n- chain: `Task18 real pi coding flow`\n- team kind: `Coding`",
+                    "not_actionable_reason": "",
+                    "participants": [
+                      {
+                        "agent_instance_id": "pi@task18-e2e",
+                        "role": "assignee"
+                      },
+                      {
+                        "agent_instance_id": "reviewer-1@team-chain-19f4fb0bc1c",
+                        "role": "lgtm_required"
+                      }
+                    ],
+                    "priority": "normal",
+                    "reviewer_agent_instance_id": "reviewer-1@team-chain-19f4fb0bc1c",
+                    "status": "in_progress",
+                    "task_id": "task-19f4fb0bd0e",
+                    "title": "Plan: Task18 real pi coding flow",
+                    "unresolved_comment_count": 0,
+                    "unresolved_comments": [],
+                    "updated_at_unix_ms": 1783748410895,
+                    "votes": []
+                  },
+                  "task_id": "task-19f4fb0bd0e",
+                  "type": "task_event"
+                },
+                "loading": false,
+                "participantsByTaskId": {},
+                "taskLogsByTaskId": {},
+                "tasksById": {
+                  "task-19f4fb0bd0e": {
+                    "acceptanceCriteria": "",
+                    "assigneeAgentInstanceId": "pi@task18-e2e",
+                    "chainId": "chain-19f4fb0bc1c",
+                    "coordinatorAgentInstanceId": "pi@task18-e2e",
+                    "createdAtUnixMs": 1783748410638,
+                    "createdBy": "operator@local",
+                    "dependsOn": "",
+                    "description": "Auto-generated scaffold task.\n\n- scaffold: `scaffold-coding-plan`\n- task: `plan`\n- chain: `Task18 real pi coding flow`\n- team kind: `Coding`",
+                    "id": "task-19f4fb0bd0e",
+                    "notActionableReason": "",
+                    "participants": [
+                      {
+                        "agentInstanceId": "pi@task18-e2e",
+                        "role": "assignee"
+                      },
+                      {
+                        "agentInstanceId": "reviewer-1@team-chain-19f4fb0bc1c",
+                        "role": "lgtm_required"
+                      }
+                    ],
+                    "priority": "normal",
+                    "reviewerAgentInstanceId": "reviewer-1@team-chain-19f4fb0bc1c",
+                    "status": "in_progress",
+                    "taskId": "task-19f4fb0bd0e",
+                    "title": "Plan: Task18 real pi coding flow",
+                    "unresolvedCommentCount": 0,
+                    "unresolvedComments": [],
+                    "updatedAtUnixMs": 1783748410895,
+                    "votes": []
+                  },
+                  "task-19f4fb0bd0f": {
+                    "acceptanceCriteria": "",
+                    "assigneeAgentInstanceId": "coder-1@team-chain-19f4fb0bc1c",
+                    "chainId": "chain-19f4fb0bc1c",
+                    "coordinatorAgentInstanceId": "pi@task18-e2e",
+                    "createdAtUnixMs": 1783748410678,
+                    "createdBy": "operator@local",
+                    "dependsOn": "task-19f4fb0bd0e",
+                    "description": "Auto-generated scaffold task.\n\n- scaffold: `scaffold-coding-implement`\n- task: `implement`\n- chain: `Task18 real pi coding flow`\n- team kind: `Coding`",
+                    "id": "task-19f4fb0bd0f",
+                    "notActionableReason": "waiting_for_promotion",
+                    "participants": [
+                      {
+                        "agentInstanceId": "coder-1@team-chain-19f4fb0bc1c",
+                        "role": "assignee"
+                      },
+                      {
+                        "agentInstanceId": "reviewer-1@team-chain-19f4fb0bc1c",
+                        "role": "lgtm_required"
+                      }
+                    ],
+                    "priority": "normal",
+                    "reviewerAgentInstanceId": "reviewer-1@team-chain-19f4fb0bc1c",
+                    "status": "planning",
+                    "taskId": "task-19f4fb0bd0f",
+                    "title": "Implement: Task18 real pi coding flow",
+                    "unresolvedCommentCount": 0,
+                    "unresolvedComments": [],
+                    "updatedAtUnixMs": 1783748410678,
+                    "votes": []
+                  },
+                  "task-19f4fb0bd10": {
+                    "acceptanceCriteria": "",
+                    "assigneeAgentInstanceId": "reviewer-1@team-chain-19f4fb0bc1c",
+                    "chainId": "chain-19f4fb0bc1c",
+                    "coordinatorAgentInstanceId": "pi@task18-e2e",
+                    "createdAtUnixMs": 1783748410706,
+                    "createdBy": "operator@local",
+                    "dependsOn": "task-19f4fb0bd0f",
+                    "description": "Auto-generated scaffold task.\n\n- scaffold: `scaffold-coding-review`\n- task: `review`\n- chain: `Task18 real pi coding flow`\n- team kind: `Coding`",
+                    "id": "task-19f4fb0bd10",
+                    "notActionableReason": "waiting_for_promotion",
+                    "participants": [
+                      {
+                        "agentInstanceId": "reviewer-1@team-chain-19f4fb0bc1c",
+                        "role": "assignee"
+                      },
+                      {
+                        "agentInstanceId": "pi@task18-e2e",
+                        "role": "lgtm_required"
+                      }
+                    ],
+                    "priority": "normal",
+                    "reviewerAgentInstanceId": "pi@task18-e2e",
+                    "status": "planning",
+                    "taskId": "task-19f4fb0bd10",
+                    "title": "Review: Task18 real pi coding flow",
+                    "unresolvedCommentCount": 0,
+                    "unresolvedComments": [],
+                    "updatedAtUnixMs": 1783748410706,
+                    "votes": []
+                  },
+                  "task-19f4fb0bd11": {
+                    "acceptanceCriteria": "",
+                    "assigneeAgentInstanceId": "coder-1@team-chain-19f4fb0bc1c",
+                    "chainId": "chain-19f4fb0bc1c",
+                    "coordinatorAgentInstanceId": "pi@task18-e2e",
+                    "createdAtUnixMs": 1783748410721,
+                    "createdBy": "operator@local",
+                    "dependsOn": "task-19f4fb0bd10",
+                    "description": "Auto-generated scaffold task.\n\n- scaffold: `scaffold-coding-validate`\n- task: `validate`\n- chain: `Task18 real pi coding flow`\n- team kind: `Coding`",
+                    "id": "task-19f4fb0bd11",
+                    "notActionableReason": "waiting_for_promotion",
+                    "participants": [
+                      {
+                        "agentInstanceId": "coder-1@team-chain-19f4fb0bc1c",
+                        "role": "assignee"
+                      },
+                      {
+                        "agentInstanceId": "reviewer-1@team-chain-19f4fb0bc1c",
+                        "role": "lgtm_required"
+                      }
+                    ],
+                    "priority": "normal",
+                    "reviewerAgentInstanceId": "reviewer-1@team-chain-19f4fb0bc1c",
+                    "status": "planning",
+                    "taskId": "task-19f4fb0bd11",
+                    "title": "Validate: Task18 real pi coding flow",
+                    "unresolvedCommentCount": 0,
+                    "unresolvedComments": [],
+                    "updatedAtUnixMs": 1783748410721,
+                    "votes": []
+                  },
+                  "task-19f4fb0bd12": {
+                    "acceptanceCriteria": "",
+                    "assigneeAgentInstanceId": "pi@task18-e2e",
+                    "chainId": "chain-19f4fb0bc1c",
+                    "coordinatorAgentInstanceId": "pi@task18-e2e",
+                    "createdAtUnixMs": 1783748410741,
+                    "createdBy": "operator@local",
+                    "dependsOn": "task-19f4fb0bd11",
+                    "description": "Auto-generated scaffold task.\n\n- scaffold: `scaffold-coding-summary`\n- task: `summary`\n- chain: `Task18 real pi coding flow`\n- team kind: `Coding`",
+                    "id": "task-19f4fb0bd12",
+                    "notActionableReason": "waiting_for_promotion",
+                    "participants": [
+                      {
+                        "agentInstanceId": "pi@task18-e2e",
+                        "role": "assignee"
+                      },
+                      {
+                        "agentInstanceId": "reviewer-1@team-chain-19f4fb0bc1c",
+                        "role": "lgtm_required"
+                      }
+                    ],
+                    "priority": "normal",
+                    "reviewerAgentInstanceId": "reviewer-1@team-chain-19f4fb0bc1c",
+                    "status": "planning",
+                    "taskId": "task-19f4fb0bd12",
+                    "title": "Summary: Task18 real pi coding flow",
+                    "unresolvedCommentCount": 0,
+                    "unresolvedComments": [],
+                    "updatedAtUnixMs": 1783748410741,
+                    "votes": []
+                  }
+                },
+                "unreviewedChains": []
+              }
+            }
+          },
+          "name": "read Redux after creating Task18 real pi coding flow",
+          "ok": true,
+          "ts_unix_ms": 1783748411515
+        },
+        {
+          "detail": {
+            "result": {
+              "ham_ctl_source": "ed\",\"task_id\":\"\",\"chain_id\":\"chain-19f4fb0bc1c\",\"title\":\"Task18 real pi coding flow\",\"description\":\"Use real pi/Codex agents to make a tiny README change and complete review/merge flow.\",\"acceptance_criteria\":\"\",\"priority\":\"\",\"status\":\"planning\",\"body\":\"\",\"comment_id\":\"\",\"vote_approved\":\"\",\"project_id\":\"default\",\"team_id\":\"team-chain-19f4fb0bc1c\",\"vcs_workspace_id\":\"\",\"agent_instance_id\":\"\",\"assignee_agent_instance_id\":\"\",\"reviewer_agent_instance_id\":\"\",\"coordinator_agent_instance_id\":\"pi@task18-e2e\",\"depends_on\":\"\",\"role\":\"\",\"created_by\":\"\",\"author_agent_instance_id\":\"operator@local\",\"created_unix_ms\":1783748410549,\"interrupt\":false},{\"event_id\":\"taskevt_1783748410774\",\"kind\":\"Chain_Status_Changed\",\"task_id\":\"\",\"chain_id\":\"chain-19f4fb0bc1c\",\"title\":\"\",\"description\":\"\",\"acceptance_criteria\":\"\",\"priority\":\"\",\"status\":\"in_progress\",\"body\":\"\",\"comment_id\":\"\",\"vote_approved\":\"\",\"project_id\":\"\",\"team_id\":\"\",\"vcs_workspace_id\":\"\",\"agent_instance_id\":\"\",\"assignee_agent_instance_id\":\"\",\"reviewer_agent_instance_id\":\"\",\"coordinator_agent_instance_id\":\"\",\"depends_on\":\"\",\"role\":\"\",\"created_by\":\"\",\"author_agent_instance_id\":\"operator@local\",\"created_unix_ms\":1783748410774,\"interrupt\":false}]}\n",
+              "ham_ctl_status": "in_progress",
+              "ui_status": "in_progress"
+            }
+          },
+          "name": "assert chain activated after UI actions (UI Redux + ham-ctl)",
+          "ok": true,
+          "ts_unix_ms": 1783748411567
+        },
+        {
+          "detail": {
+            "result": "pi@task18-e2e"
+          },
+          "name": "resolve chain coordinator identity via ham-ctl",
+          "ok": true,
+          "ts_unix_ms": 1783748411595
+        },
+        {
+          "detail": {
+            "result": {
+              "agent_instance_id": "pi@task18-e2e",
+              "connected": true,
+              "connection_state": "connected",
+              "live": true,
+              "startup_status": "ready",
+              "tmux_pane_present": true
+            }
+          },
+          "name": "assert product boots coordinator on chain activation (no prelaunch)",
+          "ok": true,
+          "ts_unix_ms": 1783748413744
+        },
+        {
+          "detail": {
+            "error": "coordinator composer did not appear after opening chain (retried)"
+          },
+          "name": "open first coding chain from UI and confirm composer",
+          "ok": false,
+          "ts_unix_ms": 1783748505336
+        }
+      ],
+      "task18_requirement": "real pi+Codex simple coding flow, clean merge, nudges, UI status",
+      "title": "Single coding chain on a git-backed project progresses with real pi/Codex agents"
+    }
+  ],
+  "runner_task": "task-19f4effc9ca",
+  "task": "task-19f4b590d38",
+  "uses_global_wrapper_credentials": false
+}

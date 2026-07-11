@@ -17,5 +17,6 @@
     "noEmit": true,
     "jsx": "react-jsx"
   },
-  "include": ["src/ui", "src/vite-env.d.ts"]
+  "include": ["src/ui", "src/vite-env.d.ts"],
+  "exclude": ["src/ui/electron"]
 }

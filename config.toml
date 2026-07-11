@@ -1,19 +1,57 @@
 [daemon]
 bind_host = "127.0.0.1"
+# When wrappers run on other machines, set advertise_host to an address they can reach.
+# Example: advertise_host = "192.168.1.50" or "daemon.example.internal"
+advertise_host = ""
 port = 49322
-data_dir = "~/.local/share/odin-test"
+data_dir = "~/.local/share/heimdall"
+wrapper_bin = "./result-wrapper/bin/ham-wrapper"
+# Default provider/tier for generated team agents. Settings can override these via preferences.
+default_agent_provider_profile = "pi"
+default_agent_model_tier = "normal"
+
+[guide_agent]
+enabled = true
+autostart = true
+restart_if_stopped = true
+agent_instance_id = "guide@heimdall"
+template_id = "guide"
+provider_profile = "pi"
+model_tier = "smart"
+
+[daemon]
+# Scheduled task nudges are disabled by default. When enabled, the daemon records durable
+# Task_Nudged/Task_Nudge_Failed events and applies cooldown/restart grace to avoid spam.
+# nudge_enabled = false
+# nudge_interval_seconds = 60
+# nudge_ready_after_seconds = 300
+# nudge_review_after_seconds = 300
+# nudge_need_improvements_after_seconds = 300
+# nudge_working_stale_after_seconds = 900
+# nudge_cooldown_seconds = 300
+# nudge_restart_grace_seconds = 60
+# nudge_send_escape_prefix = false
+# Agents stuck in "starting" past this many seconds are marked startup_failed.
+# startup_stale_after_seconds = 120
 
 [wrapper]
 daemon_url = "http://127.0.0.1:49322"
-credentials_path = "~/.local/share/odin-test/wrapper-credentials.json"
+credentials_path = "~/.local/share/heimdall/wrapper-credentials.json"
 agent_name = "pi"
-default_agent = "pi"
-display_name = "pi main"
+display_name = "{instance}"
 requested_access_mode = "main"
 command = ["pi"]
-tmux_session = "bc-agents"
+tmux_session = "ham-agents"
 tmux_window_prefix = "agent"
-working_dir = "."
+# Optional managed runtime cwd root. When set, wrappers run agents in
+# <agent_run_dir>/<project>/<agent-instance-id>-<timestamp> with safe path slugging.
+# Set use_random_dir=true to use <agent_run_dir>/<project>/<random-slug> instead.
+agent_run_dir = "~/.local/share/heimdall/agent-runs"
+use_random_dir = false
+# Optional per-provider managed run-dir/bootstrap controls.
+# agent_run_dir = "~/.local/share/heimdall/agent-runs"
+# use_random_dir = false
+# bootstrap_profile = "pi" # pi|claude|codex or custom profile name
 
 # Per-agent-command launch customization. The wrapper selects this section by
 # wrapper.command[0] ("pi" here), or by stripping "-agent" from the agent class
@@ -24,15 +62,77 @@ yolo_flags = []
 # pi accepts the starter prompt as a positional arg:
 #   pi "prompt"
 prompt_flags = []
-starter_prompt = "You are {instance}. Use bc-odinctl with token {token}. Read inbox with: bc-odinctl --config ./config.toml inbox --token {token}. Send with: bc-odinctl --config ./config.toml send --token {token} --to <agent_instance_id> --body <message>."
+starter_prompt = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap file (AGENTS.md or CLAUDE.md) for context, identity, and what you can do."
+
+[wrapper.agent-cmd.pi.models]
+flag = "--model"
+# OpenAI Codex model tier mapping for pi:
+# - cheap is intentionally upgraded to normal so no agent uses a cheap model
+# - normal: stronger day-to-day SWE work
+# - smart: highest-capability planning/review/complex implementation
+cheap = "openai-codex/gpt-5.4"
+normal = "openai-codex/gpt-5.4"
+smart = "openai-codex/gpt-5.5"
+
+[wrapper.agent-cmd.pi.startup_detection]
+enabled = false
+
 
 [wrapper.agent-cmd.claude]
-command = ["claude"]
-# Claude yolo/non-interactive permission bypass:
-#   claude --dangerously-skip-permissions "prompt"
-yolo_flags = ["--dangerously-skip-permissions"]
+# Claude subscription via pi + pi-anthropic-oauth. This intentionally launches
+# pi, not the Claude Code CLI, so no claude-code install is required after
+# OAuth login. Anthropic models are selected via --model below.
+command = ["pi"]
+yolo_flags = []
 prompt_flags = []
-starter_prompt = "You are {instance}. Use bc-odinctl with token {token}. Read inbox with: bc-odinctl --config ./config.toml inbox --token {token}. Send with: bc-odinctl --config ./config.toml send --token {token} --to <agent_instance_id> --body <message>."
+starter_prompt = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap file (AGENTS.md or CLAUDE.md) for context, identity, and what you can do."
+
+[wrapper.agent-cmd.claude.bootstrap.AGENTS_MD]
+name = "AGENTS.md"
+
+[wrapper.agent-cmd.claude.bootstrap.MEMORY_MD]
+name = "MEMORY.md"
+
+[wrapper.agent-cmd.claude.bootstrap.SKILLS]
+relative_dir = "skills"
+filename = "SKILL.md"
+
+[wrapper.agent-cmd.claude.models]
+flag = "--model"
+cheap  = "anthropic/claude-sonnet-4-6"
+normal = "anthropic/claude-sonnet-4-6"
+smart  = "anthropic/claude-opus-4-8"
+
+# Startup detection is parsed per provider profile but remains disabled unless enabled.
+# Later wrapper/daemon lifecycle tasks consume these patterns to classify startup state.
+[wrapper.agent-cmd.claude.startup_detection]
+enabled = true
+startup_probe_seconds = 20
+capture_interval_ms = 500
+# auto_enter_patterns: when matched in pane during startup probe, wrapper presses
+# the matching pre-key (if any) followed by Enter, then resumes detection.
+# auto_enter_pre_keys is parallel: empty / missing index = just Enter; otherwise
+# the value is passed to `tmux send-keys` first (e.g. "Down", "Tab", "Up", "1").
+# Use a pre-key when the prompt's default option isn't what we want.
+auto_enter_patterns = ["Yes, I trust this folder", "WARNING: Claude Code running in Bypass Permissions mode"]
+# Trust prompt's default is "Yes" → bare Enter is fine. Bypass-permissions
+# warning defaults to "No, exit" → press Down to move to "Yes, proceed".
+auto_enter_pre_keys = ["", "Down"]
+blocked_patterns = ["Enter auto mode"]
+startup_unknown_is_blocked = false
+sanitized_reason_mapping = ["trust=Claude directory trust prompt", "trust=Claude directory trust prompt", "bypass=Claude bypass permissions warning", "confirm=Claude interactive confirm prompt"]
+
+[wrapper.agent-cmd.codex]
+command = ["codex"]
+yolo_flags = []
+prompt_flags = []
+starter_prompt = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap file (AGENTS.md or CLAUDE.md) for context, identity, and what you can do."
+
+[wrapper.agent-cmd.codex.models]
+flag = "-m"
+cheap = "gpt-5"
+normal = "gpt-5"
+smart = "gpt-5-pro"
 
 [ctl]
 daemon_url = "http://127.0.0.1:49322"

@@ -1,9 +1,9 @@
 {
-  "name": "odin-ui",
+  "name": "heimdall",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Electron/Vite React UI prototype for Odin Test.",
+  "description": "Electron/Vite React UI prototype for Heimdall Test.",
   "main": "electron-dist/main.cjs",
   "scripts": {
     "dev": "npm run build:electron && concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@reduxjs/toolkit": "^2.2.8",
+    "lucide-react": "^1.21.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-redux": "^9.1.2"

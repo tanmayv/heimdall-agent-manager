@@ -1,45 +1,131 @@
-import { useState } from 'react';
+import { useRef, useState, memo } from 'react';
 import { useDispatch } from 'react-redux';
 import { sendMessageToSelectedAgent } from '../store/chatSlice';
+import { handleKeyDownCtrlW } from '../utils/keyboard';
 
-export default function Composer({ selectedAgent, disabled }) {
+const Composer = memo(function Composer({ selectedAgent, disabled, onSubmit, smartReplies }: any) {
   const dispatch = useDispatch<any>();
-  const [body, setBody] = useState('');
-  const canSend = selectedAgent && body.trim() && !disabled;
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [hasText, setHasText] = useState(false);
+  
+  if (import.meta.env.DEV) {
+    console.log('[Render] Composer', { hasAgent: !!selectedAgent, disabled, hasText });
+  }
+  
+  const canSend = selectedAgent && hasText && !disabled;
 
-  function handleSubmit(event) {
-    event.preventDefault();
-    const nextBody = body.trim();
-    if (!canSend) return;
-    setBody('');
-    dispatch(sendMessageToSelectedAgent(nextBody));
+  function handleInput() {
+    const text = textareaRef.current?.value || '';
+    const currentlyHasText = text.trim().length > 0;
+    if (hasText !== currentlyHasText) {
+      setHasText(currentlyHasText);
+    }
   }
 
+  function handleSubmit(event?: React.FormEvent | React.KeyboardEvent, isInterrupt = false) {
+    if (event) event.preventDefault();
+    let nextBody = textareaRef.current?.value.trim() || '';
+    if (!selectedAgent || disabled || !nextBody) return;
+    
+    if (isInterrupt) {
+      nextBody = '\u001b' + nextBody;
+    }
+    
+    if (onSubmit) {
+      onSubmit();
+    }
+    
+    if (textareaRef.current) {
+      textareaRef.current.value = '';
+    }
+    setHasText(false);
+    
+    const tempId = `local_temp_${Date.now()}`;
+    dispatch(sendMessageToSelectedAgent({ body: nextBody, tempId, interrupt: isInterrupt }));
+  }
+
+  function handleSmartReplyClick(replyText: string) {
+    if (!selectedAgent || disabled) return;
+    if (onSubmit) {
+      onSubmit();
+    }
+    if (textareaRef.current) {
+      textareaRef.current.value = '';
+    }
+    setHasText(false);
+    const tempId = `local_temp_${Date.now()}`;
+    dispatch(sendMessageToSelectedAgent({ body: replyText, tempId }));
+  }
+
+  const showReplies = smartReplies && smartReplies.length > 0 && !disabled;
+
   return (
-    <form className="border-t border-slate-800 bg-slate-950/80 p-4" onSubmit={handleSubmit}>
-      <div className="orbit-ring animate-float-in relative rounded-[2rem] border border-slate-700 bg-slate-900/90 p-2 shadow-xl shadow-slate-950/30 transition-all duration-300 focus-within:-translate-y-0.5 focus-within:border-blue-400/70 focus-within:shadow-blue-500/10">
-        <label htmlFor="composer" className="sr-only">
-          Message {selectedAgent?.label ?? 'agent'}
-        </label>
-        <textarea
-          id="composer"
-          rows={2}
-          value={body}
-          onChange={(event) => setBody(event.target.value)}
-          placeholder={selectedAgent ? `Message ${selectedAgent.id}...` : 'Select a connected agent to start chatting'}
-          className="max-h-32 w-full resize-none rounded-[1.5rem] bg-transparent px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 transition-colors duration-300 focus:bg-slate-950/30 focus:outline-none"
-        />
-        <div className="flex items-center justify-between px-2 pb-1">
-          <p className="text-xs text-slate-500">Messages send through /user-rpc send_to_agent</p>
-          <button
-            type="submit"
-            disabled={!canSend}
-            className="rounded-full bg-blue-500 px-4 py-2 text-sm font-semibold text-white shadow-lg shadow-blue-950/30 transition-all duration-200 hover:-translate-y-0.5 hover:scale-105 hover:bg-blue-400 active:translate-y-0 active:scale-95 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:translate-y-0 disabled:hover:scale-100"
-          >
-            Send
-          </button>
+    <div className="border-t border-[var(--fd-hairline)] bg-[var(--fd-surface-2)] p-4 flex flex-col gap-2.5">
+      {/* Smart Replies Row */}
+      {showReplies && (
+        <div className="flex flex-wrap gap-2 px-1">
+          {smartReplies.map((reply: string, idx: number) => (
+            <button
+              key={idx}
+              type="button"
+              onClick={() => handleSmartReplyClick(reply)}
+              className="bg-[#181818] hover:bg-[var(--fd-accent-blue)] hover:text-black border border-[#2a2a2a] hover:border-[var(--fd-accent-blue)]/50 text-[#ccc] text-xs px-3.5 py-1.5 rounded-full transition-[transform,colors] duration-150  font-semibold shadow-sm"
+            >
+              {reply}
+            </button>
+          ))}
         </div>
-      </div>
-    </form>
+      )}
+
+      <form className="w-full" onSubmit={handleSubmit}>
+        <div className="framer-card relative rounded-[var(--fd-radius-xxl)] p-2">
+          <label htmlFor="composer" className="sr-only">
+            Message {selectedAgent?.label ?? 'agent'}
+          </label>
+          <textarea
+            id="composer"
+            ref={textareaRef}
+            data-debug-id="message-input"
+            rows={2}
+            spellCheck={false}
+            defaultValue=""
+            onInput={handleInput}
+            onKeyDown={(event) => {
+              handleKeyDownCtrlW(event as any);
+              if (event.defaultPrevented) return;
+              if (event.key === 'Enter' && event.ctrlKey) {
+                handleSubmit(event, event.shiftKey);
+              }
+            }}
+            placeholder={selectedAgent ? `Message ${selectedAgent.id}...` : 'Select a connected agent to start chatting'}
+            className="framer-input max-h-32 w-full resize-y rounded-[var(--fd-radius-md)] border-0 bg-transparent px-3 py-2 text-sm shadow-none focus:shadow-none placeholder:text-[#999]"
+          />
+          <div className="flex items-center justify-between px-2 pb-1">
+            <p className="framer-subtext">Messages send through /user-rpc send_to_agent</p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                data-debug-id="interrupt-message-btn"
+                disabled={!canSend}
+                onClick={(e) => handleSubmit(e, true)}
+                className="framer-pill bg-red-600 hover:bg-red-700 text-white disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Interrupt
+              </button>
+              <button
+                type="submit"
+                data-debug-id="send-message-btn"
+                disabled={!canSend}
+                className="framer-pill bg-white disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Send
+              </button>
+            </div>
+          </div>
+        </div>
+      </form>
+    </div>
   );
-}
+});
+
+export default Composer;

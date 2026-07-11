@@ -1,5 +1,5 @@
 {
-  description = "Odin interactive agent daemon prototype";
+  description = "Heimdall Agent Manager";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
@@ -25,28 +25,48 @@
           runHook preBuild
           mkdir -p $out/bin
           odin build ${srcDir} -collection:odin_test=src -out:$out/bin/${name}
+          ${if name == "ham-wrapper" then "ln -s ham-wrapper $out/bin/bc-agent-wrapper" else ""}
+          ${if name == "ham-test-agent" then "ln -s ham-test-agent $out/bin/bc-test-agent" else ""}
+          runHook postBuild
+        '';
+      };
+
+      mkOdinPackageWithRuntime = pkgs: odin: name: srcDir: runtimeInputs: pkgs.stdenv.mkDerivation {
+        pname = name;
+        version = appVersion;
+        src = ./.;
+        nativeBuildInputs = [ odin pkgs.makeWrapper ];
+        buildInputs = runtimeInputs;
+        dontConfigure = true;
+        dontInstall = true;
+        buildPhase = ''
+          runHook preBuild
+          mkdir -p $out/bin
+          odin build ${srcDir} -collection:odin_test=src -out:$out/bin/${name}
+          wrapProgram $out/bin/${name} --prefix PATH : ${pkgs.lib.makeBinPath runtimeInputs}
           runHook postBuild
         '';
       };
 
       mkOdinDaemonPackage = pkgs: odin: pkgs.stdenv.mkDerivation {
-        pname = "bc-odin-daemon";
+        pname = "ham-daemon";
         version = appVersion;
         src = ./.;
-        nativeBuildInputs = [ odin ];
+        nativeBuildInputs = [ odin pkgs.makeWrapper ];
+        buildInputs = [ pkgs.sqlite ];
         dontConfigure = true;
         dontInstall = true;
         buildPhase = ''
           runHook preBuild
           mkdir -p $out/bin
-          odin build src/daemon -collection:odin_test=src -out:$out/bin/bc-odin-daemon
-          odin build src/wrapper -collection:odin_test=src -out:$out/bin/bc-agent-wrapper
+          odin build src/daemon -collection:odin_test=src -out:$out/bin/ham-daemon
+          wrapProgram $out/bin/ham-daemon --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.sqlite ]}
           runHook postBuild
         '';
       };
 
       mkOdinCtlPackage = pkgs: odin: pkgs.stdenv.mkDerivation {
-        pname = "bc-odinctl";
+        pname = "ham-ctl";
         version = appVersion;
         src = ./.;
         nativeBuildInputs = [ odin ];
@@ -55,13 +75,38 @@
         buildPhase = ''
           runHook preBuild
           mkdir -p $out/bin
-          odin build src/ctl -collection:odin_test=src -out:$out/bin/bc-odinctl
-          odin build src/wrapper -collection:odin_test=src -out:$out/bin/bc-agent-wrapper
+          odin build src/ctl -collection:odin_test=src -out:$out/bin/ham-ctl
           runHook postBuild
         '';
       };
+
+      mkOdinUiPackage = pkgs: pkgs.buildNpmPackage {
+        pname = "heimdall";
+        version = appVersion;
+        src = ./.;
+        npmDepsHash = "sha256-TZJIsQ3ckX+WAZEcSrKcEni1Ah+GnUX/P1YN4oFnm1g=";
+        nativeBuildInputs = [ pkgs.makeWrapper ];
+        npmBuildScript = "build";
+        npmFlags = [ "--ignore-scripts" ];
+        npmInstallFlags = [ "--ignore-scripts" ];
+        installPhase = ''
+          runHook preInstall
+          mkdir -p $out/share/heimdall/{dist,electron-dist}
+          cp -r dist/* $out/share/heimdall/dist/
+          cp -r electron-dist/* $out/share/heimdall/electron-dist/
+          mkdir -p $out/bin
+          makeWrapper ${pkgs.electron}/bin/electron $out/bin/heimdall \
+            --add-flags "$out/share/heimdall/electron-dist/main.cjs"
+          runHook postInstall
+        '';
+      };
+
+      homeManagerModule = import ./nix/home-manager.nix { inherit self; };
     in
     {
+      homeModules.default = homeManagerModule;
+      homeManagerModules.default = homeManagerModule;
+
       packages = forAllSystems (system:
         let
           pkgs = pkgsFor system;
@@ -72,29 +117,163 @@
           odin = pkgs.odin.override { llvmPackages_18 = pkgs.llvmPackages_21; };
         in
         {
-          bc-odin-daemon = mkOdinDaemonPackage pkgs odin;
-          bc-agent-wrapper = mkOdinPackage pkgs odin "bc-agent-wrapper" "src/wrapper";
-          bc-odinctl = mkOdinCtlPackage pkgs odin;
-          bc-test-agent = mkOdinPackage pkgs odin "bc-test-agent" "src/test_agent";
-          default = self.packages.${system}.bc-odin-daemon;
+          ham-daemon = mkOdinDaemonPackage pkgs odin;
+          ham-wrapper = mkOdinPackage pkgs odin "ham-wrapper" "src/wrapper";
+          ham-ctl = mkOdinCtlPackage pkgs odin;
+          ham-test-agent = mkOdinPackage pkgs odin "ham-test-agent" "src/test_agent";
+          ham-team-kinds-test = mkOdinPackage pkgs odin "ham-team-kinds-test" "tests";
+          ham-team-db-service-test = mkOdinPackageWithRuntime pkgs odin "ham-team-db-service-test" "tests/team_db_service_test" [ pkgs.sqlite ];
+          ham-team-service-test = mkOdinPackageWithRuntime pkgs odin "ham-team-service-test" "tests/team_service_test" [ pkgs.sqlite ];
+          ham-vcs-backend-test = mkOdinPackageWithRuntime pkgs odin "ham-vcs-backend-test" "tests/vcs_backend_test" [ pkgs.git pkgs.jujutsu ];
+          heimdall = mkOdinUiPackage pkgs;
+          bc-agent-wrapper = self.packages.${system}.ham-wrapper;
+          bc-test-agent = self.packages.${system}.ham-test-agent;
+          default = self.packages.${system}.ham-daemon;
         });
 
-      apps = forAllSystems (system: {
+      apps = forAllSystems (system: 
+        let pkgs = pkgsFor system;
+        in {
         daemon = {
           type = "app";
-          program = "${self.packages.${system}.bc-odin-daemon}/bin/bc-odin-daemon";
+          program = "${self.packages.${system}.ham-daemon}/bin/ham-daemon";
+        };
+        # daemon-with-wrapper: builds the current ham-wrapper alongside the
+        # ham-daemon and launches the daemon with a generated config whose
+        # [daemon].wrapper_bin points at that exact wrapper store path. This is
+        # stronger than relying on ./result-wrapper because it works from any
+        # CWD/config and cannot accidentally use a stale symlink.
+        #
+        # Extra args are forwarded. If --config is supplied, that config is used
+        # as the base and rewritten into a temp file with the current wrapper.
+        daemon-with-wrapper = {
+          type = "app";
+          program = "${pkgs.writeShellScriptBin "ham-daemon-with-wrapper" ''
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            HAM_DAEMON="${self.packages.${system}.ham-daemon}/bin/ham-daemon"
+            HAM_WRAPPER="${self.packages.${system}.ham-wrapper}/bin/ham-wrapper"
+            HAM_WRAPPER_DIR="${self.packages.${system}.ham-wrapper}"
+
+            # Keep the legacy repo symlink fresh for tools/tests that still read
+            # config.toml directly, but do not depend on it for this daemon run.
+            if [ -L result-wrapper ] || [ ! -e result-wrapper ]; then
+              ln -sfn "$HAM_WRAPPER_DIR" result-wrapper
+              echo "[ham-daemon-with-wrapper] refreshed ./result-wrapper -> $HAM_WRAPPER_DIR"
+            fi
+
+            CONFIG_PATH=""
+            REST=()
+            while [ "$#" -gt 0 ]; do
+              case "$1" in
+                --config)
+                  if [ "$#" -lt 2 ]; then
+                    echo "[ham-daemon-with-wrapper] --config requires a path" >&2
+                    exit 2
+                  fi
+                  CONFIG_PATH="$2"
+                  shift 2
+                  ;;
+                *)
+                  REST+=("$1")
+                  shift
+                  ;;
+              esac
+            done
+            if [ -z "$CONFIG_PATH" ] && [ -f "$PWD/config.toml" ]; then
+              CONFIG_PATH="$PWD/config.toml"
+              echo "[ham-daemon-with-wrapper] using $CONFIG_PATH"
+            fi
+
+            TMP_CONFIG=""
+            if [ -n "$CONFIG_PATH" ]; then
+              TMP_CONFIG="$(${pkgs.coreutils}/bin/mktemp "''${TMPDIR:-/tmp}/heimdall-daemon-with-wrapper.XXXXXX")"
+              ${pkgs.gawk}/bin/awk -v wrapper="$HAM_WRAPPER" '
+                BEGIN { in_daemon = 0; replaced = 0 }
+                /^\[daemon\][[:space:]]*$/ { in_daemon = 1; print; next }
+                /^\[/ {
+                  if (in_daemon && !replaced) {
+                    print "wrapper_bin = \"" wrapper "\""
+                    replaced = 1
+                  }
+                  in_daemon = 0
+                  print
+                  next
+                }
+                in_daemon && /^[[:space:]]*wrapper_bin[[:space:]]*=/ {
+                  print "wrapper_bin = \"" wrapper "\""
+                  replaced = 1
+                  next
+                }
+                { print }
+                END {
+                  if (!replaced) {
+                    if (!in_daemon) print ""
+                    if (!in_daemon) print "[daemon]"
+                    print "wrapper_bin = \"" wrapper "\""
+                  }
+                }
+              ' "$CONFIG_PATH" > "$TMP_CONFIG"
+              trap 'rm -f "$TMP_CONFIG"' EXIT
+              set -- --config "$TMP_CONFIG" "''${REST[@]}"
+              echo "[ham-daemon-with-wrapper] base config: $CONFIG_PATH"
+              echo "[ham-daemon-with-wrapper] generated config: $TMP_CONFIG"
+            else
+              set -- "''${REST[@]}"
+            fi
+
+            echo "[ham-daemon-with-wrapper] daemon: $HAM_DAEMON"
+            echo "[ham-daemon-with-wrapper] wrapper: $HAM_WRAPPER"
+            exec "$HAM_DAEMON" "$@"
+          ''}/bin/ham-daemon-with-wrapper";
         };
         wrapper = {
           type = "app";
-          program = "${self.packages.${system}.bc-agent-wrapper}/bin/bc-agent-wrapper";
+          program = "${self.packages.${system}.ham-wrapper}/bin/ham-wrapper";
         };
         ctl = {
           type = "app";
-          program = "${self.packages.${system}.bc-odinctl}/bin/bc-odinctl";
+          program = "${self.packages.${system}.ham-ctl}/bin/ham-ctl";
         };
         test-agent = {
           type = "app";
-          program = "${self.packages.${system}.bc-test-agent}/bin/bc-test-agent";
+          program = "${self.packages.${system}.ham-test-agent}/bin/ham-test-agent";
+        };
+        heimdall = {
+          type = "app";
+          program = "${self.packages.${system}.heimdall}/bin/heimdall";
+        };
+        heimdall-browser = {
+          type = "app";
+          program = "${pkgs.writeShellScriptBin "heimdall-browser" ''
+            #!/usr/bin/env bash
+            MODE="dev"
+            PORT="5173"
+
+            while [[ "$#" -gt 0 ]]; do
+                case $1 in
+                    --dev) MODE="dev"; shift ;;
+                    --release) MODE="release"; shift ;;
+                    --port) PORT="$2"; shift 2 ;;
+                    *) echo "Unknown parameter passed: $1"; exit 1 ;;
+                esac
+            done
+
+            echo "[heimdall] Starting Vite server ($MODE mode) on port $PORT..."
+            if [ ! -d "node_modules" ]; then
+              echo "[heimdall] node_modules not found. Running npm install..."
+              ${pkgs.nodejs}/bin/npm install
+            fi
+
+            if [ "$MODE" == "release" ]; then
+              echo "[heimdall] Building for release..."
+              ${pkgs.nodejs}/bin/npm run build
+              ${pkgs.nodejs}/bin/npx vite preview --host 127.0.0.1 --port $PORT
+            else
+              ${pkgs.nodejs}/bin/npx vite --host 127.0.0.1 --port $PORT
+            fi
+          ''}/bin/heimdall-browser";
         };
         default = self.apps.${system}.daemon;
       });
