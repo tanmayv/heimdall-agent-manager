@@ -36,11 +36,11 @@ function renderInline(text: string): string {
 
   // Bold + italic combinations.
   escaped = escaped.replace(/\*\*\*([^*\n]+)\*\*\*/g, '<strong><em>$1</em></strong>');
-  escaped = escaped.replace(/___([^_\n]+)___/g, '<strong><em>$1</em></strong>');
+  escaped = escaped.replace(/(^|[^A-Za-z0-9_])___([^_\n]+)___(?![A-Za-z0-9_])/g, '$1<strong><em>$2</em></strong>');
   escaped = escaped.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
-  escaped = escaped.replace(/__([^_\n]+)__/g, '<strong>$1</strong>');
+  escaped = escaped.replace(/(^|[^A-Za-z0-9_])__([^_\n]+)__(?![A-Za-z0-9_])/g, '$1<strong>$2</strong>');
   escaped = escaped.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
-  escaped = escaped.replace(/(^|[^_])_([^_\n]+)_/g, '$1<em>$2</em>');
+  escaped = escaped.replace(/(^|[^A-Za-z0-9_])_([^_\s](?:[^_\n]*?[^_\s])?)_(?![A-Za-z0-9_])/g, '$1<em>$2</em>');
 
   // Strikethrough.
   escaped = escaped.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');

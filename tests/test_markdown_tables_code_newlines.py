@@ -14,6 +14,7 @@ checks = [
     ('tables render copy CSV button', 'data-markdown-copy-table="true"' in src and 'Copy CSV' in src),
     ('table copy serializes CSV', 'function tableToCsv' in src and 'function csvEscape' in src and '.join(\',\')' in src),
     ('copy is event delegated from markdown root', 'rootRef' in src and 'addEventListener' in src),
+    ('underscore emphasis does not trigger inside words', "(?![A-Za-z0-9_])" in src and "[^A-Za-z0-9_]" in src),
 ]
 failed = [name for name, ok in checks if not ok]
 if failed:

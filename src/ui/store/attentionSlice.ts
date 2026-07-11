@@ -52,7 +52,7 @@ function parseMultiQuestions(optionsJson: string): MultiQuestionPrompt[] {
       if (typeof item === 'string') return { prompt: item, options: [], freeForm: true };
       const rawOptions = Array.isArray(item?.options) ? item.options : (Array.isArray(item?.suggested_replies) ? item.suggested_replies : []);
       return {
-        prompt: String(item?.question || item?.prompt || item?.body || item?.title || '').trim(),
+        prompt: String(item?.question || item?.prompt || item?.text || item?.body || item?.title || '').trim(),
         options: rawOptions.map(optionText).filter(Boolean),
         freeForm: Boolean(item?.free_form ?? item?.freeForm ?? rawOptions.length === 0),
       };

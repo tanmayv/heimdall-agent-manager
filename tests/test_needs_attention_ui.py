@@ -50,8 +50,8 @@ def main() -> None:
     require("attention-card-chat_approval" in app and "action-reply-" in app, "chat approval suggested replies must render")
     require("attention-card-chat_approval" in app and "action-freeform-send" in app, "chat approval must expose free-form send when free_form=true")
 
-    # Badge count now includes chat approvals, memory proposals, merges
-    require("attention.chatApprovalIds" in app, "badge count must include chat approvals")
+    # Badge count now includes actionable chat approvals, memory proposals, merges
+    require("chatApprovalsById" in app and "kind !== 'multi_question'" in app, "badge count must include actionable chat approvals and exclude inline multi_question prompts")
     require("pendingMemoryIds" in app, "badge count must include pending memory proposals")
     require("mergeReviewingChains" in app, "badge count must include reviewing chains")
 

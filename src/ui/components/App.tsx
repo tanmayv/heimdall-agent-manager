@@ -245,9 +245,10 @@ function isUserActionableTask(task: any): boolean {
   return false;
 }
 
-function attentionCount(tasksById: Record<string, any>, chainApprovalIds: string[], pendingMemoryIds: number, mergeReviewingChains: number) {
+function attentionCount(tasksById: Record<string, any>, attention: any, pendingMemoryIds: number, mergeReviewingChains: number) {
   const tasks = Object.values(tasksById).filter(isUserActionableTask).length;
-  return tasks + (chainApprovalIds?.length || 0) + pendingMemoryIds + mergeReviewingChains;
+  const chatApprovals = (attention?.chatApprovalIds || []).filter((id: string) => attention.chatApprovalsById?.[id]?.kind !== 'multi_question').length;
+  return tasks + chatApprovals + pendingMemoryIds + mergeReviewingChains;
 }
 
 export default function App() {
@@ -324,7 +325,7 @@ export default function App() {
   const toasts = useSelector((state: any) => state.toasts?.toasts || []);
   const pendingMemoryIds = useMemo(() => (memory?.recordIds || []).filter((id: string) => memory.recordsById?.[id]?.status === 'pending').length, [memory?.recordIds, memory?.recordsById]);
   const mergeReviewingChains = useMemo(() => (Object.values(chainsById || {}) as any[]).filter((chain) => chain?.status === 'reviewing').length, [chainsById]);
-  const badgeCount = attentionCount(tasksById || {}, attention.chatApprovalIds || [], pendingMemoryIds, mergeReviewingChains);
+  const badgeCount = attentionCount(tasksById || {}, attention, pendingMemoryIds, mergeReviewingChains);
 
   const loadHomeData = useCallback(async (periodic = false, reason = 'startup') => {
     const result = await dispatch(refreshTaskBoard()).unwrap().catch(() => null);
@@ -1102,7 +1103,7 @@ function AttentionSurface({ tasksById, chainsById, openChain, attention, memory,
   }, []);
   const chatApprovals = (attention?.chatApprovalIds || [])
     .map((id: string) => attention.chatApprovalsById?.[id])
-    .filter((approval: any) => approval && approval.state === 'open' && approval.expiresAtUnixMs > now);
+    .filter((approval: any) => approval && approval.state === 'open' && approval.expiresAtUnixMs > now && approval.kind !== 'multi_question');
   const taskApprovals = Object.values(tasksById || {}).filter(isUserActionableTask) as any[];
   const mergeChains = (Object.values(chainsById || {}) as any[]).filter((chain: any) => chain?.status === 'reviewing');
   const memoryProposals = (memory?.recordIds || [])
@@ -1565,7 +1566,7 @@ function normalizeMultiQuestions(value: any): MultiQuestionPrompt[] {
     if (typeof item === 'string') return { prompt: item, options: [], freeForm: true };
     const rawOptions = Array.isArray(item?.options) ? item.options : (Array.isArray(item?.suggested_replies) ? item.suggested_replies : []);
     return {
-      prompt: String(item?.question || item?.prompt || item?.body || item?.title || '').trim(),
+      prompt: String(item?.question || item?.prompt || item?.text || item?.body || item?.title || '').trim(),
       options: rawOptions.map(optionText).filter(Boolean),
       freeForm: Boolean(item?.free_form ?? item?.freeForm ?? rawOptions.length === 0),
     };
@@ -1618,6 +1619,7 @@ function CoordinatorActionCard({ action, messageId, debugPrefix, usedReply, onUs
     if (action.type !== 'multi_question' || used) return;
     const payload = JSON.stringify({
       type: 'multi_question_answer',
+      prompt_message_id: messageId,
       answers: action.questions.map((question, index) => ({ question: question.prompt, answer: answers[index] || '' })),
     });
     onUse(payload);
@@ -1677,10 +1679,73 @@ function CoordinatorActionCard({ action, messageId, debugPrefix, usedReply, onUs
           </div>
         ))}
       </div>
-      {used && <div data-debug-id={`${debugPrefix}-multi-question-${messageId}-used`} className="mt-2 text-xs text-emerald-200">Answers sent.</div>}
+      {used && <MultiQuestionAnswerSummary reply={usedReply} debugId={`${debugPrefix}-multi-question-${messageId}-used`} />}
       <button data-debug-id={`${debugPrefix}-multi-question-${messageId}-send`} onClick={sendMultiQuestion} disabled={used || !complete} className="mt-3 rounded-xl bg-sky-400 px-3 py-2 text-xs font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">Send answers</button>
     </div>
   );
+}
+
+function parseMultiQuestionAnswerReply(body: string): null | { promptMessageId: string; answers: { question: string; answer: string }[] } {
+  try {
+    const parsed = JSON.parse(String(body || '').trim());
+    if (!parsed || parsed.type !== 'multi_question_answer' || !Array.isArray(parsed.answers)) return null;
+    return {
+      promptMessageId: String(parsed.prompt_message_id || parsed.promptMessageId || ''),
+      answers: parsed.answers.map((item: any) => ({ question: String(item?.question || ''), answer: String(item?.answer || '') })).filter((item: any) => item.answer),
+    };
+  } catch (_err) {
+    return null;
+  }
+}
+
+function MultiQuestionAnswerSummary({ reply, debugId }: { reply: string; debugId: string }) {
+  const parsed = parseMultiQuestionAnswerReply(reply);
+  if (!parsed || parsed.answers.length === 0) {
+    return <div data-debug-id={debugId} className="mt-2 text-xs text-emerald-200">Answers sent.</div>;
+  }
+  return (
+    <div data-debug-id={debugId} className="mt-2 rounded-lg bg-emerald-400/10 p-2 text-xs text-emerald-100">
+      <div className="font-semibold">Answers saved</div>
+      <div className="mt-1 space-y-1">
+        {parsed.answers.map((item, index) => (
+          <div key={`${debugId}-${index}`}><span className="text-emerald-200/70">{item.question}</span> → {item.answer}</div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function UserActionReplyBubble({ body }: { body: string }) {
+  const multi = parseMultiQuestionAnswerReply(body);
+  if (multi) return <MultiQuestionAnswerSummary reply={body} debugId="coordinator-user-multi-question-answer" />;
+  return <Markdown source={body} compact className="mt-1" />;
+}
+
+function deriveCoordinatorActionReplies(messages: CoordinatorMessage[]): Record<string, string> {
+  const replies: Record<string, string> = {};
+  const pending: { messageId: string; action: CoordinatorActionPayload }[] = [];
+  for (const msg of messages) {
+    if (!msg.isUser) {
+      const action = parseCoordinatorActionPayload(msg.body);
+      if (action) pending.push({ messageId: msg.messageId, action });
+      continue;
+    }
+    const multi = parseMultiQuestionAnswerReply(msg.body);
+    if (multi) {
+      if (multi.promptMessageId && pending.some((item) => item.messageId === multi.promptMessageId && item.action.type === 'multi_question')) {
+        replies[multi.promptMessageId] = msg.body;
+        continue;
+      }
+      const target = [...pending].reverse().find((item) => item.action.type === 'multi_question' && !replies[item.messageId]);
+      if (target) replies[target.messageId] = msg.body;
+      continue;
+    }
+    const text = String(msg.body || '').trim();
+    if (!text) continue;
+    const target = [...pending].reverse().find((item) => item.action.type === 'smart_answer' && !replies[item.messageId] && item.action.suggestedReplies.includes(text));
+    if (target) replies[target.messageId] = text;
+  }
+  return replies;
 }
 
 function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'chain-coordinator', emptyText = 'No coordinator chat loaded for this chain.' }: { chainId: string; messages: CoordinatorMessage[]; onReply: (reply: string) => void; debugPrefix?: string; emptyText?: string }) {
@@ -1690,6 +1755,7 @@ function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'cha
   const lastChainRef = useRef(chainId);
   const [showJump, setShowJump] = useState(false);
   const [usedActionCards, setUsedActionCards] = useState<Record<string, string>>({});
+  const persistedActionReplies = useMemo(() => deriveCoordinatorActionReplies(messages), [messages]);
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
     const node = scrollRef.current;
@@ -1756,14 +1822,15 @@ function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'cha
                 )}
               </div>
               {(() => {
-                const action = !msg.isUser ? parseCoordinatorActionPayload(msg.body) : null;
+                if (msg.isUser) return <UserActionReplyBubble body={msg.body} />;
+                const action = parseCoordinatorActionPayload(msg.body);
                 if (!action) return <Markdown source={msg.body} compact className="mt-1" />;
                 return (
                   <CoordinatorActionCard
                     action={action}
                     messageId={msg.messageId}
                     debugPrefix={debugPrefix}
-                    usedReply={usedActionCards[msg.messageId] || ''}
+                    usedReply={usedActionCards[msg.messageId] || persistedActionReplies[msg.messageId] || ''}
                     onUse={(reply) => {
                       setUsedActionCards((prev) => ({ ...prev, [msg.messageId]: reply }));
                       onReply(reply);

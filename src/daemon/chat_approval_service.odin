@@ -21,7 +21,7 @@ Chat_Approval_Detect_Result :: struct {
 // Accepted shapes (subset of what the UI already renders):
 //   {"type":"smart_answer","body":"...","suggested_replies":[ ... ], "expires_in_ms": 60000?}
 //   {"type":"questions","body":"...","options":[ ... ], "free_form": true?}
-//   {"type":"multi_question","title":"...","questions":[{"question":"...","options":["..."]}]}
+//   {"type":"multi_question","title":"...","questions":[{"text":"...","options":["..."]}]}
 //   {"type":"approval_request","title":"...","body":"...","suggested_replies":[ ... ]}
 chat_approval_detect_payload :: proc(payload: string) -> Chat_Approval_Detect_Result {
 	res := Chat_Approval_Detect_Result{}
@@ -61,6 +61,9 @@ chat_approval_invalid_type_error :: proc(payload: string) -> string {
 	kind := extract_json_string(trimmed, "type", "")
 	if kind == "smartanswer" {
 		return `{"ok":false,"error":"invalid_approval_type","message":"invalid approval type 'smartanswer'; use canonical type 'smart_answer'"}`
+	}
+	if kind == "multiquestion" || kind == "mulit_question" {
+		return fmt.tprintf(`{"ok":false,"error":"invalid_approval_type","message":"invalid approval type '%s'; use canonical type 'multi_question'"}`, kind)
 	}
 	return ""
 }
