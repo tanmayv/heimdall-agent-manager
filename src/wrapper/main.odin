@@ -111,7 +111,7 @@ main :: proc() {
 			fmt.println("registration_status", register_response.status)
 			fmt.println("registration_response", register_response.body)
 			if register_response.status == 401 {
-				fmt.println("AUTH FAILURE: closing wrapper after registration 401", agent_instance_id)
+				fmt.println("fatal: registration unauthorized; stopping wrapper", agent_instance_id, register_response.body)
 			}
 		}
 		return
@@ -437,12 +437,12 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 		// (e.g. due to daemon restart), re-register and reconnect immediately!
 		if !ws_conn.connected {
 			fmt.println("WebSocket disconnected; attempting to reconnect...", agent_instance_id)
-			if new_ws_url, new_token, reconnected, auth_failed := reregister_and_reconnect_ws(daemon_url, agent_class, agent_instance_id, display_name, current_token, ws_conn); reconnected {
+			if new_ws_url, new_token, terminal_auth_failure, reconnected := reregister_and_reconnect_ws(daemon_url, agent_class, agent_instance_id, display_name, current_token, ws_conn); reconnected {
 				fmt.println("WebSocket successfully reconnected!", agent_instance_id, new_ws_url)
 				current_token = new_token
 				failed_heartbeats = 0
 				notify_agent_token_refreshed(tmux_pane, daemon_url, new_token, agent_instance_id)
-			} else if auth_failed {
+			} else if terminal_auth_failure {
 				close_wrapper_after_auth_failure(agent_instance_id, "ws_reconnect_register_401", "daemon rejected re-registration while WS was disconnected", ws_conn)
 				return
 			} else {
@@ -475,23 +475,30 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 			fmt.println("heartbeat unauthorized; closing wrapper", agent_instance_id, response.body)
 			close_wrapper_after_auth_failure(agent_instance_id, "heartbeat_401", response.body, ws_conn)
 			return
+		} else if ok && response.status == 409 {
+			fmt.println("fatal: heartbeat conflict; stopping wrapper", agent_instance_id, response.body)
+			return
 		} else if ok && response.status == 400 {
 			// Distinguish project_not_found / missing_required so operator sees it.
 			fmt.println("heartbeat rejected", agent_instance_id, response.body)
 			failed_heartbeats += 1
 		} else {
 			failed_heartbeats += 1
-			fmt.println("heartbeat failed", agent_instance_id)
+			if ok {
+				fmt.println("heartbeat failed", agent_instance_id, "status", response.status, "body", response.body)
+			} else {
+				fmt.println("heartbeat failed", agent_instance_id, "request_failed")
+			}
 		}
 
 		if failed_heartbeats >= 3 {
 			fmt.println("heartbeat failed repeatedly; re-registering", agent_instance_id)
-			if new_ws_url, new_token, reconnected, auth_failed := reregister_and_reconnect_ws(daemon_url, agent_class, agent_instance_id, display_name, current_token, ws_conn); reconnected {
+			if new_ws_url, new_token, terminal_auth_failure, reconnected := reregister_and_reconnect_ws(daemon_url, agent_class, agent_instance_id, display_name, current_token, ws_conn); reconnected {
 				fmt.println("reconnected", agent_instance_id, new_ws_url)
 				current_token = new_token
 				failed_heartbeats = 0
 				notify_agent_token_refreshed(tmux_pane, daemon_url, new_token, agent_instance_id)
-			} else if auth_failed {
+			} else if terminal_auth_failure {
 				close_wrapper_after_auth_failure(agent_instance_id, "heartbeat_retry_register_401", "daemon rejected re-registration after repeated heartbeat failures", ws_conn)
 				return
 			} else {
@@ -694,7 +701,7 @@ close_wrapper_after_auth_failure :: proc(agent_instance_id, reason, detail: stri
 	ws.close(ws_conn)
 }
 
-reregister_and_reconnect_ws :: proc(daemon_url, agent_class, agent_instance_id, display_name, agent_token: string, ws_conn: ^ws.Connection) -> (new_ws_url: string, new_token: string, ok: bool, auth_failed: bool) {
+reregister_and_reconnect_ws :: proc(daemon_url, agent_class, agent_instance_id, display_name, agent_token: string, ws_conn: ^ws.Connection) -> (new_ws_url: string, new_token: string, terminal_auth_failure: bool, ok: bool) {
 	response, health_ok := http.get(daemon_url, contracts.ROUTE_HEALTH)
 	if !health_ok || response.status != 200 do return "", "", false, false
 
@@ -703,7 +710,12 @@ reregister_and_reconnect_ws :: proc(daemon_url, agent_class, agent_instance_id, 
 	if !register_ok || register_response.status != 200 {
 		if register_ok {
 			fmt.println("re-registration failed", register_response.status, register_response.body)
-			if register_response.status == 401 do return "", "", false, true
+			if register_response.status == 401 {
+				fmt.println("fatal: re-registration unauthorized; wrapper will stop", agent_instance_id, register_response.body)
+				return "", "", true, false
+			}
+		} else {
+			fmt.println("re-registration request failed", agent_instance_id)
 		}
 		return "", "", false, false
 	}
@@ -719,7 +731,7 @@ reregister_and_reconnect_ws :: proc(daemon_url, agent_class, agent_instance_id, 
 	new_conn, ws_ok := ws.connect(ws_url)
 	if !ws_ok do return ws_url, token, false, false
 	ws_conn^ = new_conn
-	return ws_url, token, true, false
+	return ws_url, token, false, true
 }
 
 heartbeat_request_json :: proc(agent_instance_id, agent_token, display_name, provider_profile, provider_tier, project_id, tmux_pane, run_dir, exec_state, blocked_reason, startup_status, startup_reason_code, startup_safe_diagnostic: string, pid: int, exec_state_since_unix_ms: i64) -> string {
