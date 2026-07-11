@@ -110,6 +110,9 @@ main :: proc() {
 		if register_ok {
 			fmt.println("registration_status", register_response.status)
 			fmt.println("registration_response", register_response.body)
+			if register_response.status == 401 {
+				fmt.println("fatal: registration unauthorized; stopping wrapper", agent_instance_id, register_response.body)
+			}
 		}
 		return
 	}
@@ -434,11 +437,14 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 		// (e.g. due to daemon restart), re-register and reconnect immediately!
 		if !ws_conn.connected {
 			fmt.println("WebSocket disconnected; attempting to reconnect...", agent_instance_id)
-			if new_ws_url, new_token, reconnected := reregister_and_reconnect_ws(daemon_url, agent_class, agent_instance_id, display_name, current_token, ws_conn); reconnected {
+			if new_ws_url, new_token, terminal_auth_failure, reconnected := reregister_and_reconnect_ws(daemon_url, agent_class, agent_instance_id, display_name, current_token, ws_conn); reconnected {
 				fmt.println("WebSocket successfully reconnected!", agent_instance_id, new_ws_url)
 				current_token = new_token
 				failed_heartbeats = 0
 				notify_agent_token_refreshed(tmux_pane, daemon_url, new_token, agent_instance_id)
+			} else if terminal_auth_failure {
+				close_wrapper_after_auth_failure(agent_instance_id, "ws_reconnect_register_401", "daemon rejected re-registration while WS was disconnected", ws_conn)
+				return
 			} else {
 				fmt.println("WebSocket reconnection attempt failed; will retry", agent_instance_id)
 			}
@@ -466,34 +472,35 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 				}
 			}
 		} else if ok && response.status == 401 {
-			// Token not found in registry (daemon restarted). Re-register fresh to
-			// get the token back into the daemon's in-memory registry.
-			fmt.println("heartbeat token_not_found; re-registering", agent_instance_id)
-			if new_ws_url, new_token, reconnected := reregister_and_reconnect_ws(daemon_url, agent_class, agent_instance_id, display_name, current_token, ws_conn); reconnected {
-				fmt.println("re-registered", agent_instance_id, new_ws_url)
-				current_token = new_token
-				failed_heartbeats = 0
-				notify_agent_token_refreshed(tmux_pane, daemon_url, new_token, agent_instance_id)
-			} else {
-				fmt.println("re-register failed", agent_instance_id)
-				failed_heartbeats += 1
-			}
+			fmt.println("heartbeat unauthorized; closing wrapper", agent_instance_id, response.body)
+			close_wrapper_after_auth_failure(agent_instance_id, "heartbeat_401", response.body, ws_conn)
+			return
+		} else if ok && response.status == 409 {
+			fmt.println("fatal: heartbeat conflict; stopping wrapper", agent_instance_id, response.body)
+			return
 		} else if ok && response.status == 400 {
 			// Distinguish project_not_found / missing_required so operator sees it.
 			fmt.println("heartbeat rejected", agent_instance_id, response.body)
 			failed_heartbeats += 1
 		} else {
 			failed_heartbeats += 1
-			fmt.println("heartbeat failed", agent_instance_id)
+			if ok {
+				fmt.println("heartbeat failed", agent_instance_id, "status", response.status, "body", response.body)
+			} else {
+				fmt.println("heartbeat failed", agent_instance_id, "request_failed")
+			}
 		}
 
 		if failed_heartbeats >= 3 {
 			fmt.println("heartbeat failed repeatedly; re-registering", agent_instance_id)
-			if new_ws_url, new_token, reconnected := reregister_and_reconnect_ws(daemon_url, agent_class, agent_instance_id, display_name, current_token, ws_conn); reconnected {
+			if new_ws_url, new_token, terminal_auth_failure, reconnected := reregister_and_reconnect_ws(daemon_url, agent_class, agent_instance_id, display_name, current_token, ws_conn); reconnected {
 				fmt.println("reconnected", agent_instance_id, new_ws_url)
 				current_token = new_token
 				failed_heartbeats = 0
 				notify_agent_token_refreshed(tmux_pane, daemon_url, new_token, agent_instance_id)
+			} else if terminal_auth_failure {
+				close_wrapper_after_auth_failure(agent_instance_id, "heartbeat_retry_register_401", "daemon rejected re-registration after repeated heartbeat failures", ws_conn)
+				return
 			} else {
 				fmt.println("reconnect attempt failed", agent_instance_id)
 			}
@@ -559,6 +566,7 @@ handle_task_event :: proc(text, tmux_pane, agent_instance_id: string) {
 	status := extract_json_string(text, "status", "updated")
 	changed_by := extract_json_string(text, "changed_by", "unknown")
 	body := extract_json_string(text, "body", "")
+	event_kind := extract_json_string(text, "event", "")
 	if changed_by == agent_instance_id {
 		fmt.println("suppressed self-authored task event", task_id, status, changed_by)
 		return
@@ -575,11 +583,12 @@ handle_task_event :: proc(text, tmux_pane, agent_instance_id: string) {
 	defer delete(line)
 
 	// Task notifications can be high volume (auto-claims, status changes, nudges).
-	// Do not send an Escape prefix for task events: it interrupts the agent's
-	// current generation and can create notification storms when many task
-	// updates arrive. The line itself is still delivered so agents can observe
-	// relevant task changes without aborting in-flight work.
+	// Keep ordinary task updates non-interrupting, but let explicit nudges break
+	// through an active agent generation so they are not silently buried.
 	escape_prefix := false
+	if event_kind == "Task_Nudged" {
+		escape_prefix = extract_json_bool(text, "interrupt", false) || extract_json_bool(text, "send_escape_prefix", false)
+	}
 
 	if tmux.send_line_with_escape(tmux_pane, line, escape_prefix) {
 		fmt.println("notified agent pane", line)
@@ -688,17 +697,29 @@ report_stop_done :: proc(ws_conn: ^ws.Connection, agent_instance_id: string) {
 	_ = ws.send_text(ws_conn, strings.to_string(b))
 }
 
-reregister_and_reconnect_ws :: proc(daemon_url, agent_class, agent_instance_id, display_name, agent_token: string, ws_conn: ^ws.Connection) -> (new_ws_url: string, new_token: string, ok: bool) {
+close_wrapper_after_auth_failure :: proc(agent_instance_id, reason, detail: string, ws_conn: ^ws.Connection) {
+	fmt.println("AUTH FAILURE: closing wrapper", agent_instance_id, reason)
+	if detail != "" do fmt.println("auth_failure_detail", detail)
+	ws.close(ws_conn)
+}
+
+reregister_and_reconnect_ws :: proc(daemon_url, agent_class, agent_instance_id, display_name, agent_token: string, ws_conn: ^ws.Connection) -> (new_ws_url: string, new_token: string, terminal_auth_failure: bool, ok: bool) {
 	response, health_ok := http.get(daemon_url, contracts.ROUTE_HEALTH)
-	if !health_ok || response.status != 200 do return "", "", false
+	if !health_ok || response.status != 200 do return "", "", false, false
 
 	register_body := register_request_json(agent_class, agent_instance_id, display_name, agent_token)
 	register_response, register_ok := http.post(daemon_url, contracts.ROUTE_REGISTER, register_body)
 	if !register_ok || register_response.status != 200 {
 		if register_ok {
 			fmt.println("re-registration failed", register_response.status, register_response.body)
+			if register_response.status == 401 {
+				fmt.println("fatal: re-registration unauthorized; wrapper will stop", agent_instance_id, register_response.body)
+				return "", "", true, false
+			}
+		} else {
+			fmt.println("re-registration request failed", agent_instance_id)
 		}
-		return "", "", false
+		return "", "", false, false
 	}
 
 	ws_url := extract_json_string(register_response.body, "ws_url", "")
@@ -706,13 +727,13 @@ reregister_and_reconnect_ws :: proc(daemon_url, agent_class, agent_instance_id, 
 	prefs_obj := extract_json_object(register_response.body, "preferences")
 	defer if prefs_obj != "" do delete(prefs_obj)
 	apply_preferences_json(prefs_obj)
-	if ws_url == "" do return "", "", false
+	if ws_url == "" do return "", "", false, false
 
 	ws.close(ws_conn)
 	new_conn, ws_ok := ws.connect(ws_url)
-	if !ws_ok do return ws_url, token, false
+	if !ws_ok do return ws_url, token, false, false
 	ws_conn^ = new_conn
-	return ws_url, token, true
+	return ws_url, token, false, true
 }
 
 heartbeat_request_json :: proc(agent_instance_id, agent_token, display_name, provider_profile, provider_tier, project_id, tmux_pane, run_dir, exec_state, blocked_reason, startup_status, startup_reason_code, startup_safe_diagnostic: string, pid: int, exec_state_since_unix_ms: i64) -> string {
@@ -996,7 +1017,7 @@ Memory_Record :: struct {
 	is_configured_template: bool,
 }
 
-fetch_all_active_memories :: proc(daemon_url, agent_token, team_id, project_id: string, memory_templates: []string) -> [dynamic]Memory_Record {
+fetch_all_active_memories :: proc(daemon_url, agent_token, team_id, project_id, role_key, task_chain_type: string, memory_templates: []string) -> [dynamic]Memory_Record {
 	result := make([dynamic]Memory_Record)
 	configured_ids := make(map[string]bool)
 
@@ -1010,23 +1031,15 @@ fetch_all_active_memories :: proc(daemon_url, agent_token, team_id, project_id: 
 		}
 	}
 
-	if project_id != "" {
+	if agent_token != "" {
 		req := strings.builder_make()
-		strings.write_string(&req, `{"agent_token":"`); json_write_string(&req, agent_token)
-		strings.write_string(&req, `","action":"memory_list","scope":"project","subject_key":"`); json_write_string(&req, fmt.tprintf("pr:%s", project_id))
-		strings.write_string(&req, `","status":"active"}`)
-		resp, ok := http.post(daemon_url, contracts.ROUTE_AGENT_RPC, strings.to_string(req))
-		if ok && resp.status == 200 {
-			parse_into_memory_records(resp.body, memory_templates, false, &result, &configured_ids)
-		}
-	}
-
-	if team_id != "" && project_id != "" {
-		req := strings.builder_make()
-		strings.write_string(&req, `{"agent_token":"`); json_write_string(&req, agent_token)
-		strings.write_string(&req, `","action":"memory_list","scope":"team_project","subject_key":"`); json_write_string(&req, fmt.tprintf("tp:%s:%s", team_id, project_id))
-		strings.write_string(&req, `","status":"active"}`)
-		resp, ok := http.post(daemon_url, contracts.ROUTE_AGENT_RPC, strings.to_string(req))
+		strings.write_string(&req, `{"agent_token":"`); json_write_string(&req, agent_token); strings.write_string(&req, `"`)
+		if team_id != "" { strings.write_string(&req, `,"team_id":"`); json_write_string(&req, team_id); strings.write_string(&req, `"`) }
+		if project_id != "" { strings.write_string(&req, `,"project_id":"`); json_write_string(&req, project_id); strings.write_string(&req, `"`) }
+		if role_key != "" { strings.write_string(&req, `,"role_key":"`); json_write_string(&req, role_key); strings.write_string(&req, `"`) }
+		if task_chain_type != "" { strings.write_string(&req, `,"task_chain_type":"`); json_write_string(&req, task_chain_type); strings.write_string(&req, `"`) }
+		strings.write_string(&req, `}`)
+		resp, ok := http.post(daemon_url, "/memory/applicable", strings.to_string(req))
 		if ok && resp.status == 200 {
 			parse_into_memory_records(resp.body, memory_templates, false, &result, &configured_ids)
 		}
@@ -1074,9 +1087,9 @@ generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_
 	project_id := agent_cmd.project
 	if project_id == "" do project_id = cfg.project
 	project_context := project_bootstrap_context(daemon_url, agent_token, cfg, agent_cmd)
-	team_context, chain_id := team_bootstrap_context(daemon_url, team_id)
+	team_context, chain_id, task_chain_type := team_bootstrap_context(daemon_url, team_id)
 	chain_context, workspace_context := task_chain_bootstrap_context(daemon_url, agent_token, chain_id)
-	memories := fetch_all_active_memories(daemon_url, agent_token, team_id, project_id, memory_templates)
+	memories := fetch_all_active_memories(daemon_url, agent_token, team_id, project_id, role_key, task_chain_type, memory_templates)
 
 	written := make([dynamic]string)
 
@@ -1137,14 +1150,15 @@ generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_
 	write_manifest(cwd, written[:])
 }
 
-team_bootstrap_context :: proc(daemon_url, team_id: string) -> (string, string) {
-	if team_id == "" do return "", ""
+team_bootstrap_context :: proc(daemon_url, team_id: string) -> (string, string, string) {
+	if team_id == "" do return "", "", ""
 	response, ok := http.get(daemon_url, fmt.tprintf("/teams/%s", team_id))
-	if !ok || response.status != 200 do return "", ""
+	if !ok || response.status != 200 do return "", "", ""
 	chain_id := extract_json_string(response.body, "chain_id", "")
+	team_kind := extract_json_string(response.body, "kind", "")
 	b := strings.builder_make()
 	strings.write_string(&b, "- team_id: "); strings.write_string(&b, extract_json_string(response.body, "team_id", team_id)); strings.write_string(&b, "\n")
-	strings.write_string(&b, "- kind: "); strings.write_string(&b, extract_json_string(response.body, "kind", "")); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- kind: "); strings.write_string(&b, team_kind); strings.write_string(&b, "\n")
 	strings.write_string(&b, "- status: "); strings.write_string(&b, extract_json_string(response.body, "status", "")); strings.write_string(&b, "\n")
 	strings.write_string(&b, "- Roster:\n")
 	idx := 0
@@ -1162,7 +1176,7 @@ team_bootstrap_context :: proc(daemon_url, team_id: string) -> (string, string) 
 		}
 		idx = end
 	}
-	return strings.to_string(b), chain_id
+	return strings.to_string(b), chain_id, team_kind
 }
 
 task_chain_bootstrap_context :: proc(daemon_url, agent_token, chain_id: string) -> (string, string) {

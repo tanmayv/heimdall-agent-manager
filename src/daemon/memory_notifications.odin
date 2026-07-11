@@ -36,6 +36,9 @@ memory_append_event :: proc(event: contracts.Memory_Event) -> contracts.Memory_A
 		rec.subject_agent = strings.clone(ev.subject_agent)
 		rec.scope = strings.clone(ev.scope)
 		rec.subject_key = strings.clone(ev.subject_key)
+		rec.project_ids = strings.clone(ev.project_ids)
+		rec.role_keys = strings.clone(ev.role_keys)
+		rec.task_chain_types = strings.clone(ev.task_chain_types)
 		rec.type = ev.type
 		rec.title = strings.clone(ev.title)
 		rec.body = strings.clone(ev.body)

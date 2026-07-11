@@ -368,6 +368,11 @@ handle_client :: proc(client: net.TCP_Socket) {
 		return
 	}
 
+	if strings.has_prefix(request, "POST /memory/applicable ") {
+		handle_memory_applicable(client, request_body(request))
+		return
+	}
+
 	if strings.has_prefix(request, "POST /memory/show ") {
 		handle_memory_show(client, request_body(request))
 		return
