@@ -1909,22 +1909,6 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
     }, 60);
     return () => window.clearTimeout(timer);
   }, [chain?.chainId]);
-  const team = chainView.teamByChainId[chain.chainId];
-  const members = team?.members || [];
-  const agentsByRecordId = new Map<string, any>(agents.map((agent: any) => [agent.agentRecordId, agent]));
-  const roster = members.map((member: any) => {
-    const agent = member.agent_record_id ? agentsByRecordId.get(member.agent_record_id) : null;
-    const memberId = agent?.id || member.agent_instance_id || member.agentInstanceId || member.route_to || `${member.role_key}-${member.role_index}`;
-    return agent || {
-      id: memberId,
-      label: member.route_to || member.agent_instance_id || member.agentInstanceId || `${member.role_key} ${member.role_index + 1}`,
-      state: member.lifecycle_status || 'missing',
-      status: member.lifecycle_status || 'missing',
-      roleKey: member.role_key,
-      roleIndex: member.role_index,
-      isUserProxy: Boolean(member.is_user_proxy),
-    };
-  });
   const workspace = chainView.workspaceByChainId[chain.chainId];
   const chat = chainView.chatByChainId[chain.chainId] || [];
   const optimistic = chainView.optimisticMessagesByChainId[chain.chainId] || [];
@@ -1976,69 +1960,6 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
       </div>
 
       <div className="mt-8 space-y-4">
-        <section className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
-          <div className="flex items-center justify-between gap-3">
-            <h2 className="font-semibold">Team roster</h2>
-            <div className="rounded-xl bg-black/20 px-3 py-1.5 text-xs text-zinc-400">{tasks.length} task(s) loaded</div>
-          </div>
-          <div data-debug-id="chain-roster-strip" className="mt-3 flex gap-3 overflow-x-auto pb-1">
-            {roster.length === 0 ? <div className="text-sm text-zinc-500">No team members loaded for this chain.</div> : roster.map((agent: any) => {
-              const runtime = agentRuntimeDot(agent);
-              const blocked = agent.state === 'blocked' || agent.status === 'startup_blocked' || agent.blockedReason;
-              const assignment = collectAgentAssignments(agent, tasksById || {}, chainsById || {})[0];
-              return (
-                <button
-                  key={agent.id}
-                  data-debug-id={`chain-roster-row-${agent.id}`}
-                  onClick={() => onOpenAgent(agent.id)}
-                  className={`min-w-[260px] max-w-[320px] shrink-0 rounded-xl border ${blocked ? 'border-red-500/25 bg-red-500/10 text-red-100' : 'border-white/5 bg-white/5 text-zinc-200'} px-3 py-3 text-left transition hover:border-white/15 hover:bg-white/10`}
-                >
-                  <div className="flex items-start gap-2">
-                    <span data-debug-id={`chain-roster-dot-${agent.id}`} title={runtime.label} aria-label={`status ${runtime.label}`} className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${runtime.color}`}></span>
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate font-medium">{agent.label || agent.id}</div>
-                      <div className="truncate text-xs text-zinc-500">{agent.roleKey ? `${agent.roleKey} · ` : ''}{runtime.label}{agent.currentTaskId ? ` · task ${agent.currentTaskId}` : ''}</div>
-                      {blocked && <div className="mt-1 text-xs text-red-300">{agent.blockedReason || 'blocked'}</div>}
-                      {assignment ? (
-                        <div data-debug-id={`chain-roster-assignments-${agent.id}`} className="mt-2 rounded-lg border border-white/5 bg-black/20 px-2 py-2 text-[11px] text-zinc-300">
-                          <div className="flex items-center gap-2">
-                            <span className={`rounded-full border px-1.5 py-0.5 text-[10px] uppercase tracking-wide ${assignment.role === 'reviewing' ? 'border-sky-500/30 bg-sky-500/15 text-sky-200' : 'border-teal-500/30 bg-teal-500/15 text-teal-200'}`}>{assignment.role === 'reviewing' ? 'Reviewing' : 'Assigned'}</span>
-                            <span className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[10px] ${statusTone(assignment.chainStatus || 'unknown')}`}>{assignment.chainStatus || 'unknown'}</span>
-                          </div>
-                          <button
-                            data-debug-id={`chain-roster-assignment-${agent.id}-${assignment.taskId}`}
-                            onClick={(event) => { event.stopPropagation(); if (assignment.chainId) onOpenChain?.(assignment.chainId); }}
-                            className="mt-1 block w-full text-left"
-                          >
-                            <div className="truncate font-medium text-zinc-100">{assignment.chainTitle || assignment.chainId || 'Standalone'}</div>
-                            <div className="truncate text-zinc-400"><span className="text-zinc-500">Task:</span> {assignment.taskTitle || assignment.taskId} · <span className={`inline-block rounded px-1 text-[10px] ${statusTone(assignment.taskStatus || 'unknown')}`}>{assignment.taskStatus}</span></div>
-                          </button>
-                          {assignment.blockedOnTaskIds && assignment.blockedOnTaskIds.length > 0 && (
-                            <div data-debug-id={`chain-roster-assignment-${agent.id}-${assignment.taskId}-blocked-on`} className="mt-1 flex flex-wrap items-center gap-1 text-[10px] text-amber-200">
-                              <span className="uppercase tracking-wide text-amber-300/80">Blocked on</span>
-                              {assignment.blockedOnTaskIds.map((id: string) => (
-                                <button
-                                  key={`${assignment.taskId}-blocked-${id}`}
-                                  data-debug-id={`chain-roster-assignment-${agent.id}-${assignment.taskId}-blocked-on-${id}`}
-                                  onClick={(event) => { event.stopPropagation(); openTaskById(id); }}
-                                  title={`Open blocking task ${id}`}
-                                  className="rounded border border-amber-500/30 bg-amber-500/10 px-1 py-0.5 font-mono text-[10px] text-amber-100 transition hover:border-amber-400/60 hover:bg-amber-500/20"
-                                >{id}</button>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <div className="mt-2 text-xs text-zinc-500">No active task or review.</div>
-                      )}
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </section>
-
         <section data-debug-id="chain-coordinator-panel" className="flex h-[70vh] max-h-[70vh] min-h-[420px] flex-col rounded-2xl border border-white/10 bg-white/[0.035] p-4">
           <h2 className="font-semibold">Coordinator chat</h2>
           <CoordinatorMessageList chainId={chain.chainId} messages={messages} onReply={(reply) => onSend(reply)} />
@@ -2099,6 +2020,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
           onSetTaskStatus={onSetTaskStatus}
           onVoteTask={onVoteTask}
           onNudgeTask={onNudgeTask}
+          agents={agents}
         />
         {completedTasks.length > 0 && (
           <div data-debug-id="chain-completed-task-section" className="mt-5 border-t border-white/10 pt-4">
@@ -2120,6 +2042,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
               onSetTaskStatus={onSetTaskStatus}
               onVoteTask={onVoteTask}
               onNudgeTask={onNudgeTask}
+              agents={agents}
               completed
             />
           </div>
@@ -2129,10 +2052,48 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
   );
 }
 
-function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, expandedTaskId, commentDraft, nudgeDraft, onCommentDraft, onNudgeDraft, onOpenTask, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, completed = false }: any) {
+function taskReviewerIds(task: any): string[] {
+  const ids = new Set<string>();
+  if (task?.reviewerAgentInstanceId) ids.add(String(task.reviewerAgentInstanceId));
+  (task?.participants || []).forEach((participant: any) => {
+    if (participant?.role === 'lgtm_required' && participant.agentInstanceId) ids.add(String(participant.agentInstanceId));
+  });
+  return [...ids];
+}
+
+function isAgentRunning(agent: any): boolean {
+  if (!agent) return false;
+  const startup = String(agent.startupStatus || '').toLowerCase();
+  const state = String(agent.state || agent.status || '').toLowerCase();
+  if (agent.blockedReason || state === 'blocked' || startup === 'blocked' || startup === 'startup_blocked') return false;
+  if (agent.currentTaskId || agent.connected) return true;
+  return ['ready', 'live', 'connected', 'idle', 'working'].includes(state) || ['ready', 'connected'].includes(startup);
+}
+
+function TaskAgentChip({ role, agentId, agent, active }: any) {
+  const runtime = agentRuntimeDot(agent || { id: agentId, state: agentId ? 'missing' : 'unknown' });
+  const running = isAgentRunning(agent);
+  const working = Boolean(active && running);
+  return (
+    <span data-debug-id={`chain-task-${role.toLowerCase()}-${agentId || 'none'}`} className={`inline-flex max-w-[220px] items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] ${working ? 'border-teal-400/35 bg-teal-400/10 text-teal-100' : 'border-white/10 bg-black/20 text-zinc-400'}`} title={`${role}: ${agentId || 'none'} · ${runtime.label}`}>
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${working ? 'animate-ping bg-teal-300' : runtime.color}`}></span>
+      <span className="shrink-0 text-zinc-500">{role}</span>
+      <span className="truncate">{agent?.label || agentId || '—'}</span>
+      <span className="shrink-0 text-zinc-600">·</span>
+      <span className="shrink-0">{working ? 'working…' : runtime.label}</span>
+    </span>
+  );
+}
+
+function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, expandedTaskId, commentDraft, nudgeDraft, onCommentDraft, onNudgeDraft, onOpenTask, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, agents = [], completed = false }: any) {
   const [commentsOpenByTaskId, setCommentsOpenByTaskId] = useState<Record<string, boolean>>({});
   const [busyAction, setBusyAction] = useState('');
   const [localError, setLocalError] = useState('');
+  const agentsById = useMemo(() => {
+    const map = new Map<string, any>();
+    (agents || []).forEach((agent: any) => { if (agent?.id) map.set(String(agent.id), agent); });
+    return map;
+  }, [agents]);
   const runAction = async (key: string, fn: () => Promise<void> | void) => {
     setBusyAction(key);
     setLocalError('');
@@ -2160,6 +2121,13 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ex
           const blockers = unmetDependencyIds(task, tasksById || {});
           const startDisabledReason = blockers.length > 0 ? `Waiting on ${blockers.join(', ')}` : (task.notActionableReason?.startsWith('assignee_busy:') ? task.notActionableReason : '');
           const actionNeeded = isUserActionableTask(task);
+          const assigneeId = task.assigneeAgentInstanceId || '';
+          const assigneeAgent = assigneeId ? agentsById.get(String(assigneeId)) : null;
+          const reviewerIds = taskReviewerIds(task);
+          const reviewerId = reviewerIds[0] || '';
+          const reviewerAgent = reviewerId ? agentsById.get(String(reviewerId)) : null;
+          const assigneeWorking = task.status === 'in_progress' && blockers.length === 0 && !task.notActionableReason;
+          const reviewerWorking = task.status === 'review_ready';
           const baseTone = completed ? 'border-white/5 bg-white/[0.025] text-zinc-500 opacity-70' : expanded ? 'border-sky-400/30 bg-sky-400/[0.06]' : 'border-white/8 bg-white/[0.04] hover:bg-white/[0.07]';
           return (
             <div key={task.taskId} data-debug-id={`chain-task-row-${task.taskId}`} className={`rounded-2xl border transition ${baseTone}`}>
@@ -2171,10 +2139,14 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ex
                     <span data-debug-id={`chain-task-row-${task.taskId}-status`} className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] ${perceived.tone}`}>{perceived.label}</span>
                   </div>
                 </button>
+                <div data-debug-id={`chain-task-row-${task.taskId}-agents`} className="hidden min-w-0 shrink items-center justify-end gap-2 lg:flex">
+                  <TaskAgentChip role="Assignee" agentId={assigneeId} agent={assigneeAgent} active={assigneeWorking} />
+                  <TaskAgentChip role="Reviewer" agentId={reviewerId} agent={reviewerAgent} active={reviewerWorking} />
+                </div>
                 {actionNeeded && (
                   <button data-debug-id={`chain-task-row-${task.taskId}-action-needed-btn`} onClick={() => onOpenTask(task)} className="shrink-0 rounded-xl bg-rose-400 px-3 py-1.5 text-xs font-semibold text-black hover:bg-rose-300">Action needed</button>
                 )}
-                <button data-debug-id={`chain-task-row-${task.taskId}-expand-btn`} onClick={() => expanded ? onCloseTask() : onOpenTask(task)} className="shrink-0 rounded-lg bg-white/10 px-2 py-1 text-xs hover:bg-white/15">{expanded ? 'Collapse' : 'Expand'}</button>
+                <button data-debug-id={`chain-task-row-${task.taskId}-expand-btn`} aria-label={expanded ? 'Collapse task details' : 'Expand task details'} title={expanded ? 'Collapse task details' : 'Expand task details'} onClick={() => expanded ? onCloseTask() : onOpenTask(task)} className="shrink-0 rounded-lg bg-white/10 px-2 py-1 text-xs hover:bg-white/15">{expanded ? '⌃' : '›'}</button>
               </div>
               {expanded && (
                 <div data-debug-id={`chain-task-row-${task.taskId}-expanded`} className="border-t border-white/10 px-4 py-4">

@@ -18,6 +18,12 @@ REQUIRED_APP_SNIPPETS = [
     'data-debug-id={`chain-task-row-${task.taskId}`}',
     'data-debug-id={`chain-task-row-${task.taskId}-title`}',
     'data-debug-id={`chain-task-row-${task.taskId}-status`}',
+    'data-debug-id={`chain-task-row-${task.taskId}-agents`}',
+    'function TaskAgentChip',
+    'function isAgentRunning',
+    'assigneeWorking',
+    'reviewerWorking',
+    'working…',
     'data-debug-id={`chain-task-row-${task.taskId}-action-needed-btn`}',
     'data-debug-id={`chain-task-row-${task.taskId}-expand-btn`}',
     'data-debug-id={`chain-task-row-${task.taskId}-expanded`}',
@@ -59,13 +65,17 @@ def main() -> None:
     for snippet in ["fetchTasksForChain", "fetchSelectedTaskLog", "nudgeSelectedTask"]:
         if snippet not in task_slice:
             raise AssertionError(f"missing task slice support: {snippet}")
-    for snippet in ["ChainTaskSurface", "TaskDetail", "UI-9", "dependency-ordered todo list", "Completed tasks"]:
+    for snippet in ["ChainTaskSurface", "TaskDetail", "UI-9", "dependency-ordered todo list", "Completed tasks", "assignee/reviewer runtime chips"]:
         if snippet not in ui_doc:
             raise AssertionError(f"missing UI doc snippet: {snippet}")
     if "UI-9" not in inv_doc:
         raise AssertionError("missing UI-9 invariant")
     if "direct-agent" in app.lower() and "debug" not in app.lower():
         raise AssertionError("Chain task UI must not add main-path direct-agent chat")
+    if "Team roster" in app or "chain-roster-row" in app:
+        raise AssertionError("ChainView should not render the old team roster surface")
+    if ">{expanded ? 'Collapse' : 'Expand'}<" in app:
+        raise AssertionError("Task row expand control should be icon-only")
     print("PASS: ChainView task todo list/detail UI contract")
 
 
