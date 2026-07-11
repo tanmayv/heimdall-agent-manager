@@ -28,6 +28,12 @@ memory_service_propose :: proc(action, body, author: string) -> Memory_Service_R
 	defer delete(title)
 	memory_body := extract_json_string(body, "body", "")
 	defer delete(memory_body)
+	project_ids_text := extract_json_string(body, "project_ids", extract_json_string(body, "project_id", ""))
+	defer delete(project_ids_text)
+	role_keys_text := extract_json_string(body, "role_keys", extract_json_string(body, "role_key", ""))
+	defer delete(role_keys_text)
+	task_chain_types_text := extract_json_string(body, "task_chain_types", extract_json_string(body, "task_chain_type", ""))
+	defer delete(task_chain_types_text)
 
 	target_id := extract_json_string(body, "memory_id", "")
 	if target_id == "" {
@@ -50,6 +56,12 @@ memory_service_propose :: proc(action, body, author: string) -> Memory_Service_R
 	defer delete(proposal_id)
 	memory_id: string
 	defer delete(memory_id)
+
+	project_ids, role_keys, task_chain_types, targets_ok, targets_err := memory_prepare_targets(project_ids_text, role_keys_text, task_chain_types_text)
+	defer delete(project_ids)
+	defer delete(role_keys)
+	defer delete(task_chain_types)
+	if !targets_ok do return memory_error(400, targets_err)
 
 	mem_type, type_ok := memory_type_parse(type_text)
 	if (action == "edit" || action == "archive") && target_id == "" do return memory_error(400, "memory_id required")
@@ -94,7 +106,7 @@ memory_service_propose :: proc(action, body, author: string) -> Memory_Service_R
 		target_id = strings.clone(memory_id)
 	}
 	if action == "new" {
-		resolved_subject, resolved_scope, resolved_subject_key, ok, err := memory_resolve_new_subject(author, body, subject, scope, subject_key, title, mem_type)
+		resolved_subject, resolved_scope, resolved_subject_key, ok, err := memory_resolve_new_subject(author, body, subject, scope, subject_key, title, mem_type, project_ids != "" || role_keys != "" || task_chain_types != "")
 		if !ok do return memory_error(400, err)
 		delete(subject)
 		subject = resolved_subject
@@ -102,17 +114,27 @@ memory_service_propose :: proc(action, body, author: string) -> Memory_Service_R
 		scope = resolved_scope
 		delete(subject_key)
 		subject_key = resolved_subject_key
+		if ok_scope, scope_err := memory_validate_scope_targets(scope, subject_key, project_ids, role_keys, task_chain_types); !ok_scope do return memory_error(400, scope_err)
 		new_metadata_json := memory_metadata_with_action(metadata_json, action, "")
 		delete(metadata_json)
 		metadata_json = new_metadata_json
 	}
 	if action != "new" {
+		if changed, change_err := memory_edit_targeting_changed(body, subject, scope, subject_key, project_ids, role_keys, task_chain_types, target); changed {
+			return memory_error(400, change_err)
+		}
 		delete(subject)
 		subject = strings.clone(target.subject_agent)
 		delete(scope)
 		scope = strings.clone(target.scope)
 		delete(subject_key)
 		subject_key = strings.clone(target.subject_key)
+		delete(project_ids)
+		project_ids = strings.clone(target.project_ids)
+		delete(role_keys)
+		role_keys = strings.clone(target.role_keys)
+		delete(task_chain_types)
+		task_chain_types = strings.clone(target.task_chain_types)
 		if action == "archive" {
 			mem_type = target.type
 			delete(title)
@@ -124,7 +146,27 @@ memory_service_propose :: proc(action, body, author: string) -> Memory_Service_R
 		delete(metadata_json)
 		metadata_json = new_metadata_json
 	}
-	event := contracts.Memory_Event{kind = .Memory_Proposed, memory_id = memory_id, proposal_id = proposal_id, subject_agent = subject, scope = scope, subject_key = subject_key, type = mem_type, title = title, body = memory_body, status = .Pending, reason = reason, evidence = evidence, metadata_json = metadata_json, author = author, source_task_id = source_task_id, version = proposal_version}
+	event := contracts.Memory_Event{
+		kind = .Memory_Proposed,
+		memory_id = memory_id,
+		proposal_id = proposal_id,
+		subject_agent = subject,
+		scope = scope,
+		subject_key = subject_key,
+		project_ids = project_ids,
+		role_keys = role_keys,
+		task_chain_types = task_chain_types,
+		type = mem_type,
+		title = title,
+		body = memory_body,
+		status = .Pending,
+		reason = reason,
+		evidence = evidence,
+		metadata_json = metadata_json,
+		author = author,
+		source_task_id = source_task_id,
+		version = proposal_version,
+	}
 	resp := memory_append_event(event)
 	if !resp.ok do return memory_error(500, resp.message)
 	return Memory_Service_Result{ok = true, status_code = 200, message = memory_response_json(resp.message, resp.memory_id, resp.proposal_id)}
@@ -167,6 +209,21 @@ memory_service_list_json :: proc(body: string, calling_agent_id: string = "") ->
 	status, status_ok := memory_status_parse(status_text)
 	include_all := extract_json_bool(body, "include_all_statuses", false) || status_text == "all"
 	if !status_ok && !include_all do return `{"ok":false,"message":"invalid memory status"}`
+	type_text := extract_json_string(body, "type", "")
+	defer delete(type_text)
+	if _, ok := memory_type_parse(type_text); type_text != "" && !ok do return `{"ok":false,"message":"invalid memory type"}`
+	project_ids_filter_text := extract_json_string(body, "project_ids", extract_json_string(body, "project_id", ""))
+	defer delete(project_ids_filter_text)
+	role_keys_filter_text := extract_json_string(body, "role_keys", extract_json_string(body, "role_key", ""))
+	defer delete(role_keys_filter_text)
+	task_chain_types_filter_text := extract_json_string(body, "task_chain_types", extract_json_string(body, "task_chain_type", ""))
+	defer delete(task_chain_types_filter_text)
+	project_ids_filter, role_keys_filter, task_chain_types_filter, filters_ok, filters_err := memory_prepare_targets(project_ids_filter_text, role_keys_filter_text, task_chain_types_filter_text)
+	defer delete(project_ids_filter)
+	defer delete(role_keys_filter)
+	defer delete(task_chain_types_filter)
+	if !filters_ok do return memory_error(400, filters_err).message
+
 	subject := extract_json_string(body, "subject_agent", extract_json_string(body, "agent", ""))
 	defer delete(subject)
 	scope := memory_scope_normalize(extract_json_string(body, "scope", ""))
@@ -195,13 +252,49 @@ memory_service_list_json :: proc(body: string, calling_agent_id: string = "") ->
 	strings.write_string(&builder, `{"ok":true,"records":[`)
 	wrote := false
 	for rec in records {
-		if rec.scope == "Personal" && !memory_personal_visible_to(calling_agent_id) do continue
+		if !memory_record_matches_filters(rec, type_text, project_ids_filter, role_keys_filter, task_chain_types_filter, calling_agent_id) do continue
 		if wrote do strings.write_string(&builder, `,`)
 		memory_write_record_json(&builder, rec)
 		wrote = true
 	}
 	strings.write_string(&builder, `]}`)
 	return strings.to_string(builder)
+}
+
+memory_service_applicable_json :: proc(body, calling_agent_id: string) -> Memory_Service_Result {
+	target_agent_instance_id := extract_json_string(body, "agent_instance_id", "")
+	if target_agent_instance_id == "" do target_agent_instance_id = strings.clone(calling_agent_id)
+	defer delete(target_agent_instance_id)
+	team_id := extract_json_string(body, "team_id", extract_json_string(body, "team", ""))
+	defer delete(team_id)
+	project_id := extract_json_string(body, "project_id", "")
+	defer delete(project_id)
+	role_key := extract_json_string(body, "role_key", "")
+	defer delete(role_key)
+	task_chain_type := extract_json_string(body, "task_chain_type", "")
+	defer delete(task_chain_type)
+
+	if project_id != "" && !memory_project_id_known(project_id) do return memory_error(400, "unknown project_id target")
+	if role_key != "" && !memory_role_key_known(role_key) do return memory_error(400, "unknown role_key target")
+	if task_chain_type != "" && !memory_task_chain_type_known(task_chain_type) do return memory_error(400, "unknown task_chain_type target")
+
+	records := memory_db_list_records("", "", "", .Active, false)
+	defer {
+		for rec in records do memory_record_free(rec)
+		delete(records)
+	}
+
+	builder := strings.builder_make()
+	strings.write_string(&builder, `{"ok":true,"records":[`)
+	wrote := false
+	for rec in records {
+		if !memory_record_applies(rec, calling_agent_id, target_agent_instance_id, team_id, project_id, role_key, task_chain_type) do continue
+		if wrote do strings.write_string(&builder, `,`)
+		memory_write_record_json(&builder, rec)
+		wrote = true
+	}
+	strings.write_string(&builder, `]}`)
+	return Memory_Service_Result{ok = true, status_code = 200, message = strings.to_string(builder)}
 }
 
 memory_service_show_json :: proc(body: string) -> string {
@@ -274,7 +367,7 @@ memory_scope_normalize :: proc(value: string) -> string {
 	return strings.clone(value)
 }
 
-memory_resolve_new_subject :: proc(author, body, subject, scope, subject_key, title: string, mem_type: contracts.Memory_Type) -> (string, string, string, bool, string) {
+memory_resolve_new_subject :: proc(author, body, subject, scope, subject_key, title: string, mem_type: contracts.Memory_Type, has_targets: bool) -> (string, string, string, bool, string) {
 	resolved_scope := strings.clone(scope)
 	resolved_subject := strings.clone(subject)
 	resolved_subject_key := strings.clone(subject_key)
@@ -299,10 +392,15 @@ memory_resolve_new_subject :: proc(author, body, subject, scope, subject_key, ti
 			resolved_scope = strings.clone("Template")
 		} else if resolved_subject != "" {
 			resolved_scope = strings.clone("Team_Project")
+		} else if has_targets {
+			return resolved_subject, resolved_scope, resolved_subject_key, true, ""
 		}
 	}
 
 	switch resolved_scope {
+	case "":
+		if has_targets do return resolved_subject, resolved_scope, resolved_subject_key, true, ""
+		return "", "", "", false, "memory proposals require a legacy scope or canonical targets"
 	case "Team_Project":
 		if project_id == "" {
 			if idx := agent_record_index_by_instance(resolved_subject); idx >= 0 && agent_instance_records[idx].project_id != "" do project_id = strings.clone(agent_instance_records[idx].project_id)
@@ -343,6 +441,52 @@ memory_resolve_new_subject :: proc(author, body, subject, scope, subject_key, ti
 		return "", "", "", false, "invalid memory scope"
 	}
 	return resolved_subject, resolved_scope, resolved_subject_key, true, ""
+}
+
+memory_prepare_targets :: proc(project_ids, role_keys, task_chain_types: string) -> (string, string, string, bool, string) {
+	project_ids_value := memory_normalize_csv(project_ids)
+	role_keys_value := memory_normalize_csv(role_keys)
+	task_chain_types_value := memory_normalize_csv(task_chain_types)
+	if !memory_validate_project_ids(project_ids_value) do return "", "", "", false, "unknown project_id target"
+	if !memory_validate_role_keys(role_keys_value) do return "", "", "", false, "unknown role_key target"
+	if !memory_validate_task_chain_types(task_chain_types_value) do return "", "", "", false, "unknown task_chain_type target"
+	return project_ids_value, role_keys_value, task_chain_types_value, true, ""
+}
+
+memory_validate_scope_targets :: proc(scope, subject_key, project_ids, role_keys, task_chain_types: string) -> (bool, string) {
+	has_targets := project_ids != "" || role_keys != "" || task_chain_types != ""
+	switch scope {
+	case "":
+		if !has_targets do return false, "memory proposals require a legacy scope or canonical targets"
+		return true, ""
+	case "Template":
+		if has_targets do return false, "template memories stay separate in v1; targeting fields are not allowed"
+		return true, ""
+	case "Personal":
+		if has_targets do return false, "personal memories cannot use project/role/task-chain targeting"
+		return true, ""
+	case "Project", "Team_Project":
+		legacy_project := memory_project_id_from_subject(scope, subject_key)
+		if legacy_project != "" && project_ids != "" && !memory_csv_contains(project_ids, legacy_project) {
+			return false, "project_ids must include the legacy project target"
+		}
+		return true, ""
+	case:
+		return false, "invalid memory scope"
+	}
+}
+
+memory_edit_targeting_changed :: proc(body, subject, scope, subject_key, project_ids, role_keys, task_chain_types: string, target: contracts.Memory_Record) -> (bool, string) {
+	if subject != "" && subject != target.subject_agent do return true, "material retargets require archive+new in v1"
+	if scope != "" && scope != target.scope do return true, "material retargets require archive+new in v1"
+	if subject_key != "" && subject_key != target.subject_key do return true, "material retargets require archive+new in v1"
+	if project_ids != "" && project_ids != target.project_ids do return true, "material retargets require archive+new in v1"
+	if role_keys != "" && role_keys != target.role_keys do return true, "material retargets require archive+new in v1"
+	if task_chain_types != "" && task_chain_types != target.task_chain_types do return true, "material retargets require archive+new in v1"
+	if json_has_key(body, "team_id") || json_has_key(body, "team") || json_has_key(body, "project") || json_has_key(body, "template_key") || json_has_key(body, "template") {
+		return true, "material retargets require archive+new in v1"
+	}
+	return false, ""
 }
 
 memory_team_id_for_agent :: proc(agent_instance_id: string) -> string {
@@ -418,10 +562,240 @@ memory_personal_visible_to :: proc(calling_agent_id: string) -> bool {
 	return strings.has_suffix(calling_agent_id, "@heimdall-system")
 }
 
+memory_project_id_known :: proc(value: string) -> bool {
+	if value == "" do return false
+	return project_index(value) >= 0
+}
+
+memory_role_key_known :: proc(value: string) -> bool {
+	if value == "" do return false
+	for kind in team_kind_list() {
+		for role in kind.roles {
+			if role.role_key == value do return true
+		}
+	}
+	return false
+}
+
+memory_task_chain_type_known :: proc(value: string) -> bool {
+	if value == "" do return false
+	return team_kind_get(value) != nil
+}
+
+memory_validate_project_ids :: proc(csv: string) -> bool {
+	entries := memory_csv_entries(csv)
+	defer delete(entries)
+	for entry in entries {
+		if !memory_project_id_known(entry) do return false
+	}
+	return true
+}
+
+memory_validate_role_keys :: proc(csv: string) -> bool {
+	entries := memory_csv_entries(csv)
+	defer delete(entries)
+	for entry in entries {
+		if !memory_role_key_known(entry) do return false
+	}
+	return true
+}
+
+memory_validate_task_chain_types :: proc(csv: string) -> bool {
+	entries := memory_csv_entries(csv)
+	defer delete(entries)
+	for entry in entries {
+		if !memory_task_chain_type_known(entry) do return false
+	}
+	return true
+}
+
+memory_csv_entries :: proc(value: string) -> [dynamic]string {
+	result := make([dynamic]string)
+	parts := strings.split(value, ",")
+	for part in parts {
+		trimmed := strings.trim_space(part)
+		if trimmed == "" do continue
+		seen := false
+		for existing in result {
+			if existing == trimmed {
+				seen = true
+				break
+			}
+		}
+		if !seen do append(&result, strings.clone(trimmed))
+	}
+	return result
+}
+
+memory_normalize_csv :: proc(value: string) -> string {
+	entries := memory_csv_entries(value)
+	defer {
+		for entry in entries do delete(entry)
+		delete(entries)
+	}
+	return memory_join_csv(entries[:])
+}
+
+memory_join_csv :: proc(values: []string) -> string {
+	builder := strings.builder_make()
+	first := true
+	for value in values {
+		trimmed := strings.trim_space(value)
+		if trimmed == "" do continue
+		if !first do strings.write_string(&builder, ",")
+		first = false
+		strings.write_string(&builder, trimmed)
+	}
+	return strings.to_string(builder)
+}
+
+memory_csv_contains :: proc(csv, value: string) -> bool {
+	entries := memory_csv_entries(csv)
+	defer {
+		for entry in entries do delete(entry)
+		delete(entries)
+	}
+	for entry in entries {
+		if entry == value do return true
+	}
+	return false
+}
+
+memory_dimension_matches :: proc(csv, value: string) -> bool {
+	if csv == "" do return true
+	if value == "" do return false
+	return memory_csv_contains(csv, value)
+}
+
+memory_dimension_filter_matches :: proc(record_csv, filter_csv: string) -> bool {
+	if filter_csv == "" do return true
+	if record_csv == "" do return true
+	return memory_csv_overlaps(record_csv, filter_csv)
+}
+
+memory_csv_overlaps :: proc(left_csv, right_csv: string) -> bool {
+	left_entries := memory_csv_entries(left_csv)
+	defer {
+		for entry in left_entries do delete(entry)
+		delete(left_entries)
+	}
+	for entry in left_entries {
+		if memory_csv_contains(right_csv, entry) do return true
+	}
+	return false
+}
+
+memory_project_id_from_subject :: proc(scope, subject_key: string) -> string {
+	if subject_key == "" do return ""
+	switch scope {
+	case "Project":
+		if strings.has_prefix(subject_key, "pr:") && len(subject_key) > 3 do return strings.clone(subject_key[3:])
+	case "Team_Project":
+		if !strings.has_prefix(subject_key, "tp:") do return ""
+		rest := subject_key[3:]
+		sep := strings.index_byte(rest, ':')
+		if sep >= 0 && sep < len(rest)-1 do return strings.clone(rest[sep+1:])
+	}
+	return ""
+}
+
+memory_legacy_scope_applies :: proc(rec: contracts.Memory_Record, calling_agent_id, target_agent_instance_id, team_id, project_id: string) -> bool {
+	switch rec.scope {
+	case "":
+		return true
+	case "Project":
+		if project_id == "" do return false
+		return rec.subject_key == fmt.tprintf("pr:%s", project_id)
+	case "Team_Project":
+		if team_id == "" || project_id == "" do return false
+		return rec.subject_key == fmt.tprintf("tp:%s:%s", team_id, project_id)
+	case "Personal":
+		if !memory_personal_visible_to(calling_agent_id) do return false
+		return rec.subject_key == fmt.tprintf("agent:%s", target_agent_instance_id)
+	case "Template":
+		return false
+	case:
+		return false
+	}
+}
+
+memory_record_applies :: proc(rec: contracts.Memory_Record, calling_agent_id, target_agent_instance_id, team_id, project_id, role_key, task_chain_type: string) -> bool {
+	if rec.status != .Active do return false
+	if rec.scope == "Template" || rec.type == .Template do return false
+	if !memory_legacy_scope_applies(rec, calling_agent_id, target_agent_instance_id, team_id, project_id) do return false
+	if !memory_dimension_matches(rec.project_ids, project_id) do return false
+	if !memory_dimension_matches(rec.role_keys, role_key) do return false
+	if !memory_dimension_matches(rec.task_chain_types, task_chain_type) do return false
+	return true
+}
+
+memory_record_matches_filters :: proc(rec: contracts.Memory_Record, type_filter, project_ids_filter, role_keys_filter, task_chain_types_filter, calling_agent_id: string) -> bool {
+	if rec.scope == "Personal" && !memory_personal_visible_to(calling_agent_id) do return false
+	if type_filter != "" && memory_type_string_service(rec.type) != type_filter do return false
+	if !memory_dimension_filter_matches(rec.project_ids, project_ids_filter) do return false
+	if !memory_dimension_filter_matches(rec.role_keys, role_keys_filter) do return false
+	if !memory_dimension_filter_matches(rec.task_chain_types, task_chain_types_filter) do return false
+	if rec.scope == "Template" || rec.type == .Template {
+		return project_ids_filter == "" && role_keys_filter == "" && task_chain_types_filter == ""
+	}
+	if rec.scope == "Personal" {
+		return project_ids_filter == "" && role_keys_filter == "" && task_chain_types_filter == ""
+	}
+	legacy_project := memory_project_id_from_subject(rec.scope, rec.subject_key)
+	if project_ids_filter != "" && legacy_project != "" && !memory_csv_contains(project_ids_filter, legacy_project) do return false
+	return true
+}
+
+memory_write_csv_json_array :: proc(builder: ^strings.Builder, csv: string) {
+	entries := memory_csv_entries(csv)
+	defer {
+		for entry in entries do delete(entry)
+		delete(entries)
+	}
+	strings.write_string(builder, `[`)
+	for entry, i in entries {
+		if i > 0 do strings.write_string(builder, `,`)
+		strings.write_string(builder, `"`)
+		json_write_string(builder, entry)
+		strings.write_string(builder, `"`)
+	}
+	strings.write_string(builder, `]`)
+}
+
 memory_write_record_json :: proc(builder: ^strings.Builder, rec: contracts.Memory_Record) {
-	strings.write_string(builder, `{"memory_id":"`); json_write_string(builder, rec.memory_id); strings.write_string(builder, `","proposal_id":"`); json_write_string(builder, rec.proposal_id); strings.write_string(builder, `","subject_agent":"`); json_write_string(builder, rec.subject_agent); strings.write_string(builder, `","scope":"`); json_write_string(builder, rec.scope); strings.write_string(builder, `","subject_key":"`); json_write_string(builder, rec.subject_key); strings.write_string(builder, `","type":"`); json_write_string(builder, memory_type_string_service(rec.type)); strings.write_string(builder, `","title":"`); json_write_string(builder, rec.title); strings.write_string(builder, `","body":"`); json_write_string(builder, rec.body); strings.write_string(builder, `","status":"`); json_write_string(builder, memory_status_string_service(rec.status)); strings.write_string(builder, `","reason":"`); json_write_string(builder, rec.reason); strings.write_string(builder, `","evidence":"`); json_write_string(builder, rec.evidence); strings.write_string(builder, `","metadata_json":"`); json_write_string(builder, rec.metadata_json); strings.write_string(builder, `","source_task_id":"`); json_write_string(builder, rec.source_task_id); strings.write_string(builder, `","version":`); strings.write_string(builder, fmt.tprintf("%d", rec.version)); strings.write_string(builder, `,"created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.created_unix_ms)); strings.write_string(builder, `,"updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.updated_unix_ms)); strings.write_string(builder, `}`)
+	strings.write_string(builder, `{"memory_id":"`); json_write_string(builder, rec.memory_id)
+	strings.write_string(builder, `","proposal_id":"`); json_write_string(builder, rec.proposal_id)
+	strings.write_string(builder, `","subject_agent":"`); json_write_string(builder, rec.subject_agent)
+	strings.write_string(builder, `","scope":"`); json_write_string(builder, rec.scope)
+	strings.write_string(builder, `","subject_key":"`); json_write_string(builder, rec.subject_key)
+	strings.write_string(builder, `","project_ids":`); memory_write_csv_json_array(builder, rec.project_ids)
+	strings.write_string(builder, `,"role_keys":`); memory_write_csv_json_array(builder, rec.role_keys)
+	strings.write_string(builder, `,"task_chain_types":`); memory_write_csv_json_array(builder, rec.task_chain_types)
+	strings.write_string(builder, `,"type":"`); json_write_string(builder, memory_type_string_service(rec.type))
+	strings.write_string(builder, `","title":"`); json_write_string(builder, rec.title)
+	strings.write_string(builder, `","body":"`); json_write_string(builder, rec.body)
+	strings.write_string(builder, `","status":"`); json_write_string(builder, memory_status_string_service(rec.status))
+	strings.write_string(builder, `","reason":"`); json_write_string(builder, rec.reason)
+	strings.write_string(builder, `","evidence":"`); json_write_string(builder, rec.evidence)
+	strings.write_string(builder, `","metadata_json":"`); json_write_string(builder, rec.metadata_json)
+	strings.write_string(builder, `","source_task_id":"`); json_write_string(builder, rec.source_task_id)
+	strings.write_string(builder, `","version":`); strings.write_string(builder, fmt.tprintf("%d", rec.version))
+	strings.write_string(builder, `,"created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.created_unix_ms))
+	strings.write_string(builder, `,"updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.updated_unix_ms))
+	strings.write_string(builder, `}`)
 }
 
 memory_write_event_json :: proc(builder: ^strings.Builder, ev: contracts.Memory_Event) {
-	strings.write_string(builder, `{"event_id":"`); json_write_string(builder, ev.event_id); strings.write_string(builder, `","memory_id":"`); json_write_string(builder, ev.memory_id); strings.write_string(builder, `","proposal_id":"`); json_write_string(builder, ev.proposal_id); strings.write_string(builder, `","subject_key":"`); json_write_string(builder, ev.subject_key); strings.write_string(builder, `","reason":"`); json_write_string(builder, ev.reason); strings.write_string(builder, `","evidence":"`); json_write_string(builder, ev.evidence); strings.write_string(builder, `","author":"`); json_write_string(builder, ev.author); strings.write_string(builder, `","created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", ev.created_unix_ms)); strings.write_string(builder, `}`)
+	strings.write_string(builder, `{"event_id":"`); json_write_string(builder, ev.event_id)
+	strings.write_string(builder, `","memory_id":"`); json_write_string(builder, ev.memory_id)
+	strings.write_string(builder, `","proposal_id":"`); json_write_string(builder, ev.proposal_id)
+	strings.write_string(builder, `","subject_key":"`); json_write_string(builder, ev.subject_key)
+	strings.write_string(builder, `","project_ids":`); memory_write_csv_json_array(builder, ev.project_ids)
+	strings.write_string(builder, `,"role_keys":`); memory_write_csv_json_array(builder, ev.role_keys)
+	strings.write_string(builder, `,"task_chain_types":`); memory_write_csv_json_array(builder, ev.task_chain_types)
+	strings.write_string(builder, `,"reason":"`); json_write_string(builder, ev.reason)
+	strings.write_string(builder, `","evidence":"`); json_write_string(builder, ev.evidence)
+	strings.write_string(builder, `","author":"`); json_write_string(builder, ev.author)
+	strings.write_string(builder, `","created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", ev.created_unix_ms))
+	strings.write_string(builder, `}`)
 }

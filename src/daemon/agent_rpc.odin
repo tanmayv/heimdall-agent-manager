@@ -37,7 +37,8 @@ handle_agent_rpc :: proc(client: net.TCP_Socket, body: string) {
 	} else if action == "memory_decide" {
 		write_memory_service_response(client, memory_service_decide(extract_json_string(body, "decision", extract_json_string(body, "result", "")), body, from_agent_instance_id))
 	} else if action == "memory_list" {
-		write_response(client, 200, "OK", memory_service_list_json(body, from_agent_instance_id))
+		out := memory_service_list_json(body, from_agent_instance_id)
+		if !extract_json_bool(out, "ok", false) { write_response(client, 400, "Bad Request", out) } else { write_response(client, 200, "OK", out) }
 	} else if action == "memory_show" {
 		write_response(client, 200, "OK", memory_service_show_json(body))
 	} else if action == "memory_history" {

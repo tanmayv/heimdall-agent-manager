@@ -598,6 +598,11 @@ memory_ctl_add_filter_fields :: proc(body: ^strings.Builder, args: []string) {
 	if subject_key := option_value(args, "--subject-key", ""); subject_key != "" { strings.write_string(body, `,"subject_key":"`); json_write_string(body, subject_key); strings.write_string(body, `"`) }
 	if team := option_value(args, "--team", option_value(args, "--team-id", "")); team != "" { strings.write_string(body, `,"team_id":"`); json_write_string(body, team); strings.write_string(body, `"`) }
 	if project := option_value(args, "--project", option_value(args, "--project-id", "")); project != "" { strings.write_string(body, `,"project_id":"`); json_write_string(body, project); strings.write_string(body, `"`) }
+	if project_ids := option_value(args, "--project-ids", ""); project_ids != "" { strings.write_string(body, `,"project_ids":"`); json_write_string(body, project_ids); strings.write_string(body, `"`) }
+	if role_key := option_value(args, "--role-key", ""); role_key != "" { strings.write_string(body, `,"role_key":"`); json_write_string(body, role_key); strings.write_string(body, `"`) }
+	if role_keys := option_value(args, "--role-keys", ""); role_keys != "" { strings.write_string(body, `,"role_keys":"`); json_write_string(body, role_keys); strings.write_string(body, `"`) }
+	if task_chain_type := option_value(args, "--task-chain-type", ""); task_chain_type != "" { strings.write_string(body, `,"task_chain_type":"`); json_write_string(body, task_chain_type); strings.write_string(body, `"`) }
+	if task_chain_types := option_value(args, "--task-chain-types", ""); task_chain_types != "" { strings.write_string(body, `,"task_chain_types":"`); json_write_string(body, task_chain_types); strings.write_string(body, `"`) }
 	if template_key := option_value(args, "--template-key", option_value(args, "--template", "")); template_key != "" { strings.write_string(body, `,"template_key":"`); json_write_string(body, template_key); strings.write_string(body, `"`) }
 	if typ := option_value(args, "--type", ""); typ != "" { strings.write_string(body, `,"type":"`); json_write_string(body, typ); strings.write_string(body, `"`) }
 	if status := option_value(args, "--status", ""); status != "" { strings.write_string(body, `,"status":"`); json_write_string(body, status); strings.write_string(body, `"`) }
@@ -1154,12 +1159,12 @@ print_usage :: proc(config_path, daemon_url: string) {
 	fmt.println("  projects update --token <token> --project-id <id> [--name <name>] [--description <text>] [--anchor-type <type> --anchor-value <val> [--anchor-note <note>]]")
 	fmt.println("  projects list --token <token>")
 	fmt.println("  projects show --token <token> --project-id <id>")
-	fmt.println("  memory propose new --token <token> --scope <team_project|project|template> [--team <id> --project <id> | --project <id> | --template-key <slug> | --subject-key <key>] [--agent <agent>] --type <type> --title <title> --body <body> [--reason <text>] [--evidence <text>] [--source-task-id <id>]")
-	fmt.println("  memory propose edit --token <token> --memory-id <id> --expected-version <version> --title <title> --body <body> [--reason <text>] [--evidence <text>]")
+	fmt.println("  memory propose new --token <token> [--scope <team_project|project|template>] [--team <id> --project <id> | --project <id> | --template-key <slug> | --subject-key <key>] [--agent <agent>] [--project-ids <csv>] [--role-keys <csv>] [--task-chain-types <csv>] --type <type> --title <title> --body <body> [--reason <text>] [--evidence <text>] [--source-task-id <id>]")
+	fmt.println("  memory propose edit --token <token> --memory-id <id> --expected-version <version> --title <title> --body <body> [--project-ids <csv>] [--role-keys <csv>] [--task-chain-types <csv>] [--reason <text>] [--evidence <text>]")
 	fmt.println("  memory propose archive --token <token> --memory-id <id> --expected-version <version> [--reason <text>] [--evidence <text>]")
 	fmt.println("  memory propose rollback --token <token> --memory-id <id> --expected-version <version> [--reason <text>] [--evidence <text>]")
 	fmt.println("  memory decide --token <token> --proposal-id <id> --decision approve|reject [--reason <text>]")
-	fmt.println("  memory list --token <token> [--agent <agent>] [--scope <scope>] [--subject-key <key>] [--team <id>] [--project <id>] [--template-key <slug>] [--type <type>] [--status <status>] [--all]")
+	fmt.println("  memory list --token <token> [--agent <agent>] [--scope <scope>] [--subject-key <key>] [--team <id>] [--project <id> | --project-ids <csv>] [--template-key <slug>] [--type <type>] [--role-key <key> | --role-keys <csv>] [--task-chain-type <kind> | --task-chain-types <csv>] [--status <status>] [--all]")
 	fmt.println("  memory show --token <token> --memory-id <id>")
 	fmt.println("  memory history --token <token> --memory-id <id>")
 	fmt.println("  users register --user-id <user> --client-instance-id <client> [--token <client_token>]")

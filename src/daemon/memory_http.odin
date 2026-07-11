@@ -15,9 +15,17 @@ handle_memory_decide :: proc(client: net.TCP_Socket, body: string) {
 }
 
 handle_memory_list :: proc(client: net.TCP_Socket, body: string) {
-	_, ok := memory_author_from_body(client, body)
+	author, ok := memory_author_from_body(client, body)
 	if !ok do return
-	write_response(client, 200, "OK", memory_service_list_json(body))
+	out := memory_service_list_json(body, author)
+	if !extract_json_bool(out, "ok", false) { write_response(client, 400, "Bad Request", out); return }
+	write_response(client, 200, "OK", out)
+}
+
+handle_memory_applicable :: proc(client: net.TCP_Socket, body: string) {
+	author, ok := memory_author_from_body(client, body)
+	if !ok do return
+	write_memory_service_response(client, memory_service_applicable_json(body, author))
 }
 
 handle_memory_show :: proc(client: net.TCP_Socket, body: string) {

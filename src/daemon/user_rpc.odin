@@ -39,7 +39,7 @@ handle_user_rpc :: proc(client: net.TCP_Socket, body: string) {
 	case "memory_propose_archive": write_memory_service_response(client, memory_service_propose("archive", body, user_id))
 	case "memory_propose_rollback": write_memory_service_response(client, memory_service_propose("rollback", body, user_id))
 	case "memory_decide": write_memory_service_response(client, memory_service_decide(extract_json_string(body, "decision", extract_json_string(body, "result", "")), body, user_id))
-	case "memory_list": write_response(client, 200, "OK", memory_service_list_json(body))
+	case "memory_list": out := memory_service_list_json(body, user_id); if !extract_json_bool(out, "ok", false) { write_response(client, 400, "Bad Request", out) } else { write_response(client, 200, "OK", out) }
 	case "memory_show": write_response(client, 200, "OK", memory_service_show_json(body))
 	case "memory_history": write_response(client, 200, "OK", memory_service_history_json(body))
 	case "project_list": write_response(client, 200, "OK", project_list_json())
