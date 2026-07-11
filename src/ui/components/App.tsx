@@ -1951,9 +1951,6 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
           <div className="mt-3 flex flex-wrap gap-2">
             <span className={`rounded-full border px-3 py-1 text-xs ${statusTone(chain.status)}`}>{chain.status}</span>
             <span className="rounded-full bg-white/5 px-3 py-1 text-xs text-zinc-400">Coordinator {chain.coordinatorAgentInstanceId || '—'}</span>
-            <span data-debug-id="chain-http-load-evidence" className="rounded-full bg-white/5 px-3 py-1 text-xs text-zinc-500">HTTP load {chainView.lastHttpLoadByChainId[chain.chainId] ? new Date(chainView.lastHttpLoadByChainId[chain.chainId]).toLocaleTimeString() : 'pending'}</span>
-            <span data-debug-id="chain-ws-evidence" className="rounded-full bg-white/5 px-3 py-1 text-xs text-zinc-500">WS {chainView.lastWsRefreshReason || 'none yet'}</span>
-            <span data-debug-id="chain-local-action-evidence" className="rounded-full bg-white/5 px-3 py-1 text-xs text-zinc-500">Local {chainView.lastLocalAction || 'none yet'}</span>
           </div>
         </div>
         <div />
