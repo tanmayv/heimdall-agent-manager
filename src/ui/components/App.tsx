@@ -6,13 +6,18 @@ import {
   agentLifecycleEventReceived,
   agentRuntimeEventReceived,
   appendMessage,
+  GUIDE_AGENT_ID,
   chatEventReceived,
+  closeGuidePanel,
+  fetchGuideChat,
   fetchPreferences,
   fetchSelectedChat,
   refreshAgents,
   registerSession,
   removeDaemonProfile,
   renameDaemonProfile,
+  sendGuideMessage,
+  toggleGuidePanel,
   updateSessionConfig,
   userWsConnected,
   userWsConnecting,
@@ -47,7 +52,7 @@ import {
 import { answerChatApproval, chatApprovalEventReceived, dismissChatApproval, refreshChatApprovals, tickChatApprovalExpiry } from '../store/attentionSlice';
 import { refreshMemory, decideMemoryProposal } from '../store/memorySlice';
 import Markdown from './Markdown';
-import './useUrlParams';
+import { updateUrlParams } from './useUrlParams';
 
 type Chain = {
   chainId: string;
@@ -246,7 +251,7 @@ function attentionCount(tasksById: Record<string, any>, chainApprovalIds: string
 
 export default function App() {
   const dispatch = useDispatch<any>();
-  const { agents, session, daemonProfiles, selectedAgentId } = useSelector((state: any) => state.chat);
+  const { agents, session, daemonProfiles, selectedAgentId, chats, guidePanelOpen, guideSending, fetchingChatsByAgentId } = useSelector((state: any) => state.chat);
   const { projectsById, projectIds, mutating: projectMutating, error: projectError } = useSelector((state: any) => state.projects);
   const { chainsById, tasksById, chainTaskIds, taskLogsByTaskId, loading } = useSelector((state: any) => state.tasks);
   const home = useSelector((state: any) => state.home);
@@ -297,6 +302,22 @@ export default function App() {
     }
     return byId;
   }, [agents]);
+  const guideAgent = useMemo(() => (agents || []).find((agent: any) => agent.id === GUIDE_AGENT_ID) || null, [agents]);
+  const guideUnread = Number(guideAgent?.unreadCount || unreadByAgentId[GUIDE_AGENT_ID] || 0);
+  const guideMessages = useMemo(() => normalizeCoordinatorMessages((chats?.[GUIDE_AGENT_ID] || []).map((msg: any) => ({
+    message_id: msg.id,
+    id: msg.id,
+    direction: msg.author === 'user' ? 'user_to_agent' : 'agent_to_user',
+    body: msg.body,
+    createdUnixMs: msg.createdUnixMs || 0,
+    deliveredUnixMs: msg.deliveredUnixMs || 0,
+    readUnixMs: msg.readUnixMs || 0,
+    deliveryFailedUnixMs: msg.deliveryFailedUnixMs || 0,
+    deliveryError: msg.deliveryError || (msg.error ? 'delivery failed' : ''),
+    sending: Boolean(msg.sending),
+    agentInstanceId: GUIDE_AGENT_ID,
+  }))), [chats]);
+  const guideLoading = Boolean(fetchingChatsByAgentId?.[GUIDE_AGENT_ID]);
   const attention = useSelector((state: any) => state.attention);
   const memory = useSelector((state: any) => state.memory);
   const pendingMemoryIds = useMemo(() => (memory?.recordIds || []).filter((id: string) => memory.recordsById?.[id]?.status === 'pending').length, [memory?.recordIds, memory?.recordsById]);
@@ -335,6 +356,16 @@ export default function App() {
   }, [dispatch, loadHomeData]);
 
   useEffect(() => { connectSession(); }, [connectSession]);
+  useEffect(() => {
+    if (!guidePanelOpen || !session.connected) return undefined;
+    dispatch(fetchGuideChat()).catch(() => undefined);
+    dispatch(refreshAgents()).catch(() => undefined);
+    const interval = window.setInterval(() => {
+      dispatch(fetchGuideChat()).catch(() => undefined);
+      dispatch(refreshAgents()).catch(() => undefined);
+    }, 10000);
+    return () => window.clearInterval(interval);
+  }, [dispatch, guidePanelOpen, session.connected]);
   useEffect(() => {
     if (firstRunPromptedRef.current) return;
     let hasStoredProfiles = false;
@@ -493,6 +524,7 @@ export default function App() {
   }, [dispatch, loadHomeData, session.connected, session.clientInstanceId, session.clientToken, session.daemonUrl]);
 
   const openChain = useCallback((chainId: string) => {
+    updateUrlParams({ chainId, view: 'chain' });
     dispatch(selectChain(chainId));
     dispatch(fetchTasksForChain(chainId));
     dispatch(focusChainView(chainId));
@@ -515,6 +547,7 @@ export default function App() {
   }, [dispatch, home.surface, session.connected]);
 
   const openProject = useCallback((projectId: string) => {
+    updateUrlParams({ chainId: null, taskId: null, view: 'home' });
     dispatch(selectProject(projectId));
     dispatch(selectSurface('home'));
   }, [dispatch]);
@@ -720,7 +753,7 @@ export default function App() {
               chainView={chainView}
               taskLogsByTaskId={taskLogsByTaskId}
               onOpenChain={openChain}
-              onBack={() => dispatch(selectSurface('home'))}
+              onBack={() => { updateUrlParams({ chainId: null, taskId: null, view: 'home' }); dispatch(selectSurface('home')); }}
               onSend={(body: string) => {
                 const localId = `local_${Date.now()}_${Math.random().toString(36).slice(2)}`;
                 dispatch(optimisticCoordinatorMessage({ chainId: selectedChain.chainId, body, localId }));
@@ -763,7 +796,40 @@ export default function App() {
             />
           )}
         </main>
+        <div
+          data-debug-id="guide-side-panel-slot"
+          className={`h-full shrink-0 overflow-hidden transition-[width] duration-300 ease-out ${guidePanelOpen ? 'w-[400px]' : 'w-0'}`}
+          aria-hidden={!guidePanelOpen}
+        >
+          {guidePanelOpen && (
+            <GuideSidePanel
+              agent={guideAgent}
+              messages={guideMessages}
+              loading={guideLoading}
+              sending={guideSending}
+              onClose={() => dispatch(closeGuidePanel())}
+              onSend={(body: string) => {
+                const tempId = `local_temp_guide_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+                dispatch(sendGuideMessage({ body, tempId }));
+              }}
+            />
+          )}
+        </div>
       </div>
+      {!guidePanelOpen && (
+        <button
+          data-debug-id="guide-floating-btn"
+          onClick={() => dispatch(toggleGuidePanel())}
+          title="Open Heimdall Guide"
+          aria-label="Open Heimdall Guide"
+          className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full border border-amber-200/30 bg-amber-300 text-2xl text-black shadow-2xl shadow-black/40 transition hover:scale-105 hover:bg-amber-200"
+        >
+          <span aria-hidden="true">🪖</span>
+          {guideUnread > 0 && (
+            <span data-debug-id="guide-floating-unread" className="absolute -right-1 -top-1 rounded-full bg-sky-400 px-1.5 py-0.5 text-[10px] font-bold text-black">{guideUnread > 99 ? '99+' : guideUnread}</span>
+          )}
+        </button>
+      )}
       {home.newChainModalOpen && (
         <NewChainModal
           projectId={home.selectedProjectId || selectedProjectId}
@@ -783,6 +849,7 @@ export default function App() {
                 coordinatorAgentInstanceId: result?.coordinator_agent_instance_id || result?.coordinatorAgentInstanceId || payload.coordinatorAgentInstanceId || '',
                 workspaceSetupTaskId: result?.workspace_setup_task_id || result?.workspaceSetupTaskId || '',
                 discoveryTaskId: result?.discovery_task_id || result?.discoveryTaskId || '',
+                coordinatorBootRequested: Boolean(result?.coordinator_boot_requested || result?.coordinatorBootRequested),
                 workspaceId: result?.vcs_workspace_id || result?.vcsWorkspaceId || '',
                 wantsVcs: Boolean(payload.wantsVcs),
                 startedAt: Date.now(),
@@ -851,14 +918,14 @@ function buildChainCreationProgress(progress: any, chainsById: Record<string, an
   const status = coordinator?.status || coordinator?.startupStatus || '';
   const coordinatorReady = Boolean(coordinator && (coordinator.connected || ['connected', 'idle', 'ready'].includes(status)));
   const elapsedMs = Date.now() - Number(progress.startedAt || Date.now());
-  const timedOut = !coordinatorReady && elapsedMs >= 10_000;
+  const timedOut = !coordinatorReady && elapsedMs >= 20_000;
   const workspaceReady = !progress.wantsVcs || Boolean(workspaceSetupTask || progress.workspaceId || chain?.vcsWorkspaceId || chain?.vcs_workspace_id || chainView.workspaceByChainId?.[chainId]);
   const steps = [
     { key: 'chain', label: 'Task chain created', done: Boolean(chainId), detail: chainId || 'waiting for chain id' },
     { key: 'team', label: 'Team allocated', done: Boolean(progress.teamId || chain?.teamId || chain?.team_id || team?.team_id), detail: progress.teamId || chain?.teamId || chain?.team_id || team?.team_id || 'waiting for team' },
     { key: 'workspace', label: progress.wantsVcs ? 'Workspace setup task created' : 'Workspace skipped', done: workspaceReady, detail: progress.wantsVcs ? (workspaceSetupTask?.taskId || progress.workspaceSetupTaskId || 'creating setup task') : 'VCS not requested' },
     { key: 'task', label: 'Coordinator discovery task created', done: Boolean(discoveryTask), detail: discoveryTask?.taskId || progress.discoveryTaskId || 'waiting for task' },
-    { key: 'boot', label: 'Coordinator boot requested', done: Boolean(chainView.focusByChainId?.[chainId] || coordinator), detail: coordinatorId || 'waiting for coordinator' },
+    { key: 'boot', label: 'Coordinator start requested', done: Boolean(progress.coordinatorBootRequested || coordinator), detail: progress.coordinatorBootRequested ? `${coordinatorId || 'coordinator'} launch requested by chain create` : (coordinatorId || 'waiting for coordinator') },
     { key: 'running', label: 'Coordinator running / start-success', done: coordinatorReady, detail: coordinator ? `${coordinator.label || coordinator.id} · ${status || (coordinator.connected ? 'connected' : 'starting')}` : (timedOut ? 'not ready after 10s' : 'starting') },
     { key: 'claimed', label: 'Initial task claimed', done: Boolean(discoveryTask?.status === 'in_progress' || coordinator?.currentTaskId === discoveryTask?.taskId), detail: discoveryTask?.status || 'optional after startup' },
   ];
@@ -875,7 +942,7 @@ function ChainCreationProgressModal({ progress, onOpen, onCancel }: any) {
           <div>
             <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Creating task chain</div>
             <h2 className="mt-2 text-xl font-semibold text-white">Starting coordinator</h2>
-            <p className="mt-1 text-sm text-zinc-400">Chat opens once the coordinator is running. Timeout: 10 seconds.</p>
+            <p className="mt-1 text-sm text-zinc-400">Chat opens once the coordinator is running. Timeout: 20 seconds.</p>
           </div>
           <button data-debug-id="chain-creation-dismiss-btn" onClick={onCancel} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Dismiss</button>
         </div>
@@ -894,7 +961,7 @@ function ChainCreationProgressModal({ progress, onOpen, onCancel }: any) {
           ))}
         </div>
         {progress.timedOut ? (
-          <div data-debug-id="chain-creation-timeout" className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-100">Coordinator was not ready within 10 seconds. You can open the chain now; chat may still be starting.</div>
+          <div data-debug-id="chain-creation-timeout" className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-100">Coordinator was not ready within 20 seconds. You can open the chain now; chat may still be starting.</div>
         ) : (
           <div className="mt-4 text-sm text-zinc-400">Waiting for coordinator start-success / connected state…</div>
         )}
@@ -1074,50 +1141,112 @@ function ChatApprovalCard({ approval, chain, now, onAnswer, onDismiss, onOpen }:
   const [freeReply, setFreeReply] = useState('');
   const [dismissReasonOpen, setDismissReasonOpen] = useState(false);
   const [dismissReason, setDismissReason] = useState('');
+  const [answeredReply, setAnsweredReply] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [multiAnswers, setMultiAnswers] = useState<Record<number, string>>({});
   const timeLeft = humanTimeLeft(approval.expiresAtUnixMs, now);
   const urgent = approval.expiresAtUnixMs - now < 60_000;
   const description = approval.body || approval.title || 'Agent is requesting approval.';
+  const used = Boolean(answeredReply) || approval.state !== 'open';
+  const disabled = used || submitting;
+  const isMultiQuestion = approval.kind === 'multi_question' && (approval.multiQuestions || []).length > 0;
+  const handleAnswer = async (reply: string) => {
+    const trimmed = String(reply || '').trim();
+    if (!trimmed || disabled) return;
+    setSubmitting(true);
+    try {
+      await Promise.resolve(onAnswer(trimmed));
+      setAnsweredReply(trimmed);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+  const multiComplete = isMultiQuestion && approval.multiQuestions.every((_: any, index: number) => String(multiAnswers[index] || '').trim());
+  const sendMultiAnswers = () => {
+    const reply = JSON.stringify({
+      type: 'multi_question_answer',
+      answers: (approval.multiQuestions || []).map((question: any, index: number) => ({ question: question.prompt, answer: multiAnswers[index] || '' })),
+    });
+    handleAnswer(reply);
+  };
   return (
-    <div data-debug-id={`attention-card-chat_approval-${approval.approvalId}`} className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+    <div data-debug-id={`attention-card-chat_approval-${approval.approvalId}`} className={`rounded-2xl border p-4 ${used ? 'border-emerald-400/25 bg-emerald-400/[0.04]' : 'border-white/10 bg-white/[0.035]'}`}>
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Chat approval · {approval.kind}</div>
           <div className="mt-1 truncate font-semibold">{chain?.title || approval.chainId || 'Chain'}</div>
           <div className="mt-1 text-xs text-zinc-500">From {approval.agentInstanceId || 'agent'}</div>
         </div>
-        <span data-debug-id={`attention-card-chat_approval-${approval.approvalId}-expiry`} className={`shrink-0 rounded-full px-2 py-1 text-[11px] ${urgent ? 'bg-red-400/20 text-red-100' : 'bg-white/10 text-zinc-300'}`}>expires in {timeLeft}</span>
+        <span data-debug-id={`attention-card-chat_approval-${approval.approvalId}-expiry`} className={`shrink-0 rounded-full px-2 py-1 text-[11px] ${used ? 'bg-emerald-400/20 text-emerald-100' : urgent ? 'bg-red-400/20 text-red-100' : 'bg-white/10 text-zinc-300'}`}>{used ? 'answered' : `expires in ${timeLeft}`}</span>
       </div>
       <div className="mt-3 rounded-xl bg-black/20 p-3">
         <Markdown source={description} compact className="text-sm text-zinc-200" />
       </div>
-      <div className="mt-3 flex flex-wrap gap-2">
-        {approval.suggestedReplies.map((reply: string, index: number) => (
-          <button
-            key={`${approval.approvalId}-reply-${index}`}
-            data-debug-id={`attention-card-chat_approval-${approval.approvalId}-action-reply-${index}`}
-            onClick={() => onAnswer(reply)}
-            className="rounded-xl bg-sky-400 px-3 py-2 text-xs font-semibold text-black hover:bg-sky-300"
-          >{prettifyReply(reply)}</button>
-        ))}
-        {approval.freeForm && (
-          <div className="flex min-w-[220px] flex-1 gap-2">
-            <input
-              data-debug-id={`attention-card-chat_approval-${approval.approvalId}-freeform-input`}
-              value={freeReply}
-              onChange={(event) => setFreeReply(event.target.value)}
-              onKeyDown={(event) => { if (event.key === 'Enter' && freeReply.trim()) { onAnswer(freeReply.trim()); setFreeReply(''); } }}
-              placeholder="Type a reply…"
-              className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"
-            />
-            <button data-debug-id={`attention-card-chat_approval-${approval.approvalId}-action-freeform-send`} disabled={!freeReply.trim()} onClick={() => { onAnswer(freeReply.trim()); setFreeReply(''); }} className="rounded-xl bg-sky-400 px-3 py-2 text-xs font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">Send</button>
-          </div>
-        )}
-      </div>
+      {isMultiQuestion ? (
+        <div data-debug-id={`attention-card-chat_approval-${approval.approvalId}-multi-question`} className="mt-3 space-y-3">
+          {approval.multiQuestions.map((question: any, index: number) => (
+            <div key={`${approval.approvalId}-question-${index}`} className="rounded-xl bg-black/20 p-3">
+              <div className="text-sm font-medium text-zinc-100">{question.prompt}</div>
+              {question.options.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {question.options.map((option: string) => (
+                    <button
+                      key={option}
+                      data-debug-id={`attention-card-chat_approval-${approval.approvalId}-action-question-${index}-${option.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
+                      onClick={() => setMultiAnswers((prev) => ({ ...prev, [index]: option }))}
+                      disabled={disabled}
+                      className={`rounded-full border px-3 py-1 text-xs ${multiAnswers[index] === option ? 'border-sky-300/50 bg-sky-300/20 text-sky-100' : 'border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10'} disabled:cursor-not-allowed disabled:opacity-60`}
+                    >{option}</button>
+                  ))}
+                </div>
+              )}
+              {question.freeForm && (
+                <input
+                  data-debug-id={`attention-card-chat_approval-${approval.approvalId}-question-${index}-input`}
+                  value={multiAnswers[index] || ''}
+                  onChange={(event) => setMultiAnswers((prev) => ({ ...prev, [index]: event.target.value }))}
+                  disabled={disabled}
+                  placeholder="Type an answer…"
+                  className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400 disabled:cursor-not-allowed disabled:text-zinc-500"
+                />
+              )}
+            </div>
+          ))}
+          <button data-debug-id={`attention-card-chat_approval-${approval.approvalId}-action-multi-question-send`} disabled={disabled || !multiComplete} onClick={sendMultiAnswers} className="rounded-xl bg-sky-400 px-3 py-2 text-xs font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">Send answers</button>
+        </div>
+      ) : (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {approval.suggestedReplies.map((reply: string, index: number) => (
+            <button
+              key={`${approval.approvalId}-reply-${index}`}
+              data-debug-id={`attention-card-chat_approval-${approval.approvalId}-action-reply-${index}`}
+              onClick={() => handleAnswer(reply)}
+              disabled={disabled}
+              className="rounded-xl bg-sky-400 px-3 py-2 text-xs font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500"
+            >{prettifyReply(reply)}</button>
+          ))}
+          {approval.freeForm && (
+            <div className="flex min-w-[220px] flex-1 gap-2">
+              <input
+                data-debug-id={`attention-card-chat_approval-${approval.approvalId}-freeform-input`}
+                value={freeReply}
+                onChange={(event) => setFreeReply(event.target.value)}
+                onKeyDown={(event) => { if (event.key === 'Enter' && freeReply.trim()) { handleAnswer(freeReply.trim()); setFreeReply(''); } }}
+                disabled={disabled}
+                placeholder="Type a reply…"
+                className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400 disabled:cursor-not-allowed disabled:text-zinc-500"
+              />
+              <button data-debug-id={`attention-card-chat_approval-${approval.approvalId}-action-freeform-send`} disabled={disabled || !freeReply.trim()} onClick={() => { handleAnswer(freeReply.trim()); setFreeReply(''); }} className="rounded-xl bg-sky-400 px-3 py-2 text-xs font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">Send</button>
+            </div>
+          )}
+        </div>
+      )}
+      {used && <div data-debug-id={`attention-card-chat_approval-${approval.approvalId}-answered`} className="mt-2 text-xs text-emerald-200">Reply sent. This card is disabled.</div>}
       <div className="mt-3 flex flex-wrap items-center gap-2">
-        <button data-debug-id={`attention-card-chat_approval-${approval.approvalId}-action-dismiss`} onClick={() => setDismissReasonOpen((open) => !open)} className="rounded-xl bg-white/10 px-3 py-2 text-xs hover:bg-white/15">Dismiss</button>
+        <button data-debug-id={`attention-card-chat_approval-${approval.approvalId}-action-dismiss`} disabled={disabled} onClick={() => setDismissReasonOpen((open) => !open)} className="rounded-xl bg-white/10 px-3 py-2 text-xs hover:bg-white/15 disabled:cursor-not-allowed disabled:text-zinc-500">Dismiss</button>
         {approval.chainId && <button data-debug-id={`attention-card-chat_approval-${approval.approvalId}-action-open`} onClick={onOpen} className="rounded-xl bg-white/10 px-3 py-2 text-xs hover:bg-white/15">Open chain</button>}
       </div>
-      {dismissReasonOpen && (
+      {dismissReasonOpen && !used && (
         <div data-debug-id={`attention-card-chat_approval-${approval.approvalId}-dismiss-panel`} className="mt-3 flex flex-wrap items-center gap-2 rounded-xl bg-black/30 p-3">
           <input
             data-debug-id={`attention-card-chat_approval-${approval.approvalId}-dismiss-reason-input`}
@@ -1346,6 +1475,64 @@ function formatChatTimestamp(unixMs: number): { label: string; iso: string } {
   return { label: `${date.toLocaleDateString()} ${time}`, iso };
 }
 
+type MultiQuestionPrompt = {
+  prompt: string;
+  options: string[];
+  freeForm: boolean;
+};
+
+type CoordinatorActionPayload =
+  | { type: 'smart_answer'; body: string; suggestedReplies: string[] }
+  | { type: 'multi_question'; body: string; questions: MultiQuestionPrompt[] };
+
+function optionText(item: any): string {
+  if (typeof item === 'string') return item;
+  if (item && typeof item === 'object') return String(item.label || item.value || item.text || item.title || JSON.stringify(item));
+  return String(item ?? '');
+}
+
+function normalizeMultiQuestions(value: any): MultiQuestionPrompt[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item: any) => {
+    if (typeof item === 'string') return { prompt: item, options: [], freeForm: true };
+    const rawOptions = Array.isArray(item?.options) ? item.options : (Array.isArray(item?.suggested_replies) ? item.suggested_replies : []);
+    return {
+      prompt: String(item?.question || item?.prompt || item?.body || item?.title || '').trim(),
+      options: rawOptions.map(optionText).filter(Boolean),
+      freeForm: Boolean(item?.free_form ?? item?.freeForm ?? rawOptions.length === 0),
+    };
+  }).filter((question) => question.prompt);
+}
+
+function parseCoordinatorActionPayload(body: string): null | CoordinatorActionPayload {
+  const trimmed = String(body || '').trim();
+  if (!trimmed.startsWith('{')) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (parsed.type === 'smart_answer') {
+      const text = typeof parsed.body === 'string' ? parsed.body : '';
+      const replies = Array.isArray(parsed.suggested_replies) ? parsed.suggested_replies.map(optionText).filter(Boolean) : [];
+      if (!text || replies.length === 0) return null;
+      return { type: 'smart_answer', body: text, suggestedReplies: replies };
+    }
+    if (parsed.type === 'multi_question') {
+      const questions = normalizeMultiQuestions(parsed.questions);
+      if (questions.length === 0) return null;
+      const text = typeof parsed.body === 'string' ? parsed.body : (typeof parsed.title === 'string' ? parsed.title : 'Please answer the questions below.');
+      return { type: 'multi_question', body: text, questions };
+    }
+    return null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+function parseCoordinatorSmartAnswer(body: string): null | { type: string; body: string; suggestedReplies: string[] } {
+  const action = parseCoordinatorActionPayload(body);
+  return action?.type === 'smart_answer' ? action : null;
+}
+
 function deliveryStatusFor(msg: CoordinatorMessage): { glyph: string; label: string; tone: string } {
   if (msg.sending) return { glyph: '○', label: 'sending', tone: 'text-sky-200/70' };
   if (msg.deliveryFailedUnixMs || msg.deliveryError) return { glyph: '⚠', label: msg.deliveryError || 'delivery failed', tone: 'text-red-300' };
@@ -1355,12 +1542,86 @@ function deliveryStatusFor(msg: CoordinatorMessage): { glyph: string; label: str
   return { glyph: '', label: '', tone: '' };
 }
 
-function CoordinatorMessageList({ chainId, messages }: { chainId: string; messages: CoordinatorMessage[] }) {
+// Default smart-answer card debug ids render as chain-coordinator-smart-answer-<message_id>.
+function CoordinatorActionCard({ action, messageId, debugPrefix, usedReply, onUse }: { action: CoordinatorActionPayload; messageId: string; debugPrefix: string; usedReply: string; onUse: (reply: string) => void }) {
+  const [answers, setAnswers] = useState<Record<number, string>>({});
+  const used = Boolean(usedReply);
+  const sendMultiQuestion = () => {
+    if (action.type !== 'multi_question' || used) return;
+    const payload = JSON.stringify({
+      type: 'multi_question_answer',
+      answers: action.questions.map((question, index) => ({ question: question.prompt, answer: answers[index] || '' })),
+    });
+    onUse(payload);
+  };
+  if (action.type === 'smart_answer') {
+    return (
+      <div data-debug-id={`${debugPrefix}-smart-answer-${messageId}`} className={`mt-2 rounded-xl border p-3 ${used ? 'border-emerald-400/25 bg-emerald-400/[0.06]' : 'border-amber-400/20 bg-amber-400/[0.06]'}`}>
+        <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-amber-200">{used ? 'Reply selected' : 'Needs approval'}</div>
+        <Markdown source={action.body} compact className="mt-2" />
+        {used && <div data-debug-id={`${debugPrefix}-smart-answer-${messageId}-used`} className="mt-2 text-xs text-emerald-200">Sent: {prettifyReply(usedReply)}</div>}
+        <div className="mt-3 flex flex-wrap gap-2">
+          {action.suggestedReplies.map((reply) => (
+            <button
+              key={reply}
+              data-debug-id={`${debugPrefix}-smart-answer-${messageId}-${reply.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
+              onClick={() => onUse(reply)}
+              disabled={used}
+              className="rounded-full border border-amber-300/20 bg-amber-300/10 px-3 py-1 text-xs font-medium text-amber-100 hover:bg-amber-300/20 disabled:cursor-not-allowed disabled:border-emerald-300/20 disabled:bg-emerald-300/10 disabled:text-emerald-100/70"
+            >{reply}</button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+  const complete = action.questions.every((_, index) => String(answers[index] || '').trim());
+  return (
+    <div data-debug-id={`${debugPrefix}-multi-question-${messageId}`} className={`mt-2 rounded-xl border p-3 ${used ? 'border-emerald-400/25 bg-emerald-400/[0.06]' : 'border-amber-400/20 bg-amber-400/[0.06]'}`}>
+      <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-amber-200">{used ? 'Reply selected' : 'Needs answers'}</div>
+      {action.body && <Markdown source={action.body} compact className="mt-2" />}
+      <div className="mt-3 space-y-3">
+        {action.questions.map((question, index) => (
+          <div key={`${messageId}-question-${index}`} className="rounded-xl bg-black/20 p-3">
+            <div className="text-sm font-medium text-zinc-100">{question.prompt}</div>
+            {question.options.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {question.options.map((option) => (
+                  <button
+                    key={option}
+                    data-debug-id={`${debugPrefix}-multi-question-${messageId}-q${index}-${option.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
+                    onClick={() => setAnswers((prev) => ({ ...prev, [index]: option }))}
+                    disabled={used}
+                    className={`rounded-full border px-3 py-1 text-xs ${answers[index] === option ? 'border-sky-300/50 bg-sky-300/20 text-sky-100' : 'border-white/10 bg-white/5 text-zinc-200 hover:bg-white/10'} disabled:cursor-not-allowed disabled:opacity-60`}
+                  >{option}</button>
+                ))}
+              </div>
+            )}
+            {question.freeForm && (
+              <input
+                data-debug-id={`${debugPrefix}-multi-question-${messageId}-q${index}-input`}
+                value={answers[index] || ''}
+                onChange={(event) => setAnswers((prev) => ({ ...prev, [index]: event.target.value }))}
+                disabled={used}
+                placeholder="Type an answer…"
+                className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400 disabled:cursor-not-allowed disabled:text-zinc-500"
+              />
+            )}
+          </div>
+        ))}
+      </div>
+      {used && <div data-debug-id={`${debugPrefix}-multi-question-${messageId}-used`} className="mt-2 text-xs text-emerald-200">Answers sent.</div>}
+      <button data-debug-id={`${debugPrefix}-multi-question-${messageId}-send`} onClick={sendMultiQuestion} disabled={used || !complete} className="mt-3 rounded-xl bg-sky-400 px-3 py-2 text-xs font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">Send answers</button>
+    </div>
+  );
+}
+
+function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'chain-coordinator', emptyText = 'No coordinator chat loaded for this chain.' }: { chainId: string; messages: CoordinatorMessage[]; onReply: (reply: string) => void; debugPrefix?: string; emptyText?: string }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickyRef = useRef(true);
   const lastCountRef = useRef(0);
   const lastChainRef = useRef(chainId);
   const [showJump, setShowJump] = useState(false);
+  const [usedActionCards, setUsedActionCards] = useState<Record<string, string>>({});
 
   const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
     const node = scrollRef.current;
@@ -1405,31 +1666,46 @@ function CoordinatorMessageList({ chainId, messages }: { chainId: string; messag
     <div className="relative mt-4 min-h-0 flex-1">
       <div
         ref={scrollRef}
-        data-debug-id="chain-coordinator-scroll"
+        data-debug-id={`${debugPrefix}-scroll`}
         onScroll={onScroll}
         className="h-full min-h-0 space-y-3 overflow-y-auto rounded-xl bg-black/20 p-4 scroll-smooth"
       >
         {messages.length === 0 ? (
-          <div className="text-sm text-zinc-500">No coordinator chat loaded for this chain.</div>
+          <div className="text-sm text-zinc-500">{emptyText}</div>
         ) : messages.map((msg) => {
           const timestamp = formatChatTimestamp(msg.createdUnixMs);
           const delivery = deliveryStatusFor(msg);
           return (
             <div
               key={msg.key}
-              data-debug-id={`chain-coordinator-message-${msg.messageId}`}
+              data-debug-id={`${debugPrefix}-message-${msg.messageId}`}
               className={`rounded-2xl px-4 py-3 text-sm ${msg.isUser ? 'ml-8 bg-sky-500/15 text-sky-100' : 'mr-8 bg-white/5 text-zinc-200'}`}
             >
               <div className="flex items-baseline justify-between gap-3 text-[10px] uppercase tracking-wider text-zinc-500">
                 <span className="truncate">{msg.authorLabel}</span>
                 {timestamp.label && (
-                  <time data-debug-id={`chain-coordinator-message-${msg.messageId}-time`} dateTime={timestamp.iso} title={timestamp.iso} className="shrink-0">{timestamp.label}</time>
+                  <time data-debug-id={`${debugPrefix}-message-${msg.messageId}-time`} dateTime={timestamp.iso} title={timestamp.iso} className="shrink-0">{timestamp.label}</time>
                 )}
               </div>
-              <Markdown source={msg.body} compact className="mt-1" />
+              {(() => {
+                const action = !msg.isUser ? parseCoordinatorActionPayload(msg.body) : null;
+                if (!action) return <Markdown source={msg.body} compact className="mt-1" />;
+                return (
+                  <CoordinatorActionCard
+                    action={action}
+                    messageId={msg.messageId}
+                    debugPrefix={debugPrefix}
+                    usedReply={usedActionCards[msg.messageId] || ''}
+                    onUse={(reply) => {
+                      setUsedActionCards((prev) => ({ ...prev, [msg.messageId]: reply }));
+                      onReply(reply);
+                    }}
+                  />
+                );
+              })()}
               {msg.isUser && delivery.glyph && (
                 <div
-                  data-debug-id={`chain-coordinator-message-${msg.messageId}-status`}
+                  data-debug-id={`${debugPrefix}-message-${msg.messageId}-status`}
                   title={delivery.label}
                   className={`mt-1 text-right text-[10px] ${delivery.tone}`}
                 >{delivery.glyph} {delivery.label}</div>
@@ -1440,12 +1716,71 @@ function CoordinatorMessageList({ chainId, messages }: { chainId: string; messag
       </div>
       {showJump && (
         <button
-          data-debug-id="chain-coordinator-jump-latest-btn"
+          data-debug-id={`${debugPrefix}-jump-latest-btn`}
           onClick={() => scrollToBottom('smooth')}
           className="absolute bottom-3 right-3 rounded-full border border-white/10 bg-black/70 px-3 py-1 text-[11px] text-zinc-100 shadow-lg hover:bg-black"
         >Jump to latest ↓</button>
       )}
     </div>
+  );
+}
+
+function GuideSidePanel({ agent, messages, loading, sending, onClose, onSend }: any) {
+  const [draft, setDraft] = useState('');
+  const composerRef = useRef<HTMLInputElement | null>(null);
+  const runtime = agentRuntimeDot(agent);
+  useEffect(() => {
+    const timer = window.setTimeout(() => composerRef.current?.focus({ preventScroll: true }), 120);
+    return () => window.clearTimeout(timer);
+  }, []);
+  const submit = () => {
+    const body = draft.trim();
+    if (!body || sending) return;
+    onSend(body);
+    setDraft('');
+  };
+  return (
+    <aside data-debug-id="guide-side-panel" className="flex h-full w-[400px] flex-col border-l border-white/10 bg-[#0d0f14] shadow-2xl shadow-black/30">
+      <div className="flex items-start justify-between gap-3 border-b border-white/10 p-4">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="flex h-9 w-9 items-center justify-center rounded-2xl bg-amber-300/15 text-xl" aria-hidden="true">🪖</span>
+            <div className="min-w-0">
+              <div className="text-xs uppercase tracking-[0.22em] text-amber-200/80">Heimdall Guide</div>
+              <div data-debug-id="guide-side-panel-agent" className="truncate text-sm font-semibold text-zinc-100">{agent?.label || GUIDE_AGENT_ID}</div>
+            </div>
+          </div>
+          <div className="mt-2 flex items-center gap-2 text-xs text-zinc-500">
+            <span data-debug-id="guide-side-panel-status-dot" className={`h-2 w-2 rounded-full ${runtime.color}`}></span>
+            <span data-debug-id="guide-side-panel-status">{runtime.label}</span>
+            {loading && <span className="text-zinc-600">· loading</span>}
+          </div>
+        </div>
+        <button data-debug-id="guide-side-panel-close-btn" onClick={onClose} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15">Close</button>
+      </div>
+      <div className="flex min-h-0 flex-1 flex-col p-4">
+        <CoordinatorMessageList
+          chainId={GUIDE_AGENT_ID}
+          messages={messages}
+          onReply={onSend}
+          debugPrefix="guide-chat"
+          emptyText="No guide chat yet. Ask Heimdall Guide about daemon, UI, tasks, teams, agents, or troubleshooting."
+        />
+        <div className="mt-4 flex gap-2">
+          <input
+            data-debug-id="guide-chat-composer-input"
+            ref={composerRef}
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => { if (event.key === 'Enter') submit(); }}
+            placeholder="Ask Heimdall Guide…"
+            className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-amber-300"
+          />
+          <button data-debug-id="guide-chat-send-btn" disabled={sending || !draft.trim()} onClick={submit} className="rounded-xl bg-amber-300 px-4 py-2 text-sm font-semibold text-black hover:bg-amber-200 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">Send</button>
+        </div>
+        <p className="mt-2 text-xs text-zinc-500">Global guide chat is not chain-scoped. Mutating actions should remain explicit and auditable.</p>
+      </div>
+    </aside>
   );
 }
 
@@ -1486,7 +1821,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
   });
   const workspace = chainView.workspaceByChainId[chain.chainId];
   const chat = chainView.chatByChainId[chain.chainId] || [];
-  const optimistic = (chainView.optimisticMessagesByChainId[chain.chainId] || []).filter((msg: any) => msg.sending);
+  const optimistic = chainView.optimisticMessagesByChainId[chain.chainId] || [];
   const messages = useMemo(() => normalizeCoordinatorMessages([...chat, ...optimistic]), [chat, optimistic]);
   const diffOpen = Boolean(chainView.diffOpenByChainId[chain.chainId]);
   const preview = chainView.mergePreviewByChainId[chain.chainId];
@@ -1617,7 +1952,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
 
         <section data-debug-id="chain-coordinator-panel" className="flex h-[70vh] max-h-[70vh] min-h-[420px] flex-col rounded-2xl border border-white/10 bg-white/[0.035] p-4">
           <h2 className="font-semibold">Coordinator chat</h2>
-          <CoordinatorMessageList chainId={chain.chainId} messages={messages} />
+          <CoordinatorMessageList chainId={chain.chainId} messages={messages} onReply={(reply) => onSend(reply)} />
           <div className="mt-4 flex gap-2">
             <input
               data-debug-id="chain-coordinator-composer-input"
@@ -1864,13 +2199,13 @@ function WorkspaceBox({ chainId, workspace, preview, diffOpen, onToggleDiff, onR
 }
 
 const TEAM_KIND_OPTIONS = [
-  { key: 'coding', label: 'Coding', scaffolds: ['feature', 'bugfix', 'refactor'], wantsVcs: true },
-  { key: 'research', label: 'Research', scaffolds: ['report', 'spike'], wantsVcs: false },
-  { key: 'debugging', label: 'Debugging', scaffolds: ['bug', 'incident'], wantsVcs: true },
-  { key: 'data-analysis', label: 'Data analysis', scaffolds: ['analysis'], wantsVcs: true },
-  { key: 'writing', label: 'Writing', scaffolds: ['article'], wantsVcs: true },
-  { key: 'ops', label: 'Ops', scaffolds: ['chore'], wantsVcs: true },
-  { key: 'solo', label: 'Solo', scaffolds: ['solo'], wantsVcs: false },
+  { key: 'coding', label: 'Coding', description: 'The default kind for changes to code repositories.', scaffolds: ['feature', 'bugfix', 'refactor'], wantsVcs: true },
+  { key: 'research', label: 'Research', description: 'Non-code investigative work: source review, market scan, spike write-ups.', scaffolds: ['report', 'spike'], wantsVcs: false },
+  { key: 'debugging', label: 'Debugging', description: 'Diagnostic work with an expected fix at the end.', scaffolds: ['bug', 'incident'], wantsVcs: true },
+  { key: 'data-analysis', label: 'Data analysis', description: 'Notebooks, dataset exploration, and model evaluation.', scaffolds: ['analysis'], wantsVcs: true },
+  { key: 'writing', label: 'Writing', description: 'Docs, blog posts, and longer-form artifacts.', scaffolds: ['article'], wantsVcs: true },
+  { key: 'ops', label: 'Ops', description: 'Repo/config maintenance, dependency bumps, and small automations.', scaffolds: ['chore'], wantsVcs: true },
+  { key: 'solo', label: 'Solo', description: 'A team of one backed by a synthetic user_proxy reviewer.', scaffolds: ['solo'], wantsVcs: false },
 ];
 
 function defaultCoordinator(agents: any[], projectId: string) {
@@ -1983,15 +2318,15 @@ function NewChainModal({ projectId, projects, agents, creating, error, onClose, 
   const [goal, setGoal] = useState('');
   const [kind, setKind] = useState('coding');
   const kindDef = TEAM_KIND_OPTIONS.find((item) => item.key === kind) || TEAM_KIND_OPTIONS[0];
-  const [scaffold, setScaffold] = useState(kindDef.scaffolds[0] || 'none');
+  const [scaffold, setScaffold] = useState('none');
   const [wantsVcs, setWantsVcs] = useState(kindDef.wantsVcs);
   const selectedProject = projects.find((project: any) => project.projectId === selectedProjectId) || null;
   const selectedProjectSupportsVcs = projectSupportsVcs(selectedProject);
-  const coordinatorAgentInstanceId = defaultCoordinator(agents, selectedProjectId);
+  const coordinatorAgentInstanceId = '';
 
   useEffect(() => {
     const next = TEAM_KIND_OPTIONS.find((item) => item.key === kind) || TEAM_KIND_OPTIONS[0];
-    setScaffold(next.scaffolds[0] || 'none');
+    setScaffold('none');
     setWantsVcs(next.wantsVcs && selectedProjectSupportsVcs);
   }, [kind, selectedProjectSupportsVcs]);
 
@@ -2015,7 +2350,7 @@ function NewChainModal({ projectId, projects, agents, creating, error, onClose, 
       <form onSubmit={submit} className="w-full max-w-2xl rounded-3xl border border-white/10 bg-[#11141a] p-6 shadow-2xl">
         <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Create chain</div>
         <h2 className="mt-2 text-2xl font-semibold">+ New chain</h2>
-        <p className="mt-2 text-sm text-zinc-400">Create a chain and refresh Home/Sidebar automatically after the daemon persists it.</p>
+        <p className="mt-2 text-sm text-zinc-400">Create a chain. By default this creates only a coordinator task to update the chain from the user requirement; optional scaffolds add draft tasks after coordinator validation.</p>
 
         <div className="mt-5 grid gap-4 md:grid-cols-2">
           <label className="text-sm text-zinc-300">
@@ -2031,24 +2366,30 @@ function NewChainModal({ projectId, projects, agents, creating, error, onClose, 
             </select>
           </label>
         </div>
+        <div data-debug-id="new-chain-kind-description" className="mt-3 rounded-xl bg-white/[0.04] p-3 text-xs text-zinc-400">
+          <span className="font-semibold text-zinc-300">{kindDef.label} team:</span> {kindDef.description}
+        </div>
 
         <label className="mt-4 block text-sm text-zinc-300">
           Title
           <input data-debug-id="new-chain-title-input" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Short action-oriented chain title" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" autoFocus />
         </label>
 
-        <label className="mt-4 block text-sm text-zinc-300">
-          Goal
-          <textarea data-debug-id="new-chain-goal-textarea" value={goal} onChange={(event) => setGoal(event.target.value)} placeholder="What should this chain accomplish?" rows={4} className="mt-1 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
-        </label>
+        {scaffold !== 'none' && (
+          <label className="mt-4 block text-sm text-zinc-300">
+            Goal
+            <textarea data-debug-id="new-chain-goal-textarea" value={goal} onChange={(event) => setGoal(event.target.value)} placeholder="What should this chain accomplish?" rows={4} className="mt-1 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
+          </label>
+        )}
 
         <div className="mt-4 grid gap-4 md:grid-cols-2">
           <label className="text-sm text-zinc-300">
-            Scaffold
+            Optional task scaffold
             <select data-debug-id="new-chain-scaffold-select" value={scaffold} onChange={(event) => setScaffold(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
-              {kindDef.scaffolds.map((item) => <option key={item} value={item}>{item}</option>)}
               <option value="none">none</option>
+              {kindDef.scaffolds.map((item) => <option key={item} value={item}>{item}</option>)}
             </select>
+            <div className="mt-1 text-xs text-zinc-500">Non-none scaffolds create draft tasks that depend on coordinator validation.</div>
           </label>
           <label className="flex items-center gap-3 rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-zinc-300">
             <input data-debug-id="new-chain-vcs-checkbox" type="checkbox" checked={wantsVcs && selectedProjectSupportsVcs} disabled={!selectedProjectSupportsVcs} onChange={(event) => setWantsVcs(event.target.checked)} className="h-4 w-4" />
@@ -2059,12 +2400,12 @@ function NewChainModal({ projectId, projects, agents, creating, error, onClose, 
           Project VCS: {selectedProjectSupportsVcs ? `enabled via ${projectAnchorValue(selectedProject, 'vcs_kind', 'auto')} repo ${projectAnchorValue(selectedProject, 'directory')}` : 'disabled — add directory/vcs_kind anchors in project settings'}
         </div>
 
-        <div className="mt-4 rounded-xl bg-white/[0.04] p-3 text-xs text-zinc-500">Coordinator: {coordinatorAgentInstanceId || 'No eligible coordinator agent found'}</div>
+        <div data-debug-id="new-chain-coordinator-preview" className="mt-4 rounded-xl bg-white/[0.04] p-3 text-xs text-zinc-500">Coordinator: generated on create as coordinator@project-chain</div>
         {error && <div className="mt-4 rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-200">{error}</div>}
 
         <div className="mt-6 flex justify-end gap-2">
           <button data-debug-id="new-chain-cancel-btn" type="button" onClick={onClose} disabled={creating} className="rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15 disabled:opacity-50">Cancel</button>
-          <button data-debug-id="new-chain-submit-btn" type="submit" disabled={creating || !title.trim() || !coordinatorAgentInstanceId} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:opacity-50">{creating ? 'Creating…' : 'Create chain'}</button>
+          <button data-debug-id="new-chain-submit-btn" type="submit" disabled={creating || !title.trim()} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:opacity-50">{creating ? 'Creating…' : 'Create chain'}</button>
         </div>
       </form>
     </div>

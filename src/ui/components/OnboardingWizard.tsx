@@ -320,7 +320,7 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
                     
                     <div className="text-right">
                       <div className="flex gap-1">
-                        {['cheap', 'normal', 'smart'].map((tier) => {
+                        {['normal', 'smart'].map((tier) => {
                           const modelName = provider.tiers?.[tier];
                           if (!modelName) return null;
                           return (
@@ -432,7 +432,6 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
                       >
                         <option value="smart">smart (recommended)</option>
                         <option value="normal">normal</option>
-                        <option value="cheap">cheap</option>
                       </select>
                     </div>
                   </div>
@@ -465,7 +464,6 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
                       >
                         <option value="smart">smart (recommended)</option>
                         <option value="normal">normal</option>
-                        <option value="cheap">cheap</option>
                       </select>
                     </div>
                   </div>

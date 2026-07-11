@@ -208,6 +208,33 @@ handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_C
 		return true
 	}
 
+	// GET /chat-approvals/pending
+	if len(ctx.segments) == 2 && ctx.segments[0] == "chat-approvals" && ctx.segments[1] == "pending" && ctx.method == "GET" {
+		handle_chat_approvals_pending(client, ctx)
+		return true
+	}
+	// POST /chat-approvals/answer
+	if len(ctx.segments) == 2 && ctx.segments[0] == "chat-approvals" && ctx.segments[1] == "answer" && ctx.method == "POST" {
+		handle_chat_approvals_answer(client, request_body(request), ctx)
+		return true
+	}
+	// POST /chat-approvals/dismiss
+	if len(ctx.segments) == 2 && ctx.segments[0] == "chat-approvals" && ctx.segments[1] == "dismiss" && ctx.method == "POST" {
+		handle_chat_approvals_dismiss(client, request_body(request), ctx)
+		return true
+	}
+	// POST /chat-approvals/cancel
+	if len(ctx.segments) == 2 && ctx.segments[0] == "chat-approvals" && ctx.segments[1] == "cancel" && ctx.method == "POST" {
+		handle_chat_approvals_cancel(client, request_body(request), ctx)
+		return true
+	}
+
+	// POST /guide-action-grants/approve
+	if len(ctx.segments) == 2 && ctx.segments[0] == "guide-action-grants" && ctx.segments[1] == "approve" && ctx.method == "POST" {
+		handle_guide_action_grant_approve(client, request_body(request), ctx)
+		return true
+	}
+
 	return false
 }
 

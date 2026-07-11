@@ -111,8 +111,7 @@ agent_store_apply_event :: proc(event: Agent_Instance_Event) -> bool {
 	rec.provider_profile = strings.clone(event.provider_profile)
 	rec.project_id = strings.clone(event.project_id)
 	rec.run_dir = strings.clone(event.run_dir)
-	tier := event.model_tier
-	if tier == "" do tier = "normal"
+	tier := normalize_model_tier(event.model_tier)
 	rec.model_tier = strings.clone(tier)
 	if event.current_task_since == -1 {
 		rec.current_task_id = ""

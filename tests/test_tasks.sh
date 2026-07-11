@@ -490,9 +490,9 @@ assert_field "T10 status=in_progress" "$UNBLK_SHOW" "status" "in_progress"
 echo ""
 
 # ─────────────────────────────────────────────────────────────────────────────
-# T11 — Comment revert approved task to ready
+# T11 — Informational comments do not revert approved tasks
 # ─────────────────────────────────────────────────────────────────────────────
-echo "=== T11: comment revert approved task to ready ==="
+echo "=== T11: informational comment preserves approved task ==="
 
 # 1. Approve DT2 manually using USER_TOKEN
 APP_DT2=$(ctl tasks status --token "$USER_TOKEN" --task-id "$DT2" --chain-id "$C4" --status approved --body "manual approval of step 2")
@@ -505,17 +505,17 @@ assert_field "T11 DT2 status=approved" "$SHOW_DT2_APP" "status" "approved"
 SHOW_C4_REV=$(ctl task-chains show --token "$TOKEN" --chain-id "$C4")
 assert_field "T11 C4 status=reviewing" "$SHOW_C4_REV" "status" "reviewing"
 
-# 3. Add an unresolved comment to DT2
-CMT_REV=$(ctl tasks comment --token "$TOKEN" --task-id "$DT2" --chain-id "$C4" --body "Wait, I found a major bug in the implementation!")
-assert_ok "T11 add comment to approved task" "$CMT_REV"
+# 3. Add an unresolved informational comment to DT2
+CMT_REV=$(ctl tasks comment --token "$TOKEN" --task-id "$DT2" --chain-id "$C4" --body "Informational follow-up: thanks for the evidence.")
+assert_ok "T11 add informational comment to approved task" "$CMT_REV"
 
-# 4. Verify task has reverted to in_progress (via auto-claim from ready)
+# 4. Verify ordinary comments do not regress approved work
 SHOW_DT2_REV=$(ctl tasks show --token "$TOKEN" --task-id "$DT2")
-assert_field "T11 DT2 status reverted to in_progress" "$SHOW_DT2_REV" "status" "in_progress"
+assert_field "T11 DT2 status remains approved" "$SHOW_DT2_REV" "status" "approved"
 
-# 5. Verify chain has reverted to in_progress
-SHOW_C4_IN_PROG=$(ctl task-chains show --token "$TOKEN" --chain-id "$C4")
-assert_field "T11 C4 status reverted to in_progress" "$SHOW_C4_IN_PROG" "status" "in_progress"
+# 5. Verify chain remains reviewing instead of reverting due to an informational comment
+SHOW_C4_STILL_REV=$(ctl task-chains show --token "$TOKEN" --chain-id "$C4")
+assert_field "T11 C4 status remains reviewing" "$SHOW_C4_STILL_REV" "status" "reviewing"
 
 echo ""
 

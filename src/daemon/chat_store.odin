@@ -41,6 +41,9 @@ chat_store_init :: proc(data_dir: string) {
 	if !message_db_init(data_dir) {
 		fmt.println("chat_store_init: failed to initialize message database")
 	}
+	if !chat_approval_db_init() {
+		fmt.println("chat_store_init: failed to initialize chat approvals table")
+	}
 }
 
 chat_store_append_event :: proc(event: Chat_Event) -> bool {

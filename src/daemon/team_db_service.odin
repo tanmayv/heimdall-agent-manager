@@ -174,7 +174,7 @@ team_member_with_identity_defaults :: proc(member: Team_Member_Record) -> Team_M
 		if idx := agent_record_index(m.agent_record_id); idx >= 0 {
 			m.agent_instance_id = agent_instance_records[idx].agent_instance_id
 		} else {
-			m.agent_instance_id = team_service_member_agent_instance_id(m.team_id, m.role_key, m.role_index)
+			m.agent_instance_id = team_service_member_agent_instance_id("", "", m.team_id, m.role_key, m.role_index)
 		}
 	}
 	return m

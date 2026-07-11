@@ -14,7 +14,7 @@ project_create :: proc(body, author: string) -> Project_Service_Result {
 	if project_index(project_id) >= 0 do return project_error(400, "project already exists")
 	event := Project_Event{kind = .Project_Created, project_id = project_id, name = name, description = description, author = author}
 	project_parse_anchors_into(body, &event.anchors, &event.anchor_count)
-	if bad := project_first_invalid_anchor(event.anchors[:], event.anchor_count); bad != "" do return project_error(400, fmt.tprintf("unknown anchor type '%s'; allowed: git_repo, base_ref, vcs_kind, worktree_root, docs, scratch", bad))
+	if bad := project_first_invalid_anchor(event.anchors[:], event.anchor_count); bad != "" do return project_error(400, fmt.tprintf("unknown anchor type '%s'; allowed: directory, git_repo, base_ref, vcs_kind, worktree_root, docs, scratch", bad))
 	if !project_store_append_event(event) do return project_error(500, "append project failed")
 	return Project_Service_Result{ok = true, status_code = 200, message = project_response_json("created", project_id)}
 }
@@ -30,9 +30,20 @@ project_update :: proc(body, author: string) -> Project_Service_Result {
 	event := Project_Event{kind = .Project_Updated, project_id = project_id, name = name, description = description, author = author}
 	project_parse_anchors_into(body, &event.anchors, &event.anchor_count)
 	if json_value_start(body, "anchors") < 0 && event.anchor_count == 0 { event.anchor_count = current.anchor_count; for i in 0..<current.anchor_count do event.anchors[i] = project_anchor_clone(current.anchors[i]) }
-	if bad := project_first_invalid_anchor(event.anchors[:], event.anchor_count); bad != "" do return project_error(400, fmt.tprintf("unknown anchor type '%s'; allowed: git_repo, base_ref, vcs_kind, worktree_root, docs, scratch", bad))
+	if bad := project_first_invalid_anchor(event.anchors[:], event.anchor_count); bad != "" do return project_error(400, fmt.tprintf("unknown anchor type '%s'; allowed: directory, git_repo, base_ref, vcs_kind, worktree_root, docs, scratch", bad))
 	if !project_store_append_event(event) do return project_error(500, "append project failed")
 	return Project_Service_Result{ok = true, status_code = 200, message = project_response_json("updated", project_id)}
+}
+
+project_delete :: proc(body, author: string) -> Project_Service_Result {
+	project_id := extract_json_string(body, "project_id", "")
+	if project_id == "" do return project_error(400, "project_id required")
+	if project_id == "heimdall-system" do return project_error(400, "cannot delete heimdall-system project")
+	idx := project_index(project_id)
+	if idx < 0 do return project_error(404, "project not found")
+	event := Project_Event{kind = .Project_Deleted, project_id = project_id, author = author}
+	if !project_store_append_event(event) do return project_error(500, "delete project failed")
+	return Project_Service_Result{ok = true, status_code = 200, message = project_response_json("deleted", project_id)}
 }
 
 project_list_json :: proc() -> string {
@@ -55,7 +66,7 @@ project_write_record_json :: proc(b: ^strings.Builder, p: Project_Record) {
 
 project_anchor_type_allowed :: proc(t: string) -> bool {
 	switch t {
-	case "git_repo", "base_ref", "vcs_kind", "worktree_root", "docs", "scratch": return true
+	case "directory", "git_repo", "base_ref", "vcs_kind", "worktree_root", "docs", "scratch": return true
 	}
 	return false
 }

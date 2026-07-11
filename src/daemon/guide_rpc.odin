@@ -1,0 +1,446 @@
+package main
+
+import "core:fmt"
+import "core:net"
+import "core:os"
+import "core:strconv"
+import "core:strings"
+import http "odin_test:lib/http_client"
+
+GUIDE_ACTION_GRANT_TTL_MS :: i64(5 * 60 * 1000)
+GUIDE_ACTION_GRANT_MAX    :: 128
+
+Guide_Action_Grant :: struct {
+	grant_id:             string,
+	user_id:              string,
+	action_type:          string,
+	params_json:          string,
+	reason:               string,
+	state:                string,
+	requested_at_unix_ms: i64,
+	expires_at_unix_ms:   i64,
+	approved_at_unix_ms:  i64,
+	decided_by:           string,
+	used_at_unix_ms:      i64,
+}
+
+guide_action_grants: [GUIDE_ACTION_GRANT_MAX]Guide_Action_Grant
+guide_action_grant_count: int
+
+guide_rpc_try_handle :: proc(client: net.TCP_Socket, action, body, from_agent_instance_id: string) -> bool {
+	if !strings.has_prefix(action, "guide_") do return false
+	if !guide_agent_is_singleton(from_agent_instance_id) {
+		fmt.printfln("GUIDE_RPC ts_unix_ms=%d stage=rejected action=%s from=%s reason=not_guide", router_now_unix_ms(), action, from_agent_instance_id)
+		write_response(client, 403, "Forbidden", `{"ok":false,"message":"guide RPC actions are restricted to guide@heimdall"}`)
+		return true
+	}
+	fmt.printfln("GUIDE_RPC ts_unix_ms=%d stage=handle action=%s from=%s", router_now_unix_ms(), action, from_agent_instance_id)
+	if action == "guide_status" {
+		write_response(client, 200, "OK", guide_rpc_status_json())
+		return true
+	}
+	if action == "guide_state_summary" {
+		write_response(client, 200, "OK", guide_rpc_state_summary_json())
+		return true
+	}
+	if action == "guide_list_chains" {
+		limit := extract_json_int(body, "limit", 20)
+		if limit <= 0 || limit > 100 do limit = 20
+		write_response(client, 200, "OK", guide_rpc_list_chains_json(limit, extract_json_string(body, "status", "")))
+		return true
+	}
+	if action == "guide_show_chain" {
+		chain_id := extract_json_string(body, "chain_id", extract_json_string(body, "chain", ""))
+		write_response(client, 200, "OK", guide_rpc_show_chain_json(chain_id))
+		return true
+	}
+	if action == "guide_list_agents" || action == "guide_show_agent_runtime" {
+		agent_id := extract_json_string(body, "agent_instance_id", extract_json_string(body, "agent", ""))
+		write_response(client, 200, "OK", guide_rpc_agents_json(agent_id))
+		return true
+	}
+	if action == "guide_list_projects" {
+		write_response(client, 200, "OK", project_list_json())
+		return true
+	}
+	if action == "guide_ui_debug_status" {
+		write_response(client, 200, "OK", guide_rpc_ui_debug_status_json())
+		return true
+	}
+	if action == "guide_ui_debug_action" {
+		write_response(client, 200, "OK", guide_rpc_ui_debug_action_json(body))
+		return true
+	}
+	if action == "guide_request_user_action" {
+		write_response(client, 200, "OK", guide_rpc_request_user_action_json(body))
+		return true
+	}
+	if action == "guide_execute_user_action" {
+		write_response(client, 200, "OK", guide_rpc_execute_user_action_json(body))
+		return true
+	}
+	write_response(client, 400, "Bad Request", `{"ok":false,"message":"unsupported guide RPC action"}`)
+	return true
+}
+
+guide_rpc_status_json :: proc() -> string {
+	b := strings.builder_make()
+	agent_id := guide_agent_instance_id()
+	strings.write_string(&b, `{"ok":true,"agent_instance_id":"`); json_write_string(&b, agent_id)
+	strings.write_string(&b, `","enabled":`); strings.write_string(&b, "true" if server_config.guide_agent.enabled else "false")
+	strings.write_string(&b, `,"autostart":`); strings.write_string(&b, "true" if server_config.guide_agent.autostart else "false")
+	strings.write_string(&b, `,"restart_if_stopped":`); strings.write_string(&b, "true" if server_config.guide_agent.restart_if_stopped else "false")
+	strings.write_string(&b, `,"template_id":"`); json_write_string(&b, server_config.guide_agent.template_id)
+	strings.write_string(&b, `","provider_profile":"`); json_write_string(&b, server_config.guide_agent.provider_profile)
+	strings.write_string(&b, `","model_tier":"`); json_write_string(&b, server_config.guide_agent.model_tier)
+	if idx := registry_find_agent(agent_id); idx >= 0 {
+		ag := agents[idx]
+		strings.write_string(&b, `","connected":`); strings.write_string(&b, "true" if ag.connected else "false")
+		strings.write_string(&b, `,"startup_status":"`); json_write_string(&b, ag.startup_status)
+		strings.write_string(&b, `","startup_reason_code":"`); json_write_string(&b, ag.startup_reason_code)
+		strings.write_string(&b, `","tmux_pane":"`); json_write_string(&b, ag.tmux_pane)
+		strings.write_string(&b, `"`)
+	} else {
+		strings.write_string(&b, `","connected":false,"startup_status":"offline","startup_reason_code":"","tmux_pane":""`)
+	}
+	strings.write_string(&b, `}`)
+	return strings.to_string(b)
+}
+
+guide_rpc_state_summary_json :: proc() -> string {
+	active_chains := 0
+	for i in 0..<task_chain_count {
+		if !task_chains[i].archived && task_chains[i].status != "completed" && task_chains[i].status != "cancelled" && task_chains[i].status != "abandoned" do active_chains += 1
+	}
+	live_agents := 0
+	for i in 0..<agent_instance_record_count {
+		if agent_instance_records[i].archived_at_unix_ms == 0 do live_agents += 1
+	}
+	connected_agents := 0
+	for i in 0..<agent_count {
+		if agents[i].connected || agents[i].has_ws do connected_agents += 1
+	}
+	pending_attention := 0
+	for i in 0..<task_state_count {
+		if isUserActionableTask_for_guide(task_states[i]) do pending_attention += 1
+	}
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"projects":`); strings.write_string(&b, fmt.tprintf("%d", project_record_count))
+	strings.write_string(&b, `,"chains":`); strings.write_string(&b, fmt.tprintf("%d", task_chain_count))
+	strings.write_string(&b, `,"active_chains":`); strings.write_string(&b, fmt.tprintf("%d", active_chains))
+	strings.write_string(&b, `,"tasks":`); strings.write_string(&b, fmt.tprintf("%d", task_state_count))
+	strings.write_string(&b, `,"agents":`); strings.write_string(&b, fmt.tprintf("%d", live_agents))
+	strings.write_string(&b, `,"connected_agents":`); strings.write_string(&b, fmt.tprintf("%d", connected_agents))
+	strings.write_string(&b, `,"pending_task_attention":`); strings.write_string(&b, fmt.tprintf("%d", pending_attention))
+	strings.write_string(&b, `,"guide_agent_id":"`); json_write_string(&b, guide_agent_instance_id())
+	strings.write_string(&b, `"}`)
+	return strings.to_string(b)
+}
+
+isUserActionableTask_for_guide :: proc(task: Task_State) -> bool {
+	if task.status == .Review_Ready {
+		for i in 0..<task_participant_count {
+			p := task_participants[i]
+			if p.task_id == task.task_id && p.agent_instance_id == "user_proxy" && p.role == "lgtm_required" do return true
+		}
+	}
+	if task.status == .Blocked do return strings.contains(task.description, "user") || strings.contains(task.description, "operator")
+	return false
+}
+
+guide_rpc_list_chains_json :: proc(limit: int, status_filter: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"chains":[`)
+	first := true
+	count := 0
+	for i := task_chain_count - 1; i >= 0; i -= 1 {
+		chain := task_chains[i]
+		if status_filter != "" && chain.status != status_filter do continue
+		if count >= limit do break
+		if !first do strings.write_string(&b, `,`)
+		first = false
+		task_write_chain_json(&b, chain)
+		count += 1
+	}
+	strings.write_string(&b, `],"count":`); strings.write_string(&b, fmt.tprintf("%d", count)); strings.write_string(&b, `}`)
+	return strings.to_string(b)
+}
+
+guide_rpc_show_chain_json :: proc(chain_id: string) -> string {
+	if chain_id == "" do return `{"ok":false,"message":"chain_id required"}`
+	idx, found := task_existing_chain_index(chain_id)
+	if !found do return `{"ok":false,"message":"unknown chain_id"}`
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"chain":`)
+	task_write_chain_json(&b, task_chains[idx])
+	strings.write_string(&b, `,"tasks":[`)
+	first := true
+	for i in 0..<task_state_count {
+		if task_states[i].chain_id != chain_id do continue
+		if !first do strings.write_string(&b, `,`)
+		first = false
+		guide_rpc_write_task_json(&b, task_states[i])
+	}
+	strings.write_string(&b, `]}`)
+	return strings.to_string(b)
+}
+
+guide_rpc_write_task_json :: proc(b: ^strings.Builder, task: Task_State) {
+	strings.write_string(b, `{"task_id":"`); json_write_string(b, task.task_id)
+	strings.write_string(b, `","chain_id":"`); json_write_string(b, task.chain_id)
+	strings.write_string(b, `","title":"`); json_write_string(b, task.title)
+	strings.write_string(b, `","status":"`); json_write_string(b, task_status_to_string(task.status))
+	strings.write_string(b, `","priority":"`); json_write_string(b, task.priority)
+	strings.write_string(b, `","assignee_agent_instance_id":"`); json_write_string(b, task.assignee_agent_instance_id)
+	strings.write_string(b, `","depends_on":"`); json_write_string(b, task.depends_on)
+	strings.write_string(b, `","updated_at_unix_ms":`); strings.write_string(b, fmt.tprintf("%d", task.updated_at_unix_ms))
+	strings.write_string(b, `}`)
+}
+
+guide_rpc_agents_json :: proc(agent_id: string) -> string {
+	b := strings.builder_make()
+	if agent_id != "" {
+		idx := agent_record_index_by_instance(agent_id)
+		if idx < 0 do return `{"ok":false,"message":"unknown agent_instance_id"}`
+		strings.write_string(&b, `{"ok":true,"agent":`)
+		agent_instance_record_json(&b, agent_instance_records[idx])
+		strings.write_string(&b, `}`)
+		return strings.to_string(b)
+	}
+	strings.write_string(&b, `{"ok":true,"agents":[`)
+	first := true
+	for i in 0..<agent_instance_record_count {
+		rec := agent_instance_records[i]
+		if rec.archived_at_unix_ms != 0 do continue
+		if !first do strings.write_string(&b, `,`)
+		first = false
+		agent_instance_record_json(&b, rec)
+	}
+	strings.write_string(&b, `]}`)
+	return strings.to_string(b)
+}
+
+guide_rpc_ui_debug_status_json :: proc() -> string {
+	registry := guide_rpc_ui_debug_registry_json()
+	port, found := guide_rpc_ui_debug_first_port(registry)
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"available":`); strings.write_string(&b, "true" if found else "false")
+	strings.write_string(&b, `,"active_port":`); strings.write_string(&b, fmt.tprintf("%d", port))
+	strings.write_string(&b, `,"registry_path":"`); json_write_string(&b, guide_rpc_ui_debug_registry_path())
+	strings.write_string(&b, `","instances":`)
+	if registry == "" {
+		strings.write_string(&b, `[]`)
+	} else {
+		strings.write_string(&b, registry)
+	}
+	strings.write_string(&b, `}`)
+	return strings.to_string(b)
+}
+
+guide_rpc_ui_debug_action_json :: proc(body: string) -> string {
+	registry := guide_rpc_ui_debug_registry_json()
+	port, found := guide_rpc_ui_debug_first_port(registry)
+	if !found do return `{"ok":false,"message":"no active Electron debug server registered"}`
+	debug_action := extract_json_string(body, "debug_action", extract_json_string(body, "debug", ""))
+	path := ""
+	switch debug_action {
+	case "info": path = "/info"
+	case "state": path = "/state"
+	case "elements": path = "/elements"
+	case "logs": path = "/logs"
+	case:
+		return `{"ok":false,"message":"unsupported or mutating UI debug action; allowed: info, state, elements, logs"}`
+	}
+	base := fmt.tprintf("http://127.0.0.1:%d", port)
+	resp, ok := http.get(base, path)
+	if !ok do return `{"ok":false,"message":"Electron debug server request failed"}`
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"debug_action":"`); json_write_string(&b, debug_action)
+	strings.write_string(&b, `","port":`); strings.write_string(&b, fmt.tprintf("%d", port))
+	strings.write_string(&b, `,"status":`); strings.write_string(&b, fmt.tprintf("%d", resp.status))
+	strings.write_string(&b, `,"result":`)
+	if strings.trim_space(resp.body) == "" {
+		strings.write_string(&b, `null`)
+	} else {
+		strings.write_string(&b, resp.body)
+	}
+	strings.write_string(&b, `}`)
+	fmt.printfln("GUIDE_UI_DEBUG ts_unix_ms=%d action=%s port=%d status=%d", router_now_unix_ms(), debug_action, port, resp.status)
+	return strings.to_string(b)
+}
+
+guide_rpc_request_user_action_json :: proc(body: string) -> string {
+	action_type := extract_json_string(body, "action_type", extract_json_string(body, "delegated_action", ""))
+	if !guide_action_type_allowed(action_type) do return `{"ok":false,"message":"unsupported delegated action_type"}`
+	params_json := guide_action_extract_params_json(body)
+	user_id := extract_json_string(body, "user_id", server_config.daemon.user_id)
+	if user_id == "" do user_id = "operator@local"
+	reason := extract_json_string(body, "reason", extract_json_string(body, "title", "Guide requested a delegated action"))
+	now := router_now_unix_ms()
+	grant_id := fmt.tprintf("ggrant_%d_%d", now, guide_action_grant_count)
+	idx := guide_action_grant_count % GUIDE_ACTION_GRANT_MAX
+	guide_action_grants[idx] = Guide_Action_Grant{
+		grant_id             = strings.clone(grant_id),
+		user_id              = strings.clone(user_id),
+		action_type          = strings.clone(action_type),
+		params_json          = strings.clone(params_json),
+		reason               = strings.clone(reason),
+		state                = strings.clone("pending"),
+		requested_at_unix_ms = now,
+		expires_at_unix_ms   = now + GUIDE_ACTION_GRANT_TTL_MS,
+	}
+	guide_action_grant_count += 1
+	fmt.printfln("GUIDE_ACTION_GRANT ts_unix_ms=%d stage=requested grant_id=%s action_type=%s user=%s reason=%s", now, grant_id, action_type, user_id, reason)
+	return guide_action_grant_json(guide_action_grants[idx])
+}
+
+guide_rpc_execute_user_action_json :: proc(body: string) -> string {
+	grant_id := extract_json_string(body, "grant_id", "")
+	if grant_id == "" do return `{"ok":false,"message":"grant_id required"}`
+	idx := guide_action_grant_index(grant_id)
+	if idx < 0 do return `{"ok":false,"message":"unknown grant_id"}`
+	grant := &guide_action_grants[idx]
+	now := router_now_unix_ms()
+	if grant.state != "approved" do return `{"ok":false,"message":"grant is not approved"}`
+	if grant.expires_at_unix_ms <= now do return `{"ok":false,"message":"grant expired"}`
+	if grant.used_at_unix_ms != 0 do return `{"ok":false,"message":"grant already used"}`
+	path := guide_action_debug_path(grant.action_type)
+	if path == "" do return `{"ok":false,"message":"unsupported delegated action"}`
+	registry := guide_rpc_ui_debug_registry_json()
+	port, found := guide_rpc_ui_debug_first_port(registry)
+	if !found do return `{"ok":false,"message":"no active Electron debug server registered"}`
+	base := fmt.tprintf("http://127.0.0.1:%d", port)
+	resp, ok := http.post(base, path, grant.params_json)
+	if !ok do return `{"ok":false,"message":"Electron debug action request failed"}`
+	grant.used_at_unix_ms = now
+	grant.state = strings.clone("used")
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"grant_id":"`); json_write_string(&b, grant_id)
+	strings.write_string(&b, `","action_type":"`); json_write_string(&b, grant.action_type)
+	strings.write_string(&b, `","port":`); strings.write_string(&b, fmt.tprintf("%d", port))
+	strings.write_string(&b, `,"status":`); strings.write_string(&b, fmt.tprintf("%d", resp.status))
+	strings.write_string(&b, `,"result":`)
+	if strings.trim_space(resp.body) == "" {
+		strings.write_string(&b, `null`)
+	} else {
+		strings.write_string(&b, resp.body)
+	}
+	strings.write_string(&b, `}`)
+	fmt.printfln("GUIDE_ACTION_GRANT ts_unix_ms=%d stage=executed grant_id=%s action_type=%s status=%d", now, grant_id, grant.action_type, resp.status)
+	return strings.to_string(b)
+}
+
+handle_guide_action_grant_approve :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
+	user_id, ok := rest_authorize(client, ctx)
+	if !ok do return
+	if registry_agent_instance_for_token(ctx.token) != "" {
+		write_response(client, 403, "Forbidden", `{"ok":false,"message":"agent tokens cannot approve guide action grants"}`)
+		return
+	}
+	grant_id := extract_json_string(body, "grant_id", "")
+	approve := extract_json_bool(body, "approve", true)
+	idx := guide_action_grant_index(grant_id)
+	if grant_id == "" || idx < 0 {
+		write_response(client, 404, "Not Found", `{"ok":false,"message":"unknown grant_id"}`)
+		return
+	}
+	grant := &guide_action_grants[idx]
+	if grant.user_id != user_id {
+		write_response(client, 403, "Forbidden", `{"ok":false,"message":"grant belongs to another user"}`)
+		return
+	}
+	if grant.state != "pending" {
+		write_response(client, 409, "Conflict", `{"ok":false,"message":"grant is no longer pending"}`)
+		return
+	}
+	now := router_now_unix_ms()
+	if grant.expires_at_unix_ms <= now {
+		grant.state = strings.clone("expired")
+		write_response(client, 409, "Conflict", `{"ok":false,"message":"grant expired"}`)
+		return
+	}
+	grant.decided_by = strings.clone(user_id)
+	grant.approved_at_unix_ms = now
+	grant.state = strings.clone("approved" if approve else "rejected")
+	fmt.printfln("GUIDE_ACTION_GRANT ts_unix_ms=%d stage=decided grant_id=%s action_type=%s user=%s state=%s", now, grant_id, grant.action_type, user_id, grant.state)
+	write_response(client, 200, "OK", guide_action_grant_json(grant^))
+}
+
+guide_action_grant_json :: proc(grant: Guide_Action_Grant) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"grant":{"grant_id":"`); json_write_string(&b, grant.grant_id)
+	strings.write_string(&b, `","user_id":"`); json_write_string(&b, grant.user_id)
+	strings.write_string(&b, `","action_type":"`); json_write_string(&b, grant.action_type)
+	strings.write_string(&b, `","state":"`); json_write_string(&b, grant.state)
+	strings.write_string(&b, `","reason":"`); json_write_string(&b, grant.reason)
+	strings.write_string(&b, `","params":`); strings.write_string(&b, grant.params_json if grant.params_json != "" else `{}`)
+	strings.write_string(&b, `,"requested_at_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", grant.requested_at_unix_ms))
+	strings.write_string(&b, `,"expires_at_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", grant.expires_at_unix_ms))
+	strings.write_string(&b, `,"approved_at_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", grant.approved_at_unix_ms))
+	strings.write_string(&b, `,"used_at_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", grant.used_at_unix_ms))
+	strings.write_string(&b, `}}`)
+	return strings.to_string(b)
+}
+
+guide_action_grant_index :: proc(grant_id: string) -> int {
+	for i in 0..<GUIDE_ACTION_GRANT_MAX {
+		if guide_action_grants[i].grant_id == grant_id do return i
+	}
+	return -1
+}
+
+guide_action_extract_params_json :: proc(body: string) -> string {
+	params := chat_approval_extract_raw_json_value(body, "params")
+	if params == "" do params = chat_approval_extract_raw_json_value(body, "parameters")
+	if params == "" do params = `{}`
+	return params
+}
+
+guide_action_type_allowed :: proc(action_type: string) -> bool {
+	return action_type == "ui_debug_click" || action_type == "ui_debug_type" || action_type == "ui_debug_select" || action_type == "ui_debug_highlight"
+}
+
+guide_action_debug_path :: proc(action_type: string) -> string {
+	switch action_type {
+	case "ui_debug_click": return "/click"
+	case "ui_debug_type": return "/type"
+	case "ui_debug_select": return "/select"
+	case "ui_debug_highlight": return "/highlight"
+	}
+	return ""
+}
+
+guide_rpc_ui_debug_registry_path :: proc() -> string {
+	if server_data_dir != "" do return fmt.tprintf("%s/debug-instances.json", server_data_dir)
+	return "debug-instances.json"
+}
+
+guide_rpc_ui_debug_registry_json :: proc() -> string {
+	path := guide_rpc_ui_debug_registry_path()
+	data, err := os.read_entire_file(path, context.allocator)
+	if err != nil do return ""
+	defer delete(data)
+	text := strings.trim_space(string(data))
+	if text == "" do return ""
+	return strings.clone(text)
+}
+
+guide_rpc_ui_debug_first_port :: proc(registry: string) -> (int, bool) {
+	if registry == "" do return 0, false
+	search := registry
+	for {
+		idx := strings.index(search, `"port"`)
+		if idx < 0 do return 0, false
+		after := search[idx + len(`"port"`):]
+		colon := strings.index(after, ":")
+		if colon < 0 do return 0, false
+		rest := strings.trim_left(after[colon + 1:], " \t\r\n")
+		end := 0
+		for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' do end += 1
+		if end > 0 {
+			if parsed, ok := strconv.parse_int(rest[:end]); ok && parsed > 0 do return int(parsed), true
+		}
+		if len(after) <= colon + 1 do return 0, false
+		search = after[colon + 1:]
+	}
+}

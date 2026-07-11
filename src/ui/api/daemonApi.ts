@@ -286,6 +286,29 @@ export async function focusTaskChain({ daemonUrl, clientToken, chainId }: Omit<U
   });
 }
 
+export async function listPendingChatApprovals({ daemonUrl, clientToken }: { daemonUrl: string; clientToken: string }) {
+  return requestJson(joinUrl(daemonUrl, `/chat-approvals/pending?token=${encodeURIComponent(clientToken)}`), {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+  });
+}
+
+export async function answerChatApproval({ daemonUrl, clientToken, approvalId, reply }: { daemonUrl: string; clientToken: string; approvalId: string; reply: string }) {
+  return requestJson(joinUrl(daemonUrl, `/chat-approvals/answer`), {
+    method: 'POST',
+    body: { approval_id: approvalId, reply, token: clientToken },
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+  });
+}
+
+export async function dismissChatApproval({ daemonUrl, clientToken, approvalId, reason = 'user_dismissed', notify = false }: { daemonUrl: string; clientToken: string; approvalId: string; reason?: string; notify?: boolean }) {
+  return requestJson(joinUrl(daemonUrl, `/chat-approvals/dismiss`), {
+    method: 'POST',
+    body: { approval_id: approvalId, reason, notify, token: clientToken },
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+  });
+}
+
 export async function fetchWorkspace({ daemonUrl, clientToken, chainId }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId: string }) {
   return requestJson(joinUrl(daemonUrl, `/chains/${encodeURIComponent(chainId)}/workspace?agent_token=${encodeURIComponent(clientToken)}`));
 }
@@ -482,6 +505,10 @@ export async function createProject({ daemonUrl, clientInstanceId, clientToken, 
 
 export async function updateProject({ daemonUrl, clientInstanceId, clientToken, projectId, name, description, anchors }: UserRpcRequest & { projectId: string; name?: string; description?: string; anchors?: ProjectAnchor[] }) {
   return userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action: 'project_update', body: { project_id: projectId, name: name || '', description: description || '', anchors: anchors || [] } });
+}
+
+export async function deleteProject({ daemonUrl, clientInstanceId, clientToken, projectId }: UserRpcRequest & { projectId: string }) {
+  return userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action: 'project_delete', body: { project_id: projectId } });
 }
 
 export async function reorderProjects({ daemonUrl, clientInstanceId, clientToken, projectIds }: UserRpcRequest & { projectIds: string[] }) {

@@ -37,6 +37,13 @@ export const updateProjectFromUi = createAsyncThunk('projects/updateProjectFromU
   return result;
 });
 
+export const deleteProjectFromUi = createAsyncThunk('projects/deleteProjectFromUi', async (payload: { projectId: string }, { dispatch, getState }) => {
+  const state = getState() as any;
+  const result = await daemonApi.deleteProject({ ...auth(state), projectId: payload.projectId });
+  await (dispatch as any)(refreshProjects());
+  return result;
+});
+
 export const reorderProjectsFromUi = createAsyncThunk('projects/reorderProjectsFromUi', async (projectIds: string[], { dispatch, getState }) => {
   dispatch(projectSlice.actions.reorderProjectsLocally(projectIds));
   const state = getState() as any;
@@ -149,6 +156,18 @@ const projectSlice = createSlice({
       .addCase(updateProjectFromUi.rejected, (state: any, action) => {
         state.mutating = false;
         state.error = action.error.message || 'Failed to update project';
+      })
+      .addCase(deleteProjectFromUi.pending, (state: any) => {
+        state.mutating = true;
+        state.error = '';
+      })
+      .addCase(deleteProjectFromUi.fulfilled, (state: any, action) => {
+        state.mutating = false;
+        if (state.selectedProjectId === action.payload?.project_id) state.selectedProjectId = '';
+      })
+      .addCase(deleteProjectFromUi.rejected, (state: any, action) => {
+        state.mutating = false;
+        state.error = action.error.message || 'Failed to delete project';
       })
       .addCase(reorderProjectsFromUi.pending, (state: any) => {
         state.mutating = true;

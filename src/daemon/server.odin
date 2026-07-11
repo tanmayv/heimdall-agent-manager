@@ -89,6 +89,7 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 	}
 	time_step("audit_db_init", &step)
 	router_adapter_init(cfg.daemon); time_step("router_adapter_init", &step)
+	_ = task_runtime_reconcile_all_active("startup_replay", "normal"); time_step("task_runtime_reconcile_all_active", &step)
 	hub_sync_init(); time_step("hub_sync_init", &step)
 	message_queue_init(); time_step("message_queue_init", &step)
 	message_queue_start_worker(); time_step("message_queue_start_worker", &step)
@@ -110,6 +111,7 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 		fmt.println("warning: failed to set daemon listener close-on-exec")
 	}
 	fmt.println("odin-daemon listening", cfg.daemon.bind_host, cfg.daemon.port)
+	_ = guide_service_start(cfg.guide_agent, "daemon_startup")
 	for {
 		client, _, accept_err := net.accept_tcp(listener)
 		if accept_err != nil do continue
@@ -383,6 +385,11 @@ handle_client :: proc(client: net.TCP_Socket) {
 
 	if strings.has_prefix(request, "POST /projects/update ") {
 		handle_project_update(client, request_body(request))
+		return
+	}
+
+	if strings.has_prefix(request, "POST /projects/delete ") {
+		handle_project_delete(client, request_body(request))
 		return
 	}
 

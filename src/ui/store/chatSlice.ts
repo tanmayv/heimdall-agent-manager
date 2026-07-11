@@ -4,6 +4,8 @@ import * as daemonApi from '../api/daemonApi';
 const DEFAULT_DAEMON_URL = 'http://127.0.0.1:49322';
 const DEFAULT_USER_ID = 'operator@local';
 const DAEMON_PROFILES_KEY = 'odin.daemonProfiles';
+export const GUIDE_AGENT_ID = 'guide@heimdall';
+const CHAT_OPTIMISTIC_GRACE_MS = 30_000;
 
 function getStoredValue(key: string, fallback: string): string {
   try {
@@ -213,7 +215,8 @@ function mergeKnownAndLiveAgents(localKnownAgents: any[], daemonAgents: any[], d
 }
 
 function mapMessage(message: any) {
-  const createdTime = message.created_unix_ms ? new Date(message.created_unix_ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+  const createdUnixMs = Number(message.created_unix_ms ?? message.createdUnixMs ?? 0);
+  const createdTime = createdUnixMs ? new Date(createdUnixMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
   const deliveredUnixMs = Number(message.delivered_unix_ms ?? message.deliveredUnixMs ?? 0);
   const readUnixMs = Number(message.read_unix_ms ?? message.readUnixMs ?? 0);
   const deliveryFailedUnixMs = Number(message.delivery_failed_unix_ms ?? message.deliveryFailedUnixMs ?? 0);
@@ -222,6 +225,7 @@ function mapMessage(message: any) {
     author: message.direction === 'user_to_agent' || message.author === 'user' ? 'user' : 'agent',
     body: message.body,
     timestamp: createdTime || message.timestamp || '',
+    createdUnixMs,
     deliveredAt: deliveredUnixMs > 0 ? new Date(deliveredUnixMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : (message.deliveredAt || ''),
     deliveredUnixMs,
     readAt: readUnixMs > 0 ? new Date(readUnixMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : (message.readAt || ''),
@@ -240,8 +244,17 @@ function mergeMessage(existing: any, incoming: any) {
     body: incoming.body ?? existing.body,
     timestamp: incoming.timestamp || existing.timestamp,
     sending: false,
+    optimistic: false,
     error: incoming.deliveryFailedUnixMs > 0 ? false : (existing.error && !incoming.id ? existing.error : false),
   };
+}
+
+function isRecentOptimisticMessage(message: any): boolean {
+  if (!message) return false;
+  const marker = Boolean(message.sending || message.optimistic || String(message.id || '').startsWith('local_temp_'));
+  if (!marker) return false;
+  const at = Number(message.deliveredUnixMs || message.createdUnixMs || 0);
+  return Boolean(message.sending) || !at || Date.now() - at < CHAT_OPTIMISTIC_GRACE_MS;
 }
 
 function mergeMessages(existingMessages: any[], incomingMessages: any[]) {
@@ -402,6 +415,37 @@ export const sendMessageToSelectedAgent = createAsyncThunk(
   }
 );
 
+export const fetchGuideChat = createAsyncThunk('chat/fetchGuideChat', async (_payload: void | undefined, { getState }) => {
+  const { session } = (getState() as any).chat;
+  if (!session.clientToken) return { agentId: GUIDE_AGENT_ID, messages: [], nextCursor: 0, markedRead: false };
+  await daemonApi.markChatRead({
+    daemonUrl: session.daemonUrl,
+    clientInstanceId: session.clientInstanceId,
+    clientToken: session.clientToken,
+    agentInstanceId: GUIDE_AGENT_ID,
+  }).catch(() => undefined);
+  const data = await daemonApi.fetchChat({
+    daemonUrl: session.daemonUrl,
+    clientToken: session.clientToken,
+    agentInstanceId: GUIDE_AGENT_ID,
+    limit: 80,
+  });
+  return { agentId: GUIDE_AGENT_ID, messages: (data.messages ?? []).map(mapMessage).reverse(), nextCursor: data.next_cursor || 0, markedRead: true };
+});
+
+export const sendGuideMessage = createAsyncThunk('chat/sendGuideMessage', async (payload: { body: string; tempId: string; interrupt?: boolean }, { getState }) => {
+  const { session } = (getState() as any).chat;
+  const res = await daemonApi.sendToAgent({
+    daemonUrl: session.daemonUrl,
+    clientInstanceId: session.clientInstanceId,
+    clientToken: session.clientToken,
+    agentInstanceId: GUIDE_AGENT_ID,
+    body: payload.body,
+    interrupt: payload.interrupt,
+  });
+  return { messageId: res.message_id };
+});
+
 export const startAgentInstance = createAsyncThunk('chat/startAgentInstance', async (agent: any, { dispatch, getState }) => {
   const { session } = (getState() as any).chat;
   await daemonApi.startAgent({
@@ -480,6 +524,8 @@ const initialState = {
   chatsCursor: {} as Record<string, number>,   // Track cursor per agent (identity)
   chatsHasMore: {} as Record<string, boolean>,  // Track if there are more messages per agent
   sending: false,
+  guidePanelOpen: false,
+  guideSending: false,
   testRuns: [] as any[],
   fetchingChatsByAgentId: {} as Record<string, boolean>,
   activeView: 'chat' as 'chat' | 'settings' | 'tasks' | 'memory' | 'memoryAudit' | 'projects' | 'agents' | 'startAgent',
@@ -495,6 +541,15 @@ const chatSlice = createSlice({
     },
     setView(state, action) {
       state.activeView = action.payload || 'chat';
+    },
+    openGuidePanel(state) {
+      state.guidePanelOpen = true;
+    },
+    closeGuidePanel(state) {
+      state.guidePanelOpen = false;
+    },
+    toggleGuidePanel(state) {
+      state.guidePanelOpen = !state.guidePanelOpen;
     },
     markAgentReadLocally(state, action) {
       const agentInstanceId = String(action.payload || '');
@@ -838,7 +893,7 @@ const chatSlice = createSlice({
             state.chats[payloadAgentId] = mergeMessages(messages, state.chats[payloadAgentId]);
           } else {
             // Initial load - daemon truth plus any still-unmatched optimistic sends.
-            const optimistic = state.chats[payloadAgentId].filter((m: any) => m.sending || String(m.id).startsWith('local_temp_'));
+            const optimistic = state.chats[payloadAgentId].filter(isRecentOptimisticMessage);
             const unmatchedOptimistic = optimistic.filter((local: any) => !messages.some((server: any) => server.id === local.id || (server.author === local.author && server.body === local.body)));
             state.chats[payloadAgentId] = [...messages, ...unmatchedOptimistic];
           }
@@ -858,6 +913,65 @@ const chatSlice = createSlice({
         }
         state.session.error = action.error.message || 'Failed to fetch chat';
       })
+      .addCase(fetchGuideChat.pending, (state: any) => {
+        state.fetchingChatsByAgentId[GUIDE_AGENT_ID] = true;
+      })
+      .addCase(fetchGuideChat.fulfilled, (state: any, action) => {
+        state.fetchingChatsByAgentId[GUIDE_AGENT_ID] = false;
+        const { messages, nextCursor, markedRead } = action.payload;
+        const optimistic = (state.chats[GUIDE_AGENT_ID] || []).filter(isRecentOptimisticMessage);
+        const unmatchedOptimistic = optimistic.filter((local: any) => !messages.some((server: any) => server.id === local.id || (server.author === local.author && server.body === local.body)));
+        state.chats[GUIDE_AGENT_ID] = [...messages, ...unmatchedOptimistic];
+        state.chatsCursor[GUIDE_AGENT_ID] = nextCursor;
+        state.chatsHasMore[GUIDE_AGENT_ID] = nextCursor > 0;
+        if (markedRead) {
+          const agent = state.agents.find((item: any) => item.id === GUIDE_AGENT_ID);
+          if (agent) agent.unreadCount = 0;
+        }
+      })
+      .addCase(fetchGuideChat.rejected, (state: any, action) => {
+        state.fetchingChatsByAgentId[GUIDE_AGENT_ID] = false;
+        state.session.error = action.error.message || 'Failed to fetch guide chat';
+      })
+      .addCase(sendGuideMessage.pending, (state: any, action) => {
+        state.guideSending = true;
+        state.session.error = '';
+        const { body, tempId } = action.meta.arg;
+        if (!state.chats[GUIDE_AGENT_ID]) state.chats[GUIDE_AGENT_ID] = [];
+        state.chats[GUIDE_AGENT_ID].push({
+          id: tempId,
+          author: 'user',
+          body,
+          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          sending: true,
+          readUnixMs: 0,
+          deliveredUnixMs: 0,
+          createdUnixMs: Date.now(),
+          optimistic: true,
+        });
+      })
+      .addCase(sendGuideMessage.fulfilled, (state: any, action) => {
+        state.guideSending = false;
+        const { tempId } = action.meta.arg;
+        const { messageId } = action.payload;
+        const msg = (state.chats[GUIDE_AGENT_ID] || []).find((m: any) => m.id === tempId);
+        if (msg) {
+          msg.id = messageId;
+          msg.sending = false;
+          msg.deliveredUnixMs = Date.now();
+          msg.optimistic = true;
+        }
+      })
+      .addCase(sendGuideMessage.rejected, (state: any, action) => {
+        state.guideSending = false;
+        const { tempId } = action.meta.arg;
+        const msg = (state.chats[GUIDE_AGENT_ID] || []).find((m: any) => m.id === tempId);
+        if (msg) {
+          msg.sending = false;
+          msg.error = true;
+        }
+        state.session.error = action.error.message || 'Failed to send guide message';
+      })
       .addCase(sendMessageToSelectedAgent.pending, (state: any, action) => {
         state.sending = true;
         state.session.error = '';
@@ -875,6 +989,8 @@ const chatSlice = createSlice({
             sending: true,
             readUnixMs: 0,
             deliveredUnixMs: 0,
+            createdUnixMs: Date.now(),
+            optimistic: true,
           });
         }
       })
@@ -888,6 +1004,8 @@ const chatSlice = createSlice({
           if (msg) {
             msg.id = messageId;
             msg.sending = false;
+            msg.deliveredUnixMs = Date.now();
+            msg.optimistic = true;
           }
         }
       })
@@ -907,7 +1025,7 @@ const chatSlice = createSlice({
   },
 });
 
-export const { selectAgent, setView, setDaemonUrl, addDaemonProfile, renameDaemonProfile, removeDaemonProfile, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived, agentRuntimeEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage, reorderAgentsLocally, markAgentReadLocally } = chatSlice.actions;
+export const { selectAgent, setView, setDaemonUrl, addDaemonProfile, renameDaemonProfile, removeDaemonProfile, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived, agentRuntimeEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage, reorderAgentsLocally, markAgentReadLocally, openGuidePanel, closeGuidePanel, toggleGuidePanel } = chatSlice.actions;
 
 export const markCoordinatorRead = createAsyncThunk('chat/markCoordinatorRead', async (agentInstanceId: string, { dispatch, getState }) => {
   const state = getState() as any;

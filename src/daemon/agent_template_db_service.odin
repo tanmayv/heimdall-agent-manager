@@ -319,7 +319,24 @@ seed_default_templates_if_empty :: proc() {
 		})
 	}
 
-	// 8. Specialist
+	// 8. Guide
+	if exists, customized := agent_template_get_customized_status("guide"); !exists || !customized {
+		agent_template_db_save(Agent_Template_Record{
+			template_id = "guide",
+			display_name = "Heimdall Guide",
+			description = "Use this singleton global template for Heimdall product guidance, daemon/UI diagnostics, and operator support.",
+			role_hint = "guiding",
+			suggested_model_tier = "smart",
+			persona = strings.trim_space(#load("../prompts/guide_persona.md", string)),
+			instructions = strings.trim_space(#load("../prompts/guide_instructions.md", string)),
+			default_provider_profile = "pi",
+			created_unix_ms = now,
+			updated_unix_ms = now,
+			is_customized = false,
+		})
+	}
+
+	// 9. Specialist
 	if exists, customized := agent_template_get_customized_status("specialist"); !exists || !customized {
 		agent_template_db_save(Agent_Template_Record{
 			template_id = "specialist",

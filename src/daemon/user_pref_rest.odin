@@ -30,6 +30,8 @@ PREFERENCE_KEYS := []string{
 	"user_display_name",
 	"setup_completed",
 	"memory_auditor_dir",
+	"default_agent_provider_profile",
+	"default_agent_model_tier",
 }
 
 get_preference_default :: proc(key: string, agent_class := "") -> (value: string, interrupt: bool) {
@@ -124,6 +126,12 @@ get_preference_default :: proc(key: string, agent_class := "") -> (value: string
 		return "false", false
 	case "memory_auditor_dir":
 		return "~/agent_knowledge", false
+	case "default_agent_provider_profile":
+		if server_config.daemon.default_agent_provider_profile != "" do return server_config.daemon.default_agent_provider_profile, false
+		return "pi", false
+	case "default_agent_model_tier":
+		if server_config.daemon.default_agent_model_tier != "" do return server_config.daemon.default_agent_model_tier, false
+		return "normal", false
 	}
 	return "", false
 }

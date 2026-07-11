@@ -3,9 +3,9 @@ package main
 import "core:fmt"
 import "core:strings"
 
-agent_chat_send_to_user :: proc(agent_instance_id, user_id, body: string) -> (string, bool) {
+agent_chat_send_to_user :: proc(agent_instance_id, user_id, body: string, chain_id: string = "") -> (string, bool) {
 	if !valid_user_id(user_id) || body == "" do return "", false
-	message_id, ok := chat_append_agent_to_user(user_id, agent_instance_id, body)
+	message_id, ok := chat_append_agent_to_user_with_chain(user_id, agent_instance_id, body, chain_id)
 	if !ok || message_id == "" do return "", false
 	return message_id, true
 }

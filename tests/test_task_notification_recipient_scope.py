@@ -178,6 +178,21 @@ class TaskNotificationRecipientScopeTests(unittest.TestCase):
             r'task_notify_all_lgtm_required[\s\S]+?if notified_count > 0[\s\S]+?return[\s\S]+?default_reviewer[\s\S]+?coord[\s\S]+?operator@local',
         )
 
+    def test_review_ready_notifications_wake_reviewers_immediately(self):
+        """review_ready notification dispatch must request a high-priority
+        autoscaler boot/wake for concrete agent reviewers, not wait for the
+        periodic nudge scheduler tick."""
+        source = TASK_NOTIFICATIONS.read_text()
+        self.assertIn('task_notify_review_ready_agent', source)
+        self.assertRegex(
+            source,
+            r'task_notify_review_ready_agent[\s\S]+?task_autoscaler_ensure_agent\(chain, reviewer_agent_instance_id, state\.task_id, "high", router_now_unix_ms\(\)(?:, "review_ready")?\)',
+        )
+        self.assertRegex(
+            source,
+            r'task_notify_all_lgtm_required[\s\S]+?task_notify_review_ready_agent\(state, p\.agent_instance_id\)[\s\S]+?task_notify_recipient\(p\.agent_instance_id, payload\)',
+        )
+
     def test_no_cross_task_same_chain_participant_fallback_remains(self):
         combined = TASK_NOTIFICATIONS.read_text() + "\n" + TASK_QUERIES.read_text()
         same_chain_participant_fallbacks = re.findall(

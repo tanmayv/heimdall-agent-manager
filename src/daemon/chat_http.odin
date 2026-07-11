@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:net"
 import "core:strings"
 
@@ -48,11 +49,13 @@ handle_chat_send_to_coordinator :: proc(client: net.TCP_Socket, body: string) {
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"append chat failed"}`)
 		return
 	}
-	chat_event_fanout(user_id, coordinator, message_id, "user_to_agent")
+	chat_event_fanout(user_id, coordinator, message_id, "user_to_agent", chain_id)
 	_ = agent_chat_notify_user_message(coordinator, user_id, message_id)
+	superseded := chat_approval_supersede_for_chain(chain_id, message_body, message_id, user_id)
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"message_id":"`); json_write_string(&b, message_id)
 	strings.write_string(&b, `","chain_id":"`); json_write_string(&b, chain_id)
+	strings.write_string(&b, `","superseded_approvals":`); strings.write_string(&b, fmt.tprintf("%d", superseded))
 	strings.write_string(&b, `","agent_instance_id":"`); json_write_string(&b, coordinator)
 	strings.write_string(&b, `","coordinator_boot_requested":`); strings.write_string(&b, "true" if boot_requested else "false")
 	strings.write_string(&b, `}`)

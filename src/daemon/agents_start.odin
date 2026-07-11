@@ -9,6 +9,11 @@ valid_model_tier :: proc(tier: string) -> bool {
 	return tier == "cheap" || tier == "normal" || tier == "smart"
 }
 
+normalize_model_tier :: proc(tier: string) -> string {
+	if tier == "" || tier == "cheap" do return "normal"
+	return tier
+}
+
 handle_agents_providers :: proc(client: net.TCP_Socket) {
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"ok":true,"providers":[`)
@@ -124,7 +129,7 @@ handle_agents_associate :: proc(client: net.TCP_Socket, body: string) {
 	if idx < 0 { write_response(client, 404, "Not Found", `{"ok":false,"message":"agent not found"}`); return }
 	rec := agent_instance_records[idx]
 	rec.project_id = strings.clone(project_id)
-	assoc_tier := rec.model_tier; if assoc_tier == "" do assoc_tier = "normal"
+	assoc_tier := normalize_model_tier(rec.model_tier)
 	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = rec.provider_profile, project_id = rec.project_id, run_dir = rec.run_dir, model_tier = assoc_tier, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent association"}`); return }
 	write_agent_ok_response(client, "associated", agent_instance_records[agent_record_index(rec.agent_record_id)])
 }
@@ -137,7 +142,7 @@ handle_agents_disassociate :: proc(client: net.TCP_Socket, body: string) {
 	if idx < 0 { write_response(client, 404, "Not Found", `{"ok":false,"message":"agent not found"}`); return }
 	rec := agent_instance_records[idx]
 	rec.project_id = ""
-	disassoc_tier := rec.model_tier; if disassoc_tier == "" do disassoc_tier = "normal"
+	disassoc_tier := normalize_model_tier(rec.model_tier)
 	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = rec.provider_profile, project_id = "", run_dir = rec.run_dir, model_tier = disassoc_tier, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent disassociation"}`); return }
 	write_agent_ok_response(client, "disassociated", agent_instance_records[agent_record_index(rec.agent_record_id)])
 }
@@ -148,9 +153,17 @@ handle_agents_disassociate :: proc(client: net.TCP_Socket, body: string) {
 agent_record_upsert :: proc(
 	agent_instance_id, display_label, template_id, provider_profile, project_id, run_dir_override, model_tier: string,
 ) -> (agent_record_id: string, final_tier: string, ok: bool) {
+	if template_id == "guide" && !guide_agent_is_singleton(agent_instance_id) {
+		fmt.printfln("GUIDE_LAUNCH ts_unix_ms=%d stage=record_upsert_rejected target=%s template=%s reason=guide_template_reserved", router_now_unix_ms(), agent_instance_id, template_id)
+		return "", "", false
+	}
+	if guide_agent_is_singleton(agent_instance_id) && template_id != "" && template_id != "guide" {
+		fmt.printfln("GUIDE_LAUNCH ts_unix_ms=%d stage=record_upsert_rejected target=%s template=%s reason=guide_singleton_reserved", router_now_unix_ms(), agent_instance_id, template_id)
+		return "", "", false
+	}
 	rec_id := agent_new_record_id()
 	run_dir := run_dir_override
-	tier := model_tier; if tier == "" do tier = "normal"
+	tier := normalize_model_tier(model_tier)
 	pp := provider_profile
 	resolved_project_id := project_id
 	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 {
@@ -200,15 +213,14 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 	// Resolve model_tier: stored record's tier is the base; caller may override.
 	stored_model_tier := "normal"
 	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 {
-		stored_model_tier = agent_instance_records[idx].model_tier
-		if stored_model_tier == "" do stored_model_tier = "normal"
+		stored_model_tier = normalize_model_tier(agent_instance_records[idx].model_tier)
 	}
 	if request_tier := extract_json_string(body, "model_tier", ""); request_tier != "" {
 		if !valid_model_tier(request_tier) {
 			write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid model_tier; expected cheap, normal, or smart"}`)
 			return
 		}
-		stored_model_tier = request_tier
+		stored_model_tier = normalize_model_tier(request_tier)
 	}
 
 	log_path := wrapper_log_path(agent_instance_id)
@@ -227,7 +239,7 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 
 	agent_token := generate_agent_token()
 	registry_add_pending_agent_token(agent_instance_id, agent_token)
-	ok := launch_wrapper_detached(agent_instance_id, provider_profile, config_path, log_path, agent_token, display_name, final_tier, resolved_project_id)
+	ok := launch_wrapper_detached(agent_instance_id, provider_profile, config_path, log_path, agent_token, display_name, final_tier, resolved_project_id, "manual_agent_start", "", "", "")
 	if !ok {
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to start wrapper"}`)
 		return
@@ -269,7 +281,7 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 	}
 	strings.write_string(builder, `","project_name":"`); json_write_string(builder, project_name)
 	strings.write_string(builder, `","run_dir":"`); json_write_string(builder, rec.run_dir)
-	model_tier := rec.model_tier; if model_tier == "" do model_tier = "normal"
+	model_tier := normalize_model_tier(rec.model_tier)
 	strings.write_string(builder, `","model_tier":"`); json_write_string(builder, model_tier)
 	strings.write_string(builder, `","created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.created_unix_ms))
 	strings.write_string(builder, `,"updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.updated_unix_ms))
@@ -321,7 +333,9 @@ query_param :: proc(request, name: string) -> string {
 	return query[start:start + end]
 }
 
-launch_wrapper_detached :: proc(agent_instance_id, selected_agent, config_path, log_path, agent_token, display_name, model_tier, project_id: string) -> bool {
+launch_wrapper_detached :: proc(agent_instance_id, selected_agent, config_path, log_path, agent_token, display_name, model_tier, project_id: string, launch_source: string = "", chain_id: string = "", team_id: string = "", task_id: string = "") -> bool {
+	spawn_start_ms := router_now_unix_ms()
+	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=wrapper_spawn_build_begin source=%s chain=%s team=%s task=%s target=%s provider=%s tier=%s project=%s log=%s", spawn_start_ms, launch_source, chain_id, team_id, task_id, agent_instance_id, selected_agent, model_tier, project_id, log_path)
 	_ = os.make_directory_all(parent_dir(log_path))
 	wrapper_bin := default_wrapper_bin()
 
@@ -342,7 +356,7 @@ launch_wrapper_detached :: proc(agent_instance_id, selected_agent, config_path, 
 		strings.write_string(&builder, " --display-name ")
 		strings.write_string(&builder, shell_quote(display_name))
 	}
-	tier := model_tier; if tier == "" do tier = "normal"
+	tier := normalize_model_tier(model_tier)
 	strings.write_string(&builder, " --tier ")
 	strings.write_string(&builder, shell_quote(tier))
 	if project_id != "" {
@@ -355,11 +369,15 @@ launch_wrapper_detached :: proc(agent_instance_id, selected_agent, config_path, 
 	strings.write_string(&builder, shell_quote(log_path))
 	strings.write_string(&builder, " 2>&1 < /dev/null &")
 
-	process, err := os.process_start(os.Process_Desc{command = []string{"sh", "-c", strings.to_string(builder)}})
+	cmd := strings.to_string(builder)
+	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=wrapper_process_start_begin source=%s chain=%s team=%s task=%s target=%s wrapper_bin=%s", router_now_unix_ms(), router_now_unix_ms() - spawn_start_ms, launch_source, chain_id, team_id, task_id, agent_instance_id, wrapper_bin)
+	process, err := os.process_start(os.Process_Desc{command = []string{"sh", "-c", cmd}})
 	if err != nil {
+		fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=wrapper_process_start_failed source=%s chain=%s team=%s task=%s target=%s", router_now_unix_ms(), router_now_unix_ms() - spawn_start_ms, launch_source, chain_id, team_id, task_id, agent_instance_id)
 		fmt.println("wrapper launch failed")
 		return false
 	}
+	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=wrapper_process_start_done source=%s chain=%s team=%s task=%s target=%s shell_pid=%v", router_now_unix_ms(), router_now_unix_ms() - spawn_start_ms, launch_source, chain_id, team_id, task_id, agent_instance_id, process.handle)
 	_ = process
 	return true
 }
@@ -483,10 +501,10 @@ handle_agent_instance_update :: proc(client: net.TCP_Socket, body: string) {
 	provider_profile := extract_json_string(body, "provider_profile", rec.provider_profile)
 	project_id := extract_json_string(body, "project_id", rec.project_id)
 	run_dir := extract_json_string(body, "run_dir", rec.run_dir)
-	model_tier := rec.model_tier; if model_tier == "" do model_tier = "normal"
+	model_tier := normalize_model_tier(rec.model_tier)
 	if req_tier := extract_json_string(body, "model_tier", ""); req_tier != "" {
 		if !valid_model_tier(req_tier) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid model_tier; expected cheap, normal, or smart"}`); return }
-		model_tier = req_tier
+		model_tier = normalize_model_tier(req_tier)
 	}
 	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = display_name, template_id = template_id, provider_profile = provider_profile, project_id = project_id, run_dir = run_dir, model_tier = model_tier, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`); return }
 	write_agent_ok_response(client, "updated", agent_instance_records[agent_record_index(rec.agent_record_id)])
@@ -500,6 +518,7 @@ handle_agent_instance_create :: proc(client: net.TCP_Socket, body: string) {
 	project_id := extract_json_string(body, "project_id", "")
 	model_tier := extract_json_string(body, "model_tier", "normal")
 	if !valid_model_tier(model_tier) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid model_tier; expected cheap, normal, or smart"}`); return }
+	model_tier = normalize_model_tier(model_tier)
 	if agent_instance_id == "" {
 		id_base := display_name if display_name != "" else template_id
 		agent_instance_id = agent_generated_instance_id(id_base, project_id)

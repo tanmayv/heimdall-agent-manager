@@ -10,7 +10,7 @@ PROJECT_MAX_ANCHORS :: 32
 
 Project_Anchor :: struct { type: string, value: string, note: string }
 Project_Record :: struct { project_id: string, name: string, description: string, anchors: [PROJECT_MAX_ANCHORS]Project_Anchor, anchor_count: int, created_unix_ms: i64, updated_unix_ms: i64, order: int }
-Project_Event_Kind :: enum { Project_Created, Project_Updated }
+Project_Event_Kind :: enum { Project_Created, Project_Updated, Project_Deleted }
 Project_Event :: struct { event_id: string, kind: Project_Event_Kind, project_id: string, name: string, description: string, anchors: [PROJECT_MAX_ANCHORS]Project_Anchor, anchor_count: int, author: string, created_unix_ms: i64, order: int }
 
 
@@ -65,6 +65,14 @@ project_store_replay :: proc() {
 project_apply_event :: proc(event: Project_Event) -> bool {
 	if project_event_count < PROJECT_MAX_EVENTS { project_events[project_event_count] = project_event_clone(event); project_event_count += 1 }
 	idx := project_index(event.project_id)
+	if event.kind == .Project_Deleted {
+		if idx < 0 do return true
+		for i in idx..<project_record_count-1 {
+			project_records[i] = project_records[i+1]
+		}
+		project_record_count -= 1
+		return true
+	}
 	if idx < 0 {
 		if project_record_count >= PROJECT_MAX_PROJECTS do return false
 		idx = project_record_count; project_record_count += 1
@@ -91,7 +99,9 @@ project_event_json :: proc(event: Project_Event) -> string {
 
 project_event_from_json :: proc(line: string) -> (Project_Event, bool) {
 	kind := Project_Event_Kind.Project_Created
-	if extract_json_string(line, "kind", "") == "Project_Updated" do kind = .Project_Updated
+	kind_text := extract_json_string(line, "kind", "")
+	if kind_text == "Project_Updated" do kind = .Project_Updated
+	if kind_text == "Project_Deleted" do kind = .Project_Deleted
 	ev := Project_Event{event_id = extract_json_string(line, "event_id", ""), kind = kind, project_id = extract_json_string(line, "project_id", ""), name = extract_json_string(line, "name", ""), description = extract_json_string(line, "description", ""), author = extract_json_string(line, "author", ""), created_unix_ms = i64(extract_json_int(line, "created_unix_ms", 0)), order = extract_json_int(line, "order", 0)}
 	project_parse_anchors_into(line, &ev.anchors, &ev.anchor_count)
 	return ev, ev.project_id != ""

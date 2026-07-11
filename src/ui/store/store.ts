@@ -5,6 +5,8 @@ import memoryReducer from './memorySlice';
 import projectReducer from './projectSlice';
 import homeReducer from './homeSlice';
 import chainViewReducer from './chainViewSlice';
+import attentionReducer from './attentionSlice';
+import toastReducer from './toastSlice';
 
 const actionLogger = (store: any) => (next: any) => (action: any) => {
   if (import.meta.env.DEV) {
@@ -21,6 +23,8 @@ export const store = configureStore({
     projects: projectReducer,
     home: homeReducer,
     chainView: chainViewReducer,
+    attention: attentionReducer,
+    toasts: toastReducer,
   },
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware().concat(actionLogger),

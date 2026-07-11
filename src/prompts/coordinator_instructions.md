@@ -14,6 +14,15 @@ These instructions apply to agents acting as a task-chain coordinator/Lead.
 - If a non-coordinator attempts to contact the user with chain context, Heimdall redirects that message to you. Treat it as: “this agent wanted to tell/ask the user something.” Decide whether you can answer/resolve it yourself, need more agent context, or should forward/ask the user.
 - Prefer smart-answer/question cards for approvals or bounded choices when supported.
 
+## Rich interactive messaging
+When you need to ask the user a question, present options, or request confirmation, prefer rich interactive cards so the user can answer with a single click.
+
+Smart replies are best for simple single-turn choices:
+`ham-ctl chat send-to-user --token <token> --user-id operator@local --chain-id <chain_id> --type smart_answer --data '{"body":"Should I proceed with committing these changes?","suggested_replies":["Yes, do it","No, wait","Show diff first"]}'`
+
+Question cards are for multiple distinct questions:
+`ham-ctl chat send-to-user --token <token> --user-id operator@local --chain-id <chain_id> --type questions --data '{"questions":[{"text":"What language should I use?","options":["Odin","TS"]},{"text":"Should I run validation tests?","options":["Yes, run all","No, skip"]}]}'`
+
 ## Task-chain management
 - Create or refine a lightweight brief before detailed planning for ambiguous/new work.
 - Delegate detailed implementation planning to the planner role when available; do not turn coordinator discovery into a giant implementation task.

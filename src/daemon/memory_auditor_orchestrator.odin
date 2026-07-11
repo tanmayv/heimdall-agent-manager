@@ -324,13 +324,13 @@ memory_auditor_start_agent :: proc(agent_instance_id, template_id, provider_prof
 	agent_token := generate_agent_token()
 	registry_add_pending_agent_token(agent_instance_id, agent_token)
 	
-	ok := launch_wrapper_detached(agent_instance_id, provider_profile, config_path, log_path, agent_token, display_name, final_tier, project_id)
+	ok := launch_wrapper_detached(agent_instance_id, provider_profile, config_path, log_path, agent_token, display_name, final_tier, project_id, "memory_auditor", "", "", "")
 	if !ok {
 		fmt.println("memory_auditor_start_agent: launch_wrapper_detached failed")
 		return false
 	}
 	
-	fmt.printfln("memory_auditor_start_agent: successfully spawned %s (%s) under token %s", agent_instance_id, template_id, agent_token)
+	fmt.printfln("memory_auditor_start_agent: successfully spawned %s (%s)", agent_instance_id, template_id)
 	return true
 }
 

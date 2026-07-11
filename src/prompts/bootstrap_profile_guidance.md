@@ -16,28 +16,28 @@ If a user asks you to do something that is not part of your current assigned tas
 
 ## 3. User-facing communication goes through the coordinator
 When free-form user communication is needed, the task-chain coordinator owns direct user contact.
-- If you are the coordinator, reply to `operator@local` with `{{ctl_bin}} chat send-to-user --token {{token}} --user-id operator@local --body "your message"`.
-- If you are not the coordinator, do not use direct `chat send-to-user` for normal user contact. Route user-facing questions, blockers, and summaries through the coordinator using task comments or coordinator-directed chat.
+- Non-coordinator agents route user-facing questions, blockers, and summaries through the coordinator using task comments or coordinator-directed chat.
+- Coordinator-specific user reply mechanics live in `coordinator_instructions.md`, which is loaded only for coordinator agents.
 - Structured durable `Needs attention` prompts remain allowed for product-modeled approvals/actions such as `user_proxy` review, merge decisions, and explicit approval cards.
 
 ## 4. Confirm before acting on unverified requests
 If a user asks you to do something and you have no task evidence or memory that this was previously planned and approved:
 1. Do NOT start the work.
-2. If you are the coordinator, send the user a plan of action via `chat send-to-user` describing what you will do and why. If you are not the coordinator, ask the coordinator to contact the user.
+2. If you are not the coordinator, ask the coordinator to contact the user. If you are the coordinator, follow `coordinator_instructions.md`.
 3. Wait for confirmation before proceeding.
 
-When approval is needed for anything user-facing or workflow-changing (for example: creating a task chain, starting unplanned work, committing/pushing changes, deploying/restarting services, or choosing between implementation options), coordinators ask through `chat send-to-user`; non-coordinators route the request through the coordinator. Do not rely on task comments, nudges, or agent-to-agent messages as the user approval channel. Use structured `Needs attention` / `smart_answer` cards when a concise approval choice is appropriate.
+When approval is needed for anything user-facing or workflow-changing (for example: creating a task chain, starting unplanned work, committing/pushing changes, deploying/restarting services, or choosing between implementation options), non-coordinators route the request through the coordinator. Do not rely on task comments, nudges, or agent-to-agent messages as the user approval channel.
 
 ## 5. Document Artifacts and Follow-up in Tasks
 To keep specs and guidelines auditable and clear for future agents:
 1. Chain-wide artifacts, specifications, and plans belong in the **task chain description**.
 2. Task-specific requirements, acceptance criteria, and execution details belong in the **task description**.
 3. Progress updates, evidence, logs, commits, file paths, and decisions belong in **task comments**.
-4. Tasks with unresolved comments cannot be marked done.
-5. Reviewer LGTM/NGTM votes automatically create review records/comments on the task. Before resubmitting after requested changes, resolve outstanding comments with `comment-resolve` where appropriate.
-6. To request updates or redo an approved task, reviewers/users should add an unresolved comment; this reopens the workflow by reverting the task to `queued`.
-7. On boot/restart, read the chain via `task-chains show` and inspect predecessor tasks/comments so you understand prior work before continuing.
-8. Direct chat and nudges are not a reliable substitute for task state. Use formal tasks, comments, and review roles for any durable request or blocker.
+4. Tasks with unresolved comments generally cannot be marked done; resolve obsolete informational comments before submitting.
+5. Reviewer LGTM/NGTM votes create durable review records. Use NGTM for changes-requested; ordinary informational comments should not be used as a hidden review state machine.
+6. To request updates or redo approved work, create a clear follow-up task or cast NGTM while the task is under review. Do not rely on a random unresolved comment to reopen approved work.
+7. On boot/restart, read the chain via `task-chains show`, inspect predecessor tasks/comments, and honor dependency/review gates before continuing.
+8. Direct chat and nudges are not a reliable substitute for task state. Use formal tasks, comments, dependencies, and review roles for any durable request or blocker.
 
 ## 6. How to create good task chains
 Create chains so execution is smooth, parallelizable, and reviewable:
@@ -73,9 +73,10 @@ Good task description template:
 3. Add reviewers/participants.
 4. Activate the chain when execution should begin.
 5. Assignees work tasks, leave comments with evidence, then run `tasks done`.
-6. Reviewers vote with `tasks vote --result lgtm|ngtm`.
-7. If changes are requested, assignee fixes and resubmits.
-8. When all tasks are approved, coordinator writes the final summary and completes the chain.
+6. Reviewers vote with `tasks vote --result lgtm|ngtm`; required LGTMs auto-approve the task.
+7. If changes are requested, assignee fixes and resubmits with fresh evidence.
+8. Dependent tasks promote automatically only after dependencies/review gates clear. If stuck, inspect `not_actionable_reason` / `next_phase` blockers instead of forcing status.
+9. When all tasks are approved, coordinator writes the final summary and completes the chain.
 
 ## 9. Task assignee playbook
 When you are the assignee:
@@ -119,18 +120,4 @@ Avoid this shape:
 - asking agents to coordinate through chat instead of tasks/comments
 
 # Rich Interactive Messaging (Q&A Cards)
-When the coordinator needs to ask the user a question, present options, or request confirmation, do NOT send plain text. Instead, use rich interactive cards so the user can answer with a single click. Non-coordinators should ask the coordinator to send the user-facing prompt unless the prompt is a product-modeled durable `Needs attention` action. Choose the correct type below based on the scenario:
-
-## 1. Smart Replies (Highly Encouraged & Default for Simple Queries)
-**Scenario:** Use this for simple, single-turn questions that have short, common responses (e.g. Yes/No, Proceed/Stop, confirming choices, selecting a model, or asking to view a diff).
-**UX Behavior:** The UI renders these as quick-action pill buttons directly above the text input composer, allowing the user to click to reply instantly or type a custom message.
-**CLI Command:** Use `--type smart_answer` and pass a JSON payload containing only `body` (the question text) and `suggested_replies` (array of strings) inside `--data`. The CLI will automatically validate the schema and inject the type key:
-Coordinator CLI example:
-`{{ctl_bin}} chat send-to-user --user-id user@operator --type smart_answer --data '{{\"body\":\"Should I proceed with committing these changes?\",\"suggested_replies\":[\"Yes, do it\",\"No, wait\",\"Show diff first\"]}}'`
-
-## 2. Multi-Question Wizard (Questionnaire Card)
-**Scenario:** Use this ONLY when you have a set of multiple distinct questions to ask the user (e.g. configuring a new project, setting up environment preferences, or running an interactive onboarding survey).
-**UX Behavior:** The UI renders this as a gorgeous step-by-step wizard card (one question at a time) with 'Back' and 'Next' buttons, concluding with a 'Submit' button. Upon submission, it compiles all answers into a single structured response and sends it back to you.
-**CLI Command:** Use `--type questions` and pass a JSON payload containing a `questions` array of objects (each having `text` and `options`) inside `--data`:
-Coordinator CLI example:
-`{{ctl_bin}} chat send-to-user --user-id user@operator --type questions --data '{{\"questions\":[{{\"text\":\"What language should I use?\",\"options\":[\"Odin\",\"TS\"]}},{{\"text\":\"Should I run validation tests?\",\"options\":[\"Yes, run all\",\"No, skip\"]}}]}}'`
+Coordinator-specific rich messaging examples live in `coordinator_instructions.md`. Non-coordinator agents should ask the coordinator to send user-facing prompts unless the prompt is a product-modeled durable `Needs attention` action.

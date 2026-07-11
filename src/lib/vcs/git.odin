@@ -17,14 +17,24 @@ git_workspace_add :: proc(repo, name, base_ref, worktree_root: string) -> (Vcs_W
 	effective_base := base_ref
 	if effective_base == "" do effective_base = "main"
 	path := vcs_workspace_path(worktree_root, name)
+	branch_name := git_workspace_branch_name(name)
 	_ = os.make_directory_all(vcs_workspace_parent(path))
 	_, _, _ = vcs_run([]string{"git", "-C", repo, "fetch", "--quiet", "origin", effective_base})
-	_, ok, msg := vcs_run([]string{"git", "-C", repo, "worktree", "add", path, "-b", name, effective_base})
+	_, ok, msg := vcs_run([]string{"git", "-C", repo, "worktree", "add", path, "-b", branch_name, effective_base})
 	if !ok {
-		_, ok, msg = vcs_run([]string{"git", "-C", repo, "worktree", "add", path, name})
+		_, ok, msg = vcs_run([]string{"git", "-C", repo, "worktree", "add", path, branch_name})
 		if !ok do return Vcs_Workspace_Handle{}, false, msg
 	}
-	return Vcs_Workspace_Handle{path = path, branch_or_change = name, base_ref = effective_base, kind = .Git}, true, "git worktree created"
+	return Vcs_Workspace_Handle{path = path, branch_or_change = branch_name, base_ref = effective_base, kind = .Git}, true, "git worktree created"
+}
+
+git_workspace_branch_name :: proc(name: string) -> string {
+	clean, _ := strings.replace_all(name, "/", "-")
+	clean, _ = strings.replace_all(clean, "@", "-")
+	clean, _ = strings.replace_all(clean, " ", "-")
+	clean = strings.trim(clean, "-.")
+	if clean == "" do clean = "heimdall-workspace"
+	return strings.clone(fmt.tprintf("heimdall-%s", clean))
 }
 
 git_workspace_remove :: proc(handle: Vcs_Workspace_Handle, force: bool) -> (bool, string) {

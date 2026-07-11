@@ -34,7 +34,7 @@ team_service_create_for_chain :: proc(project_id, chain_id, kind_key, name, coor
 
 	for role in kind.roles {
 		for idx in 0..<role.count {
-			member := Team_Member_Record{team_member_id = team_service_member_id(team_id, role.role_key, idx), team_id = team_id, role_key = role.role_key, role_index = idx, agent_instance_id = team_service_member_agent_instance_id(team_id, role.role_key, idx)}
+			member := Team_Member_Record{team_member_id = team_service_member_id(team_id, role.role_key, idx), team_id = team_id, role_key = role.role_key, role_index = idx, agent_instance_id = team_service_member_agent_instance_id(project_id, chain_id, team_id, role.role_key, idx)}
 			if role.role_key == "coordinator" && idx == 0 && coordinator_agent_instance_id != "" {
 				member.agent_instance_id = coordinator_agent_instance_id
 			}
@@ -72,12 +72,56 @@ team_service_archive :: proc(team_id, reason: string) -> bool {
 	return ok
 }
 
+team_service_add_member :: proc(team_id, role_key, agent_instance_id: string) -> (Team_Member_Record, bool, string) {
+	if !team_service_ready do return Team_Member_Record{}, false, "team service not ready"
+	if team_id == "" || role_key == "" || agent_instance_id == "" do return Team_Member_Record{}, false, "team_id, role, and agent_instance_id are required"
+	if _, ok := team_db_get_team(team_service_db, team_id); !ok do return Team_Member_Record{}, false, "team not found"
+	members := team_db_list_members(team_service_db, team_id)
+	next_index := 0
+	for member in members {
+		if member.route_to == agent_instance_id || member.agent_instance_id == agent_instance_id do return member, true, "already member"
+		if member.role_key == role_key && member.role_index >= next_index do next_index = member.role_index + 1
+	}
+	team, _ := team_db_get_team(team_service_db, team_id)
+	member := Team_Member_Record{team_member_id = team_service_member_id(team_id, role_key, next_index), team_id = team_id, role_key = role_key, role_index = next_index, agent_instance_id = team_service_member_agent_instance_id(team.project_id, team.chain_id, team_id, role_key, next_index), route_to = agent_instance_id}
+	if !team_db_insert_member(team_service_db, member) do return Team_Member_Record{}, false, "add member failed"
+	return member, true, "added"
+}
+
 team_service_member_id :: proc(team_id, role_key: string, role_index: int) -> string {
 	return fmt.tprintf("%s:%s:%d", team_id, role_key, role_index)
 }
 
-team_service_member_agent_instance_id :: proc(team_id, role_key: string, role_index: int) -> string {
-	return fmt.tprintf("%s-%d@%s", safe_team_id_part(role_key), role_index + 1, safe_team_id_part(team_id))
+team_service_member_agent_instance_id :: proc(project_id, chain_id, team_id, role_key: string, role_index: int) -> string {
+	scope := team_service_agent_scope(project_id, chain_id, team_id)
+	role_part := safe_team_id_part(role_key)
+	if role_key == "coordinator" && role_index == 0 {
+		return fmt.tprintf("coordinator@%s", scope)
+	}
+	return fmt.tprintf("%s-%d@%s", role_part, role_index + 1, scope)
+}
+
+team_service_agent_scope :: proc(project_id, chain_id, fallback_team_id: string) -> string {
+	project_part := safe_team_id_part(project_id)
+	if pidx := project_index(project_id); pidx >= 0 {
+		project := project_records[pidx]
+		dir := project_anchor_value(project, "directory", "")
+		base := team_service_path_basename(dir)
+		if base != "" do project_part = safe_team_id_part(base)
+		if project_part == "" && project.name != "" do project_part = safe_team_id_part(project.name)
+	}
+	chain_part := safe_team_id_part(chain_id)
+	if project_part != "" && chain_part != "" do return fmt.tprintf("%s-%s", project_part, chain_part)
+	if chain_part != "" do return chain_part
+	return safe_team_id_part(fallback_team_id)
+}
+
+team_service_path_basename :: proc(path: string) -> string {
+	trimmed := strings.trim_right(path, "/")
+	if trimmed == "" do return ""
+	idx := strings.last_index_byte(trimmed, '/')
+	if idx >= 0 && idx + 1 < len(trimmed) do return trimmed[idx + 1:]
+	return trimmed
 }
 
 team_service_team_id :: proc(chain_id, name: string) -> string {

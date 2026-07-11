@@ -139,12 +139,13 @@
           program = "${self.packages.${system}.ham-daemon}/bin/ham-daemon";
         };
         # daemon-with-wrapper: builds the current ham-wrapper alongside the
-        # ham-daemon, refreshes ./result-wrapper -> the freshly built store
-        # path, and launches the daemon with ./config.toml. Use this in place
-        # of `nix run .#ham-daemon` when you want a one-shot "latest daemon +
-        # latest wrapper" boot without hand-managing the symlink.
+        # ham-daemon and launches the daemon with a generated config whose
+        # [daemon].wrapper_bin points at that exact wrapper store path. This is
+        # stronger than relying on ./result-wrapper because it works from any
+        # CWD/config and cannot accidentally use a stale symlink.
         #
-        # Extra args (e.g. --config /elsewhere.toml, --port ...) are forwarded.
+        # Extra args are forwarded. If --config is supplied, that config is used
+        # as the base and rewritten into a temp file with the current wrapper.
         daemon-with-wrapper = {
           type = "app";
           program = "${pkgs.writeShellScriptBin "ham-daemon-with-wrapper" ''
@@ -152,30 +153,78 @@
             set -euo pipefail
 
             HAM_DAEMON="${self.packages.${system}.ham-daemon}/bin/ham-daemon"
+            HAM_WRAPPER="${self.packages.${system}.ham-wrapper}/bin/ham-wrapper"
             HAM_WRAPPER_DIR="${self.packages.${system}.ham-wrapper}"
 
-            # Refresh ./result-wrapper -> latest wrapper store path so the
-            # repo's config.toml (wrapper_bin = ./result-wrapper/bin/ham-wrapper)
-            # resolves to the just-built binary. Only do this when run from
-            # a directory that already has a result-wrapper (i.e. the repo);
-            # otherwise skip silently so the daemon still starts.
+            # Keep the legacy repo symlink fresh for tools/tests that still read
+            # config.toml directly, but do not depend on it for this daemon run.
             if [ -L result-wrapper ] || [ ! -e result-wrapper ]; then
               ln -sfn "$HAM_WRAPPER_DIR" result-wrapper
               echo "[ham-daemon-with-wrapper] refreshed ./result-wrapper -> $HAM_WRAPPER_DIR"
             fi
 
-            # If no --config flag was passed and a repo config exists, use it.
-            HAS_CONFIG=0
-            for arg in "$@"; do
-              if [ "$arg" = "--config" ]; then HAS_CONFIG=1; break; fi
+            CONFIG_PATH=""
+            REST=()
+            while [ "$#" -gt 0 ]; do
+              case "$1" in
+                --config)
+                  if [ "$#" -lt 2 ]; then
+                    echo "[ham-daemon-with-wrapper] --config requires a path" >&2
+                    exit 2
+                  fi
+                  CONFIG_PATH="$2"
+                  shift 2
+                  ;;
+                *)
+                  REST+=("$1")
+                  shift
+                  ;;
+              esac
             done
-            if [ "$HAS_CONFIG" -eq 0 ] && [ -f "$PWD/config.toml" ]; then
-              set -- --config "$PWD/config.toml" "$@"
-              echo "[ham-daemon-with-wrapper] using $PWD/config.toml"
+            if [ -z "$CONFIG_PATH" ] && [ -f "$PWD/config.toml" ]; then
+              CONFIG_PATH="$PWD/config.toml"
+              echo "[ham-daemon-with-wrapper] using $CONFIG_PATH"
+            fi
+
+            TMP_CONFIG=""
+            if [ -n "$CONFIG_PATH" ]; then
+              TMP_CONFIG="$(${pkgs.coreutils}/bin/mktemp "''${TMPDIR:-/tmp}/heimdall-daemon-with-wrapper.XXXXXX")"
+              ${pkgs.gawk}/bin/awk -v wrapper="$HAM_WRAPPER" '
+                BEGIN { in_daemon = 0; replaced = 0 }
+                /^\[daemon\][[:space:]]*$/ { in_daemon = 1; print; next }
+                /^\[/ {
+                  if (in_daemon && !replaced) {
+                    print "wrapper_bin = \"" wrapper "\""
+                    replaced = 1
+                  }
+                  in_daemon = 0
+                  print
+                  next
+                }
+                in_daemon && /^[[:space:]]*wrapper_bin[[:space:]]*=/ {
+                  print "wrapper_bin = \"" wrapper "\""
+                  replaced = 1
+                  next
+                }
+                { print }
+                END {
+                  if (!replaced) {
+                    if (!in_daemon) print ""
+                    if (!in_daemon) print "[daemon]"
+                    print "wrapper_bin = \"" wrapper "\""
+                  }
+                }
+              ' "$CONFIG_PATH" > "$TMP_CONFIG"
+              trap 'rm -f "$TMP_CONFIG"' EXIT
+              set -- --config "$TMP_CONFIG" "''${REST[@]}"
+              echo "[ham-daemon-with-wrapper] base config: $CONFIG_PATH"
+              echo "[ham-daemon-with-wrapper] generated config: $TMP_CONFIG"
+            else
+              set -- "''${REST[@]}"
             fi
 
             echo "[ham-daemon-with-wrapper] daemon: $HAM_DAEMON"
-            echo "[ham-daemon-with-wrapper] wrapper: $HAM_WRAPPER_DIR/bin/ham-wrapper"
+            echo "[ham-daemon-with-wrapper] wrapper: $HAM_WRAPPER"
             exec "$HAM_DAEMON" "$@"
           ''}/bin/ham-daemon-with-wrapper";
         };

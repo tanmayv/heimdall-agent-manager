@@ -39,39 +39,35 @@ Team_Kind_Def :: struct {
 }
 
 coding_roles := [3]Team_Role_Slot{
-	{role_key = "coordinator", agent_template_id = "lead", count = 1, default_tier = "smart", default_provider = "pi"},
-	{role_key = "coder", agent_template_id = "coder", count = 1, default_tier = "normal", default_provider = "pi"},
-	{role_key = "reviewer", agent_template_id = "reviewer", count = 1, default_tier = "smart", default_provider = "pi"},
+	{role_key = "coordinator", agent_template_id = "lead", count = 1, default_tier = "smart", default_provider = ""},
+	{role_key = "coder", agent_template_id = "coder", count = 1, default_tier = "normal", default_provider = ""},
+	{role_key = "reviewer", agent_template_id = "reviewer", count = 1, default_tier = "smart", default_provider = ""},
 }
 coding_memory_templates := [3]string{"bootstrap-guidance", "coding-conventions", "git-hygiene"}
+// Reviewer participation happens via lgtm_required on the preceding work task,
+// so we no longer emit a standalone review task where the reviewer is the assignee.
 coding_feature_dep_implement := [1]string{"plan"}
-coding_feature_dep_review := [1]string{"implement"}
-coding_feature_dep_validate := [1]string{"review"}
+coding_feature_dep_validate := [1]string{"implement"}
 coding_feature_dep_summary := [1]string{"validate"}
-coding_feature_tasks := [5]Team_Chain_Scaffold_Task{
+coding_feature_tasks := [4]Team_Chain_Scaffold_Task{
 	{key = "plan", title_template = "Plan: {chain_title}", role_key = "coordinator", reviewer_role = "reviewer", description_key = "scaffold-coding-plan"},
 	{key = "implement", title_template = "Implement: {chain_title}", role_key = "coder", reviewer_role = "reviewer", depends_on = coding_feature_dep_implement[:], description_key = "scaffold-coding-implement"},
-	{key = "review", title_template = "Review: {chain_title}", role_key = "reviewer", reviewer_role = "coordinator", depends_on = coding_feature_dep_review[:], description_key = "scaffold-coding-review"},
 	{key = "validate", title_template = "Validate: {chain_title}", role_key = "coder", reviewer_role = "reviewer", depends_on = coding_feature_dep_validate[:], description_key = "scaffold-coding-validate"},
 	{key = "summary", title_template = "Summary: {chain_title}", role_key = "coordinator", reviewer_role = "reviewer", depends_on = coding_feature_dep_summary[:], description_key = "scaffold-coding-summary"},
 }
 coding_bugfix_dep_fix := [1]string{"reproduce"}
-coding_bugfix_dep_verify := [1]string{"fix"}
-coding_bugfix_dep_summary := [1]string{"verify"}
-coding_bugfix_tasks := [4]Team_Chain_Scaffold_Task{
+coding_bugfix_dep_summary := [1]string{"fix"}
+coding_bugfix_tasks := [3]Team_Chain_Scaffold_Task{
 	{key = "reproduce", title_template = "Reproduce: {chain_title}", role_key = "coder", reviewer_role = "reviewer", description_key = "scaffold-coding-reproduce"},
 	{key = "fix", title_template = "Fix: {chain_title}", role_key = "coder", reviewer_role = "reviewer", depends_on = coding_bugfix_dep_fix[:], description_key = "scaffold-coding-fix"},
-	{key = "verify", title_template = "Verify: {chain_title}", role_key = "reviewer", reviewer_role = "coordinator", depends_on = coding_bugfix_dep_verify[:], description_key = "scaffold-coding-verify"},
 	{key = "summary", title_template = "Summary: {chain_title}", role_key = "coordinator", reviewer_role = "reviewer", depends_on = coding_bugfix_dep_summary[:], description_key = "scaffold-coding-summary"},
 }
 coding_refactor_dep_refactor := [1]string{"plan"}
-coding_refactor_dep_review := [1]string{"refactor"}
-coding_refactor_dep_validate := [1]string{"review"}
+coding_refactor_dep_validate := [1]string{"refactor"}
 coding_refactor_dep_summary := [1]string{"validate"}
-coding_refactor_tasks := [5]Team_Chain_Scaffold_Task{
+coding_refactor_tasks := [4]Team_Chain_Scaffold_Task{
 	{key = "plan", title_template = "Plan: {chain_title}", role_key = "coordinator", reviewer_role = "reviewer", description_key = "scaffold-coding-plan"},
 	{key = "refactor", title_template = "Refactor: {chain_title}", role_key = "coder", reviewer_role = "reviewer", depends_on = coding_refactor_dep_refactor[:], description_key = "scaffold-coding-refactor"},
-	{key = "review", title_template = "Review: {chain_title}", role_key = "reviewer", reviewer_role = "coordinator", depends_on = coding_refactor_dep_review[:], description_key = "scaffold-coding-review"},
 	{key = "validate", title_template = "Validate: {chain_title}", role_key = "coder", reviewer_role = "reviewer", depends_on = coding_refactor_dep_validate[:], description_key = "scaffold-coding-validate"},
 	{key = "summary", title_template = "Summary: {chain_title}", role_key = "coordinator", reviewer_role = "reviewer", depends_on = coding_refactor_dep_summary[:], description_key = "scaffold-coding-summary"},
 }
@@ -82,20 +78,18 @@ coding_scaffolds := [3]Team_Chain_Scaffold{
 }
 
 research_roles := [3]Team_Role_Slot{
-	{role_key = "coordinator", agent_template_id = "lead", count = 1, default_tier = "smart", default_provider = "pi"},
-	{role_key = "researcher", agent_template_id = "specialist", count = 2, default_tier = "smart", default_provider = "pi"},
-	{role_key = "reviewer", agent_template_id = "reviewer", count = 1, default_tier = "smart", default_provider = "pi"},
+	{role_key = "coordinator", agent_template_id = "lead", count = 1, default_tier = "smart", default_provider = ""},
+	{role_key = "researcher", agent_template_id = "specialist", count = 2, default_tier = "smart", default_provider = ""},
+	{role_key = "reviewer", agent_template_id = "reviewer", count = 1, default_tier = "smart", default_provider = ""},
 }
 research_memory_templates := [3]string{"bootstrap-guidance", "research-method", "source-hygiene"}
 research_report_dep_gather := [1]string{"scope"}
 research_report_dep_synthesize := [1]string{"gather"}
-research_report_dep_review := [1]string{"synthesize"}
-research_report_dep_summary := [1]string{"review"}
-research_report_tasks := [5]Team_Chain_Scaffold_Task{
+research_report_dep_summary := [1]string{"synthesize"}
+research_report_tasks := [4]Team_Chain_Scaffold_Task{
 	{key = "scope", title_template = "Scope: {chain_title}", role_key = "coordinator", reviewer_role = "reviewer", description_key = "scaffold-research-scope"},
 	{key = "gather", title_template = "Gather: {chain_title}", role_key = "researcher", reviewer_role = "reviewer", depends_on = research_report_dep_gather[:], description_key = "scaffold-research-gather"},
 	{key = "synthesize", title_template = "Synthesize: {chain_title}", role_key = "researcher", reviewer_role = "reviewer", depends_on = research_report_dep_synthesize[:], description_key = "scaffold-research-synthesize"},
-	{key = "review", title_template = "Review: {chain_title}", role_key = "reviewer", reviewer_role = "coordinator", depends_on = research_report_dep_review[:], description_key = "scaffold-research-review"},
 	{key = "summary", title_template = "Summary: {chain_title}", role_key = "coordinator", reviewer_role = "reviewer", depends_on = research_report_dep_summary[:], description_key = "scaffold-research-summary"},
 }
 research_spike_dep_explore := [1]string{"question"}
@@ -113,20 +107,18 @@ research_scaffolds := [2]Team_Chain_Scaffold{
 }
 
 debugging_roles := [3]Team_Role_Slot{
-	{role_key = "coordinator", agent_template_id = "lead", count = 1, default_tier = "smart", default_provider = "pi"},
-	{role_key = "debugger", agent_template_id = "coder", count = 1, default_tier = "smart", default_provider = "pi"},
-	{role_key = "reviewer", agent_template_id = "reviewer", count = 1, default_tier = "smart", default_provider = "pi"},
+	{role_key = "coordinator", agent_template_id = "lead", count = 1, default_tier = "smart", default_provider = ""},
+	{role_key = "debugger", agent_template_id = "coder", count = 1, default_tier = "smart", default_provider = ""},
+	{role_key = "reviewer", agent_template_id = "reviewer", count = 1, default_tier = "smart", default_provider = ""},
 }
 debugging_memory_templates := [3]string{"bootstrap-guidance", "debugging-playbook", "evidence-collection"}
 debug_bug_dep_isolate := [1]string{"reproduce"}
 debug_bug_dep_fix := [1]string{"isolate"}
-debug_bug_dep_verify := [1]string{"fix"}
-debug_bug_dep_summary := [1]string{"verify"}
-debug_bug_tasks := [5]Team_Chain_Scaffold_Task{
+debug_bug_dep_summary := [1]string{"fix"}
+debug_bug_tasks := [4]Team_Chain_Scaffold_Task{
 	{key = "reproduce", title_template = "Reproduce: {chain_title}", role_key = "debugger", reviewer_role = "reviewer", description_key = "scaffold-debugging-reproduce"},
 	{key = "isolate", title_template = "Isolate: {chain_title}", role_key = "debugger", reviewer_role = "reviewer", depends_on = debug_bug_dep_isolate[:], description_key = "scaffold-debugging-isolate"},
 	{key = "fix", title_template = "Fix: {chain_title}", role_key = "debugger", reviewer_role = "reviewer", depends_on = debug_bug_dep_fix[:], description_key = "scaffold-debugging-fix"},
-	{key = "verify", title_template = "Verify: {chain_title}", role_key = "reviewer", reviewer_role = "coordinator", depends_on = debug_bug_dep_verify[:], description_key = "scaffold-debugging-verify"},
 	{key = "summary", title_template = "Summary: {chain_title}", role_key = "coordinator", reviewer_role = "reviewer", depends_on = debug_bug_dep_summary[:], description_key = "scaffold-debugging-summary"},
 }
 debug_incident_dep_mitigate := [1]string{"triage"}
@@ -146,20 +138,18 @@ debugging_scaffolds := [2]Team_Chain_Scaffold{
 }
 
 data_analysis_roles := [3]Team_Role_Slot{
-	{role_key = "coordinator", agent_template_id = "lead", count = 1, default_tier = "smart", default_provider = "pi"},
-	{role_key = "analyst", agent_template_id = "specialist", count = 2, default_tier = "normal", default_provider = "pi"},
-	{role_key = "reviewer", agent_template_id = "reviewer", count = 1, default_tier = "smart", default_provider = "pi"},
+	{role_key = "coordinator", agent_template_id = "lead", count = 1, default_tier = "smart", default_provider = ""},
+	{role_key = "analyst", agent_template_id = "specialist", count = 2, default_tier = "normal", default_provider = ""},
+	{role_key = "reviewer", agent_template_id = "reviewer", count = 1, default_tier = "smart", default_provider = ""},
 }
 data_analysis_memory_templates := [3]string{"bootstrap-guidance", "data-hygiene", "notebook-discipline"}
 data_analysis_dep_explore := [1]string{"define"}
 data_analysis_dep_analyze := [1]string{"explore"}
-data_analysis_dep_validate := [1]string{"analyze"}
-data_analysis_dep_report := [1]string{"validate"}
-data_analysis_tasks := [5]Team_Chain_Scaffold_Task{
+data_analysis_dep_report := [1]string{"analyze"}
+data_analysis_tasks := [4]Team_Chain_Scaffold_Task{
 	{key = "define", title_template = "Define: {chain_title}", role_key = "coordinator", reviewer_role = "reviewer", description_key = "scaffold-data-analysis-define"},
 	{key = "explore", title_template = "Explore: {chain_title}", role_key = "analyst", reviewer_role = "reviewer", depends_on = data_analysis_dep_explore[:], description_key = "scaffold-data-analysis-explore"},
 	{key = "analyze", title_template = "Analyze: {chain_title}", role_key = "analyst", reviewer_role = "reviewer", depends_on = data_analysis_dep_analyze[:], description_key = "scaffold-data-analysis-analyze"},
-	{key = "validate", title_template = "Validate: {chain_title}", role_key = "reviewer", reviewer_role = "coordinator", depends_on = data_analysis_dep_validate[:], description_key = "scaffold-data-analysis-validate"},
 	{key = "report", title_template = "Report: {chain_title}", role_key = "coordinator", reviewer_role = "reviewer", depends_on = data_analysis_dep_report[:], description_key = "scaffold-data-analysis-report"},
 }
 data_analysis_scaffolds := [1]Team_Chain_Scaffold{
@@ -167,18 +157,16 @@ data_analysis_scaffolds := [1]Team_Chain_Scaffold{
 }
 
 writing_roles := [3]Team_Role_Slot{
-	{role_key = "coordinator", agent_template_id = "lead", count = 1, default_tier = "smart", default_provider = "pi"},
-	{role_key = "writer", agent_template_id = "specialist", count = 1, default_tier = "normal", default_provider = "pi"},
-	{role_key = "reviewer", agent_template_id = "reviewer", count = 1, default_tier = "smart", default_provider = "pi"},
+	{role_key = "coordinator", agent_template_id = "lead", count = 1, default_tier = "smart", default_provider = ""},
+	{role_key = "writer", agent_template_id = "specialist", count = 1, default_tier = "normal", default_provider = ""},
+	{role_key = "reviewer", agent_template_id = "reviewer", count = 1, default_tier = "smart", default_provider = ""},
 }
 writing_memory_templates := [2]string{"bootstrap-guidance", "writing-style"}
 writing_dep_draft := [1]string{"outline"}
-writing_dep_review := [1]string{"draft"}
-writing_dep_publish := [1]string{"review"}
-writing_tasks := [4]Team_Chain_Scaffold_Task{
+writing_dep_publish := [1]string{"draft"}
+writing_tasks := [3]Team_Chain_Scaffold_Task{
 	{key = "outline", title_template = "Outline: {chain_title}", role_key = "coordinator", reviewer_role = "reviewer", description_key = "scaffold-writing-outline"},
 	{key = "draft", title_template = "Draft: {chain_title}", role_key = "writer", reviewer_role = "reviewer", depends_on = writing_dep_draft[:], description_key = "scaffold-writing-draft"},
-	{key = "review", title_template = "Review: {chain_title}", role_key = "reviewer", reviewer_role = "coordinator", depends_on = writing_dep_review[:], description_key = "scaffold-writing-review"},
 	{key = "publish", title_template = "Publish: {chain_title}", role_key = "coordinator", reviewer_role = "reviewer", depends_on = writing_dep_publish[:], description_key = "scaffold-writing-publish"},
 }
 writing_scaffolds := [1]Team_Chain_Scaffold{
@@ -186,16 +174,14 @@ writing_scaffolds := [1]Team_Chain_Scaffold{
 }
 
 ops_roles := [3]Team_Role_Slot{
-	{role_key = "coordinator", agent_template_id = "lead", count = 1, default_tier = "normal", default_provider = "pi"},
-	{role_key = "operator", agent_template_id = "coder", count = 1, default_tier = "normal", default_provider = "pi"},
-	{role_key = "reviewer", agent_template_id = "reviewer", count = 1, default_tier = "normal", default_provider = "pi"},
+	{role_key = "coordinator", agent_template_id = "lead", count = 1, default_tier = "normal", default_provider = ""},
+	{role_key = "operator", agent_template_id = "coder", count = 1, default_tier = "normal", default_provider = ""},
+	{role_key = "reviewer", agent_template_id = "reviewer", count = 1, default_tier = "normal", default_provider = ""},
 }
 ops_memory_templates := [2]string{"bootstrap-guidance", "ops-runbooks"}
-ops_dep_verify := [1]string{"apply"}
-ops_dep_summary := [1]string{"verify"}
-ops_tasks := [3]Team_Chain_Scaffold_Task{
+ops_dep_summary := [1]string{"apply"}
+ops_tasks := [2]Team_Chain_Scaffold_Task{
 	{key = "apply", title_template = "Apply: {chain_title}", role_key = "operator", reviewer_role = "reviewer", description_key = "scaffold-ops-apply"},
-	{key = "verify", title_template = "Verify: {chain_title}", role_key = "reviewer", reviewer_role = "coordinator", depends_on = ops_dep_verify[:], description_key = "scaffold-ops-verify"},
 	{key = "summary", title_template = "Summary: {chain_title}", role_key = "coordinator", reviewer_role = "reviewer", depends_on = ops_dep_summary[:], description_key = "scaffold-ops-summary"},
 }
 ops_scaffolds := [1]Team_Chain_Scaffold{
@@ -203,8 +189,8 @@ ops_scaffolds := [1]Team_Chain_Scaffold{
 }
 
 solo_roles := [3]Team_Role_Slot{
-	{role_key = "coordinator", agent_template_id = "lead", count = 1, default_tier = "smart", default_provider = "pi"},
-	{role_key = "worker", agent_template_id = "specialist", count = 1, default_tier = "normal", default_provider = "pi"},
+	{role_key = "coordinator", agent_template_id = "lead", count = 1, default_tier = "smart", default_provider = ""},
+	{role_key = "worker", agent_template_id = "specialist", count = 1, default_tier = "normal", default_provider = ""},
 	{role_key = "user_proxy", agent_template_id = "", count = 1, default_tier = "", default_provider = ""},
 }
 solo_dep_work := [1]string{"plan"}

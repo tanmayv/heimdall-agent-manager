@@ -169,6 +169,11 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append chain create failed"}`}
 	}
 	task_notify_event(event)
+	// Request coordinator runtime immediately after the chain exists, before
+	// workspace/discovery/scaffold task creation. Later task/status transitions
+	// still reconcile idempotently, but this makes boot independent of those
+	// follow-up events and gives the UI an immediate launch request to observe.
+	coordinator_boot_requested := task_runtime_reconcile_chain_coordinator(chain_id, "chain_created", "high")
 	workspace_setup_task_id := ""
 	if cmd.wants_vcs {
 		workspace_setup_task_id = task_service_create_workspace_setup_task(chain_id, cmd.project_id, team_id, chain_title, coordinator_agent_instance_id, cmd.author_agent_instance_id)
@@ -177,15 +182,16 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 			return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append workspace setup task failed"}`}
 		}
 	}
-	discovery_task_id := task_service_create_coordinator_discovery_task(chain_id, chain_title, cmd.description, kind, coordinator_agent_instance_id, cmd.author_agent_instance_id, workspace_setup_task_id)
+	scaffold_selected := cmd.scaffold != "" && cmd.scaffold != "none" && !cmd.no_scaffold
+	discovery_task_id := task_service_create_coordinator_discovery_task(chain_id, chain_title, cmd.description, kind, coordinator_agent_instance_id, cmd.author_agent_instance_id, workspace_setup_task_id, scaffold_selected)
 	if discovery_task_id == "" {
 		_ = team_service_archive(team_id, "discovery_task_create_failed")
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append coordinator discovery task failed"}`}
 	}
-	if cmd.scaffold != "" && !cmd.no_scaffold {
+	if scaffold_selected {
 		legacy_cmd := cmd
 		legacy_cmd.title = chain_title
-		if ok, msg := task_service_create_chain_scaffold(chain_id, team_id, legacy_cmd, kind); !ok {
+		if ok, msg := task_service_create_chain_scaffold(chain_id, team_id, legacy_cmd, kind, discovery_task_id); !ok {
 			if workspace_id != "" do task_service_cleanup_workspace(chain_id)
 			_ = team_service_archive(team_id, "scaffold_create_failed")
 			return Task_Service_Result{ok = false, status_code = 500, message = task_service_error_json(msg)}
@@ -198,7 +204,8 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 	strings.write_string(&b, `","workspace_setup_task_id":"`); json_write_string(&b, workspace_setup_task_id)
 	strings.write_string(&b, `","discovery_task_id":"`); json_write_string(&b, discovery_task_id)
 	strings.write_string(&b, `","coordinator_agent_instance_id":"`); json_write_string(&b, coordinator_agent_instance_id)
-	strings.write_string(&b, `","status":"in_progress"}`)
+	strings.write_string(&b, `","coordinator_boot_requested":`); strings.write_string(&b, "true" if coordinator_boot_requested else "false")
+	strings.write_string(&b, `,"status":"in_progress"}`)
 	return Task_Service_Result{ok = true, status_code = 200, message = strings.to_string(b)}
 }
 
@@ -214,7 +221,7 @@ task_service_chain_member_for_role :: proc(team_id, role_key: string) -> string 
 	for member in members {
 		if member.role_key != role_key do continue
 		if member.agent_instance_id != "" do return member.agent_instance_id
-		return team_service_member_agent_instance_id(team_id, member.role_key, member.role_index)
+		return team_service_member_agent_instance_id("", "", team_id, member.role_key, member.role_index)
 	}
 	return ""
 }
@@ -287,16 +294,16 @@ vcs_git_safe_branch_name :: proc(name: string) -> string {
 	return strings.clone(fmt.tprintf("heimdall-%s", clean))
 }
 
-task_service_create_coordinator_discovery_task :: proc(chain_id, chain_title, chain_description: string, kind: ^Team_Kind_Def, coordinator_agent_instance_id, author: string, depends_on: string = "") -> string {
+task_service_create_coordinator_discovery_task :: proc(chain_id, chain_title, chain_description: string, kind: ^Team_Kind_Def, coordinator_agent_instance_id, author: string, depends_on: string = "", scaffold_selected: bool = false) -> string {
 	task_id := task_generate_id()
 	kind_name := "team"
 	if kind != nil && kind.display_name != "" do kind_name = kind.display_name
-	description := task_service_coordinator_discovery_description(chain_title, chain_description, kind_name)
+	description := task_service_coordinator_discovery_description(chain_title, chain_description, kind_name, scaffold_selected)
 	event := Task_Event{
 		kind                       = .Task_Created,
 		task_id                    = task_id,
 		chain_id                   = chain_id,
-		title                      = "Discover goal and plan next tasks",
+		title                      = "Validate task chain scaffold" if scaffold_selected else "Update task chain from user requirement",
 		description                = description,
 		priority                   = "normal",
 		status                     = "ready" if depends_on == "" else "planning",
@@ -310,9 +317,13 @@ task_service_create_coordinator_discovery_task :: proc(chain_id, chain_title, ch
 	return task_id
 }
 
-task_service_coordinator_discovery_description :: proc(chain_title, chain_description, kind_name: string) -> string {
+task_service_coordinator_discovery_description :: proc(chain_title, chain_description, kind_name: string, scaffold_selected: bool = false) -> string {
 	b := strings.builder_make()
-	strings.write_string(&b, "Initial coordinator discovery task for a newly created task chain.\n\n")
+	if scaffold_selected {
+		strings.write_string(&b, "Coordinator validation task for a newly created scaffolded task chain.\n\n")
+	} else {
+		strings.write_string(&b, "Initial coordinator task for a newly created task chain.\n\n")
+	}
 	strings.write_string(&b, "## Context\n")
 	strings.write_string(&b, "- Team kind: "); strings.write_string(&b, kind_name); strings.write_string(&b, "\n")
 	strings.write_string(&b, "- Current chain title: "); strings.write_string(&b, chain_title); strings.write_string(&b, "\n")
@@ -324,9 +335,15 @@ task_service_coordinator_discovery_description :: proc(chain_title, chain_descri
 	strings.write_string(&b, "\n## Instructions\n")
 	strings.write_string(&b, "1. Contact the user in chain chat and explain the selected team kind and roles.\n")
 	strings.write_string(&b, "2. Clarify the user's goal with concise questions if title/goal are missing or vague.\n")
-	strings.write_string(&b, "3. Rename/update the chain title and description once the goal is clear.\n")
-	strings.write_string(&b, "4. Create downstream tasks/dependencies or apply an appropriate task-bundle template.\n")
-	strings.write_string(&b, "5. Keep free-form user contact routed through the coordinator.\n")
+	strings.write_string(&b, "3. Rename/update the chain title and description once the requirement is clear.\n")
+	if scaffold_selected {
+		strings.write_string(&b, "4. Validate the generated scaffold tasks before any scaffold work starts; edit/create/cancel tasks so the chain matches the user's requirement.\n")
+		strings.write_string(&b, "5. Mark this validation task done only when the scaffold is safe to execute. All scaffold tasks depend on this task.\n")
+		strings.write_string(&b, "6. Keep free-form user contact routed through the coordinator.\n")
+	} else {
+		strings.write_string(&b, "4. Create downstream tasks/dependencies only after understanding the user's requirement.\n")
+		strings.write_string(&b, "5. Keep free-form user contact routed through the coordinator.\n")
+	}
 	return strings.to_string(b)
 }
 
@@ -345,7 +362,7 @@ Task_Scaffold_Role_Counter :: struct {
 	next: int,
 }
 
-task_service_create_chain_scaffold :: proc(chain_id, team_id: string, cmd: Task_Chain_Create_Command, kind: ^Team_Kind_Def) -> (bool, string) {
+task_service_create_chain_scaffold :: proc(chain_id, team_id: string, cmd: Task_Chain_Create_Command, kind: ^Team_Kind_Def, validation_task_id: string = "") -> (bool, string) {
 	if kind == nil do return false, "unknown team kind"
 	scaffold_idx := 0
 	if cmd.scaffold != "" {
@@ -382,9 +399,12 @@ task_service_create_chain_scaffold :: proc(chain_id, team_id: string, cmd: Task_
 		})
 	}
 	for i in 0..<len(scaffold.tasks) {
-		if len(scaffold.tasks[i].depends_on) == 0 do continue
 		deps := strings.builder_make()
 		first := true
+		if validation_task_id != "" {
+			strings.write_string(&deps, validation_task_id)
+			first = false
+		}
 		for dep_key in scaffold.tasks[i].depends_on {
 			dep_id := ""
 			for j in 0..<len(built) {
@@ -494,7 +514,7 @@ task_service_scaffold_reviewers :: proc(team_id, kind_key: string, cmd: Task_Cha
 task_service_scaffold_member_agent_instance_id :: proc(team_id, kind_key: string, cmd: Task_Chain_Create_Command, member: Team_Member_Record) -> string {
 	if member.is_user_proxy do return "user_proxy"
 	if member.agent_instance_id != "" do return member.agent_instance_id
-	return team_service_member_agent_instance_id(team_id, member.role_key, member.role_index)
+	return team_service_member_agent_instance_id(cmd.project_id, cmd.chain_id, team_id, member.role_key, member.role_index)
 }
 
 task_service_scaffold_interpolate :: proc(template, chain_title, project_name, team_kind: string) -> string {
@@ -1411,6 +1431,9 @@ task_service_chain_status_command :: proc(cmd: Task_Chain_Status_Command) -> Tas
 	// surface a merge decision for VCS chains (docs/teams-v1/03-lifecycle.md §3.4/§3.5).
 	if cmd.status == "completed" {
 		merge_lifecycle_on_chain_completed(cmd.chain_id, cmd.author_agent_instance_id)
+	}
+	if cmd.status == "completed" || cmd.status == "archived" || cmd.status == "cancelled" || cmd.status == "abandoned" {
+		_ = task_autoscaler_stop_chain_agents(cmd.chain_id, strings.concatenate({"chain_status_", cmd.status}))
 	}
 
 	archive_ok := true

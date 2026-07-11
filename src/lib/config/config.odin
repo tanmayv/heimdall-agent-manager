@@ -39,6 +39,7 @@ default_config_path :: proc() -> string {
 Config :: struct {
 	daemon: Daemon_Config,
 	wrapper: Wrapper_Config,
+	guide_agent: Guide_Agent_Config,
 	ctl: Ctl_Config,
 }
 
@@ -64,7 +65,19 @@ Daemon_Config :: struct {
 	nudge_send_escape_prefix: bool,
 	startup_stale_after_seconds: int,
 	team_idle_shutdown_seconds: int,
+	default_agent_provider_profile: string,
+	default_agent_model_tier: string,
 	wrapper_bin: string,
+}
+
+Guide_Agent_Config :: struct {
+	enabled: bool,
+	autostart: bool,
+	restart_if_stopped: bool,
+	agent_instance_id: string,
+	template_id: string,
+	provider_profile: string,
+	model_tier: string,
 }
 
 Wrapper_Config :: struct {
@@ -157,6 +170,7 @@ Section :: enum {
 	Wrapper_Agent_Bootstrap_Feature,
 	Wrapper_Agent_Models,
 	Wrapper_Agent_Startup_Detection,
+	Guide_Agent,
 	Ctl,
 }
 
@@ -218,6 +232,10 @@ parse_config :: proc(content: string, cfg: ^Config) {
 		if line == "[wrapper]" {
 			section = .Wrapper
 			current_agent_command = ""
+			continue
+		}
+		if line == "[guide_agent]" {
+			section = .Guide_Agent
 			continue
 		}
 		// Most specific first: [wrapper.agent-cmd.<name>.bootstrap.<FEATURE>]
@@ -291,6 +309,8 @@ parse_config :: proc(content: string, cfg: ^Config) {
 			parse_models_key(current_agent_command, key, value, &cfg.wrapper)
 		case .Wrapper_Agent_Startup_Detection:
 			parse_startup_detection_key(current_agent_command, key, value, &cfg.wrapper)
+		case .Guide_Agent:
+			parse_guide_agent_key(key, value, &cfg.guide_agent)
 		case .Ctl:
 			parse_ctl_key(key, value, &cfg.ctl)
 		case:
@@ -370,8 +390,32 @@ parse_daemon_key :: proc(key, value: string, cfg: ^Daemon_Config) {
 		if n, ok := strconv.parse_int(value); ok do cfg.startup_stale_after_seconds = int(n)
 	case "team_idle_shutdown_seconds":
 		if n, ok := strconv.parse_int(value); ok do cfg.team_idle_shutdown_seconds = int(n)
+	case "default_agent_provider_profile":
+		cfg.default_agent_provider_profile = parse_string(value)
+	case "default_agent_model_tier":
+		cfg.default_agent_model_tier = parse_string(value)
 	case "wrapper_bin":
 		cfg.wrapper_bin = parse_string(value)
+	case:
+	}
+}
+
+parse_guide_agent_key :: proc(key, value: string, cfg: ^Guide_Agent_Config) {
+	switch key {
+	case "enabled":
+		cfg.enabled = parse_bool(value)
+	case "autostart":
+		cfg.autostart = parse_bool(value)
+	case "restart_if_stopped":
+		cfg.restart_if_stopped = parse_bool(value)
+	case "agent_instance_id":
+		cfg.agent_instance_id = parse_string(value)
+	case "template_id":
+		cfg.template_id = parse_string(value)
+	case "provider_profile":
+		cfg.provider_profile = parse_string(value)
+	case "model_tier":
+		cfg.model_tier = parse_string(value)
 	case:
 	}
 }
@@ -626,6 +670,16 @@ default_config :: proc() -> Config {
 	cfg.daemon.nudge_send_escape_prefix = false
 	cfg.daemon.startup_stale_after_seconds = 120
 	cfg.daemon.team_idle_shutdown_seconds = 1800
+	cfg.daemon.default_agent_provider_profile = "pi"
+	cfg.daemon.default_agent_model_tier = "normal"
+
+	cfg.guide_agent.enabled = true
+	cfg.guide_agent.autostart = true
+	cfg.guide_agent.restart_if_stopped = true
+	cfg.guide_agent.agent_instance_id = "guide@heimdall"
+	cfg.guide_agent.template_id = "guide"
+	cfg.guide_agent.provider_profile = "pi"
+	cfg.guide_agent.model_tier = "smart"
 
 	cfg.wrapper.daemon_url = "http://127.0.0.1:49322"
 	cfg.wrapper.credentials_path = "~/.local/share/heimdall/wrapper-credentials.json"

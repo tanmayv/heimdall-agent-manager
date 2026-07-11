@@ -16,6 +16,10 @@ team_focus_event_count: int
 
 handle_teams_request :: proc(client: net.TCP_Socket, request: string) -> bool {
 	method, target := http_method_target(request)
+	if method == "POST" && (target == "/teams/add-member" || target == "/teams/add-member/") {
+		handle_team_add_member(client, request_body(request))
+		return true
+	}
 	if method == "GET" && (target == "/teams" || strings.has_prefix(target, "/teams?")) {
 		project_id := query_value(target, "project_id")
 		status := query_value(target, "status")
@@ -193,7 +197,30 @@ write_member_json :: proc(builder: ^strings.Builder, member: Team_Member_Record)
 	strings.write_string(builder, `"}`)
 }
 
+handle_team_add_member :: proc(client: net.TCP_Socket, body: string) {
+	author, ok := task_author_from_body(client, body)
+	if !ok || author == "" do return
+	member, add_ok, message := team_service_add_member(extract_json_string(body, "team_id", extract_json_string(body, "team", "")), extract_json_string(body, "role_key", extract_json_string(body, "role", "")), extract_json_string(body, "agent_instance_id", ""))
+	if !add_ok {
+		write_response(client, 400, "Bad Request", team_error_json(message))
+		return
+	}
+	builder := strings.builder_make()
+	strings.write_string(&builder, `{"ok":true,"message":"`); json_write_string(&builder, message)
+	strings.write_string(&builder, `","member":`)
+	write_member_json(&builder, member)
+	strings.write_string(&builder, `}`)
+	write_response(client, 200, "OK", strings.to_string(builder))
+}
+
+team_error_json :: proc(message: string) -> string {
+	builder := strings.builder_make()
+	strings.write_string(&builder, `{"ok":false,"message":"`); json_write_string(&builder, message); strings.write_string(&builder, `"}`)
+	return strings.to_string(builder)
+}
+
 team_member_agent_instance_id :: proc(member: Team_Member_Record) -> string {
+	if member.route_to != "" && !member.is_user_proxy do return member.route_to
 	if member.agent_instance_id != "" do return member.agent_instance_id
 	if idx := agent_record_index(member.agent_record_id); idx >= 0 do return agent_instance_records[idx].agent_instance_id
 	if member.role_key == "coordinator" {

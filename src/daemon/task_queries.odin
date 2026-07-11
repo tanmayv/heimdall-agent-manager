@@ -342,6 +342,7 @@ task_recompute_promotions :: proc(author: string) -> int {
 			task_notify_event(event)
 			changed += 1
 			if status == "queued" {
+				_ = task_runtime_reconcile_task(state.task_id, "status_change", "normal")
 				task_service_auto_claim(state.task_id)
 			}
 		}

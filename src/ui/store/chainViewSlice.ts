@@ -1,6 +1,8 @@
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
 import * as daemonApi from '../api/daemonApi';
 
+const OPTIMISTIC_MESSAGE_GRACE_MS = 30_000;
+
 function auth(state: any) {
   const { session } = state.chat;
   return { daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken };
@@ -131,9 +133,15 @@ const chainViewSlice = createSlice({
         if (chat?.messages) {
           state.chatByChainId[chainId] = chat.messages;
           const serverIds = new Set(chat.messages.map((m: any) => m.message_id || m.id).filter(Boolean));
+          const now = Date.now();
           state.optimisticMessagesByChainId[chainId] = (state.optimisticMessagesByChainId[chainId] || []).filter((m: any) => {
             if (m.messageId && serverIds.has(m.messageId)) return false;
-            return m.sending;
+            // Keep recently delivered optimistic messages briefly. A focus/revalidate
+            // request can race ahead of chat persistence/read-your-write visibility;
+            // dropping non-sending optimistic rows immediately makes the message
+            // disappear until a later restart/refetch.
+            const lastLocalAt = Number(m.deliveredUnixMs || m.createdUnixMs || 0);
+            return Boolean(m.sending) || (lastLocalAt > 0 && now - lastLocalAt < OPTIMISTIC_MESSAGE_GRACE_MS);
           });
         }
         state.lastHttpLoadByChainId[chainId] = Date.now();

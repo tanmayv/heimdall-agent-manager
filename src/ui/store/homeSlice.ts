@@ -2,10 +2,20 @@ import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
 import * as daemonApi from '../api/daemonApi';
 import { fetchTasksForChain, refreshTaskBoard } from './taskSlice';
 
+function initialChainIdFromUrl(): string {
+  try {
+    return new URLSearchParams(window.location.search).get('chainId') || '';
+  } catch (_err) {
+    return '';
+  }
+}
+
+const initialChainId = initialChainIdFromUrl();
+
 const initialState = {
-  surface: 'home',
+  surface: initialChainId ? 'chain' : 'home',
   selectedProjectId: '',
-  selectedChainId: '',
+  selectedChainId: initialChainId,
   newChainModalOpen: false,
   newChainCreating: false,
   newChainError: '',
@@ -26,7 +36,7 @@ export const submitNewChain = createAsyncThunk('home/submitNewChain', async (pay
     clientToken: session.clientToken,
     project_id: payload.projectId || '',
     title: payload.title || '',
-    description: payload.goal || '',
+    description: payload.scaffold && payload.scaffold !== 'none' ? (payload.goal || '') : '',
     kind: payload.kind || 'coding',
     scaffold: payload.scaffold === 'none' ? '' : (payload.scaffold || ''),
     no_scaffold: payload.scaffold === 'none',

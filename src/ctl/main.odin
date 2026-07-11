@@ -632,6 +632,23 @@ ctl_teams :: proc(daemon_url, action: string, args: []string) {
 		fmt.println("usage: teams start is not supported; create or focus a chain instead")
 		return
 	}
+	if action == "add-member" {
+		team_id := option_value(args, "--team", option_value(args, "--team-id", ""))
+		role := option_value(args, "--role", option_value(args, "--role-key", ""))
+		agent_instance_id := option_value(args, "--agent-instance-id", option_value(args, "--agent", ""))
+		token := option_value(args, "--token", "")
+		if team_id == "" || role == "" || agent_instance_id == "" || token == "" { fmt.println("usage: ham-ctl teams add-member --token <token> --team <team_id> --role <role> --agent-instance-id <agent>"); return }
+		body := strings.builder_make()
+		strings.write_string(&body, `{"agent_token":"`); json_write_string(&body, token)
+		strings.write_string(&body, `","team_id":"`); json_write_string(&body, team_id)
+		strings.write_string(&body, `","role_key":"`); json_write_string(&body, role)
+		strings.write_string(&body, `","agent_instance_id":"`); json_write_string(&body, agent_instance_id)
+		strings.write_string(&body, `"}`)
+		response, ok := http.post(daemon_url, "/teams/add-member", strings.to_string(body))
+		if !ok { fmt.println(`{"ok":false,"message":"teams add-member request failed"}`); return }
+		fmt.println(response.body)
+		return
+	}
 	path := ""
 	switch action {
 	case "list":
@@ -649,7 +666,7 @@ ctl_teams :: proc(daemon_url, action: string, args: []string) {
 		path = fmt.tprintf("/teams/%s", team_id)
 		if action == "show-members" do path = fmt.tprintf("%s/members", path)
 	case:
-		fmt.println("usage: ham-ctl teams <list|show|show-members> [--json]")
+		fmt.println("usage: ham-ctl teams <list|show|show-members|add-member> [--json]")
 		return
 	}
 	response, ok := http.get(daemon_url, path)
@@ -725,6 +742,10 @@ ctl_chat :: proc(daemon_url, action: string, args: []string) {
 		ctl_agent_chat(daemon_url, action, args)
 		return
 	}
+	if action == "approvals" {
+		ctl_chat_approvals(daemon_url, args)
+		return
+	}
 	body := strings.builder_make()
 	strings.write_string(&body, `{"client_instance_id":"`); json_write_string(&body, option_value(args, "--client-instance-id", ""))
 	strings.write_string(&body, `","client_token":"`); json_write_string(&body, option_value(args, "--token", ""))
@@ -735,7 +756,7 @@ ctl_chat :: proc(daemon_url, action: string, args: []string) {
 	case "send": strings.write_string(&body, "send_to_agent")
 	case "mark-read": strings.write_string(&body, "mark_read")
 	case:
-		fmt.println("usage: ham-ctl chat <list|fetch|send|mark-read|send-to-user|fetch-user>"); return
+		fmt.println("usage: ham-ctl chat <list|fetch|send|mark-read|send-to-user|fetch-user|approvals>"); return
 	}
 	strings.write_string(&body, `"`)
 	if agent := option_value(args, "--agent-instance-id", ""); agent != "" { strings.write_string(&body, `,"agent_instance_id":"`); json_write_string(&body, agent); strings.write_string(&body, `"`) }
@@ -781,6 +802,10 @@ ctl_agent_chat :: proc(daemon_url, action: string, args: []string) {
 
 		strings.write_string(&body, `","action":"send_to_user","body":"`)
 		json_write_string(&body, final_body)
+		if chain_id := option_value(args, "--chain-id", option_value(args, "--chain", "")); chain_id != "" {
+			strings.write_string(&body, `","chain_id":"`)
+			json_write_string(&body, chain_id)
+		}
 		strings.write_string(&body, `"}`)
 	} else {
 		include_read := has_flag(args, "--include-read")
@@ -803,6 +828,68 @@ ctl_agent_chat :: proc(daemon_url, action: string, args: []string) {
 	response, ok := http.post(daemon_url, contracts.ROUTE_AGENT_RPC, strings.to_string(body))
 	if !ok { fmt.println(`{"ok":false,"message":"agent chat request failed"}`); return }
 	fmt.println(response.body)
+}
+
+ctl_chat_approvals :: proc(daemon_url: string, args: []string) {
+	if len(args) < 3 {
+		fmt.println("usage: ham-ctl chat approvals <list|answer|dismiss|cancel> --token <token> [--approval-id <id>] [--reply <text>] [--reason <text>] [--notify]")
+		return
+	}
+	sub := args[2]
+	token := option_value(args, "--token", "")
+	if token == "" {
+		fmt.println(`{"ok":false,"message":"--token is required"}`)
+		return
+	}
+	switch sub {
+	case "list":
+		path := fmt.tprintf("/chat-approvals/pending?token=%s", token)
+		response, ok := http.get(daemon_url, path)
+		if !ok { fmt.println(`{"ok":false,"message":"list request failed"}`); return }
+		fmt.println(response.body)
+	case "answer":
+		approval_id := option_value(args, "--approval-id", "")
+		reply := option_value(args, "--reply", "")
+		if approval_id == "" || reply == "" {
+			fmt.println(`{"ok":false,"message":"answer requires --approval-id and --reply"}`); return
+		}
+		b := strings.builder_make()
+		strings.write_string(&b, `{"approval_id":"`); json_write_string(&b, approval_id)
+		strings.write_string(&b, `","reply":"`); json_write_string(&b, reply)
+		strings.write_string(&b, `","token":"`); json_write_string(&b, token)
+		strings.write_string(&b, `"}`)
+		response, ok := http.post(daemon_url, "/chat-approvals/answer", strings.to_string(b))
+		if !ok { fmt.println(`{"ok":false,"message":"answer request failed"}`); return }
+		fmt.println(response.body)
+	case "dismiss":
+		approval_id := option_value(args, "--approval-id", "")
+		if approval_id == "" { fmt.println(`{"ok":false,"message":"dismiss requires --approval-id"}`); return }
+		reason := option_value(args, "--reason", "user_dismissed")
+		notify := has_flag(args, "--notify")
+		b := strings.builder_make()
+		strings.write_string(&b, `{"approval_id":"`); json_write_string(&b, approval_id)
+		strings.write_string(&b, `","reason":"`); json_write_string(&b, reason)
+		strings.write_string(&b, `","notify":`); strings.write_string(&b, "true" if notify else "false")
+		strings.write_string(&b, `,"token":"`); json_write_string(&b, token)
+		strings.write_string(&b, `"}`)
+		response, ok := http.post(daemon_url, "/chat-approvals/dismiss", strings.to_string(b))
+		if !ok { fmt.println(`{"ok":false,"message":"dismiss request failed"}`); return }
+		fmt.println(response.body)
+	case "cancel":
+		approval_id := option_value(args, "--approval-id", "")
+		if approval_id == "" { fmt.println(`{"ok":false,"message":"cancel requires --approval-id"}`); return }
+		reason := option_value(args, "--reason", "agent_cancelled")
+		b := strings.builder_make()
+		strings.write_string(&b, `{"approval_id":"`); json_write_string(&b, approval_id)
+		strings.write_string(&b, `","reason":"`); json_write_string(&b, reason)
+		strings.write_string(&b, `","agent_token":"`); json_write_string(&b, token)
+		strings.write_string(&b, `"}`)
+		response, ok := http.post(daemon_url, "/chat-approvals/cancel", strings.to_string(b))
+		if !ok { fmt.println(`{"ok":false,"message":"cancel request failed"}`); return }
+		fmt.println(response.body)
+	case:
+		fmt.println("usage: ham-ctl chat approvals <list|answer|dismiss|cancel> ...")
+	}
 }
 
 inbox_request_json :: proc(token, limit: string, include_read: bool, chain_id: string = "") -> string {
@@ -1053,10 +1140,10 @@ print_usage :: proc(config_path, daemon_url: string) {
 	fmt.println("  tasks participant --token <token> --task-id <id> --agent-instance-id <agent> --role <assignee|lgtm_required|lgtm_optional|coordinator|subscriber>")
 	fmt.println("  tasks vote --token <token> --task-id <id> --result lgtm|ngtm --comment <text>")
 	fmt.println("  tasks nudge --token <token> --task-id <id> --body <text>")
-	fmt.println("  chains create --token <token> [--project-id <id>] --kind <kind> [--title <title>] [--description|--goal <text>] [--scaffold <key> (legacy)] [--no-vcs] [--coordinator <agent>] [--reviewer <agent>]")
+	fmt.println("  chains create --token <token> [--project-id <id>] --kind <kind> [--title <title>] [--description|--goal <text>] [--scaffold <key> (legacy)] [--no-vcs] [--reviewer <agent>] [--coordinator <agent> advanced override]")
 	fmt.println("  chains show --token <token> --chain-id <id>")
 	fmt.println("  chains focus --chain <chain_id> [--json]")
-	fmt.println("  task-chains create --token <token> [--project-id <id>] --kind <kind> [--title <title>] [--description|--goal <text>] [--scaffold <key> (legacy)] [--no-vcs] [--coordinator <agent>] [--reviewer <agent>]")
+	fmt.println("  task-chains create --token <token> [--project-id <id>] --kind <kind> [--title <title>] [--description|--goal <text>] [--scaffold <key> (legacy)] [--no-vcs] [--reviewer <agent>] [--coordinator <agent> advanced override]")
 	fmt.println("  task-chains activate --token <token> --chain-id <id>    (planning → in_progress, tasks begin auto-promoting)")
 	fmt.println("  task-chains update --token <token> --chain-id <id> [--title <text>] [--description <text>] [--coordinator <agent>] [--reviewer <agent>]")
 	fmt.println("  task-chains status --token <token> --chain-id <id> --status <status> [--final-summary <text>]")
@@ -1079,7 +1166,12 @@ print_usage :: proc(config_path, daemon_url: string) {
 	fmt.println("  users heartbeat --client-instance-id <client> --token <client_token>")
 	fmt.println("  users presence --token <agent_token>")
 	fmt.println("  chat list|fetch|send|mark-read --client-instance-id <client> --token <client_token> [--agent-instance-id <agent>] [--body <text>] [--message-id <id>]")
-	fmt.println("  chat send-to-user --token <agent_token> --user-id <user> [--body <text>] [--type questions --data <json>]")
+	fmt.println("  chat send-to-user --token <agent_token> --user-id <user> [--body <text>] [--chain-id <chain>|--chain <chain>] [--type questions --data <json>]")
+	fmt.println("  chat approvals list --token <user_token>")
+	fmt.println("  chat approvals answer --token <user_token> --approval-id <id> --reply <text>")
+	fmt.println("  chat approvals dismiss --token <user_token> --approval-id <id> [--reason <text>] [--notify]")
+	fmt.println("  chat approvals cancel --token <agent_token> --approval-id <id> [--reason <text>]")
+	fmt.println("    coordinator best practice: include --chain-id for chain replies; non-coordinator chain sends are redirected to the coordinator")
 	fmt.println("  chat fetch-user --token <agent_token> --user-id <user> [--include-read] [--limit N] [--cursor TS]")
 	fmt.println("  start-success --token <agent_token>   (signal to daemon that agent is alive and ready)")
 	fmt.println("global flags: --config <path>, --daemon-url <url>, --version, --help")

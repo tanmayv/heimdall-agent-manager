@@ -80,22 +80,31 @@ main :: proc() {
 	}
 	window_name := wrapper_window_name(cfg.tmux_window_prefix, agent_instance_id)
 	cwd := resolve_agent_run_dir(cfg, agent_cmd, agent_cmd_ok, selected_agent, agent_instance_id)
+	launch_start_ms := wrapper_now_unix_ms()
+	wrapper_launch_log("start", agent_instance_id, launch_start_ms)
+	fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d elapsed_ms=0 stage=identity_resolved agent=%s class=%s selected_agent=%s project=%s tier=%s session=%s window=%s cwd=%s", launch_start_ms, agent_instance_id, agent_class, selected_agent, effective_project_id, model_tier, cfg.tmux_session, window_name, cwd)
 
 	overwrite := has_flag(os.args, "--overwrite")
 	if !handle_existing_agent_window(cfg.tmux_session, window_name, overwrite) {
+		wrapper_launch_log("existing_window_abort", agent_instance_id, launch_start_ms)
 		return
 	}
+	wrapper_launch_log("existing_window_checked", agent_instance_id, launch_start_ms)
 
 	display_name := option_value(os.args, "--display-name", template_display_name(cfg.display_name, agent_class, agent_instance_id, selected_agent))
 
+	wrapper_launch_log("daemon_health_begin", agent_instance_id, launch_start_ms)
 	response, health_ok := http.get(cfg.daemon_url, contracts.ROUTE_HEALTH)
+	fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=daemon_health_done agent=%s ok=%t status=%d", wrapper_now_unix_ms(), wrapper_now_unix_ms() - launch_start_ms, agent_instance_id, health_ok, response.status)
 	if !health_ok || response.status != 200 {
 		fmt.println("daemon is not reachable; start ham-daemon first")
 		return
 	}
 
 	register_body := register_request_json(agent_class, agent_instance_id, display_name, requested_agent_token)
+	wrapper_launch_log("register_begin", agent_instance_id, launch_start_ms)
 	register_response, register_ok := http.post(cfg.daemon_url, contracts.ROUTE_REGISTER, register_body)
+	fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=register_done agent=%s ok=%t status=%d response_bytes=%d", wrapper_now_unix_ms(), wrapper_now_unix_ms() - launch_start_ms, agent_instance_id, register_ok, register_response.status, len(register_response.body))
 	if !register_ok || register_response.status != 200 {
 		fmt.println("registration failed")
 		if register_ok {
@@ -136,11 +145,13 @@ main :: proc() {
 		return
 	}
 	if effective_project_id != "" {
+		wrapper_launch_log("project_validate_begin", registered_instance_id, launch_start_ms)
 		if !validate_project_exists(cfg.daemon_url, agent_token, effective_project_id) {
 			fmt.println("invalid project_id", effective_project_id)
 			fmt.println("wrapper startup aborted before tmux launch; create the project first or remove --project-id / wrapper.project")
 			return
 		}
+		wrapper_launch_log("project_validate_done", registered_instance_id, launch_start_ms)
 	}
 
 	fmt.println("starting tmux agent")
@@ -149,7 +160,9 @@ main :: proc() {
 	fmt.println("working_dir", cwd)
 
 	if !is_test_token(agent_token) {
+		wrapper_launch_log("bootstrap_files_begin", registered_instance_id, launch_start_ms)
 		generate_bootstrap_files(cwd, loaded.path, cfg, agent_cmd, selected_agent, registered_instance_id, display_name, cfg.daemon_url, agent_token, template_instructions, team_id, role_key, role_index)
+		wrapper_launch_log("bootstrap_files_done", registered_instance_id, launch_start_ms)
 	}
 
 	stop_message := cfg.stop_message
@@ -157,7 +170,10 @@ main :: proc() {
 	if stop_message == "" do stop_message = "Agent stop requested. You have {time} seconds to complete your current work and checkpoint before shutdown."
 
 	command := build_agent_command(cfg, selected_agent, cfg.daemon_url, registered_instance_id, display_name, conversation_id, agent_token, model_tier)
+	wrapper_launch_log("agent_command_built", registered_instance_id, launch_start_ms)
+	wrapper_launch_log("tmux_ensure_begin", registered_instance_id, launch_start_ms)
 	launch, launch_ok := tmux.ensure_agent_window(cfg.tmux_session, window_name, cwd, command)
+	fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=tmux_ensure_done agent=%s ok=%t pane=%s", wrapper_now_unix_ms(), wrapper_now_unix_ms() - launch_start_ms, registered_instance_id, launch_ok, launch.pane_id)
 	if !launch_ok {
 		fmt.println("failed to launch or find tmux window")
 		report_startup_status(cfg.daemon_url, registered_instance_id, "startup_failed", "tmux_launch_failed", "failed to launch or find tmux window", selected_agent, cwd, "")
@@ -169,9 +185,15 @@ main :: proc() {
 	startup_safe_diagnostic := "Startup detection disabled; assuming ready"
 
 
+	startup_report_begin := wrapper_now_unix_ms()
 	report_startup_status(cfg.daemon_url, registered_instance_id, "starting", "launch", "Agent process launched in tmux", selected_agent, cwd, launch.pane_id)
+	fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=startup_report_starting_done agent=%s report_ms=%d", wrapper_now_unix_ms(), wrapper_now_unix_ms() - launch_start_ms, registered_instance_id, wrapper_now_unix_ms() - startup_report_begin)
+	wrapper_launch_log("starter_prompt_begin", registered_instance_id, launch_start_ms)
 	deliver_tmux_starter_prompt(agent_cmd, cfg.daemon_url, registered_instance_id, display_name, conversation_id, agent_token, launch.pane_id)
+	wrapper_launch_log("starter_prompt_done", registered_instance_id, launch_start_ms)
+	wrapper_launch_log("startup_probe_begin", registered_instance_id, launch_start_ms)
 	result := startup_probe_agent(agent_cmd.startup_detection, launch.pane_id)
+	wrapper_launch_log("startup_probe_done", registered_instance_id, launch_start_ms)
 	if result.status != "disabled" {
 		startup_status = result.status
 		startup_reason_code = result.reason_code
@@ -189,7 +211,9 @@ main :: proc() {
 		_ = tmux.rename_window_for_pane(launch.pane_id, window_name)
 	}
 
+	wrapper_launch_log("ws_connect_begin", registered_instance_id, launch_start_ms)
 	ws_conn, ws_ok := ws.connect(ws_url)
+	fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=ws_connect_done agent=%s ok=%t", wrapper_now_unix_ms(), wrapper_now_unix_ms() - launch_start_ms, registered_instance_id, ws_ok)
 	if ws_ok {
 		fmt.println("ws connected", ws_url)
 	} else {
@@ -197,6 +221,7 @@ main :: proc() {
 	}
 
 	initial_exec_state := "running"
+	wrapper_launch_log("heartbeat_loop_enter", registered_instance_id, launch_start_ms)
 	heartbeat_loop(cfg.daemon_url, agent_class, registered_instance_id, display_name, agent_token, launch.pane_id, stop_message, selected_agent, model_tier, effective_project_id, cwd, initial_exec_state, startup_status, startup_reason_code, startup_safe_diagnostic, cfg.tmux_session, window_name, &ws_conn)
 }
 
@@ -204,6 +229,19 @@ Startup_Probe_Result :: struct {
 	status: string,
 	reason_code: string,
 	safe_diagnostic: string,
+}
+
+wrapper_now_unix_ms :: proc() -> i64 {
+	return time.to_unix_nanoseconds(time.now()) / 1_000_000
+}
+
+wrapper_launch_log :: proc(stage, agent_instance_id: string, start_ms: i64 = 0) {
+	now := wrapper_now_unix_ms()
+	if start_ms > 0 {
+		fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=%s agent=%s", now, now - start_ms, stage, agent_instance_id)
+	} else {
+		fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d stage=%s agent=%s", now, stage, agent_instance_id)
+	}
 }
 
 startup_probe_agent :: proc(cfg: cfg_lib.Startup_Detection_Config, pane_id: string, abort_flag: ^bool = nil) -> Startup_Probe_Result {
@@ -314,6 +352,8 @@ startup_safe_diagnostic :: proc(cfg: cfg_lib.Startup_Detection_Config, idx: int,
 }
 
 report_startup_status :: proc(daemon_url, agent_instance_id, status, reason_code, safe_diagnostic, provider_profile, run_dir, tmux_pane: string) {
+	start_ms := wrapper_now_unix_ms()
+	fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d stage=startup_report_post_begin agent=%s status=%s reason=%s pane=%s", start_ms, agent_instance_id, status, reason_code, tmux_pane)
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"agent_instance_id":"`); json_write_string(&builder, agent_instance_id)
 	strings.write_string(&builder, `","startup_status":"`); json_write_string(&builder, status)
@@ -323,7 +363,8 @@ report_startup_status :: proc(daemon_url, agent_instance_id, status, reason_code
 	strings.write_string(&builder, `","run_dir":"`); json_write_string(&builder, run_dir)
 	strings.write_string(&builder, `","tmux_pane":"`); json_write_string(&builder, tmux_pane)
 	strings.write_string(&builder, `"}`)
-	_, _ = http.post(daemon_url, "/startup", strings.to_string(builder))
+	response, ok := http.post(daemon_url, "/startup", strings.to_string(builder))
+	fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=startup_report_post_done agent=%s status=%s ok=%t http_status=%d", wrapper_now_unix_ms(), wrapper_now_unix_ms() - start_ms, agent_instance_id, status, ok, response.status)
 }
 
 handle_existing_agent_window :: proc(tmux_session, window_name: string, overwrite: bool) -> bool {
@@ -1080,6 +1121,18 @@ generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_
 		}
 	}
 
+	// Guide-only product handbook. This is intentionally a concrete file in the
+	// guide run directory so the singleton guide can read stable Heimdall-specific
+	// operating guidance without giving that context to ordinary project agents.
+	if agent_instance_id == "guide@heimdall" {
+		name := "guide-agent.md"
+		path := join_path(cwd, name)
+		if can_write_managed_file(path) {
+			write_managed_file(path, strings.trim_space(#load("../prompts/guide-agent.md", string)))
+			append(&written, name)
+		}
+	}
+
 	cleanup_removed_bootstrap_files(cwd, written[:])
 	write_manifest(cwd, written[:])
 }
@@ -1186,7 +1239,11 @@ build_agents_md :: proc(name, profile: string, selected_agent, agent_instance_id
 	strings.write_string(&b, "- role_index: "); strings.write_string(&b, fmt.tprintf("%d", role_index)); strings.write_string(&b, "\n")
 	strings.write_string(&b, "- provider/profile: "); strings.write_string(&b, selected_agent); strings.write_string(&b, " / "); strings.write_string(&b, profile); strings.write_string(&b, "\n")
 	strings.write_string(&b, "- agent_token: "); strings.write_string(&b, agent_token); strings.write_string(&b, "\n")
-	strings.write_string(&b, "- start-success: `"); strings.write_string(&b, effective_ctl_bin()); strings.write_string(&b, " --daemon-url "); strings.write_string(&b, daemon_url); strings.write_string(&b, " --token "); strings.write_string(&b, agent_token); strings.write_string(&b, " start-success`\n\n")
+	strings.write_string(&b, "- start-success: `"); strings.write_string(&b, effective_ctl_bin()); strings.write_string(&b, " --daemon-url "); strings.write_string(&b, daemon_url); strings.write_string(&b, " --token "); strings.write_string(&b, agent_token); strings.write_string(&b, " start-success`\n")
+	if agent_instance_id == "guide@heimdall" {
+		strings.write_string(&b, "- guide handbook: read `guide-agent.md` after start-success; it is the guide-only Heimdall product/runbook context.\n")
+	}
+	strings.write_string(&b, "\n")
 
 	strings.write_string(&b, "# Project\n")
 	if project_context != "" { strings.write_string(&b, project_context); strings.write_string(&b, "\n") } else { strings.write_string(&b, "- project_id: unknown\n- VCS bindings: none\n\n") }
@@ -1199,13 +1256,20 @@ build_agents_md :: proc(name, profile: string, selected_agent, agent_instance_id
 	if team_context != "" { strings.write_string(&b, team_context) } else if team_id != "" { strings.write_string(&b, "- team_id: "); strings.write_string(&b, team_id); strings.write_string(&b, "\n") }
 	if is_coordinator {
 		strings.write_string(&b, "- You are the coordinator for free-form user contact: summarize/forward team needs to the operator when needed.\n")
-		strings.write_string(&b, "- Team members route user-facing decisions through you; consolidate and ask the user only when necessary.\n")
+		strings.write_string(&b, "- Use chain-scoped user replies (`chat send-to-user --chain-id <chain_id>`) when the reply belongs to a task chain, so it appears in coordinator chat and direct chat.\n")
+		strings.write_string(&b, "- Team members route user-facing decisions through you; consolidate, resolve locally when possible, and ask the user only when necessary.\n")
 	} else {
 		strings.write_string(&b, "- Coordinator owns user-facing decisions; route free-form user communication through the coordinator.\n")
-		strings.write_string(&b, "- Do not use direct `chat send-to-user` for normal user contact. Use task comments or coordinator-directed chat instead.\n")
+		strings.write_string(&b, "- Do not use direct `chat send-to-user` for normal user contact. Use task comments or coordinator-directed chat instead; chain-context sends are redirected to the coordinator, not the user.\n")
 	}
 	strings.write_string(&b, "- Structured Needs attention prompts remain allowed for product-modeled approvals/actions such as user_proxy review and merge decisions.\n")
 	strings.write_string(&b, "- Agents shut down after 30 minutes idle unless task, mention, or nudge keeps them alive.\n\n")
+
+	if is_coordinator {
+		strings.write_string(&b, "# Coordinator Instructions\n")
+		strings.write_string(&b, strings.trim_space(#load("../prompts/coordinator_instructions.md", string)))
+		strings.write_string(&b, "\n\n")
+	}
 
 	if workspace_context != "" {
 		strings.write_string(&b, "# Workspace\n")
@@ -1223,7 +1287,7 @@ build_agents_md :: proc(name, profile: string, selected_agent, agent_instance_id
 	strings.write_string(&b, "# Tools\n")
 	strings.write_string(&b, "- `ham-ctl tasks next|show|comment|done --token <token>` for task work.\n")
 	if is_coordinator {
-		strings.write_string(&b, "- `ham-ctl chat send-to-user --token <token> --user-id operator@local --body <text>` for coordinator-owned user replies.\n")
+		strings.write_string(&b, "- `ham-ctl chat send-to-user --token <token> --user-id operator@local --chain-id <chain_id> --body <text>` for coordinator-owned chain replies.\n")
 	} else {
 		strings.write_string(&b, "- For user-facing questions, comment/nudge the coordinator; the coordinator owns free-form user replies.\n")
 	}

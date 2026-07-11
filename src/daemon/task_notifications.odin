@@ -280,6 +280,7 @@ task_notify_all_lgtm_required :: proc(task_id, chain_id: string) {
 		}
 		if task_reviewer_has_voted(task_id, p.agent_instance_id) do continue
 		if task_reviewer_active_slot_blocker(p.agent_instance_id, task_id) != "" do continue
+		task_notify_review_ready_agent(state, p.agent_instance_id)
 		task_notify_recipient(p.agent_instance_id, payload)
 		notified_count += 1
 	}
@@ -295,6 +296,7 @@ task_notify_all_lgtm_required :: proc(task_id, chain_id: string) {
 	default_reviewer := task_reviewer_agent_instance_id(state)
 	if default_reviewer != "" && default_reviewer != "operator@local" && default_reviewer != "user_proxy" {
 		if !task_reviewer_has_voted(task_id, default_reviewer) && task_reviewer_active_slot_blocker(default_reviewer, task_id) == "" {
+			task_notify_review_ready_agent(state, default_reviewer)
 			task_notify_recipient(default_reviewer, payload)
 			fmt.printfln("NOTIFY: task=%s chain=%s status=review_ready fallback=default_reviewer=%s has_required=%t", task_id, chain_id, default_reviewer, has_required)
 			return
@@ -308,6 +310,15 @@ task_notify_all_lgtm_required :: proc(task_id, chain_id: string) {
 	}
 	_ = notification_outbox_insert_pending("operator@local", payload)
 	fmt.printfln("NOTIFY: task=%s chain=%s status=review_ready fallback=operator_durable has_required=%t", task_id, chain_id, has_required)
+}
+
+task_notify_review_ready_agent :: proc(state: Task_State, reviewer_agent_instance_id: string) {
+	if reviewer_agent_instance_id == "" || reviewer_agent_instance_id == "operator@local" || reviewer_agent_instance_id == "user_proxy" do return
+	chain_idx, found := task_existing_chain_index(state.chain_id)
+	if !found do return
+	chain := task_chains[chain_idx]
+	if chain.status != "in_progress" do return
+	_ = task_autoscaler_ensure_agent(chain, reviewer_agent_instance_id, state.task_id, "high", router_now_unix_ms(), "review_ready")
 }
 
 // After a reviewer submits a vote, nudge them about their next pending review_ready task.
@@ -332,8 +343,10 @@ task_notify_reviewer_rotation :: proc(reviewer: string) {
 			body              = fmt.tprintf("You have a pending review on task %s", state.task_id),
 			interrupt         = true,
 		}
-		task_store_append_event(event)
-		task_notify_event(event)
+		if task_store_append_event(event) {
+			_ = task_runtime_reconcile_task(state.task_id, "review_rotation", "high")
+			task_notify_event(event)
+		}
 		return
 	}
 }

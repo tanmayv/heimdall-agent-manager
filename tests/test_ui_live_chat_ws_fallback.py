@@ -23,15 +23,15 @@ def main() -> None:
     onopen_block = src[onopen_idx:src.find("      };", onopen_idx) + len("      };")]
     require("dispatch(refreshAgents());" in onopen_block, "onopen should still refresh agents")
     require("selectedAgentRef.current" in onopen_block, "onopen should read selectedAgentRef")
-    require("dispatch(fetchSelectedChat(selected));" in onopen_block, "onopen should refresh selected chat")
+    require("dispatch(fetchSelectedChat({ agentId: selected }));" in onopen_block, "onopen should refresh selected chat")
 
-    chat_marker = "if (payload?.type !== 'chat_event') return;"
+    chat_marker = "if (payload?.type === 'chat_event') {"
     chat_idx = src.find(chat_marker)
     require(chat_idx >= 0, "chat_event handler not found")
     chat_block = src[chat_idx:src.find("      };", chat_idx) + len("      };")]
     require("dispatch(chatEventReceived(payload));" in chat_block, "chat_event should update unread/session metadata")
     require("payload.message" in chat_block and "dispatch(appendMessage" in chat_block, "embedded message path should append")
-    require("dispatch(fetchSelectedChat(agentId));" in chat_block, "message-less chat_event should fetch chat")
+    require("dispatch(fetchSelectedChat({ agentId: selectedDirectAgent }));" in chat_block, "message-less chat_event should fetch chat")
 
     print("UI LIVE CHAT WS FALLBACK TEST PASSED")
 
