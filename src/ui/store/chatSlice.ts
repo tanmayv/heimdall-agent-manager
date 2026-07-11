@@ -496,6 +496,15 @@ const chatSlice = createSlice({
     setView(state, action) {
       state.activeView = action.payload || 'chat';
     },
+    markAgentReadLocally(state, action) {
+      const agentInstanceId = String(action.payload || '');
+      if (!agentInstanceId) return;
+      const agent = state.agents.find((item: any) => item.id === agentInstanceId);
+      if (agent) {
+        agent.unreadCount = 0;
+        storeKnownAgents(state.agents);
+      }
+    },
     reorderAgentsLocally(state, action) {
       const agentIds = action.payload;
       const agentsById = new Map<string, any>();
@@ -531,6 +540,24 @@ const chatSlice = createSlice({
       if (!daemonUrl) return;
       const profile = { label: String(action.payload?.label || daemonLabelForUrl(daemonUrl)), url: daemonUrl };
       state.daemonProfiles = normalizeDaemonProfiles([...state.daemonProfiles, profile], daemonUrl);
+      storeDaemonProfiles(state.daemonProfiles);
+    },
+    renameDaemonProfile(state, action) {
+      const daemonUrl = normalizeDaemonUrl(action.payload?.daemonUrl || action.payload?.url || '');
+      const label = String(action.payload?.label || '').trim();
+      if (!daemonUrl || !label) return;
+      state.daemonProfiles = state.daemonProfiles.map((profile: any) => (
+        normalizeDaemonUrl(profile?.url || '') === daemonUrl ? { ...profile, label } : profile
+      ));
+      state.daemonProfiles = normalizeDaemonProfiles(state.daemonProfiles, state.session.daemonUrl);
+      storeDaemonProfiles(state.daemonProfiles);
+    },
+    removeDaemonProfile(state, action) {
+      const daemonUrl = normalizeDaemonUrl(action.payload?.daemonUrl || action.payload?.url || action.payload || '');
+      if (!daemonUrl) return;
+      if (daemonUrl === state.session.daemonUrl) return; // never delete the active profile
+      state.daemonProfiles = state.daemonProfiles.filter((profile: any) => normalizeDaemonUrl(profile?.url || '') !== daemonUrl);
+      state.daemonProfiles = normalizeDaemonProfiles(state.daemonProfiles, state.session.daemonUrl);
       storeDaemonProfiles(state.daemonProfiles);
     },
     updateSessionConfig(state, action) {
@@ -880,6 +907,24 @@ const chatSlice = createSlice({
   },
 });
 
-export const { selectAgent, setView, setDaemonUrl, addDaemonProfile, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived, agentRuntimeEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage, reorderAgentsLocally } = chatSlice.actions;
+export const { selectAgent, setView, setDaemonUrl, addDaemonProfile, renameDaemonProfile, removeDaemonProfile, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived, agentRuntimeEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage, reorderAgentsLocally, markAgentReadLocally } = chatSlice.actions;
+
+export const markCoordinatorRead = createAsyncThunk('chat/markCoordinatorRead', async (agentInstanceId: string, { dispatch, getState }) => {
+  const state = getState() as any;
+  const { session } = state.chat;
+  if (!agentInstanceId || !session.clientToken || !session.clientInstanceId) return { agentInstanceId, ok: false };
+  dispatch(markAgentReadLocally(agentInstanceId));
+  try {
+    await daemonApi.markChatRead({
+      daemonUrl: session.daemonUrl,
+      clientInstanceId: session.clientInstanceId,
+      clientToken: session.clientToken,
+      agentInstanceId,
+    });
+    return { agentInstanceId, ok: true };
+  } catch (_err) {
+    return { agentInstanceId, ok: false };
+  }
+});
 export default chatSlice.reducer;
 

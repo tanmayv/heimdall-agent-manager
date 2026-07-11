@@ -111,7 +111,7 @@ const chainViewSlice = createSlice({
       const { chainId, body } = action.payload || {};
       if (!chainId || !body) return;
       if (!state.optimisticMessagesByChainId[chainId]) state.optimisticMessagesByChainId[chainId] = [];
-      state.optimisticMessagesByChainId[chainId].push({ id: action.payload?.localId || `local_${Date.now()}`, body, author: 'user', sending: true, createdUnixMs: Date.now() });
+      state.optimisticMessagesByChainId[chainId].push({ id: action.payload?.localId || `local_${Date.now()}`, localId: action.payload?.localId || '', body, author: 'user', sending: true, createdUnixMs: Date.now() });
       state.lastLocalAction = `sendCoordinator:${chainId}`;
     },
     wsChainViewRefreshRequested(state: any, action) {
@@ -144,10 +144,20 @@ const chainViewSlice = createSlice({
         const { chainId, localId, result } = action.payload;
         const pending = state.optimisticMessagesByChainId[chainId] || [];
         const messageId = result?.message_id || '';
-        state.optimisticMessagesByChainId[chainId] = pending.filter((m: any) => m.id !== localId);
-        if (messageId && !state.chatByChainId[chainId]?.some((m: any) => m.message_id === messageId || m.id === messageId)) {
-          state.lastLocalAction = `sentCoordinator:${chainId}`;
-        }
+        let matched = false;
+        state.optimisticMessagesByChainId[chainId] = pending.map((m: any) => {
+          if (m.id !== localId && m.localId !== localId) return m;
+          matched = true;
+          return {
+            ...m,
+            id: messageId || m.id,
+            message_id: messageId || m.id,
+            messageId: messageId || m.id,
+            sending: false,
+            deliveredUnixMs: Number(m.deliveredUnixMs || Date.now()),
+          };
+        });
+        state.lastLocalAction = `sentCoordinator:${chainId}`;
       })
       .addCase(fetchWorkspaceForChain.fulfilled, (state: any, action) => { if (action.payload.chainId && action.payload.workspace?.workspace) state.workspaceByChainId[action.payload.chainId] = action.payload.workspace.workspace; })
       .addCase(previewWorkspaceMerge.fulfilled, (state: any, action) => { if (action.payload.chainId) state.mergePreviewByChainId[action.payload.chainId] = action.payload.preview; })

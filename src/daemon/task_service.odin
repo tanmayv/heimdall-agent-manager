@@ -42,6 +42,14 @@ task_service_create_task :: proc(cmd: Task_Create_Command) -> Task_Service_Resul
 	if !task_status_allowed(status) {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"invalid task status"}`}
 	}
+	if cmd.depends_on != "" {
+		if cmd.chain_id == "" {
+			return task_dependency_validation_error("depends_on requires chain_id", "missing_chain", cmd.depends_on)
+		}
+		if dep_error, dep_error_kind, dep_ids, dep_ok := task_validate_dependency_ids(cmd.depends_on, cmd.chain_id, task_id); !dep_ok {
+			return task_dependency_validation_error(dep_error, dep_error_kind, dep_ids)
+		}
+	}
 	if status == "ready" || status == "in_progress" {
 		if dep_blockers := task_dependency_blocking_ids(cmd.depends_on); dep_blockers != "" {
 			return task_gating_error("dependency", "unmet task dependencies", dep_blockers)
@@ -73,6 +81,9 @@ task_service_create_task :: proc(cmd: Task_Create_Command) -> Task_Service_Resul
 	}
 	if cmd.assignee_agent_instance_id != "" && !task_agent_instance_allowed_for_chain(chain_id, cmd.assignee_agent_instance_id) {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"assignee is not a member of this chain team"}`}
+	}
+	if cmd.assignee_agent_instance_id != "" && task_agent_instance_has_chain_role(chain_id, cmd.assignee_agent_instance_id, "reviewer") {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"reviewer role agent cannot be the assignee"}`}
 	}
 	if cmd.reviewer_agent_instance_id != "" && !task_agent_instance_allowed_for_chain(chain_id, cmd.reviewer_agent_instance_id) {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"reviewer is not a member of this chain team"}`}
@@ -136,15 +147,10 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 		_ = team_service_archive(team_id, "invalid_default_reviewer")
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"default reviewer cannot equal coordinator"}`}
 	}
+	// Do not create Git/JJ workspaces synchronously during chain creation.
+	// Worktree creation can require user approval and may fail on local refs; for
+	// VCS-backed chains we create an explicit coordinator task before discovery.
 	workspace_id := ""
-	if cmd.wants_vcs {
-		if workspace, workspace_ok, workspace_msg := task_service_maybe_provision_workspace(cmd.project_id, chain_id, team_id, chain_title); workspace_ok {
-			workspace_id = workspace.workspace_id
-		} else if workspace_msg != "no vcs" {
-			_ = team_service_archive(team_id, "workspace_provision_failed")
-			return Task_Service_Result{ok = false, status_code = 500, message = task_service_error_json(workspace_msg)}
-		}
-	}
 	event := Task_Event{
 		kind                          = .Chain_Created,
 		chain_id                      = chain_id,
@@ -159,14 +165,20 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 		author_agent_instance_id      = cmd.author_agent_instance_id,
 	}
 	if !task_store_append_event(event) {
-		if workspace_id != "" do task_service_cleanup_workspace(chain_id)
 		_ = team_service_archive(team_id, "chain_create_failed")
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append chain create failed"}`}
 	}
 	task_notify_event(event)
-	discovery_task_id := task_service_create_coordinator_discovery_task(chain_id, chain_title, cmd.description, kind, coordinator_agent_instance_id, cmd.author_agent_instance_id)
+	workspace_setup_task_id := ""
+	if cmd.wants_vcs {
+		workspace_setup_task_id = task_service_create_workspace_setup_task(chain_id, cmd.project_id, team_id, chain_title, coordinator_agent_instance_id, cmd.author_agent_instance_id)
+		if workspace_setup_task_id == "" {
+			_ = team_service_archive(team_id, "workspace_setup_task_create_failed")
+			return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append workspace setup task failed"}`}
+		}
+	}
+	discovery_task_id := task_service_create_coordinator_discovery_task(chain_id, chain_title, cmd.description, kind, coordinator_agent_instance_id, cmd.author_agent_instance_id, workspace_setup_task_id)
 	if discovery_task_id == "" {
-		if workspace_id != "" do task_service_cleanup_workspace(chain_id)
 		_ = team_service_archive(team_id, "discovery_task_create_failed")
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append coordinator discovery task failed"}`}
 	}
@@ -183,6 +195,7 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 	strings.write_string(&b, `{"ok":true,"chain_id":"`); json_write_string(&b, chain_id)
 	strings.write_string(&b, `","team_id":"`); json_write_string(&b, team_id)
 	strings.write_string(&b, `","vcs_workspace_id":"`); json_write_string(&b, workspace_id)
+	strings.write_string(&b, `","workspace_setup_task_id":"`); json_write_string(&b, workspace_setup_task_id)
 	strings.write_string(&b, `","discovery_task_id":"`); json_write_string(&b, discovery_task_id)
 	strings.write_string(&b, `","coordinator_agent_instance_id":"`); json_write_string(&b, coordinator_agent_instance_id)
 	strings.write_string(&b, `","status":"in_progress"}`)
@@ -206,7 +219,75 @@ task_service_chain_member_for_role :: proc(team_id, role_key: string) -> string 
 	return ""
 }
 
-task_service_create_coordinator_discovery_task :: proc(chain_id, chain_title, chain_description: string, kind: ^Team_Kind_Def, coordinator_agent_instance_id, author: string) -> string {
+task_service_create_workspace_setup_task :: proc(chain_id, project_id, team_id, chain_title, coordinator_agent_instance_id, author: string) -> string {
+	task_id := task_generate_id()
+	description := task_service_workspace_setup_description(project_id, team_id, chain_id, chain_title)
+	event := Task_Event{
+		kind                       = .Task_Created,
+		task_id                    = task_id,
+		chain_id                   = chain_id,
+		title                      = "Prepare chain workspace",
+		description                = description,
+		priority                   = "normal",
+		status                     = "ready",
+		assignee_agent_instance_id = coordinator_agent_instance_id,
+		created_by                 = author,
+		author_agent_instance_id   = author,
+	}
+	if !task_store_append_event(event) do return ""
+	task_notify_event(event)
+	return task_id
+}
+
+task_service_workspace_setup_description :: proc(project_id, team_id, chain_id, chain_title: string) -> string {
+	repo := ""
+	base_ref := "main"
+	worktree_root := fmt.tprintf("/tmp/heimdall-worktrees/%s", project_id)
+	vcs_kind := "auto"
+	if pidx := project_index(project_id); pidx >= 0 {
+		project := project_records[pidx]
+		repo = project_anchor_value(project, "directory", "")
+		base_ref = project_anchor_value(project, "base_ref", base_ref)
+		worktree_root = project_anchor_value(project, "worktree_root", worktree_root)
+		vcs_kind = project_anchor_value(project, "vcs_kind", vcs_kind)
+	}
+	slug := task_chain_slug(chain_title, chain_id)
+	path := fmt.tprintf("%s/team/%s/%s", strings.trim_right(worktree_root, "/"), team_id, slug)
+	branch := vcs_git_safe_branch_name(fmt.tprintf("team-%s-%s", team_id, slug))
+	b := strings.builder_make()
+	strings.write_string(&b, "Prepare the VCS workspace for this chain before doing discovery/planning.\n\n")
+	strings.write_string(&b, "## Required approval\n")
+	strings.write_string(&b, "Do not run any VCS command until you have asked the user in chain chat and received explicit approval. Show the exact command(s) you plan to run.\n\n")
+	strings.write_string(&b, "## Expected workspace\n")
+	strings.write_string(&b, "- Project directory: "); strings.write_string(&b, repo if repo != "" else "not configured"); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- VCS kind: "); strings.write_string(&b, vcs_kind); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- Base ref: "); strings.write_string(&b, base_ref); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- Worktree path: "); strings.write_string(&b, path); strings.write_string(&b, "\n")
+	strings.write_string(&b, "- Suggested branch name, if the user approves branch creation: "); strings.write_string(&b, branch); strings.write_string(&b, "\n\n")
+	strings.write_string(&b, "## Suggested Git commands\n")
+	strings.write_string(&b, "First ask the user to approve these commands. After approval, prefer a detached worktree first so chain creation does not depend on branch ref creation:\n\n")
+	strings.write_string(&b, "```bash\n")
+	strings.write_string(&b, fmt.tprintf("mkdir -p %s\n", shell_quote(vcs.vcs_workspace_parent(path))))
+	strings.write_string(&b, fmt.tprintf("git -C %s fetch --quiet origin %s || true\n", shell_quote(repo), shell_quote(base_ref)))
+	strings.write_string(&b, fmt.tprintf("git -C %s worktree add --detach %s %s\n", shell_quote(repo), shell_quote(path), shell_quote(base_ref)))
+	strings.write_string(&b, fmt.tprintf("git -C %s switch -c %s\n", shell_quote(path), shell_quote(branch)))
+	strings.write_string(&b, "```\n\n")
+	strings.write_string(&b, "If branch creation fails, keep the detached worktree and report the failure in a task comment instead of blocking chain creation.\n\n")
+	strings.write_string(&b, "## Completion evidence\n")
+	strings.write_string(&b, "Comment with the approved commands, actual workspace path, branch/detached state, base ref, and `git -C <path> status --short --branch` output. Then mark this task done. The discovery task is intentionally blocked on this task.\n")
+	return strings.to_string(b)
+}
+
+vcs_git_safe_branch_name :: proc(name: string) -> string {
+	clean, _ := strings.replace_all(name, "/", "-")
+	clean, _ = strings.replace_all(clean, "@", "-")
+	clean, _ = strings.replace_all(clean, " ", "-")
+	clean = strings.trim(clean, "-.")
+	if clean == "" do clean = "workspace"
+	return strings.clone(fmt.tprintf("heimdall-%s", clean))
+}
+
+task_service_create_coordinator_discovery_task :: proc(chain_id, chain_title, chain_description: string, kind: ^Team_Kind_Def, coordinator_agent_instance_id, author: string, depends_on: string = "") -> string {
 	task_id := task_generate_id()
 	kind_name := "team"
 	if kind != nil && kind.display_name != "" do kind_name = kind.display_name
@@ -218,8 +299,9 @@ task_service_create_coordinator_discovery_task :: proc(chain_id, chain_title, ch
 		title                      = "Discover goal and plan next tasks",
 		description                = description,
 		priority                   = "normal",
-		status                     = "ready",
+		status                     = "ready" if depends_on == "" else "planning",
 		assignee_agent_instance_id = coordinator_agent_instance_id,
+		depends_on                 = depends_on,
 		created_by                 = author,
 		author_agent_instance_id   = author,
 	}
@@ -445,7 +527,7 @@ task_service_maybe_provision_workspace :: proc(project_id, chain_id, team_id, ti
 	if project_idx < 0 do return Vcs_Workspace_Record{}, false, "no vcs"
 	project := project_records[project_idx]
 	kind := project_anchor_value(project, "vcs_kind", "auto")
-	repo := project_anchor_value(project, "git_repo", "")
+	repo := project_anchor_value(project, "directory", "")
 	if kind == "none" || repo == "" do return Vcs_Workspace_Record{}, false, "no vcs"
 	backend_kind := vcs.Vcs_Kind.Git
 	if kind == "jj" do backend_kind = .Jj
@@ -542,40 +624,10 @@ task_service_comment_command :: proc(cmd: Task_Comment_Command) -> Task_Service_
 	}
 	task_notify_event(event)
 
-	if idx, found := task_existing_state_index(cmd.task_id, cmd.chain_id); found {
-		state := task_states[idx]
-		if state.status == .Approved {
-			back_event := Task_Event{
-				kind                     = .Task_Status_Changed,
-				task_id                  = cmd.task_id,
-				chain_id                 = state.chain_id,
-				status                   = "queued",
-				body                     = fmt.tprintf("reverted to ready due to unresolved comment: %s", cmd.body),
-				author_agent_instance_id = "system-comment-revert",
-			}
-			if task_store_append_event(back_event) {
-				task_notify_event(back_event)
-				if state.chain_id != "" {
-					if c_idx, c_found := task_existing_chain_index(state.chain_id); c_found {
-						if task_chains[c_idx].status == "reviewing" {
-							chain_event := Task_Event{
-								kind                     = .Chain_Status_Changed,
-								chain_id                 = state.chain_id,
-								status                   = "in_progress",
-								body                     = "reverted chain to in_progress due to task comment revert",
-								author_agent_instance_id = "system-comment-revert",
-							}
-							if task_store_append_event(chain_event) {
-								task_notify_event(chain_event)
-							}
-						}
-					}
-				}
-				task_recompute_promotions("system-comment-revert")
-				task_service_auto_claim(cmd.task_id)
-			}
-		}
-	}
+	// Ordinary comments are informational by default. Do not regress an
+	// already-approved task merely because the comment is unresolved; explicit
+	// changes-requested review state is represented by an NGTM vote, which moves
+	// review_ready work back to in_progress in task_service_review_vote.
 
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"comment_id":"`); json_write_string(&b, comment_id); strings.write_string(&b, `"}`)
@@ -628,6 +680,9 @@ task_service_assign_command :: proc(cmd: Task_Assign_Command) -> Task_Service_Re
 	if task_chain_default_reviewer_agent_instance_id(state.chain_id) == cmd.agent_instance_id {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"assignee cannot be the default reviewer"}`}
 	}
+	if task_agent_instance_has_chain_role(state.chain_id, cmd.agent_instance_id, "reviewer") {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"reviewer role agent cannot be the assignee"}`}
+	}
 	if !task_agent_instance_allowed_for_chain(state.chain_id, cmd.agent_instance_id) {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"agent is not a member of this chain team"}`}
 	}
@@ -678,6 +733,9 @@ task_service_participant_command :: proc(cmd: Task_Participant_Command) -> Task_
 	if cmd.role == "assignee" && task_chain_default_reviewer_agent_instance_id(state.chain_id) == cmd.agent_instance_id {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"default reviewer cannot be the assignee"}`}
 	}
+	if cmd.role == "assignee" && task_agent_instance_has_chain_role(state.chain_id, cmd.agent_instance_id, "reviewer") {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"reviewer role agent cannot be the assignee"}`}
+	}
 	if !task_agent_instance_allowed_for_chain(state.chain_id, cmd.agent_instance_id) {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"agent is not a member of this chain team"}`}
 	}
@@ -694,6 +752,21 @@ task_service_participant_command :: proc(cmd: Task_Participant_Command) -> Task_
 	}
 	task_notify_event(event)
 	return Task_Service_Result{ok = true, status_code = 200, message = `{"ok":true}`}
+}
+
+task_agent_instance_has_chain_role :: proc(chain_id, agent_instance_id, role_key: string) -> bool {
+	if chain_id == "" || agent_instance_id == "" || role_key == "" do return false
+	chain_idx, chain_found := task_existing_chain_index(chain_id)
+	if !chain_found do return false
+	chain := task_chains[chain_idx]
+	if chain.team_id == "" do return false
+	members := team_db_list_members(team_service_db, chain.team_id)
+	for member in members {
+		if member.role_key != role_key do continue
+		if member.agent_instance_id != "" && member.agent_instance_id == agent_instance_id do return true
+		if member.route_to != "" && member.route_to == agent_instance_id do return true
+	}
+	return false
 }
 
 task_agent_instance_allowed_for_chain :: proc(chain_id, agent_instance_id: string) -> bool {
@@ -797,6 +870,20 @@ task_service_status_command :: proc(cmd: Task_Status_Command) -> Task_Service_Re
 			return Task_Service_Result{ok = false, status_code = 403, message = `{"ok":false,"message":"force requires chain coordinator or operator"}`}
 		}
 	} else {
+		if status_val == .In_Progress {
+			if dep_blockers := task_dependency_blocking_ids(state.depends_on); dep_blockers != "" {
+				return task_gating_error("dependency", "unmet task dependencies", dep_blockers)
+			}
+			if !task_chain_allows_execution(state.chain_id) {
+				return Task_Service_Result{ok = false, status_code = 409, message = `{"ok":false,"message":"task chain is not in_progress","error":"chain_not_active"}`}
+			}
+			if state.assignee_agent_instance_id == "" {
+				return Task_Service_Result{ok = false, status_code = 409, message = `{"ok":false,"message":"task has no assignee","error":"unassigned"}`}
+			}
+			if active := task_active_slot_blocker(state.assignee_agent_instance_id, state.task_id); active != "" {
+				return task_gating_error("assignee_active_task", "assignee already has an active task", active)
+			}
+		}
 		if status_val == .Review_Ready || status_val == .Approved {
 			unresolved := task_unresolved_comments(cmd.task_id)
 			defer delete(unresolved)
@@ -828,6 +915,12 @@ task_service_status_command :: proc(cmd: Task_Status_Command) -> Task_Service_Re
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append task status failed"}`}
 	}
 	task_notify_event(event)
+	if cmd.status == "in_progress" || cmd.status == "queued" || cmd.status == "review_ready" {
+		_ = task_runtime_reconcile_task(cmd.task_id, "status_change", "high")
+	}
+	if state.status == .Review_Ready && cmd.status != "review_ready" {
+		task_cancel_open_user_proxy_approvals(cmd.task_id, state.chain_id)
+	}
 	if cmd.status == "review_ready" || cmd.status == "blocked" || cmd.status == "queued" || cmd.status == "ready" || cmd.status == "approved" {
 		_ = agent_store_clear_current_task(cmd.author_agent_instance_id)
 	}
@@ -899,6 +992,7 @@ task_service_review_vote :: proc(cmd: Task_Review_Vote_Command) -> Task_Service_
 	}
 	task_notify_event(event)
 	_ = agent_store_clear_current_task(cmd.author_agent_instance_id)
+	task_cancel_open_user_proxy_approvals(cmd.task_id, cmd.chain_id)
 	if !cmd.approved {
 		back_event := Task_Event{
 			kind                     = .Task_Status_Changed,
@@ -910,6 +1004,7 @@ task_service_review_vote :: proc(cmd: Task_Review_Vote_Command) -> Task_Service_
 		}
 		if task_store_append_event(back_event) {
 			task_notify_event(back_event)
+			_ = task_runtime_reconcile_task(cmd.task_id, "status_change", "high")
 		}
 	} else if task_all_required_lgtms_approved(cmd.task_id) {
 		task_service_auto_approve(cmd.task_id, cmd.chain_id)
@@ -974,7 +1069,24 @@ task_notify_user_proxy_review_requests :: proc(task_id, chain_id: string) {
 		if sender == "" do sender = "user_proxy"
 		body := task_user_proxy_review_card_json(state)
 		message_id, ok := chat_store_append_message_with_chain(member.route_to, sender, "agent_to_user", body, true, state.chain_id)
-		if ok do chat_event_fanout(member.route_to, sender, message_id, "agent_to_user")
+		if ok {
+			chat_event_fanout(member.route_to, sender, message_id, "agent_to_user", state.chain_id)
+			if det := chat_approval_detect_payload(body); det.matched {
+				_, _ = chat_approval_service_record(det, message_id, state.chain_id, member.route_to, sender)
+			}
+		}
+	}
+}
+
+// Called when a task exits review_ready (approved / regressed to in_progress /
+// cancelled). Any open user_proxy approvals bound to the chain that reference
+// this task_id must be cancelled so the operator inbox is not stranded.
+task_cancel_open_user_proxy_approvals :: proc(task_id, chain_id: string) {
+	if chain_id == "" do return
+	rows := chat_approval_db_list_open_for_chain(chain_id)
+	for rec in rows {
+		if !strings.contains(rec.options_json, task_id) do continue
+		_ = chat_approval_service_terminal(rec.approval_id, "cancelled", "", "system-task-service", "task_left_review_ready", "")
 	}
 }
 
@@ -1057,6 +1169,7 @@ task_service_auto_claim :: proc(task_id: string) {
 	}
 	if task_store_append_event(event) {
 		task_notify_event(event)
+		_ = task_runtime_reconcile_task(task_id, "auto_claim", "high")
 	}
 }
 
@@ -1135,6 +1248,7 @@ task_service_nudge_command :: proc(cmd: Task_Nudge_Command) -> Task_Service_Resu
 	if !task_store_append_event(event) {
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append task nudge failed"}`}
 	}
+	_ = task_runtime_reconcile_task(state.task_id, "manual_nudge", "high")
 	delivery := task_notify_nudge_delivery(event)
 	delivery_state := "skipped"
 	if delivery.live_delivered {
@@ -1338,6 +1452,49 @@ task_gating_error :: proc(error_kind, message, blocking_task_ids: string) -> Tas
 	}
 	strings.write_string(&b, `]}`)
 	return Task_Service_Result{ok = false, status_code = 409, message = strings.to_string(b)}
+}
+
+task_dependency_validation_error :: proc(message, error_kind, dependency_task_ids: string) -> Task_Service_Result {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":false,"message":"`); json_write_string(&b, message)
+	strings.write_string(&b, `","error":"`);             json_write_string(&b, error_kind)
+	strings.write_string(&b, `","dependency_task_ids":[`)
+	ids   := strings.split(dependency_task_ids, ",")
+	first := true
+	for id_raw in ids {
+		id := strings.trim_space(id_raw)
+		if id == "" do continue
+		if !first do strings.write_string(&b, `,`)
+		first = false
+		strings.write_string(&b, `"`); json_write_string(&b, id); strings.write_string(&b, `"`)
+	}
+	strings.write_string(&b, `]}`)
+	return Task_Service_Result{ok = false, status_code = 400, message = strings.to_string(b)}
+}
+
+task_validate_dependency_ids :: proc(depends_on, chain_id, self_task_id: string) -> (message: string, error_kind: string, dependency_task_ids: string, ok: bool) {
+	deps := strings.split(depends_on, ",")
+	for dep in deps {
+		id := strings.trim_space(dep)
+		if id == "" do continue
+		if id == self_task_id {
+			return "task cannot depend on itself", "self_dependency", id, false
+		}
+		found_idx := -1
+		for i in 0..<task_state_count {
+			if task_states[i].task_id == id {
+				found_idx = i
+				break
+			}
+		}
+		if found_idx < 0 {
+			return "dependency task not found", "dependency_not_found", id, false
+		}
+		if chain_id != "" && task_states[found_idx].chain_id != chain_id {
+			return "dependency task must be in the same chain", "dependency_cross_chain", id, false
+		}
+	}
+	return "", "", "", true
 }
 
 task_service_evaluate_chain :: proc(chain_id, evaluation, author: string) -> Task_Service_Result {
