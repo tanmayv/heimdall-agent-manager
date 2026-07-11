@@ -2138,11 +2138,11 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ex
                     <span data-debug-id={`chain-task-row-${task.taskId}-title`} className={`truncate text-sm font-medium ${completed ? 'text-zinc-500 line-through decoration-zinc-600' : 'text-zinc-100'}`}>{task.title || task.taskId}</span>
                     <span data-debug-id={`chain-task-row-${task.taskId}-status`} className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] ${perceived.tone}`}>{perceived.label}</span>
                   </div>
+                  <div data-debug-id={`chain-task-row-${task.taskId}-agents`} className="mt-2 ml-8 flex min-w-0 flex-wrap items-center gap-2">
+                    <TaskAgentChip role="Assignee" agentId={assigneeId} agent={assigneeAgent} active={assigneeWorking} />
+                    <TaskAgentChip role="Reviewer" agentId={reviewerId} agent={reviewerAgent} active={reviewerWorking} />
+                  </div>
                 </button>
-                <div data-debug-id={`chain-task-row-${task.taskId}-agents`} className="hidden min-w-0 shrink items-center justify-end gap-2 lg:flex">
-                  <TaskAgentChip role="Assignee" agentId={assigneeId} agent={assigneeAgent} active={assigneeWorking} />
-                  <TaskAgentChip role="Reviewer" agentId={reviewerId} agent={reviewerAgent} active={reviewerWorking} />
-                </div>
                 {actionNeeded && (
                   <button data-debug-id={`chain-task-row-${task.taskId}-action-needed-btn`} onClick={() => onOpenTask(task)} className="shrink-0 rounded-xl bg-rose-400 px-3 py-1.5 text-xs font-semibold text-black hover:bg-rose-300">Action needed</button>
                 )}
