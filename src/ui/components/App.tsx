@@ -51,6 +51,7 @@ import {
 } from '../store/chainViewSlice';
 import { answerChatApproval, chatApprovalEventReceived, dismissChatApproval, refreshChatApprovals, tickChatApprovalExpiry } from '../store/attentionSlice';
 import { refreshMemory, decideMemoryProposal } from '../store/memorySlice';
+import { dismissToast, showToast } from '../store/toastSlice';
 import Markdown from './Markdown';
 import { updateUrlParams } from './useUrlParams';
 
@@ -320,6 +321,7 @@ export default function App() {
   const guideLoading = Boolean(fetchingChatsByAgentId?.[GUIDE_AGENT_ID]);
   const attention = useSelector((state: any) => state.attention);
   const memory = useSelector((state: any) => state.memory);
+  const toasts = useSelector((state: any) => state.toasts?.toasts || []);
   const pendingMemoryIds = useMemo(() => (memory?.recordIds || []).filter((id: string) => memory.recordsById?.[id]?.status === 'pending').length, [memory?.recordIds, memory?.recordsById]);
   const mergeReviewingChains = useMemo(() => (Object.values(chainsById || {}) as any[]).filter((chain) => chain?.status === 'reviewing').length, [chainsById]);
   const badgeCount = attentionCount(tasksById || {}, attention.chatApprovalIds || [], pendingMemoryIds, mergeReviewingChains);
@@ -764,10 +766,46 @@ export default function App() {
               onPreviewMerge={() => dispatch(previewWorkspaceMerge(selectedChain.chainId))}
               onOpenAgent={(agentId: string) => { dispatch(openAgentSideSheet(agentId)); dispatch(loadAgentSideSheet(agentId)); }}
               onOpenTask={(taskId: string) => dispatch(fetchSelectedTaskLog(taskId))}
-              onAddComment={async (task: any, body: string) => { await dispatch(addCommentToSelectedTask({ taskId: task.taskId, chainId: task.chainId, body })); dispatch(fetchTasksForChain(task.chainId)); dispatch(fetchSelectedTaskLog(task.taskId)); }}
-              onSetTaskStatus={async (task: any, status: string, body: string) => { await dispatch(updateSelectedTaskStatus({ taskId: task.taskId, chainId: task.chainId, status, body })); dispatch(fetchTasksForChain(task.chainId)); dispatch(fetchSelectedTaskLog(task.taskId)); }}
-              onVoteTask={async (task: any, approved: boolean) => { await dispatch(voteOnSelectedTask({ taskId: task.taskId, chainId: task.chainId, approved, comment: approved ? 'LGTM from ChainView.' : 'Changes requested from ChainView.' })); dispatch(fetchTasksForChain(task.chainId)); dispatch(fetchSelectedTaskLog(task.taskId)); }}
-              onNudgeTask={async (task: any, body: string) => { await dispatch(nudgeSelectedTask({ taskId: task.taskId, chainId: task.chainId, body, interrupt: false })); dispatch(fetchTasksForChain(task.chainId)); dispatch(fetchSelectedTaskLog(task.taskId)); }}
+              onAddComment={async (task: any, body: string) => {
+                try {
+                  await dispatch(addCommentToSelectedTask({ taskId: task.taskId, chainId: task.chainId, body })).unwrap();
+                  dispatch(showToast({ kind: 'success', title: 'Comment added', message: task.title || task.taskId }));
+                  dispatch(fetchTasksForChain(task.chainId)); dispatch(fetchSelectedTaskLog(task.taskId));
+                } catch (err: any) {
+                  dispatch(showToast({ kind: 'error', title: 'Comment failed', message: err?.message || 'Unable to add task comment' }));
+                  throw err;
+                }
+              }}
+              onSetTaskStatus={async (task: any, status: string, body: string) => {
+                try {
+                  await dispatch(updateSelectedTaskStatus({ taskId: task.taskId, chainId: task.chainId, status, body })).unwrap();
+                  dispatch(showToast({ kind: 'success', title: 'Task updated', message: `${task.title || task.taskId} → ${status}` }));
+                  dispatch(fetchTasksForChain(task.chainId)); dispatch(fetchSelectedTaskLog(task.taskId));
+                } catch (err: any) {
+                  dispatch(showToast({ kind: 'error', title: 'Task update failed', message: err?.message || `Unable to set ${status}` }));
+                  throw err;
+                }
+              }}
+              onVoteTask={async (task: any, approved: boolean) => {
+                try {
+                  await dispatch(voteOnSelectedTask({ taskId: task.taskId, chainId: task.chainId, approved, comment: approved ? 'LGTM from ChainView.' : 'Changes requested from ChainView.' })).unwrap();
+                  dispatch(showToast({ kind: 'success', title: approved ? 'LGTM recorded' : 'Changes requested', message: task.title || task.taskId }));
+                  dispatch(fetchTasksForChain(task.chainId)); dispatch(fetchSelectedTaskLog(task.taskId));
+                } catch (err: any) {
+                  dispatch(showToast({ kind: 'error', title: 'Review vote failed', message: err?.message || 'Unable to vote on task' }));
+                  throw err;
+                }
+              }}
+              onNudgeTask={async (task: any, body: string) => {
+                try {
+                  await dispatch(nudgeSelectedTask({ taskId: task.taskId, chainId: task.chainId, body, interrupt: false })).unwrap();
+                  dispatch(showToast({ kind: 'success', title: 'Nudge sent', message: task.title || task.taskId }));
+                  dispatch(fetchTasksForChain(task.chainId)); dispatch(fetchSelectedTaskLog(task.taskId));
+                } catch (err: any) {
+                  dispatch(showToast({ kind: 'error', title: 'Nudge failed', message: err?.message || 'Unable to nudge task' }));
+                  throw err;
+                }
+              }}
             />
           ) : home.surface === 'attention' ? (
             <AttentionSurface
@@ -894,6 +932,7 @@ export default function App() {
           }}
         />
       )}
+      <ToastStack toasts={toasts} onDismiss={(id: string) => dispatch(dismissToast(id))} />
       {chainView.sideSheetAgentId && (
         <AgentSideSheet
           agent={sideSheetAgent}
@@ -901,6 +940,35 @@ export default function App() {
           onClose={() => dispatch(closeAgentSideSheet())}
         />
       )}
+    </div>
+  );
+}
+
+function ToastStack({ toasts, onDismiss }: { toasts: any[]; onDismiss: (id: string) => void }) {
+  useEffect(() => {
+    if (!toasts?.length) return undefined;
+    const timers = toasts
+      .filter((toast) => toast.autoDismissMs !== 0)
+      .map((toast) => window.setTimeout(() => onDismiss(toast.id), toast.autoDismissMs || 3200));
+    return () => timers.forEach((timer) => window.clearTimeout(timer));
+  }, [toasts, onDismiss]);
+  if (!toasts?.length) return null;
+  return (
+    <div data-debug-id="toast-stack" className="fixed bottom-6 left-1/2 z-[70] flex w-[min(92vw,520px)] -translate-x-1/2 flex-col gap-2">
+      {toasts.map((toast) => {
+        const tone = toast.kind === 'error' ? 'border-red-400/30 bg-red-500/15 text-red-100' : toast.kind === 'success' ? 'border-emerald-400/30 bg-emerald-500/15 text-emerald-100' : toast.kind === 'progress' ? 'border-sky-400/30 bg-sky-500/15 text-sky-100' : 'border-white/10 bg-zinc-900/95 text-zinc-100';
+        return (
+          <div key={toast.id} data-debug-id={`toast-${toast.kind}`} className={`rounded-2xl border px-4 py-3 shadow-2xl backdrop-blur ${tone}`}>
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="text-sm font-semibold">{toast.title}</div>
+                {toast.message && <div className="mt-0.5 break-words text-xs opacity-85">{toast.message}</div>}
+              </div>
+              <button data-debug-id={`toast-${toast.kind}-dismiss`} onClick={() => onDismiss(toast.id)} className="rounded-lg px-2 py-1 text-xs opacity-70 hover:bg-white/10 hover:opacity-100">×</button>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1784,6 +1852,44 @@ function GuideSidePanel({ agent, messages, loading, sending, onClose, onSend }: 
   );
 }
 
+const COMPLETED_TASK_STATUSES = new Set(['approved', 'done', 'completed', 'cancelled', 'archived']);
+
+function isCompletedTask(task: any): boolean {
+  return COMPLETED_TASK_STATUSES.has(String(task?.status || ''));
+}
+
+function perceivedTaskStatus(task: any, tasksById: Record<string, any>): { label: string; tone: string } {
+  if (!task) return { label: 'unknown', tone: statusTone('unknown') };
+  const blockers = unmetDependencyIds(task, tasksById || {});
+  if (isCompletedTask(task)) return { label: task.status || 'done', tone: 'bg-zinc-700/40 text-zinc-400 border-zinc-600/40' };
+  if (blockers.length > 0) return { label: 'blocked by deps', tone: 'bg-amber-500/15 text-amber-200 border-amber-500/30' };
+  if (isUserActionableTask(task)) return { label: 'needs you', tone: 'bg-rose-500/15 text-rose-200 border-rose-500/30' };
+  if (task.notActionableReason) return { label: 'waiting', tone: 'bg-zinc-500/15 text-zinc-300 border-zinc-500/30' };
+  return { label: task.status || 'unknown', tone: statusTone(task.status || 'unknown') };
+}
+
+function dependencyOrderedTasks(tasks: any[], tasksById: Record<string, any>): any[] {
+  const byId = new Map<string, any>();
+  const originalIndex = new Map<string, number>();
+  tasks.forEach((task, index) => { byId.set(task.taskId, task); originalIndex.set(task.taskId, index); });
+  const visited = new Set<string>();
+  const visiting = new Set<string>();
+  const out: any[] = [];
+  const visit = (task: any) => {
+    if (!task?.taskId || visited.has(task.taskId)) return;
+    if (visiting.has(task.taskId)) { out.push(task); visited.add(task.taskId); return; }
+    visiting.add(task.taskId);
+    parseDependsOn(task.dependsOn).forEach((depId) => {
+      const dep = byId.get(depId) || tasksById?.[depId];
+      if (dep && byId.has(dep.taskId)) visit(dep);
+    });
+    visiting.delete(task.taskId);
+    if (!visited.has(task.taskId)) { visited.add(task.taskId); out.push(task); }
+  };
+  [...tasks].sort((a, b) => (originalIndex.get(a.taskId) || 0) - (originalIndex.get(b.taskId) || 0)).forEach(visit);
+  return out;
+}
+
 function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, taskLogsByTaskId, onBack, onSend, onToggleDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenChain, onOpenTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask }: any) {
   const [draft, setDraft] = useState('');
   const [selectedTaskId, setSelectedTaskId] = useState('');
@@ -1825,26 +1931,9 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
   const messages = useMemo(() => normalizeCoordinatorMessages([...chat, ...optimistic]), [chat, optimistic]);
   const diffOpen = Boolean(chainView.diffOpenByChainId[chain.chainId]);
   const preview = chainView.mergePreviewByChainId[chain.chainId];
-  const selectedTask = tasks.find((task: any) => task.taskId === selectedTaskId) || null;
-  const taskLog = selectedTask ? (taskLogsByTaskId?.[selectedTask.taskId] || []) : [];
-  const comments = taskLog.filter((event: any) => event.kind === 'Task_Comment');
-  const reviewEvents = taskLog.filter((event: any) => event.kind === 'Task_Review_Vote');
-  const votes = selectedTask?.votes || [];
-  const taskById = new Map<string, any>(tasks.map((task: any) => [task.taskId, task]));
-  const dependencyBlockers = selectedTask?.dependsOn
-    ? String(selectedTask.dependsOn).split(',').map((id) => id.trim()).filter(Boolean).filter((id) => taskById.get(id)?.status !== 'approved')
-    : [];
-  const startDisabledReason = selectedTask
-    ? (dependencyBlockers.length > 0 ? `Waiting on ${dependencyBlockers.join(', ')}` : (selectedTask.notActionableReason?.startsWith('assignee_busy:') ? selectedTask.notActionableReason : ''))
-    : '';
-  const taskGroups = [
-    { key: 'planning', title: 'Planning', statuses: ['planning'] },
-    { key: 'ready', title: 'Queued / ready', statuses: ['queued', 'ready'] },
-    { key: 'in_progress', title: 'In progress', statuses: ['in_progress'] },
-    { key: 'review_ready', title: 'Review', statuses: ['review_ready'] },
-    { key: 'blocked', title: 'Blocked', statuses: ['blocked'] },
-    { key: 'done', title: 'Approved / done', statuses: ['approved', 'done', 'completed'] },
-  ];
+  const orderedTasks = useMemo(() => dependencyOrderedTasks(tasks, tasksById || {}), [tasks, tasksById]);
+  const activeTasks = orderedTasks.filter((task: any) => !isCompletedTask(task));
+  const completedTasks = orderedTasks.filter(isCompletedTask);
   const openTask = (task: any) => {
     setSelectedTaskId(task.taskId);
     setCommentDraft('');
@@ -1987,126 +2076,173 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
       <section data-debug-id="chain-task-surface" className="mt-8 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <h2 className="font-semibold">Chain tasks</h2>
-            <p className="text-xs text-zinc-500">Tasks are scoped to this chain and its team members.</p>
+            <h2 className="font-semibold">Task chain plan</h2>
+            <p className="text-xs text-zinc-500">A dependency-ordered todo list. Click a task to expand its description, actions, and comments.</p>
           </div>
-          <span data-debug-id="chain-task-count" className="rounded-full bg-white/5 px-3 py-1 text-xs text-zinc-400">{tasks.length} tasks</span>
+          <span data-debug-id="chain-task-count" className="rounded-full bg-white/5 px-3 py-1 text-xs text-zinc-400">{activeTasks.length} active · {completedTasks.length} completed</span>
         </div>
-        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {taskGroups.map((group) => {
-            const groupTasks = tasks.filter((task: any) => group.statuses.includes(task.status));
-            return (
-              <div key={group.key} data-debug-id={`chain-task-column-${group.key}`} className="rounded-xl bg-black/20 p-3">
-                <div className="mb-2 flex items-center justify-between text-xs uppercase tracking-wide text-zinc-500"><span>{group.title}</span><span>{groupTasks.length}</span></div>
-                <div className="space-y-2">
-                  {groupTasks.length === 0 ? <div className="rounded-lg border border-dashed border-white/10 p-3 text-xs text-zinc-600">No tasks</div> : groupTasks.map((task: any) => (
-                    <button key={task.taskId} data-debug-id={`chain-task-card-${task.taskId}`} onClick={() => openTask(task)} className="w-full rounded-lg bg-white/[0.055] p-3 text-left text-sm hover:bg-white/[0.09]">
-                      <div className="font-medium text-zinc-100">{task.title || task.taskId}</div>
-                      <div className="mt-1 flex flex-wrap gap-1 text-[11px] text-zinc-500">
-                        <span>{task.status}</span><span>·</span><span>{task.assigneeAgentInstanceId || 'unassigned'}</span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        <TaskTodoList
+          title="Active tasks"
+          emptyText="No active tasks."
+          tasks={activeTasks}
+          tasksById={tasksById}
+          taskLogsByTaskId={taskLogsByTaskId}
+          expandedTaskId={selectedTaskId}
+          commentDraft={commentDraft}
+          nudgeDraft={nudgeDraft}
+          onCommentDraft={setCommentDraft}
+          onNudgeDraft={setNudgeDraft}
+          onOpenTask={openTask}
+          onOpenTaskById={openTaskById}
+          onCloseTask={() => setSelectedTaskId('')}
+          onAddComment={onAddComment}
+          onSetTaskStatus={onSetTaskStatus}
+          onVoteTask={onVoteTask}
+          onNudgeTask={onNudgeTask}
+        />
+        {completedTasks.length > 0 && (
+          <div data-debug-id="chain-completed-task-section" className="mt-5 border-t border-white/10 pt-4">
+            <TaskTodoList
+              title="Completed tasks"
+              emptyText="No completed tasks."
+              tasks={completedTasks}
+              tasksById={tasksById}
+              taskLogsByTaskId={taskLogsByTaskId}
+              expandedTaskId={selectedTaskId}
+              commentDraft={commentDraft}
+              nudgeDraft={nudgeDraft}
+              onCommentDraft={setCommentDraft}
+              onNudgeDraft={setNudgeDraft}
+              onOpenTask={openTask}
+              onOpenTaskById={openTaskById}
+              onCloseTask={() => setSelectedTaskId('')}
+              onAddComment={onAddComment}
+              onSetTaskStatus={onSetTaskStatus}
+              onVoteTask={onVoteTask}
+              onNudgeTask={onNudgeTask}
+              completed
+            />
+          </div>
+        )}
       </section>
+    </div>
+  );
+}
 
-      {selectedTask && (
-        <div data-debug-id="task-detail-drawer" className="fixed inset-0 z-50 flex justify-end bg-black/50">
-          <aside className="h-full w-[32rem] max-w-full overflow-y-auto border-l border-white/10 bg-[#0d0f14] p-5 shadow-2xl">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Task detail</div>
-                <h2 data-debug-id="task-detail-title" className="mt-2 text-2xl font-semibold">{selectedTask.title || selectedTask.taskId}</h2>
+function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, expandedTaskId, commentDraft, nudgeDraft, onCommentDraft, onNudgeDraft, onOpenTask, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, completed = false }: any) {
+  const [commentsOpenByTaskId, setCommentsOpenByTaskId] = useState<Record<string, boolean>>({});
+  const [busyAction, setBusyAction] = useState('');
+  const [localError, setLocalError] = useState('');
+  const runAction = async (key: string, fn: () => Promise<void> | void) => {
+    setBusyAction(key);
+    setLocalError('');
+    try {
+      await Promise.resolve(fn());
+    } catch (err: any) {
+      setLocalError(err?.message || 'Action failed');
+    } finally {
+      setBusyAction('');
+    }
+  };
+  return (
+    <div data-debug-id={`chain-task-list-${completed ? 'completed' : 'active'}`} className="mt-4">
+      <div className="mb-2 flex items-center justify-between text-xs uppercase tracking-wide text-zinc-500"><span>{title}</span><span>{tasks.length}</span></div>
+      {localError && <div data-debug-id="task-list-action-error" className="mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{localError}</div>}
+      <div className="space-y-2">
+        {tasks.length === 0 ? <div className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">{emptyText}</div> : tasks.map((task: any, index: number) => {
+          const expanded = expandedTaskId === task.taskId;
+          const perceived = perceivedTaskStatus(task, tasksById || {});
+          const commentsOpen = Boolean(commentsOpenByTaskId[task.taskId]);
+          const taskLog = taskLogsByTaskId?.[task.taskId] || [];
+          const comments = taskLog.filter((event: any) => event.kind === 'Task_Comment');
+          const reviewEvents = taskLog.filter((event: any) => event.kind === 'Task_Review_Vote');
+          const votes = task.votes || [];
+          const blockers = unmetDependencyIds(task, tasksById || {});
+          const startDisabledReason = blockers.length > 0 ? `Waiting on ${blockers.join(', ')}` : (task.notActionableReason?.startsWith('assignee_busy:') ? task.notActionableReason : '');
+          const actionNeeded = isUserActionableTask(task);
+          const baseTone = completed ? 'border-white/5 bg-white/[0.025] text-zinc-500 opacity-70' : expanded ? 'border-sky-400/30 bg-sky-400/[0.06]' : 'border-white/8 bg-white/[0.04] hover:bg-white/[0.07]';
+          return (
+            <div key={task.taskId} data-debug-id={`chain-task-row-${task.taskId}`} className={`rounded-2xl border transition ${baseTone}`}>
+              <div className="flex items-center gap-3 px-4 py-3">
+                <button onClick={() => expanded ? onCloseTask() : onOpenTask(task)} className="min-w-0 flex-1 text-left">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="w-6 shrink-0 font-mono text-xs text-zinc-600">{index + 1}</span>
+                    <span data-debug-id={`chain-task-row-${task.taskId}-title`} className={`truncate text-sm font-medium ${completed ? 'text-zinc-500 line-through decoration-zinc-600' : 'text-zinc-100'}`}>{task.title || task.taskId}</span>
+                    <span data-debug-id={`chain-task-row-${task.taskId}-status`} className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] ${perceived.tone}`}>{perceived.label}</span>
+                  </div>
+                </button>
+                {actionNeeded && (
+                  <button data-debug-id={`chain-task-row-${task.taskId}-action-needed-btn`} onClick={() => onOpenTask(task)} className="shrink-0 rounded-xl bg-rose-400 px-3 py-1.5 text-xs font-semibold text-black hover:bg-rose-300">Action needed</button>
+                )}
+                <button data-debug-id={`chain-task-row-${task.taskId}-expand-btn`} onClick={() => expanded ? onCloseTask() : onOpenTask(task)} className="shrink-0 rounded-lg bg-white/10 px-2 py-1 text-xs hover:bg-white/15">{expanded ? 'Collapse' : 'Expand'}</button>
               </div>
-              <button data-debug-id="task-detail-close-btn" onClick={() => setSelectedTaskId('')} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Close</button>
-            </div>
-            <div className="mt-4 flex flex-wrap gap-2 text-xs">
-              <span data-debug-id="task-detail-status" className={`rounded-full border px-3 py-1 ${statusTone(selectedTask.status)}`}>{selectedTask.status}</span>
-              <span className="rounded-full bg-white/5 px-3 py-1 text-zinc-400">Assignee {selectedTask.assigneeAgentInstanceId || '—'}</span>
-              <span className="rounded-full bg-white/5 px-3 py-1 text-zinc-400">Reviewer {selectedTask.reviewerAgentInstanceId || '—'}</span>
-            </div>
-            <div data-debug-id="task-detail-description" className="mt-5 rounded-xl bg-white/[0.04] p-3">
-              {selectedTask.description ? (
-                <Markdown source={selectedTask.description} className="text-sm text-zinc-300" />
-              ) : (
-                <div className="text-sm text-zinc-500">No description.</div>
+              {expanded && (
+                <div data-debug-id={`chain-task-row-${task.taskId}-expanded`} className="border-t border-white/10 px-4 py-4">
+                  <div className="flex flex-wrap gap-2 text-xs">
+                    <span className={`rounded-full border px-2 py-1 ${statusTone(task.status)}`}>{task.status}</span>
+                    <span className="rounded-full bg-black/20 px-2 py-1 text-zinc-400">Assignee {task.assigneeAgentInstanceId || '—'}</span>
+                    <span className="rounded-full bg-black/20 px-2 py-1 text-zinc-400">Reviewer {task.reviewerAgentInstanceId || '—'}</span>
+                  </div>
+                  <div data-debug-id={`task-detail-description-${task.taskId}`} className="mt-3 rounded-xl bg-black/20 p-3">
+                    {task.description ? <Markdown source={task.description} className="text-sm text-zinc-300" /> : <div className="text-sm text-zinc-500">No description.</div>}
+                  </div>
+                  {task.dependsOn && (
+                    <div data-debug-id={`task-detail-depends-on-${task.taskId}`} className="mt-3 rounded-xl bg-black/20 p-3">
+                      <div className="text-[10px] uppercase tracking-wider text-zinc-500">Depends on</div>
+                      <div className="mt-1 flex flex-wrap gap-1.5">
+                        {parseDependsOn(task.dependsOn).map((depId: string) => {
+                          const dep = tasksById?.[depId];
+                          const satisfied = dep && isCompletedTask(dep);
+                          return <button key={`${task.taskId}-${depId}`} onClick={() => onOpenTaskById(depId)} className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${satisfied ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-100' : 'border-amber-500/30 bg-amber-500/10 text-amber-100'}`}>{depId}</button>;
+                        })}
+                      </div>
+                    </div>
+                  )}
+                  {task.notActionableReason && <InfoRow label="Not actionable" value={task.notActionableReason} tone={task.notActionableReason.startsWith('deps_unmet:') ? 'text-amber-200' : 'text-zinc-300'} />}
+                  <div data-debug-id={`task-detail-actions-${task.taskId}`} className="mt-3 flex flex-wrap gap-2">
+                    <button data-debug-id={`task-detail-status-start-btn-${task.taskId}`} disabled={Boolean(startDisabledReason) || Boolean(busyAction)} title={startDisabledReason || 'Start task'} onClick={() => runAction(`start-${task.taskId}`, () => onSetTaskStatus(task, 'in_progress', 'Started from ChainView.'))} className="rounded-xl bg-white/10 px-3 py-2 text-xs hover:bg-white/15 disabled:cursor-not-allowed disabled:bg-white/5 disabled:text-zinc-500">Start</button>
+                    <button data-debug-id={`task-detail-status-done-btn-${task.taskId}`} disabled={Boolean(busyAction)} onClick={() => runAction(`done-${task.taskId}`, () => onSetTaskStatus(task, 'review_ready', 'Submitted for review from ChainView.'))} className="rounded-xl bg-emerald-400/90 px-3 py-2 text-xs font-semibold text-black hover:bg-emerald-300 disabled:opacity-60">Done / review</button>
+                    <button data-debug-id={`task-detail-status-block-btn-${task.taskId}`} disabled={Boolean(busyAction)} onClick={() => runAction(`block-${task.taskId}`, () => onSetTaskStatus(task, 'blocked', 'Blocked from ChainView.'))} className="rounded-xl bg-amber-400/90 px-3 py-2 text-xs font-semibold text-black hover:bg-amber-300 disabled:opacity-60">Block</button>
+                    <button data-debug-id={`task-detail-status-later-btn-${task.taskId}`} disabled={Boolean(busyAction)} onClick={() => runAction(`later-${task.taskId}`, () => onSetTaskStatus(task, 'queued', 'Moved later from ChainView.'))} className="rounded-xl bg-white/10 px-3 py-2 text-xs hover:bg-white/15 disabled:opacity-60">Later</button>
+                    <button data-debug-id={`task-detail-vote-lgtm-btn-${task.taskId}`} disabled={Boolean(busyAction)} onClick={() => runAction(`lgtm-${task.taskId}`, () => onVoteTask(task, true))} className="rounded-xl bg-sky-400/90 px-3 py-2 text-xs font-semibold text-black hover:bg-sky-300 disabled:opacity-60">LGTM</button>
+                    <button data-debug-id={`task-detail-vote-ngtm-btn-${task.taskId}`} disabled={Boolean(busyAction)} onClick={() => runAction(`ngtm-${task.taskId}`, () => onVoteTask(task, false))} className="rounded-xl bg-red-400/90 px-3 py-2 text-xs font-semibold text-black hover:bg-red-300 disabled:opacity-60">NGTM</button>
+                    {busyAction.endsWith(task.taskId) && <span className="self-center text-xs text-sky-200">Working…</span>}
+                  </div>
+                  <div className="mt-3 rounded-xl bg-black/20 p-3">
+                    <div className="text-xs uppercase tracking-wider text-zinc-500">Nudge</div>
+                    <textarea data-debug-id={`task-detail-nudge-textarea-${task.taskId}`} value={nudgeDraft} onChange={(event) => onNudgeDraft(event.target.value)} rows={2} className="mt-2 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
+                    <button data-debug-id={`task-detail-nudge-btn-${task.taskId}`} disabled={Boolean(busyAction) || !String(nudgeDraft || '').trim()} onClick={() => runAction(`nudge-${task.taskId}`, () => onNudgeTask(task, nudgeDraft))} className="mt-2 rounded-xl bg-white/10 px-3 py-2 text-xs hover:bg-white/15 disabled:opacity-60">Send nudge</button>
+                  </div>
+                  {(votes.length > 0 || reviewEvents.length > 0) && (
+                    <div data-debug-id={`task-detail-votes-${task.taskId}`} className="mt-3 rounded-xl bg-black/20 p-3">
+                      <div className="text-xs uppercase tracking-wider text-zinc-500">Votes / review history</div>
+                      <div className="mt-2 space-y-2">
+                        {votes.map((vote: any, voteIndex: number) => <div key={`vote-${voteIndex}`} className="rounded-lg bg-white/[0.04] p-2 text-sm text-zinc-300">{vote.reviewerAgentInstanceId || 'reviewer'} · {vote.approved ? 'LGTM' : 'NGTM'}{vote.comment ? ` · ${vote.comment}` : ''}</div>)}
+                        {reviewEvents.map((event: any, eventIndex: number) => <div key={event.eventId || eventIndex} className="rounded-lg bg-white/[0.04] p-2 text-sm text-zinc-300"><Markdown source={event.body || event.status || 'vote recorded'} compact /></div>)}
+                      </div>
+                    </div>
+                  )}
+                  <div className="mt-3 rounded-xl bg-black/20 p-3">
+                    <button data-debug-id={`task-detail-comments-toggle-${task.taskId}`} onClick={() => setCommentsOpenByTaskId((prev) => ({ ...prev, [task.taskId]: !prev[task.taskId] }))} className="flex w-full items-center justify-between text-left text-xs uppercase tracking-wider text-zinc-500"><span>Comments</span><span>{comments.length} · {commentsOpen ? 'hide' : 'show'}</span></button>
+                    {commentsOpen && (
+                      <div data-debug-id={`task-detail-comments-${task.taskId}`} className="mt-3 space-y-2">
+                        {comments.length === 0 ? <div className="text-sm text-zinc-500">No comments loaded.</div> : comments.map((comment: any, commentIndex: number) => (
+                          <div key={comment.commentId || commentIndex} data-debug-id={`task-detail-comment-${task.taskId}-${commentIndex}`} className="rounded-lg bg-white/[0.04] p-2 text-sm text-zinc-300">
+                            <div className="text-[10px] uppercase tracking-wider text-zinc-500">{comment.authorAgentInstanceId || 'comment'}</div>
+                            <Markdown source={comment.body || ''} compact className="mt-1 text-sm text-zinc-300" />
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <textarea data-debug-id={`task-detail-comment-textarea-${task.taskId}`} value={commentDraft} onChange={(event) => onCommentDraft(event.target.value)} rows={2} placeholder="Add a task comment…" className="mt-3 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
+                    <button data-debug-id={`task-detail-comment-submit-btn-${task.taskId}`} disabled={Boolean(busyAction) || !String(commentDraft || '').trim()} onClick={() => runAction(`comment-${task.taskId}`, async () => { const body = String(commentDraft || '').trim(); if (!body) return; await onAddComment(task, body); onCommentDraft(''); setCommentsOpenByTaskId((prev) => ({ ...prev, [task.taskId]: true })); })} className="mt-2 rounded-xl bg-sky-400 px-3 py-2 text-xs font-semibold text-black hover:bg-sky-300 disabled:opacity-60">Add comment</button>
+                  </div>
+                </div>
               )}
             </div>
-            {selectedTask.dependsOn && (
-              <div data-debug-id="task-detail-depends-on" className="mt-4 rounded-xl bg-white/[0.04] p-3">
-                <div className="text-[10px] uppercase tracking-wider text-zinc-500">Depends on</div>
-                <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-zinc-300">
-                  {parseDependsOn(selectedTask.dependsOn).map((depId: string) => {
-                    const dep = tasksById?.[depId] || tasks.find((task: any) => task.taskId === depId);
-                    const satisfied = dep && (dep.status === 'approved' || dep.status === 'done' || dep.status === 'completed');
-                    return (
-                      <button
-                        key={`task-detail-depends-${depId}`}
-                        data-debug-id={`task-detail-depends-on-${depId}`}
-                        onClick={() => openTaskById(depId)}
-                        title={`Open ${depId}${dep?.title ? ' · ' + dep.title : ''}`}
-                        className={`rounded border px-1.5 py-0.5 font-mono text-[10px] transition ${satisfied ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-100 hover:border-emerald-400/60 hover:bg-emerald-500/20' : 'border-amber-500/30 bg-amber-500/10 text-amber-100 hover:border-amber-400/60 hover:bg-amber-500/20'}`}
-                      >{depId}</button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-            {selectedTask.notActionableReason && <InfoRow label="Not actionable" value={selectedTask.notActionableReason} tone={selectedTask.notActionableReason.startsWith('deps_unmet:') ? 'text-amber-200' : 'text-zinc-300'} />}
-            <div data-debug-id="task-detail-votes" className="mt-5 rounded-xl bg-white/[0.04] p-3">
-              <div className="text-xs uppercase tracking-wider text-zinc-500">Votes / review history</div>
-              <div className="mt-3 space-y-2">
-                {votes.length === 0 && reviewEvents.length === 0 ? <div className="text-sm text-zinc-500">No votes recorded.</div> : <>
-                  {votes.map((vote: any, index: number) => (
-                    <div key={`vote-${index}`} data-debug-id={`task-detail-vote-${index}`} className="rounded-lg bg-black/20 p-2 text-sm text-zinc-300">
-                      <div className="text-[10px] uppercase tracking-wider text-zinc-500">{vote.reviewerAgentInstanceId || 'reviewer'} · {vote.approved ? 'LGTM' : 'NGTM'}</div>
-                      {vote.comment && (
-                        <Markdown source={vote.comment} compact className="mt-1 text-sm text-zinc-200" />
-                      )}
-                    </div>
-                  ))}
-                  {reviewEvents.map((event: any, index: number) => (
-                    <div key={event.eventId || `review-${index}`} data-debug-id={`task-detail-review-event-${index}`} className="rounded-lg bg-black/20 p-2 text-sm text-zinc-300">
-                      <div className="text-[10px] uppercase tracking-wider text-zinc-500">{event.authorAgentInstanceId || 'review'} · review event</div>
-                      <Markdown source={event.body || event.status || 'vote recorded'} compact className="mt-1 text-sm text-zinc-200" />
-                    </div>
-                  ))}
-                </>}
-              </div>
-            </div>
-            <div className="mt-5 grid grid-cols-2 gap-2">
-              <button data-debug-id="task-detail-status-done-btn" onClick={() => onSetTaskStatus(selectedTask, 'review_ready', 'Submitted for review from ChainView.')} className="rounded-xl bg-emerald-400/90 px-3 py-2 text-sm font-semibold text-black hover:bg-emerald-300">Done / review</button>
-              <button data-debug-id="task-detail-status-block-btn" onClick={() => onSetTaskStatus(selectedTask, 'blocked', 'Blocked from ChainView.')} className="rounded-xl bg-amber-400/90 px-3 py-2 text-sm font-semibold text-black hover:bg-amber-300">Block</button>
-              <button data-debug-id="task-detail-status-later-btn" onClick={() => onSetTaskStatus(selectedTask, 'queued', 'Moved later from ChainView.')} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Later</button>
-              <button data-debug-id="task-detail-status-start-btn" disabled={Boolean(startDisabledReason)} title={startDisabledReason || 'Start task'} onClick={() => onSetTaskStatus(selectedTask, 'in_progress', 'Started from ChainView.')} className={`rounded-xl px-3 py-2 text-sm ${startDisabledReason ? 'cursor-not-allowed bg-white/5 text-zinc-500' : 'bg-white/10 hover:bg-white/15'}`}>Start</button>
-              <button data-debug-id="task-detail-vote-lgtm-btn" onClick={() => onVoteTask(selectedTask, true)} className="rounded-xl bg-sky-400/90 px-3 py-2 text-sm font-semibold text-black hover:bg-sky-300">LGTM</button>
-              <button data-debug-id="task-detail-vote-ngtm-btn" onClick={() => onVoteTask(selectedTask, false)} className="rounded-xl bg-red-400/90 px-3 py-2 text-sm font-semibold text-black hover:bg-red-300">NGTM</button>
-            </div>
-            <div className="mt-5 rounded-xl bg-white/[0.04] p-3">
-              <div className="text-xs uppercase tracking-wider text-zinc-500">Nudge</div>
-              <textarea data-debug-id="task-detail-nudge-textarea" value={nudgeDraft} onChange={(event) => setNudgeDraft(event.target.value)} rows={2} className="mt-2 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
-              <button data-debug-id="task-detail-nudge-btn" onClick={() => onNudgeTask(selectedTask, nudgeDraft)} className="mt-2 rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Send nudge</button>
-            </div>
-            <div className="mt-5 rounded-xl bg-white/[0.04] p-3">
-              <div className="text-xs uppercase tracking-wider text-zinc-500">Comments</div>
-              <div data-debug-id="task-detail-comments" className="mt-3 space-y-2">
-                {comments.length === 0 ? <div className="text-sm text-zinc-500">No comments loaded.</div> : comments.map((comment: any, index: number) => (
-                  <div key={comment.commentId || index} data-debug-id={`task-detail-comment-${index}`} className="rounded-lg bg-black/20 p-2 text-sm text-zinc-300">
-                    <div className="text-[10px] uppercase tracking-wider text-zinc-500">{comment.authorAgentInstanceId || 'comment'}</div>
-                    <Markdown source={comment.body || ''} compact className="mt-1 text-sm text-zinc-300" />
-                  </div>
-                ))}
-              </div>
-              <textarea data-debug-id="task-detail-comment-textarea" value={commentDraft} onChange={(event) => setCommentDraft(event.target.value)} rows={3} placeholder="Add a task comment…" className="mt-3 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
-              <button data-debug-id="task-detail-comment-submit-btn" onClick={() => { const body = commentDraft.trim(); if (!body) return; onAddComment(selectedTask, body); setCommentDraft(''); }} className="mt-2 rounded-xl bg-sky-400 px-3 py-2 text-sm font-semibold text-black hover:bg-sky-300">Add comment</button>
-            </div>
-          </aside>
-        </div>
-      )}
+          );
+        })}
+      </div>
     </div>
   );
 }
