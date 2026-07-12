@@ -122,7 +122,7 @@ extract_json_bool :: proc(body, key: string, fallback: bool) -> bool {
 	return fallback
 }
 
-register_response_json :: proc(record: Agent_Record, template_instructions, prefs_json: string) -> string {
+register_response_json :: proc(record: Agent_Record, template_persona, template_instructions, prefs_json: string) -> string {
 	builder := strings.builder_make()
 	ws_host := server_bind_host
 	if server_config.daemon.advertise_host != "" do ws_host = server_config.daemon.advertise_host
@@ -153,6 +153,10 @@ register_response_json :: proc(record: Agent_Record, template_instructions, pref
 		strings.write_string(&builder, "\",\"role_key\":\"")
 		json_write_string(&builder, role_key)
 		strings.write_string(&builder, fmt.tprintf("\",\"role_index\":%d", role_index))
+	}
+	if template_persona != "" {
+		strings.write_string(&builder, "\",\"template_persona\":\"")
+		json_write_string(&builder, template_persona)
 	}
 	if template_instructions != "" {
 		strings.write_string(&builder, "\",\"template_instructions\":\"")

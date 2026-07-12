@@ -133,6 +133,7 @@ main :: proc() {
 	conversation_id := extract_json_string(register_response.body, "conversation_id", "")
 	ws_url := extract_json_string(register_response.body, "ws_url", "")
 	agent_token := extract_json_string(register_response.body, "agent_token", "")
+	template_persona := extract_json_string(register_response.body, "template_persona", "")
 	template_instructions := extract_json_string(register_response.body, "template_instructions", "")
 	team_id := extract_json_string(register_response.body, "team_id", "")
 	role_key := extract_json_string(register_response.body, "role_key", "")
@@ -165,7 +166,7 @@ main :: proc() {
 
 	if !is_test_token(agent_token) {
 		wrapper_launch_log("bootstrap_files_begin", registered_instance_id, launch_start_ms)
-		generate_bootstrap_files(cwd, loaded.path, cfg, agent_cmd, selected_agent, registered_instance_id, display_name, cfg.daemon_url, agent_token, current_task_id, template_instructions, team_id, role_key, role_index)
+		generate_bootstrap_files(cwd, loaded.path, cfg, agent_cmd, selected_agent, registered_instance_id, display_name, cfg.daemon_url, agent_token, current_task_id, template_persona, template_instructions, team_id, role_key, role_index)
 		wrapper_launch_log("bootstrap_files_done", registered_instance_id, launch_start_ms)
 	}
 
@@ -1187,7 +1188,7 @@ parse_into_memory_records :: proc(body: string, memory_templates: []string, temp
 	}
 }
 
-generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Command_Config, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, current_task_id, template_instructions, team_id, role_key: string, role_index: int) {
+generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Command_Config, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, current_task_id, template_persona, template_instructions, team_id, role_key: string, role_index: int) {
 	profile := bootstrap_profile(agent_cmd, selected_agent)
 	memory_templates := agent_cmd.memory_templates
 	if len(memory_templates) == 0 do memory_templates = cfg.memory_templates
@@ -1209,7 +1210,7 @@ generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_
 		}
 		path := join_path(cwd, name)
 		if can_write_managed_file(path) {
-			text := build_agents_md(name, profile, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path, memories[:], project_context, chain_context, team_context, workspace_context, has_reference_memories(memories[:]), current_task_id, template_instructions, team_id, role_key, role_index)
+			text := build_agents_md(name, profile, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path, memories[:], project_context, chain_context, team_context, workspace_context, has_reference_memories(memories[:]), current_task_id, template_persona, template_instructions, team_id, role_key, role_index)
 			write_managed_file(path, text)
 			append(&written, name)
 		}
@@ -1346,7 +1347,7 @@ content_section_enabled :: proc(sections: []string, section: string) -> bool {
 	return false
 }
 
-build_agents_md :: proc(name, profile: string, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path: string, memories: []Memory_Record, project_context, chain_context, team_context, workspace_context: string, has_memory_md: bool, current_task_id, template_instructions, team_id, role_key: string, role_index: int) -> string {
+build_agents_md :: proc(name, profile: string, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path: string, memories: []Memory_Record, project_context, chain_context, team_context, workspace_context: string, has_memory_md: bool, current_task_id, template_persona, template_instructions, team_id, role_key: string, role_index: int) -> string {
 	b := strings.builder_make()
 	is_team_member := team_id != "" || role_key != ""
 	is_coordinator := !is_team_member || role_key == "coordinator"
@@ -1399,9 +1400,30 @@ build_agents_md :: proc(name, profile: string, selected_agent, agent_instance_id
 	strings.write_string(&b, "- Structured Needs attention prompts remain allowed for product-modeled approvals/actions such as user_proxy review and merge decisions.\n")
 	strings.write_string(&b, "- Agents shut down after 30 minutes idle unless task, mention, or nudge keeps them alive.\n\n")
 
+	// Base operating rules shared by every agent (task management, REQ-IDs,
+	// routing table, CLI cheatsheet). Sourced from prompts/bootstrap_profile_guidance.md.
+	strings.write_string(&b, "# Agent Operating Rules\n")
+	strings.write_string(&b, strings.trim_space(#load("../prompts/bootstrap_profile_guidance.md", string)))
+	strings.write_string(&b, "\n\n")
+
 	if is_coordinator {
 		strings.write_string(&b, "# Coordinator Instructions\n")
 		strings.write_string(&b, strings.trim_space(#load("../prompts/coordinator_instructions.md", string)))
+		strings.write_string(&b, "\n\n")
+	}
+
+	// Role persona + instructions come from the agent template stored in the
+	// daemon DB (planner/coder/reviewer/tester/specialist/etc.). Emitting them
+	// here makes them visible inside AGENTS.md alongside the shared rules and
+	// keeps the whole agent context reproducible from the run directory.
+	if tp := strings.trim_space(template_persona); tp != "" {
+		strings.write_string(&b, "# Role Persona\n")
+		strings.write_string(&b, tp)
+		strings.write_string(&b, "\n\n")
+	}
+	if ti := strings.trim_space(template_instructions); ti != "" {
+		strings.write_string(&b, "# Role Instructions\n")
+		strings.write_string(&b, ti)
 		strings.write_string(&b, "\n\n")
 	}
 

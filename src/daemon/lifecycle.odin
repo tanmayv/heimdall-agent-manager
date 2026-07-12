@@ -50,10 +50,12 @@ handle_register :: proc(client: net.TCP_Socket, body: string) {
 	agent_runtime_tracker_observe_register(agent_instance_id, record.agent_token)
 	router_adapter_announce_local_agent(agent_instance_id, agent_class)
 	agent_lifecycle_emit(agent_instance_id, "registered", "register")
-	// Look up template instructions so the wrapper can include them in the bootstrap.
+	// Look up template persona + instructions so the wrapper can include them in the bootstrap.
+	template_persona := ""
 	template_instructions := ""
 	if si := agent_record_index_by_instance(agent_instance_id); si >= 0 {
 		if ti := agent_template_index(agent_instance_records[si].template_id); ti >= 0 {
+			template_persona = agent_template_records[ti].persona
 			template_instructions = agent_template_records[ti].instructions
 		}
 	}
@@ -65,7 +67,7 @@ handle_register :: proc(client: net.TCP_Socket, body: string) {
 	prefs_json := serialize_all_preferences_json(user_id, agent_class)
 	defer delete(prefs_json)
 
-	write_response(client, 200, "OK", register_response_json(record, template_instructions, prefs_json))
+	write_response(client, 200, "OK", register_response_json(record, template_persona, template_instructions, prefs_json))
 }
 
 handle_startup_report :: proc(client: net.TCP_Socket, body: string) {
