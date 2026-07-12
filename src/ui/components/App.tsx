@@ -683,7 +683,7 @@ export default function App() {
           badgeCount={badgeCount}
           onSelect={selectSurfaceWithUrl}
         />
-        <aside className="w-64 shrink-0 border-r border-white/10 bg-gradient-to-b from-[#0d0f14] to-[#0a0c11] flex flex-col">
+        <aside className="w-80 shrink-0 border-r border-white/10 bg-gradient-to-b from-[#0d0f14] to-[#0a0c11] flex flex-col">
           <div className="px-4 pt-4 pb-3 border-b border-white/5">
             <div className="flex items-center gap-2">
               <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-sky-500/15 text-sky-300">
@@ -908,7 +908,7 @@ export default function App() {
         </main>
         <div
           data-debug-id="guide-side-panel-slot"
-          className={`h-full shrink-0 overflow-hidden transition-[width] duration-300 ease-out ${guidePanelOpen ? 'w-[400px]' : 'w-0'}`}
+          className={`h-full shrink-0 overflow-hidden transition-[width] duration-300 ease-out ${guidePanelOpen ? 'w-[520px]' : 'w-0'}`}
           aria-hidden={!guidePanelOpen}
         >
           {guidePanelOpen && (
@@ -1957,7 +1957,7 @@ function GuideSidePanel({ agent, messages, loading, sending, onClose, onSend }: 
     setDraft('');
   };
   return (
-    <aside data-debug-id="guide-side-panel" className="flex h-full w-[400px] flex-col border-l border-white/10 bg-[#0d0f14] shadow-2xl shadow-black/30">
+    <aside data-debug-id="guide-side-panel" className="flex h-full w-[520px] flex-col border-l border-white/10 bg-[#0d0f14] shadow-2xl shadow-black/30">
       <div className="flex items-start justify-between gap-3 border-b border-white/10 p-4">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -2376,7 +2376,7 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ex
 function AgentSideSheet({ agent, details, onClose }: any) {
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/50">
-      <aside className="h-full w-96 border-l border-white/10 bg-[#0d0f14] p-5 shadow-2xl">
+      <aside className="h-full w-[28rem] border-l border-white/10 bg-[#0d0f14] p-5 shadow-2xl">
         <div className="flex items-start justify-between gap-3">
           <div>
             <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Team member</div>
