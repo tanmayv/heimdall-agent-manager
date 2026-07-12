@@ -83,11 +83,10 @@ handle_startup_report :: proc(client: net.TCP_Socket, body: string) {
 	}
 	provider_profile := extract_json_string(body, "provider_profile", "")
 	run_dir := extract_json_string(body, "run_dir", "")
-	if !registry_update_startup(agent_instance_id, status, extract_json_string(body, "reason_code", ""), extract_json_string(body, "safe_diagnostic", ""), provider_profile, run_dir, extract_json_string(body, "tmux_pane", "")) {
+	if !agent_runtime_tracker_apply_startup_report(agent_instance_id, status, extract_json_string(body, "reason_code", ""), extract_json_string(body, "safe_diagnostic", ""), provider_profile, run_dir, extract_json_string(body, "tmux_pane", "")) {
 		write_response(client, 404, "Not Found", `{"ok":false,"message":"unknown agent instance"}`)
 		return
 	}
-	if status == "starting" || status == "ready" do _ = agent_runtime_tracker_clear_stop_request(agent_instance_id, "startup_report")
 	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 && (provider_profile != "" || run_dir != "") {
 		rec := agent_instance_records[idx]
 		if provider_profile != "" do rec.provider_profile = provider_profile
@@ -96,8 +95,6 @@ handle_startup_report :: proc(client: net.TCP_Socket, body: string) {
 		// emitting with empty tier would clobber the value set at /agents/start.
 		_ = agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = rec.provider_profile, project_id = rec.project_id, run_dir = rec.run_dir, model_tier = rec.model_tier, author = "startup_report"})
 	}
-	agent_runtime_tracker_observe_ready_or_heartbeat(agent_instance_id, "startup_report")
-	agent_lifecycle_emit(agent_instance_id, status, "startup_report")
 	write_response(client, 200, "OK", `{"ok":true}`)
 }
 
@@ -251,13 +248,7 @@ handle_heartbeat :: proc(client: net.TCP_Socket, body: string) {
 		}
 	}
 
-	was_live := registry_agent_live(snap.agent_instance_id)
-	runtime_changed, lifecycle_changed := registry_apply_heartbeat_snapshot(snap)
-	agent_runtime_tracker_observe_ready_or_heartbeat(snap.agent_instance_id, "heartbeat")
-	if !was_live || lifecycle_changed {
-		agent_lifecycle_emit(snap.agent_instance_id, "connected", "heartbeat")
-	}
-	if runtime_changed do agent_runtime_emit(snap.agent_instance_id, "heartbeat")
+	_, _ = agent_runtime_tracker_apply_heartbeat_snapshot(snap)
 
 	resp := strings.builder_make()
 	strings.write_string(&resp, `{"ok":true,"inserted":`)

@@ -446,28 +446,24 @@ audit_janitor_tick :: proc() {
 	assignee := task_state.assignee_agent_instance_id
 
 	if task_state.status == .Queued || task_state.status == .In_Progress {
-		agent_idx := agent_record_index_by_instance(assignee)
-		if agent_idx >= 0 {
-			agent := agents[agent_idx]
-			if agent.startup_status == "startup_failed" {
-				fmt.printfln("AUDIT FAILED: Auditor agent %s startup failed (%s). Failing run %s.", assignee, agent.startup_reason_code, active_run.audit_id)
-				memory_auditor_conclude_audit(active_run.audit_id, "failed", "agent_startup_failed")
-				return
-			}
-			
-			// If unclaimed for more than 120 seconds, mark stale
-			if task_state.status == .Queued && elapsed_sec >= 120 {
-				fmt.printfln("AUDIT FAILED: Auditor agent %s failed to claim task within 120s. Failing run %s.", assignee, active_run.audit_id)
-				memory_auditor_conclude_audit(active_run.audit_id, "failed", "agent_startup_stale")
-				return
-			}
+		if failure_reason := agent_runtime_tracker_startup_failure_reason(assignee); failure_reason != "" {
+			fmt.printfln("AUDIT FAILED: Auditor agent %s startup failed (%s). Failing run %s.", assignee, failure_reason, active_run.audit_id)
+			memory_auditor_conclude_audit(active_run.audit_id, "failed", "agent_startup_failed")
+			return
+		}
+		
+		// If unclaimed for more than 120 seconds, mark stale
+		if task_state.status == .Queued && elapsed_sec >= 120 {
+			fmt.printfln("AUDIT FAILED: Auditor agent %s failed to claim task within 120s. Failing run %s.", assignee, active_run.audit_id)
+			memory_auditor_conclude_audit(active_run.audit_id, "failed", "agent_startup_stale")
+			return
+		}
 
-			// If agent went offline during active working, fail run
-			if task_state.status == .In_Progress && !agent.connected && elapsed_sec >= 30 {
-				fmt.printfln("AUDIT FAILED: Auditor agent %s went offline during execution. Failing run %s.", assignee, active_run.audit_id)
-				memory_auditor_conclude_audit(active_run.audit_id, "failed", "agent_went_offline")
-				return
-			}
+		// If agent went offline during active working, fail run
+		if task_state.status == .In_Progress && !agent_runtime_tracker_running(assignee) && elapsed_sec >= 30 {
+			fmt.printfln("AUDIT FAILED: Auditor agent %s went offline during execution. Failing run %s.", assignee, active_run.audit_id)
+			memory_auditor_conclude_audit(active_run.audit_id, "failed", "agent_went_offline")
+			return
 		}
 	}
 }

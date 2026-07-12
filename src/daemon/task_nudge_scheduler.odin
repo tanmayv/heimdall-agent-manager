@@ -253,16 +253,10 @@ task_autoscaler_ensure_agent :: proc(chain: Task_Chain_State, agent_instance_id,
 	agent_token := generate_agent_token()
 	if !agent_runtime_tracker_try_begin_launch(agent_instance_id, agent_token, reason, task_id, now) {
 		_ = agent_store_touch_needed(agent_instance_id)
-		connected := false
-		has_ws := false
-		startup_status := ""
-		if idx := registry_find_agent(agent_instance_id); idx >= 0 {
-			connected = agents[idx].connected
-			has_ws = agents[idx].has_ws
-			startup_status = agents[idx].startup_status
-		}
-		fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=ensure_agent_skip source=%s chain=%s team=%s task=%s target=%s skip_reason=agent_tracker connected=%t has_ws=%t startup_status=%s", router_now_unix_ms(), reason, chain.chain_id, chain.team_id, task_id, agent_instance_id, connected, has_ws, startup_status)
-		fmt.printfln("RUNTIME_RECONCILE_SKIP: target=%s reason=%s tracker_coalesced=true connected=%t has_ws=%t startup_status=%s", agent_instance_id, reason, connected, has_ws, startup_status)
+		lifecycle_status := agent_runtime_tracker_lifecycle_status(agent_instance_id)
+		has_ws := agent_runtime_tracker_has_ws(agent_instance_id)
+		fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=ensure_agent_skip source=%s chain=%s team=%s task=%s target=%s skip_reason=agent_tracker lifecycle_status=%s has_ws=%t", router_now_unix_ms(), reason, chain.chain_id, chain.team_id, task_id, agent_instance_id, lifecycle_status, has_ws)
+		fmt.printfln("RUNTIME_RECONCILE_SKIP: target=%s reason=%s tracker_coalesced=true lifecycle_status=%s has_ws=%t", agent_instance_id, reason, lifecycle_status, has_ws)
 		return false
 	}
 
@@ -306,9 +300,7 @@ task_autoscaler_team_has_high_priority_boot :: proc(team_id: string) -> bool {
 		target := task_reviewer_agent_instance_id(state)
 		if target == "" || target == "user_proxy" do continue
 		if agent_runtime_tracker_running(target) do continue
-		if idx := registry_find_agent(target); idx >= 0 {
-			if agents[idx].startup_status == "starting" do continue
-		}
+		if agent_runtime_tracker_is_launching(target) do continue
 		return true
 	}
 	return false
@@ -387,8 +379,9 @@ task_autoscaler_idle_shutdown :: proc(now: i64) -> int {
 		if rec.agent_instance_id == "" || rec.current_task_id != "" do continue
 		if guide_agent_is_singleton(rec.agent_instance_id) || rec.template_id == "guide" do continue
 		if task_autoscaler_agent_is_active_chain_coordinator(rec.agent_instance_id) do continue
+		if !agent_runtime_tracker_has_ws(rec.agent_instance_id) do continue
 		idx := registry_find_agent(rec.agent_instance_id)
-		if idx < 0 || !agents[idx].has_ws do continue
+		if idx < 0 do continue
 		if task_autoscaler_has_unread_mentions(rec.agent_instance_id, rec.last_needed_at_unix_ms) do continue
 		last := rec.last_needed_at_unix_ms
 		if last == 0 do last = agents[idx].startup_updated_unix_ms
@@ -442,12 +435,11 @@ task_autoscaler_stop_chain_agents :: proc(chain_id, reason: string) -> int {
 				_ = agent_store_clear_current_task(agent_id)
 			}
 		}
-		if idx := registry_find_agent(agent_id); idx >= 0 {
-			if agents[idx].has_ws && agents[idx].stop_requested_unix_ms == 0 {
-				if ok, _, _ := agent_runtime_tracker_request_stop(agent_id, 30, reason); ok {
-					changed += 1
-					fmt.printfln("RUNTIME_RECONCILE_STOP ts_unix_ms=%d reason=%s chain=%s target=%s", router_now_unix_ms(), reason, chain_id, agent_id)
-				}
+		if agent_runtime_tracker_is_stopping(agent_id) do continue
+		if agent_runtime_tracker_has_ws(agent_id) {
+			if ok, _, _ := agent_runtime_tracker_request_stop(agent_id, 30, reason); ok {
+				changed += 1
+				fmt.printfln("RUNTIME_RECONCILE_STOP ts_unix_ms=%d reason=%s chain=%s target=%s", router_now_unix_ms(), reason, chain_id, agent_id)
 			}
 		}
 	}

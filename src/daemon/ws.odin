@@ -24,10 +24,11 @@ handle_ws :: proc(client: net.TCP_Socket, request: string) {
 	}
 
 	write_ws_upgrade(client, ws_accept_key(key))
-	registry_set_ws(agent_instance_id, client)
-	agent_runtime_tracker_observe_ws_connected(agent_instance_id)
+	if !agent_runtime_tracker_observe_ws_connected(agent_instance_id, client) {
+		net.close(client)
+		return
+	}
 	task_notifications_flush_queue(agent_instance_id)
-	agent_lifecycle_emit(agent_instance_id, "connected", "websocket_connected")
 	fmt.println("ws connected", agent_instance_id)
 	ws_read_loop(strings.clone(agent_instance_id), client)
 }
@@ -56,10 +57,7 @@ ws_read_loop :: proc(agent_instance_id: string, client: net.TCP_Socket) {
 	for {
 		n, err := net.recv_tcp(client, buf[:])
 		if err != nil || n == 0 {
-			if registry_clear_ws_if_socket(agent_instance_id, client) {
-				agent_runtime_tracker_observe_disconnected(agent_instance_id, "websocket_closed")
-				agent_lifecycle_emit(agent_instance_id, "disconnected", "websocket_closed")
-			}
+			_ = agent_runtime_tracker_observe_ws_disconnected(agent_instance_id, client, "websocket_closed")
 			fmt.println("ws disconnected", agent_instance_id)
 			return
 		}
@@ -94,10 +92,7 @@ ws_read_loop :: proc(agent_instance_id: string, client: net.TCP_Socket) {
 			text := string(buf[offset:offset+payload_len])
 			ws_dispatch_agent_message(agent_instance_id, text)
 		} else if opcode == 0x8 {
-			if registry_clear_ws_if_socket(agent_instance_id, client) {
-				agent_runtime_tracker_observe_disconnected(agent_instance_id, "ws_close_frame")
-				agent_lifecycle_emit(agent_instance_id, "disconnected", "ws_close_frame")
-			}
+			_ = agent_runtime_tracker_observe_ws_disconnected(agent_instance_id, client, "ws_close_frame")
 			fmt.println("ws close frame", agent_instance_id)
 			return
 		}

@@ -1,7 +1,5 @@
 package main
 
-import "core:fmt"
-import "core:net"
 import "core:thread"
 import "core:time"
 import cfg_lib "odin_test:lib/config"
@@ -34,13 +32,7 @@ agent_startup_janitor_tick :: proc() {
 		// 1. Sweep starting agents (exited or stale startup)
 		if agents[i].startup_status == "starting" {
 			if now - agents[i].startup_updated_unix_ms >= threshold {
-				id := agents[i].agent_instance_id
-				agents[i].startup_status = "startup_failed"
-				agents[i].startup_reason_code = "startup_stale"
-				agents[i].startup_safe_diagnostic = "Agent did not report startup status within the configured timeout"
-				agents[i].startup_updated_unix_ms = now
-				if !agents[i].has_ws do agents[i].connected = false
-				agent_lifecycle_emit(id, "startup_failed", "startup_stale")
+				agent_runtime_tracker_apply_startup_timeout(agents[i].agent_instance_id, now)
 			}
 			continue
 		}
@@ -49,17 +41,7 @@ agent_startup_janitor_tick :: proc() {
 		if agents[i].connected {
 			hb_timeout := i64(30 * 1000) // 30 seconds of silence = offline
 			if now - agents[i].last_seen_unix_ms >= hb_timeout {
-				id := agents[i].agent_instance_id
-				fmt.println("LIVENESS TIMEOUT: Agent", id, "has not sent heartbeats for 30s. Marking offline.")
-				
-				if agents[i].has_ws {
-					net.close(agents[i].ws_socket)
-					agents[i].has_ws = false
-				}
-				agents[i].connected = false
-				agents[i].exec_state = "offline"
-				
-				agent_lifecycle_emit(id, "disconnected", "heartbeat_timeout")
+				agent_runtime_tracker_apply_heartbeat_timeout(agents[i].agent_instance_id)
 			}
 		}
 	}

@@ -235,13 +235,5 @@ team_member_agent_instance_id :: proc(member: Team_Member_Record) -> string {
 member_lifecycle_status :: proc(member: Team_Member_Record) -> string {
 	agent_instance_id := team_member_agent_instance_id(member)
 	if agent_instance_id == "" do return "missing"
-	live_idx := registry_find_agent(agent_instance_id)
-	if live_idx < 0 do return "offline"
-	agent := agents[live_idx]
-	if agent.connected || agent.has_ws do return "connected"
-	if agent.startup_status == "starting" do return "starting"
-	if agent.startup_status == "startup_blocked" do return "startup_blocked"
-	if agent.startup_status == "startup_failed" do return "startup_failed"
-	if agent.startup_status == "ready" do return "ready"
-	return "idle"
+	return agent_runtime_tracker_lifecycle_status(agent_instance_id)
 }

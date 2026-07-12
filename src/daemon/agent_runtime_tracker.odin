@@ -96,6 +96,65 @@ agent_runtime_tracker_running :: proc(agent_instance_id: string) -> bool {
 	return agent_runtime_tracker_observed_state_unlocked(agent_instance_id, now) == .Running
 }
 
+agent_runtime_tracker_is_launching :: proc(agent_instance_id: string) -> bool {
+	if idx := registry_find_agent(agent_instance_id); idx >= 0 {
+		return agents[idx].startup_status == "starting"
+	}
+	return false
+}
+
+agent_runtime_tracker_has_ws :: proc(agent_instance_id: string) -> bool {
+	if idx := registry_find_agent(agent_instance_id); idx >= 0 {
+		return agents[idx].has_ws
+	}
+	return false
+}
+
+agent_runtime_tracker_is_stopping :: proc(agent_instance_id: string) -> bool {
+	if idx := registry_find_agent(agent_instance_id); idx >= 0 {
+		agent := agents[idx]
+		return agent.stop_requested_unix_ms != 0 || agent.startup_status == "stopping"
+	}
+	return false
+}
+
+agent_runtime_tracker_startup_failure_reason :: proc(agent_instance_id: string) -> string {
+	if idx := registry_find_agent(agent_instance_id); idx >= 0 {
+		if agents[idx].startup_status == "startup_failed" do return agents[idx].startup_reason_code
+	}
+	return ""
+}
+
+agent_runtime_tracker_lifecycle_status :: proc(agent_instance_id: string) -> string {
+	if idx := registry_find_agent(agent_instance_id); idx >= 0 {
+		agent := agents[idx]
+		if agent.connected || agent.has_ws do return "connected"
+		if agent_runtime_tracker_is_stopping(agent_instance_id) do return "stopping"
+		if agent.startup_status == "starting" do return "starting"
+		if agent.startup_status == "startup_blocked" do return "startup_blocked"
+		if agent.startup_status == "startup_failed" do return "startup_failed"
+		if agent.startup_status == "ready" do return "ready"
+		if agent.startup_status == "stopped" do return "stopped"
+		return "idle"
+	}
+	return "offline"
+}
+
+agent_runtime_tracker_agent_state :: proc(agent_instance_id: string, has_current_task: bool) -> string {
+	if registry_find_agent(agent_instance_id) >= 0 {
+		if agent_runtime_tracker_is_stopping(agent_instance_id) do return "shutting_down"
+		if idx := registry_find_agent(agent_instance_id); idx >= 0 {
+			agent := agents[idx]
+			if agent.blocked_reason != "" || agent.exec_state == "blocked" do return "blocked"
+		}
+		if has_current_task do return "live"
+		if agent_runtime_tracker_is_launching(agent_instance_id) do return "warming"
+		return "idle"
+	}
+	if has_current_task do return "live"
+	return "idle"
+}
+
 agent_runtime_tracker_try_begin_launch :: proc(agent_instance_id, launch_token, reason, task_id: string, now: i64) -> bool {
 	if agent_instance_id == "" do return false
 	sync.mutex_lock(&agent_runtime_tracker_mutex)
@@ -178,6 +237,10 @@ agent_runtime_tracker_request_stop :: proc(agent_instance_id: string, time_in_se
 		fmt.printf("WARNING: stop_agent failed: agent '%s' not found in registry\n", agent_instance_id)
 		return false, 404, `{"ok":false,"message":"agent not found"}`
 	}
+	if agents[idx].stop_requested_unix_ms != 0 {
+		fmt.printfln("AGENT_TRACKER ts_unix_ms=%d event=stop_requested_duplicate agent=%s reason=%s", router_now_unix_ms(), agent_instance_id, reason)
+		return true, 200, `{"ok":true,"already":true}`
+	}
 	if !agents[idx].has_ws {
 		fmt.printf("WARNING: stop_agent failed: agent '%s' has no active WebSocket connection (connected=%t)\n", agent_instance_id, agents[idx].connected)
 		return false, 400, `{"ok":false,"message":"agent not connected via WebSocket"}`
@@ -237,16 +300,20 @@ agent_runtime_tracker_observe_register :: proc(agent_instance_id, agent_token: s
 	fmt.printfln("AGENT_TRACKER ts_unix_ms=%d event=register_observed agent=%s state=%v", now, agent_instance_id, rec.state)
 }
 
-agent_runtime_tracker_observe_ws_connected :: proc(agent_instance_id: string) {
+agent_runtime_tracker_observe_ws_connected :: proc(agent_instance_id: string, socket: net.TCP_Socket) -> bool {
+	if !registry_set_ws(agent_instance_id, socket) do return false
 	now := router_now_unix_ms()
 	sync.mutex_lock(&agent_runtime_tracker_mutex)
-	defer sync.mutex_unlock(&agent_runtime_tracker_mutex)
 	idx := agent_runtime_tracker_index_or_add_locked(agent_instance_id)
-	if idx < 0 do return
-	rec := &agent_runtime_tracker_records[idx]
-	if rec.state == .Not_Running do rec.state = .Launching
-	rec.last_observed_unix_ms = now
-	fmt.printfln("AGENT_TRACKER ts_unix_ms=%d event=ws_connected agent=%s state=%v", now, agent_instance_id, rec.state)
+	if idx >= 0 {
+		rec := &agent_runtime_tracker_records[idx]
+		if rec.state == .Not_Running do rec.state = .Launching
+		rec.last_observed_unix_ms = now
+		fmt.printfln("AGENT_TRACKER ts_unix_ms=%d event=ws_connected agent=%s state=%v", now, agent_instance_id, rec.state)
+	}
+	sync.mutex_unlock(&agent_runtime_tracker_mutex)
+	agent_lifecycle_emit(agent_instance_id, "connected", "websocket_connected")
+	return true
 }
 
 agent_runtime_tracker_observe_ready_or_heartbeat :: proc(agent_instance_id, source: string) {
@@ -263,9 +330,63 @@ agent_runtime_tracker_observe_ready_or_heartbeat :: proc(agent_instance_id, sour
 	} else if observed == .Launching {
 		_ = agent_runtime_tracker_clear_stop_request(agent_instance_id, source)
 		rec.state = .Launching
+	} else {
+		rec.state = .Not_Running
 	}
 	rec.last_observed_unix_ms = now
 	fmt.printfln("AGENT_TRACKER ts_unix_ms=%d event=%s agent=%s observed=%v state=%v", now, source, agent_instance_id, observed, rec.state)
+}
+
+agent_runtime_tracker_apply_startup_report :: proc(agent_instance_id, status, reason_code, safe_diagnostic, provider_profile, run_dir, tmux_pane: string) -> bool {
+	if !registry_update_startup(agent_instance_id, status, reason_code, safe_diagnostic, provider_profile, run_dir, tmux_pane) do return false
+	if status == "starting" || status == "ready" do _ = agent_runtime_tracker_clear_stop_request(agent_instance_id, "startup_report")
+	agent_runtime_tracker_observe_ready_or_heartbeat(agent_instance_id, "startup_report")
+	agent_lifecycle_emit(agent_instance_id, status, "startup_report")
+	return true
+}
+
+agent_runtime_tracker_apply_heartbeat_snapshot :: proc(snap: Heartbeat_Snapshot) -> (runtime_changed: bool, lifecycle_changed: bool) {
+	was_live := registry_agent_live(snap.agent_instance_id)
+	runtime_changed, lifecycle_changed = registry_apply_heartbeat_snapshot(snap)
+	agent_runtime_tracker_observe_ready_or_heartbeat(snap.agent_instance_id, "heartbeat")
+	if !was_live || lifecycle_changed {
+		agent_lifecycle_emit(snap.agent_instance_id, "connected", "heartbeat")
+	}
+	if runtime_changed do agent_runtime_emit(snap.agent_instance_id, "heartbeat")
+	return
+}
+
+agent_runtime_tracker_observe_start_success :: proc(agent_instance_id: string) -> bool {
+	now := router_now_unix_ms()
+	if !registry_update_startup(agent_instance_id, "ready", "start_success", "Agent reported ready via start-success RPC", "", "", "") do return false
+	if idx := registry_find_agent(agent_instance_id); idx >= 0 {
+		agents[idx].connected = true
+		agents[idx].startup_updated_unix_ms = now
+	}
+	_ = agent_runtime_tracker_clear_stop_request(agent_instance_id, "start_success")
+	observed: Agent_Runtime_State = .Launching
+	sync.mutex_lock(&agent_runtime_tracker_mutex)
+	if idx := agent_runtime_tracker_index_or_add_locked(agent_instance_id); idx >= 0 {
+		rec := &agent_runtime_tracker_records[idx]
+		observed = agent_runtime_tracker_observed_state_unlocked(agent_instance_id, now)
+		if observed == .Running {
+			rec.state = .Running
+		} else {
+			rec.state = .Launching
+		}
+		rec.last_observed_unix_ms = now
+	}
+	sync.mutex_unlock(&agent_runtime_tracker_mutex)
+	agent_lifecycle_emit(agent_instance_id, "connected", "start_success")
+	fmt.printfln("AGENT_TRACKER ts_unix_ms=%d event=start_success agent=%s observed=%v", now, agent_instance_id, observed)
+	return true
+}
+
+agent_runtime_tracker_observe_ws_disconnected :: proc(agent_instance_id: string, socket: net.TCP_Socket, reason: string) -> bool {
+	if !registry_clear_ws_if_socket(agent_instance_id, socket) do return false
+	agent_runtime_tracker_observe_disconnected(agent_instance_id, reason)
+	agent_lifecycle_emit(agent_instance_id, "disconnected", reason)
+	return true
 }
 
 agent_runtime_tracker_observe_disconnected :: proc(agent_instance_id, reason: string) {
@@ -278,6 +399,40 @@ agent_runtime_tracker_observe_disconnected :: proc(agent_instance_id, reason: st
 	rec.state = .Not_Running
 	rec.last_observed_unix_ms = now
 	fmt.printfln("AGENT_TRACKER ts_unix_ms=%d event=disconnected agent=%s reason=%s", now, agent_instance_id, reason)
+}
+
+agent_runtime_tracker_apply_startup_timeout :: proc(agent_instance_id: string, timed_out_unix_ms: i64) -> bool {
+	idx := registry_find_agent(agent_instance_id)
+	if idx < 0 do return false
+	agent := &agents[idx]
+	if agent.startup_status != "starting" do return false
+
+	agent.startup_status = "startup_failed"
+	agent.startup_reason_code = "startup_stale"
+	agent.startup_safe_diagnostic = "Agent did not report startup status within the configured timeout"
+	agent.startup_updated_unix_ms = timed_out_unix_ms
+	if !agent.has_ws do agent.connected = false
+	agent_lifecycle_emit(agent_instance_id, "startup_failed", "startup_stale")
+	fmt.printfln("AGENT_TRACKER ts_unix_ms=%d event=startup_timeout agent=%s", timed_out_unix_ms, agent_instance_id)
+	return true
+}
+
+agent_runtime_tracker_apply_heartbeat_timeout :: proc(agent_instance_id: string) -> bool {
+	idx := registry_find_agent(agent_instance_id)
+	if idx < 0 do return false
+	agent := &agents[idx]
+	if !agent.connected do return false
+
+	fmt.println("LIVENESS TIMEOUT: Agent", agent_instance_id, "has not sent heartbeats for 30s. Marking offline.")
+	if agent.has_ws {
+		net.close(agent.ws_socket)
+		agent.has_ws = false
+	}
+	agent.connected = false
+	agent.exec_state = "offline"
+	agent_runtime_tracker_observe_disconnected(agent_instance_id, "heartbeat_timeout")
+	agent_lifecycle_emit(agent_instance_id, "disconnected", "heartbeat_timeout")
+	return true
 }
 
 agent_runtime_tracker_token_prefix :: proc(token: string) -> string {

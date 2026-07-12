@@ -374,14 +374,5 @@ agent_store_emit_agent_update :: proc(rec: Agent_Instance_Record) {
 }
 
 agent_store_agent_state :: proc(rec: Agent_Instance_Record) -> string {
-	if idx := registry_find_agent(rec.agent_instance_id); idx >= 0 {
-		agent := agents[idx]
-		if agent.stop_requested_unix_ms != 0 do return "shutting_down"
-		if agent.blocked_reason != "" || agent.exec_state == "blocked" do return "blocked"
-		if rec.current_task_id != "" do return "live"
-		if agent.startup_status == "starting" do return "warming"
-		return "idle"
-	}
-	if rec.current_task_id != "" do return "live"
-	return "idle"
+	return agent_runtime_tracker_agent_state(rec.agent_instance_id, rec.current_task_id != "")
 }

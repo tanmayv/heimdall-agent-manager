@@ -327,22 +327,15 @@ handle_agents_test_history :: proc(client: net.TCP_Socket) {
 
 handle_start_success :: proc(client: net.TCP_Socket, agent_token: string) {
 	if !is_test_token(agent_token) {
-		// Production agent reporting it's ready. Flip startup_status and emit
-		// agent_lifecycle_changed so the UI / janitors know the wrapper-side
-		// probe is no longer the source of truth.
 		agent_instance_id := registry_agent_instance_for_token(agent_token)
 		if agent_instance_id == "" {
 			write_response(client, 404, "Not Found", `{"ok":false,"message":"no agent found for this token"}`)
 			return
 		}
-		_ = registry_update_startup(agent_instance_id, "ready", "start_success", "Agent reported ready via start-success RPC", "", "", "")
-		// Mark connected so UI shows green; emit lifecycle event with state="connected"
-		// for consistency with the deprecated agent_ready path the UI already knows.
-		if idx := registry_find_agent(agent_instance_id); idx >= 0 {
-			agents[idx].connected = true
-			agents[idx].startup_updated_unix_ms = now_unix_ms()
+		if !agent_runtime_tracker_observe_start_success(agent_instance_id) {
+			write_response(client, 404, "Not Found", `{"ok":false,"message":"no agent found for this token"}`)
+			return
 		}
-		agent_lifecycle_emit(agent_instance_id, "connected", "start_success")
 		b := strings.builder_make()
 		strings.write_string(&b, `{"ok":true,"agent_instance_id":"`)
 		json_write_string(&b, agent_instance_id)
