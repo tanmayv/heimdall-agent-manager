@@ -8,15 +8,16 @@ ROUTER = (ROOT / 'src/daemon/rest_router.odin').read_text()
 HANDBOOK = (ROOT / 'src/prompts/guide-agent.md').read_text()
 
 checks = [
-    ('guide can request scoped user action grants', 'guide_request_user_action' in RPC and 'guide_rpc_request_user_action_json' in RPC),
-    ('guide can execute only approved grants', 'guide_execute_user_action' in RPC and 'grant.state != "approved"' in RPC),
-    ('grants are short-lived and one-use', 'GUIDE_ACTION_GRANT_TTL_MS' in RPC and 'grant.used_at_unix_ms != 0' in RPC),
-    ('user approval endpoint exists and rejects agent tokens', 'handle_guide_action_grant_approve' in RPC and 'agent tokens cannot approve guide action grants' in RPC),
-    ('rest router wires guide action approval', 'guide-action-grants' in ROUTER and 'handle_guide_action_grant_approve' in ROUTER),
-    ('delegated UI debug mutations are scoped', 'ui_debug_click' in RPC and 'ui_debug_type' in RPC and 'ui_debug_select' in RPC and 'ui_debug_highlight' in RPC),
-    ('delegated action execution proxies through daemon', 'http.post(base, path, grant.params_json)' in RPC),
-    ('delegated action grant audit logs exist', 'GUIDE_ACTION_GRANT' in RPC),
-    ('handbook documents delegated actions', 'guide_request_user_action' in HANDBOOK and 'guide_execute_user_action' in HANDBOOK and 'one-use' in HANDBOOK),
+    ('grant request rpc removed', 'guide_request_user_action' not in RPC),
+    ('grant execute rpc removed', 'guide_execute_user_action' not in RPC),
+    ('grant state and helpers removed', 'Guide_Action_Grant' not in RPC and 'guide_action_grants' not in RPC and 'guide_action_grant_' not in RPC),
+    ('grant approval route removed', 'guide-action-grants' not in ROUTER and 'handle_guide_action_grant_approve' not in ROUTER),
+    ('grant audit logs removed', 'GUIDE_ACTION_GRANT' not in RPC),
+    ('read-only ui debug rpc preserved', 'guide_ui_debug_status' in RPC and 'guide_ui_debug_action' in RPC),
+    ('read-only ui debug actions preserved', 'case "info": path = "/info"' in RPC and 'case "state": path = "/state"' in RPC and 'case "elements": path = "/elements"' in RPC and 'case "logs": path = "/logs"' in RPC),
+    ('mutating ui debug actions rejected', 'unsupported or mutating UI debug action; allowed: info, state, elements, logs' in RPC and 'http.post(' not in RPC),
+    ('unsupported grant rpc names now fall through to generic unsupported message', 'unsupported guide RPC action' in RPC),
+    ('handbook documents honest read-only policy', 'guide_ui_debug_action' in HANDBOOK and 'read-only' in HANDBOOK and 'local developer/debug capability' in HANDBOOK),
 ]
 failed = [name for name, ok in checks if not ok]
 if failed:
@@ -24,4 +25,4 @@ if failed:
     for name in failed:
         print('-', name)
     sys.exit(1)
-print('TEST PASSED: guide delegated user action grants')
+print('TEST PASSED: guide grant removal and read-only UI policy')

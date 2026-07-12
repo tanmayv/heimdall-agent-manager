@@ -1,4 +1,4 @@
-const assert = require('node:assert').strict;
+import assert from 'node:assert/strict';
 
 const storage = new Map<string, string>();
 (globalThis as any).window = {
@@ -10,8 +10,8 @@ const storage = new Map<string, string>();
   odinApi: undefined,
 };
 
-const { mapAgent } = require('../src/ui/store/chatSlice');
-const { agentRuntimeDot, isAgentRunning } = require('../src/ui/components/App');
+const { mapAgent } = await import('../src/ui/store/chatSlice');
+const { agentRuntimeDot, isAgentRunning } = await import('../src/ui/components/App');
 
 const active = mapAgent({ agent_instance_id: 'active@local', connected: true, activity_status: 'active' });
 assert.equal(active.status, 'connected', 'active activity should map to connected/active UI status');

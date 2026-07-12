@@ -7,26 +7,6 @@ import "core:strconv"
 import "core:strings"
 import http "odin_test:lib/http_client"
 
-GUIDE_ACTION_GRANT_TTL_MS :: i64(5 * 60 * 1000)
-GUIDE_ACTION_GRANT_MAX    :: 128
-
-Guide_Action_Grant :: struct {
-	grant_id:             string,
-	user_id:              string,
-	action_type:          string,
-	params_json:          string,
-	reason:               string,
-	state:                string,
-	requested_at_unix_ms: i64,
-	expires_at_unix_ms:   i64,
-	approved_at_unix_ms:  i64,
-	decided_by:           string,
-	used_at_unix_ms:      i64,
-}
-
-guide_action_grants: [GUIDE_ACTION_GRANT_MAX]Guide_Action_Grant
-guide_action_grant_count: int
-
 guide_rpc_try_handle :: proc(client: net.TCP_Socket, action, body, from_agent_instance_id: string) -> bool {
 	if !strings.has_prefix(action, "guide_") do return false
 	if !guide_agent_is_singleton(from_agent_instance_id) {
@@ -69,14 +49,6 @@ guide_rpc_try_handle :: proc(client: net.TCP_Socket, action, body, from_agent_in
 	}
 	if action == "guide_ui_debug_action" {
 		write_response(client, 200, "OK", guide_rpc_ui_debug_action_json(body))
-		return true
-	}
-	if action == "guide_request_user_action" {
-		write_response(client, 200, "OK", guide_rpc_request_user_action_json(body))
-		return true
-	}
-	if action == "guide_execute_user_action" {
-		write_response(client, 200, "OK", guide_rpc_execute_user_action_json(body))
 		return true
 	}
 	write_response(client, 400, "Bad Request", `{"ok":false,"message":"unsupported guide RPC action"}`)
@@ -269,147 +241,6 @@ guide_rpc_ui_debug_action_json :: proc(body: string) -> string {
 	strings.write_string(&b, `}`)
 	fmt.printfln("GUIDE_UI_DEBUG ts_unix_ms=%d action=%s port=%d status=%d", router_now_unix_ms(), debug_action, port, resp.status)
 	return strings.to_string(b)
-}
-
-guide_rpc_request_user_action_json :: proc(body: string) -> string {
-	action_type := extract_json_string(body, "action_type", extract_json_string(body, "delegated_action", ""))
-	if !guide_action_type_allowed(action_type) do return `{"ok":false,"message":"unsupported delegated action_type"}`
-	params_json := guide_action_extract_params_json(body)
-	user_id := extract_json_string(body, "user_id", server_config.daemon.user_id)
-	if user_id == "" do user_id = "operator@local"
-	reason := extract_json_string(body, "reason", extract_json_string(body, "title", "Guide requested a delegated action"))
-	now := router_now_unix_ms()
-	grant_id := fmt.tprintf("ggrant_%d_%d", now, guide_action_grant_count)
-	idx := guide_action_grant_count % GUIDE_ACTION_GRANT_MAX
-	guide_action_grants[idx] = Guide_Action_Grant{
-		grant_id             = strings.clone(grant_id),
-		user_id              = strings.clone(user_id),
-		action_type          = strings.clone(action_type),
-		params_json          = strings.clone(params_json),
-		reason               = strings.clone(reason),
-		state                = strings.clone("pending"),
-		requested_at_unix_ms = now,
-		expires_at_unix_ms   = now + GUIDE_ACTION_GRANT_TTL_MS,
-	}
-	guide_action_grant_count += 1
-	fmt.printfln("GUIDE_ACTION_GRANT ts_unix_ms=%d stage=requested grant_id=%s action_type=%s user=%s reason=%s", now, grant_id, action_type, user_id, reason)
-	return guide_action_grant_json(guide_action_grants[idx])
-}
-
-guide_rpc_execute_user_action_json :: proc(body: string) -> string {
-	grant_id := extract_json_string(body, "grant_id", "")
-	if grant_id == "" do return `{"ok":false,"message":"grant_id required"}`
-	idx := guide_action_grant_index(grant_id)
-	if idx < 0 do return `{"ok":false,"message":"unknown grant_id"}`
-	grant := &guide_action_grants[idx]
-	now := router_now_unix_ms()
-	if grant.state != "approved" do return `{"ok":false,"message":"grant is not approved"}`
-	if grant.expires_at_unix_ms <= now do return `{"ok":false,"message":"grant expired"}`
-	if grant.used_at_unix_ms != 0 do return `{"ok":false,"message":"grant already used"}`
-	path := guide_action_debug_path(grant.action_type)
-	if path == "" do return `{"ok":false,"message":"unsupported delegated action"}`
-	registry := guide_rpc_ui_debug_registry_json()
-	port, found := guide_rpc_ui_debug_first_port(registry)
-	if !found do return `{"ok":false,"message":"no active Electron debug server registered"}`
-	base := fmt.tprintf("http://127.0.0.1:%d", port)
-	resp, ok := http.post(base, path, grant.params_json)
-	if !ok do return `{"ok":false,"message":"Electron debug action request failed"}`
-	grant.used_at_unix_ms = now
-	grant.state = strings.clone("used")
-	b := strings.builder_make()
-	strings.write_string(&b, `{"ok":true,"grant_id":"`); json_write_string(&b, grant_id)
-	strings.write_string(&b, `","action_type":"`); json_write_string(&b, grant.action_type)
-	strings.write_string(&b, `","port":`); strings.write_string(&b, fmt.tprintf("%d", port))
-	strings.write_string(&b, `,"status":`); strings.write_string(&b, fmt.tprintf("%d", resp.status))
-	strings.write_string(&b, `,"result":`)
-	if strings.trim_space(resp.body) == "" {
-		strings.write_string(&b, `null`)
-	} else {
-		strings.write_string(&b, resp.body)
-	}
-	strings.write_string(&b, `}`)
-	fmt.printfln("GUIDE_ACTION_GRANT ts_unix_ms=%d stage=executed grant_id=%s action_type=%s status=%d", now, grant_id, grant.action_type, resp.status)
-	return strings.to_string(b)
-}
-
-handle_guide_action_grant_approve :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
-	user_id, ok := rest_authorize(client, ctx)
-	if !ok do return
-	if registry_agent_instance_for_token(ctx.token) != "" {
-		write_response(client, 403, "Forbidden", `{"ok":false,"message":"agent tokens cannot approve guide action grants"}`)
-		return
-	}
-	grant_id := extract_json_string(body, "grant_id", "")
-	approve := extract_json_bool(body, "approve", true)
-	idx := guide_action_grant_index(grant_id)
-	if grant_id == "" || idx < 0 {
-		write_response(client, 404, "Not Found", `{"ok":false,"message":"unknown grant_id"}`)
-		return
-	}
-	grant := &guide_action_grants[idx]
-	if grant.user_id != user_id {
-		write_response(client, 403, "Forbidden", `{"ok":false,"message":"grant belongs to another user"}`)
-		return
-	}
-	if grant.state != "pending" {
-		write_response(client, 409, "Conflict", `{"ok":false,"message":"grant is no longer pending"}`)
-		return
-	}
-	now := router_now_unix_ms()
-	if grant.expires_at_unix_ms <= now {
-		grant.state = strings.clone("expired")
-		write_response(client, 409, "Conflict", `{"ok":false,"message":"grant expired"}`)
-		return
-	}
-	grant.decided_by = strings.clone(user_id)
-	grant.approved_at_unix_ms = now
-	grant.state = strings.clone("approved" if approve else "rejected")
-	fmt.printfln("GUIDE_ACTION_GRANT ts_unix_ms=%d stage=decided grant_id=%s action_type=%s user=%s state=%s", now, grant_id, grant.action_type, user_id, grant.state)
-	write_response(client, 200, "OK", guide_action_grant_json(grant^))
-}
-
-guide_action_grant_json :: proc(grant: Guide_Action_Grant) -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, `{"ok":true,"grant":{"grant_id":"`); json_write_string(&b, grant.grant_id)
-	strings.write_string(&b, `","user_id":"`); json_write_string(&b, grant.user_id)
-	strings.write_string(&b, `","action_type":"`); json_write_string(&b, grant.action_type)
-	strings.write_string(&b, `","state":"`); json_write_string(&b, grant.state)
-	strings.write_string(&b, `","reason":"`); json_write_string(&b, grant.reason)
-	strings.write_string(&b, `","params":`); strings.write_string(&b, grant.params_json if grant.params_json != "" else `{}`)
-	strings.write_string(&b, `,"requested_at_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", grant.requested_at_unix_ms))
-	strings.write_string(&b, `,"expires_at_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", grant.expires_at_unix_ms))
-	strings.write_string(&b, `,"approved_at_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", grant.approved_at_unix_ms))
-	strings.write_string(&b, `,"used_at_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", grant.used_at_unix_ms))
-	strings.write_string(&b, `}}`)
-	return strings.to_string(b)
-}
-
-guide_action_grant_index :: proc(grant_id: string) -> int {
-	for i in 0..<GUIDE_ACTION_GRANT_MAX {
-		if guide_action_grants[i].grant_id == grant_id do return i
-	}
-	return -1
-}
-
-guide_action_extract_params_json :: proc(body: string) -> string {
-	params := chat_approval_extract_raw_json_value(body, "params")
-	if params == "" do params = chat_approval_extract_raw_json_value(body, "parameters")
-	if params == "" do params = `{}`
-	return params
-}
-
-guide_action_type_allowed :: proc(action_type: string) -> bool {
-	return action_type == "ui_debug_click" || action_type == "ui_debug_type" || action_type == "ui_debug_select" || action_type == "ui_debug_highlight"
-}
-
-guide_action_debug_path :: proc(action_type: string) -> string {
-	switch action_type {
-	case "ui_debug_click": return "/click"
-	case "ui_debug_type": return "/type"
-	case "ui_debug_select": return "/select"
-	case "ui_debug_highlight": return "/highlight"
-	}
-	return ""
 }
 
 guide_rpc_ui_debug_registry_path :: proc() -> string {
