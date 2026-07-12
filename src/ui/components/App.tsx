@@ -84,6 +84,45 @@ function statusTone(status: string) {
   return 'bg-zinc-500/15 text-zinc-200 border-zinc-500/30';
 }
 
+function agentRuntimeStatus(agent: any): string {
+  if (!agent) return 'offline';
+  return agent.status || agent.startupStatus || (agent.connected ? 'connected' : 'offline');
+}
+
+function agentRuntimeStatusLabel(status: string): string {
+  switch (status) {
+    case 'connected': return 'Active';
+    case 'idle': return 'Idle';
+    case 'starting': return 'Starting';
+    case 'startup_blocked': return 'Blocked';
+    case 'startup_failed': return 'Startup failed';
+    case 'startup_unknown': return 'Startup unknown';
+    case 'stopping': return 'Stopping';
+    case 'ready': return 'Ready';
+    case 'offline': return 'Offline';
+    default: return status || 'Unknown';
+  }
+}
+
+function agentRuntimeStatusTone(status: string): string {
+  if (status === 'connected' || status === 'idle' || status === 'ready') return 'border-emerald-500/30 bg-emerald-500/15 text-emerald-200';
+  if (status === 'starting') return 'border-sky-500/30 bg-sky-500/15 text-sky-200';
+  if (status === 'startup_blocked' || status === 'stopping') return 'border-amber-500/30 bg-amber-500/15 text-amber-200';
+  if (status === 'startup_failed') return 'border-red-500/30 bg-red-500/15 text-red-200';
+  if (status === 'startup_unknown') return 'border-violet-500/30 bg-violet-500/15 text-violet-200';
+  return 'border-zinc-600/40 bg-zinc-700/40 text-zinc-400';
+}
+
+function agentRuntimeDotTone(status: string): string {
+  if (status === 'connected') return 'bg-emerald-400 shadow-emerald-400/40 animate-soft-pulse';
+  if (status === 'idle' || status === 'ready') return 'bg-emerald-300 shadow-emerald-300/30';
+  if (status === 'starting') return 'bg-sky-400 shadow-sky-400/40 animate-soft-pulse';
+  if (status === 'startup_blocked' || status === 'stopping') return 'bg-amber-400 shadow-amber-400/40 animate-soft-pulse';
+  if (status === 'startup_failed') return 'bg-red-400 shadow-red-400/40';
+  if (status === 'startup_unknown') return 'bg-violet-400 shadow-violet-400/40';
+  return 'bg-zinc-500/70 shadow-zinc-500/20';
+}
+
 const COMPLETED_CHAIN_STATUSES = new Set(['completed', 'approved', 'archived', 'cancelled', 'abandoned']);
 
 function isChainCompleted(chain: any): boolean {
@@ -2064,6 +2103,12 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
   const messages = useMemo(() => normalizeCoordinatorMessages([...chat, ...optimistic]), [chat, optimistic]);
   const diffOpen = Boolean(chainView.diffOpenByChainId[chain.chainId]);
   const preview = chainView.mergePreviewByChainId[chain.chainId];
+  const coordinatorAgentId = chain.coordinatorAgentInstanceId || chain.coordinator_agent_instance_id || '';
+  const coordinatorAgent = useMemo(() => agents.find((agent: any) => agent.id === coordinatorAgentId || agent.agentInstanceId === coordinatorAgentId || agent.agent_instance_id === coordinatorAgentId), [agents, coordinatorAgentId]);
+  const coordinatorStatus = agentRuntimeStatus(coordinatorAgent);
+  const coordinatorStatusLabel = agentRuntimeStatusLabel(coordinatorStatus);
+  const coordinatorLabel = coordinatorAgent?.label || coordinatorAgentId || 'Coordinator';
+  const coordinatorLastSeen = coordinatorAgent?.lastSeen && coordinatorAgent.lastSeen !== '—' ? `Last seen ${coordinatorAgent.lastSeen}` : '';
   const orderedTasks = useMemo(() => dependencyOrderedTasks(tasks, tasksById || {}), [tasks, tasksById]);
   const activeTasks = orderedTasks.filter((task: any) => !isCompletedTask(task));
   const completedTasks = orderedTasks.filter(isCompletedTask);
@@ -2099,7 +2144,11 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
           <h1 className="text-4xl font-semibold">{chain.title || chain.chainId}</h1>
           <div className="mt-3 flex flex-wrap gap-2">
             <span className={`rounded-full border px-3 py-1 text-xs ${statusTone(chain.status)}`}>{chain.status}</span>
-            <span className="rounded-full bg-white/5 px-3 py-1 text-xs text-zinc-400">Coordinator {chain.coordinatorAgentInstanceId || '—'}</span>
+            <span className="rounded-full bg-white/5 px-3 py-1 text-xs text-zinc-400">Coordinator {coordinatorAgentId || '—'}</span>
+            <span data-debug-id="chain-coordinator-live-status-chip" className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs ${agentRuntimeStatusTone(coordinatorStatus)}`} title={`${coordinatorLabel} · ${coordinatorStatusLabel}${coordinatorLastSeen ? ` · ${coordinatorLastSeen}` : ''}`}>
+              <span className={`h-1.5 w-1.5 rounded-full shadow ${agentRuntimeDotTone(coordinatorStatus)}`} />
+              {coordinatorStatusLabel}
+            </span>
           </div>
         </div>
         <div />
@@ -2107,7 +2156,17 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
 
       <div className="mt-8 space-y-4">
         <section data-debug-id="chain-coordinator-panel" className="flex h-[70vh] max-h-[70vh] min-h-[420px] flex-col rounded-2xl border border-white/10 bg-white/[0.035] p-4">
-          <h2 className="font-semibold">Coordinator chat</h2>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="font-semibold">Coordinator chat</h2>
+              <p data-debug-id="chain-coordinator-agent-id" className="mt-0.5 text-xs text-zinc-500">{coordinatorAgentId || 'No coordinator assigned'}</p>
+            </div>
+            <div data-debug-id="chain-coordinator-live-status" className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium ${agentRuntimeStatusTone(coordinatorStatus)}`} title={`${coordinatorLabel} · ${coordinatorStatusLabel}${coordinatorLastSeen ? ` · ${coordinatorLastSeen}` : ''}`}>
+              <span className={`h-2 w-2 rounded-full shadow ${agentRuntimeDotTone(coordinatorStatus)}`} />
+              <span>{coordinatorStatusLabel}</span>
+              {coordinatorLastSeen && <span className="hidden text-[10px] opacity-70 sm:inline">· {coordinatorLastSeen}</span>}
+            </div>
+          </div>
           <CoordinatorMessageList chainId={chain.chainId} messages={messages} onReply={(reply) => onSend(reply)} />
           <div className="mt-4 flex gap-2">
             <input
