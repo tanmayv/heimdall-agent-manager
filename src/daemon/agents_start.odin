@@ -238,9 +238,20 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 	}
 
 	agent_token := generate_agent_token()
+	if !agent_runtime_tracker_try_begin_launch(agent_instance_id, agent_token, "manual_agent_start", "", router_now_unix_ms()) {
+		builder := strings.builder_make()
+		strings.write_string(&builder, `{"ok":true,"mode":"remote_detached","message":"already running or launch in progress","agent_record_id":"`)
+		json_write_string(&builder, agent_record_id)
+		strings.write_string(&builder, `","agent_instance_id":"`)
+		json_write_string(&builder, agent_instance_id)
+		strings.write_string(&builder, `"}`)
+		write_response(client, 200, "OK", strings.to_string(builder))
+		return
+	}
 	registry_add_pending_agent_token(agent_instance_id, agent_token)
 	ok := launch_wrapper_detached(agent_instance_id, provider_profile, config_path, log_path, agent_token, display_name, final_tier, resolved_project_id, "manual_agent_start", "", "", "")
 	if !ok {
+		agent_runtime_tracker_launch_failed(agent_instance_id, agent_token, "manual_agent_start")
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to start wrapper"}`)
 		return
 	}

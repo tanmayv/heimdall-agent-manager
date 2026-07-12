@@ -935,14 +935,18 @@ task_service_status_command :: proc(cmd: Task_Status_Command) -> Task_Service_Re
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append task status failed"}`}
 	}
 	task_notify_event(event)
+	if cmd.status == "in_progress" && state.assignee_agent_instance_id != "" {
+		_ = agent_store_set_current_task(state.assignee_agent_instance_id, cmd.task_id)
+	}
 	if cmd.status == "in_progress" || cmd.status == "queued" || cmd.status == "review_ready" {
 		_ = task_runtime_reconcile_task(cmd.task_id, "status_change", "high")
 	}
 	if state.status == .Review_Ready && cmd.status != "review_ready" {
 		task_cancel_open_user_proxy_approvals(cmd.task_id, state.chain_id)
 	}
-	if cmd.status == "review_ready" || cmd.status == "blocked" || cmd.status == "queued" || cmd.status == "ready" || cmd.status == "approved" {
-		_ = agent_store_clear_current_task(cmd.author_agent_instance_id)
+	if cmd.status == "review_ready" || cmd.status == "blocked" || cmd.status == "queued" || cmd.status == "ready" || cmd.status == "approved" || cmd.status == "cancelled" {
+		if state.assignee_agent_instance_id != "" do _ = agent_store_clear_current_task_if_matches(state.assignee_agent_instance_id, cmd.task_id)
+		_ = agent_store_clear_current_task_if_matches(cmd.author_agent_instance_id, cmd.task_id)
 	}
 
 	manual_defer := (cmd.status == "queued" || cmd.status == "ready") && state.status == .In_Progress && task_actor_has_role(state, cmd.author_agent_instance_id, "assignee")
@@ -1023,6 +1027,7 @@ task_service_review_vote :: proc(cmd: Task_Review_Vote_Command) -> Task_Service_
 			author_agent_instance_id = "system-review-vote",
 		}
 		if task_store_append_event(back_event) {
+			if state.assignee_agent_instance_id != "" do _ = agent_store_set_current_task(state.assignee_agent_instance_id, cmd.task_id)
 			task_notify_event(back_event)
 			_ = task_runtime_reconcile_task(cmd.task_id, "status_change", "high")
 		}
@@ -1161,6 +1166,9 @@ task_service_auto_approve :: proc(task_id, chain_id: string) {
 		author_agent_instance_id = "system-auto-approve",
 	}
 	if task_store_append_event(event) {
+		if idx, found := task_existing_state_index(task_id, chain_id); found && task_states[idx].assignee_agent_instance_id != "" {
+			_ = agent_store_clear_current_task_if_matches(task_states[idx].assignee_agent_instance_id, task_id)
+		}
 		task_notify_event(event)
 		task_recompute_promotions("system-auto-approve")
 		task_service_try_auto_complete_chain(chain_id)
@@ -1188,6 +1196,7 @@ task_service_auto_claim :: proc(task_id: string) {
 		author_agent_instance_id = "system-auto-claim",
 	}
 	if task_store_append_event(event) {
+		_ = agent_store_set_current_task(assignee, task_id)
 		task_notify_event(event)
 		_ = task_runtime_reconcile_task(task_id, "auto_claim", "high")
 	}

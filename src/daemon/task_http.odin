@@ -412,6 +412,7 @@ task_claim_next_for_agent :: proc(agent_instance_id: string) -> (Task_State, boo
 			author_agent_instance_id = "system-auto-claim",
 		}
 		if task_store_append_event(event) {
+			_ = agent_store_set_current_task(agent_instance_id, state.task_id)
 			task_notify_event(event)
 		}
 		return task_states[task_state_index(state.task_id, state.chain_id)], true

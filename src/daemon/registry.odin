@@ -363,19 +363,34 @@ registry_set_ws :: proc(agent_instance_id: string, socket: net.TCP_Socket) -> bo
 
 registry_clear_ws :: proc(agent_instance_id: string) {
 	if idx := registry_find_agent(agent_instance_id); idx >= 0 {
-		if agents[idx].has_ws {
-			net.shutdown(agents[idx].ws_socket, .Both)
-			net.close(agents[idx].ws_socket)
+		registry_clear_ws_index(idx)
+	}
+}
+
+registry_clear_ws_if_socket :: proc(agent_instance_id: string, socket: net.TCP_Socket) -> bool {
+	if idx := registry_find_agent(agent_instance_id); idx >= 0 {
+		if agents[idx].has_ws && agents[idx].ws_socket == socket {
+			registry_clear_ws_index(idx)
+			return true
 		}
-		agents[idx].has_ws = false
-		agents[idx].connected = false
-		agents[idx].last_seen_unix_ms = now_unix_ms()
-		if agents[idx].startup_status == "starting" {
-			agents[idx].startup_status = "startup_failed"
-			agents[idx].startup_reason_code = "ws_disconnected"
-			agents[idx].startup_safe_diagnostic = "Agent disconnected before reporting startup status"
-			agents[idx].startup_updated_unix_ms = agents[idx].last_seen_unix_ms
-		}
+		fmt.printf("WARNING: ignoring stale WebSocket close for agent '%s'; socket is no longer current\n", agent_instance_id)
+	}
+	return false
+}
+
+registry_clear_ws_index :: proc(idx: int) {
+	if agents[idx].has_ws {
+		net.shutdown(agents[idx].ws_socket, .Both)
+		net.close(agents[idx].ws_socket)
+	}
+	agents[idx].has_ws = false
+	agents[idx].connected = false
+	agents[idx].last_seen_unix_ms = now_unix_ms()
+	if agents[idx].startup_status == "starting" {
+		agents[idx].startup_status = "startup_failed"
+		agents[idx].startup_reason_code = "ws_disconnected"
+		agents[idx].startup_safe_diagnostic = "Agent disconnected before reporting startup status"
+		agents[idx].startup_updated_unix_ms = agents[idx].last_seen_unix_ms
 	}
 }
 
@@ -516,7 +531,7 @@ registry_agent_live :: proc(agent_instance_id: string) -> bool {
 	idx := registry_find_agent(agent_instance_id)
 	if idx < 0 do return false
 	now := now_unix_ms()
-	return agents[idx].connected && now - agents[idx].last_seen_unix_ms < DUPLICATE_HEARTBEAT_FRESH_MS
+	return agents[idx].connected && agents[idx].has_ws && agents[idx].startup_status == "ready" && now - agents[idx].last_seen_unix_ms < DUPLICATE_HEARTBEAT_FRESH_MS
 }
 
 

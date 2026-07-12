@@ -165,8 +165,17 @@ def setup_task(url: str):
     chain = request_post(url, "/task-chains/create", {
         "agent_token": user_token,
         "chain_id": "chain-stale-ws",
+        "kind": "coding",
         "title": "Stale WS chain",
         "coordinator_agent_instance_id": USER_ID,
+        "wants_vcs": False,
+        "no_scaffold": True,
+    })
+    request_post(url, "/teams/add-member", {
+        "agent_token": user_token,
+        "team_id": chain["team_id"],
+        "role_key": "specialist",
+        "agent_instance_id": AGENT_ID,
     })
     task = request_post(url, "/tasks/create", {
         "agent_token": user_token,
