@@ -85,6 +85,7 @@ handle_startup_report :: proc(client: net.TCP_Socket, body: string) {
 		write_response(client, 404, "Not Found", `{"ok":false,"message":"unknown agent instance"}`)
 		return
 	}
+	if status == "starting" || status == "ready" do _ = agent_runtime_tracker_clear_stop_request(agent_instance_id, "startup_report")
 	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 && (provider_profile != "" || run_dir != "") {
 		rec := agent_instance_records[idx]
 		if provider_profile != "" do rec.provider_profile = provider_profile

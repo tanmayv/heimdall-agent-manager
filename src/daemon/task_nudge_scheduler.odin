@@ -395,7 +395,7 @@ task_autoscaler_idle_shutdown :: proc(now: i64) -> int {
 		if last == 0 do last = agents[idx].last_seen_unix_ms
 		grace := task_autoscaler_idle_shutdown_seconds(rec.agent_instance_id)
 		if last == 0 || now - last < i64(grace) * 1000 do continue
-		if ok, _, _ := agents_stop_request(rec.agent_instance_id, 30); ok { changed += 1 }
+		if ok, _, _ := agent_runtime_tracker_request_stop(rec.agent_instance_id, 30, "idle_shutdown"); ok { changed += 1 }
 	}
 	return changed
 }
@@ -444,7 +444,7 @@ task_autoscaler_stop_chain_agents :: proc(chain_id, reason: string) -> int {
 		}
 		if idx := registry_find_agent(agent_id); idx >= 0 {
 			if agents[idx].has_ws && agents[idx].stop_requested_unix_ms == 0 {
-				if ok, _, _ := agents_stop_request(agent_id, 30); ok {
+				if ok, _, _ := agent_runtime_tracker_request_stop(agent_id, 30, reason); ok {
 					changed += 1
 					fmt.printfln("RUNTIME_RECONCILE_STOP ts_unix_ms=%d reason=%s chain=%s target=%s", router_now_unix_ms(), reason, chain_id, agent_id)
 				}

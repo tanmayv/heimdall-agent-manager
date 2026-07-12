@@ -108,10 +108,7 @@ ws_dispatch_agent_message :: proc(agent_instance_id: string, text: string) {
 	msg_type := extract_json_string(text, "type", "")
 	fmt.println("ws agent message", agent_instance_id, msg_type)
 	if msg_type == "stop_done" {
-		registry_update_startup(agent_instance_id, "stopped", "stop_done", "Agent stopped gracefully", "", "", "")
-		registry_clear_ws(agent_instance_id)
-		agent_runtime_tracker_observe_disconnected(agent_instance_id, "stop_done")
-		agent_lifecycle_emit(agent_instance_id, "offline", "stop_done")
+		agent_runtime_tracker_observe_stop_done(agent_instance_id, "ws_stop_done")
 	}
 }
 

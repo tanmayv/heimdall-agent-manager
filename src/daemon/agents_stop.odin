@@ -35,25 +35,7 @@ handle_agents_stop :: proc(client: net.TCP_Socket, body: string, request: string
 }
 
 agents_stop_request :: proc(agent_instance_id: string, time_in_sec: int) -> (bool, int, string) {
-	idx := registry_find_agent(agent_instance_id)
-	if idx < 0 {
-		fmt.printf("WARNING: stop_agent failed: agent '%s' not found in registry\n", agent_instance_id)
-		return false, 404, `{"ok":false,"message":"agent not found"}`
-	}
-	if !agents[idx].has_ws {
-		fmt.printf("WARNING: stop_agent failed: agent '%s' has no active WebSocket connection (connected=%t)\n", agent_instance_id, agents[idx].connected)
-		return false, 400, `{"ok":false,"message":"agent not connected via WebSocket"}`
-	}
-	payload := stop_event_json(agent_instance_id, time_in_sec)
-	if !registry_send_ws_text(agent_instance_id, payload) {
-		fmt.printf("ERROR: stop_agent failed: failed to deliver stop event to agent '%s' over WebSocket\n", agent_instance_id)
-		return false, 500, `{"ok":false,"message":"failed to deliver stop event to agent"}`
-	}
-	agents[idx].stop_timeout_seconds = time_in_sec
-	agents[idx].stop_requested_unix_ms = router_now_unix_ms()
-	registry_update_startup(agent_instance_id, "stopping", "stop_requested", "Stop event sent to agent", "", "", "")
-	agent_lifecycle_emit(agent_instance_id, "stopping", "stop_requested")
-	return true, 200, `{"ok":true}`
+	return agent_runtime_tracker_request_stop(agent_instance_id, time_in_sec, "api_stop_request")
 }
 
 handle_agents_stop_done :: proc(client: net.TCP_Socket, body: string) {
@@ -62,9 +44,7 @@ handle_agents_stop_done :: proc(client: net.TCP_Socket, body: string) {
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"agent_instance_id required"}`)
 		return
 	}
-	registry_update_startup(agent_instance_id, "stopped", "stop_done", "Agent stopped gracefully", "", "", "")
-	registry_clear_ws(agent_instance_id)
-	agent_lifecycle_emit(agent_instance_id, "offline", "stop_done")
+	agent_runtime_tracker_observe_stop_done(agent_instance_id, "http_stop_done")
 	write_response(client, 200, "OK", `{"ok":true,"message":"stop acknowledged"}`)
 }
 

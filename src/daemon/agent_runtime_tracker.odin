@@ -161,8 +161,67 @@ agent_runtime_tracker_register_allowed :: proc(agent_instance_id, agent_token: s
 	return true
 }
 
+agent_runtime_tracker_clear_stop_request :: proc(agent_instance_id, source: string) -> bool {
+	if idx := registry_find_agent(agent_instance_id); idx >= 0 {
+		changed := agents[idx].stop_requested_unix_ms != 0 || agents[idx].stop_timeout_seconds != 0
+		agents[idx].stop_requested_unix_ms = 0
+		agents[idx].stop_timeout_seconds = 0
+		if changed do fmt.printfln("AGENT_TRACKER ts_unix_ms=%d event=stop_request_cleared agent=%s source=%s", router_now_unix_ms(), agent_instance_id, source)
+		return changed
+	}
+	return false
+}
+
+agent_runtime_tracker_request_stop :: proc(agent_instance_id: string, time_in_sec: int, reason: string) -> (bool, int, string) {
+	idx := registry_find_agent(agent_instance_id)
+	if idx < 0 {
+		fmt.printf("WARNING: stop_agent failed: agent '%s' not found in registry\n", agent_instance_id)
+		return false, 404, `{"ok":false,"message":"agent not found"}`
+	}
+	if !agents[idx].has_ws {
+		fmt.printf("WARNING: stop_agent failed: agent '%s' has no active WebSocket connection (connected=%t)\n", agent_instance_id, agents[idx].connected)
+		return false, 400, `{"ok":false,"message":"agent not connected via WebSocket"}`
+	}
+	payload := stop_event_json(agent_instance_id, time_in_sec)
+	if !registry_send_ws_text(agent_instance_id, payload) {
+		fmt.printf("ERROR: stop_agent failed: failed to deliver stop event to agent '%s' over WebSocket\n", agent_instance_id)
+		return false, 500, `{"ok":false,"message":"failed to deliver stop event to agent"}`
+	}
+	agents[idx].stop_timeout_seconds = time_in_sec
+	agents[idx].stop_requested_unix_ms = router_now_unix_ms()
+	registry_update_startup(agent_instance_id, "stopping", "stop_requested", "Stop event sent to agent", "", "", "")
+	agent_lifecycle_emit(agent_instance_id, "stopping", "stop_requested")
+
+	sync.mutex_lock(&agent_runtime_tracker_mutex)
+	if rec_idx := agent_runtime_tracker_index_or_add_locked(agent_instance_id); rec_idx >= 0 {
+		rec := &agent_runtime_tracker_records[rec_idx]
+		rec.state = .Not_Running
+		rec.last_observed_unix_ms = router_now_unix_ms()
+	}
+	sync.mutex_unlock(&agent_runtime_tracker_mutex)
+	fmt.printfln("AGENT_TRACKER ts_unix_ms=%d event=stop_requested agent=%s reason=%s timeout_sec=%d", router_now_unix_ms(), agent_instance_id, reason, time_in_sec)
+	return true, 200, `{"ok":true}`
+}
+
+agent_runtime_tracker_observe_stop_done :: proc(agent_instance_id, reason: string) {
+	_ = agent_runtime_tracker_clear_stop_request(agent_instance_id, reason)
+	registry_update_startup(agent_instance_id, "stopped", "stop_done", "Agent stopped gracefully", "", "", "")
+	registry_clear_ws(agent_instance_id)
+	agent_runtime_tracker_observe_disconnected(agent_instance_id, "stop_done")
+	agent_lifecycle_emit(agent_instance_id, "offline", "stop_done")
+}
+
 agent_runtime_tracker_observe_register :: proc(agent_instance_id, agent_token: string) {
 	now := router_now_unix_ms()
+	_ = agent_runtime_tracker_clear_stop_request(agent_instance_id, "register")
+	if reg_idx := registry_find_agent(agent_instance_id); reg_idx >= 0 {
+		if agents[reg_idx].startup_status == "stopping" || agents[reg_idx].startup_status == "stopped" || agents[reg_idx].startup_reason_code == "stop_requested" || agents[reg_idx].startup_reason_code == "stop_done" {
+			agents[reg_idx].startup_status = "starting"
+			agents[reg_idx].startup_reason_code = "register"
+			agents[reg_idx].startup_safe_diagnostic = "Agent registered after previous stop"
+			agents[reg_idx].startup_updated_unix_ms = now
+		}
+	}
 	sync.mutex_lock(&agent_runtime_tracker_mutex)
 	defer sync.mutex_unlock(&agent_runtime_tracker_mutex)
 	idx := agent_runtime_tracker_index_or_add_locked(agent_instance_id)
@@ -199,8 +258,10 @@ agent_runtime_tracker_observe_ready_or_heartbeat :: proc(agent_instance_id, sour
 	rec := &agent_runtime_tracker_records[idx]
 	observed := agent_runtime_tracker_observed_state_unlocked(agent_instance_id, now)
 	if observed == .Running {
+		_ = agent_runtime_tracker_clear_stop_request(agent_instance_id, source)
 		rec.state = .Running
 	} else if observed == .Launching {
+		_ = agent_runtime_tracker_clear_stop_request(agent_instance_id, source)
 		rec.state = .Launching
 	}
 	rec.last_observed_unix_ms = now

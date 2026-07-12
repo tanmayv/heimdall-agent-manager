@@ -67,6 +67,7 @@ Heartbeat_Snapshot :: struct {
 
 startup_status_rank :: proc(status: string) -> int {
 	switch status {
+	case "stopping", "stopped": return 3
 	case "ready", "startup_failed": return 2
 	case "startup_blocked", "startup_unknown": return 1
 	case "starting", "": return 0
