@@ -150,6 +150,69 @@ cheap = "gpt-5"
 normal = "gpt-5"
 smart = "gpt-5-pro"
 
+# Google Antigravity CLI (`agy`). Command surface verified via `agy --help`:
+#   --prompt-interactive  Run an initial prompt interactively and continue the session (-i)
+#   --dangerously-skip-permissions  Auto-approve all tool permission requests without prompting
+#   --model  Model for the current CLI session
+# Model names come from `agy models`.
+[wrapper.agent-cmd.antigravity]
+command = ["agy"]
+yolo_flags = ["--dangerously-skip-permissions"]
+prompt_flags = ["--prompt-interactive"]
+starter_prompt = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap files (AGENTS.md and .agents/skills/) for context."
+
+[wrapper.agent-cmd.antigravity.bootstrap.AGENTS_MD]
+content = ["IDENTITY", "GUIDANCE", "PROJECT", "MEMORY"]
+name = "AGENTS.md"
+
+[wrapper.agent-cmd.antigravity.bootstrap.SKILLS]
+filename = "SKILL.md"
+relative_dir = ".agents/skills"
+
+[wrapper.agent-cmd.antigravity.models]
+flag = "--model"
+cheap  = "Gemini 3.5 Flash (Low)"
+normal = "Gemini 3.5 Flash (Medium)"
+smart  = "Gemini 3.1 Pro (High)"
+
+# Startup detection tuned against a fresh `~/.gemini/antigravity-cli` state.
+# First-run onboarding shows two consecutive blocking screens before the CLI
+# is ready:
+#   1. "Choose your color scheme:" — default highlight is `terminal`, so bare
+#      Enter advances to the ToS screen.
+#   2. "Terms of Service & Data Use" with the data-collection checkbox
+#      pre-focused. Two Tabs (or two Downs) move the highlight past the
+#      checkbox and [Previous] to reach [Done]; Enter confirms.
+# After onboarding, if `--dangerously-skip-permissions` is missing and the
+# agent tries to write outside its workspace, a "File access / Allow access to
+# this file?" prompt appears. We include the yolo flag by default, but the
+# pattern is listed under blocked_patterns so an operator running without it
+# still gets a clean startup_blocked signal instead of a hang.
+[wrapper.agent-cmd.antigravity.startup_detection]
+enabled = true
+startup_probe_seconds = 30
+capture_interval_ms = 500
+auto_enter_patterns = ["Choose your color scheme", "Terms of Service & Data Use"]
+# Color-scheme screen: default (`terminal`) is already highlighted, bare Enter
+# advances. ToS screen: two Tabs move focus from the checkbox past [Previous]
+# onto [Done], then Enter confirms.
+auto_enter_pre_keys = ["", "Tab Tab"]
+blocked_patterns = ["Allow access to this file?", "File access", "outside workspace"]
+startup_unknown_is_blocked = false
+sanitized_reason_mapping = [
+  "color=Antigravity CLI color-scheme picker",
+  "tos=Antigravity CLI Terms of Service prompt",
+  "file_access=Antigravity CLI file-access prompt; add --dangerously-skip-permissions to yolo_flags",
+]
+
+[wrapper.agent-cmd.antigravity.activity_detection]
+enabled = true
+sample_line_count = 20
+ignore_bottom_lines = 0
+check_interval_seconds = 15
+min_gap_ms = 100
+max_gap_ms = 500
+
 
 [ctl]
 daemon_url = "http://127.0.0.1:49322"
