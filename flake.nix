@@ -13,6 +13,7 @@
 
       # Keep appVersion in sync with src/contracts/protocol.odin APP_VERSION.
       appVersion = "0.1.0";
+      npmDepsHash = "sha256-TZJIsQ3ckX+WAZEcSrKcEni1Ah+GnUX/P1YN4oFnm1g=";
 
       mkOdinPackage = pkgs: odin: name: srcDir: pkgs.stdenv.mkDerivation {
         pname = name;
@@ -84,7 +85,7 @@
         pname = "heimdall";
         version = appVersion;
         src = ./.;
-        npmDepsHash = "sha256-TZJIsQ3ckX+WAZEcSrKcEni1Ah+GnUX/P1YN4oFnm1g=";
+        inherit npmDepsHash;
         nativeBuildInputs = [ pkgs.makeWrapper ];
         npmBuildScript = "build";
         npmFlags = [ "--ignore-scripts" ];
@@ -97,6 +98,22 @@
           mkdir -p $out/bin
           makeWrapper ${pkgs.electron}/bin/electron $out/bin/heimdall \
             --add-flags "$out/share/heimdall/electron-dist/main.cjs"
+          runHook postInstall
+        '';
+      };
+
+      mkNodeModules = pkgs: pkgs.buildNpmPackage {
+        pname = "heimdall-node-modules";
+        version = appVersion;
+        src = ./.;
+        inherit npmDepsHash;
+        dontBuild = true;
+        npmFlags = [ "--ignore-scripts" ];
+        npmInstallFlags = [ "--ignore-scripts" ];
+        installPhase = ''
+          runHook preInstall
+          mkdir -p $out
+          cp -r node_modules $out/node_modules
           runHook postInstall
         '';
       };
@@ -126,6 +143,7 @@
           ham-team-service-test = mkOdinPackageWithRuntime pkgs odin "ham-team-service-test" "tests/team_service_test" [ pkgs.sqlite ];
           ham-vcs-backend-test = mkOdinPackageWithRuntime pkgs odin "ham-vcs-backend-test" "tests/vcs_backend_test" [ pkgs.git pkgs.jujutsu ];
           heimdall = mkOdinUiPackage pkgs;
+          heimdall-node-modules = mkNodeModules pkgs;
           bc-agent-wrapper = self.packages.${system}.ham-wrapper;
           bc-test-agent = self.packages.${system}.ham-test-agent;
           default = self.packages.${system}.ham-daemon;
@@ -242,7 +260,46 @@
         };
         heimdall = {
           type = "app";
-          program = "${self.packages.${system}.heimdall}/bin/heimdall";
+          program = "${pkgs.writeShellScriptBin "heimdall" ''
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            echo "[heimdall] Checking for node_modules..."
+            if [ ! -d "node_modules" ]; then
+              echo "[heimdall] node_modules not found. Running npm install..."
+              ${pkgs.nodejs}/bin/npm install
+            fi
+
+            echo "[heimdall] Building Electron TypeScript..."
+            ${pkgs.nodejs}/bin/npm run build:electron
+
+            PORT=5173
+            while ! (${pkgs.python3}/bin/python3 -c "import socket; s = socket.socket(); s.bind(('127.0.0.1', $PORT)); s.close()" 2>/dev/null); do
+              PORT=$((PORT + 1))
+            done
+
+            echo "[heimdall] Starting Vite dev server on port $PORT..."
+            ${pkgs.nodejs}/bin/npx vite --host 127.0.0.1 --port "$PORT" &
+            VITE_PID=$!
+            cleanup() {
+              echo "[heimdall] Cleaning up Vite dev server (PID: $VITE_PID)..."
+              kill "$VITE_PID" 2>/dev/null || true
+            }
+            trap cleanup EXIT INT TERM
+
+            echo "[heimdall] Waiting for Vite server at http://127.0.0.1:$PORT..."
+            while ! ${pkgs.curl}/bin/curl -s "http://127.0.0.1:$PORT" > /dev/null 2>&1; do
+              if ! kill -0 "$VITE_PID" 2>/dev/null; then
+                echo "[heimdall] Vite server process died unexpectedly." >&2
+                exit 1
+              fi
+              sleep 0.1
+            done
+
+            echo "[heimdall] Vite ready. Launching Electron in dev mode..."
+            export VITE_DEV_SERVER_URL="http://127.0.0.1:$PORT"
+            ${pkgs.electron}/bin/electron electron-dist/main.cjs
+          ''}/bin/heimdall";
         };
         heimdall-browser = {
           type = "app";
@@ -262,8 +319,9 @@
 
             echo "[heimdall] Starting Vite server ($MODE mode) on port $PORT..."
             if [ ! -d "node_modules" ]; then
-              echo "[heimdall] node_modules not found. Running npm install..."
-              ${pkgs.nodejs}/bin/npm install
+              echo "[heimdall] node_modules not found. Copying from Nix store..."
+              cp -r "${self.packages.${system}.heimdall-node-modules}/node_modules" node_modules
+              chmod -R u+w node_modules
             fi
 
             if [ "$MODE" == "release" ]; then

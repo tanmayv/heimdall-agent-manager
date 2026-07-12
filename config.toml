@@ -138,6 +138,26 @@ check_interval_seconds = 15
 min_gap_ms = 100
 max_gap_ms = 500
 
+[wrapper.agent-cmd.copilot]
+command = ["copilot"]
+prompt_delivery = "flag-injection"
+prompt_flags = ["-i"]
+starter_prompt = "First, run: {ctl_bin} --token {token} start-success."
+yolo_flags = ["--yolo"]
+
+[wrapper.agent-cmd.copilot.models]
+flag = "--model"
+cheap = "claude-sonnet-4.5"
+normal = "claude-sonnet-4.6"
+smart = "claude-opus-4.6"
+
+[wrapper.agent-cmd.copilot.startup_detection]
+enabled = true
+startup_probe_seconds = 20
+capture_interval_ms = 500
+auto_enter_patterns = ["Confirm folder trust"]
+auto_enter_pre_keys = ["Down"]
+
 [wrapper.agent-cmd.codex]
 command = ["codex"]
 yolo_flags = []
