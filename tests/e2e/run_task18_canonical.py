@@ -565,7 +565,7 @@ def scenario_ui_no_vcs_user_proxy(h: Harness, sc: Scenario) -> ScenarioResult:
         chain_id = chain.get("chainId")
         if not chain_id:
             raise HarnessError("created no-vcs chain has no chainId")
-        task = step(steps, "setup user_proxy review_ready task through isolated helper", lambda: h.http_post("/tasks/create", {"agent_token": h.agent_token, "chain_id": chain_id, "title": "Task18 user_proxy smart approval", "assignee_agent_instance_id": "pi@task18-e2e", "status": "review_ready"}))
+        task = step(steps, "setup user_proxy review_ready task through isolated helper", lambda: h.http_post("/tasks/create", {"agent_token": h.agent_token, "chain_id": chain_id, "title": "Task18 user_proxy smart approval", "assignee_agent_instance_id": chain.get("coordinatorAgentInstanceId"), "status": "review_ready"}))
         task_id = task.get("task_id")
         if not task_id:
             raise HarnessError(f"task create failed: {task}")

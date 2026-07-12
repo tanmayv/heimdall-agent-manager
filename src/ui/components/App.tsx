@@ -1303,9 +1303,17 @@ function AttentionSurface({ tasksById, chainsById, openChain, attention, memory,
             <div className="mt-1 font-semibold">{chainsById?.[task.chainId]?.title || task.chainId || 'Standalone'} · {task.title}</div>
             <div className="mt-1 text-sm text-zinc-400">{task.status} · {task.notActionableReason || 'awaiting your review'}</div>
             <div className="mt-3 flex flex-wrap gap-2">
-              <button data-debug-id={`attention-card-task_approval-${task.taskId}-action-approve`} onClick={() => onVoteTask(task, true)} className="rounded-xl bg-emerald-400 px-3 py-2 text-sm font-semibold text-black hover:bg-emerald-300">Approve</button>
-              <button data-debug-id={`attention-card-task_approval-${task.taskId}-action-reject`} onClick={() => onVoteTask(task, false)} className="rounded-xl bg-red-400/90 px-3 py-2 text-sm font-semibold text-black hover:bg-red-300">Request changes</button>
-              {task.chainId && <button data-debug-id={`attention-card-task_approval-${task.taskId}-action-open`} onClick={() => openChain(task.chainId)} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Open chain</button>}
+              <span data-debug-id={`attention-card-task_approval-${task.taskId}-action-approve`}>
+                <button data-debug-id={`attention-approval-${task.taskId}-approve-btn`} onClick={() => onVoteTask(task, true)} className="rounded-xl bg-emerald-400 px-3 py-2 text-sm font-semibold text-black hover:bg-emerald-300">Approve</button>
+              </span>
+              <span data-debug-id={`attention-card-task_approval-${task.taskId}-action-reject`}>
+                <button data-debug-id={`attention-approval-${task.taskId}-reject-btn`} onClick={() => onVoteTask(task, false)} className="rounded-xl bg-red-400/90 px-3 py-2 text-sm font-semibold text-black hover:bg-red-300">Request changes</button>
+              </span>
+              {task.chainId && (
+                <span data-debug-id={`attention-card-task_approval-${task.taskId}-action-open`}>
+                  <button data-debug-id={`attention-blocked-${task.taskId}-open-btn`} onClick={() => openChain(task.chainId)} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Open chain</button>
+                </span>
+              )}
             </div>
           </div>
         ))}
