@@ -16,8 +16,10 @@ DAEMON_URL = f"http://{HOST}:{PORT}"
 USER_ID = "operator@local"
 CLIENT_ID = "chain-send-user-client"
 COORDINATOR_ID = "coord-chain-send@task19-e2e"
+ORIGIN_COORDINATOR_ID = "origin-coord-chain-send@task19-e2e"
 OTHER_AGENT_ID = "non-coord-chain-send@task19-e2e"
 CHAIN_ID = "chain-send-to-user-task19"
+ORIGIN_CHAIN_ID = "chain-send-to-user-origin"
 OTHER_CHAIN_ID = "chain-send-to-user-other"
 
 
@@ -89,6 +91,22 @@ def create_chain(user_token, title, chain_id, coordinator_id):
         raise AssertionError(f"task_chain_create failed: status={status} body={res}")
     if res.get("chain_id") != chain_id:
         raise AssertionError(f"unexpected chain response: {res}")
+
+
+def set_chain_status(user_token, chain_id, status, final_summary=""):
+    status_code, res = request_post(
+        "/user-rpc",
+        {
+            "action": "task_chain_status",
+            "client_instance_id": CLIENT_ID,
+            "client_token": user_token,
+            "chain_id": chain_id,
+            "status": status,
+            "final_summary": final_summary,
+        },
+    )
+    if status_code != 200 or not res.get("ok"):
+        raise AssertionError(f"task_chain_status failed: status={status_code} body={res}")
 
 
 def approval_by_id(pending, approval_id):
@@ -166,6 +184,15 @@ ham_ctl_bin = "{ctl_bin}"
         if not coord_token:
             raise AssertionError(f"coordinator registration failed: {coord_res}")
 
+        _, origin_coord_res = request_post("/register", {
+            "agent_class": "origin-coord-chain-send",
+            "agent_instance_id": ORIGIN_COORDINATOR_ID,
+            "display_name": "Origin Chain Send Coordinator",
+        })
+        origin_coord_token = origin_coord_res.get("agent_token")
+        if not origin_coord_token:
+            raise AssertionError(f"origin coordinator registration failed: {origin_coord_res}")
+
         _, other_res = request_post("/register", {
             "agent_class": "non-coord-chain-send",
             "agent_instance_id": OTHER_AGENT_ID,
@@ -179,6 +206,22 @@ ham_ctl_bin = "{ctl_bin}"
         user_token = user_res.get("client_token")
         if not user_token:
             raise AssertionError(f"user registration failed: {user_res}")
+
+        create_chain(user_token, "Origin fallback send_to_user", ORIGIN_CHAIN_ID, ORIGIN_COORDINATOR_ID)
+        set_chain_status(user_token, ORIGIN_CHAIN_ID, "completed", "completed to verify origin-chain inference")
+        origin_body = "completed-chain coordinator reply inferred from origin chain"
+        status, origin_res = request_post("/agent-rpc", {
+            "agent_token": origin_coord_token,
+            "action": "send_to_user",
+            "user_id": USER_ID,
+            "body": origin_body,
+        })
+        if status != 200 or not origin_res.get("ok") or origin_res.get("chain_id") != ORIGIN_CHAIN_ID:
+            raise AssertionError(f"origin-chain inferred send_to_user failed: status={status} body={origin_res}")
+        _, origin_fetch = request_get_json(f"/chats/{urllib.parse.quote(ORIGIN_COORDINATOR_ID)}/messages?chain_id={ORIGIN_CHAIN_ID}", user_token)
+        origin_matches = [m for m in origin_fetch.get("messages", []) if m.get("message_id") == origin_res.get("message_id")]
+        if len(origin_matches) != 1 or origin_matches[0].get("body") != origin_body or origin_matches[0].get("chain_id") != ORIGIN_CHAIN_ID:
+            raise AssertionError(f"origin-chain reply missing from completed chain chat: {origin_fetch}")
 
         create_chain(user_token, "Chain-scoped send_to_user", CHAIN_ID, COORDINATOR_ID)
 

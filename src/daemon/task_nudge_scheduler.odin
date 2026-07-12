@@ -219,6 +219,7 @@ task_autoscaler_ensure_chain_coordinator :: proc(chain_id, reason, priority: str
 
 task_autoscaler_ensure_agent :: proc(chain: Task_Chain_State, agent_instance_id, task_id, priority: string, now: i64, reason: string = "") -> bool {
 	if agent_instance_id == "" do return false
+	_ = agent_record_bind_origin_chain(agent_instance_id, chain)
 	boot_priority := priority
 	if boot_priority == "" do boot_priority = "normal"
 	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=ensure_agent_requested source=%s chain=%s team=%s task=%s target=%s priority=%s", now, reason, chain.chain_id, chain.team_id, task_id, agent_instance_id, boot_priority)
@@ -330,7 +331,7 @@ task_autoscaler_launch_agent :: proc(chain: Task_Chain_State, agent_instance_id:
 	now := router_now_unix_ms()
 	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=resolve_config_done source=%s chain=%s team=%s task=%s target=%s template=%s provider=%s tier=%s project=%s", now, now - launch_start_ms, launch_source, chain.chain_id, chain.team_id, launch_task_id, agent_instance_id, template_id, provider_profile, model_tier, chain.project_id)
 	fmt.printfln("RUNTIME_RECONCILE_AGENT_CONFIG: target=%s chain=%s team=%s template=%s provider=%s tier=%s project=%s", agent_instance_id, chain.chain_id, chain.team_id, template_id, provider_profile, model_tier, chain.project_id)
-	rec_id, final_tier, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, provider_profile, chain.project_id, "", model_tier)
+	rec_id, final_tier, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, provider_profile, chain.project_id, "", model_tier, chain.chain_id)
 	if !upsert_ok || rec_id == "" {
 		now = router_now_unix_ms()
 		fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=record_upsert_failed source=%s chain=%s team=%s task=%s target=%s", now, now - launch_start_ms, launch_source, chain.chain_id, chain.team_id, launch_task_id, agent_instance_id)

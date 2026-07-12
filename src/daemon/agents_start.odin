@@ -155,6 +155,7 @@ handle_agents_disassociate :: proc(client: net.TCP_Socket, body: string) {
 // agent_record_id and the final model_tier, or ("", "") on failure.
 agent_record_upsert :: proc(
 	agent_instance_id, display_label, template_id, provider_profile, project_id, run_dir_override, model_tier: string,
+	origin_chain_id: string = "",
 ) -> (agent_record_id: string, final_tier: string, ok: bool) {
 	if template_id == "guide" && !guide_agent_is_singleton(agent_instance_id) {
 		fmt.printfln("GUIDE_LAUNCH ts_unix_ms=%d stage=record_upsert_rejected target=%s template=%s reason=guide_template_reserved", router_now_unix_ms(), agent_instance_id, template_id)
@@ -169,6 +170,7 @@ agent_record_upsert :: proc(
 	tier := normalize_model_tier(model_tier)
 	pp := provider_profile
 	resolved_project_id := project_id
+	resolved_origin_chain_id := origin_chain_id
 	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 {
 		rec_id = agent_instance_records[idx].agent_record_id
 		if run_dir == "" do run_dir = agent_instance_records[idx].run_dir
@@ -177,6 +179,7 @@ agent_record_upsert :: proc(
 		// must NOT clobber the stored association. Use the stored value as the
 		// fallback; explicit disassociation goes through /agents/disassociate.
 		if resolved_project_id == "" do resolved_project_id = agent_instance_records[idx].project_id
+		if agent_instance_records[idx].origin_chain_id != "" do resolved_origin_chain_id = agent_instance_records[idx].origin_chain_id
 	}
 	if pp == "" do pp = "pi"
 	ev := Agent_Instance_Event{
@@ -187,12 +190,37 @@ agent_record_upsert :: proc(
 		template_id = template_id,
 		provider_profile = pp,
 		project_id = resolved_project_id,
+		origin_chain_id = resolved_origin_chain_id,
 		run_dir = run_dir,
 		model_tier = tier,
 		author = "api",
 	}
 	if !agent_store_append_event(ev) do return "", "", false
 	return rec_id, tier, true
+}
+
+agent_record_bind_origin_chain :: proc(agent_instance_id: string, chain: Task_Chain_State) -> bool {
+	if agent_instance_id == "" || chain.chain_id == "" do return false
+	display_name := agent_instance_id
+	template_id := derive_agent_class(agent_instance_id)
+	provider_profile := memory_auditor_resolve_pref("", "default_agent_provider_profile")
+	model_tier := memory_auditor_resolve_pref("", "default_agent_model_tier")
+	if provider_profile == "" do provider_profile = "pi"
+	if model_tier == "" do model_tier = "normal"
+	if team_template, team_provider, team_tier, ok := task_autoscaler_team_role_defaults(chain, agent_instance_id); ok {
+		if team_template != "" do template_id = team_template
+		if team_provider != "" do provider_profile = team_provider
+		if team_tier != "" do model_tier = team_tier
+	}
+	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 {
+		rec := agent_instance_records[idx]
+		if rec.display_name != "" do display_name = rec.display_name
+		if rec.template_id != "" do template_id = rec.template_id
+		if rec.provider_profile != "" do provider_profile = rec.provider_profile
+		if rec.model_tier != "" do model_tier = rec.model_tier
+	}
+	_, _, ok := agent_record_upsert(agent_instance_id, display_name, template_id, provider_profile, chain.project_id, "", model_tier, chain.chain_id)
+	return ok
 }
 
 handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
@@ -289,6 +317,7 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 	strings.write_string(builder, `","template_id":"`); json_write_string(builder, rec.template_id)
 	strings.write_string(builder, `","provider_profile":"`); json_write_string(builder, rec.provider_profile)
 	strings.write_string(builder, `","project_id":"`); json_write_string(builder, rec.project_id)
+	strings.write_string(builder, `","origin_chain_id":"`); json_write_string(builder, rec.origin_chain_id)
 	project_name := ""
 	if rec.project_id != "" {
 		if pidx := project_index(rec.project_id); pidx >= 0 do project_name = project_records[pidx].name

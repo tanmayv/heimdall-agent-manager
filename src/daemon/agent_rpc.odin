@@ -182,7 +182,23 @@ agent_rpc_infer_reply_chain_id :: proc(agent_instance_id: string) -> (chain_id: 
 		if count > 1 do return "", false, true
 	}
 	if count == 1 do return candidate, true, false
+	if origin_chain_id := agent_rpc_origin_chain_id_for_agent(agent_instance_id); origin_chain_id != "" {
+		return origin_chain_id, true, false
+	}
 	return "", false, false
+}
+
+agent_rpc_origin_chain_id_for_agent :: proc(agent_instance_id: string) -> string {
+	idx := agent_record_index_by_instance(agent_instance_id)
+	if idx < 0 do return ""
+	origin_chain_id := agent_instance_records[idx].origin_chain_id
+	if origin_chain_id == "" do return ""
+	chain_idx, found := task_existing_chain_index(origin_chain_id)
+	if !found do return ""
+	chain := task_chains[chain_idx]
+	if chain.chain_id == "" || chain.archived || chain.status == "archived" do return ""
+	if chain.coordinator_agent_instance_id != agent_instance_id do return ""
+	return origin_chain_id
 }
 
 agent_rpc_chain_is_reply_candidate_for_agent :: proc(chain: Task_Chain_State, agent_instance_id: string) -> bool {
