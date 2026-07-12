@@ -746,7 +746,7 @@ default_config :: proc() -> Config {
 	cfg.wrapper.tmux_window_prefix = "agent"
 	cfg.wrapper.agent_run_dir = ""
 	cfg.wrapper.use_random_dir = false
-	cfg.wrapper.project = "default"
+	cfg.wrapper.project = ""
 	cfg.wrapper.memory_templates = nil
 
 	cfg.ctl.daemon_url = "http://127.0.0.1:49322"

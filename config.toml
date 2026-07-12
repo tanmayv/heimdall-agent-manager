@@ -162,7 +162,6 @@ prompt_flags = ["--prompt-interactive"]
 starter_prompt = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap files (AGENTS.md and .agents/skills/) for context."
 
 [wrapper.agent-cmd.antigravity.bootstrap.AGENTS_MD]
-content = ["IDENTITY", "GUIDANCE", "PROJECT", "MEMORY"]
 name = "AGENTS.md"
 
 [wrapper.agent-cmd.antigravity.bootstrap.SKILLS]
