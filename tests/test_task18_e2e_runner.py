@@ -23,7 +23,7 @@ REQUIRED_SNIPPETS = [
     "--allow-external-blockers",
     "openai-codex/gpt-5.3-codex-spark",
     "generated-isolated-empty",
-    "home-http-load-evidence",
+    "operator-facing freshness diagnostics should be hidden",
     "chain-coordinator-composer-input",
     "Needs attention",
     "BS-6/UI-5/API-4",

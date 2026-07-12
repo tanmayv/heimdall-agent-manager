@@ -267,13 +267,34 @@ function chainProjectId(chain: Chain) {
   return chain.projectId || 'default';
 }
 
+type ChainProgress = {
+  total: number;
+  completed: number;
+  incomplete: number;
+  blocked: number;
+  reviewReady: number;
+  percent: number;
+  label: string;
+};
+
+const TASK_PROGRESS_COMPLETE_STATUSES = new Set(['approved', 'done', 'completed']);
+const TASK_PROGRESS_EXCLUDED_STATUSES = new Set(['cancelled', 'archived', 'abandoned']);
+
+function buildChainProgress(chainId: string, chainTaskIds: Record<string, string[]>, tasksById: Record<string, any>): ChainProgress {
+  const ids = chainTaskIds?.[chainId] || [];
+  const tasks = ids.map((id) => tasksById?.[id]).filter(Boolean).filter((task) => !TASK_PROGRESS_EXCLUDED_STATUSES.has(String(task.status || '')));
+  const completed = tasks.filter((task) => TASK_PROGRESS_COMPLETE_STATUSES.has(String(task.status || ''))).length;
+  const blocked = tasks.filter((task) => task.status === 'blocked').length;
+  const reviewReady = tasks.filter((task) => task.status === 'review_ready').length;
+  const total = tasks.length;
+  const percent = total === 0 ? 0 : Math.round((completed / total) * 100);
+  const label = total === 0 ? 'No tasks yet' : `${completed} of ${total} tasks complete`;
+  return { total, completed, incomplete: Math.max(0, total - completed), blocked, reviewReady, percent, label };
+}
+
 function chainMeta(chainId: string, chainTaskIds: Record<string, string[]>, tasksById: Record<string, any>) {
-  const ids = chainTaskIds[chainId] || [];
-  const tasks = ids.map((id) => tasksById[id]).filter(Boolean);
-  const done = tasks.filter((t) => ['approved', 'done', 'completed'].includes(t.status)).length;
-  const blocked = tasks.filter((t) => t.status === 'blocked').length;
-  const reviewReady = tasks.filter((t) => t.status === 'review_ready').length;
-  return `${done} / ${tasks.length} done · ${blocked} blocked · ${reviewReady} review-ready`;
+  const progress = buildChainProgress(chainId, chainTaskIds, tasksById);
+  return `${progress.completed} / ${progress.total} done · ${progress.blocked} blocked · ${progress.reviewReady} review-ready`;
 }
 
 function isUserActionableTask(task: any): boolean {
@@ -798,6 +819,7 @@ export default function App() {
                           const accent = chainStatusAccent(chain.status);
                           const coordinatorId = chain.coordinatorAgentInstanceId || '';
                           const unread = coordinatorId && !active ? (unreadByAgentId[coordinatorId] || 0) : 0;
+                          const progress = buildChainProgress(chain.chainId, chainTaskIds, tasksById);
                           return (
                             <button
                               key={chain.chainId}
@@ -805,17 +827,25 @@ export default function App() {
                               data-status={chain.status}
                               data-unread={unread > 0 ? unread : undefined}
                               onClick={() => openChain(chain.chainId)}
-                              title={`${chain.title || chain.chainId} · ${chain.status}${unread ? ` · ${unread} unread` : ''}`}
-                              className={`group flex w-full items-center gap-2 border-l-2 px-2 py-1 text-left text-[12px] transition ${accent.border} ${active ? 'bg-white/[0.06] text-zinc-50' : 'text-zinc-400 hover:bg-white/[0.03] hover:text-zinc-100'}`}
+                              title={`${chain.title || chain.chainId} · ${chain.status} · ${progress.label}${unread ? ` · ${unread} unread` : ''}`}
+                              className={`group flex w-full flex-col gap-1 border-l-2 px-2 py-1.5 text-left text-[12px] transition ${accent.border} ${active ? 'bg-white/[0.06] text-zinc-50' : 'text-zinc-400 hover:bg-white/[0.03] hover:text-zinc-100'}`}
                             >
-                              <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${accent.dot}`}></span>
-                              <span className="min-w-0 flex-1 truncate">{chain.title || chain.chainId}</span>
-                              {unread > 0 && (
-                                <span
-                                  data-debug-id={`sidebar-chain-unread-${chain.chainId}`}
-                                  className="shrink-0 rounded-full bg-sky-400 px-1.5 py-0.5 text-[9px] font-semibold text-black"
-                                >{unread > 99 ? '99+' : unread}</span>
-                              )}
+                              <span className="flex w-full min-w-0 items-center gap-2">
+                                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${accent.dot}`}></span>
+                                <span className="min-w-0 flex-1 truncate">{chain.title || chain.chainId}</span>
+                                {unread > 0 && (
+                                  <span
+                                    data-debug-id={`sidebar-chain-unread-${chain.chainId}`}
+                                    className="shrink-0 rounded-full bg-sky-400 px-1.5 py-0.5 text-[9px] font-semibold text-black"
+                                  >{unread > 99 ? '99+' : unread}</span>
+                                )}
+                              </span>
+                              <span data-debug-id={`sidebar-chain-progress-${chain.chainId}`} className="ml-3 flex w-[calc(100%-0.75rem)] items-center gap-1.5 text-[9px] text-zinc-500">
+                                <span className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-white/10">
+                                  <span className="block h-full rounded-full bg-sky-400/80" style={{ width: `${progress.percent}%` }} />
+                                </span>
+                                <span className="shrink-0 tabular-nums">{progress.total === 0 ? '—' : `${progress.percent}%`}</span>
+                              </span>
                             </button>
                           );
                         })}
@@ -1105,7 +1135,7 @@ function buildChainCreationProgress(progress: any, chainsById: Record<string, an
     { key: 'workspace', label: progress.wantsVcs ? 'Workspace setup task created' : 'Workspace skipped', done: workspaceReady, detail: progress.wantsVcs ? (workspaceSetupTask?.taskId || progress.workspaceSetupTaskId || 'creating setup task') : 'VCS not requested' },
     { key: 'task', label: 'Coordinator discovery task created', done: Boolean(discoveryTask), detail: discoveryTask?.taskId || progress.discoveryTaskId || 'waiting for task' },
     { key: 'boot', label: 'Coordinator start requested', done: Boolean(progress.coordinatorBootRequested || coordinator), detail: progress.coordinatorBootRequested ? `${coordinatorId || 'coordinator'} launch requested by chain create` : (coordinatorId || 'waiting for coordinator') },
-    { key: 'running', label: 'Coordinator running / start-success', done: coordinatorReady, detail: coordinator ? `${coordinator.label || coordinator.id} · ${status || (coordinator.connected ? 'connected' : 'starting')}` : (timedOut ? 'not ready after 10s' : 'starting') },
+    { key: 'running', label: 'Coordinator running / start-success', done: coordinatorReady, detail: coordinator ? `${coordinator.label || coordinator.id} · ${status || (coordinator.connected ? 'connected' : 'starting')}` : (timedOut ? 'not ready after 20s' : 'starting') },
     { key: 'claimed', label: 'Initial task claimed', done: Boolean(discoveryTask?.status === 'in_progress' || coordinator?.currentTaskId === discoveryTask?.taskId), detail: discoveryTask?.status || 'optional after startup' },
   ];
   return { ...progress, chain, team, tasks, workspaceSetupTask, discoveryTask, coordinator, coordinatorId, coordinatorReady, elapsedMs, timedOut, steps };
@@ -1160,17 +1190,11 @@ function HomePage({ groups, activeProject, loading, chainTaskIds, tasksById, hom
         <div>
           <div className="text-xs uppercase tracking-[0.25em] text-zinc-500">Home</div>
           <h1 className="mt-2 text-4xl font-semibold">Task chains</h1>
-          <p className="mt-2 max-w-2xl text-sm text-zinc-400">Live Redux-backed chain list grouped by project. Startup HTTP load, focus/periodic revalidation, and WebSocket-triggered refetches keep this view fresh automatically.</p>
+          <p className="mt-2 max-w-2xl text-sm text-zinc-400">Create and open team task chains grouped by project. Each row summarizes chain status, ownership, and completion at a glance.</p>
         </div>
         <button data-debug-id="home-new-chain-btn" onClick={() => newChain(activeProject?.projectId)} className="rounded-2xl bg-sky-400 px-5 py-3 font-semibold text-black hover:bg-sky-300">+ New chain</button>
       </div>
-      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
-        <div className="flex flex-wrap gap-2 text-[11px] text-zinc-500">
-          <span data-debug-id="home-http-load-evidence" className="rounded-full bg-white/5 px-3 py-1">HTTP load: {home.lastHttpLoadUnixMs ? new Date(home.lastHttpLoadUnixMs).toLocaleTimeString() : 'pending'}</span>
-          <span data-debug-id="home-periodic-evidence" className="rounded-full bg-white/5 px-3 py-1">Periodic revalidation: every {PERIODIC_REVALIDATE_MS / 1000}s</span>
-          <span data-debug-id="home-ws-evidence" className="rounded-full bg-white/5 px-3 py-1">Last WS refetch: {home.lastWsRefreshReason || 'none yet'}</span>
-          <span data-debug-id="home-local-action-evidence" className="rounded-full bg-white/5 px-3 py-1">Local action: {home.lastLocalAction || 'none yet'}</span>
-        </div>
+      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(320px,0.8fr)]">
         <button data-debug-id="home-open-memory-btn" onClick={openMemory} className="rounded-3xl border border-sky-400/20 bg-sky-400/10 p-5 text-left transition hover:border-sky-300/40 hover:bg-sky-400/15">
           <div className="text-xs uppercase tracking-[0.22em] text-sky-200">Memory Management</div>
           <div className="mt-2 text-xl font-semibold text-zinc-100">Open memory browser, detail view, proposal forms, and review queue</div>
@@ -2079,6 +2103,35 @@ function dependencyOrderedTasks(tasks: any[], tasksById: Record<string, any>): a
   return out;
 }
 
+function ChainProgressPanel({ chain, progress }: { chain: any; progress: ChainProgress }) {
+  const pctLabel = progress.total === 0 ? 'No task plan yet' : `${progress.percent}% complete`;
+  const incompleteLabel = progress.total === 0 ? 'Waiting for tasks to be created' : `${progress.incomplete} remaining`;
+  return (
+    <section data-debug-id="chain-progress-panel" className="mt-8 overflow-hidden rounded-3xl border border-sky-400/20 bg-gradient-to-br from-sky-400/15 via-white/[0.04] to-emerald-400/10 p-5 shadow-2xl shadow-sky-950/20">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <div className="text-xs uppercase tracking-[0.22em] text-sky-200/80">Chain progress</div>
+          <h2 className="mt-2 text-2xl font-semibold text-white">{pctLabel}</h2>
+          <p data-debug-id="chain-progress-summary" className="mt-1 text-sm text-zinc-300">{progress.label} · {incompleteLabel}</p>
+        </div>
+        <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-right">
+          <div className="text-3xl font-semibold tabular-nums text-white">{progress.total === 0 ? '—' : `${progress.percent}%`}</div>
+          <div className="mt-1 text-xs text-zinc-400">{chain.status || 'unknown'} chain</div>
+        </div>
+      </div>
+      <div className="mt-5 h-3 overflow-hidden rounded-full bg-black/30 ring-1 ring-white/10">
+        <div data-debug-id="chain-progress-bar" className="h-full rounded-full bg-gradient-to-r from-sky-300 via-cyan-300 to-emerald-300 shadow-lg shadow-sky-400/25 transition-all" style={{ width: `${progress.percent}%` }} />
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2 text-xs text-zinc-300">
+        <span data-debug-id="chain-progress-complete-count" className="rounded-full bg-emerald-400/10 px-3 py-1 text-emerald-100">{progress.completed} complete</span>
+        <span data-debug-id="chain-progress-active-count" className="rounded-full bg-white/10 px-3 py-1">{progress.incomplete} active</span>
+        <span data-debug-id="chain-progress-review-count" className="rounded-full bg-sky-400/10 px-3 py-1 text-sky-100">{progress.reviewReady} review-ready</span>
+        <span data-debug-id="chain-progress-blocked-count" className="rounded-full bg-amber-400/10 px-3 py-1 text-amber-100">{progress.blocked} blocked</span>
+      </div>
+    </section>
+  );
+}
+
 function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, taskLogsByTaskId, onBack, onSend, onToggleDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenChain, onOpenTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask }: any) {
   const [draft, setDraft] = useState('');
   const [selectedTaskId, setSelectedTaskId] = useState('');
@@ -2111,6 +2164,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
   const coordinatorLabel = coordinatorAgent?.label || coordinatorAgentId || 'Coordinator';
   const coordinatorLastSeen = coordinatorAgent?.lastSeen && coordinatorAgent.lastSeen !== '—' ? `Last seen ${coordinatorAgent.lastSeen}` : '';
   const orderedTasks = useMemo(() => dependencyOrderedTasks(tasks, tasksById || {}), [tasks, tasksById]);
+  const chainProgress = useMemo(() => buildChainProgress(chain.chainId, { [chain.chainId]: tasks.map((task: any) => task.taskId).filter(Boolean) }, tasksById || {}), [chain.chainId, tasks, tasksById]);
   const activeTasks = orderedTasks.filter((task: any) => !isCompletedTask(task));
   const completedTasks = orderedTasks.filter(isCompletedTask);
   const openTask = (task: any) => {
@@ -2200,7 +2254,9 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
         </div>
       )}
 
-      <section data-debug-id="chain-task-surface" className="mt-8 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+      <ChainProgressPanel chain={chain} progress={chainProgress} />
+
+      <section data-debug-id="chain-task-surface" className="mt-6 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="font-semibold">Task chain plan</h2>

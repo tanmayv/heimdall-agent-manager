@@ -604,13 +604,17 @@ def scenario_redux_freshness(h: Harness, sc: Scenario) -> ScenarioResult:
     steps: list[Step] = []
     artifacts: dict[str, str] = {}
     try:
-        step(steps, "wait for freshness evidence on Home", lambda: h.ui_wait_for_debug_id("home-http-load-evidence"))
-        elems = step(steps, "collect elements without manual refresh", lambda: h.ui("GET", "/elements"))
-        required = {"home-http-load-evidence", "home-periodic-evidence", "home-ws-evidence", "home-local-action-evidence"}
+        elems = step(steps, "collect Home elements without manual refresh", lambda: h.ui("GET", "/elements"))
+        hidden = {"home-http-load-evidence", "home-periodic-evidence", "home-ws-evidence", "home-local-action-evidence"}
         present = {e.get("debugId") for e in elems}
-        missing = sorted(required - present)
-        if missing:
-            raise HarnessError(f"missing freshness evidence IDs: {missing}")
+        visible_debug = sorted(hidden & present)
+        if visible_debug:
+            raise HarnessError(f"operator-facing freshness diagnostics should be hidden: {visible_debug}")
+        visible_text = "\n".join(str(e.get("text") or "") for e in elems)
+        forbidden_text = ["HTTP load:", "Periodic revalidation:", "Last WS refetch:", "Local action:"]
+        leaked = [text for text in forbidden_text if text in visible_text]
+        if leaked:
+            raise HarnessError(f"operator-facing freshness diagnostic text leaked: {leaked}")
         def wait_freshness() -> dict[str, Any]:
             deadline = time.time() + 30
             last: dict[str, Any] = {}
