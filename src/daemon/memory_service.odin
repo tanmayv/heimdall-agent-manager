@@ -10,7 +10,17 @@ Memory_Service_Result :: struct {
 	message: string,
 }
 
+MEMORY_SUBJECT_DEPRECATED_MESSAGE :: "subject_key and subject_agent are deprecated; use project, role, and task-chain targeting fields instead"
+
+memory_deprecated_subject_fields_error :: proc(body: string) -> string {
+	if json_has_key(body, "subject_key") || json_has_key(body, "subjectKey") || json_has_key(body, "subject_agent") || json_has_key(body, "subjectAgent") || json_has_key(body, "agent") {
+		return MEMORY_SUBJECT_DEPRECATED_MESSAGE
+	}
+	return ""
+}
+
 memory_service_propose :: proc(action, body, author: string) -> Memory_Service_Result {
+	if err := memory_deprecated_subject_fields_error(body); err != "" do return memory_error(400, err)
 	subject := extract_json_string(body, "subject_agent", "")
 	if subject == "" {
 		delete(subject)
@@ -205,6 +215,7 @@ memory_service_decide :: proc(decision, body, author: string) -> Memory_Service_
 }
 
 memory_service_list_json :: proc(body: string, calling_agent_id: string = "") -> string {
+	if err := memory_deprecated_subject_fields_error(body); err != "" do return memory_error(400, err).message
 	status_text := extract_json_string(body, "status", "active")
 	status, status_ok := memory_status_parse(status_text)
 	include_all := extract_json_bool(body, "include_all_statuses", false) || status_text == "all"

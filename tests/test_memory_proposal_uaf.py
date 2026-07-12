@@ -55,7 +55,8 @@ def main():
     try:
         prop_res = request_post("/memory/propose/new", {
             "agent_token": token,
-            "subject_agent": agent_id,
+            "scope": "template",
+            "template_key": "test-memory-proposal-uaf",
             "type": "fact",
             "title": "Initial Title",
             "body": "Initial Body text of proposal",
