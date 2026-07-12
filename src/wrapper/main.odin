@@ -379,8 +379,19 @@ startup_probe_agent :: proc(cfg: cfg_lib.Startup_Detection_Config, pane_id: stri
 				if idx < len(cfg.auto_enter_pre_keys) do pre_key = cfg.auto_enter_pre_keys[idx]
 				fmt.println("startup auto_enter matched idx", idx, "pattern", cfg.auto_enter_patterns[idx], "pre_key", pre_key)
 				if pre_key != "" {
-					pre_cmd := []string{"tmux", "send-keys", "-t", pane_id, pre_key}
-					_, _, _, _ = os.process_exec(os.Process_Desc{command = pre_cmd}, context.allocator)
+					// Support multi-key pre-sequences like "Tab Tab" or "Down Down".
+					// tmux send-keys accepts multiple key tokens as separate argv
+					// entries (e.g. `send-keys Tab Tab`) but not as a single
+					// space-joined argument, so we split here and pass each token
+					// on the argv. This lets config-authors express multi-step nav
+					// without escaping.
+					tokens := strings.fields(pre_key)
+					defer delete(tokens)
+					pre_cmd := make([dynamic]string, 0, len(tokens) + 4)
+					defer delete(pre_cmd)
+					append(&pre_cmd, "tmux", "send-keys", "-t", pane_id)
+					for tok in tokens do append(&pre_cmd, tok)
+					_, _, _, _ = os.process_exec(os.Process_Desc{command = pre_cmd[:]}, context.allocator)
 					// Tiny pause so the TUI registers the navigation before Enter
 					time.sleep(150 * time.Millisecond)
 				}
