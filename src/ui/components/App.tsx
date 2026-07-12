@@ -169,17 +169,22 @@ function collectAgentAssignments(agent: any, tasksById: Record<string, any>, cha
   return results.slice(0, 1);
 }
 
-function agentRuntimeDot(agent: any): { color: string; label: string } {
+export function agentRuntimeDot(agent: any): { color: string; label: string } {
   if (!agent) return { color: 'bg-zinc-500', label: 'unknown' };
   const startup = String(agent.startupStatus || '').toLowerCase();
   const state = String(agent.state || agent.status || '').toLowerCase();
+  const activity = String(agent.activityStatus || agent.activity_status || '').toLowerCase();
   const blocked = agent.blockedReason || state === 'blocked' || startup === 'startup_blocked' || startup === 'blocked';
+  const live = Boolean(agent.connected || startup === 'ready' || state === 'ready' || state === 'live' || state === 'connected' || state === 'idle');
   if (blocked) return { color: 'bg-red-400', label: 'blocked' };
+  if (startup === 'startup_failed' || startup === 'startup_unknown') return { color: startup === 'startup_failed' ? 'bg-red-400' : 'bg-violet-400', label: startup.replace('startup_', '') };
   if (state === 'missing' || state === 'archived') return { color: 'bg-zinc-500', label: state };
-  if (agent.currentTaskId) return { color: 'bg-teal-400', label: 'working' };
-  if (agent.connected || startup === 'ready' || state === 'ready' || state === 'live' || state === 'connected' || state === 'idle') return { color: 'bg-emerald-400', label: state || 'connected' };
-  if (startup === 'starting' || state === 'starting' || state === 'warming' || state === 'restarting') return { color: 'bg-amber-400 animate-pulse', label: startup || state || 'starting' };
   if (state === 'disconnected' || state === 'offline' || state === 'stopped') return { color: 'bg-zinc-500', label: state };
+  if (startup === 'starting' || state === 'starting' || state === 'warming' || state === 'restarting') return { color: 'bg-amber-400 animate-pulse', label: startup || state || 'starting' };
+  if (live && activity === 'active') return { color: 'bg-emerald-400', label: 'active' };
+  if (live && activity === 'idle') return { color: 'bg-amber-300', label: 'idle' };
+  if (live && agent.currentTaskId) return { color: 'bg-teal-400', label: 'working' };
+  if (live) return { color: 'bg-emerald-400', label: state || 'connected' };
   return { color: 'bg-zinc-500', label: state || startup || 'unknown' };
 }
 
@@ -2125,26 +2130,34 @@ function taskReviewerIds(task: any): string[] {
   return [...ids];
 }
 
-function isAgentRunning(agent: any): boolean {
+export function isAgentRunning(agent: any): boolean {
   if (!agent) return false;
   const startup = String(agent.startupStatus || '').toLowerCase();
   const state = String(agent.state || agent.status || '').toLowerCase();
   if (agent.blockedReason || state === 'blocked' || startup === 'blocked' || startup === 'startup_blocked') return false;
   if (agent.currentTaskId || agent.connected) return true;
-  return ['ready', 'live', 'connected', 'idle', 'working'].includes(state) || ['ready', 'connected'].includes(startup);
+  return ['ready', 'live', 'connected', 'idle', 'working', 'active'].includes(state) || ['ready', 'connected'].includes(startup);
 }
 
 function TaskAgentChip({ role, agentId, agent, active }: any) {
   const runtime = agentRuntimeDot(agent || { id: agentId, state: agentId ? 'missing' : 'unknown' });
   const running = isAgentRunning(agent);
-  const working = Boolean(active && running);
+  const activity = String(agent?.activityStatus || agent?.activity_status || '').toLowerCase();
+  const working = Boolean(active && running && (activity === '' || activity === 'unknown' || activity === 'active'));
+  const idle = Boolean(active && running && activity === 'idle');
+  const workingLabel = activity === 'active' ? 'active' : 'working…';
+  const tone = working
+    ? 'border-emerald-400/35 bg-emerald-400/10 text-emerald-100'
+    : idle
+      ? 'border-amber-300/35 bg-amber-300/10 text-amber-100'
+      : 'border-white/10 bg-black/20 text-zinc-400';
   return (
-    <span data-debug-id={`chain-task-${role.toLowerCase()}-${agentId || 'none'}`} className={`inline-flex max-w-[220px] items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] ${working ? 'border-teal-400/35 bg-teal-400/10 text-teal-100' : 'border-white/10 bg-black/20 text-zinc-400'}`} title={`${role}: ${agentId || 'none'} · ${runtime.label}`}>
-      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${working ? 'animate-ping bg-teal-300' : runtime.color}`}></span>
+    <span data-debug-id={`chain-task-${role.toLowerCase()}-${agentId || 'none'}`} className={`inline-flex max-w-[220px] items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] ${tone}`} title={`${role}: ${agentId || 'none'} · ${runtime.label}`}>
+      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${working ? 'animate-ping bg-emerald-300' : idle ? 'bg-amber-300' : runtime.color}`}></span>
       <span className="shrink-0 text-zinc-500">{role}</span>
       <span className="truncate">{agent?.label || agentId || '—'}</span>
       <span className="shrink-0 text-zinc-600">·</span>
-      <span className="shrink-0">{working ? 'working…' : runtime.label}</span>
+      <span className="shrink-0">{working ? workingLabel : idle ? 'idle' : runtime.label}</span>
     </span>
   );
 }

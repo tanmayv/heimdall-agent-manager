@@ -252,7 +252,7 @@ function MemoryPanel({ records, loading }: any) {
 }
 
 function AgentsPanel({ agents }: any) {
-  return <Panel title="Agents (raw registry)" subtitle="Debug view of daemon agent registry, moved from the old Agents top-level tab."><div className="grid gap-3">{agents.length === 0 ? <Empty text="No agents loaded." /> : agents.map((agent: any) => <Card key={agent.id}><div className="flex items-center justify-between gap-3"><div className="font-semibold">{agent.label || agent.id}</div><span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-zinc-400">{agent.state || agent.status || 'unknown'}</span></div><div className="mt-1 text-xs text-zinc-500">{agent.id} · project {agent.projectId || '—'} · current task {agent.currentTaskId || 'idle'}</div></Card>)}</div></Panel>;
+  return <Panel title="Agents (raw registry)" subtitle="Debug view of daemon agent registry, moved from the old Agents top-level tab."><div className="grid gap-3">{agents.length === 0 ? <Empty text="No agents loaded." /> : agents.map((agent: any) => <Card key={agent.id}><div className="flex items-center justify-between gap-3"><div className="font-semibold">{agent.label || agent.id}</div><span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-zinc-400">{agent.state || agent.status || 'unknown'}</span></div><div className="mt-1 text-xs text-zinc-500">{agent.id} · project {agent.projectId || '—'} · current task {agent.currentTaskId || 'idle'} · activity {agent.activityStatus || 'unknown'}</div></Card>)}</div></Panel>;
 }
 
 function DirectChatPanel({ agents, agentId, setAgentId, messages, draft, setDraft, sending, onSend }: any) {

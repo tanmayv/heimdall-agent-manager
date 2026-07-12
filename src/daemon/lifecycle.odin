@@ -131,6 +131,9 @@ handle_heartbeat :: proc(client: net.TCP_Socket, body: string) {
 		startup_status           = extract_json_string(body, "startup_status", ""),
 		startup_reason_code      = extract_json_string(body, "startup_reason_code", ""),
 		startup_safe_diagnostic  = extract_json_string(body, "startup_safe_diagnostic", ""),
+		activity_status          = extract_json_string(body, "activity_status", ""),
+		activity_checked_unix_ms = i64(extract_json_int(body, "activity_checked_unix_ms", 0)),
+		activity_source          = extract_json_string(body, "activity_source", ""),
 	}
 
 	if !valid_agent_instance_id(snap.agent_instance_id) {
@@ -139,6 +142,10 @@ handle_heartbeat :: proc(client: net.TCP_Socket, body: string) {
 	}
 	if snap.display_name == "" || snap.provider_profile == "" || snap.provider_tier == "" {
 		write_response(client, 400, "Bad Request", `{"ok":false,"error":"missing_required","message":"heartbeat requires display_name, provider_profile, provider_tier"}`)
+		return
+	}
+	if snap.activity_status != "" && snap.activity_status != "active" && snap.activity_status != "idle" && snap.activity_status != "unknown" {
+		write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid activity_status"}`)
 		return
 	}
 	if snap.provider_tier != "cheap" && snap.provider_tier != "normal" && snap.provider_tier != "smart" {

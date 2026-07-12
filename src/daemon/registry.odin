@@ -26,6 +26,9 @@ Agent_Record :: struct {
 	startup_reason_code: string,
 	startup_safe_diagnostic: string,
 	startup_updated_unix_ms: i64,
+	activity_status: string,
+	activity_checked_unix_ms: i64,
+	activity_source: string,
 	provider_profile: string,
 	provider_tier: string,
 	project_id: string,
@@ -57,6 +60,9 @@ Heartbeat_Snapshot :: struct {
 	startup_status: string,
 	startup_reason_code: string,
 	startup_safe_diagnostic: string,
+	activity_status: string,
+	activity_checked_unix_ms: i64,
+	activity_source: string,
 }
 
 startup_status_rank :: proc(status: string) -> int {
@@ -97,6 +103,18 @@ registry_apply_heartbeat_snapshot :: proc(snap: Heartbeat_Snapshot) -> (runtime_
 	}
 	if snap.blocked_reason != a.blocked_reason {
 		a.blocked_reason = strings.clone(snap.blocked_reason)
+		runtime_changed = true
+	}
+	if snap.activity_status != "" && snap.activity_status != a.activity_status {
+		a.activity_status = strings.clone(snap.activity_status)
+		runtime_changed = true
+	}
+	if snap.activity_checked_unix_ms != 0 && snap.activity_checked_unix_ms != a.activity_checked_unix_ms {
+		a.activity_checked_unix_ms = snap.activity_checked_unix_ms
+		runtime_changed = true
+	}
+	if snap.activity_source != a.activity_source {
+		a.activity_source = strings.clone(snap.activity_source)
 		runtime_changed = true
 	}
 
@@ -547,7 +565,10 @@ registry_list_json :: proc() -> string {
 		strings.write_string(&builder, `","display_name":"`); json_write_string(&builder, a.display_name)
 		strings.write_string(&builder, fmt.tprintf(`","connected":%v,"has_ws":%v,"last_seen_unix_ms":%d`, a.connected, a.has_ws, a.last_seen_unix_ms))
 		strings.write_string(&builder, `,"startup_status":"`); json_write_string(&builder, a.startup_status)
-		strings.write_string(&builder, `","provider_profile":"`); json_write_string(&builder, a.provider_profile)
+		strings.write_string(&builder, `","activity_status":"`); json_write_string(&builder, a.activity_status)
+		strings.write_string(&builder, `","activity_source":"`); json_write_string(&builder, a.activity_source)
+		strings.write_string(&builder, `","activity_checked_unix_ms":`); strings.write_string(&builder, fmt.tprintf("%d", a.activity_checked_unix_ms))
+		strings.write_string(&builder, `,"provider_profile":"`); json_write_string(&builder, a.provider_profile)
 		strings.write_string(&builder, `","provider_tier":"`); json_write_string(&builder, a.provider_tier)
 		strings.write_string(&builder, `","project_id":"`); json_write_string(&builder, a.project_id)
 		strings.write_string(&builder, `"}`)

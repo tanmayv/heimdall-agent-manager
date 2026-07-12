@@ -98,10 +98,12 @@ guide_rpc_status_json :: proc() -> string {
 		strings.write_string(&b, `","connected":`); strings.write_string(&b, "true" if ag.connected else "false")
 		strings.write_string(&b, `,"startup_status":"`); json_write_string(&b, ag.startup_status)
 		strings.write_string(&b, `","startup_reason_code":"`); json_write_string(&b, ag.startup_reason_code)
-		strings.write_string(&b, `","tmux_pane":"`); json_write_string(&b, ag.tmux_pane)
+		strings.write_string(&b, `","activity_status":"`); json_write_string(&b, ag.activity_status)
+		strings.write_string(&b, `","activity_checked_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", ag.activity_checked_unix_ms))
+		strings.write_string(&b, `,"tmux_pane":"`); json_write_string(&b, ag.tmux_pane)
 		strings.write_string(&b, `"`)
 	} else {
-		strings.write_string(&b, `","connected":false,"startup_status":"offline","startup_reason_code":"","tmux_pane":""`)
+		strings.write_string(&b, `","connected":false,"startup_status":"offline","startup_reason_code":"","activity_status":"unknown","activity_checked_unix_ms":0,"tmux_pane":""`)
 	}
 	strings.write_string(&b, `}`)
 	return strings.to_string(b)

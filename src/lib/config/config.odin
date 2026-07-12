@@ -113,6 +113,15 @@ Startup_Detection_Config :: struct {
 	sanitized_reason_mapping: []string,
 }
 
+Activity_Detection_Config :: struct {
+	enabled: bool,
+	sample_line_count: int,
+	ignore_bottom_lines: int,
+	check_interval_seconds: int,
+	min_gap_ms: int,
+	max_gap_ms: int,
+}
+
 Model_Tiers_Config :: struct {
 	flag:   string,
 	cheap:  string,
@@ -150,6 +159,7 @@ Agent_Command_Config :: struct {
 	memory_templates: []string,
 	stop_message: string,
 	startup_detection: Startup_Detection_Config,
+	activity_detection: Activity_Detection_Config,
 }
 
 Ctl_Config :: struct {
@@ -170,6 +180,7 @@ Section :: enum {
 	Wrapper_Agent_Bootstrap_Feature,
 	Wrapper_Agent_Models,
 	Wrapper_Agent_Startup_Detection,
+	Wrapper_Agent_Activity_Detection,
 	Guide_Agent,
 	Ctl,
 }
@@ -274,6 +285,14 @@ parse_config :: proc(content: string, cfg: ^Config) {
 			ensure_agent_command(&cfg.wrapper, current_agent_command)
 			continue
 		}
+		// [wrapper.agent-cmd.<name>.activity_detection]
+		// Length guard: prefix(19) + name(≥1) + ".activity_detection]"(20) = ≥40
+		if strings.has_prefix(line, "[wrapper.agent-cmd.") && strings.has_suffix(line, ".activity_detection]") && len(line) > 19 + len(".activity_detection]") {
+			section = .Wrapper_Agent_Activity_Detection
+			current_agent_command = line[len("[wrapper.agent-cmd."):len(line) - len(".activity_detection]")]
+			ensure_agent_command(&cfg.wrapper, current_agent_command)
+			continue
+		}
 		// [wrapper.agent-cmd.<name>]
 		// Length guard: prefix(19) + name(≥1) + "]"(1) = ≥21
 		if strings.has_prefix(line, "[wrapper.agent-cmd.") && strings.has_suffix(line, "]") && len(line) > 20 {
@@ -309,6 +328,8 @@ parse_config :: proc(content: string, cfg: ^Config) {
 			parse_models_key(current_agent_command, key, value, &cfg.wrapper)
 		case .Wrapper_Agent_Startup_Detection:
 			parse_startup_detection_key(current_agent_command, key, value, &cfg.wrapper)
+		case .Wrapper_Agent_Activity_Detection:
+			parse_activity_detection_key(current_agent_command, key, value, &cfg.wrapper)
 		case .Guide_Agent:
 			parse_guide_agent_key(key, value, &cfg.guide_agent)
 		case .Ctl:
@@ -464,6 +485,7 @@ ensure_agent_command :: proc(cfg: ^Wrapper_Config, name: string) -> int {
 	}
 	cmd := Agent_Command_Config{name = strings.clone(name)}
 	cmd.bootstrap.features = make(map[string]Bootstrap_Feature_Config)
+	cmd.activity_detection = default_activity_detection_config()
 	append(&cfg.agent_commands, cmd)
 	return len(cfg.agent_commands) - 1
 }
@@ -552,6 +574,26 @@ parse_startup_detection_key :: proc(name, key, value: string, cfg: ^Wrapper_Conf
 		sd.startup_unknown_is_blocked = parse_bool(value)
 	case "sanitized_reason_mapping", "reason_mapping":
 		sd.sanitized_reason_mapping = parse_string_array(value)
+	case:
+	}
+}
+
+parse_activity_detection_key :: proc(name, key, value: string, cfg: ^Wrapper_Config) {
+	idx := ensure_agent_command(cfg, name)
+	ad := &cfg.agent_commands[idx].activity_detection
+	switch key {
+	case "enabled":
+		ad.enabled = parse_bool(value)
+	case "sample_line_count":
+		if n, ok := strconv.parse_int(value); ok do ad.sample_line_count = int(n)
+	case "ignore_bottom_lines":
+		if n, ok := strconv.parse_int(value); ok do ad.ignore_bottom_lines = int(n)
+	case "check_interval_seconds":
+		if n, ok := strconv.parse_int(value); ok do ad.check_interval_seconds = int(n)
+	case "min_gap_ms":
+		if n, ok := strconv.parse_int(value); ok do ad.min_gap_ms = int(n)
+	case "max_gap_ms":
+		if n, ok := strconv.parse_int(value); ok do ad.max_gap_ms = int(n)
 	case:
 	}
 }
@@ -645,6 +687,17 @@ strip_comment :: proc(line: string) -> string {
 		return line[:idx]
 	}
 	return line
+}
+
+default_activity_detection_config :: proc() -> Activity_Detection_Config {
+	return Activity_Detection_Config{
+		enabled = true,
+		sample_line_count = 20,
+		ignore_bottom_lines = 0,
+		check_interval_seconds = 15,
+		min_gap_ms = 100,
+		max_gap_ms = 500,
+	}
 }
 
 default_config :: proc() -> Config {

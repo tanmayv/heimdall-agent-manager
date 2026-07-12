@@ -77,6 +77,13 @@ smart = "openai-codex/gpt-5.5"
 [wrapper.agent-cmd.pi.startup_detection]
 enabled = false
 
+[wrapper.agent-cmd.pi.activity_detection]
+enabled = true
+sample_line_count = 20
+ignore_bottom_lines = 0
+check_interval_seconds = 15
+min_gap_ms = 100
+max_gap_ms = 500
 
 [wrapper.agent-cmd.claude]
 # Claude subscription via pi + pi-anthropic-oauth. This intentionally launches
@@ -122,6 +129,15 @@ blocked_patterns = ["Enter auto mode"]
 startup_unknown_is_blocked = false
 sanitized_reason_mapping = ["trust=Claude directory trust prompt", "trust=Claude directory trust prompt", "bypass=Claude bypass permissions warning", "confirm=Claude interactive confirm prompt"]
 
+[wrapper.agent-cmd.claude.activity_detection]
+enabled = true
+sample_line_count = 20
+# Ignore volatile footer/timer lines if needed for this provider.
+ignore_bottom_lines = 0
+check_interval_seconds = 15
+min_gap_ms = 100
+max_gap_ms = 500
+
 [wrapper.agent-cmd.codex]
 command = ["codex"]
 yolo_flags = []
@@ -133,6 +149,7 @@ flag = "-m"
 cheap = "gpt-5"
 normal = "gpt-5"
 smart = "gpt-5-pro"
+
 
 [ctl]
 daemon_url = "http://127.0.0.1:49322"
