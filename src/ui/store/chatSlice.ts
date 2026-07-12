@@ -99,25 +99,32 @@ function safeStartupStatus(agent: any) {
   return '';
 }
 
-function mapAgent(agent: any) {
+export function mapAgent(agent: any) {
   const lastSeenUnixMs = Number(agent.last_seen_unix_ms ?? agent.lastSeenUnixMs ?? 0);
   const startupStatus = safeStartupStatus(agent);
   const execState = agent.exec_state || agent.execState || '';
   const execStateSinceUnixMs = Number(agent.exec_state_since_unix_ms ?? agent.execStateSinceUnixMs ?? 0);
   const blockedReason = agent.blocked_reason || agent.blockedReason || '';
+  const activityStatus = agent.activity_status || agent.activityStatus || '';
+  const activityCheckedUnixMs = Number(agent.activity_checked_unix_ms ?? agent.activityCheckedUnixMs ?? 0);
+  const activitySource = agent.activity_source || agent.activitySource || '';
 
   let status = 'offline';
   if (startupStatus) {
     status = startupStatus;
   } else if (agent.connected) {
-    if (execState === 'running') {
+    if (activityStatus === 'active') {
+      status = 'connected';
+    } else if (activityStatus === 'idle') {
+      status = 'idle';
+    } else if (execState === 'running') {
       status = 'connected';
     } else if (execState === 'blocked') {
       status = 'startup_blocked';
     } else if (execState === 'idle') {
       status = 'idle';
     } else {
-      status = 'connected'; // Fallback
+      status = 'connected';
     }
   }
 
@@ -147,6 +154,9 @@ function mapAgent(agent: any) {
     execState,
     execStateSinceUnixMs,
     blockedReason,
+    activityStatus,
+    activityCheckedUnixMs,
+    activitySource,
     currentTaskId: agent.current_task_id || agent.currentTaskId || '',
     currentTaskSince: Number(agent.current_task_since ?? agent.currentTaskSince ?? 0),
     state: agent.state || '',
@@ -781,10 +791,17 @@ const chatSlice = createSlice({
       if (existingIndex >= 0) {
         const existing: any = state.agents[existingIndex];
         const execState = payload.exec_state || '';
-        
+        const activityStatus = payload.activity_status ?? existing.activityStatus ?? '';
+
         let status = existing.status;
-        if (existing.status !== 'offline' || payload.last_seen_unix_ms) {
-          if (execState === 'running') {
+        if (existing.startupStatus) {
+          status = existing.startupStatus;
+        } else if (existing.status !== 'offline' || payload.last_seen_unix_ms) {
+          if (activityStatus === 'active') {
+            status = 'connected';
+          } else if (activityStatus === 'idle') {
+            status = 'idle';
+          } else if (execState === 'running') {
             status = 'connected';
           } else if (execState === 'blocked') {
             status = 'startup_blocked';
@@ -794,7 +811,7 @@ const chatSlice = createSlice({
             status = 'connected';
           }
         }
-        
+
         state.agents[existingIndex] = {
           ...existing,
           status,
@@ -803,6 +820,9 @@ const chatSlice = createSlice({
           execState,
           execStateSinceUnixMs: payload.exec_state_since_unix_ms ?? existing.execStateSinceUnixMs,
           blockedReason: payload.blocked_reason ?? existing.blockedReason,
+          activityStatus,
+          activityCheckedUnixMs: payload.activity_checked_unix_ms ?? existing.activityCheckedUnixMs,
+          activitySource: payload.activity_source ?? existing.activitySource,
           runDir: payload.run_dir ?? existing.runDir,
           lastSeenUnixMs: payload.last_seen_unix_ms ?? existing.lastSeenUnixMs,
           lastSeen: payload.last_seen_unix_ms ? new Date(payload.last_seen_unix_ms).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : existing.lastSeen,

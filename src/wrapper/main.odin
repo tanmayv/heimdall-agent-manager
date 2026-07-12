@@ -225,13 +225,103 @@ main :: proc() {
 
 	initial_exec_state := "running"
 	wrapper_launch_log("heartbeat_loop_enter", registered_instance_id, launch_start_ms)
-	heartbeat_loop(cfg.daemon_url, agent_class, registered_instance_id, display_name, agent_token, launch.pane_id, stop_message, selected_agent, model_tier, effective_project_id, cwd, initial_exec_state, startup_status, startup_reason_code, startup_safe_diagnostic, cfg.tmux_session, window_name, &ws_conn)
+	heartbeat_loop(cfg.daemon_url, agent_class, registered_instance_id, display_name, agent_token, launch.pane_id, stop_message, selected_agent, model_tier, effective_project_id, cwd, initial_exec_state, startup_status, startup_reason_code, startup_safe_diagnostic, agent_cmd.activity_detection, cfg.tmux_session, window_name, &ws_conn)
 }
 
 Startup_Probe_Result :: struct {
 	status: string,
 	reason_code: string,
 	safe_diagnostic: string,
+}
+
+Activity_Status_Snapshot :: struct {
+	status: string,
+	checked_unix_ms: i64,
+	source: string,
+}
+
+ACTIVITY_STATUS_SOURCE :: "tmux_pane_sampler"
+ACTIVITY_SAMPLE_COUNT :: 3
+HEARTBEAT_INTERVAL_MS :: i64(10_000)
+ACTIVITY_LOOP_SLEEP_MS :: time.Duration(250)
+
+activity_detection_effective :: proc(cfg: cfg_lib.Activity_Detection_Config) -> cfg_lib.Activity_Detection_Config {
+	effective := cfg
+	if effective.sample_line_count <= 0 do effective.sample_line_count = 20
+	if effective.ignore_bottom_lines < 0 do effective.ignore_bottom_lines = 0
+	if effective.ignore_bottom_lines >= effective.sample_line_count do effective.ignore_bottom_lines = effective.sample_line_count - 1
+	if effective.check_interval_seconds <= 0 do effective.check_interval_seconds = 15
+	if effective.min_gap_ms <= 0 do effective.min_gap_ms = 100
+	if effective.max_gap_ms <= 0 do effective.max_gap_ms = 500
+	if effective.min_gap_ms > effective.max_gap_ms {
+		tmp := effective.min_gap_ms
+		effective.min_gap_ms = effective.max_gap_ms
+		effective.max_gap_ms = tmp
+	}
+	return effective
+}
+
+activity_gap_ms :: proc(cfg: cfg_lib.Activity_Detection_Config) -> int {
+	if cfg.max_gap_ms <= cfg.min_gap_ms do return cfg.min_gap_ms
+	range := cfg.max_gap_ms - cfg.min_gap_ms + 1
+	return cfg.min_gap_ms + int(rand.uint32() % u32(range))
+}
+
+normalize_activity_capture :: proc(text: string, ignore_bottom_lines: int) -> string {
+	lines := strings.split(text, "\n")
+	defer delete(lines)
+	end := len(lines)
+	for end > 0 && lines[end - 1] == "" do end -= 1
+	if ignore_bottom_lines > 0 {
+		end -= ignore_bottom_lines
+		if end < 1 do end = 1
+	}
+	if end <= 0 do return ""
+	builder := strings.builder_make()
+	for i in 0..<end {
+		if i > 0 do strings.write_byte(&builder, '\n')
+		strings.write_string(&builder, lines[i])
+	}
+	return strings.to_string(builder)
+}
+
+classify_activity_captures :: proc(captures: []string, cfg: cfg_lib.Activity_Detection_Config) -> string {
+	if len(captures) <= 1 do return "idle"
+	reference := normalize_activity_capture(captures[0], cfg.ignore_bottom_lines)
+	for i in 1..<len(captures) {
+		if normalize_activity_capture(captures[i], cfg.ignore_bottom_lines) != reference {
+			return "active"
+		}
+	}
+	return "idle"
+}
+
+sample_activity_status :: proc(agent_instance_id, pane_id: string, cfg: cfg_lib.Activity_Detection_Config) -> Activity_Status_Snapshot {
+	now := wrapper_now_unix_ms()
+	if !cfg.enabled {
+		return Activity_Status_Snapshot{status = "unknown", checked_unix_ms = now, source = ACTIVITY_STATUS_SOURCE}
+	}
+	if pane_id == "" || !tmux.pane_exists(pane_id) {
+		return Activity_Status_Snapshot{status = "unknown", checked_unix_ms = now, source = ACTIVITY_STATUS_SOURCE}
+	}
+	capture_lines := cfg.sample_line_count + cfg.ignore_bottom_lines
+	if capture_lines <= 0 do capture_lines = cfg.sample_line_count
+	captures: [ACTIVITY_SAMPLE_COUNT]string
+	for i in 0..<ACTIVITY_SAMPLE_COUNT {
+		capture, ok := tmux.capture_pane_text(pane_id, capture_lines)
+		if !ok {
+			fmt.printfln("WRAPPER_ACTIVITY ts_unix_ms=%d agent=%s status=unknown reason=capture_failed", wrapper_now_unix_ms(), agent_instance_id)
+			return Activity_Status_Snapshot{status = "unknown", checked_unix_ms = wrapper_now_unix_ms(), source = ACTIVITY_STATUS_SOURCE}
+		}
+		captures[i] = capture
+		if i + 1 < ACTIVITY_SAMPLE_COUNT {
+			time.sleep(time.Duration(activity_gap_ms(cfg)) * time.Millisecond)
+		}
+	}
+	status := classify_activity_captures(captures[:], cfg)
+	checked := wrapper_now_unix_ms()
+	fmt.printfln("WRAPPER_ACTIVITY ts_unix_ms=%d agent=%s status=%s", checked, agent_instance_id, status)
+	return Activity_Status_Snapshot{status = status, checked_unix_ms = checked, source = ACTIVITY_STATUS_SOURCE}
 }
 
 wrapper_now_unix_ms :: proc() -> i64 {
@@ -414,7 +504,7 @@ read_yes_from_stdin :: proc() -> bool {
 	return answer == "y" || answer == "Y" || answer == "yes" || answer == "YES"
 }
 
-heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name, agent_token, tmux_pane, stop_message, provider_profile, provider_tier, project_id, run_dir, initial_exec_state, initial_startup_status, initial_startup_reason_code, initial_startup_safe_diagnostic, tmux_session, window_name: string, ws_conn: ^ws.Connection) {
+heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name, agent_token, tmux_pane, stop_message, provider_profile, provider_tier, project_id, run_dir, initial_exec_state, initial_startup_status, initial_startup_reason_code, initial_startup_safe_diagnostic: string, activity_cfg: cfg_lib.Activity_Detection_Config, tmux_session, window_name: string, ws_conn: ^ws.Connection) {
 	fmt.println("heartbeat started", agent_instance_id)
 	current_token := agent_token
 	failed_heartbeats := 0
@@ -426,11 +516,22 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 	current_startup_status := initial_startup_status
 	current_startup_reason_code := initial_startup_reason_code
 	current_startup_safe_diagnostic := initial_startup_safe_diagnostic
+	effective_activity_cfg := activity_detection_effective(activity_cfg)
+	latest_activity := Activity_Status_Snapshot{status = "unknown", checked_unix_ms = 0, source = ACTIVITY_STATUS_SOURCE}
+	next_heartbeat_unix_ms := wrapper_now_unix_ms()
+	next_activity_check_unix_ms := wrapper_now_unix_ms()
+	if !effective_activity_cfg.enabled do next_activity_check_unix_ms = -1
 
 	for {
+		now := wrapper_now_unix_ms()
 		if !tmux.pane_exists(tmux_pane) {
 			fmt.println("agent tmux pane missing; stopping wrapper", tmux_pane)
 			return
+		}
+
+		if next_activity_check_unix_ms >= 0 && now >= next_activity_check_unix_ms {
+			latest_activity = sample_activity_status(agent_instance_id, tmux_pane, effective_activity_cfg)
+			next_activity_check_unix_ms = wrapper_now_unix_ms() + i64(effective_activity_cfg.check_interval_seconds) * 1_000
 		}
 
 		// Self-healing WebSocket reconnection: if the WebSocket connection was severed
@@ -450,60 +551,62 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 			}
 		}
 
-		body := heartbeat_request_json(agent_instance_id, current_token, display_name, provider_profile, provider_tier, project_id, tmux_pane, run_dir, exec_state, "", current_startup_status, current_startup_reason_code, current_startup_safe_diagnostic, pid, exec_state_since)
-		response, ok := http.post(daemon_url, contracts.ROUTE_HEARTBEAT, body)
-		if ok && response.status == 200 {
-			failed_heartbeats = 0
-			fmt.println("heartbeat ok", agent_instance_id)
-			log_heartbeat_corrections(response.body, agent_instance_id)
+		if now >= next_heartbeat_unix_ms {
+			body := heartbeat_request_json(agent_instance_id, current_token, display_name, provider_profile, provider_tier, project_id, tmux_pane, run_dir, exec_state, "", current_startup_status, current_startup_reason_code, current_startup_safe_diagnostic, latest_activity, pid, exec_state_since)
+			response, ok := http.post(daemon_url, contracts.ROUTE_HEARTBEAT, body)
+			if ok && response.status == 200 {
+				failed_heartbeats = 0
+				fmt.println("heartbeat ok", agent_instance_id)
+				log_heartbeat_corrections(response.body, agent_instance_id)
 
-			// Parse corrections to dynamically capture startup status overrides from the daemon
-			if corr_idx := strings.index(response.body, `"corrections":{`); corr_idx >= 0 {
-				corr_block := response.body[corr_idx:]
-				if new_status := extract_json_string(corr_block, "startup_status", ""); new_status != "" {
-					fmt.println("HEARTBEAT CORRECTION: startup_status corrected to", new_status)
-					current_startup_status = strings.clone(new_status)
-					if new_reason := extract_json_string(corr_block, "startup_reason_code", ""); new_reason != "" {
-						current_startup_reason_code = strings.clone(new_reason)
-					}
-					if new_diag := extract_json_string(corr_block, "startup_safe_diagnostic", ""); new_diag != "" {
-						current_startup_safe_diagnostic = strings.clone(new_diag)
+				// Parse corrections to dynamically capture startup status overrides from the daemon
+				if corr_idx := strings.index(response.body, `"corrections":{`); corr_idx >= 0 {
+					corr_block := response.body[corr_idx:]
+					if new_status := extract_json_string(corr_block, "startup_status", ""); new_status != "" {
+						fmt.println("HEARTBEAT CORRECTION: startup_status corrected to", new_status)
+						current_startup_status = strings.clone(new_status)
+						if new_reason := extract_json_string(corr_block, "startup_reason_code", ""); new_reason != "" {
+							current_startup_reason_code = strings.clone(new_reason)
+						}
+						if new_diag := extract_json_string(corr_block, "startup_safe_diagnostic", ""); new_diag != "" {
+							current_startup_safe_diagnostic = strings.clone(new_diag)
+						}
 					}
 				}
-			}
-		} else if ok && response.status == 401 {
-			fmt.println("heartbeat unauthorized; closing wrapper", agent_instance_id, response.body)
-			close_wrapper_after_auth_failure(agent_instance_id, "heartbeat_401", response.body, ws_conn)
-			return
-		} else if ok && response.status == 409 {
-			fmt.println("fatal: heartbeat conflict; stopping wrapper", agent_instance_id, response.body)
-			return
-		} else if ok && response.status == 400 {
-			// Distinguish project_not_found / missing_required so operator sees it.
-			fmt.println("heartbeat rejected", agent_instance_id, response.body)
-			failed_heartbeats += 1
-		} else {
-			failed_heartbeats += 1
-			if ok {
-				fmt.println("heartbeat failed", agent_instance_id, "status", response.status, "body", response.body)
-			} else {
-				fmt.println("heartbeat failed", agent_instance_id, "request_failed")
-			}
-		}
-
-		if failed_heartbeats >= 3 {
-			fmt.println("heartbeat failed repeatedly; re-registering", agent_instance_id)
-			if new_ws_url, new_token, terminal_auth_failure, reconnected := reregister_and_reconnect_ws(daemon_url, agent_class, agent_instance_id, display_name, current_token, ws_conn); reconnected {
-				fmt.println("reconnected", agent_instance_id, new_ws_url)
-				current_token = new_token
-				failed_heartbeats = 0
-				notify_agent_token_refreshed(tmux_pane, daemon_url, new_token, agent_instance_id)
-			} else if terminal_auth_failure {
-				close_wrapper_after_auth_failure(agent_instance_id, "heartbeat_retry_register_401", "daemon rejected re-registration after repeated heartbeat failures", ws_conn)
+			} else if ok && response.status == 401 {
+				fmt.println("heartbeat unauthorized; closing wrapper", agent_instance_id, response.body)
+				close_wrapper_after_auth_failure(agent_instance_id, "heartbeat_401", response.body, ws_conn)
 				return
+			} else if ok && response.status == 409 {
+				fmt.println("fatal: heartbeat conflict; stopping wrapper", agent_instance_id, response.body)
+				return
+			} else if ok && response.status == 400 {
+				fmt.println("heartbeat rejected", agent_instance_id, response.body)
+				failed_heartbeats += 1
 			} else {
-				fmt.println("reconnect attempt failed", agent_instance_id)
+				failed_heartbeats += 1
+				if ok {
+					fmt.println("heartbeat failed", agent_instance_id, "status", response.status, "body", response.body)
+				} else {
+					fmt.println("heartbeat failed", agent_instance_id, "request_failed")
+				}
 			}
+
+			if failed_heartbeats >= 3 {
+				fmt.println("heartbeat failed repeatedly; re-registering", agent_instance_id)
+				if new_ws_url, new_token, terminal_auth_failure, reconnected := reregister_and_reconnect_ws(daemon_url, agent_class, agent_instance_id, display_name, current_token, ws_conn); reconnected {
+					fmt.println("reconnected", agent_instance_id, new_ws_url)
+					current_token = new_token
+					failed_heartbeats = 0
+					notify_agent_token_refreshed(tmux_pane, daemon_url, new_token, agent_instance_id)
+				} else if terminal_auth_failure {
+					close_wrapper_after_auth_failure(agent_instance_id, "heartbeat_retry_register_401", "daemon rejected re-registration after repeated heartbeat failures", ws_conn)
+					return
+				} else {
+					fmt.println("reconnect attempt failed", agent_instance_id)
+				}
+			}
+			next_heartbeat_unix_ms = wrapper_now_unix_ms() + HEARTBEAT_INTERVAL_MS
 		}
 
 		if text, got_message := ws.poll_text(ws_conn); got_message {
@@ -529,7 +632,7 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 				fmt.println("ws message", text)
 			}
 		}
-		time.sleep(10 * time.Second)
+		time.sleep(ACTIVITY_LOOP_SLEEP_MS * time.Millisecond)
 	}
 }
 
@@ -736,7 +839,7 @@ reregister_and_reconnect_ws :: proc(daemon_url, agent_class, agent_instance_id, 
 	return ws_url, token, false, true
 }
 
-heartbeat_request_json :: proc(agent_instance_id, agent_token, display_name, provider_profile, provider_tier, project_id, tmux_pane, run_dir, exec_state, blocked_reason, startup_status, startup_reason_code, startup_safe_diagnostic: string, pid: int, exec_state_since_unix_ms: i64) -> string {
+heartbeat_request_json :: proc(agent_instance_id, agent_token, display_name, provider_profile, provider_tier, project_id, tmux_pane, run_dir, exec_state, blocked_reason, startup_status, startup_reason_code, startup_safe_diagnostic: string, activity: Activity_Status_Snapshot, pid: int, exec_state_since_unix_ms: i64) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, `{"agent_instance_id":"`); json_write_string(&b, agent_instance_id)
 	strings.write_string(&b, `","agent_token":"`); json_write_string(&b, agent_token)
@@ -751,7 +854,10 @@ heartbeat_request_json :: proc(agent_instance_id, agent_token, display_name, pro
 	strings.write_string(&b, `","startup_status":"`); json_write_string(&b, startup_status)
 	strings.write_string(&b, `","startup_reason_code":"`); json_write_string(&b, startup_reason_code)
 	strings.write_string(&b, `","startup_safe_diagnostic":"`); json_write_string(&b, startup_safe_diagnostic)
-	strings.write_string(&b, `","pid":`); strings.write_string(&b, fmt.tprintf("%d", pid))
+	strings.write_string(&b, `","activity_status":"`); json_write_string(&b, activity.status)
+	strings.write_string(&b, `","activity_source":"`); json_write_string(&b, activity.source)
+	strings.write_string(&b, `","activity_checked_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", activity.checked_unix_ms))
+	strings.write_string(&b, `,"pid":`); strings.write_string(&b, fmt.tprintf("%d", pid))
 	strings.write_string(&b, `,"exec_state_since_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", exec_state_since_unix_ms))
 	strings.write_string(&b, `}`)
 	return strings.to_string(b)

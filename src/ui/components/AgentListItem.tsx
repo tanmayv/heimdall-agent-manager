@@ -8,18 +8,18 @@ const statusStyles = {
   startup_blocked: 'bg-amber-400 shadow-amber-400/40',
   startup_failed: 'bg-red-400 shadow-red-400/40',
   startup_unknown: 'bg-violet-400 shadow-violet-400/40',
-  idle: 'bg-[var(--fd-hairline)] shadow-[var(--fd-hairline)]/30',
+  idle: 'bg-amber-300 shadow-amber-300/40',
   stopping: 'bg-amber-400 shadow-amber-400/40 animate-soft-pulse',
   offline: 'bg-[#999999]/70 shadow-[#999999]/20',
 };
 
 const statusLabels = {
-  connected: 'Running',
+  connected: 'Active',
   starting: 'Starting',
   startup_blocked: 'Blocked',
   startup_failed: 'Startup failed',
   startup_unknown: 'Startup unknown',
-  idle: 'Connected (Idle)',
+  idle: 'Idle',
   stopping: 'Stopping',
   offline: 'Offline',
 };
