@@ -40,10 +40,10 @@ chat_approval_detect_payload :: proc(payload: string) -> Chat_Approval_Detect_Re
 	}
 	free_form := extract_json_bool(trimmed, "free_form", false)
 	if options == "" {
-		// Preserve approval semantics even when option extraction fails or a card is
-		// intentionally free-form. The UI can still render body/title metadata and
-		// the durable approval remains chain-bound instead of being stored as a raw
-		// untracked chat message.
+		// Treat canonical approval card types as durable approvals even when their
+		// option arrays are omitted, cannot be extracted, or the card is intentionally
+		// free-form. This preserves chain binding instead of silently storing an
+		// untracked raw chat message.
 		options = "[]"
 		if kind == "questions" do free_form = true
 	}
@@ -116,7 +116,13 @@ chat_approval_extract_raw_json_value :: proc(body, key: string) -> string {
 chat_approval_service_record :: proc(det: Chat_Approval_Detect_Result, message_id, chain_id, user_id, agent_instance_id: string) -> (string, bool) {
 	if !det.matched || chain_id == "" || message_id == "" do return "", false
 	now := router_now_unix_ms()
-	approval_id := fmt.tprintf("cappr_%d", now)
+	approval_id := fmt.tprintf("cappr_%s", message_id)
+	title := det.title
+	if title == "" do title = "Approval request"
+	body := det.body
+	if body == "" do body = title
+	options_json := det.options_json
+	if options_json == "" do options_json = "[]"
 	rec := Chat_Approval_Record{
 		approval_id        = strings.clone(approval_id),
 		message_id         = strings.clone(message_id),
@@ -124,9 +130,9 @@ chat_approval_service_record :: proc(det: Chat_Approval_Detect_Result, message_i
 		user_id            = strings.clone(user_id),
 		agent_instance_id  = strings.clone(agent_instance_id),
 		kind               = strings.clone(det.kind),
-		title              = strings.clone(det.title),
-		body               = strings.clone(det.body),
-		options_json       = strings.clone(det.options_json),
+		title              = strings.clone(title),
+		body               = strings.clone(body),
+		options_json       = strings.clone(options_json),
 		free_form          = det.free_form,
 		expires_at_unix_ms = now + det.ttl_ms,
 		state              = strings.clone("open"),

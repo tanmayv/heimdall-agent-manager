@@ -90,6 +90,7 @@ def main() -> None:
     )
     require('chain_id_required_for_approval' in agent_rpc, "send_to_user must reject approval-shaped payload when chain_id cannot be resolved")
     require('chat_approval_service_record' in agent_rpc, "send_to_user must persist approval record on match")
+    require('send_to_user did not create an approval record' in agent_rpc, "send_to_user must fail loudly if approval persistence fails")
 
     # --- Supersede on user->coordinator chat + fmt import
     require("chat_approval_supersede_for_chain(chain_id, message_body" in chat_http, "user->coordinator send must supersede open approvals")

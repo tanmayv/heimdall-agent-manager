@@ -109,6 +109,9 @@ handle_agent_rpc_send_to_user :: proc(client: net.TCP_Socket, body, from_agent_i
 	if approval_det.matched {
 		if recorded, insert_ok := chat_approval_service_record(approval_det, message_id, chain_id, user_id, from_agent_instance_id); insert_ok {
 			approval_id = recorded
+		} else {
+			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"send_to_user did not create an approval record"}`)
+			return
 		}
 	}
 	builder := strings.builder_make()
