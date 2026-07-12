@@ -29,7 +29,8 @@ inputs.heimdall.url = "github:tanmayv/heimdall-agent-manager";
 ```
 
 This generates a minimal `~/.config/heimdall/config.toml` with the defaults
-shown below and installs the three core binaries.
+shown below (including the default `[guide_agent]` table) and installs the
+three core binaries.
 
 ---
 
@@ -60,6 +61,17 @@ programs.heimdall = {
     # nudge.restartGraceSeconds          = 60;
     # nudge.sendEscapePrefix             = false;
     # startupStaleAfterSeconds           = 120;
+  };
+
+  # ── [guide_agent] ──────────────────────────────────────────────────────
+  guideAgent = {
+    enabled          = true;
+    autostart        = true;
+    restartIfStopped = true;
+    agentInstanceId  = "guide@heimdall";
+    templateId       = "guide";
+    providerProfile  = "pi";
+    modelTier        = "smart";
   };
 
   # ── [wrapper] ───────────────────────────────────────────────────────────
@@ -226,6 +238,23 @@ programs.heimdall = {
 | `nudge.sendEscapePrefix` | bool \| null | `null` |
 
 `null` values are omitted from the generated TOML (daemon built-in defaults apply).
+
+### `programs.heimdall.guideAgent`
+
+| Option | Type | Default |
+|---|---|---|
+| `enabled` | bool | `true` |
+| `autostart` | bool | `true` |
+| `restartIfStopped` | bool | `true` |
+| `agentInstanceId` | str | `"guide@heimdall"` |
+| `templateId` | str | `"guide"` |
+| `providerProfile` | str | `"pi"` |
+| `modelTier` | `"cheap"\|"normal"\|"smart"` | `"smart"` |
+
+Notes:
+- `restartIfStopped` is rendered for config parity, but the current daemon only stores/reports it; no restart-loop behavior is implemented yet.
+- Non-default `agentInstanceId` values render correctly, but the current daemon only launches the default singleton and otherwise reports `invalid_singleton_id`.
+- Set `providerProfile = ""` to fall back to `[daemon].default_agent_provider_profile`, then `pi`.
 
 ### `programs.heimdall.wrapper`
 

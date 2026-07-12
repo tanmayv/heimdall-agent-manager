@@ -296,6 +296,16 @@ let
     // lib.optionalAttrs (d.nudge.restartGraceSeconds != null)          { nudge_restart_grace_seconds          = d.nudge.restartGraceSeconds; }
     // lib.optionalAttrs (d.nudge.sendEscapePrefix != null)             { nudge_send_escape_prefix             = d.nudge.sendEscapePrefix; };
 
+  mkGuideAgent = g: {
+    enabled            = g.enabled;
+    autostart          = g.autostart;
+    restart_if_stopped = g.restartIfStopped;
+    agent_instance_id  = g.agentInstanceId;
+    template_id        = g.templateId;
+    provider_profile   = g.providerProfile;
+    model_tier         = g.modelTier;
+  };
+
   mkWrapper = w:
     {
       daemon_url          = w.daemonUrl;
@@ -317,6 +327,7 @@ let
 
   configAttrs =
     lib.optionalAttrs cfg.daemon.enable  { daemon  = mkDaemon cfg.daemon; }
+    // { guide_agent = mkGuideAgent cfg.guideAgent; }
     // lib.optionalAttrs cfg.wrapper.enable { wrapper = mkWrapper cfg.wrapper; }
     // lib.optionalAttrs cfg.ctl.enable     { ctl     = { daemon_url = cfg.ctl.daemonUrl; }; };
 
@@ -452,6 +463,46 @@ in
           type    = lib.types.nullOr lib.types.bool;
           default = null;
         };
+      };
+    };
+
+    # ── [guide_agent] ────────────────────────────────────────────────────────
+
+    guideAgent = {
+      enabled = lib.mkOption {
+        type        = lib.types.bool;
+        default     = true;
+        description = "Whether the guide agent is enabled (`[guide_agent].enabled`).";
+      };
+      autostart = lib.mkOption {
+        type        = lib.types.bool;
+        default     = true;
+        description = "Whether the daemon should start the guide agent during daemon startup (`[guide_agent].autostart`).";
+      };
+      restartIfStopped = lib.mkOption {
+        type        = lib.types.bool;
+        default     = true;
+        description = "Guide-agent config parity for `[guide_agent].restart_if_stopped`. The current runtime stores and reports this value, but no restart loop behavior was found in the daemon yet.";
+      };
+      agentInstanceId = lib.mkOption {
+        type        = lib.types.str;
+        default     = "guide@heimdall";
+        description = "Guide singleton agent instance ID (`[guide_agent].agent_instance_id`). Non-default values are accepted by config parsing, but the current daemon launch path only starts the default singleton and otherwise reports `invalid_singleton_id`.";
+      };
+      templateId = lib.mkOption {
+        type        = lib.types.str;
+        default     = "guide";
+        description = "Guide template ID (`[guide_agent].template_id`).";
+      };
+      providerProfile = lib.mkOption {
+        type        = lib.types.str;
+        default     = "pi";
+        description = "Provider profile for the guide agent (`[guide_agent].provider_profile`). Set to an empty string to fall back to `[daemon].default_agent_provider_profile`, then `pi`.";
+      };
+      modelTier = lib.mkOption {
+        type        = lib.types.enum [ "cheap" "normal" "smart" ];
+        default     = "smart";
+        description = "Model tier for the guide agent (`[guide_agent].model_tier`).";
       };
     };
 
