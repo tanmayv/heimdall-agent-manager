@@ -35,11 +35,18 @@ chat_approval_detect_payload :: proc(payload: string) -> Chat_Approval_Detect_Re
 	if options == "" do options = chat_approval_extract_raw_json_value(trimmed, "options")
 	if kind == "multi_question" {
 		questions := chat_approval_extract_raw_json_value(trimmed, "questions")
-		if questions == "" do return res
+		if questions == "" do questions = "[]"
 		options = questions
 	}
 	free_form := extract_json_bool(trimmed, "free_form", false)
-	if options == "" && !(kind == "questions" && free_form) do return res
+	if options == "" {
+		// Preserve approval semantics even when option extraction fails or a card is
+		// intentionally free-form. The UI can still render body/title metadata and
+		// the durable approval remains chain-bound instead of being stored as a raw
+		// untracked chat message.
+		options = "[]"
+		if kind == "questions" do free_form = true
+	}
 	res.matched = true
 	res.kind = kind
 	res.title = extract_json_string(trimmed, "title", "")

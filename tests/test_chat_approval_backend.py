@@ -4,7 +4,7 @@
 These do not spin up the daemon; they verify the code paths so we catch
 accidental regressions to the plan/contract:
 - durable table exists and has all required columns
-- approval-shaped send_to_user without chain_id is rejected
+- approval-shaped send_to_user resolves/infers chain_id before falling back to rejection
 - terminal transitions and supersede + sweeper are wired
 - endpoints are registered in the REST router
 """
@@ -62,7 +62,7 @@ def main() -> None:
 
     # --- Service
     require("chat_approval_detect_payload :: proc" in service, "payload detection missing")
-    for kind in ["smart_answer", "questions", "approval_request"]:
+    for kind in ["smart_answer", "questions", "multi_question", "approval_request"]:
         require(f'kind != "{kind}"' in service or f'"{kind}"' in service, f"kind {kind} not recognized")
     require("CHAT_APPROVAL_DEFAULT_TTL_MS" in service, "default TTL constant missing")
     require("chat_approval_service_record :: proc" in service, "record insert helper missing")
@@ -81,9 +81,14 @@ def main() -> None:
     require("chat_approval_sweep_expired :: proc" in service, "expiry sweeper missing")
     require("chat_approval_supersede_for_chain :: proc" in service, "supersede helper missing")
 
-    # --- send_to_user detection + chain_id enforcement
+    # --- send_to_user detection + chain_id inference/enforcement
     require("chat_approval_detect_payload" in agent_rpc, "send_to_user must detect approval payloads")
-    require('chain_id_required_for_approval' in agent_rpc, "send_to_user must reject approval-shaped payload without chain_id")
+    require("agent_rpc_infer_reply_chain_id" in agent_rpc, "send_to_user must infer chain_id from sender context")
+    require(
+        agent_rpc.find("agent_rpc_infer_reply_chain_id") < agent_rpc.find("chat_approval_detect_payload"),
+        "send_to_user must infer chain_id before validating approval-shaped payloads",
+    )
+    require('chain_id_required_for_approval' in agent_rpc, "send_to_user must reject approval-shaped payload when chain_id cannot be resolved")
     require('chat_approval_service_record' in agent_rpc, "send_to_user must persist approval record on match")
 
     # --- Supersede on user->coordinator chat + fmt import

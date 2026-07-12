@@ -91,6 +91,43 @@ def create_chain(user_token, title, chain_id, coordinator_id):
         raise AssertionError(f"unexpected chain response: {res}")
 
 
+def approval_by_id(pending, approval_id):
+    matches = [a for a in pending.get("approvals", []) if a.get("approval_id") == approval_id]
+    if len(matches) != 1:
+        raise AssertionError(f"approval {approval_id} not found exactly once in pending list: {pending}")
+    return matches[0]
+
+
+def assert_chat_approval_chain(user_token, approval_id, message_id, expected_chain_id, expected_kind):
+    _, pending = request_get_json("/chat-approvals/pending", user_token)
+    approval = approval_by_id(pending, approval_id)
+    if approval.get("chain_id") != expected_chain_id or approval.get("kind") != expected_kind:
+        raise AssertionError(f"approval lost chain/kind metadata: {approval}")
+
+    _, chain_fetch = request_get_json(f"/chats/{urllib.parse.quote(COORDINATOR_ID)}/messages?chain_id={expected_chain_id}", user_token)
+    matches = [m for m in chain_fetch.get("messages", []) if m.get("message_id") == message_id]
+    if len(matches) != 1 or matches[0].get("chain_id") != expected_chain_id:
+        raise AssertionError(f"approval message not exposed in chain chat: {chain_fetch}")
+
+
+def send_approval(agent_token, user_token, payload, expected_chain_id, expected_kind, explicit_chain_id=None):
+    req = {
+        "agent_token": agent_token,
+        "action": "send_to_user",
+        "user_id": USER_ID,
+        "payload": json.dumps(payload, separators=(",", ":")),
+    }
+    if explicit_chain_id is not None:
+        req["chain_id"] = explicit_chain_id
+    status, res = request_post("/agent-rpc", req)
+    if status != 200 or not res.get("ok") or not res.get("message_id") or not res.get("approval_id"):
+        raise AssertionError(f"approval send failed: status={status} body={res}")
+    if res.get("chain_id") != expected_chain_id:
+        raise AssertionError(f"approval response lost chain_id: {res}")
+    assert_chat_approval_chain(user_token, res["approval_id"], res["message_id"], expected_chain_id, expected_kind)
+    return res
+
+
 def main():
     repo_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     daemon_bin = bin_path(repo_dir, "result-daemon", "result", "ham-daemon")
@@ -156,6 +193,28 @@ ham_ctl_bin = "{ctl_bin}"
             raise AssertionError(f"auto-inferred send_to_user failed: status={status} body={auto_res}")
         if auto_res.get("chain_id") != CHAIN_ID:
             raise AssertionError(f"expected inferred chain_id in response, got: {auto_res}")
+
+        send_approval(
+            coord_token,
+            user_token,
+            {"type": "smart_answer", "body": "Approve inferred smart answer?", "suggested_replies": ["Yes", "No"]},
+            CHAIN_ID,
+            "smart_answer",
+        )
+        send_approval(
+            coord_token,
+            user_token,
+            {"type": "questions", "body": "Pick an inferred option", "options": ["A", "B"]},
+            CHAIN_ID,
+            "questions",
+        )
+        send_approval(
+            coord_token,
+            user_token,
+            {"type": "multi_question", "questions": [{"text": "Pick one", "options": ["One", "Two"]}]},
+            CHAIN_ID,
+            "multi_question",
+        )
 
         create_chain(user_token, "Other chain for filtering", OTHER_CHAIN_ID, COORDINATOR_ID)
 
@@ -240,7 +299,18 @@ ham_ctl_bin = "{ctl_bin}"
         if status != 409 or ambiguous.get("ok") is not False or "multiple possible active chains" not in ambiguous.get("message", ""):
             raise AssertionError(f"ambiguous coordinator send did not request explicit chain_id: status={status} body={ambiguous}")
 
-        print("PASS: send_to_user persists/infer coordinator chain replies and redirects non-coordinator sends")
+        explicit_approval = send_approval(
+            coord_token,
+            user_token,
+            {"type": "smart_answer", "body": "Approve explicit chain?", "suggested_replies": ["Yes", "No"]},
+            CHAIN_ID,
+            "smart_answer",
+            explicit_chain_id=CHAIN_ID,
+        )
+        if not explicit_approval.get("approval_id"):
+            raise AssertionError(f"explicit chain approval did not return approval_id: {explicit_approval}")
+
+        print("PASS: send_to_user persists/infer coordinator chain replies, approval chain_id metadata, and redirects non-coordinator sends")
     finally:
         if daemon_proc is not None:
             daemon_proc.terminate()

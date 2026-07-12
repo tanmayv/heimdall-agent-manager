@@ -75,7 +75,10 @@ chat_approval_db_init :: proc() -> bool {
 chat_approval_db_insert :: proc(rec: Chat_Approval_Record) -> bool {
 	stmt: sqlite3_stmt = nil
 	query := `INSERT INTO chat_approvals (approval_id, message_id, chain_id, user_id, agent_instance_id, kind, title, body, options_json, free_form, expires_at_unix_ms, state, created_unix_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`
-	if sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return false
+	if rc := sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil); rc != SQLITE_OK {
+		fmt.printf("chat_approval_db_insert: prepare failed: %d (%s)\n", rc, sqlite3_errmsg(message_db.db))
+		return false
+	}
 	defer sqlite3_finalize(stmt)
 	sqlite3_bind_text(stmt, 1, cstring(raw_data(rec.approval_id)), i32(len(rec.approval_id)), SQLITE_TRANSIENT)
 	sqlite3_bind_text(stmt, 2, cstring(raw_data(rec.message_id)), i32(len(rec.message_id)), SQLITE_TRANSIENT)
@@ -91,7 +94,12 @@ chat_approval_db_insert :: proc(rec: Chat_Approval_Record) -> bool {
 	sqlite3_bind_int64(stmt, 10, free_form_val)
 	sqlite3_bind_int64(stmt, 11, c.longlong(rec.expires_at_unix_ms))
 	sqlite3_bind_int64(stmt, 12, c.longlong(rec.created_unix_ms))
-	return sqlite3_step(stmt) == SQLITE_DONE
+	rc := sqlite3_step(stmt)
+	if rc != SQLITE_DONE {
+		fmt.printf("chat_approval_db_insert: step failed: %d (%s) approval_id=%s message_id=%s chain_id=%s kind=%s\n", rc, sqlite3_errmsg(message_db.db), rec.approval_id, rec.message_id, rec.chain_id, rec.kind)
+		return false
+	}
+	return true
 }
 
 chat_approval_db_get :: proc(approval_id: string) -> (rec: Chat_Approval_Record, found: bool) {
