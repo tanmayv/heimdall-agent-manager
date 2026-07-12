@@ -172,9 +172,9 @@ memory_db_save_record :: proc(rec: contracts.Memory_Record) -> bool {
 
 	sqlite3_bind_text(stmt, 1, cstring(raw_data(rec.memory_id)), i32(len(rec.memory_id)), SQLITE_TRANSIENT)
 	sqlite3_bind_text(stmt, 2, cstring(raw_data(rec.proposal_id)), i32(len(rec.proposal_id)), SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 3, cstring(raw_data(rec.subject_agent)), i32(len(rec.subject_agent)), SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 3, cstring(raw_data(rec.legacy_subject_agent)), i32(len(rec.legacy_subject_agent)), SQLITE_TRANSIENT)
 	sqlite3_bind_text(stmt, 4, cstring(raw_data(rec.scope)), i32(len(rec.scope)), SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 5, cstring(raw_data(rec.subject_key)), i32(len(rec.subject_key)), SQLITE_TRANSIENT)
+	sqlite3_bind_text(stmt, 5, cstring(raw_data(rec.legacy_subject_key)), i32(len(rec.legacy_subject_key)), SQLITE_TRANSIENT)
 	sqlite3_bind_text(stmt, 6, cstring(raw_data(rec.project_ids)), i32(len(rec.project_ids)), SQLITE_TRANSIENT)
 	sqlite3_bind_text(stmt, 7, cstring(raw_data(rec.role_keys)), i32(len(rec.role_keys)), SQLITE_TRANSIENT)
 	sqlite3_bind_text(stmt, 8, cstring(raw_data(rec.task_chain_types)), i32(len(rec.task_chain_types)), SQLITE_TRANSIENT)
@@ -278,24 +278,19 @@ memory_db_get_proposal :: proc(proposal_id: string) -> (rec: contracts.Memory_Re
 	return {}, false
 }
 
-memory_db_list_records :: proc(subject_agent, scope, subject_key: string, status: contracts.Memory_Status, include_all: bool) -> []contracts.Memory_Record {
+memory_db_list_records :: proc(scope: string, status: contracts.Memory_Status, include_all: bool) -> []contracts.Memory_Record {
 	stmt: sqlite3_stmt = nil
-	
-	// Build dynamic query
+
 	query_builder := strings.builder_make()
 	strings.write_string(&query_builder, `SELECT 
 		memory_id, proposal_id, subject_agent, scope, subject_key, project_ids, role_keys, task_chain_types, type,
 		title, body, status, reason, evidence,
 		metadata_json, source_task_id, version, created_unix_ms, updated_unix_ms
 		FROM memories WHERE 1=1`)
-	
-	if subject_agent != "" do strings.write_string(&query_builder, " AND subject_agent = ?")
 	if scope != "" do strings.write_string(&query_builder, " AND scope = ?")
-	if subject_key != "" do strings.write_string(&query_builder, " AND subject_key = ?")
 	if !include_all do strings.write_string(&query_builder, " AND status = ?")
-	
+
 	query := strings.to_string(query_builder)
-	
 	rc := sqlite3_prepare_v2(memory_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
 		fmt.println("memory_db_list_records: prepare failed:", rc)
@@ -304,16 +299,8 @@ memory_db_list_records :: proc(subject_agent, scope, subject_key: string, status
 	defer sqlite3_finalize(stmt)
 
 	bind_idx := i32(1)
-	if subject_agent != "" {
-		sqlite3_bind_text(stmt, bind_idx, cstring(raw_data(subject_agent)), i32(len(subject_agent)), SQLITE_TRANSIENT)
-		bind_idx += 1
-	}
 	if scope != "" {
 		sqlite3_bind_text(stmt, bind_idx, cstring(raw_data(scope)), i32(len(scope)), SQLITE_TRANSIENT)
-		bind_idx += 1
-	}
-	if subject_key != "" {
-		sqlite3_bind_text(stmt, bind_idx, cstring(raw_data(subject_key)), i32(len(subject_key)), SQLITE_TRANSIENT)
 		bind_idx += 1
 	}
 	if !include_all {
@@ -358,9 +345,12 @@ memory_db_history :: proc(memory_id: string) -> []contracts.Memory_Event {
 		}
 		// Fetch other details from the memory record if it is a proposal to match the contract
 		if rec, found := memory_db_get_record(ev.memory_id); found {
-			ev.subject_agent = rec.subject_agent
+			ev.legacy_subject_agent = rec.legacy_subject_agent
 			ev.scope = rec.scope
-			ev.subject_key = rec.subject_key
+			ev.legacy_subject_key = rec.legacy_subject_key
+			ev.agent_instance_id = rec.agent_instance_id
+			ev.team_id = rec.team_id
+			ev.template_key = rec.template_key
 			ev.project_ids = rec.project_ids
 			ev.role_keys = rec.role_keys
 			ev.task_chain_types = rec.task_chain_types
@@ -377,29 +367,32 @@ memory_db_history :: proc(memory_id: string) -> []contracts.Memory_Event {
 	return result[:]
 }
 
-// Archive all other active expertise for the same subject/scope when a new one is approved
-memory_db_archive_active_expertise :: proc(scope, subject_key, keep_memory_id: string, at_unix_ms: i64) -> bool {
-	stmt: sqlite3_stmt = nil
-	query := `UPDATE memories 
-		SET status = 'archived', version = version + 1, updated_unix_ms = ? 
-		WHERE type = 'expertise' AND status = 'active' AND scope = ? AND subject_key = ? AND memory_id != ?`
-
-	rc := sqlite3_prepare_v2(memory_db.db, cstring(raw_data(query)), -1, &stmt, nil)
-	if rc != SQLITE_OK {
-		fmt.println("memory_db_archive_active_expertise: prepare failed:", rc)
-		return false
+// Archive all other active expertise for the same canonical target bucket when a new one is approved
+memory_db_archive_active_expertise :: proc(rec: contracts.Memory_Record, keep_memory_id: string, at_unix_ms: i64) -> bool {
+	records := memory_db_list_records(rec.scope, .Active, false)
+	defer {
+		for other in records do memory_record_free(other)
+		delete(records)
 	}
-	defer sqlite3_finalize(stmt)
-
-	sqlite3_bind_int64(stmt, 1, at_unix_ms)
-	sqlite3_bind_text(stmt, 2, cstring(raw_data(scope)), i32(len(scope)), SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 3, cstring(raw_data(subject_key)), i32(len(subject_key)), SQLITE_TRANSIENT)
-	sqlite3_bind_text(stmt, 4, cstring(raw_data(keep_memory_id)), i32(len(keep_memory_id)), SQLITE_TRANSIENT)
-
-	rc = sqlite3_step(stmt)
-	if rc != SQLITE_DONE {
-		fmt.println("memory_db_archive_active_expertise: step failed:", rc)
-		return false
+	bucket := memory_expertise_bucket_key(rec)
+	defer delete(bucket)
+	for other in records {
+		if other.memory_id == keep_memory_id do continue
+		if other.type != .Expertise do continue
+		other_bucket := memory_expertise_bucket_key(other)
+		matches := other_bucket == bucket
+		delete(other_bucket)
+		if !matches do continue
+		if found, ok := memory_db_get_record(other.memory_id); ok {
+			found.status = .Archived
+			found.version += 1
+			found.updated_unix_ms = at_unix_ms
+			if !memory_db_save_record(found) {
+				memory_record_free(found)
+				return false
+			}
+			memory_record_free(found)
+		}
 	}
 	return true
 }
@@ -430,12 +423,12 @@ memory_db_parse_record :: proc(stmt: sqlite3_stmt) -> contracts.Memory_Record {
 	delete(type_str)
 	delete(status_str)
 
-	return contracts.Memory_Record{
+	rec := contracts.Memory_Record{
 		memory_id = memory_id,
 		proposal_id = proposal_id,
-		subject_agent = subject_agent,
+		legacy_subject_agent = subject_agent,
 		scope = scope,
-		subject_key = subject_key,
+		legacy_subject_key = subject_key,
 		project_ids = project_ids,
 		role_keys = role_keys,
 		task_chain_types = task_chain_types,
@@ -451,14 +444,19 @@ memory_db_parse_record :: proc(stmt: sqlite3_stmt) -> contracts.Memory_Record {
 		created_unix_ms = sqlite3_column_int64(stmt, 17),
 		updated_unix_ms = sqlite3_column_int64(stmt, 18),
 	}
+	memory_record_normalize_legacy(&rec)
+	return rec
 }
 
 memory_record_free :: proc(rec: contracts.Memory_Record) {
 	delete(rec.memory_id)
 	delete(rec.proposal_id)
-	delete(rec.subject_agent)
+	delete(rec.legacy_subject_agent)
 	delete(rec.scope)
-	delete(rec.subject_key)
+	delete(rec.legacy_subject_key)
+	delete(rec.agent_instance_id)
+	delete(rec.team_id)
+	delete(rec.template_key)
 	delete(rec.project_ids)
 	delete(rec.role_keys)
 	delete(rec.task_chain_types)
@@ -474,9 +472,12 @@ memory_event_free :: proc(ev: contracts.Memory_Event) {
 	delete(ev.event_id)
 	delete(ev.memory_id)
 	delete(ev.proposal_id)
-	delete(ev.subject_agent)
+	delete(ev.legacy_subject_agent)
 	delete(ev.scope)
-	delete(ev.subject_key)
+	delete(ev.legacy_subject_key)
+	delete(ev.agent_instance_id)
+	delete(ev.team_id)
+	delete(ev.template_key)
 	delete(ev.project_ids)
 	delete(ev.role_keys)
 	delete(ev.task_chain_types)

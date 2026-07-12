@@ -499,10 +499,10 @@ function EntityCard({ id, type, session }: { id: string; type: 'task' | 'chain' 
             <span className="text-[9px] text-[var(--fd-accent-blue)] font-medium hover:underline">Open →</span>
           </div>
         </div>
-        <h4 className="font-semibold text-white truncate">{entity.title}</h4>
+        <h4 className="font-semibold text-white truncate">{entity.title || entity.memoryId || entity.proposalId}</h4>
         <p className="text-[#999] truncate mt-0.5">{entity.body}</p>
         <div className="flex items-center justify-between text-[10px] text-[#777] mt-2 border-t border-[#222] pt-2">
-          <span>Agent: <span className="text-[#aaa]">{entity.subjectAgent}</span></span>
+          <span>Target: <span className="text-[#aaa]">{entity.target || entity.scope || '—'}</span></span>
           <span className="uppercase tracking-wide">{entity.type} · {entity.scope}</span>
         </div>
       </div>

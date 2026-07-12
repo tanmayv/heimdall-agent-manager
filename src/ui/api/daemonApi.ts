@@ -441,8 +441,26 @@ function userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action, body
   });
 }
 
-export async function listMemory({ daemonUrl, clientInstanceId, clientToken, subjectAgent, scope, type, status, includeAllStatuses = true }: UserRpcRequest & { subjectAgent?: string; scope?: string; type?: string; status?: string; includeAllStatuses?: boolean }) {
-  return userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action: 'memory_list', body: { subject_agent: subjectAgent || '', scope: scope || '', type: type || '', status: status || '', include_all_statuses: includeAllStatuses } });
+export async function listMemory({ daemonUrl, clientInstanceId, clientToken, scope, type, status, agentInstanceId, teamId, templateKey, projectIds, roleKeys, taskChainTypes, includeAllStatuses = true }: UserRpcRequest & { scope?: string; type?: string; status?: string; agentInstanceId?: string; teamId?: string; templateKey?: string; projectIds?: string[] | string; roleKeys?: string[] | string; taskChainTypes?: string[] | string; includeAllStatuses?: boolean }) {
+  const csv = (value?: string[] | string) => Array.isArray(value) ? value.join(',') : (value || '');
+  return userRpcRequest({
+    daemonUrl,
+    clientInstanceId,
+    clientToken,
+    action: 'memory_list',
+    body: {
+      scope: scope || '',
+      type: type || '',
+      status: status || '',
+      agent_instance_id: agentInstanceId || '',
+      team_id: teamId || '',
+      template_key: templateKey || '',
+      project_ids: csv(projectIds),
+      role_keys: csv(roleKeys),
+      task_chain_types: csv(taskChainTypes),
+      include_all_statuses: includeAllStatuses,
+    }
+  });
 }
 
 export async function showMemory({ daemonUrl, clientInstanceId, clientToken, memoryId }: UserRpcRequest & { memoryId: string }) {

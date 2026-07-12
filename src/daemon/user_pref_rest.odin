@@ -77,10 +77,10 @@ get_preference_default :: proc(key: string, agent_class := "") -> (value: string
 		return "Task {task_id} {status} by {changed_by}.", false
 
 	case "msg_memory_updated":
-		return "Memory {memory_id} {event} by {changed_by} for {subject_agent} ({status}). Fetch details with: {ctl_bin} memory show --token <your token> --memory-id {memory_id}", false
+		return "Memory {memory_id} {event} by {changed_by} for {target} ({status}). Fetch details with: {ctl_bin} memory show --token <your token> --memory-id {memory_id}", false
 
 	case "msg_memory_proposal_updated":
-		return "Memory proposal {proposal_id} {event} by {changed_by} for {subject_agent}. Review with: {ctl_bin} memory history --token <your token> --memory-id {memory_id}", false
+		return "Memory proposal {proposal_id} {event} by {changed_by} for {target}. Review with: {ctl_bin} memory history --token <your token> --memory-id {memory_id}", false
 
 	case "msg_user_chat":
 		return "{pending_count} User Chat Messages from {user_id}. Read with: {ctl_bin} chat fetch-user --token <your token> --user-id {user_id}", true

@@ -1,13 +1,50 @@
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
 import * as daemonApi from '../api/daemonApi';
 
+function normalizeStringArray(value: any) {
+  if (Array.isArray(value)) return value.map((item) => String(item || '')).filter(Boolean);
+  if (!value) return [];
+  return String(value)
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function memoryTargetSummary(record: any) {
+  if (record.target) return String(record.target);
+  const scope = record.scope || 'scope';
+  const teamId = record.team_id || '';
+  const templateKey = record.template_key || '';
+  const agentInstanceId = record.agent_instance_id || '';
+  const projectIds = normalizeStringArray(record.project_ids);
+  const roleKeys = normalizeStringArray(record.role_keys);
+  const taskChainTypes = normalizeStringArray(record.task_chain_types);
+  const parts = [scope];
+  if (teamId) parts.push(`team ${teamId}`);
+  if (templateKey) parts.push(`template ${templateKey}`);
+  if (agentInstanceId) parts.push(`agent ${agentInstanceId}`);
+  if (projectIds.length) parts.push(`projects ${projectIds.join(', ')}`);
+  if (roleKeys.length) parts.push(`roles ${roleKeys.join(', ')}`);
+  if (taskChainTypes.length) parts.push(`task chains ${taskChainTypes.join(', ')}`);
+  return parts.join(' · ');
+}
+
 function normalizeMemory(record: any) {
+  const projectIds = normalizeStringArray(record.project_ids);
+  const roleKeys = normalizeStringArray(record.role_keys);
+  const taskChainTypes = normalizeStringArray(record.task_chain_types);
   return {
     id: record.memory_id || '',
     memoryId: record.memory_id || '',
     proposalId: record.proposal_id || '',
-    subjectAgent: record.subject_agent || '',
     scope: record.scope || 'global',
+    agentInstanceId: record.agent_instance_id || '',
+    teamId: record.team_id || '',
+    templateKey: record.template_key || '',
+    projectIds,
+    roleKeys,
+    taskChainTypes,
+    target: memoryTargetSummary(record),
     type: record.type || 'fact',
     title: record.title || '',
     body: record.body || '',
@@ -27,9 +64,17 @@ function normalizeHistory(event: any) {
     eventId: event.event_id || '',
     memoryId: event.memory_id || '',
     proposalId: event.proposal_id || '',
+    scope: event.scope || '',
+    agentInstanceId: event.agent_instance_id || '',
+    teamId: event.team_id || '',
+    templateKey: event.template_key || '',
+    projectIds: normalizeStringArray(event.project_ids),
+    roleKeys: normalizeStringArray(event.role_keys),
+    taskChainTypes: normalizeStringArray(event.task_chain_types),
     reason: event.reason || '',
     evidence: event.evidence || '',
     author: event.author || '',
+    sourceTaskId: event.source_task_id || '',
     createdUnixMs: Number(event.created_unix_ms || 0),
   };
 }
@@ -96,7 +141,7 @@ const initialState = {
   recordsById: {} as Record<string, any>,
   recordIds: [] as string[],
   historyById: {} as Record<string, any[]>,
-  filters: { subjectAgent: '', type: '', status: '' },
+  filters: { type: '', status: '' },
   loading: false,
   detailLoading: false,
   error: '',
@@ -171,7 +216,6 @@ const memorySlice = createSlice({
         const recordsById: any = {};
         const activeFilters = state.filters;
         const recordIds = [...action.payload.records]
-          .filter((record: any) => !activeFilters.subjectAgent || record.subjectAgent.toLowerCase().includes(activeFilters.subjectAgent.toLowerCase()))
           .filter((record: any) => !activeFilters.type || record.type === activeFilters.type)
           .filter((record: any) => !activeFilters.status || record.status === activeFilters.status)
           .sort((left, right) => (right.updatedUnixMs || right.createdUnixMs || 0) - (left.updatedUnixMs || left.createdUnixMs || 0))

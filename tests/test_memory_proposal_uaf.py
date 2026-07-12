@@ -1,6 +1,7 @@
 import urllib.request
 import json
 import sys
+import urllib.error
 
 DAEMON_URL = "http://127.0.0.1:49325"
 
@@ -12,8 +13,11 @@ def request_post(path, data):
         headers=headers,
         method="POST"
     )
-    res = urllib.request.urlopen(req)
-    return json.loads(res.read().decode("utf-8"))
+    try:
+        res = urllib.request.urlopen(req)
+        return json.loads(res.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        return json.loads(exc.read().decode("utf-8"))
 
 def main():
     agent_id = "test-mem-agent@default"
@@ -33,15 +37,31 @@ def main():
         print("[-] Registration failed:", e)
         sys.exit(1)
 
-    # 2. Create the agent instance record in the database
-    print("[*] Creating agent record...")
+    # 2. Create a project and the agent instance record in the database
+    print("[*] Creating project and agent record...")
     try:
+        user_reg = request_post("/user-client/register", {
+            "user_id": "operator@local",
+            "client_instance_id": "test-mem-user"
+        })
+        project_res = request_post("/user-rpc", {
+            "action": "project_create",
+            "client_instance_id": "test-mem-user",
+            "client_token": user_reg["client_token"],
+            "project_id": "test-mem-project",
+            "name": "Test Memory Project",
+            "description": "memory proposal test"
+        })
+        if not project_res.get("ok"):
+            print("[-] Project creation failed:", project_res)
+            sys.exit(1)
         create_res = request_post("/agents/create", {
             "agent_instance_id": agent_id,
             "display_name": "Test Memory",
             "provider_profile": "pi",
             "template_id": "test-mem-agent",
-            "model_tier": "normal"
+            "model_tier": "normal",
+            "project_id": "test-mem-project"
         })
         if not create_res.get("ok"):
             print("[-] Agent record creation failed:", create_res)
@@ -55,7 +75,8 @@ def main():
     try:
         prop_res = request_post("/memory/propose/new", {
             "agent_token": token,
-            "subject_agent": agent_id,
+            "scope": "project",
+            "project_id": "test-mem-project",
             "type": "fact",
             "title": "Initial Title",
             "body": "Initial Body text of proposal",
@@ -151,6 +172,15 @@ def main():
             sys.exit(1)
     except Exception as e:
         print("[-] Memory archive decide request failed:", e)
+        sys.exit(1)
+
+    # 9. Public JSON should no longer expose subject fields.
+    show_res = request_post("/memory/show", {"agent_token": token, "memory_id": memory_id})
+    list_res = request_post("/memory/list", {"agent_token": token, "scope": "project", "project_id": "test-mem-project", "include_all_statuses": True})
+    history_res = request_post("/memory/history", {"agent_token": token, "memory_id": memory_id})
+    payload = json.dumps({"show": show_res, "list": list_res, "history": history_res})
+    if "subject_agent" in payload or "subject_key" in payload:
+        print("[-] Subject fields still exposed in public memory JSON:", payload)
         sys.exit(1)
 
     print("[+] All memory UAF and proposal integration tests passed successfully!")

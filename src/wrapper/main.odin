@@ -709,7 +709,8 @@ handle_memory_event :: proc(text, tmux_pane, agent_instance_id: string) {
 	event := extract_json_string(text, "event", "memory_updated")
 	memory_id := extract_json_string(text, "memory_id", "unknown")
 	proposal_id := extract_json_string(text, "proposal_id", "")
-	subject_agent := extract_json_string(text, "subject_agent", "")
+	target := extract_json_string(text, "target", "")
+	if target == "" do target = extract_json_string(text, "subject_agent", "")
 	status := extract_json_string(text, "status", "")
 
 	template_str := active_live_prefs.msg_memory_updated
@@ -725,7 +726,7 @@ handle_memory_event :: proc(text, tmux_pane, agent_instance_id: string) {
 	line := template_live_message(
 		template_str,
 		0, "",
-		"", "", changed_by, "", target_id, event, subject_agent, "", "", "", 0,
+		"", "", changed_by, "", target_id, event, target, "", "", "", 0,
 	)
 	defer delete(line)
 
@@ -2116,9 +2117,9 @@ initialize_default_preferences :: proc() {
 	active_live_prefs.msg_task_updated_int = false
 	active_live_prefs.msg_task_updated_empty = "Task {task_id} {status} by {changed_by}."
 	active_live_prefs.msg_task_updated_empty_int = false
-	active_live_prefs.msg_memory_updated = "Memory {memory_id} {event} by {changed_by} for {subject_agent} ({status}). Fetch details with: {ctl_bin} memory show --token <your token> --memory-id {memory_id}"
+	active_live_prefs.msg_memory_updated = "Memory {memory_id} {event} by {changed_by} for {target} ({status}). Fetch details with: {ctl_bin} memory show --token <your token> --memory-id {memory_id}"
 	active_live_prefs.msg_memory_updated_int = false
-	active_live_prefs.msg_memory_proposal_updated = "Memory proposal {proposal_id} {event} by {changed_by} for {subject_agent}. Review with: {ctl_bin} memory history --token <your token> --memory-id {memory_id}"
+	active_live_prefs.msg_memory_proposal_updated = "Memory proposal {proposal_id} {event} by {changed_by} for {target}. Review with: {ctl_bin} memory history --token <your token> --memory-id {memory_id}"
 	active_live_prefs.msg_memory_proposal_updated_int = false
 	active_live_prefs.msg_user_chat = "{pending_count} User Chat Messages from {user_id}. Read with: {ctl_bin} chat fetch-user --token <your token> --user-id {user_id}"
 	active_live_prefs.msg_user_chat_int = true
@@ -2223,7 +2224,7 @@ extract_json_object :: proc(body, key: string) -> string {
 	return ""
 }
 
-template_live_message :: proc(template_str: string, pending_count: int, from_agent_id, task_id, status, changed_by, body, memory_id, event, subject_agent, user_id, new_token, daemon_url: string, time_val: int, allocator := context.allocator) -> string {
+template_live_message :: proc(template_str: string, pending_count: int, from_agent_id, task_id, status, changed_by, body, memory_id, event, target, user_id, new_token, daemon_url: string, time_val: int, allocator := context.allocator) -> string {
 	context.allocator = context.temp_allocator
 	
 	res := replace_all(template_str, "{pending_count}", fmt.tprintf("%d", pending_count))
@@ -2235,7 +2236,8 @@ template_live_message :: proc(template_str: string, pending_count: int, from_age
 	res = replace_all(res, "{memory_id}", memory_id)
 	res = replace_all(res, "{proposal_id}", memory_id)
 	res = replace_all(res, "{event}", event)
-	res = replace_all(res, "{subject_agent}", subject_agent)
+	res = replace_all(res, "{target}", target)
+	res = replace_all(res, "{subject_agent}", target)
 	res = replace_all(res, "{user_id}", user_id)
 	res = replace_all(res, "{new_token}", new_token)
 	res = replace_all(res, "{daemon_url}", daemon_url)
