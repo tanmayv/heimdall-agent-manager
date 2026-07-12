@@ -33,9 +33,12 @@ memory_append_event :: proc(event: contracts.Memory_Event) -> contracts.Memory_A
 	#partial switch ev.kind {
 	case .Memory_Proposed:
 		rec.proposal_id = strings.clone(ev.proposal_id)
-		rec.subject_agent = strings.clone(ev.subject_agent)
+		rec.legacy_subject_agent = strings.clone(ev.legacy_subject_agent)
 		rec.scope = strings.clone(ev.scope)
-		rec.subject_key = strings.clone(ev.subject_key)
+		rec.legacy_subject_key = strings.clone(ev.legacy_subject_key)
+		rec.agent_instance_id = strings.clone(ev.agent_instance_id)
+		rec.team_id = strings.clone(ev.team_id)
+		rec.template_key = strings.clone(ev.template_key)
 		rec.project_ids = strings.clone(ev.project_ids)
 		rec.role_keys = strings.clone(ev.role_keys)
 		rec.task_chain_types = strings.clone(ev.task_chain_types)
@@ -51,7 +54,7 @@ memory_append_event :: proc(event: contracts.Memory_Event) -> contracts.Memory_A
 		rec.updated_unix_ms = ev.created_unix_ms
 	case .Memory_Approved:
 		if rec.type == .Expertise {
-			memory_db_archive_active_expertise(rec.scope, rec.subject_key, rec.memory_id, ev.created_unix_ms)
+			memory_db_archive_active_expertise(rec, rec.memory_id, ev.created_unix_ms)
 		}
 		rec.status = .Active
 		rec.version += 1
@@ -85,8 +88,8 @@ memory_notify_event :: proc(event: contracts.Memory_Event) -> bool {
 	payload := memory_notification_json(event, rec, found)
 	user_client_fanout_all_ws_text(payload)
 	sent := false
-	subject := event.subject_agent
-	if subject == "" && found do subject = rec.subject_agent
+	subject := event.legacy_subject_agent
+	if subject == "" && found do subject = rec.legacy_subject_agent
 	sent = task_notify_recipient_except(subject, payload, event.author) || sent
 	source_task := event.source_task_id
 	if source_task == "" && found do source_task = rec.source_task_id
@@ -102,29 +105,44 @@ memory_notify_event :: proc(event: contracts.Memory_Event) -> bool {
 }
 
 memory_notification_json :: proc(event: contracts.Memory_Event, rec: contracts.Memory_Record, found: bool) -> string {
-	subject := event.subject_agent
+	agent_instance_id := event.agent_instance_id
+	team_id := event.team_id
+	template_key := event.template_key
 	scope := event.scope
-	subject_key := event.subject_key
+	project_ids := event.project_ids
+	role_keys := event.role_keys
+	task_chain_types := event.task_chain_types
 	type_text := memory_type_string_service(event.type)
 	status := memory_status_string_service(event.status)
 	source_task := event.source_task_id
 	metadata_json := event.metadata_json
 	if found {
-		if subject == "" do subject = rec.subject_agent
+		if agent_instance_id == "" do agent_instance_id = rec.agent_instance_id
+		if team_id == "" do team_id = rec.team_id
+		if template_key == "" do template_key = rec.template_key
 		if scope == "" do scope = rec.scope
-		if subject_key == "" do subject_key = rec.subject_key
+		if project_ids == "" do project_ids = rec.project_ids
+		if role_keys == "" do role_keys = rec.role_keys
+		if task_chain_types == "" do task_chain_types = rec.task_chain_types
 		type_text = memory_type_string_service(rec.type)
 		status = memory_status_string_service(rec.status)
 		if source_task == "" do source_task = rec.source_task_id
 		if metadata_json == "" do metadata_json = rec.metadata_json
 	}
+	target := memory_target_string(scope, agent_instance_id, team_id, template_key, project_ids)
+	defer delete(target)
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"type":"memory_event","event":"`); json_write_string(&builder, fmt.tprintf("%v", event.kind))
 	strings.write_string(&builder, `","memory_id":"`); json_write_string(&builder, event.memory_id)
 	strings.write_string(&builder, `","proposal_id":"`); json_write_string(&builder, event.proposal_id)
-	strings.write_string(&builder, `","subject_agent":"`); json_write_string(&builder, subject)
 	strings.write_string(&builder, `","scope":"`); json_write_string(&builder, scope)
-	strings.write_string(&builder, `","subject_key":"`); json_write_string(&builder, subject_key)
+	strings.write_string(&builder, `","agent_instance_id":"`); json_write_string(&builder, agent_instance_id)
+	strings.write_string(&builder, `","team_id":"`); json_write_string(&builder, team_id)
+	strings.write_string(&builder, `","template_key":"`); json_write_string(&builder, template_key)
+	strings.write_string(&builder, `","project_ids":`); memory_write_csv_json_array(&builder, project_ids)
+	strings.write_string(&builder, `,"role_keys":`); memory_write_csv_json_array(&builder, role_keys)
+	strings.write_string(&builder, `,"task_chain_types":`); memory_write_csv_json_array(&builder, task_chain_types)
+	strings.write_string(&builder, `,"target":"`); json_write_string(&builder, target)
 	strings.write_string(&builder, `","memory_type":"`); json_write_string(&builder, type_text)
 	strings.write_string(&builder, `","status":"`); json_write_string(&builder, status)
 	strings.write_string(&builder, `","changed_by":"`); json_write_string(&builder, event.author)

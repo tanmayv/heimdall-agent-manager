@@ -74,9 +74,9 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
   const [submitError, setSubmitError] = useState('');
   const [reviewState, setReviewState] = useState<Record<string, { reason: string; loading?: boolean; error?: string }>>({});
   const [form, setForm] = useState({
-    subjectAgent: '',
+    agentInstanceId: '',
     scope: 'team_project',
-    subjectKey: '',
+    templateKey: '',
     projectIds: '',
     roleKeys: '',
     taskChainTypes: '',
@@ -114,9 +114,9 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
   useEffect(() => {
     if (formMode === 'new') {
       setForm({
-        subjectAgent: '',
+        agentInstanceId: '',
         scope: 'team_project',
-        subjectKey: '',
+        templateKey: '',
         projectIds: '',
         roleKeys: '',
         taskChainTypes: '',
@@ -132,9 +132,9 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
     }
     if (!selectedRecord) return;
     setForm({
-      subjectAgent: selectedRecord.subjectAgent || '',
+      agentInstanceId: selectedRecord.agentInstanceId || '',
       scope: selectedRecord.scope || 'team_project',
-      subjectKey: selectedRecord.subjectKey || '',
+      templateKey: selectedRecord.templateKey || '',
       projectIds: csvText(selectedRecord.projectIds || []),
       roleKeys: csvText(selectedRecord.roleKeys || []),
       taskChainTypes: csvText(selectedRecord.taskChainTypes || []),
@@ -160,9 +160,9 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
       if (formMode === 'new') {
         const result = await dispatch(proposeMemoryChange({
           proposalAction: 'new',
-          subjectAgent: form.subjectAgent,
+          agentInstanceId: form.agentInstanceId,
           scope: form.scope,
-          subjectKey: form.subjectKey,
+          templateKey: form.templateKey,
           projectIds: form.projectIds,
           roleKeys: form.roleKeys,
           taskChainTypes: form.taskChainTypes,
@@ -184,9 +184,9 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
             proposalAction: 'edit',
             memoryId: selectedRecord.memoryId,
             expectedVersion: selectedRecord.version,
-            subjectAgent: form.subjectAgent,
+            agentInstanceId: form.agentInstanceId,
             scope: form.scope,
-            subjectKey: form.subjectKey,
+            templateKey: form.templateKey,
             projectIds: form.projectIds,
             roleKeys: form.roleKeys,
             taskChainTypes: form.taskChainTypes,
@@ -291,13 +291,13 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-lg font-semibold text-zinc-100">Filters and search</div>
-                <div className="mt-1 text-sm text-zinc-500">Filter by subject, targeting, lifecycle status, and free text across titles/body/metadata.</div>
+                <div className="mt-1 text-sm text-zinc-500">Filter by canonical target, lifecycle status, and free text across titles/body/metadata.</div>
               </div>
               <button data-debug-id="memory-filters-reset-btn" onClick={() => dispatch(resetMemoryFilters())} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Reset</button>
             </div>
             <div data-debug-id="memory-filters" className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              <FilterInput debugId="memory-filter-subject-input" label="Agent / subject" value={filters.subject || ''} onChange={(value) => handleFilterChange({ subject: value, subjectAgent: value })} placeholder="agent id, subject key, memory id…" />
-              <FilterInput debugId="memory-filter-subject-key-input" label="Subject key" value={filters.subjectKey || ''} onChange={(value) => handleFilterChange({ subjectKey: value })} placeholder="tp:team:project" />
+              <FilterInput debugId="memory-filter-target-input" label="Target" value={filters.search || ''} onChange={(value) => handleFilterChange({ search: value })} placeholder="target, memory id, proposal id…" />
+              <FilterInput debugId="memory-filter-template-key-input" label="Template key" value={filters.templateKey || ''} onChange={(value) => handleFilterChange({ templateKey: value })} placeholder="template key" />
               <FilterInput debugId="memory-filter-project-input" label="Project target" value={filters.projectId || ''} onChange={(value) => handleFilterChange({ projectId: value })} placeholder="heimdall-agent-manager" />
               <FilterInput debugId="memory-filter-role-input" label="Role target" value={filters.roleKey || ''} onChange={(value) => handleFilterChange({ roleKey: value })} placeholder="coder, reviewer" />
               <FilterInput debugId="memory-filter-task-chain-type-input" label="Task-chain type target" value={filters.taskChainType || ''} onChange={(value) => handleFilterChange({ taskChainType: value })} placeholder="feature, bugfix" />
@@ -343,8 +343,8 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
                           <Badge>{normalizeProposalState(record)}</Badge>
                         </div>
                         <div className="mt-2 grid gap-1 text-xs text-zinc-400 md:grid-cols-2 xl:grid-cols-3">
-                          <div><span className="text-zinc-500">Subject:</span> {record.subjectAgent || '—'}</div>
-                          <div><span className="text-zinc-500">subject_key:</span> {record.subjectKey || '—'}</div>
+                          <div><span className="text-zinc-500">Target:</span> {record.target || '—'}</div>
+                          <div><span className="text-zinc-500">template_key:</span> {record.templateKey || '—'}</div>
                           <div><span className="text-zinc-500">Version:</span> {record.version ?? 0}</div>
                           <div><span className="text-zinc-500">project_ids:</span> {compactList(record.projectIds || [])}</div>
                           <div><span className="text-zinc-500">role_keys:</span> {compactList(record.roleKeys || [])}</div>
@@ -382,9 +382,9 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
                   <DetailStat label="Proposal state" value={normalizeProposalState(selectedRecord)} />
                   <DetailStat label="Type" value={selectedRecord.type || '—'} />
                   <DetailStat label="Status" value={selectedRecord.status || '—'} />
-                  <DetailStat label="Subject / agent" value={selectedRecord.subjectAgent || '—'} />
+                  <DetailStat label="Agent instance" value={selectedRecord.agentInstanceId || '—'} />
                   <DetailStat label="Scope" value={selectedRecord.scope || '—'} />
-                  <DetailStat label="subject_key" value={selectedRecord.subjectKey || '—'} />
+                  <DetailStat label="template_key" value={selectedRecord.templateKey || '—'} />
                   <DetailStat label="Version" value={String(selectedRecord.version || 0)} />
                   <DetailStat label="project_ids" value={compactList(selectedRecord.projectIds || [])} />
                   <DetailStat label="role_keys" value={compactList(selectedRecord.roleKeys || [])} />
@@ -424,7 +424,7 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
                         </div>
                         <div className="mt-2 text-xs text-zinc-400">Proposal: {event.proposalId || '—'} · Author: {event.author || '—'}</div>
                         <div className="mt-2 grid gap-1 text-xs text-zinc-500">
-                          <div>subject_key: {event.subjectKey || '—'}</div>
+                          <div>template_key: {event.templateKey || '—'}</div>
                           <div>project_ids: {compactList(event.projectIds || [])}</div>
                           <div>role_keys: {compactList(event.roleKeys || [])}</div>
                           <div>task_chain_types: {compactList(event.taskChainTypes || [])}</div>
@@ -474,9 +474,9 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
                   </div>
 
                   <div className="grid gap-3 md:grid-cols-2">
-                    <FilterInput debugId="memory-form-subject-agent-input" label="Subject / agent" value={form.subjectAgent} onChange={(value) => setForm((current) => ({ ...current, subjectAgent: value }))} placeholder="agent instance id" />
+                    <FilterInput debugId="memory-form-agent-instance-input" label="Agent instance" value={form.agentInstanceId} onChange={(value) => setForm((current) => ({ ...current, agentInstanceId: value }))} placeholder="agent instance id" />
                     <FilterInput debugId="memory-form-scope-input" label="Scope" value={form.scope} onChange={(value) => setForm((current) => ({ ...current, scope: value }))} placeholder="team_project, project, personal…" />
-                    <FilterInput debugId="memory-form-subject-key-input" label="subject_key" value={form.subjectKey} onChange={(value) => setForm((current) => ({ ...current, subjectKey: value }))} placeholder="tp:team:project" />
+                    <FilterInput debugId="memory-form-template-key-input" label="template_key" value={form.templateKey} onChange={(value) => setForm((current) => ({ ...current, templateKey: value }))} placeholder="template key" />
                     <FilterInput debugId="memory-form-source-task-input" label="source_task_id" value={form.sourceTaskId} onChange={(value) => setForm((current) => ({ ...current, sourceTaskId: value }))} placeholder="task-..." />
                     <FilterInput debugId="memory-form-project-ids-input" label="project_ids (CSV)" value={form.projectIds} onChange={(value) => setForm((current) => ({ ...current, projectIds: value }))} placeholder="proj-a,proj-b" />
                     <FilterInput debugId="memory-form-role-keys-input" label="role_keys (CSV)" value={form.roleKeys} onChange={(value) => setForm((current) => ({ ...current, roleKeys: value }))} placeholder="coder,reviewer" />
@@ -529,7 +529,7 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
                           <Badge>{record.scope || 'scope'}</Badge>
                           <Badge>v{record.version || 0}</Badge>
                         </div>
-                        <div className="mt-2 text-xs text-zinc-400">Proposal {record.proposalId || '—'} · Subject {record.subjectAgent || '—'} · subject_key {record.subjectKey || '—'}</div>
+                        <div className="mt-2 text-xs text-zinc-400">Proposal {record.proposalId || '—'} · Target {record.target || '—'} · template_key {record.templateKey || '—'}</div>
                         <div className="mt-1 text-xs text-zinc-500">Targets: project_ids {compactList(record.projectIds || [])} · role_keys {compactList(record.roleKeys || [])} · task_chain_types {compactList(record.taskChainTypes || [])}</div>
                       </div>
                       <button data-debug-id={`memory-pending-open-${record.memoryId}`} onClick={() => onSelectMemory(record.memoryId)} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Inspect</button>

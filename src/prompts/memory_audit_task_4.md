@@ -3,12 +3,12 @@
 ## Ask for Auditor (Assignee)
 Draft structured memory recommendations in Markdown format based on the analysis from Task 3.
 - Use the standard memory types: `fact`, `habit`, `episode`, `expertise`, `skill`.
-- Formulate precise memory entries including subject agent, title, type, and body.
+- Formulate precise memory entries including target/scope, title, type, and body.
 - Align with focus guidelines: {{AUDITOR_INSTRUCTIONS}}.
 
 ## Success Criteria for Auditor (Assignee)
 - Generate a clean Markdown file listing all memory recommendations.
-- For each memory, supply: Subject Agent, Type, Title, Body, Evidence (links to tasks/lines), and Rationale.
+- For each memory, supply: Target, Scope, Type, Title, Body, Evidence (links to tasks/lines), and Rationale.
 - Post the Markdown text in the task comments and save it as an artifact.
 
 ## Ask for Reviewer

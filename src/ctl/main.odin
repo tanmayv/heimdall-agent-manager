@@ -557,15 +557,25 @@ ctl_projects :: proc(daemon_url, action: string, args: []string) {
 	fmt.println(response.body)
 }
 
-MEMORY_SUBJECT_DEPRECATED_MESSAGE :: "subject_key and subject_agent are deprecated; use project, role, and task-chain targeting fields instead"
+MEMORY_DEPRECATED_SUBJECT_MESSAGE :: "deprecated memory subject fields are not accepted; use canonical target fields (agent_instance_id, team_id, project_id, template_key, project_ids, role_keys, task_chain_types)"
+
+memory_ctl_deprecated_subject_args :: proc(args: []string) -> string {
+	if has_flag(args, "--subject-key") || has_flag(args, "--subject-agent") || has_flag(args, "--agent") do return MEMORY_DEPRECATED_SUBJECT_MESSAGE
+	return ""
+}
+
+memory_ctl_error_json :: proc(message: string) -> string {
+	body := strings.builder_make()
+	strings.write_string(&body, `{"ok":false,"message":"`)
+	json_write_string(&body, message)
+	strings.write_string(&body, `"}`)
+	return strings.to_string(body)
+}
 
 ctl_memory :: proc(daemon_url: string, cmd: []string, args: []string) {
 	token := option_value(args, "--token", "")
 	if token == "" { fmt.println("usage: ham-ctl memory <propose new|edit|archive|rollback|decide|list|show|history> --token <token> ..."); return }
-	if memory_ctl_has_deprecated_subject_flag(args) {
-		fmt.println(`{"ok":false,"message":"subject_key and subject_agent are deprecated; use project, role, and task-chain targeting fields instead"}`)
-		return
-	}
+	if msg := memory_ctl_deprecated_subject_args(args); msg != "" { fmt.println(memory_ctl_error_json(msg)); return }
 	path := ""
 	body := strings.builder_make()
 	strings.write_string(&body, `{"agent_token":"`); json_write_string(&body, token); strings.write_string(&body, `"`)
@@ -616,6 +626,7 @@ memory_ctl_has_deprecated_subject_flag :: proc(args: []string) -> bool {
 }
 
 memory_ctl_add_filter_fields :: proc(body: ^strings.Builder, args: []string) {
+	if agent := option_value(args, "--agent-instance-id", ""); agent != "" { strings.write_string(body, `,"agent_instance_id":"`); json_write_string(body, agent); strings.write_string(body, `"`) }
 	if scope := option_value(args, "--scope", ""); scope != "" { strings.write_string(body, `,"scope":"`); json_write_string(body, scope); strings.write_string(body, `"`) }
 	if team := option_value(args, "--team", option_value(args, "--team-id", "")); team != "" { strings.write_string(body, `,"team_id":"`); json_write_string(body, team); strings.write_string(body, `"`) }
 	if project := option_value(args, "--project", option_value(args, "--project-id", "")); project != "" { strings.write_string(body, `,"project_id":"`); json_write_string(body, project); strings.write_string(body, `"`) }
@@ -964,7 +975,7 @@ command_tokens :: proc(args: []string) -> [dynamic]string {
 	cmd := make([dynamic]string)
 	for i := 1; i < len(args); i += 1 {
 		arg := args[i]
-		if arg == cfg_lib.CONFIG_PATH_FLAG || arg == "--daemon-url" || arg == "--wrapper-bin" || arg == "--agent" || arg == "--token" || arg == "--to" || arg == "--body" || arg == "--limit" || arg == "--task-id" || arg == "--task" || arg == "--chain-id" || arg == "--chain" || arg == "--status" || arg == "--agent-instance-id" || arg == "--role" || arg == "--final-summary" || arg == "--summary" || arg == "--user-id" || arg == "--client-instance-id" || arg == "--message-id" || arg == "--result" || arg == "--comment" || arg == "--title" || arg == "--description" || arg == "--goal" || arg == "--priority" || arg == "--assignee-agent-instance-id" || arg == "--assignee" || arg == "--coordinator-agent-instance-id" || arg == "--coordinator" || arg == "--reviewer" || arg == "--comment-id" || arg == "--depends-on" || arg == "--subject-agent" || arg == "--scope" || arg == "--type" || arg == "--memory-id" || arg == "--memory" || arg == "--proposal-id" || arg == "--decision" || arg == "--reason" || arg == "--evidence" || arg == "--source-task-id" || arg == "--source-task" || arg == "--expected-version" || arg == "--project-id" || arg == "--project" || arg == "--name" || arg == "--anchor-type" || arg == "--anchor-value" || arg == "--anchor-note" || arg == "--cursor" {
+		if arg == cfg_lib.CONFIG_PATH_FLAG || arg == "--daemon-url" || arg == "--wrapper-bin" || arg == "--agent" || arg == "--token" || arg == "--to" || arg == "--body" || arg == "--limit" || arg == "--task-id" || arg == "--task" || arg == "--chain-id" || arg == "--chain" || arg == "--status" || arg == "--agent-instance-id" || arg == "--role" || arg == "--final-summary" || arg == "--summary" || arg == "--user-id" || arg == "--client-instance-id" || arg == "--message-id" || arg == "--result" || arg == "--comment" || arg == "--title" || arg == "--description" || arg == "--goal" || arg == "--priority" || arg == "--assignee-agent-instance-id" || arg == "--assignee" || arg == "--coordinator-agent-instance-id" || arg == "--coordinator" || arg == "--reviewer" || arg == "--comment-id" || arg == "--depends-on" || arg == "--subject-agent" || arg == "--subject-key" || arg == "--scope" || arg == "--type" || arg == "--memory-id" || arg == "--memory" || arg == "--proposal-id" || arg == "--decision" || arg == "--reason" || arg == "--evidence" || arg == "--source-task-id" || arg == "--source-task" || arg == "--expected-version" || arg == "--project-id" || arg == "--project" || arg == "--name" || arg == "--anchor-type" || arg == "--anchor-value" || arg == "--anchor-note" || arg == "--cursor" {
 			i += 1
 			continue
 		}
@@ -1180,12 +1191,12 @@ print_usage :: proc(config_path, daemon_url: string) {
 	fmt.println("  projects update --token <token> --project-id <id> [--name <name>] [--description <text>] [--anchor-type <type> --anchor-value <val> [--anchor-note <note>]]")
 	fmt.println("  projects list --token <token>")
 	fmt.println("  projects show --token <token> --project-id <id>")
-	fmt.println("  memory propose new --token <token> [--scope <team_project|project|template>] [--team <id> --project <id> | --project <id> | --template-key <slug>] [--project-ids <csv>] [--role-keys <csv>] [--task-chain-types <csv>] --type <type> --title <title> --body <body> [--reason <text>] [--evidence <text>] [--source-task-id <id>]")
+	fmt.println("  memory propose new --token <token> [--scope <team_project|project|template|personal>] [--team <id> --project <id> | --project <id> | --template-key <slug> | --agent-instance-id <id>] [--project-ids <csv>] [--role-keys <csv>] [--task-chain-types <csv>] --type <type> --title <title> --body <body> [--reason <text>] [--evidence <text>] [--source-task-id <id>]   (deprecated: --subject-key/--subject-agent/--agent are rejected)")
 	fmt.println("  memory propose edit --token <token> --memory-id <id> --expected-version <version> --title <title> --body <body> [--project-ids <csv>] [--role-keys <csv>] [--task-chain-types <csv>] [--reason <text>] [--evidence <text>]")
 	fmt.println("  memory propose archive --token <token> --memory-id <id> --expected-version <version> [--reason <text>] [--evidence <text>]")
 	fmt.println("  memory propose rollback --token <token> --memory-id <id> --expected-version <version> [--reason <text>] [--evidence <text>]")
 	fmt.println("  memory decide --token <token> --proposal-id <id> --decision approve|reject [--reason <text>]")
-	fmt.println("  memory list --token <token> [--scope <scope>] [--team <id>] [--project <id> | --project-ids <csv>] [--template-key <slug>] [--type <type>] [--role-key <key> | --role-keys <csv>] [--task-chain-type <kind> | --task-chain-types <csv>] [--status <status>] [--all]")
+	fmt.println("  memory list --token <token> [--agent-instance-id <id>] [--scope <scope>] [--team <id>] [--project <id> | --project-ids <csv>] [--template-key <slug>] [--type <type>] [--role-key <key> | --role-keys <csv>] [--task-chain-type <kind> | --task-chain-types <csv>] [--status <status>] [--all]")
 	fmt.println("  memory show --token <token> --memory-id <id>")
 	fmt.println("  memory history --token <token> --memory-id <id>")
 	fmt.println("  users register --user-id <user> --client-instance-id <client> [--token <client_token>]")

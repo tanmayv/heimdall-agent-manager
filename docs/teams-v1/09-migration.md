@@ -82,13 +82,15 @@ The **currently-in-flight `Introduce Teams model` chain** (this chain) is attach
 
 For every `memories` row:
 
-- Compute new `scope` and `subject_key`:
-  - If `subject_agent` matches a real agent → `scope = Team_Project`, `subject_key = "tp:<resolve_team(agent)>:<agent.project_id or "_orphan">"`.
-  - If `subject_agent` matches a heimdall-system agent → `scope = Template`, `subject_key = "tmpl:<title_slug>"`.
-  - If `subject_agent` is empty and `title` matches a template scope → `Template`.
-- Idempotent: rerun leaves rows alone if `scope` is already set.
+- Compute canonical public targeting:
+  - If `subject_agent` matches a real agent → `scope = Team_Project`, `team_id = <resolve_team(agent)>`, `project_ids = [agent.project_id or "_orphan"]`.
+  - If `subject_agent` matches a heimdall-system agent → `scope = Template`, `template_key = <title_slug>`.
+  - If `subject_agent` is empty and `title` matches a template scope → `scope = Template`, `template_key = <title_slug>`.
+  - If the row is a personal quirk/scratch case → `scope = Personal`, `agent_instance_id = <agent>`.
+- Preserve or derive internal legacy compatibility storage only as needed for readback/restart safety during the transition.
+- Idempotent: rerun leaves rows alone if canonical targeting is already set.
 
-Persist a mapping table `memory_migration_map(memory_id, old_scope, old_subject, new_scope, new_subject_key)` for auditability.
+Persist a mapping table `memory_migration_map(memory_id, old_scope, old_subject, new_scope, new_subject_key)` for auditability of the legacy-to-canonical rewrite, even though public APIs now surface canonical target fields instead of `subject_key`.
 
 ### 9.5 Anchor migration
 
@@ -129,13 +131,13 @@ Markdown, one section per migration step, with:
 - Counts before/after.
 - List of rows moved/rewritten.
 - Any anchors dropped (with their old values).
-- Any memory rows that could not be resolved (kept `subject_key = ""` and flagged).
+- Any memory rows that could not be resolved to canonical targeting (and what compatibility fallback, if any, was retained).
 
 Filed under `<data_dir>/migrations/`. Operator inspects before removing `HEIMDALL_MIGRATE_V1=1` from env.
 
 ## Rollback
 
-Migration is destructive on anchor rewrites and memory subject_keys. Backup requirement in Task 14 acceptance:
+Migration is destructive on anchor rewrites and legacy memory targeting compatibility fields. Backup requirement in Task 14 acceptance:
 
 - Task 14 begins with `cp -R <data_dir> <data_dir>.pre-teams-v1`.
 - On failure, `mv` the backup back and remove `teams.db`, `vcs.db`.

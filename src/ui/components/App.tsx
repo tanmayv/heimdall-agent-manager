@@ -1298,13 +1298,14 @@ function AttentionSurface({ tasksById, chainsById, openChain, attention, memory,
         {showMemory && memoryProposals.map((rec: any) => (
           <div key={`memory-${rec.memoryId}`} data-debug-id={`attention-card-memory-${rec.memoryId}`} className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
             <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Memory proposal</div>
-            <div className="mt-1 font-semibold">{rec.title || rec.subjectAgent} · {rec.type}</div>
-            <div className="mt-1 text-sm text-zinc-400">Subject: {rec.subjectAgent} · Scope: {rec.scope}</div>
+            <div className="mt-1 font-semibold">{rec.title || rec.memoryId} · {rec.type}</div>
+            <div className="mt-1 text-sm text-zinc-400">Target: {rec.target || rec.scope}</div>
             {rec.body && (
               <div className="mt-2 rounded-xl bg-black/20 p-3">
                 <Markdown source={rec.body} compact className="text-sm text-zinc-200" />
               </div>
             )}
+            {(rec.reason || rec.evidence) && <div className="mt-2 text-xs text-zinc-500">{rec.reason ? `Reason: ${rec.reason}` : ''}{rec.reason && rec.evidence ? ' · ' : ''}{rec.evidence ? `Evidence: ${rec.evidence}` : ''}</div>}
             <div className="mt-3 flex flex-wrap gap-2">
               <button data-debug-id={`attention-card-memory-${rec.memoryId}-action-approve`} onClick={() => onDecideMemory(rec.proposalId, 'approve')} className="rounded-xl bg-emerald-400 px-3 py-2 text-sm font-semibold text-black hover:bg-emerald-300">Approve</button>
               <button data-debug-id={`attention-card-memory-${rec.memoryId}-action-reject`} onClick={() => onDecideMemory(rec.proposalId, 'reject')} className="rounded-xl bg-red-400/90 px-3 py-2 text-sm font-semibold text-black hover:bg-red-300">Reject</button>

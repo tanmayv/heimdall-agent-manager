@@ -452,9 +452,10 @@ function normalizeMemoryMutationBody(body: Record<string, any>) {
   const normalized = { ...body };
   if (normalized.memory_id == null && normalized.memoryId != null) normalized.memory_id = normalized.memoryId;
   if (normalized.expected_version == null && normalized.expectedVersion != null) normalized.expected_version = normalized.expectedVersion;
-  if (normalized.subject_agent == null && normalized.subjectAgent != null) normalized.subject_agent = normalized.subjectAgent;
-  if (normalized.subject_agent == null && normalized.agent != null) normalized.subject_agent = normalized.agent;
-  if (normalized.subject_key == null && normalized.subjectKey != null) normalized.subject_key = normalized.subjectKey;
+  if (normalized.agent_instance_id == null && normalized.agentInstanceId != null) normalized.agent_instance_id = normalized.agentInstanceId;
+  if (normalized.team_id == null && normalized.teamId != null) normalized.team_id = normalized.teamId;
+  if (normalized.template_key == null && normalized.templateKey != null) normalized.template_key = normalized.templateKey;
+  if (normalized.project_id == null && normalized.projectId != null) normalized.project_id = normalized.projectId;
   if (normalized.source_task_id == null && normalized.sourceTaskId != null) normalized.source_task_id = normalized.sourceTaskId;
   if (normalized.metadata_json == null && normalized.metadataJson != null) normalized.metadata_json = normalized.metadataJson;
   if (normalized.project_ids == null) normalized.project_ids = normalizeMemoryCsv(normalized.projectIds ?? normalized.projectId ?? normalized.project_id);
@@ -463,23 +464,24 @@ function normalizeMemoryMutationBody(body: Record<string, any>) {
   return normalized;
 }
 
-export async function listMemory({ daemonUrl, clientInstanceId, clientToken, subjectAgent, agent, scope, subjectKey, projectId, projectIds, roleKey, roleKeys, taskChainType, taskChainTypes, type, status, includeAllStatuses = true }: UserRpcRequest & { subjectAgent?: string; agent?: string; scope?: string; subjectKey?: string; projectId?: string; projectIds?: string | string[]; roleKey?: string; roleKeys?: string | string[]; taskChainType?: string; taskChainTypes?: string | string[]; type?: string; status?: string; includeAllStatuses?: boolean }) {
+export async function listMemory({ daemonUrl, clientInstanceId, clientToken, scope, type, status, agentInstanceId, teamId, templateKey, projectIds, roleKeys, taskChainTypes, includeAllStatuses = true }: UserRpcRequest & { scope?: string; type?: string; status?: string; agentInstanceId?: string; teamId?: string; templateKey?: string; projectIds?: string[] | string; roleKeys?: string[] | string; taskChainTypes?: string[] | string; includeAllStatuses?: boolean }) {
   return userRpcRequest({
     daemonUrl,
     clientInstanceId,
     clientToken,
     action: 'memory_list',
     body: {
-      subject_agent: subjectAgent || agent || '',
       scope: scope || '',
-      subject_key: subjectKey || '',
-      project_ids: normalizeMemoryCsv(projectIds ?? projectId),
-      role_keys: normalizeMemoryCsv(roleKeys ?? roleKey),
-      task_chain_types: normalizeMemoryCsv(taskChainTypes ?? taskChainType),
       type: type || '',
       status: status || '',
+      agent_instance_id: agentInstanceId || '',
+      team_id: teamId || '',
+      template_key: templateKey || '',
+      project_ids: normalizeMemoryCsv(projectIds),
+      role_keys: normalizeMemoryCsv(roleKeys),
+      task_chain_types: normalizeMemoryCsv(taskChainTypes),
       include_all_statuses: includeAllStatuses,
-    },
+    }
   });
 }
 
