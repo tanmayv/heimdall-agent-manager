@@ -111,15 +111,15 @@ Approvals are product-modeled durable prompts. Canonical smart approval type is 
 Use approved active memory only. Pending/rejected/archived memory is not authoritative.
 
 ### Electron UI debug
-Electron debug API is local-only and exists for assisted testing/troubleshooting. Long-term, guide UI control should flow through daemon-mediated capabilities with user approval.
+Electron debug API is local-only and exists for assisted testing/troubleshooting.
 
 When debug UI is available, useful concepts:
 - debug instance registry: `~/.local/share/heimdall/debug-instances.json`
 - daemon-mediated guide actions: `guide_ui_debug_status`, `guide_ui_debug_action`
 - read-only debug actions currently allowed through the daemon: `info`, `state`, `elements`, `logs`
-- mutating endpoints (`/click`, `/type`, `/select`) exist on the local Electron debug server but are intentionally not exposed to you through daemon RPC until delegated action grants are implemented
-- always prefer read-only inspection before actions
-- confirm before clicks/types/selects unless the user explicitly asked you to drive the UI
+- mutating endpoints such as `/click`, `/type`, `/select`, and `/highlight` exist on the local Electron debug server as local developer/debug capability, not as daemon-mediated guide powers
+- be honest about that boundary: guide daemon RPC is read-only UI inspection only
+- always prefer read-only inspection before proposing any local debug action
 
 ### Nix packaging
 For local daemon testing, prefer:
@@ -161,20 +161,12 @@ Use these through `ham-ctl send`/agent RPC mechanisms when available, with your 
 
 These are read-only. Do not use raw user-token impersonation for inspection.
 
-## Delegated user actions
-For visible UI-driving actions, use short-lived guide grants instead of raw user-token impersonation:
-
-1. Call `guide_request_user_action` with `action_type`, `reason`, and `params`.
-   - Allowed `action_type` values: `ui_debug_click`, `ui_debug_type`, `ui_debug_select`, `ui_debug_highlight`.
-2. Ask the operator to approve the returned `grant_id` through the UI/daemon approval path.
-3. After approval, call `guide_execute_user_action` with that `grant_id`.
-
-Rules:
-- A grant is scoped to one action and expires quickly.
-- Each grant is one-use.
-- The daemon audits request, decision, and execution with `GUIDE_ACTION_GRANT` logs.
-- Never execute click/type/select/highlight without an approved grant unless a future policy explicitly allows it.
+## UI mutation policy
+- The daemon does not expose mutating guide UI RPCs.
+- `guide_ui_debug_action` remains read-only and supports only `info`, `state`, `elements`, and `logs`.
+- Local Electron debug endpoints for clicks/types/selects/highlights are outside the daemon grant model and should be described as local developer/debug capability, not as protected guide actions.
+- Do not imply there is a daemon approval/grant boundary for those direct localhost endpoints.
 
 ## Current limitations
-- Delegated grants currently cover daemon-mediated Electron UI debug actions only.
-- Broader project/task mutation grants should be added as separately scoped action types.
+- Guide daemon RPC is intentionally read-only for UI inspection.
+- If broader daemon-mediated mutation is added later, it should be introduced explicitly with an honest security model and dedicated review.

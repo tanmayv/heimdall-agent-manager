@@ -29,30 +29,30 @@ Long-term UX goal: a global side chat panel, accessible from every page, connect
 
 ### Later capabilities
 1. Drive Electron debug UI for guided troubleshooting.
-2. Perform user-authorized actions using short-lived delegated user capabilities.
-3. Produce guided walkthroughs in the side panel with inline action buttons.
+2. Produce guided walkthroughs in the side panel with inline action buttons.
+3. If mutating daemon-mediated capabilities are ever added, define them explicitly with an honest security model instead of implying localhost debug endpoints are protected.
 
 ## Security Model
-The guide is high-privilege, so use capability delegation instead of giving it a raw persistent user token.
+The guide is high-privilege, so do not give it a raw persistent user token.
 
 ### Recommended model
-- Add daemon-managed scoped capabilities for the guide:
+- Keep daemon-managed guide capabilities narrowly scoped:
   - read-only state inspection by default.
-  - UI-debug actions only when an active Electron client registers debug control availability.
-  - mutating user actions require explicit user confirmation or short-lived delegation.
-- Every privileged guide action should be audited:
+  - daemon-mediated UI debug access limited to read-only inspection.
+- Treat direct localhost Electron debug mutating endpoints as local developer/debug capability, not as a meaningful daemon security boundary.
+- Every privileged daemon-mediated guide action should be audited:
   - action type
   - user id
   - guide agent id
   - target resource
   - timestamp
   - result
-- The guide can request actions, but the daemon enforces policy.
+- Be explicit about the boundary: the daemon enforces policy only for the RPCs it actually exposes.
 
 ### Avoid
 - Putting `operator@local` user tokens directly in the guide bootstrap.
 - Letting the guide call arbitrary user RPC as the user with no approval trail.
-- Letting the guide control Electron debug UI when no visible/active UI session is registered.
+- Claiming localhost Electron debug mutation endpoints are protected by the daemon when they are directly reachable as local debug tools.
 
 ## Backend Plan
 
@@ -107,13 +107,12 @@ Add a constrained guide RPC surface:
 - `guide_show_chain`
 - `guide_show_agent_runtime`
 - `guide_send_agent_message`
-- Later: `guide_request_user_action`
-- Later: `guide_ui_debug_action`
+- `guide_ui_debug_action`
 
 These should not require raw user-token impersonation.
 
 ### 6. UI debug bridge
-Long term, route UI debug through the daemon rather than letting the guide call localhost debug server directly.
+Route read-only UI debug inspection through the daemon rather than letting the guide call localhost debug server directly.
 
 Flow:
 1. Electron debug server registers with daemon:
@@ -121,10 +120,12 @@ Flow:
    - debug port
    - enabled actions
    - active window/page metadata
-2. Guide requests a UI action through daemon.
-3. Daemon checks user/session policy.
-4. Electron executes the action and returns result.
+2. Guide requests read-only UI inspection through daemon.
+3. Daemon proxies the inspection request.
+4. Electron returns result.
 5. Daemon audits result and forwards it to guide.
+
+Mutating localhost debug endpoints may still exist for local developer workflows, but they are outside the daemon guide RPC surface.
 
 ## UI Plan
 
@@ -160,7 +161,7 @@ Later, render guide-suggested actions as buttons:
 - “Run health check”
 - “Ask coordinator”
 
-Mutating actions should require confirmation.
+If future mutating actions are introduced, they should be explicitly modeled and reviewed rather than inferred from localhost debug endpoints.
 
 ## Agent-to-Agent Communication
 The guide should be able to message other agents using existing chat infrastructure, with policy:
@@ -207,22 +208,13 @@ Acceptance:
 
 ### Phase 4: UI debug bridge
 - Electron registers debug-control capability with daemon.
-- Guide can request read-only UI inspection first.
-- Add explicit confirmation for click/type/select actions.
+- Guide can request read-only UI inspection through daemon-mediated API.
+- Mutating localhost debug endpoints remain outside the guide daemon RPC surface.
 
 Acceptance:
 - Guide can inspect current page/elements through daemon-mediated API.
-- User can approve a suggested UI action.
-- All UI debug actions are audited.
-
-### Phase 5: Delegated user actions
-- Add short-lived scoped user delegation tokens or action grants.
-- Guide can perform approved user actions through daemon policy.
-
-Acceptance:
-- User authorizes a specific guide action.
-- Guide performs it.
-- Audit trail records the authorization and result.
+- Unsupported or mutating guide UI debug actions are rejected by daemon RPC.
+- Read-only UI debug actions are audited.
 
 ## Tests
 
@@ -232,7 +224,7 @@ Backend:
 - Guide is not assigned to project/team scaffold roles.
 - Guide exempt from idle shutdown.
 - Guide launch source is logged as `guide_startup`.
-- Guide cannot use mutating user RPCs without delegation.
+- Guide cannot use mutating user RPCs through the read-only guide RPC surface.
 
 UI:
 - Guide side panel visible on every route.
@@ -242,7 +234,7 @@ UI:
 
 Security/integration:
 - UI debug bridge unavailable unless Electron client registers it.
-- Mutating guide action requires confirmation.
+- Mutating guide UI debug actions are rejected by daemon RPC.
 - Audit events are persisted.
 
 ## Open Questions

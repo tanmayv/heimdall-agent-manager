@@ -229,11 +229,6 @@ handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_C
 		return true
 	}
 
-	// POST /guide-action-grants/approve
-	if len(ctx.segments) == 2 && ctx.segments[0] == "guide-action-grants" && ctx.segments[1] == "approve" && ctx.method == "POST" {
-		handle_guide_action_grant_approve(client, request_body(request), ctx)
-		return true
-	}
 
 	return false
 }

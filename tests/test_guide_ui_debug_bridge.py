@@ -29,7 +29,7 @@ def main() -> None:
     require('import http "odin_test:lib/http_client"' in rpc and 'http.get(base, path)' in rpc, "daemon must proxy through its HTTP client")
     for action in ['"info"', '"state"', '"elements"', '"logs"']:
         require(action in rpc, f"read-only UI debug action missing: {action}")
-    require('unsupported or mutating UI debug action' in rpc, "mutating UI debug actions must not run without delegation")
+    require('unsupported or mutating UI debug action' in rpc, "mutating UI debug actions must be rejected by daemon RPC")
     require('GUIDE_UI_DEBUG' in rpc, "UI debug bridge must audit/log guide debug calls")
     require('response_transfer_chunked' in http_client and 'response_decode_chunked_body' in http_client, "HTTP client must decode chunked Electron debug responses before proxying JSON")
 
@@ -37,6 +37,7 @@ def main() -> None:
         require(f"path: '{endpoint}'" in debug, f"Electron debug server missing endpoint {endpoint}")
     require('debug-instances.json' in registry and 'updatePort' in registry, "Electron must publish debug server port in registry")
     require('Phase 4: UI debug bridge' in plan, "guide plan should track phase 4")
+    require('guide_request_user_action' not in plan and 'guide_execute_user_action' not in plan and 'action grants' not in plan and 'delegation tokens' not in plan, "guide plan must not describe removed guide grant flows")
 
     print('TEST PASSED: guide UI debug bridge scaffolding')
 
