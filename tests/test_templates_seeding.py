@@ -30,6 +30,13 @@ EXPECTED_TEMPLATES = {
         "display_name": "Tester",
         "description": "Use this template for validation agents that design test cases, execute suites, and report bugs."
     },
+    "researcher": {
+        "template_id": "researcher",
+        "display_name": "Researcher",
+        "description": "Use this template for evidence-driven investigation, RCA, and synthesis agents that answer questions without owning production code changes.",
+        "role_hint": "researcher",
+        "suggested_model_tier": "smart"
+    },
     "memory_auditor": {
         "template_id": "memory_auditor",
         "display_name": "Memory Auditor",

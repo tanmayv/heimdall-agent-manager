@@ -268,7 +268,24 @@ seed_default_templates_if_empty :: proc() {
 		})
 	}
 
-	// 5. Tester
+	// 5. Researcher
+	if exists, customized := agent_template_get_customized_status("researcher"); !exists || !customized {
+		agent_template_db_save(Agent_Template_Record{
+			template_id = "researcher",
+			display_name = "Researcher",
+			description = "Use this template for evidence-driven investigation, RCA, and synthesis agents that answer questions without owning production code changes.",
+			role_hint = "researcher",
+			suggested_model_tier = "smart",
+			persona = strings.trim_space(#load("../prompts/researcher_persona.md", string)),
+			instructions = strings.trim_space(#load("../prompts/researcher_instructions.md", string)),
+			default_provider_profile = "pi",
+			created_unix_ms = now,
+			updated_unix_ms = now,
+			is_customized = false,
+		})
+	}
+
+	// 6. Tester
 	if exists, customized := agent_template_get_customized_status("tester"); !exists || !customized {
 		agent_template_db_save(Agent_Template_Record{
 			template_id = "tester",
@@ -285,7 +302,7 @@ seed_default_templates_if_empty :: proc() {
 		})
 	}
 
-	// 6. Memory Auditor
+	// 7. Memory Auditor
 	if exists, customized := agent_template_get_customized_status("memory_auditor"); !exists || !customized {
 		agent_template_db_save(Agent_Template_Record{
 			template_id = "memory_auditor",
@@ -302,7 +319,7 @@ seed_default_templates_if_empty :: proc() {
 		})
 	}
 
-	// 7. Memory Reviewer
+	// 8. Memory Reviewer
 	if exists, customized := agent_template_get_customized_status("memory_reviewer"); !exists || !customized {
 		agent_template_db_save(Agent_Template_Record{
 			template_id = "memory_reviewer",
@@ -319,7 +336,7 @@ seed_default_templates_if_empty :: proc() {
 		})
 	}
 
-	// 8. Guide
+	// 9. Guide
 	if exists, customized := agent_template_get_customized_status("guide"); !exists || !customized {
 		agent_template_db_save(Agent_Template_Record{
 			template_id = "guide",
@@ -336,7 +353,7 @@ seed_default_templates_if_empty :: proc() {
 		})
 	}
 
-	// 9. Specialist
+	// 10. Specialist
 	if exists, customized := agent_template_get_customized_status("specialist"); !exists || !customized {
 		agent_template_db_save(Agent_Template_Record{
 			template_id = "specialist",

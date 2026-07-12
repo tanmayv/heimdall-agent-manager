@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import SessionConfig from './SessionConfig';
+import { TEAM_KIND_METADATA, paceLabel, taskCountLabel, wantsVcsLabel } from './teamKinds';
 import { fetchPreferences, fetchSelectedChat, refreshSettingsCatalog, saveUserPreference, selectAgent, sendMessageToSelectedAgent } from '../store/chatSlice';
 import { refreshMemory } from '../store/memorySlice';
 import { clearProjectError, deleteProjectFromUi, fetchProjectDetail, refreshProjects, selectProject, updateProjectFromUi } from '../store/projectSlice';
@@ -14,16 +15,6 @@ const SETTINGS_ITEMS = [
   { key: 'agents', label: 'Agents (raw registry)' },
   { key: 'direct-chat', label: 'Direct agent chat (debug)' },
   { key: 'daemon', label: 'Daemon connection' },
-];
-
-const TEAM_KINDS = [
-  { key: 'coding', label: 'Coding', vcs: 'default on', scaffolds: ['feature', 'bugfix', 'refactor'] },
-  { key: 'research', label: 'Research', vcs: 'default off', scaffolds: ['report', 'spike'] },
-  { key: 'debugging', label: 'Debugging', vcs: 'default on', scaffolds: ['bug', 'incident'] },
-  { key: 'data-analysis', label: 'Data analysis', vcs: 'default on', scaffolds: ['analysis'] },
-  { key: 'writing', label: 'Writing', vcs: 'default on', scaffolds: ['article'] },
-  { key: 'ops', label: 'Ops', vcs: 'default on', scaffolds: ['chore'] },
-  { key: 'solo', label: 'Solo', vcs: 'project default', scaffolds: ['solo'] },
 ];
 
 function normalizeTemplate(template: any) {
@@ -124,7 +115,7 @@ function TemplatesPanel({ templates }: any) {
 }
 
 function TeamKindsPanel() {
-  return <Panel title="Team kinds" subtitle="Closed-set daemon team kinds. Read-only."><div className="grid gap-3 md:grid-cols-2">{TEAM_KINDS.map((kind) => <Card key={kind.key}><div className="flex items-center justify-between"><div className="font-semibold">{kind.label}</div><span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-zinc-400">{kind.key}</span></div><div className="mt-2 text-sm text-zinc-500">VCS: {kind.vcs}</div><div className="mt-2 flex flex-wrap gap-1">{kind.scaffolds.map((scaffold) => <span key={scaffold} className="rounded-full bg-sky-400/10 px-2 py-0.5 text-xs text-sky-200">{scaffold}</span>)}</div></Card>)}</div></Panel>;
+  return <Panel title="Team kinds" subtitle="Closed-set daemon team kinds. Read-only."><div className="grid gap-3 md:grid-cols-2">{TEAM_KIND_METADATA.map((kind) => <Card key={kind.key}><div className="flex items-center justify-between"><div className="font-semibold">{kind.label}</div><span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-zinc-400">{kind.key}</span></div><div className="mt-2 text-sm text-zinc-500">{kind.description}</div><div className="mt-3 flex flex-wrap gap-1 text-xs">{[`${paceLabel(kind.pace)} pace`, taskCountLabel(kind.expectedTaskCount), `${kind.collaboratingAgentCount} agents`, `VCS: ${wantsVcsLabel(kind.wantsVcsMode)}`].map((badge) => <span key={badge} className="rounded-full bg-white/10 px-2 py-0.5 text-zinc-300">{badge}</span>)}</div><div className="mt-3 flex flex-wrap gap-1">{kind.scaffolds.map((scaffold) => <span key={scaffold.key} className="rounded-full bg-sky-400/10 px-2 py-0.5 text-xs text-sky-200">{scaffold.label} · {paceLabel(scaffold.pace)} · {scaffold.expectedTaskCount} tasks</span>)}</div></Card>)}</div></Panel>;
 }
 
 function preferenceValue(preferences: any[], key: string, fallback = '') {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import SettingsPage from './SettingsPage';
 import MemoryManagementPage from './MemoryManagementPage';
+import { defaultWantsVcs, findScaffold, findTeamKind, kindOptionLabel, NONE_SCAFFOLD_META, paceLabel, scaffoldOptionLabel, taskCountLabel } from './teamKinds';
 import {
   addDaemonProfile,
   agentLifecycleEventReceived,
@@ -2520,16 +2521,6 @@ function WorkspaceBox({ chainId, workspace, preview, diffOpen, onToggleDiff, onR
   );
 }
 
-const TEAM_KIND_OPTIONS = [
-  { key: 'coding', label: 'Coding', description: 'The default kind for changes to code repositories.', scaffolds: ['feature', 'bugfix', 'refactor'], wantsVcs: true },
-  { key: 'research', label: 'Research', description: 'Non-code investigative work: source review, market scan, spike write-ups.', scaffolds: ['report', 'spike'], wantsVcs: false },
-  { key: 'debugging', label: 'Debugging', description: 'Diagnostic work with an expected fix at the end.', scaffolds: ['bug', 'incident'], wantsVcs: true },
-  { key: 'data-analysis', label: 'Data analysis', description: 'Notebooks, dataset exploration, and model evaluation.', scaffolds: ['analysis'], wantsVcs: true },
-  { key: 'writing', label: 'Writing', description: 'Docs, blog posts, and longer-form artifacts.', scaffolds: ['article'], wantsVcs: true },
-  { key: 'ops', label: 'Ops', description: 'Repo/config maintenance, dependency bumps, and small automations.', scaffolds: ['chore'], wantsVcs: true },
-  { key: 'solo', label: 'Solo', description: 'A team of one backed by a synthetic user_proxy reviewer.', scaffolds: ['solo'], wantsVcs: false },
-];
-
 function defaultCoordinator(agents: any[], projectId: string) {
   const pool = agents.filter((agent: any) => agent.id && (!projectId || !agent.projectId || agent.projectId === projectId));
   const ranked = [...pool].sort((left: any, right: any) => {
@@ -2639,17 +2630,18 @@ function NewChainModal({ projectId, projects, agents, creating, error, onClose, 
   const [title, setTitle] = useState('');
   const [goal, setGoal] = useState('');
   const [kind, setKind] = useState('coding');
-  const kindDef = TEAM_KIND_OPTIONS.find((item) => item.key === kind) || TEAM_KIND_OPTIONS[0];
+  const kindDef = findTeamKind(kind);
   const [scaffold, setScaffold] = useState('none');
-  const [wantsVcs, setWantsVcs] = useState(kindDef.wantsVcs);
   const selectedProject = projects.find((project: any) => project.projectId === selectedProjectId) || null;
   const selectedProjectSupportsVcs = projectSupportsVcs(selectedProject);
+  const [wantsVcs, setWantsVcs] = useState(defaultWantsVcs(kindDef, selectedProjectSupportsVcs));
+  const selectedScaffold = scaffold === 'none' ? NONE_SCAFFOLD_META : findScaffold(kindDef, scaffold);
   const coordinatorAgentInstanceId = '';
 
   useEffect(() => {
-    const next = TEAM_KIND_OPTIONS.find((item) => item.key === kind) || TEAM_KIND_OPTIONS[0];
+    const next = findTeamKind(kind);
     setScaffold('none');
-    setWantsVcs(next.wantsVcs && selectedProjectSupportsVcs);
+    setWantsVcs(defaultWantsVcs(next, selectedProjectSupportsVcs));
   }, [kind, selectedProjectSupportsVcs]);
 
   const submit = (event: any) => {
@@ -2684,12 +2676,13 @@ function NewChainModal({ projectId, projects, agents, creating, error, onClose, 
           <label className="text-sm text-zinc-300">
             Kind
             <select data-debug-id="new-chain-kind-select" value={kind} onChange={(event) => setKind(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
-              {TEAM_KIND_OPTIONS.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
+              {[findTeamKind('coding'), findTeamKind('research'), findTeamKind('solo')].map((item) => <option key={item.key} value={item.key}>{kindOptionLabel(item)}</option>)}
             </select>
           </label>
         </div>
         <div data-debug-id="new-chain-kind-description" className="mt-3 rounded-xl bg-white/[0.04] p-3 text-xs text-zinc-400">
-          <span className="font-semibold text-zinc-300">{kindDef.label} team:</span> {kindDef.description}
+          <div><span className="font-semibold text-zinc-300">{kindDef.label} team:</span> {kindDef.description}</div>
+          <div className="mt-1 text-zinc-500">{paceLabel(kindDef.pace)} pace · {taskCountLabel(kindDef.expectedTaskCount)} default · {kindDef.collaboratingAgentCount} collaborating agents</div>
         </div>
 
         <label className="mt-4 block text-sm text-zinc-300">
@@ -2708,10 +2701,15 @@ function NewChainModal({ projectId, projects, agents, creating, error, onClose, 
           <label className="text-sm text-zinc-300">
             Optional task scaffold
             <select data-debug-id="new-chain-scaffold-select" value={scaffold} onChange={(event) => setScaffold(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
-              <option value="none">none</option>
-              {kindDef.scaffolds.map((item) => <option key={item} value={item}>{item}</option>)}
+              <option value="none">{scaffoldOptionLabel(NONE_SCAFFOLD_META)}</option>
+              {kindDef.scaffolds.map((item) => <option key={item.key} value={item.key}>{scaffoldOptionLabel(item)}</option>)}
             </select>
             <div className="mt-1 text-xs text-zinc-500">Non-none scaffolds create draft tasks that depend on coordinator validation.</div>
+            <div className="mt-2 rounded-lg bg-white/[0.04] p-3 text-xs text-zinc-400">
+              <div className="font-semibold text-zinc-300">{selectedScaffold.label}</div>
+              <div className="mt-1">{selectedScaffold.description}</div>
+              <div className="mt-1 text-zinc-500">{paceLabel(selectedScaffold.pace)} pace · {taskCountLabel(selectedScaffold.expectedTaskCount)} · {selectedScaffold.collaboratingAgentCount} agents</div>
+            </div>
           </label>
           <label className="flex items-center gap-3 rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-zinc-300">
             <input data-debug-id="new-chain-vcs-checkbox" type="checkbox" checked={wantsVcs && selectedProjectSupportsVcs} disabled={!selectedProjectSupportsVcs} onChange={(event) => setWantsVcs(event.target.checked)} className="h-4 w-4" />

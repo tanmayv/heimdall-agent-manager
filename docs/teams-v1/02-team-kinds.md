@@ -1,210 +1,180 @@
 # 02 · Team kinds
 
-Team kinds are a **closed set** compiled into the daemon. Adding a new kind requires a code change and a reviewer sign-off. Users cannot define custom kinds.
+Team kinds are a **closed set** compiled into the daemon. Users choose from three user-facing kinds:
 
-The kind decides:
+- `coding`
+- `research`
+- `solo`
 
-- **Role slots** — which roles the team has and how many.
-- **Memory templates** — which curated template memories the team's agents load at bootstrap.
-- **Task-bundle templates** — coordinator-invoked helpers that add related tasks/dependencies to an existing chain after the goal is clarified. They are not required during chain creation.
-- **Default model tier per role** — cheap / normal / smart.
-- **`wants_vcs`** — whether chains of this kind expect a VCS workspace by default.
+Legacy top-level kinds (`debugging`, `data-analysis`, `writing`, `ops`) are no longer first-class registry entries. Their workflows are absorbed into consolidated scaffolds under the three active kinds.
 
 ## Registry shape
 
-Location: `src/daemon/team_kinds.odin` (new file, code-only, no DB).
+Location: `src/daemon/team_kinds.odin`
 
 ```odin
 Team_Role_Slot :: struct {
-    role_key:          string,           // "coordinator", "coder", "reviewer", ...
-    agent_template_id: string,           // fk to existing agent_templates
-    count:             int,               // fixed number of instances
-    default_tier:      string,           // "cheap" | "normal" | "smart"
-    default_provider:  string,           // "pi" | "claude" | "codex"
+    role_key:          string,
+    agent_template_id: string,
+    count:             int,
+    default_tier:      string,
+    default_provider:  string,
 }
 
 Team_Chain_Scaffold_Task :: struct {
-    key:              string,             // stable id within scaffold, e.g. "plan"
-    title_template:   string,             // "Plan: {chain_title}"
-    role_key:         string,             // which role gets it as assignee
-    reviewer_role:    string,             // which role reviews (lgtm_required)
-    depends_on:       []string,           // scaffold task keys
-    description_key:  string,             // stable scaffold-description id used by the renderer
+    key:              string,
+    title_template:   string,
+    role_key:         string,
+    reviewer_role:    string,
+    depends_on:       []string,
+    description_key:  string,
 }
 
 Team_Chain_Scaffold :: struct {
-    key:            string,               // "feature", "bugfix", "spike", ...
-    title_template: string,
-    tasks:          []Team_Chain_Scaffold_Task,
+    key:                       string,
+    title_template:            string,
+    pace:                      string, // fast | normal | slow
+    expected_task_count:       int,
+    collaborating_agent_count: int,
+    tasks:                     []Team_Chain_Scaffold_Task,
 }
 
 Team_Kind_Def :: struct {
-    key:               string,            // "coding", "research", ...
-    display_name:      string,
-    description:       string,
-    roles:             []Team_Role_Slot,
-    memory_templates:  []string,          // template memory ids/titles when fixed for the kind
-    memory_templates_inherit_from_role: string, // optional role key for kinds like solo that inherit from another kind mapping
-    scaffolds:         []Team_Chain_Scaffold, // legacy name; treated as coordinator-invoked task-bundle templates
-    wants_vcs:         bool,
-    wants_vcs_follows_project: bool,      // optional flag for kinds like solo that mirror project vcs_kind by default
-    idle_shutdown_ms:  int,               // default 30*60*1000; can override
+    key:                       string,
+    display_name:              string,
+    description:               string,
+    pace:                      string,
+    expected_task_count:       int,
+    collaborating_agent_count: int,
+    roles:                     []Team_Role_Slot,
+    memory_templates:          []string,
+    memory_templates_inherit_from_role: string,
+    scaffolds:                 []Team_Chain_Scaffold,
+    wants_vcs:                 bool,
+    wants_vcs_follows_project: bool,
+    idle_shutdown_ms:          int,
 }
 ```
 
-## The seven kinds
+### Metadata semantics
 
-Each kind is fully specified below. Wherever a role references an existing agent template, the template must already exist in the `agent_templates` DB (defaults seeded by `seed_default_templates_if_empty`).
+- **`pace`** — user-facing workflow speed hint.
+- **`expected_task_count`** — expected number of tasks for the kind default or a scaffold.
+- **`collaborating_agent_count`** — visible collaboration size for the kind/scaffold.
+- **`wants_vcs`** — default VCS preference when fixed on/off.
+- **`wants_vcs_follows_project`** — used by `solo` to follow project VCS support by default.
 
-### 2.1 `coding`
+## Active kinds
 
-The default kind for changes to code repositories.
+### 1. `coding`
 
-| Role | Template | Count | Default tier | Provider |
-|---|---|---|---|---|
-| coordinator | `lead` | 1 | smart | pi |
-| coder | `coder` | 1 | normal | pi |
-| reviewer | `reviewer` | 1 | smart | pi |
+Code changes, bug fixes, refactors, chores, and incidents with separate implementation, testing, and review responsibilities.
 
-- **`wants_vcs`** = true
-- **Memory templates**: `bootstrap-guidance`, `coding-conventions`, `git-hygiene`
-- **Task-bundle templates** available to the coordinator after chain creation:
-  - **`feature`** — plan → implement → review → validate → summary
-  - **`bugfix`** — reproduce → fix → verify → summary
-  - **`refactor`** — plan → refactor → review → validate → summary
+| Role | Template | Count | Default tier |
+|---|---|---:|---|
+| coordinator | `lead` | 1 | smart |
+| coder | `coder` | 1 | normal |
+| tester | `tester` | 1 | normal |
+| reviewer | `reviewer` | 1 | smart |
 
-### 2.2 `research`
+- Kind metadata: `pace = normal`, `expected_task_count = 1`, `collaborating_agent_count = 4`
+- `wants_vcs = true`
+- Memory templates: `bootstrap-guidance`, `coding-conventions`, `git-hygiene`
 
-Non-code investigative work: source review, market scan, spike write-ups.
+Scaffolds:
 
-| Role | Template | Count | Default tier | Provider |
-|---|---|---|---|---|
-| coordinator | `lead` | 1 | smart | pi |
-| researcher | `specialist` | 2 | smart | pi |
-| reviewer | `reviewer` | 1 | smart | pi |
+| Scaffold | Pace | Tasks | Agents | Shape |
+|---|---|---:|---:|---|
+| `feature` | slow | 5 | 4 | `plan -> contracts -> implement -> test -> summary` |
+| `bugfix` | fast | 4 | 4 | `reproduce -> fix -> test -> summary` |
+| `refactor` | normal | 4 | 4 | `plan -> refactor -> test -> summary` |
+| `chore` | fast | 2 | 4 | `apply -> summary` |
+| `incident` | slow | 5 | 4 | `triage -> mitigate -> root-cause -> fix -> post-mortem` |
 
-- **`wants_vcs`** = false
-- **Memory templates**: `bootstrap-guidance`, `research-method`, `source-hygiene`
-- **Task-bundle templates** available to the coordinator after chain creation:
-  - **`report`** — scope → gather → synthesize → review → summary
-  - **`spike`** — question → explore → conclude → summary
+Invariant: Coding scaffolds do **not** assign reproduction, final test validation, or RCA validation to the coder when tester/coordinator ownership is intended.
 
-### 2.3 `debugging`
+### 2. `research`
 
-Diagnostic work with an expected fix at the end. Assumes code changes but is optimized for RCA over feature-building.
+Non-code investigation, RCA, synthesis, and analysis with a dedicated `researcher` template.
 
-| Role | Template | Count | Default tier | Provider |
-|---|---|---|---|---|
-| coordinator | `lead` | 1 | smart | pi |
-| debugger | `coder` | 1 | smart | pi |
-| reviewer | `reviewer` | 1 | smart | pi |
+| Role | Template | Count | Default tier |
+|---|---|---:|---|
+| coordinator | `lead` | 1 | smart |
+| researcher | `researcher` | 1 | smart |
+| reviewer | `reviewer` | 1 | smart |
 
-- **`wants_vcs`** = true
-- **Memory templates**: `bootstrap-guidance`, `debugging-playbook`, `evidence-collection`
-- **Task-bundle templates** available to the coordinator after chain creation:
-  - **`bug`** — reproduce → isolate → fix → verify → summary
-  - **`incident`** — triage → mitigate → root-cause → fix → post-mortem
+- Kind metadata: `pace = normal`, `expected_task_count = 1`, `collaborating_agent_count = 3`
+- `wants_vcs = false`
+- Memory templates: `bootstrap-guidance`, `research-method`, `source-hygiene`
 
-### 2.4 `data-analysis`
+Scaffolds:
 
-Notebooks, dataset exploration, model evaluation. Often in a repo (notebooks committed), so VCS is on by default but easy to switch off.
+| Scaffold | Pace | Tasks | Agents | Shape |
+|---|---|---:|---:|---|
+| `report` | slow | 4 | 3 | `scope -> gather -> synthesize -> summary` |
+| `spike` | normal | 4 | 3 | `question -> explore -> conclude -> summary` |
+| `analysis` | normal | 4 | 3 | `define -> investigate -> synthesize -> summary` |
 
-| Role | Template | Count | Default tier | Provider |
-|---|---|---|---|---|
-| coordinator | `lead` | 1 | smart | pi |
-| analyst | `specialist` | 2 | normal | pi |
-| reviewer | `reviewer` | 1 | smart | pi |
+The `researcher` role is backed by seeded prompt files:
+- `src/prompts/researcher_persona.md`
+- `src/prompts/researcher_instructions.md`
 
-- **`wants_vcs`** = true
-- **Memory templates**: `bootstrap-guidance`, `data-hygiene`, `notebook-discipline`
-- **Task-bundle templates** available to the coordinator after chain creation:
-  - **`analysis`** — define → explore → analyze → validate → report
+### 3. `solo`
 
-### 2.5 `writing`
+A coordinator plus one worker, backed by a synthetic `user_proxy` reviewer that routes approvals to the operator.
 
-Docs, blog posts, longer-form artifacts. Usually in a repo (docs/) so VCS defaults on.
+| Role | Template | Count | Default tier |
+|---|---|---:|---|
+| coordinator | `lead` | 1 | smart |
+| worker | `specialist` | 1 | normal |
+| user_proxy | synthetic | 1 | — |
 
-| Role | Template | Count | Default tier | Provider |
-|---|---|---|---|---|
-| coordinator | `lead` | 1 | smart | pi |
-| writer | `specialist` | 1 | normal | pi |
-| reviewer | `reviewer` | 1 | smart | pi |
+- Kind metadata: `pace = fast`, `expected_task_count = 1`, `collaborating_agent_count = 3`
+- `wants_vcs_follows_project = true`
+- Memory templates inherit from `worker`
 
-- **`wants_vcs`** = true
-- **Memory templates**: `bootstrap-guidance`, `writing-style`
-- **Task-bundle templates** available to the coordinator after chain creation:
-  - **`article`** — outline → draft → review → publish
+Scaffolds:
 
-### 2.6 `ops`
+| Scaffold | Pace | Tasks | Agents | Shape |
+|---|---|---:|---:|---|
+| `solo` | fast | 4 | 3 | `plan -> work -> user-review -> summary` |
 
-Repo/config maintenance, dependency bumps, small automations.
+## Absorbed legacy workflows
 
-| Role | Template | Count | Default tier | Provider |
-|---|---|---|---|---|
-| coordinator | `lead` | 1 | normal | pi |
-| operator | `coder` | 1 | normal | pi |
-| reviewer | `reviewer` | 1 | normal | pi |
+The old seven-kind model is intentionally consolidated:
 
-- **`wants_vcs`** = true
-- **Memory templates**: `bootstrap-guidance`, `ops-runbooks`
-- **Task-bundle templates** available to the coordinator after chain creation:
-  - **`chore`** — apply → verify → summary
+| Legacy kind/workflow | New home |
+|---|---|
+| `debugging/bug` | `coding/bugfix` |
+| `debugging/incident` | `coding/incident` |
+| `ops/chore` | `coding/chore` |
+| `writing/article` | `research/report` |
+| `data-analysis/analysis` | `research/analysis` |
 
-### 2.7 `solo`
+This keeps the UI and registry small while preserving common workflow shapes as scaffolds.
 
-A team of one, backed by a synthetic `user_proxy` reviewer that routes approvals to `operator@local` via smart-reply chat cards.
+## UI expectations
 
-| Role | Template | Count | Default tier | Provider |
-|---|---|---|---|---|
-| coordinator | `lead` | 1 | smart | pi |
-| worker | (chosen at chain create, one of `coder` / `specialist`) | 1 | normal | pi |
-| user_proxy (reviewer) | — synthetic — | 1 | — | — |
+The UI mirrors the baked metadata and should show:
 
-- **`wants_vcs`** — follows project's `vcs_kind`; user can toggle in `+ New chain` modal. In the baked registry this is represented by `wants_vcs_follows_project = true` rather than a fixed `wants_vcs = true|false` value.
-- **Memory templates**: inherits from the worker's underlying kind mapping. In the baked registry this is represented by `memory_templates_inherit_from_role = "worker"` rather than a fixed `memory_templates` list.
-- **Task-bundle templates** available to the coordinator after chain creation:
-  - **`solo`** — plan → work → user-review → summary
-- The `user_proxy` member has `agent_record_id = NULL`, `is_user_proxy = true`, `route_to = "operator@local"`. LGTM votes on tasks reviewed by `user_proxy` come from smart-reply cards to operator.
+- only `Coding`, `Research`, and `Solo`
+- kind labels with pace and collaborating-agent counts
+- scaffold labels with pace, expected task count, and agent count
+- `none — 1 task (Coordinator discovery only)` for chains created without a scaffold
+- Solo VCS default following project support instead of a hard-coded off default
 
-## Tester note
+## Tester role note
 
-There is **no `tester` role slot on any kind**. Testers are agents in the roster who become **assignees on explicit test tasks** (e.g. Task 3.T = "Test: teams.db init"). They are never a default reviewer for implementation tasks. This is intentional — see INV of [`01-model.md`](./01-model.md) and reviewer guidance in [`10-review-invariants.md`](./10-review-invariants.md).
+The consolidated model **does** include a `tester` role on `coding` only.
 
-## Task-bundle template rendering
+- The tester owns reproduction/final verification tasks in Coding scaffolds.
+- The tester is **not** the default reviewer assignee.
+- Review still happens through `lgtm_required` reviewer participation on work tasks.
 
-New chain creation does **not** require or automatically apply a full scaffold. A chain starts with exactly one coordinator discovery task; after clarifying the goal, the coordinator may apply a task-bundle template to the existing chain.
+## Adding or changing a kind
 
-When a coordinator/operator applies a task-bundle template to an existing chain:
-
-1. Resolve `team_kind_def` for the chain's kind.
-2. Pick template by key (for example `feature`, `bugfix`, `report`). The current code-level name may still be `scaffold` during migration, but product/docs should call this a task bundle.
-3. For each `Team_Chain_Scaffold_Task` in the template:
-   - Instantiate a task with `title_template` interpolated over `{chain_title}`, `{project_name}`, `{team_kind}`.
-   - Render the task description from the template's `description_key`; the current implementation uses a built-in generic description that records the key/task/kind metadata rather than prompt-file-specific prose.
-   - Assignee = first team member with matching `role_key` (round-robin if multiple).
-   - Reviewer(s) = team member(s) with matching `reviewer_role` as `lgtm_required`.
-   - Coordinator-owned control-plane tasks keep visible review gates; the coordinator may explicitly bypass a workflow gate only through the audited coordinator-only `--force` path when no user/product decision is required.
-   - Worker/reviewer execution tasks, including implementation/fix/refactor/review/validate work, keep their explicit reviewer gates.
-   - `depends_on` resolves to concrete task IDs after all bundle tasks are created (two-pass).
-4. Append the bundle's `Task_Created` / participant events in template order.
-
-Backward compatibility: legacy `scaffold` / `no_scaffold` create-time fields may be accepted for one release, but default creation is team-type-first and creates only the coordinator discovery task. Explicit legacy scaffold-at-create callers should be treated as compatibility shims, not the main workflow.
-
-## Workflow gates
-
-- **WF-1** Coordinator authority is explicit and audited: the chain coordinator may use `tasks done --force` / approved-status force only to bypass a workflow gate they own, and the durable task log records `FORCE_REVIEW_BYPASS` evidence with task, chain, coordinator, prior/new status, reason, and timestamp.
-- **WF-2** Review gates are not silently removed and no fake LGTM votes are created. Worker execution tasks remain independently review-gated unless an authorized coordinator/operator explicitly force-advances with audit evidence.
-- **WF-3** New chain creation requires only project/team kind plus optional VCS preference; title/goal are optional and can be clarified by the coordinator after creation.
-- **WF-4** New chains are active/ready by default and include exactly one initial ready coordinator discovery task; they do not remain in `planning` / `waiting_for_promotion`.
-- **WF-5** Task-bundle templates are applied to an existing chain by coordinator/operator action; default creation does not silently generate a full implementation chain.
-- **WF-6** Coordinator discovery task instructs the coordinator to clarify the goal, explain team roles, update chain title/description, and create/apply downstream tasks.
-
-## Adding a new kind
-
-1. Append a `Team_Kind_Def` in `src/daemon/team_kinds.odin`.
-2. Update `docs/teams-v1/02-team-kinds.md` with the same content.
-3. Update `07-ui.md`'s kind-picker list.
-4. Add a test entry in `tests/team_kinds_test.odin`.
-5. Optionally add prompt-backed scaffold descriptions later if/when the renderer moves beyond the current built-in generic scaffold-description text.
-
-That's intended to stay a small reviewed diff each time.
+1. Update `src/daemon/team_kinds.odin`.
+2. Update this document.
+3. Update static UI metadata in `src/ui/components/teamKinds.ts`.
+4. Update affected tests (`tests/team_kinds_test.odin`, `tests/team_service_test/main.odin`, and any template/UI checks).
+5. Validate daemon and UI checks before merge.

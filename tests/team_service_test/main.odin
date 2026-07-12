@@ -14,7 +14,8 @@ main :: proc() {
 	check(coding_id != "", "coding team allocation failed")
 	coding := daemon.team_service_show(coding_id)
 	check(coding.team.status == "latent", "coding team should start latent")
-	check(len(coding.members) == 3, "coding team should have three members")
+	check(len(coding.members) == 4, "coding team should have four members")
+	check(count_role(coding.members, "tester") == 1, "coding team should include one tester member")
 	for member in coding.members {
 		check(member.agent_record_id == "", "coding member should not be provisioned to an agent yet")
 		check(!member.is_user_proxy, "coding member should not be user_proxy")
