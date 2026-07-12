@@ -1510,7 +1510,7 @@ function DaemonProfileModal({ mode, initialUrl, initialLabel, activeUrl, onClose
 function SurfaceRail({ surface, badgeCount, onSelect }: { surface: string; badgeCount: number; onSelect: (next: string) => void }) {
   const items: { key: string; label: string; icon: string; badge?: number }[] = [
     { key: 'home', label: 'Home', icon: '⌂' },
-    { key: 'memory', label: 'Memory', icon: '🧠' },
+    { key: 'memory', label: 'Memory', icon: '◫' },
     { key: 'attention', label: 'Needs attention', icon: '◎', badge: badgeCount },
     { key: 'settings', label: 'Settings', icon: '⚙' },
   ];

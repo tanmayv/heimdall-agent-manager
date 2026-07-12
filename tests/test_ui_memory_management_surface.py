@@ -22,7 +22,7 @@ def main() -> None:
     home_slice = HOME_SLICE.read_text(encoding="utf-8")
 
     require("import MemoryManagementPage from './MemoryManagementPage';" in app, "App should import MemoryManagementPage")
-    require("{ key: 'memory', label: 'Memory', icon: '🧠' }" in app, "Surface rail should expose a primary Memory nav item")
+    require("{ key: 'memory', label: 'Memory', icon: '◫' }" in app, "Surface rail should expose a primary Memory nav item with a monochrome icon")
     require('data-debug-id="home-open-memory-btn"' in app, "Home should expose a direct memory entry button")
     require('data-debug-id="home-memory-total"' in app and 'data-debug-id="home-memory-pending"' in app, "Home should summarize memory counts")
     require("home.surface === 'memory' ? (" in app, "App should route a dedicated memory surface")
