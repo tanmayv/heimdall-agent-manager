@@ -1553,14 +1553,135 @@ write_skills :: proc(cwd, rel_dir, filename: string, memories: []Memory_Record) 
 		file_rel := join_path(skill_dir_rel, filename)
 		file_abs := join_path(skill_dir_abs, filename)
 		if can_write_managed_file(file_abs) {
-			content_b := strings.builder_make()
-			strings.write_string(&content_b, active_live_prefs.bootstrap_header); strings.write_string(&content_b, "\n")
-			strings.write_string(&content_b, m.body); strings.write_string(&content_b, "\n")
-			write_managed_file(file_abs, strings.to_string(content_b))
+			content := render_skill_file(slug, m.title, m.body)
+			write_managed_file(file_abs, content)
 			append(&written, file_rel)
 		}
 	}
 	return written[:]
+}
+
+// render_skill_file produces a Claude Code / codex compatible SKILL.md.
+//
+// The first line must be `---` (YAML frontmatter start) so provider skill
+// discovery can parse `name:` and `description:` from the header. Two shapes of
+// memory body are supported:
+//
+//   1. Body already carries a `---`-delimited frontmatter block. We copy it
+//      verbatim after guaranteeing `heimdall_managed: true` is present inside
+//      the block so ownership can be detected on the next boot.
+//   2. Body is a mix of `key: value` lines and free markdown. We split the
+//      leading `key: value` lines into the frontmatter and the rest into the
+//      body. Missing `name`/`description` are backfilled from the memory's
+//      slug/title so the file is always valid.
+render_skill_file :: proc(slug, title, body: string) -> string {
+	trimmed := strings.trim_space(body)
+	if strings.has_prefix(trimmed, "---\n") || strings.has_prefix(trimmed, "---\r\n") {
+		after := trimmed[4:] if strings.has_prefix(trimmed, "---\n") else trimmed[5:]
+		close_rel := strings.index(after, "\n---")
+		if close_rel >= 0 {
+			front := after[:close_rel]
+			rest := after[close_rel+len("\n---"):]
+			return build_skill_file(front, rest, slug, title, /*already_frontmatter*/ true)
+		}
+	}
+	front, rest := split_leading_yaml_lines(trimmed)
+	return build_skill_file(front, rest, slug, title, /*already_frontmatter*/ false)
+}
+
+split_leading_yaml_lines :: proc(text: string) -> (front: string, rest: string) {
+	lines := strings.split(text, "\n")
+	defer delete(lines)
+	split_idx := 0
+	for i in 0..<len(lines) {
+		line := strings.trim_right(lines[i], "\r")
+		if line == "" {
+			split_idx = i + 1
+			break
+		}
+		colon := strings.index(line, ":")
+		if colon <= 0 {
+			break
+		}
+		key := strings.trim_space(line[:colon])
+		if !skill_yaml_key_valid(key) do break
+		split_idx = i + 1
+	}
+	if split_idx == 0 {
+		return "", text
+	}
+	fb := strings.builder_make()
+	for i in 0..<split_idx {
+		line := strings.trim_right(lines[i], "\r")
+		if line == "" do continue
+		strings.write_string(&fb, line); strings.write_string(&fb, "\n")
+	}
+	rb := strings.builder_make()
+	for i in split_idx..<len(lines) {
+		if i > split_idx do strings.write_string(&rb, "\n")
+		strings.write_string(&rb, lines[i])
+	}
+	return strings.to_string(fb), strings.to_string(rb)
+}
+
+skill_yaml_key_valid :: proc(key: string) -> bool {
+	if key == "" do return false
+	for i in 0..<len(key) {
+		ch := key[i]
+		valid := (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_'
+		if !valid do return false
+	}
+	return true
+}
+
+skill_yaml_get :: proc(front, key: string) -> string {
+	lines := strings.split(front, "\n")
+	defer delete(lines)
+	for line in lines {
+		trimmed := strings.trim_right(strings.trim_left(line, " \t"), "\r")
+		colon := strings.index(trimmed, ":")
+		if colon <= 0 do continue
+		if strings.trim_space(trimmed[:colon]) != key do continue
+		return strings.trim_space(trimmed[colon+1:])
+	}
+	return ""
+}
+
+skill_yaml_has :: proc(front, key: string) -> bool {
+	return skill_yaml_get(front, key) != ""
+}
+
+build_skill_file :: proc(front, rest, slug, title: string, already_frontmatter: bool) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "---\n")
+	if !skill_yaml_has(front, "name") {
+		strings.write_string(&b, "name: "); strings.write_string(&b, slug); strings.write_string(&b, "\n")
+	}
+	if !skill_yaml_has(front, "description") {
+		strings.write_string(&b, "description: "); strings.write_string(&b, yaml_scalar_line(title)); strings.write_string(&b, "\n")
+	}
+	front_trimmed := strings.trim_space(front)
+	if front_trimmed != "" {
+		strings.write_string(&b, front_trimmed); strings.write_string(&b, "\n")
+	}
+	if !strings.contains(front, MANAGED_YAML_MARKER) {
+		strings.write_string(&b, MANAGED_YAML_MARKER); strings.write_string(&b, "\n")
+	}
+	strings.write_string(&b, "---\n")
+	body := strings.trim_left(rest, "\n\r")
+	if body != "" {
+		strings.write_string(&b, "\n"); strings.write_string(&b, body)
+		if !strings.has_suffix(body, "\n") do strings.write_string(&b, "\n")
+	}
+	return strings.to_string(b)
+}
+
+// yaml_scalar_line makes a single-line YAML scalar safe: it collapses embedded
+// newlines to spaces so an accidental multi-line title cannot break the header.
+yaml_scalar_line :: proc(value: string) -> string {
+	flat := replace_all(value, "\r\n", " ")
+	flat = replace_all(flat, "\n", " ")
+	return strings.trim_space(flat)
 }
 
 cleanup_removed_bootstrap_files :: proc(cwd: string, files: []string) {
@@ -1598,13 +1719,33 @@ write_manifest :: proc(cwd: string, files: []string) {
 can_write_managed_file :: proc(path: string) -> bool {
 	data, err := os.read_entire_file(path, context.allocator)
 	if err != nil do return true
-	return strings.has_prefix(string(data), BOOTSTRAP_HEADER) || strings.has_prefix(string(data), active_live_prefs.bootstrap_header)
+	return data_has_managed_marker(string(data))
 }
 
 file_has_managed_header :: proc(path: string) -> bool {
 	data, err := os.read_entire_file(path, context.allocator)
 	if err != nil do return false
-	return strings.has_prefix(string(data), BOOTSTRAP_HEADER) || strings.has_prefix(string(data), active_live_prefs.bootstrap_header)
+	return data_has_managed_marker(string(data))
+}
+
+// data_has_managed_marker recognises files this wrapper owns.
+// The classic marker is the HTML comment header used on plain markdown outputs.
+// Skill files must start with a YAML frontmatter block for Claude Code / codex
+// skill discovery to work, so they instead carry `heimdall_managed: true`
+// inside the frontmatter itself and this function accepts either form.
+MANAGED_YAML_MARKER :: "heimdall_managed: true"
+data_has_managed_marker :: proc(data: string) -> bool {
+	if strings.has_prefix(data, BOOTSTRAP_HEADER) do return true
+	if active_live_prefs.bootstrap_header != "" && strings.has_prefix(data, active_live_prefs.bootstrap_header) do return true
+	if strings.has_prefix(data, "---\n") || strings.has_prefix(data, "---\r\n") {
+		after := data[4:] if strings.has_prefix(data, "---\n") else data[5:]
+		close_rel := strings.index(after, "\n---")
+		if close_rel >= 0 {
+			front := after[:close_rel]
+			if strings.contains(front, MANAGED_YAML_MARKER) do return true
+		}
+	}
+	return false
 }
 
 write_managed_file :: proc(path, content: string) {
