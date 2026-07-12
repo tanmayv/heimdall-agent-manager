@@ -322,10 +322,15 @@ memory_auditor_start_agent :: proc(agent_instance_id, template_id, provider_prof
 	}
 
 	agent_token := generate_agent_token()
+	if !agent_runtime_tracker_try_begin_launch(agent_instance_id, agent_token, "memory_auditor", "", router_now_unix_ms()) {
+		fmt.println("memory_auditor_start_agent: launch already running or in progress")
+		return true
+	}
 	registry_add_pending_agent_token(agent_instance_id, agent_token)
 	
 	ok := launch_wrapper_detached(agent_instance_id, provider_profile, config_path, log_path, agent_token, display_name, final_tier, project_id, "memory_auditor", "", "", "")
 	if !ok {
+		agent_runtime_tracker_launch_failed(agent_instance_id, agent_token, "memory_auditor")
 		fmt.println("memory_auditor_start_agent: launch_wrapper_detached failed")
 		return false
 	}

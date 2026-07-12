@@ -27,12 +27,6 @@ guide_service_start :: proc(cfg: cfg_lib.Guide_Agent_Config, source: string = "g
 		fmt.printfln("GUIDE_LAUNCH ts_unix_ms=%d stage=skip source=%s target=%s skip_reason=invalid_singleton_id expected=%s", router_now_unix_ms(), source, agent_id, GUIDE_AGENT_DEFAULT_ID)
 		return false
 	}
-	if idx := registry_find_agent(agent_id); idx >= 0 {
-		if agents[idx].connected || agents[idx].has_ws || agents[idx].startup_status == "starting" || agents[idx].startup_status == "ready" {
-			fmt.printfln("GUIDE_LAUNCH ts_unix_ms=%d stage=skip source=%s target=%s skip_reason=already_live connected=%t has_ws=%t startup_status=%s", router_now_unix_ms(), source, agent_id, agents[idx].connected, agents[idx].has_ws, agents[idx].startup_status)
-			return false
-		}
-	}
 	template_id := cfg.template_id
 	if template_id == "" do template_id = "guide"
 	provider_profile := cfg.provider_profile
@@ -50,10 +44,15 @@ guide_service_start :: proc(cfg: cfg_lib.Guide_Agent_Config, source: string = "g
 		return false
 	}
 	agent_token := generate_agent_token()
+	if !agent_runtime_tracker_try_begin_launch(agent_id, agent_token, source, "", router_now_unix_ms()) {
+		fmt.printfln("GUIDE_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=skip source=%s target=%s skip_reason=agent_tracker", router_now_unix_ms(), router_now_unix_ms() - start_ms, source, agent_id)
+		return false
+	}
 	registry_add_pending_agent_token(agent_id, agent_token)
 	log_path := wrapper_log_path(agent_id)
 	fmt.printfln("GUIDE_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=wrapper_spawn_request source=%s target=%s record=%s provider=%s tier=%s project=%s log=%s", router_now_unix_ms(), router_now_unix_ms() - start_ms, source, agent_id, rec_id, provider_profile, final_tier, project_id, log_path)
 	ok := launch_wrapper_detached(agent_id, provider_profile, server_config_path, log_path, agent_token, display_name, final_tier, project_id, source, "", "", "")
+	if !ok do agent_runtime_tracker_launch_failed(agent_id, agent_token, source)
 	fmt.printfln("GUIDE_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=wrapper_spawn_result source=%s target=%s ok=%t", router_now_unix_ms(), router_now_unix_ms() - start_ms, source, agent_id, ok)
 	return ok
 }

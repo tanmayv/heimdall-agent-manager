@@ -57,6 +57,7 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 	}
 	step := init_t0
 	registry_init(); time_step("registry_init", &step)
+	agent_runtime_tracker_init(); time_step("agent_runtime_tracker_init", &step)
 	user_client_registry_init(); time_step("user_client_registry_init", &step)
 	message_provider = mp.new_memory_provider(); time_step("message_provider", &step)
 	if !memory_db_init(server_data_dir) {

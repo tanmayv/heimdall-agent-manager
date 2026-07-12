@@ -226,14 +226,6 @@ task_autoscaler_ensure_agent :: proc(chain: Task_Chain_State, agent_instance_id,
 		fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=ensure_agent_skip source=%s chain=%s team=%s task=%s target=%s skip_reason=team_has_high_priority_boot", router_now_unix_ms(), reason, chain.chain_id, chain.team_id, task_id, agent_instance_id)
 		return false
 	}
-	if idx := registry_find_agent(agent_instance_id); idx >= 0 {
-		if agents[idx].connected || agents[idx].has_ws || agents[idx].startup_status == "starting" || agents[idx].startup_status == "ready" {
-			_ = agent_store_touch_needed(agent_instance_id)
-			fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=ensure_agent_skip source=%s chain=%s team=%s task=%s target=%s skip_reason=already_live connected=%t has_ws=%t startup_status=%s", router_now_unix_ms(), reason, chain.chain_id, chain.team_id, task_id, agent_instance_id, agents[idx].connected, agents[idx].has_ws, agents[idx].startup_status)
-			fmt.printfln("RUNTIME_RECONCILE_SKIP: target=%s reason=%s connected=%t has_ws=%t startup_status=%s", agent_instance_id, reason, agents[idx].connected, agents[idx].has_ws, agents[idx].startup_status)
-			return false
-		}
-	}
 	incoming_rank := task_autoscaler_boot_priority_rank(boot_priority)
 	lease_idx := task_autoscaler_lease_index(chain.team_id)
 	bypass_lease := task_autoscaler_reason_bypasses_lease(reason)
@@ -258,6 +250,22 @@ task_autoscaler_ensure_agent :: proc(chain: Task_Chain_State, agent_instance_id,
 		lease_idx = team_boot_lease_count; team_boot_lease_count += 1
 		team_boot_leases[lease_idx].team_id = strings.clone(chain.team_id)
 	}
+	agent_token := generate_agent_token()
+	if !agent_runtime_tracker_try_begin_launch(agent_instance_id, agent_token, reason, task_id, now) {
+		_ = agent_store_touch_needed(agent_instance_id)
+		connected := false
+		has_ws := false
+		startup_status := ""
+		if idx := registry_find_agent(agent_instance_id); idx >= 0 {
+			connected = agents[idx].connected
+			has_ws = agents[idx].has_ws
+			startup_status = agents[idx].startup_status
+		}
+		fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=ensure_agent_skip source=%s chain=%s team=%s task=%s target=%s skip_reason=agent_tracker connected=%t has_ws=%t startup_status=%s", router_now_unix_ms(), reason, chain.chain_id, chain.team_id, task_id, agent_instance_id, connected, has_ws, startup_status)
+		fmt.printfln("RUNTIME_RECONCILE_SKIP: target=%s reason=%s tracker_coalesced=true connected=%t has_ws=%t startup_status=%s", agent_instance_id, reason, connected, has_ws, startup_status)
+		return false
+	}
+
 	lease := &team_boot_leases[lease_idx]
 	lease.holder_agent_instance_id = strings.clone(agent_instance_id)
 	lease.priority = strings.clone(boot_priority)
@@ -265,12 +273,13 @@ task_autoscaler_ensure_agent :: proc(chain: Task_Chain_State, agent_instance_id,
 	lease.last_boot_at_unix_ms = now
 	_ = agent_store_touch_needed(agent_instance_id)
 	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=launch_agent_call source=%s chain=%s team=%s task=%s target=%s priority=%s bypass_lease=%t", router_now_unix_ms(), reason, chain.chain_id, chain.team_id, task_id, agent_instance_id, boot_priority, bypass_lease)
-	if task_autoscaler_launch_agent(chain, agent_instance_id, reason, task_id) {
+	if task_autoscaler_launch_agent(chain, agent_instance_id, reason, task_id, agent_token) {
 		_ = team_db_update_team_status(team_service_db, chain.team_id, "warming")
 		fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=launch_agent_success source=%s chain=%s team=%s task=%s target=%s priority=%s", router_now_unix_ms(), reason, chain.chain_id, chain.team_id, task_id, agent_instance_id, boot_priority)
 		fmt.printfln("RUNTIME_RECONCILE_LAUNCH: target=%s task=%s reason=%s priority=%s", agent_instance_id, task_id, reason, boot_priority)
 		return true
 	}
+	agent_runtime_tracker_launch_failed(agent_instance_id, agent_token, reason)
 	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=launch_agent_failed source=%s chain=%s team=%s task=%s target=%s priority=%s", router_now_unix_ms(), reason, chain.chain_id, chain.team_id, task_id, agent_instance_id, boot_priority)
 	fmt.printfln("RUNTIME_RECONCILE_LAUNCH_FAILED: target=%s task=%s reason=%s priority=%s", agent_instance_id, task_id, reason, boot_priority)
 	return false
@@ -296,15 +305,16 @@ task_autoscaler_team_has_high_priority_boot :: proc(team_id: string) -> bool {
 		if chain.team_id != team_id || chain.status != "in_progress" do continue
 		target := task_reviewer_agent_instance_id(state)
 		if target == "" || target == "user_proxy" do continue
+		if agent_runtime_tracker_running(target) do continue
 		if idx := registry_find_agent(target); idx >= 0 {
-			if agents[idx].connected || agents[idx].has_ws || agents[idx].startup_status == "starting" || agents[idx].startup_status == "ready" do continue
+			if agents[idx].startup_status == "starting" do continue
 		}
 		return true
 	}
 	return false
 }
 
-task_autoscaler_launch_agent :: proc(chain: Task_Chain_State, agent_instance_id: string, launch_source: string = "", launch_task_id: string = "") -> bool {
+task_autoscaler_launch_agent :: proc(chain: Task_Chain_State, agent_instance_id: string, launch_source: string = "", launch_task_id: string = "", launch_token: string = "") -> bool {
 	launch_start_ms := router_now_unix_ms()
 	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=resolve_config_begin source=%s chain=%s team=%s task=%s target=%s", launch_start_ms, launch_source, chain.chain_id, chain.team_id, launch_task_id, agent_instance_id)
 	template_id := derive_agent_class(agent_instance_id)
@@ -336,7 +346,8 @@ task_autoscaler_launch_agent :: proc(chain: Task_Chain_State, agent_instance_id:
 	}
 	now = router_now_unix_ms()
 	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=record_upsert_done source=%s chain=%s team=%s task=%s target=%s record=%s final_tier=%s", now, now - launch_start_ms, launch_source, chain.chain_id, chain.team_id, launch_task_id, agent_instance_id, rec_id, final_tier)
-	agent_token := generate_agent_token()
+	agent_token := launch_token
+	if agent_token == "" do agent_token = generate_agent_token()
 	registry_add_pending_agent_token(agent_instance_id, agent_token)
 	log_path := wrapper_log_path(agent_instance_id)
 	now = router_now_unix_ms()

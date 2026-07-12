@@ -26,6 +26,10 @@ handle_register :: proc(client: net.TCP_Socket, body: string) {
 	}
 
 	requested_agent_token := extract_json_string(body, "agent_token", "")
+	if requested_agent_token != "" && !agent_runtime_tracker_register_allowed(agent_instance_id, requested_agent_token) {
+		write_response(client, 409, "Conflict", `{"ok":false,"error":"superseded_launch","message":"agent launch was superseded by a newer runtime generation"}`)
+		return
+	}
 	// Daemon-spawned wrappers keep their issued token across daemon restarts, but the
 	// in-memory pending-token list does not. Allow a requested token for a fresh
 	// instance; still reject untrusted token replacement for an existing registry entry.
@@ -43,6 +47,7 @@ handle_register :: proc(client: net.TCP_Socket, body: string) {
 		extract_json_string(body, "display_name", ""),
 		requested_agent_token,
 	)
+	agent_runtime_tracker_observe_register(agent_instance_id, record.agent_token)
 	router_adapter_announce_local_agent(agent_instance_id, agent_class)
 	agent_lifecycle_emit(agent_instance_id, "registered", "register")
 	// Look up template instructions so the wrapper can include them in the bootstrap.
@@ -88,6 +93,7 @@ handle_startup_report :: proc(client: net.TCP_Socket, body: string) {
 		// emitting with empty tier would clobber the value set at /agents/start.
 		_ = agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = rec.provider_profile, project_id = rec.project_id, run_dir = rec.run_dir, model_tier = rec.model_tier, author = "startup_report"})
 	}
+	agent_runtime_tracker_observe_ready_or_heartbeat(agent_instance_id, "startup_report")
 	agent_lifecycle_emit(agent_instance_id, status, "startup_report")
 	write_response(client, 200, "OK", `{"ok":true}`)
 }
@@ -237,6 +243,7 @@ handle_heartbeat :: proc(client: net.TCP_Socket, body: string) {
 
 	was_live := registry_agent_live(snap.agent_instance_id)
 	runtime_changed, lifecycle_changed := registry_apply_heartbeat_snapshot(snap)
+	agent_runtime_tracker_observe_ready_or_heartbeat(snap.agent_instance_id, "heartbeat")
 	if !was_live || lifecycle_changed {
 		agent_lifecycle_emit(snap.agent_instance_id, "connected", "heartbeat")
 	}

@@ -354,6 +354,12 @@ agent_store_update_work_state :: proc(agent_instance_id, current_task_id: string
 agent_store_touch_needed :: proc(agent_instance_id: string) -> bool { return agent_store_update_work_state(agent_instance_id, "", false, true) }
 agent_store_set_current_task :: proc(agent_instance_id, task_id: string) -> bool { return agent_store_update_work_state(agent_instance_id, task_id, true, true) }
 agent_store_clear_current_task :: proc(agent_instance_id: string) -> bool { return agent_store_update_work_state(agent_instance_id, "", true, true) }
+agent_store_clear_current_task_if_matches :: proc(agent_instance_id, task_id: string) -> bool {
+	idx := agent_record_index_by_instance(agent_instance_id)
+	if idx < 0 do return false
+	if agent_instance_records[idx].current_task_id != task_id do return false
+	return agent_store_update_work_state(agent_instance_id, "", true, true)
+}
 
 agent_store_emit_agent_update :: proc(rec: Agent_Instance_Record) {
 	b := strings.builder_make()
