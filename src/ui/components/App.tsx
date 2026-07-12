@@ -1332,7 +1332,7 @@ function AttentionSurface({ tasksById, chainsById, openChain, attention, memory,
           <div key={`memory-${rec.memoryId}`} data-debug-id={`attention-card-memory-${rec.memoryId}`} className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
             <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Memory proposal</div>
             <div className="mt-1 font-semibold">{rec.title || rec.memoryId} · {rec.type}</div>
-            <div className="mt-1 text-sm text-zinc-400">Target: {rec.target || rec.scope}</div>
+            <div className="mt-1 text-sm text-zinc-400">Target: {rec.target || 'global'}</div>
             {rec.body && (
               <div className="mt-2 rounded-xl bg-black/20 p-3">
                 <Markdown source={rec.body} compact className="text-sm text-zinc-200" />

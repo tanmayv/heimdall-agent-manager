@@ -502,8 +502,8 @@ function EntityCard({ id, type, session }: { id: string; type: 'task' | 'chain' 
         <h4 className="font-semibold text-white truncate">{entity.title || entity.memoryId || entity.proposalId}</h4>
         <p className="text-[#999] truncate mt-0.5">{entity.body}</p>
         <div className="flex items-center justify-between text-[10px] text-[#777] mt-2 border-t border-[#222] pt-2">
-          <span>Target: <span className="text-[#aaa]">{entity.target || entity.scope || '—'}</span></span>
-          <span className="uppercase tracking-wide">{entity.type} · {entity.scope}</span>
+          <span>Target: <span className="text-[#aaa]">{entity.target || 'global'}</span></span>
+          <span className="uppercase tracking-wide">{entity.type}</span>
         </div>
       </div>
     );

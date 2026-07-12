@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Backend regression coverage for memory subject-field removal.
+"""Backend regression coverage for simplified memory targeting.
 
 Covers:
-- public list/show/history/applicable JSON omits subject_agent/subject_key
-- expertise dedup uses canonical target + title, not only scope/project
-- legacy rows with empty project_ids but retained scope+subject_key normalize after restart
+- public list/show/history/applicable JSON exposes only target_team_kind/target_role/target_project_id
+- null/empty targets act as wildcards
+- populated targets use strict AND semantics
+- expertise dedup uses canonical target triple + title
 """
 
 import json
 import os
-import sqlite3
 import subprocess
 import tempfile
 import time
@@ -21,7 +21,12 @@ HOST = "127.0.0.1"
 PORT = 49423
 URL = f"http://{HOST}:{PORT}"
 USER_ID = "operator@local"
-AGENT_ID = "memory-backend-coder@default"
+AGENT_ID = "memory-target-coder@default"
+PROJECT_ID = "memory-target-project"
+OTHER_PROJECT_ID = "memory-target-project-2"
+TEAM_KIND = "coding"
+ROLE = "coder"
+OTHER_ROLE = "reviewer"
 
 
 def bin_path(repo: Path, binary: str) -> str:
@@ -36,7 +41,14 @@ def bin_path(repo: Path, binary: str) -> str:
         path = repo / base / "bin" / binary
         if path.exists():
             return str(path)
-    raise RuntimeError(f"could not find {binary}")
+    package = {
+        "ham-daemon": "ham-daemon",
+        "ham-wrapper": "ham-wrapper",
+        "ham-ctl": "ham-ctl",
+    }[binary]
+    build = subprocess.run(["nix", "build", f".#${package}".replace("$", ""), "--no-link", "--print-out-paths"], cwd=repo, capture_output=True, text=True, check=True)
+    out_path = build.stdout.strip().splitlines()[-1]
+    return str(Path(out_path) / "bin" / binary)
 
 
 def post(path: str, data: dict) -> dict:
@@ -101,34 +113,44 @@ def stop_daemon(proc, log) -> None:
     log.close()
 
 
-def assert_no_subject_fields(payload: dict, label: str) -> None:
+def assert_no_legacy_fields(payload: dict, label: str) -> None:
     text = json.dumps(payload)
-    if "subject_agent" in text or "subject_key" in text:
-        raise AssertionError(f"{label} unexpectedly exposed subject fields: {payload}")
+    forbidden = [
+        "subject_agent",
+        "subject_key",
+        '"scope"',
+        "agent_instance_id",
+        '"team_id"',
+        "template_key",
+        "project_ids",
+        "role_keys",
+        "task_chain_types",
+    ]
+    for item in forbidden:
+        if item in text:
+            raise AssertionError(f"{label} unexpectedly exposed legacy field {item}: {payload}")
 
 
-def memory_show(agent_token: str, memory_id: str) -> dict:
-    return post("/memory/show", {"agent_token": agent_token, "memory_id": memory_id})
+def propose(agent_token: str, **body) -> dict:
+    payload = {"agent_token": agent_token}
+    payload.update(body)
+    return post("/memory/propose/new", payload)
+
+
+def approve(agent_token: str, proposal_id: str) -> dict:
+    return post("/memory/decide", {"agent_token": agent_token, "proposal_id": proposal_id, "decision": "approve"})
+
+
+def applicable(agent_token: str, **body) -> dict:
+    payload = {"agent_token": agent_token}
+    payload.update(body)
+    return post("/memory/applicable", payload)
 
 
 def memory_list(agent_token: str, **body) -> dict:
     payload = {"agent_token": agent_token}
     payload.update(body)
     return post("/memory/list", payload)
-
-
-def memory_history(agent_token: str, memory_id: str) -> dict:
-    return post("/memory/history", {"agent_token": agent_token, "memory_id": memory_id})
-
-
-def propose(agent_token: str, action: str, body: dict) -> dict:
-    payload = {"agent_token": agent_token}
-    payload.update(body)
-    return post(f"/memory/propose/{action}", payload)
-
-
-def approve(agent_token: str, proposal_id: str) -> dict:
-    return post("/memory/decide", {"agent_token": agent_token, "proposal_id": proposal_id, "decision": "approve"})
 
 
 def create_project(user_client: dict, project_id: str) -> None:
@@ -139,229 +161,124 @@ def create_project(user_client: dict, project_id: str) -> None:
             "client_instance_id": user_client["client_instance_id"],
             "client_token": user_client["client_token"],
             "project_id": project_id,
-            "name": "Memory Backend",
-            "description": "memory backend subject removal regression",
+            "name": project_id,
+            "description": "memory target regression",
         },
     )
     if not res.get("ok"):
         raise AssertionError(f"project_create failed: {res}")
 
 
-def active_status_by_id(records: list[dict]) -> dict[str, str]:
-    return {rec["memory_id"]: rec["status"] for rec in records}
+def titles(records: list[dict]) -> set[str]:
+    return {str(record.get("title", "")) for record in records}
+
+
+def status_by_id(records: list[dict]) -> dict[str, str]:
+    return {str(rec["memory_id"]): str(rec["status"]) for rec in records}
 
 
 def main() -> None:
     repo = Path(__file__).resolve().parents[1]
-    temp_dir = tempfile.mkdtemp(prefix="heimdall-memory-backend-")
+    temp_dir = tempfile.mkdtemp(prefix="heimdall-memory-targets-")
     proc = log = None
     try:
         proc, log, log_path = start_daemon(repo, temp_dir)
 
-        user_client = post("/user-client/register", {"user_id": USER_ID, "client_instance_id": "memory-backend-user"})
-        user_client["client_instance_id"] = "memory-backend-user"
-        create_project(user_client, "memory-backend-project")
-        create_project(user_client, "memory-backend-project-2")
+        user_client = post("/user-client/register", {"user_id": USER_ID, "client_instance_id": "memory-target-user"})
+        user_client["client_instance_id"] = "memory-target-user"
+        create_project(user_client, PROJECT_ID)
+        create_project(user_client, OTHER_PROJECT_ID)
 
         agent_token = post(
             "/register",
             {
-                "agent_class": "memory-backend-coder",
+                "agent_class": "memory-target-coder",
                 "agent_instance_id": AGENT_ID,
-                "display_name": "Memory Backend Coder",
+                "display_name": "Memory Target Coder",
             },
         )["agent_token"]
         agent_create = post(
             "/agents/create",
             {
                 "agent_instance_id": AGENT_ID,
-                "display_name": "Memory Backend Coder",
+                "display_name": "Memory Target Coder",
                 "provider_profile": "pi",
                 "template_id": "coder",
                 "model_tier": "normal",
-                "project_id": "memory-backend-project",
+                "project_id": PROJECT_ID,
             },
         )
         if not agent_create.get("ok"):
             raise AssertionError(f"agents/create failed: {agent_create}")
 
-        prop1 = propose(
-            agent_token,
-            "new",
-            {
-                "scope": "project",
-                "project_id": "memory-backend-project",
-                "type": "expertise",
-                "title": "Build cache",
-                "body": "Use nix build outputs for daemon binaries.",
-                "reason": "backend test",
-                "evidence": "step-1",
-            },
-        )
-        approve(agent_token, prop1["proposal_id"])
-        mem1 = prop1["memory_id"]
+        created = []
+        for kwargs in [
+            dict(type="fact", title="Global memory", body="Applies everywhere."),
+            dict(target_role=ROLE, type="fact", title="Coder only", body="Applies only to coder role."),
+            dict(target_project_id=PROJECT_ID, type="fact", title="Project only", body="Applies only to project."),
+            dict(target_project_id=PROJECT_ID, target_role=ROLE, type="fact", title="Project and role", body="Requires both project and role."),
+            dict(target_team_kind=TEAM_KIND, type="fact", title="Team kind only", body="Applies only to coding teams."),
+        ]:
+            res = propose(agent_token, **kwargs)
+            approve(agent_token, res["proposal_id"])
+            created.append(res["memory_id"])
 
-        show1 = memory_show(agent_token, mem1)
-        list1 = memory_list(agent_token, scope="project", project_id="memory-backend-project", include_all_statuses=True)
-        history1 = memory_history(agent_token, mem1)
-        applicable1 = post(
-            "/memory/applicable",
-            {
-                "agent_token": agent_token,
-                "agent_instance_id": AGENT_ID,
-                "project_id": "memory-backend-project",
-            },
-        )
+        show_res = post("/memory/show", {"agent_token": agent_token, "memory_id": created[0]})
+        history_res = post("/memory/history", {"agent_token": agent_token, "memory_id": created[0]})
+        listed = memory_list(agent_token, include_all_statuses=True)
+        assert_no_legacy_fields(show_res, "show")
+        assert_no_legacy_fields(history_res, "history")
+        assert_no_legacy_fields(listed, "list")
 
-        assert_no_subject_fields(show1, "show1")
-        assert_no_subject_fields(list1, "list1")
-        assert_no_subject_fields(history1, "history1")
-        assert_no_subject_fields(applicable1, "applicable1")
-        if show1["record"]["project_ids"] != ["memory-backend-project"]:
-            raise AssertionError(show1)
-        if applicable1["records"][0]["memory_id"] != mem1:
-            raise AssertionError(applicable1)
+        rec = show_res["record"]
+        if sorted(rec.keys()) and {"target_team_kind", "target_role", "target_project_id"} - set(rec.keys()):
+            raise AssertionError(f"show payload missing target triple: {rec}")
 
-        # Same title + same target should archive prior expertise.
-        prop2 = propose(
-            agent_token,
-            "new",
-            {
-                "scope": "project",
-                "project_id": "memory-backend-project",
-                "type": "expertise",
-                "title": "Build cache",
-                "body": "Use --print-out-paths for evidence when needed.",
-                "reason": "backend test",
-                "evidence": "step-2",
-            },
-        )
-        approve(agent_token, prop2["proposal_id"])
-        mem2 = prop2["memory_id"]
+        exact_match = applicable(agent_token, target_team_kind=TEAM_KIND, target_role=ROLE, target_project_id=PROJECT_ID)
+        exact_titles = titles(exact_match["records"])
+        expected = {"Global memory", "Coder only", "Project only", "Project and role", "Team kind only"}
+        if exact_titles != expected:
+            raise AssertionError(f"exact applicability mismatch: {exact_titles} != {expected}")
 
-        # Different title on same target should stay active.
-        prop3 = propose(
-            agent_token,
-            "new",
-            {
-                "scope": "project",
-                "project_id": "memory-backend-project",
-                "type": "expertise",
-                "title": "SQLite inspection",
-                "body": "Legacy normalization can be tested by mutating memory.db directly.",
-                "reason": "backend test",
-                "evidence": "step-3",
-            },
-        )
-        approve(agent_token, prop3["proposal_id"])
-        mem3 = prop3["memory_id"]
+        wrong_role = applicable(agent_token, target_team_kind=TEAM_KIND, target_role=OTHER_ROLE, target_project_id=PROJECT_ID)
+        wrong_role_titles = titles(wrong_role["records"])
+        if "Coder only" in wrong_role_titles or "Project and role" in wrong_role_titles:
+            raise AssertionError(f"role mismatch should exclude role-targeted memories: {wrong_role_titles}")
 
+        wrong_project = applicable(agent_token, target_team_kind=TEAM_KIND, target_role=ROLE, target_project_id=OTHER_PROJECT_ID)
+        wrong_project_titles = titles(wrong_project["records"])
+        if "Project only" in wrong_project_titles or "Project and role" in wrong_project_titles:
+            raise AssertionError(f"project mismatch should exclude project-targeted memories: {wrong_project_titles}")
+
+        wrong_team = applicable(agent_token, target_team_kind="research", target_role=ROLE, target_project_id=PROJECT_ID)
+        wrong_team_titles = titles(wrong_team["records"])
+        if "Team kind only" in wrong_team_titles:
+            raise AssertionError(f"team-kind mismatch should exclude team-kind-targeted memory: {wrong_team_titles}")
+
+        wildcard = applicable(agent_token)
+        wildcard_titles = titles(wildcard["records"])
+        if wildcard_titles != {"Global memory"}:
+            raise AssertionError(f"wildcard request should only match fully global memories: {wildcard_titles}")
+
+        # Expertise dedup remains keyed by canonical target triple + title.
+        exp1 = propose(agent_token, target_project_id=PROJECT_ID, target_role=ROLE, type="expertise", title="Targeted expertise", body="first")
+        approve(agent_token, exp1["proposal_id"])
+        exp2 = propose(agent_token, target_project_id=PROJECT_ID, target_role=ROLE, type="expertise", title="Targeted expertise", body="second")
+        approve(agent_token, exp2["proposal_id"])
         all_records = memory_list(agent_token, include_all_statuses=True, status="all")
-        statuses = active_status_by_id(all_records["records"])
-        if statuses[mem1] != "archived":
-            raise AssertionError(f"expected first expertise archived, got {statuses}")
-        if statuses[mem2] != "active" or statuses[mem3] != "active":
-            raise AssertionError(f"expected second and third expertise active, got {statuses}")
+        statuses = status_by_id(all_records["records"])
+        if statuses[exp1["memory_id"]] != "archived" or statuses[exp2["memory_id"]] != "active":
+            raise AssertionError(f"expertise dedup should archive prior matching target triple: {statuses}")
 
-        # Same logical multi-value targets in different orders should dedup.
-        prop4 = propose(
-            agent_token,
-            "new",
-            {
-                "scope": "project",
-                "project_id": "memory-backend-project",
-                "project_ids": "memory-backend-project,memory-backend-project-2",
-                "role_keys": "reviewer,coder",
-                "task_chain_types": "research,coding",
-                "type": "expertise",
-                "title": "Cross-project coordination",
-                "body": "Initial ordered target set.",
-                "reason": "backend test",
-                "evidence": "step-4",
-            },
-        )
-        approve(agent_token, prop4["proposal_id"])
-        mem4 = prop4["memory_id"]
-        prop5 = propose(
-            agent_token,
-            "new",
-            {
-                "scope": "project",
-                "project_id": "memory-backend-project",
-                "project_ids": "memory-backend-project-2,memory-backend-project",
-                "role_keys": "coder,reviewer",
-                "task_chain_types": "coding,research",
-                "type": "expertise",
-                "title": "Cross-project coordination",
-                "body": "Same logical target set, reversed ordering.",
-                "reason": "backend test",
-                "evidence": "step-5",
-            },
-        )
-        approve(agent_token, prop5["proposal_id"])
-        mem5 = prop5["memory_id"]
-
-        all_records = memory_list(agent_token, include_all_statuses=True, status="all")
-        statuses = active_status_by_id(all_records["records"])
-        if statuses[mem4] != "archived" or statuses[mem5] != "active":
-            raise AssertionError(f"reordered multi-target expertise did not dedup canonically: {statuses}")
-
-        # Emulate legacy rows that only retain scope + subject_key, then restart.
-        stop_daemon(proc, log)
-        proc = log = None
-        db_path = Path(temp_dir) / "data" / "memory" / "memory.db"
-        with sqlite3.connect(db_path) as conn:
-            conn.execute(
-                "UPDATE memories SET project_ids = '' WHERE memory_id = ?",
-                (mem2,),
-            )
-            conn.commit()
-
-        proc, log, log_path = start_daemon(repo, temp_dir)
-        agent_token = post(
-            "/register",
-            {
-                "agent_class": "memory-backend-coder",
-                "agent_instance_id": AGENT_ID,
-                "display_name": "Memory Backend Coder Restarted",
-            },
-        )["agent_token"]
-
-        show2 = memory_show(agent_token, mem2)
-        list2 = memory_list(agent_token, scope="project", project_id="memory-backend-project", include_all_statuses=True)
-        history2 = memory_history(agent_token, mem2)
-        applicable2 = post(
-            "/memory/applicable",
-            {
-                "agent_token": agent_token,
-                "agent_instance_id": AGENT_ID,
-                "project_id": "memory-backend-project",
-            },
-        )
-
-        assert_no_subject_fields(show2, "show2")
-        assert_no_subject_fields(list2, "list2")
-        assert_no_subject_fields(history2, "history2")
-        assert_no_subject_fields(applicable2, "applicable2")
-        if show2["record"]["project_ids"] != ["memory-backend-project"]:
-            raise AssertionError(f"legacy normalization failed after restart: {show2}")
-        if mem2 not in {rec["memory_id"] for rec in applicable2["records"]}:
-            raise AssertionError(f"applicable lost legacy-normalized memory after restart: {applicable2}")
-
-        print(
-            json.dumps(
-                {
-                    "ok": True,
-                    "before_show": show1["record"],
-                    "before_history_event": history1["events"][0] if history1["events"] else {},
-                    "after_restart_show": show2["record"],
-                    "statuses": statuses,
-                    "reordered_bucket_archive": {"archived": mem4, "active": mem5},
-                    "daemon_log": log_path,
-                },
-                indent=2,
-            )
-        )
+        print(json.dumps({
+            "ok": True,
+            "exact_titles": sorted(exact_titles),
+            "wrong_role_titles": sorted(wrong_role_titles),
+            "wrong_project_titles": sorted(wrong_project_titles),
+            "wrong_team_titles": sorted(wrong_team_titles),
+            "wildcard_titles": sorted(wildcard_titles),
+            "daemon_log": log_path,
+        }, indent=2))
     finally:
         if proc and log:
             stop_daemon(proc, log)

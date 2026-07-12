@@ -723,7 +723,6 @@ handle_memory_event :: proc(text, tmux_pane, agent_instance_id: string) {
 	memory_id := extract_json_string(text, "memory_id", "unknown")
 	proposal_id := extract_json_string(text, "proposal_id", "")
 	target := extract_json_string(text, "target", "")
-	if target == "" do target = extract_json_string(text, "subject_agent", "")
 	status := extract_json_string(text, "status", "")
 
 	template_str := active_live_prefs.msg_memory_updated
@@ -1133,42 +1132,29 @@ Memory_Record :: struct {
 	type_text:             string,
 	title:                 string,
 	body:                  string,
-	scope:                 string,
+	target:                string,
 	is_configured_template: bool,
 }
 
-fetch_all_active_memories :: proc(daemon_url, agent_token, team_id, project_id, role_key, task_chain_type: string, memory_templates: []string) -> [dynamic]Memory_Record {
+fetch_all_active_memories :: proc(daemon_url, agent_token, team_kind, project_id, role_key: string, memory_templates: []string) -> [dynamic]Memory_Record {
 	result := make([dynamic]Memory_Record)
-	configured_ids := make(map[string]bool)
+	if agent_token == "" do return result
 
-	if len(memory_templates) > 0 {
-		req := strings.builder_make()
-		strings.write_string(&req, `{"agent_token":"`); json_write_string(&req, agent_token)
-		strings.write_string(&req, `","action":"memory_list","scope":"template","status":"active"}`)
-		resp, ok := http.post(daemon_url, contracts.ROUTE_AGENT_RPC, strings.to_string(req))
-		if ok && resp.status == 200 {
-			parse_into_memory_records(resp.body, memory_templates, true, &result, &configured_ids)
-		}
-	}
-
-	if agent_token != "" {
-		req := strings.builder_make()
-		strings.write_string(&req, `{"agent_token":"`); json_write_string(&req, agent_token); strings.write_string(&req, `"`)
-		if team_id != "" { strings.write_string(&req, `,"team_id":"`); json_write_string(&req, team_id); strings.write_string(&req, `"`) }
-		if project_id != "" { strings.write_string(&req, `,"project_id":"`); json_write_string(&req, project_id); strings.write_string(&req, `"`) }
-		if role_key != "" { strings.write_string(&req, `,"role_key":"`); json_write_string(&req, role_key); strings.write_string(&req, `"`) }
-		if task_chain_type != "" { strings.write_string(&req, `,"task_chain_type":"`); json_write_string(&req, task_chain_type); strings.write_string(&req, `"`) }
-		strings.write_string(&req, `}`)
-		resp, ok := http.post(daemon_url, "/memory/applicable", strings.to_string(req))
-		if ok && resp.status == 200 {
-			parse_into_memory_records(resp.body, memory_templates, false, &result, &configured_ids)
-		}
+	req := strings.builder_make()
+	strings.write_string(&req, `{"agent_token":"`); json_write_string(&req, agent_token); strings.write_string(&req, `"`)
+	if team_kind != "" { strings.write_string(&req, `,"target_team_kind":"`); json_write_string(&req, team_kind); strings.write_string(&req, `"`) }
+	if project_id != "" { strings.write_string(&req, `,"target_project_id":"`); json_write_string(&req, project_id); strings.write_string(&req, `"`) }
+	if role_key != "" { strings.write_string(&req, `,"target_role":"`); json_write_string(&req, role_key); strings.write_string(&req, `"`) }
+	strings.write_string(&req, `}`)
+	resp, ok := http.post(daemon_url, "/memory/applicable", strings.to_string(req))
+	if ok && resp.status == 200 {
+		parse_into_memory_records(resp.body, memory_templates, &result)
 	}
 
 	return result
 }
 
-parse_into_memory_records :: proc(body: string, memory_templates: []string, templates_only: bool, result: ^[dynamic]Memory_Record, configured_ids: ^map[string]bool) {
+parse_into_memory_records :: proc(body: string, memory_templates: []string, result: ^[dynamic]Memory_Record) {
 	idx := 0
 	for {
 		start_rel := strings.index(body[idx:], `{"memory_id":"`)
@@ -1185,17 +1171,9 @@ parse_into_memory_records :: proc(body: string, memory_templates: []string, temp
 		memory_id := extract_json_string(object, "memory_id", "")
 		title := extract_json_string(object, "title", "")
 		body_text := extract_json_string(object, "body", "")
-		scope := extract_json_string(object, "scope", "")
+		target := extract_json_string(object, "target", "")
 		is_configured_template := type_text == "template" && memory_template_matches(object, memory_templates)
-
-		if templates_only {
-			if !is_configured_template { idx = end; continue }
-			configured_ids^[memory_id] = true
-			append(result, Memory_Record{memory_id = memory_id, type_text = type_text, title = title, body = body_text, scope = scope, is_configured_template = true})
-		} else {
-			if _, seen := configured_ids^[memory_id]; seen { idx = end; continue }
-			append(result, Memory_Record{memory_id = memory_id, type_text = type_text, title = title, body = body_text, scope = scope, is_configured_template = false})
-		}
+		append(result, Memory_Record{memory_id = memory_id, type_text = type_text, title = title, body = body_text, target = target, is_configured_template = is_configured_template})
 		idx = end
 	}
 }
@@ -1207,9 +1185,9 @@ generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_
 	project_id := agent_cmd.project
 	if project_id == "" do project_id = cfg.project
 	project_context := project_bootstrap_context(daemon_url, agent_token, cfg, agent_cmd)
-	team_context, chain_id, task_chain_type := team_bootstrap_context(daemon_url, team_id)
+	team_context, chain_id, team_kind := team_bootstrap_context(daemon_url, team_id)
 	chain_context, workspace_context := task_chain_bootstrap_context(daemon_url, agent_token, chain_id)
-	memories := fetch_all_active_memories(daemon_url, agent_token, team_id, project_id, role_key, task_chain_type, memory_templates)
+	memories := fetch_all_active_memories(daemon_url, agent_token, team_kind, project_id, role_key, memory_templates)
 
 	written := make([dynamic]string)
 
@@ -2093,7 +2071,7 @@ memory_cli_guidance :: proc(agent_token: string) -> string {
 	strings.write_string(&builder, "Examples: ")
 	write_ctl(&builder, bin, " memory propose new --token ")
 	strings.write_string(&builder, agent_token)
-	strings.write_string(&builder, " --scope team_project --team <team_id> --project <project_id> --type fact|habit|episode|expertise|skill|template --title <title> --body <body> --reason <why> --evidence <task-or-source>; ")
+	strings.write_string(&builder, " --target-team-kind <kind> --target-role <role> --target-project-id <project_id> --type fact|habit|episode|expertise|skill|template --title <title> --body <body> --reason <why> --evidence <task-or-source>; ")
 	write_ctl(&builder, bin, " memory propose edit --token ")
 	strings.write_string(&builder, agent_token)
 	strings.write_string(&builder, " --memory-id <id> --expected-version <n> --title <title> --body <body> --reason <why> --evidence <source>; ")
@@ -2122,9 +2100,9 @@ memory_cli_guidance :: proc(agent_token: string) -> string {
 memory_template_matches :: proc(object: string, memory_templates: []string) -> bool {
 	memory_id := extract_json_string(object, "memory_id", "")
 	title := extract_json_string(object, "title", "")
-	scope := extract_json_string(object, "scope", "")
+	target := extract_json_string(object, "target", "")
 	for item in memory_templates {
-		if item == memory_id || item == title || item == scope do return true
+		if item == memory_id || item == title || item == target do return true
 	}
 	return false
 }

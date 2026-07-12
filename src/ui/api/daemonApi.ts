@@ -441,9 +441,7 @@ function userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action, body
   });
 }
 
-function normalizeMemoryCsv(value: any): string {
-  if (Array.isArray(value)) return value.map((entry) => String(entry || '').trim()).filter(Boolean).join(',');
-  if (typeof value === 'string') return value.split(',').map((entry) => entry.trim()).filter(Boolean).join(',');
+function normalizeMemoryTargetValue(value: any): string {
   if (value == null) return '';
   return String(value).trim();
 }
@@ -452,34 +450,26 @@ function normalizeMemoryMutationBody(body: Record<string, any>) {
   const normalized = { ...body };
   if (normalized.memory_id == null && normalized.memoryId != null) normalized.memory_id = normalized.memoryId;
   if (normalized.expected_version == null && normalized.expectedVersion != null) normalized.expected_version = normalized.expectedVersion;
-  if (normalized.agent_instance_id == null && normalized.agentInstanceId != null) normalized.agent_instance_id = normalized.agentInstanceId;
-  if (normalized.team_id == null && normalized.teamId != null) normalized.team_id = normalized.teamId;
-  if (normalized.template_key == null && normalized.templateKey != null) normalized.template_key = normalized.templateKey;
-  if (normalized.project_id == null && normalized.projectId != null) normalized.project_id = normalized.projectId;
+  if (normalized.target_team_kind == null && normalized.targetTeamKind != null) normalized.target_team_kind = normalizeMemoryTargetValue(normalized.targetTeamKind);
+  if (normalized.target_role == null && normalized.targetRole != null) normalized.target_role = normalizeMemoryTargetValue(normalized.targetRole);
+  if (normalized.target_project_id == null && normalized.targetProjectId != null) normalized.target_project_id = normalizeMemoryTargetValue(normalized.targetProjectId);
   if (normalized.source_task_id == null && normalized.sourceTaskId != null) normalized.source_task_id = normalized.sourceTaskId;
   if (normalized.metadata_json == null && normalized.metadataJson != null) normalized.metadata_json = normalized.metadataJson;
-  if (normalized.project_ids == null) normalized.project_ids = normalizeMemoryCsv(normalized.projectIds ?? normalized.projectId ?? normalized.project_id);
-  if (normalized.role_keys == null) normalized.role_keys = normalizeMemoryCsv(normalized.roleKeys ?? normalized.roleKey ?? normalized.role_key);
-  if (normalized.task_chain_types == null) normalized.task_chain_types = normalizeMemoryCsv(normalized.taskChainTypes ?? normalized.taskChainType ?? normalized.task_chain_type);
   return normalized;
 }
 
-export async function listMemory({ daemonUrl, clientInstanceId, clientToken, scope, type, status, agentInstanceId, teamId, templateKey, projectIds, roleKeys, taskChainTypes, includeAllStatuses = true }: UserRpcRequest & { scope?: string; type?: string; status?: string; agentInstanceId?: string; teamId?: string; templateKey?: string; projectIds?: string[] | string; roleKeys?: string[] | string; taskChainTypes?: string[] | string; includeAllStatuses?: boolean }) {
+export async function listMemory({ daemonUrl, clientInstanceId, clientToken, type, status, targetTeamKind, targetRole, targetProjectId, includeAllStatuses = true }: UserRpcRequest & { type?: string; status?: string; targetTeamKind?: string; targetRole?: string; targetProjectId?: string; includeAllStatuses?: boolean }) {
   return userRpcRequest({
     daemonUrl,
     clientInstanceId,
     clientToken,
     action: 'memory_list',
     body: {
-      scope: scope || '',
       type: type || '',
       status: status || '',
-      agent_instance_id: agentInstanceId || '',
-      team_id: teamId || '',
-      template_key: templateKey || '',
-      project_ids: normalizeMemoryCsv(projectIds),
-      role_keys: normalizeMemoryCsv(roleKeys),
-      task_chain_types: normalizeMemoryCsv(taskChainTypes),
+      target_team_kind: normalizeMemoryTargetValue(targetTeamKind),
+      target_role: normalizeMemoryTargetValue(targetRole),
+      target_project_id: normalizeMemoryTargetValue(targetProjectId),
       include_all_statuses: includeAllStatuses,
     }
   });

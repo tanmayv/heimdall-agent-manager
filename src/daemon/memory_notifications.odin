@@ -13,12 +13,10 @@ memory_append_event :: proc(event: contracts.Memory_Event) -> contracts.Memory_A
 	if ev.proposal_id == "" && ev.kind == .Memory_Proposed do ev.proposal_id = strings.clone(fmt.tprintf("proposal_%d", ev.created_unix_ms))
 	if ev.version == 0 do ev.version = 1
 
-	// Save the event to database first
 	if !memory_db_save_event(ev) {
 		return contracts.Memory_Append_Response{ok = false, message = "save memory event failed", event_id = ev.event_id, memory_id = ev.memory_id, proposal_id = ev.proposal_id}
 	}
 
-	// Apply projection logic to update active 'memories' record
 	rec, found := memory_db_get_record(ev.memory_id)
 	if !found {
 		rec = contracts.Memory_Record{
@@ -33,15 +31,9 @@ memory_append_event :: proc(event: contracts.Memory_Event) -> contracts.Memory_A
 	#partial switch ev.kind {
 	case .Memory_Proposed:
 		rec.proposal_id = strings.clone(ev.proposal_id)
-		rec.legacy_subject_agent = strings.clone(ev.legacy_subject_agent)
-		rec.scope = strings.clone(ev.scope)
-		rec.legacy_subject_key = strings.clone(ev.legacy_subject_key)
-		rec.agent_instance_id = strings.clone(ev.agent_instance_id)
-		rec.team_id = strings.clone(ev.team_id)
-		rec.template_key = strings.clone(ev.template_key)
-		rec.project_ids = strings.clone(ev.project_ids)
-		rec.role_keys = strings.clone(ev.role_keys)
-		rec.task_chain_types = strings.clone(ev.task_chain_types)
+		rec.target_team_kind = strings.clone(ev.target_team_kind)
+		rec.target_role = strings.clone(ev.target_role)
+		rec.target_project_id = strings.clone(ev.target_project_id)
 		rec.type = ev.type
 		rec.title = strings.clone(ev.title)
 		rec.body = strings.clone(ev.body)
@@ -74,10 +66,7 @@ memory_append_event :: proc(event: contracts.Memory_Event) -> contracts.Memory_A
 	}
 
 	memory_record_free(rec)
-
-	// Broadcast notifications
 	memory_notify_event(ev)
-
 	return contracts.Memory_Append_Response{ok = true, message = "appended", event_id = ev.event_id, memory_id = ev.memory_id, proposal_id = ev.proposal_id}
 }
 
@@ -88,9 +77,6 @@ memory_notify_event :: proc(event: contracts.Memory_Event) -> bool {
 	payload := memory_notification_json(event, rec, found)
 	user_client_fanout_all_ws_text(payload)
 	sent := false
-	subject := event.legacy_subject_agent
-	if subject == "" && found do subject = rec.legacy_subject_agent
-	sent = task_notify_recipient_except(subject, payload, event.author) || sent
 	source_task := event.source_task_id
 	if source_task == "" && found do source_task = rec.source_task_id
 	if source_task != "" {
@@ -105,44 +91,32 @@ memory_notify_event :: proc(event: contracts.Memory_Event) -> bool {
 }
 
 memory_notification_json :: proc(event: contracts.Memory_Event, rec: contracts.Memory_Record, found: bool) -> string {
-	agent_instance_id := event.agent_instance_id
-	team_id := event.team_id
-	template_key := event.template_key
-	scope := event.scope
-	project_ids := event.project_ids
-	role_keys := event.role_keys
-	task_chain_types := event.task_chain_types
+	target_team_kind := event.target_team_kind
+	target_role := event.target_role
+	target_project_id := event.target_project_id
 	type_text := memory_type_string_service(event.type)
 	status := memory_status_string_service(event.status)
 	source_task := event.source_task_id
 	metadata_json := event.metadata_json
 	if found {
-		if agent_instance_id == "" do agent_instance_id = rec.agent_instance_id
-		if team_id == "" do team_id = rec.team_id
-		if template_key == "" do template_key = rec.template_key
-		if scope == "" do scope = rec.scope
-		if project_ids == "" do project_ids = rec.project_ids
-		if role_keys == "" do role_keys = rec.role_keys
-		if task_chain_types == "" do task_chain_types = rec.task_chain_types
+		if target_team_kind == "" do target_team_kind = rec.target_team_kind
+		if target_role == "" do target_role = rec.target_role
+		if target_project_id == "" do target_project_id = rec.target_project_id
 		type_text = memory_type_string_service(rec.type)
 		status = memory_status_string_service(rec.status)
 		if source_task == "" do source_task = rec.source_task_id
 		if metadata_json == "" do metadata_json = rec.metadata_json
 	}
-	target := memory_target_string(scope, agent_instance_id, team_id, template_key, project_ids)
+	target := memory_target_string(target_team_kind, target_role, target_project_id)
 	defer delete(target)
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"type":"memory_event","event":"`); json_write_string(&builder, fmt.tprintf("%v", event.kind))
 	strings.write_string(&builder, `","memory_id":"`); json_write_string(&builder, event.memory_id)
 	strings.write_string(&builder, `","proposal_id":"`); json_write_string(&builder, event.proposal_id)
-	strings.write_string(&builder, `","scope":"`); json_write_string(&builder, scope)
-	strings.write_string(&builder, `","agent_instance_id":"`); json_write_string(&builder, agent_instance_id)
-	strings.write_string(&builder, `","team_id":"`); json_write_string(&builder, team_id)
-	strings.write_string(&builder, `","template_key":"`); json_write_string(&builder, template_key)
-	strings.write_string(&builder, `","project_ids":`); memory_write_csv_json_array(&builder, project_ids)
-	strings.write_string(&builder, `,"role_keys":`); memory_write_csv_json_array(&builder, role_keys)
-	strings.write_string(&builder, `,"task_chain_types":`); memory_write_csv_json_array(&builder, task_chain_types)
-	strings.write_string(&builder, `,"target":"`); json_write_string(&builder, target)
+	strings.write_string(&builder, `","target_team_kind":"`); json_write_string(&builder, target_team_kind)
+	strings.write_string(&builder, `","target_role":"`); json_write_string(&builder, target_role)
+	strings.write_string(&builder, `","target_project_id":"`); json_write_string(&builder, target_project_id)
+	strings.write_string(&builder, `","target":"`); json_write_string(&builder, target)
 	strings.write_string(&builder, `","memory_type":"`); json_write_string(&builder, type_text)
 	strings.write_string(&builder, `","status":"`); json_write_string(&builder, status)
 	strings.write_string(&builder, `","changed_by":"`); json_write_string(&builder, event.author)

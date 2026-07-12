@@ -4,40 +4,38 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 REQUIRED = {
-    "src/daemon/user_pref_rest.odin": [
-        "for {target} ({status})",
-        "for {target}. Review with:",
-    ],
     "src/wrapper/main.odin": [
         'extract_json_string(text, "target", "")',
-        'replace_all(res, "{target}", target)',
-        'for {target} ({status})',
-        'for {target}. Review with:',
-    ],
-    "src/prompts/memory_audit_task_4.md": [
-        "target/scope",
-        "Target, Scope, Type, Title, Body",
-    ],
-    "docs/teams-v1/05-memory.md": [
-        "project_ids",
-        "role_keys",
-        "task_chain_types",
-        "team_id",
-        "template_key",
+        '"target_team_kind":"',
+        '"target_role":"',
+        '"target_project_id":"',
+        '/memory/applicable',
+        '--target-team-kind <kind> --target-role <role> --target-project-id <project_id>',
     ],
     "src/ctl/main.odin": [
-        "--agent-instance-id <id>",
-        "memory list --token <token> [--agent-instance-id <id>]",
-        "deprecated: --subject-key/--subject-agent/--agent are rejected",
+        '--target-team-kind <kind>',
+        '--target-role <role>',
+        '--target-project-id <project>',
+        'memory list --token <token> [--target-team-kind <kind>] [--target-role <role>] [--target-project-id <project>]',
+    ],
+    "src/daemon/memory_service.odin": [
+        'target_team_kind',
+        'target_role',
+        'target_project_id',
+        'memory_record_applies :: proc(rec: contracts.Memory_Record, target_team_kind, target_role, target_project_id: string) -> bool',
     ],
 }
 
 FORBIDDEN = {
-    "src/daemon/user_pref_rest.odin": ["{subject_agent}"],
-    "src/prompts/memory_audit_task_4.md": ["Subject Agent"],
-    "docs/teams-v1/05-memory.md": ["subject_key", "subject_agent"],
+    "src/wrapper/main.odin": [
+        '"action":"memory_list","type":"template","status":"active"',
+        'parse_into_memory_records(resp.body, memory_templates, true,',
+    ],
     "src/ctl/main.odin": [
-        "memory list --token <token> [--agent <agent>] [--scope <scope>] [--subject-key <key>]",
+        'memory list --token <token> [--agent <agent>] [--scope <scope>]',
+        '--project-ids <csv>',
+        '--role-keys <csv>',
+        '--task-chain-types <csv>',
     ],
 }
 
@@ -60,7 +58,7 @@ def main() -> None:
     if errors:
         raise SystemExit("\n".join(errors))
 
-    print("ok: wrapper/preferences/docs/prompt memory subject cleanup surface looks canonical")
+    print("ok: simplified memory targeting surface looks canonical")
 
 
 if __name__ == "__main__":

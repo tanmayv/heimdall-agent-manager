@@ -239,7 +239,7 @@ function ProjectsPanel({ projects, selectedProjectId, selectedProject, loading, 
 }
 
 function MemoryPanel({ records, loading }: any) {
-  return <Panel title="Memory browser" subtitle="Redux-backed memory records; refreshed on Settings mount and memory events.">{loading ? <Empty text="Loading memory…" /> : <div className="grid gap-3">{records.length === 0 ? <Empty text="No memory records loaded." /> : records.slice(0, 50).map((record: any) => <Card key={record.memoryId || record.id}><div className="font-semibold">{record.title || record.memoryId || record.id}</div><div className="mt-1 text-sm text-zinc-500">{record.scope || 'scope'} · {record.type || 'type'} · {record.status || 'status'}</div><div className="mt-1 text-xs text-zinc-500">Target: {record.target || record.scope || '—'}</div><div className="mt-2 line-clamp-3 text-sm text-zinc-300">{record.body || record.content || ''}</div></Card>)}</div>}</Panel>;
+  return <Panel title="Memory browser" subtitle="Redux-backed memory records; refreshed on Settings mount and memory events.">{loading ? <Empty text="Loading memory…" /> : <div className="grid gap-3">{records.length === 0 ? <Empty text="No memory records loaded." /> : records.slice(0, 50).map((record: any) => <Card key={record.memoryId || record.id}><div className="font-semibold">{record.title || record.memoryId || record.id}</div><div className="mt-1 text-sm text-zinc-500">{record.type || 'type'} · {record.status || 'status'}</div><div className="mt-1 text-xs text-zinc-500">Target: {record.target || 'global'}</div><div className="mt-2 line-clamp-3 text-sm text-zinc-300">{record.body || record.content || ''}</div></Card>)}</div>}</Panel>;
 }
 
 function AgentsPanel({ agents }: any) {

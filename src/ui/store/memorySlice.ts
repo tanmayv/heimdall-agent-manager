@@ -1,46 +1,26 @@
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
 import * as daemonApi from '../api/daemonApi';
 
-function normalizeStringArray(value: any) {
-  if (Array.isArray(value)) return value.map((entry) => String(entry || '').trim()).filter(Boolean);
-  if (typeof value === 'string') return value.split(',').map((entry) => entry.trim()).filter(Boolean);
-  return [];
-}
-
 function memoryTargetSummary(record: any) {
   if (record.target) return String(record.target);
-  const scope = record.scope || 'scope';
-  const teamId = record.team_id || '';
-  const templateKey = record.template_key || '';
-  const agentInstanceId = record.agent_instance_id || '';
-  const projectIds = normalizeStringArray(record.project_ids);
-  const roleKeys = normalizeStringArray(record.role_keys);
-  const taskChainTypes = normalizeStringArray(record.task_chain_types);
-  const parts = [scope];
-  if (teamId) parts.push(`team ${teamId}`);
-  if (templateKey) parts.push(`template ${templateKey}`);
-  if (agentInstanceId) parts.push(`agent ${agentInstanceId}`);
-  if (projectIds.length) parts.push(`projects ${projectIds.join(', ')}`);
-  if (roleKeys.length) parts.push(`roles ${roleKeys.join(', ')}`);
-  if (taskChainTypes.length) parts.push(`task chains ${taskChainTypes.join(', ')}`);
-  return parts.join(' · ');
+  const targetTeamKind = String(record.target_team_kind || '').trim();
+  const targetRole = String(record.target_role || '').trim();
+  const targetProjectId = String(record.target_project_id || '').trim();
+  const parts = [] as string[];
+  if (targetTeamKind) parts.push(`team kind ${targetTeamKind}`);
+  if (targetRole) parts.push(`role ${targetRole}`);
+  if (targetProjectId) parts.push(`project ${targetProjectId}`);
+  return parts.length ? parts.join(' · ') : 'global';
 }
 
 function normalizeMemory(record: any) {
-  const projectIds = normalizeStringArray(record.project_ids);
-  const roleKeys = normalizeStringArray(record.role_keys);
-  const taskChainTypes = normalizeStringArray(record.task_chain_types);
   return {
     id: record.memory_id || '',
     memoryId: record.memory_id || '',
     proposalId: record.proposal_id || '',
-    scope: record.scope || 'global',
-    agentInstanceId: record.agent_instance_id || '',
-    teamId: record.team_id || '',
-    templateKey: record.template_key || '',
-    projectIds,
-    roleKeys,
-    taskChainTypes,
+    targetTeamKind: record.target_team_kind || '',
+    targetRole: record.target_role || '',
+    targetProjectId: record.target_project_id || '',
     target: memoryTargetSummary(record),
     type: record.type || 'fact',
     title: record.title || '',
@@ -61,13 +41,14 @@ function normalizeHistory(event: any) {
     eventId: event.event_id || '',
     memoryId: event.memory_id || '',
     proposalId: event.proposal_id || '',
-    scope: event.scope || '',
-    agentInstanceId: event.agent_instance_id || '',
-    teamId: event.team_id || '',
-    templateKey: event.template_key || '',
-    projectIds: normalizeStringArray(event.project_ids),
-    roleKeys: normalizeStringArray(event.role_keys),
-    taskChainTypes: normalizeStringArray(event.task_chain_types),
+    targetTeamKind: event.target_team_kind || '',
+    targetRole: event.target_role || '',
+    targetProjectId: event.target_project_id || '',
+    target: memoryTargetSummary(event),
+    type: event.type || 'fact',
+    title: event.title || '',
+    body: event.body || '',
+    status: event.status || '',
     reason: event.reason || '',
     evidence: event.evidence || '',
     author: event.author || '',
@@ -100,15 +81,13 @@ function includesListValue(values: any[], target: string) {
 }
 
 function hasTargeting(record: any) {
-  return Boolean(record.agentInstanceId || record.teamId || record.templateKey || record.projectIds?.length || record.roleKeys?.length || record.taskChainTypes?.length);
+  return Boolean(record.targetTeamKind || record.targetRole || record.targetProjectId);
 }
 
 const initialFilters = {
-  scope: '',
-  templateKey: '',
-  projectId: '',
-  roleKey: '',
-  taskChainType: '',
+  targetTeamKind: '',
+  targetRole: '',
+  targetProjectId: '',
   type: '',
   status: '',
   targeting: 'all',
@@ -117,20 +96,14 @@ const initialFilters = {
 };
 
 export function matchesMemoryFilters(record: any, filters: any) {
-  const scopeFilter = String(filters?.scope || '').trim().toLowerCase();
-  if (scopeFilter && String(record.scope || '').trim().toLowerCase() !== scopeFilter) return false;
+  const targetTeamKindFilter = String(filters?.targetTeamKind || '').trim().toLowerCase();
+  if (targetTeamKindFilter && String(record.targetTeamKind || '').trim().toLowerCase() !== targetTeamKindFilter) return false;
 
-  const templateKeyFilter = String(filters?.templateKey || '').trim().toLowerCase();
-  if (templateKeyFilter && String(record.templateKey || '').trim().toLowerCase() !== templateKeyFilter) return false;
+  const targetRoleFilter = String(filters?.targetRole || '').trim().toLowerCase();
+  if (targetRoleFilter && String(record.targetRole || '').trim().toLowerCase() !== targetRoleFilter) return false;
 
-  const projectIdFilter = String(filters?.projectId || '').trim();
-  if (projectIdFilter && !includesListValue(record.projectIds || [], projectIdFilter)) return false;
-
-  const roleKeyFilter = String(filters?.roleKey || '').trim();
-  if (roleKeyFilter && !includesListValue(record.roleKeys || [], roleKeyFilter)) return false;
-
-  const taskChainTypeFilter = String(filters?.taskChainType || '').trim();
-  if (taskChainTypeFilter && !includesListValue(record.taskChainTypes || [], taskChainTypeFilter)) return false;
+  const targetProjectIdFilter = String(filters?.targetProjectId || '').trim().toLowerCase();
+  if (targetProjectIdFilter && String(record.targetProjectId || '').trim().toLowerCase() !== targetProjectIdFilter) return false;
 
   const typeFilter = String(filters?.type || '').trim().toLowerCase();
   if (typeFilter && String(record.type || '').trim().toLowerCase() !== typeFilter) return false;
@@ -151,19 +124,15 @@ export function matchesMemoryFilters(record: any, filters: any) {
     record.title,
     record.body,
     record.target,
-    record.agentInstanceId,
-    record.teamId,
-    record.templateKey,
-    record.scope,
+    record.targetTeamKind,
+    record.targetRole,
+    record.targetProjectId,
     record.type,
     record.status,
     record.reason,
     record.evidence,
     record.metadataJson,
     record.sourceTaskId,
-    ...(record.projectIds || []),
-    ...(record.roleKeys || []),
-    ...(record.taskChainTypes || []),
   ].some((value) => includesText(value, search));
 }
 

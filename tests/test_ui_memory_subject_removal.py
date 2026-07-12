@@ -6,52 +6,53 @@ ROOT = Path(__file__).resolve().parents[1]
 UI_FILES = {
     "src/ui/api/daemonApi.ts": [
         "action: 'memory_list'",
-        "agent_instance_id:",
-        "team_id:",
-        "template_key:",
-        "project_ids:",
-        "role_keys:",
-        "task_chain_types:",
+        "target_team_kind",
+        "target_role",
+        "target_project_id",
     ],
     "src/ui/store/memorySlice.ts": [
-        "agentInstanceId",
-        "teamId",
-        "templateKey",
-        "projectIds",
-        "roleKeys",
-        "taskChainTypes",
-        "target:",
-        "templateKey: '',",
+        "targetTeamKind",
+        "targetRole",
+        "targetProjectId",
         "targeting: 'all'",
     ],
     "src/ui/components/App.tsx": [
-        "Target:",
-        "rec.target || rec.scope",
+        "Target: {rec.target || 'global'}",
     ],
     "src/ui/components/SettingsPage.tsx": [
-        "Target:",
-        "record.target || record.scope",
+        "Target: {record.target || 'global'}",
     ],
     "src/ui/components/MessageBubble.tsx": [
-        "Target:",
-        "entity.target || entity.scope",
+        "Target: <span className=\"text-[#aaa]\">{entity.target || 'global'}</span>",
     ],
     "src/ui/components/MemoryManagementPage.tsx": [
-        "Target",
+        "Team kind target",
+        "Role target",
+        "Project target",
+        "target_team_kind",
+        "target_role",
+        "target_project_id",
+    ],
+}
+
+FORBIDDEN_BY_FILE = {
+    "src/ui/components/MemoryManagementPage.tsx": [
         "templateKey",
         "projectIds",
         "roleKeys",
         "taskChainTypes",
+        "scope",
+        "subjectAgent",
+        "subjectKey",
+    ],
+    "src/ui/store/memorySlice.ts": [
+        "templateKey",
+        "projectIds",
+        "roleKeys",
+        "taskChainTypes",
+        "scope",
     ],
 }
-
-FORBIDDEN = [
-    "subjectAgent",
-    "subject_agent",
-    "subjectKey",
-    "subject_key",
-    "Subject:",
-]
 
 
 def main() -> None:
@@ -63,14 +64,14 @@ def main() -> None:
         for snippet in required_snippets:
             if snippet not in text:
                 missing.append(f"{rel}: missing required snippet {snippet!r}")
-        for snippet in FORBIDDEN:
+        for snippet in FORBIDDEN_BY_FILE.get(rel, []):
             if snippet in text:
                 forbidden_hits.append(f"{rel}: still contains forbidden snippet {snippet!r}")
 
     if missing or forbidden_hits:
         raise SystemExit("\n".join(missing + forbidden_hits))
 
-    print("ok: UI memory subject-field references removed and canonical targeting snippets present")
+    print("ok: UI uses simplified memory target triple only")
 
 
 if __name__ == "__main__":

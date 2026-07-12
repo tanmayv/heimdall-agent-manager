@@ -94,11 +94,6 @@ teams_v1_has_unmigrated_task_chains :: proc() -> bool {
 }
 
 teams_v1_has_unmigrated_memory :: proc() -> bool {
-	records := memory_db_list_records("", contracts.Memory_Status.Pending, true)
-	defer delete(records)
-	for rec in records {
-		if rec.scope == "" do return true
-	}
 	return false
 }
 
@@ -235,49 +230,12 @@ teams_v1_backfill_task_chain_team_ids :: proc(report: ^strings.Builder) -> int {
 
 teams_v1_migrate_memory_scope :: proc(report: ^strings.Builder, map_db_path: string) -> int {
 	_ = teams_v1_memory_map_init(map_db_path)
-	records := memory_db_list_records("", contracts.Memory_Status.Pending, true)
-	defer delete(records)
-	changed := 0
-	for rec_val in records {
-		rec := rec_val
-		new_scope, new_subject_key := teams_v1_memory_target(rec)
-		_ = teams_v1_memory_map_insert(map_db_path, rec.memory_id, rec.scope, rec.legacy_subject_agent, new_scope, new_subject_key)
-		if rec.scope == new_scope && new_scope != "" {
-			continue
-		}
-		if new_scope == "" {
-			strings.write_string(report, fmt.tprintf("- `%s` unresolved -> subject_key `%s`\n", rec.memory_id, new_subject_key))
-			continue
-		}
-		rec.scope = strings.clone(new_scope)
-		delete(rec.legacy_subject_key)
-		rec.legacy_subject_key = strings.clone(new_subject_key)
-		memory_record_normalize_legacy(&rec)
-		if memory_db_save_record(rec) {
-			changed += 1
-			strings.write_string(report, fmt.tprintf("- `%s` -> scope `%s`, subject_key `%s`\n", rec.memory_id, new_scope, new_subject_key))
-		}
-	}
-	if changed == 0 do strings.write_string(report, "- no changes\n")
-	return changed
+	strings.write_string(report, "- skipped: memory targeting now uses target_team_kind/target_role/target_project_id only; legacy memory migration is intentionally disabled\n")
+	return 0
 }
 
 teams_v1_memory_target :: proc(rec: contracts.Memory_Record) -> (string, string) {
-	if rec.legacy_subject_agent != "" && agent_record_index_by_instance(rec.legacy_subject_agent) >= 0 {
-		team_id := teams_v1_resolve_team_for_agent(rec.legacy_subject_agent)
-		project_id := "_orphan"
-		if idx := agent_record_index_by_instance(rec.legacy_subject_agent); idx >= 0 && agent_instance_records[idx].project_id != "" do project_id = agent_instance_records[idx].project_id
-		return "Team_Project", fmt.tprintf("tp:%s:%s", team_id, project_id)
-	}
-	if rec.legacy_subject_agent != "" && strings.has_suffix(rec.legacy_subject_agent, "@heimdall-system") {
-		return "Template", fmt.tprintf("tmpl:%s", teams_v1_slug(rec.title))
-	}
-	if rec.legacy_subject_agent == "" && rec.title != "" {
-		return "Template", fmt.tprintf("tmpl:%s", teams_v1_slug(rec.title))
-	}
-	if rec.legacy_subject_agent != "" {
-		return "Project", fmt.tprintf("pr:%s", teams_v1_slug(rec.legacy_subject_agent))
-	}
+	_ = rec
 	return "", ""
 }
 
