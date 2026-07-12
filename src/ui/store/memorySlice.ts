@@ -1,6 +1,12 @@
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
 import * as daemonApi from '../api/daemonApi';
 
+function normalizeStringArray(value: any) {
+  if (Array.isArray(value)) return value.map((entry) => String(entry || '').trim()).filter(Boolean);
+  if (typeof value === 'string') return value.split(',').map((entry) => entry.trim()).filter(Boolean);
+  return [];
+}
+
 function normalizeMemory(record: any) {
   return {
     id: record.memory_id || '',
@@ -8,6 +14,10 @@ function normalizeMemory(record: any) {
     proposalId: record.proposal_id || '',
     subjectAgent: record.subject_agent || '',
     scope: record.scope || 'global',
+    subjectKey: record.subject_key || '',
+    projectIds: normalizeStringArray(record.project_ids),
+    roleKeys: normalizeStringArray(record.role_keys),
+    taskChainTypes: normalizeStringArray(record.task_chain_types),
     type: record.type || 'fact',
     title: record.title || '',
     body: record.body || '',
@@ -27,6 +37,10 @@ function normalizeHistory(event: any) {
     eventId: event.event_id || '',
     memoryId: event.memory_id || '',
     proposalId: event.proposal_id || '',
+    subjectKey: event.subject_key || '',
+    projectIds: normalizeStringArray(event.project_ids),
+    roleKeys: normalizeStringArray(event.role_keys),
+    taskChainTypes: normalizeStringArray(event.task_chain_types),
     reason: event.reason || '',
     evidence: event.evidence || '',
     author: event.author || '',
@@ -39,10 +53,103 @@ function auth(state: any) {
   return { daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken };
 }
 
+function sortMemoryRecords(records: any[]) {
+  return [...records].sort((left, right) => (right.updatedUnixMs || right.createdUnixMs || 0) - (left.updatedUnixMs || left.createdUnixMs || 0));
+}
+
+function sortMemoryIds(recordsById: Record<string, any>) {
+  return sortMemoryRecords(Object.values(recordsById || {})).map((record: any) => record.memoryId);
+}
+
+function includesText(value: any, needle: string) {
+  return String(value || '').toLowerCase().includes(needle);
+}
+
+function includesListValue(values: any[], target: string) {
+  const normalizedTarget = String(target || '').trim().toLowerCase();
+  if (!normalizedTarget) return true;
+  return (values || []).some((value: any) => String(value || '').trim().toLowerCase() === normalizedTarget);
+}
+
+function hasTargeting(record: any) {
+  return Boolean(record.subjectKey || record.projectIds?.length || record.roleKeys?.length || record.taskChainTypes?.length);
+}
+
+const initialFilters = {
+  subject: '',
+  subjectAgent: '',
+  scope: '',
+  subjectKey: '',
+  projectId: '',
+  roleKey: '',
+  taskChainType: '',
+  type: '',
+  status: '',
+  targeting: 'all',
+  pendingActiveOnly: false,
+  search: '',
+};
+
+export function matchesMemoryFilters(record: any, filters: any) {
+  const subjectFilter = String(filters?.subject || filters?.subjectAgent || '').trim().toLowerCase();
+  if (subjectFilter && ![
+    record.subjectAgent,
+    record.subjectKey,
+    record.memoryId,
+    record.proposalId,
+  ].some((value) => includesText(value, subjectFilter))) return false;
+
+  const scopeFilter = String(filters?.scope || '').trim().toLowerCase();
+  if (scopeFilter && String(record.scope || '').trim().toLowerCase() !== scopeFilter) return false;
+
+  const subjectKeyFilter = String(filters?.subjectKey || '').trim().toLowerCase();
+  if (subjectKeyFilter && !includesText(record.subjectKey, subjectKeyFilter)) return false;
+
+  const projectIdFilter = String(filters?.projectId || '').trim();
+  if (projectIdFilter && !includesListValue(record.projectIds || [], projectIdFilter)) return false;
+
+  const roleKeyFilter = String(filters?.roleKey || '').trim();
+  if (roleKeyFilter && !includesListValue(record.roleKeys || [], roleKeyFilter)) return false;
+
+  const taskChainTypeFilter = String(filters?.taskChainType || '').trim();
+  if (taskChainTypeFilter && !includesListValue(record.taskChainTypes || [], taskChainTypeFilter)) return false;
+
+  const typeFilter = String(filters?.type || '').trim().toLowerCase();
+  if (typeFilter && String(record.type || '').trim().toLowerCase() !== typeFilter) return false;
+
+  const statusFilter = String(filters?.status || '').trim().toLowerCase();
+  if (statusFilter && String(record.status || '').trim().toLowerCase() !== statusFilter) return false;
+
+  if (filters?.pendingActiveOnly && !['pending', 'active'].includes(String(record.status || '').trim().toLowerCase())) return false;
+
+  if (filters?.targeting === 'targeted' && !hasTargeting(record)) return false;
+  if (filters?.targeting === 'untargeted' && hasTargeting(record)) return false;
+
+  const search = String(filters?.search || '').trim().toLowerCase();
+  if (!search) return true;
+  return [
+    record.memoryId,
+    record.proposalId,
+    record.title,
+    record.body,
+    record.subjectAgent,
+    record.scope,
+    record.subjectKey,
+    record.type,
+    record.status,
+    record.reason,
+    record.evidence,
+    record.metadataJson,
+    record.sourceTaskId,
+    ...(record.projectIds || []),
+    ...(record.roleKeys || []),
+    ...(record.taskChainTypes || []),
+  ].some((value) => includesText(value, search));
+}
+
 export const refreshMemory = createAsyncThunk('memory/refreshMemory', async (_, { getState }) => {
   const state = getState() as any;
   const { session } = state.chat;
-  const { filters } = state.memory;
   if (!session.clientToken) return { records: [] };
   const data = await daemonApi.listMemory({ ...auth(state), includeAllStatuses: true });
   return { records: (data.records ?? []).map(normalizeMemory) };
@@ -96,7 +203,7 @@ const initialState = {
   recordsById: {} as Record<string, any>,
   recordIds: [] as string[],
   historyById: {} as Record<string, any[]>,
-  filters: { subjectAgent: '', type: '', status: '' },
+  filters: { ...initialFilters },
   loading: false,
   detailLoading: false,
   error: '',
@@ -120,6 +227,9 @@ const memorySlice = createSlice({
     setMemoryFilters(state: any, action) {
       state.filters = { ...state.filters, ...action.payload };
     },
+    resetMemoryFilters(state: any) {
+      state.filters = { ...initialFilters };
+    },
     memoryEventReceived(state: any, action) {
       state.lastMemoryEvent = action.payload;
     },
@@ -142,7 +252,6 @@ const memorySlice = createSlice({
           state.activeAudit.error = action.payload.reason || action.payload.failure_reason || 'Unknown audit failure';
         }
       } else {
-        // If we missed the start event (e.g. page refresh), create a completed stub
         state.activeAudit = {
           auditId: action.payload.audit_id || '',
           timeRange: '',
@@ -168,19 +277,13 @@ const memorySlice = createSlice({
       })
       .addCase(refreshMemory.fulfilled, (state: any, action) => {
         state.loading = false;
+        const sortedRecords = sortMemoryRecords(action.payload.records || []);
         const recordsById: any = {};
-        const activeFilters = state.filters;
-        const recordIds = [...action.payload.records]
-          .filter((record: any) => !activeFilters.subjectAgent || record.subjectAgent.toLowerCase().includes(activeFilters.subjectAgent.toLowerCase()))
-          .filter((record: any) => !activeFilters.type || record.type === activeFilters.type)
-          .filter((record: any) => !activeFilters.status || record.status === activeFilters.status)
-          .sort((left, right) => (right.updatedUnixMs || right.createdUnixMs || 0) - (left.updatedUnixMs || left.createdUnixMs || 0))
-          .map((record: any) => {
-            recordsById[record.memoryId] = record;
-            return record.memoryId;
-          });
+        sortedRecords.forEach((record: any) => {
+          recordsById[record.memoryId] = record;
+        });
         state.recordsById = recordsById;
-        state.recordIds = recordIds;
+        state.recordIds = sortedRecords.map((record: any) => record.memoryId);
       })
       .addCase(refreshMemory.rejected, (state: any, action) => {
         state.loading = false;
@@ -191,7 +294,10 @@ const memorySlice = createSlice({
       })
       .addCase(fetchMemoryDetail.fulfilled, (state: any, action) => {
         state.detailLoading = false;
-        if (action.payload.record) state.recordsById[action.payload.memoryId] = action.payload.record;
+        if (action.payload.record) {
+          state.recordsById[action.payload.memoryId] = action.payload.record;
+          state.recordIds = sortMemoryIds(state.recordsById);
+        }
         state.historyById[action.payload.memoryId] = action.payload.history;
       })
       .addCase(fetchMemoryDetail.rejected, (state: any, action) => {
@@ -225,5 +331,14 @@ const memorySlice = createSlice({
   },
 });
 
-export const { setMemoryFilters, memoryEventReceived, auditStartedReceived, auditEndedReceived, clearActiveAudit } = memorySlice.actions;
+export const selectMemoryState = (state: any) => state.memory;
+export const selectMemoryFilters = (state: any) => selectMemoryState(state).filters || initialFilters;
+export const selectMemoryRecords = (state: any) => (selectMemoryState(state).recordIds || []).map((id: string) => selectMemoryState(state).recordsById?.[id]).filter(Boolean);
+export const selectFilteredMemoryRecords = (state: any) => selectMemoryRecords(state).filter((record: any) => matchesMemoryFilters(record, selectMemoryFilters(state)));
+export const selectFilteredMemoryIds = (state: any) => selectFilteredMemoryRecords(state).map((record: any) => record.memoryId);
+export const selectPendingMemoryRecords = (state: any) => selectMemoryRecords(state).filter((record: any) => record.status === 'pending');
+export const selectPendingMemoryCount = (state: any) => selectPendingMemoryRecords(state).length;
+export const selectPendingActiveMemoryRecords = (state: any) => selectMemoryRecords(state).filter((record: any) => ['pending', 'active'].includes(record.status));
+
+export const { setMemoryFilters, resetMemoryFilters, memoryEventReceived, auditStartedReceived, auditEndedReceived, clearActiveAudit } = memorySlice.actions;
 export default memorySlice.reducer;

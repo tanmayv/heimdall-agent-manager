@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Regression for wrapper starter prompt delivery modes.
+"""Regression for wrapper current-task prompt/bootstrap context.
 
-Starts an isolated daemon and launches three fake agents through ham-wrapper:
-- default flag-injection appends prompt_flags + rendered prompt to argv
-- tmux delivery omits prompt flags/arg and sends rendered prompt into pane
-- none delivery omits both argv prompt and tmux prompt injection
+Launches ham-wrapper directly with --current-task-id and verifies:
+- starter prompt renders {task_id}
+- starter prompt includes explicit task-start guidance
+- generated AGENTS.md includes the concrete current task line
 """
 
 import json
@@ -12,13 +12,13 @@ import os
 import shutil
 import stat
 import subprocess
-import sys
 import time
 import urllib.request
 from pathlib import Path
 
 HOST = "127.0.0.1"
-PORT = 49440
+PORT = 49441
+TASK_ID = "task-123abc"
 
 
 def bin_path(repo: Path, preferred: str, fallback: str, binary: str) -> str:
@@ -62,15 +62,17 @@ def wait_for(path: Path, timeout: float = 8.0) -> str:
     raise RuntimeError(f"timed out waiting for {path}")
 
 
-def assert_not_exists(path: Path, duration: float = 1.0) -> None:
-    deadline = time.time() + duration
+def wait_for_glob(base: Path, pattern: str, timeout: float = 8.0) -> Path:
+    deadline = time.time() + timeout
     while time.time() < deadline:
-        if path.exists() and path.read_text(encoding="utf-8"):
-            raise AssertionError(f"unexpected prompt delivery at {path}: {path.read_text()!r}")
+        matches = list(base.glob(pattern))
+        if matches:
+            return matches[0]
         time.sleep(0.1)
+    raise RuntimeError(f"timed out waiting for {pattern} under {base}")
 
 
-def write_fake_agent(path: Path, argv_path: Path, prompt_path: Path) -> None:
+def write_fake_agent(path: Path) -> None:
     path.write_text(
         "#!/usr/bin/env bash\n"
         "printf '%s\\n' \"$*\" > \"$1\"\n"
@@ -84,26 +86,14 @@ def write_fake_agent(path: Path, argv_path: Path, prompt_path: Path) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
-def start_agent(url: str, agent_name: str, instance_id: str) -> None:
-    # Use /agents/start directly. Pre-registering here makes the runtime
-    # tracker treat the agent as already launching and coalesce the real wrapper
-    # launch on current daemon builds.
-    res = request_post(url, "/agents/start", {
-        "agent_instance_id": instance_id,
-        "agent": agent_name,
-    })
-    if not res.get("ok"):
-        raise RuntimeError(f"start failed for {instance_id}: {res}")
-
-
 def main() -> None:
     repo = Path(__file__).resolve().parents[1]
-    temp = repo / "tests" / "temp_tmux_prompt_delivery"
+    temp = repo / "tests" / "temp_wrapper_current_task_prompt"
     if temp.exists():
         shutil.rmtree(temp)
     temp.mkdir(parents=True)
 
-    tmux_session = "ham-prompt-delivery-test"
+    tmux_session = "ham-current-task-test"
     subprocess.run(["tmux", "kill-session", "-t", tmux_session], capture_output=True)
 
     daemon_bin = bin_path(repo, "result-daemon", "result-1", "ham-daemon")
@@ -112,9 +102,7 @@ def main() -> None:
     url = f"http://{HOST}:{PORT}"
 
     fake = temp / "fake-agent.sh"
-    # argv/prompt paths are passed as first two command args by config; script
-    # writes argv to first, then shifts and writes stdin line to second.
-    write_fake_agent(fake, temp / "unused-argv", temp / "unused-prompt")
+    write_fake_agent(fake)
 
     config = temp / "config.toml"
     config.write_text(f'''
@@ -134,7 +122,7 @@ daemon_url = "{url}"
 credentials_path = "{temp}/data/wrapper-credentials.json"
 agent_name = "flag-agent"
 default_agent = "flag-agent"
-display_name = "{{{{instance}}}}"
+display_name = "{{instance}}"
 tmux_session = "{tmux_session}"
 tmux_window_prefix = "agent"
 agent_run_dir = "{temp}/runs"
@@ -145,30 +133,18 @@ ham_ctl_bin = "{ctl_bin}"
 [wrapper.agent-cmd.flag-agent]
 command = ["{fake}", "{temp}/flag.argv", "{temp}/flag.prompt"]
 prompt_flags = ["--prompt"]
-starter_prompt = "FLAG hello {{agent_instance_id}} via {{daemon_url}}"
-
-[wrapper.agent-cmd.tmux-agent]
-command = ["{fake}", "{temp}/tmux.argv", "{temp}/tmux.prompt"]
-prompt_flags = ["--prompt"]
-starter_prompt = "TMUX hello {{agent_instance_id}} via {{daemon_url}}"
-prompt_delivery = "tmux"
-prompt_tmux_delay_ms = 100
-prompt_tmux_enter = true
-
-[wrapper.agent-cmd.none-agent]
-command = ["{fake}", "{temp}/none.argv", "{temp}/none.prompt"]
-prompt_flags = ["--prompt"]
-starter_prompt = "NONE hello {{agent_instance_id}} via {{daemon_url}}"
-prompt_delivery = "none"
+starter_prompt = "FLAG hello {{agent_instance_id}} via {{daemon_url}} for {{task_id}}"
 ''', encoding="utf-8")
 
     daemon_log = open(temp / "daemon.log", "w", encoding="utf-8")
     daemon = subprocess.Popen([daemon_bin, "--config", str(config)], stdout=daemon_log, stderr=subprocess.STDOUT)
+    wrapper_log = open(temp / "wrapper.log", "w", encoding="utf-8")
+    wrapper = None
     try:
         wait_health(url)
         request_post(url, "/user-client/register", {
             "user_id": "operator@local",
-            "client_instance_id": "test-tmux-prompt-delivery",
+            "client_instance_id": "test-current-task-wrapper",
         })
         setup_agent = request_post(url, "/register", {
             "agent_class": "setup-agent",
@@ -179,44 +155,53 @@ prompt_delivery = "none"
             "agent_token": setup_agent["agent_token"],
             "project_id": "default",
             "name": "default",
-            "description": "wrapper tmux prompt delivery test",
+            "description": "wrapper current-task prompt test",
         })
 
-        start_agent(url, "flag-agent", "flag-agent@case")
-        start_agent(url, "tmux-agent", "tmux-agent@case")
-        start_agent(url, "none-agent", "none-agent@case")
+        wrapper = subprocess.Popen(
+            [
+                wrapper_bin,
+                "--config", str(config),
+                "--agent", "flag-agent",
+                "--current-task-id", TASK_ID,
+                "flag-agent@case",
+            ],
+            stdout=wrapper_log,
+            stderr=subprocess.STDOUT,
+        )
 
         flag_argv = wait_for(temp / "flag.argv")
-        if "--prompt" not in flag_argv or "FLAG hello flag-agent@case" not in flag_argv:
-            raise AssertionError(f"flag injection argv missing prompt: {flag_argv!r}")
-        assert_not_exists(temp / "flag.prompt")
+        if TASK_ID not in flag_argv:
+            raise AssertionError(f"task id missing from rendered prompt argv: {flag_argv!r}")
+        if f"for {TASK_ID}" not in flag_argv:
+            raise AssertionError(f"{{task_id}} placeholder was not rendered: {flag_argv!r}")
+        if f"begin your assigned task {TASK_ID}" not in flag_argv:
+            raise AssertionError(f"task-start guidance missing from prompt: {flag_argv!r}")
+        if f"tasks show --token" not in flag_argv or TASK_ID not in flag_argv:
+            raise AssertionError(f"tasks show guidance missing from prompt: {flag_argv!r}")
 
-        tmux_argv = wait_for(temp / "tmux.argv")
-        if "--prompt" in tmux_argv or "TMUX hello" in tmux_argv:
-            raise AssertionError(f"tmux delivery leaked prompt into argv: {tmux_argv!r}")
-        tmux_prompt = wait_for(temp / "tmux.prompt")
-        if "TMUX hello tmux-agent@case via" not in tmux_prompt:
-            raise AssertionError(f"tmux prompt was not rendered/injected: {tmux_prompt!r}")
+        agents_md = wait_for_glob(temp / "runs" / "default", "*/AGENTS.md")
+        agents_text = wait_for(agents_md)
+        expected = f"- Current task: `{TASK_ID}` (already auto-claimed for this launch)."
+        if expected not in agents_text:
+            raise AssertionError(f"AGENTS current-task line missing from {agents_md}: {agents_text!r}")
+        if f"tasks show --token <token> --task-id {TASK_ID}" not in agents_text:
+            raise AssertionError(f"AGENTS task-show guidance missing from {agents_md}: {agents_text!r}")
 
-        none_argv = wait_for(temp / "none.argv")
-        if "--prompt" in none_argv or "NONE hello" in none_argv:
-            raise AssertionError(f"none delivery leaked prompt into argv: {none_argv!r}")
-        assert_not_exists(temp / "none.prompt")
-
-        print(json.dumps({
-            "ok": True,
-            "flag_argv": flag_argv.strip(),
-            "tmux_argv": tmux_argv.strip(),
-            "tmux_prompt": tmux_prompt.strip(),
-            "none_argv": none_argv.strip(),
-        }, indent=2, sort_keys=True))
-        print("WRAPPER TMUX PROMPT DELIVERY TEST PASSED")
+        print("WRAPPER CURRENT TASK PROMPT TEST PASSED")
     finally:
+        if wrapper is not None:
+            wrapper.terminate()
+            try:
+                wrapper.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                wrapper.kill()
         daemon.terminate()
         try:
             daemon.wait(timeout=5)
         except subprocess.TimeoutExpired:
             daemon.kill()
+        wrapper_log.close()
         daemon_log.close()
         subprocess.run(["tmux", "kill-session", "-t", tmux_session], capture_output=True)
         if os.environ.get("KEEP_HEIMDALL_TEST_TMP") == "1":

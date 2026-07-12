@@ -441,8 +441,46 @@ function userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action, body
   });
 }
 
-export async function listMemory({ daemonUrl, clientInstanceId, clientToken, subjectAgent, scope, type, status, includeAllStatuses = true }: UserRpcRequest & { subjectAgent?: string; scope?: string; type?: string; status?: string; includeAllStatuses?: boolean }) {
-  return userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action: 'memory_list', body: { subject_agent: subjectAgent || '', scope: scope || '', type: type || '', status: status || '', include_all_statuses: includeAllStatuses } });
+function normalizeMemoryCsv(value: any): string {
+  if (Array.isArray(value)) return value.map((entry) => String(entry || '').trim()).filter(Boolean).join(',');
+  if (typeof value === 'string') return value.split(',').map((entry) => entry.trim()).filter(Boolean).join(',');
+  if (value == null) return '';
+  return String(value).trim();
+}
+
+function normalizeMemoryMutationBody(body: Record<string, any>) {
+  const normalized = { ...body };
+  if (normalized.memory_id == null && normalized.memoryId != null) normalized.memory_id = normalized.memoryId;
+  if (normalized.expected_version == null && normalized.expectedVersion != null) normalized.expected_version = normalized.expectedVersion;
+  if (normalized.subject_agent == null && normalized.subjectAgent != null) normalized.subject_agent = normalized.subjectAgent;
+  if (normalized.subject_agent == null && normalized.agent != null) normalized.subject_agent = normalized.agent;
+  if (normalized.subject_key == null && normalized.subjectKey != null) normalized.subject_key = normalized.subjectKey;
+  if (normalized.source_task_id == null && normalized.sourceTaskId != null) normalized.source_task_id = normalized.sourceTaskId;
+  if (normalized.metadata_json == null && normalized.metadataJson != null) normalized.metadata_json = normalized.metadataJson;
+  if (normalized.project_ids == null) normalized.project_ids = normalizeMemoryCsv(normalized.projectIds ?? normalized.projectId ?? normalized.project_id);
+  if (normalized.role_keys == null) normalized.role_keys = normalizeMemoryCsv(normalized.roleKeys ?? normalized.roleKey ?? normalized.role_key);
+  if (normalized.task_chain_types == null) normalized.task_chain_types = normalizeMemoryCsv(normalized.taskChainTypes ?? normalized.taskChainType ?? normalized.task_chain_type);
+  return normalized;
+}
+
+export async function listMemory({ daemonUrl, clientInstanceId, clientToken, subjectAgent, agent, scope, subjectKey, projectId, projectIds, roleKey, roleKeys, taskChainType, taskChainTypes, type, status, includeAllStatuses = true }: UserRpcRequest & { subjectAgent?: string; agent?: string; scope?: string; subjectKey?: string; projectId?: string; projectIds?: string | string[]; roleKey?: string; roleKeys?: string | string[]; taskChainType?: string; taskChainTypes?: string | string[]; type?: string; status?: string; includeAllStatuses?: boolean }) {
+  return userRpcRequest({
+    daemonUrl,
+    clientInstanceId,
+    clientToken,
+    action: 'memory_list',
+    body: {
+      subject_agent: subjectAgent || agent || '',
+      scope: scope || '',
+      subject_key: subjectKey || '',
+      project_ids: normalizeMemoryCsv(projectIds ?? projectId),
+      role_keys: normalizeMemoryCsv(roleKeys ?? roleKey),
+      task_chain_types: normalizeMemoryCsv(taskChainTypes ?? taskChainType),
+      type: type || '',
+      status: status || '',
+      include_all_statuses: includeAllStatuses,
+    },
+  });
 }
 
 export async function showMemory({ daemonUrl, clientInstanceId, clientToken, memoryId }: UserRpcRequest & { memoryId: string }) {
@@ -454,7 +492,7 @@ export async function memoryHistory({ daemonUrl, clientInstanceId, clientToken, 
 }
 
 export async function proposeMemory({ daemonUrl, clientInstanceId, clientToken, proposalAction, ...body }: UserRpcRequest & { proposalAction: 'new' | 'edit' | 'archive' | 'rollback' } & Record<string, any>) {
-  return userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action: `memory_propose_${proposalAction}`, body });
+  return userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action: `memory_propose_${proposalAction}`, body: normalizeMemoryMutationBody(body) });
 }
 
 export async function decideMemory({ daemonUrl, clientInstanceId, clientToken, proposalId, decision, reason }: UserRpcRequest & { proposalId: string; decision: 'approve' | 'reject'; reason?: string }) {

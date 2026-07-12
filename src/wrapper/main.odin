@@ -59,6 +59,7 @@ main :: proc() {
 	}
 
 	override_project_id := option_value(os.args, "--project-id", "")
+	current_task_id := option_value(os.args, "--current-task-id", "")
 	model_tier := option_value(os.args, "--tier", "normal")
 	if model_tier != "cheap" && model_tier != "normal" && model_tier != "smart" {
 		fmt.println("invalid --tier value; expected cheap, normal, or smart; got:", model_tier)
@@ -164,7 +165,7 @@ main :: proc() {
 
 	if !is_test_token(agent_token) {
 		wrapper_launch_log("bootstrap_files_begin", registered_instance_id, launch_start_ms)
-		generate_bootstrap_files(cwd, loaded.path, cfg, agent_cmd, selected_agent, registered_instance_id, display_name, cfg.daemon_url, agent_token, template_instructions, team_id, role_key, role_index)
+		generate_bootstrap_files(cwd, loaded.path, cfg, agent_cmd, selected_agent, registered_instance_id, display_name, cfg.daemon_url, agent_token, current_task_id, template_instructions, team_id, role_key, role_index)
 		wrapper_launch_log("bootstrap_files_done", registered_instance_id, launch_start_ms)
 	}
 
@@ -172,7 +173,7 @@ main :: proc() {
 	if agent_cmd.stop_message != "" do stop_message = agent_cmd.stop_message
 	if stop_message == "" do stop_message = "Agent stop requested. You have {time} seconds to complete your current work and checkpoint before shutdown."
 
-	command := build_agent_command(cfg, selected_agent, cfg.daemon_url, registered_instance_id, display_name, conversation_id, agent_token, model_tier)
+	command := build_agent_command(cfg, selected_agent, cfg.daemon_url, registered_instance_id, display_name, conversation_id, agent_token, current_task_id, model_tier)
 	wrapper_launch_log("agent_command_built", registered_instance_id, launch_start_ms)
 	wrapper_launch_log("tmux_ensure_begin", registered_instance_id, launch_start_ms)
 	launch, launch_ok := tmux.ensure_agent_window(cfg.tmux_session, window_name, cwd, command)
@@ -192,7 +193,7 @@ main :: proc() {
 	report_startup_status(cfg.daemon_url, registered_instance_id, "starting", "launch", "Agent process launched in tmux", selected_agent, cwd, launch.pane_id)
 	fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=startup_report_starting_done agent=%s report_ms=%d", wrapper_now_unix_ms(), wrapper_now_unix_ms() - launch_start_ms, registered_instance_id, wrapper_now_unix_ms() - startup_report_begin)
 	wrapper_launch_log("starter_prompt_begin", registered_instance_id, launch_start_ms)
-	deliver_tmux_starter_prompt(agent_cmd, cfg.daemon_url, registered_instance_id, display_name, conversation_id, agent_token, launch.pane_id)
+	deliver_tmux_starter_prompt(agent_cmd, cfg.daemon_url, registered_instance_id, display_name, conversation_id, agent_token, current_task_id, launch.pane_id)
 	wrapper_launch_log("starter_prompt_done", registered_instance_id, launch_start_ms)
 	wrapper_launch_log("startup_probe_begin", registered_instance_id, launch_start_ms)
 	result := startup_probe_agent(agent_cmd.startup_detection, launch.pane_id)
@@ -1006,7 +1007,7 @@ has_flag :: proc(args: []string, flag: string) -> bool {
 
 print_usage :: proc() {
 	fmt.println("ham-wrapper", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
-	fmt.println("usage: ham-wrapper [--config <path>] [--agent <name>] [--agent-token <token>] [--project-id <id>] [--detach] [--version] [--help] [agent|agent@suffix]")
+	fmt.println("usage: ham-wrapper [--config <path>] [--agent <name>] [--agent-token <token>] [--project-id <id>] [--current-task-id <id>] [--detach] [--version] [--help] [agent|agent@suffix]")
 }
 
 resolve_working_dir :: proc(path: string) -> string {
@@ -1186,7 +1187,7 @@ parse_into_memory_records :: proc(body: string, memory_templates: []string, temp
 	}
 }
 
-generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Command_Config, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, template_instructions, team_id, role_key: string, role_index: int) {
+generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Command_Config, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, current_task_id, template_instructions, team_id, role_key: string, role_index: int) {
 	profile := bootstrap_profile(agent_cmd, selected_agent)
 	memory_templates := agent_cmd.memory_templates
 	if len(memory_templates) == 0 do memory_templates = cfg.memory_templates
@@ -1208,7 +1209,7 @@ generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_
 		}
 		path := join_path(cwd, name)
 		if can_write_managed_file(path) {
-			text := build_agents_md(name, profile, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path, memories[:], project_context, chain_context, team_context, workspace_context, has_reference_memories(memories[:]), template_instructions, team_id, role_key, role_index)
+			text := build_agents_md(name, profile, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path, memories[:], project_context, chain_context, team_context, workspace_context, has_reference_memories(memories[:]), current_task_id, template_instructions, team_id, role_key, role_index)
 			write_managed_file(path, text)
 			append(&written, name)
 		}
@@ -1345,7 +1346,7 @@ content_section_enabled :: proc(sections: []string, section: string) -> bool {
 	return false
 }
 
-build_agents_md :: proc(name, profile: string, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path: string, memories: []Memory_Record, project_context, chain_context, team_context, workspace_context: string, has_memory_md: bool, template_instructions, team_id, role_key: string, role_index: int) -> string {
+build_agents_md :: proc(name, profile: string, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path: string, memories: []Memory_Record, project_context, chain_context, team_context, workspace_context: string, has_memory_md: bool, current_task_id, template_instructions, team_id, role_key: string, role_index: int) -> string {
 	b := strings.builder_make()
 	is_team_member := team_id != "" || role_key != ""
 	is_coordinator := !is_team_member || role_key == "coordinator"
@@ -1369,7 +1370,20 @@ build_agents_md :: proc(name, profile: string, selected_agent, agent_instance_id
 	if project_context != "" { strings.write_string(&b, project_context); strings.write_string(&b, "\n") } else { strings.write_string(&b, "- project_id: unknown\n- VCS bindings: none\n\n") }
 
 	strings.write_string(&b, "# Task Chain\n")
-	if chain_context != "" { strings.write_string(&b, chain_context) } else { strings.write_string(&b, "- chain_id: unknown\n- Current task: use `ham-ctl tasks next --token <token>` to claim assigned work.\n") }
+	if chain_context != "" { strings.write_string(&b, chain_context) } else { strings.write_string(&b, "- chain_id: unknown\n") }
+	if current_task_id != "" {
+		strings.write_string(&b, "- Current task: `")
+		strings.write_string(&b, current_task_id)
+		strings.write_string(&b, "` (already auto-claimed for this launch). After `start-success`, inspect it with `")
+		strings.write_string(&b, effective_ctl_bin())
+		strings.write_string(&b, " tasks show --token <token> --task-id ")
+		strings.write_string(&b, current_task_id)
+		strings.write_string(&b, "` and begin work. Use `")
+		strings.write_string(&b, effective_ctl_bin())
+		strings.write_string(&b, " tasks next --token <token>` if you need to claim/resume assigned work from task state.\n")
+	} else {
+		strings.write_string(&b, "- Current task: use `ham-ctl tasks next --token <token>` to claim assigned work.\n")
+	}
 	strings.write_string(&b, "\n")
 
 	strings.write_string(&b, "# Team\n")
@@ -1823,15 +1837,21 @@ starter_prompt_template_for_agent :: proc(agent_cmd: cfg_lib.Agent_Command_Confi
 	return active_live_prefs.starter_prompt
 }
 
-render_starter_prompt_for_agent :: proc(agent_cmd: cfg_lib.Agent_Command_Config, daemon_url, agent_instance_id, display_name, conversation_id, agent_token: string) -> string {
+render_starter_prompt_for_agent :: proc(agent_cmd: cfg_lib.Agent_Command_Config, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id: string) -> string {
 	template := starter_prompt_template_for_agent(agent_cmd, agent_token)
 	if template == "" do return ""
-	return template_string(template, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
+	if current_task_id != "" {
+		template = strings.concatenate({
+			strings.trim_space(template),
+			"\n\nAfter start-success, inspect and begin your assigned task {task_id}: `{ctl_bin} tasks show --token {token} --task-id {task_id}`. If you need to claim or resume assigned work from task state, run `{ctl_bin} tasks next --token {token}`.",
+		})
+	}
+	return template_string(template, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id)
 }
 
-deliver_tmux_starter_prompt :: proc(agent_cmd: cfg_lib.Agent_Command_Config, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, pane_id: string) {
+deliver_tmux_starter_prompt :: proc(agent_cmd: cfg_lib.Agent_Command_Config, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id, pane_id: string) {
 	if prompt_delivery_for_agent(agent_cmd) != "tmux" do return
-	prompt := render_starter_prompt_for_agent(agent_cmd, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
+	prompt := render_starter_prompt_for_agent(agent_cmd, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id)
 	if prompt == "" do return
 	delay_ms := prompt_tmux_delay_for_agent(agent_cmd)
 	if delay_ms > 0 do time.sleep(time.Duration(delay_ms) * time.Millisecond)
@@ -1843,7 +1863,7 @@ deliver_tmux_starter_prompt :: proc(agent_cmd: cfg_lib.Agent_Command_Config, dae
 	}
 }
 
-build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, model_tier: string) -> []string {
+build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id, model_tier: string) -> []string {
 	agent_command_name := selected_agent
 	if agent_command_name == "" do agent_command_name = command_name_for_agent(cfg.command, cfg.agent_name)
 	for agent_cmd in cfg.agent_commands {
@@ -1858,8 +1878,8 @@ build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_
 				if starter_prompt_template_for_agent(agent_cmd, agent_token) != "" do count += 1
 			}
 			result := make([dynamic]string, 0, count)
-			append_templated_args(&result, base, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
-			append_templated_args(&result, agent_cmd.yolo_flags, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
+			append_templated_args(&result, base, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id)
+			append_templated_args(&result, agent_cmd.yolo_flags, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id)
 			// Model tier flag
 			if agent_cmd.models.flag != "" {
 				model_value := cfg_lib.resolve_model_value(agent_cmd.models, model_tier)
@@ -1874,14 +1894,14 @@ build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_
 				fmt.println("model_flag_missing no models.flag configured for", agent_command_name)
 			}
 			if inject_prompt_via_flags {
-				append_templated_args(&result, agent_cmd.prompt_flags, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
-				prompt := render_starter_prompt_for_agent(agent_cmd, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
+				append_templated_args(&result, agent_cmd.prompt_flags, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id)
+				prompt := render_starter_prompt_for_agent(agent_cmd, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id)
 				if prompt != "" do append(&result, prompt)
 			}
 			return result[:]
 		}
 	}
-	return template_command(cfg.command, daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
+	return template_command(cfg.command, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id)
 }
 
 memory_cli_guidance :: proc(agent_token: string) -> string {
@@ -1962,16 +1982,16 @@ command_name_for_agent :: proc(command: []string, agent_class: string) -> string
 	return agent_class
 }
 
-append_templated_args :: proc(result: ^[dynamic]string, args: []string, daemon_url, agent_instance_id, display_name, conversation_id, agent_token: string) {
+append_templated_args :: proc(result: ^[dynamic]string, args: []string, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id: string) {
 	for arg in args {
-		append(result, template_string(arg, daemon_url, agent_instance_id, display_name, conversation_id, agent_token))
+		append(result, template_string(arg, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id))
 	}
 }
 
-template_command :: proc(command: []string, daemon_url, agent_instance_id, display_name, conversation_id, agent_token: string) -> []string {
+template_command :: proc(command: []string, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id: string) -> []string {
 	result := make([]string, len(command))
 	for i in 0..<len(command) {
-		result[i] = template_string(command[i], daemon_url, agent_instance_id, display_name, conversation_id, agent_token)
+		result[i] = template_string(command[i], daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id)
 	}
 	return result
 }
@@ -1987,7 +2007,7 @@ effective_ctl_bin :: proc() -> string {
 	return HAM_CTL_BIN
 }
 
-template_string :: proc(value, daemon_url, agent_instance_id, display_name, conversation_id, agent_token: string) -> string {
+template_string :: proc(value, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id: string) -> string {
 	ctl_bin := effective_ctl_bin()
 	templated := replace_all(value, "{daemon_url}", daemon_url)
 	templated = replace_all(templated, "{agent_instance_id}", agent_instance_id)
@@ -1996,6 +2016,7 @@ template_string :: proc(value, daemon_url, agent_instance_id, display_name, conv
 	templated = replace_all(templated, "{conversation_id}", conversation_id)
 	templated = replace_all(templated, "{agent_token}", agent_token)
 	templated = replace_all(templated, "{token}", agent_token)
+	templated = replace_all(templated, "{task_id}", current_task_id)
 	templated = replace_all(templated, "{ctl_bin}", ctl_bin)
 	return templated
 }
@@ -2070,7 +2091,7 @@ option_value :: proc(args: []string, name, fallback: string) -> string {
 
 agent_identity_from_args :: proc(args: []string, fallback: string) -> string {
 	for i := 1; i < len(args); i += 1 {
-		if args[i] == cfg_lib.CONFIG_PATH_FLAG || args[i] == "--agent" || args[i] == "--agent-token" || args[i] == "--display-name" || args[i] == "--tier" || args[i] == "--project-id" {
+		if args[i] == cfg_lib.CONFIG_PATH_FLAG || args[i] == "--agent" || args[i] == "--agent-token" || args[i] == "--display-name" || args[i] == "--tier" || args[i] == "--project-id" || args[i] == "--current-task-id" {
 			i += 1
 			continue
 		}

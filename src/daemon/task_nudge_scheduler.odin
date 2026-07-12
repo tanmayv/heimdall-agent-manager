@@ -214,7 +214,7 @@ task_autoscaler_ensure_chain_coordinator :: proc(chain_id, reason, priority: str
 	}
 	boot_priority := priority
 	if boot_priority == "" do boot_priority = "high"
-	return task_autoscaler_ensure_agent(chain, coordinator, reason, boot_priority, router_now_unix_ms(), reason)
+	return task_autoscaler_ensure_agent(chain, coordinator, "", boot_priority, router_now_unix_ms(), reason)
 }
 
 task_autoscaler_ensure_agent :: proc(chain: Task_Chain_State, agent_instance_id, task_id, priority: string, now: i64, reason: string = "") -> bool {

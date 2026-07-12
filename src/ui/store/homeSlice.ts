@@ -2,20 +2,27 @@ import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
 import * as daemonApi from '../api/daemonApi';
 import { fetchTasksForChain, refreshTaskBoard } from './taskSlice';
 
-function initialChainIdFromUrl(): string {
+function initialUrlState() {
   try {
-    return new URLSearchParams(window.location.search).get('chainId') || '';
+    const params = new URLSearchParams(window.location.search);
+    const chainId = params.get('chainId') || '';
+    const view = params.get('view') || '';
+    if (view === 'memory') return { surface: 'memory', chainId };
+    if (view === 'attention') return { surface: 'attention', chainId };
+    if (view === 'settings') return { surface: 'settings', chainId };
+    if (view === 'chain' || chainId) return { surface: 'chain', chainId };
+    return { surface: 'home', chainId: '' };
   } catch (_err) {
-    return '';
+    return { surface: 'home', chainId: '' };
   }
 }
 
-const initialChainId = initialChainIdFromUrl();
+const initialUrl = initialUrlState();
 
 const initialState = {
-  surface: initialChainId ? 'chain' : 'home',
+  surface: initialUrl.surface,
   selectedProjectId: '',
-  selectedChainId: initialChainId,
+  selectedChainId: initialUrl.chainId,
   newChainModalOpen: false,
   newChainCreating: false,
   newChainError: '',

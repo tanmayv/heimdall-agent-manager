@@ -380,6 +380,10 @@ launch_wrapper_detached :: proc(agent_instance_id, selected_agent, config_path, 
 		strings.write_string(&builder, " --project-id ")
 		strings.write_string(&builder, shell_quote(project_id))
 	}
+	if task_id != "" {
+		strings.write_string(&builder, " --current-task-id ")
+		strings.write_string(&builder, shell_quote(task_id))
+	}
 	strings.write_string(&builder, " ")
 	strings.write_string(&builder, shell_quote(agent_instance_id))
 	strings.write_string(&builder, " > ")

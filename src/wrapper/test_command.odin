@@ -221,7 +221,7 @@ step1_config :: proc(cfg: cfg_lib.Wrapper_Config, provider, tier: string, strict
 	}
 
 	// Templating dry-run: expand starter_prompt with placeholder values
-	expanded := template_string(agent_cmd.starter_prompt, "http://test-daemon:49322", "test@default", "Test Agent", "conv-test", "tok-test")
+	expanded := template_string(agent_cmd.starter_prompt, "http://test-daemon:49322", "test@default", "Test Agent", "conv-test", "tok-test", "task-test")
 	if expanded == "" {
 		return false, "", "starter_prompt expanded to empty string", false, agent_cmd, true
 	}

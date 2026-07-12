@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import SettingsPage from './SettingsPage';
+import MemoryManagementPage from './MemoryManagementPage';
 import {
   addDaemonProfile,
   agentLifecycleEventReceived,
@@ -50,10 +51,10 @@ import {
   wsChainViewRefreshRequested,
 } from '../store/chainViewSlice';
 import { answerChatApproval, chatApprovalEventReceived, dismissChatApproval, refreshChatApprovals, tickChatApprovalExpiry } from '../store/attentionSlice';
-import { refreshMemory, decideMemoryProposal } from '../store/memorySlice';
+import { refreshMemory, decideMemoryProposal, fetchMemoryDetail, memoryEventReceived, auditStartedReceived, auditEndedReceived } from '../store/memorySlice';
 import { dismissToast, showToast } from '../store/toastSlice';
 import Markdown from './Markdown';
-import { updateUrlParams } from './useUrlParams';
+import { updateUrlParams, useUrlParams } from './useUrlParams';
 
 type Chain = {
   chainId: string;
@@ -263,6 +264,7 @@ export default function App() {
   const { chainsById, tasksById, chainTaskIds, taskLogsByTaskId, loading } = useSelector((state: any) => state.tasks);
   const home = useSelector((state: any) => state.home);
   const chainView = useSelector((state: any) => state.chainView);
+  const [urlParams] = useUrlParams();
   const sessionRef = useRef(session);
   const chainViewRef = useRef(chainView);
   const chainsByIdRef = useRef(chainsById);
@@ -331,6 +333,28 @@ export default function App() {
   const pendingMemoryIds = useMemo(() => (memory?.recordIds || []).filter((id: string) => memory.recordsById?.[id]?.status === 'pending').length, [memory?.recordIds, memory?.recordsById]);
   const mergeReviewingChains = useMemo(() => (Object.values(chainsById || {}) as any[]).filter((chain) => chain?.status === 'reviewing').length, [chainsById]);
   const badgeCount = attentionCount(tasksById || {}, attention, pendingMemoryIds, mergeReviewingChains);
+
+  useEffect(() => {
+    if (urlParams.view === 'memory' && home.surface !== 'memory') {
+      dispatch(selectSurface('memory'));
+      return;
+    }
+    if (urlParams.view === 'attention' && home.surface !== 'attention') {
+      dispatch(selectSurface('attention'));
+      return;
+    }
+    if (urlParams.view === 'settings' && home.surface !== 'settings') {
+      dispatch(selectSurface('settings'));
+      return;
+    }
+    if (urlParams.view === 'chain' && urlParams.chainId && home.selectedChainId !== urlParams.chainId) {
+      dispatch(selectChain(urlParams.chainId));
+      return;
+    }
+    if ((urlParams.view === 'home' || !urlParams.view) && home.surface !== 'home' && !urlParams.chainId) {
+      dispatch(selectSurface('home'));
+    }
+  }, [dispatch, home.selectedChainId, home.surface, urlParams.chainId, urlParams.view]);
 
   const loadHomeData = useCallback(async (periodic = false, reason = 'startup') => {
     const result = await dispatch(refreshTaskBoard()).unwrap().catch(() => null);
@@ -495,6 +519,20 @@ export default function App() {
           dispatch(chatApprovalEventReceived(payload));
           return;
         }
+        if (payload?.type === 'memory_event') {
+          dispatch(memoryEventReceived(payload));
+          dispatch(refreshMemory());
+          if (payload.memory_id) dispatch(fetchMemoryDetail(payload.memory_id));
+          return;
+        }
+        if (payload?.type === 'audit_start') {
+          dispatch(auditStartedReceived(payload));
+          return;
+        }
+        if (payload?.type === 'audit_end') {
+          dispatch(auditEndedReceived(payload));
+          return;
+        }
         if (payload?.type === 'merge_decision_pending') {
           const focused = chainViewRef.current.focusedChainId;
           const chainId = payload.chain_id || '';
@@ -554,8 +592,27 @@ export default function App() {
     return () => { window.clearInterval(refresh); window.clearInterval(expiry); };
   }, [dispatch, home.surface, session.connected]);
 
+  const selectSurfaceWithUrl = useCallback((next: string) => {
+    if (next === 'memory') {
+      updateUrlParams({ view: 'memory', chainId: null, taskId: null });
+      dispatch(selectSurface('memory'));
+      return;
+    }
+    if (next === 'home') {
+      updateUrlParams({ view: 'home', chainId: null, taskId: null, memoryId: null });
+      dispatch(selectSurface('home'));
+      return;
+    }
+    if (next === 'attention' || next === 'settings') {
+      updateUrlParams({ view: next, chainId: null, taskId: null, memoryId: null });
+      dispatch(selectSurface(next));
+      return;
+    }
+    dispatch(selectSurface(next));
+  }, [dispatch]);
+
   const openProject = useCallback((projectId: string) => {
-    updateUrlParams({ chainId: null, taskId: null, view: 'home' });
+    updateUrlParams({ chainId: null, taskId: null, view: 'home', memoryId: null });
     dispatch(selectProject(projectId));
     dispatch(selectSurface('home'));
   }, [dispatch]);
@@ -624,7 +681,7 @@ export default function App() {
         <SurfaceRail
           surface={home.surface}
           badgeCount={badgeCount}
-          onSelect={(next: string) => dispatch(selectSurface(next))}
+          onSelect={selectSurfaceWithUrl}
         />
         <aside className="w-64 shrink-0 border-r border-white/10 bg-gradient-to-b from-[#0d0f14] to-[#0a0c11] flex flex-col">
           <div className="px-4 pt-4 pb-3 border-b border-white/5">
@@ -750,7 +807,13 @@ export default function App() {
 
         <main className="min-w-0 flex-1 overflow-y-auto">
           {home.surface === 'settings' ? (
-            <SettingsPage session={session} onBack={() => dispatch(selectSurface('home'))} onReconnect={(config: any) => { dispatch(updateSessionConfig(config)); window.setTimeout(connectSession, 0); }} />
+            <SettingsPage session={session} onBack={() => selectSurfaceWithUrl('home')} onReconnect={(config: any) => { dispatch(updateSessionConfig(config)); window.setTimeout(connectSession, 0); }} />
+          ) : home.surface === 'memory' ? (
+            <MemoryManagementPage
+              selectedMemoryId={urlParams.memoryId}
+              onSelectMemory={(memoryId: string) => updateUrlParams({ view: 'memory', memoryId })}
+              onBackToHome={() => selectSurfaceWithUrl('home')}
+            />
           ) : home.surface === 'chain' && selectedChain ? (
             <ChainView
               chain={selectedChain}
@@ -835,7 +898,10 @@ export default function App() {
               chainTaskIds={chainTaskIds}
               tasksById={tasksById}
               home={home}
+              totalMemoryRecords={memory?.recordIds?.length || 0}
+              pendingMemoryIds={pendingMemoryIds}
               openChain={openChain}
+              openMemory={() => selectSurfaceWithUrl('memory')}
               newChain={(projectId?: string) => dispatch(openNewChainModal({ projectId: projectId || selectedProjectId }))}
             />
           )}
@@ -1048,7 +1114,7 @@ function ChainCreationProgressModal({ progress, onOpen, onCancel }: any) {
   );
 }
 
-function HomePage({ groups, activeProject, loading, chainTaskIds, tasksById, home, openChain, newChain }: any) {
+function HomePage({ groups, activeProject, loading, chainTaskIds, tasksById, home, totalMemoryRecords, pendingMemoryIds, openChain, openMemory, newChain }: any) {
   return (
     <div className="mx-auto max-w-6xl px-8 py-8">
       <div className="flex items-start justify-between gap-4">
@@ -1059,11 +1125,21 @@ function HomePage({ groups, activeProject, loading, chainTaskIds, tasksById, hom
         </div>
         <button data-debug-id="home-new-chain-btn" onClick={() => newChain(activeProject?.projectId)} className="rounded-2xl bg-sky-400 px-5 py-3 font-semibold text-black hover:bg-sky-300">+ New chain</button>
       </div>
-      <div className="mt-4 flex flex-wrap gap-2 text-[11px] text-zinc-500">
-        <span data-debug-id="home-http-load-evidence" className="rounded-full bg-white/5 px-3 py-1">HTTP load: {home.lastHttpLoadUnixMs ? new Date(home.lastHttpLoadUnixMs).toLocaleTimeString() : 'pending'}</span>
-        <span data-debug-id="home-periodic-evidence" className="rounded-full bg-white/5 px-3 py-1">Periodic revalidation: every {PERIODIC_REVALIDATE_MS / 1000}s</span>
-        <span data-debug-id="home-ws-evidence" className="rounded-full bg-white/5 px-3 py-1">Last WS refetch: {home.lastWsRefreshReason || 'none yet'}</span>
-        <span data-debug-id="home-local-action-evidence" className="rounded-full bg-white/5 px-3 py-1">Local action: {home.lastLocalAction || 'none yet'}</span>
+      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(320px,0.8fr)]">
+        <div className="flex flex-wrap gap-2 text-[11px] text-zinc-500">
+          <span data-debug-id="home-http-load-evidence" className="rounded-full bg-white/5 px-3 py-1">HTTP load: {home.lastHttpLoadUnixMs ? new Date(home.lastHttpLoadUnixMs).toLocaleTimeString() : 'pending'}</span>
+          <span data-debug-id="home-periodic-evidence" className="rounded-full bg-white/5 px-3 py-1">Periodic revalidation: every {PERIODIC_REVALIDATE_MS / 1000}s</span>
+          <span data-debug-id="home-ws-evidence" className="rounded-full bg-white/5 px-3 py-1">Last WS refetch: {home.lastWsRefreshReason || 'none yet'}</span>
+          <span data-debug-id="home-local-action-evidence" className="rounded-full bg-white/5 px-3 py-1">Local action: {home.lastLocalAction || 'none yet'}</span>
+        </div>
+        <button data-debug-id="home-open-memory-btn" onClick={openMemory} className="rounded-3xl border border-sky-400/20 bg-sky-400/10 p-5 text-left transition hover:border-sky-300/40 hover:bg-sky-400/15">
+          <div className="text-xs uppercase tracking-[0.22em] text-sky-200">Memory Management</div>
+          <div className="mt-2 text-xl font-semibold text-zinc-100">Open memory browser, detail view, proposal forms, and review queue</div>
+          <div className="mt-3 flex flex-wrap gap-2 text-xs text-zinc-300">
+            <span data-debug-id="home-memory-total" className="rounded-full bg-black/20 px-3 py-1">{totalMemoryRecords} loaded</span>
+            <span data-debug-id="home-memory-pending" className="rounded-full bg-black/20 px-3 py-1">{pendingMemoryIds} pending</span>
+          </div>
+        </button>
       </div>
       <div className="mt-8 space-y-8">
         {loading && <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-400">Loading chains…</div>}
@@ -1434,6 +1510,7 @@ function DaemonProfileModal({ mode, initialUrl, initialLabel, activeUrl, onClose
 function SurfaceRail({ surface, badgeCount, onSelect }: { surface: string; badgeCount: number; onSelect: (next: string) => void }) {
   const items: { key: string; label: string; icon: string; badge?: number }[] = [
     { key: 'home', label: 'Home', icon: '⌂' },
+    { key: 'memory', label: 'Memory', icon: '🧠' },
     { key: 'attention', label: 'Needs attention', icon: '◎', badge: badgeCount },
     { key: 'settings', label: 'Settings', icon: '⚙' },
   ];
