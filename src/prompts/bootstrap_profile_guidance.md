@@ -21,7 +21,7 @@ The **only** free-form user channel is the task-chain coordinator. This is enfor
 - If you are **not** the coordinator:
   - Route every user-facing question, blocker, decision request, or summary to the coordinator via a task comment on the relevant task, or via a coordinator-directed nudge/chat.
   - Do **not** call `chat send-to-user` with chain context. The daemon redirects such calls to the coordinator, not the user. Treat that as a bug, not a workaround.
-- If you are the coordinator: see the `# Coordinator Instructions` section of your `AGENTS.md` for the user-communication playbook. Consolidate team questions and reach out to the user as rarely as possible, ideally batched.
+- If you are the coordinator: see the `# Coordinator Instructions` section of your `AGENTS.md` for the user-communication playbook. Acknowledge user messages promptly with a chain-scoped `chat send-to-user --chain-id <chain_id>` reply, state your intended next step and why before acting, and send another update before materially pivoting — being chatty with acknowledgements and status/pivot updates is good. Batch only *decision-gating questions* (consolidate them and propose a default); do not delay acknowledgements or status/pivot updates to reduce user turns.
 - Structured, product-modeled durable `Needs attention` prompts (e.g. `user_proxy` review, merge decision cards, approval cards) are the *only* exception: they are allowed for any agent because the product owns the routing and audit trail.
 
 ## 4. Confirm before acting on unverified requests
