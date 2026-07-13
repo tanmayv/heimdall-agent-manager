@@ -2219,6 +2219,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
   const chainProgress = useMemo(() => buildChainProgress(chain.chainId, { [chain.chainId]: tasks.map((task: any) => task.taskId).filter(Boolean) }, tasksById || {}), [chain.chainId, tasks, tasksById]);
   const activeTasks = orderedTasks.filter((task: any) => !isCompletedTask(task));
   const completedTasks = orderedTasks.filter(isCompletedTask);
+  const taskIndexMap = useMemo(() => new Map(orderedTasks.map((t: any, i: number) => [t.taskId, i + 1])), [orderedTasks]);
   const openTask = (task: any) => {
     setSelectedTaskId(task.taskId);
     setCommentDraft('');
@@ -2354,6 +2355,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
           onVoteTask={onVoteTask}
           onNudgeTask={onNudgeTask}
           agents={agents}
+          taskIndexMap={taskIndexMap}
         />
         {completedTasks.length > 0 && (
           <div data-debug-id="chain-completed-task-section" className="mt-5 border-t border-white/10 pt-4">
@@ -2376,6 +2378,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
               onVoteTask={onVoteTask}
               onNudgeTask={onNudgeTask}
               agents={agents}
+              taskIndexMap={taskIndexMap}
               completed
             />
           </div>
@@ -2426,7 +2429,7 @@ function TaskAgentChip({ role, agentId, agent, active }: any) {
   );
 }
 
-function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, expandedTaskId, commentDraft, nudgeDraft, onCommentDraft, onNudgeDraft, onOpenTask, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, agents = [], completed = false }: any) {
+function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, expandedTaskId, commentDraft, nudgeDraft, onCommentDraft, onNudgeDraft, onOpenTask, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, agents = [], taskIndexMap = new Map(), completed = false }: any) {
   const [commentsOpenByTaskId, setCommentsOpenByTaskId] = useState<Record<string, boolean>>({});
   const [busyAction, setBusyAction] = useState('');
   const [localError, setLocalError] = useState('');
@@ -2470,12 +2473,13 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ex
           const assigneeWorking = task.status === 'in_progress' && blockers.length === 0 && !task.notActionableReason;
           const reviewerWorking = task.status === 'review_ready';
           const baseTone = completed ? 'border-white/5 bg-white/[0.025] text-zinc-500 opacity-70' : expanded ? 'border-sky-400/30 bg-sky-400/[0.06]' : 'border-white/8 bg-white/[0.04] hover:bg-white/[0.07]';
+          const taskNum = taskIndexMap.get(task.taskId) || index + 1;
           return (
             <div key={task.taskId} data-debug-id={`chain-task-row-${task.taskId}`} className={`rounded-2xl border transition ${baseTone}`}>
               <div className="flex items-center gap-3 px-4 py-3">
                 <button onClick={() => expanded ? onCloseTask() : onOpenTask(task)} className="min-w-0 flex-1 text-left">
                   <div className="flex min-w-0 items-center gap-2">
-                    <span className="w-6 shrink-0 font-mono text-xs text-zinc-600">{index + 1}</span>
+                    <span className="w-8 shrink-0 font-mono text-xs text-zinc-600">{taskNum}.</span>
                     <span data-debug-id={`chain-task-row-${task.taskId}-title`} className={`truncate text-sm font-medium ${completed ? 'text-zinc-500 line-through decoration-zinc-600' : 'text-zinc-100'}`}>{task.title || task.taskId}</span>
                     <span data-debug-id={`chain-task-row-${task.taskId}-status`} className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] ${perceived.tone}`}>{perceived.label}</span>
                   </div>
@@ -2493,6 +2497,7 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ex
                 <div data-debug-id={`chain-task-row-${task.taskId}-expanded`} className="border-t border-white/10 px-4 py-4">
                   <div className="flex flex-wrap gap-2 text-xs">
                     <span className={`rounded-full border px-2 py-1 ${statusTone(task.status)}`}>{task.status}</span>
+                    <span className="rounded-full bg-black/20 px-2 py-1 font-mono text-zinc-400">ID: {task.taskId}</span>
                     <span className="rounded-full bg-black/20 px-2 py-1 text-zinc-400">Assignee {task.assigneeAgentInstanceId || '—'}</span>
                     <span className="rounded-full bg-black/20 px-2 py-1 text-zinc-400">Reviewer {task.reviewerAgentInstanceId || '—'}</span>
                   </div>
