@@ -379,6 +379,67 @@ export async function fetchTaskComments({ daemonUrl, clientToken, taskId, unreso
   });
 }
 
+export async function createArtifact({ daemonUrl, clientToken, name, kind = '', projectId = '', description = '', contentBase64 }: { daemonUrl: string; clientToken: string; name: string; kind?: string; projectId?: string; description?: string; contentBase64: string }) {
+  return requestJson(joinUrl(daemonUrl, '/artifacts/create'), {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+    body: {
+      name,
+      kind,
+      project_id: projectId,
+      description,
+      content_base64: contentBase64,
+    },
+  });
+}
+
+export async function fetchArtifactMeta({ daemonUrl, clientToken, artifactId }: { daemonUrl: string; clientToken: string; artifactId: string }) {
+  return requestJson(joinUrl(daemonUrl, `/artifacts/${encodeURIComponent(artifactId)}`), {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+  });
+}
+
+export function artifactContentUrl({ daemonUrl, clientToken, artifactId }: { daemonUrl: string; clientToken: string; artifactId: string }) {
+  return joinUrl(daemonUrl, `/artifacts/${encodeURIComponent(artifactId)}/content?token=${encodeURIComponent(clientToken)}`);
+}
+
+export async function listArtifacts({ daemonUrl, clientToken, projectId = '', creatorId = '', originRef = '', includeDeleted = false, limit = 100 }: { daemonUrl: string; clientToken: string; projectId?: string; creatorId?: string; originRef?: string; includeDeleted?: boolean; limit?: number }) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (projectId) params.set('project_id', projectId);
+  if (creatorId) params.set('creator_id', creatorId);
+  if (originRef) params.set('origin_ref', originRef);
+  if (includeDeleted) params.set('include_deleted', 'true');
+  return requestJson(joinUrl(daemonUrl, `/artifacts?${params.toString()}`), {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+  });
+}
+
+export async function updateArtifact({ daemonUrl, clientToken, artifactId, name, kind, projectId, description, originKind, originRef, contentBase64 }: { daemonUrl: string; clientToken: string; artifactId: string; name?: string; kind?: string; projectId?: string; description?: string; originKind?: string; originRef?: string; contentBase64?: string }) {
+  const body: any = { artifact_id: artifactId };
+  if (name !== undefined) body.name = name;
+  if (kind !== undefined) body.kind = kind;
+  if (projectId !== undefined) body.project_id = projectId;
+  if (description !== undefined) body.description = description;
+  if (originKind !== undefined) body.origin_kind = originKind;
+  if (originRef !== undefined) body.origin_ref = originRef;
+  if (contentBase64 !== undefined) body.content_base64 = contentBase64;
+  return requestJson(joinUrl(daemonUrl, '/artifacts/update'), {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+    body,
+  });
+}
+
+export async function deleteArtifact({ daemonUrl, clientToken, artifactId }: { daemonUrl: string; clientToken: string; artifactId: string }) {
+  return requestJson(joinUrl(daemonUrl, '/artifacts/delete'), {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+    body: { artifact_id: artifactId },
+  });
+}
+
 export async function listTasks({ daemonUrl, clientToken, chainId = '', createdAfter = 0, createdBefore = 0, limit = 50, offset = 0 }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId?: string; createdAfter?: number; createdBefore?: number; limit?: number; offset?: number }) {
   let path = `/tasks?limit=${limit}&offset=${offset}`;
   if (chainId) path += `&chain_id=${encodeURIComponent(chainId)}`;
@@ -419,8 +480,12 @@ export async function createTaskChain({ daemonUrl, agentToken, clientInstanceId,
   return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_chain_create', agentPath: '/task-chains/create', body: chain });
 }
 
-export async function addTaskComment({ daemonUrl, agentToken, clientInstanceId, clientToken, taskId, chainId, body }: Partial<TaskAgentRequest & UserRpcRequest> & { taskId: string; chainId?: string; body: string }) {
-  return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_comment', agentPath: '/tasks/comment', body: { task_id: taskId, chain_id: chainId || '', body } });
+export async function addTaskComment({ daemonUrl, agentToken, clientInstanceId, clientToken, taskId, chainId, body, artifactContentBase64, artifactName, artifactKind }: Partial<TaskAgentRequest & UserRpcRequest> & { taskId: string; chainId?: string; body: string; artifactContentBase64?: string; artifactName?: string; artifactKind?: string }) {
+  const requestBody: any = { task_id: taskId, chain_id: chainId || '', body };
+  if (artifactContentBase64 !== undefined) requestBody.artifact_content_base64 = artifactContentBase64;
+  if (artifactName !== undefined) requestBody.artifact_name = artifactName;
+  if (artifactKind !== undefined) requestBody.artifact_kind = artifactKind;
+  return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_comment', agentPath: '/tasks/comment', body: requestBody });
 }
 
 export async function updateTaskStatus({ daemonUrl, agentToken, clientInstanceId, clientToken, taskId, chainId, status, body }: Partial<TaskAgentRequest & UserRpcRequest> & { taskId: string; chainId?: string; status: string; body: string }) {

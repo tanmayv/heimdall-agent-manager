@@ -17,6 +17,7 @@ nudge_send_escape_prefix = true
 nudge_working_stale_after_seconds = 900
 port = 49422
 startup_stale_after_seconds = 120
+artifact_max_bytes = 10485760
 wrapper_bin = "/nix/store/djnvnb6h4vswzn6icaq0124wzypks0nd-ham-wrapper-0.1.0/bin/ham-wrapper"
 
 [guide_agent]

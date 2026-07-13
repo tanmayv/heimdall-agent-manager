@@ -139,7 +139,33 @@ handle_user_rpc_task_chain_create :: proc(client: net.TCP_Socket, body, user_id:
 }
 
 handle_user_rpc_task_comment :: proc(client: net.TCP_Socket, body, user_id: string) {
-	result := task_service_comment(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "body", ""), user_id)
+	task_id := extract_json_string(body, "task_id", "")
+	chain_id := extract_json_string(body, "chain_id", "")
+	comment_body := extract_json_string(body, "body", "")
+	artifact_content_base64 := extract_json_string(body, "artifact_content_base64", "")
+	created_artifact := Artifact_Record{}
+	if strings.trim_space(artifact_content_base64) != "" {
+		idx, found := task_existing_state_index(task_id, chain_id)
+		if !found {
+			write_response(client, 404, "Not Found", `{"ok":false,"message":"task not found"}`)
+			return
+		}
+		resolved_chain_id := task_states[idx].chain_id
+		project_id := ""
+		if chain_idx, chain_found := task_existing_chain_index(resolved_chain_id); chain_found {
+			project_id = task_chains[chain_idx].project_id
+		}
+		artifact_result := artifact_create_record(user_id, true, extract_json_string(body, "artifact_name", ""), extract_json_string(body, "artifact_kind", ""), "", project_id, "comment", task_id, "", artifact_content_base64)
+		if !artifact_result.ok {
+			artifact_write_error(client, artifact_result.status, artifact_result.status_text, artifact_result.error_kind, artifact_result.message)
+			return
+		}
+		created_artifact = artifact_result.rec
+		comment_body = artifact_append_link_body(comment_body, created_artifact.artifact_id)
+		if chain_id == "" do chain_id = resolved_chain_id
+	}
+	result := task_service_comment(task_id, chain_id, comment_body, user_id)
+	if !result.ok && created_artifact.artifact_id != "" do artifact_cleanup_failed_inline_attach(created_artifact)
 	write_task_service_response(client, result)
 }
 

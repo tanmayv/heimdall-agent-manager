@@ -5,6 +5,7 @@ import { sendMessageToSelectedAgent } from '../store/chatSlice';
 import { updateTaskStateDirectly, updateChainStateDirectly } from '../store/taskSlice';
 import { fetchMemoryDetail, refreshMemory } from '../store/memorySlice';
 import * as daemonApi from '../api/daemonApi';
+import Markdown from './Markdown';
 
 function isSafeUrl(url: string) {
   const trimmed = url.trim();
@@ -85,159 +86,9 @@ function renderHeading(level: number, key: string, children: ReturnType<typeof r
   return <h6 key={key}>{children}</h6>;
 }
 
-function MarkdownContent({ text }: { text: string }) {
+function MarkdownContent({ text, className = '' }: { text: string; className?: string }) {
   console.log('[Render] MarkdownContent');
-  const blocks = [];
-  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
-  let paragraph: string[] = [];
-  let listItems: string[] = [];
-  let quoteLines: string[] = [];
-  let orderedList = false;
-  let codeLines: string[] = [];
-  let inCode = false;
-  let codeLanguage = '';
-
-  function flushParagraph() {
-    if (!paragraph.length) return;
-    const content = paragraph.join(' ').trim();
-    if (content) blocks.push(<p key={`p-${blocks.length}`}>{renderInlineMarkdown(content, `p-${blocks.length}`)}</p>);
-    paragraph = [];
-  }
-
-  function flushList() {
-    if (!listItems.length) return;
-    const Tag = orderedList ? 'ol' : 'ul';
-    blocks.push(
-      <Tag key={`list-${blocks.length}`}>
-        {listItems.map((item, index) => <li key={index}>{renderInlineMarkdown(item, `li-${blocks.length}-${index}`)}</li>)}
-      </Tag>
-    );
-    listItems = [];
-  }
-
-  function flushQuote() {
-    if (!quoteLines.length) return;
-    blocks.push(
-      <blockquote key={`quote-${blocks.length}`}>
-        {quoteLines.map((line, index) => (
-          <p key={index}>{renderInlineMarkdown(line, `quote-${blocks.length}-${index}`)}</p>
-        ))}
-      </blockquote>
-    );
-    quoteLines = [];
-  }
-
-  function flushAllTextBlocks() {
-    flushParagraph();
-    flushList();
-    flushQuote();
-  }
-
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    const fence = line.match(/^```\s*([\w-]*)\s*$/);
-    if (fence) {
-      if (inCode) {
-        blocks.push(
-          <pre key={`code-${blocks.length}`} data-language={codeLanguage || undefined}>
-            <code>{codeLines.join('\n')}</code>
-          </pre>
-        );
-        codeLines = [];
-        codeLanguage = '';
-        inCode = false;
-      } else {
-        flushAllTextBlocks();
-        inCode = true;
-        codeLanguage = fence[1] || '';
-      }
-      continue;
-    }
-
-    if (inCode) {
-      codeLines.push(line);
-      continue;
-    }
-
-    if (!line.trim()) {
-      flushAllTextBlocks();
-      continue;
-    }
-
-    const heading = line.match(/^\s{0,3}(#{1,6})\s+(.+)\s*#*\s*$/);
-    if (heading) {
-      flushAllTextBlocks();
-      const level = Math.min(heading[1].length, 6);
-      blocks.push(renderHeading(level, `heading-${blocks.length}`, renderInlineMarkdown(heading[2].trim(), `heading-${blocks.length}`)));
-      continue;
-    }
-
-    const quote = line.match(/^\s*>\s?(.*)$/);
-    if (quote) {
-      flushParagraph();
-      flushList();
-      quoteLines.push(quote[1].trim());
-      continue;
-    }
-
-    if (looksLikeTableRow(line) && index + 1 < lines.length && isTableSeparator(lines[index + 1])) {
-      flushAllTextBlocks();
-      const headers = splitTableRow(line);
-      const rows: string[][] = [];
-      index += 2;
-      while (index < lines.length && looksLikeTableRow(lines[index]) && !isTableSeparator(lines[index])) {
-        rows.push(splitTableRow(lines[index]));
-        index += 1;
-      }
-      index -= 1;
-      blocks.push(
-        <div className="markdown-table-wrap" key={`table-${blocks.length}`}>
-          <table>
-            <thead>
-              <tr>{headers.map((cell, cellIndex) => <th key={cellIndex}>{renderInlineMarkdown(cell, `th-${blocks.length}-${cellIndex}`)}</th>)}</tr>
-            </thead>
-            <tbody>
-              {rows.map((row, rowIndex) => (
-                <tr key={rowIndex}>
-                  {headers.map((_, cellIndex) => (
-                    <td key={cellIndex}>{renderInlineMarkdown(row[cellIndex] || '', `td-${blocks.length}-${rowIndex}-${cellIndex}`)}</td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      );
-      continue;
-    }
-
-    const unordered = line.match(/^\s*[-*]\s+(.+)$/);
-    const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
-    if (unordered || ordered) {
-      flushParagraph();
-      flushQuote();
-      const nextOrdered = Boolean(ordered);
-      if (listItems.length && orderedList !== nextOrdered) flushList();
-      orderedList = nextOrdered;
-      listItems.push((unordered?.[1] || ordered?.[1] || '').trim());
-      continue;
-    }
-
-    flushList();
-    flushQuote();
-    paragraph.push(line.trim());
-  }
-
-  if (inCode) {
-    blocks.push(
-      <pre key={`code-${blocks.length}`} data-language={codeLanguage || undefined}>
-        <code>{codeLines.join('\n')}</code>
-      </pre>
-    );
-  }
-  flushAllTextBlocks();
-
-  return <div className="markdown-message text-sm leading-6">{blocks}</div>;
+  return <Markdown source={text} compact className={`text-sm leading-6 ${className}`} />;
 }
 
 async function copyMessageText(text: string) {
@@ -757,7 +608,7 @@ function MessageBubble({ message, session }: { message: any; session: any }) {
           renderMultiQuestionCard(multiQuestion)
         ) : structuredQuestion ? (
           <div>
-            <MarkdownContent text={structuredQuestion.question} />
+            <MarkdownContent text={structuredQuestion.question} className={isUser ? 'text-slate-900' : 'text-zinc-200'} />
             <div className="mt-3 flex flex-wrap gap-2 animate-fade-in">
               {structuredQuestion.suggested_answers.map((answer, idx) => {
                 const isChosen = selectedAnswer === answer;
@@ -782,9 +633,9 @@ function MessageBubble({ message, session }: { message: any; session: any }) {
             </div>
           </div>
         ) : smartAnswerBody ? (
-          <MarkdownContent text={smartAnswerBody} />
+          <MarkdownContent text={smartAnswerBody} className={isUser ? 'text-slate-900' : 'text-zinc-200'} />
         ) : (
-          <MarkdownContent text={displayBody} />
+          <MarkdownContent text={displayBody} className={isUser ? 'text-slate-900' : 'text-zinc-200'} />
         )}
         {refs.length > 0 && (
           <div className="mt-3 space-y-2 border-t border-[#222] pt-2.5">

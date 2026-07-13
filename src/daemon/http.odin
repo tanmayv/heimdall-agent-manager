@@ -13,6 +13,11 @@ Request_Telemetry :: struct {
 	start_tick: time.Tick,
 }
 
+Response_Header :: struct {
+	name:  string,
+	value: string,
+}
+
 @(thread_local)
 current_telemetry: ^Request_Telemetry
 
@@ -69,46 +74,58 @@ extract_header :: proc(request, name: string) -> string {
 }
 
 write_response :: proc(client: net.TCP_Socket, status: int, status_text, body: string) {
-	response := fmt.tprintf(
-		"HTTP/1.1 %d %s\r\nContent-Type: application/json\r\nContent-Length: %d\r\nAccess-Control-Allow-Origin: *\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type, Authorization\r\nConnection: close\r\n\r\n%s",
-		status,
-		status_text,
-		len(body),
-		body,
-	)
-	net.send_tcp(client, transmute([]byte)response)
+	write_binary_response(client, status, status_text, "application/json", transmute([]byte)body)
+}
 
-	if current_telemetry != nil {
-		t := current_telemetry
-		// ponytail: skip telemetry for heartbeat routes to avoid cluttering daemon logs
-		if t.path != "/heartbeat" && t.path != "/user-client/heartbeat" {
-			duration := time.duration_milliseconds(time.tick_diff(t.start_tick, time.tick_now()))
-
-			now := time.now()
-		y, mo, d := time.date(now)
-		h, mi, s := time.clock_from_time(now)
-		ms := (time.to_unix_nanoseconds(now) / 1_000_000) % 1000
-
-		body_log := ""
-		if len(body) < 100 {
-			body_log = fmt.tprintf(" | Body: %s", body)
-		}
-
-		params_log := t.params
-		if len(params_log) > 200 {
-			params_log = fmt.tprintf("%s...", params_log[:200])
-		}
-
-		fmt.printf("[RPC TELEMETRY] %04d-%02d-%02d %02d:%02d:%02d.%03d | %s %s | Params: %s | Status: %d | Latency: %.1fms | Size: %d bytes%s\n",
-			y, int(mo), d, h, mi, s, ms,
-			t.method,
-			t.path,
-			params_log,
-			status,
-			duration,
-			len(body),
-			body_log,
-		)
-		}
+write_binary_response :: proc(client: net.TCP_Socket, status: int, status_text, content_type: string, body: []byte, headers: []Response_Header = nil) {
+	builder := strings.builder_make()
+	strings.write_string(&builder, fmt.tprintf("HTTP/1.1 %d %s\r\n", status, status_text))
+	strings.write_string(&builder, "Content-Type: ")
+	strings.write_string(&builder, content_type)
+	strings.write_string(&builder, "\r\n")
+	strings.write_string(&builder, fmt.tprintf("Content-Length: %d\r\n", len(body)))
+	strings.write_string(&builder, "Access-Control-Allow-Origin: *\r\n")
+	strings.write_string(&builder, "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n")
+	strings.write_string(&builder, "Access-Control-Allow-Headers: Content-Type, Authorization\r\n")
+	for header in headers {
+		if header.name == "" do continue
+		strings.write_string(&builder, header.name)
+		strings.write_string(&builder, ": ")
+		strings.write_string(&builder, header.value)
+		strings.write_string(&builder, "\r\n")
 	}
+	strings.write_string(&builder, "Connection: close\r\n\r\n")
+	header_bytes := transmute([]byte)strings.to_string(builder)
+	net.send_tcp(client, header_bytes)
+	if len(body) > 0 do net.send_tcp(client, body)
+	log_http_response(status, body)
+}
+
+log_http_response :: proc(status: int, body: []byte) {
+	if current_telemetry == nil do return
+	t := current_telemetry
+	if t.path == "/heartbeat" || t.path == "/user-client/heartbeat" do return
+	duration := time.duration_milliseconds(time.tick_diff(t.start_tick, time.tick_now()))
+	now := time.now()
+	y, mo, d := time.date(now)
+	h, mi, s := time.clock_from_time(now)
+	ms := (time.to_unix_nanoseconds(now) / 1_000_000) % 1000
+	body_log := ""
+	if len(body) < 100 {
+		body_log = fmt.tprintf(" | Body: %s", string(body))
+	}
+	params_log := t.params
+	if len(params_log) > 200 {
+		params_log = fmt.tprintf("%s...", params_log[:200])
+	}
+	fmt.printf("[RPC TELEMETRY] %04d-%02d-%02d %02d:%02d:%02d.%03d | %s %s | Params: %s | Status: %d | Latency: %.1fms | Size: %d bytes%s\n",
+		y, int(mo), d, h, mi, s, ms,
+		t.method,
+		t.path,
+		params_log,
+		status,
+		duration,
+		len(body),
+		body_log,
+	)
 }
