@@ -2187,6 +2187,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
   const [selectedTaskId, setSelectedTaskId] = useState('');
   const [commentDraft, setCommentDraft] = useState('');
   const [nudgeDraft, setNudgeDraft] = useState('Please take a look at this task when you are available.');
+  const [descOpen, setDescOpen] = useState(false);
   const composerRef = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
     if (!chain?.chainId) return;
@@ -2261,6 +2262,23 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
       </div>
 
       <div className="mt-8 space-y-4">
+        {chain.description && (
+          <section data-debug-id="chain-description-panel" className="flex flex-col rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+            <button
+              data-debug-id="chain-description-toggle"
+              onClick={() => setDescOpen(!descOpen)}
+              className="flex items-center justify-between text-left font-semibold text-zinc-300 hover:text-white"
+            >
+              <span>Chain Description</span>
+              <span className="text-xs">{descOpen ? 'Hide' : 'Show'}</span>
+            </button>
+            {descOpen && (
+              <div data-debug-id="chain-description-content" className="mt-4 text-sm text-zinc-300">
+                <Markdown source={chain.description} />
+              </div>
+            )}
+          </section>
+        )}
         <section data-debug-id="chain-coordinator-panel" className="flex h-[70vh] max-h-[70vh] min-h-[420px] flex-col rounded-2xl border border-white/10 bg-white/[0.035] p-4">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <div>
