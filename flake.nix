@@ -199,9 +199,14 @@
                   ;;
               esac
             done
-            if [ -z "$CONFIG_PATH" ] && [ -f "$PWD/config.toml" ]; then
-              CONFIG_PATH="$PWD/config.toml"
-              echo "[ham-daemon-with-wrapper] using $CONFIG_PATH"
+            if [ -z "$CONFIG_PATH" ]; then
+              XDG_CONFIG="''${XDG_CONFIG_HOME:-$HOME/.config}/heimdall/config.toml"
+              if [ -f "$XDG_CONFIG" ]; then
+                CONFIG_PATH="$XDG_CONFIG"
+                echo "[ham-daemon-with-wrapper] using $CONFIG_PATH"
+              else
+                echo "[ham-daemon-with-wrapper] no config at $XDG_CONFIG; pass --config <path> to override" >&2
+              fi
             fi
 
             TMP_CONFIG=""

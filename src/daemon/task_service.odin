@@ -371,7 +371,7 @@ task_service_coordinator_discovery_description :: proc(chain_title, chain_descri
 		strings.write_string(&b, "5. Mark this validation task done only when the scaffold is safe to execute. All scaffold tasks depend on this task.\n")
 		strings.write_string(&b, "6. Keep free-form user contact routed through the coordinator.\n")
 	} else {
-		strings.write_string(&b, "4. Create downstream tasks/dependencies only after understanding the user's requirement.\n")
+		strings.write_string(&b, "4. Create downstream tasks/dependencies or apply an appropriate task-bundle template only after understanding the user's requirement.\n")
 		strings.write_string(&b, "5. Keep free-form user contact routed through the coordinator.\n")
 	}
 	return strings.to_string(b)

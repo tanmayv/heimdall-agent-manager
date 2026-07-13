@@ -6,8 +6,12 @@ import "core:strings"
 HUMAN_RECIPIENT_ID :: "operator@local"
 
 task_runtime_agent_target :: proc(agent_instance_id: string) -> string {
-	if agent_instance_id == "" || task_actor_is_user(agent_instance_id) do return ""
+	if !identity_is_agent(agent_instance_id) do return ""
 	return agent_instance_id
+}
+
+identity_is_agent :: proc(agent_instance_id: string) -> bool {
+	return agent_instance_id != "" && agent_record_index_by_instance(agent_instance_id) >= 0
 }
 
 // Returns the first non-archived agent_instance_id whose template role_hint matches.
@@ -292,15 +296,7 @@ task_all_chain_tasks_terminal :: proc(chain_id: string) -> bool {
 // --- Role / authorization helpers ---
 
 task_actor_is_user :: proc(actor: string) -> bool {
-	if actor == "" do return false
-	// An actor is an AGENT (not a user) if it is currently connected in the live
-	// WS registry OR it has a durable agent instance record. Relying on the live
-	// registry alone mis-classifies a not-yet-connected agent (e.g. a brand-new
-	// chain coordinator that has never booted) as a user, which then blocks its
-	// own boot with skip_reason=no_runtime_coordinator (chicken-and-egg deadlock).
-	if registry_agent_exists(actor) do return false
-	if agent_record_index_by_instance(actor) >= 0 do return false
-	return true
+	return actor != "" && !identity_is_agent(actor)
 }
 
 task_actor_has_role :: proc(state: Task_State, actor, role: string) -> bool {

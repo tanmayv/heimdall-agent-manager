@@ -7,7 +7,7 @@ port = 49322
 data_dir = "~/.local/share/heimdall"
 wrapper_bin = "./result-wrapper/bin/ham-wrapper"
 # Default provider/tier for generated team agents. Settings can override these via preferences.
-default_agent_provider_profile = "jetski"
+default_agent_provider_profile = "pi"
 default_agent_model_tier = "normal"
 
 [guide_agent]
@@ -37,8 +37,8 @@ model_tier = "smart"
 [wrapper]
 daemon_url = "http://127.0.0.1:49322"
 credentials_path = "~/.local/share/heimdall/wrapper-credentials.json"
-agent_name = "jetski"
-default_agent = "jetski"
+agent_name = "pi"
+default_agent = "pi"
 display_name = "{instance}"
 requested_access_mode = "main"
 command = ["/google/bin/releases/jetski-devs/tools/cli"]
@@ -72,7 +72,7 @@ filename = "SKILL.md"
 relative_dir = ".agents/skills"
 
 [wrapper.agent-cmd.jetski.models]
-cheap = "Gemini Next"
+cheap = "Gemini 3.5 Flash"
 flag = "--model"
 normal = "Gemini 3.5 Flash"
 smart = "Gemini 3.1 Pro"
@@ -168,7 +168,7 @@ yolo_flags = ["--yolo"]
 
 [wrapper.agent-cmd.copilot.models]
 flag = "--model"
-cheap = "claude-sonnet-4.5"
+cheap = "claude-sonnet-4.6"
 normal = "claude-sonnet-4.6"
 smart = "claude-opus-4.6"
 
@@ -211,7 +211,7 @@ relative_dir = ".agents/skills"
 
 [wrapper.agent-cmd.antigravity.models]
 flag = "--model"
-cheap  = "Gemini 3.5 Flash (Low)"
+cheap  = "Gemini 3.5 Flash (Medium)"
 normal = "Gemini 3.5 Flash (Medium)"
 smart  = "Gemini 3.1 Pro (High)"
 

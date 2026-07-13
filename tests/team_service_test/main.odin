@@ -8,6 +8,7 @@ import daemon "odin_test:daemon"
 main :: proc() {
 	data_dir := "/tmp/heimdall-team-service-test"
 	_, _, _, _ = os.process_exec(os.Process_Desc{command = []string{"rm", "-rf", data_dir}}, context.allocator)
+	daemon.agent_store_init(data_dir)
 	check(daemon.team_service_init(data_dir), "team_service_init failed")
 
 	coding_id := daemon.team_service_create_for_chain("proj", "chain-coding", "coding", "", "coord@coding")
@@ -17,10 +18,24 @@ main :: proc() {
 	check(len(coding.members) == 4, "coding team should have four members")
 	check(count_role(coding.members, "tester") == 1, "coding team should include one tester member")
 	for member in coding.members {
-		check(member.agent_record_id == "", "coding member should not be provisioned to an agent yet")
+		check(member.agent_record_id != "", "coding member should be provisioned to an agent identity immediately")
+		check(daemon.identity_is_agent(member.agent_instance_id), "coding member should be classified as an agent before first connect")
 		check(!member.is_user_proxy, "coding member should not be user_proxy")
 		if member.role_key == "coordinator" do check(member.agent_instance_id == "coord@coding", "explicit chain coordinator should bind team coordinator member")
 	}
+
+	// Restart classification: identity is DB-backed and replayed on startup, so a
+	// running/provisioned agent must remain classified as an agent after a daemon
+	// restart even before it re-registers in the live WS registry. Re-initialising
+	// the agent store wipes in-memory records and replays the durable event log.
+	daemon.agent_store_init(data_dir)
+	for member in coding.members {
+		check(daemon.identity_is_agent(member.agent_instance_id), "provisioned agent must remain classified as an agent after daemon restart")
+	}
+	// A genuine user id (never minted as an agent) must classify as a user.
+	check(!daemon.identity_is_agent("operator@local"), "human placeholder must not be classified as an agent")
+	check(daemon.task_actor_is_user("some-user@corp"), "an id with no agent record must classify as a user")
+	check(!daemon.task_actor_is_user("coord@coding"), "a provisioned agent id must not classify as a user")
 
 	solo_id := daemon.team_service_create_for_chain("proj", "chain-solo", "solo", "", "coord@solo")
 	check(solo_id != "", "solo team allocation failed")

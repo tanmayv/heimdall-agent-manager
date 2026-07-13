@@ -7,6 +7,10 @@ import "core:strings"
 AGENT_MAX_RECORDS :: 1024
 AGENT_MAX_EVENTS :: 4096
 
+AGENT_IDENTITY_STATE_PROVISIONED :: "provisioned"
+AGENT_IDENTITY_STATE_RUNNING :: "running"
+AGENT_IDENTITY_STATE_ARCHIVED :: "archived"
+
 // Persisted identity + configuration for an agent. NEVER add runtime or session
 // fields here (pid, tmux_pane, exec_state, last_heartbeat_*) — those go on
 // Agent_Record in registry.odin so they stay in-memory only. Daemon is the
@@ -21,6 +25,7 @@ Agent_Instance_Record :: struct {
 	project_id: string,
 	run_dir: string,
 	model_tier: string,
+	state: string,
 	created_unix_ms: i64,
 	updated_unix_ms: i64,
 	archived_at_unix_ms: i64,
@@ -42,6 +47,7 @@ Agent_Instance_Event :: struct {
 	project_id: string,
 	run_dir: string,
 	model_tier: string,
+	state: string,
 	current_task_id: string,
 	current_task_since: i64,
 	last_needed_at_unix_ms: i64,
@@ -54,12 +60,14 @@ agent_instance_records: [AGENT_MAX_RECORDS]Agent_Instance_Record
 agent_instance_record_count: int
 agent_instance_events: [AGENT_MAX_EVENTS]Agent_Instance_Event
 agent_instance_event_count: int
+agent_store_sequence: i64
 agent_store_dir: string
 agent_instance_events_path: string
 
 agent_store_init :: proc(data_dir: string) {
 	agent_instance_record_count = 0
 	agent_instance_event_count = 0
+	agent_store_sequence = 0
 	agent_store_dir = strings.clone(fmt.tprintf("%s/agents", expand_home(data_dir)))
 	agent_instance_events_path = strings.clone(fmt.tprintf("%s/instance-events.jsonl", agent_store_dir))
 	_ = os.make_directory_all(agent_store_dir)
@@ -69,7 +77,7 @@ agent_store_init :: proc(data_dir: string) {
 
 agent_store_append_event :: proc(event: Agent_Instance_Event) -> bool {
 	ev := agent_instance_event_clone(event)
-	if ev.event_id == "" do ev.event_id = strings.clone(fmt.tprintf("agent_evt_%d", router_now_unix_ms()))
+	if ev.event_id == "" do ev.event_id = strings.clone(fmt.tprintf("agent_evt_%d_%d", router_now_unix_ms(), agent_store_next_sequence()))
 	if ev.created_unix_ms == 0 do ev.created_unix_ms = router_now_unix_ms()
 	file, err := os.open(agent_instance_events_path, os.O_CREATE | os.O_APPEND | os.O_WRONLY)
 	if err != nil do return false
@@ -102,6 +110,7 @@ agent_store_apply_event :: proc(event: Agent_Instance_Event) -> bool {
 	if event.kind == .Agent_Instance_Archived {
 		rec.archived_at_unix_ms = event.created_unix_ms
 		rec.updated_unix_ms = event.created_unix_ms
+		rec.state = strings.clone(AGENT_IDENTITY_STATE_ARCHIVED)
 		return true
 	}
 	rec.agent_record_id = strings.clone(event.agent_record_id)
@@ -113,6 +122,11 @@ agent_store_apply_event :: proc(event: Agent_Instance_Event) -> bool {
 	rec.run_dir = strings.clone(event.run_dir)
 	tier := normalize_model_tier(event.model_tier)
 	rec.model_tier = strings.clone(tier)
+	identity_state := event.state
+	if identity_state == "" do identity_state = rec.state
+	if identity_state == "" do identity_state = AGENT_IDENTITY_STATE_PROVISIONED
+	if rec.archived_at_unix_ms != 0 do identity_state = AGENT_IDENTITY_STATE_ARCHIVED
+	rec.state = strings.clone(agent_identity_state_normalize(identity_state))
 	if event.current_task_since == -1 {
 		rec.current_task_id = ""
 		rec.current_task_since = 0
@@ -130,20 +144,36 @@ agent_store_apply_event :: proc(event: Agent_Instance_Event) -> bool {
 agent_record_index :: proc(agent_record_id: string) -> int { for i in 0..<agent_instance_record_count { if agent_instance_records[i].agent_record_id == agent_record_id do return i }; return -1 }
 agent_record_index_by_instance :: proc(agent_instance_id: string) -> int { for i in 0..<agent_instance_record_count { if agent_instance_records[i].agent_instance_id == agent_instance_id do return i }; return -1 }
 
-agent_instance_event_clone :: proc(e: Agent_Instance_Event) -> Agent_Instance_Event { out := e; out.event_id = strings.clone(e.event_id); out.agent_record_id = strings.clone(e.agent_record_id); out.agent_instance_id = strings.clone(e.agent_instance_id); out.display_name = strings.clone(e.display_name); out.template_id = strings.clone(e.template_id); out.provider_profile = strings.clone(e.provider_profile); out.project_id = strings.clone(e.project_id); out.run_dir = strings.clone(e.run_dir); out.model_tier = strings.clone(e.model_tier); out.current_task_id = strings.clone(e.current_task_id); out.author = strings.clone(e.author); return out }
+agent_identity_state_normalize :: proc(state: string) -> string {
+	if state == AGENT_IDENTITY_STATE_RUNNING do return AGENT_IDENTITY_STATE_RUNNING
+	if state == AGENT_IDENTITY_STATE_ARCHIVED do return AGENT_IDENTITY_STATE_ARCHIVED
+	return AGENT_IDENTITY_STATE_PROVISIONED
+}
+
+agent_record_identity_state :: proc(rec: Agent_Instance_Record) -> string {
+	if rec.archived_at_unix_ms != 0 do return AGENT_IDENTITY_STATE_ARCHIVED
+	return agent_identity_state_normalize(rec.state)
+}
+
+agent_instance_event_clone :: proc(e: Agent_Instance_Event) -> Agent_Instance_Event { out := e; out.event_id = strings.clone(e.event_id); out.agent_record_id = strings.clone(e.agent_record_id); out.agent_instance_id = strings.clone(e.agent_instance_id); out.display_name = strings.clone(e.display_name); out.template_id = strings.clone(e.template_id); out.provider_profile = strings.clone(e.provider_profile); out.project_id = strings.clone(e.project_id); out.run_dir = strings.clone(e.run_dir); out.model_tier = strings.clone(e.model_tier); out.state = strings.clone(e.state); out.current_task_id = strings.clone(e.current_task_id); out.author = strings.clone(e.author); return out }
 
 agent_instance_event_json :: proc(event: Agent_Instance_Event) -> string {
-	b := strings.builder_make(); strings.write_string(&b, `{"event_id":"`); json_write_string(&b, event.event_id); strings.write_string(&b, `","kind":"`); json_write_string(&b, fmt.tprintf("%v", event.kind)); strings.write_string(&b, `","agent_record_id":"`); json_write_string(&b, event.agent_record_id); strings.write_string(&b, `","agent_instance_id":"`); json_write_string(&b, event.agent_instance_id); strings.write_string(&b, `","display_name":"`); json_write_string(&b, event.display_name); strings.write_string(&b, `","template_id":"`); json_write_string(&b, event.template_id); strings.write_string(&b, `","provider_profile":"`); json_write_string(&b, event.provider_profile); strings.write_string(&b, `","project_id":"`); json_write_string(&b, event.project_id); strings.write_string(&b, `","run_dir":"`); json_write_string(&b, event.run_dir); strings.write_string(&b, `","model_tier":"`); json_write_string(&b, event.model_tier); strings.write_string(&b, `","current_task_id":"`); json_write_string(&b, event.current_task_id); strings.write_string(&b, `","current_task_since":`); strings.write_string(&b, fmt.tprintf("%d", event.current_task_since)); strings.write_string(&b, `,"last_needed_at_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", event.last_needed_at_unix_ms)); strings.write_string(&b, `,"order":`); strings.write_string(&b, fmt.tprintf("%d", event.order)); strings.write_string(&b, `,"author":"`); json_write_string(&b, event.author); strings.write_string(&b, `","created_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", event.created_unix_ms)); strings.write_string(&b, `}`); return strings.to_string(b)
+	b := strings.builder_make(); strings.write_string(&b, `{"event_id":"`); json_write_string(&b, event.event_id); strings.write_string(&b, `","kind":"`); json_write_string(&b, fmt.tprintf("%v", event.kind)); strings.write_string(&b, `","agent_record_id":"`); json_write_string(&b, event.agent_record_id); strings.write_string(&b, `","agent_instance_id":"`); json_write_string(&b, event.agent_instance_id); strings.write_string(&b, `","display_name":"`); json_write_string(&b, event.display_name); strings.write_string(&b, `","template_id":"`); json_write_string(&b, event.template_id); strings.write_string(&b, `","provider_profile":"`); json_write_string(&b, event.provider_profile); strings.write_string(&b, `","project_id":"`); json_write_string(&b, event.project_id); strings.write_string(&b, `","run_dir":"`); json_write_string(&b, event.run_dir); strings.write_string(&b, `","model_tier":"`); json_write_string(&b, event.model_tier); strings.write_string(&b, `","identity_state":"`); json_write_string(&b, agent_identity_state_normalize(event.state)); strings.write_string(&b, `","current_task_id":"`); json_write_string(&b, event.current_task_id); strings.write_string(&b, `","current_task_since":`); strings.write_string(&b, fmt.tprintf("%d", event.current_task_since)); strings.write_string(&b, `,"last_needed_at_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", event.last_needed_at_unix_ms)); strings.write_string(&b, `,"order":`); strings.write_string(&b, fmt.tprintf("%d", event.order)); strings.write_string(&b, `,"author":"`); json_write_string(&b, event.author); strings.write_string(&b, `","created_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", event.created_unix_ms)); strings.write_string(&b, `}`); return strings.to_string(b)
 }
 
 agent_instance_event_from_json :: proc(line: string) -> (Agent_Instance_Event, bool) {
 	kind := Agent_Instance_Event_Kind.Agent_Instance_Upserted
 	if extract_json_string(line, "kind", "") == "Agent_Instance_Archived" do kind = .Agent_Instance_Archived
-	ev := Agent_Instance_Event{event_id = extract_json_string(line, "event_id", ""), kind = kind, agent_record_id = extract_json_string(line, "agent_record_id", ""), agent_instance_id = extract_json_string(line, "agent_instance_id", ""), display_name = extract_json_string(line, "display_name", ""), template_id = extract_json_string(line, "template_id", ""), provider_profile = extract_json_string(line, "provider_profile", ""), project_id = extract_json_string(line, "project_id", ""), run_dir = extract_json_string(line, "run_dir", ""), model_tier = extract_json_string(line, "model_tier", ""), current_task_id = extract_json_string(line, "current_task_id", ""), current_task_since = i64(extract_json_int(line, "current_task_since", 0)), last_needed_at_unix_ms = i64(extract_json_int(line, "last_needed_at_unix_ms", 0)), author = extract_json_string(line, "author", ""), created_unix_ms = i64(extract_json_int(line, "created_unix_ms", 0)), order = extract_json_int(line, "order", 0)}
+	ev := Agent_Instance_Event{event_id = extract_json_string(line, "event_id", ""), kind = kind, agent_record_id = extract_json_string(line, "agent_record_id", ""), agent_instance_id = extract_json_string(line, "agent_instance_id", ""), display_name = extract_json_string(line, "display_name", ""), template_id = extract_json_string(line, "template_id", ""), provider_profile = extract_json_string(line, "provider_profile", ""), project_id = extract_json_string(line, "project_id", ""), run_dir = extract_json_string(line, "run_dir", ""), model_tier = extract_json_string(line, "model_tier", ""), state = extract_json_string(line, "identity_state", extract_json_string(line, "state", "")), current_task_id = extract_json_string(line, "current_task_id", ""), current_task_since = i64(extract_json_int(line, "current_task_since", 0)), last_needed_at_unix_ms = i64(extract_json_int(line, "last_needed_at_unix_ms", 0)), author = extract_json_string(line, "author", ""), created_unix_ms = i64(extract_json_int(line, "created_unix_ms", 0)), order = extract_json_int(line, "order", 0)}
 	return ev, ev.agent_record_id != "" || ev.agent_instance_id != ""
 }
 
-agent_new_record_id :: proc() -> string { return fmt.tprintf("agent_rec_%d", router_now_unix_ms()) }
+agent_store_next_sequence :: proc() -> i64 {
+	agent_store_sequence += 1
+	return agent_store_sequence
+}
+
+agent_new_record_id :: proc() -> string { return fmt.tprintf("agent_rec_%d_%d", router_now_unix_ms(), agent_store_next_sequence()) }
 
 agent_generated_instance_id :: proc(name, project_id: string) -> string {
 	prefix := name; if prefix == "" do prefix = "agent"
@@ -335,7 +365,7 @@ agent_store_update_work_state :: proc(agent_instance_id, current_task_id: string
 	if idx < 0 do return false
 	rec := agent_instance_records[idx]
 	now := router_now_unix_ms()
-	event := Agent_Instance_Event{kind=.Agent_Instance_Upserted, agent_record_id=rec.agent_record_id, agent_instance_id=rec.agent_instance_id, display_name=rec.display_name, template_id=rec.template_id, provider_profile=rec.provider_profile, project_id=rec.project_id, run_dir=rec.run_dir, model_tier=rec.model_tier, current_task_id=rec.current_task_id, current_task_since=rec.current_task_since, last_needed_at_unix_ms=rec.last_needed_at_unix_ms, author="autoscaler"}
+	event := Agent_Instance_Event{kind=.Agent_Instance_Upserted, agent_record_id=rec.agent_record_id, agent_instance_id=rec.agent_instance_id, display_name=rec.display_name, template_id=rec.template_id, provider_profile=rec.provider_profile, project_id=rec.project_id, run_dir=rec.run_dir, model_tier=rec.model_tier, state=rec.state, current_task_id=rec.current_task_id, current_task_since=rec.current_task_since, last_needed_at_unix_ms=rec.last_needed_at_unix_ms, author="autoscaler"}
 	if set_current {
 		event.current_task_id = current_task_id
 		event.current_task_since = now
@@ -349,6 +379,14 @@ agent_store_update_work_state :: proc(agent_instance_id, current_task_id: string
 		if updated_idx := agent_record_index_by_instance(agent_instance_id); updated_idx >= 0 do agent_store_emit_agent_update(agent_instance_records[updated_idx])
 	}
 	return ok
+}
+
+agent_store_set_identity_state :: proc(agent_instance_id, identity_state, author: string) -> bool {
+	idx := agent_record_index_by_instance(agent_instance_id)
+	if idx < 0 do return false
+	rec := agent_instance_records[idx]
+	event := Agent_Instance_Event{kind=.Agent_Instance_Upserted, agent_record_id=rec.agent_record_id, agent_instance_id=rec.agent_instance_id, display_name=rec.display_name, template_id=rec.template_id, provider_profile=rec.provider_profile, project_id=rec.project_id, run_dir=rec.run_dir, model_tier=rec.model_tier, state=agent_identity_state_normalize(identity_state), current_task_id=rec.current_task_id, current_task_since=rec.current_task_since, last_needed_at_unix_ms=rec.last_needed_at_unix_ms, author=author}
+	return agent_store_append_event(event)
 }
 
 agent_store_touch_needed :: proc(agent_instance_id: string) -> bool { return agent_store_update_work_state(agent_instance_id, "", false, true) }

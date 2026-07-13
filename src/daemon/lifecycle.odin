@@ -41,10 +41,22 @@ handle_register :: proc(client: net.TCP_Socket, body: string) {
 		}
 	}
 
+	display_name := extract_json_string(body, "display_name", "")
+	if agent_record_index_by_instance(agent_instance_id) < 0 {
+		stored_display := display_name
+		if stored_display == "" do stored_display = agent_instance_id
+		if _, _, ok := agent_record_upsert(agent_instance_id, stored_display, agent_class, "", "", "", "normal", AGENT_IDENTITY_STATE_RUNNING); !ok {
+			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent identity"}`)
+			return
+		}
+	} else {
+		_ = agent_store_set_identity_state(agent_instance_id, AGENT_IDENTITY_STATE_RUNNING, "register")
+	}
+
 	record := registry_register(
 		agent_class,
 		agent_instance_id,
-		extract_json_string(body, "display_name", ""),
+		display_name,
 		requested_agent_token,
 	)
 	agent_runtime_tracker_observe_register(agent_instance_id, record.agent_token)

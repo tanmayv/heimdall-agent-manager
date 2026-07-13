@@ -42,6 +42,13 @@ team_service_create_for_chain :: proc(project_id, chain_id, kind_key, name, coor
 				member.is_user_proxy = true
 				member.route_to = HUMAN_RECIPIENT_ID
 				member.agent_instance_id = ""
+			} else {
+				rec_id, provision_ok := team_service_provision_member_agent(member.agent_instance_id, project_id, role.role_key, role.agent_template_id, role.default_provider, role.default_tier)
+				if !provision_ok {
+					fmt.println("team_service_create_for_chain failed to provision agent identity", team_id, member.agent_instance_id)
+					return ""
+				}
+				member.agent_record_id = rec_id
 			}
 			append(&members, member)
 		}
@@ -84,8 +91,31 @@ team_service_add_member :: proc(team_id, role_key, agent_instance_id: string) ->
 	}
 	team, _ := team_db_get_team(team_service_db, team_id)
 	member := Team_Member_Record{team_member_id = team_service_member_id(team_id, role_key, next_index), team_id = team_id, role_key = role_key, role_index = next_index, agent_instance_id = team_service_member_agent_instance_id(team.project_id, team.chain_id, team_id, role_key, next_index), route_to = agent_instance_id}
+	template_id, provider, tier := team_service_role_defaults(team.kind, role_key)
+	rec_id, provision_ok := team_service_provision_member_agent(member.agent_instance_id, team.project_id, role_key, template_id, provider, tier)
+	if !provision_ok do return Team_Member_Record{}, false, "agent identity provision failed"
+	member.agent_record_id = rec_id
 	if !team_db_insert_member(team_service_db, member) do return Team_Member_Record{}, false, "add member failed"
 	return member, true, "added"
+}
+
+team_service_provision_member_agent :: proc(agent_instance_id, project_id, role_key, template_id, provider_profile, model_tier: string) -> (string, bool) {
+	if agent_instance_id == "" do return "", true
+	template := template_id
+	if template == "" do template = derive_agent_class(agent_instance_id)
+	tier := model_tier
+	if tier == "" do tier = "normal"
+	rec_id, _, ok := agent_record_upsert(agent_instance_id, agent_instance_id, template, provider_profile, project_id, "", tier, AGENT_IDENTITY_STATE_PROVISIONED)
+	return rec_id, ok
+}
+
+team_service_role_defaults :: proc(kind_key, role_key: string) -> (string, string, string) {
+	kind := team_kind_get(kind_key)
+	if kind == nil do return "", "", "normal"
+	for role in kind.roles {
+		if role.role_key == role_key do return role.agent_template_id, role.default_provider, role.default_tier
+	}
+	return "", "", "normal"
 }
 
 team_service_member_id :: proc(team_id, role_key: string, role_index: int) -> string {

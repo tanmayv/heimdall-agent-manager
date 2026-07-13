@@ -155,6 +155,7 @@ handle_agents_disassociate :: proc(client: net.TCP_Socket, body: string) {
 // agent_record_id and the final model_tier, or ("", "") on failure.
 agent_record_upsert :: proc(
 	agent_instance_id, display_label, template_id, provider_profile, project_id, run_dir_override, model_tier: string,
+	identity_state: string = "",
 ) -> (agent_record_id: string, final_tier: string, ok: bool) {
 	if template_id == "guide" && !guide_agent_is_singleton(agent_instance_id) {
 		fmt.printfln("GUIDE_LAUNCH ts_unix_ms=%d stage=record_upsert_rejected target=%s template=%s reason=guide_template_reserved", router_now_unix_ms(), agent_instance_id, template_id)
@@ -169,16 +170,19 @@ agent_record_upsert :: proc(
 	tier := normalize_model_tier(model_tier)
 	pp := provider_profile
 	resolved_project_id := project_id
+	state := identity_state
 	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 {
 		rec_id = agent_instance_records[idx].agent_record_id
 		if run_dir == "" do run_dir = agent_instance_records[idx].run_dir
 		if pp == "" do pp = agent_instance_records[idx].provider_profile
+		if state == "" do state = agent_instance_records[idx].state
 		// Empty project_id from caller (e.g. /agents/start with no body project_id)
 		// must NOT clobber the stored association. Use the stored value as the
 		// fallback; explicit disassociation goes through /agents/disassociate.
 		if resolved_project_id == "" do resolved_project_id = agent_instance_records[idx].project_id
 	}
 	if pp == "" do pp = "pi"
+	if state == "" do state = AGENT_IDENTITY_STATE_PROVISIONED
 	ev := Agent_Instance_Event{
 		kind = .Agent_Instance_Upserted,
 		agent_record_id = rec_id,
@@ -189,6 +193,7 @@ agent_record_upsert :: proc(
 		project_id = resolved_project_id,
 		run_dir = run_dir,
 		model_tier = tier,
+		state = agent_identity_state_normalize(state),
 		author = "api",
 	}
 	if !agent_store_append_event(ev) do return "", "", false
@@ -300,6 +305,7 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 	strings.write_string(builder, `","created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.created_unix_ms))
 	strings.write_string(builder, `,"updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.updated_unix_ms))
 	strings.write_string(builder, `,"archived_at_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.archived_at_unix_ms))
+	strings.write_string(builder, `,"identity_state":"`); json_write_string(builder, agent_record_identity_state(rec))
 	strings.write_string(builder, `,"current_task_id":"`); json_write_string(builder, rec.current_task_id)
 	strings.write_string(builder, `","current_task_since":`); strings.write_string(builder, fmt.tprintf("%d", rec.current_task_since))
 	strings.write_string(builder, `,"last_needed_at_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.last_needed_at_unix_ms))
