@@ -852,14 +852,7 @@ task_service_comment_resolve :: proc(cmd: Task_Comment_Resolve_Command) -> Task_
 	if cmd.task_id == "" || cmd.comment_id == "" {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"comment resolve requires task_id and comment_id"}`}
 	}
-	found := false
-	for i in 0..<task_comment_count {
-		if task_comments[i].task_id == cmd.task_id && task_comments[i].comment_id == cmd.comment_id {
-			found = true
-			break
-		}
-	}
-	if !found {
+	if !store_comment_exists(cmd.task_id, cmd.comment_id) {
 		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"comment not found"}`}
 	}
 	event := Task_Event{
@@ -1259,6 +1252,8 @@ task_user_proxy_reviewer_for :: proc(state: Task_State, user_id: string) -> (str
 		team_id = team.team_id
 	}
 	members := team_db_list_members(team_service_db, team_id)
+	parts := store_participants_of(state.task_id)
+	defer delete(parts)
 	for member in members {
 		if !member.is_user_proxy do continue
 		if member.route_to != user_id do continue
@@ -1266,9 +1261,7 @@ task_user_proxy_reviewer_for :: proc(state: Task_State, user_id: string) -> (str
 		if default_rev != "" && task_reviewer_matches_user_proxy_member(default_rev, member) {
 			return default_rev, true
 		}
-		for i in 0..<task_participant_count {
-			p := task_participants[i]
-			if p.task_id != state.task_id do continue
+		for p in parts {
 			if p.role != "lgtm_required" && p.role != "lgtm_optional" do continue
 			if p.agent_instance_id == member.role_key || p.agent_instance_id == member.route_to || (member.agent_record_id != "" && p.agent_instance_id == member.agent_record_id) {
 				return p.agent_instance_id, true

@@ -159,9 +159,9 @@ handle_get_task_comments :: proc(client: net.TCP_Socket, task_id: string, ctx: ^
 	b := strings.builder_make()
 	strings.write_string(&b, `{"comments":[`)
 	first := true
-	for i in 0..<task_comment_count {
-		c := task_comments[i]
-		if c.task_id != task_id do continue
+	comments := store_comments_of(task_id)
+	defer delete(comments)
+	for c in comments {
 		if unresolved_only && c.resolved do continue
 		if !first do strings.write_string(&b, `,`)
 		first = false

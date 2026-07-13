@@ -133,9 +133,10 @@ task_reviewer_is_user_review :: proc(state: Task_State, reviewer: string) -> boo
 }
 
 task_required_reviewer_agent_instance_id :: proc(state: Task_State) -> string {
-	for i in 0..<task_participant_count {
-		p := task_participants[i]
-		if p.task_id == state.task_id && p.role == "lgtm_required" {
+	parts := store_participants_of(state.task_id)
+	defer delete(parts)
+	for p in parts {
+		if p.role == "lgtm_required" {
 			return p.agent_instance_id
 		}
 	}
@@ -154,9 +155,10 @@ task_concrete_reviewer_agent_instance_id :: proc(state: Task_State) -> string {
 
 task_requires_user_review :: proc(state: Task_State) -> bool {
 	required_count := 0
-	for i in 0..<task_participant_count {
-		p := task_participants[i]
-		if p.task_id != state.task_id || p.role != "lgtm_required" do continue
+	parts := store_participants_of(state.task_id)
+	defer delete(parts)
+	for p in parts {
+		if p.role != "lgtm_required" do continue
 		required_count += 1
 		if task_reviewer_is_user_review(state, p.agent_instance_id) do return true
 	}
@@ -212,11 +214,7 @@ task_reviewer_active_slot_blocker :: proc(reviewer, excluding_task_id: string) -
 }
 
 task_reviewer_has_voted :: proc(task_id, reviewer: string) -> bool {
-	for i in 0..<task_lgtm_vote_count {
-		v := task_lgtm_votes[i]
-		if v.task_id == task_id && v.reviewer_agent_instance_id == reviewer do return true
-	}
-	return false
+	return store_reviewer_has_voted(task_id, reviewer)
 }
 
 // --- LGTM checks ---
@@ -224,16 +222,13 @@ task_reviewer_has_voted :: proc(task_id, reviewer: string) -> bool {
 task_all_required_lgtms_approved :: proc(task_id: string) -> bool {
 	required_count := 0
 	approved_count := 0
-	for i in 0..<task_participant_count {
-		p := task_participants[i]
-		if p.task_id != task_id || p.role != "lgtm_required" do continue
+	parts := store_participants_of(task_id)
+	defer delete(parts)
+	for p in parts {
+		if p.role != "lgtm_required" do continue
 		required_count += 1
-		for j in 0..<task_lgtm_vote_count {
-			v := task_lgtm_votes[j]
-			if v.task_id == task_id && v.reviewer_agent_instance_id == p.agent_instance_id && v.approved {
-				approved_count += 1
-				break
-			}
+		if store_reviewer_has_approved_vote(task_id, p.agent_instance_id) {
+			approved_count += 1
 		}
 	}
 	if required_count == 0 {
@@ -241,12 +236,8 @@ task_all_required_lgtms_approved :: proc(task_id: string) -> bool {
 			default_rev := task_reviewer_agent_instance_id(state)
 			if default_rev != "" {
 				required_count = 1
-				for j in 0..<task_lgtm_vote_count {
-					v := task_lgtm_votes[j]
-					if v.task_id == task_id && v.reviewer_agent_instance_id == default_rev && v.approved {
-						approved_count = 1
-						break
-					}
+				if store_reviewer_has_approved_vote(task_id, default_rev) {
+					approved_count = 1
 				}
 			}
 		}
@@ -297,8 +288,7 @@ task_actor_has_role :: proc(state: Task_State, actor, role: string) -> bool {
 		if task_coordinator_agent_instance_id(state) == actor do return true
 	case:
 	}
-	for i in 0..<task_participant_count {
-		p := task_participants[i]
+	for p in store_all_participants() {
 		if p.role != role || p.agent_instance_id != actor do continue
 		if p.task_id != state.task_id && (state.chain_id == "" || p.chain_id != state.chain_id) do continue
 		return true
@@ -354,8 +344,7 @@ task_target_for_role :: proc(state: Task_State, role: string) -> string {
 		if coord != "" do return coord
 	case:
 	}
-	for i in 0..<task_participant_count {
-		p := task_participants[i]
+	for p in store_all_participants() {
 		if p.role != role do continue
 		if p.task_id != state.task_id && (state.chain_id == "" || p.chain_id != state.chain_id) do continue
 		return p.agent_instance_id
@@ -582,9 +571,10 @@ task_not_actionable_reason :: proc(state: Task_State) -> string {
 
 task_unresolved_comments :: proc(task_id: string) -> []Task_Comment_State {
 	result := make([dynamic]Task_Comment_State)
-	for i in 0..<task_comment_count {
-		c := task_comments[i]
-		if c.task_id == task_id && !c.resolved do append(&result, c)
+	comments := store_comments_of(task_id)
+	defer delete(comments)
+	for c in comments {
+		if !c.resolved do append(&result, c)
 	}
 	return result[:]
 }
@@ -654,35 +644,33 @@ task_write_state_json :: proc(builder: ^strings.Builder, state: Task_State) {
 	// Serialize participants list
 	strings.write_string(builder, `,"participants":[`)
 	first_part := true
-	for i in 0..<task_participant_count {
-		p := task_participants[i]
-		if p.task_id == state.task_id {
-			if !first_part do strings.write_string(builder, `,`)
-			first_part = false
-			strings.write_string(builder, `{"agent_instance_id":"`)
-			json_write_string(builder, p.agent_instance_id)
-			strings.write_string(builder, `","role":"`)
-			json_write_string(builder, p.role)
-			strings.write_string(builder, `"}`)
-		}
+	parts := store_participants_of(state.task_id)
+	defer delete(parts)
+	for p in parts {
+		if !first_part do strings.write_string(builder, `,`)
+		first_part = false
+		strings.write_string(builder, `{"agent_instance_id":"`)
+		json_write_string(builder, p.agent_instance_id)
+		strings.write_string(builder, `","role":"`)
+		json_write_string(builder, p.role)
+		strings.write_string(builder, `"}`)
 	}
 	strings.write_string(builder, `]`)
 
 	strings.write_string(builder, `,"votes":[`)
 	first_vote := true
-	for i in 0..<task_lgtm_vote_count {
-		v := task_lgtm_votes[i]
-		if v.task_id == state.task_id {
-			if !first_vote do strings.write_string(builder, `,`)
-			first_vote = false
-			strings.write_string(builder, `{"reviewer_agent_instance_id":"`)
-			json_write_string(builder, v.reviewer_agent_instance_id)
-			strings.write_string(builder, `","approved":`)
-			strings.write_string(builder, "true" if v.approved else "false")
-			strings.write_string(builder, `,"comment":"`)
-			json_write_string(builder, v.comment)
-			strings.write_string(builder, `"}`)
-		}
+	votes := store_votes_for(state.task_id)
+	defer delete(votes)
+	for v in votes {
+		if !first_vote do strings.write_string(builder, `,`)
+		first_vote = false
+		strings.write_string(builder, `{"reviewer_agent_instance_id":"`)
+		json_write_string(builder, v.reviewer_agent_instance_id)
+		strings.write_string(builder, `","approved":`)
+		strings.write_string(builder, "true" if v.approved else "false")
+		strings.write_string(builder, `,"comment":"`)
+		json_write_string(builder, v.comment)
+		strings.write_string(builder, `"}`)
 	}
 	strings.write_string(builder, `]}`)
 }

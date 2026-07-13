@@ -84,9 +84,9 @@ handle_task_comments :: proc(client: net.TCP_Socket, body: string) {
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"comments":[`)
 	first := true
-	for i in 0..<task_comment_count {
-		c := task_comments[i]
-		if c.task_id != task_id do continue
+	comments := store_comments_of(task_id)
+	defer delete(comments)
+	for c in comments {
 		if unresolved_only && c.resolved do continue
 		if !first do strings.write_string(&b, `,`)
 		first = false
@@ -365,9 +365,8 @@ task_store_state_json :: proc() -> string {
 		task_write_state_json(&b, state)
 	}
 	strings.write_string(&b, `],"participants":[`)
-	for i in 0..<task_participant_count {
+	for p, i in store_all_participants() {
 		if i > 0 do strings.write_string(&b, `,`)
-		p := task_participants[i]
 		strings.write_string(&b, `{"task_id":"`);           json_write_string(&b, p.task_id)
 		strings.write_string(&b, `","chain_id":"`);         json_write_string(&b, p.chain_id)
 		strings.write_string(&b, `","agent_instance_id":"`); json_write_string(&b, p.agent_instance_id)

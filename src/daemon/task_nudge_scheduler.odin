@@ -477,8 +477,7 @@ task_autoscaler_has_unread_mentions :: proc(agent_instance_id: string, since_uni
 	out, ok := task_db_query_pending_notification_count(agent_instance_id)
 	if ok && out > 0 do return true
 	mention := fmt.tprintf("@%s", agent_instance_id)
-	for i in 0..<task_comment_count {
-		c := task_comments[i]
+	for c in store_all_comments() {
 		if c.resolved do continue
 		if since_unix_ms > 0 && c.created_unix_ms <= since_unix_ms do continue
 		if strings.contains(c.body, agent_instance_id) || strings.contains(c.body, mention) do return true

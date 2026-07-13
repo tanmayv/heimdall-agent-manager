@@ -164,6 +164,54 @@ store_reviewer_has_voted :: proc(task_id, reviewer: string) -> bool {
 	return false
 }
 
+store_all_participants :: proc() -> []Task_Participant {
+	return task_participants[:task_participant_count]
+}
+
+store_participant_count :: proc() -> int {
+	return task_participant_count
+}
+
+store_all_comments :: proc() -> []Task_Comment_State {
+	return task_comments[:task_comment_count]
+}
+
+store_comment_count :: proc() -> int {
+	return task_comment_count
+}
+
+store_all_votes :: proc() -> []Task_LGTM_Vote_State {
+	return task_lgtm_votes[:task_lgtm_vote_count]
+}
+
+store_vote_count :: proc() -> int {
+	return task_lgtm_vote_count
+}
+
+store_participants_in_chain :: proc(chain_id: string, allocator := context.allocator) -> []Task_Participant {
+	out := make([dynamic]Task_Participant, 0, 0, allocator)
+	for i in 0..<task_participant_count {
+		if task_participants[i].chain_id == chain_id do append(&out, task_participants[i])
+	}
+	return out[:]
+}
+
+store_reviewer_has_approved_vote :: proc(task_id, reviewer: string) -> bool {
+	for i in 0..<task_lgtm_vote_count {
+		v := task_lgtm_votes[i]
+		if v.task_id == task_id && v.reviewer_agent_instance_id == reviewer && v.approved do return true
+	}
+	return false
+}
+
+store_comment_exists :: proc(task_id, comment_id: string) -> bool {
+	for i in 0..<task_comment_count {
+		c := task_comments[i]
+		if c.task_id == task_id && c.comment_id == comment_id do return true
+	}
+	return false
+}
+
 // --- Mutations (destined to be the ONLY writers of the arrays + counts) ----
 
 // store_append_event is the write funnel; it delegates to the existing entry so

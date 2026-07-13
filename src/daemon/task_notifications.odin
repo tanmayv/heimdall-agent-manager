@@ -130,9 +130,9 @@ task_recipients_for_role :: proc(state: Task_State, role: string) -> [dynamic]st
 		c := task_coordinator_agent_instance_id(state)
 		if c != "" do append(&out, c)
 	}
-	for i in 0..<task_participant_count {
-		p := task_participants[i]
-		if p.task_id != state.task_id do continue
+	parts := store_participants_of(state.task_id)
+	defer delete(parts)
+	for p in parts {
 		if p.role != role do continue
 		if p.agent_instance_id == "" do continue
 		append(&out, p.agent_instance_id)
@@ -164,9 +164,9 @@ task_actionable_recipients :: proc(state: Task_State, status: string) -> (recipi
 	}
 
 	// Subscribers are always included but reason=subscriber so we can filter later.
-	for i in 0..<task_participant_count {
-		p := task_participants[i]
-		if p.task_id != state.task_id do continue
+	parts := store_participants_of(state.task_id)
+	defer delete(parts)
+	for p in parts {
 		if p.role != "subscriber" do continue
 		if p.agent_instance_id == "" do continue
 		if seen[p.agent_instance_id] do continue
@@ -268,9 +268,9 @@ task_notify_all_lgtm_required :: proc(task_id, chain_id: string) {
 	has_required   := false
 	notified_count := 0
 	user_proxy_required := false
-	for i in 0..<task_participant_count {
-		p := task_participants[i]
-		if p.task_id != task_id do continue
+	parts := store_participants_of(task_id)
+	defer delete(parts)
+	for p in parts {
 		if p.role != "lgtm_required" do continue
 		has_required = true
 		if task_reviewer_is_user_review(state, p.agent_instance_id) {
@@ -361,12 +361,12 @@ task_notify_role :: proc(state: Task_State, role, payload, author_agent_instance
 
 task_notify_participants_by_role :: proc(task_id, chain_id, role, payload, skip_agent_instance_id, author_agent_instance_id: string) -> bool {
 	sent := false
-	for i in 0..<task_participant_count {
-		p := task_participants[i]
+	parts := store_participants_of(task_id)
+	defer delete(parts)
+	for p in parts {
 		if p.role != role do continue
 		if p.agent_instance_id == skip_agent_instance_id do continue
 		if p.agent_instance_id == author_agent_instance_id do continue
-		if p.task_id != task_id do continue
 		sent = task_notify_recipient(p.agent_instance_id, payload) || sent
 	}
 	return sent
