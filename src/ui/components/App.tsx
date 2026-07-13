@@ -57,6 +57,7 @@ import { refreshMemory, decideMemoryProposal, fetchMemoryDetail, memoryEventRece
 import { dismissToast, showToast } from '../store/toastSlice';
 import Markdown from './Markdown';
 import { updateUrlParams, useUrlParams } from './useUrlParams';
+import { VimSidebarProvider, VimEditButton } from './VimSidebar';
 
 type Chain = {
   chainId: string;
@@ -781,7 +782,8 @@ export default function App() {
   }, [chainCreationProgress, creationProgressState?.coordinatorReady, openChain]);
 
   return (
-    <div className="h-screen overflow-hidden bg-[#08090b] text-zinc-100">
+    <VimSidebarProvider>
+      <div className="h-screen overflow-hidden bg-[#08090b] text-zinc-100">
       <div className="flex h-full">
         <SurfaceRail
           surface={home.surface}
@@ -1129,6 +1131,7 @@ export default function App() {
         />
       )}
     </div>
+    </VimSidebarProvider>
   );
 }
 
@@ -1309,7 +1312,16 @@ function MergeDecisionCard({ decision, chain, onMerge, onOpen, onOpenPreview }: 
       )}
 
       <div className="mt-3">
-        <label className="block text-xs text-zinc-500 uppercase tracking-wider">Custom Instructions (MD-1)</label>
+        <div className="flex items-center justify-between mb-1">
+          <label className="block text-xs text-zinc-500 uppercase tracking-wider">Custom Instructions (MD-1)</label>
+          <VimEditButton
+            debugId={`merge-instructions-vim-edit-btn-${decision.chainId}`}
+            title={`Merge Instructions #${decision.chainId}`}
+            value={instructions}
+            onApply={(val) => setInstructions(val)}
+            lang="markdown"
+          />
+        </div>
         <textarea
           data-debug-id={`merge-instructions-${decision.chainId}`}
           value={instructions}
@@ -2608,7 +2620,16 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ex
                     {busyAction.endsWith(task.taskId) && <span className="self-center text-xs text-sky-200">Working…</span>}
                   </div>
                   <div className="mt-3 rounded-xl bg-black/20 p-3">
-                    <div className="text-xs uppercase tracking-wider text-zinc-500">Nudge / Vote</div>
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs uppercase tracking-wider text-zinc-500">Nudge / Vote</div>
+                      <VimEditButton
+                        debugId={`task-detail-nudge-vim-edit-btn-${task.taskId}`}
+                        title={`Task Nudge #${task.taskId}`}
+                        value={nudgeDraft || ''}
+                        onApply={(val) => onNudgeDraft(val)}
+                        lang="markdown"
+                      />
+                    </div>
                     <textarea data-debug-id={`task-detail-nudge-textarea-${task.taskId}`} value={nudgeDraft} onChange={(event) => onNudgeDraft(event.target.value)} rows={2} className="mt-2 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
                     <div className="mt-2 flex flex-wrap gap-2">
                         <button data-debug-id={`task-detail-nudge-btn-${task.taskId}`} disabled={Boolean(busyAction) || !String(nudgeDraft || '').trim()} onClick={() => runAction(`nudge-${task.taskId}`, () => onNudgeTask(task, nudgeDraft))} className="rounded-xl bg-white/10 px-3 py-2 text-xs hover:bg-white/15 disabled:opacity-60">Send nudge</button>
@@ -2637,7 +2658,17 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ex
                         ))}
                       </div>
                     )}
-                    <textarea data-debug-id={`task-detail-comment-textarea-${task.taskId}`} value={commentDraft} onChange={(event) => onCommentDraft(event.target.value)} rows={2} placeholder="Add a task comment…" className="mt-3 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
+                    <div className="mt-3 flex items-center justify-between">
+                      <span className="text-xs uppercase tracking-wider text-zinc-500">New Comment</span>
+                      <VimEditButton
+                        debugId={`task-detail-comment-vim-edit-btn-${task.taskId}`}
+                        title={`Comment on #${task.taskId}`}
+                        value={commentDraft || ''}
+                        onApply={(val) => onCommentDraft(val)}
+                        lang="markdown"
+                      />
+                    </div>
+                    <textarea data-debug-id={`task-detail-comment-textarea-${task.taskId}`} value={commentDraft} onChange={(event) => onCommentDraft(event.target.value)} rows={2} placeholder="Add a task comment…" className="mt-2 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
                     <button data-debug-id={`task-detail-comment-submit-btn-${task.taskId}`} disabled={Boolean(busyAction) || !String(commentDraft || '').trim()} onClick={() => runAction(`comment-${task.taskId}`, async () => { const body = String(commentDraft || '').trim(); if (!body) return; await onAddComment(task, body); onCommentDraft(''); setCommentsOpenByTaskId((prev) => ({ ...prev, [task.taskId]: true })); })} className="mt-2 rounded-xl bg-sky-400 px-3 py-2 text-xs font-semibold text-black hover:bg-sky-300 disabled:opacity-60">Add comment</button>
                   </div>
                 </div>
@@ -2875,7 +2906,16 @@ function NewProjectModal({ creating, error, onClose, onSubmit }: any) {
         </label>
 
         <label className="mt-4 block text-sm text-zinc-300">
-          Description
+          <div className="flex items-center justify-between mb-1">
+            <span>Description</span>
+            <VimEditButton
+              debugId="new-project-description-vim-edit-btn"
+              title="New Project Description"
+              value={description}
+              onApply={(val) => setDescription(val)}
+              lang="markdown"
+            />
+          </div>
           <textarea data-debug-id="new-project-description-textarea" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Optional project description" rows={3} className="mt-1 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
         </label>
 
@@ -3007,7 +3047,16 @@ function NewChainModal({ projectId, projects, agents, creating, error, onClose, 
 
         {scaffold !== 'none' && (
           <label className="mt-4 block text-sm text-zinc-300">
-            Goal
+            <div className="flex items-center justify-between mb-1">
+              <span>Goal</span>
+              <VimEditButton
+                debugId="new-chain-goal-vim-edit-btn"
+                title="Task Chain Goal"
+                value={goal}
+                onApply={(val) => setGoal(val)}
+                lang="markdown"
+              />
+            </div>
             <textarea data-debug-id="new-chain-goal-textarea" value={goal} onChange={(event) => setGoal(event.target.value)} placeholder="What should this chain accomplish?" rows={4} className="mt-1 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
           </label>
         )}

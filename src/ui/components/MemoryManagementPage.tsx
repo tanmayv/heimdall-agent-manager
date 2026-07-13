@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import Markdown from './Markdown';
+import { VimEditButton } from './VimSidebar';
 import {
   decideMemoryProposal,
   fetchMemoryDetail,
@@ -568,7 +569,16 @@ function FilterSelect({ debugId, label, value, onChange, options, includeAny = t
 function TextArea({ debugId, label, value, onChange, rows, placeholder }: any) {
   return (
     <label className="block text-sm text-zinc-300">
-      <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">{label}</div>
+      <div className="flex items-center justify-between mb-1">
+        <div className="text-xs uppercase tracking-wide text-zinc-500">{label}</div>
+        <VimEditButton
+          debugId={`${debugId}-vim-edit-btn`}
+          title={label || 'Memory Content'}
+          value={value || ''}
+          onApply={onChange}
+          lang={String(debugId || '').includes('json') ? 'json' : 'markdown'}
+        />
+      </div>
       <textarea data-debug-id={debugId} value={value} onChange={(event) => onChange(event.target.value)} rows={rows} placeholder={placeholder} className="w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
     </label>
   );

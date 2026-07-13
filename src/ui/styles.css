@@ -1,6 +1,7 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+@import '@vimee/shiki-editor/styles.css';
 
 :root {
   color-scheme: dark;
@@ -401,5 +402,35 @@ body {
     opacity: 1;
   }
 }
+
+/* Vimee Editor Customization */
+.vimee-editor-container {
+  --sv-font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --sv-font-size: 13px;
+  --sv-line-height: 1.6;
+  --sv-gutter-color: #52525b;
+  --sv-cursor-color: #10b981;
+  --sv-statusline-bg: #13151c;
+  --sv-statusline-fg: #d4d4d8;
+  --sv-mode-insert-color: #38bdf8;
+  --sv-mode-visual-color: #c084fc;
+  --sv-selection-bg: rgba(16, 185, 129, 0.22);
+}
+
+.vimee-editor-container .sv-container {
+  background-color: transparent !important;
+  height: 100%;
+}
+
+.vimee-editor-container .sv-code-area {
+  padding: 16px;
+}
+
+.vimee-editor-container .sv-statusline {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 6px 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
 
 

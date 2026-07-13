@@ -15,10 +15,14 @@
   },
   "dependencies": {
     "@reduxjs/toolkit": "^2.2.8",
+    "@vimee/core": "^0.3.0",
+    "@vimee/react": "^0.3.0",
+    "@vimee/shiki-editor": "^0.2.0",
     "lucide-react": "^1.21.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "react-redux": "^9.1.2"
+    "react-redux": "^9.1.2",
+    "shiki": "^4.3.1"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",

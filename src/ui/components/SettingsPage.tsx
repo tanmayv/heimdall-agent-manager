@@ -5,6 +5,7 @@ import { TEAM_KIND_METADATA, paceLabel, taskCountLabel, wantsVcsLabel } from './
 import { fetchPreferences, fetchSelectedChat, refreshSettingsCatalog, saveUserPreference, selectAgent, sendMessageToSelectedAgent } from '../store/chatSlice';
 import { refreshMemory } from '../store/memorySlice';
 import { clearProjectError, deleteProjectFromUi, fetchProjectDetail, refreshProjects, selectProject, updateProjectFromUi } from '../store/projectSlice';
+import { VimEditButton } from './VimSidebar';
 
 const SETTINGS_ITEMS = [
   { key: 'templates', label: 'Agent templates' },
@@ -200,7 +201,17 @@ function ProjectsPanel({ projects, selectedProjectId, selectedProject, loading, 
               <label className="block text-sm text-zinc-300">Name
                 <input data-debug-id="settings-project-name-input" value={name} onChange={(event) => setName(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
               </label>
-              <label className="block text-sm text-zinc-300">Description
+              <label className="block text-sm text-zinc-300">
+                <div className="flex items-center justify-between mb-1">
+                  <span>Description</span>
+                  <VimEditButton
+                    debugId="settings-project-description-vim-edit-btn"
+                    title="Edit Project Description"
+                    value={description}
+                    onApply={(newVal) => setDescription(newVal)}
+                    lang="markdown"
+                  />
+                </div>
                 <textarea data-debug-id="settings-project-description-textarea" value={description} onChange={(event) => setDescription(event.target.value)} rows={5} className="mt-1 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
               </label>
               <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
