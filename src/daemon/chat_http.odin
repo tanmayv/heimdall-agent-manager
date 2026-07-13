@@ -43,7 +43,6 @@ handle_chat_send_to_coordinator :: proc(client: net.TCP_Socket, body: string) {
 	}
 	user_id := sender
 	if itype != "user" do user_id = "operator@local"
-	boot_requested := task_autoscaler_ensure_chain_coordinator(chain_id, "coordinator_message", "high")
 	message_id, ok := chat_store_append_message_with_chain(user_id, coordinator, "user_to_agent", message_body, false, chain_id)
 	if !ok {
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"append chat failed"}`)
@@ -56,8 +55,8 @@ handle_chat_send_to_coordinator :: proc(client: net.TCP_Socket, body: string) {
 	strings.write_string(&b, `{"ok":true,"message_id":"`); json_write_string(&b, message_id)
 	strings.write_string(&b, `","chain_id":"`); json_write_string(&b, chain_id)
 	strings.write_string(&b, `","superseded_approvals":`); strings.write_string(&b, fmt.tprintf("%d", superseded))
-	strings.write_string(&b, `","agent_instance_id":"`); json_write_string(&b, coordinator)
-	strings.write_string(&b, `","coordinator_boot_requested":`); strings.write_string(&b, "true" if boot_requested else "false")
+	strings.write_string(&b, `,"agent_instance_id":"`); json_write_string(&b, coordinator)
+	strings.write_string(&b, `","coordinator_boot_requested":false`)
 	strings.write_string(&b, `}`)
 	write_response(client, 200, "OK", strings.to_string(b))
 }

@@ -338,6 +338,16 @@ agent_runtime_tracker_observe_ready_or_heartbeat :: proc(agent_instance_id, sour
 }
 
 agent_runtime_tracker_apply_startup_report :: proc(agent_instance_id, status, reason_code, safe_diagnostic, provider_profile, run_dir, tmux_pane: string) -> bool {
+	if idx := registry_find_agent(agent_instance_id); idx >= 0 {
+		ag := &agents[idx]
+		if ag.startup_status == "ready" && ag.startup_reason_code == "start_success" && reason_code == "no_pattern_matched" && (status == "startup_unknown" || status == "startup_blocked") {
+			if provider_profile != "" do ag.provider_profile = strings.clone(provider_profile)
+			if run_dir != "" do ag.run_dir = strings.clone(run_dir)
+			if tmux_pane != "" do ag.tmux_pane = strings.clone(tmux_pane)
+			fmt.printfln("AGENT_TRACKER ts_unix_ms=%d event=startup_report_ignored agent=%s incoming_status=%s incoming_reason=%s preserved_status=%s preserved_reason=%s", router_now_unix_ms(), agent_instance_id, status, reason_code, ag.startup_status, ag.startup_reason_code)
+			return true
+		}
+	}
 	if !registry_update_startup(agent_instance_id, status, reason_code, safe_diagnostic, provider_profile, run_dir, tmux_pane) do return false
 	if status == "starting" || status == "ready" do _ = agent_runtime_tracker_clear_stop_request(agent_instance_id, "startup_report")
 	agent_runtime_tracker_observe_ready_or_heartbeat(agent_instance_id, "startup_report")
