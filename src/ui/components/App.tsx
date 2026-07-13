@@ -2318,7 +2318,9 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
     }
     onOpenTask?.(taskId);
   };
-  const hasWorkspace = Boolean(chain.vcsWorkspaceId || workspace?.workspace_id);
+  const chainRepoDiffSupported = Boolean(chain.repoDiffSupported || chain.repo_diff_supported);
+  const workspaceForDisplay = workspace || (chainRepoDiffSupported ? { repo_diff_supported: true, diff_base_sha: chain.diffBaseSha || chain.diff_base_sha || '' } : null);
+  const hasWorkspace = Boolean(chain.vcsWorkspaceId || workspaceForDisplay?.workspace_id || workspaceForDisplay?.repo_diff_supported || workspaceForDisplay?.repoDiffSupported || chainRepoDiffSupported);
   const submit = () => {
     const body = draft.trim();
     if (!body) return;
@@ -2395,7 +2397,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
         <div data-debug-id="chain-workspace-row" className="mt-8">
           <WorkspaceBox
             chainId={chain.chainId}
-            workspace={workspace}
+            workspace={workspaceForDisplay}
             preview={preview}
             diffOpen={diffOpen}
             diffData={diffData}
@@ -2737,38 +2739,48 @@ function MergePreviewSummary({ preview }: { preview: any }) {
 
 function WorkspaceBox({ chainId, workspace, preview, diffOpen, diffData, onFetchDiff, onToggleDiff, onRescan, onPreviewMerge }: any) {
   const files = workspace?.status?.files || workspace?.files || [];
+  const isRepoLevel = Boolean((workspace?.repo_diff_supported || workspace?.repoDiffSupported) && !workspace?.workspace_id);
   const [selectedFile, setSelectedFile] = useState('');
+  const diffKey = selectedFile || '';
+  const currentDiff = diffData?.[diffKey];
+  const repoBaseSha = workspace?.diff_base_sha || workspace?.diffBaseSha || '';
+  const diffLabel = currentDiff?.diff_label || currentDiff?.diffLabel || workspace?.diff_label || workspace?.diffLabel || (isRepoLevel ? (repoBaseSha ? 'Changes since chain started (whole repo)' : 'Uncommitted changes') : 'Worktree changes');
 
-  // Auto-select the first file when files load
+  // Auto-select the first file when files load. Repo-level chains may still use
+  // an empty file selection to fetch the whole-repo diff when no file list exists.
   useEffect(() => {
     if (files.length > 0 && !selectedFile) setSelectedFile(files[0].path || '');
   }, [files, selectedFile]);
 
-  // Fetch the diff when a file is selected and the diff modal is open
+  // Fetch the diff only after the user opens the diff panel.
   useEffect(() => {
-    if (diffOpen && selectedFile && (!diffData || !diffData[selectedFile])) {
-      onFetchDiff?.(selectedFile);
+    if (diffOpen && !currentDiff) {
+      onFetchDiff?.(diffKey);
     }
-  }, [diffOpen, selectedFile, diffData, onFetchDiff]);
+  }, [diffOpen, diffKey, currentDiff, onFetchDiff]);
 
   return (
     <section className="rounded-2xl border border-sky-400/20 bg-sky-400/[0.04] p-4">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h2 className="font-semibold">Workspace</h2>
-          <div className="mt-2 text-sm text-zinc-300">{workspace?.branch_or_change || workspace?.branchOrChange || workspace?.workspace_id || chainId}</div>
-          <div className="mt-1 text-xs text-zinc-500">base {workspace?.base_ref || workspace?.baseRef || 'main'} · {workspace?.path || 'workspace path pending'}</div>
-          <div className="mt-2 text-sm text-zinc-400">{workspace?.status?.summary_line || workspace?.status || 'Workspace status loads on focus/re-scan.'}</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="font-semibold">Workspace</h2>
+            <span data-debug-id="workspace-diff-mode-label" className="rounded-full bg-sky-400/10 px-2 py-0.5 text-xs text-sky-100">{diffLabel}</span>
+          </div>
+          <div className="mt-2 text-sm text-zinc-300">{workspace?.branch_or_change || workspace?.branchOrChange || workspace?.workspace_id || (isRepoLevel ? 'repo-level' : chainId)}</div>
+          <div className="mt-1 text-xs text-zinc-500">base {workspace?.base_ref || workspace?.baseRef || workspace?.diff_base_sha || workspace?.diffBaseSha || 'main'} · {workspace?.path || 'workspace path pending'}</div>
+          <div className="mt-2 text-sm text-zinc-400">{workspace?.status?.summary_line || workspace?.summary_line || workspace?.summaryLine || workspace?.status || 'Workspace status loads on focus/re-scan.'}</div>
         </div>
         <div className="flex flex-wrap justify-end gap-2">
           <button data-debug-id="workspace-refresh-btn" onClick={onRescan} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Re-scan workspace</button>
           <button data-debug-id="workspace-pull-base-btn" disabled className="rounded-xl bg-white/5 px-3 py-2 text-sm text-zinc-500">Pull base</button>
-          <button data-debug-id="workspace-preview-merge-btn" onClick={onPreviewMerge} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Preview merge</button>
+          <button data-debug-id="workspace-preview-merge-btn" onClick={isRepoLevel ? undefined : onPreviewMerge} disabled={isRepoLevel} className={isRepoLevel ? "rounded-xl bg-white/5 px-3 py-2 text-sm text-zinc-500" : "rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15"}>Preview merge</button>
           <button data-debug-id="workspace-show-diff-btn" onClick={onToggleDiff} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Show diff</button>
           <button data-debug-id="workspace-copy-diff-btn" disabled className="rounded-xl bg-white/5 px-3 py-2 text-sm text-zinc-500">Copy diff</button>
           <button data-debug-id="workspace-ask-coordinator-btn" disabled className="rounded-xl bg-white/5 px-3 py-2 text-sm text-zinc-500">Ask coordinator</button>
         </div>
       </div>
+      {isRepoLevel && <p className="mt-3 text-xs text-sky-100/80">Repo-level diffs are whole-repo/time-based and are not causally attributed to only this chain.</p>}
       <div className="mt-4 grid gap-2 md:grid-cols-2">
         {files.length === 0 ? <div className="text-sm text-zinc-500">No changed files reported.</div> : files.map((file: any, index: number) => {
           const path = file.path || `file-${index}`;
@@ -2784,11 +2796,14 @@ function WorkspaceBox({ chainId, workspace, preview, diffOpen, diffData, onFetch
       
       {preview && <MergePreviewSummary preview={preview} />}
       
-      {diffOpen && selectedFile && diffData?.[selectedFile] && (
-        <RichDiffView diffString={typeof diffData[selectedFile] === 'string' ? diffData[selectedFile] : (diffData[selectedFile].diff || diffData[selectedFile].patch)} />
+      {diffOpen && currentDiff && (
+        <>
+          <div className="mt-4 rounded-xl border border-sky-400/20 bg-sky-400/10 px-3 py-2 text-sm text-sky-100">{diffLabel}</div>
+          <RichDiffView diffString={typeof currentDiff === 'string' ? currentDiff : (currentDiff.diff || currentDiff.patch)} />
+        </>
       )}
       
-      {diffOpen && selectedFile && !diffData?.[selectedFile] && (
+      {diffOpen && !currentDiff && (
          <div className="mt-4 rounded-xl bg-black/30 p-4 text-sm text-zinc-400">Loading diff...</div>
       )}
       

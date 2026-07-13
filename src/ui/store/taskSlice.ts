@@ -42,6 +42,8 @@ function normalizeChain(chain: any) {
     status: chain.status || 'active',
     projectId: chain.project_id || chain.projectId || '',
     vcsWorkspaceId: chain.vcs_workspace_id || chain.vcsWorkspaceId || '',
+    diffBaseSha: chain.diff_base_sha || chain.diffBaseSha || '',
+    repoDiffSupported: Boolean(chain.repo_diff_supported || chain.repoDiffSupported),
     teamId: chain.team_id || chain.teamId || '',
     coordinatorAgentInstanceId: chain.coordinator_agent_instance_id || '',
     defaultReviewerAgentInstanceId: chain.default_reviewer_agent_instance_id || '',

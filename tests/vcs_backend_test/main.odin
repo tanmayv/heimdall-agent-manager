@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import vcs "odin_test:lib/vcs"
 
 main :: proc() {
@@ -23,6 +24,11 @@ main :: proc() {
 	detected := backend.detect(root)
 	if !detected.ok {
 		fmt.println("git detect failed", detected.message)
+		os.exit(1)
+	}
+	baseline_sha, baseline_ok, baseline_msg := backend.repo_head_sha(root)
+	if !baseline_ok || baseline_sha == "" {
+		fmt.println("git repo_head_sha failed", baseline_msg)
 		os.exit(1)
 	}
 	handle: vcs.Vcs_Workspace_Handle
@@ -50,9 +56,29 @@ main :: proc() {
 		fmt.println("git status missing ahead/adds", status.ahead_commits, len(status.files))
 		os.exit(1)
 	}
-	_, ok, msg = backend.workspace_diff(handle, "README.md")
-	if !ok {
-		fmt.println("git workspace_diff failed", msg)
+	workspace_diff: string
+	workspace_diff, ok, msg = backend.workspace_diff(handle, "README.md")
+	if !ok || !strings.contains(workspace_diff, "branch change") || strings.contains(workspace_diff, "main change") {
+		fmt.println("git workspace_diff failed or changed semantics", ok, msg)
+		os.exit(1)
+	}
+	_ = os.write_entire_file(fmt.tprintf("%s/README.md", root), "dirty tracked\n")
+	_ = os.write_entire_file(fmt.tprintf("%s/untracked.txt", root), "untracked file\n")
+	repo_status: vcs.Vcs_Status
+	repo_status, ok, msg = backend.repo_status(root, baseline_sha)
+	if !ok || len(repo_status.files) < 2 {
+		fmt.println("git repo_status baseline failed", ok, msg, len(repo_status.files))
+		os.exit(1)
+	}
+	repo_diff: vcs.Vcs_Repo_Diff
+	repo_diff, ok, msg = backend.repo_diff(root, "", baseline_sha)
+	if !ok || repo_diff.mode != "repo_baseline" || repo_diff.label != "Changes since chain started (whole repo)" || repo_diff.base_sha != baseline_sha || !strings.contains(repo_diff.diff, "main change") || !strings.contains(repo_diff.diff, "dirty tracked") || !strings.contains(repo_diff.diff, "untracked file") {
+		fmt.println("git repo_diff baseline failed", ok, msg, repo_diff.mode, repo_diff.label)
+		os.exit(1)
+	}
+	repo_diff, ok, msg = backend.repo_diff(root, "", "")
+	if !ok || repo_diff.mode != "repo_uncommitted" || repo_diff.label != "Uncommitted changes" || repo_diff.base_sha != "" || !strings.contains(repo_diff.diff, "dirty tracked") || !strings.contains(repo_diff.diff, "untracked file") {
+		fmt.println("git repo_diff fallback failed", ok, msg, repo_diff.mode, repo_diff.label)
 		os.exit(1)
 	}
 	preview: vcs.Vcs_Merge_Preview
@@ -62,6 +88,12 @@ main :: proc() {
 		os.exit(1)
 	}
 	fmt.println("git ok", detected.repo_root, handle.path, handle.branch_or_change, status.summary_line, "conflicts", len(preview.conflicts))
+
+	jj_state, _, _, jj_err := os.process_exec(os.Process_Desc{command = []string{"jj", "--version"}}, context.allocator)
+	if jj_err != nil || !jj_state.success {
+		fmt.println("jj skip command unavailable")
+		return
+	}
 
 	jj_root := "/tmp/ham-vcs-jj-backend-test"
 	jj_workspaces := "/tmp/ham-vcs-jj-workspaces"
