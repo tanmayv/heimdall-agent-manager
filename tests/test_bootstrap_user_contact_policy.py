@@ -93,6 +93,26 @@ def check_bootstrap_guidance() -> None:
     forbid(src, 'CRITICAL INSTRUCTION', BOOTSTRAP_GUIDANCE)
     forbid(src, 'Always reply to user messages', BOOTSTRAP_GUIDANCE)
 
+    # RESP-2/RESP-3: the coordinator summary in the generated bootstrap must not
+    # tell coordinators to contact the user "as rarely as possible" without an
+    # exception for acknowledgements/status/pivot updates; that conflicts with
+    # proactive responsiveness. It must instead distinguish decision-gating
+    # questions (batchable) from acknowledgements/updates (send promptly).
+    forbid(src, 'reach out to the user as rarely as possible', BOOTSTRAP_GUIDANCE)
+    # The coordinator bullet must require prompt acknowledgement + pivot updates
+    # while only batching decision questions. Require these concepts on one line.
+    require_line_with_all(
+        src,
+        [
+            r"coordinator",
+            r"acknowledge[^\n]*(prompt|quick)|prompt[^\n]*acknowledg",
+            r"pivot|status update|status/pivot|another update",
+            r"decision[- ]gating|decision question|batch only|only[^\n]*decision",
+        ],
+        "RESP-2/RESP-3",
+        BOOTSTRAP_GUIDANCE,
+    )
+
 
 def check_coordinator_prompt() -> None:
     src = COORDINATOR_PROMPT.read_text(encoding="utf-8")
