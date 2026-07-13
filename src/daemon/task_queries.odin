@@ -106,7 +106,7 @@ task_reviewer_agent_instance_id :: proc(state: Task_State) -> string {
 	if default_rev != "" && default_rev != state.assignee_agent_instance_id {
 		return default_rev
 	}
-	return "operator@local"
+	return "user_proxy"
 }
 
 // --- Active slot checks ---
@@ -276,7 +276,7 @@ task_nudge_target_for_status :: proc(state: Task_State, status: Task_Status) -> 
 		return task_target_for_role(state, "assignee")
 	case .Review_Ready:
 		reviewer := task_reviewer_agent_instance_id(state)
-		if reviewer != "operator@local" do return reviewer
+		if reviewer != "operator@local" && reviewer != "user_proxy" do return reviewer
 		return task_target_for_role(state, "lgtm_required")
 	case .Approved:
 		return task_target_for_role(state, "coordinator")
@@ -493,7 +493,7 @@ task_not_actionable_reason :: proc(state: Task_State) -> string {
 		return ""
 	case .Review_Ready:
 		reviewer := task_reviewer_agent_instance_id(state)
-		if reviewer == "operator@local" do return "awaiting_user_review"
+		if reviewer == "operator@local" || reviewer == "user_proxy" do return "awaiting_user_review"
 		if blocker := task_reviewer_active_slot_blocker(reviewer, state.task_id); blocker != "" {
 			return strings.concatenate({"reviewer_busy:", blocker})
 		}
