@@ -65,7 +65,7 @@ store_tasks_for_assignee :: proc(agent_instance_id: string, allocator := context
 
 // --- Chain queries --------------------------------------------------------
 
-// store_get_chain replaces the find-then-index task_existing_chain_index pattern.
+// store_get_chain replaces the removed find-then-index chain lookup pattern.
 store_get_chain :: proc(chain_id: string) -> (Task_Chain_State, bool) {
 	idx := task_chain_index_of(chain_id)
 	if idx < 0 do return Task_Chain_State{}, false
@@ -84,6 +84,17 @@ store_chains_for_project :: proc(project_id: string, allocator := context.alloca
 	out := make([dynamic]Task_Chain_State, 0, 0, allocator)
 	for i in 0..<task_chain_count {
 		if task_chains[i].project_id == project_id do append(&out, task_chains[i])
+	}
+	return out[:]
+}
+
+// store_all_chains returns copies of every chain in insertion order. Prefer a
+// more specific accessor when possible; this exists for the handful of callers
+// that genuinely need a full sweep.
+store_all_chains :: proc(allocator := context.allocator) -> []Task_Chain_State {
+	out := make([dynamic]Task_Chain_State, 0, task_chain_count, allocator)
+	for i in 0..<task_chain_count {
+		append(&out, task_chains[i])
 	}
 	return out[:]
 }

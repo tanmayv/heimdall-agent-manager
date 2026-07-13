@@ -94,22 +94,22 @@ task_depends_on_task :: proc(depends_on, task_id: string) -> bool {
 
 task_coordinator_agent_instance_id :: proc(state: Task_State) -> string {
 	if state.chain_id == "" do return ""
-	idx, found := task_existing_chain_index(state.chain_id)
+	chain, found := store_get_chain(state.chain_id)
 	if !found do return ""
-	return task_chains[idx].coordinator_agent_instance_id
+	return chain.coordinator_agent_instance_id
 }
 
 task_chain_default_reviewer_agent_instance_id :: proc(chain_id: string) -> string {
 	if chain_id == "" do return ""
-	idx, found := task_existing_chain_index(chain_id)
+	chain, found := store_get_chain(chain_id)
 	if !found do return ""
-	return task_chains[idx].default_reviewer_agent_instance_id
+	return chain.default_reviewer_agent_instance_id
 }
 
 task_team_id_for_state :: proc(state: Task_State) -> string {
 	if state.chain_id == "" do return ""
-	idx, found := task_existing_chain_index(state.chain_id)
-	if found && task_chains[idx].team_id != "" do return task_chains[idx].team_id
+	chain, found := store_get_chain(state.chain_id)
+	if found && chain.team_id != "" do return chain.team_id
 	team, ok := team_db_get_team_by_chain_id(team_service_db, state.chain_id)
 	if !ok do return ""
 	return team.team_id
@@ -265,16 +265,14 @@ task_all_required_lgtms_approved :: proc(task_id: string) -> bool {
 
 task_chain_allows_execution :: proc(chain_id: string) -> bool {
 	if chain_id == "" do return true
-	idx, found := task_existing_chain_index(chain_id)
+	chain, found := store_get_chain(chain_id)
 	if !found do return true
-	return task_chains[idx].status == "in_progress"
+	return chain.status == "in_progress"
 }
 
 task_active_chain_for_project :: proc(project_id: string) -> string {
 	if project_id == "" do return ""
-	for i in 0..<task_chain_count {
-		c := task_chains[i]
-		if c.project_id != project_id do continue
+	for c in store_chains_for_project(project_id) {
 		if c.status == "planning" || c.status == "in_progress" || c.status == "blocked" || c.status == "paused" {
 			return c.chain_id
 		}
@@ -532,9 +530,9 @@ task_ready_allows_auto_claim :: proc(state: Task_State) -> bool {
 
 task_chain_status_for_task :: proc(state: Task_State) -> string {
 	if state.chain_id == "" do return ""
-	idx, found := task_existing_chain_index(state.chain_id)
+	chain, found := store_get_chain(state.chain_id)
 	if !found do return ""
-	return task_chains[idx].status
+	return chain.status
 }
 
 task_not_actionable_reason :: proc(state: Task_State) -> string {
@@ -702,23 +700,9 @@ task_existing_state_index :: proc(task_id, chain_id: string) -> (int, bool) {
 	return -1, false
 }
 
-task_existing_chain_index :: proc(chain_id: string) -> (int, bool) {
-	for i in 0..<task_chain_count {
-		if task_chains[i].chain_id == chain_id do return i, true
-	}
-	return -1, false
-}
-
 task_id_exists :: proc(task_id: string) -> bool {
 	for i in 0..<task_state_count {
 		if task_states[i].task_id == task_id do return true
-	}
-	return false
-}
-
-task_chain_id_exists :: proc(chain_id: string) -> bool {
-	for i in 0..<task_chain_count {
-		if task_chains[i].chain_id == chain_id do return true
 	}
 	return false
 }
@@ -736,7 +720,7 @@ task_generate_chain_id :: proc() -> string {
 	base := router_now_unix_ms()
 	for i in 0..<1000 {
 		candidate := fmt.tprintf("chain-%x", base + i64(i))
-		if !task_chain_id_exists(candidate) do return candidate
+		if !store_chain_exists(candidate) do return candidate
 	}
 	return fmt.tprintf("chain-%x", router_now_unix_ms())
 }

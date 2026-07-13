@@ -301,26 +301,25 @@ handle_task_chain_show :: proc(client: net.TCP_Socket, body: string) {
 	_, ok := task_author_from_body(client, body)
 	if !ok do return
 	chain_id := extract_json_string(body, "chain_id", "")
-	for i in 0..<task_chain_count {
-		if task_chains[i].chain_id == chain_id {
-			b := strings.builder_make()
-			strings.write_string(&b, `{"ok":true,"chain":`)
-			task_write_chain_json(&b, task_chains[i])
-			strings.write_string(&b, `,"events":[`)
-			first := true
-			for j in 0..<task_event_count {
-				event := task_events[j]
-				if event.chain_id != chain_id || event.task_id != "" do continue
-				if !first do strings.write_string(&b, `,`)
-				first = false
-				strings.write_string(&b, task_event_json(event))
-			}
-			strings.write_string(&b, `]}`)
-			write_response(client, 200, "OK", strings.to_string(b))
-			return
-		}
+	chain, found := store_get_chain(chain_id)
+	if !found {
+		write_response(client, 404, "Not Found", `{"ok":false,"message":"chain not found"}`)
+		return
 	}
-	write_response(client, 404, "Not Found", `{"ok":false,"message":"chain not found"}`)
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"chain":`)
+	task_write_chain_json(&b, chain)
+	strings.write_string(&b, `,"events":[`)
+	first := true
+	for j in 0..<task_event_count {
+		event := task_events[j]
+		if event.chain_id != chain_id || event.task_id != "" do continue
+		if !first do strings.write_string(&b, `,`)
+		first = false
+		strings.write_string(&b, task_event_json(event))
+	}
+	strings.write_string(&b, `]}`)
+	write_response(client, 200, "OK", strings.to_string(b))
 }
 
 task_author_from_body :: proc(client: net.TCP_Socket, body: string) -> (string, bool) {
@@ -359,7 +358,7 @@ task_store_state_json :: proc() -> string {
 	strings.write_string(&b, `{"ok":true,"task_count":`)
 	strings.write_string(&b, fmt.tprintf("%d", task_state_count))
 	strings.write_string(&b, `,"chain_count":`)
-	strings.write_string(&b, fmt.tprintf("%d", task_chain_count))
+	strings.write_string(&b, fmt.tprintf("%d", store_chain_count()))
 	strings.write_string(&b, `,"event_count":`)
 	strings.write_string(&b, fmt.tprintf("%d", task_event_count))
 	strings.write_string(&b, `,"tasks":[`)
@@ -378,9 +377,9 @@ task_store_state_json :: proc() -> string {
 		strings.write_string(&b, `"}`)
 	}
 	strings.write_string(&b, `],"chains":[`)
-	for i in 0..<task_chain_count {
+	for chain, i in store_all_chains() {
 		if i > 0 do strings.write_string(&b, `,`)
-		task_write_chain_json(&b, task_chains[i])
+		task_write_chain_json(&b, chain)
 	}
 	strings.write_string(&b, `]}`)
 	return strings.to_string(b)

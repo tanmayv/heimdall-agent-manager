@@ -11,9 +11,8 @@ task_archive_chain_to_hub :: proc(chain_id: string) -> bool {
 		task_store_mark_archive_pending(chain_id, "hub disabled")
 		return false
 	}
-	idx := task_chain_index(chain_id)
-	chain := task_chains[idx]
-	if chain.final_summary == "" {
+	chain, chain_ok := store_get_chain(chain_id)
+	if !chain_ok || chain.final_summary == "" {
 		return false
 	}
 	payload := task_chain_archive_snapshot_json(chain_id)
@@ -32,8 +31,7 @@ task_archive_chain_to_hub :: proc(chain_id: string) -> bool {
 }
 
 task_chain_archive_snapshot_json :: proc(chain_id: string) -> string {
-	chain_idx := task_chain_index(chain_id)
-	chain := task_chains[chain_idx]
+	chain, _ := store_get_chain(chain_id)
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"chain_id":"`); json_write_string(&builder, chain_id)
 	strings.write_string(&builder, `","title":"`); json_write_string(&builder, chain.title)

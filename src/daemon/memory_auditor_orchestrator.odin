@@ -106,8 +106,7 @@ handle_post_task_chain_audit :: proc(client: net.TCP_Socket, body: string, ctx: 
 		if time_range != "all" {
 			since_ms = now - delta_unix_ms(time_range)
 		}
-		for i in 0..<task_chain_count {
-			chain := task_chains[i]
+		for chain in store_all_chains() {
 			if chain.status != "completed" || chain.evaluation != "good" do continue
 			if time_range == "all" || chain.completed_at_unix_ms >= since_ms {
 				append(&target_chains, strings.clone(chain.chain_id))

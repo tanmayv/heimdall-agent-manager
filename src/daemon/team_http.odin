@@ -224,8 +224,7 @@ team_member_agent_instance_id :: proc(member: Team_Member_Record) -> string {
 	if member.agent_instance_id != "" do return member.agent_instance_id
 	if idx := agent_record_index(member.agent_record_id); idx >= 0 do return agent_instance_records[idx].agent_instance_id
 	if member.role_key == "coordinator" {
-		for i in 0..<task_chain_count {
-			chain := task_chains[i]
+		for chain in store_all_chains() {
 			if chain.team_id == member.team_id do return chain.coordinator_agent_instance_id
 		}
 	}

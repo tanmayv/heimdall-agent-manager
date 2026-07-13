@@ -739,10 +739,9 @@ project_anchor_value :: proc(project: Project_Record, anchor_type, default_value
 }
 
 task_chain_project_git_repo :: proc(chain_id: string) -> (string, bool, string) {
-	chain_idx, found := task_existing_chain_index(chain_id)
+	chain, found := store_get_chain(chain_id)
 	if !found do return "", false, "chain not found"
 	if _, has_workspace := vcs_db_workspace_for_chain(chain_id); has_workspace do return "", false, "chain has dedicated workspace"
-	chain := task_chains[chain_idx]
 	if chain.project_id == "" do return "", false, "chain has no project"
 	project_idx := project_index(chain.project_id)
 	if project_idx < 0 do return "", false, "project not found"
@@ -763,15 +762,16 @@ task_chain_repo_diff_supported :: proc(chain_id: string) -> bool {
 
 task_chain_maybe_record_diff_base_sha :: proc(chain_id, reason: string) -> bool {
 	_ = reason
-	chain_idx, found := task_existing_chain_index(chain_id)
+	chain, found := store_get_chain(chain_id)
 	if !found do return false
-	if strings.trim_space(task_chains[chain_idx].diff_base_sha) != "" do return true
+	if strings.trim_space(chain.diff_base_sha) != "" do return true
 	repo, repo_ok, _ := task_chain_project_git_repo(chain_id)
 	if !repo_ok do return false
 	sha, sha_ok, _ := vcs.vcs_backend_for(.Git).repo_head_sha(repo)
 	if !sha_ok || sha == "" do return false
-	task_chains[chain_idx].diff_base_sha = strings.clone(sha)
-	if task_db_ready do return task_db_save_chain(task_chains[chain_idx])
+	chain.diff_base_sha = strings.clone(sha)
+	_ = store_upsert_chain(chain)
+	if task_db_ready do return task_db_save_chain(chain)
 	return true
 }
 
@@ -794,11 +794,10 @@ task_service_activate_chain :: proc(cmd: Task_Chain_Activate_Command) -> Task_Se
 	if cmd.chain_id == "" {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"activate requires chain_id"}`}
 	}
-	chain_idx, found := task_existing_chain_index(cmd.chain_id)
+	chain, found := store_get_chain(cmd.chain_id)
 	if !found {
 		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"chain not found"}`}
 	}
-	chain := task_chains[chain_idx]
 	if chain.status != "planning" {
 		return Task_Service_Result{ok = false, status_code = 409, message = `{"ok":false,"message":"only planning chains can be activated"}`}
 	}
@@ -980,9 +979,8 @@ task_service_participant_command :: proc(cmd: Task_Participant_Command) -> Task_
 
 task_agent_instance_has_chain_role :: proc(chain_id, agent_instance_id, role_key: string) -> bool {
 	if chain_id == "" || agent_instance_id == "" || role_key == "" do return false
-	chain_idx, chain_found := task_existing_chain_index(chain_id)
+	chain, chain_found := store_get_chain(chain_id)
 	if !chain_found do return false
-	chain := task_chains[chain_idx]
 	if chain.team_id == "" do return false
 	members := team_db_list_members(team_service_db, chain.team_id)
 	for member in members {
@@ -995,9 +993,8 @@ task_agent_instance_has_chain_role :: proc(chain_id, agent_instance_id, role_key
 
 task_agent_instance_allowed_for_chain :: proc(chain_id, agent_instance_id: string) -> bool {
 	if agent_instance_id == "" do return false
-	chain_idx, chain_found := task_existing_chain_index(chain_id)
+	chain, chain_found := store_get_chain(chain_id)
 	if !chain_found do return true
-	chain := task_chains[chain_idx]
 	if agent_instance_id == chain.coordinator_agent_instance_id || agent_instance_id == chain.default_reviewer_agent_instance_id do return true
 	if chain.team_id == "" do return true
 	members := team_db_list_members(team_service_db, chain.team_id)
@@ -1258,9 +1255,9 @@ task_service_review_vote :: proc(cmd: Task_Review_Vote_Command) -> Task_Service_
 
 task_user_proxy_reviewer_for :: proc(state: Task_State, user_id: string) -> (string, bool) {
 	if user_id == "" do return "", false
-	chain_idx, chain_found := task_existing_chain_index(state.chain_id)
+	chain, chain_found := store_get_chain(state.chain_id)
 	if !chain_found do return "", false
-	team_id := task_chains[chain_idx].team_id
+	team_id := chain.team_id
 	if team_id == "" {
 		team, ok := team_db_get_team_by_chain_id(team_service_db, state.chain_id)
 		if !ok do return "", false
@@ -1290,9 +1287,8 @@ task_notify_user_proxy_review_requests :: proc(task_id, chain_id: string) {
 	idx, found := task_existing_state_index(task_id, chain_id)
 	if !found do return
 	state := task_states[idx]
-	chain_idx, chain_found := task_existing_chain_index(state.chain_id)
+	chain, chain_found := store_get_chain(state.chain_id)
 	if !chain_found do return
-	chain := task_chains[chain_idx]
 	team_id := chain.team_id
 	if team_id == "" {
 		team, ok := team_db_get_team_by_chain_id(team_service_db, state.chain_id)
@@ -1356,9 +1352,9 @@ task_service_user_proxy_review_reply :: proc(user_id, coordinator_agent_instance
 	if !found do return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"task not found"}`}
 	state := task_states[idx]
 	if state.status != .Review_Ready do return Task_Service_Result{ok = false, status_code = 409, message = `{"ok":false,"message":"task is not pending review"}`}
-	chain_idx, chain_found := task_existing_chain_index(state.chain_id)
+	chain, chain_found := store_get_chain(state.chain_id)
 	if !chain_found do return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"chain not found"}`}
-	if coordinator_agent_instance_id != "" && task_chains[chain_idx].coordinator_agent_instance_id != coordinator_agent_instance_id {
+	if coordinator_agent_instance_id != "" && chain.coordinator_agent_instance_id != coordinator_agent_instance_id {
 		return Task_Service_Result{ok = false, status_code = 403, message = `{"ok":false,"message":"reply coordinator mismatch"}`}
 	}
 	if _, ok := task_user_proxy_reviewer_for(state, user_id); !ok {
@@ -1418,9 +1414,9 @@ task_service_auto_claim :: proc(task_id: string) {
 
 task_service_try_auto_complete_chain :: proc(chain_id: string) {
 	if chain_id == "" do return
-	chain_idx, found := task_existing_chain_index(chain_id)
+	chain, found := store_get_chain(chain_id)
 	if !found do return
-	if task_chains[chain_idx].status == "reviewing" || task_chains[chain_idx].status == "paused" || task_chains[chain_idx].status == "completed" || task_chains[chain_idx].status == "archived" do return
+	if chain.status == "reviewing" || chain.status == "paused" || chain.status == "completed" || chain.status == "archived" do return
 	if !task_all_chain_tasks_terminal(chain_id) do return
 	event := Task_Event{
 		kind                     = .Chain_Status_Changed,
@@ -1436,9 +1432,8 @@ task_service_try_auto_complete_chain :: proc(chain_id: string) {
 }
 
 task_service_ping_coordinator_for_chain_completion :: proc(chain_id: string) {
-	chain_idx, found := task_existing_chain_index(chain_id)
+	chain, found := store_get_chain(chain_id)
 	if !found do return
-	chain := task_chains[chain_idx]
 	if chain.coordinator_agent_instance_id == "" do return
 
 	message_body := fmt.tprintf(
@@ -1517,14 +1512,14 @@ task_service_update_chain :: proc(cmd: Task_Chain_Update_Command) -> Task_Servic
 	if cmd.chain_id == "" {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"chain update requires chain_id"}`}
 	}
-	chain_idx, found := task_existing_chain_index(cmd.chain_id)
+	chain, found := store_get_chain(cmd.chain_id)
 	if !found {
 		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"chain not found"}`}
 	}
 	new_coordinator := cmd.coordinator_agent_instance_id
-	if new_coordinator == "" do new_coordinator = task_chains[chain_idx].coordinator_agent_instance_id
+	if new_coordinator == "" do new_coordinator = chain.coordinator_agent_instance_id
 	new_default_reviewer, default_reviewer_normalized := task_normalize_user_reviewer(cmd.default_reviewer_agent_instance_id)
-	if new_default_reviewer == "" do new_default_reviewer = task_chains[chain_idx].default_reviewer_agent_instance_id
+	if new_default_reviewer == "" do new_default_reviewer = chain.default_reviewer_agent_instance_id
 	if new_default_reviewer != "" && new_default_reviewer == new_coordinator {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"default reviewer cannot equal coordinator"}`}
 	}
@@ -1540,7 +1535,7 @@ task_service_update_chain :: proc(cmd: Task_Chain_Update_Command) -> Task_Servic
 	}
 	event_default_reviewer := ""
 	if cmd.default_reviewer_agent_instance_id != "" do event_default_reviewer = new_default_reviewer
-	audit_body := fmt.tprintf("chain metadata updated by %s; old_description=%s; new_description=%s", cmd.author_agent_instance_id, task_chains[chain_idx].description, cmd.description)
+	audit_body := fmt.tprintf("chain metadata updated by %s; old_description=%s; new_description=%s", cmd.author_agent_instance_id, chain.description, cmd.description)
 	event := Task_Event{
 		kind                          = .Chain_Metadata_Updated,
 		chain_id                      = cmd.chain_id,
@@ -1582,11 +1577,11 @@ task_service_chain_status_command :: proc(cmd: Task_Chain_Status_Command) -> Tas
 	if cmd.chain_id == "" || cmd.status == "" {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"chain status requires chain_id and status"}`}
 	}
-	chain_idx, found := task_existing_chain_index(cmd.chain_id)
+	chain, found := store_get_chain(cmd.chain_id)
 	if !found {
 		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"chain not found"}`}
 	}
-	stored_summary := task_chains[chain_idx].final_summary
+	stored_summary := chain.final_summary
 	if cmd.status == "completed" && strings.trim_space(cmd.final_summary) == "" && stored_summary == "" {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"final_summary required for completed status"}`}
 	}
@@ -1759,8 +1754,7 @@ task_service_evaluate_chain :: proc(chain_id, evaluation, author: string) -> Tas
 	if evaluation != "good" && evaluation != "bad" && evaluation != "unreviewed" {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"invalid evaluation value. Expected: good, bad, unreviewed"}`}
 	}
-	_, found := task_existing_chain_index(chain_id)
-	if !found {
+	if !store_chain_exists(chain_id) {
 		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"chain not found"}`}
 	}
 	event := Task_Event{

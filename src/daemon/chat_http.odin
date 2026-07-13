@@ -31,12 +31,12 @@ handle_chat_send_to_coordinator :: proc(client: net.TCP_Socket, body: string) {
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"send-to-coordinator requires chain_id and body"}`)
 		return
 	}
-	idx, found := task_existing_chain_index(chain_id)
+	chain, found := store_get_chain(chain_id)
 	if !found {
 		write_response(client, 404, "Not Found", `{"ok":false,"message":"chain not found"}`)
 		return
 	}
-	coordinator := task_chains[idx].coordinator_agent_instance_id
+	coordinator := chain.coordinator_agent_instance_id
 	if coordinator == "" {
 		write_response(client, 404, "Not Found", `{"ok":false,"message":"chain has no coordinator"}`)
 		return

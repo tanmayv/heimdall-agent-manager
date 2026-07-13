@@ -65,9 +65,9 @@ handle_workspace_diff_for_chain :: proc(client: net.TCP_Socket, chain_id, path: 
 	}
 	repo, repo_ok, repo_msg := task_chain_project_git_repo(chain_id)
 	if !repo_ok { write_response(client, 404, "Not Found", workspace_error_json(repo_msg)); return }
-	chain_idx, chain_ok := task_existing_chain_index(chain_id)
+	chain, chain_ok := store_get_chain(chain_id)
 	if !chain_ok { write_response(client, 404, "Not Found", workspace_error_json("chain not found")); return }
-	result, diff_ok, msg := vcs.vcs_backend_for(.Git).repo_diff(repo, path, task_chains[chain_idx].diff_base_sha)
+	result, diff_ok, msg := vcs.vcs_backend_for(.Git).repo_diff(repo, path, chain.diff_base_sha)
 	if !diff_ok { write_response(client, 500, "Internal Server Error", workspace_error_json(msg)); return }
 	write_response(client, 200, "OK", workspace_diff_json(result.diff, result.mode, result.label, result.base_sha))
 }
@@ -128,8 +128,8 @@ handle_workspace_merge_for_chain :: proc(client: net.TCP_Socket, body, chain_id:
 
 	if mode == "chain" {
 		original_title := "Untitled Chain"
-		if chain_idx, found_chain := task_existing_chain_index(chain_id); found_chain {
-			original_title = task_chains[chain_idx].title
+		if chain, found_chain := store_get_chain(chain_id); found_chain {
+			original_title = chain.title
 		}
 		
 		merge_chain_title := fmt.tprintf("Merge: %s", original_title)
@@ -206,11 +206,11 @@ workspace_response_json :: proc(chain_id: string, include_status: bool) -> strin
 	if !repo_ok {
 		b := strings.builder_make(); strings.write_string(&b, `{"ok":false,"message":"`); json_write_string(&b, repo_msg); strings.write_string(&b, `","repo_diff_supported":false}`); return strings.to_string(b)
 	}
-	chain_idx, chain_ok := task_existing_chain_index(chain_id)
+	chain, chain_ok := store_get_chain(chain_id)
 	if !chain_ok do return `{"ok":false,"message":"chain not found","repo_diff_supported":false}`
 	status := vcs.Vcs_Status{}
-	if include_status { s, ok, _ := vcs.vcs_backend_for(.Git).repo_status(repo, task_chains[chain_idx].diff_base_sha); if ok do status = s }
-	return workspace_repo_response_json(chain_id, repo, task_chains[chain_idx].project_id, task_chains[chain_idx].diff_base_sha, status)
+	if include_status { s, ok, _ := vcs.vcs_backend_for(.Git).repo_status(repo, chain.diff_base_sha); if ok do status = s }
+	return workspace_repo_response_json(chain_id, repo, chain.project_id, chain.diff_base_sha, status)
 }
 
 workspace_diff_json :: proc(diff, mode, label, base_sha: string) -> string {

@@ -87,8 +87,8 @@ teams_v1_agent_has_team :: proc(rec: Agent_Instance_Record) -> bool {
 }
 
 teams_v1_has_unmigrated_task_chains :: proc() -> bool {
-	for i in 0..<task_chain_count {
-		if task_chains[i].team_id == "" do return true
+	for chain in store_all_chains() {
+		if chain.team_id == "" do return true
 	}
 	return false
 }
@@ -216,12 +216,14 @@ teams_v1_swe_member :: proc(team_id, agent_instance_id, role_key: string, role_i
 
 teams_v1_backfill_task_chain_team_ids :: proc(report: ^strings.Builder) -> int {
 	changed := 0
-	for i in 0..<task_chain_count {
-		if task_chains[i].team_id != "" do continue
-		task_chains[i].team_id = strings.clone(task_chain_effective_team_id(task_chains[i]))
-		if task_db_ready && task_db_save_chain(task_chains[i]) {
+	for existing in store_all_chains() {
+		if existing.team_id != "" do continue
+		chain := existing
+		chain.team_id = strings.clone(task_chain_effective_team_id(chain))
+		_ = store_upsert_chain(chain)
+		if task_db_ready && task_db_save_chain(chain) {
 			changed += 1
-			strings.write_string(report, fmt.tprintf("- `%s` -> `%s`\n", task_chains[i].chain_id, task_chains[i].team_id))
+			strings.write_string(report, fmt.tprintf("- `%s` -> `%s`\n", chain.chain_id, chain.team_id))
 		}
 	}
 	if changed == 0 do strings.write_string(report, "- no changes\n")

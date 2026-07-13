@@ -41,8 +41,8 @@ merge_lifecycle_finalize_decision :: proc(chain_id: string) {
 }
 
 merge_lifecycle_team_id :: proc(chain_id: string) -> string {
-	if idx, ok := task_existing_chain_index(chain_id); ok {
-		if tid := task_chain_effective_team_id(task_chains[idx]); tid != "" do return tid
+	if chain, ok := store_get_chain(chain_id); ok {
+		if tid := task_chain_effective_team_id(chain); tid != "" do return tid
 	}
 	if team, ok := team_db_get_team_by_chain_id(team_service_db, chain_id); ok do return team.team_id
 	return ""

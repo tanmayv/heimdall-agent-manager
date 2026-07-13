@@ -165,9 +165,8 @@ task_runtime_reconcile_task :: proc(task_id, reason, priority: string) -> bool {
 	if !found do return false
 	state := task_states[idx]
 	if state.status != .Queued && state.status != .Review_Ready && state.status != .In_Progress do return false
-	chain_idx, chain_found := task_existing_chain_index(state.chain_id)
+	chain, chain_found := store_get_chain(state.chain_id)
 	if !chain_found do return false
-	chain := task_chains[chain_idx]
 	if chain.status != "in_progress" do return false
 	target := state.assignee_agent_instance_id
 	boot_priority := priority
@@ -197,12 +196,11 @@ task_runtime_reconcile_chain_coordinator :: proc(chain_id, reason, priority: str
 }
 
 task_autoscaler_ensure_chain_coordinator :: proc(chain_id, reason, priority: string) -> bool {
-	chain_idx, found := task_existing_chain_index(chain_id)
+	chain, found := store_get_chain(chain_id)
 	if !found {
 		fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=chain_coordinator_reconcile_skip source=%s chain=%s skip_reason=chain_not_found", router_now_unix_ms(), reason, chain_id)
 		return false
 	}
-	chain := task_chains[chain_idx]
 	if chain.status == "archived" {
 		fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=chain_coordinator_reconcile_skip source=%s chain=%s skip_reason=chain_archived", router_now_unix_ms(), reason, chain_id)
 		return false
@@ -293,9 +291,8 @@ task_autoscaler_team_has_high_priority_boot :: proc(team_id: string) -> bool {
 	for i in 0..<task_state_count {
 		state := task_states[i]
 		if state.status != .Review_Ready do continue
-		chain_idx, found := task_existing_chain_index(state.chain_id)
+		chain, found := store_get_chain(state.chain_id)
 		if !found do continue
-		chain := task_chains[chain_idx]
 		if chain.team_id != team_id || chain.status != "in_progress" do continue
 		target := task_concrete_reviewer_agent_instance_id(state)
 		if target == "" do continue
@@ -394,8 +391,7 @@ task_autoscaler_idle_shutdown :: proc(now: i64) -> int {
 }
 
 task_autoscaler_agent_is_active_chain_coordinator :: proc(agent_instance_id: string) -> bool {
-	for i in 0..<task_chain_count {
-		chain := task_chains[i]
+	for chain in store_all_chains() {
 		if chain.coordinator_agent_instance_id == agent_instance_id && !task_autoscaler_chain_terminal(chain.status) do return true
 	}
 	return false
@@ -406,9 +402,8 @@ task_autoscaler_chain_terminal :: proc(status: string) -> bool {
 }
 
 task_autoscaler_stop_chain_agents :: proc(chain_id, reason: string) -> int {
-	chain_idx, found := task_existing_chain_index(chain_id)
+	chain, found := store_get_chain(chain_id)
 	if !found do return 0
-	chain := task_chains[chain_idx]
 	if !task_autoscaler_chain_terminal(chain.status) do return 0
 	candidates := make([dynamic]string)
 	defer delete(candidates)
@@ -455,8 +450,7 @@ task_autoscaler_task_belongs_to_chain :: proc(task_id, chain_id: string) -> bool
 }
 
 task_autoscaler_agent_has_active_work_outside_chain :: proc(agent_id, excluded_chain_id: string) -> bool {
-	for i in 0..<task_chain_count {
-		chain := task_chains[i]
+	for chain in store_all_chains() {
 		if chain.chain_id == excluded_chain_id || task_autoscaler_chain_terminal(chain.status) do continue
 		if chain.coordinator_agent_instance_id == agent_id do return true
 		if chain.default_reviewer_agent_instance_id == agent_id do return true

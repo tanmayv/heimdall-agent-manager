@@ -77,12 +77,12 @@ handle_agent_rpc_send_to_user :: proc(client: net.TCP_Socket, body, from_agent_i
 	}
 
 	if chain_id != "" {
-		chain_idx, found := task_existing_chain_index(chain_id)
+		chain, found := store_get_chain(chain_id)
 		if !found {
 			write_response(client, 404, "Not Found", `{"ok":false,"message":"unknown chain_id"}`)
 			return
 		}
-		if task_chains[chain_idx].coordinator_agent_instance_id != from_agent_instance_id {
+		if chain.coordinator_agent_instance_id != from_agent_instance_id {
 			agent_rpc_redirect_non_coordinator_send_to_user(client, user_id, from_agent_instance_id, payload, chain_id, chain_id_explicit)
 			return
 		}
@@ -126,12 +126,12 @@ handle_agent_rpc_send_to_user :: proc(client: net.TCP_Socket, body, from_agent_i
 }
 
 agent_rpc_redirect_non_coordinator_send_to_user :: proc(client: net.TCP_Socket, user_id, from_agent_instance_id, payload, chain_id: string, chain_id_explicit: bool) {
-	chain_idx, found := task_existing_chain_index(chain_id)
+	chain, found := store_get_chain(chain_id)
 	if !found {
 		write_response(client, 404, "Not Found", `{"ok":false,"message":"unknown chain_id"}`)
 		return
 	}
-	coordinator := task_chains[chain_idx].coordinator_agent_instance_id
+	coordinator := chain.coordinator_agent_instance_id
 	if coordinator == "" {
 		write_response(client, 404, "Not Found", `{"ok":false,"message":"chain has no coordinator"}`)
 		return
@@ -169,8 +169,7 @@ agent_rpc_infer_reply_chain_id :: proc(agent_instance_id: string) -> (chain_id: 
 
 	candidate := ""
 	count := 0
-	for i in 0..<task_chain_count {
-		chain := task_chains[i]
+	for chain in store_all_chains() {
 		if !agent_rpc_chain_is_reply_candidate_for_agent(chain, agent_instance_id) do continue
 		if candidate != chain.chain_id {
 			candidate = chain.chain_id

@@ -83,8 +83,8 @@ guide_rpc_status_json :: proc() -> string {
 
 guide_rpc_state_summary_json :: proc() -> string {
 	active_chains := 0
-	for i in 0..<task_chain_count {
-		if !task_chains[i].archived && task_chains[i].status != "completed" && task_chains[i].status != "cancelled" && task_chains[i].status != "abandoned" do active_chains += 1
+	for chain in store_all_chains() {
+		if !chain.archived && chain.status != "completed" && chain.status != "cancelled" && chain.status != "abandoned" do active_chains += 1
 	}
 	live_agents := 0
 	for i in 0..<agent_instance_record_count {
@@ -100,7 +100,7 @@ guide_rpc_state_summary_json :: proc() -> string {
 	}
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"projects":`); strings.write_string(&b, fmt.tprintf("%d", project_record_count))
-	strings.write_string(&b, `,"chains":`); strings.write_string(&b, fmt.tprintf("%d", task_chain_count))
+	strings.write_string(&b, `,"chains":`); strings.write_string(&b, fmt.tprintf("%d", store_chain_count()))
 	strings.write_string(&b, `,"active_chains":`); strings.write_string(&b, fmt.tprintf("%d", active_chains))
 	strings.write_string(&b, `,"tasks":`); strings.write_string(&b, fmt.tprintf("%d", task_state_count))
 	strings.write_string(&b, `,"agents":`); strings.write_string(&b, fmt.tprintf("%d", live_agents))
@@ -122,8 +122,9 @@ guide_rpc_list_chains_json :: proc(limit: int, status_filter: string) -> string 
 	strings.write_string(&b, `{"ok":true,"chains":[`)
 	first := true
 	count := 0
-	for i := task_chain_count - 1; i >= 0; i -= 1 {
-		chain := task_chains[i]
+	chains := store_all_chains()
+	for i := len(chains) - 1; i >= 0; i -= 1 {
+		chain := chains[i]
 		if status_filter != "" && chain.status != status_filter do continue
 		if count >= limit do break
 		if !first do strings.write_string(&b, `,`)
@@ -137,11 +138,11 @@ guide_rpc_list_chains_json :: proc(limit: int, status_filter: string) -> string 
 
 guide_rpc_show_chain_json :: proc(chain_id: string) -> string {
 	if chain_id == "" do return `{"ok":false,"message":"chain_id required"}`
-	idx, found := task_existing_chain_index(chain_id)
+	chain, found := store_get_chain(chain_id)
 	if !found do return `{"ok":false,"message":"unknown chain_id"}`
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"chain":`)
-	task_write_chain_json(&b, task_chains[idx])
+	task_write_chain_json(&b, chain)
 	strings.write_string(&b, `,"tasks":[`)
 	first := true
 	for i in 0..<task_state_count {

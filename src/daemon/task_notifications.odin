@@ -314,9 +314,8 @@ task_notify_all_lgtm_required :: proc(task_id, chain_id: string) {
 
 task_notify_review_ready_agent :: proc(state: Task_State, reviewer_agent_instance_id: string) {
 	if reviewer_agent_instance_id == "" do return
-	chain_idx, found := task_existing_chain_index(state.chain_id)
+	chain, found := store_get_chain(state.chain_id)
 	if !found do return
-	chain := task_chains[chain_idx]
 	if chain.status != "in_progress" do return
 	_ = task_autoscaler_ensure_agent(chain, reviewer_agent_instance_id, state.task_id, "high", router_now_unix_ms(), "review_ready")
 }
@@ -502,9 +501,9 @@ task_notification_json :: proc(event: Task_Event, status: string) -> string {
 
 	// Augment with full task chain payload if chain_id is present
 	if event.chain_id != "" {
-		if idx := task_chain_index_of(event.chain_id); idx >= 0 {
+		if chain, found := store_get_chain(event.chain_id); found {
 			strings.write_string(&b, `,"chain":`)
-			task_write_chain_json(&b, task_chains[idx])
+			task_write_chain_json(&b, chain)
 		}
 	}
 
