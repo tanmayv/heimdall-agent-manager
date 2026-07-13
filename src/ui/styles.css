@@ -423,7 +423,12 @@ body {
 }
 
 .vimee-editor-container .sv-code-area {
-  padding: 16px;
+  padding: 8px 16px;
+}
+
+.vimee-editor-container .sv-cursor {
+  top: calc(var(--cursor-line) * 1lh + 8px) !important;
+  left: calc(16px + (var(--cursor-col) + 1) * 1ch) !important;
 }
 
 .vimee-editor-container .sv-statusline {
