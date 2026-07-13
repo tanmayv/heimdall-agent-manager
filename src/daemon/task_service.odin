@@ -1224,9 +1224,26 @@ task_user_proxy_reviewer_for :: proc(state: Task_State, user_id: string) -> (str
 		team_id = team.team_id
 	}
 	members := team_db_list_members(team_service_db, team_id)
+	if user_id == "operator@local" {
+		default_rev := task_reviewer_agent_instance_id(state)
+		if default_rev == "user_proxy" {
+			return "user_proxy", true
+		}
+		for i in 0..<task_participant_count {
+			p := task_participants[i]
+			if p.task_id == state.task_id && p.agent_instance_id == "user_proxy" {
+				return "user_proxy", true
+			}
+		}
+	}
+
 	for member in members {
 		if !member.is_user_proxy do continue
 		if member.route_to != user_id do continue
+		default_rev := task_reviewer_agent_instance_id(state)
+		if default_rev != "" && (default_rev == member.role_key || default_rev == member.route_to || (member.agent_record_id != "" && default_rev == member.agent_record_id)) {
+			return default_rev, true
+		}
 		for i in 0..<task_participant_count {
 			p := task_participants[i]
 			if p.task_id != state.task_id do continue
