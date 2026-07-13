@@ -74,6 +74,45 @@ type Project = {
 
 const EMPTY: any[] = [];
 const PERIODIC_REVALIDATE_MS = 30000;
+const NEW_CHAIN_KIND_SCAFFOLD_DEFAULT_KEY = 'heimdall.newChain.kindScaffoldDefault';
+
+type NewChainKindScaffoldDefault = {
+  kind: string;
+  scaffold: string;
+};
+
+let newChainKindScaffoldDefaultMemory: NewChainKindScaffoldDefault = { kind: 'coding', scaffold: 'none' };
+
+function normalizeNewChainKindScaffoldDefault(candidate: any): NewChainKindScaffoldDefault {
+  const kindDef = findTeamKind(typeof candidate?.kind === 'string' ? candidate.kind : 'coding');
+  const scaffold = typeof candidate?.scaffold === 'string' && (candidate.scaffold === 'none' || kindDef.scaffolds.some((item) => item.key === candidate.scaffold))
+    ? candidate.scaffold
+    : 'none';
+  return { kind: kindDef.key, scaffold };
+}
+
+function loadNewChainKindScaffoldDefault(): NewChainKindScaffoldDefault {
+  try {
+    const raw = window.localStorage.getItem(NEW_CHAIN_KIND_SCAFFOLD_DEFAULT_KEY);
+    if (raw) {
+      const normalized = normalizeNewChainKindScaffoldDefault(JSON.parse(raw));
+      newChainKindScaffoldDefaultMemory = normalized;
+      return normalized;
+    }
+  } catch (_err) { /* ignore */ }
+  return normalizeNewChainKindScaffoldDefault(newChainKindScaffoldDefaultMemory);
+}
+
+function persistNewChainKindScaffoldDefault(candidate: any): NewChainKindScaffoldDefault {
+  const normalized = normalizeNewChainKindScaffoldDefault(candidate);
+  newChainKindScaffoldDefaultMemory = normalized;
+  try { window.localStorage.setItem(NEW_CHAIN_KIND_SCAFFOLD_DEFAULT_KEY, JSON.stringify(normalized)); } catch (_err) { /* ignore */ }
+  return normalized;
+}
+
+function newChainKindScaffoldSelectionsMatch(left: NewChainKindScaffoldDefault, right: NewChainKindScaffoldDefault) {
+  return left.kind === right.kind && left.scaffold === right.scaffold;
+}
 
 function statusTone(status: string) {
   if (status === 'completed' || status === 'approved') return 'bg-emerald-500/15 text-emerald-200 border-emerald-500/30';
@@ -2693,25 +2732,49 @@ function NewChainModal({ projectId, projects, agents, creating, error, onClose, 
   const [selectedProjectId, setSelectedProjectId] = useState(projectId || projects[0]?.projectId || '');
   const [title, setTitle] = useState('');
   const [goal, setGoal] = useState('');
-  const [kind, setKind] = useState('coding');
+  const [savedKindScaffoldDefault, setSavedKindScaffoldDefault] = useState(() => loadNewChainKindScaffoldDefault());
+  const [kind, setKind] = useState(() => savedKindScaffoldDefault.kind);
   const kindDef = findTeamKind(kind);
-  const [scaffold, setScaffold] = useState('none');
+  const [scaffold, setScaffold] = useState(() => savedKindScaffoldDefault.scaffold);
   const selectedProject = projects.find((project: any) => project.projectId === selectedProjectId) || null;
   const selectedProjectSupportsVcs = projectSupportsVcs(selectedProject);
   const [wantsVcs, setWantsVcs] = useState(defaultWantsVcs(kindDef, selectedProjectSupportsVcs));
   const selectedScaffold = scaffold === 'none' ? NONE_SCAFFOLD_META : findScaffold(kindDef, scaffold);
+  const savedKindDef = findTeamKind(savedKindScaffoldDefault.kind);
+  const savedScaffoldDefault = savedKindScaffoldDefault.scaffold === 'none' ? NONE_SCAFFOLD_META : findScaffold(savedKindDef, savedKindScaffoldDefault.scaffold);
+  const selectionDiffersFromDefault = !newChainKindScaffoldSelectionsMatch({ kind, scaffold }, savedKindScaffoldDefault);
+  const [setSelectionAsDefault, setSetSelectionAsDefault] = useState(false);
   const coordinatorAgentInstanceId = '';
 
   useEffect(() => {
-    const next = findTeamKind(kind);
-    setScaffold('none');
-    setWantsVcs(defaultWantsVcs(next, selectedProjectSupportsVcs));
+    setWantsVcs(defaultWantsVcs(findTeamKind(kind), selectedProjectSupportsVcs));
   }, [kind, selectedProjectSupportsVcs]);
+
+  useEffect(() => {
+    if (!selectionDiffersFromDefault) setSetSelectionAsDefault(false);
+  }, [selectionDiffersFromDefault]);
+
+  const handleKindChange = (nextKindKey: string) => {
+    const nextKind = findTeamKind(nextKindKey);
+    const currentScaffoldValidForNextKind = scaffold === 'none' || nextKind.scaffolds.some((item) => item.key === scaffold);
+    const nextSelection = normalizeNewChainKindScaffoldDefault({
+      kind: nextKind.key,
+      scaffold: currentScaffoldValidForNextKind ? scaffold : savedKindScaffoldDefault.scaffold,
+    });
+    setKind(nextSelection.kind);
+    setScaffold(nextSelection.scaffold);
+    setWantsVcs(defaultWantsVcs(nextKind, selectedProjectSupportsVcs));
+  };
 
   const submit = (event: any) => {
     event.preventDefault();
     const cleanTitle = title.trim();
     if (!cleanTitle || creating) return;
+    if (selectionDiffersFromDefault && setSelectionAsDefault) {
+      const nextDefault = persistNewChainKindScaffoldDefault({ kind, scaffold });
+      setSavedKindScaffoldDefault(nextDefault);
+      setSetSelectionAsDefault(false);
+    }
     onSubmit({
       projectId: selectedProjectId,
       title: cleanTitle,
@@ -2739,7 +2802,7 @@ function NewChainModal({ projectId, projects, agents, creating, error, onClose, 
           </label>
           <label className="text-sm text-zinc-300">
             Kind
-            <select data-debug-id="new-chain-kind-select" value={kind} onChange={(event) => setKind(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
+            <select data-debug-id="new-chain-kind-select" value={kind} onChange={(event) => handleKindChange(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
               {[findTeamKind('coding'), findTeamKind('research'), findTeamKind('solo')].map((item) => <option key={item.key} value={item.key}>{kindOptionLabel(item)}</option>)}
             </select>
           </label>
@@ -2762,19 +2825,30 @@ function NewChainModal({ projectId, projects, agents, creating, error, onClose, 
         )}
 
         <div className="mt-4 grid gap-4 md:grid-cols-2">
-          <label className="text-sm text-zinc-300">
-            Optional task scaffold
-            <select data-debug-id="new-chain-scaffold-select" value={scaffold} onChange={(event) => setScaffold(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
-              <option value="none">{scaffoldOptionLabel(NONE_SCAFFOLD_META)}</option>
-              {kindDef.scaffolds.map((item) => <option key={item.key} value={item.key}>{scaffoldOptionLabel(item)}</option>)}
-            </select>
+          <div>
+            <label className="text-sm text-zinc-300">
+              Optional task scaffold
+              <select data-debug-id="new-chain-scaffold-select" value={scaffold} onChange={(event) => setScaffold(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
+                <option value="none">{scaffoldOptionLabel(NONE_SCAFFOLD_META)}</option>
+                {kindDef.scaffolds.map((item) => <option key={item.key} value={item.key}>{scaffoldOptionLabel(item)}</option>)}
+              </select>
+            </label>
             <div className="mt-1 text-xs text-zinc-500">Non-none scaffolds create draft tasks that depend on coordinator validation.</div>
             <div className="mt-2 rounded-lg bg-white/[0.04] p-3 text-xs text-zinc-400">
               <div className="font-semibold text-zinc-300">{selectedScaffold.label}</div>
               <div className="mt-1">{selectedScaffold.description}</div>
               <div className="mt-1 text-zinc-500">{paceLabel(selectedScaffold.pace)} pace · {taskCountLabel(selectedScaffold.expectedTaskCount)} · {selectedScaffold.collaboratingAgentCount} agents</div>
             </div>
-          </label>
+            <div data-debug-id="new-chain-default-status" className="mt-3 rounded-lg bg-white/[0.04] p-3 text-xs text-zinc-500">
+              Default selection: <span className="text-zinc-300">{savedKindDef.label}</span> / <span className="text-zinc-300">{savedScaffoldDefault.label}</span>
+            </div>
+            {selectionDiffersFromDefault && (
+              <label className="mt-3 flex items-center gap-3 rounded-xl border border-sky-400/20 bg-sky-400/10 px-3 py-3 text-sm text-zinc-200">
+                <input data-debug-id="new-chain-set-default-checkbox" type="checkbox" checked={setSelectionAsDefault} onChange={(event) => setSetSelectionAsDefault(event.target.checked)} className="h-4 w-4" />
+                Set this kind/scaffold as the default for future new chains
+              </label>
+            )}
+          </div>
           <label className="flex items-center gap-3 rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-zinc-300">
             <input data-debug-id="new-chain-vcs-checkbox" type="checkbox" checked={wantsVcs && selectedProjectSupportsVcs} disabled={!selectedProjectSupportsVcs} onChange={(event) => setWantsVcs(event.target.checked)} className="h-4 w-4" />
             Use VCS workspace if project supports it
