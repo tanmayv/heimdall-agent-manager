@@ -49,7 +49,7 @@ task_notify_event :: proc(event: Task_Event) -> bool {
 				system_project_id := "heimdall-system"
 				author := ev.author_agent_instance_id
 				if author == "" || author == "system" || author == "system-review-vote" || author == "system-auto-approve" {
-					author = "operator@local" // fallback to resolve preferences
+					author = HUMAN_RECIPIENT_ID // fallback to resolve preferences
 				}
 				reviewer_agent_id := memory_auditor_resolve_pref(author, "memory_reviewer_agent_id")
 				reviewer_model_tier := memory_auditor_resolve_pref(author, "memory_reviewer_model_tier")
@@ -183,18 +183,18 @@ task_actionable_recipients :: proc(state: Task_State, status: string) -> (recipi
 // operator@local via the durable outbox so the event is never lost.
 task_notify_fallback :: proc(state: Task_State, payload, author: string) -> (recipient: string, ok: bool) {
 	candidates := []string{
-		task_chain_default_reviewer_agent_instance_id(state.chain_id),
-		task_coordinator_agent_instance_id(state),
-		"operator@local",
+		task_runtime_agent_target(task_chain_default_reviewer_agent_instance_id(state.chain_id)),
+		task_runtime_agent_target(task_coordinator_agent_instance_id(state)),
+		HUMAN_RECIPIENT_ID,
 	}
 	for c in candidates {
 		if c == "" || c == author do continue
 		_ = task_notify_recipient(c, payload)
 		return c, true
 	}
-	// Last resort: durable-queue to operator@local so the event has an audit trail.
-	_ = notification_outbox_insert_pending("operator@local", payload)
-	return "operator@local", false
+	// Last resort: durable-queue to the human inbox so the event has an audit trail.
+	_ = notification_outbox_insert_pending(HUMAN_RECIPIENT_ID, payload)
+	return HUMAN_RECIPIENT_ID, false
 }
 
 task_notify_by_status :: proc(state: Task_State, status, author_agent_instance_id, payload: string) -> bool {
@@ -274,7 +274,7 @@ task_notify_all_lgtm_required :: proc(task_id, chain_id: string) {
 		if p.task_id != task_id do continue
 		if p.role != "lgtm_required" do continue
 		has_required = true
-		if p.agent_instance_id == "user_proxy" {
+		if task_reviewer_is_user_review(state, p.agent_instance_id) {
 			user_proxy_required = true
 			continue
 		}
@@ -288,13 +288,13 @@ task_notify_all_lgtm_required :: proc(task_id, chain_id: string) {
 		fmt.printfln("NOTIFY: task=%s chain=%s status=review_ready lgtm_required_notified=%d", task_id, chain_id, notified_count)
 		return
 	}
-	if user_proxy_required {
+	if user_proxy_required || (!has_required && task_requires_user_review(state)) {
 		fmt.printfln("NOTIFY: task=%s chain=%s status=review_ready user_proxy_routed_to_operator=true", task_id, chain_id)
 		return
 	}
 	// Fallback chain: default reviewer → coordinator → operator@local (durable).
-	default_reviewer := task_reviewer_agent_instance_id(state)
-	if default_reviewer != "" && default_reviewer != "operator@local" && default_reviewer != "user_proxy" {
+	default_reviewer := task_concrete_reviewer_agent_instance_id(state)
+	if default_reviewer != "" {
 		if !task_reviewer_has_voted(task_id, default_reviewer) && task_reviewer_active_slot_blocker(default_reviewer, task_id) == "" {
 			task_notify_review_ready_agent(state, default_reviewer)
 			task_notify_recipient(default_reviewer, payload)
@@ -302,18 +302,18 @@ task_notify_all_lgtm_required :: proc(task_id, chain_id: string) {
 			return
 		}
 	}
-	coord := task_coordinator_agent_instance_id(state)
-	if coord != "" && coord != "operator@local" {
+	coord := task_runtime_agent_target(task_coordinator_agent_instance_id(state))
+	if coord != "" {
 		task_notify_recipient(coord, payload)
 		fmt.printfln("NOTIFY: task=%s chain=%s status=review_ready fallback=coordinator=%s has_required=%t", task_id, chain_id, coord, has_required)
 		return
 	}
-	_ = notification_outbox_insert_pending("operator@local", payload)
+	_ = notification_outbox_insert_pending(HUMAN_RECIPIENT_ID, payload)
 	fmt.printfln("NOTIFY: task=%s chain=%s status=review_ready fallback=operator_durable has_required=%t", task_id, chain_id, has_required)
 }
 
 task_notify_review_ready_agent :: proc(state: Task_State, reviewer_agent_instance_id: string) {
-	if reviewer_agent_instance_id == "" || reviewer_agent_instance_id == "operator@local" || reviewer_agent_instance_id == "user_proxy" do return
+	if reviewer_agent_instance_id == "" do return
 	chain_idx, found := task_existing_chain_index(state.chain_id)
 	if !found do return
 	chain := task_chains[chain_idx]
@@ -329,7 +329,7 @@ task_notify_reviewer_rotation :: proc(reviewer: string) {
 		if state.status != .Review_Ready do continue
 		is_required := task_actor_has_role(state, reviewer, "lgtm_required")
 		if !is_required {
-			is_required = task_reviewer_agent_instance_id(state) == reviewer
+			is_required = task_concrete_reviewer_agent_instance_id(state) == reviewer
 		}
 		if !is_required do continue
 		if task_reviewer_has_voted(state.task_id, reviewer) do continue

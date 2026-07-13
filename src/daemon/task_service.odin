@@ -26,7 +26,7 @@ Task_Service_Result :: struct {
 USER_PROXY_REVIEWER_WARNING :: "operator@local reviewer normalized to user_proxy; prefer user_proxy for user-facing task reviews"
 
 task_normalize_user_reviewer :: proc(agent_instance_id: string) -> (string, bool) {
-	if agent_instance_id == "operator@local" || agent_instance_id == "user@operator" {
+	if task_actor_is_user(agent_instance_id) {
 		return "user_proxy", true
 	}
 	return agent_instance_id, false
@@ -549,14 +549,14 @@ task_service_pick_non_user_reviewer :: proc(team_id, project_id, chain_id, assig
 			if member.role_key != role_key do continue
 			if member.is_user_proxy do continue
 			agent_id := task_service_member_agent_id(team_id, project_id, chain_id, member)
-			if agent_id == "" || agent_id == assignee || agent_id == "operator@local" do continue
+			if agent_id == "" || agent_id == assignee || task_runtime_agent_target(agent_id) == "" do continue
 			return agent_id
 		}
 	}
 	for member in members {
 		if member.is_user_proxy do continue
 		agent_id := task_service_member_agent_id(team_id, project_id, chain_id, member)
-		if agent_id == "" || agent_id == assignee || agent_id == "operator@local" do continue
+		if agent_id == "" || agent_id == assignee || task_runtime_agent_target(agent_id) == "" do continue
 		return agent_id
 	}
 	return ""
@@ -995,7 +995,6 @@ task_agent_instance_has_chain_role :: proc(chain_id, agent_instance_id, role_key
 
 task_agent_instance_allowed_for_chain :: proc(chain_id, agent_instance_id: string) -> bool {
 	if agent_instance_id == "" do return false
-	if agent_instance_id == "user_proxy" do return true
 	chain_idx, chain_found := task_existing_chain_index(chain_id)
 	if !chain_found do return true
 	chain := task_chains[chain_idx]
@@ -1003,6 +1002,7 @@ task_agent_instance_allowed_for_chain :: proc(chain_id, agent_instance_id: strin
 	if chain.team_id == "" do return true
 	members := team_db_list_members(team_service_db, chain.team_id)
 	for member in members {
+		if task_reviewer_matches_user_proxy_member(agent_instance_id, member) do return true
 		if member.agent_instance_id != "" && member.agent_instance_id == agent_instance_id do return true
 		if member.route_to != "" && member.route_to == agent_instance_id do return true
 	}
@@ -1191,12 +1191,16 @@ task_service_review_vote :: proc(cmd: Task_Review_Vote_Command) -> Task_Service_
 	if state.status != .Review_Ready {
 		return Task_Service_Result{ok = false, status_code = 409, message = `{"ok":false,"message":"can only vote on review_ready tasks"}`}
 	}
+	user_review_required := cmd.author_is_user && task_requires_user_review(state)
 	vote_author := cmd.author_agent_instance_id
+	if user_review_required {
+		vote_author = task_reviewer_agent_instance_id(state)
+	}
 	if proxy_reviewer, proxy_ok := task_user_proxy_reviewer_for(state, cmd.author_agent_instance_id); proxy_ok {
 		vote_author = proxy_reviewer
 	}
 	is_required  := task_actor_has_role(state, vote_author, "lgtm_required")
-	if !is_required && vote_author == task_reviewer_agent_instance_id(state) {
+	if !is_required && (user_review_required || vote_author == task_reviewer_agent_instance_id(state)) {
 		is_required = true
 	}
 	is_optional  := task_actor_has_role(state, vote_author, "lgtm_optional")
@@ -1263,24 +1267,11 @@ task_user_proxy_reviewer_for :: proc(state: Task_State, user_id: string) -> (str
 		team_id = team.team_id
 	}
 	members := team_db_list_members(team_service_db, team_id)
-	if user_id == "operator@local" {
-		default_rev := task_reviewer_agent_instance_id(state)
-		if default_rev == "user_proxy" {
-			return "user_proxy", true
-		}
-		for i in 0..<task_participant_count {
-			p := task_participants[i]
-			if p.task_id == state.task_id && p.agent_instance_id == "user_proxy" {
-				return "user_proxy", true
-			}
-		}
-	}
-
 	for member in members {
 		if !member.is_user_proxy do continue
 		if member.route_to != user_id do continue
 		default_rev := task_reviewer_agent_instance_id(state)
-		if default_rev != "" && (default_rev == member.role_key || default_rev == member.route_to || (member.agent_record_id != "" && default_rev == member.agent_record_id)) {
+		if default_rev != "" && task_reviewer_matches_user_proxy_member(default_rev, member) {
 			return default_rev, true
 		}
 		for i in 0..<task_participant_count {
@@ -1308,10 +1299,10 @@ task_notify_user_proxy_review_requests :: proc(task_id, chain_id: string) {
 		if !ok do return
 		team_id = team.team_id
 	}
+	if !task_requires_user_review(state) do return
 	members := team_db_list_members(team_service_db, team_id)
 	for member in members {
 		if !member.is_user_proxy || member.route_to == "" do continue
-		if !task_actor_has_role(state, member.role_key, "lgtm_required") && !task_actor_has_role(state, member.route_to, "lgtm_required") do continue
 		sender := chain.coordinator_agent_instance_id
 		if sender == "" do sender = "user_proxy"
 		body := task_user_proxy_review_card_json(state)
@@ -1375,7 +1366,7 @@ task_service_user_proxy_review_reply :: proc(user_id, coordinator_agent_instance
 	}
 	comment := "operator user_proxy LGTM"
 	if rejected do comment = "operator user_proxy NGTM"
-	return task_service_review_vote(Task_Review_Vote_Command{task_id = state.task_id, chain_id = state.chain_id, approved = approved, comment = comment, author_agent_instance_id = user_id})
+	return task_service_review_vote(Task_Review_Vote_Command{task_id = state.task_id, chain_id = state.chain_id, approved = approved, comment = comment, author_agent_instance_id = user_id, author_is_user = true})
 }
 
 task_service_auto_approve :: proc(task_id, chain_id: string) {
@@ -1459,7 +1450,7 @@ task_service_ping_coordinator_for_chain_completion :: proc(chain_id: string) {
 		TASK_CHAIN_BEST_PRACTICES,
 	)
 
-	_, ok := chat_store_append_message_with_chain("operator@local", chain.coordinator_agent_instance_id, "user_to_agent", message_body, false, chain_id)
+	_, ok := chat_store_append_message_with_chain(HUMAN_RECIPIENT_ID, chain.coordinator_agent_instance_id, "user_to_agent", message_body, false, chain_id)
 	if !ok {
 		fmt.println("WARNING: Failed to append completion ping message to coordinator agent:", chain.coordinator_agent_instance_id)
 	} else {

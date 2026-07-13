@@ -40,7 +40,7 @@ team_service_create_for_chain :: proc(project_id, chain_id, kind_key, name, coor
 			}
 			if role.role_key == "user_proxy" {
 				member.is_user_proxy = true
-				member.route_to = "operator@local"
+				member.route_to = HUMAN_RECIPIENT_ID
 				member.agent_instance_id = ""
 			}
 			append(&members, member)

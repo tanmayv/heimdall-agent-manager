@@ -173,10 +173,10 @@ task_runtime_reconcile_task :: proc(task_id, reason, priority: string) -> bool {
 	boot_priority := priority
 	if boot_priority == "" do boot_priority = "normal"
 	if state.status == .Review_Ready {
-		target = task_reviewer_agent_instance_id(state)
+		target = task_concrete_reviewer_agent_instance_id(state)
 		boot_priority = "high"
 	}
-	if target == "" || target == "user_proxy" || target == "operator@local" do return false
+	if target == "" do return false
 	if target == chain.coordinator_agent_instance_id do return false
 	if state.status == .Queued {
 		if blocker := task_active_slot_blocker(target, state.task_id); blocker != "" do return false
@@ -207,9 +207,9 @@ task_autoscaler_ensure_chain_coordinator :: proc(chain_id, reason, priority: str
 		fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=chain_coordinator_reconcile_skip source=%s chain=%s skip_reason=chain_archived", router_now_unix_ms(), reason, chain_id)
 		return false
 	}
-	coordinator := chain.coordinator_agent_instance_id
-	if coordinator == "" || coordinator == "user_proxy" {
-		fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=chain_coordinator_reconcile_skip source=%s chain=%s skip_reason=no_runtime_coordinator coordinator=%s", router_now_unix_ms(), reason, chain_id, coordinator)
+	coordinator := task_runtime_agent_target(chain.coordinator_agent_instance_id)
+	if coordinator == "" {
+		fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=chain_coordinator_reconcile_skip source=%s chain=%s skip_reason=no_runtime_coordinator coordinator=%s", router_now_unix_ms(), reason, chain_id, chain.coordinator_agent_instance_id)
 		return false
 	}
 	boot_priority := priority
@@ -297,8 +297,8 @@ task_autoscaler_team_has_high_priority_boot :: proc(team_id: string) -> bool {
 		if !found do continue
 		chain := task_chains[chain_idx]
 		if chain.team_id != team_id || chain.status != "in_progress" do continue
-		target := task_reviewer_agent_instance_id(state)
-		if target == "" || target == "user_proxy" do continue
+		target := task_concrete_reviewer_agent_instance_id(state)
+		if target == "" do continue
 		if agent_runtime_tracker_running(target) do continue
 		if agent_runtime_tracker_is_launching(target) do continue
 		return true
@@ -425,8 +425,9 @@ task_autoscaler_stop_chain_agents :: proc(chain_id, reason: string) -> int {
 		delete(members)
 	}
 	changed := 0
-	for agent_id in candidates {
-		if agent_id == "" || agent_id == "user_proxy" do continue
+	for candidate_id in candidates {
+		agent_id := task_runtime_agent_target(candidate_id)
+		if agent_id == "" do continue
 		if guide_agent_is_singleton(agent_id) do continue
 		if task_autoscaler_agent_has_active_work_outside_chain(agent_id, chain_id) do continue
 		if rec_idx := agent_record_index_by_instance(agent_id); rec_idx >= 0 {
@@ -484,7 +485,7 @@ task_autoscaler_idle_shutdown_seconds :: proc(agent_instance_id: string) -> int 
 }
 
 task_autoscaler_has_unread_mentions :: proc(agent_instance_id: string, since_unix_ms: i64) -> bool {
-	if chat_has_unread_direction("operator@local", agent_instance_id, "user_to_agent") do return true
+	if chat_has_unread_direction(HUMAN_RECIPIENT_ID, agent_instance_id, "user_to_agent") do return true
 	out, ok := task_db_query_pending_notification_count(agent_instance_id)
 	if ok && out > 0 do return true
 	mention := fmt.tprintf("@%s", agent_instance_id)

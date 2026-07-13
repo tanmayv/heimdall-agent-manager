@@ -12,17 +12,41 @@ Task_Db_Service :: struct {
 
 task_db: Task_Db_Service
 
+task_db_open :: proc(db_path: string) -> bool {
+	rc := sqlite3_open(cstring(raw_data(db_path)), &task_db.db)
+	if rc != SQLITE_OK {
+		fmt.println("task_db_init: sqlite3_open failed:", rc)
+		return false
+	}
+	return true
+}
+
+task_db_drop_files :: proc(db_path: string) {
+	_ = os.remove(db_path)
+	_ = os.remove(strings.concatenate({db_path, "-wal"}))
+	_ = os.remove(strings.concatenate({db_path, "-shm"}))
+}
+
+task_db_reset_old_version :: proc(db_path: string, current_version: int) -> bool {
+	fmt.printfln("task_db_init: task.db user_version=%d older than required schema version %d; dropping and reinitializing %s (no migration path for this bump)", current_version, TASK_DB_SCHEMA_VERSION, db_path)
+	sqlite3_close(task_db.db)
+	task_db_drop_files(db_path)
+	return task_db_open(db_path)
+}
+
 task_db_init :: proc(data_dir: string) -> bool {
 	db_dir := fmt.tprintf("%s/tasks", data_dir)
 	_ = os.make_directory_all(db_dir)
 
 	db_path := fmt.tprintf("%s/task.db", db_dir)
 	task_db.db_path = strings.clone(db_path)
+	existed_before := os.exists(db_path)
 
-	rc := sqlite3_open(cstring(raw_data(db_path)), &task_db.db)
-	if rc != SQLITE_OK {
-		fmt.println("task_db_init: sqlite3_open failed:", rc)
-		return false
+	if !task_db_open(db_path) do return false
+
+	current_version := db_get_user_version(task_db.db)
+	if existed_before && current_version < TASK_DB_SCHEMA_VERSION {
+		if !task_db_reset_old_version(db_path, current_version) do return false
 	}
 
 	if !task_db_create_schema() {
@@ -31,10 +55,15 @@ task_db_init :: proc(data_dir: string) -> bool {
 		return false
 	}
 
-	if !task_db_run_migrations() {
-		fmt.println("task_db_init: failed to run migrations")
-		sqlite3_close(task_db.db)
-		return false
+	current_version = db_get_user_version(task_db.db)
+	if current_version < TASK_DB_SCHEMA_VERSION {
+		if !db_set_user_version(task_db.db, TASK_DB_SCHEMA_VERSION) {
+			fmt.println("task_db_init: failed to set schema version")
+			sqlite3_close(task_db.db)
+			return false
+		}
+	} else {
+		fmt.printfln("task_db_init: current task.db schema version %d already up to date; no reset needed", current_version)
 	}
 
 	fmt.println("task_db_init: relational database initialized at", db_path)
@@ -613,7 +642,7 @@ task_db_execute :: proc(query: string) -> bool {
 	return true
 }
 
-TASK_DB_SCHEMA_VERSION :: 6 // Version 1: evaluation, Version 2: last_audit_at_unix_ms, Version 3: default_reviewer_agent_instance_id, Version 4: team_id, Version 5: vcs_workspace_id, Version 6: diff_base_sha
+TASK_DB_SCHEMA_VERSION :: 7 // Version 1: evaluation, Version 2: last_audit_at_unix_ms, Version 3: default_reviewer_agent_instance_id, Version 4: team_id, Version 5: vcs_workspace_id, Version 6: diff_base_sha, Version 7: reset old persisted task.db files for caller-identity review robustness (no migration path)
 
 task_db_backfill_team_ids :: proc() -> bool {
 	if !db_has_column(task_db.db, "task_chains", "team_id") do return true

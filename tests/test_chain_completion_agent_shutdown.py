@@ -14,7 +14,7 @@ checks = [
     ('completed chains are terminal for coordinator exemption', 'task_autoscaler_chain_terminal' in SCHED and 'chain.status) do return true' in SCHED),
     ('coordinator exemption no longer includes completed chains', 'chain.coordinator_agent_instance_id == agent_instance_id && !task_autoscaler_chain_terminal(chain.status)' in SCHED),
     ('terminal chain status requests agent shutdown', 'task_autoscaler_stop_chain_agents(cmd.chain_id' in SERVICE),
-    ('shutdown skips guide singleton and user_proxy', 'guide_agent_is_singleton(agent_id)' in SCHED and 'agent_id == "user_proxy"' in SCHED),
+    ('shutdown skips guide singleton and non-runtime human/user seats', 'guide_agent_is_singleton(agent_id)' in SCHED and 'agent_id := task_runtime_agent_target(candidate_id)' in SCHED),
     ('shutdown avoids agents with other active work', 'task_autoscaler_agent_has_active_work_outside_chain' in SCHED and 'excluded_chain_id' in SCHED),
     ('shutdown clears current task for completed chain', 'agent_store_clear_current_task(agent_id)' in SCHED and 'task_autoscaler_task_belongs_to_chain' in SCHED),
     ('shutdown delegates stop lifecycle to agent runtime tracker', 'agent_runtime_tracker_request_stop(agent_id, 30, reason)' in SCHED and 'RUNTIME_RECONCILE_STOP' in SCHED),

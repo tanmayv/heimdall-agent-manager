@@ -112,12 +112,7 @@ guide_rpc_state_summary_json :: proc() -> string {
 }
 
 isUserActionableTask_for_guide :: proc(task: Task_State) -> bool {
-	if task.status == .Review_Ready {
-		for i in 0..<task_participant_count {
-			p := task_participants[i]
-			if p.task_id == task.task_id && p.agent_instance_id == "user_proxy" && p.role == "lgtm_required" do return true
-		}
-	}
+	if task.status == .Review_Ready && task_requires_user_review(task) do return true
 	if task.status == .Blocked do return strings.contains(task.description, "user") || strings.contains(task.description, "operator")
 	return false
 }
