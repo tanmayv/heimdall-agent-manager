@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:net"
 import "core:strings"
 import vcs "odin_test:lib/vcs"
@@ -55,13 +56,20 @@ handle_workspace_diff :: proc(client: net.TCP_Socket, body: string) {
 }
 
 handle_workspace_diff_for_chain :: proc(client: net.TCP_Socket, chain_id, path: string) {
-	rec, found := vcs_db_workspace_for_chain(chain_id)
-	if !found { write_response(client, 404, "Not Found", `{"ok":false,"message":"workspace not found"}`); return }
-	backend := vcs.vcs_backend_for(vcs_handle_from_record(rec).kind)
-	diff, diff_ok, msg := backend.workspace_diff(vcs_handle_from_record(rec), path)
+	if rec, found := vcs_db_workspace_for_chain(chain_id); found {
+		backend := vcs.vcs_backend_for(vcs_handle_from_record(rec).kind)
+		diff, diff_ok, msg := backend.workspace_diff(vcs_handle_from_record(rec), path)
+		if !diff_ok { write_response(client, 500, "Internal Server Error", workspace_error_json(msg)); return }
+		b := strings.builder_make(); strings.write_string(&b, `{"ok":true,"diff":"`); json_write_string(&b, diff); strings.write_string(&b, `"}`)
+		write_response(client, 200, "OK", strings.to_string(b)); return
+	}
+	repo, repo_ok, repo_msg := task_chain_project_git_repo(chain_id)
+	if !repo_ok { write_response(client, 404, "Not Found", workspace_error_json(repo_msg)); return }
+	chain_idx, chain_ok := task_existing_chain_index(chain_id)
+	if !chain_ok { write_response(client, 404, "Not Found", workspace_error_json("chain not found")); return }
+	result, diff_ok, msg := vcs.vcs_backend_for(.Git).repo_diff(repo, path, task_chains[chain_idx].diff_base_sha)
 	if !diff_ok { write_response(client, 500, "Internal Server Error", workspace_error_json(msg)); return }
-	b := strings.builder_make(); strings.write_string(&b, `{"ok":true,"diff":"`); json_write_string(&b, diff); strings.write_string(&b, `"}`)
-	write_response(client, 200, "OK", strings.to_string(b))
+	write_response(client, 200, "OK", workspace_diff_json(result.diff, result.mode, result.label, result.base_sha))
 }
 
 handle_workspace_refresh :: proc(client: net.TCP_Socket, body: string) { _, ok := task_author_from_body(client, body); if !ok do return; chain_id := extract_json_string(body, "chain_id", extract_json_string(body, "chain", "")); write_response(client, 200, "OK", workspace_response_json(chain_id, true)) }
@@ -153,11 +161,61 @@ handle_workspace_archive_for_chain :: proc(client: net.TCP_Socket, body, chain_i
 }
 
 workspace_response_json :: proc(chain_id: string, include_status: bool) -> string {
-	rec, found := vcs_db_workspace_for_chain(chain_id)
-	if !found do return `{"ok":false,"message":"workspace not found"}`
+	if rec, found := vcs_db_workspace_for_chain(chain_id); found {
+		status := vcs.Vcs_Status{}
+		if include_status { backend := vcs.vcs_backend_for(vcs_handle_from_record(rec).kind); s, ok, _ := backend.workspace_status(vcs_handle_from_record(rec)); if ok do status = s }
+		b := strings.builder_make(); strings.write_string(&b, `{"ok":true,"workspace":`); vcs_write_workspace_json(&b, rec, status); strings.write_string(&b, `}`); return strings.to_string(b)
+	}
+	repo, repo_ok, repo_msg := task_chain_project_git_repo(chain_id)
+	if !repo_ok {
+		b := strings.builder_make(); strings.write_string(&b, `{"ok":false,"message":"`); json_write_string(&b, repo_msg); strings.write_string(&b, `","repo_diff_supported":false}`); return strings.to_string(b)
+	}
+	chain_idx, chain_ok := task_existing_chain_index(chain_id)
+	if !chain_ok do return `{"ok":false,"message":"chain not found","repo_diff_supported":false}`
 	status := vcs.Vcs_Status{}
-	if include_status { backend := vcs.vcs_backend_for(vcs_handle_from_record(rec).kind); s, ok, _ := backend.workspace_status(vcs_handle_from_record(rec)); if ok do status = s }
-	b := strings.builder_make(); strings.write_string(&b, `{"ok":true,"workspace":`); vcs_write_workspace_json(&b, rec, status); strings.write_string(&b, `}`); return strings.to_string(b)
+	if include_status { s, ok, _ := vcs.vcs_backend_for(.Git).repo_status(repo, task_chains[chain_idx].diff_base_sha); if ok do status = s }
+	return workspace_repo_response_json(chain_id, repo, task_chains[chain_idx].project_id, task_chains[chain_idx].diff_base_sha, status)
+}
+
+workspace_diff_json :: proc(diff, mode, label, base_sha: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"diff":"`); json_write_string(&b, diff)
+	strings.write_string(&b, `","diff_mode":"`); json_write_string(&b, mode)
+	strings.write_string(&b, `","diff_label":"`); json_write_string(&b, label)
+	strings.write_string(&b, `","diff_base_sha":"`); json_write_string(&b, base_sha)
+	strings.write_string(&b, `"}`)
+	return strings.to_string(b)
+}
+
+workspace_repo_response_json :: proc(chain_id, repo, project_id, diff_base_sha: string, status: vcs.Vcs_Status) -> string {
+	mode := "repo_uncommitted"
+	label := "Uncommitted changes"
+	if strings.trim_space(diff_base_sha) != "" {
+		mode = "repo_baseline"
+		label = "Changes since chain started (whole repo)"
+	}
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"workspace":{"workspace_id":"","chain_id":"`); json_write_string(&b, chain_id)
+	strings.write_string(&b, `","project_id":"`); json_write_string(&b, project_id)
+	strings.write_string(&b, `","vcs_kind":"git","path":"`); json_write_string(&b, repo)
+	strings.write_string(&b, `","branch_or_change":"repo-level","base_ref":"`); json_write_string(&b, diff_base_sha)
+	strings.write_string(&b, `","status":"repo","summary_line":"`); json_write_string(&b, status.summary_line)
+	strings.write_string(&b, `","ahead_commits":0,"behind_commits":0,"is_conflicted":`); strings.write_string(&b, "true" if status.is_conflicted else "false")
+	strings.write_string(&b, `,"repo_diff_supported":true,"diff_mode":"`); json_write_string(&b, mode)
+	strings.write_string(&b, `","diff_label":"`); json_write_string(&b, label)
+	strings.write_string(&b, `","diff_base_sha":"`); json_write_string(&b, diff_base_sha)
+	strings.write_string(&b, `","files":[`)
+	for i in 0..<len(status.files) {
+		if i > 0 do strings.write_string(&b, `,`)
+		f := status.files[i]
+		strings.write_string(&b, `{"path":"`); json_write_string(&b, f.path)
+		strings.write_string(&b, `","status":"`); json_write_string(&b, f.status)
+		strings.write_string(&b, `","adds":`); strings.write_string(&b, fmt.tprintf("%d", f.adds))
+		strings.write_string(&b, `,"dels":`); strings.write_string(&b, fmt.tprintf("%d", f.dels))
+		strings.write_string(&b, `}`)
+	}
+	strings.write_string(&b, `]}}`)
+	return strings.to_string(b)
 }
 
 workspace_merge_preview_json :: proc(p: vcs.Vcs_Merge_Preview) -> string {

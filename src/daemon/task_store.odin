@@ -151,6 +151,7 @@ Task_Chain_State :: struct {
 	project_id:                         string,
 	team_id:                            string,
 	vcs_workspace_id:                   string,
+	diff_base_sha:                      string,
 	title:                              string,
 	description:                        string,
 	status:                             string,

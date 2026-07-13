@@ -187,6 +187,7 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 		_ = team_service_archive(team_id, "chain_create_failed")
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append chain create failed"}`}
 	}
+	_ = task_chain_maybe_record_diff_base_sha(chain_id, "chain_created")
 	task_notify_event(event)
 	// Request coordinator runtime immediately after the chain exists, before
 	// workspace/discovery/scaffold task creation. Later task/status transitions
@@ -737,6 +738,43 @@ project_anchor_value :: proc(project: Project_Record, anchor_type, default_value
 	return default_value
 }
 
+task_chain_project_git_repo :: proc(chain_id: string) -> (string, bool, string) {
+	chain_idx, found := task_existing_chain_index(chain_id)
+	if !found do return "", false, "chain not found"
+	if _, has_workspace := vcs_db_workspace_for_chain(chain_id); has_workspace do return "", false, "chain has dedicated workspace"
+	chain := task_chains[chain_idx]
+	if chain.project_id == "" do return "", false, "chain has no project"
+	project_idx := project_index(chain.project_id)
+	if project_idx < 0 do return "", false, "project not found"
+	project := project_records[project_idx]
+	kind := project_anchor_value(project, "vcs_kind", "auto")
+	repo := project_anchor_value(project, "directory", "")
+	if repo == "" do repo = project_anchor_value(project, "git_repo", "")
+	if repo == "" || kind == "none" || kind == "jj" do return "", false, "project does not support git repo diff"
+	detected := vcs.vcs_backend_for(.Git).detect(repo)
+	if !detected.ok do return "", false, detected.message
+	return detected.repo_root, true, "git repo diff supported"
+}
+
+task_chain_repo_diff_supported :: proc(chain_id: string) -> bool {
+	_, ok, _ := task_chain_project_git_repo(chain_id)
+	return ok
+}
+
+task_chain_maybe_record_diff_base_sha :: proc(chain_id, reason: string) -> bool {
+	_ = reason
+	chain_idx, found := task_existing_chain_index(chain_id)
+	if !found do return false
+	if strings.trim_space(task_chains[chain_idx].diff_base_sha) != "" do return true
+	repo, repo_ok, _ := task_chain_project_git_repo(chain_id)
+	if !repo_ok do return false
+	sha, sha_ok, _ := vcs.vcs_backend_for(.Git).repo_head_sha(repo)
+	if !sha_ok || sha == "" do return false
+	task_chains[chain_idx].diff_base_sha = strings.clone(sha)
+	if task_db_ready do return task_db_save_chain(task_chains[chain_idx])
+	return true
+}
+
 task_chain_slug :: proc(title, chain_id: string) -> string {
 	b := strings.builder_make()
 	for r in strings.to_lower(title) {
@@ -1102,6 +1140,7 @@ task_service_status_command :: proc(cmd: Task_Status_Command) -> Task_Service_Re
 	}
 	task_notify_event(event)
 	if cmd.status == "in_progress" && state.assignee_agent_instance_id != "" {
+		_ = task_chain_maybe_record_diff_base_sha(state.chain_id, "task_started")
 		_ = agent_store_set_current_task(state.assignee_agent_instance_id, cmd.task_id)
 	}
 	if cmd.status == "in_progress" || cmd.status == "queued" || cmd.status == "review_ready" {
@@ -1379,6 +1418,7 @@ task_service_auto_claim :: proc(task_id: string) {
 		author_agent_instance_id = "system-auto-claim",
 	}
 	if task_store_append_event(event) {
+		_ = task_chain_maybe_record_diff_base_sha(state.chain_id, "task_auto_claimed")
 		_ = agent_store_set_current_task(assignee, task_id)
 		task_notify_event(event)
 		_ = task_runtime_reconcile_task(task_id, "auto_claim", "high")
@@ -1582,7 +1622,10 @@ task_service_chain_status_command :: proc(cmd: Task_Chain_Status_Command) -> Tas
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append chain status failed"}`}
 	}
 	task_notify_event(status_event)
-	if cmd.status == "in_progress" do _ = task_autoscaler_ensure_chain_coordinator(cmd.chain_id, "chain_status_in_progress", "high")
+	if cmd.status == "in_progress" {
+		_ = task_chain_maybe_record_diff_base_sha(cmd.chain_id, "chain_status_in_progress")
+		_ = task_autoscaler_ensure_chain_coordinator(cmd.chain_id, "chain_status_in_progress", "high")
+	}
 
 	// Orchestrate member tasks based on the new chain status
 	if cmd.status == "completed" || cmd.status == "archived" || cmd.status == "planning" || cmd.status == "paused" {

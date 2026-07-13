@@ -44,6 +44,13 @@ Vcs_Merge_Preview :: struct {
 	summary:          string,
 }
 
+Vcs_Repo_Diff :: struct {
+	diff:     string,
+	mode:     string,
+	label:    string,
+	base_sha: string,
+}
+
 Vcs_Backend :: struct {
 	kind:                Vcs_Kind,
 	detect:              proc(repo_path: string) -> Vcs_Detect_Result,
@@ -52,12 +59,15 @@ Vcs_Backend :: struct {
 	workspace_status:    proc(handle: Vcs_Workspace_Handle) -> (Vcs_Status, bool, string),
 	workspace_diff:      proc(handle: Vcs_Workspace_Handle, path: string) -> (string, bool, string),
 	workspace_pull_base: proc(handle: Vcs_Workspace_Handle) -> (bool, string),
+	repo_head_sha:        proc(repo: string) -> (string, bool, string),
+	repo_status:          proc(repo, diff_base_sha: string) -> (Vcs_Status, bool, string),
+	repo_diff:            proc(repo, path, diff_base_sha: string) -> (Vcs_Repo_Diff, bool, string),
 	merge_preview:       proc(handle: Vcs_Workspace_Handle, target: string) -> (Vcs_Merge_Preview, bool, string),
 	merge_execute:       proc(handle: Vcs_Workspace_Handle, target: string) -> (bool, string),
 }
 
 none_backend := Vcs_Backend{kind = .None}
-git_backend := Vcs_Backend{kind = .Git, detect = git_detect, workspace_add = git_workspace_add, workspace_remove = git_workspace_remove, workspace_status = git_workspace_status, workspace_diff = git_workspace_diff, workspace_pull_base = git_workspace_pull_base, merge_preview = git_merge_preview, merge_execute = git_merge_execute}
+git_backend := Vcs_Backend{kind = .Git, detect = git_detect, workspace_add = git_workspace_add, workspace_remove = git_workspace_remove, workspace_status = git_workspace_status, workspace_diff = git_workspace_diff, workspace_pull_base = git_workspace_pull_base, repo_head_sha = git_repo_head_sha, repo_status = git_repo_status, repo_diff = git_repo_diff, merge_preview = git_merge_preview, merge_execute = git_merge_execute}
 jj_backend := Vcs_Backend{kind = .Jj, detect = jj_detect, workspace_add = jj_workspace_add, workspace_remove = jj_workspace_remove, workspace_status = jj_workspace_status, workspace_diff = jj_workspace_diff, workspace_pull_base = jj_workspace_pull_base, merge_preview = jj_merge_preview, merge_execute = jj_merge_execute}
 
 vcs_backend_for :: proc(kind: Vcs_Kind) -> ^Vcs_Backend {

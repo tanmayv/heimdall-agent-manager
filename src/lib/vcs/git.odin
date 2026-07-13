@@ -83,6 +83,102 @@ git_workspace_diff :: proc(handle: Vcs_Workspace_Handle, path: string) -> (strin
 	return vcs_truncate_diff(out), true, "git diff ok"
 }
 
+git_repo_head_sha :: proc(repo: string) -> (string, bool, string) {
+	out, ok, msg := vcs_run([]string{"git", "-C", repo, "rev-parse", "--verify", "HEAD"})
+	if !ok do return "", false, msg
+	return strings.clone(strings.trim_space(out)), true, "git head sha ok"
+}
+
+git_repo_status :: proc(repo, diff_base_sha: string) -> (Vcs_Status, bool, string) {
+	out, ok, msg := vcs_run([]string{"git", "-C", repo, "status", "--porcelain=v1", "-uall"})
+	if !ok do return Vcs_Status{}, false, msg
+	files := make([dynamic]Vcs_File_Change)
+	conflicted := 0
+	for line in strings.split(out, "\n") {
+		if strings.trim_space(line) == "" || len(line) < 3 do continue
+		status := strings.trim_space(line[:2])
+		path := strings.trim_space(line[3:])
+		if strings.contains(status, "U") || status == "AA" || status == "DD" do conflicted += 1
+		append(&files, Vcs_File_Change{path = strings.clone(path), status = strings.clone(status)})
+	}
+	base := strings.trim_space(diff_base_sha)
+	if base != "" do git_apply_repo_numstat(repo, &files, fmt.tprintf("%s..HEAD", base))
+	git_apply_repo_numstat(repo, &files, "HEAD")
+	return Vcs_Status{files = files[:], is_conflicted = conflicted > 0, summary_line = vcs_summary_from_files(files[:], conflicted)}, true, "git repo status ok"
+}
+
+git_repo_diff :: proc(repo, path, diff_base_sha: string) -> (Vcs_Repo_Diff, bool, string) {
+	base := strings.trim_space(diff_base_sha)
+	mode := "repo_uncommitted"
+	label := "Uncommitted changes"
+	builder := strings.builder_make()
+	if base != "" {
+		mode = "repo_baseline"
+		label = "Changes since chain started (whole repo)"
+		committed, ok, msg := git_diff_revspec(repo, fmt.tprintf("%s..HEAD", base), path)
+		if !ok do return Vcs_Repo_Diff{}, false, msg
+		if committed != "" {
+			strings.write_string(&builder, committed)
+			strings.write_string(&builder, "\n")
+		}
+	}
+	tracked, tracked_ok, tracked_msg := git_diff_revspec(repo, "HEAD", path)
+	if !tracked_ok do return Vcs_Repo_Diff{}, false, tracked_msg
+	if tracked != "" {
+		strings.write_string(&builder, tracked)
+		strings.write_string(&builder, "\n")
+	}
+	untracked, untracked_ok, untracked_msg := git_untracked_diff(repo, path)
+	if !untracked_ok do return Vcs_Repo_Diff{}, false, untracked_msg
+	if untracked != "" {
+		strings.write_string(&builder, untracked)
+		strings.write_string(&builder, "\n")
+	}
+	return Vcs_Repo_Diff{diff = vcs_truncate_diff(strings.to_string(builder)), mode = strings.clone(mode), label = strings.clone(label), base_sha = strings.clone(base)}, true, "git repo diff ok"
+}
+
+git_diff_revspec :: proc(repo, revspec, path: string) -> (string, bool, string) {
+	if path == "" {
+		return vcs_run([]string{"git", "-C", repo, "diff", revspec})
+	}
+	return vcs_run([]string{"git", "-C", repo, "diff", revspec, "--", path})
+}
+
+git_untracked_diff :: proc(repo, path: string) -> (string, bool, string) {
+	out: string
+	ok: bool
+	msg: string
+	if path == "" {
+		out, ok, msg = vcs_run([]string{"git", "-C", repo, "ls-files", "--others", "--exclude-standard"})
+	} else {
+		out, ok, msg = vcs_run([]string{"git", "-C", repo, "ls-files", "--others", "--exclude-standard", "--", path})
+	}
+	if !ok do return "", false, msg
+	builder := strings.builder_make()
+	for line in strings.split(out, "\n") {
+		file := strings.trim_space(line)
+		if file == "" do continue
+		diff, diff_ok, diff_msg := git_diff_no_index(repo, file)
+		if !diff_ok do return "", false, diff_msg
+		if diff != "" {
+			strings.write_string(&builder, diff)
+			strings.write_string(&builder, "\n")
+		}
+	}
+	return strings.to_string(builder), true, "git untracked diff ok"
+}
+
+git_diff_no_index :: proc(repo, file: string) -> (string, bool, string) {
+	cmd := []string{"git", "-C", repo, "diff", "--no-index", "--", "/dev/null", file}
+	state, stdout, stderr, err := os.process_exec(os.Process_Desc{command = cmd}, context.allocator)
+	if err != nil do return "", false, "command failed to start"
+	out := strings.trim_space(string(stdout))
+	if state.success || out != "" do return strings.clone(out), true, "ok"
+	msg := strings.trim_space(string(stderr))
+	if msg == "" do msg = "command failed"
+	return "", false, vcs_safe_message(msg)
+}
+
 git_workspace_pull_base :: proc(handle: Vcs_Workspace_Handle) -> (bool, string) {
 	_, _ = vcs_run_ok([]string{"git", "-C", handle.path, "fetch", "origin", handle.base_ref})
 	return vcs_run_ok([]string{"git", "-C", handle.path, "rebase", fmt.tprintf("origin/%s", handle.base_ref)})
@@ -113,7 +209,11 @@ git_merge_preview :: proc(handle: Vcs_Workspace_Handle, target: string) -> (Vcs_
 }
 
 git_apply_numstat :: proc(handle: Vcs_Workspace_Handle, files: ^[dynamic]Vcs_File_Change, revspec: string) {
-	out, ok, _ := vcs_run([]string{"git", "-C", handle.path, "diff", "--numstat", revspec})
+	git_apply_repo_numstat(handle.path, files, revspec)
+}
+
+git_apply_repo_numstat :: proc(repo: string, files: ^[dynamic]Vcs_File_Change, revspec: string) {
+	out, ok, _ := vcs_run([]string{"git", "-C", repo, "diff", "--numstat", revspec})
 	if !ok do return
 	for line in strings.split(out, "\n") {
 		parts := strings.fields(line)
