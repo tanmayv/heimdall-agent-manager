@@ -18,6 +18,42 @@ package main
 
 import "core:strings"
 
+// --- Lifecycle / Reset ----------------------------------------------------
+
+task_store_reset :: proc() {
+	task_event_count       = 0
+	task_state_count       = 0
+	task_participant_count = 0
+	task_chain_count       = 0
+	task_comment_count     = 0
+	task_lgtm_vote_count   = 0
+}
+
+// --- Event queries --------------------------------------------------------
+
+store_all_events :: proc() -> []Task_Event {
+	return task_events[:task_event_count]
+}
+
+store_event_count :: proc() -> int {
+	return task_event_count
+}
+
+store_last_event :: proc() -> (Task_Event, bool) {
+	if task_event_count == 0 do return Task_Event{}, false
+	return task_events[task_event_count - 1], true
+}
+
+store_events_in_chain :: proc(chain_id: string) -> []Task_Event {
+	result := make([dynamic]Task_Event)
+	for i in 0..<task_event_count {
+		if task_events[i].chain_id == chain_id {
+			append(&result, task_events[i])
+		}
+	}
+	return result[:]
+}
+
 // --- Task (state) queries -------------------------------------------------
 
 // store_get_task returns a COPY of the task with the given id, or ok=false.

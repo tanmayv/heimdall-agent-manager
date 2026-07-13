@@ -4,11 +4,7 @@ import "core:fmt"
 import "core:strings"
 
 task_projection_reset :: proc() {
-	task_state_count       = 0
-	task_participant_count = 0
-	task_chain_count       = 0
-	task_comment_count     = 0
-	task_lgtm_vote_count   = 0
+	task_store_reset()
 }
 
 task_projection_apply_event :: proc(event: Task_Event) -> bool {

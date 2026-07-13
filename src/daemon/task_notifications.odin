@@ -11,8 +11,7 @@ Task_Notification_Delivery :: struct {
 
 task_notify_event :: proc(event: Task_Event) -> bool {
 	ev := event
-	if task_event_count > 0 {
-		last_ev := task_events[task_event_count - 1]
+	if last_ev, found := store_last_event(); found {
 		if last_ev.kind == ev.kind && last_ev.task_id == ev.task_id && last_ev.chain_id == ev.chain_id {
 			ev.event_id = last_ev.event_id
 			ev.created_unix_ms = last_ev.created_unix_ms
@@ -417,8 +416,7 @@ task_notifications_flush_queue :: proc(agent_instance_id: string) {
 
 task_notify_nudge_delivery :: proc(event: Task_Event) -> Task_Notification_Delivery {
 	ev := event
-	if task_event_count > 0 {
-		last_ev := task_events[task_event_count - 1]
+	if last_ev, found := store_last_event(); found {
 		if last_ev.kind == ev.kind && last_ev.task_id == ev.task_id && last_ev.chain_id == ev.chain_id {
 			ev.event_id = last_ev.event_id
 			ev.created_unix_ms = last_ev.created_unix_ms

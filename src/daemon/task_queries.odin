@@ -484,8 +484,7 @@ TASK_SYSTEM_BLOCK_ASSIGNEE_ACTIVE :: "assignee_active_task"
 task_system_block_kind :: proc(state: Task_State) -> string {
 	if state.status != .Blocked do return ""
 	// The block kind is stored in the last status-change comment body
-	for i := task_event_count - 1; i >= 0; i -= 1 {
-		ev := task_events[i]
+	#reverse for ev in store_all_events() {
 		if ev.task_id != state.task_id || ev.kind != .Task_Status_Changed || ev.status != "blocked" do continue
 		if strings.has_prefix(ev.body, "system_block:dependency") do return TASK_SYSTEM_BLOCK_DEPENDENCY
 		if strings.has_prefix(ev.body, "system_block:assignee_active_task") do return TASK_SYSTEM_BLOCK_ASSIGNEE_ACTIVE
@@ -495,8 +494,7 @@ task_system_block_kind :: proc(state: Task_State) -> string {
 }
 
 task_latest_status_body :: proc(task_id: string) -> string {
-	for i := task_event_count - 1; i >= 0; i -= 1 {
-		ev := task_events[i]
+	#reverse for ev in store_all_events() {
 		if ev.task_id != task_id || ev.kind != .Task_Status_Changed do continue
 		return ev.body
 	}
@@ -597,8 +595,7 @@ task_log_json :: proc(task_id: string) -> string {
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"ok":true,"events":[`)
 	first := true
-	for i in 0..<task_event_count {
-		event := task_events[i]
+	for event in store_all_events() {
 		if event.task_id != task_id do continue
 		if !first do strings.write_string(&builder, `,`)
 		first = false

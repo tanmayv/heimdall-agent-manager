@@ -183,8 +183,7 @@ task_events_path:       string
 task_db_ready:          bool
 
 task_store_init :: proc(data_dir: string) {
-	task_event_count = 0
-	task_projection_reset()
+	task_store_reset()
 	task_store_dir   = strings.clone(fmt.tprintf("%s/tasks", data_dir))
 	task_events_path = strings.clone(fmt.tprintf("%s/events.jsonl", task_store_dir))
 	_ = os.make_directory_all(task_store_dir)
@@ -279,8 +278,7 @@ task_store_init :: proc(data_dir: string) {
 		}
 		
 		// Reset memory projection to prepare for clean SQLite load
-		task_event_count = 0
-		task_projection_reset()
+		task_store_reset()
 	}
 
 	// 3. Load all projected states from SQLite relational tables

@@ -453,7 +453,7 @@ task_db_delete_participant :: proc(task_id, agent_instance_id, role: string) -> 
 }
 
 task_db_load_all :: proc() -> bool {
-	task_projection_reset()
+	task_store_reset()
 
 	// 1. Load task_chains
 	{

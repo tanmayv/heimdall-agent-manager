@@ -68,8 +68,7 @@ task_chain_archive_snapshot_json :: proc(chain_id: string) -> string {
 	}
 	strings.write_string(&builder, `],"events":[`)
 	first = true
-	for i in 0..<task_event_count {
-		event := task_events[i]
+	for event in store_all_events() {
 		if event.chain_id != chain_id do continue
 		if !first do strings.write_string(&builder, `,`)
 		first = false

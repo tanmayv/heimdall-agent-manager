@@ -309,8 +309,7 @@ handle_task_chain_show :: proc(client: net.TCP_Socket, body: string) {
 	task_write_chain_json(&b, chain)
 	strings.write_string(&b, `,"events":[`)
 	first := true
-	for j in 0..<task_event_count {
-		event := task_events[j]
+	for event in store_all_events() {
 		if event.chain_id != chain_id || event.task_id != "" do continue
 		if !first do strings.write_string(&b, `,`)
 		first = false
@@ -358,7 +357,7 @@ task_store_state_json :: proc() -> string {
 	strings.write_string(&b, `,"chain_count":`)
 	strings.write_string(&b, fmt.tprintf("%d", store_chain_count()))
 	strings.write_string(&b, `,"event_count":`)
-	strings.write_string(&b, fmt.tprintf("%d", task_event_count))
+	strings.write_string(&b, fmt.tprintf("%d", store_event_count()))
 	strings.write_string(&b, `,"tasks":[`)
 	for state, i in store_all_tasks() {
 		if i > 0 do strings.write_string(&b, `,`)

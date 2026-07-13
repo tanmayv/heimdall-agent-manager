@@ -92,8 +92,7 @@ task_nudge_threshold_seconds :: proc(status: Task_Status) -> int {
 
 task_last_nudge_unix_ms :: proc(task_id, target: string) -> i64 {
 	last: i64
-	for i in 0..<task_event_count {
-		event := task_events[i]
+	for event in store_all_events() {
 		if event.task_id != task_id do continue
 		if event.kind != .Task_Nudged && event.kind != .Task_Nudge_Failed do continue
 		if target != "" && event.agent_instance_id != target do continue
@@ -482,8 +481,7 @@ task_autoscaler_has_unread_mentions :: proc(agent_instance_id: string, since_uni
 		if since_unix_ms > 0 && c.created_unix_ms <= since_unix_ms do continue
 		if strings.contains(c.body, agent_instance_id) || strings.contains(c.body, mention) do return true
 	}
-	for i in 0..<task_event_count {
-		e := task_events[i]
+	for e in store_all_events() {
 		if e.agent_instance_id != agent_instance_id do continue
 		if since_unix_ms > 0 && e.created_unix_ms <= since_unix_ms do continue
 		if e.kind == .Task_Nudged || e.kind == .Task_Nudge_Failed do return true
