@@ -96,16 +96,19 @@ artifact_validate_payload :: proc(kind, mime, ext: string, data: []byte, max_byt
 artifact_write_blob :: proc(artifact_id: string, data: []byte) -> (rel_path, sha256: string, size_bytes: i64, ok: bool) {
 	rel_path = artifact_blob_rel_path(artifact_id)
 	abs_path := artifact_blob_abs_path(rel_path)
-	if err := os.make_directory_all(parent_dir(abs_path)); err != nil {
-		fmt.printfln("artifact_write_blob: make_directory_all failed for %s", abs_path)
-		return "", "", 0, false
-	}
-	if os.write_entire_file(abs_path, data) != nil {
-		_ = os.remove(abs_path)
-		if os.write_entire_file(abs_path, data) != nil {
-			fmt.printfln("artifact_write_blob: write failed for %s", abs_path)
+	blob_dir := parent_dir(abs_path)
+	if !os.is_dir(blob_dir) {
+		if err := os.make_directory_all(blob_dir); err != nil {
+			fmt.println("artifact_write_blob: make_directory_all failed", "dir", blob_dir, "file", abs_path, "err", err)
 			return "", "", 0, false
 		}
+	}
+	// os.write_entire_file is create-only on some platforms. Remove first so
+	// update can replace the existing blob bytes at the same sharded path.
+	_ = os.remove(abs_path)
+	if err := os.write_entire_file(abs_path, data); err != nil {
+		fmt.println("artifact_write_blob: write failed", "dir", blob_dir, "file", abs_path, "err", err)
+		return "", "", 0, false
 	}
 	return strings.clone(rel_path), artifact_sha256_hex(data), i64(len(data)), true
 }

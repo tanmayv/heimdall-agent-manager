@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Artifacts MVP backend + CLI integration regression."""
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -262,19 +263,47 @@ ham_ctl_bin = \"{ctl_bin}\"
         if status == 200 or bad_magic.get("error") != "unsupported_type":
             raise AssertionError(f"png magic-byte validation failed to reject bad payload: status={status} payload={bad_magic}")
 
+        original_sha = meta_res["artifact"].get("sha256")
+        original_size = meta_res["artifact"].get("size_bytes")
+        replacement_bytes = b"# artifact test\nreplacement bytes after update\n"
+        replacement_sha = hashlib.sha256(replacement_bytes).hexdigest()
+        status, byte_update_res = request_post("/artifacts/update", {
+            "artifact_id": artifact_id,
+            "name": "sample.md",
+            "description": "byte-replaced cli artifact",
+            "content_base64": base64.b64encode(replacement_bytes).decode("ascii"),
+        }, agent_token)
+        assert_ok(status, byte_update_res, "artifact byte-replacement update")
+        byte_updated = byte_update_res.get("artifact", {})
+        if byte_updated.get("sha256") != replacement_sha or byte_updated.get("sha256") == original_sha:
+            raise AssertionError(f"byte update did not change sha256 correctly: original={original_sha} payload={byte_update_res}")
+        if byte_updated.get("size_bytes") != len(replacement_bytes) or byte_updated.get("size_bytes") == original_size:
+            raise AssertionError(f"byte update did not change size_bytes correctly: original={original_size} payload={byte_update_res}")
+        status, replaced_content, replaced_headers = request_get_bytes(f"/artifacts/{urllib.parse.quote(artifact_id)}/content", agent_token)
+        if status != 200 or replaced_content != replacement_bytes or replaced_content == markdown_bytes:
+            raise AssertionError(f"artifact byte update content fetch failed: status={status} bytes={replaced_content!r}")
+        if replaced_headers.get("Content-Type") != "text/markdown":
+            raise AssertionError(f"byte-updated content type incorrect: headers={replaced_headers}")
+
         status, update_res = request_post("/artifacts/update", {
             "artifact_id": artifact_id,
             "name": "sample.md",
             "description": "updated cli artifact",
             "project_id": "artifacts-test-project-updated",
         }, agent_token)
-        assert_ok(status, update_res, "artifact update")
-        if update_res.get("artifact", {}).get("description") != "updated cli artifact":
+        assert_ok(status, update_res, "artifact metadata-only update")
+        updated_artifact = update_res.get("artifact", {})
+        if updated_artifact.get("description") != "updated cli artifact":
             raise AssertionError(f"updated artifact metadata missing description change: {update_res}")
+        if updated_artifact.get("sha256") != replacement_sha or updated_artifact.get("size_bytes") != len(replacement_bytes):
+            raise AssertionError(f"metadata-only update unexpectedly changed bytes metadata: {update_res}")
         status, updated_meta = request_get_json(f"/artifacts/{urllib.parse.quote(artifact_id)}", agent_token)
-        assert_ok(status, updated_meta, "artifact metadata after update")
+        assert_ok(status, updated_meta, "artifact metadata after metadata-only update")
         if updated_meta.get("artifact", {}).get("project_id") != "artifacts-test-project-updated":
             raise AssertionError(f"updated artifact metadata missing project change: {updated_meta}")
+        status, metadata_only_content, _ = request_get_bytes(f"/artifacts/{urllib.parse.quote(artifact_id)}/content", agent_token)
+        if status != 200 or metadata_only_content != replacement_bytes:
+            raise AssertionError(f"metadata-only update did not preserve replacement bytes: status={status} bytes={metadata_only_content!r}")
 
         # Inline task-comment artifact creation.
         status, comment_res = request_post("/tasks/comment", {

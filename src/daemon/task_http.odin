@@ -66,15 +66,15 @@ handle_task_comment :: proc(client: net.TCP_Socket, body: string) {
 	artifact_content_base64 := extract_json_string(body, "artifact_content_base64", "")
 	created_artifact := Artifact_Record{}
 	if strings.trim_space(artifact_content_base64) != "" {
-		idx, found := task_existing_state_index(task_id, chain_id)
+		state, found := store_get_task_in_chain(task_id, chain_id)
 		if !found {
 			write_response(client, 404, "Not Found", `{"ok":false,"message":"task not found"}`)
 			return
 		}
-		resolved_chain_id := task_states[idx].chain_id
+		resolved_chain_id := state.chain_id
 		project_id := ""
-		if chain_idx, chain_found := task_existing_chain_index(resolved_chain_id); chain_found {
-			project_id = task_chains[chain_idx].project_id
+		if chain, chain_found := store_get_chain(resolved_chain_id); chain_found {
+			project_id = chain.project_id
 		}
 		artifact_result := artifact_create_record(author, false, extract_json_string(body, "artifact_name", ""), extract_json_string(body, "artifact_kind", ""), "", project_id, "comment", task_id, "", artifact_content_base64)
 		if !artifact_result.ok {
