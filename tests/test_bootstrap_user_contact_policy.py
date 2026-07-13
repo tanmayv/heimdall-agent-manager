@@ -45,6 +45,22 @@ def require_all_regex(haystack: str, patterns, req_id: str, where: Path) -> None
             )
 
 
+def require_line_with_all(haystack: str, concepts, req_id: str, where: Path) -> None:
+    """At least one single line must match every concept regex.
+
+    This enforces that related semantics co-occur (e.g. "notify the user" +
+    "before" + "pivot") instead of being satisfied by unrelated scattered
+    keywords. Concept regexes are matched case-insensitively.
+    """
+    compiled = [re.compile(c, re.IGNORECASE) for c in concepts]
+    for line in haystack.splitlines():
+        if all(c.search(line) for c in compiled):
+            return
+    raise AssertionError(
+        f"{req_id}: {where} has no single line satisfying all concepts {concepts!r}"
+    )
+
+
 def check_wrapper() -> None:
     src = WRAPPER.read_text(encoding="utf-8")
 
@@ -100,12 +116,15 @@ def check_coordinator_prompt() -> None:
         COORDINATOR_PROMPT,
     )
 
-    # RESP-3: send another chain-scoped update before materially pivoting.
-    require_all_regex(
+    # RESP-3: send another chain-scoped update to the user before materially
+    # pivoting. Require notify/update/send + before + pivot/different-action to
+    # co-occur on one line, so a stray "pivot" cannot satisfy the contract.
+    require_line_with_all(
         src,
         [
-            r"pivot",
-            r"before[^\n]*pivot|pivot[^\n]*update|another[^\n]*update",
+            r"\b(send|update|notify|another update|fresh update|new update|tell the user|message the user)\b",
+            r"\bbefore\b",
+            r"pivot|materially different|different action|not (previously|already) described|new(ly)? scope",
         ],
         "RESP-3",
         COORDINATOR_PROMPT,
@@ -132,10 +151,16 @@ def check_guide_prompt() -> None:
         "RESP-4",
         GUIDE_PROMPT,
     )
-    # RESP-5: notify before material pivots / additional user-visible actions.
-    require_all_regex(
+    # RESP-5: guide MUST notify/update the user before material pivots or extra
+    # user-visible actions. Require notify-user + before + pivot/extra-action to
+    # co-occur on a single line (a bare "pivot" must not pass).
+    require_line_with_all(
         src,
-        [r"pivot|before[^\n]*additional[^\n]*(action|investigat|coordination)"],
+        [
+            r"\b(notify|update|tell|inform|message|let)\b[^\n]*\buser\b|\buser\b[^\n]*\b(notify|update|tell|inform|message)\b",
+            r"\bbefore\b",
+            r"pivot|material(ly)? (new|different|additional)|additional[^\n]*(action|investigat|coordination)|user-visible action",
+        ],
         "RESP-5",
         GUIDE_PROMPT,
     )
@@ -156,10 +181,16 @@ def check_guide_handbook() -> None:
         "RESP-4",
         GUIDE_HANDBOOK,
     )
-    # RESP-5: material-pivot update requirement.
-    require_all_regex(
+    # RESP-5: guide handbook MUST tell the guide to send the user another update
+    # before materially pivoting. Require send/notify-user + before + pivot to
+    # co-occur on one line (the earlier bare-"pivot" check was too weak).
+    require_line_with_all(
         src,
-        [r"pivot"],
+        [
+            r"\b(send|notify|update|tell|inform|message)\b[^\n]*\buser\b|\buser\b[^\n]*\b(another update|update|notify|tell|inform|message)\b",
+            r"\bbefore\b",
+            r"pivot|material(ly)? (new|different|additional)|different[^\n]*(investigation|coordination|action)|user-visible action",
+        ],
         "RESP-5",
         GUIDE_HANDBOOK,
     )
