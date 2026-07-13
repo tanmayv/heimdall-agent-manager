@@ -966,9 +966,9 @@ export default function App() {
                   throw err;
                 }
               }}
-              onVoteTask={async (task: any, approved: boolean) => {
+              onVoteTask={async (task: any, approved: boolean, comment?: string) => {
                 try {
-                  await dispatch(voteOnSelectedTask({ taskId: task.taskId, chainId: task.chainId, approved, comment: approved ? 'LGTM from ChainView.' : 'Changes requested from ChainView.' })).unwrap();
+                  await dispatch(voteOnSelectedTask({ taskId: task.taskId, chainId: task.chainId, approved, comment: comment || (approved ? 'LGTM from ChainView.' : 'Changes requested from ChainView.') })).unwrap();
                   dispatch(showToast({ kind: 'success', title: approved ? 'LGTM recorded' : 'Changes requested', message: task.title || task.taskId }));
                   dispatch(fetchTasksForChain(task.chainId)); dispatch(fetchSelectedTaskLog(task.taskId));
                 } catch (err: any) {
@@ -995,7 +995,7 @@ export default function App() {
               attention={attention}
               memory={memory}
               pendingMemoryIds={pendingMemoryIds}
-              onVoteTask={(task: any, approved: boolean) => dispatch(voteOnAttentionTask({ taskId: task.taskId, chainId: task.chainId, approved }))}
+              onVoteTask={(task: any, approved: boolean, comment?: string) => dispatch(voteOnAttentionTask({ taskId: task.taskId, chainId: task.chainId, approved, comment: comment || undefined }))}
               onAnswerApproval={(approvalId: string, reply: string) => dispatch(answerChatApproval({ approvalId, reply }))}
               onDismissApproval={(approvalId: string, reason?: string, notify?: boolean) => dispatch(dismissChatApproval({ approvalId, reason, notify }))}
               onDecideMemory={(proposalId: string, decision: 'approve' | 'reject') => dispatch(decideMemoryProposal({ proposalId, decision }))}
@@ -2499,14 +2499,16 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ex
                     <button data-debug-id={`task-detail-status-done-btn-${task.taskId}`} disabled={Boolean(busyAction)} onClick={() => runAction(`done-${task.taskId}`, () => onSetTaskStatus(task, 'review_ready', 'Submitted for review from ChainView.'))} className="rounded-xl bg-emerald-400/90 px-3 py-2 text-xs font-semibold text-black hover:bg-emerald-300 disabled:opacity-60">Done / review</button>
                     <button data-debug-id={`task-detail-status-block-btn-${task.taskId}`} disabled={Boolean(busyAction)} onClick={() => runAction(`block-${task.taskId}`, () => onSetTaskStatus(task, 'blocked', 'Blocked from ChainView.'))} className="rounded-xl bg-amber-400/90 px-3 py-2 text-xs font-semibold text-black hover:bg-amber-300 disabled:opacity-60">Block</button>
                     <button data-debug-id={`task-detail-status-later-btn-${task.taskId}`} disabled={Boolean(busyAction)} onClick={() => runAction(`later-${task.taskId}`, () => onSetTaskStatus(task, 'queued', 'Moved later from ChainView.'))} className="rounded-xl bg-white/10 px-3 py-2 text-xs hover:bg-white/15 disabled:opacity-60">Later</button>
-                    <button data-debug-id={`task-detail-vote-lgtm-btn-${task.taskId}`} disabled={Boolean(busyAction)} onClick={() => runAction(`lgtm-${task.taskId}`, () => onVoteTask(task, true))} className="rounded-xl bg-sky-400/90 px-3 py-2 text-xs font-semibold text-black hover:bg-sky-300 disabled:opacity-60">LGTM</button>
-                    <button data-debug-id={`task-detail-vote-ngtm-btn-${task.taskId}`} disabled={Boolean(busyAction)} onClick={() => runAction(`ngtm-${task.taskId}`, () => onVoteTask(task, false))} className="rounded-xl bg-red-400/90 px-3 py-2 text-xs font-semibold text-black hover:bg-red-300 disabled:opacity-60">NGTM</button>
                     {busyAction.endsWith(task.taskId) && <span className="self-center text-xs text-sky-200">Working…</span>}
                   </div>
                   <div className="mt-3 rounded-xl bg-black/20 p-3">
-                    <div className="text-xs uppercase tracking-wider text-zinc-500">Nudge</div>
+                    <div className="text-xs uppercase tracking-wider text-zinc-500">Nudge / Vote</div>
                     <textarea data-debug-id={`task-detail-nudge-textarea-${task.taskId}`} value={nudgeDraft} onChange={(event) => onNudgeDraft(event.target.value)} rows={2} className="mt-2 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
-                    <button data-debug-id={`task-detail-nudge-btn-${task.taskId}`} disabled={Boolean(busyAction) || !String(nudgeDraft || '').trim()} onClick={() => runAction(`nudge-${task.taskId}`, () => onNudgeTask(task, nudgeDraft))} className="mt-2 rounded-xl bg-white/10 px-3 py-2 text-xs hover:bg-white/15 disabled:opacity-60">Send nudge</button>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                        <button data-debug-id={`task-detail-nudge-btn-${task.taskId}`} disabled={Boolean(busyAction) || !String(nudgeDraft || '').trim()} onClick={() => runAction(`nudge-${task.taskId}`, () => onNudgeTask(task, nudgeDraft))} className="rounded-xl bg-white/10 px-3 py-2 text-xs hover:bg-white/15 disabled:opacity-60">Send nudge</button>
+                        <button data-debug-id={`task-detail-vote-lgtm-btn-${task.taskId}`} disabled={Boolean(busyAction)} onClick={() => runAction(`lgtm-${task.taskId}`, () => onVoteTask(task, true, nudgeDraft))} className="rounded-xl bg-sky-400/90 px-3 py-2 text-xs font-semibold text-black hover:bg-sky-300 disabled:opacity-60">LGTM</button>
+                        <button data-debug-id={`task-detail-vote-ngtm-btn-${task.taskId}`} disabled={Boolean(busyAction)} onClick={() => runAction(`ngtm-${task.taskId}`, () => onVoteTask(task, false, nudgeDraft))} className="rounded-xl bg-red-400/90 px-3 py-2 text-xs font-semibold text-black hover:bg-red-300 disabled:opacity-60">NGTM</button>
+                    </div>
                   </div>
                   {(votes.length > 0 || reviewEvents.length > 0) && (
                     <div data-debug-id={`task-detail-votes-${task.taskId}`} className="mt-3 rounded-xl bg-black/20 p-3">
