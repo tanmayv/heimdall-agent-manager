@@ -7,7 +7,7 @@ port = 49322
 data_dir = "~/.local/share/heimdall"
 wrapper_bin = "./result-wrapper/bin/ham-wrapper"
 # Default provider/tier for generated team agents. Settings can override these via preferences.
-default_agent_provider_profile = "pi"
+default_agent_provider_profile = "jetski"
 default_agent_model_tier = "normal"
 
 [guide_agent]
@@ -16,7 +16,7 @@ autostart = true
 restart_if_stopped = true
 agent_instance_id = "guide@heimdall"
 template_id = "guide"
-provider_profile = "pi"
+provider_profile = "jetski"
 model_tier = "smart"
 
 [daemon]
@@ -37,10 +37,11 @@ model_tier = "smart"
 [wrapper]
 daemon_url = "http://127.0.0.1:49322"
 credentials_path = "~/.local/share/heimdall/wrapper-credentials.json"
-agent_name = "pi"
+agent_name = "jetski"
+default_agent = "jetski"
 display_name = "{instance}"
 requested_access_mode = "main"
-command = ["pi"]
+command = ["/google/bin/releases/jetski-devs/tools/cli"]
 tmux_session = "ham-agents"
 tmux_window_prefix = "agent"
 # Optional managed runtime cwd root. When set, wrappers run agents in
@@ -56,6 +57,26 @@ use_random_dir = false
 # Per-agent-command launch customization. The wrapper selects this section by
 # wrapper.command[0] ("pi" here), or by stripping "-agent" from the agent class
 # when wrapper.command is empty.
+[wrapper.agent-cmd.jetski]
+command = ["/google/bin/releases/jetski-devs/tools/cli"]
+prompt_flags = ["--prompt-interactive"]
+starter_prompt = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap files (AGENTS.md and .agents/skills/) for context."
+yolo_flags = ["--dangerously-skip-permissions"]
+
+[wrapper.agent-cmd.jetski.bootstrap.AGENTS_MD]
+content = ["IDENTITY", "GUIDANCE", "PROJECT", "MEMORY"]
+name = "AGENTS.md"
+
+[wrapper.agent-cmd.jetski.bootstrap.SKILLS]
+filename = "SKILL.md"
+relative_dir = ".agents/skills"
+
+[wrapper.agent-cmd.jetski.models]
+cheap = "Gemini Next"
+flag = "--model"
+normal = "Gemini 3.5 Flash"
+smart = "Gemini 3.1 Pro"
+
 [wrapper.agent-cmd.pi]
 command = ["pi"]
 yolo_flags = []
