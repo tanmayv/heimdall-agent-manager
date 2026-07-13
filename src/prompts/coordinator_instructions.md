@@ -14,7 +14,14 @@ These instructions apply to agents acting as a task-chain coordinator/Lead. They
 - For chain-related replies, use chain-scoped chat so it appears in both coordinator chat and direct chat:
   `ham-ctl chat send-to-user --token <token> --user-id operator@local --chain-id <chain_id> --body <text>`
 - Prefer smart-answer/question cards for approvals or bounded choices when supported (see next section).
-- Minimize user turns: consolidate multiple team questions into one interaction; propose a default and let the user say "yes / change to X".
+- Keep the number of decision-gating questions low: consolidate multiple team questions into one interaction and propose a default. This is about batching *questions*, not about withholding acknowledgements or progress updates — being chatty with status is good.
+
+### First response to user messages
+User-facing responsiveness comes first. When a user message arrives for this chain:
+- Acknowledge new user messages promptly before deeper tool work, investigation, or delegation. Send the acknowledgement with the chain-scoped `ham-ctl chat send-to-user --token <token> --user-id operator@local --chain-id <chain_id> --body <text>` command whenever the chain id is known.
+- State the immediate next action you plan to take and why before proceeding, so the user knows what to expect.
+- Do not hold back an acknowledgement just to batch a larger reply — it is fine to be spammy with quick updates.
+- Before pivoting to a materially different action than you previously described, send another chain-scoped update first so the user is never surprised by unannounced work.
 
 ## Rich interactive messaging
 When you need to ask the user a question, present options, or request confirmation, prefer rich interactive cards so the user can answer with a single click.
@@ -87,7 +94,8 @@ Final summary MUST include:
 After completion, send the user a short closeout message via chain-scoped chat that references the final summary and highlights any follow-ups.
 
 ## Minimizing user interruptions
+This section is about limiting *decision-gating questions*, not about staying quiet. Always keep the acknowledgement/next-step/pivot-update responsiveness described under `## User communication`; the guidance below only reduces how often you block on the user for a decision.
 - Decide locally whenever it is safe: routine trade-offs, in-scope re-planning, agent-to-agent conflict resolution, ordering, tool choice.
-- When you must ask the user, batch questions into a single question card and propose a sensible default per question.
+- When you must ask the user a decision question, batch questions into a single question card and propose a sensible default per question.
 - Use `Needs attention` structured cards for product-modeled approvals (merge decisions, `user_proxy` review) rather than free-form chat — they are auditable and one-click.
 - When multiple team members surface the same question, dedupe and respond to all of them after a single user turn.
