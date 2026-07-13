@@ -50,6 +50,13 @@ export const previewWorkspaceMerge = createAsyncThunk('chainView/previewWorkspac
   return { chainId, preview };
 });
 
+export const fetchWorkspaceDiff = createAsyncThunk('chainView/fetchWorkspaceDiff', async (payload: { chainId: string; file?: string }, { getState }) => {
+  const session = auth(getState() as any);
+  if (!payload.chainId || !session.clientToken) return { chainId: payload.chainId, file: payload.file || '', diff: null };
+  const diff = await daemonApi.fetchWorkspaceDiff({ ...session, chainId: payload.chainId, file: payload.file }).catch(() => null);
+  return { chainId: payload.chainId, file: payload.file || '', diff };
+});
+
 export const loadAgentSideSheet = createAsyncThunk('chainView/loadAgentSideSheet', async (agentId: string, { getState }) => {
   const state = getState() as any;
   const session = auth(state);
@@ -75,6 +82,7 @@ const initialState = {
   chatByChainId: {} as Record<string, any[]>,
   optimisticMessagesByChainId: {} as Record<string, any[]>,
   mergePreviewByChainId: {} as Record<string, any>,
+  workspaceDiffByChainId: {} as Record<string, Record<string, any>>,
   diffOpenByChainId: {} as Record<string, boolean>,
   sideSheetAgentId: '',
   sideSheetByAgentId: {} as Record<string, any>,
@@ -169,6 +177,14 @@ const chainViewSlice = createSlice({
       })
       .addCase(fetchWorkspaceForChain.fulfilled, (state: any, action) => { if (action.payload.chainId && action.payload.workspace?.workspace) state.workspaceByChainId[action.payload.chainId] = action.payload.workspace.workspace; })
       .addCase(previewWorkspaceMerge.fulfilled, (state: any, action) => { if (action.payload.chainId) state.mergePreviewByChainId[action.payload.chainId] = action.payload.preview; })
+      .addCase(fetchWorkspaceDiff.fulfilled, (state: any, action) => {
+        if (action.payload.chainId && action.payload.diff) {
+          if (!state.workspaceDiffByChainId[action.payload.chainId]) {
+            state.workspaceDiffByChainId[action.payload.chainId] = {};
+          }
+          state.workspaceDiffByChainId[action.payload.chainId][action.payload.file || ''] = action.payload.diff;
+        }
+      })
       .addCase(loadAgentSideSheet.pending, (state: any, action) => { state.sideSheetAgentId = action.meta.arg || ''; state.lastLocalAction = `openAgent:${state.sideSheetAgentId}`; })
       .addCase(loadAgentSideSheet.fulfilled, (state: any, action) => { if (action.payload.agentId) state.sideSheetByAgentId[action.payload.agentId] = action.payload; });
   },

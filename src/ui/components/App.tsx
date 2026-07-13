@@ -49,6 +49,7 @@ import {
   revalidateChainView,
   sendCoordinatorMessage,
   toggleWorkspaceDiff,
+  fetchWorkspaceDiff,
   wsChainViewRefreshRequested,
 } from '../store/chainViewSlice';
 import { answerChatApproval, chatApprovalEventReceived, dismissChatApproval, refreshChatApprovals, tickChatApprovalExpiry } from '../store/attentionSlice';
@@ -940,6 +941,7 @@ export default function App() {
                 dispatch(sendCoordinatorMessage({ chainId: selectedChain.chainId, body, localId }));
               }}
               onToggleDiff={() => dispatch(toggleWorkspaceDiff(selectedChain.chainId))}
+              onFetchDiff={(file: string) => dispatch(fetchWorkspaceDiff({ chainId: selectedChain.chainId, file }))}
               onRescan={() => dispatch(fetchWorkspaceForChain(selectedChain.chainId))}
               onPreviewMerge={() => dispatch(previewWorkspaceMerge(selectedChain.chainId))}
               onOpenAgent={(agentId: string) => { dispatch(openAgentSideSheet(agentId)); dispatch(loadAgentSideSheet(agentId)); }}
@@ -2180,7 +2182,7 @@ function ChainProgressPanel({ chain, progress }: { chain: any; progress: ChainPr
   );
 }
 
-function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, taskLogsByTaskId, onBack, onSend, onToggleDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenChain, onOpenTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask }: any) {
+function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, taskLogsByTaskId, onBack, onSend, onToggleDiff, onFetchDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenChain, onOpenTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask }: any) {
   const [draft, setDraft] = useState('');
   const [selectedTaskId, setSelectedTaskId] = useState('');
   const [commentDraft, setCommentDraft] = useState('');
@@ -2204,6 +2206,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
   const optimistic = chainView.optimisticMessagesByChainId[chain.chainId] || [];
   const messages = useMemo(() => normalizeCoordinatorMessages([...chat, ...optimistic]), [chat, optimistic]);
   const diffOpen = Boolean(chainView.diffOpenByChainId[chain.chainId]);
+  const diffData = chainView.workspaceDiffByChainId?.[chain.chainId] || {};
   const preview = chainView.mergePreviewByChainId[chain.chainId];
   const coordinatorAgentId = chain.coordinatorAgentInstanceId || chain.coordinator_agent_instance_id || '';
   const coordinatorAgent = useMemo(() => agents.find((agent: any) => agent.id === coordinatorAgentId || agent.agentInstanceId === coordinatorAgentId || agent.agent_instance_id === coordinatorAgentId), [agents, coordinatorAgentId]);
@@ -2295,6 +2298,8 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
             workspace={workspace}
             preview={preview}
             diffOpen={diffOpen}
+            diffData={diffData}
+            onFetchDiff={onFetchDiff}
             onToggleDiff={onToggleDiff}
             onRescan={onRescan}
             onPreviewMerge={onPreviewMerge}
@@ -2587,8 +2592,59 @@ function InfoRow({ label, value, tone = 'text-zinc-300' }: any) {
   );
 }
 
-function WorkspaceBox({ chainId, workspace, preview, diffOpen, onToggleDiff, onRescan, onPreviewMerge }: any) {
+function RichDiffView({ diffString }: { diffString?: string }) {
+  if (!diffString || typeof diffString !== 'string') return <pre className="mt-4 max-h-[500px] overflow-auto rounded-xl bg-black/30 p-3 text-xs text-zinc-300">{JSON.stringify(diffString, null, 2)}</pre>;
+  return (
+    <div className="mt-4 max-h-[500px] overflow-auto rounded-xl bg-[#0d1117] text-[13px] font-mono shadow-inner">
+      {diffString.split('\n').map((line, i) => {
+        let color = 'text-zinc-300';
+        let bg = '';
+        if (line.startsWith('+') && !line.startsWith('+++')) { color = 'text-[#e6ffed]'; bg = 'bg-[#238636]/30'; }
+        else if (line.startsWith('-') && !line.startsWith('---')) { color = 'text-[#ffdce0]'; bg = 'bg-[#da3633]/30'; }
+        else if (line.startsWith('@@')) { color = 'text-sky-300'; bg = 'bg-sky-400/10'; }
+        return <div key={i} className={`whitespace-pre px-4 py-[2px] ${color} ${bg}`}>{line}</div>;
+      })}
+    </div>
+  );
+}
+
+function MergePreviewSummary({ preview }: { preview: any }) {
+  if (!preview) return null;
+  const filesAdded = preview.added || preview.adds || [];
+  const filesModified = preview.modified || preview.mods || [];
+  const filesDeleted = preview.removed || preview.deleted || preview.dels || [];
+  
+  return (
+    <div className="mt-4 overflow-hidden rounded-xl border border-sky-400/20 bg-sky-400/5">
+       <div className="border-b border-sky-400/10 bg-sky-400/10 p-3 text-sm font-semibold text-sky-200">Merge Preview Summary</div>
+       <div className="p-4 text-sm text-zinc-300">
+         {preview.message && <div className="mb-4 text-sky-100">{preview.message}</div>}
+         {preview.mergeable !== undefined && <div className="mb-4">Mergeable: {preview.mergeable ? <span className="font-semibold text-emerald-400">Yes</span> : <span className="font-semibold text-red-400">No</span>}</div>}
+         {filesAdded.length > 0 && <div className="mt-2 text-emerald-400">Added: {filesAdded.join(', ')}</div>}
+         {filesModified.length > 0 && <div className="mt-2 text-amber-400">Modified: {filesModified.join(', ')}</div>}
+         {filesDeleted.length > 0 && <div className="mt-2 text-red-400">Deleted: {filesDeleted.join(', ')}</div>}
+         {!filesAdded.length && !filesModified.length && !filesDeleted.length && <pre className="mt-2 text-xs text-zinc-400">{JSON.stringify(preview, null, 2)}</pre>}
+       </div>
+    </div>
+  );
+}
+
+function WorkspaceBox({ chainId, workspace, preview, diffOpen, diffData, onFetchDiff, onToggleDiff, onRescan, onPreviewMerge }: any) {
   const files = workspace?.status?.files || workspace?.files || [];
+  const [selectedFile, setSelectedFile] = useState('');
+
+  // Auto-select the first file when files load
+  useEffect(() => {
+    if (files.length > 0 && !selectedFile) setSelectedFile(files[0].path || '');
+  }, [files, selectedFile]);
+
+  // Fetch the diff when a file is selected and the diff modal is open
+  useEffect(() => {
+    if (diffOpen && selectedFile && (!diffData || !diffData[selectedFile])) {
+      onFetchDiff?.(selectedFile);
+    }
+  }, [diffOpen, selectedFile, diffData, onFetchDiff]);
+
   return (
     <section className="rounded-2xl border border-sky-400/20 bg-sky-400/[0.04] p-4">
       <div className="flex items-start justify-between gap-4">
@@ -2614,11 +2670,22 @@ function WorkspaceBox({ chainId, workspace, preview, diffOpen, onToggleDiff, onR
           return <div key={path} data-debug-id={`workspace-file-${slug}`} className="rounded-xl bg-black/20 px-3 py-2 text-sm text-zinc-300">{file.status || '?'} {path} <span className="text-zinc-500">+{file.adds || 0} −{file.dels || 0}</span></div>;
         })}
       </div>
-      <select data-debug-id="workspace-diff-file-select" className="mt-4 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-300" disabled={files.length === 0}>
-        {files.length === 0 ? <option>No files</option> : files.map((file: any, index: number) => <option key={file.path || index}>{file.path || `file-${index}`}</option>)}
-      </select>
-      {preview && <pre className="mt-4 max-h-40 overflow-auto rounded-xl bg-black/30 p-3 text-xs text-zinc-300">{JSON.stringify(preview, null, 2)}</pre>}
-      {diffOpen && <div className="mt-4 rounded-xl bg-black/30 p-4 text-sm text-zinc-400">Diff panel requested. File-specific diff loading lands in the workspace follow-up; VCS commands still require explicit clicks.</div>}
+      {files.length > 0 && diffOpen && (
+        <select data-debug-id="workspace-diff-file-select" value={selectedFile} onChange={(e) => setSelectedFile(e.target.value)} className="mt-4 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-300 outline-none focus:border-sky-400">
+          {files.map((file: any, index: number) => <option key={file.path || index} value={file.path || `file-${index}`}>{file.path || `file-${index}`}</option>)}
+        </select>
+      )}
+      
+      {preview && <MergePreviewSummary preview={preview} />}
+      
+      {diffOpen && selectedFile && diffData?.[selectedFile] && (
+        <RichDiffView diffString={typeof diffData[selectedFile] === 'string' ? diffData[selectedFile] : (diffData[selectedFile].diff || diffData[selectedFile].patch)} />
+      )}
+      
+      {diffOpen && selectedFile && !diffData?.[selectedFile] && (
+         <div className="mt-4 rounded-xl bg-black/30 p-4 text-sm text-zinc-400">Loading diff...</div>
+      )}
+      
       <p className="mt-3 text-xs text-zinc-500">No VCS command runs without your click.</p>
     </section>
   );
