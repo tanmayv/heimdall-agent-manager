@@ -207,8 +207,15 @@ task_autoscaler_ensure_chain_coordinator :: proc(chain_id, reason, priority: str
 		fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=chain_coordinator_reconcile_skip source=%s chain=%s skip_reason=chain_archived", router_now_unix_ms(), reason, chain_id)
 		return false
 	}
-	coordinator := task_runtime_agent_target(chain.coordinator_agent_instance_id)
-	if coordinator == "" {
+	// The chain coordinator id is a team-provisioned AGENT identity, not a human.
+	// Do NOT route it through the user-guessing heuristic (task_runtime_agent_target/
+	// task_actor_is_user): a brand-new coordinator has not connected yet and has no
+	// durable record until its first boot, so the heuristic would mis-classify it as
+	// a user and skip the boot with no_runtime_coordinator — a chicken-and-egg
+	// deadlock where the coordinator can never start. We only skip when the field is
+	// genuinely empty or a legacy human placeholder (operator@local / user_proxy).
+	coordinator := chain.coordinator_agent_instance_id
+	if coordinator == "" || coordinator == HUMAN_RECIPIENT_ID || coordinator == "user_proxy" || coordinator == "operator@local" {
 		fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=chain_coordinator_reconcile_skip source=%s chain=%s skip_reason=no_runtime_coordinator coordinator=%s", router_now_unix_ms(), reason, chain_id, chain.coordinator_agent_instance_id)
 		return false
 	}
