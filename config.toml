@@ -33,6 +33,11 @@ model_tier = "smart"
 # nudge_send_escape_prefix = false
 # Agents stuck in "starting" past this many seconds are marked startup_failed.
 # startup_stale_after_seconds = 120
+# Artifact uploads are limited to 10 MiB by default.
+# artifact_max_bytes = 10485760
+# Optional global artifact blob-store override. Defaults to:
+#   <daemon.data_dir>/artifacts/blobs
+# artifact_blob_dir = "~/.local/share/heimdall/artifacts/blobs"
 
 [wrapper]
 daemon_url = "http://127.0.0.1:49322"

@@ -58,7 +58,11 @@ handle_agent_rpc_send_to_user :: proc(client: net.TCP_Socket, body, from_agent_i
 	payload := extract_json_string(body, "payload", "")
 	chain_id := extract_json_string(body, "chain_id", extract_json_string(body, "chain", ""))
 	if payload == "" do payload = extract_json_string(body, "body", "")
-	if !valid_user_id(user_id) || payload == "" {
+	artifact_content_base64 := extract_json_string(body, "artifact_content_base64", "")
+	artifact_name := extract_json_string(body, "artifact_name", "")
+	artifact_kind := extract_json_string(body, "artifact_kind", "")
+	attach_artifact := strings.trim_space(artifact_content_base64) != ""
+	if !valid_user_id(user_id) || (payload == "" && !attach_artifact) {
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"send_to_user requires valid user_id and body"}`)
 		return
 	}
@@ -76,32 +80,47 @@ handle_agent_rpc_send_to_user :: proc(client: net.TCP_Socket, body, from_agent_i
 		if inferred do chain_id = inferred_chain_id
 	}
 
+	project_id := ""
 	if chain_id != "" {
 		chain_idx, found := task_existing_chain_index(chain_id)
 		if !found {
 			write_response(client, 404, "Not Found", `{"ok":false,"message":"unknown chain_id"}`)
 			return
 		}
+		project_id = task_chains[chain_idx].project_id
 		if task_chains[chain_idx].coordinator_agent_instance_id != from_agent_instance_id {
 			agent_rpc_redirect_non_coordinator_send_to_user(client, user_id, from_agent_instance_id, payload, chain_id, chain_id_explicit)
 			return
 		}
+	}
+	created_artifact := Artifact_Record{}
+	if attach_artifact {
+		result := artifact_create_record(from_agent_instance_id, false, artifact_name, artifact_kind, "", project_id, "chat", chain_id, "", artifact_content_base64)
+		if !result.ok {
+			artifact_write_error(client, result.status, result.status_text, result.error_kind, result.message)
+			return
+		}
+		created_artifact = result.rec
+		payload = artifact_append_link_body(payload, created_artifact.artifact_id)
 	}
 	// Detect approval-shaped payloads (smart_answer / questions / approval_request).
 	// Approvals must be bound to a chain so operator inbox items can be listed
 	// and expired without stranding the agent. Reject known invalid spellings
 	// instead of silently rendering raw JSON.
 	if invalid_approval := chat_approval_invalid_type_error(payload); invalid_approval != "" {
+		if created_artifact.artifact_id != "" do artifact_cleanup_failed_inline_attach(created_artifact)
 		write_response(client, 400, "Bad Request", invalid_approval)
 		return
 	}
 	approval_det := chat_approval_detect_payload(payload)
 	if approval_det.matched && chain_id == "" {
+		if created_artifact.artifact_id != "" do artifact_cleanup_failed_inline_attach(created_artifact)
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"chain_id required for approval-shaped send_to_user","error":"chain_id_required_for_approval"}`)
 		return
 	}
 	message_id, ok := agent_chat_send_to_user(from_agent_instance_id, user_id, payload, chain_id)
 	if !ok || message_id == "" {
+		if created_artifact.artifact_id != "" do artifact_cleanup_failed_inline_attach(created_artifact)
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"send_to_user did not create a message"}`)
 		return
 	}

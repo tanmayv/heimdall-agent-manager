@@ -3,7 +3,7 @@ from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-MD = ROOT / 'src/ui/components/Markdown.tsx'
+MD = ROOT / 'src/ui/components/MarkdownBody.tsx'
 
 src = MD.read_text()
 checks = [

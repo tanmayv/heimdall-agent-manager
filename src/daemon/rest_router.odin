@@ -149,6 +149,44 @@ handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_C
 		return true
 	}
 
+	// POST /artifacts/create
+	if len(ctx.segments) == 2 && ctx.segments[0] == "artifacts" && ctx.segments[1] == "create" && ctx.method == "POST" {
+		handle_post_artifact_create(client, request_body(request), ctx)
+		return true
+	}
+
+	// GET /artifacts
+	if len(ctx.segments) == 1 && ctx.segments[0] == "artifacts" && ctx.method == "GET" {
+		handle_get_artifacts(client, ctx)
+		return true
+	}
+
+	// GET /artifacts/{artifact_id}/content
+	if len(ctx.segments) == 3 && ctx.segments[0] == "artifacts" && ctx.segments[2] == "content" && ctx.method == "GET" {
+		artifact_id := ctx.segments[1]
+		handle_get_artifact_content(client, artifact_id, ctx)
+		return true
+	}
+
+	// POST /artifacts/update
+	if len(ctx.segments) == 2 && ctx.segments[0] == "artifacts" && ctx.segments[1] == "update" && ctx.method == "POST" {
+		handle_post_artifact_update(client, request_body(request), ctx)
+		return true
+	}
+
+	// POST /artifacts/delete
+	if len(ctx.segments) == 2 && ctx.segments[0] == "artifacts" && ctx.segments[1] == "delete" && ctx.method == "POST" {
+		handle_post_artifact_delete(client, request_body(request), ctx)
+		return true
+	}
+
+	// GET /artifacts/{artifact_id}
+	if len(ctx.segments) == 2 && ctx.segments[0] == "artifacts" && ctx.method == "GET" {
+		artifact_id := ctx.segments[1]
+		handle_get_artifact(client, artifact_id, ctx)
+		return true
+	}
+
 	// GET /chats
 	if len(ctx.segments) == 1 && ctx.segments[0] == "chats" && ctx.method == "GET" {
 		handle_get_chats(client, ctx)

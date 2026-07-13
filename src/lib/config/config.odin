@@ -68,6 +68,8 @@ Daemon_Config :: struct {
 	default_agent_provider_profile: string,
 	default_agent_model_tier: string,
 	wrapper_bin: string,
+	artifact_max_bytes: int,
+	artifact_blob_dir: string,
 }
 
 Guide_Agent_Config :: struct {
@@ -417,6 +419,10 @@ parse_daemon_key :: proc(key, value: string, cfg: ^Daemon_Config) {
 		cfg.default_agent_model_tier = parse_string(value)
 	case "wrapper_bin":
 		cfg.wrapper_bin = parse_string(value)
+	case "artifact_max_bytes":
+		if n, ok := strconv.parse_int(value); ok do cfg.artifact_max_bytes = int(n)
+	case "artifact_blob_dir":
+		cfg.artifact_blob_dir = expand_home(parse_string(value))
 	case:
 	}
 }
@@ -725,6 +731,8 @@ default_config :: proc() -> Config {
 	cfg.daemon.team_idle_shutdown_seconds = 1800
 	cfg.daemon.default_agent_provider_profile = "pi"
 	cfg.daemon.default_agent_model_tier = "normal"
+	cfg.daemon.artifact_max_bytes = 10 * 1024 * 1024
+	cfg.daemon.artifact_blob_dir = ""
 
 	cfg.guide_agent.enabled = true
 	cfg.guide_agent.autostart = true

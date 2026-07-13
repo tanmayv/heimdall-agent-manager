@@ -75,6 +75,14 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 	teams_v1_migration_maybe_run(server_data_dir); time_step("teams_v1_migration_maybe_run", &step)
 	if !vcs_db_init(server_data_dir) { fmt.println("WARNING: vcs_db_init failed, workspaces will not persist") }
 	time_step("vcs_db_init", &step)
+	if !artifact_db_init(server_data_dir) {
+		fmt.println("WARNING: artifact_db_init failed, artifact metadata will not persist")
+	}
+	time_step("artifact_db_init", &step)
+	if !artifact_storage_init(server_data_dir, cfg.daemon.artifact_blob_dir) {
+		fmt.println("WARNING: artifact_storage_init failed, artifact blobs may be unavailable")
+	}
+	time_step("artifact_storage_init", &step)
 	if !auth_db_init(server_data_dir) {
 		fmt.println("WARNING: auth_db_init failed, tokens will not persist across daemon restarts")
 	}
