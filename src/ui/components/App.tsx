@@ -52,7 +52,7 @@ import {
   fetchWorkspaceDiff,
   wsChainViewRefreshRequested,
 } from '../store/chainViewSlice';
-import { answerChatApproval, chatApprovalEventReceived, dismissChatApproval, refreshChatApprovals, tickChatApprovalExpiry } from '../store/attentionSlice';
+import { answerChatApproval, chatApprovalEventReceived, dismissChatApproval, refreshChatApprovals, tickChatApprovalExpiry, refreshMergeDecisions, executeMergeViaChain, MergeDecision } from '../store/attentionSlice';
 import { refreshMemory, decideMemoryProposal, fetchMemoryDetail, memoryEventReceived, auditStartedReceived, auditEndedReceived } from '../store/memorySlice';
 import { dismissToast, showToast } from '../store/toastSlice';
 import Markdown from './Markdown';
@@ -687,8 +687,12 @@ export default function App() {
   useEffect(() => {
     if (home.surface !== 'attention' || !session.connected) return undefined;
     dispatch(refreshChatApprovals());
+    dispatch(refreshMergeDecisions());
     dispatch(refreshMemory());
-    const refresh = window.setInterval(() => { dispatch(refreshChatApprovals()); }, 30_000);
+    const refresh = window.setInterval(() => {
+      dispatch(refreshChatApprovals());
+      dispatch(refreshMergeDecisions());
+    }, 30_000);
     const expiry = window.setInterval(() => dispatch(tickChatApprovalExpiry()), 15_000);
     return () => { window.clearInterval(refresh); window.clearInterval(expiry); };
   }, [dispatch, home.surface, session.connected]);
@@ -1000,6 +1004,7 @@ export default function App() {
               onDismissApproval={(approvalId: string, reason?: string, notify?: boolean) => dispatch(dismissChatApproval({ approvalId, reason, notify }))}
               onDecideMemory={(proposalId: string, decision: 'approve' | 'reject') => dispatch(decideMemoryProposal({ proposalId, decision }))}
               onOpenMerge={(chainId: string) => { openChain(chainId); dispatch(previewWorkspaceMerge(chainId)); }}
+              onMergeViaChain={(chainId: string, instructions: string) => dispatch(executeMergeViaChain({ chainId, instructions }))}
             />
           ) : (
             <HomePage
@@ -1280,7 +1285,66 @@ function HomePage({ groups, activeProject, loading, chainTaskIds, tasksById, hom
   );
 }
 
-function AttentionSurface({ tasksById, chainsById, openChain, attention, memory, pendingMemoryIds, onVoteTask, onAnswerApproval, onDismissApproval, onDecideMemory, onOpenMerge }: any) {
+function MergeDecisionCard({ decision, chain, onMerge, onOpen, onOpenPreview }: {
+  decision: MergeDecision;
+  chain: any;
+  onMerge: (instructions: string) => void;
+  onOpen: () => void;
+  onOpenPreview: () => void;
+}) {
+  const defaultPrompt = `Merge branch ${decision.branchOrChange} into ${decision.baseRef} and push to origin.`;
+  const [instructions, setInstructions] = useState(defaultPrompt);
+
+  return (
+    <div key={`merge-${decision.chainId}`} data-debug-id={`attention-card-chain_merge-${decision.chainId}`} className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+      <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Merge Decision</div>
+      <div className="mt-1 font-semibold">{chain?.title || decision.chainId}</div>
+      <div className="mt-1 text-sm text-zinc-400">Workspace: {decision.workspaceId} · base: {decision.baseRef}</div>
+      
+      {decision.preview && (
+        <div className="mt-2 text-xs text-zinc-400">
+          <div>Can Fast-Forward: {decision.preview.canFastForward ? 'Yes' : 'No'}</div>
+          {decision.preview.summary && <div className="mt-1 font-mono">{decision.preview.summary}</div>}
+        </div>
+      )}
+
+      <div className="mt-3">
+        <label className="block text-xs text-zinc-500 uppercase tracking-wider">Custom Instructions (MD-1)</label>
+        <textarea
+          data-debug-id={`merge-instructions-${decision.chainId}`}
+          value={instructions}
+          onChange={(e) => setInstructions(e.target.value)}
+          className="mt-1 w-full rounded-lg bg-black/40 border border-white/10 p-2 text-sm text-zinc-200 focus:border-sky-400 focus:outline-none"
+          rows={3}
+        />
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          data-debug-id={`attention-card-chain_merge-${decision.chainId}-action-approve`}
+          onClick={() => onMerge(instructions)}
+          className="rounded-xl bg-emerald-400 px-3 py-2 text-sm font-semibold text-black hover:bg-emerald-300"
+        >
+          Approve Merge
+        </button>
+        <button
+          onClick={onOpenPreview}
+          className="rounded-xl bg-sky-400 px-3 py-2 text-sm font-semibold text-black hover:bg-sky-300"
+        >
+          Preview Diff
+        </button>
+        <button
+          onClick={onOpen}
+          className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15"
+        >
+          Open chain
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AttentionSurface({ tasksById, chainsById, openChain, attention, memory, pendingMemoryIds, onVoteTask, onAnswerApproval, onDismissApproval, onDecideMemory, onOpenMerge, onMergeViaChain }: any) {
   const [filter, setFilter] = useState<'all' | 'chat' | 'tasks' | 'merge' | 'memory'>('all');
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -1292,22 +1356,25 @@ function AttentionSurface({ tasksById, chainsById, openChain, attention, memory,
     .filter((approval: any) => approval && approval.state === 'open' && approval.expiresAtUnixMs > now && approval.kind !== 'multi_question');
   const taskApprovals = Object.values(tasksById || {}).filter(isUserActionableTask) as any[];
   const mergeChains = (Object.values(chainsById || {}) as any[]).filter((chain: any) => chain?.status === 'reviewing');
+  const mergeDecisions = (attention?.mergeDecisionIds || [])
+    .map((id: string) => attention.mergeDecisionsById?.[id])
+    .filter(Boolean);
   const memoryProposals = (memory?.recordIds || [])
     .map((id: string) => memory.recordsById?.[id])
     .filter((rec: any) => rec && rec.status === 'pending');
 
   const kinds: { key: typeof filter; label: string; count: number }[] = [
-    { key: 'all', label: 'All', count: chatApprovals.length + taskApprovals.length + mergeChains.length + memoryProposals.length },
+    { key: 'all', label: 'All', count: chatApprovals.length + taskApprovals.length + mergeChains.length + mergeDecisions.length + memoryProposals.length },
     { key: 'chat', label: 'Chat approvals', count: chatApprovals.length },
     { key: 'tasks', label: 'Task approvals', count: taskApprovals.length },
-    { key: 'merge', label: 'Merge review', count: mergeChains.length },
+    { key: 'merge', label: 'Merge review', count: mergeChains.length + mergeDecisions.length },
     { key: 'memory', label: 'Memory proposals', count: memoryProposals.length },
   ];
   const showChat = filter === 'all' || filter === 'chat';
   const showTasks = filter === 'all' || filter === 'tasks';
   const showMerge = filter === 'all' || filter === 'merge';
   const showMemory = filter === 'all' || filter === 'memory';
-  const totalVisible = (showChat ? chatApprovals.length : 0) + (showTasks ? taskApprovals.length : 0) + (showMerge ? mergeChains.length : 0) + (showMemory ? memoryProposals.length : 0);
+  const totalVisible = (showChat ? chatApprovals.length : 0) + (showTasks ? taskApprovals.length : 0) + (showMerge ? (mergeChains.length + mergeDecisions.length) : 0) + (showMemory ? memoryProposals.length : 0);
   return (
     <div data-debug-id="attention-surface" className="mx-auto max-w-5xl px-8 py-8">
       <div className="text-xs uppercase tracking-[0.25em] text-zinc-500">Needs attention</div>
@@ -1358,17 +1425,31 @@ function AttentionSurface({ tasksById, chainsById, openChain, attention, memory,
             </div>
           </div>
         ))}
-        {showMerge && mergeChains.map((chain: any) => (
-          <div key={`merge-${chain.chainId}`} data-debug-id={`attention-card-chain_merge-${chain.chainId}`} className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
-            <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Merge review</div>
-            <div className="mt-1 font-semibold">{chain.title || chain.chainId}</div>
-            <div className="mt-1 text-sm text-zinc-400">Chain is reviewing. Coordinator: {chain.coordinatorAgentInstanceId || '—'}</div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button data-debug-id={`attention-card-chain_merge-${chain.chainId}-action-preview`} onClick={() => onOpenMerge(chain.chainId)} className="rounded-xl bg-sky-400 px-3 py-2 text-sm font-semibold text-black hover:bg-sky-300">Preview merge</button>
-              <button data-debug-id={`attention-card-chain_merge-${chain.chainId}-action-open`} onClick={() => openChain(chain.chainId)} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Open chain</button>
-            </div>
-          </div>
-        ))}
+        {showMerge && (
+          <>
+            {mergeDecisions.map((decision: any) => (
+              <MergeDecisionCard
+                key={decision.chainId}
+                decision={decision}
+                chain={chainsById?.[decision.chainId]}
+                onMerge={(instructions: string) => onMergeViaChain(decision.chainId, instructions)}
+                onOpen={() => openChain(decision.chainId)}
+                onOpenPreview={() => onOpenMerge(decision.chainId)}
+              />
+            ))}
+            {mergeChains.map((chain: any) => (
+              <div key={`merge-${chain.chainId}`} data-debug-id={`attention-card-chain_merge-${chain.chainId}`} className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+                <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Merge review</div>
+                <div className="mt-1 font-semibold">{chain.title || chain.chainId}</div>
+                <div className="mt-1 text-sm text-zinc-400">Chain is reviewing. Coordinator: {chain.coordinatorAgentInstanceId || '—'}</div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button data-debug-id={`attention-card-chain_merge-${chain.chainId}-action-preview`} onClick={() => onOpenMerge(chain.chainId)} className="rounded-xl bg-sky-400 px-3 py-2 text-sm font-semibold text-black hover:bg-sky-300">Preview merge</button>
+                  <button data-debug-id={`attention-card-chain_merge-${chain.chainId}-action-open`} onClick={() => openChain(chain.chainId)} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Open chain</button>
+                </div>
+              </div>
+            ))}
+          </>
+        )}
         {showMemory && memoryProposals.map((rec: any) => (
           <div key={`memory-${rec.memoryId}`} data-debug-id={`attention-card-memory-${rec.memoryId}`} className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
             <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Memory proposal</div>

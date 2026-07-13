@@ -317,6 +317,38 @@ export async function previewWorkspaceMerge({ daemonUrl, clientToken, chainId }:
   return requestJson(joinUrl(daemonUrl, `/chains/${encodeURIComponent(chainId)}/workspace/merge-preview?agent_token=${encodeURIComponent(clientToken)}`));
 }
 
+export async function executeWorkspaceMerge({
+  daemonUrl,
+  clientToken,
+  chainId,
+  target,
+  mode = 'direct',
+  instructions = '',
+}: Omit<UserRpcRequest, 'clientInstanceId'> & {
+  chainId: string;
+  target?: string;
+  mode?: 'direct' | 'chain';
+  instructions?: string;
+}) {
+  return requestJson(joinUrl(daemonUrl, `/chains/${encodeURIComponent(chainId)}/workspace/merge`), {
+    method: 'POST',
+    body: {
+      agent_token: clientToken,
+      target: target || '',
+      mode,
+      instructions,
+    },
+    headers: { 'Authorization': `Bearer ${clientToken}` }
+  });
+}
+
+export async function fetchAttention({ daemonUrl, clientToken }: Omit<UserRpcRequest, 'clientInstanceId'>) {
+  return requestJson(joinUrl(daemonUrl, `/attention?agent_token=${encodeURIComponent(clientToken)}`), {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${clientToken}` }
+  });
+}
+
 export async function fetchWorkspaceDiff({ daemonUrl, clientToken, chainId, file = '' }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId: string; file?: string }) {
   let path = `/chains/${encodeURIComponent(chainId)}/workspace/diff?agent_token=${encodeURIComponent(clientToken)}`;
   if (file) path += `&file=${encodeURIComponent(file)}`;

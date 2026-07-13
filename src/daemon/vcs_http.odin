@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:net"
 import "core:strings"
 import vcs "odin_test:lib/vcs"
@@ -109,14 +110,50 @@ handle_workspace_merge :: proc(client: net.TCP_Socket, body: string) {
 }
 
 handle_workspace_merge_for_chain :: proc(client: net.TCP_Socket, body, chain_id: string) {
-	_, is_user, ok := task_author_and_type_from_body(client, body); if !ok do return
+	user_id, is_user, ok := task_author_and_type_from_body(client, body); if !ok do return
 	if !is_user { write_response(client, 403, "Forbidden", `{"ok":false,"message":"workspace merge requires user token"}`); return }
-	target := extract_json_string(body, "target", "")
+	
 	rec, found := vcs_db_workspace_for_chain(chain_id); if !found { write_response(client, 404, "Not Found", `{"ok":false,"message":"workspace not found"}`); return }
+	
+	mode := extract_json_string(body, "mode", "direct")
+	instructions := extract_json_string(body, "instructions", "")
+	target := extract_json_string(body, "target", "")
+
+	if mode == "chain" {
+		original_title := "Untitled Chain"
+		if chain_idx, found_chain := task_existing_chain_index(chain_id); found_chain {
+			original_title = task_chains[chain_idx].title
+		}
+		
+		merge_chain_title := fmt.tprintf("Merge: %s", original_title)
+		
+		create_cmd := Task_Chain_Create_Command{
+			project_id = rec.project_id,
+			kind = "coding",
+			scaffold = "chore",
+			title = merge_chain_title,
+			description = instructions,
+			wants_vcs = true,
+			author_agent_instance_id = user_id,
+		}
+		
+		create_res := task_service_create_chain(create_cmd)
+		if !create_res.ok {
+			write_response(client, create_res.status_code, "Error", create_res.message)
+			return
+		}
+		
+		_ = vcs_db_update_status(chain_id, "merging")
+		merge_lifecycle_finalize_decision(chain_id)
+		
+		write_response(client, 200, "OK", create_res.message)
+		return
+	}
+
+	// Default/direct mode
 	backend := vcs.vcs_backend_for(vcs_handle_from_record(rec).kind); ok2, msg := backend.merge_execute(vcs_handle_from_record(rec), target)
 	if !ok2 { write_response(client, 409, "Conflict", workspace_error_json(msg)); return }
-	// Task 16: operator merge succeeded → remove the worktree (kept only if
-	// keep_on_archive), clear merge_pending, and archive team (§3.5).
+	
 	if !rec.keep_on_archive {
 		_, _ = backend.workspace_remove(vcs_handle_from_record(rec), true)
 	}

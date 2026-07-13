@@ -85,6 +85,41 @@ function normalizeApproval(record: any): ChatApproval {
   };
 }
 
+export type MergeDecision = {
+  chainId: string;
+  workspaceId: string;
+  projectId: string;
+  vcsKind: string;
+  branchOrChange: string;
+  baseRef: string;
+  path: string;
+  preview: {
+    canFastForward: boolean;
+    summary: string;
+    conflicts: string[];
+    commands: string[];
+  };
+};
+
+function normalizeMergeDecision(record: any): MergeDecision {
+  const preview = record.preview || {};
+  return {
+    chainId: record.chain_id || '',
+    workspaceId: record.workspace_id || '',
+    projectId: record.project_id || '',
+    vcsKind: record.vcs_kind || '',
+    branchOrChange: record.branch_or_change || '',
+    baseRef: record.base_ref || '',
+    path: record.path || '',
+    preview: {
+      canFastForward: Boolean(preview.can_fast_forward),
+      summary: preview.summary || '',
+      conflicts: preview.conflicts || [],
+      commands: preview.commands || [],
+    },
+  };
+}
+
 function auth(state: any) {
   const { session } = state.chat;
   return { daemonUrl: session.daemonUrl, clientToken: session.clientToken };
@@ -111,9 +146,36 @@ export const dismissChatApproval = createAsyncThunk('attention/dismissChatApprov
   return result;
 });
 
+export const refreshMergeDecisions = createAsyncThunk('attention/refreshMergeDecisions', async (_, { getState }) => {
+  const state = getState() as any;
+  if (!state.chat.session.clientToken) return { mergeDecisions: [] };
+  const data = await daemonApi.fetchAttention({ daemonUrl: state.chat.session.daemonUrl, clientToken: state.chat.session.clientToken });
+  return { mergeDecisions: (data.merge_decisions || []).map(normalizeMergeDecision) };
+});
+
+export const executeMergeViaChain = createAsyncThunk(
+  'attention/executeMergeViaChain',
+  async (payload: { chainId: string; instructions: string; target?: string }, { dispatch, getState }) => {
+    const state = getState() as any;
+    const { session } = state.chat;
+    const result = await daemonApi.executeWorkspaceMerge({
+      daemonUrl: session.daemonUrl,
+      clientToken: session.clientToken,
+      chainId: payload.chainId,
+      target: payload.target,
+      mode: 'chain',
+      instructions: payload.instructions,
+    });
+    await dispatch(refreshMergeDecisions());
+    return result;
+  }
+);
+
 const initialState = {
   chatApprovalsById: {} as Record<string, ChatApproval>,
   chatApprovalIds: [] as string[],
+  mergeDecisionsById: {} as Record<string, MergeDecision>,
+  mergeDecisionIds: [] as string[],
   loading: false,
   error: '',
   lastEventAt: 0,
@@ -186,6 +248,29 @@ const attentionSlice = createSlice({
       })
       .addCase(dismissChatApproval.rejected, (state: any, action) => {
         state.error = action.error.message || 'Failed to dismiss approval';
+      })
+      .addCase(refreshMergeDecisions.pending, (state: any) => {
+        state.loading = true;
+        state.error = '';
+      })
+      .addCase(refreshMergeDecisions.fulfilled, (state: any, action) => {
+        state.loading = false;
+        const decisions: MergeDecision[] = action.payload.mergeDecisions || [];
+        const byId: Record<string, MergeDecision> = {};
+        const ids: string[] = [];
+        for (const decision of decisions) {
+          byId[decision.chainId] = decision;
+          ids.push(decision.chainId);
+        }
+        state.mergeDecisionsById = byId;
+        state.mergeDecisionIds = ids;
+      })
+      .addCase(refreshMergeDecisions.rejected, (state: any, action) => {
+        state.loading = false;
+        state.error = action.error.message || 'Failed to load merge decisions';
+      })
+      .addCase(executeMergeViaChain.rejected, (state: any, action) => {
+        state.error = action.error.message || 'Failed to execute merge via chain';
       });
   },
 });

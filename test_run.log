@@ -1,0 +1,365 @@
+[*] Created temporary HEIMDALL_HOME: /tmp/tmp.1U43KttSQx
+[*] Starting ham-daemon on port 49325...
+[*] Waiting for daemon to start...
+[*] Daemon is healthy!
+[*] Running tasks smoke test...
+[-] Error: test_tasks.sh failed! Full test logs:
+daemon ok  run_id=1783390096  config=/tmp/tmp.1U43KttSQx/config.toml
+ctl:       /usr/local/google/home/tanmayvijay/heimdall-agent-manager/result-ctl/bin/ham-ctl
+agent:     smoketest@run1783390096
+token:     agt_7ccd676f71e9...
+user_token: uct_9aa51adcf3fc...
+
+PASS: setup: create project
+project:   project_1783390096959
+
+=== T1: chain planning guard ===
+PASS: T1 create chain
+PASS: T1 chain status=planning
+chain:     chain-19f3a554e4f
+PASS: T1 create task
+task:      task-19f3a554e64
+PASS: T1 show task ok
+PASS: T1 task status=planning
+PASS: T1 tasks next=null (chain not active)
+
+=== T2: chain activation ===
+PASS: T2 activate chain
+PASS: T2 chain show ok
+PASS: T2 chain status=in_progress
+PASS: T2 show task
+PASS: T2 task promoted (status=in_progress)
+PASS: T2 tasks next returns task
+
+=== T3: comment lifecycle ===
+PASS: T3 add comment
+PASS: T3 comment_id returned (cmt_1783390097109)
+PASS: T3 tasks show has unresolved_comment_count=1
+PASS: T3 tasks show has unresolved_comments list with cmt_id
+PASS: T3 tasks show has unresolved_comments list with body
+PASS: T3 transition to done blocked by unresolved comments
+PASS: T3 error mentions unresolved comments
+PASS: T3 fetch unresolved ok
+PASS: T3 one unresolved comment present
+PASS: T3 comment not yet resolved
+PASS: T3 resolve comment
+PASS: T3 tasks show has unresolved_comment_count=0
+PASS: T3 tasks show has no unresolved_comments details
+PASS: T3 zero unresolved after resolve
+
+=== T4: review_ready + lgtm_required notification ===
+PASS: T4 add lgtm_required participant
+PASS: T4 agent manual status change is blocked
+PASS: T4 agent manual status error
+PASS: T4 set review_ready via tasks done
+PASS: T4 status=review_ready
+PASS: T4 task log ok
+PASS: T4 log has Task_Status_Changed
+PASS: T4 log has review_ready status event
+
+=== T5: lgtm vote → auto-approve → chain complete ===
+PASS: T5 lgtm vote accepted
+PASS: T5 show after vote
+PASS: T5 task=approved
+PASS: T5 chain status=reviewing
+PASS: T5 complete chain
+PASS: T5 chain status=completed
+PASS: T5 log has Task_Review_Vote
+PASS: T5 log has approved event
+
+=== T6: ngtm vote → back to in_progress ===
+PASS: T6 create chain2
+PASS: T6 create task2
+PASS: T6 ngtm vote accepted
+PASS: T6 task returned to in_progress
+PASS: T6 task has ngtm vote before resubmitting
+PASS: T6 resubmit task done
+PASS: T6 task promoted to review_ready
+PASS: T6 task votes are cleared on resubmit
+
+=== T7: manual nudge in task event log ===
+PASS: T7 nudge accepted
+PASS: T7 Task_Nudged in log
+PASS: T7 nudge body in log
+
+=== T8: one-active-per-project guard ===
+PASS: T8 chain creation blocked by active chain
+PASS: T8 error names active chain
+PASS: T8 cleanup T2
+
+=== T9: depends_on ordering ===
+PASS: T9 create project2
+PASS: T9 create chain4
+PASS: T9 create step1
+PASS: T9 create step2 with depends-on
+PASS: T9 step2 still planning after activate
+PASS: T9 step2 promoted after dep approved (status=in_progress)
+
+=== T10: blocked / unblock ===
+PASS: T10 set blocked
+PASS: T10 status=blocked
+PASS: T10 unblock
+FAIL: T10 status=in_progress (status=queued, want in_progress)
+      got: {"ok":true,"task":{"task_id":"task-19f3a555093","chain_id":"chain-19f3a555072","title":"Step 2 (depends on Step 1)","description":"","acceptance_criteria":"","priority":"normal","status":"queued","ass
+
+=== T11: comment revert approved task to ready ===
+PASS: T11 approve DT2
+PASS: T11 DT2 status=approved
+PASS: T11 C4 status=reviewing
+PASS: T11 add comment to approved task
+PASS: T11 DT2 status reverted to in_progress
+PASS: T11 C4 status reverted to in_progress
+
+=== T12: GET /task-chains/{chain_id} REST route ===
+PASS: T12 fetch chain details via REST
+PASS: T12 REST response has correct chain_id
+PASS: T12 non-existent chain returns 404
+
+=== T13: JSON control character escaping ===
+PASS: T13 add control character comment
+PASS: T13 show task with control character
+PASS: T13 has escaped escape code in JSON string
+
+=== CLEANUP: Wiping test records to prevent database pollution ===
+[*] Archiving test agent via REST API...
+[+] Cleanup completed successfully!
+
+════════════════════════════════════════════
+ Results: 78 passed, 1 failed
+════════════════════════════════════════════
+
+WS nudge note: status-change notifications (review_ready → lgtm_required
+agents) go via WebSocket only and are not verified in this script.
+To confirm: connect an agent, change a task to review_ready, and check
+its tmux pane for {"type":"task_event",...} frames.
+[-] Daemon logs:
+init registry_init 0.0ms
+init user_client_registry_init 0.0ms
+init message_provider 7.5ms
+memory_db_init: database initialized at /tmp/tmp.1U43KttSQx/data/memory/memory.db
+init memory_db_init 4.1ms
+init central_hub_init 0.2ms
+DB: Migrating task.db to version 1 (adding evaluation)...
+DB: Column 'evaluation' already exists in 'task_chains', skipping ALTER TABLE.
+DB: Migrated task.db to version 1 successfully.
+DB: Migrating task.db to version 2 (adding last_audit_at_unix_ms)...
+DB: Column 'last_audit_at_unix_ms' already exists in 'task_chains', skipping ALTER TABLE.
+DB: Migrated task.db to version 2 successfully.
+DB: Migrating task.db to version 3 (adding default_reviewer_agent_instance_id)...
+DB: Column 'default_reviewer_agent_instance_id' already exists in 'task_chains', skipping ALTER TABLE.
+DB: Migrated task.db to version 3 successfully.
+task_db_init: relational database initialized at /tmp/tmp.1U43KttSQx/data/tasks/task.db
+init task_store_init 7.2ms
+init project_store_init 0.4ms
+DB: Migrating templates.db to version 1 (adding is_customized)...
+DB: Column 'is_customized' already exists in 'agent_templates', skipping ALTER TABLE.
+DB: Migrated templates.db to version 1 successfully.
+DB: Migrating templates.db to version 2 (adding description)...
+DB: Column 'description' already exists in 'agent_templates', skipping ALTER TABLE.
+DB: Migrated templates.db to version 2 successfully.
+agent_template_db_init: database initialized at /tmp/tmp.1U43KttSQx/data/templates/templates.db
+agent_template_db: checking and seeding default templates...
+init agent_store_init 6.4ms
+message_db_init: database initialized at /tmp/tmp.1U43KttSQx/data/chat/messages.db
+init chat_store_init 3.0ms
+auth_db_init: database initialized at /tmp/tmp.1U43KttSQx/data/auth/tokens.db
+init auth_db_init 1.6ms
+user_pref_db_init: database initialized at /tmp/tmp.1U43KttSQx/data/preferences/preference.db
+init user_pref_db_init 1.1ms
+audit_db_init: database initialized at /tmp/tmp.1U43KttSQx/data/audits/audits.db
+init audit_db_init 2.6ms
+init router_adapter_init 0.0ms
+init hub_sync_init 0.0ms
+init message_queue_init 0.0ms
+init message_queue_start_worker 0.2ms
+init hub_sync_start_worker 0.0ms
+init task_nudge_scheduler_start 0.0ms
+init agent_startup_janitor_start 0.1ms
+init test_run_startup_sweep 6.4ms
+init backup_scheduler_start 0.2ms
+init TOTAL 41.1ms
+odin-daemon listening 127.0.0.1 49325
+[RPC TELEMETRY] 2026-07-07 02:08:16.873 | GET /health | Params:  | Status: 200 | Latency: 0.0ms | Size: 32 bytes | Body: {"ok":true,"protocol_version":1}
+[RPC TELEMETRY] 2026-07-07 02:08:16.891 | GET /health | Params:  | Status: 200 | Latency: 0.0ms | Size: 32 bytes | Body: {"ok":true,"protocol_version":1}
+DEBUG: auth_db_get_token no token found for agent smoketest@run1783390096
+DEBUG: auth_db_store_token for agent smoketest@run1783390096 token = agt_7ccd676f71e9c2b3 ...
+DEBUG: auth_db_store_token succeeded
+[RPC TELEMETRY] 2026-07-07 02:08:16.910 | POST /register | Params: {"agent_class":"smoketest","agent_instance_id":"smoketest@run1783390096","display_name":"Smoke 1783390096"} | Status: 200 | Latency: 1.8ms | Size: 13587 bytes
+DEBUG: auth_db_get_token no token found for agent smoketest-rev@run1783390096
+DEBUG: auth_db_store_token for agent smoketest-rev@run1783390096 token = agt_7b8b11ccbf7f9b7d ...
+DEBUG: auth_db_store_token succeeded
+[RPC TELEMETRY] 2026-07-07 02:08:16.930 | POST /register | Params: {"agent_class":"smoketest-rev","agent_instance_id":"smoketest-rev@run1783390096","display_name":"Smoke Reviewer 1783390096"} | Status: 200 | Latency: 1.7ms | Size: 13611 bytes
+DEBUG: auth_db_get_token no token found for user operator@local
+DEBUG: auth_db_store_token for user operator@local token = uct_9aa51adcf3fcbe38 ...
+DEBUG: auth_db_store_token succeeded
+[RPC TELEMETRY] 2026-07-07 02:08:16.947 | POST /user-client/register | Params: {"user_id":"operator@local","client_instance_id":"test-client-run1783390096"} | Status: 200 | Latency: 0.7ms | Size: 173 bytes
+[RPC TELEMETRY] 2026-07-07 02:08:16.959 | POST /projects/create | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","name":"Task Smoke 1783390096","description":"automated smoke test"} | Status: 200 | Latency: 0.3ms | Size: 68 bytes | Body: {"ok":true,"message":"created","project_id":"project_1783390096959"}
+[TASK EVENT] Kind: Chain_Created | Task ID:  | Chain ID: chain-19f3a554e4f | Status: planning | Author: smoketest@run1783390096 | Body: 
+[RPC TELEMETRY] 2026-07-07 02:08:16.976 | POST /task-chains/create | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","chain_id":"","project_id":"project_1783390096959","title":"Smoke Chain 1783390096","description":"Goal: verify ta... | Status: 200 | Latency: 0.9ms | Size: 62 bytes | Body: {"ok":true,"chain_id":"chain-19f3a554e4f","status":"planning"}
+[TASK EVENT] Kind: Task_Created | Task ID: task-19f3a554e64 | Chain ID: chain-19f3a554e4f | Status: planning | Author: smoketest@run1783390096 | Body: 
+[RPC TELEMETRY] 2026-07-07 02:08:16.998 | POST /tasks/create | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","chain_id":"chain-19f3a554e4f","title":"Task Alpha","description":"First task in smoke chain","status":"","priorit... | Status: 200 | Latency: 1.4ms | Size: 146 bytes
+[RPC TELEMETRY] 2026-07-07 02:08:17.021 | POST /tasks/show | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554e64"} | Status: 200 | Latency: 0.6ms | Size: 681 bytes
+[RPC TELEMETRY] 2026-07-07 02:08:17.036 | POST /tasks/next | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e"} | Status: 200 | Latency: 0.1ms | Size: 23 bytes | Body: {"ok":true,"task":null}
+[TASK EVENT] Kind: Chain_Status_Changed | Task ID:  | Chain ID: chain-19f3a554e4f | Status: in_progress | Author: smoketest@run1783390096 | Body: 
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f3a554e64 | Chain ID: chain-19f3a554e4f | Status: queued | Author: smoketest@run1783390096 | Body: system_auto:deps_cleared
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f3a554e64 | Chain ID: chain-19f3a554e4f | Status: in_progress | Author: system-auto-claim | Body: system_auto:auto_claimed
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1783390096' has no active WebSocket connection (connected=true)
+WARNING: failed to send WS to agent 'smoketest@run1783390096'. Queued notification.
+[RPC TELEMETRY] 2026-07-07 02:08:17.048 | POST /task-chains/activate | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","chain_id":"chain-19f3a554e4f"} | Status: 200 | Latency: 2.7ms | Size: 11 bytes | Body: {"ok":true}
+[RPC TELEMETRY] 2026-07-07 02:08:17.057 | POST /task-chains/show | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","chain_id":"chain-19f3a554e4f"} | Status: 200 | Latency: 0.1ms | Size: 1757 bytes
+[RPC TELEMETRY] 2026-07-07 02:08:17.077 | POST /tasks/show | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554e64"} | Status: 200 | Latency: 0.1ms | Size: 670 bytes
+[RPC TELEMETRY] 2026-07-07 02:08:17.101 | POST /tasks/next | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e"} | Status: 200 | Latency: 0.6ms | Size: 670 bytes
+[TASK EVENT] Kind: Task_Comment | Task ID: task-19f3a554e64 | Chain ID: chain-19f3a554e4f | Status:  | Author: smoketest@run1783390096 | Body: Progress: starting implementation
+
+Decisions:
+- approach A over B because simpler
+
+Next: finish and submit for review
+[RPC TELEMETRY] 2026-07-07 02:08:17.112 | POST /tasks/comment | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554e64","chain_id":"chain-19f3a554e4f","body":"Progress: starting implementation\n\nDecisions... | Status: 200 | Latency: 2.8ms | Size: 44 bytes | Body: {"ok":true,"comment_id":"cmt_1783390097109"}
+[RPC TELEMETRY] 2026-07-07 02:08:17.127 | POST /tasks/show | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554e64"} | Status: 200 | Latency: 0.2ms | Size: 889 bytes
+[RPC TELEMETRY] 2026-07-07 02:08:17.146 | POST /tasks/done | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554e64","chain_id":"chain-19f3a554e4f","body":"done"} | Status: 400 | Latency: 0.1ms | Size: 55 bytes | Body: {"ok":false,"message":"task has 1 unresolved comments"}
+[RPC TELEMETRY] 2026-07-07 02:08:17.159 | POST /tasks/comments | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554e64","unresolved_only":true} | Status: 200 | Latency: 0.1ms | Size: 293 bytes
+[TASK EVENT] Kind: Task_Comment_Resolved | Task ID: task-19f3a554e64 | Chain ID: chain-19f3a554e4f | Status:  | Author: smoketest@run1783390096 | Body: 
+[RPC TELEMETRY] 2026-07-07 02:08:17.179 | POST /tasks/comment-resolve | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554e64","chain_id":"chain-19f3a554e4f","comment_id":"cmt_1783390097109"} | Status: 200 | Latency: 0.6ms | Size: 11 bytes | Body: {"ok":true}
+[RPC TELEMETRY] 2026-07-07 02:08:17.188 | POST /tasks/show | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554e64"} | Status: 200 | Latency: 0.1ms | Size: 670 bytes
+[RPC TELEMETRY] 2026-07-07 02:08:17.204 | POST /tasks/comments | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554e64","unresolved_only":true} | Status: 200 | Latency: 0.1ms | Size: 25 bytes | Body: {"ok":true,"comments":[]}
+[TASK EVENT] Kind: Task_Participant_Added | Task ID: task-19f3a554e64 | Chain ID: chain-19f3a554e4f | Status:  | Author: smoketest@run1783390096 | Body: 
+[RPC TELEMETRY] 2026-07-07 02:08:17.213 | POST /tasks/participant | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554e64","chain_id":"chain-19f3a554e4f","agent_instance_id":"smoketest-rev@run1783390096","rol... | Status: 200 | Latency: 0.7ms | Size: 11 bytes | Body: {"ok":true}
+[RPC TELEMETRY] 2026-07-07 02:08:17.220 | POST /tasks/status | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554e64","chain_id":"chain-19f3a554e4f","status":"review_ready","body":"illegal status change ... | Status: 403 | Latency: 0.1ms | Size: 72 bytes | Body: {"ok":false,"message":"manual status changes restricted to user tokens"}
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f3a554e64 | Chain ID: chain-19f3a554e4f | Status: review_ready | Author: smoketest@run1783390096 | Body: implementation complete, ready for review
+WARNING: registry_send_ws_text failed: agent 'smoketest-rev@run1783390096' has no active WebSocket connection (connected=true)
+WARNING: failed to send WS to agent 'smoketest-rev@run1783390096'. Queued notification.
+[RPC TELEMETRY] 2026-07-07 02:08:17.234 | POST /tasks/done | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554e64","chain_id":"chain-19f3a554e4f","body":"implementation complete, ready for review"} | Status: 200 | Latency: 0.8ms | Size: 64 bytes | Body: {"ok":true,"task_id":"task-19f3a554e64","status":"review_ready"}
+[RPC TELEMETRY] 2026-07-07 02:08:17.242 | POST /tasks/show | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554e64"} | Status: 200 | Latency: 0.1ms | Size: 802 bytes
+[RPC TELEMETRY] 2026-07-07 02:08:17.253 | POST /tasks/log | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554e64"} | Status: 200 | Latency: 0.2ms | Size: 4021 bytes
+[TASK EVENT] Kind: Task_Review_Vote | Task ID: task-19f3a554e64 | Chain ID: chain-19f3a554e4f | Status:  | Author: smoketest-rev@run1783390096 | Body: Logic is correct, tests pass, good to merge
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f3a554e64 | Chain ID: chain-19f3a554e4f | Status: approved | Author: system-auto-approve | Body: system_auto:all_lgtm_required_approved
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1783390096' has no active WebSocket connection (connected=true)
+WARNING: failed to send WS to agent 'smoketest@run1783390096'. Queued notification.
+[TASK EVENT] Kind: Chain_Status_Changed | Task ID:  | Chain ID: chain-19f3a554e4f | Status: reviewing | Author: system-auto-complete | Body: system_auto:all_tasks_terminal_review_required
+DEBUG: message_db_insert called for message_id = chatmsg_1783390097273 user_id = operator@local agent_instance_id = smoketest@run1783390096 direction = user_to_agent interrupt = false
+DEBUG: message_db_insert succeeded for chatmsg_1783390097273
+INFO: Successfully pinged coordinator agent smoketest@run1783390096 for chain completion of chain-19f3a554e4f
+[RPC TELEMETRY] 2026-07-07 02:08:17.274 | POST /tasks/vote | Params: {"agent_token":"agt_7b8b11ccbf7f9b7d75f31739d57487287ea699b90e55f3f79a4c522059103f5e","task_id":"task-19f3a554e64","chain_id":"chain-19f3a554e4f","result":"lgtm","comment":"Logic is correct, tests pas... | Status: 200 | Latency: 3.7ms | Size: 60 bytes | Body: {"ok":true,"task_id":"task-19f3a554e64","status":"approved"}
+[RPC TELEMETRY] 2026-07-07 02:08:17.287 | POST /tasks/show | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554e64"} | Status: 200 | Latency: 0.3ms | Size: 902 bytes
+[RPC TELEMETRY] 2026-07-07 02:08:17.307 | POST /task-chains/show | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","chain_id":"chain-19f3a554e4f"} | Status: 200 | Latency: 0.2ms | Size: 2307 bytes
+[TASK EVENT] Kind: Chain_Final_Summary_Set | Task ID:  | Chain ID: chain-19f3a554e4f | Status:  | Author: smoketest@run1783390096 | Body: Integration tests complete
+[TASK EVENT] Kind: Chain_Completed | Task ID:  | Chain ID: chain-19f3a554e4f | Status: completed | Author: smoketest@run1783390096 | Body: Integration tests complete
+[TASK EVENT] Kind: Chain_Archive_Pending | Task ID:  | Chain ID: chain-19f3a554e4f | Status:  | Author:  | Body: hub disabled
+[RPC TELEMETRY] 2026-07-07 02:08:17.319 | POST /task-chains/complete | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","chain_id":"chain-19f3a554e4f","summary":"Integration tests complete"} | Status: 200 | Latency: 1.6ms | Size: 53 bytes | Body: {"ok":true,"archive_ok":false,"archive_pending":true}
+[RPC TELEMETRY] 2026-07-07 02:08:17.328 | POST /task-chains/show | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","chain_id":"chain-19f3a554e4f"} | Status: 200 | Latency: 0.2ms | Size: 3893 bytes
+[RPC TELEMETRY] 2026-07-07 02:08:17.339 | POST /tasks/log | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554e64"} | Status: 200 | Latency: 0.2ms | Size: 5154 bytes
+[TASK EVENT] Kind: Chain_Created | Task ID:  | Chain ID: chain-19f3a554fc8 | Status: planning | Author: smoketest@run1783390096 | Body: 
+[RPC TELEMETRY] 2026-07-07 02:08:17.353 | POST /task-chains/create | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","chain_id":"","project_id":"project_1783390096959","title":"ngtm Chain 1783390096","description":"Goal: test ngtm ... | Status: 200 | Latency: 0.7ms | Size: 62 bytes | Body: {"ok":true,"chain_id":"chain-19f3a554fc8","status":"planning"}
+[TASK EVENT] Kind: Task_Created | Task ID: task-19f3a554fd8 | Chain ID: chain-19f3a554fc8 | Status: planning | Author: smoketest@run1783390096 | Body: 
+[RPC TELEMETRY] 2026-07-07 02:08:17.370 | POST /tasks/create | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","chain_id":"chain-19f3a554fc8","title":"ngtm Task","description":"","status":"","priority":"","assignee_agent_inst... | Status: 200 | Latency: 1.8ms | Size: 146 bytes
+[TASK EVENT] Kind: Task_Participant_Added | Task ID: task-19f3a554fd8 | Chain ID: chain-19f3a554fc8 | Status:  | Author: smoketest@run1783390096 | Body: 
+[RPC TELEMETRY] 2026-07-07 02:08:17.398 | POST /tasks/participant | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554fd8","chain_id":"chain-19f3a554fc8","agent_instance_id":"smoketest-rev@run1783390096","rol... | Status: 200 | Latency: 1.0ms | Size: 11 bytes | Body: {"ok":true}
+[TASK EVENT] Kind: Chain_Status_Changed | Task ID:  | Chain ID: chain-19f3a554fc8 | Status: in_progress | Author: smoketest@run1783390096 | Body: 
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f3a554fd8 | Chain ID: chain-19f3a554fc8 | Status: queued | Author: smoketest@run1783390096 | Body: system_auto:deps_cleared
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f3a554fd8 | Chain ID: chain-19f3a554fc8 | Status: in_progress | Author: system-auto-claim | Body: system_auto:auto_claimed
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1783390096' has no active WebSocket connection (connected=true)
+WARNING: failed to send WS to agent 'smoketest@run1783390096'. Queued notification.
+[RPC TELEMETRY] 2026-07-07 02:08:17.402 | POST /task-chains/activate | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","chain_id":"chain-19f3a554fc8"} | Status: 200 | Latency: 1.9ms | Size: 11 bytes | Body: {"ok":true}
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f3a554fd8 | Chain ID: chain-19f3a554fc8 | Status: review_ready | Author: smoketest@run1783390096 | Body: ready
+WARNING: registry_send_ws_text failed: agent 'smoketest-rev@run1783390096' has no active WebSocket connection (connected=true)
+WARNING: failed to send WS to agent 'smoketest-rev@run1783390096'. Queued notification.
+[RPC TELEMETRY] 2026-07-07 02:08:17.409 | POST /tasks/done | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554fd8","chain_id":"chain-19f3a554fc8","body":"ready"} | Status: 200 | Latency: 3.0ms | Size: 64 bytes | Body: {"ok":true,"task_id":"task-19f3a554fd8","status":"review_ready"}
+[TASK EVENT] Kind: Task_Review_Vote | Task ID: task-19f3a554fd8 | Chain ID: chain-19f3a554fc8 | Status:  | Author: smoketest-rev@run1783390096 | Body: service.odin:42 — null check missing before calling Parse()
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f3a554fd8 | Chain ID: chain-19f3a554fc8 | Status: in_progress | Author: system-review-vote | Body: ngtm by smoketest-rev@run1783390096: service.odin:42 — null check missing before calling Parse()
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1783390096' has no active WebSocket connection (connected=true)
+WARNING: failed to send WS to agent 'smoketest@run1783390096'. Queued notification.
+[RPC TELEMETRY] 2026-07-07 02:08:17.413 | POST /tasks/vote | Params: {"agent_token":"agt_7b8b11ccbf7f9b7d75f31739d57487287ea699b90e55f3f79a4c522059103f5e","task_id":"task-19f3a554fd8","chain_id":"chain-19f3a554fc8","result":"ngtm","comment":"service.odin:42 — null ch... | Status: 200 | Latency: 1.9ms | Size: 63 bytes | Body: {"ok":true,"task_id":"task-19f3a554fd8","status":"in_progress"}
+[RPC TELEMETRY] 2026-07-07 02:08:17.421 | POST /tasks/show | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554fd8"} | Status: 200 | Latency: 0.2ms | Size: 732 bytes
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f3a554fd8 | Chain ID: chain-19f3a554fc8 | Status: review_ready | Author: smoketest@run1783390096 | Body: fixed missing null check
+WARNING: registry_send_ws_text failed: agent 'smoketest-rev@run1783390096' has no active WebSocket connection (connected=true)
+WARNING: failed to send WS to agent 'smoketest-rev@run1783390096'. Queued notification.
+[RPC TELEMETRY] 2026-07-07 02:08:17.437 | POST /tasks/done | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554fd8","chain_id":"chain-19f3a554fc8","body":"fixed missing null check"} | Status: 200 | Latency: 0.8ms | Size: 64 bytes | Body: {"ok":true,"task_id":"task-19f3a554fd8","status":"review_ready"}
+[RPC TELEMETRY] 2026-07-07 02:08:17.445 | POST /tasks/show | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554fd8"} | Status: 200 | Latency: 0.1ms | Size: 776 bytes
+[TASK EVENT] Kind: Task_Nudged | Task ID: task-19f3a554fd8 | Chain ID: chain-19f3a554fc8 | Status: review_ready | Author: smoketest@run1783390096 | Body: Reminder: please address the ngtm comment before resubmitting for review
+WARNING: registry_send_ws_text failed: agent 'smoketest-rev@run1783390096' has no active WebSocket connection (connected=true)
+WARNING: failed to send WS to agent 'smoketest-rev@run1783390096'. Queued notification.
+[RPC TELEMETRY] 2026-07-07 02:08:17.462 | POST /tasks/nudge | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554fd8","chain_id":"chain-19f3a554fc8","body":"Reminder: please address the ngtm comment befo... | Status: 200 | Latency: 0.2ms | Size: 80 bytes | Body: {"ok":true,"target_agent_instance_id":"smoketest-rev@run1783390096","sent":true}
+[RPC TELEMETRY] 2026-07-07 02:08:17.471 | POST /tasks/log | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554fd8"} | Status: 200 | Latency: 0.3ms | Size: 5161 bytes
+[RPC TELEMETRY] 2026-07-07 02:08:17.485 | POST /task-chains/create | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","chain_id":"","project_id":"project_1783390096959","title":"Conflict Chain 1783390096","description":"Goal: verify... | Status: 409 | Latency: 0.1ms | Size: 98 bytes | Body: {"ok":false,"message":"project already has an active chain","active_chain_id":"chain-19f3a554fc8"}
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f3a554fd8 | Chain ID: chain-19f3a554fc8 | Status: cancelled | Author: operator@local | Body: cleanup T2
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1783390096' has no active WebSocket connection (connected=true)
+WARNING: failed to send WS to agent 'smoketest@run1783390096'. Queued notification.
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1783390096' has no active WebSocket connection (connected=true)
+WARNING: failed to send WS to agent 'smoketest@run1783390096'. Queued notification.
+[TASK EVENT] Kind: Chain_Status_Changed | Task ID:  | Chain ID: chain-19f3a554fc8 | Status: reviewing | Author: system-auto-complete | Body: system_auto:all_tasks_terminal_review_required
+DEBUG: message_db_insert called for message_id = chatmsg_1783390097499 user_id = operator@local agent_instance_id = smoketest@run1783390096 direction = user_to_agent interrupt = false
+DEBUG: message_db_insert succeeded for chatmsg_1783390097499
+INFO: Successfully pinged coordinator agent smoketest@run1783390096 for chain completion of chain-19f3a554fc8
+[RPC TELEMETRY] 2026-07-07 02:08:17.500 | POST /tasks/status | Params: {"agent_token":"uct_9aa51adcf3fcbe3873bf746a5e3fc3d05bd0a5998dbf622cee8b31394036807a","task_id":"task-19f3a554fd8","chain_id":"chain-19f3a554fc8","status":"cancelled","body":"cleanup T2"} | Status: 200 | Latency: 1.9ms | Size: 61 bytes | Body: {"ok":true,"task_id":"task-19f3a554fd8","status":"cancelled"}
+[RPC TELEMETRY] 2026-07-07 02:08:17.508 | POST /projects/create | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","name":"Deps Test 1783390096","description":"dependency ordering test"} | Status: 200 | Latency: 0.3ms | Size: 68 bytes | Body: {"ok":true,"message":"created","project_id":"project_1783390097508"}
+[TASK EVENT] Kind: Chain_Created | Task ID:  | Chain ID: chain-19f3a555072 | Status: planning | Author: smoketest@run1783390096 | Body: 
+[RPC TELEMETRY] 2026-07-07 02:08:17.523 | POST /task-chains/create | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","chain_id":"","project_id":"project_1783390097508","title":"Deps Chain 1783390096","description":"Goal: verify dep... | Status: 200 | Latency: 0.7ms | Size: 62 bytes | Body: {"ok":true,"chain_id":"chain-19f3a555072","status":"planning"}
+[TASK EVENT] Kind: Task_Created | Task ID: task-19f3a555081 | Chain ID: chain-19f3a555072 | Status: planning | Author: smoketest@run1783390096 | Body: 
+[RPC TELEMETRY] 2026-07-07 02:08:17.538 | POST /tasks/create | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","chain_id":"chain-19f3a555072","title":"Step 1 (no deps)","description":"","status":"","priority":"","assignee_age... | Status: 200 | Latency: 1.2ms | Size: 146 bytes
+[TASK EVENT] Kind: Task_Participant_Added | Task ID: task-19f3a555081 | Chain ID: chain-19f3a555072 | Status:  | Author: smoketest@run1783390096 | Body: 
+[RPC TELEMETRY] 2026-07-07 02:08:17.552 | POST /tasks/participant | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a555081","chain_id":"chain-19f3a555072","agent_instance_id":"smoketest-rev@run1783390096","rol... | Status: 200 | Latency: 0.8ms | Size: 11 bytes | Body: {"ok":true}
+[TASK EVENT] Kind: Task_Created | Task ID: task-19f3a555093 | Chain ID: chain-19f3a555072 | Status: planning | Author: smoketest@run1783390096 | Body: 
+[RPC TELEMETRY] 2026-07-07 02:08:17.556 | POST /tasks/create | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","chain_id":"chain-19f3a555072","title":"Step 2 (depends on Step 1)","description":"","status":"","priority":"","as... | Status: 200 | Latency: 1.0ms | Size: 146 bytes
+[TASK EVENT] Kind: Chain_Status_Changed | Task ID:  | Chain ID: chain-19f3a555072 | Status: in_progress | Author: smoketest@run1783390096 | Body: 
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f3a555081 | Chain ID: chain-19f3a555072 | Status: queued | Author: smoketest@run1783390096 | Body: system_auto:deps_cleared
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f3a555081 | Chain ID: chain-19f3a555072 | Status: in_progress | Author: system-auto-claim | Body: system_auto:auto_claimed
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1783390096' has no active WebSocket connection (connected=true)
+WARNING: failed to send WS to agent 'smoketest@run1783390096'. Queued notification.
+[RPC TELEMETRY] 2026-07-07 02:08:17.572 | POST /task-chains/activate | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","chain_id":"chain-19f3a555072"} | Status: 200 | Latency: 1.9ms | Size: 11 bytes | Body: {"ok":true}
+[RPC TELEMETRY] 2026-07-07 02:08:17.575 | POST /tasks/show | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a555093"} | Status: 200 | Latency: 0.2ms | Size: 695 bytes
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f3a555081 | Chain ID: chain-19f3a555072 | Status: review_ready | Author: smoketest@run1783390096 | Body: done
+WARNING: registry_send_ws_text failed: agent 'smoketest-rev@run1783390096' has no active WebSocket connection (connected=true)
+WARNING: failed to send WS to agent 'smoketest-rev@run1783390096'. Queued notification.
+[RPC TELEMETRY] 2026-07-07 02:08:17.586 | POST /tasks/done | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a555081","chain_id":"chain-19f3a555072","body":"done"} | Status: 200 | Latency: 0.8ms | Size: 64 bytes | Body: {"ok":true,"task_id":"task-19f3a555081","status":"review_ready"}
+[TASK EVENT] Kind: Task_Review_Vote | Task ID: task-19f3a555081 | Chain ID: chain-19f3a555072 | Status:  | Author: smoketest-rev@run1783390096 | Body: ok
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f3a555081 | Chain ID: chain-19f3a555072 | Status: approved | Author: system-auto-approve | Body: system_auto:all_lgtm_required_approved
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1783390096' has no active WebSocket connection (connected=true)
+WARNING: failed to send WS to agent 'smoketest@run1783390096'. Queued notification.
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f3a555093 | Chain ID: chain-19f3a555072 | Status: queued | Author: system-auto-approve | Body: system_auto:deps_cleared
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1783390096' has no active WebSocket connection (connected=true)
+WARNING: failed to send WS to agent 'smoketest@run1783390096'. Queued notification.
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f3a555093 | Chain ID: chain-19f3a555072 | Status: in_progress | Author: system-auto-claim | Body: system_auto:auto_claimed
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1783390096' has no active WebSocket connection (connected=true)
+WARNING: failed to send WS to agent 'smoketest@run1783390096'. Queued notification.
+[RPC TELEMETRY] 2026-07-07 02:08:17.590 | POST /tasks/vote | Params: {"agent_token":"agt_7b8b11ccbf7f9b7d75f31739d57487287ea699b90e55f3f79a4c522059103f5e","task_id":"task-19f3a555081","chain_id":"chain-19f3a555072","result":"lgtm","comment":"ok"} | Status: 200 | Latency: 2.5ms | Size: 60 bytes | Body: {"ok":true,"task_id":"task-19f3a555081","status":"approved"}
+[RPC TELEMETRY] 2026-07-07 02:08:17.593 | POST /tasks/show | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a555093"} | Status: 200 | Latency: 0.1ms | Size: 677 bytes
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f3a555093 | Chain ID: chain-19f3a555072 | Status: blocked | Author: smoketest@run1783390096 | Body: waiting on external API key from ops team
+[RPC TELEMETRY] 2026-07-07 02:08:17.604 | POST /tasks/blocked | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a555093","chain_id":"chain-19f3a555072","body":"waiting on external API key from ops team"} | Status: 200 | Latency: 0.7ms | Size: 59 bytes | Body: {"ok":true,"task_id":"task-19f3a555093","status":"blocked"}
+[RPC TELEMETRY] 2026-07-07 02:08:17.612 | POST /tasks/show | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a555093"} | Status: 200 | Latency: 0.1ms | Size: 727 bytes
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f3a555093 | Chain ID: chain-19f3a555072 | Status: queued | Author: smoketest@run1783390096 | Body: API key received, resuming work
+[RPC TELEMETRY] 2026-07-07 02:08:17.623 | POST /tasks/later | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a555093","chain_id":"chain-19f3a555072","body":"API key received, resuming work"} | Status: 200 | Latency: 0.8ms | Size: 58 bytes | Body: {"ok":true,"task_id":"task-19f3a555093","status":"queued"}
+[RPC TELEMETRY] 2026-07-07 02:08:17.631 | POST /tasks/show | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a555093"} | Status: 200 | Latency: 0.1ms | Size: 678 bytes
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+DEBUG: auth_db_get_identity found token, identity_type = user identity_id = operator@local
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f3a555093 | Chain ID: chain-19f3a555072 | Status: approved | Author: operator@local | Body: manual approval of step 2
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1783390096' has no active WebSocket connection (connected=true)
+WARNING: failed to send WS to agent 'smoketest@run1783390096'. Queued notification.
+[TASK EVENT] Kind: Chain_Status_Changed | Task ID:  | Chain ID: chain-19f3a555072 | Status: reviewing | Author: system-auto-complete | Body: system_auto:all_tasks_terminal_review_required
+DEBUG: message_db_insert called for message_id = chatmsg_1783390097648 user_id = operator@local agent_instance_id = smoketest@run1783390096 direction = user_to_agent interrupt = false
+DEBUG: message_db_insert succeeded for chatmsg_1783390097648
+INFO: Successfully pinged coordinator agent smoketest@run1783390096 for chain completion of chain-19f3a555072
+[RPC TELEMETRY] 2026-07-07 02:08:17.649 | POST /tasks/status | Params: {"agent_token":"uct_9aa51adcf3fcbe3873bf746a5e3fc3d05bd0a5998dbf622cee8b31394036807a","task_id":"task-19f3a555093","chain_id":"chain-19f3a555072","status":"approved","body":"manual approval of step 2"... | Status: 200 | Latency: 2.5ms | Size: 60 bytes | Body: {"ok":true,"task_id":"task-19f3a555093","status":"approved"}
+[RPC TELEMETRY] 2026-07-07 02:08:17.659 | POST /tasks/show | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a555093"} | Status: 200 | Latency: 0.1ms | Size: 689 bytes
+[RPC TELEMETRY] 2026-07-07 02:08:17.670 | POST /task-chains/show | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","chain_id":"chain-19f3a555072"} | Status: 200 | Latency: 0.2ms | Size: 2133 bytes
+[TASK EVENT] Kind: Task_Comment | Task ID: task-19f3a555093 | Chain ID: chain-19f3a555072 | Status:  | Author: smoketest@run1783390096 | Body: Wait, I found a major bug in the implementation!
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f3a555093 | Chain ID: chain-19f3a555072 | Status: queued | Author: system-comment-revert | Body: reverted to ready due to unresolved comment: Wait, I found a major bug in the implementation!
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1783390096' has no active WebSocket connection (connected=true)
+WARNING: failed to send WS to agent 'smoketest@run1783390096'. Queued notification.
+[TASK EVENT] Kind: Chain_Status_Changed | Task ID:  | Chain ID: chain-19f3a555072 | Status: in_progress | Author: system-comment-revert | Body: reverted chain to in_progress due to task comment revert
+[TASK EVENT] Kind: Task_Status_Changed | Task ID: task-19f3a555093 | Chain ID: chain-19f3a555072 | Status: in_progress | Author: system-auto-claim | Body: system_auto:auto_claimed
+WARNING: registry_send_ws_text failed: agent 'smoketest@run1783390096' has no active WebSocket connection (connected=true)
+WARNING: failed to send WS to agent 'smoketest@run1783390096'. Queued notification.
+[RPC TELEMETRY] 2026-07-07 02:08:17.688 | POST /tasks/comment | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a555093","chain_id":"chain-19f3a555072","body":"Wait, I found a major bug in the implementatio... | Status: 200 | Latency: 3.9ms | Size: 44 bytes | Body: {"ok":true,"comment_id":"cmt_1783390097684"}
+[RPC TELEMETRY] 2026-07-07 02:08:17.702 | POST /tasks/show | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a555093"} | Status: 200 | Latency: 0.6ms | Size: 822 bytes
+[RPC TELEMETRY] 2026-07-07 02:08:17.736 | POST /task-chains/show | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","chain_id":"chain-19f3a555072"} | Status: 200 | Latency: 0.2ms | Size: 2700 bytes
+[RPC TELEMETRY] 2026-07-07 02:08:17.768 | GET /task-chains/chain-19f3a554e4f | Params:  | Status: 200 | Latency: 0.1ms | Size: 575 bytes
+[RPC TELEMETRY] 2026-07-07 02:08:17.789 | GET /task-chains/non-existent-chain-id | Params:  | Status: 404 | Latency: 0.1ms | Size: 54 bytes | Body: {"error":"not_found","message":"task chain not found"}
+[TASK EVENT] Kind: Task_Comment | Task ID: task-19f3a554fd8 | Chain ID: chain-19f3a554fc8 | Status:  | Author: smoketest@run1783390096 | Body: Comment with escape  character
+[RPC TELEMETRY] 2026-07-07 02:08:17.797 | POST /tasks/comment | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554fd8","chain_id":"chain-19f3a554fc8","body":"Comment with escape  character"} | Status: 200 | Latency: 1.2ms | Size: 44 bytes | Body: {"ok":true,"comment_id":"cmt_1783390097795"}
+[RPC TELEMETRY] 2026-07-07 02:08:17.805 | POST /tasks/show | Params: {"agent_token":"agt_7ccd676f71e9c2b32fc51f3fe0973ececbed0b600891ef1dbf72acd090a55f6e","task_id":"task-19f3a554fd8"} | Status: 200 | Latency: 0.1ms | Size: 878 bytes
+[RPC TELEMETRY] 2026-07-07 02:08:17.830 | POST /agents/archive | Params: {"agent_instance_id":"smoketest@run1783390096"} | Status: 404 | Latency: 1.7ms | Size: 40 bytes | Body: {"ok":false,"message":"agent not found"}
+[*] Shutting down ham-daemon (PID: 919279)...
+[*] Cleaning up temporary directory...
