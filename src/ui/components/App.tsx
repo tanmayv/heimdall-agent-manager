@@ -2894,60 +2894,64 @@ function NewProjectModal({ creating, error, onClose, onSubmit }: any) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">
-      <form onSubmit={submit} className="max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-3xl border border-white/10 bg-[#11141a] p-6 shadow-2xl">
-        <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Create project</div>
-        <h2 className="mt-2 text-2xl font-semibold">+ New Project</h2>
-        <p className="mt-2 text-sm text-zinc-400">Create a project. VCS support is determined by project anchors such as directory, vcs_kind, base_ref, and worktree_root.</p>
-
-        <label className="mt-5 block text-sm text-zinc-300">
-          Name
-          <input data-debug-id="new-project-name-input" value={name} onChange={(event) => setName(event.target.value)} placeholder="Short project name" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" autoFocus />
-        </label>
-
-        <label className="mt-4 block text-sm text-zinc-300">
-          <div className="flex items-center justify-between mb-1">
-            <span>Description</span>
-            <VimEditButton
-              debugId="new-project-description-vim-edit-btn"
-              title="New Project Description"
-              value={description}
-              onApply={(val) => setDescription(val)}
-              lang="markdown"
-            />
-          </div>
-          <textarea data-debug-id="new-project-description-textarea" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Optional project description" rows={3} className="mt-1 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
-        </label>
-
-        <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-4">
-          <label className="flex items-center gap-3 text-sm text-zinc-300">
-            <input data-debug-id="new-project-vcs-enabled-checkbox" type="checkbox" checked={vcsEnabled} onChange={(event) => setVcsEnabled(event.target.checked)} className="h-4 w-4" />
-            Enable VCS workspaces for chains in this project
-          </label>
-          <div className="mt-3 grid gap-3 md:grid-cols-2">
-            <label className="text-sm text-zinc-300">Project directory / directory
-              <input data-debug-id="new-project-directory-input" value={directory} onChange={(event) => setDirectory(event.target.value)} disabled={!vcsEnabled} placeholder="/path/to/project" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400 disabled:opacity-50" />
-            </label>
-            <label className="text-sm text-zinc-300">VCS kind / vcs_kind
-              <select data-debug-id="new-project-vcs-kind-select" value={vcsKind} onChange={(event) => setVcsKind(event.target.value)} disabled={!vcsEnabled} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400 disabled:opacity-50">
-                <option value="auto">auto</option>
-                <option value="git">git</option>
-                <option value="jj">jj</option>
-              </select>
-            </label>
-            <label className="text-sm text-zinc-300">Base ref / base_ref
-              <input data-debug-id="new-project-base-ref-input" value={baseRef} onChange={(event) => setBaseRef(event.target.value)} disabled={!vcsEnabled} placeholder="main" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400 disabled:opacity-50" />
-            </label>
-            <label className="text-sm text-zinc-300">Worktree root / worktree_root
-              <input data-debug-id="new-project-worktree-root-input" value={worktreeRoot} onChange={(event) => setWorktreeRoot(event.target.value)} disabled={!vcsEnabled} placeholder="/tmp/heimdall-worktrees/my-project" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400 disabled:opacity-50" />
-            </label>
-          </div>
-          {vcsEnabled && !directory.trim() && <div className="mt-3 text-xs text-amber-200">Project directory is required to enable VCS support.</div>}
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 sm:p-6 overflow-hidden">
+      <form onSubmit={submit} className="flex flex-col max-h-[88vh] w-full max-w-2xl overflow-hidden rounded-3xl border border-white/10 bg-[#11141a] shadow-2xl">
+        <div className="shrink-0 border-b border-white/10 px-6 py-5">
+          <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Create project</div>
+          <h2 className="mt-1 text-2xl font-semibold">+ New Project</h2>
+          <p className="mt-1 text-sm text-zinc-400">Create a project. VCS support is determined by project anchors such as directory, vcs_kind, base_ref, and worktree_root.</p>
         </div>
 
-        {error && <div className="mt-4 rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-200">{error}</div>}
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+          <label className="block text-sm text-zinc-300">
+            Name
+            <input data-debug-id="new-project-name-input" value={name} onChange={(event) => setName(event.target.value)} placeholder="Short project name" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" autoFocus />
+          </label>
 
-        <div className="mt-6 flex justify-end gap-2">
+          <label className="block text-sm text-zinc-300">
+            <div className="flex items-center justify-between mb-1">
+              <span>Description</span>
+              <VimEditButton
+                debugId="new-project-description-vim-edit-btn"
+                title="New Project Description"
+                value={description}
+                onApply={(val) => setDescription(val)}
+                lang="markdown"
+              />
+            </div>
+            <textarea data-debug-id="new-project-description-textarea" value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Optional project description" rows={3} className="mt-1 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
+          </label>
+
+          <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+            <label className="flex items-center gap-3 text-sm text-zinc-300">
+              <input data-debug-id="new-project-vcs-enabled-checkbox" type="checkbox" checked={vcsEnabled} onChange={(event) => setVcsEnabled(event.target.checked)} className="h-4 w-4" />
+              Enable VCS workspaces for chains in this project
+            </label>
+            <div className="mt-3 grid gap-3 md:grid-cols-2">
+              <label className="text-sm text-zinc-300">Project directory / directory
+                <input data-debug-id="new-project-directory-input" value={directory} onChange={(event) => setDirectory(event.target.value)} disabled={!vcsEnabled} placeholder="/path/to/project" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400 disabled:opacity-50" />
+              </label>
+              <label className="text-sm text-zinc-300">VCS kind / vcs_kind
+                <select data-debug-id="new-project-vcs-kind-select" value={vcsKind} onChange={(event) => setVcsKind(event.target.value)} disabled={!vcsEnabled} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400 disabled:opacity-50">
+                  <option value="auto">auto</option>
+                  <option value="git">git</option>
+                  <option value="jj">jj</option>
+                </select>
+              </label>
+              <label className="text-sm text-zinc-300">Base ref / base_ref
+                <input data-debug-id="new-project-base-ref-input" value={baseRef} onChange={(event) => setBaseRef(event.target.value)} disabled={!vcsEnabled} placeholder="main" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400 disabled:opacity-50" />
+              </label>
+              <label className="text-sm text-zinc-300">Worktree root / worktree_root
+                <input data-debug-id="new-project-worktree-root-input" value={worktreeRoot} onChange={(event) => setWorktreeRoot(event.target.value)} disabled={!vcsEnabled} placeholder="/tmp/heimdall-worktrees/my-project" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400 disabled:opacity-50" />
+              </label>
+            </div>
+            {vcsEnabled && !directory.trim() && <div className="mt-3 text-xs text-amber-200">Project directory is required to enable VCS support.</div>}
+          </div>
+
+          {error && <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-200">{error}</div>}
+        </div>
+
+        <div className="shrink-0 border-t border-white/10 bg-[#11141a] px-6 py-4 flex justify-end gap-2">
           <button data-debug-id="new-project-cancel-btn" type="button" onClick={onClose} disabled={creating} className="rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15 disabled:opacity-50">Cancel</button>
           <button data-debug-id="new-project-submit-btn" type="submit" disabled={creating || !name.trim() || (vcsEnabled && !directory.trim())} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:opacity-50">{creating ? 'Creating…' : 'Create project'}</button>
         </div>
@@ -3015,90 +3019,94 @@ function NewChainModal({ projectId, projects, agents, creating, error, onClose, 
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">
-      <form onSubmit={submit} className="w-full max-w-2xl rounded-3xl border border-white/10 bg-[#11141a] p-6 shadow-2xl">
-        <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Create chain</div>
-        <h2 className="mt-2 text-2xl font-semibold">+ New chain</h2>
-        <p className="mt-2 text-sm text-zinc-400">Create a chain. By default this creates only a coordinator task to update the chain from the user requirement; optional scaffolds add draft tasks after coordinator validation.</p>
-
-        <div className="mt-5 grid gap-4 md:grid-cols-2">
-          <label className="text-sm text-zinc-300">
-            Project
-            <select data-debug-id="new-chain-project-select" value={selectedProjectId} onChange={(event) => setSelectedProjectId(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
-              {projects.map((project: any) => <option key={project.projectId} value={project.projectId}>{project.name || project.projectId}</option>)}
-            </select>
-          </label>
-          <label className="text-sm text-zinc-300">
-            Kind
-            <select data-debug-id="new-chain-kind-select" value={kind} onChange={(event) => handleKindChange(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
-              {[findTeamKind('coding'), findTeamKind('research'), findTeamKind('solo')].map((item) => <option key={item.key} value={item.key}>{kindOptionLabel(item)}</option>)}
-            </select>
-          </label>
-        </div>
-        <div data-debug-id="new-chain-kind-description" className="mt-3 rounded-xl bg-white/[0.04] p-3 text-xs text-zinc-400">
-          <div><span className="font-semibold text-zinc-300">{kindDef.label} team:</span> {kindDef.description}</div>
-          <div className="mt-1 text-zinc-500">{paceLabel(kindDef.pace)} pace · {taskCountLabel(kindDef.expectedTaskCount)} default · {kindDef.collaboratingAgentCount} collaborating agents</div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 sm:p-6 overflow-hidden">
+      <form onSubmit={submit} className="flex flex-col max-h-[88vh] w-full max-w-2xl overflow-hidden rounded-3xl border border-white/10 bg-[#11141a] shadow-2xl">
+        <div className="shrink-0 border-b border-white/10 px-6 py-5">
+          <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Create chain</div>
+          <h2 className="mt-1 text-2xl font-semibold">+ New chain</h2>
+          <p className="mt-1 text-sm text-zinc-400">Create a chain. By default this creates only a coordinator task to update the chain from the user requirement; optional scaffolds add draft tasks after coordinator validation.</p>
         </div>
 
-        <label className="mt-4 block text-sm text-zinc-300">
-          Title
-          <input data-debug-id="new-chain-title-input" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Short action-oriented chain title" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" autoFocus />
-        </label>
-
-        {scaffold !== 'none' && (
-          <label className="mt-4 block text-sm text-zinc-300">
-            <div className="flex items-center justify-between mb-1">
-              <span>Goal</span>
-              <VimEditButton
-                debugId="new-chain-goal-vim-edit-btn"
-                title="Task Chain Goal"
-                value={goal}
-                onApply={(val) => setGoal(val)}
-                lang="markdown"
-              />
-            </div>
-            <textarea data-debug-id="new-chain-goal-textarea" value={goal} onChange={(event) => setGoal(event.target.value)} placeholder="What should this chain accomplish?" rows={4} className="mt-1 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
-          </label>
-        )}
-
-        <div className="mt-4 grid gap-4 md:grid-cols-2">
-          <div>
+        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+          <div className="grid gap-4 md:grid-cols-2">
             <label className="text-sm text-zinc-300">
-              Optional task scaffold
-              <select data-debug-id="new-chain-scaffold-select" value={scaffold} onChange={(event) => setScaffold(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
-                <option value="none">{scaffoldOptionLabel(NONE_SCAFFOLD_META)}</option>
-                {kindDef.scaffolds.map((item) => <option key={item.key} value={item.key}>{scaffoldOptionLabel(item)}</option>)}
+              Project
+              <select data-debug-id="new-chain-project-select" value={selectedProjectId} onChange={(event) => setSelectedProjectId(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
+                {projects.map((project: any) => <option key={project.projectId} value={project.projectId}>{project.name || project.projectId}</option>)}
               </select>
             </label>
-            <div className="mt-1 text-xs text-zinc-500">Non-none scaffolds create draft tasks that depend on coordinator validation.</div>
-            <div className="mt-2 rounded-lg bg-white/[0.04] p-3 text-xs text-zinc-400">
-              <div className="font-semibold text-zinc-300">{selectedScaffold.label}</div>
-              <div className="mt-1">{selectedScaffold.description}</div>
-              <div className="mt-1 text-zinc-500">{paceLabel(selectedScaffold.pace)} pace · {taskCountLabel(selectedScaffold.expectedTaskCount)} · {selectedScaffold.collaboratingAgentCount} agents</div>
-            </div>
-            <div data-debug-id="new-chain-default-status" className="mt-3 rounded-lg bg-white/[0.04] p-3 text-xs text-zinc-500">
-              Default selection: <span className="text-zinc-300">{savedKindDef.label}</span> / <span className="text-zinc-300">{savedScaffoldDefault.label}</span>
-            </div>
-            {selectionDiffersFromDefault && (
-              <label className="mt-3 flex items-center gap-3 rounded-xl border border-sky-400/20 bg-sky-400/10 px-3 py-3 text-sm text-zinc-200">
-                <input data-debug-id="new-chain-set-default-checkbox" type="checkbox" checked={setSelectionAsDefault} onChange={(event) => setSetSelectionAsDefault(event.target.checked)} className="h-4 w-4" />
-                Set this kind/scaffold as the default for future new chains
-              </label>
-            )}
+            <label className="text-sm text-zinc-300">
+              Kind
+              <select data-debug-id="new-chain-kind-select" value={kind} onChange={(event) => handleKindChange(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
+                {[findTeamKind('coding'), findTeamKind('research'), findTeamKind('solo')].map((item) => <option key={item.key} value={item.key}>{kindOptionLabel(item)}</option>)}
+              </select>
+            </label>
           </div>
-          <label className="flex items-center gap-3 rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-zinc-300">
-            <input data-debug-id="new-chain-vcs-checkbox" type="checkbox" checked={wantsVcs && selectedProjectSupportsVcs} disabled={!selectedProjectSupportsVcs} onChange={(event) => setWantsVcs(event.target.checked)} className="h-4 w-4" />
-            Use VCS workspace if project supports it
+          <div data-debug-id="new-chain-kind-description" className="rounded-xl bg-white/[0.04] p-3 text-xs text-zinc-400">
+            <div><span className="font-semibold text-zinc-300">{kindDef.label} team:</span> {kindDef.description}</div>
+            <div className="mt-1 text-zinc-500">{paceLabel(kindDef.pace)} pace · {taskCountLabel(kindDef.expectedTaskCount)} default · {kindDef.collaboratingAgentCount} collaborating agents</div>
+          </div>
+
+          <label className="block text-sm text-zinc-300">
+            Title
+            <input data-debug-id="new-chain-title-input" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Short action-oriented chain title" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" autoFocus />
           </label>
-        </div>
-        <div data-debug-id="new-chain-project-vcs-status" className="mt-3 rounded-xl bg-white/[0.04] p-3 text-xs text-zinc-500">
-          Project VCS: {selectedProjectSupportsVcs ? `enabled via ${projectAnchorValue(selectedProject, 'vcs_kind', 'auto')} repo ${projectAnchorValue(selectedProject, 'directory')}` : 'disabled — add directory/vcs_kind anchors in project settings'}
+
+          {scaffold !== 'none' && (
+            <label className="block text-sm text-zinc-300">
+              <div className="flex items-center justify-between mb-1">
+                <span>Goal</span>
+                <VimEditButton
+                  debugId="new-chain-goal-vim-edit-btn"
+                  title="Task Chain Goal"
+                  value={goal}
+                  onApply={(val) => setGoal(val)}
+                  lang="markdown"
+                />
+              </div>
+              <textarea data-debug-id="new-chain-goal-textarea" value={goal} onChange={(event) => setGoal(event.target.value)} placeholder="What should this chain accomplish?" rows={4} className="mt-1 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
+            </label>
+          )}
+
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="text-sm text-zinc-300">
+                Optional task scaffold
+                <select data-debug-id="new-chain-scaffold-select" value={scaffold} onChange={(event) => setScaffold(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
+                  <option value="none">{scaffoldOptionLabel(NONE_SCAFFOLD_META)}</option>
+                  {kindDef.scaffolds.map((item) => <option key={item.key} value={item.key}>{scaffoldOptionLabel(item)}</option>)}
+                </select>
+              </label>
+              <div className="mt-1 text-xs text-zinc-500">Non-none scaffolds create draft tasks that depend on coordinator validation.</div>
+              <div className="mt-2 rounded-lg bg-white/[0.04] p-3 text-xs text-zinc-400">
+                <div className="font-semibold text-zinc-300">{selectedScaffold.label}</div>
+                <div className="mt-1">{selectedScaffold.description}</div>
+                <div className="mt-1 text-zinc-500">{paceLabel(selectedScaffold.pace)} pace · {taskCountLabel(selectedScaffold.expectedTaskCount)} · {selectedScaffold.collaboratingAgentCount} agents</div>
+              </div>
+              <div data-debug-id="new-chain-default-status" className="mt-3 rounded-lg bg-white/[0.04] p-3 text-xs text-zinc-500">
+                Default selection: <span className="text-zinc-300">{savedKindDef.label}</span> / <span className="text-zinc-300">{savedScaffoldDefault.label}</span>
+              </div>
+              {selectionDiffersFromDefault && (
+                <label className="mt-3 flex items-center gap-3 rounded-xl border border-sky-400/20 bg-sky-400/10 px-3 py-3 text-sm text-zinc-200">
+                  <input data-debug-id="new-chain-set-default-checkbox" type="checkbox" checked={setSelectionAsDefault} onChange={(event) => setSetSelectionAsDefault(event.target.checked)} className="h-4 w-4" />
+                  Set this kind/scaffold as the default for future new chains
+                </label>
+              )}
+            </div>
+            <label className="flex items-center gap-3 rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-zinc-300">
+              <input data-debug-id="new-chain-vcs-checkbox" type="checkbox" checked={wantsVcs && selectedProjectSupportsVcs} disabled={!selectedProjectSupportsVcs} onChange={(event) => setWantsVcs(event.target.checked)} className="h-4 w-4" />
+              Use VCS workspace if project supports it
+            </label>
+          </div>
+          <div data-debug-id="new-chain-project-vcs-status" className="rounded-xl bg-white/[0.04] p-3 text-xs text-zinc-500">
+            Project VCS: {selectedProjectSupportsVcs ? `enabled via ${projectAnchorValue(selectedProject, 'vcs_kind', 'auto')} repo ${projectAnchorValue(selectedProject, 'directory')}` : 'disabled — add directory/vcs_kind anchors in project settings'}
+          </div>
+
+          <div data-debug-id="new-chain-coordinator-preview" className="rounded-xl bg-white/[0.04] p-3 text-xs text-zinc-500">Coordinator: generated on create as coordinator@project-chain</div>
+          {error && <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-200">{error}</div>}
         </div>
 
-        <div data-debug-id="new-chain-coordinator-preview" className="mt-4 rounded-xl bg-white/[0.04] p-3 text-xs text-zinc-500">Coordinator: generated on create as coordinator@project-chain</div>
-        {error && <div className="mt-4 rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-200">{error}</div>}
-
-        <div className="mt-6 flex justify-end gap-2">
+        <div className="shrink-0 border-t border-white/10 bg-[#11141a] px-6 py-4 flex justify-end gap-2">
           <button data-debug-id="new-chain-cancel-btn" type="button" onClick={onClose} disabled={creating} className="rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15 disabled:opacity-50">Cancel</button>
           <button data-debug-id="new-chain-submit-btn" type="submit" disabled={creating || !title.trim()} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:opacity-50">{creating ? 'Creating…' : 'Create chain'}</button>
         </div>
