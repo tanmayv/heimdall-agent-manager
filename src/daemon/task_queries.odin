@@ -69,11 +69,8 @@ task_dependency_blocking_ids :: proc(depends_on: string) -> string {
 		id := strings.trim_space(dep)
 		if id == "" do continue
 		blocked := true
-		for i in 0..<task_state_count {
-			if task_states[i].task_id == id {
-				blocked = !task_state_satisfies_dependency(task_states[i])
-				break
-			}
+		if state, found := store_get_task(id); found {
+			blocked = !task_state_satisfies_dependency(state)
 		}
 		if blocked {
 			if !first do strings.write_string(&builder, ",")
@@ -185,16 +182,14 @@ task_active_slot_blocker :: proc(assignee, excluding_task_id: string) -> string 
 	if assignee == "" do return ""
 
 	// Reviewer gating constraint: pending reviews block new tasks
-	for i in 0..<task_state_count {
-		state := task_states[i]
+	for state in store_all_tasks() {
 		if state.status != .Review_Ready do continue
 		if !task_actor_has_role(state, assignee, "lgtm_required") do continue
 		if task_reviewer_has_voted(state.task_id, assignee) do continue
 		return "pending_reviews_exist"
 	}
 
-	for i in 0..<task_state_count {
-		state := task_states[i]
+	for state in store_all_tasks() {
 		if state.task_id == excluding_task_id do continue
 		if state.assignee_agent_instance_id != assignee do continue
 		if task_status_active_for_assignee(state) do return state.task_id
@@ -206,8 +201,7 @@ task_active_slot_blocker :: proc(assignee, excluding_task_id: string) -> string 
 // (excluding excluding_task_id). Used to enforce one-active-review constraint.
 task_reviewer_active_slot_blocker :: proc(reviewer, excluding_task_id: string) -> string {
 	if reviewer == "" do return ""
-	for i in 0..<task_state_count {
-		state := task_states[i]
+	for state in store_all_tasks() {
 		if state.task_id == excluding_task_id do continue
 		if state.status != .Review_Ready do continue
 		if !task_actor_has_role(state, reviewer, "lgtm_required") && !task_actor_has_role(state, reviewer, "lgtm_optional") do continue
@@ -243,9 +237,8 @@ task_all_required_lgtms_approved :: proc(task_id: string) -> bool {
 		}
 	}
 	if required_count == 0 {
-		idx, found := task_existing_state_index(task_id, "")
-		if found {
-			default_rev := task_reviewer_agent_instance_id(task_states[idx])
+		if state, found := store_get_task_in_chain(task_id, ""); found {
+			default_rev := task_reviewer_agent_instance_id(state)
 			if default_rev != "" {
 				required_count = 1
 				for j in 0..<task_lgtm_vote_count {
@@ -282,9 +275,7 @@ task_active_chain_for_project :: proc(project_id: string) -> string {
 
 task_all_chain_tasks_terminal :: proc(chain_id: string) -> bool {
 	found_any := false
-	for i in 0..<task_state_count {
-		state := task_states[i]
-		if state.chain_id != chain_id do continue
+	for state in store_tasks_in_chain(chain_id) {
 		found_any = true
 		if !task_status_terminal(state.status) do return false
 	}
@@ -376,8 +367,7 @@ task_target_for_role :: proc(state: Task_State, role: string) -> string {
 
 task_recompute_promotions :: proc(author: string) -> int {
 	changed := 0
-	for i in 0..<task_state_count {
-		state := task_states[i]
+	for state in store_all_tasks() {
 		if !task_promotion_candidate(state) do continue
 		if !task_dependencies_satisfied(state.depends_on) do continue
 		if !task_chain_allows_execution(state.chain_id) do continue
@@ -416,8 +406,8 @@ task_recompute_promotions :: proc(author: string) -> int {
 	}
 
 	// Trigger auto-claim for Ready tasks if the assignee's slot became free
-	for i in 0..<task_state_count {
-		assignee := task_states[i].assignee_agent_instance_id
+	for state in store_all_tasks() {
+		assignee := state.assignee_agent_instance_id
 		if assignee == "" do continue
 		active := task_active_slot_blocker(assignee, "")
 		if active == "" {
@@ -439,17 +429,20 @@ task_promotion_candidate :: proc(state: Task_State) -> bool {
 }
 
 task_best_promotion_candidate_for_assignee :: proc(assignee: string) -> string {
-	best_idx := -1
-	for i in 0..<task_state_count {
-		state := task_states[i]
+	best: Task_State
+	found := false
+	for state in store_all_tasks() {
 		if state.assignee_agent_instance_id != assignee do continue
 		if !task_promotion_candidate(state) do continue
 		if !task_dependencies_satisfied(state.depends_on) do continue
 		if !task_chain_allows_execution(state.chain_id) do continue
-		if best_idx < 0 || task_state_orders_before(state, task_states[best_idx]) do best_idx = i
+		if !found || task_state_orders_before(state, best) {
+			best = state
+			found = true
+		}
 	}
-	if best_idx < 0 do return ""
-	return task_states[best_idx].task_id
+	if !found do return ""
+	return best.task_id
 }
 
 task_best_ready_task_for_assignee :: proc(assignee: string) -> string {
@@ -460,19 +453,22 @@ task_best_ready_task_for_assignee :: proc(assignee: string) -> string {
 // dependency-satisfied tasks for the same assignee, choose by priority first,
 // then created_at_unix_ms, then task_id. Chain/project id is not a limiter.
 task_best_ready_task_for_assignee_excluding :: proc(assignee, exclude_task_id: string) -> string {
-	best_idx := -1
-	for i in 0..<task_state_count {
-		state := task_states[i]
+	best: Task_State
+	found := false
+	for state in store_all_tasks() {
 		if state.assignee_agent_instance_id != assignee do continue
 		if exclude_task_id != "" && state.task_id == exclude_task_id do continue
 		if state.status != .Queued do continue
 		if !task_dependencies_satisfied(state.depends_on) do continue
 		if !task_ready_allows_auto_claim(state) do continue
 		if !task_chain_allows_execution(state.chain_id) do continue
-		if best_idx < 0 || task_state_orders_before(state, task_states[best_idx]) do best_idx = i
+		if !found || task_state_orders_before(state, best) {
+			best = state
+			found = true
+		}
 	}
-	if best_idx < 0 do return ""
-	return task_states[best_idx].task_id
+	if !found do return ""
+	return best.task_id
 }
 
 task_state_orders_before :: proc(a, b: Task_State) -> bool {
@@ -691,27 +687,11 @@ task_write_state_json :: proc(builder: ^strings.Builder, state: Task_State) {
 	strings.write_string(builder, `]}`)
 }
 
-task_existing_state_index :: proc(task_id, chain_id: string) -> (int, bool) {
-	for i in 0..<task_state_count {
-		if task_states[i].task_id == task_id && (chain_id == "" || task_states[i].chain_id == chain_id) {
-			return i, true
-		}
-	}
-	return -1, false
-}
-
-task_id_exists :: proc(task_id: string) -> bool {
-	for i in 0..<task_state_count {
-		if task_states[i].task_id == task_id do return true
-	}
-	return false
-}
-
 task_generate_id :: proc() -> string {
 	base := router_now_unix_ms()
 	for i in 0..<1000 {
 		candidate := fmt.tprintf("task-%x", base + i64(i))
-		if !task_id_exists(candidate) do return candidate
+		if !store_task_exists(candidate) do return candidate
 	}
 	return fmt.tprintf("task-%x", router_now_unix_ms())
 }
@@ -733,9 +713,8 @@ task_chain_id_for_root :: proc(task_id: string) -> string {
 task_root_id_for_response :: proc(chain_id, task_id: string, created_chain: bool) -> string {
 	if chain_id == "" do return ""
 	if created_chain do return task_id
-	for i in 0..<task_state_count {
-		state := task_states[i]
-		if state.chain_id == chain_id do return state.task_id
+	for state in store_tasks_in_chain(chain_id) {
+		return state.task_id
 	}
 	return ""
 }

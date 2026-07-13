@@ -426,22 +426,19 @@ audit_janitor_tick :: proc() {
 
 	// 2. Check if the Auditor Agent is stuck/offline/failed startup
 	audit_chain_id := fmt.tprintf("chain-audit-%s", active_run.audit_id)
-	idx := -1
+	task_state: Task_State
 	task_found := false
-	for i in 0..<task_state_count {
-		if task_states[i].chain_id == audit_chain_id {
-			if task_states[i].status == .Queued || task_states[i].status == .In_Progress {
-				idx = i
-				task_found = true
-				break
-			}
+	for state in store_tasks_in_chain(audit_chain_id) {
+		if state.status == .Queued || state.status == .In_Progress {
+			task_state = state
+			task_found = true
+			break
 		}
 	}
 	if !task_found {
 		return
 	}
-	
-	task_state := task_states[idx]
+
 	assignee := task_state.assignee_agent_instance_id
 
 	if task_state.status == .Queued || task_state.status == .In_Progress {

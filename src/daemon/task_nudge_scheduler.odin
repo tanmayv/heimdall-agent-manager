@@ -33,8 +33,7 @@ task_nudge_scheduler_tick :: proc() -> int {
 	if !task_nudge_cfg.nudge_enabled do return 0
 	now     := router_now_unix_ms()
 	changed := 0
-	for i in 0..<task_state_count {
-		state     := task_states[i]
+	for state in store_all_tasks() {
 		if !task_chain_allows_execution(state.chain_id) do continue
 		threshold := task_nudge_threshold_seconds(state.status)
 		if threshold <= 0 do continue
@@ -154,16 +153,15 @@ task_autoscaler_tick :: proc(now: i64) -> int {
 
 task_runtime_reconcile_all_active :: proc(reason, priority: string) -> int {
 	changed := 0
-	for i in 0..<task_state_count {
-		if task_runtime_reconcile_task(task_states[i].task_id, reason, priority) do changed += 1
+	for state in store_all_tasks() {
+		if task_runtime_reconcile_task(state.task_id, reason, priority) do changed += 1
 	}
 	return changed
 }
 
 task_runtime_reconcile_task :: proc(task_id, reason, priority: string) -> bool {
-	idx, found := task_existing_state_index(task_id, "")
+	state, found := store_get_task_in_chain(task_id, "")
 	if !found do return false
-	state := task_states[idx]
 	if state.status != .Queued && state.status != .Review_Ready && state.status != .In_Progress do return false
 	chain, chain_found := store_get_chain(state.chain_id)
 	if !chain_found do return false
@@ -288,8 +286,7 @@ task_autoscaler_reason_bypasses_lease :: proc(reason: string) -> bool {
 }
 
 task_autoscaler_team_has_high_priority_boot :: proc(team_id: string) -> bool {
-	for i in 0..<task_state_count {
-		state := task_states[i]
+	for state in store_all_tasks() {
 		if state.status != .Review_Ready do continue
 		chain, found := store_get_chain(state.chain_id)
 		if !found do continue
@@ -443,10 +440,9 @@ task_autoscaler_stop_chain_agents :: proc(chain_id, reason: string) -> int {
 }
 
 task_autoscaler_task_belongs_to_chain :: proc(task_id, chain_id: string) -> bool {
-	for i in 0..<task_state_count {
-		if task_states[i].task_id == task_id do return task_states[i].chain_id == chain_id
-	}
-	return false
+	state, found := store_get_task(task_id)
+	if !found do return false
+	return state.chain_id == chain_id
 }
 
 task_autoscaler_agent_has_active_work_outside_chain :: proc(agent_id, excluded_chain_id: string) -> bool {
@@ -455,8 +451,7 @@ task_autoscaler_agent_has_active_work_outside_chain :: proc(agent_id, excluded_c
 		if chain.coordinator_agent_instance_id == agent_id do return true
 		if chain.default_reviewer_agent_instance_id == agent_id do return true
 	}
-	for i in 0..<task_state_count {
-		state := task_states[i]
+	for state in store_all_tasks() {
 		if state.chain_id == excluded_chain_id || task_status_terminal(state.status) do continue
 		if state.assignee_agent_instance_id == agent_id || task_actor_has_role(state, agent_id, "lgtm_required") || task_actor_has_role(state, agent_id, "lgtm_optional") || task_actor_has_role(state, agent_id, "coordinator") do return true
 	}
@@ -466,8 +461,7 @@ task_autoscaler_agent_has_active_work_outside_chain :: proc(agent_id, excluded_c
 task_autoscaler_idle_shutdown_seconds :: proc(agent_instance_id: string) -> int {
 	grace := task_nudge_cfg.team_idle_shutdown_seconds
 	if grace <= 0 do grace = 1800
-	for i in 0..<task_state_count {
-		state := task_states[i]
+	for state in store_all_tasks() {
 		if state.chain_id == "" || task_status_terminal(state.status) do continue
 		if state.assignee_agent_instance_id != agent_instance_id && !task_actor_has_role(state, agent_instance_id, "lgtm_required") && !task_actor_has_role(state, agent_instance_id, "lgtm_optional") && !task_actor_has_role(state, agent_instance_id, "coordinator") do continue
 		team, ok := team_db_get_team_by_chain_id(team_service_db, state.chain_id)

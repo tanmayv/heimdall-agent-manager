@@ -117,10 +117,7 @@ handle_get_chain_tasks :: proc(client: net.TCP_Socket, chain_id: string, ctx: ^R
 	json_write_string(&b, chain_id)
 	strings.write_string(&b, `","tasks":[`)
 	first := true
-	for i in 0..<task_state_count {
-		state := task_states[i]
-		if state.chain_id != chain_id do continue
-		
+	for state in store_tasks_in_chain(chain_id) {
 		// Apply filters
 		if created_after > 0 && state.created_at_unix_ms < created_after do continue
 		if created_before > 0 && state.created_at_unix_ms > created_before do continue
@@ -140,15 +137,13 @@ handle_get_task :: proc(client: net.TCP_Socket, task_id: string, ctx: ^Route_Con
 	_, ok := rest_authorize(client, ctx)
 	if !ok do return
 
-	for i in 0..<task_state_count {
-		if task_states[i].task_id == task_id {
-			b := strings.builder_make()
-			strings.write_string(&b, `{"task":`)
-			task_write_state_json(&b, task_states[i])
-			strings.write_string(&b, `}`)
-			write_response(client, 200, "OK", strings.to_string(b))
-			return
-		}
+	if state, ok := store_get_task(task_id); ok {
+		b := strings.builder_make()
+		strings.write_string(&b, `{"task":`)
+		task_write_state_json(&b, state)
+		strings.write_string(&b, `}`)
+		write_response(client, 200, "OK", strings.to_string(b))
+		return
 	}
 	write_response(client, 404, "Not Found", `{"error":"not_found","message":"task not found"}`)
 }
@@ -227,8 +222,7 @@ handle_get_tasks :: proc(client: net.TCP_Socket, ctx: ^Route_Context) {
 	count := 0
 	matched_count := 0
 	
-	for i in 0..<task_state_count {
-		state := task_states[i]
+	for state in store_all_tasks() {
 		if chain_id != "" && state.chain_id != chain_id do continue
 		
 		// Apply filters

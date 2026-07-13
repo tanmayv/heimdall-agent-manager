@@ -27,13 +27,15 @@ store_get_task :: proc(task_id: string) -> (Task_State, bool) {
 	return task_states[idx], true
 }
 
-// store_get_task_in_chain replaces the find-then-index task_existing_state_index
-// pattern with a single-call value accessor. When chain_id is "", any chain
-// matches (mirrors task_existing_state_index semantics).
+// store_get_task_in_chain replaces the removed find-then-index task lookup pattern
+// with a single-call value accessor. When chain_id is "", any chain matches.
 store_get_task_in_chain :: proc(task_id, chain_id: string) -> (Task_State, bool) {
-	idx, ok := task_existing_state_index(task_id, chain_id)
-	if !ok do return Task_State{}, false
-	return task_states[idx], true
+	for i in 0..<task_state_count {
+		if task_states[i].task_id == task_id && (chain_id == "" || task_states[i].chain_id == chain_id) {
+			return task_states[i], true
+		}
+	}
+	return Task_State{}, false
 }
 
 store_task_exists :: proc(task_id: string) -> bool {
@@ -44,6 +46,16 @@ store_task_count :: proc() -> int {
 	return task_state_count
 }
 
+// store_get_or_create_task_in_chain preserves task_state_index semantics for the
+// few legacy notification paths that auto-materialize a projection row when a
+// task event references an unknown task. Prefer store_get_task* or
+// store_upsert_task in new code.
+store_get_or_create_task_in_chain :: proc(task_id, chain_id: string) -> (Task_State, bool) {
+	idx := task_state_index(task_id, chain_id)
+	if idx < 0 || idx >= task_state_count do return Task_State{}, false
+	return task_states[idx], true
+}
+
 // store_tasks_in_chain returns copies of every task in the chain. Caller owns the
 // returned slice (dynamic array backing) but must not retain it across a mutation
 // that could invalidate the underlying values.
@@ -51,6 +63,17 @@ store_tasks_in_chain :: proc(chain_id: string, allocator := context.allocator) -
 	out := make([dynamic]Task_State, 0, 0, allocator)
 	for i in 0..<task_state_count {
 		if task_states[i].chain_id == chain_id do append(&out, task_states[i])
+	}
+	return out[:]
+}
+
+// store_all_tasks returns copies of every task-state row in insertion order.
+// Prefer a more specific accessor when possible; this exists for the handful of
+// callers that genuinely need a full sweep.
+store_all_tasks :: proc(allocator := context.allocator) -> []Task_State {
+	out := make([dynamic]Task_State, 0, task_state_count, allocator)
+	for i in 0..<task_state_count {
+		append(&out, task_states[i])
 	}
 	return out[:]
 }

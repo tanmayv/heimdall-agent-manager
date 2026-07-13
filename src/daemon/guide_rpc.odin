@@ -95,14 +95,14 @@ guide_rpc_state_summary_json :: proc() -> string {
 		if agents[i].connected || agents[i].has_ws do connected_agents += 1
 	}
 	pending_attention := 0
-	for i in 0..<task_state_count {
-		if isUserActionableTask_for_guide(task_states[i]) do pending_attention += 1
+	for state in store_all_tasks() {
+		if isUserActionableTask_for_guide(state) do pending_attention += 1
 	}
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"projects":`); strings.write_string(&b, fmt.tprintf("%d", project_record_count))
 	strings.write_string(&b, `,"chains":`); strings.write_string(&b, fmt.tprintf("%d", store_chain_count()))
 	strings.write_string(&b, `,"active_chains":`); strings.write_string(&b, fmt.tprintf("%d", active_chains))
-	strings.write_string(&b, `,"tasks":`); strings.write_string(&b, fmt.tprintf("%d", task_state_count))
+	strings.write_string(&b, `,"tasks":`); strings.write_string(&b, fmt.tprintf("%d", store_task_count()))
 	strings.write_string(&b, `,"agents":`); strings.write_string(&b, fmt.tprintf("%d", live_agents))
 	strings.write_string(&b, `,"connected_agents":`); strings.write_string(&b, fmt.tprintf("%d", connected_agents))
 	strings.write_string(&b, `,"pending_task_attention":`); strings.write_string(&b, fmt.tprintf("%d", pending_attention))
@@ -145,11 +145,10 @@ guide_rpc_show_chain_json :: proc(chain_id: string) -> string {
 	task_write_chain_json(&b, chain)
 	strings.write_string(&b, `,"tasks":[`)
 	first := true
-	for i in 0..<task_state_count {
-		if task_states[i].chain_id != chain_id do continue
+	for state in store_tasks_in_chain(chain_id) {
 		if !first do strings.write_string(&b, `,`)
 		first = false
-		guide_rpc_write_task_json(&b, task_states[i])
+		guide_rpc_write_task_json(&b, state)
 	}
 	strings.write_string(&b, `]}`)
 	return strings.to_string(b)

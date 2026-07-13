@@ -624,7 +624,7 @@ task_service_next_scaffold_task_id :: proc(base: i64, built: []Task_Scaffold_Bui
 			}
 		}
 		if duplicate do continue
-		if !task_id_exists(candidate) do return candidate
+		if !store_task_exists(candidate) do return candidate
 	}
 	return task_generate_id()
 }
@@ -883,11 +883,10 @@ task_service_assign_command :: proc(cmd: Task_Assign_Command) -> Task_Service_Re
 	if cmd.task_id == "" || cmd.agent_instance_id == "" {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"task assignment requires task_id and agent_instance_id"}`}
 	}
-	idx, found := task_existing_state_index(cmd.task_id, cmd.chain_id)
+	state, found := store_get_task_in_chain(cmd.task_id, cmd.chain_id)
 	if !found {
 		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"task not found"}`}
 	}
-	state := task_states[idx]
 	if task_actor_has_role(state, cmd.agent_instance_id, "lgtm_required") || task_actor_has_role(state, cmd.agent_instance_id, "lgtm_optional") {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"agent is already a reviewer"}`}
 	}
@@ -938,11 +937,10 @@ task_service_participant_command :: proc(cmd: Task_Participant_Command) -> Task_
 	case:
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"role must be assignee, lgtm_required, lgtm_optional, coordinator, or subscriber"}`}
 	}
-	idx, found := task_existing_state_index(cmd.task_id, cmd.chain_id)
+	state, found := store_get_task_in_chain(cmd.task_id, cmd.chain_id)
 	if !found {
 		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"task not found"}`}
 	}
-	state := task_states[idx]
 	if (cmd.role == "lgtm_required" || cmd.role == "lgtm_optional") && state.assignee_agent_instance_id == agent_instance_id {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"assignee cannot be a reviewer"}`}
 	}
@@ -1033,11 +1031,10 @@ task_service_update_task :: proc(cmd: Task_Update_Command) -> Task_Service_Resul
 	if cmd.task_id == "" {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"task update requires task_id"}`}
 	}
-	idx, found := task_existing_state_index(cmd.task_id, cmd.chain_id)
+	current, found := store_get_task_in_chain(cmd.task_id, cmd.chain_id)
 	if !found {
 		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"task not found"}`}
 	}
-	current := task_states[idx]
 	title := cmd.title
 	if title == "" do title = current.title
 	description := current.description
@@ -1074,11 +1071,10 @@ task_service_status_command :: proc(cmd: Task_Status_Command) -> Task_Service_Re
 	if !task_status_allowed(cmd.status) {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"invalid task status"}`}
 	}
-	idx, found := task_existing_state_index(cmd.task_id, cmd.chain_id)
+	state, found := store_get_task_in_chain(cmd.task_id, cmd.chain_id)
 	if !found {
 		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"task not found"}`}
 	}
-	state := task_states[idx]
 	status_val, ok := task_status_from_string(cmd.status)
 	if !ok {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"invalid task status"}`}
@@ -1180,11 +1176,10 @@ task_service_review_vote :: proc(cmd: Task_Review_Vote_Command) -> Task_Service_
 	if cmd.task_id == "" || cmd.comment == "" {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"review vote requires task_id and comment"}`}
 	}
-	idx, found := task_existing_state_index(cmd.task_id, cmd.chain_id)
+	state, found := store_get_task_in_chain(cmd.task_id, cmd.chain_id)
 	if !found {
 		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"task not found"}`}
 	}
-	state := task_states[idx]
 	if state.status != .Review_Ready {
 		return Task_Service_Result{ok = false, status_code = 409, message = `{"ok":false,"message":"can only vote on review_ready tasks"}`}
 	}
@@ -1243,8 +1238,8 @@ task_service_review_vote :: proc(cmd: Task_Review_Vote_Command) -> Task_Service_
 	task_recompute_promotions(vote_author)
 	task_notify_reviewer_rotation(vote_author)
 	result_status := "review_ready"
-	if updated_idx, updated_found := task_existing_state_index(cmd.task_id, cmd.chain_id); updated_found {
-		result_status = task_status_to_string(task_states[updated_idx].status)
+	if updated_state, updated_found := store_get_task_in_chain(cmd.task_id, cmd.chain_id); updated_found {
+		result_status = task_status_to_string(updated_state.status)
 	}
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"task_id":"`); json_write_string(&b, cmd.task_id)
@@ -1284,9 +1279,8 @@ task_user_proxy_reviewer_for :: proc(state: Task_State, user_id: string) -> (str
 }
 
 task_notify_user_proxy_review_requests :: proc(task_id, chain_id: string) {
-	idx, found := task_existing_state_index(task_id, chain_id)
+	state, found := store_get_task_in_chain(task_id, chain_id)
 	if !found do return
-	state := task_states[idx]
 	chain, chain_found := store_get_chain(state.chain_id)
 	if !chain_found do return
 	team_id := chain.team_id
@@ -1348,9 +1342,8 @@ task_service_user_proxy_review_reply :: proc(user_id, coordinator_agent_instance
 	if task_id == "" || (!approved && !rejected) {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"invalid user_proxy review reply"}`}
 	}
-	idx, found := task_existing_state_index(task_id, "")
+	state, found := store_get_task_in_chain(task_id, "")
 	if !found do return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"task not found"}`}
-	state := task_states[idx]
 	if state.status != .Review_Ready do return Task_Service_Result{ok = false, status_code = 409, message = `{"ok":false,"message":"task is not pending review"}`}
 	chain, chain_found := store_get_chain(state.chain_id)
 	if !chain_found do return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"chain not found"}`}
@@ -1375,8 +1368,8 @@ task_service_auto_approve :: proc(task_id, chain_id: string) {
 		author_agent_instance_id = "system-auto-approve",
 	}
 	if task_store_append_event(event) {
-		if idx, found := task_existing_state_index(task_id, chain_id); found && task_states[idx].assignee_agent_instance_id != "" {
-			_ = agent_store_clear_current_task_if_matches(task_states[idx].assignee_agent_instance_id, task_id)
+		if state, found := store_get_task_in_chain(task_id, chain_id); found && state.assignee_agent_instance_id != "" {
+			_ = agent_store_clear_current_task_if_matches(state.assignee_agent_instance_id, task_id)
 		}
 		task_notify_event(event)
 		task_recompute_promotions("system-auto-approve")
@@ -1385,9 +1378,8 @@ task_service_auto_approve :: proc(task_id, chain_id: string) {
 }
 
 task_service_auto_claim :: proc(task_id: string) {
-	idx, found := task_existing_state_index(task_id, "")
+	state, found := store_get_task_in_chain(task_id, "")
 	if !found do return
-	state := task_states[idx]
 	if state.status != .Queued do return
 	if !task_dependencies_satisfied(state.depends_on) do return
 	if !task_ready_allows_auto_claim(state) do return
@@ -1461,11 +1453,10 @@ task_service_nudge_command :: proc(cmd: Task_Nudge_Command) -> Task_Service_Resu
 	if cmd.task_id == "" || strings.trim_space(cmd.body) == "" {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"nudge requires task_id and non-empty body"}`}
 	}
-	idx, found := task_existing_state_index(cmd.task_id, cmd.chain_id)
+	state, found := store_get_task_in_chain(cmd.task_id, cmd.chain_id)
 	if !found {
 		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"task not found"}`}
 	}
-	state := task_states[idx]
 	if task_status_terminal(state.status) {
 		return Task_Service_Result{ok = false, status_code = 409, message = `{"ok":false,"message":"terminal task cannot be nudged"}`}
 	}
@@ -1524,9 +1515,7 @@ task_service_update_chain :: proc(cmd: Task_Chain_Update_Command) -> Task_Servic
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"default reviewer cannot equal coordinator"}`}
 	}
 	if new_default_reviewer != "" {
-		for i in 0..<task_state_count {
-			state := task_states[i]
-			if state.chain_id != cmd.chain_id do continue
+		for state in store_tasks_in_chain(cmd.chain_id) {
 			if task_status_terminal(state.status) do continue
 			if state.assignee_agent_instance_id == new_default_reviewer {
 				return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"default reviewer cannot be the assignee of an active task in the chain"}`}
@@ -1615,9 +1604,7 @@ task_service_chain_status_command :: proc(cmd: Task_Chain_Status_Command) -> Tas
 
 	// Orchestrate member tasks based on the new chain status
 	if cmd.status == "completed" || cmd.status == "archived" || cmd.status == "planning" || cmd.status == "paused" {
-		for i in 0..<task_state_count {
-			state := task_states[i]
-			if state.chain_id != cmd.chain_id do continue
+		for state in store_tasks_in_chain(cmd.chain_id) {
 			if task_status_terminal(state.status) do continue
 
 			next_status := ""
@@ -1730,17 +1717,11 @@ task_validate_dependency_ids :: proc(depends_on, chain_id, self_task_id: string)
 		if id == self_task_id {
 			return "task cannot depend on itself", "self_dependency", id, false
 		}
-		found_idx := -1
-		for i in 0..<task_state_count {
-			if task_states[i].task_id == id {
-				found_idx = i
-				break
-			}
-		}
-		if found_idx < 0 {
+		state, found := store_get_task(id)
+		if !found {
 			return "dependency task not found", "dependency_not_found", id, false
 		}
-		if chain_id != "" && task_states[found_idx].chain_id != chain_id {
+		if chain_id != "" && state.chain_id != chain_id {
 			return "dependency task must be in the same chain", "dependency_cross_chain", id, false
 		}
 	}
@@ -1772,9 +1753,7 @@ task_service_evaluate_chain :: proc(chain_id, evaluation, author: string) -> Tas
 
 task_service_halt_active_tasks_for_agent :: proc(agent_id: string) {
 	if agent_id == "" do return
-	for i in 0..<task_state_count {
-		state := task_states[i]
-		if state.assignee_agent_instance_id != agent_id do continue
+	for state in store_tasks_for_assignee(agent_id) {
 		if state.status != .In_Progress do continue
 		
 		event := Task_Event{

@@ -32,8 +32,8 @@ task_notify_event :: proc(event: Task_Event) -> bool {
 
 	status := ev.status
 	if ev.task_id != "" {
-		idx   := task_state_index(ev.task_id, ev.chain_id)
-		state := task_states[idx]
+		state, ok := store_get_or_create_task_in_chain(ev.task_id, ev.chain_id)
+		if !ok do return false
 		if status == "" do status = task_status_to_string(state.status)
 		payload := task_notification_json(ev, status)
 		agent_payload := task_notification_agent_json(ev, status)
@@ -256,9 +256,8 @@ task_notify_by_status :: proc(state: Task_State, status, author_agent_instance_i
 //   4. Failing all of the above, durable-queue to operator@local so the event
 //      is never silently dropped.
 task_notify_all_lgtm_required :: proc(task_id, chain_id: string) {
-	idx, found := task_existing_state_index(task_id, chain_id)
+	state, found := store_get_task_in_chain(task_id, chain_id)
 	if !found do return
-	state   := task_states[idx]
 	payload := task_notification_agent_json(Task_Event{
 		kind     = .Task_Status_Changed,
 		task_id  = task_id,
@@ -323,8 +322,7 @@ task_notify_review_ready_agent :: proc(state: Task_State, reviewer_agent_instanc
 // After a reviewer submits a vote, nudge them about their next pending review_ready task.
 task_notify_reviewer_rotation :: proc(reviewer: string) {
 	if reviewer == "" do return
-	for i in 0..<task_state_count {
-		state := task_states[i]
+	for state in store_all_tasks() {
 		if state.status != .Review_Ready do continue
 		is_required := task_actor_has_role(state, reviewer, "lgtm_required")
 		if !is_required {
@@ -438,8 +436,8 @@ task_notify_nudge_delivery :: proc(event: Task_Event) -> Task_Notification_Deliv
 
 	status := ev.status
 	if ev.task_id != "" {
-		idx   := task_state_index(ev.task_id, ev.chain_id)
-		state := task_states[idx]
+		state, ok := store_get_or_create_task_in_chain(ev.task_id, ev.chain_id)
+		if !ok do return Task_Notification_Delivery{failed = true}
 		if status == "" do status = task_status_to_string(state.status)
 		payload := task_notification_json(ev, status)
 		agent_payload := task_notification_agent_json(ev, status)
@@ -493,9 +491,9 @@ task_notification_json :: proc(event: Task_Event, status: string) -> string {
 
 	// Augment with full task payload if task_id is present
 	if event.task_id != "" {
-		if idx, found := task_existing_state_index(event.task_id, event.chain_id); found {
+		if state, found := store_get_task_in_chain(event.task_id, event.chain_id); found {
 			strings.write_string(&b, `,"task":`)
-			task_write_state_json(&b, task_states[idx])
+			task_write_state_json(&b, state)
 		}
 	}
 

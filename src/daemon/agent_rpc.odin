@@ -161,8 +161,8 @@ agent_rpc_infer_reply_chain_id :: proc(agent_instance_id: string) -> (chain_id: 
 	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 {
 		current_task_id := agent_instance_records[idx].current_task_id
 		if current_task_id != "" {
-			if task_idx, found := task_existing_state_index(current_task_id, ""); found && task_states[task_idx].chain_id != "" {
-				return task_states[task_idx].chain_id, true, false
+			if task, found := store_get_task_in_chain(current_task_id, ""); found && task.chain_id != "" {
+				return task.chain_id, true, false
 			}
 		}
 	}
@@ -185,9 +185,7 @@ agent_rpc_chain_is_reply_candidate_for_agent :: proc(chain: Task_Chain_State, ag
 	if chain.chain_id == "" || chain.archived do return false
 	if chain.status == "completed" || chain.status == "abandoned" || chain.status == "cancelled" do return false
 	if chain.coordinator_agent_instance_id == agent_instance_id do return true
-	for i in 0..<task_state_count {
-		state := task_states[i]
-		if state.chain_id != chain.chain_id do continue
+	for state in store_tasks_in_chain(chain.chain_id) {
 		if task_status_terminal(state.status) do continue
 		if state.assignee_agent_instance_id == agent_instance_id do return true
 		if task_actor_has_role(state, agent_instance_id, "lgtm_required") || task_actor_has_role(state, agent_instance_id, "lgtm_optional") || task_actor_has_role(state, agent_instance_id, "subscriber") do return true

@@ -278,15 +278,13 @@ handle_task_show :: proc(client: net.TCP_Socket, body: string) {
 	_, ok := task_author_from_body(client, body)
 	if !ok do return
 	task_id := extract_json_string(body, "task_id", "")
-	for i in 0..<task_state_count {
-		if task_states[i].task_id == task_id {
-			b := strings.builder_make()
-			strings.write_string(&b, `{"ok":true,"task":`)
-			task_write_state_json(&b, task_states[i])
-			strings.write_string(&b, `}`)
-			write_response(client, 200, "OK", strings.to_string(b))
-			return
-		}
+	if state, found := store_get_task(task_id); found {
+		b := strings.builder_make()
+		strings.write_string(&b, `{"ok":true,"task":`)
+		task_write_state_json(&b, state)
+		strings.write_string(&b, `}`)
+		write_response(client, 200, "OK", strings.to_string(b))
+		return
 	}
 	write_response(client, 404, "Not Found", `{"ok":false,"message":"task not found"}`)
 }
@@ -356,15 +354,15 @@ write_task_service_response :: proc(client: net.TCP_Socket, result: Task_Service
 task_store_state_json :: proc() -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"task_count":`)
-	strings.write_string(&b, fmt.tprintf("%d", task_state_count))
+	strings.write_string(&b, fmt.tprintf("%d", store_task_count()))
 	strings.write_string(&b, `,"chain_count":`)
 	strings.write_string(&b, fmt.tprintf("%d", store_chain_count()))
 	strings.write_string(&b, `,"event_count":`)
 	strings.write_string(&b, fmt.tprintf("%d", task_event_count))
 	strings.write_string(&b, `,"tasks":[`)
-	for i in 0..<task_state_count {
+	for state, i in store_all_tasks() {
 		if i > 0 do strings.write_string(&b, `,`)
-		task_write_state_json(&b, task_states[i])
+		task_write_state_json(&b, state)
 	}
 	strings.write_string(&b, `],"participants":[`)
 	for i in 0..<task_participant_count {
@@ -389,15 +387,13 @@ task_store_state_json :: proc() -> string {
 // The task will already be in in_progress via auto-claim from task_recompute_promotions,
 // but this provides a direct "give me my next task" endpoint.
 task_claim_next_for_agent :: proc(agent_instance_id: string) -> (Task_State, bool) {
-	for i in 0..<task_state_count {
-		state := task_states[i]
+	for state in store_all_tasks() {
 		if state.status != .In_Progress do continue
 		if state.assignee_agent_instance_id != agent_instance_id do continue
 		return state, true
 	}
 	// Also check ready (may not have been auto-claimed yet)
-	for i in 0..<task_state_count {
-		state := task_states[i]
+	for state in store_all_tasks() {
 		if state.status != .Queued do continue
 		if !task_chain_allows_execution(state.chain_id) do continue
 		if state.assignee_agent_instance_id != "" && state.assignee_agent_instance_id != agent_instance_id do continue
@@ -415,7 +411,8 @@ task_claim_next_for_agent :: proc(agent_instance_id: string) -> (Task_State, boo
 			_ = agent_store_set_current_task(agent_instance_id, state.task_id)
 			task_notify_event(event)
 		}
-		return task_states[task_state_index(state.task_id, state.chain_id)], true
+		if updated, found := store_get_task_in_chain(state.task_id, state.chain_id); found do return updated, true
+		return state, true
 	}
 	return Task_State{}, false
 }
