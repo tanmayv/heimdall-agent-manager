@@ -90,6 +90,7 @@ Task_Review_Vote_Command :: struct {
 	approved:                 bool,
 	comment:                  string,
 	author_agent_instance_id: string,
+	author_is_user:           bool,
 }
 
 Task_Nudge_Command :: struct {

@@ -67,7 +67,7 @@ def main() -> None:
     require('project_anchor_value(project, "vcs_kind", "auto")' in src, "VCS support guard should treat configured project directories as auto VCS by default")
     require('return repo != "" && vcs_kind != "none"' in src, "VCS support guard must exclude non-VCS projects")
     require('if member.is_user_proxy do continue' in src, "non-user reviewer helper should skip user proxy members")
-    require('agent_id == "operator@local"' in src, "non-user reviewer helper should exclude operator@local")
+    require('task_runtime_agent_target(agent_id) == ""' in src, "non-user reviewer helper should exclude human recipients via runtime helper")
 
     print("VCS FINAL SCHEMA TASK TEST PASSED")
 

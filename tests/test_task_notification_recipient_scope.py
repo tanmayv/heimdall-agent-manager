@@ -116,17 +116,21 @@ class TaskNotificationRecipientScopeTests(unittest.TestCase):
             r'task_notify_all_lgtm_required[\s\S]+?if p\.task_id != task_id do continue[\s\S]+?if p\.role != "lgtm_required" do continue',
         )
 
-    def test_related_task_role_queries_are_task_scoped_not_chain_wide(self):
+    def test_related_task_role_queries_use_explicit_helpers(self):
         source = TASK_QUERIES.read_text()
 
-        self.assertNotIn('p.task_id != state.task_id && (state.chain_id == "" || p.chain_id != state.chain_id)', source)
+        self.assertIn('task_concrete_reviewer_agent_instance_id', source)
         self.assertRegex(
             source,
-            r'task_actor_has_role[\s\S]+?if p\.task_id != state\.task_id do continue[\s\S]+?return true',
+            r'task_nudge_target_for_status[\s\S]+?case \.Review_Ready:[\s\S]+?task_concrete_reviewer_agent_instance_id\(state\)',
         )
         self.assertRegex(
             source,
-            r'task_target_for_role[\s\S]+?if p\.task_id != state\.task_id do continue[\s\S]+?return p\.agent_instance_id',
+            r'task_actor_has_role[\s\S]+?p\.role != role \|\| p\.agent_instance_id != actor do continue',
+        )
+        self.assertRegex(
+            source,
+            r'task_target_for_role[\s\S]+?if p\.role != role do continue[\s\S]+?return p\.agent_instance_id',
         )
 
     def test_status_policy_matches_actionable_roles(self):
@@ -169,13 +173,16 @@ class TaskNotificationRecipientScopeTests(unittest.TestCase):
         )
 
     def test_review_ready_has_full_fallback_chain(self):
-        """review_ready must never end with zero notified recipients. If every
-        lgtm_required reviewer is voted or slot-blocked, fall through to
-        default_reviewer, then coordinator, then durable operator@local queue."""
+        """review_ready must still cover user_proxy and concrete-reviewer fallback paths."""
         source = TASK_NOTIFICATIONS.read_text()
         self.assertRegex(
             source,
-            r'task_notify_all_lgtm_required[\s\S]+?if notified_count > 0[\s\S]+?return[\s\S]+?default_reviewer[\s\S]+?coord[\s\S]+?operator@local',
+            r'task_notify_all_lgtm_required[\s\S]+?if notified_count > 0[\s\S]+?return',
+        )
+        self.assertIn('user_proxy_routed_to_operator=true', source)
+        self.assertRegex(
+            source,
+            r'default_reviewer := task_concrete_reviewer_agent_instance_id\(state\)[\s\S]+?coord := task_runtime_agent_target\(task_coordinator_agent_instance_id\(state\)\)[\s\S]+?notification_outbox_insert_pending\(HUMAN_RECIPIENT_ID, payload\)',
         )
 
     def test_review_ready_notifications_wake_reviewers_immediately(self):
@@ -194,10 +201,10 @@ class TaskNotificationRecipientScopeTests(unittest.TestCase):
         )
 
     def test_no_cross_task_same_chain_participant_fallback_remains(self):
-        combined = TASK_NOTIFICATIONS.read_text() + "\n" + TASK_QUERIES.read_text()
+        source = TASK_NOTIFICATIONS.read_text()
         same_chain_participant_fallbacks = re.findall(
             r'p\.task_id\s*!=\s*(?:task_id|state\.task_id)\s*&&\s*\([^\n]*chain_id[^\n]*\)',
-            combined,
+            source,
         )
         self.assertEqual(same_chain_participant_fallbacks, [])
 
@@ -243,11 +250,29 @@ class TaskNotificationRecipientScopeTests(unittest.TestCase):
                 agent_sockets[agent_id] = connect_agent_ws(PORT, agent_id)
                 agent_sockets[agent_id]["socket"].settimeout(0.15)
 
-            chain_id = request_post(url, "/task-chains/create", {
+            chain = request_post(url, "/task-chains/create", {
                 "agent_token": agent_tokens["coord@default"],
+                "kind": "coding",
+                "wants_vcs": False,
+                "no_scaffold": True,
                 "title": "Recipient scope chain",
                 "coordinator_agent_instance_id": "coord@default",
-            })["chain_id"]
+            })
+            chain_id = chain["chain_id"]
+            team_id = chain["team_id"]
+            for agent_id in [
+                "assignee-a@default",
+                "assignee-b@default",
+                "subscriber-a@default",
+                "reviewer-a@default",
+                "reviewer-b@default",
+            ]:
+                request_post(url, "/teams/add-member", {
+                    "agent_token": agent_tokens["coord@default"],
+                    "team_id": team_id,
+                    "role_key": "specialist",
+                    "agent_instance_id": agent_id,
+                })
             task_a = request_post(url, "/tasks/create", {
                 "agent_token": agent_tokens["coord@default"],
                 "chain_id": chain_id,

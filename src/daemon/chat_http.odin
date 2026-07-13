@@ -42,7 +42,7 @@ handle_chat_send_to_coordinator :: proc(client: net.TCP_Socket, body: string) {
 		return
 	}
 	user_id := sender
-	if itype != "user" do user_id = "operator@local"
+	if itype != "user" do user_id = HUMAN_RECIPIENT_ID
 	message_id, ok := chat_store_append_message_with_chain(user_id, coordinator, "user_to_agent", message_body, false, chain_id)
 	if !ok {
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"append chat failed"}`)
@@ -73,6 +73,6 @@ handle_chat_inbox :: proc(client: net.TCP_Socket, target: string) {
 	if limit <= 0 do limit = 50
 	include_read := query_value(target, "include_read") == "true" || query_value(target, "include_read") == "1"
 	chain_id := query_value(target, "chain_id")
-	write_response(client, 200, "OK", chat_fetch_json("operator@local", agent_instance_id, !include_read, "user_to_agent", limit, 0, chain_id))
+	write_response(client, 200, "OK", chat_fetch_json(HUMAN_RECIPIENT_ID, agent_instance_id, !include_read, "user_to_agent", limit, 0, chain_id))
 }
 

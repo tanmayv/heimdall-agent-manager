@@ -174,7 +174,7 @@ handle_task_later :: proc(client: net.TCP_Socket, body: string) {
 }
 
 handle_task_review_vote :: proc(client: net.TCP_Socket, body: string) {
-	author, ok := task_author_from_body(client, body)
+	author, is_user, ok := task_author_and_type_from_body(client, body)
 	if !ok do return
 	result_str := extract_json_string(body, "result", "")
 	approved   := result_str == "lgtm" || result_str == "approved" || result_str == "true"
@@ -184,6 +184,7 @@ handle_task_review_vote :: proc(client: net.TCP_Socket, body: string) {
 		approved                 = approved,
 		comment                  = extract_json_string(body, "comment", ""),
 		author_agent_instance_id = author,
+		author_is_user           = is_user,
 	})
 	write_task_service_response(client, result)
 }

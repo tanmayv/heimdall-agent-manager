@@ -4,6 +4,7 @@ import sys
 
 DAEMON_URL = "http://127.0.0.1:49325"
 
+
 def request_post(path, data):
     req = urllib.request.Request(
         f"{DAEMON_URL}{path}",
@@ -14,84 +15,78 @@ def request_post(path, data):
     res = urllib.request.urlopen(req)
     return json.loads(res.read().decode("utf-8"))
 
-def compute_badge_count(tasks, user_id):
+
+def compute_badge_count(tasks):
     count = 0
     for task in tasks:
-        if task.get("status") == "review_ready":
-            participants = task.get("participants", [])
-            is_part = any(p["agent_instance_id"] == user_id and p["role"] in ["lgtm_required", "lgtm_optional"] for p in participants)
-            if is_part:
-                votes = task.get("votes", [])
-                has_voted = any(v["reviewer_agent_instance_id"] == user_id for v in votes)
-                if not has_voted:
-                    count += 1
+        if task.get("status") != "review_ready":
+            continue
+        participants = task.get("participants", [])
+        needs_user_review = any(
+            p["agent_instance_id"] == "user_proxy" and p["role"] == "lgtm_required"
+            for p in participants
+        )
+        if not needs_user_review:
+            continue
+        votes = task.get("votes", [])
+        has_voted = any(v["reviewer_agent_instance_id"] == "user_proxy" for v in votes)
+        if not has_voted:
+            count += 1
     return count
+
 
 def main():
     print("Registering clients...")
     try:
-        # Register User Client
-        user_res = request_post("/user-client/register", {
+        client_token = request_post("/user-client/register", {
             "user_id": "operator@local",
             "client_instance_id": "test-client-badge-run"
-        })
-        client_token = user_res.get("client_token")
-        if not client_token:
-            print("[-] User client token missing from registration:", user_res)
-            sys.exit(1)
+        })["client_token"]
     except Exception as e:
         print("[-] User registration failed:", e)
         sys.exit(1)
 
     try:
-        # Register Agent
-        agent_res = request_post("/register", {
+        agent_token = request_post("/register", {
             "agent_class": "test-coder-badge-agent",
             "agent_instance_id": "test-coder-badge-agent@default",
             "display_name": "Test Coder Badge Agent"
-        })
-        agent_token = agent_res.get("agent_token")
+        })["agent_token"]
     except Exception as e:
         print("[-] Agent registration failed:", e)
         sys.exit(1)
 
-    # Assert initial count is 0
     try:
-        tasks_list = request_post("/tasks/list", {
-            "agent_token": agent_token
-        })
-        initial_count = compute_badge_count(tasks_list["tasks"], "operator@local")
+        tasks_list = request_post("/tasks/list", {"agent_token": agent_token})
+        initial_count = compute_badge_count(tasks_list["tasks"])
         print(f"[*] Initial badge count: {initial_count}")
         assert initial_count == 0, f"Expected 0 badge count initially, got {initial_count}"
 
-        # Create chain
-        chain_res = request_post("/task-chains/create", {
+        chain_id = request_post("/task-chains/create", {
             "agent_token": agent_token,
+            "kind": "solo",
+            "wants_vcs": False,
+            "no_scaffold": True,
             "title": "Badge Test Chain",
             "coordinator_agent_instance_id": "test-coder-badge-agent@default"
-        })
-        chain_id = chain_res.get("chain_id")
+        })["chain_id"]
 
-        # Create Task A
         print("[*] Creating Task A...")
-        task_res_a = request_post("/tasks/create", {
+        task_id_a = request_post("/tasks/create", {
             "agent_token": agent_token,
             "chain_id": chain_id,
             "title": "Task A",
             "assignee_agent_instance_id": "test-coder-badge-agent@default"
-        })
-        task_id_a = task_res_a.get("task_id")
+        })["task_id"]
 
-        # Add operator@local as reviewer participant
         request_post("/tasks/participant", {
             "agent_token": agent_token,
             "task_id": task_id_a,
             "chain_id": chain_id,
-            "agent_instance_id": "operator@local",
+            "agent_instance_id": "user_proxy",
             "role": "lgtm_required"
         })
 
-        # Transition task to review_ready
         request_post("/tasks/status", {
             "agent_token": client_token,
             "client_instance_id": "test-client-badge-run",
@@ -101,15 +96,11 @@ def main():
             "body": "ready for review"
         })
 
-        # Fetch list and check count is 1
-        tasks_list_after = request_post("/tasks/list", {
-            "agent_token": agent_token
-        })
-        badge_count_after = compute_badge_count(tasks_list_after["tasks"], "operator@local")
+        tasks_list_after = request_post("/tasks/list", {"agent_token": agent_token})
+        badge_count_after = compute_badge_count(tasks_list_after["tasks"])
         print(f"[*] Badge count after review request: {badge_count_after}")
         assert badge_count_after == 1, f"Expected badge count 1, got {badge_count_after}"
 
-        # Vote and check count is 0
         print("[*] Voting on Task A...")
         request_post("/tasks/vote", {
             "agent_token": client_token,
@@ -120,10 +111,8 @@ def main():
             "comment": "LGTM!"
         })
 
-        tasks_list_final = request_post("/tasks/list", {
-            "agent_token": agent_token
-        })
-        final_badge_count = compute_badge_count(tasks_list_final["tasks"], "operator@local")
+        tasks_list_final = request_post("/tasks/list", {"agent_token": agent_token})
+        final_badge_count = compute_badge_count(tasks_list_final["tasks"])
         print(f"[*] Final badge count after voting: {final_badge_count}")
         assert final_badge_count == 0, f"Expected 0 badge count after voting, got {final_badge_count}"
 
@@ -133,6 +122,7 @@ def main():
     except Exception as e:
         print("[-] Sidebar Badge Test failed:", e)
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

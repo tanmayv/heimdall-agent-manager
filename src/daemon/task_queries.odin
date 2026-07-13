@@ -3,6 +3,13 @@ package main
 import "core:fmt"
 import "core:strings"
 
+HUMAN_RECIPIENT_ID :: "operator@local"
+
+task_runtime_agent_target :: proc(agent_instance_id: string) -> string {
+	if agent_instance_id == "" || task_actor_is_user(agent_instance_id) do return ""
+	return agent_instance_id
+}
+
 // Returns the first non-archived agent_instance_id whose template role_hint matches.
 agents_first_by_role_hint :: proc(role_hint, project_id: string) -> string {
 	for i in 0..<agent_instance_record_count {
@@ -95,7 +102,36 @@ task_chain_default_reviewer_agent_instance_id :: proc(chain_id: string) -> strin
 	return task_chains[idx].default_reviewer_agent_instance_id
 }
 
-task_reviewer_agent_instance_id :: proc(state: Task_State) -> string {
+task_team_id_for_state :: proc(state: Task_State) -> string {
+	if state.chain_id == "" do return ""
+	idx, found := task_existing_chain_index(state.chain_id)
+	if found && task_chains[idx].team_id != "" do return task_chains[idx].team_id
+	team, ok := team_db_get_team_by_chain_id(team_service_db, state.chain_id)
+	if !ok do return ""
+	return team.team_id
+}
+
+task_reviewer_matches_user_proxy_member :: proc(reviewer: string, member: Team_Member_Record) -> bool {
+	if reviewer == "" || !member.is_user_proxy do return false
+	if member.role_key != "" && reviewer == member.role_key do return true
+	if member.route_to != "" && reviewer == member.route_to do return true
+	if member.agent_instance_id != "" && reviewer == member.agent_instance_id do return true
+	if member.agent_record_id != "" && reviewer == member.agent_record_id do return true
+	return false
+}
+
+task_reviewer_is_user_review :: proc(state: Task_State, reviewer: string) -> bool {
+	if reviewer == "" do return false
+	team_id := task_team_id_for_state(state)
+	if team_id == "" do return false
+	members := team_db_list_members(team_service_db, team_id)
+	for member in members {
+		if task_reviewer_matches_user_proxy_member(reviewer, member) do return true
+	}
+	return false
+}
+
+task_required_reviewer_agent_instance_id :: proc(state: Task_State) -> string {
 	for i in 0..<task_participant_count {
 		p := task_participants[i]
 		if p.task_id == state.task_id && p.role == "lgtm_required" {
@@ -106,7 +142,36 @@ task_reviewer_agent_instance_id :: proc(state: Task_State) -> string {
 	if default_rev != "" && default_rev != state.assignee_agent_instance_id {
 		return default_rev
 	}
-	return "user_proxy"
+	return ""
+}
+
+task_concrete_reviewer_agent_instance_id :: proc(state: Task_State) -> string {
+	reviewer := task_required_reviewer_agent_instance_id(state)
+	if reviewer == "" || task_reviewer_is_user_review(state, reviewer) do return ""
+	return reviewer
+}
+
+task_requires_user_review :: proc(state: Task_State) -> bool {
+	required_count := 0
+	for i in 0..<task_participant_count {
+		p := task_participants[i]
+		if p.task_id != state.task_id || p.role != "lgtm_required" do continue
+		required_count += 1
+		if task_reviewer_is_user_review(state, p.agent_instance_id) do return true
+	}
+	if required_count > 0 do return false
+	default_rev := task_chain_default_reviewer_agent_instance_id(state.chain_id)
+	if default_rev != "" && default_rev != state.assignee_agent_instance_id {
+		return task_reviewer_is_user_review(state, default_rev)
+	}
+	return true
+}
+
+task_reviewer_agent_instance_id :: proc(state: Task_State) -> string {
+	reviewer := task_required_reviewer_agent_instance_id(state)
+	if reviewer != "" do return reviewer
+	if task_requires_user_review(state) do return "user_proxy"
+	return ""
 }
 
 // --- Active slot checks ---
@@ -275,9 +340,9 @@ task_nudge_target_for_status :: proc(state: Task_State, status: Task_Status) -> 
 	case .Queued, .In_Progress, .Blocked:
 		return task_target_for_role(state, "assignee")
 	case .Review_Ready:
-		reviewer := task_reviewer_agent_instance_id(state)
-		if reviewer != "operator@local" && reviewer != "user_proxy" do return reviewer
-		return task_target_for_role(state, "lgtm_required")
+		reviewer := task_concrete_reviewer_agent_instance_id(state)
+		if reviewer != "" do return reviewer
+		return ""
 	case .Approved:
 		return task_target_for_role(state, "coordinator")
 	case:
@@ -492,8 +557,8 @@ task_not_actionable_reason :: proc(state: Task_State) -> string {
 	case .In_Progress:
 		return ""
 	case .Review_Ready:
-		reviewer := task_reviewer_agent_instance_id(state)
-		if reviewer == "operator@local" || reviewer == "user_proxy" do return "awaiting_user_review"
+		if task_requires_user_review(state) do return "awaiting_user_review"
+		reviewer := task_concrete_reviewer_agent_instance_id(state)
 		if blocker := task_reviewer_active_slot_blocker(reviewer, state.task_id); blocker != "" {
 			return strings.concatenate({"reviewer_busy:", blocker})
 		}

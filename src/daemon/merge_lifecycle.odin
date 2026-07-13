@@ -56,7 +56,7 @@ merge_decision_pending_json :: proc(chain_id: string, rec: Vcs_Workspace_Record,
 	strings.write_string(&b, `","branch_or_change":"`); json_write_string(&b, rec.branch_or_change)
 	strings.write_string(&b, `","base_ref":"`); json_write_string(&b, rec.base_ref)
 	strings.write_string(&b, `","preview":`); merge_preview_body_json(&b, preview)
-	strings.write_string(&b, `,"recipient":"operator@local"}`)
+	strings.write_string(&b, `,"recipient":"`); json_write_string(&b, HUMAN_RECIPIENT_ID); strings.write_string(&b, `"}`)
 	return strings.to_string(b)
 }
 

@@ -300,6 +300,7 @@ handle_user_rpc_task_review_vote :: proc(client: net.TCP_Socket, body, user_id: 
 		approved                 = approved_val,
 		comment                  = extract_json_string(body, "comment", ""),
 		author_agent_instance_id = user_id,
+		author_is_user           = true,
 	})
 	write_task_service_response(client, result)
 }
