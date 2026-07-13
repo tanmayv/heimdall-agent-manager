@@ -1,7 +1,7 @@
+@import '@vimee/shiki-editor/styles.css';
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-@import '@vimee/shiki-editor/styles.css';
 
 :root {
   color-scheme: dark;
