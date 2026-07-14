@@ -401,7 +401,7 @@ All of the following element types must have `data-debug-id`:
 | `ChainWorkspaceBox` | `workspace-refresh-btn`, `workspace-pull-base-btn`, `workspace-preview-merge-btn`, `workspace-file-${slug}`, `workspace-show-diff-btn`, `workspace-diff-file-select`, `workspace-copy-diff-btn`, `workspace-ask-coordinator-btn` |
 | `NewChainModal` | `new-chain-project-select`, `new-chain-title-input`, `new-chain-goal-textarea`, `new-chain-kind-select`, `new-chain-scaffold-select`, `new-chain-vcs-checkbox`, `new-chain-cancel-btn`, `new-chain-submit-btn` |
 | `NewProjectModal` | `new-project-name-input`, `new-project-description-textarea`, `new-project-repo-input`, `new-project-vcs-select`, `new-project-cancel-btn`, `new-project-submit-btn` |
-| `SettingsPage` | `settings-nav-${key}`, `settings-back-btn`, `settings-direct-chat-agent-select`, `settings-direct-chat-feed`, `settings-direct-chat-input`, `settings-direct-chat-send-btn` |
+| `SettingsPage` | `settings-nav-${key}`, `settings-back-btn`, `settings-create-agent-btn`, `settings-create-agent-modal`, `settings-create-agent-name-input`, `settings-create-agent-template-select`, `settings-create-agent-provider-select`, `settings-create-agent-tier-select`, `settings-create-agent-cancel-btn`, `settings-create-agent-cancel-secondary-btn`, `settings-create-agent-submit-btn`, `settings-create-agent-error`, `settings-direct-chat-agent-select`, `settings-direct-chat-feed`, `settings-direct-chat-input`, `settings-direct-chat-send-btn` |
 | `SessionConfig` | `session-config-reconnect-btn`, `session-config-daemon-url`, `session-config-user-id` |
 
 ### Shared component: AgentSelect

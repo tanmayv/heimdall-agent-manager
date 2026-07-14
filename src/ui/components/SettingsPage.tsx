@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import SessionConfig from './SessionConfig';
 import { TEAM_KIND_METADATA, paceLabel, taskCountLabel, wantsVcsLabel } from './teamKinds';
-import { fetchPreferences, fetchSelectedChat, refreshSettingsCatalog, saveUserPreference, selectAgent, sendMessageToSelectedAgent } from '../store/chatSlice';
+import { fetchPreferences, fetchSelectedChat, refreshAgents, refreshSettingsCatalog, saveUserPreference, selectAgent, sendMessageToSelectedAgent } from '../store/chatSlice';
+import * as daemonApi from '../api/daemonApi';
 import { refreshMemory } from '../store/memorySlice';
 import { clearProjectError, deleteProjectFromUi, fetchProjectDetail, refreshProjects, selectProject, updateProjectFromUi } from '../store/projectSlice';
 import { VimEditButton } from './VimSidebar';
@@ -98,7 +99,7 @@ export default function SettingsPage({ session, onReconnect, onBack }: any) {
           {selected === 'providers' && <ProvidersPanel providers={providers} preferences={preferences || []} onSaveDefault={async (key: string, value: string) => { await dispatch(saveUserPreference({ key, value })); dispatch(fetchPreferences()); }} />}
           {selected === 'projects' && <ProjectsPanel projects={projects} selectedProjectId={selectedProjectId} selectedProject={selectedProject} loading={projectDetailLoading} mutating={projectMutating} error={projectError} onSelect={(projectId: string) => { dispatch(selectProject(projectId)); dispatch(fetchProjectDetail(projectId)); }} onSave={(payload: any) => dispatch(updateProjectFromUi(payload))} onDelete={async (projectId: string) => { await dispatch(deleteProjectFromUi({ projectId })); dispatch(clearProjectError()); }} />}
           {selected === 'memory' && <MemoryPanel records={memoryRecords} loading={memoryLoading} />}
-          {selected === 'agents' && <AgentsPanel agents={agents} />}
+          {selected === 'agents' && <AgentsPanel agents={agents} templates={templates} providers={providers} onCreateAgent={async (payload: any) => { await daemonApi.createAgent({ daemonUrl: effectiveSession.daemonUrl, displayName: payload.displayName, templateId: payload.templateId, providerProfile: payload.providerProfile, modelTier: payload.modelTier }); await dispatch(refreshAgents()); }} />}
           {selected === 'direct-chat' && <DirectChatPanel agents={agents} agentId={directAgentId} setAgentId={setDirectAgentId} messages={directMessages} draft={directDraft} setDraft={setDirectDraft} sending={sending} onSend={() => { const body = directDraft.trim(); if (!body || !directAgentId) return; dispatch(sendMessageToSelectedAgent({ body, tempId: `settings_${Date.now()}` })); setDirectDraft(''); }} />}
           {selected === 'daemon' && <DaemonPanel session={effectiveSession} onReconnect={onReconnect} debugInfo={debugInfo} setDebugInfo={setDebugInfo} />}
         </section>
@@ -253,8 +254,47 @@ function MemoryPanel({ records, loading }: any) {
   return <Panel title="Memory browser" subtitle="Redux-backed memory records; refreshed on Settings mount and memory events.">{loading ? <Empty text="Loading memory…" /> : <div className="grid gap-3">{records.length === 0 ? <Empty text="No memory records loaded." /> : records.slice(0, 50).map((record: any) => <Card key={record.memoryId || record.id}><div className="font-semibold">{record.title || record.memoryId || record.id}</div><div className="mt-1 text-sm text-zinc-500">{record.type || 'type'} · {record.status || 'status'}</div><div className="mt-1 text-xs text-zinc-500">Target: {record.target || 'global'}</div><div className="mt-2 line-clamp-3 text-sm text-zinc-300">{record.body || record.content || ''}</div></Card>)}</div>}</Panel>;
 }
 
-function AgentsPanel({ agents }: any) {
-  return <Panel title="Agents (raw registry)" subtitle="Debug view of daemon agent registry, moved from the old Agents top-level tab."><div className="grid gap-3">{agents.length === 0 ? <Empty text="No agents loaded." /> : agents.map((agent: any) => <Card key={agent.id}><div className="flex items-center justify-between gap-3"><div className="font-semibold">{agent.label || agent.id}</div><span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-zinc-400">{agent.state || agent.status || 'unknown'}</span></div><div className="mt-1 text-xs text-zinc-500">{agent.id} · project {agent.projectId || '—'} · current task {agent.currentTaskId || 'idle'} · activity {agent.activityStatus || 'unknown'}</div></Card>)}</div></Panel>;
+function AgentsPanel({ agents, templates, providers, onCreateAgent }: any) {
+  const [open, setOpen] = useState(false);
+  const [displayName, setDisplayName] = useState('');
+  const [templateId, setTemplateId] = useState('');
+  const [providerProfile, setProviderProfile] = useState('');
+  const [modelTier, setModelTier] = useState('normal');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (!templateId && templates?.[0]?.id) setTemplateId(templates[0].id);
+    if (!providerProfile && providers?.[0]?.name) setProviderProfile(providers[0].name);
+  }, [templates, providers, templateId, providerProfile]);
+
+  const reset = () => {
+    setDisplayName('');
+    setTemplateId(templates?.[0]?.id || '');
+    setProviderProfile(providers?.[0]?.name || '');
+    setModelTier('normal');
+    setError('');
+  };
+  const close = () => { if (saving) return; setOpen(false); reset(); };
+  const submit = async (event: any) => {
+    event.preventDefault();
+    const name = displayName.trim();
+    if (!name) { setError('Agent name is required.'); return; }
+    if (!templateId) { setError('Choose a predefined role/template.'); return; }
+    setSaving(true);
+    setError('');
+    try {
+      await onCreateAgent({ displayName: name, templateId, providerProfile, modelTier });
+      setOpen(false);
+      reset();
+    } catch (err: any) {
+      setError(err?.message || 'Failed to create agent');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return <Panel title="Agents" subtitle="Create reusable durable agents by name + predefined role. Runtime sessions are started separately."><div className="mb-4 flex items-center justify-between gap-3"><div className="text-sm text-zinc-500">{agents.length} known agent{agents.length === 1 ? '' : 's'} loaded.</div><button data-debug-id="settings-create-agent-btn" type="button" onClick={() => { reset(); setOpen(true); }} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300">+ Create agent</button></div><div className="grid gap-3">{agents.length === 0 ? <Empty text="No agents loaded." /> : agents.map((agent: any) => <Card key={agent.id}><div className="flex items-center justify-between gap-3"><div className="font-semibold">{agent.label || agent.id}</div><span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-zinc-400">{agent.state || agent.status || 'unknown'}</span></div><div className="mt-1 text-xs text-zinc-500">{agent.id} · agent {agent.agentId || agent.agent_id || agent.id} · project {agent.projectId || '—'} · current task {agent.currentTaskId || 'idle'} · activity {agent.activityStatus || 'unknown'}</div></Card>)}</div>{open && <div data-debug-id="settings-create-agent-modal" className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4"><form onSubmit={submit} className="w-full max-w-lg rounded-3xl border border-white/10 bg-[#0d0f14] p-5 shadow-2xl"><div className="flex items-start justify-between gap-3"><div><h3 className="text-xl font-semibold">Create reusable agent</h3><p className="mt-1 text-sm text-zinc-500">Choose a durable name and predefined role. No project is required.</p></div><button data-debug-id="settings-create-agent-cancel-btn" type="button" onClick={close} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Close</button></div><div className="mt-5 space-y-4"><label className="block text-sm text-zinc-300">Agent name<input data-debug-id="settings-create-agent-name-input" value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="Alice Coder" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" /></label><label className="block text-sm text-zinc-300">Predefined role<select data-debug-id="settings-create-agent-template-select" value={templateId} onChange={(event) => setTemplateId(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="">Choose role/template</option>{templates.map((template: any) => <option key={template.id} value={template.id}>{template.name || template.id}</option>)}</select></label><div className="grid gap-3 sm:grid-cols-2"><label className="block text-sm text-zinc-300">Provider<select data-debug-id="settings-create-agent-provider-select" value={providerProfile} onChange={(event) => setProviderProfile(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="">Default</option>{providers.map((provider: any) => <option key={provider.name} value={provider.name}>{provider.name}</option>)}</select></label><label className="block text-sm text-zinc-300">Model tier<select data-debug-id="settings-create-agent-tier-select" value={modelTier} onChange={(event) => setModelTier(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="normal">normal</option><option value="smart">smart</option><option value="cheap">cheap</option></select></label></div>{error && <div data-debug-id="settings-create-agent-error" className="rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-sm text-red-100">{error}</div>}</div><div className="mt-5 flex justify-end gap-2"><button data-debug-id="settings-create-agent-cancel-secondary-btn" type="button" onClick={close} className="rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15">Cancel</button><button data-debug-id="settings-create-agent-submit-btn" type="submit" disabled={saving || !displayName.trim() || !templateId} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">{saving ? 'Creating…' : 'Create agent'}</button></div></form></div>}</Panel>;
 }
 
 function DirectChatPanel({ agents, agentId, setAgentId, messages, draft, setDraft, sending, onSend }: any) {
