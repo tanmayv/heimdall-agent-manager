@@ -198,11 +198,11 @@ export function VimEditButton({
         e.preventDefault();
         openVim({ title, initialValue: value, onApply, language: lang });
       }}
-      className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-300 transition hover:border-emerald-500 hover:bg-emerald-500/20"
+      aria-label={`Open ${title} in Vim Mode sidebar`}
+      className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-sm font-semibold text-emerald-300 transition hover:border-emerald-500 hover:bg-emerald-500/20"
       title="Open in Vim Mode sidebar (:wq to save)"
     >
-      <span>👻</span>
-      <span>Edit in Vim</span>
+      <span aria-hidden="true">⌘</span>
     </button>
   );
 }
