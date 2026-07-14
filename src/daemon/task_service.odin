@@ -913,6 +913,27 @@ task_service_assign_command :: proc(cmd: Task_Assign_Command) -> Task_Service_Re
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append task assignment failed"}`}
 	}
 	task_notify_event(event)
+	if task_status_active_for_assignee(state) {
+		if state.assignee_agent_instance_id != "" && state.assignee_agent_instance_id != cmd.agent_instance_id {
+			_ = agent_store_clear_current_task_if_matches(state.assignee_agent_instance_id, cmd.task_id)
+		}
+		if queued_behind_task_id != "" {
+			block_event := Task_Event{
+				kind                     = .Task_Status_Changed,
+				task_id                  = cmd.task_id,
+				chain_id                 = state.chain_id,
+				status                   = "blocked",
+				body                     = strings.concatenate({"system_block:assignee_active_task:", queued_behind_task_id}),
+				author_agent_instance_id = cmd.author_agent_instance_id,
+			}
+			if task_store_append_event(block_event) {
+				task_notify_event(block_event)
+			}
+		} else if state.status == .In_Progress {
+			_ = agent_store_set_current_task(cmd.agent_instance_id, cmd.task_id)
+			_ = task_runtime_reconcile_task(cmd.task_id, "assignment", "high")
+		}
+	}
 	if queued_behind_task_id != "" {
 		b := strings.builder_make()
 		strings.write_string(&b, `{"ok":true,"queued_behind_task_id":"`); json_write_string(&b, queued_behind_task_id); strings.write_string(&b, `"}`)
