@@ -711,11 +711,15 @@ task_service_maybe_provision_workspace :: proc(project_id, chain_id, team_id, ti
 	if kind == "jj" do backend_kind = .Jj
 	if kind == "fig" do backend_kind = .Fig
 	if kind == "auto" {
-		jj_detected := vcs.vcs_backend_for(.Jj).detect(repo)
-		fig_detected := vcs.vcs_backend_for(.Fig).detect(repo)
-		if jj_detected.ok do backend_kind = .Jj
-		else if fig_detected.ok do backend_kind = .Fig
-		else do backend_kind = .Git
+		if is_google3_path(repo) {
+			backend_kind = .Fig
+		} else {
+			jj_detected := vcs.vcs_backend_for(.Jj).detect(repo)
+			fig_detected := vcs.vcs_backend_for(.Fig).detect(repo)
+			if jj_detected.ok do backend_kind = .Jj
+			else if fig_detected.ok do backend_kind = .Fig
+			else do backend_kind = .Git
+		}
 	}
 	backend := vcs.vcs_backend_for(backend_kind)
 	detected := backend.detect(repo)
@@ -737,6 +741,15 @@ task_service_maybe_provision_workspace :: proc(project_id, chain_id, team_id, ti
 	return rec, true, "ok"
 }
 
+is_google3_path :: proc(path: string) -> bool {
+	parts := strings.split(path, "/")
+	defer delete(parts)
+	for p in parts {
+		if p == "google3" do return true
+	}
+	return false
+}
+
 project_anchor_value :: proc(project: Project_Record, anchor_type, default_value: string) -> string {
 	for i in 0..<project.anchor_count { if project.anchors[i].type == anchor_type do return project.anchors[i].value }
 	return default_value
@@ -753,7 +766,7 @@ task_chain_project_git_repo :: proc(chain_id: string) -> (string, bool, string) 
 	kind := project_anchor_value(project, "vcs_kind", "auto")
 	repo := project_anchor_value(project, "directory", "")
 	if repo == "" do repo = project_anchor_value(project, "git_repo", "")
-	if repo == "" || kind == "none" || kind == "jj" do return "", false, "project does not support git repo diff"
+	if repo == "" || kind == "none" || kind == "jj" || kind == "fig" || is_google3_path(repo) do return "", false, "project does not support git repo diff"
 	detected := vcs.vcs_backend_for(.Git).detect(repo)
 	if !detected.ok do return "", false, detected.message
 	return detected.repo_root, true, "git repo diff supported"

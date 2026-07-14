@@ -4056,10 +4056,11 @@ function NewProjectModal({ creating, error, onClose, onSubmit }: any) {
                   <option value="auto">auto</option>
                   <option value="git">git</option>
                   <option value="jj">jj</option>
+                  <option value="fig">fig</option>
                 </select>
               </label>
-              <label className="text-sm text-zinc-300">Base ref / base_ref
-                <input data-debug-id="new-project-base-ref-input" value={baseRef} onChange={(event) => setBaseRef(event.target.value)} disabled={!vcsEnabled} placeholder="main" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400 disabled:opacity-50" />
+              <label className="text-sm text-zinc-300">Base ref / base_ref {vcsKind === 'fig' && '(CL / p4base)'}
+                <input data-debug-id="new-project-base-ref-input" value={baseRef} onChange={(event) => setBaseRef(event.target.value)} disabled={!vcsEnabled} placeholder={vcsKind === 'fig' ? 'CL or p4base' : 'main'} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400 disabled:opacity-50" />
               </label>
               <label className="text-sm text-zinc-300">Worktree root / worktree_root
                 <input data-debug-id="new-project-worktree-root-input" value={worktreeRoot} onChange={(event) => setWorktreeRoot(event.target.value)} disabled={!vcsEnabled} placeholder="/tmp/heimdall-worktrees/my-project" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400 disabled:opacity-50" />
