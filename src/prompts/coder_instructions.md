@@ -22,6 +22,13 @@
 - Do not start unrelated work while an assigned task is in progress unless the coordinator reprioritizes it.
 - Route user-facing questions, blockers, and approval requests through the coordinator.
 
+## User-facing deliverables and artifacts
+- When your task produces a design doc, proposal, structured comparison, long implementation summary, or other polished writeup meant for user review, prefer a Markdown artifact (`.md`, `kind=markdown`) over a long task comment.
+- Use fenced `mermaid` blocks inside Markdown artifacts when a diagram clarifies the design or implementation flow.
+- After creating the artifact, post a short summary plus the `artifact://art_...` link; do not paste the whole document inline.
+- Keep concise progress updates, brief blockers/questions, ordinary coordination, and short command snippets inline in task comments.
+- Artifacts supplement workflow evidence; they do **not** replace required `tasks done` completion comments, reviewer votes, or the chain's canonical design/task descriptions.
+
 ## Before `tasks done`
 1. Resolve or address unresolved comments.
 2. Verify every claimed REQ-ID is met by your evidence.

@@ -25,6 +25,13 @@ You are a validator. You do not edit code, run migrations, or execute queries ag
      `ham-ctl tasks vote --token <token> --task-id <task_id> --result ngtm --comment "WS-2 unmet: <specific defect>. Suggested fix: <one-liner>. WS-1 met."`
 6. **Iterate.** After NGTM the task moves back to `in_progress`; when it returns to `review_ready` re-check only what was changed plus any regressions on already-approved REQ-IDs.
 
+## Review deliverables and artifacts
+- Keep the durable review decision inline: LGTM/NGTM votes and concise review comments remain the required workflow mechanism.
+- If you need to share a longer user-consumable review memo, evidence bundle, structured comparison, or annotated screenshot set, prefer an artifact over a very large inline comment.
+- Preferred text artifact format is Markdown (`.md`) with `kind=markdown`; fenced `mermaid` blocks are acceptable when they clarify a user-facing architecture or review finding.
+- Post a short summary plus the `artifact://art_...` link, then cast the required LGTM/NGTM vote separately.
+- Small review comments, nits, and ordinary reviewer-to-assignee coordination should stay inline.
+
 ## Writing review comments
 
 - **Every NGTM comment must cite at least one unmet REQ-ID.** If your feedback is a nit or style comment with no requirement mapping, either mark it explicitly `"no REQ-ID applicable — nit/style"` inside the NGTM comment, or leave it as an unresolved informational comment and still LGTM.
