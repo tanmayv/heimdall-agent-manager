@@ -1384,7 +1384,13 @@ function SidebarAgentsList({ agents = [], projects = [], session = {}, providers
   const [launchError, setLaunchError] = useState('');
   const [launchProgressId, setLaunchProgressId] = useState('');
   const [launchStartedAt, setLaunchStartedAt] = useState(0);
-  const liveAgents = useMemo(() => (agents || []).filter((agent: any) => agentHasLiveSession(agent)), [agents]);
+  const sidebarAgents = useMemo(() => (agents || [])
+    .filter((agent: any) => !isTaskGeneratedAgent(agent) || agentHasLiveSession(agent))
+    .sort((a: any, b: any) => {
+      const liveDelta = Number(agentHasLiveSession(b)) - Number(agentHasLiveSession(a));
+      if (liveDelta) return liveDelta;
+      return String(a.label || a.id || '').localeCompare(String(b.label || b.id || ''));
+    }), [agents]);
   const providerOptions = providers?.length ? providers : [{ name: 'pi' }];
   const projectOptions = projects || [];
   const effectiveLaunchProvider = launchProvider || providerOptions[0]?.name || 'pi';
@@ -1500,7 +1506,7 @@ function SidebarAgentsList({ agents = [], projects = [], session = {}, providers
                 </div>
                 <label data-debug-id="sidebar-agent-launch-save-defaults-label" className="mt-4 flex items-center gap-2 rounded-xl bg-white/[0.04] px-3 py-2 text-sm text-zinc-300">
                   <input data-debug-id="sidebar-agent-launch-save-defaults-checkbox" type="checkbox" checked={saveLaunchDefaults} onChange={(event) => setSaveLaunchDefaults(event.target.checked)} className="h-4 w-4 accent-sky-400" />
-                  Save role/provider/project/tier as defaults for this daemon only
+                  Save as default
                 </label>
                 <div data-debug-id="sidebar-agent-launch-id-preview" className="mt-3 rounded-xl bg-white/[0.04] px-3 py-2 text-xs text-zinc-400">Agent ID: <span className="font-mono text-zinc-200">{launchAgentId}</span></div>
                 {launchError && <div data-debug-id="sidebar-agent-launch-error" className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{launchError}</div>}
@@ -1523,11 +1529,12 @@ function SidebarAgentsList({ agents = [], projects = [], session = {}, providers
           </div>
         </div>
       )}
-      <div className="mb-1.5 flex items-center justify-between gap-2 px-1"><div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Running agents</div><div className="text-[10px] text-zinc-600">{liveAgents.length}</div></div>
-      {liveAgents.length === 0 ? <div className="px-1 py-1 text-[10px] text-zinc-600">No running agents</div> : <div className="space-y-1">{liveAgents.slice(0, 80).map((agent: any) => {
+      <div className="mb-1.5 flex items-center justify-between gap-2 px-1"><div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Agents</div><div className="text-[10px] text-zinc-600">{sidebarAgents.length}</div></div>
+      {sidebarAgents.length === 0 ? <div className="px-1 py-1 text-[10px] text-zinc-600">No agents</div> : <div className="space-y-1">{sidebarAgents.slice(0, 100).map((agent: any) => {
         const chainId = taskGeneratedAgentChainId(agent);
-        return <button key={agent.id} data-debug-id={`sidebar-agent-${agent.id}`} onClick={() => onOpenAgentPage?.(agent.id)} title={agent.label || agent.id} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] text-zinc-300 transition hover:bg-white/[0.04] hover:text-zinc-100"><span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-300" /><span className="min-w-0 flex-1 truncate">{agent.label || agent.id}</span>{chainId && <span className="shrink-0 rounded bg-white/[0.05] px-1 text-[9px] text-zinc-500">chain</span>}</button>;
-      })}{liveAgents.length > 80 && <div className="px-2 py-1 text-[10px] text-zinc-600">+{liveAgents.length - 80} more running</div>}</div>}
+        const live = agentHasLiveSession(agent);
+        return <button key={agent.id} data-debug-id={`sidebar-agent-${agent.id}`} onClick={() => onOpenAgentPage?.(agent.id)} title={`${agent.label || agent.id} · ${live ? 'live' : 'offline'}`} className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] transition hover:bg-white/[0.04] hover:text-zinc-100 ${live ? 'text-zinc-300' : 'text-zinc-500'}`}><span className={`h-1.5 w-1.5 shrink-0 rounded-full ${live ? 'bg-emerald-300' : 'bg-zinc-600'}`} /><span className="min-w-0 flex-1 truncate">{agent.label || agent.id}</span>{!live && <span className="shrink-0 rounded bg-white/[0.04] px-1 text-[9px] text-zinc-600">off</span>}{chainId && <span className="shrink-0 rounded bg-white/[0.05] px-1 text-[9px] text-zinc-500">chain</span>}</button>;
+      })}{sidebarAgents.length > 100 && <div className="px-2 py-1 text-[10px] text-zinc-600">+{sidebarAgents.length - 100} more agents</div>}</div>}
     </div>
   );
 }
