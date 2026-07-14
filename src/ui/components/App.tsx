@@ -1947,8 +1947,8 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
         <div data-debug-id="agent-detail-runtime" className="rounded-2xl border border-white/10 bg-white/[0.035] p-4"><div className="text-xs uppercase tracking-wide text-zinc-500">Runtime</div><div className="mt-1 flex items-center gap-2 text-sm text-zinc-100"><span className={`h-2 w-2 rounded-full ${runtime.color}`} />{runtime.label}</div></div>
       </div>
 
-      <section data-debug-id="agent-detail-chat" className="mt-6 rounded-3xl border border-white/10 bg-white/[0.035] p-5">
-        <div className="mb-3 flex items-center justify-between gap-3">
+      <section data-debug-id="agent-detail-chat" className="mt-6 flex h-[75vh] flex-col overflow-hidden rounded-3xl border border-white/10 bg-white/[0.035] p-5">
+        <div className="mb-3 flex shrink-0 items-center justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold text-zinc-100">Chat</h2>
             <p className="mt-1 text-sm text-zinc-500">Direct agent messages. Attach artifacts or paste screenshots into the composer.</p>
@@ -1958,10 +1958,10 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
             <IconActionButton debugId="agent-detail-nudge-btn" title="Nudge" icon="⚡" onClick={() => submit(true)} disabled={!agent?.id || sending || !draft.trim()} tone="warn" />
           </div>
         </div>
-        <div className="min-h-[360px] rounded-2xl border border-white/10 bg-black/20 p-3">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-white/10 bg-black/20 p-3">
           <CoordinatorMessageList chainId={agent?.id || 'agent-detail'} messages={messages} onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))} debugPrefix="agent-detail-chat" emptyText="No direct messages loaded for this agent." />
         </div>
-        <div data-debug-id="agent-detail-chat-composer-shell" className="mt-3 rounded-2xl border border-white/10 bg-black/20 p-2 focus-within:border-sky-400/70">
+        <div data-debug-id="agent-detail-chat-composer-shell" className="mt-3 shrink-0 rounded-2xl border border-white/10 bg-black/20 p-2 focus-within:border-sky-400/70">
           <textarea
             data-debug-id="agent-detail-chat-input"
             value={draft}
@@ -2217,8 +2217,8 @@ function HomeRunningAgentsPanel({ agents, projects, session, chats, templates, p
             })}
           </div>
         </div>
-        <div data-debug-id="home-running-agent-chat" className="flex min-h-[520px] flex-col rounded-2xl border border-white/10 bg-black/20 p-4">
-          <div className="flex items-center justify-between gap-3">
+        <div data-debug-id="home-running-agent-chat" className="flex h-[75vh] flex-col overflow-hidden rounded-2xl border border-white/10 bg-black/20 p-4">
+          <div className="flex shrink-0 items-center justify-between gap-3">
             <div className="min-w-0">
               <div className="text-xs uppercase tracking-[0.22em] text-zinc-500">Direct agent chat</div>
               <div data-debug-id="home-running-agent-chat-title" className="truncate text-sm font-semibold text-zinc-100">{selectedAgent?.label || selectedAgentId || 'Select a running agent'}</div>
@@ -2226,7 +2226,7 @@ function HomeRunningAgentsPanel({ agents, projects, session, chats, templates, p
             {selectedAgent && <span data-debug-id="home-running-agent-chat-status" className="rounded-full bg-white/10 px-2 py-1 text-xs text-zinc-400">{agentRuntimeDot(selectedAgent).label}</span>}
           </div>
           <CoordinatorMessageList chainId={selectedAgentId || 'running-agents'} messages={messages} onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))} debugPrefix="home-running-agent-chat" emptyText="No direct messages loaded for this agent." />
-          <div data-debug-id="home-running-agent-chat-composer-shell" className="mt-3 rounded-2xl border border-white/10 bg-black/20 p-2 focus-within:border-sky-400/70">
+          <div data-debug-id="home-running-agent-chat-composer-shell" className="mt-3 shrink-0 rounded-2xl border border-white/10 bg-black/20 p-2 focus-within:border-sky-400/70">
             <textarea
               ref={chatInputRef}
               data-debug-id="home-running-agent-chat-input"
@@ -3059,7 +3059,7 @@ function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'cha
   }, [messages.length]);
 
   return (
-    <div className="relative mt-4 min-h-0 flex-1">
+    <div className="relative mt-4 min-h-0 flex-1 overflow-hidden">
       <div
         ref={scrollRef}
         data-debug-id={`${debugPrefix}-scroll`}
