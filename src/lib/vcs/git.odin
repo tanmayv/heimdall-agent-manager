@@ -189,7 +189,7 @@ git_diff_no_index :: proc(repo, file: string) -> (string, bool, string) {
 	cmd := []string{"git", "-C", repo, "diff", "--no-index", "--", "/dev/null", file}
 	state, stdout, stderr, err := os.process_exec(os.Process_Desc{command = cmd}, context.allocator)
 	if err != nil do return "", false, "command failed to start"
-	out := strings.trim_space(string(stdout))
+	out := strings.trim_right(string(stdout), "\r\n")
 	if state.success || out != "" do return strings.clone(out), true, "ok"
 	msg := strings.trim_space(string(stderr))
 	if msg == "" do msg = "command failed"

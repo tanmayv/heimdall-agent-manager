@@ -62,6 +62,40 @@ main :: proc() {
 		fmt.println("git workspace_diff failed or changed semantics", ok, msg)
 		os.exit(1)
 	}
+	_ = os.make_directory_all(fmt.tprintf("%s/src/ui/components", root))
+	_ = os.write_entire_file(fmt.tprintf("%s/src/ui/components/App.tsx", root), "before\n")
+	_, _, _, _ = os.process_exec(os.Process_Desc{command = []string{"git", "-C", root, "add", "src/ui/components/App.tsx"}}, context.allocator)
+	_, _, _, _ = os.process_exec(os.Process_Desc{command = []string{"git", "-C", root, "commit", "-m", "add app"}}, context.allocator)
+	tracked_baseline_sha, tracked_baseline_ok, tracked_baseline_msg := backend.repo_head_sha(root)
+	if !tracked_baseline_ok || tracked_baseline_sha == "" {
+		fmt.println("git tracked baseline sha failed", tracked_baseline_msg)
+		os.exit(1)
+	}
+	_ = os.write_entire_file(fmt.tprintf("%s/src/ui/components/App.tsx", root), "after\n")
+	tracked_status: vcs.Vcs_Status
+	tracked_status, ok, msg = backend.repo_status(root, tracked_baseline_sha)
+	if !ok {
+		fmt.println("git tracked repo_status failed", msg)
+		os.exit(1)
+	}
+	tracked_actual_count, tracked_bogus_count := 0, 0
+	for f in tracked_status.files {
+		if f.path == "src/ui/components/App.tsx" do tracked_actual_count += 1
+		if f.path == "rc/ui/components/App.tsx" do tracked_bogus_count += 1
+	}
+	if len(tracked_status.files) != 1 || tracked_actual_count != 1 || tracked_bogus_count != 0 {
+		fmt.println("git tracked repo_status path parsing regressed", len(tracked_status.files), tracked_actual_count, tracked_bogus_count)
+		for f in tracked_status.files {
+			fmt.println("git tracked repo_status file", f.path, f.status, f.adds, f.dels)
+		}
+		os.exit(1)
+	}
+	tracked_diff: vcs.Vcs_Repo_Diff
+	tracked_diff, ok, msg = backend.repo_diff(root, "src/ui/components/App.tsx", tracked_baseline_sha)
+	if !ok || !strings.contains(tracked_diff.diff, "src/ui/components/App.tsx") || !strings.contains(tracked_diff.diff, "+after") {
+		fmt.println("git tracked repo_diff failed", ok, msg)
+		os.exit(1)
+	}
 	_ = os.write_entire_file(fmt.tprintf("%s/README.md", root), "dirty tracked\n")
 	_ = os.write_entire_file(fmt.tprintf("%s/untracked.txt", root), "untracked file\n")
 	repo_status: vcs.Vcs_Status

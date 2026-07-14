@@ -84,7 +84,10 @@ vcs_backend_for :: proc(kind: Vcs_Kind) -> ^Vcs_Backend {
 vcs_run :: proc(cmd: []string) -> (string, bool, string) {
 	state, stdout, stderr, err := os.process_exec(os.Process_Desc{command = cmd}, context.allocator)
 	if err != nil do return "", false, "command failed to start"
-	out := strings.trim_space(string(stdout))
+	// Preserve leading stdout whitespace because Git porcelain encodes the
+	// index/worktree state in the first two columns and a leading space is
+	// semantically meaningful there.
+	out := strings.trim_right(string(stdout), "\r\n")
 	if state.success do return strings.clone(out), true, "ok"
 	msg := strings.trim_space(string(stderr))
 	if msg == "" do msg = "command failed"
