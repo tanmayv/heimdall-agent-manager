@@ -131,6 +131,102 @@ For every chain, use exactly three layers of durable text:
 2. **Task description** — objective, REQ-IDs satisfied, scope/non-goals, files involved, acceptance criteria, and any task-specific design detail too large for the chain-level overview. Reference other tasks by `task_id`.
 3. **Task comments** — progress updates, evidence, decisions, questions. Never put durable requirements or design in comments; promote them into the chain or task description.
 
+Artifacts are a complementary user-facing deliverable, not a fourth workflow-state layer.
+
+Rule of thumb:
+
+> If it is meant for the user's durable consumption, make an artifact. If it is for task workflow or agent coordination, use comments. If a comment is getting too large, make an artifact and link it.
+
+Use artifacts for polished, user-consumable deliverables. Preferred text artifact format is Markdown (`.md`) with `kind=markdown`. Markdown artifacts may include Mermaid.js diagrams in fenced `mermaid` blocks for portable diagrams.
+
+Agents SHOULD create artifacts for:
+- design docs and proposals intended for user review/approval;
+- RCA/investigation reports meant for the user;
+- validation/test reports and pass/fail matrices;
+- screenshots or visual evidence;
+- final handoff/closeout documents;
+- long summaries or structured comparisons;
+- any content the user may want to open fullscreen, annotate, copy from, or revisit.
+
+Agents SHOULD NOT create artifacts for:
+- short progress updates;
+- brief blockers/questions;
+- small review comments;
+- ordinary agent-to-agent task coordination;
+- short command output snippets.
+
+When you create a user-facing artifact, keep the inline message or comment short: post a concise summary plus the `artifact://art_...` link. Artifacts complement durable task state; they do **not** replace the chain description, task description, task comments, `tasks done` completion comments, reviewer LGTM/NGTM votes, or the coordinator's required final chain summary.
+
+### Example: user-facing validation report
+Instead of posting a long Markdown report directly in chat or a task comment, create an artifact:
+
+```bash
+cat > /tmp/validation-report.md <<'EOF'
+# Validation report: Artifact update overwrite
+
+## Summary
+ART-8 is fixed. Byte replacement and metadata-only update both pass.
+
+## Evidence
+- `python3 tests/test_artifacts_backend_cli.py` passed.
+- Manual create -> update bytes -> fetch returned new bytes.
+
+## Risks
+None found.
+EOF
+
+ham-ctl artifacts create \
+  --token "$TOKEN" \
+  --file /tmp/validation-report.md \
+  --name "Artifact update validation report" \
+  --kind markdown \
+  --project heimdall-agent-manager
+```
+
+Then post a short message:
+
+```md
+Validation report: artifact://art_...
+
+Summary:
+- ART-8 fixed
+- byte replacement verified
+- metadata-only update verified
+- no remaining risks found
+```
+
+### Example: design doc with Mermaid
+Preferred format for user-facing design docs is Markdown (`.md`) with optional Mermaid diagrams:
+
+````markdown
+# Design: Chat artifact upload
+
+## Overview
+The chat composer uploads a file as an artifact, then sends the artifact link as a normal chat message.
+
+```mermaid
+flowchart TD
+  User[User selects file] --> Composer[Chat Composer]
+  Composer --> API[createArtifact API]
+  API --> Daemon[Artifact endpoint]
+  Daemon --> Store[Blob store]
+  API --> Chat[Send artifact:// link]
+  Chat --> Bubble[Artifact link chip]
+  Bubble --> Viewer[Fullscreen viewer]
+```
+
+## Notes
+- Markdown and PNG previews are supported first.
+- Unsupported formats show a clear fallback.
+````
+
+### Example: internal coordination stays inline
+```md
+Progress: found serializer bug in `src/daemon/agents_start.odin`; `/agents` emits malformed JSON around `identity_state`. Creating a fix task now.
+```
+
+No artifact is needed because this is concise internal workflow context.
+
 Rules that flow from the split:
 - **Unresolved comments block `tasks done`.** The daemon rejects the `review_ready` transition while any comment on the task is unresolved. Resolve informational comments with `tasks comment-resolve --comment-id <id>` and address (or open a follow-up task for) substantive ones before submitting.
 - **LGTM/NGTM votes are the durable review mechanism.** Do not use unresolved comments as a hidden "changes requested" signal — NGTM once with a consolidated comment instead.

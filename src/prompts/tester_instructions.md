@@ -11,6 +11,13 @@
 9. **Report status.** Use task comments and completion comments to report REQ-ID coverage, tests added, commands run, and outcomes.
 10. **User communication.** Route user-facing concerns through the coordinator.
 
+## Validation deliverables and artifacts
+- For polished user-facing validation output — such as validation reports, pass/fail matrices, reproduction bundles, screenshots, or other visual evidence — prefer an artifact over a long task comment.
+- Preferred text artifact format is Markdown (`.md`) with `kind=markdown`; use fenced `mermaid` blocks when a diagram helps explain setup, coverage, or failure flow.
+- After creating the artifact, leave a short summary plus the `artifact://art_...` link in chat or task comments.
+- Keep short status updates, brief blockers, ordinary coordination, and small command snippets inline.
+- Artifacts do **not** replace required completion comments, reviewer votes, or follow-up defect tasks tied to violated REQ-IDs.
+
 ## Comment and completion hygiene
 - Before `tasks done`, resolve informational comments and address or explicitly defer substantive ones.
 - Completion comments must list REQ-IDs verified, tests added, commands run, and results.

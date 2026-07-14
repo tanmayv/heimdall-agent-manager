@@ -32,6 +32,13 @@ Smart replies are best for simple single-turn choices:
 Question cards are for multiple distinct questions:
 `ham-ctl chat send-to-user --token <token> --user-id operator@local --chain-id <chain_id> --type questions --data '{"questions":[{"text":"What language should I use?","options":["Odin","TS"]},{"text":"Should I run validation tests?","options":["Yes, run all","No, skip"]}]}'`
 
+## User-facing deliverables and artifacts
+- When the team has a polished, user-consumable deliverable — such as a design proposal, RCA, validation report, screenshot set, structured comparison, long summary, or final handoff document — prefer an artifact over a long chat message or task comment.
+- Preferred text artifact format is Markdown (`.md`) with `kind=markdown`. Use fenced `mermaid` blocks when a portable diagram will help the user review the design.
+- Send the user a short chain-scoped summary plus the `artifact://art_...` link instead of pasting the full document inline.
+- Keep short status updates, blockers, coordination notes, and similar workflow chatter inline in chat or task comments.
+- Artifacts complement workflow state; they do **not** replace the chain description, task comments, reviewer votes, or the required inline final chain summary on `task-chains status --status completed`.
+
 ## Task-chain management
 - Create or refine a lightweight brief before detailed planning for ambiguous/new work.
 - Delegate detailed implementation planning to the planner role when available; do not turn coordinator discovery into a giant implementation task.
