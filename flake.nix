@@ -298,21 +298,63 @@
             #!/usr/bin/env bash
             set -euo pipefail
 
+            WATCH=0
+            PORT=5173
+            REST=()
+            while [ "$#" -gt 0 ]; do
+              case "$1" in
+                --watch)
+                  WATCH=1
+                  shift
+                  ;;
+                --port)
+                  if [ "$#" -lt 2 ]; then
+                    echo "[heimdall] --port requires a value" >&2
+                    exit 2
+                  fi
+                  PORT="$2"
+                  shift 2
+                  ;;
+                --help|-h)
+                  echo "Usage: nix run .#heimdall -- [--watch] [--port PORT] [electron args...]"
+                  echo "  default: release build; Electron loads dist/index.html (no Vite watcher/HMR)"
+                  echo "  --watch: run Vite dev server and launch Electron against it"
+                  exit 0
+                  ;;
+                --)
+                  shift
+                  REST+=("$@")
+                  break
+                  ;;
+                *)
+                  REST+=("$1")
+                  shift
+                  ;;
+              esac
+            done
+
             echo "[heimdall] Checking for node_modules..."
             if [ ! -d "node_modules" ]; then
               echo "[heimdall] node_modules not found. Running npm install..."
               ${pkgs.nodejs}/bin/npm install
             fi
 
-            echo "[heimdall] Building Electron TypeScript..."
+            if [ "$WATCH" -eq 0 ]; then
+              echo "[heimdall] Building release UI (no Vite watcher/HMR)..."
+              ${pkgs.nodejs}/bin/npm run build
+              unset VITE_DEV_SERVER_URL
+              echo "[heimdall] Launching Electron in release mode..."
+              exec ${pkgs.electron}/bin/electron electron-dist/main.cjs "''${REST[@]}"
+            fi
+
+            echo "[heimdall] Building Electron TypeScript for watch mode..."
             ${pkgs.nodejs}/bin/npm run build:electron
 
-            PORT=5173
             while ! (${pkgs.python3}/bin/python3 -c "import socket; s = socket.socket(); s.bind(('127.0.0.1', $PORT)); s.close()" 2>/dev/null); do
               PORT=$((PORT + 1))
             done
 
-            echo "[heimdall] Starting Vite dev server on port $PORT..."
+            echo "[heimdall] Starting Vite dev server on port $PORT (--watch mode)..."
             ${pkgs.nodejs}/bin/npx vite --host 127.0.0.1 --port "$PORT" &
             VITE_PID=$!
             cleanup() {
@@ -330,9 +372,9 @@
               sleep 0.1
             done
 
-            echo "[heimdall] Vite ready. Launching Electron in dev mode..."
+            echo "[heimdall] Vite ready. Launching Electron in watch/dev mode..."
             export VITE_DEV_SERVER_URL="http://127.0.0.1:$PORT"
-            ${pkgs.electron}/bin/electron electron-dist/main.cjs
+            exec ${pkgs.electron}/bin/electron electron-dist/main.cjs "''${REST[@]}"
           ''}/bin/heimdall";
         };
         heimdall-browser = {
