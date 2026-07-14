@@ -871,9 +871,8 @@ export default function App() {
   }, [dispatch, chainCreationProgress?.active, chainCreationProgress?.chainId]);
   useEffect(() => {
     if (!chainCreationProgress?.active || !creationProgressState?.coordinatorReady || !chainCreationProgress.chainId) return;
-    openChain(chainCreationProgress.chainId);
-    setChainCreationProgress((current: any) => current?.chainId === chainCreationProgress.chainId ? { ...current, active: false, completed: true } : current);
-  }, [chainCreationProgress, creationProgressState?.coordinatorReady, openChain]);
+    setChainCreationProgress((current: any) => current?.chainId === chainCreationProgress.chainId ? { ...current, completed: true } : current);
+  }, [chainCreationProgress?.active, chainCreationProgress?.chainId, creationProgressState?.coordinatorReady]);
 
   const sidebarChains = chains.filter((chain) => !isChainCompleted(chain));
 
@@ -1280,8 +1279,10 @@ function buildChainCreationProgress(progress: any, chainsById: Record<string, an
   const discoveryTask = (progress.discoveryTaskId && tasksById?.[progress.discoveryTaskId]) || tasks.find((task: any) => String(task.title || '').toLowerCase().includes('discover goal')) || null;
   const coordinatorId = progress.coordinatorAgentInstanceId || chain?.coordinatorAgentInstanceId || chain?.coordinator_agent_instance_id || '';
   const coordinator = agents.find((agent: any) => agent.id === coordinatorId || agent.agentInstanceId === coordinatorId || agent.agent_instance_id === coordinatorId) || null;
-  const status = coordinator?.status || coordinator?.startupStatus || '';
-  const coordinatorReady = Boolean(coordinator && (coordinator.connected || ['connected', 'idle', 'ready'].includes(status)));
+  const status = String(coordinator?.status || coordinator?.startupStatus || '').toLowerCase();
+  const reason = String(coordinator?.startupReasonCode || coordinator?.startup_reason_code || '').toLowerCase();
+  const connected = Boolean(coordinator?.connected) || String(coordinator?.connectionState || coordinator?.connection_state || '').toLowerCase() === 'connected';
+  const coordinatorReady = Boolean(coordinator && (connected || status === 'ready' || reason === 'start_success'));
   const elapsedMs = Date.now() - Number(progress.startedAt || Date.now());
   const timedOut = !coordinatorReady && elapsedMs >= 20_000;
   const workspaceReady = !progress.wantsVcs || Boolean(workspaceSetupTask || progress.workspaceId || chain?.vcsWorkspaceId || chain?.vcs_workspace_id || chainView.workspaceByChainId?.[chainId]);
@@ -1291,7 +1292,7 @@ function buildChainCreationProgress(progress: any, chainsById: Record<string, an
     { key: 'workspace', label: progress.wantsVcs ? 'Workspace setup task created' : 'Workspace skipped', done: workspaceReady, detail: progress.wantsVcs ? (workspaceSetupTask?.taskId || progress.workspaceSetupTaskId || 'creating setup task') : 'VCS not requested' },
     { key: 'task', label: 'Coordinator discovery task created', done: Boolean(discoveryTask), detail: discoveryTask?.taskId || progress.discoveryTaskId || 'waiting for task' },
     { key: 'boot', label: 'Coordinator start requested', done: Boolean(progress.coordinatorBootRequested || coordinator), detail: progress.coordinatorBootRequested ? `${coordinatorId || 'coordinator'} launch requested by chain create` : (coordinatorId || 'waiting for coordinator') },
-    { key: 'running', label: 'Coordinator running / start-success', done: coordinatorReady, detail: coordinator ? `${coordinator.label || coordinator.id} · ${status || (coordinator.connected ? 'connected' : 'starting')}` : (timedOut ? 'not ready after 20s' : 'starting') },
+    { key: 'running', label: 'Coordinator running / start-success', done: coordinatorReady, detail: coordinator ? `${coordinator.label || coordinator.id} · ${reason || status || (connected ? 'connected' : 'starting')}` : (timedOut ? 'not ready after 20s' : 'starting') },
     { key: 'claimed', label: 'Initial task claimed', done: Boolean(discoveryTask?.status === 'in_progress' || coordinator?.currentTaskId === discoveryTask?.taskId), detail: discoveryTask?.status || 'optional after startup' },
   ];
   return { ...progress, chain, team, tasks, workspaceSetupTask, discoveryTask, coordinator, coordinatorId, coordinatorReady, elapsedMs, timedOut, steps };
@@ -1307,7 +1308,7 @@ function ChainCreationProgressModal({ progress, onOpen, onCancel }: any) {
           <div>
             <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Creating task chain</div>
             <h2 className="mt-2 text-xl font-semibold text-white">Starting coordinator</h2>
-            <p className="mt-1 text-sm text-zinc-400">Chat opens once the coordinator is running. Timeout: 20 seconds.</p>
+            <p className="mt-1 text-sm text-zinc-400">Tracking coordinator startup until start-success. Timeout: 20 seconds.</p>
           </div>
           <button data-debug-id="chain-creation-dismiss-btn" onClick={onCancel} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Dismiss</button>
         </div>
@@ -1325,7 +1326,9 @@ function ChainCreationProgressModal({ progress, onOpen, onCancel }: any) {
             </div>
           ))}
         </div>
-        {progress.timedOut ? (
+        {progress.coordinatorReady ? (
+          <div data-debug-id="chain-creation-ready" className="mt-4 rounded-xl border border-emerald-400/30 bg-emerald-400/10 p-3 text-sm text-emerald-100">Coordinator start-success observed. You can open chat now.</div>
+        ) : progress.timedOut ? (
           <div data-debug-id="chain-creation-timeout" className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 p-3 text-sm text-amber-100">Coordinator was not ready within 20 seconds. You can open the chain now; chat may still be starting.</div>
         ) : (
           <div className="mt-4 text-sm text-zinc-400">Waiting for coordinator start-success / connected state…</div>
