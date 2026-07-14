@@ -66,6 +66,10 @@ Task_Event_Kind :: enum {
 	Task_Review_Vote,
 	Task_Nudged,
 	Task_Nudge_Failed,
+	// Task_Deleted is a first-class hard delete distinct from the cancelled
+	// status: projection removes the task (and its participants/votes/comments)
+	// from active state while the append-only event journal preserves the audit.
+	Task_Deleted,
 	Chain_Created,
 	Chain_Metadata_Updated,
 	Chain_Status_Changed,
@@ -84,6 +88,10 @@ Task_Event :: struct {
 	title:                         string,
 	description:                   string,
 	acceptance_criteria:           string,
+	// acceptance_criteria_present marks whether a Task_Metadata_Updated event
+	// intends to write acceptance_criteria. Prevents metadata-only edits from
+	// wiping the field on projection/replay.
+	acceptance_criteria_present:   bool,
 	priority:                      string,
 	status:                        string,
 	body:                          string,
@@ -97,6 +105,9 @@ Task_Event :: struct {
 	reviewer_agent_instance_id:    string,
 	coordinator_agent_instance_id: string,
 	depends_on:                    string,
+	// depends_on_present marks whether a Task_Metadata_Updated event intends to
+	// write depends_on. Prevents metadata-only edits from wiping dependencies.
+	depends_on_present:            bool,
 	role:                          string,
 	created_by:                    string,
 	author_agent_instance_id:      string,
@@ -369,6 +380,7 @@ task_event_clone :: proc(event: Task_Event) -> Task_Event {
 		title                       = strings.clone(event.title),
 		description                 = strings.clone(event.description),
 		acceptance_criteria         = strings.clone(event.acceptance_criteria),
+		acceptance_criteria_present = event.acceptance_criteria_present,
 		priority                    = strings.clone(event.priority),
 		status                      = strings.clone(event.status),
 		body                        = strings.clone(event.body),
@@ -382,6 +394,7 @@ task_event_clone :: proc(event: Task_Event) -> Task_Event {
 		reviewer_agent_instance_id  = strings.clone(event.reviewer_agent_instance_id),
 		coordinator_agent_instance_id = strings.clone(event.coordinator_agent_instance_id),
 		depends_on                  = strings.clone(event.depends_on),
+		depends_on_present          = event.depends_on_present,
 		role                        = strings.clone(event.role),
 		created_by                  = strings.clone(event.created_by),
 		author_agent_instance_id    = strings.clone(event.author_agent_instance_id),
@@ -444,6 +457,8 @@ task_store_persist_projection_for_event :: proc(event: Task_Event) -> bool {
 		}
 	case .Task_Participant_Removed:
 		return task_db_delete_participant(event.task_id, event.agent_instance_id, event.role)
+	case .Task_Deleted:
+		return task_db_delete_task(event.task_id)
 	case .Task_Comment:
 		if task_comment_count > 0 {
 			if !task_db_save_comment(task_comments[task_comment_count - 1]) do return false
@@ -494,7 +509,8 @@ task_event_json :: proc(event: Task_Event) -> string {
 	strings.write_string(&b, `","title":"`);            json_write_string(&b, event.title)
 	strings.write_string(&b, `","description":"`);      json_write_string(&b, event.description)
 	strings.write_string(&b, `","acceptance_criteria":"`); json_write_string(&b, event.acceptance_criteria)
-	strings.write_string(&b, `","priority":"`);         json_write_string(&b, event.priority)
+	strings.write_string(&b, `","acceptance_criteria_present":`); strings.write_string(&b, "true" if event.acceptance_criteria_present else "false")
+	strings.write_string(&b, `,"priority":"`);         json_write_string(&b, event.priority)
 	strings.write_string(&b, `","status":"`);           json_write_string(&b, event.status)
 	strings.write_string(&b, `","body":"`);             json_write_string(&b, event.body)
 	strings.write_string(&b, `","comment_id":"`);       json_write_string(&b, event.comment_id)
@@ -507,7 +523,8 @@ task_event_json :: proc(event: Task_Event) -> string {
 	strings.write_string(&b, `","reviewer_agent_instance_id":"`); json_write_string(&b, event.reviewer_agent_instance_id)
 	strings.write_string(&b, `","coordinator_agent_instance_id":"`); json_write_string(&b, event.coordinator_agent_instance_id)
 	strings.write_string(&b, `","depends_on":"`);       json_write_string(&b, event.depends_on)
-	strings.write_string(&b, `","role":"`);             json_write_string(&b, event.role)
+	strings.write_string(&b, `","depends_on_present":`); strings.write_string(&b, "true" if event.depends_on_present else "false")
+	strings.write_string(&b, `,"role":"`);             json_write_string(&b, event.role)
 	strings.write_string(&b, `","created_by":"`);       json_write_string(&b, event.created_by)
 	strings.write_string(&b, `","author_agent_instance_id":"`); json_write_string(&b, event.author_agent_instance_id)
 	strings.write_string(&b, `","created_unix_ms":`);   strings.write_string(&b, fmt.tprintf("%d", event.created_unix_ms))
@@ -526,6 +543,7 @@ task_event_from_json :: proc(line: string) -> (Task_Event, bool) {
 		title                       = extract_json_string(line, "title", ""),
 		description                 = extract_json_string(line, "description", ""),
 		acceptance_criteria         = extract_json_string(line, "acceptance_criteria", ""),
+		acceptance_criteria_present = extract_json_bool(line, "acceptance_criteria_present", false),
 		priority                    = extract_json_string(line, "priority", ""),
 		status                      = extract_json_string(line, "status", ""),
 		body                        = extract_json_string(line, "body", ""),
@@ -539,6 +557,7 @@ task_event_from_json :: proc(line: string) -> (Task_Event, bool) {
 		reviewer_agent_instance_id  = extract_json_string(line, "reviewer_agent_instance_id", ""),
 		coordinator_agent_instance_id = extract_json_string(line, "coordinator_agent_instance_id", ""),
 		depends_on                  = extract_json_string(line, "depends_on", ""),
+		depends_on_present          = extract_json_bool(line, "depends_on_present", false),
 		role                        = extract_json_string(line, "role", ""),
 		created_by                  = extract_json_string(line, "created_by", ""),
 		author_agent_instance_id    = extract_json_string(line, "author_agent_instance_id", ""),
@@ -561,6 +580,7 @@ task_event_kind_from_string :: proc(value: string) -> Task_Event_Kind {
 	case "Task_Review_Vote":         return .Task_Review_Vote
 	case "Task_Nudged":              return .Task_Nudged
 	case "Task_Nudge_Failed":        return .Task_Nudge_Failed
+	case "Task_Deleted":             return .Task_Deleted
 	case "Chain_Created":            return .Chain_Created
 	case "Chain_Metadata_Updated":   return .Chain_Metadata_Updated
 	case "Chain_Status_Changed":     return .Chain_Status_Changed

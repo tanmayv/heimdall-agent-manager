@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Heimdall · Task Chain Editor (Mockup)</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --fd-accent-blue: #0099ff;
+    --fd-ink: #ffffff;
+    --fd-ink-muted: #999999;
+    --fd-canvas: #090909;
+    --fd-surface-1: #141414;
+    --fd-surface-2: #1c1c1c;
+    --fd-hairline: #262626;
+    --fd-success: #22c55e;
+    --fd-amber: #f59e0b;
+    --fd-red: #ef4444;
+    --fd-violet: #a855f7;
+    --fd-teal: #14b8a6;
+    --fd-sky: #38bdf8;
+    --fd-font: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --fd-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-width: 1100px;
+    font-family: var(--fd-font);
+    background: var(--fd-canvas);
+    color: var(--fd-ink);
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; }
+  .muted { color: var(--fd-ink-muted); }
+  .mono { font-family: var(--fd-mono); }
+
+  .wrap { max-width: 1360px; margin: 0 auto; padding: 24px 28px 80px; }
+
+  /* Top bar */
+  .topbar { display: flex; align-items: center; gap: 12px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    border-radius: 9999px; padding: 9px 15px; font-size: 13px; font-weight: 600;
+    border: 1px solid var(--fd-hairline); background: var(--fd-surface-1); color: var(--fd-ink);
+    cursor: pointer; transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
+    line-height: 1; white-space: nowrap;
+  }
+  .btn:hover { box-shadow: 0 0 0 1px color-mix(in oklab, var(--fd-accent-blue), transparent 65%); }
+  .btn-primary { background: #fff; color: #000; border-color: #fff; }
+  .btn-primary:hover { box-shadow: 0 0 0 2px color-mix(in oklab, var(--fd-accent-blue), transparent 55%); }
+  .btn-accent { background: var(--fd-accent-blue); color: #000; border-color: var(--fd-accent-blue); }
+  .btn-danger { color: #fecaca; border-color: rgba(239,68,68,.35); background: rgba(239,68,68,.10); }
+  .btn-ghost { background: rgba(255,255,255,.04); border-color: transparent; }
+  .btn-sm { padding: 6px 11px; font-size: 12px; }
+  .btn-xs { padding: 4px 9px; font-size: 11px; }
+  .spacer { flex: 1; }
+
+  .headline { font-size: 30px; font-weight: 700; letter-spacing: -.8px; margin: 18px 0 0; }
+  .subtext { font-size: 14px; color: var(--fd-ink-muted); margin-top: 6px; }
+  .topline { font-size: 11px; font-weight: 600; letter-spacing: .4px; text-transform: uppercase; color: var(--fd-ink-muted); }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    border-radius: 9999px; padding: 4px 11px; font-size: 12px;
+    border: 1px solid var(--fd-hairline); background: rgba(255,255,255,.03); color: var(--fd-ink-muted);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 9999px; display: inline-block; }
+  .pulse { animation: pulse 1.7s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
+
+  /* status tones */
+  .t-planning { background: rgba(168,85,247,.15); color: #ddd6fe; border-color: rgba(168,85,247,.30); }
+  .t-queued   { background: rgba(113,113,122,.20); color: #e4e4e7; border-color: rgba(113,113,122,.35); }
+  .t-progress { background: rgba(20,184,166,.15); color: #99f6e4; border-color: rgba(20,184,166,.30); }
+  .t-review   { background: rgba(56,189,248,.15); color: #bae6fd; border-color: rgba(56,189,248,.30); }
+  .t-approved { background: rgba(34,197,94,.15); color: #bbf7d0; border-color: rgba(34,197,94,.30); }
+  .t-blocked  { background: rgba(245,158,11,.15); color: #fde68a; border-color: rgba(245,158,11,.30); }
+  .t-cancelled{ background: rgba(113,113,122,.25); color: #a1a1aa; border-color: rgba(113,113,122,.35); }
+  .d-progress { background: var(--fd-teal); }
+  .d-review   { background: var(--fd-sky); }
+  .d-approved { background: var(--fd-success); }
+  .d-blocked  { background: var(--fd-amber); }
+  .d-queued   { background: #a1a1aa; }
+  .d-planning { background: var(--fd-violet); }
+  .d-active   { background: var(--fd-success); }
+  .d-off      { background: #52525b; }
+
+  /* layout grid */
+  .grid { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 20px; margin-top: 24px; align-items: start; }
+
+  .card {
+    border-radius: 20px; border: 1px solid var(--fd-hairline);
+    background: var(--fd-surface-1); padding: 18px;
+  }
+  .card + .card { margin-top: 20px; }
+  .card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .card-title { font-size: 15px; font-weight: 700; letter-spacing: -.2px; }
+  .card-sub { font-size: 12px; color: var(--fd-ink-muted); margin-top: 2px; }
+
+  /* dependency graph */
+  .graph-wrap { position: relative; border-radius: 16px; background: #0c0c0c; border: 1px solid var(--fd-hairline); overflow: hidden; }
+  .graph-toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--fd-hairline); }
+  .graph-canvas { position: relative; height: 420px; overflow: hidden; cursor: grab; }
+  .graph-canvas.panning { cursor: grabbing; }
+  .graph-world { position: absolute; inset: 0; transform-origin: 0 0; will-change: transform; }
+  svg.edges { position: absolute; left: 0; top: 0; width: 3000px; height: 3000px; pointer-events: none; overflow: visible; }
+  .node {
+    position: absolute; width: 168px; border-radius: 13px; padding: 10px 11px;
+    border: 1px solid var(--fd-hairline); background: var(--fd-surface-2);
+    cursor: grab; user-select: none; box-shadow: 0 6px 20px rgba(0,0,0,.35);
+    transition: border-color .12s ease, box-shadow .12s ease;
+  }
+  .node:hover { border-color: color-mix(in oklab, var(--fd-accent-blue), transparent 40%); }
+  .node.sel { border-color: var(--fd-accent-blue); box-shadow: 0 0 0 2px color-mix(in oklab, var(--fd-accent-blue), transparent 55%); }
+  .node .n-idx { font-family: var(--fd-mono); font-size: 10px; color: var(--fd-ink-muted); }
+  .node .n-title { font-size: 12.5px; font-weight: 600; margin-top: 2px; line-height: 1.25; }
+  .node .n-foot { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+  .node .n-avatar { width: 16px; height: 16px; border-radius: 9999px; background: linear-gradient(135deg, #334155, #0f172a); font-size: 9px; display: grid; place-items: center; color: #cbd5e1; }
+  .port {
+    position: absolute; right: -7px; top: 50%; transform: translateY(-50%);
+    width: 14px; height: 14px; border-radius: 9999px; background: var(--fd-surface-1);
+    border: 2px solid var(--fd-accent-blue); cursor: crosshair;
+  }
+  .port.in { left: -7px; right: auto; border-color: #52525b; }
+  .legend { display: flex; gap: 14px; align-items: center; font-size: 11px; color: var(--fd-ink-muted); }
+
+  /* task list */
+  .task { border-radius: 14px; border: 1px solid var(--fd-hairline); background: var(--fd-surface-2); margin-bottom: 10px; overflow: hidden; }
+  .task.sel { border-color: var(--fd-accent-blue); }
+  .task-row { display: flex; align-items: center; gap: 12px; padding: 12px 14px; cursor: pointer; }
+  .task-grip { color: #52525b; cursor: grab; font-size: 14px; }
+  .task-idx { font-family: var(--fd-mono); font-size: 11px; color: var(--fd-ink-muted); width: 20px; }
+  .task-main { flex: 1; min-width: 0; }
+  .task-title { font-size: 13.5px; font-weight: 600; }
+  .task-meta { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+  .task-deps { font-size: 11px; color: var(--fd-ink-muted); font-family: var(--fd-mono); }
+  .task-body { padding: 0 14px 14px 46px; border-top: 1px solid var(--fd-hairline); }
+  .editor-head { display: flex; align-items: center; gap: 10px; padding-bottom: 8px; margin-bottom: 4px; border-bottom: 1px solid var(--fd-hairline); }
+  .field { margin-top: 12px; }
+  .field label { display: block; font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--fd-ink-muted); margin-bottom: 6px; }
+  .label-row { display: flex !important; align-items: center; justify-content: space-between; gap: 8px; }
+  .vimbtn { text-transform: none; letter-spacing: 0; font-size: 11px; font-weight: 600; color: var(--fd-ink-muted); background: var(--fd-surface-1); border: 1px solid var(--fd-hairline); border-radius: 8px; padding: 3px 8px; cursor: pointer; }
+  .vimbtn:hover { color: var(--fd-ink); border-color: color-mix(in oklab, var(--fd-accent-blue), transparent 45%); }
+  .input, .textarea, .select {
+    width: 100%; border-radius: 10px; border: 1px solid var(--fd-hairline);
+    background: var(--fd-surface-1); color: var(--fd-ink); font: inherit; font-size: 13px; padding: 9px 11px;
+  }
+  .input:focus, .textarea:focus, .select:focus { border-color: var(--fd-accent-blue); outline: none; }
+  .textarea { resize: vertical; min-height: 76px; font-family: var(--fd-mono); font-size: 12.5px; line-height: 1.5; }
+  .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .depchips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .depchip { display: inline-flex; align-items: center; gap: 6px; border-radius: 9999px; padding: 3px 9px; font-size: 11px; border: 1px solid var(--fd-hairline); background: var(--fd-surface-1); font-family: var(--fd-mono); }
+  .depchip button { border: none; background: none; color: var(--fd-ink-muted); cursor: pointer; font-size: 13px; line-height: 1; padding: 0; }
+  .depchip button:hover { color: var(--fd-red); }
+  .depadd { border-style: dashed; color: var(--fd-ink-muted); cursor: pointer; }
+
+  /* roster */
+  .agent { border-radius: 13px; border: 1px solid var(--fd-hairline); background: var(--fd-surface-2); padding: 12px; margin-bottom: 10px; }
+  .agent-top { display: flex; align-items: center; gap: 10px; }
+  .agent-avatar { width: 30px; height: 30px; border-radius: 9999px; background: linear-gradient(135deg, #1e293b, #0f172a); display: grid; place-items: center; font-size: 11px; color: #cbd5e1; font-weight: 700; }
+  .agent-name { font-size: 13px; font-weight: 700; }
+  .agent-role { font-size: 11px; color: var(--fd-ink-muted); }
+  .agent-controls { display: flex; gap: 8px; margin-top: 10px; align-items: center; }
+  .agent-controls .select { padding: 6px 9px; font-size: 12px; }
+  .stat { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; }
+
+  .add-task-btn { width: 100%; border-style: dashed; justify-content: center; color: var(--fd-ink-muted); margin-top: 6px; }
+
+  .footer-note { margin-top: 26px; font-size: 12px; color: var(--fd-ink-muted); border-top: 1px solid var(--fd-hairline); padding-top: 16px; }
+  kbd { font-family: var(--fd-mono); font-size: 11px; background: var(--fd-surface-2); border: 1px solid var(--fd-hairline); border-radius: 5px; padding: 1px 5px; }
+  .banner { border-radius: 12px; border: 1px dashed rgba(0,153,255,.35); background: rgba(0,153,255,.06); color: #bae6fd; font-size: 12px; padding: 10px 14px; margin-top: 16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- top bar -->
+  <div class="topbar">
+    <button class="btn btn-ghost">← Chain</button>
+    <div class="topline">Task Chain Editor</div>
+    <div class="spacer"></div>
+    <button class="btn btn-sm">↻ Refresh</button>
+    <button class="btn btn-sm">Preview plan</button>
+    <button class="btn btn-primary btn-sm">Save changes</button>
+  </div>
+
+  <h1 class="headline">Refactor auth token store to SQLite</h1>
+  <div class="subtext">Full manual control · the graph is the navigator; pick a task node to edit it, wire dependencies, manage the agent roster, and control runtimes.</div>
+  <div class="chips">
+    <span class="chip t-progress"><span class="dot d-progress pulse"></span> in_progress</span>
+    <span class="chip mono">chain: authtok-migrate</span>
+    <span class="chip">Coordinator&nbsp;<b style="color:#e4e4e7">coordinator@heimdall-auth</b></span>
+    <span class="chip">Project&nbsp;<b style="color:#e4e4e7">heimdall</b></span>
+    <span class="chip">VCS&nbsp;<b style="color:#e4e4e7">jj · auth-sqlite</b></span>
+  </div>
+
+  <div class="banner">🧭 Mockup — static design exploration. Drag nodes to reposition; shift+drag or middle-drag to pan the canvas; click a node to load it into the editor. Long-form fields (chain &amp; task description, acceptance criteria) get a ⌨ Vim button. Controls are illustrative only (no backend calls).</div>
+
+  <div class="grid">
+    <!-- LEFT COLUMN -->
+    <div>
+      <!-- Dependency graph -->
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <div class="card-title">Dependency graph</div>
+            <div class="card-sub">Drag from a task's right port onto another task to add a dependency. Click an edge to remove it.</div>
+          </div>
+          <div class="spacer"></div>
+          <button class="btn btn-xs">Auto-layout</button>
+          <button class="btn btn-xs">Fit</button>
+        </div>
+        <div class="graph-wrap">
+          <div class="graph-toolbar">
+            <div class="legend">
+              <span><span class="dot d-approved" style="width:9px;height:9px;"></span> done</span>
+              <span><span class="dot d-progress" style="width:9px;height:9px;"></span> in progress</span>
+              <span><span class="dot d-queued" style="width:9px;height:9px;"></span> queued</span>
+              <span><span class="dot d-blocked" style="width:9px;height:9px;"></span> blocked</span>
+            </div>
+            <div class="spacer"></div>
+            <span class="card-sub">6 tasks · 5 dependencies</span>
+          </div>
+          <div class="graph-canvas" id="canvas">
+            <div class="graph-world" id="world">
+            <svg class="edges" id="edges"></svg>
+            <!-- nodes positioned absolutely; data-x/y in px -->
+            <div class="node" data-id="t1" style="left:24px; top:28px;">
+              <div class="n-idx">T1 · approved</div>
+              <div class="n-title">Design SQLite schema for tokens</div>
+              <div class="n-foot"><span class="n-avatar">AR</span><span class="card-sub">arch@heimdall</span></div>
+              <div class="port out" title="drag to add dependency"></div>
+              <div class="port in"></div>
+            </div>
+            <div class="node" data-id="t2" style="left:24px; top:168px;">
+              <div class="n-idx">T2 · in_progress</div>
+              <div class="n-title">Implement token DB service</div>
+              <div class="n-foot"><span class="n-avatar">CD</span><span class="card-sub">coder@heimdall</span></div>
+              <div class="port out"></div>
+              <div class="port in"></div>
+            </div>
+            <div class="node" data-id="t3" style="left:24px; top:308px;">
+              <div class="n-idx">T3 · queued</div>
+              <div class="n-title">Migrate existing JSONL tokens</div>
+              <div class="n-foot"><span class="n-avatar">CD</span><span class="card-sub">coder@heimdall</span></div>
+              <div class="port out"></div>
+              <div class="port in"></div>
+            </div>
+            <div class="node sel" data-id="t4" style="left:300px; top:98px;">
+              <div class="n-idx">T4 · queued</div>
+              <div class="n-title">Recovery on daemon restart</div>
+              <div class="n-foot"><span class="n-avatar">CD</span><span class="card-sub">coder@heimdall</span></div>
+              <div class="port out"></div>
+              <div class="port in"></div>
+            </div>
+            <div class="node" data-id="t5" style="left:300px; top:250px;">
+              <div class="n-idx">T5 · blocked</div>
+              <div class="n-title">Integration tests + fixtures</div>
+              <div class="n-foot"><span class="n-avatar">TS</span><span class="card-sub">tester@heimdall</span></div>
+              <div class="port out"></div>
+              <div class="port in"></div>
+            </div>
+            <div class="node" data-id="t6" style="left:576px; top:170px;">
+              <div class="n-idx">T6 · planning</div>
+              <div class="n-title">Review & merge workspace</div>
+              <div class="n-foot"><span class="n-avatar">RV</span><span class="card-sub">reviewer@heimdall</span></div>
+              <div class="port out"></div>
+              <div class="port in"></div>
+            </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Selected task editor -->
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <div class="card-title">Selected task</div>
+            <div class="card-sub">Click a node in the graph above to edit it here. Edits apply to the highlighted task only.</div>
+          </div>
+          <div class="spacer"></div>
+          <button class="btn btn-xs">＋ Add task</button>
+          <button class="btn btn-xs btn-danger">🗑 Delete</button>
+        </div>
+
+        <div class="editor-head">
+          <span class="task-idx" id="edIdx">T4</span>
+          <span class="chip t-queued" id="edStatusChip"><span class="dot d-queued"></span> queued</span>
+          <div class="spacer"></div>
+          <span class="task-deps" id="edDepSummary">depends on: T2</span>
+        </div>
+
+        <div class="field">
+          <label>Title</label>
+          <input class="input" id="edTitle" value="Recovery on daemon restart" />
+        </div>
+        <div class="field">
+          <label class="label-row">Description <button class="vimbtn" title="Open in Vim Mode sidebar (:wq to save)">⌨ Vim</button></label>
+          <textarea class="textarea" id="edDesc">Rebuild the in-memory token projection from the SQLite store during daemon boot. Ensure agent_token and client_token bearer values survive restart and match previously issued credentials.</textarea>
+        </div>
+        <div class="field">
+          <label class="label-row">Acceptance criteria <button class="vimbtn" title="Open in Vim Mode sidebar (:wq to save)">⌨ Vim</button></label>
+          <textarea class="textarea" id="edAccept">- Restarting the daemon preserves all active agent/client tokens
+- No re-registration required for connected wrappers
+- Covered by an integration test that restarts the daemon mid-session</textarea>
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label>Assignee</label>
+            <select class="select">
+              <option>coder@heimdall</option>
+              <option>arch@heimdall</option>
+              <option>tester@heimdall</option>
+              <option>reviewer@heimdall</option>
+              <option>user / operator</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Reviewer</label>
+            <select class="select">
+              <option>reviewer@heimdall</option>
+              <option>arch@heimdall</option>
+              <option>user / operator</option>
+            </select>
+          </div>
+        </div>
+        <div class="row2">
+          <div class="field">
+            <label>Status</label>
+            <select class="select">
+              <option>planning</option><option selected>queued</option>
+              <option>in_progress</option><option>review_ready</option>
+              <option>approved</option><option>blocked</option><option>cancelled</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Depends on</label>
+            <div class="depchips" id="edDeps">
+              <span class="depchip">T2 · Implement token DB service <button title="remove">×</button></span>
+              <span class="depchip depadd">＋ add dependency</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- RIGHT COLUMN -->
+    <div>
+      <!-- roster -->
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <div class="card-title">Agent roster</div>
+            <div class="card-sub">Agents defined in this chain. Change provider/tier, start or stop runtimes.</div>
+          </div>
+        </div>
+
+        <div class="agent">
+          <div class="agent-top">
+            <div class="agent-avatar">CO</div>
+            <div style="flex:1">
+              <div class="agent-name">coordinator@heimdall-auth</div>
+              <div class="agent-role">coordinator · lead template</div>
+            </div>
+            <span class="stat"><span class="dot d-active pulse"></span> Active</span>
+          </div>
+          <div class="agent-controls">
+            <select class="select"><option>pi</option><option>claude</option><option>codex</option></select>
+            <select class="select"><option>cheap</option><option>normal</option><option selected>smart</option></select>
+            <div class="spacer"></div>
+            <button class="btn btn-xs btn-danger">Stop</button>
+          </div>
+        </div>
+
+        <div class="agent">
+          <div class="agent-top">
+            <div class="agent-avatar">CD</div>
+            <div style="flex:1">
+              <div class="agent-name">coder@heimdall</div>
+              <div class="agent-role">assignee · coder template</div>
+            </div>
+            <span class="stat"><span class="dot d-progress pulse"></span> Working</span>
+          </div>
+          <div class="agent-controls">
+            <select class="select"><option>pi</option><option selected>claude</option><option>codex</option></select>
+            <select class="select"><option>cheap</option><option selected>normal</option><option>smart</option></select>
+            <div class="spacer"></div>
+            <button class="btn btn-xs btn-danger">Stop</button>
+          </div>
+        </div>
+
+        <div class="agent">
+          <div class="agent-top">
+            <div class="agent-avatar">TS</div>
+            <div style="flex:1">
+              <div class="agent-name">tester@heimdall</div>
+              <div class="agent-role">assignee · tester template</div>
+            </div>
+            <span class="stat"><span class="dot d-off"></span> Offline</span>
+          </div>
+          <div class="agent-controls">
+            <select class="select"><option selected>pi</option><option>claude</option><option>codex</option></select>
+            <select class="select"><option>cheap</option><option selected>normal</option><option>smart</option></select>
+            <div class="spacer"></div>
+            <button class="btn btn-xs btn-accent">Start</button>
+          </div>
+        </div>
+
+        <div class="agent">
+          <div class="agent-top">
+            <div class="agent-avatar">RV</div>
+            <div style="flex:1">
+              <div class="agent-name">reviewer@heimdall</div>
+              <div class="agent-role">reviewer · reviewer template</div>
+            </div>
+            <span class="stat"><span class="dot d-off"></span> Offline</span>
+          </div>
+          <div class="agent-controls">
+            <select class="select"><option selected>pi</option><option>claude</option><option>codex</option></select>
+            <select class="select"><option>cheap</option><option>normal</option><option selected>smart</option></select>
+            <div class="spacer"></div>
+            <button class="btn btn-xs btn-accent">Start</button>
+          </div>
+        </div>
+
+        <button class="btn add-task-btn">＋ Add agent to chain</button>
+      </div>
+
+      <!-- chain-level -->
+      <div class="card">
+        <div class="card-head"><div class="card-title">Chain controls</div></div>
+        <div class="field"><label>Chain title</label><input class="input" value="Refactor auth token store to SQLite" /></div>
+        <div class="field">
+          <label class="label-row">Chain description <button class="vimbtn" title="Open in Vim Mode sidebar (:wq to save)">⌨ Vim</button></label>
+          <textarea class="textarea">Move the auth token store from the legacy JSONL append log to SQLite, preserving all active agent/client bearer tokens across daemon restarts. Includes migration, restart recovery, tests, and a reviewed workspace merge.</textarea>
+        </div>
+        <div class="field"><label>Coordinator</label>
+          <select class="select"><option selected>coordinator@heimdall-auth</option><option>arch@heimdall</option></select>
+        </div>
+        <div class="field"><label>Default reviewer</label>
+          <select class="select"><option selected>reviewer@heimdall</option><option>user / operator</option></select>
+        </div>
+        <div class="agent-controls" style="margin-top:14px">
+          <button class="btn btn-sm">Pause chain</button>
+          <div class="spacer"></div>
+          <button class="btn btn-sm btn-primary">Complete chain</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer-note">
+    Interactions to design next: drag-to-connect dependency edges (with cycle prevention), single-selection editor sync, optimistic runtime state via WS, and a “dirty / unsaved” diff bar. Keyboard: <kbd>N</kbd> new task · <kbd>Del</kbd> delete selected · <kbd>⌘S</kbd> save.
+  </div>
+</div>
+
+<script>
+  // Minimal edge rendering + node dragging to make the dependency graph feel real.
+  const edges = [
+    ['t1','t2'], ['t1','t3'], ['t2','t4'], ['t2','t5'], ['t4','t5'], ['t5','t6']
+  ];
+  const canvas = document.getElementById('canvas');
+  const world = document.getElementById('world');
+  const svg = document.getElementById('edges');
+
+  // pan state (translate applied to the world layer)
+  const view = { x: 0, y: 0 };
+  function applyView() { world.style.transform = `translate(${view.x}px, ${view.y}px)`; }
+  applyView();
+
+  function nodeCenter(id, side) {
+    const el = canvas.querySelector('[data-id="'+id+'"]');
+    const x = parseFloat(el.style.left), y = parseFloat(el.style.top);
+    const w = el.offsetWidth, h = el.offsetHeight;
+    return side === 'out' ? { x: x + w, y: y + h/2 } : { x: x, y: y + h/2 };
+  }
+  function drawEdges() {
+    svg.innerHTML = '';
+    for (const [a,b] of edges) {
+      const p1 = nodeCenter(a,'out'), p2 = nodeCenter(b,'in');
+      const dx = Math.max(40, Math.abs(p2.x - p1.x) * 0.5);
+      const d = `M ${p1.x} ${p1.y} C ${p1.x+dx} ${p1.y}, ${p2.x-dx} ${p2.y}, ${p2.x} ${p2.y}`;
+      const path = document.createElementNS('http://www.w3.org/2000/svg','path');
+      path.setAttribute('d', d);
+      path.setAttribute('fill','none');
+      path.setAttribute('stroke','#0099ff');
+      path.setAttribute('stroke-opacity','0.55');
+      path.setAttribute('stroke-width','2');
+      svg.appendChild(path);
+      // arrow head
+      const head = document.createElementNS('http://www.w3.org/2000/svg','circle');
+      head.setAttribute('cx', p2.x); head.setAttribute('cy', p2.y); head.setAttribute('r','3');
+      head.setAttribute('fill','#0099ff');
+      svg.appendChild(head);
+    }
+  }
+  drawEdges();
+
+  // node dragging (left-click on a node body) and canvas panning
+  // (shift+left-click or middle-click on empty canvas).
+  let drag = null; // moving a single node
+  let pan = null;  // panning the whole canvas
+
+  canvas.querySelectorAll('.node').forEach(node => {
+    node.addEventListener('mousedown', (e) => {
+      if (e.target.classList.contains('port')) return;
+      // shift or middle button over a node still pans the canvas, not the node
+      if (e.shiftKey || e.button === 1) return;
+      if (e.button !== 0) return;
+      drag = { node, ox: e.clientX, oy: e.clientY, sl: parseFloat(node.style.left), st: parseFloat(node.style.top) };
+      node.style.cursor = 'grabbing';
+      e.stopPropagation();
+      e.preventDefault();
+    });
+  });
+
+  // start a pan from empty canvas OR shift/middle anywhere
+  canvas.addEventListener('mousedown', (e) => {
+    const wantPan = e.button === 1 || (e.button === 0 && e.shiftKey);
+    if (!wantPan) return;
+    pan = { ox: e.clientX, oy: e.clientY, vx: view.x, vy: view.y };
+    canvas.classList.add('panning');
+    e.preventDefault();
+  });
+  // middle-click default (autoscroll) can interfere; suppress it
+  canvas.addEventListener('auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
+
+  window.addEventListener('mousemove', (e) => {
+    if (pan) {
+      view.x = pan.vx + (e.clientX - pan.ox);
+      view.y = pan.vy + (e.clientY - pan.oy);
+      applyView();
+      return;
+    }
+    if (!drag) return;
+    drag.node.style.left = (drag.sl + e.clientX - drag.ox) + 'px';
+    drag.node.style.top  = Math.max(4, drag.st + e.clientY - drag.oy) + 'px';
+    drawEdges();
+  });
+  window.addEventListener('mouseup', () => {
+    if (drag) drag.node.style.cursor = 'grab';
+    drag = null;
+    pan = null;
+    canvas.classList.remove('panning');
+  });
+
+  // per-task data that drives the "Selected task" editor below the graph
+  const TASKS = {
+    t1: { idx:'T1', title:'Design SQLite schema for tokens', status:'approved',
+          desc:'Define the tokens table (agent_token, client_token, kind, issued_at, revoked_at) plus indices. Document the migration from the JSONL append log.',
+          accept:'- Schema reviewed and approved\n- Indices cover the token lookup and revocation paths',
+          assignee:'arch@heimdall', reviewer:'reviewer@heimdall', deps:[] },
+    t2: { idx:'T2', title:'Implement token DB service', status:'in_progress',
+          desc:'Add the SQLite-backed token service: insert/lookup/revoke, with the same bearer-token semantics the auth layer expects.',
+          accept:'- CRUD covered by unit tests\n- Bearer tokens remain opaque random hex',
+          assignee:'coder@heimdall', reviewer:'reviewer@heimdall', deps:['t1'] },
+    t3: { idx:'T3', title:'Migrate existing JSONL tokens', status:'queued',
+          desc:'One-time importer that reads the legacy JSONL token log and writes rows into the new SQLite store, idempotently.',
+          accept:'- Re-running the migration is a no-op\n- All active tokens are preserved',
+          assignee:'coder@heimdall', reviewer:'reviewer@heimdall', deps:['t1'] },
+    t4: { idx:'T4', title:'Recovery on daemon restart', status:'queued',
+          desc:'Rebuild the in-memory token projection from the SQLite store during daemon boot. Ensure agent_token and client_token bearer values survive restart and match previously issued credentials.',
+          accept:'- Restarting the daemon preserves all active agent/client tokens\n- No re-registration required for connected wrappers\n- Covered by an integration test that restarts the daemon mid-session',
+          assignee:'coder@heimdall', reviewer:'reviewer@heimdall', deps:['t2'] },
+    t5: { idx:'T5', title:'Integration tests + fixtures', status:'blocked',
+          desc:'End-to-end tests that exercise registration, restart recovery, and revocation against a temp daemon.',
+          accept:'- Green on CI\n- Fixtures spin up and tear down an isolated data dir',
+          assignee:'tester@heimdall', reviewer:'reviewer@heimdall', deps:['t2','t4'] },
+    t6: { idx:'T6', title:'Review & merge workspace', status:'planning',
+          desc:'Review the full change set, resolve the VCS workspace, and merge auth-sqlite into the base ref.',
+          accept:'- LGTM from reviewer\n- Workspace merged, no merge_pending left behind',
+          assignee:'reviewer@heimdall', reviewer:'reviewer@heimdall', deps:['t5'] },
+  };
+  const STATUS_TONE = { approved:['t-approved','d-approved'], in_progress:['t-progress','d-progress pulse'], queued:['t-queued','d-queued'], blocked:['t-blocked','d-blocked pulse'], planning:['t-planning','d-planning'], review_ready:['t-review','d-review'], cancelled:['t-cancelled','d-off'] };
+
+  function setSelect(sel, val) { for (const o of sel.options) { if (o.textContent.trim().toLowerCase() === val.toLowerCase()) { o.selected = true; return; } } }
+  function loadTask(id) {
+    const t = TASKS[id]; if (!t) return;
+    document.getElementById('edIdx').textContent = t.idx;
+    const [tone, dot] = STATUS_TONE[t.status] || STATUS_TONE.queued;
+    const chip = document.getElementById('edStatusChip');
+    chip.className = 'chip ' + tone;
+    chip.innerHTML = '<span class="dot ' + dot + '"></span> ' + t.status;
+    document.getElementById('edTitle').value = t.title;
+    document.getElementById('edDesc').value = t.desc;
+    document.getElementById('edAccept').value = t.accept;
+    // assignee / reviewer / status selects live inside the editor card, in order
+    const s = chip.closest('.card').querySelectorAll('.select');
+    if (s[0]) setSelect(s[0], t.assignee);
+    if (s[1]) setSelect(s[1], t.reviewer);
+    if (s[2]) setSelect(s[2], t.status);
+    // dependency chips + summary
+    const depBox = document.getElementById('edDeps');
+    depBox.innerHTML = t.deps.map(d => `<span class="depchip">${TASKS[d].idx} · ${TASKS[d].title} <button title="remove">×</button></span>`).join('') + '<span class="depchip depadd">＋ add dependency</span>';
+    document.getElementById('edDepSummary').textContent = t.deps.length ? 'depends on: ' + t.deps.map(d => TASKS[d].idx).join(', ') : 'no dependencies';
+  }
+
+  // selecting a node highlights it and loads it into the editor
+  canvas.querySelectorAll('.node').forEach(node => {
+    node.addEventListener('click', (e) => {
+      if (e.target.classList.contains('port')) return;
+      canvas.querySelectorAll('.node').forEach(n => n.classList.remove('sel'));
+      node.classList.add('sel');
+      loadTask(node.dataset.id);
+    });
+  });
+  loadTask('t4');
+</script>
+</body>
+</html>

@@ -1134,15 +1134,33 @@ task_service_update_task :: proc(cmd: Task_Update_Command) -> Task_Service_Resul
 	if title == "" do title = current.title
 	description := current.description
 	if cmd.description_present do description = cmd.description
+	acceptance_criteria := current.acceptance_criteria
+	if cmd.acceptance_criteria_present do acceptance_criteria = cmd.acceptance_criteria
+	depends_on := current.depends_on
+	if cmd.depends_on_present {
+		depends_on = cmd.depends_on
+		// Validate unknown ids and self-references (reuses create-path validation),
+		// then reject cycles across the chain's current dependency graph.
+		if dep_error, dep_error_kind, dep_ids, dep_ok := task_validate_dependency_ids(depends_on, current.chain_id, cmd.task_id); !dep_ok {
+			return task_dependency_validation_error(dep_error, dep_error_kind, dep_ids)
+		}
+		if cycle_id := task_dependencies_would_cycle(current.chain_id, cmd.task_id, depends_on); cycle_id != "" {
+			return task_dependency_validation_error("dependency change would create a cycle", "dependency_cycle", cycle_id)
+		}
+	}
 	audit_body := fmt.tprintf("metadata updated by %s; old_description=%s; new_description=%s", cmd.author_agent_instance_id, current.description, description)
 	event := Task_Event{
-		kind                     = .Task_Metadata_Updated,
-		task_id                  = cmd.task_id,
-		chain_id                 = current.chain_id,
-		title                    = title,
-		description              = description,
-		body                     = audit_body,
-		author_agent_instance_id = cmd.author_agent_instance_id,
+		kind                        = .Task_Metadata_Updated,
+		task_id                     = cmd.task_id,
+		chain_id                    = current.chain_id,
+		title                       = title,
+		description                 = description,
+		acceptance_criteria         = acceptance_criteria,
+		acceptance_criteria_present = cmd.acceptance_criteria_present,
+		depends_on                  = depends_on,
+		depends_on_present          = cmd.depends_on_present,
+		body                        = audit_body,
+		author_agent_instance_id    = cmd.author_agent_instance_id,
 	}
 	if !task_store_append_event(event) {
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append task update failed"}`}
@@ -1152,6 +1170,114 @@ task_service_update_task :: proc(cmd: Task_Update_Command) -> Task_Service_Resul
 	strings.write_string(&b, `{"ok":true,"task_id":"`); json_write_string(&b, cmd.task_id)
 	strings.write_string(&b, `","description":"`); json_write_string(&b, description)
 	strings.write_string(&b, `"}`)
+	return Task_Service_Result{ok = true, status_code = 200, message = strings.to_string(b)}
+}
+
+// task_dependencies_would_cycle returns a non-empty offending task id when
+// making task_id depend on the given depends_on set would create a cycle in the
+// chain's dependency graph. It performs a DFS from each proposed dependency,
+// following existing depends_on edges of other tasks in the same chain, and
+// reports a cycle if task_id is reachable (i.e. some dependency already depends
+// on task_id transitively).
+task_dependencies_would_cycle :: proc(chain_id, task_id, depends_on: string) -> string {
+	visited := make(map[string]bool)
+	defer delete(visited)
+
+	// Seed the DFS stack with the proposed direct dependencies.
+	stack := make([dynamic]string)
+	defer delete(stack)
+	for dep in strings.split(depends_on, ",") {
+		id := strings.trim_space(dep)
+		if id == "" do continue
+		append(&stack, id)
+	}
+
+	for len(stack) > 0 {
+		current := stack[len(stack) - 1]
+		pop(&stack)
+		if current == task_id do return current // task_id reachable => cycle
+		if visited[current] do continue
+		visited[current] = true
+		// Follow the current node's own dependencies within the same chain.
+		dep_state, found := store_get_task_in_chain(current, chain_id)
+		if !found do continue
+		for dep in strings.split(dep_state.depends_on, ",") {
+			id := strings.trim_space(dep)
+			if id == "" do continue
+			if id == task_id do return id
+			if !visited[id] do append(&stack, id)
+		}
+	}
+	return ""
+}
+
+// task_service_delete_task performs a first-class hard delete (distinct from the
+// cancelled status, which keeps the row). It rejects the delete when any other
+// task in the same chain still depends on the target, returning the blocking
+// dependent ids so the UI can offer a "detach & delete" flow. On success it
+// appends a Task_Deleted event; the projection removes the task and its
+// participants/votes/comments from active state while the event journal keeps
+// the audit trail.
+task_service_delete_task :: proc(cmd: Task_Delete_Command) -> Task_Service_Result {
+	if cmd.task_id == "" {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"task delete requires task_id"}`}
+	}
+	current, found := store_get_task_in_chain(cmd.task_id, cmd.chain_id)
+	if !found {
+		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"task not found"}`}
+	}
+
+	// Reject if other tasks in the same chain depend on this one (MVP: report ids).
+	blocking := strings.builder_make()
+	first := true
+	for state in store_tasks_in_chain(current.chain_id) {
+		if state.task_id == cmd.task_id do continue
+		if task_depends_on_task(state.depends_on, cmd.task_id) {
+			if !first do strings.write_string(&blocking, ",")
+			first = false
+			strings.write_string(&blocking, state.task_id)
+		}
+	}
+	blocking_ids := strings.to_string(blocking)
+	if blocking_ids != "" {
+		b := strings.builder_make()
+		strings.write_string(&b, `{"ok":false,"message":"task has dependents; detach them before deleting","error":"blocking_dependents","blocking_dependents":[`)
+		bfirst := true
+		for id_raw in strings.split(blocking_ids, ",") {
+			id := strings.trim_space(id_raw)
+			if id == "" do continue
+			if !bfirst do strings.write_string(&b, ",")
+			bfirst = false
+			strings.write_string(&b, `"`); json_write_string(&b, id); strings.write_string(&b, `"`)
+		}
+		strings.write_string(&b, `]}`)
+		return Task_Service_Result{ok = false, status_code = 409, message = strings.to_string(b)}
+	}
+
+	// Clear any runtime current-task binding for the assignee before removal.
+	if current.assignee_agent_instance_id != "" {
+		_ = agent_store_clear_current_task_if_matches(current.assignee_agent_instance_id, cmd.task_id)
+	}
+
+	event := Task_Event{
+		kind                     = .Task_Deleted,
+		task_id                  = cmd.task_id,
+		chain_id                 = current.chain_id,
+		body                     = fmt.tprintf("task deleted by %s", cmd.author_agent_instance_id),
+		author_agent_instance_id = cmd.author_agent_instance_id,
+	}
+	// Notify BEFORE appending the delete: task_notify_event resolves the task via
+	// store_get_or_create_task_in_chain, which would re-materialize a placeholder
+	// row if called after the projection removes the task. Notifying first lets
+	// assignee/coordinator/subscribers learn of the deletion off the live row.
+	task_notify_event(event)
+	if !task_store_append_event(event) {
+		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append task delete failed"}`}
+	}
+
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"task_id":"`); json_write_string(&b, cmd.task_id)
+	strings.write_string(&b, `","deleted":true}`)
 	return Task_Service_Result{ok = true, status_code = 200, message = strings.to_string(b)}
 }
 

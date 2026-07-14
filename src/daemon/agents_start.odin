@@ -240,11 +240,21 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid model_tier; expected cheap, normal, or smart"}`)
 		return
 	}
-	stored_model_tier := agent_resolve_model_tier(request_tier)
+	launch_model_tier := agent_resolve_model_tier(request_tier)
 
 	log_path := wrapper_log_path(agent_instance_id)
 	manual_scope := agent_scope_infer(agent_instance_id, template_id)
-	agent_record_id, _, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, provider_profile, project_id, "", stored_model_tier, "", manual_scope, agent_role)
+	// /agents/start accepts provider/tier as launch overrides only. Never persist
+	// explicit request provider/tier from a start call. Existing durable identities
+	// keep their stored provider/tier; first-start records get operator/config
+	// defaults so runtime roster choices do not become durable identity memory.
+	persisted_provider_profile := agent_resolve_provider_profile("")
+	persisted_model_tier := agent_resolve_model_tier("")
+	if existing_idx := agent_record_index_by_instance(agent_instance_id); existing_idx >= 0 {
+		persisted_provider_profile = agent_instance_records[existing_idx].provider_profile
+		persisted_model_tier = agent_instance_records[existing_idx].model_tier
+	}
+	agent_record_id, _, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, persisted_provider_profile, project_id, "", persisted_model_tier, "", manual_scope, agent_role)
 	if !upsert_ok {
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`)
 		return
@@ -259,7 +269,7 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 	// Provider and tier are runtime-only launch info: request override, else the
 	// operator/config default. Neither is sourced from the durable instance record.
 	provider_profile = agent_resolve_provider_profile(provider_profile)
-	final_tier := stored_model_tier
+	final_tier := launch_model_tier
 
 	agent_token := generate_agent_token()
 	if !agent_runtime_tracker_try_begin_launch(agent_instance_id, agent_token, "manual_agent_start", "", router_now_unix_ms()) {
@@ -291,6 +301,8 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 	json_write_string(&builder, template_id)
 	strings.write_string(&builder, `","provider_profile":"`)
 	json_write_string(&builder, provider_profile)
+	strings.write_string(&builder, `","model_tier":"`)
+	json_write_string(&builder, final_tier)
 	strings.write_string(&builder, `","project_id":"`)
 	json_write_string(&builder, project_id)
 	strings.write_string(&builder, `","conversation_id":"`)

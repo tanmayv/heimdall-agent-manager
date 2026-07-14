@@ -497,6 +497,38 @@ task_db_delete_participant :: proc(task_id, agent_instance_id, role: string) -> 
 	return true
 }
 
+// task_db_delete_task hard-deletes the task row and its associated
+// participants, votes, and comments from the relational tables. The
+// append-only task_events journal is intentionally NOT touched so the
+// Task_Deleted audit record (and prior history) survives.
+task_db_delete_task :: proc(task_id: string) -> bool {
+	if task_id == "" do return false
+	ok := true
+	statements := [?]string{
+		"DELETE FROM tasks WHERE task_id = ?",
+		"DELETE FROM task_participants WHERE task_id = ?",
+		"DELETE FROM task_lgtm_votes WHERE task_id = ?",
+		"DELETE FROM task_comments WHERE task_id = ?",
+	}
+	for query in statements {
+		stmt: sqlite3_stmt = nil
+		rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+		if rc != SQLITE_OK {
+			fmt.println("task_db_delete_task: prepare failed:", rc, query)
+			ok = false
+			continue
+		}
+		task_db_bind_text(stmt, 1, task_id)
+		rc = sqlite3_step(stmt)
+		if rc != SQLITE_DONE {
+			fmt.printf("task_db_delete_task: step failed: %d (%s) for %s\n", rc, sqlite3_errmsg(task_db.db), query)
+			ok = false
+		}
+		sqlite3_finalize(stmt)
+	}
+	return ok
+}
+
 task_db_load_all :: proc() -> bool {
 	task_store_reset()
 
