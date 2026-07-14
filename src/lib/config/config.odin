@@ -363,7 +363,7 @@ legacy_config_key_warned :: proc(section: Section, agent_name, bootstrap_feature
 		if seen == legacy_key do return true
 	}
 	append(warned, strings.clone(legacy_key))
-	fmt.printfln("WARN deprecated config key ignored: %s", legacy_key)
+	fmt.fprintf(os.stderr, "WARN deprecated config key ignored: %s\n", legacy_key)
 	return true
 }
 

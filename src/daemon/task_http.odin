@@ -31,12 +31,14 @@ handle_task_chain_create :: proc(client: net.TCP_Socket, body: string) {
 	if !ok do return
 	description := extract_json_string(body, "description", "")
 	if description == "" do description = extract_json_string(body, "goal", "")
+	extracted_status := extract_json_string(body, "status", "in_progress")
 	result := task_service_create_chain(Task_Chain_Create_Command{
 		chain_id                           = extract_json_string(body, "chain_id", ""),
 		project_id                         = extract_json_string(body, "project_id", ""),
 		kind                               = extract_json_string(body, "kind", ""),
 		title                              = extract_json_string(body, "title", ""),
 		description                        = description,
+		status                             = extracted_status,
 		scaffold                           = extract_json_string(body, "scaffold", ""),
 		no_scaffold                        = extract_json_bool(body, "no_scaffold", false),
 		coordinator_agent_instance_id      = extract_json_string(body, "coordinator_agent_instance_id", ""),

@@ -24,6 +24,7 @@ Task_Chain_Create_Command :: struct {
 	team_id:                            string,
 	title:                              string,
 	description:                        string,
+	status:                             string,
 	scaffold:                           string,
 	no_scaffold:                        bool,
 	coordinator_agent_instance_id:      string,

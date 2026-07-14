@@ -147,28 +147,30 @@ register_response_json :: proc(record: Agent_Record, template_persona, template_
 	strings.write_string(&builder, record.agent_instance_id)
 	strings.write_string(&builder, "\",\"agent_token\":\"")
 	json_write_string(&builder, record.agent_token)
+	strings.write_string(&builder, "\"")
 	if team_id != "" {
-		strings.write_string(&builder, "\",\"team_id\":\"")
+		strings.write_string(&builder, ",\"team_id\":\"")
 		json_write_string(&builder, team_id)
 		strings.write_string(&builder, "\",\"role_key\":\"")
 		json_write_string(&builder, role_key)
-		strings.write_string(&builder, fmt.tprintf("\",\"role_index\":%d", role_index))
+		strings.write_string(&builder, "\",\"role_index\":")
+		strings.write_string(&builder, fmt.tprintf("%d", role_index))
 	}
 	if template_persona != "" {
-		strings.write_string(&builder, "\",\"template_persona\":\"")
+		strings.write_string(&builder, ",\"template_persona\":\"")
 		json_write_string(&builder, template_persona)
+		strings.write_string(&builder, "\"")
 	}
 	if template_instructions != "" {
-		strings.write_string(&builder, "\",\"template_instructions\":\"")
+		strings.write_string(&builder, ",\"template_instructions\":\"")
 		json_write_string(&builder, template_instructions)
+		strings.write_string(&builder, "\"")
 	}
 	if prefs_json != "" {
-		strings.write_string(&builder, "\",\"preferences\":")
+		strings.write_string(&builder, ",\"preferences\":")
 		strings.write_string(&builder, prefs_json)
-		strings.write_string(&builder, "}")
-	} else {
-		strings.write_string(&builder, "\"}")
 	}
+	strings.write_string(&builder, "}")
 	return strings.to_string(builder)
 }
 

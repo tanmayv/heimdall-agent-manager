@@ -88,8 +88,8 @@
         inherit npmDepsHash;
         nativeBuildInputs = [ pkgs.makeWrapper ];
         npmBuildScript = "build";
-        npmFlags = [ "--ignore-scripts" ];
-        npmInstallFlags = [ "--ignore-scripts" ];
+        npmFlags = [ "--ignore-scripts" "--legacy-peer-deps" ];
+        npmInstallFlags = [ "--ignore-scripts" "--legacy-peer-deps" ];
         installPhase = ''
           runHook preInstall
           mkdir -p $out/share/heimdall/{dist,electron-dist}
@@ -108,8 +108,8 @@
         src = ./.;
         inherit npmDepsHash;
         dontBuild = true;
-        npmFlags = [ "--ignore-scripts" ];
-        npmInstallFlags = [ "--ignore-scripts" ];
+        npmFlags = [ "--ignore-scripts" "--legacy-peer-deps" ];
+        npmInstallFlags = [ "--ignore-scripts" "--legacy-peer-deps" ];
         installPhase = ''
           runHook preInstall
           mkdir -p $out

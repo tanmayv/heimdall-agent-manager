@@ -16,15 +16,18 @@ def request_post(path, data):
 
 def evaluate_pending(tasks, user_id):
     pending = []
+    print(f"DEBUG: evaluate_pending called with user_id={repr(user_id)}")
+    user_reviewer_ids = {user_id, "user_proxy"}
     for task in tasks:
         if task.get("status") != "review_ready":
             continue
         participants = task.get("participants", [])
-        is_part = any(p["agent_instance_id"] == user_id and p["role"] in ["lgtm_required", "lgtm_optional"] for p in participants)
+        is_part = any(p["agent_instance_id"] in user_reviewer_ids and p["role"] in ["lgtm_required", "lgtm_optional"] for p in participants)
         if not is_part:
             continue
         votes = task.get("votes", [])
-        has_voted = any(v["reviewer_agent_instance_id"] == user_id for v in votes)
+        has_voted = any(v["reviewer_agent_instance_id"] in user_reviewer_ids for v in votes)
+        print(f"DEBUG evaluate_pending: task={task.get('task_id')} participants={participants} votes={votes} is_part={is_part} has_voted={has_voted} user_reviewer_ids={user_reviewer_ids}")
         if not has_voted:
             pending.append(task)
     return pending
@@ -62,6 +65,7 @@ def main():
         chain_res = request_post("/task-chains/create", {
             "agent_token": agent_token,
             "title": "Pending Approvals Test Chain",
+            "kind": "coding",
             "coordinator_agent_instance_id": "test-coder-pending-agent@default"
         })
         chain_id = chain_res.get("chain_id")
@@ -126,8 +130,7 @@ def main():
         tasks_list = request_post("/tasks/list", {
             "agent_token": agent_token
         })
-        
-        pending_list = evaluate_pending(tasks_list["tasks"], "operator@local")
+        pending_list = evaluate_pending(tasks_list["tasks"], "user_proxy")
         print(f"[*] Pending approvals list size: {len(pending_list)}")
         
         # Verify only Task A is present
@@ -152,7 +155,7 @@ def main():
         tasks_list_after = request_post("/tasks/list", {
             "agent_token": agent_token
         })
-        pending_list_after = evaluate_pending(tasks_list_after["tasks"], "operator@local")
+        pending_list_after = evaluate_pending(tasks_list_after["tasks"], "user_proxy")
         print(f"[*] Pending approvals list size after vote: {len(pending_list_after)}")
         
         assert len(pending_list_after) == 0, f"Expected 0 pending tasks after vote, got {len(pending_list_after)}"

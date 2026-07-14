@@ -57,6 +57,7 @@ def main():
             "project_id": project_id,
             "title": "Resolve Chain",
             "description": "test",
+            "kind": "coding",
             "coordinator_agent_instance_id": "test-resolve-agent@default"
         })
         chain_id = chain.get("chain_id")

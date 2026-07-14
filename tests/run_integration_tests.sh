@@ -26,15 +26,12 @@ ham_ctl_bin = "$REPO_DIR/result-ctl/bin/ham-ctl"
 daemon_url = "http://127.0.0.1:49325"
 credentials_path = "$TEMP_HOME/data/wrapper-credentials.json"
 agent_name = "pi"
-default_agent = "pi"
 display_name = "{instance}"
 requested_access_mode = "main"
 command = ["pi"]
 tmux_session = "ham-agents"
 tmux_window_prefix = "agent"
 agent_run_dir = "$TEMP_HOME/data/agent-runs"
-project = "default"
-memory_templates = []
 EOF
 
 # 3. Start the daemon in the background
@@ -47,7 +44,7 @@ cleanup() {
   kill "$DAEMON_PID" || true
   wait "$DAEMON_PID" 2>/dev/null || true
   echo "[*] Cleaning up temporary directory..."
-  rm -rf "$TEMP_HOME"
+  # rm -rf "$TEMP_HOME"
 }
 trap cleanup EXIT
 

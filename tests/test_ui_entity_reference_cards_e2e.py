@@ -101,6 +101,9 @@ agent_commands = []
         print("[*] Creating task chain...")
         chain_res = request_post("/task-chains/create", {
             "agent_token": agent_token,
+            "kind": "coding",
+            "status": "planning",
+            "no_scaffold": True,
             "title": "Reference Card Test Chain",
             "coordinator_agent_instance_id": "test-agent@default"
         })

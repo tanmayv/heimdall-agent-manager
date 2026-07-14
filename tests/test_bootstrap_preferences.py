@@ -59,14 +59,14 @@ def main():
         print("[-] Missing bootstrap_profile_guidance key in preferences list.")
         sys.exit(1)
         
-    expected_substr = "If you are the coordinator, reply to `operator@local` with `{ctl_bin} chat send-to-user --token {token} --user-id operator@local --body \"your message\"`."
+    expected_substr = "Acknowledge user messages promptly with a chain-scoped `chat send-to-user --chain-id <chain_id>` reply"
     if expected_substr not in guidance:
         print("[-] Coordinator-owned user contact instruction NOT found in bootstrap_profile_guidance template!")
         print("    Guidance content was:")
         print(guidance)
         sys.exit(1)
         
-    if "If you are not the coordinator, do not use direct `chat send-to-user` for normal user contact." not in guidance:
+    if "Do **not** call `chat send-to-user` with chain context." not in guidance:
         print("[-] Non-coordinator user-contact routing instruction NOT found in bootstrap_profile_guidance template!")
         print("    Guidance content was:")
         print(guidance)

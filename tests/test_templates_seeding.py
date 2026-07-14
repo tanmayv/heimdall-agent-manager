@@ -54,7 +54,7 @@ EXPECTED_TEMPLATES = {
         "role_hint": "specialist",
         "suggested_model_tier": "normal",
         "persona": "The Specialist is a domain-specific expert designed to act as a query service. They accept standalone or chain tasks containing query descriptions, process them, and output results using task comments, notifying the requester who reviewer-approves the task.",
-        "instructions": "1. Receive Query: Accept a query task where the requester is the reviewer.\n2. Process Request: Execute the query, research, or compilation task.\n3. Reply: Document findings and results in task comments.\n4. Complete: Move task to done (review_ready) to notify the requester for LGTM validation.\n5. Cooperation:\n   * Requester: Receives queries and returns comments."
+        "instructions": "1. Receive Query: Accept a query task where the requester is the reviewer.\n2. Process Request: Execute the query, research, or compilation task.\n3. Reply: Document findings and results in task comments.\n4. Complete: Run `ham-ctl tasks done --token <your_token> --task-id <task_id> --comment \"<summary and evidence>\"` to move the task to `review_ready` and notify the requester for LGTM validation.\n5. Cooperation:\n   * Requester: Receives queries and returns comments."
     }
 }
 

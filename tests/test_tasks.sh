@@ -139,6 +139,10 @@ echo "=== T1: chain planning guard ==="
 
 CHAIN1=$(ctl task-chains create --token "$TOKEN" \
   --project-id "$PROJ_ID" \
+  --kind "coding" \
+  --status "planning" \
+  --no-scaffold \
+  --no-vcs \
   --title "Smoke Chain $RUN_ID" \
   --description "Goal: verify task lifecycle
 Scope: task API
@@ -148,7 +152,9 @@ Acceptance: all assertions pass" \
 assert_ok    "T1 create chain"          "$CHAIN1"
 assert_field "T1 chain status=planning" "$CHAIN1" "status" "planning"
 CHAIN_ID=$(field "$CHAIN1" "chain_id")
+DISC_ID=$(field "$CHAIN1" "discovery_task_id")
 echo "chain:     $CHAIN_ID"
+echo "discovery: $DISC_ID"
 
 TASK1=$(ctl tasks create --token "$TOKEN" \
   --chain-id "$CHAIN_ID" \
@@ -181,6 +187,14 @@ assert_ok "T2 activate chain" "$ACT"
 CSHOW=$(ctl task-chains show --token "$TOKEN" --chain-id "$CHAIN_ID")
 assert_ok    "T2 chain show ok"            "$CSHOW"
 assert_field "T2 chain status=in_progress" "$CSHOW" "status" "in_progress"
+
+# Complete the discovery task to free the assignee slot
+DISC_DONE=$(ctl tasks done --token "$TOKEN" --task-id "$DISC_ID" --body "discovery complete")
+assert_ok "T2 complete discovery task" "$DISC_DONE"
+
+# Approve the discovery task as the user (operator) since it requires user review
+DISC_APPROVE=$(ctl tasks vote --token "$USER_TOKEN" --task-id "$DISC_ID" --chain-id "$CHAIN_ID" --result lgtm --comment "looks good")
+assert_ok "T2 approve discovery task" "$DISC_APPROVE"
 
 SHOW=$(ctl tasks show --token "$TOKEN" --task-id "$TASK_ID")
 assert_ok "T2 show task" "$SHOW"
@@ -312,11 +326,16 @@ echo "=== T6: ngtm vote → back to in_progress ==="
 
 CHAIN2=$(ctl task-chains create --token "$TOKEN" \
   --project-id "$PROJ_ID" \
+  --kind "coding" \
+  --status "planning" \
+  --no-scaffold \
+  --no-vcs \
   --title "ngtm Chain $RUN_ID" \
   --description "Goal: test ngtm rejection path" \
   --coordinator "$ME")
 assert_ok "T6 create chain2" "$CHAIN2"
 C2=$(field "$CHAIN2" "chain_id")
+DISC2_ID=$(field "$CHAIN2" "discovery_task_id")
 
 TASK2=$(ctl tasks create --token "$TOKEN" \
   --chain-id "$C2" --title "ngtm Task" --assignee "$ME")
@@ -327,6 +346,13 @@ ctl tasks participant --token "$TOKEN" \
   --task-id "$T2" --chain-id "$C2" \
   --agent-instance-id "$REV" --role lgtm_required >/dev/null
 ctl task-chains activate --token "$TOKEN" --chain-id "$C2" >/dev/null
+
+# Complete and approve discovery task for C2
+DISC2_DONE=$(ctl tasks done --token "$TOKEN" --task-id "$DISC2_ID" --body "discovery complete")
+assert_ok "T6 complete discovery task C2" "$DISC2_DONE"
+DISC2_APPROVE=$(ctl tasks vote --token "$USER_TOKEN" --task-id "$DISC2_ID" --chain-id "$C2" --result lgtm --comment "looks good")
+assert_ok "T6 approve discovery task C2" "$DISC2_APPROVE"
+
 ctl tasks done --token "$TOKEN" \
   --task-id "$T2" --chain-id "$C2" \
   --comment "ready" >/dev/null
@@ -376,11 +402,16 @@ echo "=== T8: multi-active chains + assignee-slot scheduling ==="
 
 CHAIN3=$(ctl task-chains create --token "$TOKEN" \
   --project-id "$PROJ_ID" \
+  --kind "coding" \
+  --status "planning" \
+  --no-scaffold \
+  --no-vcs \
   --title "Parallel Chain $RUN_ID" \
   --description "Goal: verify same-project multi-active scheduling" \
   --coordinator "$ME")
 assert_ok "T8 create second active-chain candidate in same project" "$CHAIN3"
 C3=$(field "$CHAIN3" "chain_id")
+DISC3_ID=$(field "$CHAIN3" "discovery_task_id")
 
 TASK3=$(ctl tasks create --token "$TOKEN" \
   --chain-id "$C3" --title "parallel task waits for assignee slot" --assignee "$ME")
@@ -389,6 +420,12 @@ T3=$(field "$TASK3" "task_id")
 
 ACT3=$(ctl task-chains activate --token "$TOKEN" --chain-id "$C3")
 assert_ok "T8 activate second same-project chain while C2 active" "$ACT3"
+
+# Complete and approve discovery task for C3
+DISC3_DONE=$(ctl tasks done --token "$TOKEN" --task-id "$DISC3_ID" --body "discovery complete")
+assert_ok "T8 complete discovery task C3" "$DISC3_DONE"
+DISC3_APPROVE=$(ctl tasks vote --token "$USER_TOKEN" --task-id "$DISC3_ID" --chain-id "$C3" --result lgtm --comment "looks good")
+assert_ok "T8 approve discovery task C3" "$DISC3_APPROVE"
 
 SHOW_T2_BUSY=$(ctl tasks show --token "$TOKEN" --task-id "$T2")
 assert_field "T8 existing task still review_ready and occupies slot" "$SHOW_T2_BUSY" "status" "review_ready"
@@ -424,11 +461,16 @@ P2=$(field "$PROJ2" "project_id")
 
 CHAIN4=$(ctl task-chains create --token "$TOKEN" \
   --project-id "$P2" \
+  --kind "coding" \
+  --status "planning" \
+  --no-scaffold \
+  --no-vcs \
   --title "Deps Chain $RUN_ID" \
   --description "Goal: verify dependency ordering" \
   --coordinator "$ME")
 assert_ok "T9 create chain4" "$CHAIN4"
 C4=$(field "$CHAIN4" "chain_id")
+DISC4_ID=$(field "$CHAIN4" "discovery_task_id")
 
 DT1_RESP=$(ctl tasks create --token "$TOKEN" \
   --chain-id "$C4" --title "Step 1 (no deps)" --assignee "$ME")
@@ -446,6 +488,12 @@ assert_ok "T9 create step2 with depends-on" "$DT2_RESP"
 DT2=$(field "$DT2_RESP" "task_id")
 
 ctl task-chains activate --token "$TOKEN" --chain-id "$C4" >/dev/null
+
+# Complete and approve discovery task for C4
+DISC4_DONE=$(ctl tasks done --token "$TOKEN" --task-id "$DISC4_ID" --body "discovery complete")
+assert_ok "T9 complete discovery task C4" "$DISC4_DONE"
+DISC4_APPROVE=$(ctl tasks vote --token "$USER_TOKEN" --task-id "$DISC4_ID" --chain-id "$C4" --result lgtm --comment "looks good")
+assert_ok "T9 approve discovery task C4" "$DISC4_APPROVE"
 
 # Only step1 should be promoted; step2 must still be planning (dep unsatisfied)
 SHOW_DT2=$(ctl tasks show --token "$TOKEN" --task-id "$DT2")

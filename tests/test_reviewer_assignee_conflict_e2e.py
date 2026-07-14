@@ -43,7 +43,7 @@ def main():
         print("[-] User registration failed:", e)
         sys.exit(1)
 
-    # 2. Register Coder Agent
+    # 2. Register Coder and Coordinator Agents
     try:
         agent_res = request_post("/register", {
             "agent_class": "agent-a",
@@ -51,6 +51,13 @@ def main():
             "display_name": "Agent A"
         })
         agent_token = agent_res.get("agent_token")
+
+        coord_res = request_post("/register", {
+            "agent_class": "coordinator-agent",
+            "agent_instance_id": "coordinator-agent@default",
+            "display_name": "Coordinator Agent"
+        })
+        coord_token = coord_res.get("agent_token")
     except Exception as e:
         print("[-] Agent registration failed:", e)
         sys.exit(1)
@@ -58,8 +65,11 @@ def main():
     # 3. Create a chain
     chain_res = request_post("/task-chains/create", {
         "agent_token": agent_token,
+        "kind": "coding",
+        "status": "planning",
+        "no_scaffold": True,
         "title": "Conflict Test Chain",
-        "coordinator_agent_instance_id": "agent-a@default"
+        "coordinator_agent_instance_id": "coordinator-agent@default"
     })
     chain_id = chain_res.get("chain_id")
 
@@ -149,33 +159,28 @@ def main():
     )
 
     # Scenario 5: Default reviewer self-review prevention
-    print("[*] Test 5: Default reviewer self-review fallback to operator@local")
+    print("[*] Test 5: Reject task creation if assignee is default reviewer")
     chain_res5 = request_post("/task-chains/create", {
         "agent_token": agent_token,
+        "kind": "coding",
+        "no_scaffold": True,
         "title": "Chain with default reviewer self-review",
-        "coordinator_agent_instance_id": "agent-a@default",
+        "coordinator_agent_instance_id": "coordinator-agent@default",
         "default_reviewer_agent_instance_id": "agent-a@default"
     })
     chain_id5 = chain_res5.get("chain_id")
 
-    task_res5 = request_post("/tasks/create", {
-        "agent_token": agent_token,
-        "chain_id": chain_id5,
-        "title": "Task assigned to default reviewer",
-        "assignee_agent_instance_id": "agent-a@default"
-    })
-    task_id5 = task_res5.get("task_id")
-
-    # Fetch task details and verify fallback to operator@local
-    tasks_list = request_post("/tasks/list", {
-        "agent_token": agent_token
-    })
-    task5 = next(t for t in tasks_list["tasks"] if t["task_id"] == task_id5)
-    actual_reviewer = task5.get("reviewer_agent_instance_id")
-    if actual_reviewer != "operator@local":
-        print(f"[-] FAIL: expected reviewer 'operator@local', got '{actual_reviewer}'")
-        sys.exit(1)
-    print(f"[+] PASS: Default reviewer self-review fallback verified (got '{actual_reviewer}')")
+    assert_http_error(
+        "Task creation conflict (assignee == default reviewer)",
+        "/tasks/create",
+        {
+            "agent_token": agent_token,
+            "chain_id": chain_id5,
+            "title": "Task assigned to default reviewer",
+            "assignee_agent_instance_id": "agent-a@default"
+        },
+        expected_status=400
+    )
 
     # Scenario 6: Default reviewer can vote and approve
     print("[*] Test 6: Default reviewer voting and auto-approval")
@@ -193,8 +198,11 @@ def main():
 
     chain_res6 = request_post("/task-chains/create", {
         "agent_token": agent_token,
+        "kind": "coding",
+        "status": "planning",
+        "no_scaffold": True,
         "title": "Chain for voting test",
-        "coordinator_agent_instance_id": "agent-a@default",
+        "coordinator_agent_instance_id": "coordinator-agent@default",
         "default_reviewer_agent_instance_id": "default-reviewer@default"
     })
     chain_id6 = chain_res6.get("chain_id")

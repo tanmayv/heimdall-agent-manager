@@ -18,7 +18,14 @@ def request_post(path, data):
     )
     try:
         res = urllib.request.urlopen(req)
-        return json.loads(res.read().decode("utf-8"))
+        raw_body = res.read()
+        try:
+            return json.loads(raw_body.decode("utf-8"))
+        except json.JSONDecodeError as je:
+            print(f"JSONDecodeError on POST {path}!")
+            print("Raw response body (first 1000 chars):", raw_body.decode("utf-8")[:1000])
+            print("Raw response body (last 1000 chars):", raw_body.decode("utf-8")[-1000:])
+            raise je
     except urllib.error.HTTPError as e:
         print(f"HTTP ERROR on POST {path}: {e.code} - {e.read().decode('utf-8')}")
         raise e
@@ -68,8 +75,8 @@ def main():
         print("[-] FAIL: Failed to register user client")
         sys.exit(1)
 
-    # 2. Register Agent
-    print("[*] Registering agent...")
+    # 2. Register Agent and Coordinator
+    print("[*] Registering agent and coordinator...")
     agent_res = request_post("/register", {
         "agent_class": "test-queue-agent",
         "agent_instance_id": agent_id,
@@ -78,6 +85,16 @@ def main():
     agent_token = agent_res.get("agent_token")
     if not agent_token:
         print("[-] FAIL: Failed to register agent")
+        sys.exit(1)
+
+    coord_res = request_post("/register", {
+        "agent_class": "coordinator-agent",
+        "agent_instance_id": "coordinator-agent@default",
+        "display_name": "Coordinator Agent"
+    })
+    coord_token = coord_res.get("agent_token")
+    if not coord_token:
+        print("[-] FAIL: Failed to register coordinator")
         sys.exit(1)
 
     # 3. Connect WebSocket first time (establishes the online record)
@@ -113,9 +130,12 @@ def main():
     chain_res = request_post("/task-chains/create", {
         "agent_token": agent_token,
         "project_id": project_id,
+        "kind": "coding",
+        "status": "planning",
+        "no_scaffold": True,
         "title": "Queue Test Chain",
         "description": "test queueing",
-        "coordinator_agent_instance_id": agent_id
+        "coordinator_agent_instance_id": "coordinator-agent@default"
     })
     chain_id = chain_res["chain_id"]
     

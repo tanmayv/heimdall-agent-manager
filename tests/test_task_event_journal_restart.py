@@ -128,6 +128,9 @@ def main() -> None:
         chain = request("/task-chains/create", {
             "agent_token": user_token,
             "project_id": project_id,
+            "kind": "coding",
+            "status": "planning",
+            "no_scaffold": True,
             "title": "Journal Chain",
             "description": "journal recovery",
             "coordinator_agent_instance_id": USER_ID,
