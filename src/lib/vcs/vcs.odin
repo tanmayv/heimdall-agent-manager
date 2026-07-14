@@ -5,7 +5,7 @@ import "core:os"
 import "core:strings"
 import "core:time"
 
-Vcs_Kind :: enum { None, Git, Jj }
+Vcs_Kind :: enum { None, Git, Jj, Fig }
 
 Vcs_Detect_Result :: struct {
 	kind:      Vcs_Kind,
@@ -69,11 +69,13 @@ Vcs_Backend :: struct {
 none_backend := Vcs_Backend{kind = .None}
 git_backend := Vcs_Backend{kind = .Git, detect = git_detect, workspace_add = git_workspace_add, workspace_remove = git_workspace_remove, workspace_status = git_workspace_status, workspace_diff = git_workspace_diff, workspace_pull_base = git_workspace_pull_base, repo_head_sha = git_repo_head_sha, repo_status = git_repo_status, repo_diff = git_repo_diff, merge_preview = git_merge_preview, merge_execute = git_merge_execute}
 jj_backend := Vcs_Backend{kind = .Jj, detect = jj_detect, workspace_add = jj_workspace_add, workspace_remove = jj_workspace_remove, workspace_status = jj_workspace_status, workspace_diff = jj_workspace_diff, workspace_pull_base = jj_workspace_pull_base, merge_preview = jj_merge_preview, merge_execute = jj_merge_execute}
+fig_backend := Vcs_Backend{kind = .Fig, detect = fig_detect, workspace_add = fig_workspace_add, workspace_remove = fig_workspace_remove, workspace_status = fig_workspace_status, workspace_diff = fig_workspace_diff, workspace_pull_base = fig_workspace_pull_base, merge_preview = fig_merge_preview, merge_execute = fig_merge_execute}
 
 vcs_backend_for :: proc(kind: Vcs_Kind) -> ^Vcs_Backend {
 	switch kind {
 	case .Git: return &git_backend
 	case .Jj: return &jj_backend
+	case .Fig: return &fig_backend
 	case .None: return &none_backend
 	}
 	return &none_backend
@@ -82,7 +84,10 @@ vcs_backend_for :: proc(kind: Vcs_Kind) -> ^Vcs_Backend {
 vcs_run :: proc(cmd: []string) -> (string, bool, string) {
 	state, stdout, stderr, err := os.process_exec(os.Process_Desc{command = cmd}, context.allocator)
 	if err != nil do return "", false, "command failed to start"
-	out := strings.trim_space(string(stdout))
+	// Preserve leading stdout whitespace because Git porcelain encodes the
+	// index/worktree state in the first two columns and a leading space is
+	// semantically meaningful there.
+	out := strings.trim_right(string(stdout), "\r\n")
 	if state.success do return strings.clone(out), true, "ok"
 	msg := strings.trim_space(string(stderr))
 	if msg == "" do msg = "command failed"
@@ -123,6 +128,7 @@ vcs_write_kept_marker :: proc(handle: Vcs_Workspace_Handle, chain_id, workspace_
 	switch handle.kind {
 	case .Git: kind = "git"
 	case .Jj: kind = "jj"
+	case .Fig: kind = "fig"
 	case .None: kind = "none"
 	}
 	body := strings.builder_make()

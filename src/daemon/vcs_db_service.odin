@@ -91,6 +91,7 @@ vcs_db_delete_workspace :: proc(chain_id: string) -> bool {
 vcs_handle_from_record :: proc(rec: Vcs_Workspace_Record) -> vcs.Vcs_Workspace_Handle {
 	kind := vcs.Vcs_Kind.Git
 	if rec.vcs_kind == "jj" do kind = .Jj
+	if rec.vcs_kind == "fig" do kind = .Fig
 	return vcs.Vcs_Workspace_Handle{path=rec.path, branch_or_change=rec.branch_or_change, base_ref=rec.base_ref, kind=kind}
 }
 

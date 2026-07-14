@@ -62,6 +62,40 @@ main :: proc() {
 		fmt.println("git workspace_diff failed or changed semantics", ok, msg)
 		os.exit(1)
 	}
+	_ = os.make_directory_all(fmt.tprintf("%s/src/ui/components", root))
+	_ = os.write_entire_file(fmt.tprintf("%s/src/ui/components/App.tsx", root), "before\n")
+	_, _, _, _ = os.process_exec(os.Process_Desc{command = []string{"git", "-C", root, "add", "src/ui/components/App.tsx"}}, context.allocator)
+	_, _, _, _ = os.process_exec(os.Process_Desc{command = []string{"git", "-C", root, "commit", "-m", "add app"}}, context.allocator)
+	tracked_baseline_sha, tracked_baseline_ok, tracked_baseline_msg := backend.repo_head_sha(root)
+	if !tracked_baseline_ok || tracked_baseline_sha == "" {
+		fmt.println("git tracked baseline sha failed", tracked_baseline_msg)
+		os.exit(1)
+	}
+	_ = os.write_entire_file(fmt.tprintf("%s/src/ui/components/App.tsx", root), "after\n")
+	tracked_status: vcs.Vcs_Status
+	tracked_status, ok, msg = backend.repo_status(root, tracked_baseline_sha)
+	if !ok {
+		fmt.println("git tracked repo_status failed", msg)
+		os.exit(1)
+	}
+	tracked_actual_count, tracked_bogus_count := 0, 0
+	for f in tracked_status.files {
+		if f.path == "src/ui/components/App.tsx" do tracked_actual_count += 1
+		if f.path == "rc/ui/components/App.tsx" do tracked_bogus_count += 1
+	}
+	if len(tracked_status.files) != 1 || tracked_actual_count != 1 || tracked_bogus_count != 0 {
+		fmt.println("git tracked repo_status path parsing regressed", len(tracked_status.files), tracked_actual_count, tracked_bogus_count)
+		for f in tracked_status.files {
+			fmt.println("git tracked repo_status file", f.path, f.status, f.adds, f.dels)
+		}
+		os.exit(1)
+	}
+	tracked_diff: vcs.Vcs_Repo_Diff
+	tracked_diff, ok, msg = backend.repo_diff(root, "src/ui/components/App.tsx", tracked_baseline_sha)
+	if !ok || !strings.contains(tracked_diff.diff, "src/ui/components/App.tsx") || !strings.contains(tracked_diff.diff, "+after") {
+		fmt.println("git tracked repo_diff failed", ok, msg)
+		os.exit(1)
+	}
 	_ = os.write_entire_file(fmt.tprintf("%s/README.md", root), "dirty tracked\n")
 	_ = os.write_entire_file(fmt.tprintf("%s/untracked.txt", root), "untracked file\n")
 	repo_status: vcs.Vcs_Status
@@ -147,4 +181,93 @@ main :: proc() {
 		os.exit(1)
 	}
 	fmt.println("jj ok", jj_detected.repo_root, jj_handle.path, jj_handle.branch_or_change, jj_status.summary_line)
+
+	hg_state, _, _, hg_err := os.process_exec(os.Process_Desc{command = []string{"hg", "help", "citc"}}, context.allocator)
+	if hg_err != nil || !hg_state.success {
+		fmt.println("fig skip: hg citc unavailable")
+		return
+	}
+
+	fig := vcs.vcs_backend_for(.Fig)
+	fig_handle: vcs.Vcs_Workspace_Handle
+	fig_ok: bool
+	fig_msg: string
+
+	// Clean up any leftover workspace from previous run
+	_, _, _, _ = os.process_exec(os.Process_Desc{command = []string{"hg", "citc", "-d", "heimdall_backend_test_temp"}}, context.allocator)
+
+	// Create a unique temporary workspace
+	ws_name := "backend_test_temp"
+	fig_handle, fig_ok, fig_msg = fig.workspace_add("", ws_name, "", "")
+	if !fig_ok {
+		fmt.println("fig workspace_add failed:", fig_msg)
+		os.exit(1)
+	}
+
+	// Ensure we cleanup at the end
+	defer {
+		remove_ok, remove_msg := fig.workspace_remove(fig_handle, true)
+		if !remove_ok {
+			fmt.println("fig workspace_remove cleanup failed:", remove_msg)
+		}
+	}
+
+	fig_detected := fig.detect(fig_handle.path)
+	if !fig_detected.ok {
+		fmt.println("fig detect failed:", fig_detected.message)
+		os.exit(1)
+	}
+
+	// Write an untracked file
+	test_file_path := fmt.tprintf("%s/test_untracked.txt", fig_handle.path)
+	_ = os.write_entire_file(test_file_path, "untracked data\n")
+
+	// Add the file to mercury
+	_, _, _, _ = os.process_exec(os.Process_Desc{
+		command = []string{"hg", "--cwd", fig_handle.path, "add", "test_untracked.txt"},
+	}, context.allocator)
+
+	fig_status: vcs.Vcs_Status
+	fig_status, fig_ok, fig_msg = fig.workspace_status(fig_handle)
+	if !fig_ok {
+		fmt.println("fig workspace_status failed:", fig_msg)
+		os.exit(1)
+	}
+
+	has_added := false
+	for f in fig_status.files {
+		if f.path == "test_untracked.txt" && f.status == "A" {
+			has_added = true
+		}
+	}
+	if !has_added {
+		fmt.println("fig status failed to detect added file")
+		os.exit(1)
+	}
+
+	// Test diff
+	fig_diff: string
+	fig_diff, fig_ok, fig_msg = fig.workspace_diff(fig_handle, "test_untracked.txt")
+	if !fig_ok || !strings.contains(fig_diff, "untracked data") {
+		fmt.println("fig workspace_diff failed:", fig_msg, fig_diff)
+		os.exit(1)
+	}
+
+	// Test merge preview
+	fig_preview: vcs.Vcs_Merge_Preview
+	fig_preview, fig_ok, fig_msg = fig.merge_preview(fig_handle, "")
+	if !fig_ok || len(fig_preview.commands) == 0 {
+		fmt.println("fig merge_preview failed:", fig_msg)
+		os.exit(1)
+	}
+
+	// Try removing without force (should fail since we have added files)
+	try_remove_ok, try_remove_msg := fig.workspace_remove(fig_handle, false)
+	if try_remove_ok {
+		fmt.println("fig workspace_remove should have failed without force, but succeeded")
+		os.exit(1)
+	}
+
+	fmt.println("fig ok", fig_detected.repo_root, fig_handle.path, fig_handle.branch_or_change, fig_status.summary_line)
 }
+
