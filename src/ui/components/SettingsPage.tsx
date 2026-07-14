@@ -178,7 +178,11 @@ function ProjectsPanel({ projects, selectedProjectId, selectedProject, loading, 
     setBaseRef(projectAnchorValue(selectedProject, 'base_ref'));
     setWorktreeRoot(projectAnchorValue(selectedProject, 'worktree_root'));
     setDeleteConfirming(false);
-  }, [selectedProject?.projectId, selectedProject?.name, selectedProject?.description, selectedProject?.anchors]);
+    // Repopulate the form only when the selected project identity changes.
+    // Depending on name/description/anchors would re-run on every refresh (those
+    // are rebuilt with fresh references) and wipe in-progress edits. See hotfix.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProject?.projectId]);
 
   return (
     <Panel title="Projects" subtitle="View project details and update/delete them from the UI.">

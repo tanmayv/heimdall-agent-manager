@@ -127,7 +127,11 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
       reason: '',
       evidence: '',
     });
-  }, [formMode, selectedRecord]);
+    // Repopulate only when the edited identity or mode changes. Depending on the
+    // whole `selectedRecord` object would re-run on every store refresh (new
+    // object reference) and clobber in-progress edits. See hotfix.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [formMode, selectedRecord?.memoryId]);
 
   const handleFilterChange = (patch: Record<string, any>) => {
     dispatch(setMemoryFilters(patch));
