@@ -1396,11 +1396,19 @@ function SidebarAgentsList({ agents = [], projects = [], session = {}, providers
   const effectiveLaunchProvider = launchProvider || providerOptions[0]?.name || 'pi';
   const effectiveLaunchProject = launchProject || '';
   const effectiveLaunchTier = launchTier || 'normal';
-  const launchAgent = useMemo(() => (agents || []).find((agent: any) => agent.id === launchProgressId) || null, [agents, launchProgressId]);
+  const launchAgent = useMemo(() => {
+    if (!launchProgressId) return null;
+    const matches = (agents || []).filter((agent: any) => {
+      const id = String(agent.id || agent.agent_instance_id || '');
+      const durableId = String(agent.agentId || agent.agent_id || '');
+      return id === launchProgressId || id === `${launchProgressId}@default` || durableId === launchProgressId;
+    });
+    return matches.find((agent: any) => agentHasLiveSession(agent)) || matches[0] || null;
+  }, [agents, launchProgressId]);
 
   const launchAgentId = useMemo(() => {
     const base = launchName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'specialist';
-    const existing = new Set((agents || []).map((agent: any) => String(agent.id || agent.agent_instance_id || '').toLowerCase()));
+    const existing = new Set((agents || []).flatMap((agent: any) => [String(agent.id || agent.agent_instance_id || '').toLowerCase(), String(agent.agentId || agent.agent_id || '').toLowerCase()].filter(Boolean)));
     if (!existing.has(base)) return base;
     for (let i = 2; i < 1000; i += 1) {
       const candidate = `${base}-${i}`;
@@ -1452,7 +1460,9 @@ function SidebarAgentsList({ agents = [], projects = [], session = {}, providers
       await daemonApi.createAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: launchAgentId, displayName: name, providerProfile: provider, templateId: role, projectId, modelTier, agentRole: role });
       setLaunchProgressId(launchAgentId);
       setLaunchStartedAt(Date.now());
-      await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: launchAgentId, provider, templateId: role, projectId, displayName: name, modelTier, agentRole: role });
+      const startResult = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: launchAgentId, provider, templateId: role, projectId, displayName: name, modelTier, agentRole: role });
+      const resolvedInstanceId = startResult?.agent_instance_id || startResult?.agentInstanceId || '';
+      if (resolvedInstanceId) setLaunchProgressId(resolvedInstanceId);
       await onRefreshAgents?.();
     } catch (err: any) {
       setLaunchError(err?.message || 'Unable to launch agent');
