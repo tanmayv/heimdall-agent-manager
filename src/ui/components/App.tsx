@@ -459,6 +459,7 @@ export default function App() {
   const [chainCreationProgress, setChainCreationProgress] = useState<any>(null);
   const [daemonPickerOpen, setDaemonPickerOpen] = useState(false);
   const [agentPageId, setAgentPageId] = useState('');
+  const [guideDebugInfo, setGuideDebugInfo] = useState<{ enabled: boolean; port: number; pid: number } | null>(null);
   const [daemonModalMode, setDaemonModalMode] = useState<null | 'add' | 'rename' | 'connect_failed'>(null);
   const [daemonModalContext, setDaemonModalContext] = useState<{ url?: string; label?: string }>({});
   const connectAttemptsRef = useRef(0);
@@ -514,6 +515,13 @@ export default function App() {
     agentInstanceId: GUIDE_AGENT_ID,
   }))), [chats]);
   const guideLoading = Boolean(fetchingChatsByAgentId?.[GUIDE_AGENT_ID]);
+  const currentPageInfo = useMemo(() => ({
+    url: typeof window !== 'undefined' ? window.location.href : '',
+    view: agentPageId ? 'agent' : home.surface,
+    chainId: home.selectedChainId || '',
+    agentId: agentPageId || '',
+    memoryId: urlParams.memoryId || '',
+  }), [agentPageId, home.surface, home.selectedChainId, urlParams.memoryId]);
   const attention = useSelector((state: any) => state.attention);
   const memory = useSelector((state: any) => state.memory);
   const toasts = useSelector((state: any) => state.toasts?.toasts || []);
@@ -586,6 +594,28 @@ export default function App() {
     }, 10000);
     return () => window.clearInterval(interval);
   }, [dispatch, guidePanelOpen, session.connected]);
+  useEffect(() => {
+    if (!guidePanelOpen || !(window as any).odinApi?.getDebugInfo) return;
+    (window as any).odinApi.getDebugInfo().then(setGuideDebugInfo).catch(() => undefined);
+  }, [guidePanelOpen]);
+  const sendGuideBody = useCallback((body: string) => {
+    const tempId = `local_temp_guide_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    dispatch(sendGuideMessage({ body, tempId }));
+  }, [dispatch]);
+  const guideDebugMessage = useCallback((info: any, action: string) => {
+    const debugUrl = info?.enabled && info?.port ? `http://127.0.0.1:${info.port}` : 'disabled';
+    return [`Heimdall Electron debug server ${action}.`, '', `debug_enabled: ${Boolean(info?.enabled)}`, `debug_url: ${debugUrl}`, `electron_pid: ${info?.pid || ''}`, `daemon_url: ${sessionRef.current?.daemonUrl || ''}`, '', 'Current page:', `url: ${currentPageInfo.url}`, `view: ${currentPageInfo.view}`, `chain_id: ${currentPageInfo.chainId}`, `agent_id: ${currentPageInfo.agentId}`, `memory_id: ${currentPageInfo.memoryId}`].join('\n');
+  }, [currentPageInfo]);
+  const toggleGuideDebugServer = useCallback(async () => {
+    if (!(window as any).odinApi?.toggleDebugServer) return;
+    const next = await (window as any).odinApi.toggleDebugServer(!guideDebugInfo?.enabled);
+    setGuideDebugInfo(next);
+    sendGuideBody(guideDebugMessage(next, next.enabled ? 'enabled' : 'disabled'));
+  }, [guideDebugInfo?.enabled, guideDebugMessage, sendGuideBody]);
+  const sendGuidePageContext = useCallback(() => {
+    if (!guideDebugInfo?.enabled) return;
+    sendGuideBody(guideDebugMessage(guideDebugInfo, 'page context'));
+  }, [guideDebugInfo, guideDebugMessage, sendGuideBody]);
   useEffect(() => {
     if (firstRunPromptedRef.current) return;
     let hasStoredProfiles = false;
@@ -1141,11 +1171,12 @@ export default function App() {
               messages={guideMessages}
               loading={guideLoading}
               sending={guideSending}
+              debugInfo={guideDebugInfo}
+              currentPageInfo={currentPageInfo}
               onClose={() => dispatch(closeGuidePanel())}
-              onSend={(body: string) => {
-                const tempId = `local_temp_guide_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-                dispatch(sendGuideMessage({ body, tempId }));
-              }}
+              onToggleDebugServer={toggleGuideDebugServer}
+              onSendPageContext={sendGuidePageContext}
+              onSend={sendGuideBody}
             />
           )}
         </div>
@@ -2938,9 +2969,10 @@ function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'cha
   );
 }
 
-function GuideSidePanel({ agent, messages, loading, sending, onClose, onSend }: any) {
+function GuideSidePanel({ agent, messages, loading, sending, debugInfo, currentPageInfo, onClose, onSend, onToggleDebugServer, onSendPageContext }: any) {
   const [draft, setDraft] = useState('');
-  const composerRef = useRef<HTMLInputElement | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const guideUpload = useArtifactUpload({ projectId: '', originKind: 'guide_chat', originRef: GUIDE_AGENT_ID });
   const runtime = agentRuntimeDot(agent);
   useEffect(() => {
     const timer = window.setTimeout(() => composerRef.current?.focus({ preventScroll: true }), 120);
@@ -2969,27 +3001,43 @@ function GuideSidePanel({ agent, messages, loading, sending, onClose, onSend }: 
             {loading && <span className="text-zinc-600">· loading</span>}
           </div>
         </div>
-        <button data-debug-id="guide-side-panel-close-btn" onClick={onClose} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15">Close</button>
+        <button data-debug-id="guide-side-panel-close-btn" onClick={onClose} title="Close" aria-label="Close Heimdall Guide" className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-sm text-zinc-200 hover:bg-white/15">×</button>
       </div>
       <div className="flex min-h-0 flex-1 flex-col p-4">
+        <div className="mb-3 rounded-2xl border border-white/10 bg-black/20 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <button data-debug-id="guide-debug-toggle-btn" onClick={onToggleDebugServer} className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold ${debugInfo?.enabled ? 'bg-emerald-400/15 text-emerald-100 hover:bg-emerald-400/20' : 'bg-white/10 text-zinc-200 hover:bg-white/15'}`} title="Start/stop Electron debug server"><span>{debugInfo?.enabled ? '●' : '○'}</span><span>Debug</span></button>
+            {debugInfo?.enabled && <button data-debug-id="guide-current-page-send-btn" onClick={onSendPageContext} className="min-w-0 flex-1 truncate rounded-xl bg-sky-400/10 px-3 py-2 text-left text-xs text-sky-100 hover:bg-sky-400/15" title="Send current page and Electron debug URL to Guide">{currentPageInfo?.url || 'Current page'}</button>}
+          </div>
+          {debugInfo?.enabled && <div data-debug-id="guide-debug-info" className="mt-2 truncate font-mono text-[10px] text-zinc-500">http://127.0.0.1:{debugInfo.port} · pid {debugInfo.pid}</div>}
+        </div>
         <CoordinatorMessageList
           chainId={GUIDE_AGENT_ID}
           messages={messages}
-          onReply={onSend}
+          onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))}
           debugPrefix="guide-chat"
           emptyText="No guide chat yet. Ask Heimdall Guide about daemon, UI, tasks, teams, agents, or troubleshooting."
         />
-        <div className="mt-4 flex gap-2">
-          <input
+        <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-2 focus-within:border-amber-300/70">
+          <textarea
             data-debug-id="guide-chat-composer-input"
             ref={composerRef}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => { if (event.key === 'Enter') submit(); }}
+            onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit(); } }}
+            onPaste={async (event) => {
+              const result = await guideUpload.uploadClipboardImage(event, { originKind: 'guide_chat', originRef: GUIDE_AGENT_ID });
+              if (result.link) setDraft((prev) => appendArtifactLink(prev, result.link || ''));
+            }}
             placeholder="Ask Heimdall Guide…"
-            className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-amber-300"
+            rows={3}
+            className="w-full resize-none bg-transparent px-2 py-2 text-sm outline-none"
           />
-          <button data-debug-id="guide-chat-send-btn" disabled={sending || !draft.trim()} onClick={submit} className="rounded-xl bg-amber-300 px-4 py-2 text-sm font-semibold text-black hover:bg-amber-200 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">Send</button>
+          {guideUpload.error && <div data-debug-id="guide-chat-upload-error" className="mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{guideUpload.error}</div>}
+          <div className="flex items-center justify-between gap-2">
+            <ArtifactUploadButton onUploaded={(link) => setDraft((prev) => appendArtifactLink(prev, link))} context={{ originKind: 'guide_chat', originRef: GUIDE_AGENT_ID }} disabled={sending} debugIdPrefix="guide-chat-artifact-upload" label="＋" buttonClassName="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-lg text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40" />
+            <button data-debug-id="guide-chat-send-btn" aria-label="Send guide message" title="Send" disabled={sending || !draft.trim()} onClick={submit} className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-amber-300 text-sm font-semibold text-black hover:bg-amber-200 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">➤</button>
+          </div>
         </div>
         <p className="mt-2 text-xs text-zinc-500">Global guide chat is not chain-scoped. Mutating actions should remain explicit and auditable.</p>
       </div>
