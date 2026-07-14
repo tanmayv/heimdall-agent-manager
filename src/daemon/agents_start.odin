@@ -209,7 +209,7 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 	config_path := extract_json_string(body, "config_path", server_config_path)
 	if agent_instance_id == "" {
 		id_base := display_name if display_name != "" else template_id
-		agent_instance_id = agent_generated_instance_id(id_base, project_id)
+		agent_instance_id = agent_generated_instance_id(id_base)
 	}
 	if display_name == "" do display_name = agent_instance_id
 	if template_id == "" do template_id = derive_agent_class(agent_instance_id)
@@ -548,10 +548,12 @@ handle_agent_instance_create :: proc(client: net.TCP_Socket, body: string) {
 	model_tier = normalize_model_tier(model_tier)
 	if agent_instance_id == "" {
 		id_base := display_name if display_name != "" else template_id
-		agent_instance_id = agent_generated_instance_id(id_base, project_id)
+		agent_instance_id = agent_generated_instance_id(id_base)
 	}
 	if display_name == "" do display_name = agent_instance_id
 	if template_id == "" do template_id = derive_agent_class(agent_instance_id)
+	// teams-v2: reserved identities (operator@local, user_proxy) are not creatable.
+	if agent_instance_id_is_reserved(agent_instance_id) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"reserved agent_instance_id cannot be created"}`); return }
 	if !valid_agent_instance_id(agent_instance_id) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid agent_instance_id"}`); return }
 	agent_record_id, _, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, provider_profile, project_id, "", model_tier)
 	if !upsert_ok { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`); return }

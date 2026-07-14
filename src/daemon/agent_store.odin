@@ -175,10 +175,21 @@ agent_store_next_sequence :: proc() -> i64 {
 
 agent_new_record_id :: proc() -> string { return fmt.tprintf("agent_rec_%d_%d", router_now_unix_ms(), agent_store_next_sequence()) }
 
-agent_generated_instance_id :: proc(name, project_id: string) -> string {
-	prefix := name; if prefix == "" do prefix = "agent"
-	suffix := project_id; if suffix == "" do suffix = "default"
-	return fmt.tprintf("%s@%s", safe_agent_id_part(prefix), safe_agent_id_part(suffix))
+// teams-v2: generate a project-free, unique agent_instance_id from a display
+// name only. The id is a slug of the name; if that slug already exists it is
+// uniquified with a short numeric suffix. Project is NEVER part of the id.
+agent_generated_instance_id :: proc(name: string) -> string {
+	base := safe_agent_id_part(name)
+	if base == "" do base = "agent"
+	if agent_record_index_by_instance(base) < 0 && !agent_instance_id_is_reserved(base) {
+		return strings.clone(base)
+	}
+	for n := 2; ; n += 1 {
+		candidate := fmt.tprintf("%s-%d", base, n)
+		if agent_record_index_by_instance(candidate) < 0 && !agent_instance_id_is_reserved(candidate) {
+			return strings.clone(candidate)
+		}
+	}
 }
 
 safe_agent_id_part :: proc(value: string) -> string {

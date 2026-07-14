@@ -504,6 +504,11 @@ hex_write_byte :: proc(builder: ^strings.Builder, b: byte) {
 	strings.write_byte(builder, digits[int(b & 0x0f)])
 }
 
+// teams-v2: identity is decoupled from project. Role/class is NOT derived by
+// splitting on '@' anymore; role comes from the agent's template role_hint.
+// This helper is retained only as a last-resort fallback label when no template
+// is known (e.g. reserved identities). It returns the whole id, minus any
+// cosmetic '@'-suffix used by reserved ids like operator@local.
 derive_agent_class :: proc(agent_instance_id: string) -> string {
 	if at := strings.index_byte(agent_instance_id, '@'); at >= 0 {
 		return strings.clone(agent_instance_id[:at])
@@ -524,26 +529,51 @@ valid_agent_id_part :: proc(id: string) -> bool {
 	return true
 }
 
-valid_agent_instance_id :: proc(agent_instance_id: string) -> bool {
-	at := strings.index_byte(agent_instance_id, '@')
-	if at <= 0 do return false
-	if at >= len(agent_instance_id) - 1 do return false
-	if strings.index_byte(agent_instance_id[at + 1:], '@') >= 0 do return false
-	return valid_agent_id_part(agent_instance_id[:at]) && valid_agent_id_part(agent_instance_id[at + 1:])
+// teams-v2: an agent_instance_id is a project-free slug of [a-zA-Z0-9-].
+// Reserved identities (operator@local, user_proxy) are the ONLY ids permitted to
+// contain '@'; they are accepted here but must not be creatable via /agents/create
+// (see agent_instance_id_is_reserved).
+agent_instance_id_is_reserved :: proc(agent_instance_id: string) -> bool {
+	return agent_instance_id == "operator@local" || agent_instance_id == "user_proxy"
 }
 
-conversation_id_for_instance :: proc(agent_instance_id: string) -> string {
+valid_agent_instance_id :: proc(agent_instance_id: string) -> bool {
+	if agent_instance_id_is_reserved(agent_instance_id) do return true
+	return valid_agent_id_part(agent_instance_id)
+}
+
+// teams-v2: conversation id is per-run-context. The same agent working two
+// chains must not share one conversation stream, so the id is derived from
+// agent_instance_id + chain_id (falling back to project_id, then bare instance).
+conversation_id_for_run :: proc(agent_instance_id, chain_id, project_id: string) -> string {
 	builder := strings.builder_make()
 	strings.write_string(&builder, "conv_")
-	for ch in agent_instance_id {
-		switch ch {
-		case 'a'..='z', 'A'..='Z', '0'..='9', '_', '-':
-			strings.write_rune(&builder, ch)
-		case:
-			strings.write_string(&builder, "_")
-		}
+	conversation_id_write_sanitized(&builder, agent_instance_id)
+	ctx := chain_id
+	if ctx == "" do ctx = project_id
+	if ctx != "" {
+		strings.write_string(&builder, "__")
+		conversation_id_write_sanitized(&builder, ctx)
 	}
 	return strings.to_string(builder)
+}
+
+conversation_id_write_sanitized :: proc(builder: ^strings.Builder, value: string) {
+	for ch in value {
+		switch ch {
+		case 'a'..='z', 'A'..='Z', '0'..='9', '_', '-':
+			strings.write_rune(builder, ch)
+		case:
+			strings.write_string(builder, "_")
+		}
+	}
+}
+
+// Backwards-internal shim: identity-only conversation id (no chain/project ctx).
+// Used where run context is not yet threaded through; callers should migrate to
+// conversation_id_for_run once a run record is available (Phase 1).
+conversation_id_for_instance :: proc(agent_instance_id: string) -> string {
+	return conversation_id_for_run(agent_instance_id, "", "")
 }
 
 registry_agent_live :: proc(agent_instance_id: string) -> bool {
