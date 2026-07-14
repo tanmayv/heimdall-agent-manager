@@ -1644,6 +1644,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
   const [vimMode, setVimMode] = useState(false);
   const upload = useArtifactUpload({ projectId: agent?.projectId || '', originKind: 'direct_agent_chat', originRef: agent?.id || '' });
   const runtime = agentRuntimeDot(agent);
+  const agentLive = agentHasLiveSession(agent);
   const messages = useMemo(() => normalizeCoordinatorMessages((chats?.[agent?.id] || []).map((msg: any) => ({ ...msg, agentInstanceId: agent?.id }))), [chats, agent?.id]);
   const buckets = useMemo(() => agentTaskBuckets(agent?.id || '', tasksById || {}), [agent?.id, tasksById]);
   const agentMemoryId = String(agent?.agentId || agent?.agent_id || agent?.id || '').split('@')[0];
@@ -1748,10 +1749,10 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
           <div className="mt-2 truncate font-mono text-xs text-zinc-500">{agent?.id}</div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-3">
-          <span data-debug-id="agent-detail-live-status" className={`rounded-full px-3 py-1 text-sm ${agentHasLiveSession(agent) ? 'bg-emerald-400/15 text-emerald-200' : 'bg-zinc-500/15 text-zinc-300'}`}>{agentHasLiveSession(agent) ? 'Live' : runtime.label}</span>
+          <span data-debug-id="agent-detail-live-status" className={`rounded-full px-3 py-1 text-sm ${agentLive ? 'bg-emerald-400/15 text-emerald-200' : 'bg-zinc-500/15 text-zinc-300'}`}>{agentLive ? 'Live' : runtime.label}</span>
           <div className="flex flex-wrap justify-end gap-2">
-            <IconActionButton debugId="agent-detail-start-btn" title="Start agent" icon="▶" onClick={startAgent} disabled={!agent?.id || Boolean(agentBusy)} tone="success" />
-            <IconActionButton debugId="agent-detail-stop-btn" title="Force stop agent" icon="■" onClick={stopAgent} disabled={!agentHasLiveSession(agent) || Boolean(agentBusy)} tone="warn" />
+            {!agentLive && <IconActionButton debugId="agent-detail-start-btn" title="Start agent" icon="▶" onClick={startAgent} disabled={!agent?.id || Boolean(agentBusy)} tone="success" />}
+            {agentLive && <IconActionButton debugId="agent-detail-stop-btn" title="Force stop agent" icon="■" onClick={stopAgent} disabled={Boolean(agentBusy)} tone="warn" />}
             <IconActionButton debugId="agent-detail-edit-btn" title="Edit agent" icon="✎" onClick={() => setEditOpen(true)} disabled={!agent?.id || Boolean(agentBusy)} />
             <IconActionButton debugId="agent-detail-delete-btn" title="Delete agent" icon="🗑" onClick={deleteAgent} disabled={!agent?.id || Boolean(agentBusy)} tone="danger" />
           </div>
