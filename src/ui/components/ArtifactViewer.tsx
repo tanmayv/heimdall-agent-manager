@@ -45,67 +45,23 @@ function formatBytes(value: number) {
   return `${size >= 10 || unit === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[unit]}`;
 }
 
-function parseCsv(text: string) {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let cell = '';
-  let inQuotes = false;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    const next = text[i + 1];
-    if (ch === '"') {
-      if (inQuotes && next === '"') {
-        cell += '"';
-        i += 1;
-      } else {
-        inQuotes = !inQuotes;
-      }
-      continue;
-    }
-    if (!inQuotes && ch === ',') {
-      row.push(cell);
-      cell = '';
-      continue;
-    }
-    if (!inQuotes && (ch === '\n' || ch === '\r')) {
-      if (ch === '\r' && next === '\n') i += 1;
-      row.push(cell);
-      rows.push(row);
-      row = [];
-      cell = '';
-      continue;
-    }
-    cell += ch;
-  }
-  if (cell.length > 0 || row.length > 0) {
-    row.push(cell);
-    rows.push(row);
-  }
-  return rows;
-}
+// MVP preview contract: only Markdown/text and PNG render inline; everything
+// else shows a clear unsupported-preview message. Classify defensively on both
+// `kind` and `mime` so common variants are handled.
+type PreviewKind = 'markdown' | 'png' | 'unsupported';
 
-function ArtifactCsvPreview({ text }: { text: string }) {
-  const rows = useMemo(() => parseCsv(text).slice(0, 50), [text]);
-  if (rows.length === 0) return <div className="text-sm text-zinc-400">CSV is empty.</div>;
-  const headers = rows[0] || [];
-  const body = rows.slice(1);
-  return (
-    <div className="overflow-auto rounded-xl border border-white/10">
-      <table className="min-w-full border-collapse text-left text-sm">
-        <thead className="bg-white/[0.05] text-zinc-100">
-          <tr>{headers.map((cell, index) => <th key={index} className="border-b border-white/10 px-3 py-2 font-medium">{cell}</th>)}</tr>
-        </thead>
-        <tbody>
-          {body.map((cells, rowIndex) => (
-            <tr key={rowIndex} className="odd:bg-white/[0.02]">
-              {headers.map((_, cellIndex) => <td key={cellIndex} className="border-b border-white/5 px-3 py-2 align-top text-zinc-300">{cells[cellIndex] || ''}</td>)}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {parseCsv(text).length > 50 && <div className="border-t border-white/10 px-3 py-2 text-xs text-zinc-500">Preview truncated to 50 rows.</div>}
-    </div>
-  );
+function classifyPreview(meta: ArtifactMeta | null): PreviewKind {
+  if (!meta) return 'unsupported';
+  const kind = String(meta.kind || '').toLowerCase();
+  const mime = String(meta.mime || '').toLowerCase();
+  const ext = String(meta.ext || '').toLowerCase();
+  if (kind === 'markdown' || kind === 'text' || mime === 'text/markdown' || mime === 'text/plain' || ext === '.md' || ext === '.markdown' || ext === '.txt') {
+    return 'markdown';
+  }
+  if (kind === 'png' || mime === 'image/png' || ext === '.png') {
+    return 'png';
+  }
+  return 'unsupported';
 }
 
 export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onClose }: ArtifactViewerProps) {
@@ -132,8 +88,13 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
         const data = await daemonApi.fetchArtifactMeta({ daemonUrl, clientToken, artifactId });
         if (cancelled) return;
         const nextMeta = data?.artifact || null;
-        if (nextMeta) metaCache.set(artifactId, nextMeta);
-        setMeta(nextMeta);
+        if (nextMeta) {
+          metaCache.set(artifactId, nextMeta);
+          setMeta(nextMeta);
+        } else {
+          setMeta(null);
+          setError('Artifact metadata is unavailable.');
+        }
       } catch (err: any) {
         if (!cancelled) setError(String(err?.message || err || 'Failed to load artifact metadata.'));
       } finally {
@@ -144,10 +105,12 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
     return () => { cancelled = true; };
   }, [artifactId, daemonUrl, clientToken]);
 
+  const previewKind = useMemo(() => classifyPreview(meta), [meta]);
+
   useEffect(() => {
     let cancelled = false;
     async function loadText() {
-      if (!meta || !(meta.kind === 'markdown' || meta.kind === 'csv')) return;
+      if (!meta || previewKind !== 'markdown') return;
       if (textCache.has(artifactId)) {
         setTextContent(textCache.get(artifactId) || '');
         return;
@@ -168,7 +131,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
     }
     loadText();
     return () => { cancelled = true; };
-  }, [artifactId, contentUrl, meta]);
+  }, [artifactId, contentUrl, meta, previewKind]);
 
   const title = meta?.name || artifactId;
 
@@ -187,7 +150,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
           </div>
           <div className="flex items-center gap-2">
             <a data-debug-id="artifact-viewer-download-btn" href={contentUrl} download={meta?.name || artifactId} className="rounded-xl bg-sky-400 px-3 py-2 text-sm font-semibold text-black hover:bg-sky-300">Download</a>
-            <button type="button" onClick={onClose} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15">Close</button>
+            <button type="button" data-debug-id="artifact-viewer-close-btn" onClick={onClose} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15">Close</button>
           </div>
         </div>
         <div className="overflow-auto p-5">
@@ -196,16 +159,16 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
           {!loading && !error && meta && (
             <div className="space-y-4">
               {meta.description && <div className="text-sm text-zinc-300">{meta.description}</div>}
-              {meta.kind === 'png' || meta.kind === 'jpeg' ? (
-                <img src={contentUrl} alt={meta.name || artifactId} className="max-h-[70vh] max-w-full rounded-2xl border border-white/10 bg-black/30" />
-              ) : meta.kind === 'html' ? (
-                <iframe title={meta.name || artifactId} src={contentUrl} sandbox="allow-downloads allow-forms allow-modals allow-pointer-lock allow-popups allow-popups-to-escape-sandbox allow-presentation allow-same-origin allow-scripts" className="h-[70vh] w-full rounded-2xl border border-white/10 bg-white" />
-              ) : meta.kind === 'csv' ? (
-                loadingText ? <div className="text-sm text-zinc-400">Loading CSV preview…</div> : <ArtifactCsvPreview text={textContent} />
-              ) : meta.kind === 'markdown' ? (
-                loadingText ? <div className="text-sm text-zinc-400">Loading markdown…</div> : <MarkdownBody source={textContent} className="text-zinc-200" onArtifactClick={setNestedArtifactId} />
+              {previewKind === 'png' ? (
+                <img data-debug-id="artifact-viewer-png-preview" src={contentUrl} alt={meta.name || artifactId} className="max-h-[70vh] max-w-full rounded-2xl border border-white/10 bg-black/30" />
+              ) : previewKind === 'markdown' ? (
+                loadingText
+                  ? <div className="text-sm text-zinc-400">Loading preview…</div>
+                  : <MarkdownBody data-debug-id="artifact-viewer-markdown-preview" source={textContent} className="text-zinc-200" onArtifactClick={setNestedArtifactId} />
               ) : (
-                <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-zinc-400">Unsupported artifact kind: {meta.kind}</div>
+                <div data-debug-id="artifact-viewer-unsupported-preview" className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-zinc-400">
+                  Preview is not available for this artifact type{meta.kind ? ` (${meta.kind}${meta.mime ? `, ${meta.mime}` : ''})` : ''}. Use Download to open it externally.
+                </div>
               )}
             </div>
           )}

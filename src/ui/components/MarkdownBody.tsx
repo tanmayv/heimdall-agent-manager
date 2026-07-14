@@ -1,4 +1,12 @@
 import { useEffect, useMemo, useRef } from 'react';
+import { useSelector } from 'react-redux';
+import * as daemonApi from '../api/daemonApi';
+
+// Module-level caches so repeated renders / multiple bubbles referencing the
+// same artifact don't refetch metadata. Names are safe to display; tokens never
+// touch these caches or the DOM.
+const artifactNameCache = new Map<string, string>();
+const artifactNamePending = new Map<string, Promise<string>>();
 
 export type MarkdownBodyProps = {
   source: string;
@@ -36,9 +44,13 @@ function renderInline(text: string): string {
   escaped = escaped.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_m, label, url) => (
     `<a href="${url}" target="_blank" rel="noreferrer" class="text-sky-300 underline decoration-sky-500/40 hover:decoration-sky-400">${label}</a>`
   ));
-  escaped = escaped.replace(ARTIFACT_TOKEN_RE, (_m, prefix, link, artifactId) => (
-    `${prefix}<button type="button" data-artifact-id="${artifactId}" data-debug-id="artifact-chip-${artifactId}" class="inline-flex items-center rounded-full border border-sky-400/30 bg-sky-400/10 px-2.5 py-0.5 text-xs font-medium text-sky-200 hover:bg-sky-400/15">${link}</button>`
-  ));
+  escaped = escaped.replace(ARTIFACT_TOKEN_RE, (_m, prefix, _link, artifactId) => {
+    // Initial visible text is the artifact ID (safe fallback). A React-side
+    // effect asynchronously swaps in the resolved artifact name when available.
+    const cachedName = artifactNameCache.get(artifactId) || '';
+    const initialText = escapeHtml(cachedName || artifactId);
+    return `${prefix}<button type="button" data-artifact-id="${artifactId}" data-artifact-link="true" data-debug-id="artifact-link-chip-${artifactId}" title="Open artifact" class="inline-flex items-center gap-1 rounded-full border border-sky-400/30 bg-sky-400/10 px-2.5 py-0.5 text-xs font-medium text-sky-200 hover:bg-sky-400/15"><span aria-hidden="true">\u{1F4CE}</span><span data-artifact-label="true">${initialText}</span></button>`;
+  });
   escaped = escaped.replace(/(^|[^"'>])((?:https?:\/\/)[\w\-._~:\/?#\[\]@!$&'()*+,;=%]+[\w\-_~:\/?#\[\]@!$&'()*+;=%])/g, (_m, prefix, url) => {
     return `${prefix}<a href="${url}" target="_blank" rel="noreferrer" class="text-sky-300 underline decoration-sky-500/40 hover:decoration-sky-400">${url}</a>`;
   });
@@ -204,6 +216,49 @@ export default function MarkdownBody({ source, className, compact, 'data-debug-i
   const rootRef = useRef<HTMLDivElement | null>(null);
   const html = useMemo(() => renderMarkdown(source || ''), [source]);
   const spacing = compact ? 'space-y-1' : 'space-y-2';
+  const session = useSelector((state: any) => state.chat?.session || {});
+  const daemonUrl = session?.daemonUrl || '';
+  const clientToken = session?.clientToken || '';
+
+  // Resolve artifact names from metadata and swap them into the rendered chips.
+  // Uses textContent (auto-escaped) so no untrusted HTML is injected, and keeps
+  // an ID fallback when metadata is unavailable or not yet loaded (UIART-5).
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return undefined;
+    const chips = Array.from(root.querySelectorAll('[data-artifact-id]')) as HTMLElement[];
+    if (chips.length === 0) return undefined;
+    let cancelled = false;
+    const applyName = (artifactId: string, name: string) => {
+      if (cancelled || !name) return;
+      const nodes = Array.from(root.querySelectorAll(`[data-artifact-id="${artifactId}"]`)) as HTMLElement[];
+      nodes.forEach((node) => {
+        const label = node.querySelector('[data-artifact-label="true"]') as HTMLElement | null;
+        if (label) label.textContent = name;
+      });
+    };
+    chips.forEach((chip) => {
+      const artifactId = chip.getAttribute('data-artifact-id') || '';
+      if (!artifactId) return;
+      const cachedName = artifactNameCache.get(artifactId);
+      if (cachedName) { applyName(artifactId, cachedName); return; }
+      if (!daemonUrl || !clientToken) return; // leave ID fallback in place
+      let pending = artifactNamePending.get(artifactId);
+      if (!pending) {
+        pending = daemonApi.fetchArtifactMeta({ daemonUrl, clientToken, artifactId })
+          .then((data: any) => {
+            const name = String(data?.artifact?.name || '');
+            if (name) artifactNameCache.set(artifactId, name);
+            return name;
+          })
+          .catch(() => '')
+          .finally(() => { artifactNamePending.delete(artifactId); });
+        artifactNamePending.set(artifactId, pending);
+      }
+      pending.then((name) => applyName(artifactId, name));
+    });
+    return () => { cancelled = true; };
+  }, [html, daemonUrl, clientToken]);
 
   useEffect(() => {
     const root = rootRef.current;

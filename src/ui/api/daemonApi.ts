@@ -379,17 +379,21 @@ export async function fetchTaskComments({ daemonUrl, clientToken, taskId, unreso
   });
 }
 
-export async function createArtifact({ daemonUrl, clientToken, name, kind = '', projectId = '', description = '', contentBase64 }: { daemonUrl: string; clientToken: string; name: string; kind?: string; projectId?: string; description?: string; contentBase64: string }) {
+export async function createArtifact({ daemonUrl, clientToken, name, kind = '', mime = '', projectId = '', description = '', originKind = '', originRef = '', contentBase64 }: { daemonUrl: string; clientToken: string; name: string; kind?: string; mime?: string; projectId?: string; description?: string; originKind?: string; originRef?: string; contentBase64: string }) {
+  const body: any = {
+    name,
+    kind,
+    project_id: projectId,
+    description,
+    content_base64: contentBase64,
+  };
+  if (mime) body.mime = mime;
+  if (originKind) body.origin_kind = originKind;
+  if (originRef) body.origin_ref = originRef;
   return requestJson(joinUrl(daemonUrl, '/artifacts/create'), {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${clientToken}` },
-    body: {
-      name,
-      kind,
-      project_id: projectId,
-      description,
-      content_base64: contentBase64,
-    },
+    body,
   });
 }
 
