@@ -85,7 +85,8 @@ export default function AgentPicker({ debugId, daemonUrl, agents, projects, temp
   const filteredAgents = useMemo(() => (agents || []).filter((agent) => agentId(agent) && roleMatches(agent, roleHint) && searchMatches(agent, query)), [agents, roleHint, query]);
   const fallbackTemplate = templateDefault(templates, roleHint);
   const fallbackProvider = providerDefault(providers);
-  const [existingId, setExistingId] = useState(value || filteredAgents[0]?.id || '');
+  const [existingId, setExistingId] = useState(value || '');
+  const selectedId = existingId || value || '';
   const [runId, setRunId] = useState('');
   const [runTemplate, setRunTemplate] = useState(fallbackTemplate);
   const [runProvider, setRunProvider] = useState(fallbackProvider);
@@ -159,20 +160,61 @@ export default function AgentPicker({ debugId, daemonUrl, agents, projects, temp
         className="mt-3 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"
       />
 
-      <div className="mt-3 grid min-w-0 gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto]">
-        <select data-debug-id={`${debugId}-existing-select`} value={existingId} onChange={(event) => setExistingId(event.target.value)} className="min-w-0 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
-          {filteredAgents.length === 0 && <option value="">No matching existing agents</option>}
-          {filteredAgents.map((agent: any) => {
-            const id = agentId(agent);
-            const bits = [`[${statusLabel(agent).startsWith('live') ? 'LIVE' : 'OFFLINE'}]`, agentLabel(agent), agentTemplate(agent), agent.projectId ? `home ${agent.projectId}` : 'no project', statusLabel(agent)].filter(Boolean).join(' · ');
-            return <option key={id} value={id}>{bits}</option>;
-          })}
-        </select>
-        <button data-debug-id={`${debugId}-use-existing-btn`} disabled={!existingId || Boolean(busy)} onClick={() => onSelected(existingId)} className="rounded-xl bg-white/10 px-3 py-2 text-xs font-semibold text-zinc-100 hover:bg-white/15 disabled:opacity-50">Use selected</button>
-        {!selectionOnly && <button data-debug-id={`${debugId}-run-existing-btn`} disabled={!existingId || Boolean(busy)} onClick={() => {
-          const selected = filteredAgents.find((agent) => agentId(agent) === existingId) || {};
-          runAgent(existingId, agentTemplate(selected) || fallbackTemplate, selected.providerProfile || fallbackProvider, selected.projectId || defaultProjectId || '', selected.modelTier || 'normal');
-        }} className="rounded-xl bg-sky-400 px-3 py-2 text-xs font-semibold text-black hover:bg-sky-300 disabled:opacity-50">Run selected</button>}
+      <div data-debug-id={`${debugId}-agent-grid`} className="mt-3 grid max-h-[360px] min-w-0 gap-2 overflow-y-auto pr-1 md:grid-cols-2">
+        {filteredAgents.length === 0 && <div data-debug-id={`${debugId}-no-matching-agents`} className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500 md:col-span-2">No matching agents.</div>}
+        {filteredAgents.map((agent: any) => {
+          const id = agentId(agent);
+          const live = statusLabel(agent).startsWith('live');
+          const selected = selectedId === id;
+          const template = agentTemplate(agent);
+          const provider = agent.providerProfile || agent.provider_profile || '';
+          const project = agent.projectId || agent.project_id || '';
+          return (
+            <div
+              key={id}
+              role="button"
+              tabIndex={0}
+              data-debug-id={`${debugId}-agent-card-${id}`}
+              aria-disabled={Boolean(busy)}
+              onClick={async () => { if (busy) return; setExistingId(id); await onSelected(id); }}
+              onKeyDown={async (event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                if (busy) return;
+                setExistingId(id);
+                await onSelected(id);
+              }}
+              className={`min-w-0 cursor-pointer rounded-2xl border p-3 text-left transition ${busy ? 'opacity-60' : ''} ${selected ? 'border-sky-400/60 bg-sky-400/10' : 'border-white/10 bg-black/20 hover:border-white/20 hover:bg-white/[0.05]'}`}
+              title={`${agentLabel(agent)} · ${id}`}
+            >
+              <div className="flex min-w-0 items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold text-zinc-100">{agentLabel(agent)}</div>
+                  <div className="mt-1 truncate font-mono text-[11px] text-zinc-500">{id}</div>
+                </div>
+                <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${live ? 'bg-emerald-400/15 text-emerald-200' : 'bg-zinc-500/15 text-zinc-300'}`}>{live ? 'LIVE' : 'OFFLINE'}</span>
+              </div>
+              <div className="mt-3 flex min-w-0 flex-wrap gap-1.5 text-[10px] text-zinc-400">
+                {template && <span className="max-w-full truncate rounded-full bg-white/[0.05] px-2 py-0.5">{template}</span>}
+                {provider && <span className="max-w-full truncate rounded-full bg-white/[0.05] px-2 py-0.5">{provider}</span>}
+                {project && <span className="max-w-full truncate rounded-full bg-white/[0.05] px-2 py-0.5">home {project}</span>}
+                <span className="max-w-full truncate rounded-full bg-white/[0.05] px-2 py-0.5">{statusLabel(agent)}</span>
+              </div>
+              {!selectionOnly && <div className="mt-3 flex justify-end">
+                <button
+                  data-debug-id={`${debugId}-agent-run-${id}`}
+                  disabled={Boolean(busy)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setExistingId(id);
+                    runAgent(id, template || fallbackTemplate, provider || fallbackProvider, project || defaultProjectId || '', agent.modelTier || agent.model_tier || 'normal');
+                  }}
+                  className="rounded-lg bg-sky-400 px-2.5 py-1 text-[11px] font-semibold text-black hover:bg-sky-300 disabled:opacity-60"
+                >Run</button>
+              </div>}
+            </div>
+          );
+        })}
       </div>
 
       {!selectionOnly && <details className="mt-3 rounded-xl bg-white/[0.035] p-3">

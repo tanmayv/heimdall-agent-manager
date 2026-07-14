@@ -1354,15 +1354,42 @@ function agentHasLiveSession(agent: any): boolean {
   return Boolean(agent.connected) || connection === 'connected';
 }
 
+const LAUNCH_AGENT_DEFAULTS_KEY = 'heimdall.ui.launchAgentDefaultsByDaemon';
+function normalizedDaemonDefaultsKey(daemonUrl: string) {
+  return String(daemonUrl || 'default').trim() || 'default';
+}
+function readLaunchAgentDefaults(daemonUrl: string) {
+  try {
+    const all = JSON.parse(window.localStorage.getItem(LAUNCH_AGENT_DEFAULTS_KEY) || '{}') || {};
+    return all[normalizedDaemonDefaultsKey(daemonUrl)] || {};
+  } catch { return {}; }
+}
+function writeLaunchAgentDefaults(daemonUrl: string, defaults: any) {
+  try {
+    const all = JSON.parse(window.localStorage.getItem(LAUNCH_AGENT_DEFAULTS_KEY) || '{}') || {};
+    all[normalizedDaemonDefaultsKey(daemonUrl)] = defaults || {};
+    window.localStorage.setItem(LAUNCH_AGENT_DEFAULTS_KEY, JSON.stringify(all));
+  } catch { /* UI-only defaults are best-effort. */ }
+}
+
 function SidebarAgentsList({ agents = [], projects = [], session = {}, providers = [], onOpenAgentPage, onRefreshAgents }: any) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [launchName, setLaunchName] = useState('');
-  const [launchRole, setLaunchRole] = useState('specialist');
+  const [launchRole, setLaunchRole] = useState(() => readLaunchAgentDefaults(session?.daemonUrl || '').role || 'specialist');
+  const [launchProvider, setLaunchProvider] = useState(() => readLaunchAgentDefaults(session?.daemonUrl || '').provider || '');
+  const [launchProject, setLaunchProject] = useState(() => readLaunchAgentDefaults(session?.daemonUrl || '').projectId || '');
+  const [launchTier, setLaunchTier] = useState(() => readLaunchAgentDefaults(session?.daemonUrl || '').modelTier || 'normal');
+  const [saveLaunchDefaults, setSaveLaunchDefaults] = useState(false);
   const [launchBusy, setLaunchBusy] = useState(false);
   const [launchError, setLaunchError] = useState('');
   const [launchProgressId, setLaunchProgressId] = useState('');
   const [launchStartedAt, setLaunchStartedAt] = useState(0);
   const liveAgents = useMemo(() => (agents || []).filter((agent: any) => agentHasLiveSession(agent)), [agents]);
+  const providerOptions = providers?.length ? providers : [{ name: 'pi' }];
+  const projectOptions = projects || [];
+  const effectiveLaunchProvider = launchProvider || providerOptions[0]?.name || 'pi';
+  const effectiveLaunchProject = launchProject || '';
+  const effectiveLaunchTier = launchTier || 'normal';
   const launchAgent = useMemo(() => (agents || []).find((agent: any) => agent.id === launchProgressId) || null, [agents, launchProgressId]);
 
   const launchAgentId = useMemo(() => {
@@ -1389,6 +1416,15 @@ function SidebarAgentsList({ agents = [], projects = [], session = {}, providers
   ];
 
   useEffect(() => {
+    const defaults = readLaunchAgentDefaults(session?.daemonUrl || '');
+    setLaunchRole(defaults.role || 'specialist');
+    setLaunchProvider(defaults.provider || '');
+    setLaunchProject(defaults.projectId || '');
+    setLaunchTier(defaults.modelTier || 'normal');
+    setSaveLaunchDefaults(false);
+  }, [session?.daemonUrl]);
+
+  useEffect(() => {
     if (!pickerOpen || !launchProgressId || launchReady || launchFailed) return undefined;
     const tick = () => onRefreshAgents?.();
     tick();
@@ -1403,11 +1439,14 @@ function SidebarAgentsList({ agents = [], projects = [], session = {}, providers
     setLaunchBusy(true);
     setLaunchError('');
     try {
-      const provider = providers?.[0]?.name || 'pi';
-      await daemonApi.createAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: launchAgentId, displayName: name, providerProfile: provider, templateId: role, modelTier: 'normal', agentRole: role });
+      const provider = effectiveLaunchProvider;
+      const projectId = effectiveLaunchProject;
+      const modelTier = effectiveLaunchTier;
+      if (saveLaunchDefaults) writeLaunchAgentDefaults(session?.daemonUrl || '', { role, provider, projectId, modelTier });
+      await daemonApi.createAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: launchAgentId, displayName: name, providerProfile: provider, templateId: role, projectId, modelTier, agentRole: role });
       setLaunchProgressId(launchAgentId);
       setLaunchStartedAt(Date.now());
-      await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: launchAgentId, provider, templateId: role, displayName: name, modelTier: 'normal', agentRole: role });
+      await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: launchAgentId, provider, templateId: role, projectId, displayName: name, modelTier, agentRole: role });
       await onRefreshAgents?.();
     } catch (err: any) {
       setLaunchError(err?.message || 'Unable to launch agent');
@@ -1441,6 +1480,28 @@ function SidebarAgentsList({ agents = [], projects = [], session = {}, providers
                 <input data-debug-id="sidebar-agent-launch-name-input" value={launchName} onChange={(event) => setLaunchName(event.target.value)} placeholder="e.g. Payments API Specialist" className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
                 <label className="mt-4 block text-xs font-semibold uppercase tracking-wide text-zinc-500">Default role</label>
                 <input data-debug-id="sidebar-agent-launch-role-input" value={launchRole} onChange={(event) => setLaunchRole(event.target.value)} placeholder="specialist" className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
+                <div className="mt-4 grid gap-3 md:grid-cols-3">
+                  <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Provider
+                    <select data-debug-id="sidebar-agent-launch-provider-select" value={effectiveLaunchProvider} onChange={(event) => setLaunchProvider(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400">
+                      {providerOptions.map((provider: any) => <option key={provider.name} value={provider.name}>{provider.name}</option>)}
+                    </select>
+                  </label>
+                  <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Project
+                    <select data-debug-id="sidebar-agent-launch-project-select" value={effectiveLaunchProject} onChange={(event) => setLaunchProject(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400">
+                      <option value="">No project</option>
+                      {projectOptions.map((project: any) => <option key={project.projectId || project.project_id} value={project.projectId || project.project_id}>{project.name || project.projectId || project.project_id}</option>)}
+                    </select>
+                  </label>
+                  <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Tier
+                    <select data-debug-id="sidebar-agent-launch-tier-select" value={effectiveLaunchTier} onChange={(event) => setLaunchTier(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400">
+                      <option value="normal">normal</option><option value="smart">smart</option><option value="cheap">cheap</option>
+                    </select>
+                  </label>
+                </div>
+                <label data-debug-id="sidebar-agent-launch-save-defaults-label" className="mt-4 flex items-center gap-2 rounded-xl bg-white/[0.04] px-3 py-2 text-sm text-zinc-300">
+                  <input data-debug-id="sidebar-agent-launch-save-defaults-checkbox" type="checkbox" checked={saveLaunchDefaults} onChange={(event) => setSaveLaunchDefaults(event.target.checked)} className="h-4 w-4 accent-sky-400" />
+                  Save role/provider/project/tier as defaults for this daemon only
+                </label>
                 <div data-debug-id="sidebar-agent-launch-id-preview" className="mt-3 rounded-xl bg-white/[0.04] px-3 py-2 text-xs text-zinc-400">Agent ID: <span className="font-mono text-zinc-200">{launchAgentId}</span></div>
                 {launchError && <div data-debug-id="sidebar-agent-launch-error" className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{launchError}</div>}
                 <div className="mt-4 flex justify-end gap-2">
@@ -1456,7 +1517,7 @@ function SidebarAgentsList({ agents = [], projects = [], session = {}, providers
                 </div>
                 <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-sky-400 transition-all" style={{ width: `${Math.round((launchSteps.filter((step) => step.done).length / launchSteps.length) * 100)}%` }} /></div>
                 <div className="mt-4 space-y-2">{launchSteps.map((step) => <div key={step.key} data-debug-id={`sidebar-agent-launch-step-${step.key}`} className="flex items-start gap-3 rounded-xl bg-white/[0.035] px-3 py-2"><span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${step.done ? 'bg-emerald-300' : launchFailed && step.key === 'ready' ? 'bg-red-300' : 'bg-zinc-600'}`} /><div className="min-w-0 flex-1"><div className="text-sm font-medium text-zinc-100">{step.label}</div><div className="truncate text-xs text-zinc-500">{step.detail}</div></div></div>)}</div>
-                <div className="mt-4 flex justify-end gap-2"><button data-debug-id="sidebar-agent-launch-new-btn" onClick={() => { setLaunchProgressId(''); setLaunchStartedAt(0); setLaunchName(''); setLaunchRole('specialist'); }} className="rounded-xl bg-white/10 px-4 py-2 text-sm text-zinc-200 hover:bg-white/15">Launch another</button><button data-debug-id="sidebar-agent-launch-done-btn" onClick={() => setPickerOpen(false)} disabled={!launchReady && !launchFailed} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">Done</button></div>
+                <div className="mt-4 flex justify-end gap-2"><button data-debug-id="sidebar-agent-launch-new-btn" onClick={() => { setLaunchProgressId(''); setLaunchStartedAt(0); setLaunchName(''); }} className="rounded-xl bg-white/10 px-4 py-2 text-sm text-zinc-200 hover:bg-white/15">Launch another</button><button data-debug-id="sidebar-agent-launch-done-btn" onClick={() => setPickerOpen(false)} disabled={!launchReady && !launchFailed} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">Done</button></div>
               </div>
             )}
           </div>
