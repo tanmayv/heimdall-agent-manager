@@ -10,6 +10,17 @@ export const ARTIFACT_UPLOAD_ACCEPT = '.md,.markdown,text/markdown,.png,image/pn
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024; // Mirror daemon size guardrail for a friendlier client-side error.
 
 type ArtifactKindMime = { kind: string; mime: string };
+export type ClipboardUploadResult = { handled: boolean; link: string | null };
+
+type UploadArtifactParams = {
+  file: File;
+  name: string;
+  kind: string;
+  mime: string;
+  projectId?: string;
+  originKind?: string;
+  originRef?: string;
+};
 
 function classifyFile(file: File): ArtifactKindMime | null {
   const name = (file.name || '').toLowerCase();
@@ -37,9 +48,44 @@ function readFileAsBase64(file: File): Promise<string> {
   });
 }
 
+function buildClipboardImageName() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return `clipboard-image-${stamp}.png`;
+}
+
+function clipboardPngFromEvent(event: any): { file: File | null; hasImage: boolean; unsupportedImage: boolean } {
+  const items = Array.from(event?.clipboardData?.items || []) as any[];
+  let hasImage = false;
+  for (const item of items) {
+    const type = String(item?.type || '').toLowerCase();
+    if (type.startsWith('image/')) {
+      hasImage = true;
+      if (type === 'image/png') {
+        const file = item?.getAsFile?.() || null;
+        if (file) return { file, hasImage: true, unsupportedImage: false };
+      }
+    }
+  }
+  const files = Array.from(event?.clipboardData?.files || []) as File[];
+  for (const file of files) {
+    const type = String(file?.type || '').toLowerCase();
+    if (type.startsWith('image/')) {
+      hasImage = true;
+      if (type === 'image/png') return { file, hasImage: true, unsupportedImage: false };
+    }
+  }
+  return { file: null, hasImage, unsupportedImage: hasImage };
+}
+
+export function appendArtifactLink(current: string, link: string) {
+  const trimmed = String(current || '').replace(/\s+$/, '');
+  return trimmed ? `${trimmed}\n${link}` : link;
+}
+
 export type ArtifactUploadContext = {
   projectId?: string;
   originRef?: string;
+  originKind?: string;
 };
 
 export type UseArtifactUploadResult = {
@@ -47,25 +93,21 @@ export type UseArtifactUploadResult = {
   error: string;
   clearError: () => void;
   uploadFile: (file: File | null | undefined) => Promise<string | null>;
+  uploadClipboardImage: (event: any, overrides?: Partial<ArtifactUploadContext>) => Promise<ClipboardUploadResult>;
 };
 
-// Reusable upload flow used by the direct/selected-agent composer and the chain
-// coordinator composer. Returns the created `artifact://<id>` link on success or
-// null on failure, setting a human-readable `error` for the caller to surface.
+// Reusable upload flow used by the direct/selected-agent composer, the chain
+// coordinator composer, and ChainView paste affordances. Returns the created
+// `artifact://<id>` link on success or null on failure, setting a human-readable
+// `error` for the caller to surface.
 export function useArtifactUpload(context: ArtifactUploadContext = {}): UseArtifactUploadResult {
   const session = useSelector((state: any) => state.chat?.session || {});
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
   const clearError = useCallback(() => setError(''), []);
 
-  const uploadFile = useCallback(async (file: File | null | undefined): Promise<string | null> => {
+  const uploadArtifact = useCallback(async ({ file, name, kind, mime, projectId, originKind, originRef }: UploadArtifactParams): Promise<string | null> => {
     if (!file) return null;
-    setError('');
-    const classified = classifyFile(file);
-    if (!classified) {
-      setError('Unsupported file. Upload a Markdown (.md) or PNG (.png) file.');
-      return null;
-    }
     if (file.size > MAX_UPLOAD_BYTES) {
       setError('File is too large. Maximum upload size is 5 MB.');
       return null;
@@ -80,12 +122,12 @@ export function useArtifactUpload(context: ArtifactUploadContext = {}): UseArtif
       const res = await daemonApi.createArtifact({
         daemonUrl: session.daemonUrl,
         clientToken: session.clientToken,
-        name: file.name || `artifact${classified.kind === 'png' ? '.png' : '.md'}`,
-        kind: classified.kind,
-        mime: classified.mime,
-        projectId: context.projectId || '',
-        originKind: 'chat',
-        originRef: context.originRef || '',
+        name,
+        kind,
+        mime,
+        projectId: projectId || '',
+        originKind: originKind || context.originKind || 'chat',
+        originRef: originRef || context.originRef || '',
         contentBase64,
       });
       const link = res?.link || (res?.artifact?.artifact_id ? `artifact://${res.artifact.artifact_id}` : '');
@@ -100,9 +142,49 @@ export function useArtifactUpload(context: ArtifactUploadContext = {}): UseArtif
     } finally {
       setUploading(false);
     }
-  }, [session?.daemonUrl, session?.clientToken, context.projectId, context.originRef]);
+  }, [session?.daemonUrl, session?.clientToken, context.originKind, context.originRef]);
 
-  return { uploading, error, clearError, uploadFile };
+  const uploadFile = useCallback(async (file: File | null | undefined): Promise<string | null> => {
+    if (!file) return null;
+    setError('');
+    const classified = classifyFile(file);
+    if (!classified) {
+      setError('Unsupported file. Upload a Markdown (.md) or PNG (.png) file.');
+      return null;
+    }
+    return uploadArtifact({
+      file,
+      name: file.name || `artifact${classified.kind === 'png' ? '.png' : '.md'}`,
+      kind: classified.kind,
+      mime: classified.mime,
+      projectId: context.projectId || '',
+      originKind: context.originKind || 'chat',
+      originRef: context.originRef || '',
+    });
+  }, [uploadArtifact, context.projectId, context.originKind, context.originRef]);
+
+  const uploadClipboardImage = useCallback(async (event: any, overrides: Partial<ArtifactUploadContext> = {}): Promise<ClipboardUploadResult> => {
+    const extracted = clipboardPngFromEvent(event);
+    if (!extracted.hasImage) return { handled: false, link: null };
+    event?.preventDefault?.();
+    setError('');
+    if (extracted.unsupportedImage || !extracted.file) {
+      setError('Unsupported clipboard image. Paste a PNG screenshot or image.');
+      return { handled: true, link: null };
+    }
+    const link = await uploadArtifact({
+      file: extracted.file,
+      name: extracted.file.name || buildClipboardImageName(),
+      kind: 'png',
+      mime: 'image/png',
+      projectId: overrides.projectId || context.projectId || '',
+      originKind: overrides.originKind || context.originKind || 'clipboard_chat',
+      originRef: overrides.originRef || context.originRef || '',
+    });
+    return { handled: true, link };
+  }, [uploadArtifact, context.projectId, context.originKind, context.originRef]);
+
+  return { uploading, error, clearError, uploadFile, uploadClipboardImage };
 }
 
 export type ArtifactUploadButtonProps = {
