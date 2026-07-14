@@ -1667,14 +1667,14 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
     setMemoryLoading(true);
     setMemoryError('');
     try {
-      const data = await daemonApi.listApplicableMemory({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, targetAgentId: agentMemoryId, targetRole: agent?.agentRole || agent?.roleHint || agent?.templateId || '', targetProjectId: agent?.projectId || '' });
+      const data = await daemonApi.listApplicableMemory({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, targetAgentId: agentMemoryId, targetProjectId: agent?.projectId || '' });
       setAgentMemories(data.records || []);
     } catch (err: any) {
       setMemoryError(err?.message || 'Unable to load memory');
     } finally {
       setMemoryLoading(false);
     }
-  }, [agentMemoryId, agent?.agentRole, agent?.roleHint, agent?.templateId, agent?.projectId, session?.daemonUrl, session?.clientInstanceId, session?.clientToken]);
+  }, [agentMemoryId, agent?.projectId, session?.daemonUrl, session?.clientInstanceId, session?.clientToken]);
 
   useEffect(() => { refreshAgentMemory(); }, [refreshAgentMemory]);
 
