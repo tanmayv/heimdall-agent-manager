@@ -901,16 +901,6 @@ export default function App() {
             />
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
-            <SidebarAgentsList
-              agents={agents}
-              chainsById={chainsById}
-              projects={projects}
-              session={session}
-              templates={settingsTemplates}
-              providers={settingsProviders}
-              onOpenChain={openChain}
-              onRefreshAgents={() => dispatch(refreshAgents()).unwrap().catch(() => undefined)}
-            />
             <div className="mb-3">
               <button
                 data-debug-id="sidebar-new-chain-btn"
@@ -972,6 +962,22 @@ export default function App() {
                 );
               })}
             </div>
+            <SidebarAgentsList
+              agents={agents}
+              chainsById={chainsById}
+              projects={projects}
+              session={session}
+              templates={settingsTemplates}
+              providers={settingsProviders}
+              onOpenChain={openChain}
+              chats={chats}
+              onRefreshAgents={() => dispatch(refreshAgents()).unwrap().catch(() => undefined)}
+              onFetchAgentChat={(agentId: string) => dispatch(fetchSelectedChat({ agentId })).unwrap().catch(() => undefined)}
+              onSendAgentMessage={async (agentId: string, body: string) => {
+                await daemonApi.sendToAgent({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, agentInstanceId: agentId, body });
+                dispatch(fetchSelectedChat({ agentId }));
+              }}
+            />
           </div>
           <div className="border-t border-white/5 p-2">
             <button
@@ -1309,9 +1315,38 @@ function isTaskGeneratedAgent(agent: any): boolean {
   return String(agent.agentScope || agent.agent_scope || '') === 'generated_chain' || Boolean(taskGeneratedAgentChainId(agent));
 }
 
-function SidebarAgentsList({ agents = [], chainsById = {}, projects = [], session = {}, templates = [], providers = [], onOpenChain, onRefreshAgents }: any) {
+function SidebarAgentsList({ agents = [], chainsById = {}, projects = [], session = {}, templates = [], providers = [], chats = {}, onOpenChain, onRefreshAgents, onFetchAgentChat, onSendAgentMessage }: any) {
   const [pickerOpen, setPickerOpen] = useState(false);
-  const taskAgents = useMemo(() => (agents || []).filter(isTaskGeneratedAgent), [agents]);
+  const [chatAgentId, setChatAgentId] = useState('');
+  const [draft, setDraft] = useState('');
+  const [sending, setSending] = useState(false);
+  const upload = useArtifactUpload({ projectId: '', originKind: 'direct_agent_chat', originRef: chatAgentId });
+  const taskAgents = useMemo(() => (agents || []).filter((agent: any) => isTaskGeneratedAgent(agent) && isAgentRunning(agent)), [agents]);
+  const chatAgent = useMemo(() => (agents || []).find((agent: any) => agent.id === chatAgentId) || null, [agents, chatAgentId]);
+  const chatMessages = useMemo(() => normalizeCoordinatorMessages((chats?.[chatAgentId] || []).map((msg: any) => ({ ...msg, agentInstanceId: chatAgentId }))), [chats, chatAgentId]);
+
+  const openAgentChat = async (agentId: string) => {
+    setChatAgentId(agentId);
+    await onFetchAgentChat?.(agentId);
+  };
+
+  const closeAgentChat = () => {
+    setChatAgentId('');
+    setDraft('');
+  };
+
+  const submitChat = async () => {
+    const body = draft.trim();
+    if (!body || !chatAgentId || sending) return;
+    setSending(true);
+    try {
+      await onSendAgentMessage?.(chatAgentId, body);
+      setDraft('');
+    } finally {
+      setSending(false);
+    }
+  };
+
   return (
     <div className="mb-4 rounded-xl border border-white/5 bg-black/10 p-2" data-debug-id="sidebar-agents-list">
       <button
@@ -1351,34 +1386,67 @@ function SidebarAgentsList({ agents = [], chainsById = {}, projects = [], sessio
           </div>
         </div>
       )}
+      {chatAgentId && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 py-12 backdrop-blur-sm" onMouseDown={closeAgentChat}>
+          <div data-debug-id="sidebar-agent-chat" className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-3xl border border-white/10 bg-[#101217] p-5 shadow-2xl shadow-black/50" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="mb-3 flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="text-xs uppercase tracking-[0.22em] text-zinc-500">Direct agent chat</div>
+                <h2 data-debug-id="sidebar-agent-chat-title" className="truncate text-lg font-semibold text-zinc-100">{chatAgent?.label || chatAgentId}</h2>
+                <div className="mt-1 truncate text-xs text-zinc-500">{chatAgentId}</div>
+              </div>
+              <button data-debug-id="sidebar-agent-chat-close-btn" onClick={closeAgentChat} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 transition hover:bg-white/15">Close</button>
+            </div>
+            <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-white/10 bg-black/20 p-3">
+              <CoordinatorMessageList chainId={chatAgentId || 'sidebar-agent-chat'} messages={chatMessages} onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))} debugPrefix="sidebar-agent-chat" emptyText="No direct messages loaded for this agent." />
+            </div>
+            <div className="mt-3">
+              <textarea
+                data-debug-id="sidebar-agent-chat-input"
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onPaste={async (event) => {
+                  const result = await upload.uploadClipboardImage(event, { originRef: chatAgentId });
+                  if (result.link) setDraft((prev) => appendArtifactLink(prev, result.link || ''));
+                }}
+                placeholder="Message this running agent…"
+                rows={3}
+                className="w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"
+              />
+              {upload.error && <div data-debug-id="sidebar-agent-chat-upload-error" className="mt-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
+              <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
+                <ArtifactUploadButton onUploaded={(link) => setDraft((prev) => appendArtifactLink(prev, link))} context={{ originKind: 'direct_agent_chat', originRef: chatAgentId }} disabled={!chatAgentId || sending} debugIdPrefix="sidebar-agent-chat-artifact-upload" label="Attach artifact" />
+                <button data-debug-id="sidebar-agent-chat-send-btn" onClick={submitChat} disabled={!chatAgentId || sending || !draft.trim()} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">{sending ? 'Sending…' : 'Send'}</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="mb-1.5 flex items-center justify-between gap-2 px-1">
-        <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Agents</div>
+        <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Running agents</div>
         <div className="text-[10px] text-zinc-600">{taskAgents.length}</div>
       </div>
       {taskAgents.length === 0 ? (
-        <div className="px-1 py-1 text-[10px] text-zinc-600">No task-generated agents</div>
+        <div className="px-1 py-1 text-[10px] text-zinc-600">No running task-generated agents</div>
       ) : (
         <div className="space-y-1">
           {taskAgents.slice(0, 80).map((agent: any) => {
             const chainId = taskGeneratedAgentChainId(agent);
             const chain = chainId ? chainsById[chainId] : null;
-            const running = isAgentRunning(agent);
-            const disabled = !chainId || !chain;
             return (
               <button
                 key={agent.id}
                 data-debug-id={`sidebar-agent-${agent.id}`}
-                disabled={disabled}
-                onClick={() => chainId && chain && onOpenChain?.(chainId)}
+                onClick={() => openAgentChat(agent.id)}
                 title={`${agent.label || agent.id}${chain ? ` · ${chain.title || chainId}` : ''}`}
-                className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] transition ${disabled ? 'cursor-default text-zinc-500' : 'text-zinc-300 hover:bg-white/[0.04] hover:text-zinc-100'}`}
+                className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] text-zinc-300 transition hover:bg-white/[0.04] hover:text-zinc-100"
               >
-                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${running ? 'bg-emerald-300' : 'bg-zinc-600'}`} />
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-300" />
                 <span className="min-w-0 flex-1 truncate">{agent.label || agent.id}</span>
               </button>
             );
           })}
-          {taskAgents.length > 80 && <div className="px-2 py-1 text-[10px] text-zinc-600">+{taskAgents.length - 80} more</div>}
+          {taskAgents.length > 80 && <div className="px-2 py-1 text-[10px] text-zinc-600">+{taskAgents.length - 80} more running</div>}
         </div>
       )}
     </div>
