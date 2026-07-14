@@ -54,7 +54,7 @@ main :: proc() {
 	raw_agent_identity := agent_identity_from_args(os.args, cfg.agent_name)
 	agent_class, agent_instance_id, identity_ok := parse_agent_identity(raw_agent_identity)
 	if !identity_ok {
-		fmt.println("invalid agent identity; use class or class@suffix with only letters, numbers, and dash in each part")
+		fmt.println("invalid agent identity; use slug or class@suffix with only letters, numbers, and dash in each part")
 		return
 	}
 
@@ -2208,18 +2208,20 @@ register_request_json :: proc(agent_class, agent_instance_id, display_name: stri
 
 parse_agent_identity :: proc(raw: string) -> (agent_class: string, agent_instance_id: string, ok: bool) {
 	at := strings.index_byte(raw, '@')
-	class := raw
-	suffix := "default"
-	if at >= 0 {
-		class = raw[:at]
-		suffix = raw[at + 1:]
+	if at < 0 {
+		if !valid_agent_id_part(raw) {
+			return "", "", false
+		}
+		return strings.clone(raw), strings.clone(raw), true
 	}
 
+	class := raw[:at]
+	suffix := raw[at + 1:]
 	if !valid_agent_id_part(class) || !valid_agent_id_part(suffix) {
 		return "", "", false
 	}
 
-	return strings.clone(class), fmt.aprintf("%s@%s", class, suffix), true
+	return strings.clone(class), strings.clone(raw), true
 }
 
 valid_agent_id_part :: proc(id: string) -> bool {
