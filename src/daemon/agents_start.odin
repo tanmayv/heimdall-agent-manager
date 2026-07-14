@@ -191,7 +191,6 @@ agent_record_upsert :: proc(
 		// fallback; explicit disassociation goes through /agents/disassociate.
 		if resolved_project_id == "" do resolved_project_id = agent_instance_records[idx].project_id
 	}
-	if pp == "" do pp = "pi"
 	if state == "" do state = AGENT_IDENTITY_STATE_PROVISIONED
 	if scope == "" do scope = agent_scope_infer(agent_instance_id, template_id)
 	if role == "" do role = agent_role_from_template(template_id)

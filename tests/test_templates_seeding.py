@@ -8,44 +8,52 @@ EXPECTED_TEMPLATES = {
     "planner": {
         "template_id": "planner",
         "display_name": "Planner",
-        "description": "Use this template for analytical strategist agents that decompose goals, map dependencies, and draft execution schedules."
+        "description": "Use this template for analytical strategist agents that decompose goals, map dependencies, and draft execution schedules.",
+        "default_provider_profile": ""
     },
     "lead": {
         "template_id": "lead",
         "display_name": "Tech Lead",
-        "description": "Use this template for coordinator agents that delegate tasks, track progress, resolve blockers, and consolidate results."
+        "description": "Use this template for coordinator agents that delegate tasks, track progress, resolve blockers, and consolidate results.",
+        "default_provider_profile": ""
     },
     "reviewer": {
         "template_id": "reviewer",
         "display_name": "Reviewer",
-        "description": "Use this template for quality gatekeeper agents that audit code readability, correctness, and style standards."
+        "description": "Use this template for quality gatekeeper agents that audit code readability, correctness, and style standards.",
+        "default_provider_profile": ""
     },
     "coder": {
         "template_id": "coder",
         "display_name": "Coder",
-        "description": "Use this template for implementation agents that write functional code, run tests, and address reviewer feedback."
+        "description": "Use this template for implementation agents that write functional code, run tests, and address reviewer feedback.",
+        "default_provider_profile": ""
     },
     "tester": {
         "template_id": "tester",
         "display_name": "Tester",
-        "description": "Use this template for validation agents that design test cases, execute suites, and report bugs."
+        "description": "Use this template for validation agents that design test cases, execute suites, and report bugs.",
+        "default_provider_profile": ""
     },
     "researcher": {
         "template_id": "researcher",
         "display_name": "Researcher",
         "description": "Use this template for evidence-driven investigation, RCA, and synthesis agents that answer questions without owning production code changes.",
         "role_hint": "researcher",
-        "suggested_model_tier": "smart"
+        "suggested_model_tier": "smart",
+        "default_provider_profile": ""
     },
     "memory_auditor": {
         "template_id": "memory_auditor",
         "display_name": "Memory Auditor",
-        "description": "Use this template for reflective agents that analyze task histories and logs to extract reusable learnings."
+        "description": "Use this template for reflective agents that analyze task histories and logs to extract reusable learnings.",
+        "default_provider_profile": ""
     },
     "memory_reviewer": {
         "template_id": "memory_reviewer",
         "display_name": "Memory Reviewer",
-        "description": "Use this template for decision-making agents that inspect and approve/reject proposed memories."
+        "description": "Use this template for decision-making agents that inspect and approve/reject proposed memories.",
+        "default_provider_profile": ""
     },
     "specialist": {
         "template_id": "specialist",
@@ -54,7 +62,8 @@ EXPECTED_TEMPLATES = {
         "role_hint": "specialist",
         "suggested_model_tier": "normal",
         "persona": "The Specialist is a domain-specific expert designed to act as a query service. They accept standalone or chain tasks containing query descriptions, process them, and output results using task comments, notifying the requester who reviewer-approves the task.",
-        "instructions": "1. Receive Query: Accept a query task where the requester is the reviewer.\n2. Process Request: Execute the query, research, or compilation task.\n3. Reply: Document findings and results in task comments.\n4. Complete: Run `ham-ctl tasks done --token <your_token> --task-id <task_id> --comment \"<summary and evidence>\"` to move the task to `review_ready` and notify the requester for LGTM validation.\n5. Cooperation:\n   * Requester: Receives queries and returns comments."
+        "instructions": "1. Receive Query: Accept a query task where the requester is the reviewer.\n2. Process Request: Execute the query, research, or compilation task.\n3. Reply: Document findings and results in task comments.\n4. Complete: Run `ham-ctl tasks done --token <your_token> --task-id <task_id> --comment \"<summary and evidence>\"` to move the task to `review_ready` and notify the requester for LGTM validation.\n5. Cooperation:\n   * Requester: Receives queries and returns comments.",
+        "default_provider_profile": ""
     }
 }
 

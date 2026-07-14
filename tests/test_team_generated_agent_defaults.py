@@ -9,7 +9,7 @@ config = (ROOT / 'src/lib/config/config.odin').read_text()
 prefs = (ROOT / 'src/daemon/user_pref_rest.odin').read_text()
 team_service = (ROOT / 'src/daemon/team_service.odin').read_text()
 team_kinds = (ROOT / 'src/daemon/team_kinds.odin').read_text()
-runtime = (ROOT / 'src/daemon/task_nudge_scheduler.odin').read_text()
+runtime = (ROOT / 'src/daemon/agent_id_store.odin').read_text()
 app = (ROOT / 'src/ui/components/App.tsx').read_text()
 settings = (ROOT / 'src/ui/components/SettingsPage.tsx').read_text()
 

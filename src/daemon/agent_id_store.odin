@@ -272,6 +272,11 @@ agent_resolve_provider_profile :: proc(agent_id, request_value, instance_value: 
 	if idx := agent_id_index(agent_id); idx >= 0 && agent_id_records[idx].default_provider_profile != "" {
 		return strings.clone(agent_id_records[idx].default_provider_profile)
 	}
+	if pref := memory_auditor_resolve_pref("", "default_agent_provider_profile"); pref != "" {
+		return pref
+	} else {
+		delete(pref)
+	}
 	if tid := agent_id_template_id(agent_id); tid != "" {
 		if tidx := agent_template_index(tid); tidx >= 0 && agent_template_records[tidx].default_provider_profile != "" {
 			return strings.clone(agent_template_records[tidx].default_provider_profile)
@@ -287,6 +292,16 @@ agent_resolve_model_tier :: proc(agent_id, request_value, instance_value: string
 	if instance_value != "" do return normalize_model_tier(instance_value)
 	if idx := agent_id_index(agent_id); idx >= 0 && agent_id_records[idx].default_model_tier != "" {
 		return normalize_model_tier(agent_id_records[idx].default_model_tier)
+	}
+	if pref := memory_auditor_resolve_pref("", "default_agent_model_tier"); pref != "" {
+		tier := normalize_model_tier(pref)
+		if tier != pref {
+			delete(pref)
+			return strings.clone(tier)
+		}
+		return tier
+	} else {
+		delete(pref)
 	}
 	if tid := agent_id_template_id(agent_id); tid != "" {
 		if tidx := agent_template_index(tid); tidx >= 0 && agent_template_records[tidx].suggested_model_tier != "" {
