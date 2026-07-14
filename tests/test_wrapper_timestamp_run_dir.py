@@ -106,16 +106,8 @@ def run_case(repo_dir, root_dir, port, use_random_dir):
             "client_instance_id": f"test-client-{label}"
         })
 
-        agent_res = request_post(daemon_url, "/register", {
-            "agent_class": "test-agent",
-            "agent_instance_id": agent_id,
-            "display_name": f"Test Agent {label}"
-        })
-        agent_token = agent_res.get("agent_token")
-
         start_res = request_post(daemon_url, "/agents/start", {
             "agent_instance_id": agent_id,
-            "agent_token": agent_token,
             "agent": "test-agent"
         })
         if not start_res.get("ok"):

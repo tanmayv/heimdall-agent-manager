@@ -170,6 +170,8 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 	// Worktree creation can require user approval and may fail on local refs; for
 	// VCS-backed chains we create an explicit coordinator task before discovery.
 	workspace_id := ""
+	status := cmd.status
+	if status == "" do status = "in_progress"
 	event := Task_Event{
 		kind                          = .Chain_Created,
 		chain_id                      = chain_id,
@@ -178,7 +180,7 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 		vcs_workspace_id              = workspace_id,
 		title                         = chain_title,
 		description                   = cmd.description,
-		status                        = "in_progress",
+		status                        = status,
 		coordinator_agent_instance_id = coordinator_agent_instance_id,
 		reviewer_agent_instance_id    = default_reviewer_agent_instance_id,
 		author_agent_instance_id      = cmd.author_agent_instance_id,
@@ -228,7 +230,7 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 	strings.write_string(&b, `","discovery_task_id":"`); json_write_string(&b, discovery_task_id)
 	strings.write_string(&b, `","coordinator_agent_instance_id":"`); json_write_string(&b, coordinator_agent_instance_id)
 	strings.write_string(&b, `","coordinator_boot_requested":`); strings.write_string(&b, "true" if coordinator_boot_requested else "false")
-	strings.write_string(&b, `,"status":"in_progress"`)
+	strings.write_string(&b, `,"status":"`); json_write_string(&b, status); strings.write_string(&b, `"`)
 	task_write_user_proxy_warning_if_needed(&b, default_reviewer_normalized)
 	strings.write_string(&b, `}`)
 	return Task_Service_Result{ok = true, status_code = 200, message = strings.to_string(b)}
@@ -1278,12 +1280,16 @@ task_service_review_vote :: proc(cmd: Task_Review_Vote_Command) -> Task_Service_
 	}
 	user_review_required := cmd.author_is_user && task_requires_user_review(state)
 	vote_author := cmd.author_agent_instance_id
+	fmt.printf("DEBUG VOTE: author=%s, is_user=%t, requires_user_review=%t\n", cmd.author_agent_instance_id, cmd.author_is_user, task_requires_user_review(state))
 	if user_review_required {
 		vote_author = task_reviewer_agent_instance_id(state)
+		fmt.printf("DEBUG VOTE: user_review_required=true, vote_author reset to=%s\n", vote_author)
 	}
 	if proxy_reviewer, proxy_ok := task_user_proxy_reviewer_for(state, cmd.author_agent_instance_id); proxy_ok {
 		vote_author = proxy_reviewer
+		fmt.printf("DEBUG VOTE: proxy_ok=true, vote_author reset to=%s\n", vote_author)
 	}
+	fmt.printf("DEBUG VOTE: final vote_author=%s\n", vote_author)
 	is_required  := task_actor_has_role(state, vote_author, "lgtm_required")
 	if !is_required && (user_review_required || vote_author == task_reviewer_agent_instance_id(state)) {
 		is_required = true
@@ -1343,6 +1349,15 @@ task_service_review_vote :: proc(cmd: Task_Review_Vote_Command) -> Task_Service_
 
 task_user_proxy_reviewer_for :: proc(state: Task_State, user_id: string) -> (string, bool) {
 	if user_id == "" do return "", false
+	if user_id == HUMAN_RECIPIENT_ID {
+		parts := store_participants_of(state.task_id)
+		defer delete(parts)
+		for p in parts {
+			if p.agent_instance_id == "user_proxy" && (p.role == "lgtm_required" || p.role == "lgtm_optional") {
+				return "user_proxy", true
+			}
+		}
+	}
 	chain, chain_found := store_get_chain(state.chain_id)
 	if !chain_found do return "", false
 	team_id := chain.team_id

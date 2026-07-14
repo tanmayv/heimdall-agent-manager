@@ -123,6 +123,7 @@ task_reviewer_matches_user_proxy_member :: proc(reviewer: string, member: Team_M
 
 task_reviewer_is_user_review :: proc(state: Task_State, reviewer: string) -> bool {
 	if reviewer == "" do return false
+	if reviewer == "user_proxy" do return true
 	team_id := task_team_id_for_state(state)
 	if team_id == "" do return false
 	members := team_db_list_members(team_service_db, team_id)
