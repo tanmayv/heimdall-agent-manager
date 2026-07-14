@@ -6,6 +6,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 API = (ROOT / 'src/ui/api/daemonApi.ts').read_text(encoding='utf-8')
 APP = (ROOT / 'src/ui/components/App.tsx').read_text(encoding='utf-8')
+PANEL = (ROOT / 'src/ui/components/ChainArtifactsPanel.tsx').read_text(encoding='utf-8')
 UPLOAD = (ROOT / 'src/ui/components/ArtifactUpload.tsx').read_text(encoding='utf-8')
 MARKDOWN = (ROOT / 'src/ui/components/Markdown.tsx').read_text(encoding='utf-8')
 MARKDOWN_BODY = (ROOT / 'src/ui/components/MarkdownBody.tsx').read_text(encoding='utf-8')
@@ -33,10 +34,13 @@ checks = [
         'debugIdPrefix="chain-coordinator-artifact-upload"',
         'label="Attach"',
     ])),
-    ('chain coordinator upload uses project and chain context', "context={{ projectId: chain.projectId || chain.project_id || '', originRef: chain.chainId || '' }}" in APP),
+    ('chain coordinator upload uses project and chain context', all(snippet in APP for snippet in [
+        "const projectId = chain.projectId || chain.project_id || '';",
+        "context={{ projectId: projectId, originRef: chain.chainId || '' }}",
+    ])),
     ('successful chain upload inserts artifact link into the draft instead of auto-sending', all(snippet in APP for snippet in [
-        'onUploaded={(link) => setDraft((current) => {',
-        "return trimmed ? `${trimmed}\\n${link}` : link;",
+        'onUploaded={(link) => setDraft((current) => appendArtifactLink(current, link))}',
+        'if (result.link) setDraft((current) => appendArtifactLink(current, result.link));',
         'onClick={submit}',
     ])),
     ('upload component only accepts markdown and png files', all(snippet in UPLOAD for snippet in [
@@ -49,7 +53,17 @@ checks = [
         'File is too large. Maximum upload size is 5 MB.',
         'Not connected. Reconnect before uploading an artifact.',
         'const res = await daemonApi.createArtifact({',
-        "originKind: 'chat'",
+        "originKind: originKind || context.originKind || 'chat'",
+    ])),
+    ('upload component supports clipboard png paste uploads with contextual origin metadata', all(snippet in UPLOAD for snippet in [
+        'export type ClipboardUploadResult = { handled: boolean; link: string | null };',
+        'function clipboardPngFromEvent(event: any)',
+        'export function appendArtifactLink(current: string, link: string)',
+        'uploadClipboardImage: (event: any, overrides?: Partial<ArtifactUploadContext>) => Promise<ClipboardUploadResult>;',
+        'Unsupported clipboard image. Paste a PNG screenshot or image.',
+        "kind: 'png'",
+        "mime: 'image/png'",
+        "originKind: overrides.originKind || context.originKind || 'clipboard_chat'",
     ])),
     ('upload component surfaces inline error state and only calls onUploaded on success', all(snippet in UPLOAD for snippet in [
         'data-debug-id={`${debugIdPrefix}-error`}',
@@ -69,6 +83,47 @@ checks = [
         r'\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)',
     ])),
     ('message bubbles use shared Markdown component', 'return <Markdown source={text} compact' in MESSAGE_BUBBLE),
+    ('chain view renders the project artifacts panel beside coordinator chat', all(snippet in APP for snippet in [
+        'import ChainArtifactsPanel from \'./ChainArtifactsPanel\';',
+        'xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]',
+        '<ChainArtifactsPanel',
+        'projectId={projectId}',
+        'chainId={chain.chainId}',
+    ])),
+    ('artifacts panel uses project-scoped list api and viewer', all(snippet in PANEL for snippet in [
+        'data-debug-id="chain-artifacts-panel"',
+        'daemonApi.listArtifacts({ daemonUrl, clientToken, projectId, limit: 100 })',
+        '<ArtifactViewer artifactId={activeArtifactId} daemonUrl={daemonUrl} clientToken={clientToken} onClose={() => setActiveArtifactId(\'\')} />',
+        'This chain has no project_id, so project artifact listing is unavailable.',
+    ])),
+    ('artifacts panel exposes refresh, copy, open, paste, empty, and error debug ids', all(snippet in PANEL for snippet in [
+        'data-debug-id="chain-artifacts-refresh-btn"',
+        'data-debug-id="chain-artifacts-paste-zone"',
+        'data-debug-id="chain-artifacts-paste-error"',
+        'data-debug-id="chain-artifacts-empty"',
+        'data-debug-id="chain-artifacts-error"',
+        'data-debug-id={`chain-artifact-row-${artifactId}`}',
+        'data-debug-id={`chain-artifact-copy-btn-${artifactId}`}',
+        'data-debug-id={`chain-artifact-open-btn-${artifactId}`}',
+    ])),
+    ('artifacts panel copy action writes exact artifact links and surfaces toast feedback', all(snippet in PANEL for snippet in [
+        'const link = `artifact://${artifactId}`;',
+        'navigator?.clipboard?.writeText',
+        "title: 'Artifact link copied'",
+        "title: 'Copy failed'",
+    ])),
+    ('artifacts panel rows show identifying metadata', all(snippet in PANEL for snippet in [
+        'const detailBits = [kind || \'artifact\', mime, formatBytes(Number(row.size_bytes || 0))].filter(Boolean);',
+        "creator ? `creator ${creator}` : ''",
+        "originKind ? `origin ${originKind}${originRef ? ` · ${originRef}` : ''}` : ''",
+        "updatedAt ? `updated ${updatedAt}` : createdAt ? `created ${createdAt}` : ''",
+    ])),
+    ('artifacts panel paste handler uploads clipboard_panel artifacts and refreshes the list', all(snippet in PANEL for snippet in [
+        "const pasteUpload = useArtifactUpload({ projectId, originRef: chainId || '', originKind: 'clipboard_panel' });",
+        "const result = await pasteUpload.uploadClipboardImage(event, { projectId, originKind: 'clipboard_panel', originRef: chainId || '' });",
+        "title: 'Artifact created'",
+        'refreshArtifacts();',
+    ])),
     ('artifact viewer debug ids present', all(snippet in VIEWER for snippet in [
         'data-debug-id="artifact-viewer"',
         'data-debug-id="artifact-viewer-download-btn"',
@@ -80,6 +135,16 @@ checks = [
     ('artifact viewer uses shared markdown renderer for markdown artifacts', ('import MarkdownBody from "./MarkdownBody"' in VIEWER or "import MarkdownBody from './MarkdownBody'" in VIEWER) and 'source={textContent}' in VIEWER),
     ('artifact viewer preview classification is markdown/png/unsupported only', "type PreviewKind = 'markdown' | 'png' | 'unsupported';" in VIEWER and "return 'unsupported';" in VIEWER),
     ('unsupported previews show clear fallback text', 'Preview is not available for this artifact type' in VIEWER),
+    ('chain view text inputs support clipboard image paste with visible errors', all(snippet in APP for snippet in [
+        "const composerArtifactUpload = useArtifactUpload({ projectId, originRef: chain.chainId || '', originKind: 'clipboard_chat' });",
+        'onPaste={async (event) => {',
+        "originKind: 'clipboard_chat'",
+        'data-debug-id="chain-coordinator-paste-error"',
+        "const taskTextArtifactUpload = useArtifactUpload({ projectId, originRef: chainId || '', originKind: 'clipboard_chain_text' });",
+        "originKind: 'clipboard_chain_text'",
+        'data-debug-id={`task-detail-nudge-paste-error-${task.taskId}`}',
+        'data-debug-id={`task-detail-comment-paste-error-${task.taskId}`}',
+    ])),
     ('nested artifact chips are supported inside artifact markdown previews', 'const [nestedArtifactId, setNestedArtifactId]' in VIEWER and 'onArtifactClick={setNestedArtifactId}' in VIEWER),
 ]
 
