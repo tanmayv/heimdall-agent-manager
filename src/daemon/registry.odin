@@ -529,17 +529,25 @@ valid_agent_id_part :: proc(id: string) -> bool {
 	return true
 }
 
-// teams-v2: an agent_instance_id is a project-free slug of [a-zA-Z0-9-].
-// Reserved identities (operator@local, user_proxy) are the ONLY ids permitted to
-// contain '@'; they are accepted here but must not be creatable via /agents/create
-// (see agent_instance_id_is_reserved).
+// teams-v2 accepts both durable project-free instance slugs (Reusable-Agent)
+// and the legacy/generated runtime shape (role@project-chain). The reusable
+// /agents/create path generates project-free slugs, but scaffold/generated team
+// agents still use role@project-chain and wrappers must be able to register them.
+// Reserved identities (operator@local, user_proxy) are accepted here but must not
+// be creatable via /agents/create (see agent_instance_id_is_reserved).
 agent_instance_id_is_reserved :: proc(agent_instance_id: string) -> bool {
 	return agent_instance_id == "operator@local" || agent_instance_id == "user_proxy"
 }
 
 valid_agent_instance_id :: proc(agent_instance_id: string) -> bool {
 	if agent_instance_id_is_reserved(agent_instance_id) do return true
-	return valid_agent_id_part(agent_instance_id)
+	if valid_agent_id_part(agent_instance_id) do return true
+	if at := strings.index_byte(agent_instance_id, '@'); at > 0 {
+		// Exactly one @, and both sides are non-empty [A-Za-z0-9-] parts.
+		if strings.index_byte(agent_instance_id[at + 1:], '@') >= 0 do return false
+		return valid_agent_id_part(agent_instance_id[:at]) && valid_agent_id_part(agent_instance_id[at + 1:])
+	}
+	return false
 }
 
 // teams-v2: conversation id stays PER-INSTANCE. A running instance intentionally
