@@ -256,43 +256,34 @@ agent_id_event_json :: proc(event: Agent_Id_Event) -> string {
 	return strings.to_string(b)
 }
 
-// teams-v2 Phase 1: deterministic provider/tier resolution for launching an
-// instance. First non-empty wins:
-//   1. explicit request value
-//   2. the instance record's resolved value
-//   3. the agent_id's durable default
-//   4. the template default
-//   5. config global default
-// Note: in this repo `pi` IS a runnable provider profile (config.toml
-// [wrapper.agent-cmd.pi], default_agent = "pi"), so template seeds using "pi"
-// are valid and are intentionally NOT changed.
-agent_resolve_provider_profile :: proc(agent_id, request_value, instance_value: string) -> string {
+// Provider profile is runtime-only launch information; it is not persisted per
+// instance/agent_id/template. Resolution has just two tiers (first non-empty
+// wins):
+//   1. explicit request override (run one agent with a specific provider)
+//   2. the operator default preference (db value), which itself falls back to
+//      the config default (server_config.daemon.default_agent_provider_profile)
+//      via get_preference_default. This is the value used to run any new agent,
+//      and it can be reset to the config default.
+agent_resolve_provider_profile :: proc(request_value: string) -> string {
 	if request_value != "" do return strings.clone(request_value)
-	if instance_value != "" do return strings.clone(instance_value)
-	if idx := agent_id_index(agent_id); idx >= 0 && agent_id_records[idx].default_provider_profile != "" {
-		return strings.clone(agent_id_records[idx].default_provider_profile)
-	}
 	if pref := memory_auditor_resolve_pref("", "default_agent_provider_profile"); pref != "" {
 		return pref
 	} else {
 		delete(pref)
 	}
-	if tid := agent_id_template_id(agent_id); tid != "" {
-		if tidx := agent_template_index(tid); tidx >= 0 && agent_template_records[tidx].default_provider_profile != "" {
-			return strings.clone(agent_template_records[tidx].default_provider_profile)
-		}
-	}
-	if server_config.daemon.default_agent_provider_profile != "" do return strings.clone(server_config.daemon.default_agent_provider_profile)
 	if server_config.wrapper.default_agent != "" do return strings.clone(server_config.wrapper.default_agent)
 	return ""
 }
 
-agent_resolve_model_tier :: proc(agent_id, request_value, instance_value: string) -> string {
+// Model tier, like provider profile, is runtime-only launch information. First
+// non-empty wins:
+//   1. explicit request override (run one agent at a specific tier)
+//   2. the operator default preference (db value), which itself falls back to
+//      the config default (server_config.daemon.default_agent_model_tier) via
+//      get_preference_default. This is the value used to run any new agent, and
+//      it can be reset to the config default.
+agent_resolve_model_tier :: proc(request_value: string) -> string {
 	if request_value != "" && valid_model_tier(request_value) do return normalize_model_tier(request_value)
-	if instance_value != "" do return normalize_model_tier(instance_value)
-	if idx := agent_id_index(agent_id); idx >= 0 && agent_id_records[idx].default_model_tier != "" {
-		return normalize_model_tier(agent_id_records[idx].default_model_tier)
-	}
 	if pref := memory_auditor_resolve_pref("", "default_agent_model_tier"); pref != "" {
 		tier := normalize_model_tier(pref)
 		if tier != pref {
@@ -302,11 +293,6 @@ agent_resolve_model_tier :: proc(agent_id, request_value, instance_value: string
 		return tier
 	} else {
 		delete(pref)
-	}
-	if tid := agent_id_template_id(agent_id); tid != "" {
-		if tidx := agent_template_index(tid); tidx >= 0 && agent_template_records[tidx].suggested_model_tier != "" {
-			return normalize_model_tier(agent_template_records[tidx].suggested_model_tier)
-		}
 	}
 	return normalize_model_tier("normal")
 }

@@ -232,40 +232,34 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 		return
 	}
 
-	// Resolve model_tier: stored record's tier is the base; caller may override.
-	stored_model_tier := "normal"
-	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 {
-		stored_model_tier = normalize_model_tier(agent_instance_records[idx].model_tier)
+	// Model tier is runtime-only launch info. Capture just the explicit request
+	// override (if any); the durable value used to persist the instance is the
+	// resolved operator/config default, not a per-instance memory.
+	request_tier := extract_json_string(body, "model_tier", "")
+	if request_tier != "" && !valid_model_tier(request_tier) {
+		write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid model_tier; expected cheap, normal, or smart"}`)
+		return
 	}
-	if request_tier := extract_json_string(body, "model_tier", ""); request_tier != "" {
-		if !valid_model_tier(request_tier) {
-			write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid model_tier; expected cheap, normal, or smart"}`)
-			return
-		}
-		stored_model_tier = normalize_model_tier(request_tier)
-	}
+	stored_model_tier := agent_resolve_model_tier(request_tier)
 
 	log_path := wrapper_log_path(agent_instance_id)
 	manual_scope := agent_scope_infer(agent_instance_id, template_id)
-	agent_record_id, final_tier, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, provider_profile, project_id, "", stored_model_tier, "", manual_scope, agent_role)
+	agent_record_id, _, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, provider_profile, project_id, "", stored_model_tier, "", manual_scope, agent_role)
 	if !upsert_ok {
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`)
 		return
 	}
-	// Reload provider_profile and project_id as resolved by upsert (may have
-	// fallen back to stored value if caller didn't provide a fresh one).
+	// Reload project_id as resolved by upsert (may have fallen back to the stored
+	// value if the caller didn't provide a fresh one). Provider is runtime-only
+	// and intentionally NOT reloaded from the instance record here.
 	resolved_project_id := project_id
 	if idx := agent_record_index(agent_record_id); idx >= 0 {
-		provider_profile = agent_instance_records[idx].provider_profile
 		resolved_project_id = agent_instance_records[idx].project_id
 	}
-	// teams-v2: deterministic provider/tier resolution (request -> instance ->
-	// agent_id default -> template -> config). Fills provider when the instance
-	// record left it blank so create-from-template + start never launches without
-	// a runnable provider profile.
-	resolved_agent_id := agent_id_from_instance_id(agent_instance_id)
-	provider_profile = agent_resolve_provider_profile(resolved_agent_id, provider_profile, provider_profile)
-	final_tier = agent_resolve_model_tier(resolved_agent_id, "", final_tier)
+	// Provider and tier are runtime-only launch info: request override, else the
+	// operator/config default. Neither is sourced from the durable instance record.
+	provider_profile = agent_resolve_provider_profile(provider_profile)
+	final_tier := stored_model_tier
 
 	agent_token := generate_agent_token()
 	if !agent_runtime_tracker_try_begin_launch(agent_instance_id, agent_token, "manual_agent_start", "", router_now_unix_ms()) {

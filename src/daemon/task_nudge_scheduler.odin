@@ -319,8 +319,8 @@ task_autoscaler_launch_agent :: proc(chain: Task_Chain_State, agent_instance_id:
 	resolved_agent_id := agent_id_from_instance_id(agent_instance_id)
 	template_id := agent_id_template_id(resolved_agent_id)
 	display_name := agent_instance_id
-	provider_profile := agent_resolve_provider_profile(resolved_agent_id, "", "")
-	model_tier := agent_resolve_model_tier(resolved_agent_id, "", "")
+	provider_profile := agent_resolve_provider_profile("")
+	model_tier := agent_resolve_model_tier("")
 	if provider_profile == "" do provider_profile = "pi"
 	if model_tier == "" do model_tier = "normal"
 	if team_template, team_provider, team_tier, ok := task_autoscaler_team_role_defaults(chain, agent_instance_id); ok {
