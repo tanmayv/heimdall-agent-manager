@@ -102,27 +102,26 @@ relaunches it from its durable instance record into its home project (Rule A); l
 picked directly. Coding tasks guardrailed to `instance.project == chain.project`.
 
 ### Tasks
-- **P3-1 New association store.** Persist `Agent_Chain_Association` records
+- **P3-1 New association store — DONE.** Persist `Agent_Chain_Association` records
   (`association_id, agent_instance_id, project_id, chain_id, task_id, association_kind,
-  created_unix_ms, last_active_unix_ms`).
-- **P3-2 Soften membership gate.** `task_agent_instance_allowed_for_chain` no longer hard-fails;
-  auto-creates association for non-member eligible agents. `src/daemon/task_service.odin:985`
-  (and callers `:99,105,892,949`).
-- **P3-3 Queue-on-busy.** Reinterpret `task_active_slot_blocker`: assignment to a busy agent is
-  accepted but the task queues; return `queued_behind_task_id`. `src/daemon/task_queries.odin:183`.
-- **P3-4 Inherit chain+project on assign.** On assignment to idle/never-run agent, record intent
-  `{project_id := chain.project_id, chain_id := task.chain_id, task_id}`; launch reads project
-  from chain. Define tiebreaks: unchained task → require explicit `project_id` else
-  `"project_required_for_unchained_task"`; chain without project → project-less run.
-- **P3-5 Reviewer selection.** Allow any live/eligible non-team agent as reviewer; keep
-  non-self/non-user constraints (`task_service_pick_non_user_reviewer`).
-- **P3-6 Derived roster.** Compute chain roster from associations + live runs (+ optional
-  template suggestions); replace team_members as source of truth.
+  created_unix_ms, last_active_unix_ms`) in `task.db` (`agent_chain_associations`, schema v8).
+- **P3-2 Soften membership gate — DONE.** `task_agent_instance_allowed_for_chain` no longer
+  requires chain team membership; any known non-archived agent (plus user-proxy reviewers) is
+  eligible. Task events centrally upsert association rows.
+- **P3-3 Queue-on-busy — DONE for assignment.** Direct reassignment to a busy active assignee is
+  accepted and returns `queued_behind_task_id`; pending-review attention gates remain hard blocks.
+- **P3-4 Rule A restart/home project — DONE.** Launch resolution uses the durable instance's home
+  `project_id` if present; chain project is only the default for new/no-home instances.
+- **P3-5 Reviewer selection — DONE.** Eligible non-team agents can be added as reviewers via the
+  softened gate; non-self/default-reviewer/user constraints remain.
+- **P3-6 Derived roster — PENDING.** Association rows exist and are indexed, but legacy team-member
+  endpoints still expose scaffold membership. Full roster replacement should happen before/with P5.
 
 ### Acceptance
-- Assign a task to an idle never-run agent → on launch it runs in the chain's project/chain.
-- Assign/review with a live non-team agent succeeds (auto-associated).
-- Assigning to a busy live agent returns `queued_behind_task_id`, does not spawn a 2nd run.
+- Assign a task to an idle never-run agent → association records chain/project/task intent; launch
+  uses durable home project by Rule A (or chain project for no-home instances).
+- Assign/review with a non-team eligible agent succeeds and auto-associates. ✓ runtime-smoked.
+- Assigning to a busy active agent returns `queued_behind_task_id`, does not spawn a 2nd run. ✓ runtime-smoked.
 
 ### Risks
 - Roster derivation O(agents×tasks) per request — index associations.

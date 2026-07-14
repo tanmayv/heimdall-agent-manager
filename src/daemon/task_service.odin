@@ -97,13 +97,13 @@ task_service_create_task :: proc(cmd: Task_Create_Command) -> Task_Service_Resul
 		created_chain = true
 	}
 	if cmd.assignee_agent_instance_id != "" && !task_agent_instance_allowed_for_chain(chain_id, cmd.assignee_agent_instance_id) {
-		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"assignee is not a member of this chain team"}`}
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"assignee is not an eligible agent (unknown or archived)"}`}
 	}
 	if cmd.assignee_agent_instance_id != "" && task_agent_instance_has_chain_role(chain_id, cmd.assignee_agent_instance_id, "reviewer") {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"reviewer role agent cannot be the assignee"}`}
 	}
 	if reviewer_agent_instance_id != "" && !task_agent_instance_allowed_for_chain(chain_id, reviewer_agent_instance_id) {
-		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"reviewer is not a member of this chain team"}`}
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"reviewer is not an eligible agent (unknown or archived)"}`}
 	}
 	priority := cmd.priority
 	if priority == "" do priority = "normal"
@@ -890,11 +890,15 @@ task_service_assign_command :: proc(cmd: Task_Assign_Command) -> Task_Service_Re
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"reviewer role agent cannot be the assignee"}`}
 	}
 	if !task_agent_instance_allowed_for_chain(state.chain_id, cmd.agent_instance_id) {
-		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"agent is not a member of this chain team"}`}
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"agent is not an eligible agent (unknown or archived)"}`}
 	}
+	queued_behind_task_id := ""
 	if task_status_active_for_assignee(state) {
 		if active := task_active_slot_blocker(cmd.agent_instance_id, state.task_id); active != "" {
-			return task_gating_error("assignee_active_task", "assignee already has an active task", active)
+			if active == "pending_reviews_exist" {
+				return task_gating_error("assignee_active_task", "assignee already has pending reviews", active)
+			}
+			queued_behind_task_id = active
 		}
 	}
 	event := Task_Event{
@@ -909,6 +913,11 @@ task_service_assign_command :: proc(cmd: Task_Assign_Command) -> Task_Service_Re
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append task assignment failed"}`}
 	}
 	task_notify_event(event)
+	if queued_behind_task_id != "" {
+		b := strings.builder_make()
+		strings.write_string(&b, `{"ok":true,"queued_behind_task_id":"`); json_write_string(&b, queued_behind_task_id); strings.write_string(&b, `"}`)
+		return Task_Service_Result{ok = true, status_code = 200, message = strings.to_string(b)}
+	}
 	return Task_Service_Result{ok = true, status_code = 200, message = `{"ok":true}`}
 }
 
@@ -947,7 +956,7 @@ task_service_participant_command :: proc(cmd: Task_Participant_Command) -> Task_
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"reviewer role agent cannot be the assignee"}`}
 	}
 	if !task_agent_instance_allowed_for_chain(state.chain_id, agent_instance_id) {
-		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"agent is not a member of this chain team"}`}
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"agent is not an eligible agent (unknown or archived)"}`}
 	}
 	event := Task_Event{
 		kind                     = .Task_Participant_Added,
@@ -982,17 +991,55 @@ task_agent_instance_has_chain_role :: proc(chain_id, agent_instance_id, role_key
 	return false
 }
 
+// teams-v2 Phase 3: assignment is no longer gated by chain team membership.
+// Any existing, non-archived agent instance (or an allowed user-proxy reviewer)
+// may be assigned/reviewed on any chain; involvement is recorded via an
+// association record instead of requiring pre-existing membership.
+//
+// This returns whether the agent is *eligible* at all. The surrounding conflict
+// checks (assignee != reviewer, default-reviewer separation, active-slot gating)
+// are enforced separately by the callers and are unchanged.
+task_record_agent_chain_association :: proc(chain_id, task_id, agent_instance_id, association_kind: string) -> bool {
+	if chain_id == "" || task_id == "" || agent_instance_id == "" || association_kind == "" do return true
+	project_id := ""
+	if chain, found := store_get_chain(chain_id); found {
+		project_id = chain.project_id
+	}
+	now := router_now_unix_ms()
+	assoc := Agent_Chain_Association{
+		association_id = fmt.tprintf("assoc_%s_%s_%s_%s", chain_id, task_id, agent_instance_id, association_kind),
+		agent_instance_id = agent_instance_id,
+		project_id = project_id,
+		chain_id = chain_id,
+		task_id = task_id,
+		association_kind = association_kind,
+		created_unix_ms = now,
+		last_active_unix_ms = now,
+	}
+	return task_db_save_agent_chain_association(assoc)
+}
+
 task_agent_instance_allowed_for_chain :: proc(chain_id, agent_instance_id: string) -> bool {
 	if agent_instance_id == "" do return false
 	chain, chain_found := store_get_chain(chain_id)
-	if !chain_found do return true
-	if agent_instance_id == chain.coordinator_agent_instance_id || agent_instance_id == chain.default_reviewer_agent_instance_id do return true
-	if chain.team_id == "" do return true
-	members := team_db_list_members(team_service_db, chain.team_id)
-	for member in members {
-		if task_reviewer_matches_user_proxy_member(agent_instance_id, member) do return true
-		if member.agent_instance_id != "" && member.agent_instance_id == agent_instance_id do return true
-		if member.route_to != "" && member.route_to == agent_instance_id do return true
+	// Coordinator / default reviewer are always allowed.
+	if chain_found && (agent_instance_id == chain.coordinator_agent_instance_id || agent_instance_id == chain.default_reviewer_agent_instance_id) do return true
+	// Allowed user-proxy / operator reviewer identities remain permitted.
+	if agent_instance_id == "user_proxy" || agent_instance_id == HUMAN_RECIPIENT_ID do return true
+	// Any known, non-archived agent identity is eligible (flexible assignment).
+	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 {
+		return agent_instance_records[idx].archived_at_unix_ms == 0
+	}
+	// Fall back to legacy team membership so pre-teams-v2 route_to aliases still
+	// resolve even when no standalone agent record exists.
+	if chain_found && chain.team_id != "" {
+		members := team_db_list_members(team_service_db, chain.team_id)
+		defer delete(members)
+		for member in members {
+			if task_reviewer_matches_user_proxy_member(agent_instance_id, member) do return true
+			if member.agent_instance_id != "" && member.agent_instance_id == agent_instance_id do return true
+			if member.route_to != "" && member.route_to == agent_instance_id do return true
+		}
 	}
 	return false
 }

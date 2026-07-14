@@ -302,10 +302,13 @@ task_autoscaler_team_has_high_priority_boot :: proc(team_id: string) -> bool {
 task_autoscaler_launch_agent :: proc(chain: Task_Chain_State, agent_instance_id: string, launch_source: string = "", launch_task_id: string = "", launch_token: string = "") -> bool {
 	launch_start_ms := router_now_unix_ms()
 	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=resolve_config_begin source=%s chain=%s team=%s task=%s target=%s", launch_start_ms, launch_source, chain.chain_id, chain.team_id, launch_task_id, agent_instance_id)
-	template_id := derive_agent_class(agent_instance_id)
+	// teams-v2: resolve identity/config from the durable agent_id + template first,
+	// then let team-role defaults and the instance record refine below.
+	resolved_agent_id := agent_id_from_instance_id(agent_instance_id)
+	template_id := agent_id_template_id(resolved_agent_id)
 	display_name := agent_instance_id
-	provider_profile := memory_auditor_resolve_pref("", "default_agent_provider_profile")
-	model_tier := memory_auditor_resolve_pref("", "default_agent_model_tier")
+	provider_profile := agent_resolve_provider_profile(resolved_agent_id, "", "")
+	model_tier := agent_resolve_model_tier(resolved_agent_id, "", "")
 	if provider_profile == "" do provider_profile = "pi"
 	if model_tier == "" do model_tier = "normal"
 	if team_template, team_provider, team_tier, ok := task_autoscaler_team_role_defaults(chain, agent_instance_id); ok {
@@ -313,17 +316,23 @@ task_autoscaler_launch_agent :: proc(chain: Task_Chain_State, agent_instance_id:
 		if team_provider != "" do provider_profile = team_provider
 		if team_tier != "" do model_tier = team_tier
 	}
+	// teams-v2 Rule A: the instance's HOME project is authoritative for restart.
+	// Default the launch project to the chain's project, but if the durable
+	// instance record already has a home project, that wins (the agent relaunches
+	// into its own home, not the chain's).
+	launch_project_id := chain.project_id
 	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 {
 		rec := agent_instance_records[idx]
 		if rec.template_id != "" do template_id = rec.template_id
 		if rec.display_name != "" do display_name = rec.display_name
 		if rec.provider_profile != "" do provider_profile = rec.provider_profile
 		if rec.model_tier != "" do model_tier = rec.model_tier
+		if rec.project_id != "" do launch_project_id = rec.project_id
 	}
 	now := router_now_unix_ms()
-	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=resolve_config_done source=%s chain=%s team=%s task=%s target=%s template=%s provider=%s tier=%s project=%s", now, now - launch_start_ms, launch_source, chain.chain_id, chain.team_id, launch_task_id, agent_instance_id, template_id, provider_profile, model_tier, chain.project_id)
-	fmt.printfln("RUNTIME_RECONCILE_AGENT_CONFIG: target=%s chain=%s team=%s template=%s provider=%s tier=%s project=%s", agent_instance_id, chain.chain_id, chain.team_id, template_id, provider_profile, model_tier, chain.project_id)
-	rec_id, final_tier, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, provider_profile, chain.project_id, "", model_tier)
+	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=resolve_config_done source=%s chain=%s team=%s task=%s target=%s template=%s provider=%s tier=%s project=%s", now, now - launch_start_ms, launch_source, chain.chain_id, chain.team_id, launch_task_id, agent_instance_id, template_id, provider_profile, model_tier, launch_project_id)
+	fmt.printfln("RUNTIME_RECONCILE_AGENT_CONFIG: target=%s chain=%s team=%s template=%s provider=%s tier=%s project=%s", agent_instance_id, chain.chain_id, chain.team_id, template_id, provider_profile, model_tier, launch_project_id)
+	rec_id, final_tier, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, provider_profile, launch_project_id, "", model_tier)
 	if !upsert_ok || rec_id == "" {
 		now = router_now_unix_ms()
 		fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=record_upsert_failed source=%s chain=%s team=%s task=%s target=%s", now, now - launch_start_ms, launch_source, chain.chain_id, chain.team_id, launch_task_id, agent_instance_id)
@@ -336,8 +345,8 @@ task_autoscaler_launch_agent :: proc(chain: Task_Chain_State, agent_instance_id:
 	registry_add_pending_agent_token(agent_instance_id, agent_token)
 	log_path := wrapper_log_path(agent_instance_id)
 	now = router_now_unix_ms()
-	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=wrapper_spawn_request source=%s chain=%s team=%s task=%s target=%s provider=%s tier=%s project=%s log=%s", now, now - launch_start_ms, launch_source, chain.chain_id, chain.team_id, launch_task_id, agent_instance_id, provider_profile, final_tier, chain.project_id, log_path)
-	ok := launch_wrapper_detached(agent_instance_id, provider_profile, server_config_path, log_path, agent_token, display_name, final_tier, chain.project_id, launch_source, chain.chain_id, chain.team_id, launch_task_id)
+	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=wrapper_spawn_request source=%s chain=%s team=%s task=%s target=%s provider=%s tier=%s project=%s log=%s", now, now - launch_start_ms, launch_source, chain.chain_id, chain.team_id, launch_task_id, agent_instance_id, provider_profile, final_tier, launch_project_id, log_path)
+	ok := launch_wrapper_detached(agent_instance_id, provider_profile, server_config_path, log_path, agent_token, display_name, final_tier, launch_project_id, launch_source, chain.chain_id, chain.team_id, launch_task_id)
 	now = router_now_unix_ms()
 	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=wrapper_spawn_result source=%s chain=%s team=%s task=%s target=%s ok=%t", now, now - launch_start_ms, launch_source, chain.chain_id, chain.team_id, launch_task_id, agent_instance_id, ok)
 	return ok

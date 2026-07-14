@@ -136,6 +136,19 @@ task_db_create_schema :: proc() -> bool {
 		PRIMARY KEY (task_id, agent_instance_id, role)
 	);
 
+	CREATE TABLE IF NOT EXISTS agent_chain_associations (
+		association_id TEXT PRIMARY KEY,
+		agent_instance_id TEXT NOT NULL,
+		project_id TEXT NOT NULL,
+		chain_id TEXT NOT NULL,
+		task_id TEXT NOT NULL,
+		association_kind TEXT NOT NULL,
+		created_unix_ms INTEGER NOT NULL,
+		last_active_unix_ms INTEGER NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_agent_chain_associations_chain ON agent_chain_associations(chain_id, agent_instance_id);
+	CREATE INDEX IF NOT EXISTS idx_agent_chain_associations_agent ON agent_chain_associations(agent_instance_id, chain_id);
+
 	CREATE TABLE IF NOT EXISTS task_notification_outbox (
 		recipient_agent_instance_id TEXT NOT NULL,
 		event_id TEXT NOT NULL,
@@ -370,6 +383,38 @@ task_db_save_participant :: proc(part: Task_Participant) -> bool {
 	rc = sqlite3_step(stmt)
 	if rc != SQLITE_DONE {
 		fmt.printf("task_db_save_participant: step failed: %d (%s)\n", rc, sqlite3_errmsg(task_db.db))
+		return false
+	}
+	return true
+}
+
+task_db_save_agent_chain_association :: proc(assoc: Agent_Chain_Association) -> bool {
+	if assoc.association_id == "" || assoc.agent_instance_id == "" || assoc.chain_id == "" do return false
+	stmt: sqlite3_stmt = nil
+	query := `INSERT INTO agent_chain_associations (
+		association_id, agent_instance_id, project_id, chain_id, task_id, association_kind, created_unix_ms, last_active_unix_ms
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	ON CONFLICT(association_id) DO UPDATE SET last_active_unix_ms = excluded.last_active_unix_ms`
+
+	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK {
+		fmt.println("task_db_save_agent_chain_association: prepare failed:", rc)
+		return false
+	}
+	defer sqlite3_finalize(stmt)
+
+	task_db_bind_text(stmt, 1, assoc.association_id)
+	task_db_bind_text(stmt, 2, assoc.agent_instance_id)
+	task_db_bind_text(stmt, 3, assoc.project_id)
+	task_db_bind_text(stmt, 4, assoc.chain_id)
+	task_db_bind_text(stmt, 5, assoc.task_id)
+	task_db_bind_text(stmt, 6, assoc.association_kind)
+	sqlite3_bind_int64(stmt, 7, assoc.created_unix_ms)
+	sqlite3_bind_int64(stmt, 8, assoc.last_active_unix_ms)
+
+	rc = sqlite3_step(stmt)
+	if rc != SQLITE_DONE {
+		fmt.printf("task_db_save_agent_chain_association: step failed: %d (%s)\n", rc, sqlite3_errmsg(task_db.db))
 		return false
 	}
 	return true
@@ -642,7 +687,7 @@ task_db_execute :: proc(query: string) -> bool {
 	return true
 }
 
-TASK_DB_SCHEMA_VERSION :: 7 // Version 1: evaluation, Version 2: last_audit_at_unix_ms, Version 3: default_reviewer_agent_instance_id, Version 4: team_id, Version 5: vcs_workspace_id, Version 6: diff_base_sha, Version 7: reset old persisted task.db files for caller-identity review robustness (no migration path)
+TASK_DB_SCHEMA_VERSION :: 8 // Version 1: evaluation, Version 2: last_audit_at_unix_ms, Version 3: default_reviewer_agent_instance_id, Version 4: team_id, Version 5: vcs_workspace_id, Version 6: diff_base_sha, Version 7: reset old persisted task.db files for caller-identity review robustness (no migration path), Version 8: agent_chain_associations
 
 task_db_backfill_team_ids :: proc() -> bool {
 	if !db_has_column(task_db.db, "task_chains", "team_id") do return true

@@ -126,6 +126,17 @@ Task_Participant :: struct {
 	role:               string,
 }
 
+Agent_Chain_Association :: struct {
+	association_id:     string,
+	agent_instance_id:  string,
+	project_id:         string,
+	chain_id:           string,
+	task_id:            string,
+	association_kind:   string,
+	created_unix_ms:    i64,
+	last_active_unix_ms: i64,
+}
+
 Task_Comment_State :: struct {
 	comment_id:               string,
 	task_id:                  string,
@@ -317,6 +328,25 @@ task_store_append_event :: proc(event: Task_Event) -> bool {
 	if !task_store_persist_projection_for_event(ev) {
 		// ponytail: persistence happens after the in-memory projection; don't report a false user failure after accepting the task event.
 		fmt.printfln("WARNING: task event accepted but SQLite projection persist failed | Kind: %v | Task ID: %s | Chain ID: %s", ev.kind, ev.task_id, ev.chain_id)
+	}
+	if !task_store_persist_associations_for_event(ev) {
+		fmt.printfln("WARNING: task event accepted but agent-chain association persist failed | Kind: %v | Task ID: %s | Chain ID: %s", ev.kind, ev.task_id, ev.chain_id)
+	}
+	return true
+}
+
+task_store_persist_associations_for_event :: proc(ev: Task_Event) -> bool {
+	if ev.chain_id == "" || ev.task_id == "" do return true
+	#partial switch ev.kind {
+	case .Task_Created:
+		ok := true
+		if ev.assignee_agent_instance_id != "" do ok = task_record_agent_chain_association(ev.chain_id, ev.task_id, ev.assignee_agent_instance_id, "assignee") && ok
+		if ev.reviewer_agent_instance_id != "" do ok = task_record_agent_chain_association(ev.chain_id, ev.task_id, ev.reviewer_agent_instance_id, "reviewer") && ok
+		return ok
+	case .Task_Assigned:
+		return task_record_agent_chain_association(ev.chain_id, ev.task_id, ev.agent_instance_id, "assignee")
+	case .Task_Participant_Added:
+		return task_record_agent_chain_association(ev.chain_id, ev.task_id, ev.agent_instance_id, ev.role)
 	}
 	return true
 }
