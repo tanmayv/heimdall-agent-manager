@@ -557,7 +557,7 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 				failed_heartbeats = 0
 				notify_agent_token_refreshed(tmux_pane, daemon_url, new_token, agent_instance_id)
 			} else if terminal_auth_failure {
-				close_wrapper_after_auth_failure(agent_instance_id, "ws_reconnect_register_401", "daemon rejected re-registration while WS was disconnected", ws_conn)
+				close_wrapper_after_auth_failure(agent_instance_id, "ws_reconnect_register_terminal", "daemon rejected re-registration while WS was disconnected", tmux_pane, tmux_session, window_name, ws_conn)
 				return
 			} else {
 				fmt.println("WebSocket reconnection attempt failed; will retry", agent_instance_id)
@@ -588,10 +588,11 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 				}
 			} else if ok && response.status == 401 {
 				fmt.println("heartbeat unauthorized; closing wrapper", agent_instance_id, response.body)
-				close_wrapper_after_auth_failure(agent_instance_id, "heartbeat_401", response.body, ws_conn)
+				close_wrapper_after_auth_failure(agent_instance_id, "heartbeat_401", response.body, tmux_pane, tmux_session, window_name, ws_conn)
 				return
 			} else if ok && response.status == 409 {
-				fmt.println("fatal: heartbeat conflict; stopping wrapper", agent_instance_id, response.body)
+				fmt.println("fatal: heartbeat conflict; closing wrapper", agent_instance_id, response.body)
+				close_wrapper_after_auth_failure(agent_instance_id, "heartbeat_409", response.body, tmux_pane, tmux_session, window_name, ws_conn)
 				return
 			} else if ok && response.status == 400 {
 				fmt.println("heartbeat rejected", agent_instance_id, response.body)
@@ -613,7 +614,7 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 					failed_heartbeats = 0
 					notify_agent_token_refreshed(tmux_pane, daemon_url, new_token, agent_instance_id)
 				} else if terminal_auth_failure {
-					close_wrapper_after_auth_failure(agent_instance_id, "heartbeat_retry_register_401", "daemon rejected re-registration after repeated heartbeat failures", ws_conn)
+					close_wrapper_after_auth_failure(agent_instance_id, "heartbeat_retry_register_terminal", "daemon rejected re-registration after repeated heartbeat failures", tmux_pane, tmux_session, window_name, ws_conn)
 					return
 				} else {
 					fmt.println("reconnect attempt failed", agent_instance_id)
@@ -813,10 +814,18 @@ report_stop_done :: proc(ws_conn: ^ws.Connection, agent_instance_id: string) {
 	_ = ws.send_text(ws_conn, strings.to_string(b))
 }
 
-close_wrapper_after_auth_failure :: proc(agent_instance_id, reason, detail: string, ws_conn: ^ws.Connection) {
-	fmt.println("AUTH FAILURE: closing wrapper", agent_instance_id, reason)
+close_wrapper_after_auth_failure :: proc(agent_instance_id, reason, detail, tmux_pane, tmux_session, window_name: string, ws_conn: ^ws.Connection) {
+	fmt.println("AUTH FAILURE: closing wrapper and agent process", agent_instance_id, reason)
 	if detail != "" do fmt.println("auth_failure_detail", detail)
 	ws.close(ws_conn)
+	if tmux_pane != "" {
+		fmt.println("auth_failure: killing pane", tmux_pane)
+		_ = tmux.kill_pane(tmux_pane)
+	}
+	if tmux_session != "" && window_name != "" {
+		fmt.println("auth_failure: killing window", tmux_session, window_name)
+		_ = tmux.kill_window(tmux_session, window_name)
+	}
 }
 
 reregister_and_reconnect_ws :: proc(daemon_url, agent_class, agent_instance_id, display_name, agent_token: string, ws_conn: ^ws.Connection) -> (new_ws_url: string, new_token: string, terminal_auth_failure: bool, ok: bool) {
@@ -828,8 +837,8 @@ reregister_and_reconnect_ws :: proc(daemon_url, agent_class, agent_instance_id, 
 	if !register_ok || register_response.status != 200 {
 		if register_ok {
 			fmt.println("re-registration failed", register_response.status, register_response.body)
-			if register_response.status == 401 {
-				fmt.println("fatal: re-registration unauthorized; wrapper will stop", agent_instance_id, register_response.body)
+			if register_response.status == 401 || register_response.status == 409 {
+				fmt.println("fatal: re-registration rejected; wrapper will stop", agent_instance_id, register_response.body)
 				return "", "", true, false
 			}
 		} else {

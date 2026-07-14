@@ -30,19 +30,35 @@ handle_register :: proc(client: net.TCP_Socket, body: string) {
 		write_response(client, 409, "Conflict", `{"ok":false,"error":"superseded_launch","message":"agent launch was superseded by a newer runtime generation"}`)
 		return
 	}
-	// Daemon-spawned wrappers keep their issued token across daemon restarts, but the
-	// in-memory pending-token list does not. Allow a requested token for a fresh
-	// instance; still reject untrusted token replacement for an existing registry entry.
-	if requested_agent_token != "" && registry_agent_exists(agent_instance_id) {
-		idx := registry_find_agent(agent_instance_id)
-		if idx >= 0 && agents[idx].agent_token != requested_agent_token && !registry_consume_pending_agent_token(agent_instance_id, requested_agent_token) {
-			write_response(client, 401, "Unauthorized", `{"ok":false,"message":"untrusted pre-generated agent token"}`)
+	// Daemon-spawned wrappers keep their issued token across daemon restarts, but a
+	// stale wrapper must not be able to recreate durable agent records after the
+	// DB/auth store was intentionally reset. A pre-generated token is trusted only
+	// when it is still pending from this daemon process, or when both the durable
+	// agent record and persisted auth-token mapping already exist.
+	durable_agent_exists := agent_record_index_by_instance(agent_instance_id) >= 0
+	if requested_agent_token != "" {
+		trusted_preissued_token := false
+		if registry_consume_pending_agent_token(agent_instance_id, requested_agent_token) {
+			trusted_preissued_token = true
+		} else if durable_agent_exists {
+			itype, iid := auth_db_get_identity(requested_agent_token)
+			if itype == "agent" && iid == agent_instance_id do trusted_preissued_token = true
+		}
+		if !trusted_preissued_token {
+			write_response(client, 401, "Unauthorized", `{"ok":false,"error":"stale_agent_token","message":"pre-generated agent token is not pending or persisted for this agent; stop this wrapper and start the agent again"}`)
 			return
+		}
+		if registry_agent_exists(agent_instance_id) {
+			idx := registry_find_agent(agent_instance_id)
+			if idx >= 0 && agents[idx].agent_token != requested_agent_token {
+				write_response(client, 401, "Unauthorized", `{"ok":false,"error":"token_mismatch","message":"pre-generated agent token does not match active registry token"}`)
+				return
+			}
 		}
 	}
 
 	display_name := extract_json_string(body, "display_name", "")
-	if agent_record_index_by_instance(agent_instance_id) < 0 {
+	if !durable_agent_exists {
 		stored_display := display_name
 		if stored_display == "" do stored_display = agent_instance_id
 		if _, _, ok := agent_record_upsert(agent_instance_id, stored_display, agent_class, "", "", "", "normal", AGENT_IDENTITY_STATE_RUNNING); !ok {

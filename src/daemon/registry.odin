@@ -259,6 +259,10 @@ registry_agent_exists :: proc(agent_instance_id: string) -> bool {
 
 registry_add_pending_agent_token :: proc(agent_instance_id, agent_token: string) {
 	now := now_unix_ms()
+	// Persist daemon-issued launch tokens before the wrapper's first /register.
+	// If the daemon restarts between spawn and register, handle_register can still
+	// distinguish this legitimate wrapper from a stale process after a DB reset.
+	if agent_token != "" do _ = auth_db_store_token(agent_token, "agent", agent_instance_id, now)
 	for i in 0..<pending_agent_token_count {
 		if pending_agent_tokens[i].agent_instance_id == agent_instance_id && !pending_agent_tokens[i].used {
 			pending_agent_tokens[i].agent_token = strings.clone(agent_token)
