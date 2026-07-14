@@ -542,38 +542,21 @@ valid_agent_instance_id :: proc(agent_instance_id: string) -> bool {
 	return valid_agent_id_part(agent_instance_id)
 }
 
-// teams-v2: conversation id is per-run-context. The same agent working two
-// chains must not share one conversation stream, so the id is derived from
-// agent_instance_id + chain_id (falling back to project_id, then bare instance).
-conversation_id_for_run :: proc(agent_instance_id, chain_id, project_id: string) -> string {
+// teams-v2: conversation id stays PER-INSTANCE. A running instance intentionally
+// serves multiple task chains concurrently, so its conversation is the instance's
+// single stream (not per-chain). This preserves existing message-provider behavior.
+conversation_id_for_instance :: proc(agent_instance_id: string) -> string {
 	builder := strings.builder_make()
 	strings.write_string(&builder, "conv_")
-	conversation_id_write_sanitized(&builder, agent_instance_id)
-	ctx := chain_id
-	if ctx == "" do ctx = project_id
-	if ctx != "" {
-		strings.write_string(&builder, "__")
-		conversation_id_write_sanitized(&builder, ctx)
-	}
-	return strings.to_string(builder)
-}
-
-conversation_id_write_sanitized :: proc(builder: ^strings.Builder, value: string) {
-	for ch in value {
+	for ch in agent_instance_id {
 		switch ch {
 		case 'a'..='z', 'A'..='Z', '0'..='9', '_', '-':
-			strings.write_rune(builder, ch)
+			strings.write_rune(&builder, ch)
 		case:
-			strings.write_string(builder, "_")
+			strings.write_string(&builder, "_")
 		}
 	}
-}
-
-// Backwards-internal shim: identity-only conversation id (no chain/project ctx).
-// Used where run context is not yet threaded through; callers should migrate to
-// conversation_id_for_run once a run record is available (Phase 1).
-conversation_id_for_instance :: proc(agent_instance_id: string) -> string {
-	return conversation_id_for_run(agent_instance_id, "", "")
+	return strings.to_string(builder)
 }
 
 registry_agent_live :: proc(agent_instance_id: string) -> bool {

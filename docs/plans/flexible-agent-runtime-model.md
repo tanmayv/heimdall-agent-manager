@@ -1,8 +1,26 @@
 # Plan: Flexible Agent Runtime Model
 
-Status: Ready-for-implementation design (revised after code audit)
+Status: Ready-for-implementation design (revised after code audit; 3-tier identity + Rule A)
 Scope: Heimdall agent identity, per-agent memory, runtime context, task assignment, and team/template model.
-Compatibility: **No backward compatibility required.** We may change the identity primary key, the memory targeting dimensions, DB schemas, wire contracts, and CLI/HTTP shapes. Old data may be dropped or one-shot migrated; do not add compat shims.
+Compatibility: **High compatibility by design.** `agent_instance_id` keeps its existing `agent_id@project` shape and its 1:1 relationship to a live session, so wrapper/tmux/registry/conversation code is largely preserved. The change is *additive*: a new durable `agent_id` identity above the instance, a new per-agent memory dimension, and association records for chain involvement. DB/schema/contract additions are allowed; we avoid changing the instance-id primary-key shape.
+
+## Identity model at a glance (3-tier, Rule A)
+
+```text
+agent_id            durable identity  = name + role/template + defaults + MEMORY target
+   │  1
+   └──< agent_instance_id   runtime binding = agent_id @ HOME project   (NO chain in id)
+            │  1:1
+            └── one live session (tmux pane, token, ONE conversation stream)
+                     └──< serves MANY task chains concurrently (via associations)
+```
+
+Invariants (locked):
+- `agent_instance_id = agent_id @ project` and maps to **at most one** live session (1:1). Never spawn a second session for the same instance-id; reuse it.
+- Chain is **not** part of the instance id; a running instance can service multiple chains concurrently through association records.
+- **Rule A (home is authoritative):** the project in the instance id is the agent's *home* (run_dir, repo anchors, tools/creds). On restart, the assignee's stored `agent_instance_id` is relaunched into its home project — no re-resolution, no auto-clone.
+- Guardrail: **coding/implementation tasks require `assignee_instance.project == chain.project`**; review/research/advisory tasks may be cross-project.
+- Per-agent memory targets `agent_id` (applies to all of that agent's project-instances).
 
 ---
 
@@ -10,10 +28,10 @@ Compatibility: **No backward compatibility required.** We may change the identit
 
 The concrete end-state the user wants:
 
-1. **Agent create button.** Create an agent by giving it a name and picking a predefined role (template). No project required at creation time.
-2. **Per-agent memory.** Create memories scoped to *one specific agent instance*; they apply to that agent only.
-3. **Run anywhere.** The same agent identity can run in any project; project is runtime context, not identity.
-4. **Assign to an idle/never-run agent.** Assigning a task to an agent that is not running is allowed. The agent inherits the task's chain and that chain's project as its runtime context for that run.
+1. **Agent create button.** Create an `agent_id` by giving it a name and picking a predefined role (template). No project required at creation time.
+2. **Per-agent memory.** Create memories scoped to a specific `agent_id`; they apply to that agent (all its project-instances) only.
+3. **Run anywhere.** The same `agent_id` can run in any project as `agent_id@project`; project is the instance's home, not part of the durable identity.
+4. **Assign to an idle/never-run agent.** Assigning a task to an agent that is not running is allowed; if it has no live session the task system relaunches it from its durable instance record (Rule A: into its home project).
 5. **Assign/review with an existing running instance.** Pick a live agent as assignee or reviewer even if it was never part of the chain's generated team.
 
 Every section below is written so these five outcomes have exactly one unambiguous implementation path. Where the current code contradicts an outcome, the conflict is called out explicitly with the file/symbol.
@@ -72,87 +90,89 @@ Implication: "just name it and pick a role, then run" needs a deterministic prov
 
 ## 2. Target model (decisions, not options)
 
-Guiding principle stays:
+Guiding principle:
 
-> Templates propose agents. Assignments define involvement. A run binds an agent to a project + chain + task for execution.
+> Templates propose agents. An `agent_id` is the durable identity. An `agent_instance_id = agent_id@project` is the runtime binding (home project) with a 1:1 live session. Assignments define chain involvement; one instance serves many chains.
 
-But we make the following **binding decisions**.
+Binding decisions follow.
 
-### 2.1 Identity is a stable opaque id, decoupled from project
+### 2.1 Three-tier identity (compatibility-preserving)
 
-Decision:
+Decision: introduce a durable `agent_id` **above** the existing instance id, and preserve the instance-id shape.
 
-- `agent_instance_id` becomes a stable slug **derived from the display name only**, uniquified with a short random/counter suffix. It MUST NOT contain the project.
-  - Example: `reviewer-smart`, `alice-coder`, `researcher-7`.
-- `agent_class`/role is **no longer derived by splitting on `@`**. Role comes from `template_id` → `role_hint`. Remove `derive_agent_class`-by-`@` semantics.
-- `valid_agent_instance_id` is redefined: a non-empty slug of `[a-zA-Z0-9-]`, optionally with a `@`-suffix that is *cosmetic only* and never parsed for project/role. Recommended: drop `@` from generated ids entirely to avoid confusion.
-- Special identities `operator@local` and `user_proxy` remain reserved literals and are excluded from runnable rosters (unchanged behavior, but they are the *only* ids allowed to contain `@`).
+- **`agent_id`** — NEW durable identity. Project-free slug from the display name (uniquified). Examples: `coder-alice`, `reviewer-smart`, `researcher-7`. This is the thing the "Create Agent" button creates, the memory target, and the carrier of template/persona + defaults.
+- **`agent_instance_id = agent_id @ project`** — PRESERVED shape (`coder-alice@project-1`). This remains the runtime id used by wrapper/tmux/registry/conversation. Chain is **not** in the id.
+- `derive_agent_class(id)` (split on `@`) is **kept**, but its result is now the **`agent_id`**, which resolves to a stored `Agent_Id_Record` (previously the prefix was an ephemeral, unstored "class").
+- `valid_agent_instance_id`: `agent_id@project` where both parts are `[a-zA-Z0-9-]`. `operator@local` and `user_proxy` remain reserved and are not creatable.
+- **1:1 invariant:** an `agent_instance_id` maps to at most one live session. Launch guard: if a live session exists for the instance-id, reuse it; never spawn a second (enforced in `agent_runtime_tracker_try_begin_launch` + wrapper's existing exact-window check).
 
-Migration: one-shot rename pass over `instance-events.jsonl` and any DB rows is acceptable; since no backcompat is required, wiping the agent store in dev is also acceptable. **Pick one and state it in the implementation PR.** Recommended: fresh store; document the reset.
+Migration: the instance-id shape is unchanged, so existing `instance-events.jsonl` rows remain valid. We backfill an `Agent_Id_Record` for each distinct `agent_id` (the `@`-prefix) seen. Document a one-shot backfill on daemon start.
 
-### 2.2 Split identity record from runtime record
+### 2.2 Records: durable identity vs runtime binding
 
-Decision: introduce two persisted concepts.
+`Agent_Id_Record` (NEW — durable identity, one per agent):
 
-`Agent_Instance_Record` (identity only) keeps:
+- `agent_id`, `display_name`, `template_id`,
+  `default_provider_profile`, `default_model_tier`,
+  `state` (active/archived), `created_unix_ms`, `updated_unix_ms`, `archived_at_unix_ms`, `order`.
 
-- `agent_record_id`, `agent_instance_id`, `display_name`, `template_id`,
-  `default_provider_profile`, `default_model_tier`, `state` (provisioned/archived),
-  `created_unix_ms`, `updated_unix_ms`, `archived_at_unix_ms`, `order`.
+`Agent_Instance_Record` (PRESERVED — one per `(agent_id, project)`, the runtime binding):
 
-Remove from identity: `project_id`, `run_dir`, `current_task_id`, `current_task_since`, `last_needed_at_unix_ms`.
-(Those describe a *run*, not the agent.)
+- `agent_record_id`, `agent_instance_id`, **`agent_id` (NEW back-reference)**,
+  `project_id` (the home project), `run_dir`,
+  `provider_profile`, `model_tier` (resolved for this instance),
+  `current_task_id`, `current_task_since`, `last_needed_at_unix_ms`,
+  `state`, timestamps, `order`.
 
-`Agent_Run_Record` (new; one active per agent under the §2.5 decision) holds:
+The live socket/pane/heartbeat state stays **in-memory** on `Agent_Record` in `registry.odin` (the boundary rule from `agent_store.odin` header stays). We do **not** introduce a separate persisted run record; the instance record already is the per-(agent,project) runtime binding, and Rule A means it is authoritative for restart. Chain-level involvement lives in association records (§3.4), not on the instance.
 
-- `run_id`, `agent_instance_id`,
-- `project_id`, `chain_id`, `task_id`,
-- `run_dir`, `provider_profile`, `model_tier` (resolved for this run),
-- `agent_token`, `tmux_session`, `tmux_pane`, `conversation_id`,
-- `status` (launching/ready/blocked/failed/stopped), `current_task_id`, `current_task_since`,
-- `started_unix_ms`, `last_active_unix_ms`, `last_needed_unix_ms`.
+### 2.3 Conversation id stays per-instance (compatibility-preserving)
 
-Note: the existing in-memory `Agent_Record` in `registry.odin` already holds live socket/pane/heartbeat state — fold `Agent_Run_Record`'s durable-run fields there or persist alongside; do not duplicate live socket state into the store (that in-memory boundary rule from `agent_store.odin` header stays).
-
-### 2.3 Conversation id is per-run-context, not per-identity
-
-Decision: `conversation_id` is derived from `agent_instance_id + chain_id` (or `+ project_id` when no chain). Reason: the same agent working two chains must not share one conversation stream. Update `conversation_id_for_instance` → `conversation_id_for_run(agent_instance_id, chain_id, project_id)`.
-
-Consumers to update: register/reconnect responses (`lifecycle.odin`), `agents_start.odin` response builders, message provider lookups.
+Decision: **keep one conversation stream per `agent_instance_id`.** Because a running instance intentionally serves multiple chains, its conversation is the instance's stream, not per-chain. `conversation_id_for_instance(agent_instance_id)` is retained as-is. (The earlier per-chain proposal is dropped; it conflicts with "runtime not tied to a chain.")
 
 ### 2.4 Provider/tier resolution order (deterministic)
 
-When launching a run, resolve provider profile and tier in this exact order (first non-empty wins):
+When launching an instance, resolve provider profile and tier in this exact order (first non-empty wins):
 
 1. explicit value on the start/assign request,
-2. the agent identity's `default_provider_profile` / `default_model_tier`,
-3. the template's `default_provider_profile` / `suggested_model_tier`,
-4. config `[wrapper].default_agent` / global default tier.
+2. the instance record's `provider_profile` / `model_tier`,
+3. the `agent_id`'s `default_provider_profile` / `default_model_tier`,
+4. the template's `default_provider_profile` / `suggested_model_tier`,
+5. config `[wrapper].default_agent` / global default tier.
 
-Also: template seed `default_provider_profile` must be a **runnable** profile that exists in `[wrapper.agent-cmd.*]` (e.g. `Claude Code`), or empty (so step 4 applies). The literal `"pi"` seed must be removed or mapped, otherwise every "create + run from template" fails. **This is a required fix, not optional.**
+Also: template seed `default_provider_profile` must be a **runnable** profile that exists in `[wrapper.agent-cmd.*]` (e.g. `Claude Code`), or empty (so step 5 applies). The literal `"pi"` seed must be removed or mapped, otherwise every "create + run from template" fails. **Required fix.**
 
-### 2.5 Concurrency decision: one active run per agent (locked for v1)
+### 2.5 Concurrency: one active task per instance; one session per instance
 
-Decision: **one active run per agent instance at a time.** Assignment can target any eligible agent, but a given agent executes one task/run at a time.
+Decision:
 
-Consequences that must be specified:
+- **One live session per `agent_instance_id`** (the 1:1 invariant, §2.1).
+- **One active task at a time per instance** for execution (existing `task_active_slot_blocker`), but the single session may hold multiple *assigned* chains/tasks and pick the next via `tasks next`.
+- Assigning to a busy instance → task accepted, queued for that instance; response includes `queued_behind_task_id`. Do not spawn a second session; do not reject.
 
-- Assigning a task to a busy live agent → task is accepted but stays `planned`/queued for that agent; it does not force a second run. `tasks next` promotes it when the agent frees up. (Do **not** silently reject; outcome #5 says assignment must be allowed.)
-- Assigning a task to an idle-but-running agent in a *different* project/chain → since only one run is allowed, the run's project/chain context would have to switch. v1 rule: **the agent must be idle (no active task) to accept a run in a new chain.** If busy, the task queues as above. State this explicitly in the assign response (`queued_behind_task_id`).
-- Concurrent multi-chain runs are **out of scope for v1** and listed as future work (§8).
+### 2.6 Restart on failure (Rule A — home is authoritative)
 
-### 2.6 Per-agent memory (new targeting dimension)
+Decision: the task stores `assignee_agent_instance_id` (`agent_id@project`) as the durable restart key. When a task needs attention and its assignee has **no live session**:
 
-Decision: add `target_agent_instance_id` as a first-class memory targeting dimension, **alongside** existing `target_team_kind`, `target_role`, `target_project_id`.
+1. Look up the durable `Agent_Instance_Record` for that instance-id (home project, run_dir, provider, tier) — and through `agent_id`, its template/persona.
+2. If present and non-archived, `try_begin_launch(instance_id)` (coalesced → restart exactly once) and relaunch into its **home project**; regenerate token/pane/conversation.
+3. If archived/missing, do **not** hot-loop; raise an attention item (`assignee_unavailable`) for reassignment.
+4. Backoff + cap restart attempts (build on `agent_startup_janitor` + `startup_failed`).
 
-- Remove `agent_instance_id` from the blocked legacy-keys list in `memory_service.odin:20`; introduce the new canonical field `target_agent_instance_id`.
-- Add DB column + index: `ALTER TABLE memories ADD COLUMN target_agent_instance_id TEXT NOT NULL DEFAULT '';` and extend `idx_memories_targets`.
-- Extend contract structs in `src/contracts/memory_provider.odin`: `Memory_Event`, `Memory_Record`, `Memory_List_Request` all get `target_agent_instance_id`.
-- Matching rule (`memory_record_applies` / `memory_record_matches_filters`): a per-agent memory applies **only** when the requesting run's `agent_instance_id` matches. It is not returned for other agents even if role/project match.
-- Precedence for bootstrap injection (most specific first): agent-instance → project → role → team-kind → global. Document dedup/ordering.
-- Validation: `target_agent_instance_id` must reference an existing non-archived agent instance (mirror `memory_project_id_known`).
+**Rule A guardrail:** because restart always uses the assignee's home project, **coding/implementation tasks require `assignee_instance.project == chain.project`** at assignment time (else error `assignee_project_mismatch`). Review/research/advisory task types may be assigned cross-project (the agent advises from its home run_dir). This keeps restart deterministic while keeping hands-on code work in the right worktree.
 
-This is the single most important schema change for outcome #2 and must land before the UI "add memory to this agent" control.
+### 2.7 Per-agent memory (new targeting dimension, scoped to `agent_id`)
+
+Decision: add `target_agent_id` as a first-class memory targeting dimension, **alongside** `target_team_kind`, `target_role`, `target_project_id`.
+
+- Memory is scoped to the durable **`agent_id`**, so it applies to all of that agent's project-instances (a specialist keeps its expertise everywhere it runs).
+- Remove `agent_instance_id` from the blocked legacy-keys list in `memory_service.odin:20`; introduce canonical field `target_agent_id`.
+- Add DB column + index: `ALTER TABLE memories ADD COLUMN target_agent_id TEXT NOT NULL DEFAULT '';` and extend `idx_memories_targets`.
+- Extend contract structs in `src/contracts/memory_provider.odin`: `Memory_Event`, `Memory_Record`, `Memory_List_Request` all get `target_agent_id`.
+- Matching: a per-agent memory applies only when the requesting instance's `agent_id` matches. Bootstrap injection precedence (most specific first): agent-id → project → role → team-kind → global. Document dedup/ordering.
+- Validation: `target_agent_id` must reference an existing non-archived `Agent_Id_Record`.
+
+This is the key schema change for outcome #2 and must land before the UI "add memory to this agent" control.
 
 ---
 
@@ -166,19 +186,20 @@ This is the single most important schema change for outcome #2 and must land bef
 - Keep these protections (unchanged): assignee ≠ reviewer, reviewer/assignee separation, `user_proxy`/operator reviewer rules, archived-agent rejection.
 - `task_active_slot_blocker` stays but is reinterpreted per §2.5 (queue, don't hard-reject at assignment time; still gate `tasks next` promotion).
 
-### 3.2 Assign to a never-run / idle agent → inherit chain + project
+### 3.2 Assign to a never-run / idle agent (Rule A: home is authoritative)
 
 Exact rule for outcome #4:
 
-1. Task already belongs to a chain (`task.chain_id`) which has a `project_id`.
-2. On assignment, if the target agent has no active run, Heimdall records intent: `{agent_instance_id, project_id := chain.project_id, chain_id := task.chain_id, task_id}`.
-3. When launched (manually or by autoscaler/nudge), the run's `project_id` comes from **the chain**, never from the old identity `project_id` field (which no longer exists). This removes the `agents_start.odin:242` ambiguity.
-4. `run_dir` is derived from managed layout `<agent_run_dir>/<safe-project>/<safe-agent-instance>` using the *chain's* project. Per-agent `run_dir` override, if any, still wins (matches AGENTS.md managed-layout rules).
+1. You assign work by picking an **`agent_id`** (or a concrete instance). The task's chain has a `project_id`.
+2. The effective assignee instance is resolved as `agent_id @ instance.home_project`. Under **Rule A the instance's home project is authoritative** — we do NOT rebind it to the chain's project.
+3. **Guardrail (§2.6):** if the task type is coding/implementation, require `assignee_instance.project == chain.project`, else reject with `assignee_project_mismatch`. Review/research/advisory task types may be cross-project.
+4. If the instance does not exist yet, it is auto-created as `agent_id@project` (project = the picked instance's project, or for the guardrailed coding case, the chain's project). `run_dir` follows managed layout `<agent_run_dir>/<safe-project>/<safe-agent-instance>`; per-agent `run_dir` override still wins.
+5. On launch (manual or via nudge/restart), the instance runs in **its own home project** — deterministic and identical to the restart path (§2.6). This removes the `agents_start.odin:242` ambiguity: project comes from the instance record, never re-derived per assignment.
 
-Tiebreak rules that MUST be written down (currently undefined):
+Tiebreaks:
 
-- If a task has no chain (standalone task): assignment requires an explicit `project_id` on the request, else error `"project_required_for_unchained_task"`.
-- If the chain has no project: run starts project-less; VCS/workspace features degrade gracefully (already partially handled — verify `task_service_project_supports_vcs`).
+- Standalone task (no chain): assignment requires the picked instance to already carry a project; else error `project_required_for_unchained_task`.
+- Chain has no project: only cross-project-eligible (review/research/advisory) assignments allowed; coding assignment errors `chain_missing_project`.
 
 ### 3.3 Assign/review with an existing running instance (outcome #5)
 
@@ -222,7 +243,7 @@ Derived chain roster = union of associations + live runs + (optionally) generate
 
 ### 5.2 Per-agent memory UI
 
-- On an agent's detail/side sheet: "Add memory (this agent only)" control that sends `target_agent_instance_id` (§2.6).
+- On an agent's detail/side sheet: "Add memory (this agent only)" control that sends `target_agent_id` (§2.7).
 - Memory management page gains an agent filter.
 - `data-debug-id`s: `agent-memory-add-btn-${agentId}`, `agent-memory-body-textarea`, `agent-memory-submit-btn`, plus a filter select `memory-filter-agent-select`.
 
@@ -237,29 +258,30 @@ Derived chain roster = union of associations + live runs + (optionally) generate
 
 Each item is a concrete edit target so implementation has zero ambiguity.
 
-Identity:
-- [ ] `agent_generated_instance_id` — drop project from id (`agent_store.odin:181`).
-- [ ] `derive_agent_class` — stop deriving role from `@`; return template role instead, or delete callers (`registry.odin:507`).
-- [ ] `valid_agent_instance_id` — allow project-free slugs; keep operator/user_proxy reserved (`registry.odin:527`).
-- [ ] `conversation_id_for_instance` → `_for_run(agent, chain, project)` and update all callers.
+Identity (3-tier, compatibility-preserving):
+- [ ] `agent_generated_instance_id` — generate a project-free **`agent_id`** slug; instance id remains `agent_id@project` composed at bind time (`agent_store.odin:181`).
+- [ ] `derive_agent_class` — keep `@`-split, but treat the result as **`agent_id`** that resolves to an `Agent_Id_Record` (`registry.odin:507`).
+- [ ] `valid_agent_instance_id` — keep `agent_id@project` shape; operator/user_proxy reserved + non-creatable (`registry.odin:527`). *(Done in P0 commit — revisit to restore `@` composition.)*
+- [ ] `conversation_id_for_instance` — **keep per-instance** (revert the per-run variant); one stream per instance across chains.
 
 Records:
-- [ ] Remove `project_id/run_dir/current_task_*/last_needed_*` from `Agent_Instance_Record` (`agent_store.odin:19`); add `default_provider_profile`, `default_model_tier`.
-- [ ] Add `Agent_Run_Record` (persisted) or extend in-memory `Agent_Record` (registry) with durable run context (§2.2).
-- [ ] Update event JSON read/write in `agent_store.odin` (drop moved fields; bump event schema; since no compat, no dual-read needed).
+- [ ] Add `Agent_Id_Record` store (durable identity: template, defaults, state) + backfill from existing instance `@`-prefixes.
+- [ ] Add `agent_id` back-reference to `Agent_Instance_Record`; keep `project_id/run_dir/current_task_*/provider_profile/model_tier` (they are the per-(agent,project) runtime binding under Rule A).
+- [ ] Live socket/pane/heartbeat stays in-memory on `registry.odin` `Agent_Record` (no new persisted run record).
 
-Assignment:
+Assignment + restart:
 - [ ] Soften `task_agent_instance_allowed_for_chain` to auto-associate (`task_service.odin:985`).
-- [ ] Define queue-vs-reject for busy live agent using `task_active_slot_blocker` (`task_queries.odin:183`), return `queued_behind_task_id`.
-- [ ] Start path: read run `project_id` from chain, not identity (`agents_start.odin:242`); handle unchained-task/no-project tiebreaks.
+- [ ] Define queue-on-busy using `task_active_slot_blocker` (`task_queries.odin:183`), return `queued_behind_task_id`.
+- [ ] Rule A restart: nudge/tracker relaunches assignee from its durable instance record into its home project; coalesced restart-once; backoff + `assignee_unavailable` attention item (`task_nudge_scheduler.odin`, `agent_runtime_tracker.odin`, `agent_startup_janitor.odin`).
+- [ ] Coding-task guardrail: `assignee_instance.project == chain.project` else `assignee_project_mismatch`.
 - [ ] Persist association records (new store) and derive roster from them.
 
 Memory (outcome #2):
-- [ ] Add `target_agent_instance_id` to `Memory_Event`, `Memory_Record`, `Memory_List_Request` (`memory_provider.odin`).
-- [ ] Remove `agent_instance_id` from blocked legacy keys; wire the new field through propose/list/apply (`memory_service.odin:20`).
-- [ ] DB migration: add column + index (`memory_db_service.odin:49,68`).
-- [ ] Matching + precedence in `memory_record_applies` / `memory_record_matches_filters`.
-- [ ] Validation that the referenced agent exists.
+- [ ] Add `target_agent_id` to `Memory_Event`, `Memory_Record`, `Memory_List_Request` (`memory_provider.odin`).
+- [ ] Remove `agent_instance_id` from blocked legacy keys; wire `target_agent_id` through propose/list/apply (`memory_service.odin:20`).
+- [ ] DB migration: add `target_agent_id` column + index (`memory_db_service.odin:49,68`).
+- [ ] Matching + precedence in `memory_record_applies` / `memory_record_matches_filters` (agent-id most specific).
+- [ ] Validation that the referenced `agent_id` exists.
 
 Provider:
 - [ ] Replace `"pi"` template seed with a runnable profile or empty (`agent_template_db_service.odin`).
@@ -275,20 +297,20 @@ UI:
 ## 7. Phased delivery (sequenced so each phase is testable)
 
 Phase 0 — Identity decoupling
-- Project-free ids, role-from-template, conversation-per-run. Reset agent store (documented).
-- Exit: create an agent with only name+role; it has no project; it validates and lists.
+- Reserved-id rejection; instance id keeps `agent_id@project` shape; `agent_id` slug generation. (Done: reserved-id + validation; **revisit** to restore `@` composition and per-instance conversation.)
+- Exit: create an agent by name+role → durable `agent_id`; running it in a project yields `agent_id@project`.
 
-Phase 1 — Runtime split + provider resolution
-- Split identity/run records; start path takes project from chain/request; deterministic provider/tier.
-- Exit: same agent runs in project A, then project B, without mutating identity.
+Phase 1 — `Agent_Id_Record` + provider resolution
+- Add durable identity store + `agent_id` back-reference on instance; backfill from existing `@`-prefixes; deterministic provider/tier; fix `"pi"` seed.
+- Exit: same `agent_id` runs in project A and project B as two instances sharing one durable identity/defaults.
 
-Phase 2 — Per-agent memory
+Phase 2 — Per-agent memory (scoped to `agent_id`)
 - Contract + DB + service + validation + precedence.
-- Exit: add a memory to agent X; it appears in X's bootstrap only, never in agent Y's.
+- Exit: add a memory to `agent_id` X; it appears in X's instances' bootstrap only, never in Y's.
 
-Phase 3 — Flexible assignment + associations
-- Remove team gate; auto-associate; queue-on-busy; roster derived from associations.
-- Exit: assign a task to an idle never-run agent (inherits chain+project on launch); assign/review with a live non-team agent.
+Phase 3 — Flexible assignment + associations + Rule A restart
+- Remove team gate; auto-associate; queue-on-busy; roster from associations; Rule A restart-from-durable-record with coding-task project guardrail.
+- Exit: assign a task to an idle/never-run agent; kill it → task system relaunches it into its home project; assign/review with a live non-team agent.
 
 Phase 4 — UI
 - Create Agent button, per-agent memory control, assignment pickers with badges + debug ids.
@@ -300,12 +322,13 @@ Phase 5 — Team reframe
 
 ---
 
-## 8. Open questions now resolved (was §7)
+## 8. Open questions now resolved
 
-- Multi-chain concurrency: **v1 = one active run per agent** (§2.5). Concurrent runs = future work.
-- Memory scope: **add per-agent dimension** (§2.6); project/chain/task remain runtime context injected at bootstrap; project is not identity.
-- "Eligible agent": exists + non-archived + not the reviewer/assignee conflict + (for immediate run) idle; busy agents queue.
-- `user_proxy`/operator: reserved review/user identities, excluded from runnable rosters; only ids allowed to keep `@`.
+- Identity: **3-tier** — durable `agent_id` → `agent_instance_id = agent_id@project` (1:1 live session) → many chains via associations (§2.1).
+- Project reconciliation on restart: **Rule A** — home project is authoritative; assignee relaunches into its home; coding tasks guardrailed to `instance.project == chain.project` (§2.6).
+- Multi-chain: one live **session** and one active **task** per instance; a session may hold multiple assigned chains and pick next via `tasks next` (§2.5).
+- Memory scope: **`agent_id`** dimension (§2.7); project/chain/task remain runtime context injected at bootstrap.
+- `user_proxy`/operator: reserved, non-creatable, excluded from runnable rosters; only ids allowed to keep `@` as a whole literal.
 - Teams persistence: roster from associations; team tables kept only if scaffold generation needs them, else removed.
 
 ## 9. Risks / things that will bite if not ironed out
@@ -321,15 +344,18 @@ Phase 5 — Team reframe
 
 ## 10. Summary
 
-Target model (locked):
+Target model (locked, 3-tier + Rule A):
 
 ```text
-Agents are independent identities (name + role), no project in the id.
-Memory can target a single agent instance (new dimension), plus role/project/team as before.
-A Run binds agent + project(from chain) + chain + task + run_dir + token + tmux.
-Assignment works for any non-archived agent; idle never-run agents inherit chain+project on launch; live agents can be picked directly.
-One active run per agent in v1; extra assignments queue.
+agent_id            = durable identity (name + role/template + defaults + memory target)
+agent_instance_id   = agent_id@project = runtime binding, 1:1 with a live session, home project authoritative
+                      one session serves many chains via association records
+Memory targets agent_id (applies to all its project-instances).
+Assignment works for any non-archived agent; picking an agent restarts/reuses its home-project instance.
+Restart (Rule A): task stores agent_instance_id; if no live session, relaunch from the durable instance record into its home project (coalesced, backoff, attention item if archived).
+Coding tasks guardrailed to instance.project == chain.project; review/research may be cross-project.
+One live session + one active task per instance; extra assignments queue.
 Team kinds are staffing scaffolds, not assignment gates.
 ```
 
-This delivers the five product outcomes with a single, unambiguous implementation path and calls out every place the current code must change.
+This delivers the five product outcomes with a compatibility-preserving, unambiguous implementation path and calls out every place the code must change.
