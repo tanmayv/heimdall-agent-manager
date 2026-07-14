@@ -285,6 +285,8 @@ let
   mkDaemon = d:
     { bind_host = d.bindHost; port = d.port; data_dir = d.dataDir;
       wrapper_bin = "${wrapperPkg}/bin/ham-wrapper"; }
+    // lib.optionalAttrs (d.defaultAgentProviderProfile != null) { default_agent_provider_profile = d.defaultAgentProviderProfile; }
+    // lib.optionalAttrs (d.defaultAgentModelTier != null) { default_agent_model_tier = d.defaultAgentModelTier; }
     // lib.optionalAttrs (d.startupStaleAfterSeconds != null)           { startup_stale_after_seconds          = d.startupStaleAfterSeconds; }
     // lib.optionalAttrs (d.nudge.enabled != null)                      { nudge_enabled                        = d.nudge.enabled; }
     // lib.optionalAttrs (d.nudge.intervalSeconds != null)              { nudge_interval_seconds               = d.nudge.intervalSeconds; }
@@ -410,6 +412,18 @@ in
         type        = lib.types.port;
         default     = 49322;
         description = "TCP port the daemon listens on.";
+      };
+      defaultAgentProviderProfile = lib.mkOption {
+        type        = lib.types.nullOr lib.types.str;
+        default     = null;
+        example     = "pi";
+        description = "Default provider profile for generated team agents. Null = omit.";
+      };
+      defaultAgentModelTier = lib.mkOption {
+        type        = lib.types.nullOr lib.types.str;
+        default     = null;
+        example     = "normal";
+        description = "Default model tier for generated team agents. Null = omit.";
       };
       dataDir = lib.mkOption {
         type        = lib.types.str;
