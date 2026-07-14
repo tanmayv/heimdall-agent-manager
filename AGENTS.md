@@ -1,272 +1,329 @@
 # Heimdall AI Manager Project Guide
 
-This project is a prototype for a local daemon + tmux-backed agent wrapper + CLI control tool. The daemon tracks uniquely named agent instances, wrapper processes launch interactive agents in tmux, and WebSocket notifications are used only to signal that messages are available; actual message storage/fetching is intended to go through a message provider abstraction later.
+Heimdall is a local multi-agent orchestration system built around four runtime pieces:
+
+- `ham-daemon` — the durable control plane and HTTP/WS server
+- `ham-wrapper` — the tmux-backed agent launcher/runtime shim
+- `ham-ctl` — the CLI used by operators, agents, and tests
+- Heimdall UI — the Electron/Vite/React/Redux desktop client
+
+The daemon owns durable state, runtime routing, and notification fanout. Wrappers boot agents, register them, generate bootstrap files, and keep heartbeats/activity flowing back to the daemon. CLI and UI mostly fetch durable state over HTTP/REST/RPC. Agent-facing WebSockets are primarily event/summary channels: messages and chat do **not** stream full inbox bodies over WS, and agents/UI fetch the durable records after notification.
+
+## Architecture Invariants
+
+- The daemon is the source of truth for durable task, memory, project, team, VCS, artifact, auth, and agent-identity state.
+- Runtime sockets, live wrapper status, and user WebSocket connections are in-memory projections rebuilt on restart.
+- `agent_id` is the durable identity tier; `agent_instance_id` is the concrete running/project-bound instance.
+- Wrapper bootstrap files (`AGENTS.md` / `CLAUDE.md`, optional skills files, manifest) are generated from daemon state, not handwritten per run.
+- WebSockets are for liveness/event notification; bodies and full records are fetched from durable stores through REST/RPC/CLI.
 
 ## Identity Model
 
-- `agent_class`: agent type/category, usually derived from the part before `@`.
-  - Example: `coder-agent`
-- `agent_instance_id`: unique user-facing agent instance identity.
-  - Example: `coder-agent@project-1`
-- `conversation_id`: message conversation associated with an `agent_instance_id`.
-- `agent_token`: credential issued by daemon for agent RPC calls.
-- WebSocket notifications should not contain actual message bodies; they should only notify that messages are available.
+- `agent_id`
+  - Durable identity shared across projects and runs.
+  - Stored in `src/daemon/agent_id_store.odin` as `Agent_Id_Record`.
+- `agent_instance_id`
+  - Concrete instance/session identity, often `agent_id@project-or-scope`.
+  - Stored durably as `Agent_Instance_Record`, mirrored live in `Agent_Record`.
+- `conversation_id`
+  - Agent-to-agent inbox/message stream key.
+- `client_instance_id`
+  - Durable user-client/UI identity for `/user-client/register`, `/user-rpc`, and `/user-ws`.
+- `agent_token`, `client_token`
+  - Random bearer tokens persisted in `auth/tokens.db` and recovered after daemon restart.
+- `ws_token`, `reconnect_token`
+  - Wrapper/WebSocket session credentials returned by `/register` / `/reconnect`.
 
 ## Root Files
 
 - `flake.nix`
-  - Nix flake defining build packages and apps.
-  - Packages:
-    - `ham-daemon`
-    - `ham-wrapper`
-    - `ham-ctl`
-  - Provides a dev shell with Odin, OLS, tmux, curl, and jq.
-  - Uses `nixpkgs-unstable` and overrides Odin to use LLVM 21 on Darwin to avoid current compiler-rt issues.
-
-- `flake.lock`
-  - Locked flake input versions.
-
+  - Nix flake defining build packages/apps such as `ham-daemon`, `ham-wrapper`, `ham-ctl`, and UI packaging.
+- `package.json`
+  - Electron/Vite/React/TypeScript UI package scripts and dependencies.
 - `config.toml`
-  - Example runtime config.
-  - Contains daemon bind/port settings, wrapper daemon URL, tmux session/window config, command to launch, and ctl daemon URL.
-  - Documents managed agent run directories and provider bootstrap profiles:
-    - `wrapper.agent_run_dir` enables generated runtime cwd layout `<agent_run_dir>/<safe-project>/<safe-agent-instance>`.
-    - `wrapper.project` and per-agent-cmd `project` select project context/anchors for bootstrap files.
-    - Per-agent-cmd `run_dir` is an exact cwd override and bypasses managed layout.
-    - Per-agent-cmd `bootstrap_enabled` turns on managed file generation.
-    - Per-agent-cmd `bootstrap_profile` chooses provider defaults: `pi` and `codex` generate `AGENTS.md`; `claude` generates `CLAUDE.md`.
-    - Per-agent-cmd `bootstrap_files` overrides destination filenames; `bootstrap_sections` can restrict generated sections to any of `identity`, `guidance`, `project`, and `memory`.
-    - Managed files are overwritten only when they contain the Heimdall managed header, and removed only when previously listed in `.heimdall-bootstrap-manifest`.
-
+  - Main runtime config for daemon, wrapper, providers, model tiers, startup/activity detection, guide agent, managed run dirs, and ctl defaults.
+- `README.md`
+  - High-level project overview.
+- `docs/teams-v1/`
+  - Current chain/team/VCS/bootstrap lifecycle design docs.
 - `AGENTS.md`
-  - This guide.
+  - This architecture/bootstrap guide.
 
 ## Source Layout
 
 ```text
 src/
-  contracts/
-  daemon/
-  wrapper/
-  ctl/
+  contracts/          shared protocol/data contracts
+  ctl/                ham-ctl CLI
+  daemon/             ham-daemon server, stores, services, notifications
   lib/
-    config/
-    http_client/
-    tmux/
-    ws/
+    config/           config parser/defaults
+    http_client/      local HTTP client helpers
+    message_provider/ agent-to-agent message provider interface + impl
+    router_envelope/  router envelope helpers
+    tmux/             tmux launch/control helpers
+    vcs/              git/jj workspace helpers
+    ws/               WebSocket client helpers
+  prompts/            bootstrap/profile/persona/task-chain guidance text
+  test_agent/         smoke-test agent helpers
+  ui/                 Electron/Vite/React/Redux app
+  wrapper/            ham-wrapper runtime/bootstrap generator
 ```
 
 ## Package Summaries
 
-### `src/contracts` package: `contracts`
+### `src/contracts`
 
-Shared public protocol and API types. All binaries should import this package for shared contracts so breaking contract changes are caught at build time.
-
-Files:
+Shared contracts used across binaries.
 
 - `identity.odin`
-  - Defines core identity/token types:
-    - `Agent_Class`
-    - `Agent_Instance_ID`
-    - `Conversation_ID`
-    - `Wrapper_Instance_ID`
-    - `Reconnect_Token`
-    - `Ws_Token`
-    - `Agent_Token`
-  - Defines client kind/access/capability enums.
-
-- `protocol.odin`
-  - Protocol version and route constants:
-    - `/health`
-    - `/register`
-    - `/reconnect`
-    - `/heartbeat`
-    - `/ws`
-    - `/clients`
-    - `/agent-rpc`
-
+  - Core identity/token types such as `Agent_Instance_ID`, `Conversation_ID`, `Ws_Token`, and `Agent_Token`.
 - `lifecycle.odin`
-  - Health/register/reconnect request and response structs.
-  - Registration is based on `agent_class` + `agent_instance_id`.
-  - Register response includes `conversation_id`, `ws_url`, `ws_token`, and `agent_token`.
-
-- `registry.odin`
-  - Client/agent listing contract.
-  - Tracks agent instance metadata, connection status, and last-seen timestamp.
-
+  - `/register` and `/reconnect` request/response types, including `conversation_id`, `ws_url`, `ws_token`, and `agent_token`.
+- `protocol.odin`
+  - Base protocol constants (`/health`, `/register`, `/heartbeat`, `/ws`, `/agent-rpc`, `/agents/start`).
 - `messages.odin`
-  - WebSocket command/event contract.
-  - `Messages_Available` is metadata-only and must not carry actual message content.
+  - Agent WS/message event types such as `Messages_Available` and `Messages_Read`.
+- `message_provider.odin`
+  - Shared `Message`, status/read receipt, fetch, unread-count, and mark-read contracts.
+- `memory_provider.odin`
+  - Shared `Memory_Record`, `Memory_Event`, type/status enums, and replay/list/history contracts.
+- `artifacts.odin`
+  - Artifact metadata types, supported kinds, and artifact routes.
 
-- `agent_rpc.odin`
-  - Agent RPC request/response contract.
-  - Includes actions like health, list clients, send stdin, send message, and capture.
-  - Message send targets `target_agent_instance_id`.
+`src/contracts/agent_rpc.odin` still covers the minimal shared agent RPC surface. Modern task/chat/memory/project/team flows also go through daemon REST endpoints and `/user-rpc`; do not treat `agent_rpc.odin` as the whole product surface.
 
-### `src/daemon` package: `main`
+### `src/daemon`
 
-Daemon binary package for `ham-daemon`.
+The `ham-daemon` package. It is both the runtime hub and the persistence boundary.
 
-Responsibilities:
+Key responsibilities:
 
-- Runs local HTTP server.
-- Handles `/health`, `/register`, `/heartbeat`, `/clients`, `/agent-rpc`, and `/ws/<agent_instance_id>`.
-- Maintains in-memory registry of agent instances.
-- Maintains active WebSocket connection per agent instance.
-- Sends metadata-only `messages_available` WebSocket notifications.
+- HTTP server and route dispatch (`server.odin`, `rest_router.odin`, `*_http.odin`, `*_rest.odin`)
+- Wrapper lifecycle: `/register`, `/heartbeat`, `/startup`, `/ws`, `/agents/start`, `/agents/stop`
+- Agent runtime registry and lifecycle notifications (`registry.odin`, `agent_runtime_tracker.odin`, `agent_lifecycle_notifications.odin`)
+- Task chains/tasks/comments/votes/participants, projections, review routing, nudge scheduling, and durable notification outbox (`task_*.odin`)
+- User/agent chat plus approvals (`chat_*.odin`, `message_db_service.odin`, `user_rpc.odin`, `user_ws.odin`)
+- Durable memory proposal/approval pipeline (`memory_*.odin`)
+- Projects/teams/VCS/artifacts/auth/preferences/audit (`project_store.odin`, `team_*.odin`, `vcs_*.odin`, `artifact_*.odin`, `0_auth_db_service.odin`, `user_pref_db_service.odin`, `audit_db_service.odin`)
+- Hub/router scaffolding and guide/test services (`hub_*`, `router_*`, `guide_*`, `test_run.odin`)
 
-Files:
+### `src/wrapper`
 
-- `main.odin`
-  - Loads config via `src/lib/config`.
-  - Starts daemon server.
+The `ham-wrapper` package. It turns a daemon-issued start request into a managed tmux session.
 
-- `server.odin`
-  - Minimal HTTP server and WebSocket upgrade handling.
-  - Performs request routing.
-  - Handles agent RPC send-message notification path.
-  - Implements WebSocket handshake and basic read loop.
+Key responsibilities:
 
-- `registry.odin`
-  - In-memory daemon registry.
-  - Maps `agent_instance_id` to agent metadata, conversation ID, tokens, timestamps, and WebSocket socket.
-  - Generates conversation IDs from agent instance IDs.
+- Resolve provider profile / model tier / run directory / project context
+- Register with daemon and receive `conversation_id`, `agent_token`, and WS info
+- Generate managed bootstrap files (`AGENTS.md` or `CLAUDE.md`, optional `MEMORY.md`, skills files, `.heimdall-bootstrap-manifest`)
+- Launch the real agent command in tmux
+- Run startup detection and activity detection without persisting raw terminal transcripts
+- Maintain WebSocket connection, heartbeat loop, and startup/activity status reporting
+- Recover from daemon restarts via re-registration / WS reconnect logic
 
-### `src/wrapper` package: `main`
+### `src/ctl`
 
-Wrapper binary package for `ham-wrapper`.
+The `ham-ctl` CLI used by both humans and agents.
 
-Responsibilities:
+Current command families are much broader than the original POC:
 
-- Can be run from any directory, inside or outside tmux.
-- Launches/reuses a tmux session/window for the actual interactive agent command.
-- Registers the agent instance with daemon.
-- Opens a WebSocket connection to daemon.
-- Sends heartbeat loop to daemon.
-- Logs wrapper status to stdout.
-- Supports `--detach` mode by starting a background wrapper process.
+- `health`
+- `agents ...`
+- `send`, `inbox`
+- `tasks ...`, `task-chains ...`
+- `projects ...`, `teams ...`, `workspace ...`, `chains ...`, `attention`
+- `memory ...`
+- `users ...`, `chat ...`
+- `artifacts ...`
+- `start-success`
+- `help work-guide`
 
-Files:
+### `src/ui`
 
-- `main.odin`
-  - Parses `--config`, `--detach`, and agent instance argument.
-  - Derives `agent_class` from `agent_instance_id`.
-  - Launches tmux agent pane.
-  - Registers with daemon.
-  - Connects WebSocket.
-  - Runs heartbeat/poll loop.
+The Heimdall desktop UI.
 
-- `daemon_client.odin`
-  - Early wrapper-side daemon client shape using function pointers.
-  - Uses `agent_instance_id` and `conversation_id` for wrapper credentials and WebSocket session metadata.
+- Electron shell in `src/ui/electron`
+- HTTP API client in `src/ui/api/daemonApi.ts`
+- Redux slices in `src/ui/store/*`
+- React components in `src/ui/components/*`
+- Uses `/user-client/register`, `/user-ws`, REST reads, and `/user-rpc` mutations for most interactive flows
 
-### `src/ctl` package: `main`
+### `src/lib`
 
-CLI binary package for `ham-ctl`.
+Shared libraries used by daemon/wrapper/ctl.
 
-Responsibilities:
+- `config` — config structs/defaults/parser for daemon, wrapper, guide agent, and ctl
+- `http_client` — local daemon HTTP calls
+- `message_provider` — agent-to-agent provider interface plus current in-memory implementation
+- `router_envelope` — router envelope helpers
+- `tmux` — tmux lifecycle helpers
+- `vcs` — git/jj workspace helpers
+- `ws` — wrapper-side WebSocket client
 
-- Loads config.
-- Talks to daemon via HTTP.
-- Current commands:
-  - `health`
-  - `list`
+## Core Data Structures and Stores
 
-Files:
+### Identities and auth
 
-- `main.odin`
-  - Parses command from args.
-  - Calls daemon `/health` or `/clients` using shared HTTP client.
+- `Agent_Id_Record`
+  - Durable identity: display name, template, role, default provider, default tier, state.
+  - Append-only JSONL store in `src/daemon/agent_id_store.odin`.
+- `Agent_Instance_Record`
+  - Durable instance binding: `agent_instance_id`, `agent_id`, provider, project, run dir, tier, scope, role, current task timestamps.
+  - Append-only JSONL store in `src/daemon/agent_store.odin`.
+- `Agent_Record`
+  - In-memory runtime/session projection: live socket, heartbeat, tmux pane, pid, startup/activity state, provider cache.
+  - Lives in `src/daemon/registry.odin`.
+- Auth tokens
+  - `agent_token` and `client_token` are persisted in SQLite (`src/daemon/0_auth_db_service.odin`) and recovered across daemon restarts.
 
-### `src/lib/config` package: `config`
+### Tasks, chains, comments, votes, and participants
 
-Shared config loading library.
+Defined primarily in `src/daemon/task_store.odin`.
 
-Responsibilities:
+- `Task_Chain_State`
+  - Durable chain projection: project/team/workspace ids, title/description, coordinator, default reviewer, final summary, archive/evaluation flags.
+- `Task_State`
+  - Durable task projection: title, description, acceptance criteria, assignee, dependencies, timestamps, status.
+- `Task_Event`
+  - Event log record for task/chain mutations, comments, votes, status changes, nudges, archive events, and final summary.
+- `Task_Participant`
+  - Extra role membership beyond the primary assignee/coordinator/default reviewer.
+  - Roles include `assignee`, `coordinator`, `lgtm_required`, `lgtm_optional`, and `subscriber`.
+- `Task_Comment_State`
+  - Durable comments with `resolved` state.
+- `Task_LGTM_Vote_State`
+  - Durable reviewer vote state (`approved`, role, comment, timestamp).
+- Task statuses
+  - Core task states are `planning`, `queued`, `in_progress`, `review_ready`, `approved`, `blocked`, and `cancelled`.
+  - `ready` is accepted as a CLI/HTTP alias for `queued`.
+- Storage model
+  - Tasks are event-shaped and projected into in-memory arrays plus SQLite tables (`task_db_service.odin`).
+  - The daemon also keeps a durable task notification outbox for retryable per-agent notifications.
 
-- Finds config path from `--config <path>`.
-- Loads/parses minimal TOML-like config.
-- Provides default config values.
+### Agent-to-agent inbox messages
 
-Files:
+- Shared wire/data types live in `src/contracts/message_provider.odin`:
+  - `Message`, `Message_Status`, `Message_Direction`, `Send_Message_Request`, `Fetch_Messages_Request`, `Mark_Read_Request`, read receipts.
+- The provider interface lives in `src/lib/message_provider/provider.odin`.
+- The current default provider implementation is `src/lib/message_provider/memory.odin`.
+  - This is a **real** provider, but it is process-memory only today.
+  - That is separate from user/agent chat, which is durable.
 
-- `config.odin`
-  - Defines `Config`, `Daemon_Config`, `Wrapper_Config`, and `Ctl_Config`.
-  - Implements minimal parser for sections/strings/ints/string arrays.
-  - Supports wrapper tmux settings.
+### User/agent chat
 
-### `src/lib/http_client` package: `http_client`
+Defined in `src/daemon/chat_store.odin` and `message_db_service.odin`.
 
-Minimal shared HTTP client used by wrapper and CLI.
+- `Chat_Event`
+  - Append/delivered/read/failure events for human↔agent chat.
+- `Chat_Message`
+  - Durable SQLite row keyed by `message_id`, `user_id`, `agent_instance_id`, direction, body, chain id, delivery/read timestamps, and failure info.
+- Read state
+  - Stored durably per conversation/direction in the chat DB and exposed through `/user-rpc`, `/chats/...`, and UI slices.
 
-Files:
+### Memory
 
-- `http_client.odin`
-  - Implements simple `GET` and `POST` over TCP.
-  - Parses HTTP status 200 and response body.
-  - Intended only for local POC HTTP calls.
+Defined by `src/contracts/memory_provider.odin` and implemented by `src/daemon/memory_*.odin`.
 
-### `src/lib/tmux` package: `tmux`
+- `Memory_Record`
+  - Durable current record.
+- `Memory_Event`
+  - Durable proposal/approval/rejection/archive history.
+- Types
+  - `fact`, `habit`, `episode`, `expertise`, `skill`, `template`.
+- Statuses
+  - `pending`, `active`, `archived`, `rejected`.
+- Targeting dimensions
+  - `target_agent_id`, `target_team_kind`, `target_role`, `target_project_id`.
+- Storage
+  - SQLite in `memory/memory.db` with event history and applicable-memory queries.
 
-Tmux integration helper used by wrapper.
+### Projects, teams, VCS workspaces, and artifacts
 
-Files:
+- `Project_Record`
+  - Durable project metadata plus loose anchors (`type`, `value`, `note`).
+  - Append-only JSONL store in `src/daemon/project_store.odin`.
+- `Team_Record` / `Team_Member_Record`
+  - Durable chain team and roster records in `teams/teams.db`.
+  - Team members can be generated agents or `user_proxy` slots with `route_to` metadata.
+- `Vcs_Workspace_Record`
+  - Durable workspace handle in `vcs/vcs.db`: project, chain, path, base ref, branch/change, status, keep-on-archive.
+- `Artifact_Record`
+  - Durable artifact metadata in `artifacts/artifacts.db`; blob bytes live under the artifact blob store.
 
-- `tmux.odin`
-  - Ensures tmux session exists.
-  - Creates/reuses agent window.
-  - Builds shell command for launching configured command in cwd.
-  - Returns tmux pane ID.
+### Bootstrap artifacts
 
-### `src/lib/ws` package: `ws`
+Generated by `src/wrapper/main.odin`.
 
-Minimal WebSocket client helper used by wrapper.
+- Managed files can include `AGENTS.md`, `CLAUDE.md`, `MEMORY.md`, and per-skill `SKILL.md` files.
+- The wrapper writes `.heimdall-bootstrap-manifest` so it can clean up only files it previously managed.
+- Bootstrap content is assembled from live identity data, project/team/chain/workspace context, active approved memories/templates, and agent template persona/instructions.
 
-Files:
+## Persistence Model
 
-- `ws.odin`
-  - Performs WebSocket HTTP upgrade.
-  - Keeps socket open in `Connection`.
-  - Provides nonblocking `poll_text` for simple server text frames.
-  - POC only; supports small unfragmented text frames.
+Heimdall is **not** an in-memory-only system.
 
-## Current POC Flow
+Current storage is mixed by subsystem:
 
-1. Start daemon:
+- SQLite: auth tokens, tasks/projections/outbox, chat/messages, memory, teams, VCS workspaces, artifacts, preferences, audits
+- JSONL append-only stores: durable agent identities/instances, projects, some legacy/migration paths
+- In-memory runtime projections: live wrapper registry, active sockets, pending WS connections, provider-memory agent inbox implementation
 
-```bash
-ham-daemon --config ./config.toml
-```
+A good rule of thumb: durable business state lives on disk; live transport/session state stays in memory.
 
-2. Start wrapper:
+## Runtime Data Flow
 
-```bash
-ham-wrapper --config ./config.toml coder-agent@project-1
-```
+### 1. Agent start and bootstrap generation
 
-3. Wrapper launches configured command in tmux, registers with daemon, opens WS, and starts heartbeat.
+1. `ham-ctl agents start ...` or UI start action sends `POST /agents/start`.
+2. The daemon validates/provider-resolves the request, upserts durable agent identity state, and launches `ham-wrapper` detached.
+3. The wrapper calls `/health`, then `/register`.
+4. The daemon returns `agent_instance_id`, `conversation_id`, WS info, `agent_token`, template persona/instructions, and team-role context.
+5. The wrapper optionally validates project context, fetches applicable memories/project/team/chain/workspace state, writes managed bootstrap files, and launches the real agent command in tmux.
+6. The wrapper reports startup status, heartbeats, and activity snapshots; the agent later signals `start-success` through `ham-ctl ... start-success`.
 
-4. List agents:
+### 2. Agent-to-agent inbox messaging
 
-```bash
-ham-ctl --config ./config.toml list
-```
+1. Agent CLI/RPC sends a message through `/agent-rpc`.
+2. `message_service.odin` routes through the configured message provider and emits message-bus events.
+3. The daemon sends a metadata-only `messages_available` WS event to the target agent, including `conversation_id`, sender, and `pending_count`.
+4. The target agent fetches actual bodies through inbox/fetch RPC/CLI.
+5. Read events produce `messages_read` notifications back to the sender.
 
-5. Agent RPC send-message currently triggers only WS metadata notification:
+### 3. User ↔ agent chat
 
-```json
-{"type":"messages_available","conversation_id":"conv_...","pending_count":1}
-```
+1. The UI registers a `client_instance_id` and `client_token` via `/user-client/register`, heartbeats via `/user-client/heartbeat`, and opens `/user-ws/<client_instance_id>`.
+2. Human sends use `/user-rpc action=send_to_agent`; agent sends use `chat send-to-user` / chat HTTP helpers.
+3. Chat bodies are stored durably in the chat/message SQLite store.
+4. WS `chat_event` fanout tells the UI/user client that a conversation changed and carries metadata such as `message_id`, direction, chain id, and unread count.
+5. UI/CLI fetch full bodies through `/chats/...` or `/user-rpc fetch_chat`, and mark read via `/user-rpc mark_read`.
 
-## Important Design Notes
+### 4. Task lifecycle and review routing
 
-- Do not send actual message bodies over WebSocket.
-- WebSocket is notification-only.
-- Actual messages should be stored/fetched through a future `MessageProvider` abstraction.
-- `agent_instance_id` is the primary public identity.
-- `agent_class` is a grouping/type derived from `agent_instance_id` when possible.
-- Current storage is in-memory only.
-- Current HTTP/WS implementations are intentionally minimal for POC and not production-hardened.
+1. Task and chain mutations append `Task_Event` records.
+2. Projections update `Task_State`, `Task_Chain_State`, comments, participants, and votes.
+3. Automatic gating promotes tasks from `planning` to `queued`, then to `in_progress` when the assignee is free.
+4. `tasks done` moves a task to `review_ready`; required `lgtm_required` votes auto-approve it.
+5. Notification routing is status-aware:
+   - `queued` / `in_progress` → assignee (+ subscribers)
+   - `review_ready` → required reviewers with fallback routing
+   - `approved` / `blocked` / `cancelled` → assignee + coordinator (+ subscribers)
+6. If live delivery fails, the daemon queues a durable notification outbox entry for replay.
+
+### 5. Memory lifecycle
+
+1. Agents or users propose memory changes (`new`, `edit`, `archive`, `rollback`).
+2. Proposal records are stored as `pending`.
+3. Approval promotes the proposed memory to `active` (or archives/replaces the target on edit/archive/rollback flows).
+4. Wrapper bootstrap generation calls `/memory/applicable` to pull only active memories/templates relevant to the current agent/team/role/project scope.
+
+### 6. Project / team / VCS / artifact lifecycle
+
+- Projects are durable metadata records with loose anchors; they are hints, not mandatory cwd bindings.
+- Creating chains can allocate a team, generated roster, optional VCS workspace setup tasks, and workspace records.
+- VCS endpoints under `/chains/{id}/workspace...` expose status, diff, pull-base, merge-preview, merge, and archive flows.
+- Completing a VCS-backed chain can leave a workspace `merge_pending` until the merge/keep/archive decision is resolved.
+- Artifact metadata is stored durably; blobs are served separately via artifact content routes.
 
 ## Current Control / Launch Model
 
@@ -280,95 +337,66 @@ Pass `--config <path>` to override.
 
 ### Agent command profiles
 
-`config.toml` supports multiple wrapper agent command profiles:
+`config.toml` supports multiple wrapper agent command profiles, each with command args, model-tier mapping, bootstrap feature settings, startup/activity detection, and prompt-delivery behavior.
 
-```toml
-[wrapper]
-default_agent = "pi"
+Example knobs that exist today:
 
-[wrapper.agent-cmd.pi]
-command = ["pi"]
-yolo_flags = []
-prompt_flags = []
-starter_prompt = "You are {instance}. Use token {token}."
-
-[wrapper.agent-cmd.claude]
-command = ["claude"]
-yolo_flags = ["--dangerously-skip-permissions"]
-prompt_flags = []
-starter_prompt = "You are {instance}. Use token {token}."
-```
-
-`ham-ctl agents start ... --agent <name>` selects one of these profiles. If omitted, `[wrapper].default_agent` is used.
+- `wrapper.default_agent`
+- `wrapper.agent_run_dir`, `wrapper.use_random_dir`
+- per-profile `command`, `prompt_flags`, `yolo_flags`, `starter_prompt`
+- per-profile `models.{cheap,normal,smart}`
+- per-profile bootstrap feature blocks such as `bootstrap.AGENTS_MD`, `bootstrap.MEMORY_MD`, and `bootstrap.SKILLS`
+- per-profile `startup_detection` and `activity_detection`
+- guide-agent defaults under `[guide_agent]`
 
 ### Startup detection
 
-Wrappers can classify provider startup without persisting raw terminal transcripts. Add a nested startup detection section under an agent command profile:
+Wrappers can classify startup without persisting raw transcripts.
 
-```toml
-[wrapper.agent-cmd.claude.startup_detection]
-enabled = true
-startup_probe_seconds = 20
-capture_interval_ms = 500
-blocked_patterns = ["Do you trust the files in this folder", "Claude needs your permission"]
-probe_prompt = ""
-probe_expect_echo = false
-startup_unknown_is_blocked = false
-sanitized_reason_mapping = ["trust=Claude directory trust prompt", "permission=Claude permission prompt"]
-```
+Per-profile startup detection can:
 
-The wrapper captures bounded pane text in memory only during the probe window. It reports only metadata and safe diagnostics to the daemon: `starting`, `ready`, `startup_blocked`, `startup_failed`, or `startup_unknown`, plus provider/run-dir/tmux metadata and a sanitized reason. Do not put secrets or raw terminal snippets in `sanitized_reason_mapping`; use short operator-safe descriptions such as “approve Claude directory trust in the agent terminal”.
+- probe a bounded tmux capture window in memory
+- auto-press safe keys for known prompts
+- classify `starting`, `ready`, `startup_blocked`, `startup_failed`, or `startup_unknown`
+- report only sanitized diagnostics back to the daemon
 
-### Ctl commands
+### `ham-ctl` command families
 
-`ham-ctl` is the preferred user/agent interface. Attention gating is enforced by the daemon: `tasks next` first recomputes eligible dependency/slot promotions, and if a reviewer/verifier is configured the assignee should not pick another task until the current task is validated. Attempts to create or move a task to `ready` while dependencies or assignee slots are blocked return structured errors such as `error: "dependency"` or `error: "assignee_active_task"` with `blocking_task_ids`; resolve or wait on those tasks, or explicitly move work to a blocked/planned state.
+Run `ham-ctl --help` for the current surface. Important families include:
 
 ```bash
-ham-ctl health
-ham-ctl list
-ham-ctl agents list
-ham-ctl agents start <agent_instance_id> [--agent pi|claude]
-ham-ctl send --token <token> --to <agent_instance_id> --body <text>
-ham-ctl send --token <token> --to <agent_instance_id> --stdin
-ham-ctl inbox --token <token> [--limit N] [--include-read] [--json]
+ham-ctl agents list|start|create|update
+ham-ctl send|inbox
+ham-ctl tasks ...
+ham-ctl task-chains ...
+ham-ctl projects ...
+ham-ctl teams ...
+ham-ctl workspace ...
+ham-ctl memory ...
+ham-ctl users ...
+ham-ctl chat ...
+ham-ctl artifacts ...
+ham-ctl help work-guide
 ```
 
 ### Daemon-managed agent start
 
-All agent starts are managed by the daemon. When you run the `start` command, `ham-ctl` communicates with the daemon, which then launches the agent wrapper detached on the daemon machine:
-
-```bash
-ham-ctl agents start pi-agent@a --agent pi
-```
-
-Daemon endpoint:
-
-```text
-POST /agents/start
-```
-
-The daemon package includes `ham-wrapper` in its Nix output so it can launch a local wrapper.
+All managed launches go through the daemon. `ham-ctl` or the UI does **not** spawn wrappers directly for normal operation; it requests `POST /agents/start`, and the daemon launches `ham-wrapper` on the daemon host.
 
 ## Token Model
 
-Agent tokens are now non-deterministic random bearer tokens returned by registration/start responses.
+Agent and user tokens are random bearer tokens persisted by the auth DB.
 
-Do not assume token format like:
-
-```text
-agent_<agent_instance_id>
-```
-
-That old deterministic form should be rejected. Agents must use the exact token printed by wrapper/ctl/daemon response.
+Do **not** assume deterministic formats such as `agent_<agent_instance_id>`.
 
 Examples:
 
 ```json
 {"agent_token":"agt_<random-hex>"}
+{"client_token":"uct_<random-hex>"}
 ```
 
-For daemon-launched remote wrappers, daemon generates the random token, returns it to ctl, and passes it to wrapper via `--agent-token` so wrapper registers with the same token.
-
+For daemon-launched wrappers, the daemon may pre-generate the agent token, return it to ctl/UI, and pass it to the wrapper so the wrapper registers using the same durable credential.
 ## UI Debug IDs
 
 Every interactive element in the Electron UI must have a `data-debug-id` attribute. The Electron debug API (exposed at `http://127.0.0.1:<debug-port>/elements`, `/click`, `/type`, etc.) uses these IDs to locate and interact with elements programmatically.
