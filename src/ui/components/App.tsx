@@ -637,9 +637,9 @@ export default function App() {
     if (!guidePanelOpen || !(window as any).odinApi?.getDebugInfo) return;
     (window as any).odinApi.getDebugInfo().then(setGuideDebugInfo).catch(() => undefined);
   }, [guidePanelOpen]);
-  const sendGuideBody = useCallback((body: string) => {
+  const sendGuideBody = useCallback(async (body: string) => {
     const tempId = `local_temp_guide_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    dispatch(sendGuideMessage({ body, tempId }));
+    await dispatch(sendGuideMessage({ body, tempId })).unwrap();
   }, [dispatch]);
   const guideContextLabel = useMemo(() => {
     if (currentPageInfo.taskId) return `Task ${currentPageInfo.taskId}`;
@@ -658,11 +658,11 @@ export default function App() {
     if (!(window as any).odinApi?.toggleDebugServer) return;
     const next = await (window as any).odinApi.toggleDebugServer(!guideDebugInfo?.enabled);
     setGuideDebugInfo(next);
-    sendGuideBody(guideDebugMessage(next, next.enabled ? 'enabled' : 'disabled'));
+    void sendGuideBody(guideDebugMessage(next, next.enabled ? 'enabled' : 'disabled')).catch(() => undefined);
   }, [guideDebugInfo?.enabled, guideDebugMessage, sendGuideBody]);
   const sendGuidePageContext = useCallback(() => {
     if (!guideDebugInfo?.enabled) return;
-    sendGuideBody(guideDebugMessage(guideDebugInfo, 'page context'));
+    void sendGuideBody(guideDebugMessage(guideDebugInfo, 'page context')).catch(() => undefined);
   }, [guideDebugInfo, guideDebugMessage, sendGuideBody]);
   useEffect(() => {
     if (firstRunPromptedRef.current) return;
@@ -1112,10 +1112,10 @@ export default function App() {
               initialTaskId={urlParams.taskId}
               onOpenChain={openChain}
               onBack={() => { updateUrlParams({ chainId: null, taskId: null, agentId: null, view: 'home' }); dispatch(selectSurface('home')); }}
-              onSend={(body: string) => {
+              onSend={async (body: string) => {
                 const localId = `local_${Date.now()}_${Math.random().toString(36).slice(2)}`;
                 dispatch(optimisticCoordinatorMessage({ chainId: selectedChain.chainId, body, localId }));
-                dispatch(sendCoordinatorMessage({ chainId: selectedChain.chainId, body, localId }));
+                await dispatch(sendCoordinatorMessage({ chainId: selectedChain.chainId, body, localId })).unwrap();
               }}
               onToggleDiff={() => dispatch(toggleWorkspaceDiff(selectedChain.chainId))}
               onFetchDiff={(file: string) => dispatch(fetchWorkspaceDiff({ chainId: selectedChain.chainId, file }))}
@@ -1715,6 +1715,7 @@ function AgentTaskList({ title, emptyText, tasks, chainsById, agentId, completed
 function AgentDetailPage({ agent, tasksById, chainsById, chats, session, projects = [], providers = [], onBack, onOpenChain, onRefreshChat, onSendAgentMessage, onRefreshAgents, onAgentDeleted }: any) {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState('');
   const [agentBusy, setAgentBusy] = useState('');
   const [agentError, setAgentError] = useState('');
   const [startProgress, setStartProgress] = useState<any>(null);
@@ -1867,9 +1868,12 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
     const body = draft.trim();
     if (!body || !agent?.id || sending) return;
     setSending(true);
+    setSendError('');
     try {
       await onSendAgentMessage?.(agent.id, body, interrupt);
       setDraft('');
+    } catch (err: any) {
+      setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`);
     } finally {
       setSending(false);
     }
@@ -1957,28 +1961,32 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
         <div className="min-h-[360px] rounded-2xl border border-white/10 bg-black/20 p-3">
           <CoordinatorMessageList chainId={agent?.id || 'agent-detail'} messages={messages} onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))} debugPrefix="agent-detail-chat" emptyText="No direct messages loaded for this agent." />
         </div>
-        <div className="mt-3">
+        <div data-debug-id="agent-detail-chat-composer-shell" className="mt-3 rounded-2xl border border-white/10 bg-black/20 p-2 focus-within:border-sky-400/70">
           <textarea
             data-debug-id="agent-detail-chat-input"
             value={draft}
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={(event) => { setDraft(event.target.value); setSendError(''); }}
             onKeyDown={(event) => {
               if (event.key !== 'Enter' || event.shiftKey) return;
               event.preventDefault();
-              submit(false);
+              void submit(false);
             }}
             onPaste={async (event) => {
               const result = await upload.uploadClipboardImage(event, { originRef: agent?.id || '' });
-              if (result.link) setDraft((prev) => appendArtifactLink(prev, result.link || ''));
+              if (result.link) {
+                setSendError('');
+                setDraft((prev) => appendArtifactLink(prev, result.link || ''));
+              }
             }}
             placeholder="Message or nudge this agent…"
             rows={4}
-            className="w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"
+            className="w-full resize-none bg-transparent px-2 py-2 text-sm outline-none"
           />
-          {upload.error && <div data-debug-id="agent-detail-chat-upload-error" className="mt-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
-          <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
-            <ArtifactUploadButton onUploaded={(link) => setDraft((prev) => appendArtifactLink(prev, link))} context={{ originKind: 'direct_agent_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending} debugIdPrefix="agent-detail-chat-artifact-upload" label="Attach artifact" />
-            <IconActionButton debugId="agent-detail-chat-send-btn" title={sending ? 'Sending…' : 'Send'} icon="➤" onClick={() => submit(false)} disabled={!agent?.id || sending || !draft.trim()} tone="primary" />
+          {sendError && <div data-debug-id="agent-detail-chat-send-error" className="mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{sendError}</div>}
+          {upload.error && <div data-debug-id="agent-detail-chat-upload-error" className="mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
+          <div className="flex items-center justify-between gap-2">
+            <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }} context={{ originKind: 'direct_agent_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending} debugIdPrefix="agent-detail-chat-artifact-upload" label="＋" buttonClassName="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-lg text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40" />
+            <button data-debug-id="agent-detail-chat-send-btn" aria-label="Send direct agent message" title={sending ? 'Sending…' : 'Send'} onClick={() => { void submit(false); }} disabled={!agent?.id || sending || !draft.trim()} className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-sky-400 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">➤</button>
           </div>
         </div>
       </section>
@@ -2116,6 +2124,7 @@ function HomeRunningAgentsPanel({ agents, projects, session, chats, templates, p
   const [selectedAgentId, setSelectedAgentId] = useState(agents[0]?.id || '');
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState('');
   const chatInputRef = useRef<HTMLTextAreaElement | null>(null);
   const upload = useArtifactUpload({ projectId: '', originKind: 'direct_agent_chat', originRef: selectedAgentId });
   const selectedAgent = useMemo(() => (agents || []).find((agent: any) => agent.id === selectedAgentId) || null, [agents, selectedAgentId]);
@@ -2155,10 +2164,13 @@ function HomeRunningAgentsPanel({ agents, projects, session, chats, templates, p
     const body = draft.trim();
     if (!body || !selectedAgentId || sending) return;
     setSending(true);
+    setSendError('');
     try {
       await ensureSelectedAgentRunning(selectedAgentId);
       await onSendAgentMessage?.(selectedAgentId, body);
       setDraft('');
+    } catch (err: any) {
+      setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`);
     } finally {
       setSending(false);
     }
@@ -2214,24 +2226,33 @@ function HomeRunningAgentsPanel({ agents, projects, session, chats, templates, p
             {selectedAgent && <span data-debug-id="home-running-agent-chat-status" className="rounded-full bg-white/10 px-2 py-1 text-xs text-zinc-400">{agentRuntimeDot(selectedAgent).label}</span>}
           </div>
           <CoordinatorMessageList chainId={selectedAgentId || 'running-agents'} messages={messages} onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))} debugPrefix="home-running-agent-chat" emptyText="No direct messages loaded for this agent." />
-          <div className="mt-3">
+          <div data-debug-id="home-running-agent-chat-composer-shell" className="mt-3 rounded-2xl border border-white/10 bg-black/20 p-2 focus-within:border-sky-400/70">
             <textarea
               ref={chatInputRef}
               data-debug-id="home-running-agent-chat-input"
               value={draft}
-              onChange={(event) => setDraft(event.target.value)}
+              onChange={(event) => { setDraft(event.target.value); setSendError(''); }}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' || event.shiftKey) return;
+                event.preventDefault();
+                void submit();
+              }}
               onPaste={async (event) => {
                 const result = await upload.uploadClipboardImage(event, { originRef: selectedAgentId });
-                if (result.link) setDraft((prev) => appendArtifactLink(prev, result.link || ''));
+                if (result.link) {
+                  setSendError('');
+                  setDraft((prev) => appendArtifactLink(prev, result.link || ''));
+                }
               }}
               placeholder="Message selected running agent…"
               rows={3}
-              className="w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"
+              className="w-full resize-none bg-transparent px-2 py-2 text-sm outline-none"
             />
-            {upload.error && <div data-debug-id="home-running-agent-chat-upload-error" className="mt-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
-            <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
-              <ArtifactUploadButton onUploaded={(link) => setDraft((prev) => appendArtifactLink(prev, link))} context={{ originKind: 'direct_agent_chat', originRef: selectedAgentId }} disabled={!selectedAgentId || sending} debugIdPrefix="home-running-agent-chat-artifact-upload" label="Attach artifact" />
-              <button data-debug-id="home-running-agent-chat-send-btn" onClick={submit} disabled={!selectedAgentId || sending || !draft.trim()} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">{sending ? 'Sending…' : 'Send'}</button>
+            {sendError && <div data-debug-id="home-running-agent-chat-send-error" className="mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{sendError}</div>}
+            {upload.error && <div data-debug-id="home-running-agent-chat-upload-error" className="mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
+            <div className="flex items-center justify-between gap-2">
+              <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }} context={{ originKind: 'direct_agent_chat', originRef: selectedAgentId }} disabled={!selectedAgentId || sending} debugIdPrefix="home-running-agent-chat-artifact-upload" label="＋" buttonClassName="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-lg text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40" />
+              <button data-debug-id="home-running-agent-chat-send-btn" aria-label="Send running agent message" title={sending ? 'Sending…' : 'Send'} onClick={() => { void submit(); }} disabled={!selectedAgentId || sending || !draft.trim()} className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-sky-400 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">➤</button>
             </div>
           </div>
         </div>
@@ -3103,6 +3124,7 @@ function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'cha
 
 function GuideSidePanel({ agent, messages, loading, sending, debugInfo, currentPageInfo, currentPageLabel, onClose, onSend, onToggleDebugServer, onSendPageContext }: any) {
   const [draft, setDraft] = useState('');
+  const [sendError, setSendError] = useState('');
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const guideUpload = useArtifactUpload({ projectId: '', originKind: 'guide_chat', originRef: GUIDE_AGENT_ID });
   const runtime = agentRuntimeDot(agent);
@@ -3110,11 +3132,16 @@ function GuideSidePanel({ agent, messages, loading, sending, debugInfo, currentP
     const timer = window.setTimeout(() => composerRef.current?.focus({ preventScroll: true }), 120);
     return () => window.clearTimeout(timer);
   }, []);
-  const submit = () => {
+  const submit = async () => {
     const body = draft.trim();
     if (!body || sending) return;
-    onSend(body);
-    setDraft('');
+    setSendError('');
+    try {
+      await onSend(body);
+      setDraft('');
+    } catch (err: any) {
+      setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`);
+    }
   };
   return (
     <aside data-debug-id="guide-side-panel" className="flex h-full w-[520px] flex-col border-l border-white/10 bg-[#0d0f14] shadow-2xl shadow-black/30">
@@ -3155,20 +3182,24 @@ function GuideSidePanel({ agent, messages, loading, sending, debugInfo, currentP
             data-debug-id="guide-chat-composer-input"
             ref={composerRef}
             value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit(); } }}
+            onChange={(event) => { setDraft(event.target.value); setSendError(''); }}
+            onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submit(); } }}
             onPaste={async (event) => {
               const result = await guideUpload.uploadClipboardImage(event, { originKind: 'guide_chat', originRef: GUIDE_AGENT_ID });
-              if (result.link) setDraft((prev) => appendArtifactLink(prev, result.link || ''));
+              if (result.link) {
+                setSendError('');
+                setDraft((prev) => appendArtifactLink(prev, result.link || ''));
+              }
             }}
             placeholder="Ask Heimdall Guide…"
             rows={3}
             className="w-full resize-none bg-transparent px-2 py-2 text-sm outline-none"
           />
+          {sendError && <div data-debug-id="guide-chat-send-error" className="mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{sendError}</div>}
           {guideUpload.error && <div data-debug-id="guide-chat-upload-error" className="mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{guideUpload.error}</div>}
           <div className="flex items-center justify-between gap-2">
-            <ArtifactUploadButton onUploaded={(link) => setDraft((prev) => appendArtifactLink(prev, link))} context={{ originKind: 'guide_chat', originRef: GUIDE_AGENT_ID }} disabled={sending} debugIdPrefix="guide-chat-artifact-upload" label="＋" buttonClassName="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-lg text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40" />
-            <button data-debug-id="guide-chat-send-btn" aria-label="Send guide message" title="Send" disabled={sending || !draft.trim()} onClick={submit} className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-amber-300 text-sm font-semibold text-black hover:bg-amber-200 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">➤</button>
+            <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }} context={{ originKind: 'guide_chat', originRef: GUIDE_AGENT_ID }} disabled={sending} debugIdPrefix="guide-chat-artifact-upload" label="＋" buttonClassName="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-lg text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40" />
+            <button data-debug-id="guide-chat-send-btn" aria-label="Send guide message" title="Send" disabled={sending || !draft.trim()} onClick={() => { void submit(); }} className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-amber-300 text-sm font-semibold text-black hover:bg-amber-200 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">➤</button>
           </div>
         </div>
         <p className="mt-2 text-xs text-zinc-500">Global guide chat is not chain-scoped. Mutating actions should remain explicit and auditable.</p>
@@ -3247,11 +3278,12 @@ function ChainProgressPanel({ chain, progress }: { chain: any; progress: ChainPr
 function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, taskLogsByTaskId, initialTaskId = '', onBack, onSend, onToggleDiff, onFetchDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenChain, onOpenTask, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer }: any) {
   const session = useSelector((state: any) => state.chat?.session || {});
   const [draft, setDraft] = useState('');
+  const [sendError, setSendError] = useState('');
   const [selectedTaskId, setSelectedTaskId] = useState(initialTaskId || '');
   const [commentDraft, setCommentDraft] = useState('');
   const [nudgeDraft, setNudgeDraft] = useState('Please take a look at this task when you are available.');
   const [descOpen, setDescOpen] = useState(false);
-  const composerRef = useRef<HTMLInputElement | null>(null);
+  const composerRef = useRef<HTMLTextAreaElement | null>(null);
   useEffect(() => {
     if (!chain?.chainId) return;
     const node = composerRef.current;
@@ -3315,11 +3347,16 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
   const chainRepoDiffSupported = Boolean(chain.repoDiffSupported || chain.repo_diff_supported);
   const workspaceForDisplay = workspace || (chainRepoDiffSupported ? { repo_diff_supported: true, diff_base_sha: chain.diffBaseSha || chain.diff_base_sha || '' } : null);
   const hasWorkspace = Boolean(chain.vcsWorkspaceId || workspaceForDisplay?.workspace_id || workspaceForDisplay?.repo_diff_supported || workspaceForDisplay?.repoDiffSupported || chainRepoDiffSupported);
-  const submit = () => {
+  const submit = async () => {
     const body = draft.trim();
     if (!body) return;
-    onSend(body);
-    setDraft('');
+    setSendError('');
+    try {
+      await onSend(body);
+      setDraft('');
+    } catch (err: any) {
+      setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`);
+    }
   };
   return (
     <div className="mx-auto max-w-6xl px-8 py-8">
@@ -3370,31 +3407,45 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
                 {coordinatorLastSeen && <span className="hidden text-[10px] opacity-70 sm:inline">· {coordinatorLastSeen}</span>}
               </div>
             </div>
-            <CoordinatorMessageList chainId={chain.chainId} messages={messages} onReply={(reply) => onSend(reply)} />
-            <div className="mt-4 flex items-center gap-2">
-              <input
+            <CoordinatorMessageList chainId={chain.chainId} messages={messages} onReply={(reply) => {
+              setSendError('');
+              void onSend(reply).catch((err: any) => setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`));
+            }} />
+            <div data-debug-id="chain-coordinator-composer-shell" className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-2 focus-within:border-sky-400/70">
+              <textarea
                 data-debug-id="chain-coordinator-composer-input"
                 ref={composerRef}
                 value={draft}
-                onChange={(event) => setDraft(event.target.value)}
+                onChange={(event) => { setDraft(event.target.value); setSendError(''); }}
                 onPaste={async (event) => {
                   const result = await composerArtifactUpload.uploadClipboardImage(event, { projectId, originKind: 'clipboard_chat', originRef: chain.chainId || '' });
-                  if (result.link) setDraft((current) => appendArtifactLink(current, result.link));
+                  if (result.link) {
+                    setSendError('');
+                    setDraft((current) => appendArtifactLink(current, result.link));
+                  }
                 }}
-                onKeyDown={(event) => { if (event.key === 'Enter') submit(); }}
+                onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submit(); } }}
                 placeholder="Message coordinator only…"
                 autoFocus
-                className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"
+                rows={3}
+                className="w-full resize-none bg-transparent px-2 py-2 text-sm outline-none"
               />
-              <ArtifactUploadButton
-                onUploaded={(link) => setDraft((current) => appendArtifactLink(current, link))}
-                debugIdPrefix="chain-coordinator-artifact-upload"
-                context={{ projectId: projectId, originRef: chain.chainId || '' }}
-                buttonClassName="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
-                label="Attach"
-              />
-              <button data-debug-id="chain-coordinator-send-btn" onClick={submit} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300">Send</button>
+              <div className="flex items-center justify-between gap-2">
+                <ArtifactUploadButton
+                  onUploaded={(link) => { setSendError(''); setDraft((current) => appendArtifactLink(current, link)); }}
+                  debugIdPrefix="chain-coordinator-artifact-upload"
+                  context={{ projectId: projectId, originRef: chain.chainId || '' }}
+                  buttonClassName="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-lg text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
+                  label="＋"
+                />
+                <button data-debug-id="chain-coordinator-send-btn" aria-label="Send coordinator message" title="Send" onClick={() => { void submit(); }} className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-sky-400 text-sm font-semibold text-black hover:bg-sky-300">➤</button>
+              </div>
             </div>
+            {sendError ? (
+              <div data-debug-id="chain-coordinator-send-error" className="mt-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">
+                {sendError}
+              </div>
+            ) : null}
             {composerArtifactUpload.error ? (
               <div data-debug-id="chain-coordinator-paste-error" className="mt-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">
                 {composerArtifactUpload.error}

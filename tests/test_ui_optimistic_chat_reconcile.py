@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Regression checks for coordinator-chat optimistic message reconciliation.
 
-The UI must keep an immediate sending bubble, then remove/reconcile exactly the
-optimistic copy acknowledged by the server. Reconciliation must not use message
-body equality because users can send identical coordinator messages twice.
+The UI must keep an immediate sending bubble, then reconcile exactly the
+optimistic copy acknowledged by the server without collapsing same-body sends.
+Acknowledged optimistic rows may remain briefly for read-your-write smoothing,
+but they must no longer be marked sending and must carry the server message id.
 """
 from pathlib import Path
 
@@ -34,9 +35,18 @@ def main() -> None:
     require(store, "payload: { chainId: string; body: string; localId: string }", CHAIN_VIEW)
     require(store, "id: action.payload?.localId", CHAIN_VIEW)
 
-    # Fulfilled send removes only the acknowledged optimistic entry by local id.
+    # Fulfilled send reconciles only the acknowledged optimistic entry by local
+    # id and annotates it with the server id / delivered state.
     require(store, "const { chainId, localId, result } = action.payload;", CHAIN_VIEW)
-    require(store, "pending.filter((m: any) => m.id !== localId)", CHAIN_VIEW)
+    require(store, "if (m.id !== localId && m.localId !== localId) return m;", CHAIN_VIEW)
+    require(store, "messageId: messageId || m.id,", CHAIN_VIEW)
+    require(store, "sending: false,", CHAIN_VIEW)
+    require(store, "deliveredUnixMs: Number(m.deliveredUnixMs || Date.now()),", CHAIN_VIEW)
+
+    # Rejected sends preserve the optimistic row for visible failure state.
+    require(store, ".addCase(sendCoordinatorMessage.rejected, (state: any, action) => {", CHAIN_VIEW)
+    require(store, "deliveryFailedUnixMs: Date.now(),", CHAIN_VIEW)
+    require(store, "deliveryError: errorMessage,", CHAIN_VIEW)
 
     # Refreshed server chat can remove entries by server id if a mapped id exists,
     # but must not drop same-body messages by body equality.
@@ -46,10 +56,9 @@ def main() -> None:
     forbid(store, "serverUserBodies.has(m.body)", CHAIN_VIEW)
     forbid(store, "m.body === body", CHAIN_VIEW)
 
-    # Render only pending optimistic bubbles; acknowledged optimistics are never
-    # rendered beside persisted chat.
-    require(app, "filter((msg: any) => msg.sending)", APP)
-    require(app, "const messages = [...chat, ...optimistic];", APP)
+    # Render persisted chat plus optimistic rows through the shared normalizer so
+    # pending, delivered, and failed local rows all share the same status UI.
+    require(app, "const messages = useMemo(() => normalizeCoordinatorMessages([...chat, ...optimistic]), [chat, optimistic]);", APP)
 
     print("PASS: coordinator optimistic chat reconciliation contract")
 

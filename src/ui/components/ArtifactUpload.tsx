@@ -2,11 +2,18 @@ import { useCallback, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
 import * as daemonApi from '../api/daemonApi';
 
-// MVP artifact upload support is limited to Markdown/text and PNG. Keep this in
-// sync with the daemon allowlist and the fullscreen viewer preview branches.
-const MARKDOWN_EXTENSIONS = ['.md', '.markdown'];
-const PNG_EXTENSIONS = ['.png'];
-export const ARTIFACT_UPLOAD_ACCEPT = '.md,.markdown,text/markdown,.png,image/png';
+// Keep this helper aligned with the daemon artifact allowlist. Rich preview is
+// narrower than upload support; unsupported preview kinds still fall back to the
+// viewer/download flow after upload.
+const ARTIFACT_UPLOAD_SPECS = [
+  { kind: 'markdown', mime: 'text/markdown', exts: ['.md'] },
+  { kind: 'png', mime: 'image/png', exts: ['.png'] },
+  { kind: 'jpeg', mime: 'image/jpeg', exts: ['.jpg', '.jpeg'] },
+  { kind: 'csv', mime: 'text/csv', exts: ['.csv'] },
+  { kind: 'html', mime: 'text/html', exts: ['.html', '.htm'] },
+] as const;
+export const ARTIFACT_UPLOAD_ACCEPT = ARTIFACT_UPLOAD_SPECS.flatMap((spec) => [...spec.exts, spec.mime]).join(',');
+const SUPPORTED_FILE_ERROR = 'Unsupported file. Upload a supported artifact (.md, .png, .jpg, .jpeg, .csv, .html, or .htm).';
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024; // Mirror daemon size guardrail for a friendlier client-side error.
 
 type ArtifactKindMime = { kind: string; mime: string };
@@ -22,16 +29,23 @@ type UploadArtifactParams = {
   originRef?: string;
 };
 
+function fileExtension(name: string): string {
+  const trimmed = String(name || '').trim().toLowerCase();
+  const dot = trimmed.lastIndexOf('.');
+  if (dot <= 0 || dot === trimmed.length - 1) return '';
+  return trimmed.slice(dot);
+}
+
 function classifyFile(file: File): ArtifactKindMime | null {
   const name = (file.name || '').toLowerCase();
   const type = (file.type || '').toLowerCase();
-  const hasExt = (exts: string[]) => exts.some((ext) => name.endsWith(ext));
-  if (hasExt(MARKDOWN_EXTENSIONS) || type === 'text/markdown' || (type === 'text/plain' && hasExt(MARKDOWN_EXTENSIONS))) {
-    return { kind: 'markdown', mime: 'text/markdown' };
+  const ext = fileExtension(name);
+  if (ext) {
+    const byExtension = ARTIFACT_UPLOAD_SPECS.find((spec) => spec.exts.some((candidate) => candidate === ext));
+    return byExtension ? { kind: byExtension.kind, mime: byExtension.mime } : null;
   }
-  if (hasExt(PNG_EXTENSIONS) || type === 'image/png') {
-    return { kind: 'png', mime: 'image/png' };
-  }
+  const byMime = ARTIFACT_UPLOAD_SPECS.find((spec) => spec.mime === type);
+  if (byMime) return { kind: byMime.kind, mime: byMime.mime };
   return null;
 }
 
@@ -149,12 +163,13 @@ export function useArtifactUpload(context: ArtifactUploadContext = {}): UseArtif
     setError('');
     const classified = classifyFile(file);
     if (!classified) {
-      setError('Unsupported file. Upload a Markdown (.md) or PNG (.png) file.');
+      setError(SUPPORTED_FILE_ERROR);
       return null;
     }
+    const fallbackExt = ARTIFACT_UPLOAD_SPECS.find((spec) => spec.kind === classified.kind)?.exts[0] || '';
     return uploadArtifact({
       file,
-      name: file.name || `artifact${classified.kind === 'png' ? '.png' : '.md'}`,
+      name: file.name || `artifact${fallbackExt}`,
       kind: classified.kind,
       mime: classified.mime,
       projectId: context.projectId || '',
@@ -236,7 +251,7 @@ export default function ArtifactUploadButton({
         data-debug-id={`${debugIdPrefix}-btn`}
         disabled={disabled || uploading}
         onClick={() => { clearError(); inputRef.current?.click(); }}
-        title="Upload a Markdown or PNG artifact"
+        title="Upload a supported artifact"
         className={buttonClassName || 'framer-pill bg-white/10 text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40'}
       >
         {uploading ? 'Uploading…' : label}

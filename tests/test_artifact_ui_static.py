@@ -8,6 +8,8 @@ API = (ROOT / 'src/ui/api/daemonApi.ts').read_text(encoding='utf-8')
 APP = (ROOT / 'src/ui/components/App.tsx').read_text(encoding='utf-8')
 PANEL = (ROOT / 'src/ui/components/ChainArtifactsPanel.tsx').read_text(encoding='utf-8')
 UPLOAD = (ROOT / 'src/ui/components/ArtifactUpload.tsx').read_text(encoding='utf-8')
+CONTRACTS = (ROOT / 'src/contracts/artifacts.odin').read_text(encoding='utf-8')
+CHAIN_VIEW = (ROOT / 'src/ui/store/chainViewSlice.ts').read_text(encoding='utf-8')
 MARKDOWN = (ROOT / 'src/ui/components/Markdown.tsx').read_text(encoding='utf-8')
 MARKDOWN_BODY = (ROOT / 'src/ui/components/MarkdownBody.tsx').read_text(encoding='utf-8')
 VIEWER = (ROOT / 'src/ui/components/ArtifactViewer.tsx').read_text(encoding='utf-8')
@@ -29,31 +31,73 @@ checks = [
         'if (originKind) body.origin_kind = originKind;',
         'if (originRef) body.origin_ref = originRef;',
     ])),
-    ('chain coordinator composer renders artifact upload affordance and debug ids', all(snippet in APP for snippet in [
+    ('chain coordinator composer renders integrated plus upload affordance and debug ids', all(snippet in APP for snippet in [
+        'data-debug-id="chain-coordinator-composer-shell"',
         'data-debug-id="chain-coordinator-composer-input"',
         '<ArtifactUploadButton',
         'debugIdPrefix="chain-coordinator-artifact-upload"',
-        'label="Attach"',
+        'label="＋"',
+        'buttonClassName="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-lg text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"',
     ])),
     ('chain coordinator upload uses project and chain context', all(snippet in APP for snippet in [
         "const projectId = chain.projectId || chain.project_id || '';",
         "context={{ projectId: projectId, originRef: chain.chainId || '' }}",
     ])),
     ('successful chain upload inserts artifact link into the draft instead of auto-sending', all(snippet in APP for snippet in [
-        'onUploaded={(link) => setDraft((current) => appendArtifactLink(current, link))}',
-        'if (result.link) setDraft((current) => appendArtifactLink(current, result.link));',
-        'onClick={submit}',
+        "onUploaded={(link) => { setSendError(''); setDraft((current) => appendArtifactLink(current, link)); }}",
+        'setDraft((current) => appendArtifactLink(current, result.link));',
+        'onClick={() => { void submit(); }}',
     ])),
-    ('upload component only accepts markdown and png files', all(snippet in UPLOAD for snippet in [
-        "const MARKDOWN_EXTENSIONS = ['.md', '.markdown'];",
-        "const PNG_EXTENSIONS = ['.png'];",
-        "export const ARTIFACT_UPLOAD_ACCEPT = '.md,.markdown,text/markdown,.png,image/png';",
+    ('guide and chain composers await successful sends before clearing drafts and expose inline send errors', all(snippet in APP for snippet in [
+        'await dispatch(sendGuideMessage({ body, tempId })).unwrap();',
+        'await dispatch(sendCoordinatorMessage({ chainId: selectedChain.chainId, body, localId })).unwrap();',
+        'await onSend(body);',
+        'data-debug-id="guide-chat-send-error"',
+        'data-debug-id="chain-coordinator-send-error"',
+        'setSendError(`Send failed.',
     ])),
-    ('upload component validates supported files, size, and session before artifact creation', all(snippet in UPLOAD for snippet in [
-        'Unsupported file. Upload a Markdown (.md) or PNG (.png) file.',
+    ('direct agent chat composers preserve drafts on failure and expose inline send errors', all(snippet in APP for snippet in [
+        'await onSendAgentMessage?.(agent.id, body, interrupt);',
+        'await onSendAgentMessage?.(selectedAgentId, body);',
+        'data-debug-id="agent-detail-chat-send-error"',
+        'data-debug-id="home-running-agent-chat-send-error"',
+        'onChange={(event) => { setDraft(event.target.value); setSendError(\'\'); }}',
+    ])),
+    ('direct agent chat composers mirror the integrated plus attachment affordance', all(snippet in APP for snippet in [
+        'data-debug-id="agent-detail-chat-composer-shell"',
+        'data-debug-id="home-running-agent-chat-composer-shell"',
+        'debugIdPrefix="agent-detail-chat-artifact-upload" label="＋"',
+        'debugIdPrefix="home-running-agent-chat-artifact-upload" label="＋"',
+        'data-debug-id="agent-detail-chat-send-btn"',
+        'data-debug-id="home-running-agent-chat-send-btn"',
+    ])),
+    ('daemon artifact contract keeps markdown/png/jpeg/csv/html allowlist', all(snippet in CONTRACTS for snippet in [
+        'ARTIFACT_KIND_MARKDOWN :: "markdown"',
+        'ARTIFACT_KIND_PNG      :: "png"',
+        'ARTIFACT_KIND_JPEG     :: "jpeg"',
+        'ARTIFACT_KIND_CSV      :: "csv"',
+        'ARTIFACT_KIND_HTML     :: "html"',
+        'ARTIFACT_SUPPORTED_KINDS :: [5]string{',
+    ])),
+    ('upload component accepts the daemon-supported artifact kinds and markdown extension contract', all(snippet in UPLOAD for snippet in [
+        "const ARTIFACT_UPLOAD_SPECS = [",
+        "{ kind: 'markdown', mime: 'text/markdown', exts: ['.md'] },",
+        "{ kind: 'png', mime: 'image/png', exts: ['.png'] },",
+        "{ kind: 'jpeg', mime: 'image/jpeg', exts: ['.jpg', '.jpeg'] },",
+        "{ kind: 'csv', mime: 'text/csv', exts: ['.csv'] },",
+        "{ kind: 'html', mime: 'text/html', exts: ['.html', '.htm'] },",
+        "export const ARTIFACT_UPLOAD_ACCEPT = ARTIFACT_UPLOAD_SPECS.flatMap((spec) => [...spec.exts, spec.mime]).join(',');",
+    ])),
+    ('upload component rejects unsupported extensions even when mime matches and validates before artifact creation', all(snippet in UPLOAD for snippet in [
+        'Unsupported file. Upload a supported artifact (.md, .png, .jpg, .jpeg, .csv, .html, or .htm).',
+        'function fileExtension(name: string): string {',
+        'const ext = fileExtension(name);',
+        "const byExtension = ARTIFACT_UPLOAD_SPECS.find((spec) => spec.exts.some((candidate) => candidate === ext));",
+        'return byExtension ? { kind: byExtension.kind, mime: byExtension.mime } : null;',
         'File is too large. Maximum upload size is 5 MB.',
         'Not connected. Reconnect before uploading an artifact.',
         'const res = await daemonApi.createArtifact({',
+        "const fallbackExt = ARTIFACT_UPLOAD_SPECS.find((spec) => spec.kind === classified.kind)?.exts[0] || '';",
         "originKind: originKind || context.originKind || 'chat'",
     ])),
     ('upload component supports clipboard png paste uploads with contextual origin metadata', all(snippet in UPLOAD for snippet in [
@@ -70,6 +114,14 @@ checks = [
         'data-debug-id={`${debugIdPrefix}-error`}',
         'const link = await uploadFile(file);',
         'if (link) onUploaded(link);',
+    ])),
+    ('chain coordinator send failures mark optimistic messages failed for inline status/error handling', all(snippet in CHAIN_VIEW for snippet in [
+        '.addCase(sendCoordinatorMessage.pending, (state: any) => {',
+        '.addCase(sendCoordinatorMessage.rejected, (state: any, action) => {',
+        'const errorMessage = action.error.message || \'Failed to send coordinator message\';',
+        'deliveryFailedUnixMs: Date.now(),',
+        'deliveryError: errorMessage,',
+        'state.error = errorMessage;',
     ])),
     ('markdown body owns shared renderer', 'export default function MarkdownBody' in MARKDOWN_BODY and 'export function renderMarkdown' in MARKDOWN_BODY),
     ('artifact chip debug id rendered by shared markdown renderer', 'data-debug-id="artifact-link-chip-${artifactId}"' in MARKDOWN_BODY and 'data-artifact-id="${artifactId}"' in MARKDOWN_BODY),

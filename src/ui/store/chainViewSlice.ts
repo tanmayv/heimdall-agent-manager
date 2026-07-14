@@ -156,14 +156,15 @@ const chainViewSlice = createSlice({
       })
       .addCase(focusChainView.rejected, (state: any, action) => { state.loading = false; state.error = action.error.message || 'Failed to load chain'; })
       .addCase(revalidateChainView.fulfilled, (state: any, action) => { if (action.payload.chainId) state.lastPeriodicRefreshByChainId[action.payload.chainId] = action.payload.at; })
+      .addCase(sendCoordinatorMessage.pending, (state: any) => {
+        state.error = '';
+      })
       .addCase(sendCoordinatorMessage.fulfilled, (state: any, action) => {
         const { chainId, localId, result } = action.payload;
         const pending = state.optimisticMessagesByChainId[chainId] || [];
         const messageId = result?.message_id || '';
-        let matched = false;
         state.optimisticMessagesByChainId[chainId] = pending.map((m: any) => {
           if (m.id !== localId && m.localId !== localId) return m;
-          matched = true;
           return {
             ...m,
             id: messageId || m.id,
@@ -171,9 +172,27 @@ const chainViewSlice = createSlice({
             messageId: messageId || m.id,
             sending: false,
             deliveredUnixMs: Number(m.deliveredUnixMs || Date.now()),
+            deliveryFailedUnixMs: 0,
+            deliveryError: '',
           };
         });
         state.lastLocalAction = `sentCoordinator:${chainId}`;
+      })
+      .addCase(sendCoordinatorMessage.rejected, (state: any, action) => {
+        const { chainId, localId } = action.meta.arg || {};
+        const errorMessage = action.error.message || 'Failed to send coordinator message';
+        const pending = state.optimisticMessagesByChainId[chainId] || [];
+        state.optimisticMessagesByChainId[chainId] = pending.map((m: any) => {
+          if (m.id !== localId && m.localId !== localId) return m;
+          return {
+            ...m,
+            sending: false,
+            deliveryFailedUnixMs: Date.now(),
+            deliveryError: errorMessage,
+          };
+        });
+        state.error = errorMessage;
+        state.lastLocalAction = `sendCoordinatorFailed:${chainId}`;
       })
       .addCase(fetchWorkspaceForChain.fulfilled, (state: any, action) => { if (action.payload.chainId && action.payload.workspace?.workspace) state.workspaceByChainId[action.payload.chainId] = action.payload.workspace.workspace; })
       .addCase(previewWorkspaceMerge.fulfilled, (state: any, action) => { if (action.payload.chainId) state.mergePreviewByChainId[action.payload.chainId] = action.payload.preview; })
