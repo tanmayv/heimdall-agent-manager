@@ -305,7 +305,7 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 	strings.write_string(builder, `","created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.created_unix_ms))
 	strings.write_string(builder, `,"updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.updated_unix_ms))
 	strings.write_string(builder, `,"archived_at_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.archived_at_unix_ms))
-	strings.write_string(builder, `,"identity_state":"`); json_write_string(builder, agent_record_identity_state(rec))
+	strings.write_string(builder, `,"identity_state":"`); json_write_string(builder, agent_record_identity_state(rec)); strings.write_string(builder, `"`)
 	strings.write_string(builder, `,"current_task_id":"`); json_write_string(builder, rec.current_task_id)
 	strings.write_string(builder, `","current_task_since":`); strings.write_string(builder, fmt.tprintf("%d", rec.current_task_since))
 	strings.write_string(builder, `,"last_needed_at_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.last_needed_at_unix_ms))
