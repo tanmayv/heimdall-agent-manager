@@ -27,6 +27,13 @@ function agentTemplate(agent: any): string {
   return agent?.templateId || agent?.template_id || agent?.agentRole || agent?.agent_role || agent?.roleHint || agent?.role_hint || '';
 }
 
+function isGeneratedChainAgent(agent: any) {
+  const scope = String(agent?.agentScope || agent?.agent_scope || '').toLowerCase();
+  const id = agentId(agent);
+  const suffix = id.includes('@') ? id.split('@').slice(1).join('@') : id;
+  return scope === 'generated_chain' || /(?:^|-)chain-/i.test(suffix);
+}
+
 function roleMatches(agent: any, roleHint: string) {
   if (!roleHint) return true;
   const hint = roleHint.toLowerCase();
@@ -63,7 +70,7 @@ function statusLabel(agent: any) {
 }
 
 export default function AgentPicker({ debugId, daemonUrl, agents, projects, templates = [], providers = [], value = '', roleHint = '', defaultProjectId = '', onSelected, onRefreshAgents }: AgentPickerProps) {
-  const filteredAgents = useMemo(() => (agents || []).filter((agent) => agentId(agent) && roleMatches(agent, roleHint)), [agents, roleHint]);
+  const filteredAgents = useMemo(() => (agents || []).filter((agent) => agentId(agent) && !isGeneratedChainAgent(agent) && roleMatches(agent, roleHint)), [agents, roleHint]);
   const fallbackTemplate = templateDefault(templates, roleHint);
   const fallbackProvider = providerDefault(providers);
   const [existingId, setExistingId] = useState(value || filteredAgents[0]?.id || '');
@@ -132,8 +139,8 @@ export default function AgentPicker({ debugId, daemonUrl, agents, projects, temp
         {value && <div className="max-w-[220px] truncate rounded-full bg-white/5 px-2 py-1 text-xs text-zinc-400">Selected {value}</div>}
       </div>
 
-      <div className="mt-3 grid gap-2 md:grid-cols-[1fr_auto_auto]">
-        <select data-debug-id={`${debugId}-existing-select`} value={existingId} onChange={(event) => setExistingId(event.target.value)} className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
+      <div className="mt-3 grid min-w-0 gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto]">
+        <select data-debug-id={`${debugId}-existing-select`} value={existingId} onChange={(event) => setExistingId(event.target.value)} className="min-w-0 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
           {filteredAgents.length === 0 && <option value="">No matching existing agents</option>}
           {filteredAgents.map((agent: any) => {
             const id = agentId(agent);
