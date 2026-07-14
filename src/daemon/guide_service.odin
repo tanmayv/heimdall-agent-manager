@@ -43,7 +43,8 @@ guide_service_start :: proc(cfg: cfg_lib.Guide_Agent_Config, source: string = "g
 		fmt.printfln("GUIDE_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=record_upsert_failed source=%s target=%s", router_now_unix_ms(), router_now_unix_ms() - start_ms, source, agent_id)
 		return false
 	}
-	agent_token := generate_agent_token()
+	agent_token := auth_db_get_token("agent", agent_id)
+	if agent_token == "" do agent_token = generate_agent_token()
 	if !agent_runtime_tracker_try_begin_launch(agent_id, agent_token, source, "", router_now_unix_ms()) {
 		fmt.printfln("GUIDE_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=skip source=%s target=%s skip_reason=agent_tracker", router_now_unix_ms(), router_now_unix_ms() - start_ms, source, agent_id)
 		return false

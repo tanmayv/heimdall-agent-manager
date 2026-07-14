@@ -261,7 +261,8 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 	provider_profile = agent_resolve_provider_profile(provider_profile)
 	final_tier := stored_model_tier
 
-	agent_token := generate_agent_token()
+	agent_token := auth_db_get_token("agent", agent_instance_id)
+	if agent_token == "" do agent_token = generate_agent_token()
 	if !agent_runtime_tracker_try_begin_launch(agent_instance_id, agent_token, "manual_agent_start", "", router_now_unix_ms()) {
 		builder := strings.builder_make()
 		strings.write_string(&builder, `{"ok":true,"mode":"remote_detached","message":"already running or launch in progress","agent_record_id":"`)

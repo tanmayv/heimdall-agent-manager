@@ -257,7 +257,8 @@ task_autoscaler_ensure_agent :: proc(chain: Task_Chain_State, agent_instance_id,
 		lease_idx = team_boot_lease_count; team_boot_lease_count += 1
 		team_boot_leases[lease_idx].team_id = strings.clone(chain.team_id)
 	}
-	agent_token := generate_agent_token()
+	agent_token := auth_db_get_token("agent", agent_instance_id)
+	if agent_token == "" do agent_token = generate_agent_token()
 	if !agent_runtime_tracker_try_begin_launch(agent_instance_id, agent_token, reason, task_id, now) {
 		_ = agent_store_touch_needed(agent_instance_id)
 		lifecycle_status := agent_runtime_tracker_lifecycle_status(agent_instance_id)
@@ -353,6 +354,7 @@ task_autoscaler_launch_agent :: proc(chain: Task_Chain_State, agent_instance_id:
 	now = router_now_unix_ms()
 	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=record_upsert_done source=%s chain=%s team=%s task=%s target=%s record=%s final_tier=%s", now, now - launch_start_ms, launch_source, chain.chain_id, chain.team_id, launch_task_id, agent_instance_id, rec_id, final_tier)
 	agent_token := launch_token
+	if agent_token == "" do agent_token = auth_db_get_token("agent", agent_instance_id)
 	if agent_token == "" do agent_token = generate_agent_token()
 	registry_add_pending_agent_token(agent_instance_id, agent_token)
 	log_path := wrapper_log_path(agent_instance_id)
