@@ -157,14 +157,16 @@
           type = "app";
           program = "${self.packages.${system}.ham-daemon}/bin/ham-daemon";
         };
-        # daemon-with-wrapper: builds the current ham-wrapper alongside the
-        # ham-daemon and launches the daemon with a generated config whose
-        # [daemon].wrapper_bin points at that exact wrapper store path. This is
-        # stronger than relying on ./result-wrapper because it works from any
-        # CWD/config and cannot accidentally use a stale symlink.
+        # daemon-with-wrapper: builds the current ham-wrapper and ham-ctl
+        # alongside the ham-daemon and launches the daemon with a generated
+        # config whose [daemon].wrapper_bin and [wrapper].ham_ctl_bin point at
+        # those exact same-build store paths. This is stronger than relying on
+        # repo symlinks because it works from any CWD/config and cannot
+        # accidentally use a stale wrapper or ctl binary.
         #
         # Extra args are forwarded. If --config is supplied, that config is used
-        # as the base and rewritten into a temp file with the current wrapper.
+        # as the base and rewritten into a temp file with the current wrapper
+        # and ctl.
         daemon-with-wrapper = {
           type = "app";
           program = "${pkgs.writeShellScriptBin "ham-daemon-with-wrapper" ''
@@ -174,12 +176,18 @@
             HAM_DAEMON="${self.packages.${system}.ham-daemon}/bin/ham-daemon"
             HAM_WRAPPER="${self.packages.${system}.ham-wrapper}/bin/ham-wrapper"
             HAM_WRAPPER_DIR="${self.packages.${system}.ham-wrapper}"
+            HAM_CTL="${self.packages.${system}.ham-ctl}/bin/ham-ctl"
+            HAM_CTL_DIR="${self.packages.${system}.ham-ctl}"
 
-            # Keep the legacy repo symlink fresh for tools/tests that still read
-            # config.toml directly, but do not depend on it for this daemon run.
+            # Keep legacy repo symlinks fresh for tools/tests that still read
+            # config.toml directly, but do not depend on them for this daemon run.
             if [ -L result-wrapper ] || [ ! -e result-wrapper ]; then
               ln -sfn "$HAM_WRAPPER_DIR" result-wrapper
               echo "[ham-daemon-with-wrapper] refreshed ./result-wrapper -> $HAM_WRAPPER_DIR"
+            fi
+            if [ -L result-ctl ] || [ ! -e result-ctl ]; then
+              ln -sfn "$HAM_CTL_DIR" result-ctl
+              echo "[ham-daemon-with-wrapper] refreshed ./result-ctl -> $HAM_CTL_DIR"
             fi
 
             CONFIG_PATH=""
@@ -213,29 +221,48 @@
             TMP_CONFIG=""
             if [ -n "$CONFIG_PATH" ]; then
               TMP_CONFIG="$(${pkgs.coreutils}/bin/mktemp "''${TMPDIR:-/tmp}/heimdall-daemon-with-wrapper.XXXXXX")"
-              ${pkgs.gawk}/bin/awk -v wrapper="$HAM_WRAPPER" '
-                BEGIN { in_daemon = 0; replaced = 0 }
-                /^\[daemon\][[:space:]]*$/ { in_daemon = 1; print; next }
-                /^\[/ {
-                  if (in_daemon && !replaced) {
+              ${pkgs.gawk}/bin/awk -v wrapper="$HAM_WRAPPER" -v ctl="$HAM_CTL" '
+                function flush_section() {
+                  if (section == "daemon" && !replaced_daemon) {
                     print "wrapper_bin = \"" wrapper "\""
-                    replaced = 1
+                    replaced_daemon = 1
+                  } else if (section == "wrapper" && !replaced_wrapper) {
+                    print "ham_ctl_bin = \"" ctl "\""
+                    replaced_wrapper = 1
                   }
-                  in_daemon = 0
+                }
+                BEGIN { section = ""; replaced_daemon = 0; replaced_wrapper = 0; appended_section = 0 }
+                /^\[daemon\][[:space:]]*$/ { flush_section(); section = "daemon"; print; next }
+                /^\[wrapper\][[:space:]]*$/ { flush_section(); section = "wrapper"; print; next }
+                /^\[/ {
+                  flush_section()
+                  section = ""
                   print
                   next
                 }
-                in_daemon && /^[[:space:]]*wrapper_bin[[:space:]]*=/ {
+                section == "daemon" && /^[[:space:]]*wrapper_bin[[:space:]]*=/ {
                   print "wrapper_bin = \"" wrapper "\""
-                  replaced = 1
+                  replaced_daemon = 1
+                  next
+                }
+                section == "wrapper" && /^[[:space:]]*ham_ctl_bin[[:space:]]*=/ {
+                  print "ham_ctl_bin = \"" ctl "\""
+                  replaced_wrapper = 1
                   next
                 }
                 { print }
                 END {
-                  if (!replaced) {
-                    if (!in_daemon) print ""
-                    if (!in_daemon) print "[daemon]"
+                  flush_section()
+                  if (!replaced_daemon) {
+                    if (section != "" || appended_section) print ""
+                    print "[daemon]"
                     print "wrapper_bin = \"" wrapper "\""
+                    appended_section = 1
+                  }
+                  if (!replaced_wrapper) {
+                    if (section != "" || appended_section) print ""
+                    print "[wrapper]"
+                    print "ham_ctl_bin = \"" ctl "\""
                   }
                 }
               ' "$CONFIG_PATH" > "$TMP_CONFIG"
@@ -249,6 +276,7 @@
 
             echo "[ham-daemon-with-wrapper] daemon: $HAM_DAEMON"
             echo "[ham-daemon-with-wrapper] wrapper: $HAM_WRAPPER"
+            echo "[ham-daemon-with-wrapper] ctl: $HAM_CTL"
             exec "$HAM_DAEMON" "$@"
           ''}/bin/ham-daemon-with-wrapper";
         };
