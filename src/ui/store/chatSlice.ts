@@ -447,7 +447,8 @@ export const fetchSelectedChat = createAsyncThunk(
       }
       const isSelected = agentId === state.selectedAgentId;
       const isCached = Boolean(state.chats?.[agentId]);
-      if (!isSelected && !isCached) {
+      const hasExplicitAgentId = typeof payload === 'string' || Boolean(payload && typeof payload === 'object' && payload.agentId);
+      if (!hasExplicitAgentId && !isSelected && !isCached) {
         return false;
       }
     }
