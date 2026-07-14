@@ -24,13 +24,13 @@ function agentLabel(agent: any): string {
 }
 
 function agentTemplate(agent: any): string {
-  return agent?.templateId || agent?.template_id || agent?.roleHint || agent?.role_hint || '';
+  return agent?.templateId || agent?.template_id || agent?.agentRole || agent?.agent_role || agent?.roleHint || agent?.role_hint || '';
 }
 
 function roleMatches(agent: any, roleHint: string) {
   if (!roleHint) return true;
   const hint = roleHint.toLowerCase();
-  const haystack = [agentId(agent), agentLabel(agent), agentTemplate(agent), agent?.providerProfile || agent?.provider_profile || ''].join(' ').toLowerCase();
+  const haystack = [agentId(agent), agentLabel(agent), agentTemplate(agent), agent?.agentRole || agent?.agent_role || '', agent?.providerProfile || agent?.provider_profile || ''].join(' ').toLowerCase();
   if (hint === 'coder') return haystack.includes('coder') || haystack.includes('code') || haystack.includes('implement');
   if (hint === 'reviewer') return haystack.includes('review') || haystack.includes('verify') || haystack.includes('test');
   if (hint === 'coordinator') return haystack.includes('coord') || haystack.includes('lead') || haystack.includes('principal');
@@ -91,7 +91,7 @@ export default function AgentPicker({ debugId, daemonUrl, agents, projects, temp
     setBusy(`run-${trimmed}`);
     setError('');
     try {
-      const result = await daemonApi.startAgent({ daemonUrl, agentInstanceId: trimmed, provider, templateId, projectId, modelTier });
+      const result = await daemonApi.startAgent({ daemonUrl, agentInstanceId: trimmed, provider, templateId, projectId, modelTier, agentRole: templateId });
       await refresh();
       await onSelected(trimmed, result);
     } catch (err: any) {
@@ -107,8 +107,8 @@ export default function AgentPicker({ debugId, daemonUrl, agents, projects, temp
     setBusy(`create-${trimmed}`);
     setError('');
     try {
-      await daemonApi.createAgent({ daemonUrl, agentInstanceId: trimmed, displayName: createName.trim() || trimmed, providerProfile: createProvider, templateId: createTemplate, projectId: createProject, modelTier: createTier });
-      const result = await daemonApi.startAgent({ daemonUrl, agentInstanceId: trimmed, provider: createProvider, templateId: createTemplate, projectId: createProject, displayName: createName.trim() || trimmed, modelTier: createTier });
+      await daemonApi.createAgent({ daemonUrl, agentInstanceId: trimmed, displayName: createName.trim() || trimmed, providerProfile: createProvider, templateId: createTemplate, projectId: createProject, modelTier: createTier, agentRole: createTemplate });
+      const result = await daemonApi.startAgent({ daemonUrl, agentInstanceId: trimmed, provider: createProvider, templateId: createTemplate, projectId: createProject, displayName: createName.trim() || trimmed, modelTier: createTier, agentRole: createTemplate });
       await refresh();
       await onSelected(trimmed, result);
     } catch (err: any) {

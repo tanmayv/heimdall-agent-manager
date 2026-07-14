@@ -130,7 +130,7 @@ export async function listAgentProviders({ daemonUrl }: { daemonUrl: string }) {
   return data.providers ?? [];
 }
 
-export async function startAgent({ daemonUrl, agentInstanceId = '', provider, templateId, projectId, alias, displayName, modelTier }: { daemonUrl: string; agentInstanceId?: string; provider: string; templateId?: string; projectId?: string; alias?: string; displayName?: string; modelTier?: string }) {
+export async function startAgent({ daemonUrl, agentInstanceId = '', provider, templateId, projectId, alias, displayName, modelTier, agentRole }: { daemonUrl: string; agentInstanceId?: string; provider: string; templateId?: string; projectId?: string; alias?: string; displayName?: string; modelTier?: string; agentRole?: string }) {
   const body: any = {
     agent: provider || '',
     provider_profile: provider || '',
@@ -139,6 +139,7 @@ export async function startAgent({ daemonUrl, agentInstanceId = '', provider, te
     alias: alias || displayName || '',
     display_name: displayName || alias || '',
     model_tier: modelTier || 'normal',
+    agent_role: agentRole || '',
   };
   if (agentInstanceId) body.agent_instance_id = agentInstanceId;
   return requestJson(joinUrl(daemonUrl, '/agents/start'), {
@@ -155,7 +156,7 @@ export async function showAgent({ daemonUrl, agentRecordId, agentInstanceId }: {
   });
 }
 
-export async function createAgent({ daemonUrl, agentInstanceId, displayName, providerProfile, templateId, projectId, modelTier }: { daemonUrl: string; agentInstanceId?: string; displayName?: string; providerProfile?: string; templateId?: string; projectId?: string; modelTier?: string }) {
+export async function createAgent({ daemonUrl, agentInstanceId, displayName, providerProfile, templateId, projectId, modelTier, agentRole }: { daemonUrl: string; agentInstanceId?: string; displayName?: string; providerProfile?: string; templateId?: string; projectId?: string; modelTier?: string; agentRole?: string }) {
   return requestJson(joinUrl(daemonUrl, '/agents/create'), {
     method: 'POST',
     body: {
@@ -165,6 +166,7 @@ export async function createAgent({ daemonUrl, agentInstanceId, displayName, pro
       template_id: templateId || '',
       project_id: projectId || '',
       model_tier: modelTier || 'normal',
+      agent_role: agentRole || '',
     },
   });
 }

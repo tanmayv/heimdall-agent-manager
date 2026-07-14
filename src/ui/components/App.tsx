@@ -1336,8 +1336,13 @@ function ChainCreationProgressModal({ progress, onOpen, onCancel }: any) {
   );
 }
 
+function agentVisibleOnHome(agent: any): boolean {
+  if (!agent?.id) return false;
+  return String(agent.agentScope || agent.agent_scope || 'durable') !== 'generated_chain';
+}
+
 function HomePage({ groups, activeProject, loading, chainTaskIds, tasksById, home, totalMemoryRecords, pendingMemoryIds, openChain, openMemory, newChain, agents = [], projects = [], session, chats = {}, templates = [], providers = [], onRefreshAgents, onFetchAgentChat, onSendAgentMessage }: any) {
-  const liveAgents = useMemo(() => (agents || []).filter((agent: any) => isAgentRunning(agent)), [agents]);
+  const visibleAgents = useMemo(() => (agents || []).filter(agentVisibleOnHome), [agents]);
   return (
     <div className="mx-auto max-w-6xl px-8 py-8">
       <div className="flex items-start justify-between gap-4">
@@ -1388,7 +1393,7 @@ function HomePage({ groups, activeProject, loading, chainTaskIds, tasksById, hom
           </section>
         ))}
         <HomeRunningAgentsPanel
-          agents={liveAgents}
+          agents={visibleAgents}
           projects={projects}
           session={session}
           chats={chats}
@@ -1422,11 +1427,25 @@ function HomeRunningAgentsPanel({ agents, projects, session, chats, templates, p
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedAgentId]);
 
+  const ensureSelectedAgentRunning = async (agentId: string) => {
+    const agent = (agents || []).find((item: any) => item.id === agentId);
+    if (!agent || isAgentRunning(agent)) return;
+    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: agent.providerProfile || 'pi', templateId: agent.templateId || agent.agentRole || 'coder', projectId: agent.projectId || '', modelTier: agent.modelTier || 'normal', agentRole: agent.agentRole || agent.templateId || '' });
+    await onRefreshAgents?.();
+  };
+
+  const selectAgent = async (agentId: string) => {
+    setSelectedAgentId(agentId);
+    await ensureSelectedAgentRunning(agentId);
+    await onFetchAgentChat?.(agentId);
+  };
+
   const submit = async () => {
     const body = draft.trim();
     if (!body || !selectedAgentId || sending) return;
     setSending(true);
     try {
+      await ensureSelectedAgentRunning(selectedAgentId);
       await onSendAgentMessage?.(selectedAgentId, body);
       setDraft('');
     } finally {
@@ -1438,8 +1457,8 @@ function HomeRunningAgentsPanel({ agents, projects, session, chats, templates, p
     <section data-debug-id="home-running-agents-panel" className="rounded-3xl border border-white/10 bg-white/[0.035] p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold">Running agents</h2>
-          <p className="mt-1 text-sm text-zinc-500">Live agents only. Start a new agent below, then chat with it directly.</p>
+          <h2 className="text-lg font-semibold">Agents</h2>
+          <p className="mt-1 text-sm text-zinc-500">Reusable/system agents only. Chain-generated team agents are hidden. Selecting or messaging an offline agent starts it.</p>
         </div>
         <button data-debug-id="home-running-agents-refresh-btn" onClick={() => onRefreshAgents?.()} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Refresh</button>
       </div>
@@ -1456,21 +1475,19 @@ function HomeRunningAgentsPanel({ agents, projects, session, chats, templates, p
             defaultProjectId={projects?.[0]?.projectId || ''}
             onRefreshAgents={onRefreshAgents}
             onSelected={async (agentId: string) => {
-              setSelectedAgentId(agentId);
-              await onRefreshAgents?.();
-              await onFetchAgentChat?.(agentId);
+              await selectAgent(agentId);
             }}
           />
           <div data-debug-id="home-running-agents-list" className="space-y-2">
-            {agents.length === 0 ? <div className="rounded-2xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No live agents are running.</div> : agents.map((agent: any) => {
+            {agents.length === 0 ? <div className="rounded-2xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No reusable/system agents found.</div> : agents.map((agent: any) => {
               const runtime = agentRuntimeDot(agent);
               return (
-                <button key={agent.id} data-debug-id={`home-running-agent-${agent.id}`} onClick={() => setSelectedAgentId(agent.id)} className={`w-full rounded-2xl border p-3 text-left transition ${selectedAgentId === agent.id ? 'border-sky-400/40 bg-sky-400/10' : 'border-white/10 bg-black/20 hover:bg-white/[0.04]'}`}>
+                <button key={agent.id} data-debug-id={`home-running-agent-${agent.id}`} onClick={() => selectAgent(agent.id)} className={`w-full rounded-2xl border p-3 text-left transition ${selectedAgentId === agent.id ? 'border-sky-400/40 bg-sky-400/10' : 'border-white/10 bg-black/20 hover:bg-white/[0.04]'}`}>
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0 truncate font-medium text-zinc-100">{agent.label || agent.id}</div>
                     <span className={`h-2 w-2 shrink-0 rounded-full ${runtime.color}`} />
                   </div>
-                  <div className="mt-1 truncate text-xs text-zinc-500">{agent.id} · {agent.templateId || 'agent'} · {runtime.label}</div>
+                  <div className="mt-1 truncate text-xs text-zinc-500">{agent.id} · {agent.agentRole || agent.templateId || 'agent'} · {runtime.label}</div>
                   <div className="mt-1 truncate text-xs text-zinc-600">Task: {agent.currentTaskId || 'idle'} · Project: {agent.projectId || '—'}</div>
                 </button>
               );

@@ -102,6 +102,11 @@ Decision: introduce a durable `agent_id` **above** the existing instance id, and
 
 - **`agent_id`** — NEW durable identity. Project-free slug from the display name (uniquified). Examples: `coder-alice`, `reviewer-smart`, `researcher-7`. This is the thing the "Create Agent" button creates, the memory target, and the carrier of template/persona + defaults.
 - **`agent_instance_id = agent_id @ project`** — PRESERVED shape (`coder-alice@project-1`). This remains the runtime id used by wrapper/tmux/registry/conversation. Chain is **not** in the id.
+- **`agent_scope`** — explicit display/filtering classification for an instance record:
+  - `durable`: user-created/reusable agent identity. Show in global agent pickers even when offline; can be started by focusing or messaging.
+  - `generated_chain`: scaffold/autoscaler-created chain runtime such as `coder-1@...-chain-...`. Hidden from global reusable-agent views; visible only in chain/task context.
+  - `system`: singleton/background product agents such as Guide or memory auditors. Can appear in global/system views but is not part of generated chain teams.
+- **`agent_role`** — durable default persona/capability label (for memory targeting UI, picker ranking, and defaults), derived from template role when not explicitly provided. It is **not** an authorization constraint: a `coder` can still be a task reviewer if assigned.
 - `derive_agent_class(id)` (split on `@`) is **kept**, but its result is now the **`agent_id`**, which resolves to a stored `Agent_Id_Record` (previously the prefix was an ephemeral, unstored "class").
 - `valid_agent_instance_id`: `agent_id@project` where both parts are `[a-zA-Z0-9-]`. `operator@local` and `user_proxy` remain reserved and are not creatable.
 - **1:1 invariant:** an `agent_instance_id` maps to at most one live session. Launch guard: if a live session exists for the instance-id, reuse it; never spawn a second (enforced in `agent_runtime_tracker_try_begin_launch` + wrapper's existing exact-window check).
