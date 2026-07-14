@@ -1485,20 +1485,49 @@ function agentTaskBuckets(agentId: string, tasksById: Record<string, any>) {
   };
 }
 
-function AgentTaskCard({ task, chainsById, onOpenChain }: any) {
+function agentTaskRelation(agentId: string, task: any) {
+  if (task.assigneeAgentInstanceId === agentId) return 'Assignee';
+  if (task.reviewerAgentInstanceId === agentId) return 'Reviewer';
+  const participant = (task.participants || []).find((item: any) => item.agentInstanceId === agentId);
+  if (participant?.role === 'lgtm_required') return 'Required reviewer';
+  if (participant?.role === 'lgtm_optional') return 'Optional reviewer';
+  if (participant?.role) return participant.role;
+  return 'Participant';
+}
+
+function AgentTaskCard({ task, chainsById, agentId, index, completed, onOpenChain }: any) {
   const chain = chainsById?.[task.chainId] || {};
+  const perceived = perceivedTaskStatus(task, {});
+  const relation = agentTaskRelation(agentId, task);
+  const baseTone = completed ? 'border-white/5 bg-white/[0.025] text-zinc-500 opacity-80' : 'border-white/8 bg-white/[0.04] hover:bg-white/[0.07]';
   return (
-    <div data-debug-id={`agent-detail-task-${task.taskId}`} className="rounded-2xl border border-white/10 bg-black/20 p-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="truncate text-sm font-semibold text-zinc-100">{task.title || task.taskId}</div>
-          <div className="mt-1 truncate text-xs text-zinc-500">{chain.title || task.chainId || 'No chain'} · {task.taskId}</div>
-        </div>
-        <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] ${statusTone(task.status)}`}>{task.status || 'unknown'}</span>
+    <div data-debug-id={`agent-detail-task-${task.taskId}`} className={`rounded-2xl border transition ${baseTone}`}>
+      <div className="flex items-center gap-3 px-4 py-3">
+        <button data-debug-id={`agent-detail-task-open-btn-${task.taskId}`} onClick={() => task.chainId && onOpenChain?.(task.chainId)} className="min-w-0 flex-1 text-left">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="w-8 shrink-0 font-mono text-xs text-zinc-600">{index + 1}.</span>
+            <span data-debug-id={`agent-detail-task-title-${task.taskId}`} className={`truncate text-sm font-medium ${completed ? 'text-zinc-500 line-through decoration-zinc-600' : 'text-zinc-100'}`}>{task.title || task.taskId}</span>
+            <span data-debug-id={`agent-detail-task-status-${task.taskId}`} className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] ${perceived.tone}`}>{perceived.label}</span>
+          </div>
+          <div data-debug-id={`agent-detail-task-meta-${task.taskId}`} className="mt-2 ml-8 flex min-w-0 flex-wrap items-center gap-2 text-[11px]">
+            <span className="rounded-full bg-black/20 px-2 py-1 text-zinc-400">{relation}</span>
+            <span className="max-w-[260px] truncate rounded-full bg-black/20 px-2 py-1 text-zinc-400">Chain {chain.title || task.chainId || '—'}</span>
+            <span className="rounded-full bg-black/20 px-2 py-1 font-mono text-zinc-500">{task.taskId}</span>
+          </div>
+          {task.description && <div data-debug-id={`agent-detail-task-description-${task.taskId}`} className="mt-3 ml-8 line-clamp-2 text-xs text-zinc-500">{task.description}</div>}
+        </button>
+        <button data-debug-id={`agent-detail-task-open-chain-${task.taskId}`} onClick={() => task.chainId && onOpenChain?.(task.chainId)} className="shrink-0 rounded-xl bg-white/10 px-3 py-1.5 text-xs text-zinc-100 hover:bg-white/15">Open chain</button>
       </div>
-      {task.description && <div className="mt-2 line-clamp-2 text-xs text-zinc-400">{task.description}</div>}
-      <div className="mt-3 flex justify-end">
-        <button data-debug-id={`agent-detail-task-open-chain-${task.taskId}`} onClick={() => task.chainId && onOpenChain?.(task.chainId)} className="rounded-xl bg-white/10 px-3 py-1.5 text-xs text-zinc-100 hover:bg-white/15">Open chain</button>
+    </div>
+  );
+}
+
+function AgentTaskList({ title, emptyText, tasks, chainsById, agentId, completed = false, onOpenChain }: any) {
+  return (
+    <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-5">
+      <div className="mb-2 flex items-center justify-between text-xs uppercase tracking-wide text-zinc-500"><span>{title}</span><span>{tasks.length}</span></div>
+      <div className="space-y-2">
+        {tasks.length === 0 ? <div className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">{emptyText}</div> : tasks.map((task: any, index: number) => <AgentTaskCard key={task.taskId} task={task} chainsById={chainsById} agentId={agentId} index={index} completed={completed} onOpenChain={onOpenChain} />)}
       </div>
     </div>
   );
@@ -1583,14 +1612,8 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, onBack,
       </section>
 
       <section data-debug-id="agent-detail-tasks" className="mt-6 grid gap-4 lg:grid-cols-2">
-        <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-5">
-          <div className="mb-3 flex items-center justify-between"><h2 className="text-lg font-semibold text-zinc-100">Pending tasks</h2><span className="text-sm text-zinc-500">{buckets.pending.length}</span></div>
-          <div className="space-y-3">{buckets.pending.length === 0 ? <div className="rounded-2xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No pending tasks assigned.</div> : buckets.pending.map((task: any) => <AgentTaskCard key={task.taskId} task={task} chainsById={chainsById} onOpenChain={onOpenChain} />)}</div>
-        </div>
-        <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-5">
-          <div className="mb-3 flex items-center justify-between"><h2 className="text-lg font-semibold text-zinc-100">Completed tasks</h2><span className="text-sm text-zinc-500">{buckets.completed.length}</span></div>
-          <div className="space-y-3">{buckets.completed.length === 0 ? <div className="rounded-2xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No completed tasks found.</div> : buckets.completed.map((task: any) => <AgentTaskCard key={task.taskId} task={task} chainsById={chainsById} onOpenChain={onOpenChain} />)}</div>
-        </div>
+        <AgentTaskList title="Pending tasks" emptyText="No pending tasks assigned." tasks={buckets.pending} chainsById={chainsById} agentId={agent?.id || ''} onOpenChain={onOpenChain} />
+        <AgentTaskList title="Completed tasks" emptyText="No completed tasks found." tasks={buckets.completed} chainsById={chainsById} agentId={agent?.id || ''} completed onOpenChain={onOpenChain} />
       </section>
     </div>
   );
