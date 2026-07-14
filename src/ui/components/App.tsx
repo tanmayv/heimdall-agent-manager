@@ -1333,7 +1333,7 @@ function SidebarAgentsList({ agents = [], chainsById = {}, projects = [], sessio
   const [launchProgressId, setLaunchProgressId] = useState('');
   const [launchStartedAt, setLaunchStartedAt] = useState(0);
   const upload = useArtifactUpload({ projectId: '', originKind: 'direct_agent_chat', originRef: chatAgentId });
-  const taskAgents = useMemo(() => (agents || []).filter((agent: any) => isTaskGeneratedAgent(agent) && agentHasLiveSession(agent)), [agents]);
+  const liveAgents = useMemo(() => (agents || []).filter((agent: any) => agentHasLiveSession(agent)), [agents]);
   const chatAgent = useMemo(() => (agents || []).find((agent: any) => agent.id === chatAgentId) || null, [agents, chatAgentId]);
   const chatMessages = useMemo(() => normalizeCoordinatorMessages((chats?.[chatAgentId] || []).map((msg: any) => ({ ...msg, agentInstanceId: chatAgentId }))), [chats, chatAgentId]);
   const launchAgent = useMemo(() => (agents || []).find((agent: any) => agent.id === launchProgressId) || null, [agents, launchProgressId]);
@@ -1372,7 +1372,7 @@ function SidebarAgentsList({ agents = [], chainsById = {}, projects = [], sessio
   }, [agents, launchName]);
 
   const launchStatus = String(launchAgent?.startupStatus || launchAgent?.startup_status || launchAgent?.status || '').toLowerCase();
-  const launchReason = String(launchAgent?.startupReason || launchAgent?.startup_reason_code || '').toLowerCase();
+  const launchReason = String(launchAgent?.startupReasonCode || launchAgent?.startup_reason_code || '').toLowerCase();
   const launchConnected = Boolean(launchAgent?.connected) || String(launchAgent?.connectionState || launchAgent?.connection_state || '').toLowerCase() === 'connected';
   const launchReady = Boolean(launchProgressId && (launchReason === 'start_success' || launchStatus === 'ready'));
   const launchFailed = ['startup_failed', 'startup_blocked', 'startup_unknown'].includes(launchStatus);
@@ -1532,13 +1532,13 @@ function SidebarAgentsList({ agents = [], chainsById = {}, projects = [], sessio
       )}
       <div className="mb-1.5 flex items-center justify-between gap-2 px-1">
         <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Running agents</div>
-        <div className="text-[10px] text-zinc-600">{taskAgents.length}</div>
+        <div className="text-[10px] text-zinc-600">{liveAgents.length}</div>
       </div>
-      {taskAgents.length === 0 ? (
-        <div className="px-1 py-1 text-[10px] text-zinc-600">No running task-generated agents</div>
+      {liveAgents.length === 0 ? (
+        <div className="px-1 py-1 text-[10px] text-zinc-600">No running agents</div>
       ) : (
         <div className="space-y-1">
-          {taskAgents.slice(0, 80).map((agent: any) => {
+          {liveAgents.slice(0, 80).map((agent: any) => {
             const chainId = taskGeneratedAgentChainId(agent);
             const chain = chainId ? chainsById[chainId] : null;
             return (
@@ -1554,7 +1554,7 @@ function SidebarAgentsList({ agents = [], chainsById = {}, projects = [], sessio
               </button>
             );
           })}
-          {taskAgents.length > 80 && <div className="px-2 py-1 text-[10px] text-zinc-600">+{taskAgents.length - 80} more running</div>}
+          {liveAgents.length > 80 && <div className="px-2 py-1 text-[10px] text-zinc-600">+{liveAgents.length - 80} more running</div>}
         </div>
       )}
     </div>
