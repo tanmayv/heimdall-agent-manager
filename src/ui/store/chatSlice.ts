@@ -183,6 +183,7 @@ function metadataOnlyAgent(agent: any) {
 
 function getStatusPriority(status: string): number {
   switch (status) {
+    case 'ready': return 6;
     case 'connected': return 5;
     case 'idle': return 4;
     case 'startup_blocked': return 3;
@@ -191,12 +192,48 @@ function getStatusPriority(status: string): number {
   }
 }
 
+function defaultRuntimeBaseId(agent: any): string {
+  const id = String(agent?.id || agent?.agent_instance_id || agent?.agentInstanceId || '');
+  const durableId = String(agent?.agentId || agent?.agent_id || '');
+  if (!id || !durableId) return '';
+  if (id === durableId) return durableId;
+  if (id === `${durableId}@default`) return durableId;
+  return '';
+}
+
+function shouldPreferAgentRecord(candidate: any, existing: any): boolean {
+  if (!existing) return true;
+  const candidateLive = Boolean(candidate.connected) || String(candidate.connectionState || candidate.connection_state || '').toLowerCase() === 'connected';
+  const existingLive = Boolean(existing.connected) || String(existing.connectionState || existing.connection_state || '').toLowerCase() === 'connected';
+  if (candidateLive !== existingLive) return candidateLive;
+  const candidatePriority = getStatusPriority(candidate.status || candidate.startupStatus || '');
+  const existingPriority = getStatusPriority(existing.status || existing.startupStatus || '');
+  if (candidatePriority !== existingPriority) return candidatePriority > existingPriority;
+  return Number(candidate.lastSeenUnixMs || 0) >= Number(existing.lastSeenUnixMs || 0);
+}
+
 // Merge persisted-and-live agent records from /agents with the UI's localStorage
 // cache (so the sidebar isn't blank during a daemon round-trip). /agents already
 // embeds live registry fields (connected, tmux_pane, startup_status, etc.) when
 // a wrapper is up, so we no longer need a second /clients fetch.
 function mergeKnownAndLiveAgents(localKnownAgents: any[], daemonAgents: any[], daemonReachable = false) {
   const byId: any = {};
+  const defaultRuntimeAliases: any = {};
+  const putAgent = (agent: any) => {
+    if (!agent?.id) return;
+    const baseId = defaultRuntimeBaseId(agent);
+    if (baseId) {
+      const previousId = defaultRuntimeAliases[baseId];
+      const previous = previousId ? byId[previousId] : null;
+      if (!previous || shouldPreferAgentRecord(agent, previous)) {
+        if (previousId && previousId !== agent.id) delete byId[previousId];
+        defaultRuntimeAliases[baseId] = agent.id;
+        byId[agent.id] = previous ? { ...previous, ...agent } : agent;
+      }
+      return;
+    }
+    byId[agent.id] = agent;
+  };
   const daemonIds = new Set<string>();
   if (daemonReachable) {
     for (const a of daemonAgents) {
@@ -207,7 +244,7 @@ function mergeKnownAndLiveAgents(localKnownAgents: any[], daemonAgents: any[], d
   for (const agent of localKnownAgents.map((item) => mapAgent(metadataOnlyAgent(item)))) {
     if (!agent.id) continue;
     if (daemonReachable && !daemonIds.has(agent.id)) continue;
-    byId[agent.id] = { ...agent, status: 'offline', startupStatus: '', known: true };
+    putAgent({ ...agent, status: 'offline', startupStatus: '', known: true });
   }
   for (const rawDaemonAgent of daemonAgents) {
     const daemonAgent = mapAgent(rawDaemonAgent);
@@ -216,7 +253,7 @@ function mergeKnownAndLiveAgents(localKnownAgents: any[], daemonAgents: any[], d
     const status = daemonAgent.status || daemonAgent.startupStatus || ((daemonAgent as any).connected ? 'connected' : 'offline');
     const hasDaemonUnread = rawDaemonAgent.unread_count !== undefined || rawDaemonAgent.unreadCount !== undefined;
     const unreadCount = hasDaemonUnread ? daemonAgent.unreadCount : (existing.unreadCount || 0);
-    byId[daemonAgent.id] = { ...existing, ...daemonAgent, status, unreadCount, known: true };
+    putAgent({ ...existing, ...daemonAgent, status, unreadCount, known: true });
   }
   return Object.values(byId).sort((left: any, right: any) => {
     const diff = (left.order ?? 0) - (right.order ?? 0);
