@@ -892,6 +892,7 @@ task_service_assign_command :: proc(cmd: Task_Assign_Command) -> Task_Service_Re
 	if !task_agent_instance_allowed_for_chain(state.chain_id, cmd.agent_instance_id) {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"agent is not an eligible agent (unknown or archived)"}`}
 	}
+	old_assignee := state.assignee_agent_instance_id
 	queued_behind_task_id := ""
 	if task_status_active_for_assignee(state) {
 		if active := task_active_slot_blocker(cmd.agent_instance_id, state.task_id); active != "" {
@@ -913,6 +914,9 @@ task_service_assign_command :: proc(cmd: Task_Assign_Command) -> Task_Service_Re
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append task assignment failed"}`}
 	}
 	task_notify_event(event)
+	if old_assignee != "" && old_assignee != cmd.agent_instance_id {
+		_ = task_notify_task_role_change_recipients(event, task_status_to_string(state.status), "assignee", old_assignee, "")
+	}
 	if task_status_active_for_assignee(state) {
 		if state.assignee_agent_instance_id != "" && state.assignee_agent_instance_id != cmd.agent_instance_id {
 			_ = agent_store_clear_current_task_if_matches(state.assignee_agent_instance_id, cmd.task_id)
@@ -991,6 +995,9 @@ task_service_participant_command :: proc(cmd: Task_Participant_Command) -> Task_
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append participant failed"}`}
 	}
 	task_notify_event(event)
+	if (cmd.role == "lgtm_required" || cmd.role == "lgtm_optional") && state.status == .Review_Ready {
+		task_notify_review_ready_agent(state, agent_instance_id)
+	}
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true`)
 	task_write_user_proxy_warning_if_needed(&b, reviewer_normalized)
@@ -1073,11 +1080,19 @@ task_service_remove_participant_command :: proc(cmd: Task_Participant_Command) -
 	if cmd.task_id == "" || cmd.agent_instance_id == "" || cmd.role == "" {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"participant removal requires task_id, agent_instance_id, and role"}`}
 	}
+	state, found := store_get_task_in_chain(cmd.task_id, cmd.chain_id)
+	if !found {
+		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"task not found"}`}
+	}
+	agent_instance_id := cmd.agent_instance_id
+	if cmd.role == "lgtm_required" || cmd.role == "lgtm_optional" {
+		agent_instance_id, _ = task_normalize_user_reviewer(cmd.agent_instance_id)
+	}
 	event := Task_Event{
 		kind                     = .Task_Participant_Removed,
 		task_id                  = cmd.task_id,
-		chain_id                 = cmd.chain_id,
-		agent_instance_id        = cmd.agent_instance_id,
+		chain_id                 = state.chain_id,
+		agent_instance_id        = agent_instance_id,
 		role                     = cmd.role,
 		author_agent_instance_id = cmd.author_agent_instance_id,
 	}
@@ -1568,10 +1583,12 @@ task_service_update_chain :: proc(cmd: Task_Chain_Update_Command) -> Task_Servic
 	if !found {
 		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"chain not found"}`}
 	}
+	old_coordinator := chain.coordinator_agent_instance_id
+	old_default_reviewer := chain.default_reviewer_agent_instance_id
 	new_coordinator := cmd.coordinator_agent_instance_id
-	if new_coordinator == "" do new_coordinator = chain.coordinator_agent_instance_id
+	if new_coordinator == "" do new_coordinator = old_coordinator
 	new_default_reviewer, default_reviewer_normalized := task_normalize_user_reviewer(cmd.default_reviewer_agent_instance_id)
-	if new_default_reviewer == "" do new_default_reviewer = chain.default_reviewer_agent_instance_id
+	if new_default_reviewer == "" do new_default_reviewer = old_default_reviewer
 	if new_default_reviewer != "" && new_default_reviewer == new_coordinator {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"default reviewer cannot equal coordinator"}`}
 	}
@@ -1600,6 +1617,15 @@ task_service_update_chain :: proc(cmd: Task_Chain_Update_Command) -> Task_Servic
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append chain update failed"}`}
 	}
 	task_notify_event(event)
+	coordinator_changed := cmd.coordinator_agent_instance_id != "" && old_coordinator != new_coordinator
+	default_reviewer_changed := cmd.default_reviewer_agent_instance_id != "" && old_default_reviewer != new_default_reviewer
+	if coordinator_changed {
+		_ = task_notify_chain_role_change_recipients(event, chain.status, "coordinator", old_coordinator, new_coordinator)
+		_ = task_runtime_reconcile_chain_coordinator(cmd.chain_id, "coordinator_changed", "high")
+	}
+	if default_reviewer_changed {
+		_ = task_notify_chain_role_change_recipients(event, chain.status, "default_reviewer", old_default_reviewer, new_default_reviewer)
+	}
 	if cmd.final_summary != "" {
 		summary_event := Task_Event{
 			kind                     = .Chain_Final_Summary_Set,

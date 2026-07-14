@@ -63,6 +63,15 @@ task_notify_event :: proc(event: Task_Event) -> bool {
 		if ev.kind == .Task_Nudged {
 			return task_notify_recipient_except(ev.agent_instance_id, agent_payload, ev.author_agent_instance_id)
 		}
+		if ev.kind == .Task_Assigned {
+			return task_notify_task_role_change_recipients(ev, status, "assignee", "", ev.agent_instance_id)
+		}
+		if ev.kind == .Task_Participant_Added {
+			return task_notify_task_role_change_recipients(ev, status, ev.role, "", ev.agent_instance_id)
+		}
+		if ev.kind == .Task_Participant_Removed {
+			return task_notify_task_role_change_recipients(ev, status, ev.role, ev.agent_instance_id, "")
+		}
 		return task_notify_by_status(state, status, ev.author_agent_instance_id, agent_payload)
 	}
 	payload := task_notification_json(ev, status)
@@ -132,6 +141,7 @@ task_recipients_for_role :: proc(state: Task_State, role: string) -> [dynamic]st
 	parts := store_participants_of(state.task_id)
 	defer delete(parts)
 	for p in parts {
+		if p.task_id != state.task_id do continue
 		if p.role != role do continue
 		if p.agent_instance_id == "" do continue
 		append(&out, p.agent_instance_id)
@@ -166,6 +176,7 @@ task_actionable_recipients :: proc(state: Task_State, status: string) -> (recipi
 	parts := store_participants_of(state.task_id)
 	defer delete(parts)
 	for p in parts {
+		if p.task_id != state.task_id do continue
 		if p.role != "subscriber" do continue
 		if p.agent_instance_id == "" do continue
 		if seen[p.agent_instance_id] do continue
@@ -246,6 +257,71 @@ task_notify_by_status :: proc(state: Task_State, status, author_agent_instance_i
 	return sent_actionable + sent_subscribers > 0
 }
 
+task_role_change_label :: proc(role: string) -> string {
+	switch role {
+	case "lgtm_required": return "required reviewer"
+	case "lgtm_optional": return "optional reviewer"
+	case "default_reviewer": return "default reviewer"
+	case "assignee": return "assignee"
+	case "coordinator": return "coordinator"
+	case "subscriber": return "subscriber"
+	}
+	return role
+}
+
+task_notify_role_change_agent :: proc(event: Task_Event, status, recipient_agent_instance_id, body, event_id_suffix: string) -> bool {
+	recipient := task_runtime_agent_target(recipient_agent_instance_id)
+	if recipient == "" do return false
+	ev := event
+	if last_ev, found := store_last_event(); found {
+		if last_ev.kind == ev.kind && last_ev.task_id == ev.task_id && last_ev.chain_id == ev.chain_id {
+			ev.event_id = last_ev.event_id
+			ev.created_unix_ms = last_ev.created_unix_ms
+			ev.interrupt = last_ev.interrupt
+		}
+	}
+	if ev.event_id == "" {
+		ev.event_id = strings.clone(fmt.tprintf("taskevt_%d", router_now_unix_ms()))
+	}
+	if ev.created_unix_ms == 0 {
+		ev.created_unix_ms = router_now_unix_ms()
+	}
+	if event_id_suffix != "" {
+		ev.event_id = strings.clone(fmt.tprintf("%s_%s", ev.event_id, event_id_suffix))
+	}
+	ev.agent_instance_id = recipient
+	ev.body = body
+	return task_notify_recipient(recipient, task_notification_agent_json(ev, status))
+}
+
+task_notify_task_role_change_recipients :: proc(event: Task_Event, status, role, old_agent_instance_id, new_agent_instance_id: string) -> bool {
+	label := task_role_change_label(role)
+	sent := false
+	if old_agent_instance_id != "" && old_agent_instance_id != new_agent_instance_id {
+		body := fmt.tprintf("You are no longer the %s for task %s.", label, event.task_id)
+		sent = task_notify_role_change_agent(event, status, old_agent_instance_id, body, fmt.tprintf("old_%s", role)) || sent
+	}
+	if new_agent_instance_id != "" && old_agent_instance_id != new_agent_instance_id {
+		body := fmt.tprintf("You are now the %s for task %s.", label, event.task_id)
+		sent = task_notify_role_change_agent(event, status, new_agent_instance_id, body, fmt.tprintf("new_%s", role)) || sent
+	}
+	return sent
+}
+
+task_notify_chain_role_change_recipients :: proc(event: Task_Event, chain_status, role, old_agent_instance_id, new_agent_instance_id: string) -> bool {
+	label := task_role_change_label(role)
+	sent := false
+	if old_agent_instance_id != "" && old_agent_instance_id != new_agent_instance_id {
+		body := fmt.tprintf("You are no longer the %s for task chain %s.", label, event.chain_id)
+		sent = task_notify_role_change_agent(event, chain_status, old_agent_instance_id, body, fmt.tprintf("old_%s", role)) || sent
+	}
+	if new_agent_instance_id != "" && old_agent_instance_id != new_agent_instance_id {
+		body := fmt.tprintf("You are now the %s for task chain %s.", label, event.chain_id)
+		sent = task_notify_role_change_agent(event, chain_status, new_agent_instance_id, body, fmt.tprintf("new_%s", role)) || sent
+	}
+	return sent
+}
+
 // Notify all lgtm_required participants for a task that just became review_ready.
 // Guarantees at least one recipient will hear about the transition:
 //   1. Every unblocked lgtm_required participant.
@@ -270,6 +346,7 @@ task_notify_all_lgtm_required :: proc(task_id, chain_id: string) {
 	parts := store_participants_of(task_id)
 	defer delete(parts)
 	for p in parts {
+		if p.task_id != task_id do continue
 		if p.role != "lgtm_required" do continue
 		has_required = true
 		if task_reviewer_is_user_review(state, p.agent_instance_id) {
