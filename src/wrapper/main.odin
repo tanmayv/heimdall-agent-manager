@@ -185,9 +185,9 @@ main :: proc() {
 		return
 	}
 	fmt.println("tmux_pane", launch.pane_id)
-	startup_status := "ready"
-	startup_reason_code := "launch_success"
-	startup_safe_diagnostic := "Startup detection disabled; assuming ready"
+	startup_status := "starting"
+	startup_reason_code := "awaiting_start_success"
+	startup_safe_diagnostic := "Agent process launched; waiting for agent start-success RPC"
 
 
 	startup_report_begin := wrapper_now_unix_ms()

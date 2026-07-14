@@ -166,9 +166,9 @@ function EntityCard({ id, type, session }: { id: string; type: 'task' | 'chain' 
   const handleClick = (e: React.MouseEvent) => {
     if (window.getSelection()?.toString()) return;
     if (type === 'task') {
-      updateUrlParams({ taskId: id, view: 'tasks' });
+      updateUrlParams({ chainId: entity?.chainId || entity?.chain_id || '', taskId: id, view: 'chain' });
     } else if (type === 'chain') {
-      updateUrlParams({ chainId: id, taskId: '', view: 'tasks' });
+      updateUrlParams({ chainId: id, taskId: '', view: 'chain' });
     } else if (type === 'memory' || type === 'proposal') {
       if (entity?.memoryId) {
         updateUrlParams({ memoryId: entity.memoryId, view: 'memory' });

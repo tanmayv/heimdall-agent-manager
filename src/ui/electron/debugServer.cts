@@ -38,6 +38,14 @@ const routes: Array<{ method: string; path: string; handler: Handler }> = [
   },
   {
     method: 'GET',
+    path: '/context',
+    handler: async () => {
+      const json = await evalInRenderer('JSON.stringify(window.__heimdallPageContext ?? null)');
+      try { return JSON.parse(json as string); } catch { return null; }
+    },
+  },
+  {
+    method: 'GET',
     path: '/logs',
     handler: async () => {
       const json = await evalInRenderer('JSON.stringify(window.__debugLogs ?? [])');

@@ -428,15 +428,33 @@ body {
 .vimee-editor-container .sv-container {
   background-color: transparent !important;
   height: 100%;
+  width: 100%;
+  max-width: 100%;
 }
 
 .vimee-editor-container .sv-code-area {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 8px 16px;
 }
 
+.vimee-editor-container .sv-line {
+  align-items: flex-start;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.vimee-editor-container .sv-line-content {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .vimee-editor-container .sv-cursor {
-  top: calc(var(--cursor-line) * 1lh + 8px) !important;
-  left: calc(16px + var(--cursor-col) * 1ch) !important;
+  top: var(--cursor-top, calc(var(--cursor-line) * 1lh + 8px)) !important;
+  left: var(--cursor-left, calc(16px + var(--cursor-col) * 1ch)) !important;
 }
 
 .vimee-editor-container .sv-statusline {

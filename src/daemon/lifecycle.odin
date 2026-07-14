@@ -93,9 +93,19 @@ handle_startup_report :: proc(client: net.TCP_Socket, body: string) {
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid startup status"}`)
 		return
 	}
+	reason_code := extract_json_string(body, "reason_code", "")
+	safe_diagnostic := extract_json_string(body, "safe_diagnostic", "")
+	// Startup reports come from the wrapper/provider probe. Final readiness must
+	// come from the agent itself via start-success, not from wrapper launch/probe
+	// assumptions. Normalize legacy wrapper "ready/launch_success" to starting.
+	if status == "ready" && reason_code != "start_success" {
+		status = "starting"
+		if reason_code == "" || reason_code == "launch_success" do reason_code = "awaiting_start_success"
+		if safe_diagnostic == "" || strings.contains(safe_diagnostic, "assuming ready") do safe_diagnostic = "Agent process launched; waiting for agent start-success RPC"
+	}
 	provider_profile := extract_json_string(body, "provider_profile", "")
 	run_dir := extract_json_string(body, "run_dir", "")
-	if !agent_runtime_tracker_apply_startup_report(agent_instance_id, status, extract_json_string(body, "reason_code", ""), extract_json_string(body, "safe_diagnostic", ""), provider_profile, run_dir, extract_json_string(body, "tmux_pane", "")) {
+	if !agent_runtime_tracker_apply_startup_report(agent_instance_id, status, reason_code, safe_diagnostic, provider_profile, run_dir, extract_json_string(body, "tmux_pane", "")) {
 		write_response(client, 404, "Not Found", `{"ok":false,"message":"unknown agent instance"}`)
 		return
 	}

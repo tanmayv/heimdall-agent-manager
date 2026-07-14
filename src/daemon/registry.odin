@@ -119,15 +119,25 @@ registry_apply_heartbeat_snapshot :: proc(snap: Heartbeat_Snapshot) -> (runtime_
 		runtime_changed = true
 	}
 
-	// Declarative startup status synchronization via state rankings
+	// Declarative startup status synchronization via state rankings. Wrapper
+	// heartbeats are not allowed to declare final readiness; only the explicit
+	// agent start-success RPC may set ready/start_success.
 	if snap.startup_status != "" {
-		snap_rank := startup_status_rank(snap.startup_status)
+		incoming_status := snap.startup_status
+		incoming_reason := snap.startup_reason_code
+		incoming_diagnostic := snap.startup_safe_diagnostic
+		if incoming_status == "ready" && incoming_reason != "start_success" {
+			incoming_status = "starting"
+			if incoming_reason == "" || incoming_reason == "launch_success" do incoming_reason = "awaiting_start_success"
+			if incoming_diagnostic == "" || strings.contains(incoming_diagnostic, "assuming ready") do incoming_diagnostic = "Agent process launched; waiting for agent start-success RPC"
+		}
+		snap_rank := startup_status_rank(incoming_status)
 		current_rank := startup_status_rank(a.startup_status)
 
 		if snap_rank > current_rank {
-			a.startup_status = strings.clone(snap.startup_status)
-			a.startup_reason_code = strings.clone(snap.startup_reason_code)
-			a.startup_safe_diagnostic = strings.clone(snap.startup_safe_diagnostic)
+			a.startup_status = strings.clone(incoming_status)
+			a.startup_reason_code = strings.clone(incoming_reason)
+			a.startup_safe_diagnostic = strings.clone(incoming_diagnostic)
 			a.startup_updated_unix_ms = a.last_seen_unix_ms
 			lifecycle_changed = true
 		}

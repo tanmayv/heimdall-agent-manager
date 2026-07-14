@@ -6,6 +6,7 @@ export interface UrlParams {
   taskId: string;
   chainId: string;
   memoryId: string;
+  projectId: string;
 }
 
 export function getUrlParams(): UrlParams {
@@ -16,6 +17,7 @@ export function getUrlParams(): UrlParams {
     taskId: params.get('taskId') || '',
     chainId: params.get('chainId') || '',
     memoryId: params.get('memoryId') || '',
+    projectId: params.get('projectId') || '',
   };
 }
 

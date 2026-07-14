@@ -263,7 +263,7 @@ export async function markChatRead({ daemonUrl, clientInstanceId, clientToken, a
   });
 }
 
-export async function listTaskChains({ daemonUrl, clientToken, createdAfter, createdBefore, limit = 100, offset = 0 }: Omit<UserRpcRequest, 'clientInstanceId'> & { createdAfter?: number; createdBefore?: number; limit?: number; offset?: number }) {
+export async function listTaskChains({ daemonUrl, clientToken, createdAfter, createdBefore, limit = 1000, offset = 0 }: Omit<UserRpcRequest, 'clientInstanceId'> & { createdAfter?: number; createdBefore?: number; limit?: number; offset?: number }) {
   let path = `/task-chains?limit=${limit}&offset=${offset}`;
   if (createdAfter && createdAfter > 0) path += `&created_after=${createdAfter}`;
   if (createdBefore && createdBefore > 0) path += `&created_before=${createdBefore}`;
