@@ -1315,13 +1315,19 @@ function isTaskGeneratedAgent(agent: any): boolean {
   return String(agent.agentScope || agent.agent_scope || '') === 'generated_chain' || Boolean(taskGeneratedAgentChainId(agent));
 }
 
+function agentHasLiveSession(agent: any): boolean {
+  if (!agent) return false;
+  const connection = String(agent.connectionState || agent.connection_state || '').toLowerCase();
+  return Boolean(agent.connected) || connection === 'connected';
+}
+
 function SidebarAgentsList({ agents = [], chainsById = {}, projects = [], session = {}, templates = [], providers = [], chats = {}, onOpenChain, onRefreshAgents, onFetchAgentChat, onSendAgentMessage }: any) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [chatAgentId, setChatAgentId] = useState('');
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const upload = useArtifactUpload({ projectId: '', originKind: 'direct_agent_chat', originRef: chatAgentId });
-  const taskAgents = useMemo(() => (agents || []).filter((agent: any) => isTaskGeneratedAgent(agent) && isAgentRunning(agent)), [agents]);
+  const taskAgents = useMemo(() => (agents || []).filter((agent: any) => isTaskGeneratedAgent(agent) && agentHasLiveSession(agent)), [agents]);
   const chatAgent = useMemo(() => (agents || []).find((agent: any) => agent.id === chatAgentId) || null, [agents, chatAgentId]);
   const chatMessages = useMemo(() => normalizeCoordinatorMessages((chats?.[chatAgentId] || []).map((msg: any) => ({ ...msg, agentInstanceId: chatAgentId }))), [chats, chatAgentId]);
 
