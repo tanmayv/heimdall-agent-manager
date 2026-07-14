@@ -1786,7 +1786,10 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
             <h2 className="text-lg font-semibold text-zinc-100">Chat</h2>
             <p className="mt-1 text-sm text-zinc-500">Direct agent messages. Attach artifacts or paste screenshots into the composer.</p>
           </div>
-          <IconActionButton debugId="agent-detail-refresh-chat-btn" title="Refresh chat" icon="↻" onClick={() => agent?.id && onRefreshChat?.(agent.id)} />
+          <div className="flex gap-2">
+            <IconActionButton debugId="agent-detail-refresh-chat-btn" title="Refresh chat" icon="↻" onClick={() => agent?.id && onRefreshChat?.(agent.id)} />
+            <IconActionButton debugId="agent-detail-nudge-btn" title="Nudge" icon="⚡" onClick={() => submit(true)} disabled={!agent?.id || sending || !draft.trim()} tone="warn" />
+          </div>
         </div>
         <div className="min-h-[360px] rounded-2xl border border-white/10 bg-black/20 p-3">
           <CoordinatorMessageList chainId={agent?.id || 'agent-detail'} messages={messages} onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))} debugPrefix="agent-detail-chat" emptyText="No direct messages loaded for this agent." />
@@ -1796,6 +1799,11 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
             data-debug-id="agent-detail-chat-input"
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' || event.shiftKey) return;
+              event.preventDefault();
+              submit(false);
+            }}
             onPaste={async (event) => {
               const result = await upload.uploadClipboardImage(event, { originRef: agent?.id || '' });
               if (result.link) setDraft((prev) => appendArtifactLink(prev, result.link || ''));
@@ -1807,7 +1815,6 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
           {upload.error && <div data-debug-id="agent-detail-chat-upload-error" className="mt-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
           <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
             <ArtifactUploadButton onUploaded={(link) => setDraft((prev) => appendArtifactLink(prev, link))} context={{ originKind: 'direct_agent_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending} debugIdPrefix="agent-detail-chat-artifact-upload" label="Attach artifact" />
-            <IconActionButton debugId="agent-detail-nudge-btn" title="Nudge" icon="⚡" onClick={() => submit(true)} disabled={!agent?.id || sending || !draft.trim()} tone="warn" />
             <IconActionButton debugId="agent-detail-chat-send-btn" title={sending ? 'Sending…' : 'Send'} icon="➤" onClick={() => submit(false)} disabled={!agent?.id || sending || !draft.trim()} tone="primary" />
           </div>
         </div>
