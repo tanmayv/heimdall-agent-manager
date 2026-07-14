@@ -29,7 +29,12 @@ def main() -> None:
 
     require('task_runtime_reconcile_task :: proc' in sched, 'shared task runtime reconciler missing')
     require('task_runtime_reconcile_all_active :: proc' in sched, 'all-active startup/periodic reconciler missing')
+    require('task_runtime_reconcile_all_active_chain_coordinators :: proc' in sched, 'active chain coordinator reconciler missing')
     require('changed := task_runtime_reconcile_all_active("periodic_fallback", "normal")' in sched, 'periodic autoscaler must reconcile desired runtime')
+    all_active = re.search(r'task_runtime_reconcile_all_active :: proc[\s\S]+?task_runtime_reconcile_all_active_chain_coordinators :: proc', sched)
+    require(all_active and 'changed += task_runtime_reconcile_all_active_chain_coordinators(reason, priority)' in all_active.group(0), 'unified desired runtime pass must include active chain coordinators')
+    task_reconcile = re.search(r'task_runtime_reconcile_task :: proc[\s\S]+?task_runtime_reconcile_chain_coordinator :: proc', sched)
+    require(task_reconcile and 'target == chain.coordinator_agent_instance_id' not in task_reconcile.group(0), 'task reconciliation must not exclude coordinator assignees')
     require('_ = task_runtime_reconcile_all_active("startup_replay", "normal")' in server, 'startup replay must run after auth/team/template init')
     require('_ = task_runtime_reconcile_all_active("startup_replay", "normal")' not in store, 'startup replay must not run during task_store_init (before team/template services)')
 

@@ -152,8 +152,21 @@ task_autoscaler_tick :: proc(now: i64) -> int {
 
 task_runtime_reconcile_all_active :: proc(reason, priority: string) -> int {
 	changed := 0
+	changed += task_runtime_reconcile_all_active_chain_coordinators(reason, priority)
 	for state in store_all_tasks() {
 		if task_runtime_reconcile_task(state.task_id, reason, priority) do changed += 1
+	}
+	return changed
+}
+
+task_runtime_reconcile_all_active_chain_coordinators :: proc(reason, priority: string) -> int {
+	changed := 0
+	for chain in store_all_chains() {
+		if chain.status != "in_progress" do continue
+		coordinator := task_runtime_agent_target(chain.coordinator_agent_instance_id)
+		if coordinator == "" do continue
+		if registry_agent_live(coordinator) do continue
+		if task_autoscaler_ensure_chain_coordinator(chain.chain_id, reason, priority) do changed += 1
 	}
 	return changed
 }
@@ -173,7 +186,6 @@ task_runtime_reconcile_task :: proc(task_id, reason, priority: string) -> bool {
 		boot_priority = "high"
 	}
 	if target == "" do return false
-	if target == chain.coordinator_agent_instance_id do return false
 	if state.status == .Queued {
 		if blocker := task_active_slot_blocker(target, state.task_id); blocker != "" do return false
 	}
