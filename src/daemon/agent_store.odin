@@ -19,6 +19,10 @@ AGENT_IDENTITY_STATE_ARCHIVED :: "archived"
 Agent_Instance_Record :: struct {
 	agent_record_id: string,
 	agent_instance_id: string,
+	// teams-v2: durable identity back-reference. Derived from the agent_instance_id
+	// prefix (the part before '@'). Resolves to an Agent_Id_Record carrying the
+	// template/persona and default provider/tier shared across project-instances.
+	agent_id: string,
 	display_name: string,
 	template_id: string,
 	provider_profile: string,
@@ -71,6 +75,7 @@ agent_store_init :: proc(data_dir: string) {
 	agent_store_dir = strings.clone(fmt.tprintf("%s/agents", expand_home(data_dir)))
 	agent_instance_events_path = strings.clone(fmt.tprintf("%s/instance-events.jsonl", agent_store_dir))
 	_ = os.make_directory_all(agent_store_dir)
+	agent_id_store_init(agent_store_dir)
 	agent_store_replay()
 	agent_template_store_init(data_dir)
 }
@@ -115,6 +120,10 @@ agent_store_apply_event :: proc(event: Agent_Instance_Event) -> bool {
 	}
 	rec.agent_record_id = strings.clone(event.agent_record_id)
 	rec.agent_instance_id = strings.clone(event.agent_instance_id)
+	// teams-v2: derive the durable agent_id from the instance id prefix and ensure
+	// a backing Agent_Id_Record exists (backfill for pre-existing instances).
+	rec.agent_id = agent_id_from_instance_id(event.agent_instance_id)
+	agent_id_ensure_backfill(rec.agent_id, event.display_name, event.template_id, event.provider_profile, event.model_tier, event.created_unix_ms)
 	rec.display_name = strings.clone(event.display_name)
 	rec.template_id = strings.clone(event.template_id)
 	rec.provider_profile = strings.clone(event.provider_profile)

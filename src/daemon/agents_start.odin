@@ -244,6 +244,13 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 		provider_profile = agent_instance_records[idx].provider_profile
 		resolved_project_id = agent_instance_records[idx].project_id
 	}
+	// teams-v2: deterministic provider/tier resolution (request -> instance ->
+	// agent_id default -> template -> config). Fills provider when the instance
+	// record left it blank so create-from-template + start never launches without
+	// a runnable provider profile.
+	resolved_agent_id := agent_id_from_instance_id(agent_instance_id)
+	provider_profile = agent_resolve_provider_profile(resolved_agent_id, provider_profile, provider_profile)
+	final_tier = agent_resolve_model_tier(resolved_agent_id, "", final_tier)
 
 	agent_token := generate_agent_token()
 	if !agent_runtime_tracker_try_begin_launch(agent_instance_id, agent_token, "manual_agent_start", "", router_now_unix_ms()) {
@@ -290,6 +297,9 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instance_Record) {
 	strings.write_string(builder, `{"agent_record_id":"`); json_write_string(builder, rec.agent_record_id)
 	strings.write_string(builder, `","agent_instance_id":"`); json_write_string(builder, rec.agent_instance_id)
+	// teams-v2: durable identity id (resolves to the Agent_Id_Record).
+	agent_id_value := rec.agent_id; if agent_id_value == "" do agent_id_value = agent_id_from_instance_id(rec.agent_instance_id)
+	strings.write_string(builder, `","agent_id":"`); json_write_string(builder, agent_id_value)
 	strings.write_string(builder, `","display_name":"`); json_write_string(builder, rec.display_name)
 	strings.write_string(builder, `","template_id":"`); json_write_string(builder, rec.template_id)
 	strings.write_string(builder, `","provider_profile":"`); json_write_string(builder, rec.provider_profile)
@@ -555,6 +565,11 @@ handle_agent_instance_create :: proc(client: net.TCP_Socket, body: string) {
 	// teams-v2: reserved identities (operator@local, user_proxy) are not creatable.
 	if agent_instance_id_is_reserved(agent_instance_id) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"reserved agent_instance_id cannot be created"}`); return }
 	if !valid_agent_instance_id(agent_instance_id) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid agent_instance_id"}`); return }
+	// teams-v2: authoritatively create/update the durable agent_id identity with its
+	// defaults (template/persona + default provider/tier), shared across all of this
+	// agent's project-instances. project_id may be empty here (create-without-project).
+	resolved_agent_id := agent_id_from_instance_id(agent_instance_id)
+	agent_id_upsert(resolved_agent_id, display_name, template_id, provider_profile, model_tier, "api")
 	agent_record_id, _, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, provider_profile, project_id, "", model_tier)
 	if !upsert_ok { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`); return }
 	write_agent_ok_response(client, "created", agent_instance_records[agent_record_index(agent_record_id)])

@@ -140,7 +140,7 @@ When launching an instance, resolve provider profile and tier in this exact orde
 4. the template's `default_provider_profile` / `suggested_model_tier`,
 5. config `[wrapper].default_agent` / global default tier.
 
-Also: template seed `default_provider_profile` must be a **runnable** profile that exists in `[wrapper.agent-cmd.*]` (e.g. `Claude Code`), or empty (so step 5 applies). The literal `"pi"` seed must be removed or mapped, otherwise every "create + run from template" fails. **Required fix.**
+Note on the `"pi"` template seed: in *this* repo `pi` **is** a runnable provider (`config.toml` `[wrapper.agent-cmd.pi]`, `default_agent = "pi"`), so the seed is valid and is intentionally left unchanged. The earlier audit assumed the AGENTS.md example providers (`Claude Code`/`claude`) were the only runnable ones — that was wrong for the checked-in config. The real requirement is only that the resolution order above always yields a profile that exists in `[wrapper.agent-cmd.*]`; if a deployment removes `pi`, seeds must point at a profile it does define.
 
 ### 2.5 Concurrency: one active task per instance; one session per instance
 
@@ -284,8 +284,8 @@ Memory (outcome #2):
 - [ ] Validation that the referenced `agent_id` exists.
 
 Provider:
-- [ ] Replace `"pi"` template seed with a runnable profile or empty (`agent_template_db_service.odin`).
-- [ ] Implement resolution order §2.4 in the launch path.
+- [x] Resolution order §2.4 implemented in the launch path (`agent_resolve_provider_profile` / `agent_resolve_model_tier`, `agent_id_store.odin`; wired in `agents_start.odin` manual start).
+- [x] `"pi"` seed verified runnable in this repo's config — left unchanged (see §2.4 note).
 
 UI:
 - [ ] Create Agent modal + button + debug ids.
