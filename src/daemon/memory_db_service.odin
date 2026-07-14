@@ -12,7 +12,7 @@ Memory_Db_Service :: struct {
 
 memory_db: Memory_Db_Service
 
-MEMORY_DB_USER_VERSION :: 3
+MEMORY_DB_USER_VERSION :: 4 // teams-v2: +target_agent_id (memory db is recreated on bump)
 
 memory_db_init :: proc(data_dir: string) -> bool {
 	db_dir := fmt.tprintf("%s/memory", data_dir)
@@ -62,10 +62,12 @@ memory_db_create_schema :: proc() -> bool {
 		source_task_id TEXT,
 		version INTEGER NOT NULL,
 		created_unix_ms INTEGER NOT NULL,
-		updated_unix_ms INTEGER NOT NULL
+		updated_unix_ms INTEGER NOT NULL,
+		target_agent_id TEXT NOT NULL DEFAULT ''
 	);
 	CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);
 	CREATE INDEX IF NOT EXISTS idx_memories_targets ON memories(status, target_team_kind, target_role, target_project_id);
+	CREATE INDEX IF NOT EXISTS idx_memories_agent ON memories(status, target_agent_id);
 	CREATE INDEX IF NOT EXISTS idx_memories_proposal ON memories(proposal_id);
 
 	CREATE TABLE IF NOT EXISTS memory_events (
@@ -124,8 +126,8 @@ memory_db_save_record :: proc(rec: contracts.Memory_Record) -> bool {
 	query := `INSERT OR REPLACE INTO memories (
 		memory_id, proposal_id, target_team_kind, target_role, target_project_id, type,
 		title, body, status, reason, evidence, metadata_json, source_task_id,
-		version, created_unix_ms, updated_unix_ms
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		version, created_unix_ms, updated_unix_ms, target_agent_id
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	rc := sqlite3_prepare_v2(memory_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
@@ -153,6 +155,7 @@ memory_db_save_record :: proc(rec: contracts.Memory_Record) -> bool {
 	sqlite3_bind_int64(stmt, 14, i64(rec.version))
 	sqlite3_bind_int64(stmt, 15, rec.created_unix_ms)
 	sqlite3_bind_int64(stmt, 16, rec.updated_unix_ms)
+	sqlite3_bind_text(stmt, 17, cstring(raw_data(rec.target_agent_id)), i32(len(rec.target_agent_id)), SQLITE_TRANSIENT)
 
 	rc = sqlite3_step(stmt)
 	if rc != SQLITE_DONE {
@@ -199,7 +202,7 @@ memory_db_get_record :: proc(memory_id: string) -> (rec: contracts.Memory_Record
 	query := `SELECT
 		memory_id, proposal_id, target_team_kind, target_role, target_project_id, type,
 		title, body, status, reason, evidence, metadata_json, source_task_id,
-		version, created_unix_ms, updated_unix_ms
+		version, created_unix_ms, updated_unix_ms, target_agent_id
 		FROM memories WHERE memory_id = ?`
 
 	rc := sqlite3_prepare_v2(memory_db.db, cstring(raw_data(query)), -1, &stmt, nil)
@@ -221,7 +224,7 @@ memory_db_get_proposal :: proc(proposal_id: string) -> (rec: contracts.Memory_Re
 	query := `SELECT
 		memory_id, proposal_id, target_team_kind, target_role, target_project_id, type,
 		title, body, status, reason, evidence, metadata_json, source_task_id,
-		version, created_unix_ms, updated_unix_ms
+		version, created_unix_ms, updated_unix_ms, target_agent_id
 		FROM memories WHERE proposal_id = ?`
 
 	rc := sqlite3_prepare_v2(memory_db.db, cstring(raw_data(query)), -1, &stmt, nil)
@@ -243,12 +246,12 @@ memory_db_list_records :: proc(status: contracts.Memory_Status, include_all: boo
 	query := `SELECT
 		memory_id, proposal_id, target_team_kind, target_role, target_project_id, type,
 		title, body, status, reason, evidence, metadata_json, source_task_id,
-		version, created_unix_ms, updated_unix_ms
+		version, created_unix_ms, updated_unix_ms, target_agent_id
 		FROM memories`
 	if !include_all do query = `SELECT
 		memory_id, proposal_id, target_team_kind, target_role, target_project_id, type,
 		title, body, status, reason, evidence, metadata_json, source_task_id,
-		version, created_unix_ms, updated_unix_ms
+		version, created_unix_ms, updated_unix_ms, target_agent_id
 		FROM memories WHERE status = ?`
 
 	rc := sqlite3_prepare_v2(memory_db.db, cstring(raw_data(query)), -1, &stmt, nil)
@@ -298,6 +301,7 @@ memory_db_history :: proc(memory_id: string) -> []contracts.Memory_Event {
 			created_unix_ms = sqlite3_column_int64(stmt, 7),
 		}
 		if rec, found := memory_db_get_record(ev.memory_id); found {
+			ev.target_agent_id = strings.clone(rec.target_agent_id)
 			ev.target_team_kind = strings.clone(rec.target_team_kind)
 			ev.target_role = strings.clone(rec.target_role)
 			ev.target_project_id = strings.clone(rec.target_project_id)
@@ -369,12 +373,14 @@ memory_db_parse_record :: proc(stmt: sqlite3_stmt) -> contracts.Memory_Record {
 		version = int(sqlite3_column_int64(stmt, 13)),
 		created_unix_ms = sqlite3_column_int64(stmt, 14),
 		updated_unix_ms = sqlite3_column_int64(stmt, 15),
+		target_agent_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 16)),
 	}
 }
 
 memory_record_free :: proc(rec: contracts.Memory_Record) {
 	delete(rec.memory_id)
 	delete(rec.proposal_id)
+	delete(rec.target_agent_id)
 	delete(rec.target_team_kind)
 	delete(rec.target_role)
 	delete(rec.target_project_id)
@@ -390,6 +396,7 @@ memory_event_free :: proc(ev: contracts.Memory_Event) {
 	delete(ev.event_id)
 	delete(ev.memory_id)
 	delete(ev.proposal_id)
+	delete(ev.target_agent_id)
 	delete(ev.target_team_kind)
 	delete(ev.target_role)
 	delete(ev.target_project_id)

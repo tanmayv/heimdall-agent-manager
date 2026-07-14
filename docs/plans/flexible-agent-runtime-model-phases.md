@@ -84,10 +84,11 @@ Goal: memories can target one durable `agent_id` and apply to all its project-in
 - **P2-6 Bootstrap injection.** Inject `agent_id`-scoped memories at instance bootstrap for that
   agent only.
 
-### Acceptance
-- Add a memory to agent_id X → appears in X's instances' bootstrap, never in agent Y's.
-- List with agent filter returns only that agent's memories plus applicable broader scopes.
-- Sending a per-agent memory no longer returns HTTP 400.
+### Acceptance — DONE (runtime-verified)
+- Add a memory to agent_id X → appears in X's instances' bootstrap, never in agent Y's. ✓ (`applicable` returns it for Spec-One, empty for Spec-Two)
+- List with agent filter returns only that agent's memories plus applicable broader scopes. ✓ (`target_agent_id` filter in `memory_service_list_json`)
+- Sending a per-agent memory no longer returns HTTP 400; unknown/archived agent rejected. ✓
+- Memory DB recreated at user_version 4 (no ALTER migration; recreate-on-bump). ✓
 
 ### Risks
 - Precedence ambiguity → contradictory role vs instance memories (specify most-specific-wins).

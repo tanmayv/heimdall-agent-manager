@@ -35,6 +35,10 @@ Memory_Event :: struct {
 	kind: Memory_Event_Kind,
 	memory_id: string,
 	proposal_id: string,
+	// teams-v2: per-agent memory dimension. When set, the memory applies only to
+	// the durable agent_id (all its project-instances), and is the most specific
+	// targeting dimension.
+	target_agent_id: string,
 	target_team_kind: string,
 	target_role: string,
 	target_project_id: string,
@@ -54,6 +58,7 @@ Memory_Event :: struct {
 Memory_Record :: struct {
 	memory_id: string,
 	proposal_id: string,
+	target_agent_id: string,
 	target_team_kind: string,
 	target_role: string,
 	target_project_id: string,
@@ -86,6 +91,7 @@ Memory_Replay_Response :: struct {
 }
 
 Memory_List_Request :: struct {
+	target_agent_id: string,
 	target_team_kind: string,
 	target_role: string,
 	target_project_id: string,
