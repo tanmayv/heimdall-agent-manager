@@ -13,6 +13,7 @@ type AgentPickerProps = {
   defaultProjectId?: string;
   onSelected: (agentInstanceId: string, result?: any) => void | Promise<void>;
   onRefreshAgents?: () => void | Promise<void>;
+  selectionOnly?: boolean;
 };
 
 function agentId(agent: any): string {
@@ -79,7 +80,7 @@ function searchMatches(agent: any, query: string) {
   return haystack.includes(q);
 }
 
-export default function AgentPicker({ debugId, daemonUrl, agents, projects, templates = [], providers = [], value = '', roleHint = '', defaultProjectId = '', onSelected, onRefreshAgents }: AgentPickerProps) {
+export default function AgentPicker({ debugId, daemonUrl, agents, projects, templates = [], providers = [], value = '', roleHint = '', defaultProjectId = '', onSelected, onRefreshAgents, selectionOnly = false }: AgentPickerProps) {
   const [query, setQuery] = useState('');
   const filteredAgents = useMemo(() => (agents || []).filter((agent) => agentId(agent) && roleMatches(agent, roleHint) && searchMatches(agent, query)), [agents, roleHint, query]);
   const fallbackTemplate = templateDefault(templates, roleHint);
@@ -168,13 +169,13 @@ export default function AgentPicker({ debugId, daemonUrl, agents, projects, temp
           })}
         </select>
         <button data-debug-id={`${debugId}-use-existing-btn`} disabled={!existingId || Boolean(busy)} onClick={() => onSelected(existingId)} className="rounded-xl bg-white/10 px-3 py-2 text-xs font-semibold text-zinc-100 hover:bg-white/15 disabled:opacity-50">Use selected</button>
-        <button data-debug-id={`${debugId}-run-existing-btn`} disabled={!existingId || Boolean(busy)} onClick={() => {
+        {!selectionOnly && <button data-debug-id={`${debugId}-run-existing-btn`} disabled={!existingId || Boolean(busy)} onClick={() => {
           const selected = filteredAgents.find((agent) => agentId(agent) === existingId) || {};
           runAgent(existingId, agentTemplate(selected) || fallbackTemplate, selected.providerProfile || fallbackProvider, selected.projectId || defaultProjectId || '', selected.modelTier || 'normal');
-        }} className="rounded-xl bg-sky-400 px-3 py-2 text-xs font-semibold text-black hover:bg-sky-300 disabled:opacity-50">Run selected</button>
+        }} className="rounded-xl bg-sky-400 px-3 py-2 text-xs font-semibold text-black hover:bg-sky-300 disabled:opacity-50">Run selected</button>}
       </div>
 
-      <details className="mt-3 rounded-xl bg-white/[0.035] p-3">
+      {!selectionOnly && <details className="mt-3 rounded-xl bg-white/[0.035] p-3">
         <summary data-debug-id={`${debugId}-run-by-id-summary`} className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-zinc-400">Run agent by ID</summary>
         <div className="mt-3 grid gap-2 md:grid-cols-2">
           <input data-debug-id={`${debugId}-run-id-input`} value={runId} onChange={(event) => setRunId(event.target.value)} placeholder="agent-instance-id" className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
@@ -184,9 +185,9 @@ export default function AgentPicker({ debugId, daemonUrl, agents, projects, temp
           <select data-debug-id={`${debugId}-run-tier-select`} value={runTier} onChange={(event) => setRunTier(event.target.value)} className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="normal">normal</option><option value="smart">smart</option><option value="cheap">cheap</option></select>
           <button data-debug-id={`${debugId}-run-submit-btn`} disabled={!runId.trim() || Boolean(busy)} onClick={() => runAgent(runId, runTemplate, runProvider, runProject, runTier)} className="rounded-xl bg-sky-400 px-3 py-2 text-xs font-semibold text-black hover:bg-sky-300 disabled:opacity-50">Run agent</button>
         </div>
-      </details>
+      </details>}
 
-      <details className="mt-3 rounded-xl bg-white/[0.035] p-3">
+      {!selectionOnly && <details className="mt-3 rounded-xl bg-white/[0.035] p-3">
         <summary data-debug-id={`${debugId}-create-summary`} className="cursor-pointer text-xs font-semibold uppercase tracking-wide text-zinc-400">Create new agent ID and run</summary>
         <div className="mt-3 grid gap-2 md:grid-cols-2">
           <input data-debug-id={`${debugId}-create-id-input`} value={createId} onChange={(event) => setCreateId(event.target.value)} placeholder="new-agent-id" className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
@@ -197,7 +198,7 @@ export default function AgentPicker({ debugId, daemonUrl, agents, projects, temp
           <select data-debug-id={`${debugId}-create-tier-select`} value={createTier} onChange={(event) => setCreateTier(event.target.value)} className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="normal">normal</option><option value="smart">smart</option><option value="cheap">cheap</option></select>
           <button data-debug-id={`${debugId}-create-submit-btn`} disabled={!createId.trim() || Boolean(busy)} onClick={createAndRun} className="rounded-xl bg-emerald-400 px-3 py-2 text-xs font-semibold text-black hover:bg-emerald-300 disabled:opacity-50">Create and run</button>
         </div>
-      </details>
+      </details>}
 
       {busy && <div data-debug-id={`${debugId}-busy`} className="mt-2 text-xs text-sky-300">Working…</div>}
       {error && <div data-debug-id={`${debugId}-error`} className="mt-2 rounded-lg border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{error}</div>}

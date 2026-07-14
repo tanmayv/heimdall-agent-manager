@@ -95,7 +95,7 @@ function storeKnownAgents(agents: any[]) {
 
 function safeStartupStatus(agent: any) {
   const status = agent.startup_status || agent.startupStatus || agent.lifecycle_state || agent.lifecycleState || '';
-  if (status === 'startup_blocked' || status === 'startup_failed' || status === 'startup_unknown' || status === 'starting') return status;
+  if (status === 'startup_blocked' || status === 'startup_failed' || status === 'startup_unknown' || status === 'starting' || status === 'ready' || status === 'start_success') return status;
   return '';
 }
 

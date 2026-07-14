@@ -27,7 +27,7 @@ import {
   userWsDisconnected,
   userWsError,
 } from '../store/chatSlice';
-import { addCommentToSelectedTask, fetchSelectedTaskLog, fetchTasksForChain, nudgeSelectedTask, refreshTaskBoard, taskEventReceived, updateChainStateDirectly, updateSelectedTaskStatus, updateTaskStateDirectly, voteOnAttentionTask, voteOnSelectedTask } from '../store/taskSlice';
+import { addCommentToSelectedTask, addParticipantToSelectedTask, assignSelectedTask, fetchSelectedTaskLog, fetchTasksForChain, nudgeSelectedTask, refreshTaskBoard, removeParticipantFromSelectedTask, taskEventReceived, updateChainStateDirectly, updateSelectedTaskStatus, updateTaskStateDirectly, voteOnAttentionTask, voteOnSelectedTask } from '../store/taskSlice';
 import { clearProjectError, createProjectFromUi, refreshProjects } from '../store/projectSlice';
 import {
   closeNewChainModal,
@@ -458,6 +458,7 @@ export default function App() {
   const [newProjectModalOpen, setNewProjectModalOpen] = useState(false);
   const [chainCreationProgress, setChainCreationProgress] = useState<any>(null);
   const [daemonPickerOpen, setDaemonPickerOpen] = useState(false);
+  const [agentPageId, setAgentPageId] = useState('');
   const [daemonModalMode, setDaemonModalMode] = useState<null | 'add' | 'rename' | 'connect_failed'>(null);
   const [daemonModalContext, setDaemonModalContext] = useState<{ url?: string; label?: string }>({});
   const connectAttemptsRef = useRef(0);
@@ -784,6 +785,7 @@ export default function App() {
   }, [dispatch, home.surface, session.connected]);
 
   const selectSurfaceWithUrl = useCallback((next: string) => {
+    setAgentPageId('');
     if (next === 'memory') {
       updateUrlParams({ view: 'memory', chainId: null, taskId: null });
       dispatch(selectSurface('memory'));
@@ -803,9 +805,16 @@ export default function App() {
   }, [dispatch]);
 
   const openProject = useCallback((projectId: string) => {
+    setAgentPageId('');
     updateUrlParams({ chainId: null, taskId: null, view: 'home', memoryId: null });
     dispatch(selectProject(projectId));
     dispatch(selectSurface('home'));
+  }, [dispatch]);
+
+  const openAgentPage = useCallback((agentId: string) => {
+    setAgentPageId(agentId);
+    updateUrlParams({ view: 'agent', chainId: null, taskId: null, memoryId: null });
+    dispatch(fetchSelectedChat({ agentId })).catch(() => undefined);
   }, [dispatch]);
 
   const chainGroups = projects.map((project) => ({
@@ -970,13 +979,8 @@ export default function App() {
               templates={settingsTemplates}
               providers={settingsProviders}
               onOpenChain={openChain}
-              chats={chats}
+              onOpenAgentPage={openAgentPage}
               onRefreshAgents={() => dispatch(refreshAgents()).unwrap().catch(() => undefined)}
-              onFetchAgentChat={(agentId: string) => dispatch(fetchSelectedChat({ agentId })).unwrap().catch(() => undefined)}
-              onSendAgentMessage={async (agentId: string, body: string) => {
-                await daemonApi.sendToAgent({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, agentInstanceId: agentId, body });
-                dispatch(fetchSelectedChat({ agentId }));
-              }}
             />
           </div>
           <div className="border-t border-white/5 p-2">
@@ -991,7 +995,22 @@ export default function App() {
         </aside>
 
         <main className="min-w-0 flex-1 overflow-y-auto">
-          {home.surface === 'settings' ? (
+          {agentPageId ? (
+            <AgentDetailPage
+              agent={(agents || []).find((agent: any) => agent.id === agentPageId) || { id: agentPageId, label: agentPageId, status: 'unknown' }}
+              tasksById={tasksById}
+              chainsById={chainsById}
+              chats={chats}
+              session={session}
+              onBack={() => setAgentPageId('')}
+              onOpenChain={(chainId: string) => { setAgentPageId(''); openChain(chainId); }}
+              onRefreshChat={(agentId: string) => dispatch(fetchSelectedChat({ agentId })).unwrap().catch(() => undefined)}
+              onSendAgentMessage={async (agentId: string, body: string, interrupt = false) => {
+                await daemonApi.sendToAgent({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, agentInstanceId: agentId, body, interrupt });
+                dispatch(fetchSelectedChat({ agentId }));
+              }}
+            />
+          ) : home.surface === 'settings' ? (
             <SettingsPage session={session} onBack={() => selectSurfaceWithUrl('home')} onReconnect={(config: any) => { dispatch(updateSessionConfig(config)); window.setTimeout(connectSession, 0); }} />
           ) : home.surface === 'memory' ? (
             <MemoryManagementPage
@@ -1060,6 +1079,20 @@ export default function App() {
                   dispatch(showToast({ kind: 'error', title: 'Nudge failed', message: err?.message || 'Unable to nudge task' }));
                   throw err;
                 }
+              }}
+              onAssignTask={async (task: any, agentInstanceId: string) => {
+                await dispatch(assignSelectedTask({ taskId: task.taskId, chainId: task.chainId, agentInstanceId })).unwrap();
+                dispatch(fetchTasksForChain(task.chainId)); dispatch(fetchSelectedTaskLog(task.taskId));
+                dispatch(showToast({ kind: 'success', title: 'Assignee updated', message: agentInstanceId }));
+              }}
+              onSetReviewer={async (task: any, agentInstanceId: string) => {
+                const reviewers = taskReviewerIds(task);
+                for (const reviewerId of reviewers) {
+                  await dispatch(removeParticipantFromSelectedTask({ taskId: task.taskId, chainId: task.chainId, agentInstanceId: reviewerId, role: 'lgtm_required' })).unwrap().catch(() => undefined);
+                }
+                await dispatch(addParticipantToSelectedTask({ taskId: task.taskId, chainId: task.chainId, agentInstanceId, role: 'lgtm_required' })).unwrap();
+                dispatch(fetchTasksForChain(task.chainId)); dispatch(fetchSelectedTaskLog(task.taskId));
+                dispatch(showToast({ kind: 'success', title: 'Reviewer updated', message: agentInstanceId }));
               }}
             />
           ) : home.surface === 'attention' ? (
@@ -1321,44 +1354,16 @@ function agentHasLiveSession(agent: any): boolean {
   return Boolean(agent.connected) || connection === 'connected';
 }
 
-function SidebarAgentsList({ agents = [], chainsById = {}, projects = [], session = {}, templates = [], providers = [], chats = {}, onOpenChain, onRefreshAgents, onFetchAgentChat, onSendAgentMessage }: any) {
+function SidebarAgentsList({ agents = [], projects = [], session = {}, providers = [], onOpenAgentPage, onRefreshAgents }: any) {
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [chatAgentId, setChatAgentId] = useState('');
-  const [draft, setDraft] = useState('');
-  const [sending, setSending] = useState(false);
   const [launchName, setLaunchName] = useState('');
   const [launchRole, setLaunchRole] = useState('specialist');
   const [launchBusy, setLaunchBusy] = useState(false);
   const [launchError, setLaunchError] = useState('');
   const [launchProgressId, setLaunchProgressId] = useState('');
   const [launchStartedAt, setLaunchStartedAt] = useState(0);
-  const upload = useArtifactUpload({ projectId: '', originKind: 'direct_agent_chat', originRef: chatAgentId });
   const liveAgents = useMemo(() => (agents || []).filter((agent: any) => agentHasLiveSession(agent)), [agents]);
-  const chatAgent = useMemo(() => (agents || []).find((agent: any) => agent.id === chatAgentId) || null, [agents, chatAgentId]);
-  const chatMessages = useMemo(() => normalizeCoordinatorMessages((chats?.[chatAgentId] || []).map((msg: any) => ({ ...msg, agentInstanceId: chatAgentId }))), [chats, chatAgentId]);
   const launchAgent = useMemo(() => (agents || []).find((agent: any) => agent.id === launchProgressId) || null, [agents, launchProgressId]);
-
-  const openAgentChat = async (agentId: string) => {
-    setChatAgentId(agentId);
-    await onFetchAgentChat?.(agentId);
-  };
-
-  const closeAgentChat = () => {
-    setChatAgentId('');
-    setDraft('');
-  };
-
-  const submitChat = async () => {
-    const body = draft.trim();
-    if (!body || !chatAgentId || sending) return;
-    setSending(true);
-    try {
-      await onSendAgentMessage?.(chatAgentId, body);
-      setDraft('');
-    } finally {
-      setSending(false);
-    }
-  };
 
   const launchAgentId = useMemo(() => {
     const base = launchName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'specialist';
@@ -1428,30 +1433,14 @@ function SidebarAgentsList({ agents = [], chainsById = {}, projects = [], sessio
                 <h2 className="text-lg font-semibold text-zinc-100">Launch agent</h2>
                 <p className="mt-1 text-sm text-zinc-500">Create a new specialist agent and wait for start-success.</p>
               </div>
-              <button
-                data-debug-id="sidebar-agent-picker-close-btn"
-                onClick={() => setPickerOpen(false)}
-                className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 transition hover:bg-white/15"
-              >Close</button>
+              <button data-debug-id="sidebar-agent-picker-close-btn" onClick={() => setPickerOpen(false)} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 transition hover:bg-white/15">Close</button>
             </div>
             {!launchProgressId ? (
               <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
                 <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Agent name</label>
-                <input
-                  data-debug-id="sidebar-agent-launch-name-input"
-                  value={launchName}
-                  onChange={(event) => setLaunchName(event.target.value)}
-                  placeholder="e.g. Payments API Specialist"
-                  className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"
-                />
+                <input data-debug-id="sidebar-agent-launch-name-input" value={launchName} onChange={(event) => setLaunchName(event.target.value)} placeholder="e.g. Payments API Specialist" className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
                 <label className="mt-4 block text-xs font-semibold uppercase tracking-wide text-zinc-500">Default role</label>
-                <input
-                  data-debug-id="sidebar-agent-launch-role-input"
-                  value={launchRole}
-                  onChange={(event) => setLaunchRole(event.target.value)}
-                  placeholder="specialist"
-                  className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"
-                />
+                <input data-debug-id="sidebar-agent-launch-role-input" value={launchRole} onChange={(event) => setLaunchRole(event.target.value)} placeholder="specialist" className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
                 <div data-debug-id="sidebar-agent-launch-id-preview" className="mt-3 rounded-xl bg-white/[0.04] px-3 py-2 text-xs text-zinc-400">Agent ID: <span className="font-mono text-zinc-200">{launchAgentId}</span></div>
                 {launchError && <div data-debug-id="sidebar-agent-launch-error" className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{launchError}</div>}
                 <div className="mt-4 flex justify-end gap-2">
@@ -1462,104 +1451,151 @@ function SidebarAgentsList({ agents = [], chainsById = {}, projects = [], sessio
             ) : (
               <div data-debug-id="sidebar-agent-launch-progress" className="rounded-2xl border border-white/10 bg-black/20 p-4">
                 <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-xs uppercase tracking-[0.22em] text-zinc-500">Launch progress</div>
-                    <div className="mt-1 truncate font-semibold text-zinc-100">{launchAgent?.label || launchName || launchProgressId}</div>
-                    <div className="mt-1 truncate font-mono text-xs text-zinc-500">{launchProgressId}</div>
-                  </div>
+                  <div className="min-w-0"><div className="text-xs uppercase tracking-[0.22em] text-zinc-500">Launch progress</div><div className="mt-1 truncate font-semibold text-zinc-100">{launchAgent?.label || launchName || launchProgressId}</div><div className="mt-1 truncate font-mono text-xs text-zinc-500">{launchProgressId}</div></div>
                   <span className={`rounded-full px-2 py-1 text-xs ${launchReady ? 'bg-emerald-400/15 text-emerald-200' : launchFailed ? 'bg-red-400/15 text-red-200' : 'bg-sky-400/15 text-sky-200'}`}>{launchReady ? 'Ready' : launchFailed ? 'Needs attention' : 'Starting'}</span>
                 </div>
-                <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10">
-                  <div className="h-full rounded-full bg-sky-400 transition-all" style={{ width: `${Math.round((launchSteps.filter((step) => step.done).length / launchSteps.length) * 100)}%` }} />
-                </div>
-                <div className="mt-4 space-y-2">
-                  {launchSteps.map((step) => (
-                    <div key={step.key} data-debug-id={`sidebar-agent-launch-step-${step.key}`} className="flex items-start gap-3 rounded-xl bg-white/[0.035] px-3 py-2">
-                      <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${step.done ? 'bg-emerald-300' : launchFailed && step.key === 'ready' ? 'bg-red-300' : 'bg-zinc-600'}`} />
-                      <div className="min-w-0 flex-1">
-                        <div className="text-sm font-medium text-zinc-100">{step.label}</div>
-                        <div className="truncate text-xs text-zinc-500">{step.detail}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-                {launchAgent?.startupReason && <div className="mt-3 rounded-xl bg-white/[0.04] px-3 py-2 text-xs text-zinc-400">Reason: {launchAgent.startupReason}</div>}
-                {launchAgent?.startupReason && launchAgent?.startupReason !== 'start_success' && launchAgent?.startupReason !== 'register' && launchAgent?.startupReason !== 'startup_report' && <div className="mt-2 rounded-xl bg-white/[0.04] px-3 py-2 text-xs text-zinc-400">{launchAgent.startupReason}</div>}
-                <div className="mt-4 flex justify-end gap-2">
-                  <button data-debug-id="sidebar-agent-launch-new-btn" onClick={() => { setLaunchProgressId(''); setLaunchStartedAt(0); setLaunchName(''); setLaunchRole('specialist'); }} className="rounded-xl bg-white/10 px-4 py-2 text-sm text-zinc-200 hover:bg-white/15">Launch another</button>
-                  <button data-debug-id="sidebar-agent-launch-done-btn" onClick={() => setPickerOpen(false)} disabled={!launchReady && !launchFailed} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">Done</button>
-                </div>
+                <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-sky-400 transition-all" style={{ width: `${Math.round((launchSteps.filter((step) => step.done).length / launchSteps.length) * 100)}%` }} /></div>
+                <div className="mt-4 space-y-2">{launchSteps.map((step) => <div key={step.key} data-debug-id={`sidebar-agent-launch-step-${step.key}`} className="flex items-start gap-3 rounded-xl bg-white/[0.035] px-3 py-2"><span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${step.done ? 'bg-emerald-300' : launchFailed && step.key === 'ready' ? 'bg-red-300' : 'bg-zinc-600'}`} /><div className="min-w-0 flex-1"><div className="text-sm font-medium text-zinc-100">{step.label}</div><div className="truncate text-xs text-zinc-500">{step.detail}</div></div></div>)}</div>
+                <div className="mt-4 flex justify-end gap-2"><button data-debug-id="sidebar-agent-launch-new-btn" onClick={() => { setLaunchProgressId(''); setLaunchStartedAt(0); setLaunchName(''); setLaunchRole('specialist'); }} className="rounded-xl bg-white/10 px-4 py-2 text-sm text-zinc-200 hover:bg-white/15">Launch another</button><button data-debug-id="sidebar-agent-launch-done-btn" onClick={() => setPickerOpen(false)} disabled={!launchReady && !launchFailed} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">Done</button></div>
               </div>
             )}
           </div>
         </div>
       )}
-      {chatAgentId && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 py-12 backdrop-blur-sm" onMouseDown={closeAgentChat}>
-          <div data-debug-id="sidebar-agent-chat" className="flex max-h-[85vh] w-full max-w-3xl flex-col rounded-3xl border border-white/10 bg-[#101217] p-5 shadow-2xl shadow-black/50" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="mb-3 flex items-start justify-between gap-4">
-              <div className="min-w-0">
-                <div className="text-xs uppercase tracking-[0.22em] text-zinc-500">Direct agent chat</div>
-                <h2 data-debug-id="sidebar-agent-chat-title" className="truncate text-lg font-semibold text-zinc-100">{chatAgent?.label || chatAgentId}</h2>
-                <div className="mt-1 truncate text-xs text-zinc-500">{chatAgentId}</div>
-              </div>
-              <button data-debug-id="sidebar-agent-chat-close-btn" onClick={closeAgentChat} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 transition hover:bg-white/15">Close</button>
-            </div>
-            <div className="min-h-0 flex-1 overflow-hidden rounded-2xl border border-white/10 bg-black/20 p-3">
-              <CoordinatorMessageList chainId={chatAgentId || 'sidebar-agent-chat'} messages={chatMessages} onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))} debugPrefix="sidebar-agent-chat" emptyText="No direct messages loaded for this agent." />
-            </div>
-            <div className="mt-3">
-              <textarea
-                data-debug-id="sidebar-agent-chat-input"
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                onPaste={async (event) => {
-                  const result = await upload.uploadClipboardImage(event, { originRef: chatAgentId });
-                  if (result.link) setDraft((prev) => appendArtifactLink(prev, result.link || ''));
-                }}
-                placeholder="Message this running agent…"
-                rows={3}
-                className="w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"
-              />
-              {upload.error && <div data-debug-id="sidebar-agent-chat-upload-error" className="mt-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
-              <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
-                <ArtifactUploadButton onUploaded={(link) => setDraft((prev) => appendArtifactLink(prev, link))} context={{ originKind: 'direct_agent_chat', originRef: chatAgentId }} disabled={!chatAgentId || sending} debugIdPrefix="sidebar-agent-chat-artifact-upload" label="Attach artifact" />
-                <button data-debug-id="sidebar-agent-chat-send-btn" onClick={submitChat} disabled={!chatAgentId || sending || !draft.trim()} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">{sending ? 'Sending…' : 'Send'}</button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-      <div className="mb-1.5 flex items-center justify-between gap-2 px-1">
-        <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Running agents</div>
-        <div className="text-[10px] text-zinc-600">{liveAgents.length}</div>
-      </div>
-      {liveAgents.length === 0 ? (
-        <div className="px-1 py-1 text-[10px] text-zinc-600">No running agents</div>
-      ) : (
-        <div className="space-y-1">
-          {liveAgents.slice(0, 80).map((agent: any) => {
-            const chainId = taskGeneratedAgentChainId(agent);
-            const chain = chainId ? chainsById[chainId] : null;
-            return (
-              <button
-                key={agent.id}
-                data-debug-id={`sidebar-agent-${agent.id}`}
-                onClick={() => openAgentChat(agent.id)}
-                title={`${agent.label || agent.id}${chain ? ` · ${chain.title || chainId}` : ''}`}
-                className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] text-zinc-300 transition hover:bg-white/[0.04] hover:text-zinc-100"
-              >
-                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-300" />
-                <span className="min-w-0 flex-1 truncate">{agent.label || agent.id}</span>
-              </button>
-            );
-          })}
-          {liveAgents.length > 80 && <div className="px-2 py-1 text-[10px] text-zinc-600">+{liveAgents.length - 80} more running</div>}
-        </div>
-      )}
+      <div className="mb-1.5 flex items-center justify-between gap-2 px-1"><div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Running agents</div><div className="text-[10px] text-zinc-600">{liveAgents.length}</div></div>
+      {liveAgents.length === 0 ? <div className="px-1 py-1 text-[10px] text-zinc-600">No running agents</div> : <div className="space-y-1">{liveAgents.slice(0, 80).map((agent: any) => {
+        const chainId = taskGeneratedAgentChainId(agent);
+        return <button key={agent.id} data-debug-id={`sidebar-agent-${agent.id}`} onClick={() => onOpenAgentPage?.(agent.id)} title={agent.label || agent.id} className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] text-zinc-300 transition hover:bg-white/[0.04] hover:text-zinc-100"><span className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-300" /><span className="min-w-0 flex-1 truncate">{agent.label || agent.id}</span>{chainId && <span className="shrink-0 rounded bg-white/[0.05] px-1 text-[9px] text-zinc-500">chain</span>}</button>;
+      })}{liveAgents.length > 80 && <div className="px-2 py-1 text-[10px] text-zinc-600">+{liveAgents.length - 80} more running</div>}</div>}
     </div>
   );
 }
+function agentTaskBuckets(agentId: string, tasksById: Record<string, any>) {
+  const completedStatuses = new Set(['approved', 'done', 'completed', 'cancelled', 'archived']);
+  const rows = Object.values(tasksById || {}).filter((task: any) => {
+    if (!task?.taskId) return false;
+    if (task.assigneeAgentInstanceId === agentId) return true;
+    if (task.reviewerAgentInstanceId === agentId) return true;
+    return (task.participants || []).some((participant: any) => participant.agentInstanceId === agentId);
+  }) as any[];
+  rows.sort((a, b) => Number(b.updatedAtUnixMs || b.createdAtUnixMs || 0) - Number(a.updatedAtUnixMs || a.createdAtUnixMs || 0));
+  return {
+    pending: rows.filter((task) => !completedStatuses.has(String(task.status || ''))),
+    completed: rows.filter((task) => completedStatuses.has(String(task.status || ''))),
+  };
+}
+
+function AgentTaskCard({ task, chainsById, onOpenChain }: any) {
+  const chain = chainsById?.[task.chainId] || {};
+  return (
+    <div data-debug-id={`agent-detail-task-${task.taskId}`} className="rounded-2xl border border-white/10 bg-black/20 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-semibold text-zinc-100">{task.title || task.taskId}</div>
+          <div className="mt-1 truncate text-xs text-zinc-500">{chain.title || task.chainId || 'No chain'} · {task.taskId}</div>
+        </div>
+        <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] ${statusTone(task.status)}`}>{task.status || 'unknown'}</span>
+      </div>
+      {task.description && <div className="mt-2 line-clamp-2 text-xs text-zinc-400">{task.description}</div>}
+      <div className="mt-3 flex justify-end">
+        <button data-debug-id={`agent-detail-task-open-chain-${task.taskId}`} onClick={() => task.chainId && onOpenChain?.(task.chainId)} className="rounded-xl bg-white/10 px-3 py-1.5 text-xs text-zinc-100 hover:bg-white/15">Open chain</button>
+      </div>
+    </div>
+  );
+}
+
+function AgentDetailPage({ agent, tasksById, chainsById, chats, session, onBack, onOpenChain, onRefreshChat, onSendAgentMessage }: any) {
+  const [draft, setDraft] = useState('');
+  const [sending, setSending] = useState(false);
+  const upload = useArtifactUpload({ projectId: agent?.projectId || '', originKind: 'direct_agent_chat', originRef: agent?.id || '' });
+  const runtime = agentRuntimeDot(agent);
+  const messages = useMemo(() => normalizeCoordinatorMessages((chats?.[agent?.id] || []).map((msg: any) => ({ ...msg, agentInstanceId: agent?.id }))), [chats, agent?.id]);
+  const buckets = useMemo(() => agentTaskBuckets(agent?.id || '', tasksById || {}), [agent?.id, tasksById]);
+
+  useEffect(() => {
+    if (agent?.id) onRefreshChat?.(agent.id);
+    // Parent callbacks are intentionally omitted.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent?.id]);
+
+  const submit = async (interrupt = false) => {
+    const body = draft.trim();
+    if (!body || !agent?.id || sending) return;
+    setSending(true);
+    try {
+      await onSendAgentMessage?.(agent.id, body, interrupt);
+      setDraft('');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div data-debug-id="agent-detail-page" className="mx-auto max-w-6xl px-8 py-8">
+      <div className="mb-5 flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <button data-debug-id="agent-detail-back-btn" onClick={onBack} className="mb-3 rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15">← Back</button>
+          <div className="text-xs uppercase tracking-[0.25em] text-zinc-500">Agent</div>
+          <h1 data-debug-id="agent-detail-title" className="mt-2 truncate text-3xl font-semibold text-zinc-100">{agent?.label || agent?.id}</h1>
+          <div className="mt-2 truncate font-mono text-xs text-zinc-500">{agent?.id}</div>
+        </div>
+        <span data-debug-id="agent-detail-live-status" className={`shrink-0 rounded-full px-3 py-1 text-sm ${agentHasLiveSession(agent) ? 'bg-emerald-400/15 text-emerald-200' : 'bg-zinc-500/15 text-zinc-300'}`}>{agentHasLiveSession(agent) ? 'Live' : runtime.label}</span>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <div data-debug-id="agent-detail-project" className="rounded-2xl border border-white/10 bg-white/[0.035] p-4"><div className="text-xs uppercase tracking-wide text-zinc-500">Project</div><div className="mt-1 truncate text-sm text-zinc-100">{agent?.projectName || agent?.projectId || '—'}</div></div>
+        <div data-debug-id="agent-detail-role" className="rounded-2xl border border-white/10 bg-white/[0.035] p-4"><div className="text-xs uppercase tracking-wide text-zinc-500">Role</div><div className="mt-1 truncate text-sm text-zinc-100">{agent?.agentRole || agent?.roleHint || agent?.templateId || '—'}</div></div>
+        <div data-debug-id="agent-detail-provider" className="rounded-2xl border border-white/10 bg-white/[0.035] p-4"><div className="text-xs uppercase tracking-wide text-zinc-500">Provider</div><div className="mt-1 truncate text-sm text-zinc-100">{agent?.providerProfile || '—'}</div></div>
+        <div data-debug-id="agent-detail-runtime" className="rounded-2xl border border-white/10 bg-white/[0.035] p-4"><div className="text-xs uppercase tracking-wide text-zinc-500">Runtime</div><div className="mt-1 flex items-center gap-2 text-sm text-zinc-100"><span className={`h-2 w-2 rounded-full ${runtime.color}`} />{runtime.label}</div></div>
+      </div>
+
+      <section data-debug-id="agent-detail-chat" className="mt-6 rounded-3xl border border-white/10 bg-white/[0.035] p-5">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-semibold text-zinc-100">Chat</h2>
+            <p className="mt-1 text-sm text-zinc-500">Direct agent messages. Attach artifacts or paste screenshots into the composer.</p>
+          </div>
+          <button data-debug-id="agent-detail-refresh-chat-btn" onClick={() => agent?.id && onRefreshChat?.(agent.id)} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Refresh</button>
+        </div>
+        <div className="min-h-[360px] rounded-2xl border border-white/10 bg-black/20 p-3">
+          <CoordinatorMessageList chainId={agent?.id || 'agent-detail'} messages={messages} onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))} debugPrefix="agent-detail-chat" emptyText="No direct messages loaded for this agent." />
+        </div>
+        <div className="mt-3">
+          <textarea
+            data-debug-id="agent-detail-chat-input"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onPaste={async (event) => {
+              const result = await upload.uploadClipboardImage(event, { originRef: agent?.id || '' });
+              if (result.link) setDraft((prev) => appendArtifactLink(prev, result.link || ''));
+            }}
+            placeholder="Message or nudge this agent…"
+            rows={4}
+            className="w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"
+          />
+          {upload.error && <div data-debug-id="agent-detail-chat-upload-error" className="mt-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
+          <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
+            <ArtifactUploadButton onUploaded={(link) => setDraft((prev) => appendArtifactLink(prev, link))} context={{ originKind: 'direct_agent_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending} debugIdPrefix="agent-detail-chat-artifact-upload" label="Attach artifact" />
+            <button data-debug-id="agent-detail-nudge-btn" onClick={() => submit(true)} disabled={!agent?.id || sending || !draft.trim()} className="rounded-xl bg-amber-300 px-4 py-2 text-sm font-semibold text-black hover:bg-amber-200 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">Nudge</button>
+            <button data-debug-id="agent-detail-chat-send-btn" onClick={() => submit(false)} disabled={!agent?.id || sending || !draft.trim()} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">{sending ? 'Sending…' : 'Send'}</button>
+          </div>
+        </div>
+      </section>
+
+      <section data-debug-id="agent-detail-tasks" className="mt-6 grid gap-4 lg:grid-cols-2">
+        <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-5">
+          <div className="mb-3 flex items-center justify-between"><h2 className="text-lg font-semibold text-zinc-100">Pending tasks</h2><span className="text-sm text-zinc-500">{buckets.pending.length}</span></div>
+          <div className="space-y-3">{buckets.pending.length === 0 ? <div className="rounded-2xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No pending tasks assigned.</div> : buckets.pending.map((task: any) => <AgentTaskCard key={task.taskId} task={task} chainsById={chainsById} onOpenChain={onOpenChain} />)}</div>
+        </div>
+        <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-5">
+          <div className="mb-3 flex items-center justify-between"><h2 className="text-lg font-semibold text-zinc-100">Completed tasks</h2><span className="text-sm text-zinc-500">{buckets.completed.length}</span></div>
+          <div className="space-y-3">{buckets.completed.length === 0 ? <div className="rounded-2xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No completed tasks found.</div> : buckets.completed.map((task: any) => <AgentTaskCard key={task.taskId} task={task} chainsById={chainsById} onOpenChain={onOpenChain} />)}</div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 
 function HomePage({ groups, activeProject, loading, chainTaskIds, tasksById, home, totalMemoryRecords, pendingMemoryIds, openChain, openMemory, newChain }: any) {
   return (
@@ -2723,7 +2759,7 @@ function ChainProgressPanel({ chain, progress }: { chain: any; progress: ChainPr
   );
 }
 
-function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, taskLogsByTaskId, onBack, onSend, onToggleDiff, onFetchDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenChain, onOpenTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask }: any) {
+function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, taskLogsByTaskId, onBack, onSend, onToggleDiff, onFetchDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenChain, onOpenTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer }: any) {
   const session = useSelector((state: any) => state.chat?.session || {});
   const [draft, setDraft] = useState('');
   const [selectedTaskId, setSelectedTaskId] = useState('');
@@ -2926,6 +2962,8 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
           onSetTaskStatus={onSetTaskStatus}
           onVoteTask={onVoteTask}
           onNudgeTask={onNudgeTask}
+          onAssignTask={onAssignTask}
+          onSetReviewer={onSetReviewer}
           agents={agents}
           taskIndexMap={taskIndexMap}
         />
@@ -2951,6 +2989,8 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
               onSetTaskStatus={onSetTaskStatus}
               onVoteTask={onVoteTask}
               onNudgeTask={onNudgeTask}
+              onAssignTask={onAssignTask}
+              onSetReviewer={onSetReviewer}
               agents={agents}
               taskIndexMap={taskIndexMap}
               completed
@@ -2980,7 +3020,7 @@ export function isAgentRunning(agent: any): boolean {
   return ['ready', 'live', 'connected', 'idle', 'working', 'active'].includes(state) || ['ready', 'connected'].includes(startup);
 }
 
-function TaskAgentChip({ role, agentId, agent, active }: any) {
+function TaskAgentChip({ role, agentId, agent, active, onClick }: any) {
   const runtime = agentRuntimeDot(agent || { id: agentId, state: agentId ? 'missing' : 'unknown' });
   const running = isAgentRunning(agent);
   const activity = String(agent?.activityStatus || agent?.activity_status || '').toLowerCase();
@@ -2992,28 +3032,33 @@ function TaskAgentChip({ role, agentId, agent, active }: any) {
     : idle
       ? 'border-amber-300/35 bg-amber-300/10 text-amber-100'
       : 'border-white/10 bg-black/20 text-zinc-400';
-  return (
-    <span data-debug-id={`chain-task-${role.toLowerCase()}-${agentId || 'none'}`} className={`inline-flex max-w-[220px] items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] ${tone}`} title={`${role}: ${agentId || 'none'} · ${runtime.label}`}>
-      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${working ? 'animate-ping bg-emerald-300' : idle ? 'bg-amber-300' : runtime.color}`}></span>
-      <span className="shrink-0 text-zinc-500">{role}</span>
-      <span className="truncate">{agent?.label || agentId || '—'}</span>
-      <span className="shrink-0 text-zinc-600">·</span>
-      <span className="shrink-0">{working ? workingLabel : idle ? 'idle' : runtime.label}</span>
-    </span>
-  );
+  const content = (<>
+    <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${working ? 'animate-ping bg-emerald-300' : idle ? 'bg-amber-300' : runtime.color}`}></span>
+    <span className="shrink-0 text-zinc-500">{role}</span>
+    <span className="truncate">{agent?.label || agentId || '—'}</span>
+    <span className="shrink-0 text-zinc-600">·</span>
+    <span className="shrink-0">{working ? workingLabel : idle ? 'idle' : runtime.label}</span>
+  </>);
+  const className = `inline-flex max-w-[220px] items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] ${tone} ${onClick ? 'hover:bg-white/10' : ''}`;
+  if (onClick) {
+    return <button data-debug-id={`chain-task-${role.toLowerCase()}-${agentId || 'none'}`} onClick={(event) => { event.stopPropagation(); onClick(); }} className={className} title={`${role}: ${agentId || 'none'} · ${runtime.label}`}>{content}</button>;
+  }
+  return <span data-debug-id={`chain-task-${role.toLowerCase()}-${agentId || 'none'}`} className={className} title={`${role}: ${agentId || 'none'} · ${runtime.label}`}>{content}</span>;
 }
 
-function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, expandedTaskId, commentDraft, nudgeDraft, projectId = '', chainId = '', onCommentDraft, onNudgeDraft, onOpenTask, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, agents = [], taskIndexMap = new Map(), completed = false }: any) {
+function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, expandedTaskId, commentDraft, nudgeDraft, projectId = '', chainId = '', onCommentDraft, onNudgeDraft, onOpenTask, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, agents = [], taskIndexMap = new Map(), completed = false }: any) {
   const [commentsOpenByTaskId, setCommentsOpenByTaskId] = useState<Record<string, boolean>>({});
   const [busyAction, setBusyAction] = useState('');
   const [localError, setLocalError] = useState('');
   const [lastPasteTarget, setLastPasteTarget] = useState('');
+  const [agentPicker, setAgentPicker] = useState<{ taskId: string; mode: 'assignee' | 'reviewer' } | null>(null);
   const taskTextArtifactUpload = useArtifactUpload({ projectId, originRef: chainId || '', originKind: 'clipboard_chain_text' });
+  const selectableAgents = useMemo(() => [{ id: 'user_proxy', label: 'User / operator', agentRole: 'user', templateId: 'user', providerProfile: 'heimdall', projectId: projectId || '', connected: true, connectionState: 'connected' }, ...(agents || [])], [agents, projectId]);
   const agentsById = useMemo(() => {
     const map = new Map<string, any>();
-    (agents || []).forEach((agent: any) => { if (agent?.id) map.set(String(agent.id), agent); });
+    selectableAgents.forEach((agent: any) => { if (agent?.id) map.set(String(agent.id), agent); });
     return map;
-  }, [agents]);
+  }, [selectableAgents]);
   const runAction = async (key: string, fn: () => Promise<void> | void) => {
     setBusyAction(key);
     setLocalError('');
@@ -3025,8 +3070,39 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ex
       setBusyAction('');
     }
   };
+  const pickerTask = agentPicker ? tasksById?.[agentPicker.taskId] : null;
+  const applyAgentPick = async (agentInstanceId: string) => {
+    if (!agentPicker || !pickerTask) return;
+    if (agentPicker.mode === 'assignee') await onAssignTask?.(pickerTask, agentInstanceId);
+    else await onSetReviewer?.(pickerTask, agentInstanceId);
+    setAgentPicker(null);
+  };
+
   return (
     <div data-debug-id={`chain-task-list-${completed ? 'completed' : 'active'}`} className="mt-4">
+      {agentPicker && pickerTask && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 py-16 backdrop-blur-sm" onMouseDown={() => setAgentPicker(null)}>
+          <div className="w-full max-w-2xl rounded-3xl border border-white/10 bg-[#101217] p-5 shadow-2xl shadow-black/50" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <h2 className="text-lg font-semibold text-zinc-100">Set task {agentPicker.mode}</h2>
+                <p className="mt-1 truncate text-sm text-zinc-500">{pickerTask.title || pickerTask.taskId}</p>
+              </div>
+              <button data-debug-id="task-agent-picker-close-btn" onClick={() => setAgentPicker(null)} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 transition hover:bg-white/15">Close</button>
+            </div>
+            <AgentPicker
+              debugId={`task-${agentPicker.mode}-agent-picker`}
+              daemonUrl=""
+              agents={selectableAgents}
+              projects={[]}
+              roleHint=""
+              value={agentPicker.mode === 'assignee' ? (pickerTask.assigneeAgentInstanceId || '') : (taskReviewerIds(pickerTask)[0] || '')}
+              selectionOnly
+              onSelected={(agentInstanceId) => applyAgentPick(agentInstanceId)}
+            />
+          </div>
+        </div>
+      )}
       <div className="mb-2 flex items-center justify-between text-xs uppercase tracking-wide text-zinc-500"><span>{title}</span><span>{tasks.length}</span></div>
       {localError && <div data-debug-id="task-list-action-error" className="mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{localError}</div>}
       <div className="space-y-2">
@@ -3053,17 +3129,17 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ex
           return (
             <div key={task.taskId} data-debug-id={`chain-task-row-${task.taskId}`} className={`rounded-2xl border transition ${baseTone}`}>
               <div className="flex items-center gap-3 px-4 py-3">
-                <button onClick={() => expanded ? onCloseTask() : onOpenTask(task)} className="min-w-0 flex-1 text-left">
-                  <div className="flex min-w-0 items-center gap-2">
+                <div className="min-w-0 flex-1 text-left">
+                  <button data-debug-id={`chain-task-row-${task.taskId}-open-btn`} onClick={() => expanded ? onCloseTask() : onOpenTask(task)} className="flex w-full min-w-0 items-center gap-2 text-left">
                     <span className="w-8 shrink-0 font-mono text-xs text-zinc-600">{taskNum}.</span>
                     <span data-debug-id={`chain-task-row-${task.taskId}-title`} className={`truncate text-sm font-medium ${completed ? 'text-zinc-500 line-through decoration-zinc-600' : 'text-zinc-100'}`}>{task.title || task.taskId}</span>
                     <span data-debug-id={`chain-task-row-${task.taskId}-status`} className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] ${perceived.tone}`}>{perceived.label}</span>
-                  </div>
+                  </button>
                   <div data-debug-id={`chain-task-row-${task.taskId}-agents`} className="mt-2 ml-8 flex min-w-0 flex-wrap items-center gap-2">
-                    <TaskAgentChip role="Assignee" agentId={assigneeId} agent={assigneeAgent} active={assigneeWorking} />
-                    <TaskAgentChip role="Reviewer" agentId={reviewerId} agent={reviewerAgent} active={reviewerWorking} />
+                    <TaskAgentChip role="Assignee" agentId={assigneeId} agent={assigneeAgent} active={assigneeWorking} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'assignee' })} />
+                    <TaskAgentChip role="Reviewer" agentId={reviewerId} agent={reviewerAgent} active={reviewerWorking} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'reviewer' })} />
                   </div>
-                </button>
+                </div>
                 {actionNeeded && (
                   <button data-debug-id={`chain-task-row-${task.taskId}-action-needed-btn`} onClick={() => onOpenTask(task)} className="shrink-0 rounded-xl bg-rose-400 px-3 py-1.5 text-xs font-semibold text-black hover:bg-rose-300">Action needed</button>
                 )}
@@ -3074,8 +3150,8 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ex
                   <div className="flex flex-wrap gap-2 text-xs">
                     <span className={`rounded-full border px-2 py-1 ${statusTone(task.status)}`}>{task.status}</span>
                     <span className="rounded-full bg-black/20 px-2 py-1 font-mono text-zinc-400">ID: {task.taskId}</span>
-                    <span className="rounded-full bg-black/20 px-2 py-1 text-zinc-400">Assignee {task.assigneeAgentInstanceId || '—'}</span>
-                    <span className="rounded-full bg-black/20 px-2 py-1 text-zinc-400">Reviewer {task.reviewerAgentInstanceId || '—'}</span>
+                    <button data-debug-id={`task-detail-assignee-picker-btn-${task.taskId}`} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'assignee' })} className="rounded-full bg-black/20 px-2 py-1 text-zinc-300 hover:bg-white/10">Assignee {task.assigneeAgentInstanceId || '—'}</button>
+                    <button data-debug-id={`task-detail-reviewer-picker-btn-${task.taskId}`} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'reviewer' })} className="rounded-full bg-black/20 px-2 py-1 text-zinc-300 hover:bg-white/10">Reviewer {reviewerId || task.reviewerAgentInstanceId || '—'}</button>
                   </div>
                   <div data-debug-id={`task-detail-description-${task.taskId}`} className="mt-3 rounded-xl bg-black/20 p-3">
                     {task.description ? <Markdown source={task.description} className="text-sm text-zinc-300" /> : <div className="text-sm text-zinc-500">No description.</div>}
