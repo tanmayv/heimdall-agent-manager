@@ -56,6 +56,7 @@ import { answerChatApproval, chatApprovalEventReceived, dismissChatApproval, ref
 import { refreshMemory, decideMemoryProposal, fetchMemoryDetail, memoryEventReceived, auditStartedReceived, auditEndedReceived } from '../store/memorySlice';
 import { dismissToast, showToast } from '../store/toastSlice';
 import Markdown from './Markdown';
+import ArtifactUploadButton from './ArtifactUpload';
 import { updateUrlParams, useUrlParams } from './useUrlParams';
 import { VimSidebarProvider, VimEditButton } from './VimSidebar';
 
@@ -2388,7 +2389,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
             </div>
           </div>
           <CoordinatorMessageList chainId={chain.chainId} messages={messages} onReply={(reply) => onSend(reply)} />
-          <div className="mt-4 flex gap-2">
+          <div className="mt-4 flex items-center gap-2">
             <input
               data-debug-id="chain-coordinator-composer-input"
               ref={composerRef}
@@ -2398,6 +2399,13 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
               placeholder="Message coordinator only…"
               autoFocus
               className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"
+            />
+            <ArtifactUploadButton
+              onUploaded={(link) => setDraft((current) => { const trimmed = (current || '').replace(/\s+$/, ''); return trimmed ? `${trimmed}\n${link}` : link; })}
+              debugIdPrefix="chain-coordinator-artifact-upload"
+              context={{ projectId: chain.projectId || chain.project_id || '', originRef: chain.chainId || '' }}
+              buttonClassName="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
+              label="Attach"
             />
             <button data-debug-id="chain-coordinator-send-btn" onClick={submit} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300">Send</button>
           </div>

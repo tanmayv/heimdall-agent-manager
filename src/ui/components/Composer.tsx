@@ -2,6 +2,7 @@ import { useRef, useState, memo } from 'react';
 import { useDispatch } from 'react-redux';
 import { sendMessageToSelectedAgent } from '../store/chatSlice';
 import { handleKeyDownCtrlW } from '../utils/keyboard';
+import ArtifactUploadButton from './ArtifactUpload';
 
 const Composer = memo(function Composer({ selectedAgent, disabled, onSubmit, smartReplies }: any) {
   const dispatch = useDispatch<any>();
@@ -57,6 +58,19 @@ const Composer = memo(function Composer({ selectedAgent, disabled, onSubmit, sma
     dispatch(sendMessageToSelectedAgent({ body: replyText, tempId }));
   }
 
+  function handleArtifactUploaded(link: string) {
+    if (!link) return;
+    // Insert the artifact link into the composer draft; it is only sent when the
+    // user presses Send (or Ctrl+Enter), keeping normal send-gating intact.
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const existing = textarea.value;
+    const trimmed = existing.replace(/\s+$/, '');
+    textarea.value = trimmed ? `${trimmed}\n${link}` : link;
+    setHasText(textarea.value.trim().length > 0);
+    textarea.focus();
+  }
+
   const showReplies = smartReplies && smartReplies.length > 0 && !disabled;
 
   return (
@@ -102,7 +116,13 @@ const Composer = memo(function Composer({ selectedAgent, disabled, onSubmit, sma
           />
           <div className="flex items-center justify-between px-2 pb-1">
             <p className="framer-subtext">Messages send through /user-rpc send_to_agent</p>
-            <div className="flex gap-2">
+            <div className="flex items-center gap-2">
+              <ArtifactUploadButton
+                onUploaded={handleArtifactUploaded}
+                disabled={!selectedAgent || disabled}
+                context={{ projectId: selectedAgent?.projectId || '', originRef: selectedAgent?.id || '' }}
+                buttonClassName="framer-pill bg-white/10 text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
+              />
               <button
                 type="button"
                 data-debug-id="interrupt-message-btn"
