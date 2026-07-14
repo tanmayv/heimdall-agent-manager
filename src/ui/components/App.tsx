@@ -1635,6 +1635,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
   const [sending, setSending] = useState(false);
   const [agentBusy, setAgentBusy] = useState('');
   const [agentError, setAgentError] = useState('');
+  const [stopProgress, setStopProgress] = useState<any>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [editName, setEditName] = useState(agent?.label || agent?.id || '');
   const [editProvider, setEditProvider] = useState(agent?.providerProfile || '');
@@ -1648,6 +1649,19 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
   const upload = useArtifactUpload({ projectId: agent?.projectId || '', originKind: 'direct_agent_chat', originRef: agent?.id || '' });
   const runtime = agentRuntimeDot(agent);
   const agentLive = agentHasLiveSession(agent);
+  const stopStatus = String(agent?.startupStatus || agent?.startup_status || '').toLowerCase();
+  const stopReason = String(agent?.startupReasonCode || agent?.startup_reason_code || '').toLowerCase();
+  const stopConnection = String(agent?.connectionState || agent?.connection_state || '').toLowerCase();
+  const stopDelivered = stopStatus === 'stopping' || stopReason === 'stop_requested' || stopStatus === 'stopped' || stopReason === 'stop_done';
+  const stopAcknowledged = stopStatus === 'stopped' || stopReason === 'stop_done';
+  const agentStopDone = stopAcknowledged || (!agentLive && stopProgress?.active && stopDelivered);
+  const stopOffline = Boolean(stopProgress?.active && !agentLive && (stopAcknowledged || stopConnection === 'offline' || stopConnection === 'disconnected'));
+  const stopSteps = [
+    { key: 'request', label: 'Request stop', done: Boolean(stopProgress?.active), detail: stopProgress?.failed ? 'request failed' : 'stop request sent' },
+    { key: 'delivered', label: 'Stop delivered', done: stopDelivered || stopAcknowledged, detail: stopDelivered || stopAcknowledged ? 'daemon sent stop_event' : 'waiting for stop_requested event' },
+    { key: 'ack', label: 'Stop acknowledged', done: stopAcknowledged, detail: stopAcknowledged ? 'wrapper sent stop_done' : 'waiting for stop_done' },
+    { key: 'offline', label: 'Agent offline', done: stopOffline, detail: stopOffline ? 'websocket disconnected' : 'waiting for offline signal' },
+  ];
   const messages = useMemo(() => normalizeCoordinatorMessages((chats?.[agent?.id] || []).map((msg: any) => ({ ...msg, agentInstanceId: agent?.id }))), [chats, agent?.id]);
   const buckets = useMemo(() => agentTaskBuckets(agent?.id || '', tasksById || {}), [agent?.id, tasksById]);
   const agentMemoryId = String(agent?.agentId || agent?.agent_id || agent?.id || '').split('@')[0];
@@ -1664,6 +1678,17 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
     setEditProject(agent?.projectId || '');
     setEditTier(agent?.modelTier || 'normal');
   }, [agent?.id, agent?.label, agent?.providerProfile, agent?.projectId, agent?.modelTier]);
+
+  useEffect(() => {
+    if (!stopProgress?.active || stopProgress.agentId !== agent?.id || stopProgress.completed) return;
+    if (agentStopDone) setStopProgress((current: any) => current?.agentId === agent?.id ? { ...current, completed: true, completedAt: Date.now() } : current);
+  }, [stopProgress?.active, stopProgress?.agentId, stopProgress?.completed, agent?.id, agentStopDone]);
+
+  useEffect(() => {
+    if (!stopProgress?.active || stopProgress.completed) return undefined;
+    const interval = window.setInterval(() => onRefreshAgents?.(), 1000);
+    return () => window.clearInterval(interval);
+  }, [stopProgress?.active, stopProgress?.completed, onRefreshAgents]);
 
   const refreshAgentMemory = useCallback(async () => {
     if (!agentMemoryId || !session?.clientToken) return;
@@ -1710,6 +1735,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
       await action();
       await onRefreshAgents?.();
     } catch (err: any) {
+      if (kind === 'stop') setStopProgress((current: any) => current?.agentId === agent?.id ? { ...current, failed: true, error: err?.message || 'Stop request failed' } : current);
       setAgentError(err?.message || 'Agent action failed');
     } finally {
       setAgentBusy('');
@@ -1717,7 +1743,10 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
   };
 
   const startAgent = () => runAgentAction('start', () => daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || agent.agentRole || 'specialist', projectId: agent.projectId || '', displayName: agent.label || agent.id, modelTier: agent.modelTier || 'normal', agentRole: agent.agentRole || agent.templateId || '' }));
-  const stopAgent = () => runAgentAction('stop', () => daemonApi.stopAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, timeInSec: 1 }));
+  const stopAgent = () => runAgentAction('stop', async () => {
+    setStopProgress({ active: true, agentId: agent.id, requestedAt: Date.now(), completed: false });
+    await daemonApi.stopAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, timeInSec: 1 });
+  });
   const saveAgentEdit = () => runAgentAction('edit', async () => {
     await daemonApi.updateAgent({ daemonUrl: session?.daemonUrl || '', agentRecordId: agent.agentRecordId || '', agentInstanceId: agent.id, displayName: editName.trim() || agent.id, providerProfile: editProvider, projectId: editProject, modelTier: editTier });
     setEditOpen(false);
@@ -1761,6 +1790,19 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
         </div>
       </div>
       {agentError && <div data-debug-id="agent-detail-action-error" className="mb-4 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{agentError}</div>}
+      {stopProgress?.active && stopProgress.agentId === agent?.id && (() => {
+        const completedSteps = stopSteps.filter((step) => step.done).length;
+        const pct = Math.round((completedSteps / stopSteps.length) * 100);
+        return (
+          <div data-debug-id="agent-detail-stop-progress" className={`mb-4 rounded-2xl border p-4 ${stopProgress.failed ? 'border-red-400/30 bg-red-500/10' : stopProgress.completed ? 'border-emerald-400/30 bg-emerald-400/10' : 'border-amber-400/30 bg-amber-400/10'}`}>
+            <div className="flex items-center justify-between gap-3"><div><div className={`text-sm font-semibold ${stopProgress.failed ? 'text-red-100' : stopProgress.completed ? 'text-emerald-100' : 'text-amber-100'}`}>{stopProgress.failed ? 'Stop failed' : stopProgress.completed ? 'Agent stopped' : 'Stopping agent…'}</div><div className="mt-1 text-xs text-zinc-400">{stopProgress.failed ? (stopProgress.error || 'Unable to send stop request.') : stopProgress.completed ? 'Received stop_done/offline signal.' : 'Tracking stop lifecycle events until offline.'}</div></div><IconActionButton debugId="agent-detail-stop-progress-dismiss-btn" title="Dismiss" icon="×" onClick={() => setStopProgress(null)} /></div>
+            <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10"><div data-debug-id="agent-detail-stop-progress-bar" className={`h-full rounded-full transition-all ${stopProgress.failed ? 'bg-red-400' : stopProgress.completed ? 'bg-emerald-400' : 'bg-amber-300'}`} style={{ width: `${pct}%` }} /></div>
+            <div className="mt-3 grid gap-2 md:grid-cols-4">
+              {stopSteps.map((step) => <div key={step.key} data-debug-id={`agent-detail-stop-step-${step.key}`} className="rounded-xl bg-black/20 px-3 py-2"><div className="flex items-center gap-2"><span className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] ${step.done ? 'bg-emerald-400 text-black' : stopProgress.failed && step.key === 'request' ? 'bg-red-400 text-black' : 'bg-white/10 text-zinc-400'}`}>{step.done ? '✓' : stopProgress.failed && step.key === 'request' ? '!' : '…'}</span><span className="text-xs font-medium text-zinc-100">{step.label}</span></div><div className="mt-1 truncate text-[10px] text-zinc-500">{step.detail}</div></div>)}
+            </div>
+          </div>
+        );
+      })()}
       {editOpen && (
         <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 py-16 backdrop-blur-sm" onMouseDown={() => setEditOpen(false)}>
           <div className="w-full max-w-2xl rounded-3xl border border-white/10 bg-[#101217] p-5 shadow-2xl shadow-black/50" onMouseDown={(event) => event.stopPropagation()}>
