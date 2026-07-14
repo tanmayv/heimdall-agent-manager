@@ -15,6 +15,7 @@ import {
   fetchPreferences,
   fetchSelectedChat,
   refreshAgents,
+  refreshSettingsCatalog,
   registerSession,
   removeDaemonProfile,
   renameDaemonProfile,
@@ -60,6 +61,8 @@ import ArtifactUploadButton, { appendArtifactLink, useArtifactUpload } from './A
 import ChainArtifactsPanel from './ChainArtifactsPanel';
 import { updateUrlParams, useUrlParams } from './useUrlParams';
 import { VimSidebarProvider, VimEditButton } from './VimSidebar';
+import AgentPicker from './AgentPicker';
+import * as daemonApi from '../api/daemonApi';
 
 type Chain = {
   chainId: string;
@@ -442,7 +445,7 @@ function attentionCount(tasksById: Record<string, any>, attention: any, pendingM
 
 export default function App() {
   const dispatch = useDispatch<any>();
-  const { agents, session, daemonProfiles, selectedAgentId, chats, guidePanelOpen, guideSending, fetchingChatsByAgentId } = useSelector((state: any) => state.chat);
+  const { agents, session, daemonProfiles, selectedAgentId, chats, guidePanelOpen, guideSending, fetchingChatsByAgentId, settingsTemplates, settingsProviders } = useSelector((state: any) => state.chat);
   const { projectsById, projectIds, mutating: projectMutating, error: projectError } = useSelector((state: any) => state.projects);
   const { chainsById, tasksById, chainTaskIds, taskLogsByTaskId, loading } = useSelector((state: any) => state.tasks);
   const home = useSelector((state: any) => state.home);
@@ -545,6 +548,7 @@ export default function App() {
       dispatch(refreshProjects()).catch(() => undefined),
       dispatch(refreshAgents()).catch(() => undefined),
       dispatch(fetchPreferences()).catch(() => undefined),
+      dispatch(refreshSettingsCatalog()).catch(() => undefined),
     ]);
     const chainIds = (result?.chains || []).map((chain: any) => chain.chainId).filter(Boolean);
     await Promise.all(chainIds.slice(0, 20).map((chainId: string) => dispatch(fetchTasksForChain(chainId)).catch(() => undefined)));
@@ -1108,6 +1112,18 @@ export default function App() {
               openChain={openChain}
               openMemory={() => selectSurfaceWithUrl('memory')}
               newChain={(projectId?: string) => dispatch(openNewChainModal({ projectId: projectId || selectedProjectId }))}
+              agents={agents}
+              projects={projects}
+              session={session}
+              chats={chats}
+              templates={settingsTemplates}
+              providers={settingsProviders}
+              onRefreshAgents={() => dispatch(refreshAgents()).unwrap().catch(() => undefined)}
+              onFetchAgentChat={(agentId: string) => dispatch(fetchSelectedChat({ agentId })).unwrap().catch(() => undefined)}
+              onSendAgentMessage={async (agentId: string, body: string) => {
+                await daemonApi.sendToAgent({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, agentInstanceId: agentId, body });
+                dispatch(fetchSelectedChat({ agentId }));
+              }}
             />
           )}
         </main>
@@ -1320,7 +1336,8 @@ function ChainCreationProgressModal({ progress, onOpen, onCancel }: any) {
   );
 }
 
-function HomePage({ groups, activeProject, loading, chainTaskIds, tasksById, home, totalMemoryRecords, pendingMemoryIds, openChain, openMemory, newChain }: any) {
+function HomePage({ groups, activeProject, loading, chainTaskIds, tasksById, home, totalMemoryRecords, pendingMemoryIds, openChain, openMemory, newChain, agents = [], projects = [], session, chats = {}, templates = [], providers = [], onRefreshAgents, onFetchAgentChat, onSendAgentMessage }: any) {
+  const liveAgents = useMemo(() => (agents || []).filter((agent: any) => isAgentRunning(agent)), [agents]);
   return (
     <div className="mx-auto max-w-6xl px-8 py-8">
       <div className="flex items-start justify-between gap-4">
@@ -1370,8 +1387,127 @@ function HomePage({ groups, activeProject, loading, chainTaskIds, tasksById, hom
             </div>
           </section>
         ))}
+        <HomeRunningAgentsPanel
+          agents={liveAgents}
+          projects={projects}
+          session={session}
+          chats={chats}
+          templates={templates}
+          providers={providers}
+          onRefreshAgents={onRefreshAgents}
+          onFetchAgentChat={onFetchAgentChat}
+          onSendAgentMessage={onSendAgentMessage}
+        />
       </div>
     </div>
+  );
+}
+
+function HomeRunningAgentsPanel({ agents, projects, session, chats, templates, providers, onRefreshAgents, onFetchAgentChat, onSendAgentMessage }: any) {
+  const [selectedAgentId, setSelectedAgentId] = useState(agents[0]?.id || '');
+  const [draft, setDraft] = useState('');
+  const [sending, setSending] = useState(false);
+  const upload = useArtifactUpload({ projectId: '', originKind: 'direct_agent_chat', originRef: selectedAgentId });
+  const selectedAgent = useMemo(() => (agents || []).find((agent: any) => agent.id === selectedAgentId) || null, [agents, selectedAgentId]);
+  const messages = useMemo(() => normalizeCoordinatorMessages((chats?.[selectedAgentId] || []).map((msg: any) => ({ ...msg, agentInstanceId: selectedAgentId }))), [chats, selectedAgentId]);
+
+  useEffect(() => {
+    if (selectedAgentId && agents.some((agent: any) => agent.id === selectedAgentId)) return;
+    setSelectedAgentId(agents[0]?.id || '');
+  }, [agents, selectedAgentId]);
+
+  useEffect(() => {
+    if (selectedAgentId) onFetchAgentChat?.(selectedAgentId);
+    // Intentionally key this to the selected identity only; parent callbacks are recreated on render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedAgentId]);
+
+  const submit = async () => {
+    const body = draft.trim();
+    if (!body || !selectedAgentId || sending) return;
+    setSending(true);
+    try {
+      await onSendAgentMessage?.(selectedAgentId, body);
+      setDraft('');
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <section data-debug-id="home-running-agents-panel" className="rounded-3xl border border-white/10 bg-white/[0.035] p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold">Running agents</h2>
+          <p className="mt-1 text-sm text-zinc-500">Live agents only. Start a new agent below, then chat with it directly.</p>
+        </div>
+        <button data-debug-id="home-running-agents-refresh-btn" onClick={() => onRefreshAgents?.()} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Refresh</button>
+      </div>
+      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(260px,0.8fr)_minmax(0,1.2fr)]">
+        <div className="space-y-3">
+          <AgentPicker
+            debugId="home-agent-picker"
+            daemonUrl={session?.daemonUrl || ''}
+            agents={agents}
+            projects={projects}
+            templates={templates}
+            providers={providers}
+            value={selectedAgentId}
+            defaultProjectId={projects?.[0]?.projectId || ''}
+            onRefreshAgents={onRefreshAgents}
+            onSelected={async (agentId: string) => {
+              setSelectedAgentId(agentId);
+              await onRefreshAgents?.();
+              await onFetchAgentChat?.(agentId);
+            }}
+          />
+          <div data-debug-id="home-running-agents-list" className="space-y-2">
+            {agents.length === 0 ? <div className="rounded-2xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No live agents are running.</div> : agents.map((agent: any) => {
+              const runtime = agentRuntimeDot(agent);
+              return (
+                <button key={agent.id} data-debug-id={`home-running-agent-${agent.id}`} onClick={() => setSelectedAgentId(agent.id)} className={`w-full rounded-2xl border p-3 text-left transition ${selectedAgentId === agent.id ? 'border-sky-400/40 bg-sky-400/10' : 'border-white/10 bg-black/20 hover:bg-white/[0.04]'}`}>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0 truncate font-medium text-zinc-100">{agent.label || agent.id}</div>
+                    <span className={`h-2 w-2 shrink-0 rounded-full ${runtime.color}`} />
+                  </div>
+                  <div className="mt-1 truncate text-xs text-zinc-500">{agent.id} · {agent.templateId || 'agent'} · {runtime.label}</div>
+                  <div className="mt-1 truncate text-xs text-zinc-600">Task: {agent.currentTaskId || 'idle'} · Project: {agent.projectId || '—'}</div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div data-debug-id="home-running-agent-chat" className="flex min-h-[520px] flex-col rounded-2xl border border-white/10 bg-black/20 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-xs uppercase tracking-[0.22em] text-zinc-500">Direct agent chat</div>
+              <div data-debug-id="home-running-agent-chat-title" className="truncate text-sm font-semibold text-zinc-100">{selectedAgent?.label || selectedAgentId || 'Select a running agent'}</div>
+            </div>
+            {selectedAgent && <span data-debug-id="home-running-agent-chat-status" className="rounded-full bg-white/10 px-2 py-1 text-xs text-zinc-400">{agentRuntimeDot(selectedAgent).label}</span>}
+          </div>
+          <CoordinatorMessageList chainId={selectedAgentId || 'running-agents'} messages={messages} onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))} debugPrefix="home-running-agent-chat" emptyText="No direct messages loaded for this agent." />
+          <div className="mt-3">
+            <textarea
+              data-debug-id="home-running-agent-chat-input"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onPaste={async (event) => {
+                const result = await upload.uploadClipboardImage(event, { originRef: selectedAgentId });
+                if (result.link) setDraft((prev) => appendArtifactLink(prev, result.link || ''));
+              }}
+              placeholder="Message selected running agent…"
+              rows={3}
+              className="w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"
+            />
+            {upload.error && <div data-debug-id="home-running-agent-chat-upload-error" className="mt-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
+            <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
+              <ArtifactUploadButton onUploaded={(link) => setDraft((prev) => appendArtifactLink(prev, link))} context={{ originKind: 'direct_agent_chat', originRef: selectedAgentId }} disabled={!selectedAgentId || sending} debugIdPrefix="home-running-agent-chat-artifact-upload" label="Attach artifact" />
+              <button data-debug-id="home-running-agent-chat-send-btn" onClick={submit} disabled={!selectedAgentId || sending || !draft.trim()} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">{sending ? 'Sending…' : 'Send'}</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 

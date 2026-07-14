@@ -394,7 +394,7 @@ All of the following element types must have `data-debug-id`:
 
 | Component | Key IDs |
 |-----------|---------|
-| `HomePage` | `home-new-chain-btn`, `home-new-project-btn`, `home-chain-row-${chainId}`, `home-chain-open-btn-${chainId}`, `home-project-new-chain-btn-${projectId}`, `home-http-load-evidence`, `home-periodic-evidence`, `home-ws-evidence`, `home-local-action-evidence` |
+| `HomePage` | `home-new-chain-btn`, `home-new-project-btn`, `home-chain-row-${chainId}`, `home-chain-open-btn-${chainId}`, `home-project-new-chain-btn-${projectId}`, `home-running-agents-panel`, `home-running-agents-refresh-btn`, `home-running-agents-list`, `home-running-agent-${agentId}`, `home-running-agent-chat`, `home-running-agent-chat-input`, `home-running-agent-chat-send-btn`, `home-running-agent-chat-artifact-upload-button`, `home-agent-picker`, `home-http-load-evidence`, `home-periodic-evidence`, `home-ws-evidence`, `home-local-action-evidence` |
 | `AttentionPage` | `attention-approval-${itemId}-approve-btn`, `attention-approval-${itemId}-reject-btn`, `attention-blocked-${taskId}-message-btn`, `attention-blocked-${taskId}-open-btn`, `attention-merge-${chainId}-merge-btn`, `attention-merge-${chainId}-keep-btn`, `attention-merge-${chainId}-abandon-btn`, `attention-merge-${chainId}-show-diff-btn` |
 | `Sidebar` | `nav-home-btn`, `nav-attention-btn`, `nav-settings-btn`, `sidebar-project-${projectId}`, `sidebar-chain-${chainId}`, `sidebar-new-chain-btn-${projectId}` |
 | `ChainView` | `chain-back-btn`, `chain-pause-btn`, `chain-complete-btn`, `chain-attention-link`, `chain-coordinator-composer-input`, `chain-coordinator-send-btn`, `chain-roster-row-${agentId}`, `chain-agent-side-sheet-close-btn`, `chain-agent-current-task`, `chain-agent-last-comments`, `chain-agent-comment-${index}`, `chain-task-surface`, `chain-task-count`, `chain-task-column-${statusGroup}`, `chain-task-card-${taskId}`, `task-detail-drawer`, `task-detail-close-btn`, `task-detail-title`, `task-detail-status`, `task-detail-description`, `task-detail-votes`, `task-detail-vote-${index}`, `task-detail-review-event-${index}`, `task-detail-comments`, `task-detail-comment-${index}`, `task-detail-comment-textarea`, `task-detail-comment-submit-btn`, `task-detail-status-done-btn`, `task-detail-status-block-btn`, `task-detail-status-later-btn`, `task-detail-status-cancel-btn`, `task-detail-status-start-btn`, `task-detail-vote-lgtm-btn`, `task-detail-vote-ngtm-btn`, `task-detail-nudge-textarea`, `task-detail-nudge-btn`, `chain-http-load-evidence`, `chain-ws-evidence`, `chain-local-action-evidence` |
@@ -411,6 +411,10 @@ All of the following element types must have `data-debug-id`:
 ```tsx
 <AgentSelect debugId="create-task-assignee-select" ... />
 ```
+
+### Shared component: AgentPicker
+
+`AgentPicker` accepts a required `debugId` prop and derives child IDs from it: `${debugId}-existing-select`, `${debugId}-use-existing-btn`, `${debugId}-run-existing-btn`, `${debugId}-run-id-input`, `${debugId}-run-submit-btn`, `${debugId}-create-id-input`, and `${debugId}-create-submit-btn`. Always pass a page-specific `debugId` such as `home-agent-picker`.
 
 ### Adding new elements
 
