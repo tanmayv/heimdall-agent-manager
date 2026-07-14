@@ -803,6 +803,9 @@ handle_stop_event :: proc(text, tmux_pane, tmux_session, window_name, agent_inst
 	_ = tmux.kill_window(tmux_session, window_name)
 	fmt.println("stop: sending stop_done via WS")
 	report_stop_done(ws_conn, agent_instance_id)
+	// Give the TCP stack time to flush the stop_done text frame before shutting down
+	time.sleep(100 * time.Millisecond)
+	ws.close(ws_conn)
 	fmt.println("stop: done, wrapper exiting")
 }
 
