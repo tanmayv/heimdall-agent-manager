@@ -1,6 +1,19 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useSelector } from 'react-redux';
+import mermaid from 'mermaid';
 import * as daemonApi from '../api/daemonApi';
+
+let mermaidInitialized = false;
+function ensureMermaidInitialized() {
+  if (!mermaidInitialized) {
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'dark',
+      securityLevel: 'loose',
+    });
+    mermaidInitialized = true;
+  }
+}
 
 // Module-level caches so repeated renders / multiple bubbles referencing the
 // same artifact don't refetch metadata. Names are safe to display; tokens never
@@ -139,7 +152,11 @@ function renderBlocks(source: string): string {
       if (i < lines.length) i += 1;
       const escapedCode = escapeHtml(body.join('\n'));
       const langLabel = escapeHtml(lang || 'code');
-      out.push(`<div class="group my-2 overflow-hidden rounded-xl border border-white/10 bg-black/40"><div class="flex items-center justify-between border-b border-white/10 px-3 py-1.5 text-[11px] text-zinc-500"><span class="font-mono">${langLabel}</span><button type="button" data-markdown-copy-code="true" class="rounded-md bg-white/10 px-2 py-1 text-xs text-zinc-200 opacity-80 hover:bg-white/15 hover:opacity-100">Copy</button></div><pre class="overflow-x-auto p-3 font-mono text-[12px] leading-relaxed text-zinc-100" data-lang="${escapeHtml(lang)}"><code>${escapedCode}</code></pre></div>`);
+      if (/^(?:mermaid|mermedai)$/i.test((lang || '').trim())) {
+        out.push(`<div class="group my-2 overflow-hidden rounded-xl border border-white/10 bg-black/40 mermaid-block" data-mermaid-code="${escapedCode}"><div class="flex items-center justify-between border-b border-white/10 px-3 py-1.5 text-[11px] text-zinc-500"><span class="font-mono">mermaid</span><button type="button" data-markdown-copy-code="true" data-debug-id="markdown-copy-code-btn" class="rounded-md bg-white/10 px-2 py-1 text-xs text-zinc-200 opacity-80 hover:bg-white/15 hover:opacity-100">Copy</button></div><div class="mermaid-diagram-container p-3 overflow-x-auto flex flex-col items-center justify-center bg-black/20" data-mermaid-rendered="false"><pre class="font-mono text-[12px] leading-relaxed text-zinc-100 text-left w-full" data-lang="mermaid"><code>${escapedCode}</code></pre></div></div>`);
+        continue;
+      }
+      out.push(`<div class="group my-2 overflow-hidden rounded-xl border border-white/10 bg-black/40"><div class="flex items-center justify-between border-b border-white/10 px-3 py-1.5 text-[11px] text-zinc-500"><span class="font-mono">${langLabel}</span><button type="button" data-markdown-copy-code="true" data-debug-id="markdown-copy-code-btn" class="rounded-md bg-white/10 px-2 py-1 text-xs text-zinc-200 opacity-80 hover:bg-white/15 hover:opacity-100">Copy</button></div><pre class="overflow-x-auto p-3 font-mono text-[12px] leading-relaxed text-zinc-100" data-lang="${escapeHtml(lang)}"><code>${escapedCode}</code></pre></div>`);
       continue;
     }
     if (line.trim() === '') { i += 1; continue; }
@@ -202,7 +219,11 @@ function renderBlocks(source: string): string {
 
 export function renderMarkdown(source: string): string {
   if (!source) return '';
-  return renderBlocks(source);
+  const raw = normalizeMarkdownSource(source);
+  if (!raw.trim()) return '';
+  const escapedSource = escapeHtml(raw);
+  const copyBtn = `<div class="mb-1 flex items-center justify-end"><button type="button" data-markdown-copy-all="true" data-debug-id="markdown-copy-all-btn" data-markdown-source="${escapedSource}" title="Copy entire markdown" class="inline-flex h-6 w-6 items-center justify-center rounded-md border border-white/10 bg-white/5 text-zinc-400 opacity-60 transition hover:bg-white/15 hover:text-zinc-100 hover:opacity-100"><span aria-hidden="true" class="text-xs">\u{1F4CB}</span></button></div>`;
+  return copyBtn + renderBlocks(source);
 }
 
 function csvEscape(value: string): string {
@@ -281,6 +302,52 @@ export default function MarkdownBody({ source, className, compact, 'data-debug-i
   useEffect(() => {
     const root = rootRef.current;
     if (!root) return undefined;
+    const containers = Array.from(root.querySelectorAll('.mermaid-block [data-mermaid-rendered="false"]')) as HTMLElement[];
+    if (containers.length === 0) return undefined;
+
+    let cancelled = false;
+    ensureMermaidInitialized();
+
+    containers.forEach(async (container, idx) => {
+      if (cancelled) return;
+      const block = container.closest('.mermaid-block') as HTMLElement | null;
+      const code = block?.getAttribute('data-mermaid-code') || container.textContent || '';
+      if (!code.trim()) return;
+
+      const uniqueId = `mermaid-svg-${Date.now()}-${idx}-${Math.random().toString(36).substring(2, 8)}`;
+      try {
+        const { svg, bindFunctions } = await mermaid.render(uniqueId, code);
+        if (cancelled) return;
+        container.innerHTML = svg;
+        container.setAttribute('data-mermaid-rendered', 'true');
+        if (bindFunctions && typeof bindFunctions === 'function') {
+          bindFunctions(container);
+        }
+      } catch (err) {
+        if (cancelled) return;
+        console.warn('Mermaid rendering failed:', err);
+        container.setAttribute('data-mermaid-rendered', 'error');
+        const tempEl = document.getElementById(`d${uniqueId}`) || document.getElementById(uniqueId);
+        if (tempEl && tempEl.parentNode) {
+          tempEl.parentNode.removeChild(tempEl);
+        }
+        const errorBanner = document.createElement('div');
+        errorBanner.className = 'mb-2 rounded bg-rose-500/10 border border-rose-500/30 px-2 py-1 text-[11px] text-rose-300';
+        errorBanner.textContent = 'Failed to render Mermaid diagram';
+        if (!container.querySelector('.text-rose-300')) {
+          container.insertBefore(errorBanner, container.firstChild);
+        }
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [html]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return undefined;
     const onClick = async (event: MouseEvent) => {
       const target = event.target as HTMLElement | null;
       const artifactButton = target?.closest?.('[data-artifact-id]') as HTMLButtonElement | null;
@@ -289,12 +356,14 @@ export default function MarkdownBody({ source, className, compact, 'data-debug-i
         if (artifactId && onArtifactClick) onArtifactClick(artifactId);
         return;
       }
-      const button = target?.closest?.('[data-markdown-copy-code="true"],[data-markdown-copy-table="true"]') as HTMLButtonElement | null;
+      const button = target?.closest?.('[data-markdown-copy-code="true"],[data-markdown-copy-table="true"],[data-markdown-copy-all="true"]') as HTMLButtonElement | null;
       if (!button) return;
       let text = '';
-      if (button.matches('[data-markdown-copy-code="true"]')) {
+      if (button.matches('[data-markdown-copy-all="true"]')) {
+        text = button.getAttribute('data-markdown-source') || normalizeMarkdownSource(source || '');
+      } else if (button.matches('[data-markdown-copy-code="true"]')) {
         const wrapper = button.closest('.group');
-        text = wrapper?.querySelector('pre code')?.textContent || '';
+        text = wrapper?.getAttribute('data-mermaid-code') || wrapper?.querySelector('pre code')?.textContent || '';
       } else {
         const wrapper = button.closest('.markdown-table');
         const table = wrapper?.querySelector('table') as HTMLTableElement | null;
@@ -302,13 +371,28 @@ export default function MarkdownBody({ source, className, compact, 'data-debug-i
       }
       if (!text) return;
       await navigator.clipboard?.writeText(text).catch(() => undefined);
-      const previous = button.textContent || 'Copy';
+      if (button.matches('[data-markdown-copy-all="true"]')) {
+        const iconSpan = button.querySelector('span') || button;
+        const prevText = iconSpan.textContent || '\u{1F4CB}';
+        const prevTitle = button.getAttribute('title') || 'Copy entire markdown';
+        iconSpan.textContent = '\u{2713}';
+        button.setAttribute('title', 'Copied!');
+        window.setTimeout(() => {
+          iconSpan.textContent = prevText;
+          button.setAttribute('title', prevTitle);
+        }, 1200);
+        return;
+      }
+      const previous = button.getAttribute('data-original-text') || button.textContent || 'Copy';
+      if (!button.getAttribute('data-original-text')) {
+        button.setAttribute('data-original-text', previous);
+      }
       button.textContent = 'Copied';
       window.setTimeout(() => { button.textContent = previous; }, 1200);
     };
     root.addEventListener('click', onClick);
     return () => root.removeEventListener('click', onClick);
-  }, [html, onArtifactClick]);
+  }, [html, source, onArtifactClick]);
 
   useEffect(() => {
     const root = rootRef.current;

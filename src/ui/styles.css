@@ -171,6 +171,14 @@ body {
   white-space: pre;
 }
 
+.markdown-message .mermaid-diagram-container svg,
+.markdown .mermaid-diagram-container svg {
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+  display: block;
+}
+
 .markdown-table-wrap {
   max-width: 100%;
   overflow-x: auto;

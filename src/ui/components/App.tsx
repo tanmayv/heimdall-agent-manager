@@ -56,7 +56,8 @@ import { answerChatApproval, chatApprovalEventReceived, dismissChatApproval, ref
 import { refreshMemory, decideMemoryProposal, fetchMemoryDetail, memoryEventReceived, auditStartedReceived, auditEndedReceived } from '../store/memorySlice';
 import { dismissToast, showToast } from '../store/toastSlice';
 import Markdown from './Markdown';
-import ArtifactUploadButton from './ArtifactUpload';
+import ArtifactUploadButton, { appendArtifactLink, useArtifactUpload } from './ArtifactUpload';
+import ChainArtifactsPanel from './ChainArtifactsPanel';
 import { updateUrlParams, useUrlParams } from './useUrlParams';
 import { VimSidebarProvider, VimEditButton } from './VimSidebar';
 
@@ -2362,6 +2363,7 @@ function ChainProgressPanel({ chain, progress }: { chain: any; progress: ChainPr
 }
 
 function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, taskLogsByTaskId, onBack, onSend, onToggleDiff, onFetchDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenChain, onOpenTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask }: any) {
+  const session = useSelector((state: any) => state.chat?.session || {});
   const [draft, setDraft] = useState('');
   const [selectedTaskId, setSelectedTaskId] = useState('');
   const [commentDraft, setCommentDraft] = useState('');
@@ -2390,6 +2392,8 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
   const preview = chainView.mergePreviewByChainId[chain.chainId];
   const coordinatorAgentId = chain.coordinatorAgentInstanceId || chain.coordinator_agent_instance_id || '';
   const coordinatorAgent = useMemo(() => agents.find((agent: any) => agent.id === coordinatorAgentId || agent.agentInstanceId === coordinatorAgentId || agent.agent_instance_id === coordinatorAgentId), [agents, coordinatorAgentId]);
+  const projectId = chain.projectId || chain.project_id || '';
+  const composerArtifactUpload = useArtifactUpload({ projectId, originRef: chain.chainId || '', originKind: 'clipboard_chat' });
   const coordinatorStatus = agentRuntimeStatus(coordinatorAgent);
   const coordinatorStatusLabel = agentRuntimeStatusLabel(coordinatorStatus);
   const coordinatorLabel = coordinatorAgent?.label || coordinatorAgentId || 'Coordinator';
@@ -2461,41 +2465,58 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
             )}
           </section>
         )}
-        <section data-debug-id="chain-coordinator-panel" className="flex h-[70vh] max-h-[70vh] min-h-[420px] flex-col rounded-2xl border border-white/10 bg-white/[0.035] p-4">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h2 className="font-semibold">Coordinator chat</h2>
-              <p data-debug-id="chain-coordinator-agent-id" className="mt-0.5 text-xs text-zinc-500">{coordinatorAgentId || 'No coordinator assigned'}</p>
+        <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)] xl:items-stretch">
+          <section data-debug-id="chain-coordinator-panel" className="flex h-[70vh] max-h-[70vh] min-h-[420px] flex-col rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="font-semibold">Coordinator chat</h2>
+                <p data-debug-id="chain-coordinator-agent-id" className="mt-0.5 text-xs text-zinc-500">{coordinatorAgentId || 'No coordinator assigned'}</p>
+              </div>
+              <div data-debug-id="chain-coordinator-live-status" className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium ${agentRuntimeStatusTone(coordinatorStatus)}`} title={`${coordinatorLabel} · ${coordinatorStatusLabel}${coordinatorLastSeen ? ` · ${coordinatorLastSeen}` : ''}`}>
+                <span className={`h-2 w-2 rounded-full shadow ${agentRuntimeDotTone(coordinatorStatus)}`} />
+                <span>{coordinatorStatusLabel}</span>
+                {coordinatorLastSeen && <span className="hidden text-[10px] opacity-70 sm:inline">· {coordinatorLastSeen}</span>}
+              </div>
             </div>
-            <div data-debug-id="chain-coordinator-live-status" className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium ${agentRuntimeStatusTone(coordinatorStatus)}`} title={`${coordinatorLabel} · ${coordinatorStatusLabel}${coordinatorLastSeen ? ` · ${coordinatorLastSeen}` : ''}`}>
-              <span className={`h-2 w-2 rounded-full shadow ${agentRuntimeDotTone(coordinatorStatus)}`} />
-              <span>{coordinatorStatusLabel}</span>
-              {coordinatorLastSeen && <span className="hidden text-[10px] opacity-70 sm:inline">· {coordinatorLastSeen}</span>}
+            <CoordinatorMessageList chainId={chain.chainId} messages={messages} onReply={(reply) => onSend(reply)} />
+            <div className="mt-4 flex items-center gap-2">
+              <input
+                data-debug-id="chain-coordinator-composer-input"
+                ref={composerRef}
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                onPaste={async (event) => {
+                  const result = await composerArtifactUpload.uploadClipboardImage(event, { projectId, originKind: 'clipboard_chat', originRef: chain.chainId || '' });
+                  if (result.link) setDraft((current) => appendArtifactLink(current, result.link));
+                }}
+                onKeyDown={(event) => { if (event.key === 'Enter') submit(); }}
+                placeholder="Message coordinator only…"
+                autoFocus
+                className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"
+              />
+              <ArtifactUploadButton
+                onUploaded={(link) => setDraft((current) => appendArtifactLink(current, link))}
+                debugIdPrefix="chain-coordinator-artifact-upload"
+                context={{ projectId: projectId, originRef: chain.chainId || '' }}
+                buttonClassName="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
+                label="Attach"
+              />
+              <button data-debug-id="chain-coordinator-send-btn" onClick={submit} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300">Send</button>
             </div>
-          </div>
-          <CoordinatorMessageList chainId={chain.chainId} messages={messages} onReply={(reply) => onSend(reply)} />
-          <div className="mt-4 flex items-center gap-2">
-            <input
-              data-debug-id="chain-coordinator-composer-input"
-              ref={composerRef}
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={(event) => { if (event.key === 'Enter') submit(); }}
-              placeholder="Message coordinator only…"
-              autoFocus
-              className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"
-            />
-            <ArtifactUploadButton
-              onUploaded={(link) => setDraft((current) => { const trimmed = (current || '').replace(/\s+$/, ''); return trimmed ? `${trimmed}\n${link}` : link; })}
-              debugIdPrefix="chain-coordinator-artifact-upload"
-              context={{ projectId: chain.projectId || chain.project_id || '', originRef: chain.chainId || '' }}
-              buttonClassName="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
-              label="Attach"
-            />
-            <button data-debug-id="chain-coordinator-send-btn" onClick={submit} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300">Send</button>
-          </div>
-          <p className="mt-2 text-xs text-zinc-500">Sending routes to the chain coordinator. Opening this view records focus and warms the chain team when needed.</p>
-        </section>
+            {composerArtifactUpload.error ? (
+              <div data-debug-id="chain-coordinator-paste-error" className="mt-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">
+                {composerArtifactUpload.error}
+              </div>
+            ) : null}
+            <p className="mt-2 text-xs text-zinc-500">Sending routes to the chain coordinator. Opening this view records focus and warms the chain team when needed.</p>
+          </section>
+          <ChainArtifactsPanel
+            daemonUrl={session.daemonUrl}
+            clientToken={session.clientToken}
+            projectId={projectId}
+            chainId={chain.chainId}
+          />
+        </div>
       </div>
 
       {hasWorkspace && (
@@ -2533,6 +2554,8 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
           expandedTaskId={selectedTaskId}
           commentDraft={commentDraft}
           nudgeDraft={nudgeDraft}
+          projectId={projectId}
+          chainId={chain.chainId}
           onCommentDraft={setCommentDraft}
           onNudgeDraft={setNudgeDraft}
           onOpenTask={openTask}
@@ -2556,6 +2579,8 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
               expandedTaskId={selectedTaskId}
               commentDraft={commentDraft}
               nudgeDraft={nudgeDraft}
+              projectId={projectId}
+              chainId={chain.chainId}
               onCommentDraft={setCommentDraft}
               onNudgeDraft={setNudgeDraft}
               onOpenTask={openTask}
@@ -2617,10 +2642,12 @@ function TaskAgentChip({ role, agentId, agent, active }: any) {
   );
 }
 
-function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, expandedTaskId, commentDraft, nudgeDraft, onCommentDraft, onNudgeDraft, onOpenTask, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, agents = [], taskIndexMap = new Map(), completed = false }: any) {
+function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, expandedTaskId, commentDraft, nudgeDraft, projectId = '', chainId = '', onCommentDraft, onNudgeDraft, onOpenTask, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, agents = [], taskIndexMap = new Map(), completed = false }: any) {
   const [commentsOpenByTaskId, setCommentsOpenByTaskId] = useState<Record<string, boolean>>({});
   const [busyAction, setBusyAction] = useState('');
   const [localError, setLocalError] = useState('');
+  const [lastPasteTarget, setLastPasteTarget] = useState('');
+  const taskTextArtifactUpload = useArtifactUpload({ projectId, originRef: chainId || '', originKind: 'clipboard_chain_text' });
   const agentsById = useMemo(() => {
     const map = new Map<string, any>();
     (agents || []).forEach((agent: any) => { if (agent?.id) map.set(String(agent.id), agent); });
@@ -2724,7 +2751,12 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ex
                         lang="markdown"
                       />
                     </div>
-                    <textarea data-debug-id={`task-detail-nudge-textarea-${task.taskId}`} value={nudgeDraft} onChange={(event) => onNudgeDraft(event.target.value)} rows={2} className="mt-2 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
+                    <textarea data-debug-id={`task-detail-nudge-textarea-${task.taskId}`} value={nudgeDraft} onChange={(event) => onNudgeDraft(event.target.value)} onPaste={async (event) => {
+                      setLastPasteTarget(`nudge-${task.taskId}`);
+                      const result = await taskTextArtifactUpload.uploadClipboardImage(event, { projectId, originKind: 'clipboard_chain_text', originRef: chainId || '' });
+                      if (result.link) onNudgeDraft(appendArtifactLink(nudgeDraft || '', result.link));
+                    }} rows={2} className="mt-2 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
+                    {taskTextArtifactUpload.error && lastPasteTarget === `nudge-${task.taskId}` ? <div data-debug-id={`task-detail-nudge-paste-error-${task.taskId}`} className="mt-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{taskTextArtifactUpload.error}</div> : null}
                     <div className="mt-2 flex flex-wrap gap-2">
                         <button data-debug-id={`task-detail-nudge-btn-${task.taskId}`} disabled={Boolean(busyAction) || !String(nudgeDraft || '').trim()} onClick={() => runAction(`nudge-${task.taskId}`, () => onNudgeTask(task, nudgeDraft))} className="rounded-xl bg-white/10 px-3 py-2 text-xs hover:bg-white/15 disabled:opacity-60">Send nudge</button>
                         <button data-debug-id={`task-detail-vote-lgtm-btn-${task.taskId}`} disabled={Boolean(busyAction)} onClick={() => runAction(`lgtm-${task.taskId}`, () => onVoteTask(task, true, nudgeDraft))} className="rounded-xl bg-sky-400/90 px-3 py-2 text-xs font-semibold text-black hover:bg-sky-300 disabled:opacity-60">LGTM</button>
@@ -2762,7 +2794,12 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ex
                         lang="markdown"
                       />
                     </div>
-                    <textarea data-debug-id={`task-detail-comment-textarea-${task.taskId}`} value={commentDraft} onChange={(event) => onCommentDraft(event.target.value)} rows={2} placeholder="Add a task comment…" className="mt-2 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
+                    <textarea data-debug-id={`task-detail-comment-textarea-${task.taskId}`} value={commentDraft} onChange={(event) => onCommentDraft(event.target.value)} onPaste={async (event) => {
+                      setLastPasteTarget(`comment-${task.taskId}`);
+                      const result = await taskTextArtifactUpload.uploadClipboardImage(event, { projectId, originKind: 'clipboard_chain_text', originRef: chainId || '' });
+                      if (result.link) onCommentDraft(appendArtifactLink(commentDraft || '', result.link));
+                    }} rows={2} placeholder="Add a task comment…" className="mt-2 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
+                    {taskTextArtifactUpload.error && lastPasteTarget === `comment-${task.taskId}` ? <div data-debug-id={`task-detail-comment-paste-error-${task.taskId}`} className="mt-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{taskTextArtifactUpload.error}</div> : null}
                     <button data-debug-id={`task-detail-comment-submit-btn-${task.taskId}`} disabled={Boolean(busyAction) || !String(commentDraft || '').trim()} onClick={() => runAction(`comment-${task.taskId}`, async () => { const body = String(commentDraft || '').trim(); if (!body) return; await onAddComment(task, body); onCommentDraft(''); setCommentsOpenByTaskId((prev) => ({ ...prev, [task.taskId]: true })); })} className="mt-2 rounded-xl bg-sky-400 px-3 py-2 text-xs font-semibold text-black hover:bg-sky-300 disabled:opacity-60">Add comment</button>
                   </div>
                 </div>

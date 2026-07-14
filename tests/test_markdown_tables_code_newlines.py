@@ -15,6 +15,8 @@ checks = [
     ('table copy serializes CSV', 'function tableToCsv' in src and 'function csvEscape' in src and '.join(\',\')' in src),
     ('copy is event delegated from markdown root', 'rootRef' in src and 'addEventListener' in src),
     ('underscore emphasis does not trigger inside words', "(?![A-Za-z0-9_])" in src and "[^A-Za-z0-9_]" in src),
+    ('mermaid and mermedai diagram blocks supported', 'mermaid-block' in src and 'mermedai' in src and 'mermaid.render' in src),
+    ('top right subtle copy all icon button copies entire markdown', 'data-markdown-copy-all="true"' in src and 'data-markdown-source' in src and 'justify-end' in src),
 ]
 failed = [name for name, ok in checks if not ok]
 if failed:
