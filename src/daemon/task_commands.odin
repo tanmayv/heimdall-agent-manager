@@ -48,11 +48,21 @@ Task_Status_Command :: struct {
 }
 
 Task_Update_Command :: struct {
+	task_id:                     string,
+	chain_id:                    string,
+	title:                       string,
+	description:                 string,
+	description_present:         bool,
+	acceptance_criteria:         string,
+	acceptance_criteria_present: bool,
+	depends_on:                  string,
+	depends_on_present:          bool,
+	author_agent_instance_id:    string,
+}
+
+Task_Delete_Command :: struct {
 	task_id:                  string,
 	chain_id:                 string,
-	title:                    string,
-	description:              string,
-	description_present:      bool,
 	author_agent_instance_id: string,
 }
 

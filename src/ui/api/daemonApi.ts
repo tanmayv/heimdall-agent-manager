@@ -64,7 +64,11 @@ async function requestJson(url: string, { method = 'GET', body, headers, timeout
     });
     const data = await response.json().catch(() => null);
     if (!response.ok) {
-      throw new Error(data?.message || `Daemon request failed with ${response.status}`);
+      const details: string[] = [];
+      if (data?.error) details.push(`error=${data.error}`);
+      if (Array.isArray(data?.blocking_dependents) && data.blocking_dependents.length) details.push(`blocking dependents: ${data.blocking_dependents.join(', ')}`);
+      const suffix = details.length ? ` (${details.join('; ')})` : '';
+      throw new Error(`${data?.message || `Daemon request failed with ${response.status}`}${suffix}`);
     }
     return data;
   } finally {
@@ -123,6 +127,18 @@ export async function listKnownAgents({ daemonUrl, projectId = '' }: { daemonUrl
 export async function fetchTeam({ daemonUrl, teamId }: { daemonUrl: string; teamId: string }) {
   if (!teamId) return null;
   return requestJson(joinUrl(daemonUrl, `/teams/${encodeURIComponent(teamId)}`));
+}
+
+// addTeamMember adds a generated agent to an existing chain team (Task Chain
+// Editor "add agent to chain"). Reuses POST /teams/add-member, which returns the
+// full roster row (team_member_id, role_key, role_index, agent_record_id,
+// agent_instance_id, is_user_proxy, route_to, lifecycle_status). Auth follows the
+// same pattern as focusTaskChain: the user client token is accepted as agent_token.
+export async function addTeamMember({ daemonUrl, clientToken, teamId, roleKey, agentInstanceId }: { daemonUrl: string; clientToken: string; teamId: string; roleKey: string; agentInstanceId: string }) {
+  return requestJson(joinUrl(daemonUrl, '/teams/add-member'), {
+    method: 'POST',
+    body: { agent_token: clientToken, team_id: teamId, role_key: roleKey, agent_instance_id: agentInstanceId },
+  });
 }
 
 export async function listAgentProviders({ daemonUrl }: { daemonUrl: string }) {
@@ -498,11 +514,17 @@ export async function updateTaskStatus({ daemonUrl, agentToken, clientInstanceId
   return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_status', agentPath: '/tasks/status', body: { task_id: taskId, chain_id: chainId || '', status, body } });
 }
 
-export async function updateTask({ daemonUrl, agentToken, clientInstanceId, clientToken, taskId, chainId, title, description }: Partial<TaskAgentRequest & UserRpcRequest> & { taskId: string; chainId?: string; title?: string; description?: string }) {
+export async function updateTask({ daemonUrl, agentToken, clientInstanceId, clientToken, taskId, chainId, title, description, acceptanceCriteria, dependsOn }: Partial<TaskAgentRequest & UserRpcRequest> & { taskId: string; chainId?: string; title?: string; description?: string; acceptanceCriteria?: string; dependsOn?: string }) {
   const body: any = { task_id: taskId, chain_id: chainId || '' };
   if (title !== undefined) body.title = title;
   if (description !== undefined) body.description = description;
+  if (acceptanceCriteria !== undefined) body.acceptance_criteria = acceptanceCriteria;
+  if (dependsOn !== undefined) body.depends_on = dependsOn;
   return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_update', agentPath: '/tasks/update', body });
+}
+
+export async function deleteTask({ daemonUrl, agentToken, clientInstanceId, clientToken, taskId, chainId }: Partial<TaskAgentRequest & UserRpcRequest> & { taskId: string; chainId?: string }) {
+  return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_delete', agentPath: '/tasks/delete', body: { task_id: taskId, chain_id: chainId || '' } });
 }
 
 export async function assignTask({ daemonUrl, agentToken, clientInstanceId, clientToken, taskId, chainId, agentInstanceId }: Partial<TaskAgentRequest & UserRpcRequest> & { taskId: string; chainId?: string; agentInstanceId: string }) {

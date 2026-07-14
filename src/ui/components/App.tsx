@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import SettingsPage from './SettingsPage';
 import MemoryManagementPage from './MemoryManagementPage';
+import ChainEditor from './ChainEditor';
 import { defaultWantsVcs, findScaffold, findTeamKind, kindOptionLabel, NONE_SCAFFOLD_META, paceLabel, scaffoldOptionLabel, taskCountLabel } from './teamKinds';
 import {
   addDaemonProfile,
@@ -575,14 +576,14 @@ export default function App() {
       dispatch(fetchSelectedChat({ agentId: urlParams.agentId })).catch(() => undefined);
       return;
     }
-    if (urlParams.view === 'chain' && urlParams.chainId && home.selectedChainId !== urlParams.chainId) {
+    if ((urlParams.view === 'chain' || urlParams.view === 'chain-editor') && urlParams.chainId && home.selectedChainId !== urlParams.chainId) {
       setAgentPageId('');
       dispatch(selectChain(urlParams.chainId));
       dispatch(fetchTasksForChain(urlParams.chainId));
       dispatch(focusChainView(urlParams.chainId));
       return;
     }
-    if (urlParams.view === 'chain' && urlParams.taskId) {
+    if ((urlParams.view === 'chain' || urlParams.view === 'chain-editor') && urlParams.taskId) {
       dispatch(fetchSelectedTaskLog(urlParams.taskId));
     }
     if (urlParams.projectId && home.selectedProjectId !== urlParams.projectId) {
@@ -841,6 +842,14 @@ export default function App() {
   const openChain = useCallback((chainId: string) => {
     setAgentPageId('');
     updateUrlParams({ chainId, view: 'chain', taskId: null, agentId: null, memoryId: null });
+    dispatch(selectChain(chainId));
+    dispatch(fetchTasksForChain(chainId));
+    dispatch(focusChainView(chainId));
+  }, [dispatch]);
+
+  const openChainEditor = useCallback((chainId: string, taskId = '') => {
+    setAgentPageId('');
+    updateUrlParams({ chainId, view: 'chain-editor', taskId: taskId || null, agentId: null, memoryId: null });
     dispatch(selectChain(chainId));
     dispatch(fetchTasksForChain(chainId));
     dispatch(focusChainView(chainId));
@@ -1105,6 +1114,20 @@ export default function App() {
               onSelectMemory={(memoryId: string) => updateUrlParams({ view: 'memory', memoryId, chainId: null, taskId: null, agentId: null })}
               onBackToHome={() => selectSurfaceWithUrl('home')}
             />
+          ) : home.surface === 'chain' && selectedChain && urlParams.view === 'chain-editor' ? (
+            <ChainEditor
+              chain={selectedChain}
+              tasks={(chainTaskIds[selectedChain.chainId] || []).map((id: string) => tasksById[id]).filter(Boolean)}
+              tasksById={tasksById}
+              team={chainView.teamByChainId[selectedChain.chainId]}
+              agents={agents}
+              providers={settingsProviders}
+              initialTaskId={urlParams.taskId}
+              onBack={() => { updateUrlParams({ chainId: null, taskId: null, agentId: null, view: 'home' }); dispatch(selectSurface('home')); }}
+              onReturnToChain={() => updateUrlParams({ view: 'chain', chainId: selectedChain.chainId, taskId: urlParams.taskId || null })}
+              onRefresh={() => { dispatch(fetchTasksForChain(selectedChain.chainId)); dispatch(focusChainView(selectedChain.chainId)); }}
+              onSelectTask={(taskId: string) => { updateUrlParams({ view: 'chain-editor', chainId: selectedChain.chainId, taskId }); dispatch(fetchSelectedTaskLog(taskId)); }}
+            />
           ) : home.surface === 'chain' && selectedChain ? (
             <ChainView
               chain={selectedChain}
@@ -1128,6 +1151,7 @@ export default function App() {
               onPreviewMerge={() => dispatch(previewWorkspaceMerge(selectedChain.chainId))}
               onOpenAgent={(agentId: string) => { dispatch(openAgentSideSheet(agentId)); dispatch(loadAgentSideSheet(agentId)); }}
               onOpenTask={(taskId: string) => { updateUrlParams({ view: 'chain', chainId: selectedChain.chainId, taskId }); dispatch(fetchSelectedTaskLog(taskId)); }}
+              onOpenEditor={(taskId?: string) => openChainEditor(selectedChain.chainId, taskId || urlParams.taskId || '')}
               onAddComment={async (task: any, body: string) => {
                 try {
                   await dispatch(addCommentToSelectedTask({ taskId: task.taskId, chainId: task.chainId, body })).unwrap();
@@ -3284,7 +3308,7 @@ function ChainProgressPanel({ chain, progress }: { chain: any; progress: ChainPr
   );
 }
 
-function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, taskLogsByTaskId, initialTaskId = '', onBack, onSend, onToggleDiff, onFetchDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenChain, onOpenTask, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer }: any) {
+function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, taskLogsByTaskId, initialTaskId = '', onBack, onSend, onToggleDiff, onFetchDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenChain, onOpenTask, onOpenEditor, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer }: any) {
   const session = useSelector((state: any) => state.chat?.session || {});
   const [draft, setDraft] = useState('');
   const [sendError, setSendError] = useState('');
@@ -3369,7 +3393,10 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
   };
   return (
     <div className="mx-auto max-w-6xl px-8 py-8">
-      <button data-debug-id="chain-back-btn" onClick={onBack} className="rounded-xl bg-white/5 px-3 py-2 text-sm hover:bg-white/10">← Home</button>
+      <div className="flex items-center gap-3">
+        <button data-debug-id="chain-back-btn" onClick={onBack} className="rounded-xl bg-white/5 px-3 py-2 text-sm hover:bg-white/10">← Home</button>
+        <button data-debug-id="chain-open-editor-btn" onClick={() => onOpenEditor?.(selectedTaskId)} className="rounded-xl bg-sky-400 px-3 py-2 text-sm font-semibold text-black hover:bg-sky-300">Open editor</button>
+      </div>
       <div className="mt-6 flex items-start justify-between gap-4">
         <div>
           <h1 className="text-4xl font-semibold">{chain.title || chain.chainId}</h1>

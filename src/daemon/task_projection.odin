@@ -66,7 +66,18 @@ task_projection_apply_event :: proc(event: Task_Event) -> bool {
 		idx := task_state_index(event.task_id, event.chain_id)
 		if event.title != "" do task_states[idx].title = strings.clone(event.title)
 		task_states[idx].description = strings.clone(event.description)
+		if event.acceptance_criteria_present do task_states[idx].acceptance_criteria = strings.clone(event.acceptance_criteria)
+		if event.depends_on_present do task_states[idx].depends_on = strings.clone(event.depends_on)
 		task_states[idx].updated_at_unix_ms = event.created_unix_ms
+
+	case .Task_Deleted:
+		// Hard delete: remove the task and all of its associated participants,
+		// votes, and comments from active in-memory state. The event itself
+		// remains in the append-only journal for audit.
+		task_store_remove_task_state(event.task_id)
+		task_store_remove_task_participants(event.task_id)
+		task_store_clear_task_votes(event.task_id)
+		task_store_remove_task_comments(event.task_id)
 
 	case .Task_Assigned:
 		idx := task_state_index(event.task_id, event.chain_id)
@@ -248,6 +259,77 @@ task_store_clear_task_votes :: proc(task_id: string) {
 		task_lgtm_votes[i] = {}
 	}
 	task_lgtm_vote_count = write_idx
+}
+
+// task_store_remove_task_state removes the task-state row for task_id from the
+// active projection (used by first-class Task_Deleted). It compacts the array
+// and frees the removed row's owned strings.
+task_store_remove_task_state :: proc(task_id: string) {
+	write_idx := 0
+	for read_idx in 0..<task_state_count {
+		t := task_states[read_idx]
+		if t.task_id == task_id {
+			delete(t.task_id)
+			delete(t.chain_id)
+			delete(t.title)
+			delete(t.description)
+			delete(t.acceptance_criteria)
+			delete(t.priority)
+			delete(t.assignee_agent_instance_id)
+			delete(t.depends_on)
+			delete(t.created_by)
+		} else {
+			task_states[write_idx] = t
+			write_idx += 1
+		}
+	}
+	for i in write_idx..<task_state_count {
+		task_states[i] = {}
+	}
+	task_state_count = write_idx
+}
+
+// task_store_remove_task_participants removes every participant row for task_id.
+task_store_remove_task_participants :: proc(task_id: string) {
+	write_idx := 0
+	for read_idx in 0..<task_participant_count {
+		p := task_participants[read_idx]
+		if p.task_id == task_id {
+			delete(p.task_id)
+			delete(p.chain_id)
+			delete(p.agent_instance_id)
+			delete(p.role)
+		} else {
+			task_participants[write_idx] = p
+			write_idx += 1
+		}
+	}
+	for i in write_idx..<task_participant_count {
+		task_participants[i] = {}
+	}
+	task_participant_count = write_idx
+}
+
+// task_store_remove_task_comments removes every comment row for task_id.
+task_store_remove_task_comments :: proc(task_id: string) {
+	write_idx := 0
+	for read_idx in 0..<task_comment_count {
+		c := task_comments[read_idx]
+		if c.task_id == task_id {
+			delete(c.comment_id)
+			delete(c.task_id)
+			delete(c.chain_id)
+			delete(c.body)
+			delete(c.author_agent_instance_id)
+		} else {
+			task_comments[write_idx] = c
+			write_idx += 1
+		}
+	}
+	for i in write_idx..<task_comment_count {
+		task_comments[i] = {}
+	}
+	task_comment_count = write_idx
 }
 
 task_state_index :: proc(task_id, chain_id: string) -> int {

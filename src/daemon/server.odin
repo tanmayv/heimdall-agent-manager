@@ -452,6 +452,11 @@ handle_client :: proc(client: net.TCP_Socket) {
 		return
 	}
 
+	if strings.has_prefix(request, "POST /tasks/delete ") {
+		handle_task_delete(client, request_body(request))
+		return
+	}
+
 	if strings.has_prefix(request, "POST /tasks/done ") {
 		handle_task_done(client, request_body(request))
 		return

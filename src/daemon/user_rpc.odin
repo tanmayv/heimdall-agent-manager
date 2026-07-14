@@ -26,6 +26,7 @@ handle_user_rpc :: proc(client: net.TCP_Socket, body: string) {
 	case "task_comment_resolve": handle_user_rpc_task_comment_resolve(client, body, user_id)
 	case "task_status": handle_user_rpc_task_status(client, body, user_id)
 	case "task_update": handle_user_rpc_task_update(client, body, user_id)
+	case "task_delete": handle_user_rpc_task_delete(client, body, user_id)
 	case "task_assign": handle_user_rpc_task_assign(client, body, user_id)
 	case "task_participant": handle_user_rpc_task_participant(client, body, user_id)
 	case "task_participant_remove": handle_user_rpc_task_participant_remove(client, body, user_id)
@@ -186,7 +187,12 @@ handle_user_rpc_task_status :: proc(client: net.TCP_Socket, body, user_id: strin
 }
 
 handle_user_rpc_task_update :: proc(client: net.TCP_Socket, body, user_id: string) {
-	result := task_service_update_task(Task_Update_Command{task_id = extract_json_string(body, "task_id", ""), chain_id = extract_json_string(body, "chain_id", ""), title = extract_json_string(body, "title", ""), description = extract_json_string(body, "description", ""), description_present = json_has_key(body, "description"), author_agent_instance_id = user_id})
+	result := task_service_update_task(Task_Update_Command{task_id = extract_json_string(body, "task_id", ""), chain_id = extract_json_string(body, "chain_id", ""), title = extract_json_string(body, "title", ""), description = extract_json_string(body, "description", ""), description_present = json_has_key(body, "description"), acceptance_criteria = extract_json_string(body, "acceptance_criteria", ""), acceptance_criteria_present = json_has_key(body, "acceptance_criteria"), depends_on = extract_json_string(body, "depends_on", ""), depends_on_present = json_has_key(body, "depends_on"), author_agent_instance_id = user_id})
+	write_task_service_response(client, result)
+}
+
+handle_user_rpc_task_delete :: proc(client: net.TCP_Socket, body, user_id: string) {
+	result := task_service_delete_task(Task_Delete_Command{task_id = extract_json_string(body, "task_id", ""), chain_id = extract_json_string(body, "chain_id", ""), author_agent_instance_id = user_id})
 	write_task_service_response(client, result)
 }
 

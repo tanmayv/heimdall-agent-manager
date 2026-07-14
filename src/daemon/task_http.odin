@@ -166,11 +166,26 @@ handle_task_update :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
 	result := task_service_update_task(Task_Update_Command{
+		task_id                     = extract_json_string(body, "task_id", ""),
+		chain_id                    = extract_json_string(body, "chain_id", ""),
+		title                       = extract_json_string(body, "title", ""),
+		description                 = extract_json_string(body, "description", ""),
+		description_present         = json_has_key(body, "description"),
+		acceptance_criteria         = extract_json_string(body, "acceptance_criteria", ""),
+		acceptance_criteria_present = json_has_key(body, "acceptance_criteria"),
+		depends_on                  = extract_json_string(body, "depends_on", ""),
+		depends_on_present          = json_has_key(body, "depends_on"),
+		author_agent_instance_id    = author,
+	})
+	write_task_service_response(client, result)
+}
+
+handle_task_delete :: proc(client: net.TCP_Socket, body: string) {
+	author, ok := task_author_from_body(client, body)
+	if !ok do return
+	result := task_service_delete_task(Task_Delete_Command{
 		task_id                  = extract_json_string(body, "task_id", ""),
 		chain_id                 = extract_json_string(body, "chain_id", ""),
-		title                    = extract_json_string(body, "title", ""),
-		description              = extract_json_string(body, "description", ""),
-		description_present      = json_has_key(body, "description"),
 		author_agent_instance_id = author,
 	})
 	write_task_service_response(client, result)
