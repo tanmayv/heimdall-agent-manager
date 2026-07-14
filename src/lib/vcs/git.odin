@@ -78,9 +78,26 @@ git_workspace_status :: proc(handle: Vcs_Workspace_Handle) -> (Vcs_Status, bool,
 }
 
 git_workspace_diff :: proc(handle: Vcs_Workspace_Handle, path: string) -> (string, bool, string) {
-	out, ok, msg := vcs_run([]string{"git", "-C", handle.path, "diff", fmt.tprintf("%s...HEAD", handle.base_ref), "--", path})
-	if !ok do return "", false, msg
-	return vcs_truncate_diff(out), true, "git diff ok"
+	builder := strings.builder_make()
+	committed, committed_ok, committed_msg := git_diff_revspec(handle.path, fmt.tprintf("%s...HEAD", handle.base_ref), path)
+	if !committed_ok do return "", false, committed_msg
+	if committed != "" {
+		strings.write_string(&builder, committed)
+		strings.write_string(&builder, "\n")
+	}
+	tracked, tracked_ok, tracked_msg := git_diff_revspec(handle.path, "HEAD", path)
+	if !tracked_ok do return "", false, tracked_msg
+	if tracked != "" {
+		strings.write_string(&builder, tracked)
+		strings.write_string(&builder, "\n")
+	}
+	untracked, untracked_ok, untracked_msg := git_untracked_diff(handle.path, path)
+	if !untracked_ok do return "", false, untracked_msg
+	if untracked != "" {
+		strings.write_string(&builder, untracked)
+		strings.write_string(&builder, "\n")
+	}
+	return vcs_truncate_diff(strings.to_string(builder)), true, "git diff ok"
 }
 
 git_repo_head_sha :: proc(repo: string) -> (string, bool, string) {

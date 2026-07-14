@@ -3853,6 +3853,11 @@ function WorkspaceBox({ chainId, workspace, preview, diffOpen, diffData, onFetch
     }
   }, [diffOpen, diffKey, currentDiff, onFetchDiff]);
 
+  const openFileDiff = (path: string) => {
+    setSelectedFile(path);
+    if (!diffOpen) onToggleDiff?.();
+  };
+
   return (
     <section className="rounded-2xl border border-sky-400/20 bg-sky-400/[0.04] p-4">
       <div className="flex items-start justify-between gap-4">
@@ -3879,7 +3884,8 @@ function WorkspaceBox({ chainId, workspace, preview, diffOpen, diffData, onFetch
         {files.length === 0 ? <div className="text-sm text-zinc-500">No changed files reported.</div> : files.map((file: any, index: number) => {
           const path = file.path || `file-${index}`;
           const slug = String(path).replace(/[^a-zA-Z0-9_-]/g, '-');
-          return <div key={path} data-debug-id={`workspace-file-${slug}`} className="rounded-xl bg-black/20 px-3 py-2 text-sm text-zinc-300">{file.status || '?'} {path} <span className="text-zinc-500">+{file.adds || 0} −{file.dels || 0}</span></div>;
+          const isSelected = selectedFile === path;
+          return <button key={path} type="button" data-debug-id={`workspace-file-${slug}`} onClick={() => openFileDiff(path)} className={`rounded-xl px-3 py-2 text-left text-sm transition ${isSelected && diffOpen ? 'border border-sky-400/30 bg-sky-400/10 text-sky-100' : 'border border-transparent bg-black/20 text-zinc-300 hover:border-sky-400/20 hover:bg-sky-400/10'}`} title="Show diff for this file">{file.status || '?'} {path} <span className="text-zinc-500">+{file.adds || 0} −{file.dels || 0}</span></button>;
         })}
       </div>
       {files.length > 0 && diffOpen && (
