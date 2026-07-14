@@ -758,6 +758,7 @@ export default function App() {
   }, [dispatch, loadHomeData, session.connected, session.clientInstanceId, session.clientToken, session.daemonUrl]);
 
   const openChain = useCallback((chainId: string) => {
+    setAgentPageId('');
     updateUrlParams({ chainId, view: 'chain' });
     dispatch(selectChain(chainId));
     dispatch(fetchTasksForChain(chainId));
