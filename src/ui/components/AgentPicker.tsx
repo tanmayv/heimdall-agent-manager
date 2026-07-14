@@ -203,14 +203,16 @@ export default function AgentPicker({ debugId, daemonUrl, agents, projects, temp
               {!selectionOnly && <div className="mt-3 flex justify-end">
                 <button
                   data-debug-id={`${debugId}-agent-run-${id}`}
+                  aria-label={`Run ${agentLabel(agent)}`}
+                  title="Run agent"
                   disabled={Boolean(busy)}
                   onClick={(event) => {
                     event.stopPropagation();
                     setExistingId(id);
                     runAgent(id, template || fallbackTemplate, provider || fallbackProvider, project || defaultProjectId || '', agent.modelTier || agent.model_tier || 'normal');
                   }}
-                  className="rounded-lg bg-sky-400 px-2.5 py-1 text-[11px] font-semibold text-black hover:bg-sky-300 disabled:opacity-60"
-                >Run</button>
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-lg bg-sky-400 text-xs font-semibold text-black hover:bg-sky-300 disabled:opacity-60"
+                >▶</button>
               </div>}
             </div>
           );
@@ -225,7 +227,7 @@ export default function AgentPicker({ debugId, daemonUrl, agents, projects, temp
           <select data-debug-id={`${debugId}-run-provider-select`} value={runProvider} onChange={(event) => setRunProvider(event.target.value)} className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">{providerOptions.map((p: any) => <option key={p.name} value={p.name}>{p.name}</option>)}</select>
           <select data-debug-id={`${debugId}-run-project-select`} value={runProject} onChange={(event) => setRunProject(event.target.value)} className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="">No project</option>{projectOptions.map((p: any) => <option key={p.projectId || p.project_id} value={p.projectId || p.project_id}>{p.name || p.projectId || p.project_id}</option>)}</select>
           <select data-debug-id={`${debugId}-run-tier-select`} value={runTier} onChange={(event) => setRunTier(event.target.value)} className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="normal">normal</option><option value="smart">smart</option><option value="cheap">cheap</option></select>
-          <button data-debug-id={`${debugId}-run-submit-btn`} disabled={!runId.trim() || Boolean(busy)} onClick={() => runAgent(runId, runTemplate, runProvider, runProject, runTier)} className="rounded-xl bg-sky-400 px-3 py-2 text-xs font-semibold text-black hover:bg-sky-300 disabled:opacity-50">Run agent</button>
+          <button data-debug-id={`${debugId}-run-submit-btn`} aria-label="Run agent" title="Run agent" disabled={!runId.trim() || Boolean(busy)} onClick={() => runAgent(runId, runTemplate, runProvider, runProject, runTier)} className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-sky-400 text-xs font-semibold text-black hover:bg-sky-300 disabled:opacity-50">▶</button>
         </div>
       </details>}
 
@@ -238,7 +240,7 @@ export default function AgentPicker({ debugId, daemonUrl, agents, projects, temp
           <select data-debug-id={`${debugId}-create-provider-select`} value={createProvider} onChange={(event) => setCreateProvider(event.target.value)} className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">{providerOptions.map((p: any) => <option key={p.name} value={p.name}>{p.name}</option>)}</select>
           <select data-debug-id={`${debugId}-create-project-select`} value={createProject} onChange={(event) => setCreateProject(event.target.value)} className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="">No project</option>{projectOptions.map((p: any) => <option key={p.projectId || p.project_id} value={p.projectId || p.project_id}>{p.name || p.projectId || p.project_id}</option>)}</select>
           <select data-debug-id={`${debugId}-create-tier-select`} value={createTier} onChange={(event) => setCreateTier(event.target.value)} className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="normal">normal</option><option value="smart">smart</option><option value="cheap">cheap</option></select>
-          <button data-debug-id={`${debugId}-create-submit-btn`} disabled={!createId.trim() || Boolean(busy)} onClick={createAndRun} className="rounded-xl bg-emerald-400 px-3 py-2 text-xs font-semibold text-black hover:bg-emerald-300 disabled:opacity-50">Create and run</button>
+          <button data-debug-id={`${debugId}-create-submit-btn`} aria-label="Create and run" title="Create and run" disabled={!createId.trim() || Boolean(busy)} onClick={createAndRun} className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-400 text-xs font-semibold text-black hover:bg-emerald-300 disabled:opacity-50">＋</button>
         </div>
       </details>}
 

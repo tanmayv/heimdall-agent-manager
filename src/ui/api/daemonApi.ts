@@ -553,6 +553,7 @@ function normalizeMemoryMutationBody(body: Record<string, any>) {
   const normalized = { ...body };
   if (normalized.memory_id == null && normalized.memoryId != null) normalized.memory_id = normalized.memoryId;
   if (normalized.expected_version == null && normalized.expectedVersion != null) normalized.expected_version = normalized.expectedVersion;
+  if (normalized.target_agent_id == null && normalized.targetAgentId != null) normalized.target_agent_id = normalizeMemoryTargetValue(normalized.targetAgentId);
   if (normalized.target_team_kind == null && normalized.targetTeamKind != null) normalized.target_team_kind = normalizeMemoryTargetValue(normalized.targetTeamKind);
   if (normalized.target_role == null && normalized.targetRole != null) normalized.target_role = normalizeMemoryTargetValue(normalized.targetRole);
   if (normalized.target_project_id == null && normalized.targetProjectId != null) normalized.target_project_id = normalizeMemoryTargetValue(normalized.targetProjectId);
@@ -576,6 +577,10 @@ export async function listMemory({ daemonUrl, clientInstanceId, clientToken, typ
       include_all_statuses: includeAllStatuses,
     }
   });
+}
+
+export async function listApplicableMemory({ daemonUrl, clientInstanceId, clientToken, targetAgentId, targetTeamKind, targetRole, targetProjectId }: UserRpcRequest & { targetAgentId?: string; targetTeamKind?: string; targetRole?: string; targetProjectId?: string }) {
+  return requestJson(joinUrl(daemonUrl, '/memory/applicable'), { method: 'POST', body: { client_instance_id: clientInstanceId, client_token: clientToken, target_agent_id: normalizeMemoryTargetValue(targetAgentId), target_team_kind: normalizeMemoryTargetValue(targetTeamKind), target_role: normalizeMemoryTargetValue(targetRole), target_project_id: normalizeMemoryTargetValue(targetProjectId) } });
 }
 
 export async function showMemory({ daemonUrl, clientInstanceId, clientToken, memoryId }: UserRpcRequest & { memoryId: string }) {

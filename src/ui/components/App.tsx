@@ -1002,8 +1002,12 @@ export default function App() {
               chainsById={chainsById}
               chats={chats}
               session={session}
+              projects={projects}
+              providers={settingsProviders}
               onBack={() => setAgentPageId('')}
               onOpenChain={(chainId: string) => { setAgentPageId(''); openChain(chainId); }}
+              onAgentDeleted={() => { setAgentPageId(''); dispatch(refreshAgents()); }}
+              onRefreshAgents={() => dispatch(refreshAgents()).unwrap().catch(() => undefined)}
               onRefreshChat={(agentId: string) => dispatch(fetchSelectedChat({ agentId })).unwrap().catch(() => undefined)}
               onSendAgentMessage={async (agentId: string, body: string, interrupt = false) => {
                 await daemonApi.sendToAgent({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, agentInstanceId: agentId, body, interrupt });
@@ -1488,7 +1492,7 @@ function SidebarAgentsList({ agents = [], projects = [], session = {}, providers
                 <h2 className="text-lg font-semibold text-zinc-100">Launch agent</h2>
                 <p className="mt-1 text-sm text-zinc-500">Create a new specialist agent and wait for start-success.</p>
               </div>
-              <button data-debug-id="sidebar-agent-picker-close-btn" onClick={() => setPickerOpen(false)} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 transition hover:bg-white/15">Close</button>
+              <IconActionButton debugId="sidebar-agent-picker-close-btn" title="Close" icon="×" onClick={() => setPickerOpen(false)} />
             </div>
             {!launchProgressId ? (
               <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
@@ -1521,8 +1525,8 @@ function SidebarAgentsList({ agents = [], projects = [], session = {}, providers
                 <div data-debug-id="sidebar-agent-launch-id-preview" className="mt-3 rounded-xl bg-white/[0.04] px-3 py-2 text-xs text-zinc-400">Agent ID: <span className="font-mono text-zinc-200">{launchAgentId}</span></div>
                 {launchError && <div data-debug-id="sidebar-agent-launch-error" className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{launchError}</div>}
                 <div className="mt-4 flex justify-end gap-2">
-                  <button data-debug-id="sidebar-agent-launch-cancel-btn" onClick={() => setPickerOpen(false)} className="rounded-xl bg-white/10 px-4 py-2 text-sm text-zinc-200 hover:bg-white/15">Cancel</button>
-                  <button data-debug-id="sidebar-agent-launch-submit-btn" onClick={launchNamedAgent} disabled={!launchName.trim() || launchBusy} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">{launchBusy ? 'Launching…' : 'Launch'}</button>
+                  <IconActionButton debugId="sidebar-agent-launch-cancel-btn" title="Cancel" icon="×" onClick={() => setPickerOpen(false)} />
+                  <IconActionButton debugId="sidebar-agent-launch-submit-btn" title={launchBusy ? 'Launching…' : 'Launch'} icon="🚀" onClick={launchNamedAgent} disabled={!launchName.trim() || launchBusy} tone="primary" />
                 </div>
               </div>
             ) : (
@@ -1533,7 +1537,7 @@ function SidebarAgentsList({ agents = [], projects = [], session = {}, providers
                 </div>
                 <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-sky-400 transition-all" style={{ width: `${Math.round((launchSteps.filter((step) => step.done).length / launchSteps.length) * 100)}%` }} /></div>
                 <div className="mt-4 space-y-2">{launchSteps.map((step) => <div key={step.key} data-debug-id={`sidebar-agent-launch-step-${step.key}`} className="flex items-start gap-3 rounded-xl bg-white/[0.035] px-3 py-2"><span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${step.done ? 'bg-emerald-300' : launchFailed && step.key === 'ready' ? 'bg-red-300' : 'bg-zinc-600'}`} /><div className="min-w-0 flex-1"><div className="text-sm font-medium text-zinc-100">{step.label}</div><div className="truncate text-xs text-zinc-500">{step.detail}</div></div></div>)}</div>
-                <div className="mt-4 flex justify-end gap-2"><button data-debug-id="sidebar-agent-launch-new-btn" onClick={() => { setLaunchProgressId(''); setLaunchStartedAt(0); setLaunchName(''); }} className="rounded-xl bg-white/10 px-4 py-2 text-sm text-zinc-200 hover:bg-white/15">Launch another</button><button data-debug-id="sidebar-agent-launch-done-btn" onClick={() => setPickerOpen(false)} disabled={!launchReady && !launchFailed} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">Done</button></div>
+                <div className="mt-4 flex justify-end gap-2"><IconActionButton debugId="sidebar-agent-launch-new-btn" title="Launch another" icon="＋" onClick={() => { setLaunchProgressId(''); setLaunchStartedAt(0); setLaunchName(''); }} /><IconActionButton debugId="sidebar-agent-launch-done-btn" title="Done" icon="✓" onClick={() => setPickerOpen(false)} disabled={!launchReady && !launchFailed} tone="primary" /></div>
               </div>
             )}
           </div>
@@ -1600,6 +1604,17 @@ function AgentTaskCard({ task, chainsById, agentId, index, completed, onOpenChai
   );
 }
 
+function IconActionButton({ debugId, title, icon, onClick, disabled = false, tone = 'default' }: any) {
+  const tones: any = {
+    default: 'bg-white/10 text-zinc-100 hover:bg-white/15',
+    primary: 'bg-sky-400 text-black hover:bg-sky-300',
+    success: 'bg-emerald-400 text-black hover:bg-emerald-300',
+    warn: 'bg-amber-300 text-black hover:bg-amber-200',
+    danger: 'bg-red-400 text-black hover:bg-red-300',
+  };
+  return <button data-debug-id={debugId} aria-label={title} title={title} disabled={disabled} onClick={onClick} className={`inline-flex h-9 w-9 items-center justify-center rounded-xl text-sm font-semibold transition disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500 ${tones[tone] || tones.default}`}>{icon}</button>;
+}
+
 function AgentTaskList({ title, emptyText, tasks, chainsById, agentId, completed = false, onOpenChain }: any) {
   return (
     <div className="rounded-3xl border border-white/10 bg-white/[0.035] p-5">
@@ -1611,19 +1626,105 @@ function AgentTaskList({ title, emptyText, tasks, chainsById, agentId, completed
   );
 }
 
-function AgentDetailPage({ agent, tasksById, chainsById, chats, session, onBack, onOpenChain, onRefreshChat, onSendAgentMessage }: any) {
+function AgentDetailPage({ agent, tasksById, chainsById, chats, session, projects = [], providers = [], onBack, onOpenChain, onRefreshChat, onSendAgentMessage, onRefreshAgents, onAgentDeleted }: any) {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [agentBusy, setAgentBusy] = useState('');
+  const [agentError, setAgentError] = useState('');
+  const [editOpen, setEditOpen] = useState(false);
+  const [editName, setEditName] = useState(agent?.label || agent?.id || '');
+  const [editProvider, setEditProvider] = useState(agent?.providerProfile || '');
+  const [editProject, setEditProject] = useState(agent?.projectId || '');
+  const [editTier, setEditTier] = useState(agent?.modelTier || 'normal');
+  const [agentMemories, setAgentMemories] = useState<any[]>([]);
+  const [memoryLoading, setMemoryLoading] = useState(false);
+  const [memoryError, setMemoryError] = useState('');
+  const [memoryEditor, setMemoryEditor] = useState<any>(null);
+  const [memorySaving, setMemorySaving] = useState(false);
+  const [vimMode, setVimMode] = useState(false);
   const upload = useArtifactUpload({ projectId: agent?.projectId || '', originKind: 'direct_agent_chat', originRef: agent?.id || '' });
   const runtime = agentRuntimeDot(agent);
   const messages = useMemo(() => normalizeCoordinatorMessages((chats?.[agent?.id] || []).map((msg: any) => ({ ...msg, agentInstanceId: agent?.id }))), [chats, agent?.id]);
   const buckets = useMemo(() => agentTaskBuckets(agent?.id || '', tasksById || {}), [agent?.id, tasksById]);
+  const agentMemoryId = String(agent?.agentId || agent?.agent_id || agent?.id || '').split('@')[0];
 
   useEffect(() => {
     if (agent?.id) onRefreshChat?.(agent.id);
     // Parent callbacks are intentionally omitted.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent?.id]);
+
+  useEffect(() => {
+    setEditName(agent?.label || agent?.id || '');
+    setEditProvider(agent?.providerProfile || '');
+    setEditProject(agent?.projectId || '');
+    setEditTier(agent?.modelTier || 'normal');
+  }, [agent?.id, agent?.label, agent?.providerProfile, agent?.projectId, agent?.modelTier]);
+
+  const refreshAgentMemory = useCallback(async () => {
+    if (!agentMemoryId || !session?.clientToken) return;
+    setMemoryLoading(true);
+    setMemoryError('');
+    try {
+      const data = await daemonApi.listApplicableMemory({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, targetAgentId: agentMemoryId, targetRole: agent?.agentRole || agent?.roleHint || agent?.templateId || '', targetProjectId: agent?.projectId || '' });
+      setAgentMemories(data.records || []);
+    } catch (err: any) {
+      setMemoryError(err?.message || 'Unable to load memory');
+    } finally {
+      setMemoryLoading(false);
+    }
+  }, [agentMemoryId, agent?.agentRole, agent?.roleHint, agent?.templateId, agent?.projectId, session?.daemonUrl, session?.clientInstanceId, session?.clientToken]);
+
+  useEffect(() => { refreshAgentMemory(); }, [refreshAgentMemory]);
+
+  const openMemoryEditor = (record?: any) => {
+    setVimMode(false);
+    setMemoryEditor(record ? { mode: 'edit', memoryId: record.memory_id || record.memoryId, expectedVersion: Number(record.version || 0), type: record.type || 'fact', title: record.title || '', body: record.body || '', evidence: record.evidence || '', metadataJson: record.metadata_json || record.metadataJson || '', targetAgentId: record.target_agent_id || record.targetAgentId || agentMemoryId, targetRole: record.target_role || record.targetRole || '', targetProjectId: record.target_project_id || record.targetProjectId || '' } : { mode: 'new', type: 'fact', title: '', body: '', evidence: '', metadataJson: '', targetAgentId: agentMemoryId, targetRole: '', targetProjectId: '' });
+  };
+
+  const saveMemoryEditor = async () => {
+    if (!memoryEditor || !session?.clientToken || memorySaving) return;
+    setMemorySaving(true);
+    setMemoryError('');
+    try {
+      const payload: any = { proposalAction: memoryEditor.mode === 'edit' ? 'edit' : 'new', memoryId: memoryEditor.memoryId, expectedVersion: memoryEditor.expectedVersion, type: memoryEditor.type || 'fact', title: memoryEditor.title || '', body: memoryEditor.body || '', evidence: memoryEditor.evidence || '', metadataJson: memoryEditor.metadataJson || '', targetAgentId: memoryEditor.targetAgentId || agentMemoryId, targetRole: memoryEditor.targetRole || '', targetProjectId: memoryEditor.targetProjectId || '' };
+      const proposal = await daemonApi.proposeMemory({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, ...payload });
+      if (proposal?.proposal_id || proposal?.proposalId) await daemonApi.decideMemory({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, proposalId: proposal.proposal_id || proposal.proposalId, decision: 'approve', reason: 'Direct edit from agent memory editor.' });
+      setMemoryEditor(null);
+      await refreshAgentMemory();
+    } catch (err: any) {
+      setMemoryError(err?.message || 'Unable to save memory');
+    } finally {
+      setMemorySaving(false);
+    }
+  };
+
+  const runAgentAction = async (kind: string, action: () => Promise<any>) => {
+    if (!agent?.id || agentBusy) return;
+    setAgentBusy(kind);
+    setAgentError('');
+    try {
+      await action();
+      await onRefreshAgents?.();
+    } catch (err: any) {
+      setAgentError(err?.message || 'Agent action failed');
+    } finally {
+      setAgentBusy('');
+    }
+  };
+
+  const startAgent = () => runAgentAction('start', () => daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || agent.agentRole || 'specialist', projectId: agent.projectId || '', displayName: agent.label || agent.id, modelTier: agent.modelTier || 'normal', agentRole: agent.agentRole || agent.templateId || '' }));
+  const stopAgent = () => runAgentAction('stop', () => daemonApi.stopAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, timeInSec: 1 }));
+  const saveAgentEdit = () => runAgentAction('edit', async () => {
+    await daemonApi.updateAgent({ daemonUrl: session?.daemonUrl || '', agentRecordId: agent.agentRecordId || '', agentInstanceId: agent.id, displayName: editName.trim() || agent.id, providerProfile: editProvider, projectId: editProject, modelTier: editTier });
+    setEditOpen(false);
+  });
+  const deleteAgent = () => runAgentAction('delete', async () => {
+    if (!window.confirm(`Delete/archive ${agent.label || agent.id}?`)) return;
+    if (agentHasLiveSession(agent)) await daemonApi.stopAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, timeInSec: 1 }).catch(() => undefined);
+    await daemonApi.archiveAgent({ daemonUrl: session?.daemonUrl || '', agentRecordId: agent.agentRecordId || '', agentInstanceId: agent.id });
+    await onAgentDeleted?.();
+  });
 
   const submit = async (interrupt = false) => {
     const body = draft.trim();
@@ -1641,13 +1742,36 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, onBack,
     <div data-debug-id="agent-detail-page" className="mx-auto max-w-6xl px-8 py-8">
       <div className="mb-5 flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <button data-debug-id="agent-detail-back-btn" onClick={onBack} className="mb-3 rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15">← Back</button>
-          <div className="text-xs uppercase tracking-[0.25em] text-zinc-500">Agent</div>
+          <IconActionButton debugId="agent-detail-back-btn" title="Back" icon="←" onClick={onBack} />
+          <div className="mt-3 text-xs uppercase tracking-[0.25em] text-zinc-500">Agent</div>
           <h1 data-debug-id="agent-detail-title" className="mt-2 truncate text-3xl font-semibold text-zinc-100">{agent?.label || agent?.id}</h1>
           <div className="mt-2 truncate font-mono text-xs text-zinc-500">{agent?.id}</div>
         </div>
-        <span data-debug-id="agent-detail-live-status" className={`shrink-0 rounded-full px-3 py-1 text-sm ${agentHasLiveSession(agent) ? 'bg-emerald-400/15 text-emerald-200' : 'bg-zinc-500/15 text-zinc-300'}`}>{agentHasLiveSession(agent) ? 'Live' : runtime.label}</span>
+        <div className="flex shrink-0 flex-col items-end gap-3">
+          <span data-debug-id="agent-detail-live-status" className={`rounded-full px-3 py-1 text-sm ${agentHasLiveSession(agent) ? 'bg-emerald-400/15 text-emerald-200' : 'bg-zinc-500/15 text-zinc-300'}`}>{agentHasLiveSession(agent) ? 'Live' : runtime.label}</span>
+          <div className="flex flex-wrap justify-end gap-2">
+            <IconActionButton debugId="agent-detail-start-btn" title="Start agent" icon="▶" onClick={startAgent} disabled={!agent?.id || Boolean(agentBusy)} tone="success" />
+            <IconActionButton debugId="agent-detail-stop-btn" title="Force stop agent" icon="■" onClick={stopAgent} disabled={!agentHasLiveSession(agent) || Boolean(agentBusy)} tone="warn" />
+            <IconActionButton debugId="agent-detail-edit-btn" title="Edit agent" icon="✎" onClick={() => setEditOpen(true)} disabled={!agent?.id || Boolean(agentBusy)} />
+            <IconActionButton debugId="agent-detail-delete-btn" title="Delete agent" icon="🗑" onClick={deleteAgent} disabled={!agent?.id || Boolean(agentBusy)} tone="danger" />
+          </div>
+        </div>
       </div>
+      {agentError && <div data-debug-id="agent-detail-action-error" className="mb-4 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{agentError}</div>}
+      {editOpen && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 py-16 backdrop-blur-sm" onMouseDown={() => setEditOpen(false)}>
+          <div className="w-full max-w-2xl rounded-3xl border border-white/10 bg-[#101217] p-5 shadow-2xl shadow-black/50" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between gap-3"><h2 className="text-lg font-semibold text-zinc-100">Edit agent</h2><IconActionButton debugId="agent-detail-edit-close-btn" title="Close" icon="×" onClick={() => setEditOpen(false)} /></div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Name<input data-debug-id="agent-detail-edit-name-input" value={editName} onChange={(event) => setEditName(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400" /></label>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Provider<select data-debug-id="agent-detail-edit-provider-select" value={editProvider} onChange={(event) => setEditProvider(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400"><option value="">Default</option>{(providers || []).map((provider: any) => <option key={provider.name} value={provider.name}>{provider.name}</option>)}</select></label>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Project<select data-debug-id="agent-detail-edit-project-select" value={editProject} onChange={(event) => setEditProject(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400"><option value="">No project</option>{(projects || []).map((project: any) => <option key={project.projectId || project.project_id} value={project.projectId || project.project_id}>{project.name || project.projectId || project.project_id}</option>)}</select></label>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Tier<select data-debug-id="agent-detail-edit-tier-select" value={editTier} onChange={(event) => setEditTier(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400"><option value="normal">normal</option><option value="smart">smart</option><option value="cheap">cheap</option></select></label>
+            </div>
+            <div className="mt-5 flex justify-end gap-2"><IconActionButton debugId="agent-detail-edit-cancel-btn" title="Cancel" icon="×" onClick={() => setEditOpen(false)} /><IconActionButton debugId="agent-detail-edit-save-btn" title="Save" icon="✓" onClick={saveAgentEdit} disabled={Boolean(agentBusy)} tone="primary" /></div>
+          </div>
+        </div>
+      )}
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <div data-debug-id="agent-detail-project" className="rounded-2xl border border-white/10 bg-white/[0.035] p-4"><div className="text-xs uppercase tracking-wide text-zinc-500">Project</div><div className="mt-1 truncate text-sm text-zinc-100">{agent?.projectName || agent?.projectId || '—'}</div></div>
@@ -1662,7 +1786,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, onBack,
             <h2 className="text-lg font-semibold text-zinc-100">Chat</h2>
             <p className="mt-1 text-sm text-zinc-500">Direct agent messages. Attach artifacts or paste screenshots into the composer.</p>
           </div>
-          <button data-debug-id="agent-detail-refresh-chat-btn" onClick={() => agent?.id && onRefreshChat?.(agent.id)} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Refresh</button>
+          <IconActionButton debugId="agent-detail-refresh-chat-btn" title="Refresh chat" icon="↻" onClick={() => agent?.id && onRefreshChat?.(agent.id)} />
         </div>
         <div className="min-h-[360px] rounded-2xl border border-white/10 bg-black/20 p-3">
           <CoordinatorMessageList chainId={agent?.id || 'agent-detail'} messages={messages} onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))} debugPrefix="agent-detail-chat" emptyText="No direct messages loaded for this agent." />
@@ -1683,8 +1807,8 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, onBack,
           {upload.error && <div data-debug-id="agent-detail-chat-upload-error" className="mt-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
           <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
             <ArtifactUploadButton onUploaded={(link) => setDraft((prev) => appendArtifactLink(prev, link))} context={{ originKind: 'direct_agent_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending} debugIdPrefix="agent-detail-chat-artifact-upload" label="Attach artifact" />
-            <button data-debug-id="agent-detail-nudge-btn" onClick={() => submit(true)} disabled={!agent?.id || sending || !draft.trim()} className="rounded-xl bg-amber-300 px-4 py-2 text-sm font-semibold text-black hover:bg-amber-200 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">Nudge</button>
-            <button data-debug-id="agent-detail-chat-send-btn" onClick={() => submit(false)} disabled={!agent?.id || sending || !draft.trim()} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">{sending ? 'Sending…' : 'Send'}</button>
+            <IconActionButton debugId="agent-detail-nudge-btn" title="Nudge" icon="⚡" onClick={() => submit(true)} disabled={!agent?.id || sending || !draft.trim()} tone="warn" />
+            <IconActionButton debugId="agent-detail-chat-send-btn" title={sending ? 'Sending…' : 'Send'} icon="➤" onClick={() => submit(false)} disabled={!agent?.id || sending || !draft.trim()} tone="primary" />
           </div>
         </div>
       </section>
@@ -1693,6 +1817,35 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, onBack,
         <AgentTaskList title="Pending tasks" emptyText="No pending tasks assigned." tasks={buckets.pending} chainsById={chainsById} agentId={agent?.id || ''} onOpenChain={onOpenChain} />
         <AgentTaskList title="Completed tasks" emptyText="No completed tasks found." tasks={buckets.completed} chainsById={chainsById} agentId={agent?.id || ''} completed onOpenChain={onOpenChain} />
       </section>
+
+      <section data-debug-id="agent-detail-memory" className="mt-6 rounded-3xl border border-white/10 bg-white/[0.035] p-5">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div><h2 className="text-lg font-semibold text-zinc-100">Memory</h2><p className="mt-1 text-sm text-zinc-500">Applicable active memory for durable agent <span className="font-mono">{agentMemoryId || '—'}</span>.</p></div>
+          <div className="flex gap-2"><IconActionButton debugId="agent-detail-memory-refresh-btn" title="Refresh memory" icon="↻" onClick={refreshAgentMemory} disabled={memoryLoading} /><IconActionButton debugId="agent-detail-memory-add-btn" title="Add memory" icon="＋" onClick={() => openMemoryEditor()} tone="primary" /></div>
+        </div>
+        {memoryError && <div data-debug-id="agent-detail-memory-error" className="mb-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{memoryError}</div>}
+        <div className="space-y-2">
+          {memoryLoading && <div className="rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-zinc-500">Loading memory…</div>}
+          {!memoryLoading && agentMemories.length === 0 && <div className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No applicable memory items.</div>}
+          {!memoryLoading && agentMemories.map((record: any) => {
+            const memoryId = record.memory_id || record.memoryId;
+            return <div key={memoryId} data-debug-id={`agent-detail-memory-item-${memoryId}`} className="rounded-2xl border border-white/10 bg-black/20 p-3"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="truncate text-sm font-semibold text-zinc-100">{record.title || memoryId}</div><div className="mt-1 truncate text-xs text-zinc-500">{record.type || 'fact'} · v{record.version || 0} · {record.target || record.target_agent_id || 'global'}</div></div><IconActionButton debugId={`agent-detail-memory-edit-btn-${memoryId}`} title="Edit memory" icon="✎" onClick={() => openMemoryEditor(record)} /></div>{record.body && <div className="mt-2 line-clamp-3 whitespace-pre-wrap text-xs text-zinc-400">{record.body}</div>}</div>;
+          })}
+        </div>
+      </section>
+
+      {memoryEditor && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 py-10 backdrop-blur-sm" onMouseDown={() => setMemoryEditor(null)}>
+          <div data-debug-id="agent-memory-editor" className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-3xl border border-white/10 bg-[#101217] p-5 shadow-2xl shadow-black/50" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between gap-3"><h2 className="text-lg font-semibold text-zinc-100">{memoryEditor.mode === 'edit' ? 'Edit memory' : 'Add memory'}</h2><div className="flex gap-2"><IconActionButton debugId="agent-memory-editor-vim-toggle-btn" title={vimMode ? 'Disable Vim editor mode' : 'Enable Vim editor mode'} icon="⌨" onClick={() => setVimMode((value) => !value)} tone={vimMode ? 'primary' : 'default'} /><IconActionButton debugId="agent-memory-editor-close-btn" title="Close" icon="×" onClick={() => setMemoryEditor(null)} /></div></div>
+            <div className="grid gap-3 md:grid-cols-3"><label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Type<select data-debug-id="agent-memory-editor-type-select" value={memoryEditor.type} onChange={(event) => setMemoryEditor({ ...memoryEditor, type: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400"><option value="fact">fact</option><option value="preference">preference</option><option value="instruction">instruction</option><option value="skill">skill</option></select></label><label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500 md:col-span-2">Title<input data-debug-id="agent-memory-editor-title-input" value={memoryEditor.title} onChange={(event) => setMemoryEditor({ ...memoryEditor, title: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400" /></label></div>
+            <textarea data-debug-id="agent-memory-editor-body-textarea" value={memoryEditor.body} onChange={(event) => setMemoryEditor({ ...memoryEditor, body: event.target.value })} rows={vimMode ? 22 : 12} spellCheck={!vimMode} className={`mt-3 w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 font-mono text-sm outline-none focus:border-sky-400 ${vimMode ? 'caret-emerald-300 ring-1 ring-emerald-400/30' : ''}`} placeholder={vimMode ? 'Vim editor mode: larger monospace editor for modal editing.' : 'Memory body'} />
+            {vimMode && <div data-debug-id="agent-memory-editor-vim-hint" className="mt-2 rounded-xl bg-emerald-400/10 px-3 py-2 text-xs text-emerald-100">Vim editor mode is on-demand: expanded monospace editor, spellcheck off, Vim-style writing area.</div>}
+            <label className="mt-3 block text-xs font-semibold uppercase tracking-wide text-zinc-500">Evidence<input data-debug-id="agent-memory-editor-evidence-input" value={memoryEditor.evidence} onChange={(event) => setMemoryEditor({ ...memoryEditor, evidence: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400" /></label>
+            <div className="mt-5 flex justify-end gap-2"><IconActionButton debugId="agent-memory-editor-cancel-btn" title="Cancel" icon="×" onClick={() => setMemoryEditor(null)} /><IconActionButton debugId="agent-memory-editor-save-btn" title="Save memory" icon="✓" onClick={saveMemoryEditor} disabled={memorySaving || !memoryEditor.title?.trim() || !memoryEditor.body?.trim()} tone="primary" /></div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
