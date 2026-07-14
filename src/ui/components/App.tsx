@@ -1322,20 +1322,33 @@ function SidebarAgentsList({ agents = [], chainsById = {}, projects = [], sessio
         <span className="text-sm leading-none">+</span> Launch agent
       </button>
       {pickerOpen && (
-        <div className="mb-3 rounded-xl border border-white/10 bg-black/20 p-2">
-          <AgentPicker
-            debugId="sidebar-agent-picker"
-            daemonUrl={session?.daemonUrl || ''}
-            agents={agents}
-            projects={projects}
-            templates={templates}
-            providers={providers}
-            onRefreshAgents={onRefreshAgents}
-            onSelected={async () => {
-              await onRefreshAgents?.();
-              setPickerOpen(false);
-            }}
-          />
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 py-16 backdrop-blur-sm" onMouseDown={() => setPickerOpen(false)}>
+          <div className="w-full max-w-2xl rounded-3xl border border-white/10 bg-[#101217] p-5 shadow-2xl shadow-black/50" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold text-zinc-100">Launch agent</h2>
+                <p className="mt-1 text-sm text-zinc-500">Pick an existing agent or create/run a new one for coordinator, reviewer, or task assignment flows.</p>
+              </div>
+              <button
+                data-debug-id="sidebar-agent-picker-close-btn"
+                onClick={() => setPickerOpen(false)}
+                className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 transition hover:bg-white/15"
+              >Close</button>
+            </div>
+            <AgentPicker
+              debugId="sidebar-agent-picker"
+              daemonUrl={session?.daemonUrl || ''}
+              agents={agents}
+              projects={projects}
+              templates={templates}
+              providers={providers}
+              onRefreshAgents={onRefreshAgents}
+              onSelected={async () => {
+                await onRefreshAgents?.();
+                setPickerOpen(false);
+              }}
+            />
+          </div>
         </div>
       )}
       <div className="mb-1.5 flex items-center justify-between gap-2 px-1">
