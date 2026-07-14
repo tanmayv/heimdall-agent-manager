@@ -866,6 +866,8 @@ export default function App() {
     setChainCreationProgress((current: any) => current?.chainId === chainCreationProgress.chainId ? { ...current, active: false, completed: true } : current);
   }, [chainCreationProgress, creationProgressState?.coordinatorReady, openChain]);
 
+  const sidebarChains = chains.filter((chain) => !isChainCompleted(chain));
+
   return (
     <VimSidebarProvider>
       <div className="h-screen overflow-hidden bg-[#08090b] text-zinc-100">
@@ -899,107 +901,77 @@ export default function App() {
             />
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
-            {projects.map((project) => {
-              const projectChains = chains.filter((chain) => (chainProjectId(chain) === project.projectId || (project.projectId === 'default' && !chain.projectId)) && !isChainCompleted(chain));
-              const isProjectSelected = selectedProjectId === project.projectId;
-              const collapsed = Boolean(collapsedProjectIds[project.projectId]);
-              return (
-                <div key={project.projectId} className="mb-3">
-                  <div className={`group flex w-full items-center gap-1.5 rounded-md px-1 py-1 ${isProjectSelected ? 'text-zinc-100' : 'text-zinc-400'}`}>
-                    <button
-                      data-debug-id={`sidebar-project-toggle-${project.projectId}`}
-                      aria-label={collapsed ? `Expand ${project.name || project.projectId}` : `Collapse ${project.name || project.projectId}`}
-                      aria-expanded={!collapsed}
-                      onClick={() => toggleProjectCollapsed(project.projectId)}
-                      className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-zinc-500 transition hover:bg-white/[0.05] hover:text-zinc-200"
-                    >
-                      <span className={`inline-block text-[10px] transition-transform ${collapsed ? '' : 'rotate-90'}`}>▶</span>
-                    </button>
-                    <button
-                      data-debug-id={`sidebar-project-${project.projectId}`}
-                      onClick={() => openProject(project.projectId)}
-                      className="flex min-w-0 flex-1 items-center justify-between gap-2 text-left"
-                    >
-                      <span className="truncate text-[10px] font-semibold uppercase tracking-[0.18em]">{project.name || project.projectId}</span>
-                      <span className="shrink-0 text-[10px] text-zinc-500">{projectChains.length}</span>
-                    </button>
-                  </div>
-                  {(() => {
-                    const directory = projectAnchorValue(project, 'directory');
-                    if (!directory) return null;
-                    const vcsKind = projectAnchorValue(project, 'vcs_kind');
-                    const vcs = vcsIconForKind(vcsKind);
-                    return (
-                      <div
-                        data-debug-id={`sidebar-project-directory-${project.projectId}`}
-                        title={`${directory}${vcsKind ? ` · ${vcs.label}` : ''}`}
-                        className="mt-0.5 flex items-center gap-1.5 pl-6 pr-1 text-[10px] text-zinc-500"
-                      >
-                        <span data-debug-id={`sidebar-project-vcs-${project.projectId}`} aria-label={vcs.label} className={`shrink-0 rounded border px-1 py-0 font-mono text-[9px] uppercase tracking-wide ${vcs.tone}`}>{vcs.icon}</span>
-                        <span className="truncate">{shortenPath(directory)}</span>
-                      </div>
-                    );
-                  })()}
-                  {!collapsed && (
-                    <>
-                      <div className="mt-1">
-                        {projectChains.length === 0 && (
-                          <div className="px-1.5 py-1 text-[10px] text-zinc-600">No active chains</div>
-                        )}
-                        {projectChains.map((chain) => {
-                          const active = home.selectedChainId === chain.chainId;
-                          const accent = chainStatusAccent(chain.status);
-                          const coordinatorId = chain.coordinatorAgentInstanceId || '';
-                          const unread = coordinatorId && !active ? (unreadByAgentId[coordinatorId] || 0) : 0;
-                          const progress = buildChainProgress(chain.chainId, chainTaskIds, tasksById);
-                          const activity = buildChainActivityIndicator(chain, chainTaskIds, tasksById, agents);
-                          return (
-                            <button
-                              key={chain.chainId}
-                              data-debug-id={`sidebar-chain-${chain.chainId}`}
-                              data-status={chain.status}
-                              data-unread={unread > 0 ? unread : undefined}
-                              onClick={() => openChain(chain.chainId)}
-                              title={`${chain.title || chain.chainId} · ${chain.status} · ${progress.label} · ${activity.title}${unread ? ` · ${unread} unread` : ''}`}
-                              className={`group flex w-full flex-col gap-1 border-l-2 px-2 py-1.5 text-left text-[12px] transition ${accent.border} ${active ? 'bg-white/[0.06] text-zinc-50' : 'text-zinc-400 hover:bg-white/[0.03] hover:text-zinc-100'}`}
-                            >
-                              <span className="flex w-full min-w-0 items-center gap-2">
-                                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${accent.dot}`}></span>
-                                <span className="min-w-0 flex-1 truncate">{chain.title || chain.chainId}</span>
-                                <span
-                                  data-debug-id={`sidebar-chain-activity-${chain.chainId}`}
-                                  title={activity.title}
-                                  className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-medium leading-none ${activity.tone}`}
-                                >{activity.label}</span>
-                                {unread > 0 && (
-                                  <span
-                                    data-debug-id={`sidebar-chain-unread-${chain.chainId}`}
-                                    className="shrink-0 rounded-full bg-sky-400 px-1.5 py-0.5 text-[9px] font-semibold text-black"
-                                  >{unread > 99 ? '99+' : unread}</span>
-                                )}
-                              </span>
-                              <span data-debug-id={`sidebar-chain-progress-${chain.chainId}`} className="ml-3 flex w-[calc(100%-0.75rem)] items-center gap-1.5 text-[9px] text-zinc-500">
-                                <span className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-white/10">
-                                  <span className="block h-full rounded-full bg-sky-400/80" style={{ width: `${progress.percent}%` }} />
-                                </span>
-                                <span className="shrink-0 tabular-nums">{progress.total === 0 ? '—' : `${progress.percent}%`}</span>
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                      <button
-                        data-debug-id={`sidebar-new-chain-btn-${project.projectId}`}
-                        onClick={() => dispatch(openNewChainModal({ projectId: project.projectId }))}
-                        className="mt-1 flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-[11px] text-zinc-500 transition hover:bg-white/[0.03] hover:text-sky-200"
-                      >
-                        <span className="text-sm leading-none">+</span> New chain
-                      </button>
-                    </>
-                  )}
-                </div>
-              );
-            })}
+            <SidebarAgentsList
+              agents={agents}
+              chainsById={chainsById}
+              projects={projects}
+              session={session}
+              templates={settingsTemplates}
+              providers={settingsProviders}
+              onOpenChain={openChain}
+              onRefreshAgents={() => dispatch(refreshAgents()).unwrap().catch(() => undefined)}
+            />
+            <div className="mb-3">
+              <button
+                data-debug-id="sidebar-new-chain-btn"
+                onClick={() => dispatch(openNewChainModal({}))}
+                className="flex w-full items-center justify-center gap-1 rounded-lg bg-white/[0.04] px-2 py-2 text-[11px] font-medium text-zinc-200 transition hover:bg-white/[0.09] hover:text-sky-100"
+              >
+                <span className="text-sm leading-none">+</span> New task chain
+              </button>
+            </div>
+            <div className="mb-3 rounded-xl border border-white/5 bg-black/10 p-2" data-debug-id="sidebar-chain-list">
+              <div className="mb-1.5 flex items-center justify-between gap-2 px-1">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Task chains</div>
+                <div className="text-[10px] text-zinc-600">{sidebarChains.length}</div>
+              </div>
+              {sidebarChains.length === 0 ? (
+                <div className="px-1 py-1 text-[10px] text-zinc-600">No active chains</div>
+              ) : sidebarChains.map((chain) => {
+                const active = home.selectedChainId === chain.chainId;
+                const accent = chainStatusAccent(chain.status);
+                const coordinatorId = chain.coordinatorAgentInstanceId || '';
+                const unread = coordinatorId && !active ? (unreadByAgentId[coordinatorId] || 0) : 0;
+                const progress = buildChainProgress(chain.chainId, chainTaskIds, tasksById);
+                const activity = buildChainActivityIndicator(chain, chainTaskIds, tasksById, agents);
+                const project = projectsById[chainProjectId(chain)];
+                const projectName = project?.name || chain.projectId || '';
+                return (
+                  <button
+                    key={chain.chainId}
+                    data-debug-id={`sidebar-chain-${chain.chainId}`}
+                    data-status={chain.status}
+                    data-unread={unread > 0 ? unread : undefined}
+                    onClick={() => openChain(chain.chainId)}
+                    title={`${chain.title || chain.chainId} · ${chain.status}${projectName ? ` · ${projectName}` : ''} · ${progress.label} · ${activity.title}${unread ? ` · ${unread} unread` : ''}`}
+                    className={`group mb-1 flex w-full flex-col gap-1 rounded-lg border-l-2 px-2 py-1.5 text-left text-[12px] transition ${accent.border} ${active ? 'bg-white/[0.06] text-zinc-50' : 'text-zinc-400 hover:bg-white/[0.03] hover:text-zinc-100'}`}
+                  >
+                    <span className="flex w-full min-w-0 items-center gap-2">
+                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${accent.dot}`}></span>
+                      <span className="min-w-0 flex-1 truncate">{chain.title || chain.chainId}</span>
+                      <span
+                        data-debug-id={`sidebar-chain-activity-${chain.chainId}`}
+                        title={activity.title}
+                        className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-medium leading-none ${activity.tone}`}
+                      >{activity.label}</span>
+                      {unread > 0 && (
+                        <span
+                          data-debug-id={`sidebar-chain-unread-${chain.chainId}`}
+                          className="shrink-0 rounded-full bg-sky-400 px-1.5 py-0.5 text-[9px] font-semibold text-black"
+                        >{unread > 99 ? '99+' : unread}</span>
+                      )}
+                    </span>
+                    <span className="ml-3 truncate text-[9px] text-zinc-600">{projectName || 'No project'}</span>
+                    <span data-debug-id={`sidebar-chain-progress-${chain.chainId}`} className="ml-3 flex w-[calc(100%-0.75rem)] items-center gap-1.5 text-[9px] text-zinc-500">
+                      <span className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-white/10">
+                        <span className="block h-full rounded-full bg-sky-400/80" style={{ width: `${progress.percent}%` }} />
+                      </span>
+                      <span className="shrink-0 tabular-nums">{progress.total === 0 ? '—' : `${progress.percent}%`}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
           <div className="border-t border-white/5 p-2">
             <button
@@ -1112,18 +1084,6 @@ export default function App() {
               openChain={openChain}
               openMemory={() => selectSurfaceWithUrl('memory')}
               newChain={(projectId?: string) => dispatch(openNewChainModal({ projectId: projectId || selectedProjectId }))}
-              agents={agents}
-              projects={projects}
-              session={session}
-              chats={chats}
-              templates={settingsTemplates}
-              providers={settingsProviders}
-              onRefreshAgents={() => dispatch(refreshAgents()).unwrap().catch(() => undefined)}
-              onFetchAgentChat={(agentId: string) => dispatch(fetchSelectedChat({ agentId })).unwrap().catch(() => undefined)}
-              onSendAgentMessage={async (agentId: string, body: string) => {
-                await daemonApi.sendToAgent({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, agentInstanceId: agentId, body });
-                dispatch(fetchSelectedChat({ agentId }));
-              }}
             />
           )}
         </main>
@@ -1336,13 +1296,83 @@ function ChainCreationProgressModal({ progress, onOpen, onCancel }: any) {
   );
 }
 
-function agentVisibleOnHome(agent: any): boolean {
-  if (!agent?.id) return false;
-  return String(agent.agentScope || agent.agent_scope || 'durable') !== 'generated_chain';
+function taskGeneratedAgentChainId(agent: any): string {
+  const id = String(agent?.id || agent?.agent_instance_id || '');
+  const at = id.indexOf('@');
+  const suffix = at >= 0 ? id.slice(at + 1) : id;
+  const match = suffix.match(/(?:^|.*-)(chain-[a-z0-9-]+)$/i);
+  return match?.[1] || '';
 }
 
-function HomePage({ groups, activeProject, loading, chainTaskIds, tasksById, home, totalMemoryRecords, pendingMemoryIds, openChain, openMemory, newChain, agents = [], projects = [], session, chats = {}, templates = [], providers = [], onRefreshAgents, onFetchAgentChat, onSendAgentMessage }: any) {
-  const visibleAgents = useMemo(() => (agents || []).filter(agentVisibleOnHome), [agents]);
+function isTaskGeneratedAgent(agent: any): boolean {
+  if (!agent?.id && !agent?.agent_instance_id) return false;
+  return String(agent.agentScope || agent.agent_scope || '') === 'generated_chain' || Boolean(taskGeneratedAgentChainId(agent));
+}
+
+function SidebarAgentsList({ agents = [], chainsById = {}, projects = [], session = {}, templates = [], providers = [], onOpenChain, onRefreshAgents }: any) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const taskAgents = useMemo(() => (agents || []).filter(isTaskGeneratedAgent), [agents]);
+  return (
+    <div className="mb-4 rounded-xl border border-white/5 bg-black/10 p-2" data-debug-id="sidebar-agents-list">
+      <button
+        data-debug-id="sidebar-agent-launch-btn"
+        onClick={() => setPickerOpen((current) => !current)}
+        className="mb-2 flex w-full items-center justify-center gap-1 rounded-lg bg-sky-400/10 px-2 py-1.5 text-[11px] font-medium text-sky-100 transition hover:bg-sky-400/15"
+      >
+        <span className="text-sm leading-none">+</span> Launch agent
+      </button>
+      {pickerOpen && (
+        <div className="mb-3 rounded-xl border border-white/10 bg-black/20 p-2">
+          <AgentPicker
+            debugId="sidebar-agent-picker"
+            daemonUrl={session?.daemonUrl || ''}
+            agents={agents}
+            projects={projects}
+            templates={templates}
+            providers={providers}
+            onRefreshAgents={onRefreshAgents}
+            onSelected={async () => {
+              await onRefreshAgents?.();
+              setPickerOpen(false);
+            }}
+          />
+        </div>
+      )}
+      <div className="mb-1.5 flex items-center justify-between gap-2 px-1">
+        <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Agents</div>
+        <div className="text-[10px] text-zinc-600">{taskAgents.length}</div>
+      </div>
+      {taskAgents.length === 0 ? (
+        <div className="px-1 py-1 text-[10px] text-zinc-600">No task-generated agents</div>
+      ) : (
+        <div className="space-y-1">
+          {taskAgents.slice(0, 80).map((agent: any) => {
+            const chainId = taskGeneratedAgentChainId(agent);
+            const chain = chainId ? chainsById[chainId] : null;
+            const running = isAgentRunning(agent);
+            const disabled = !chainId || !chain;
+            return (
+              <button
+                key={agent.id}
+                data-debug-id={`sidebar-agent-${agent.id}`}
+                disabled={disabled}
+                onClick={() => chainId && chain && onOpenChain?.(chainId)}
+                title={`${agent.label || agent.id}${chain ? ` · ${chain.title || chainId}` : ''}`}
+                className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] transition ${disabled ? 'cursor-default text-zinc-500' : 'text-zinc-300 hover:bg-white/[0.04] hover:text-zinc-100'}`}
+              >
+                <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${running ? 'bg-emerald-300' : 'bg-zinc-600'}`} />
+                <span className="min-w-0 flex-1 truncate">{agent.label || agent.id}</span>
+              </button>
+            );
+          })}
+          {taskAgents.length > 80 && <div className="px-2 py-1 text-[10px] text-zinc-600">+{taskAgents.length - 80} more</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function HomePage({ groups, activeProject, loading, chainTaskIds, tasksById, home, totalMemoryRecords, pendingMemoryIds, openChain, openMemory, newChain }: any) {
   return (
     <div className="mx-auto max-w-6xl px-8 py-8">
       <div className="flex items-start justify-between gap-4">
@@ -1392,17 +1422,6 @@ function HomePage({ groups, activeProject, loading, chainTaskIds, tasksById, hom
             </div>
           </section>
         ))}
-        <HomeRunningAgentsPanel
-          agents={visibleAgents}
-          projects={projects}
-          session={session}
-          chats={chats}
-          templates={templates}
-          providers={providers}
-          onRefreshAgents={onRefreshAgents}
-          onFetchAgentChat={onFetchAgentChat}
-          onSendAgentMessage={onSendAgentMessage}
-        />
       </div>
     </div>
   );
