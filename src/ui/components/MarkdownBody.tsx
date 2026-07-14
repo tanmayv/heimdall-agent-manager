@@ -8,12 +8,17 @@ import * as daemonApi from '../api/daemonApi';
 const artifactNameCache = new Map<string, string>();
 const artifactNamePending = new Map<string, Promise<string>>();
 
+export type MarkdownTextSelection = {
+  selectedText: string;
+};
+
 export type MarkdownBodyProps = {
   source: string;
   className?: string;
   compact?: boolean;
   'data-debug-id'?: string;
   onArtifactClick?: (artifactId: string) => void;
+  onTextSelectionChange?: (selection: MarkdownTextSelection | null) => void;
 };
 
 const ARTIFACT_TOKEN_RE = /(^|[^"'>])(artifact:\/\/(art_[0-9a-f]{8,}))/g;
@@ -212,7 +217,20 @@ function tableToCsv(table: HTMLTableElement): string {
   )).join('\n');
 }
 
-export default function MarkdownBody({ source, className, compact, 'data-debug-id': dataDebugId, onArtifactClick }: MarkdownBodyProps) {
+function readMarkdownSelection(root: HTMLElement): MarkdownTextSelection | null {
+  const selection = window.getSelection?.() || document.getSelection?.();
+  if (!selection || selection.rangeCount === 0 || selection.isCollapsed) return null;
+  const range = selection.getRangeAt(0);
+  const commonAncestor = range.commonAncestorContainer;
+  if (!root.contains(commonAncestor)) return null;
+  if (selection.anchorNode && !root.contains(selection.anchorNode)) return null;
+  if (selection.focusNode && !root.contains(selection.focusNode)) return null;
+  const selectedText = selection.toString().replace(/\s+/g, ' ').trim();
+  if (!selectedText) return null;
+  return { selectedText };
+}
+
+export default function MarkdownBody({ source, className, compact, 'data-debug-id': dataDebugId, onArtifactClick, onTextSelectionChange }: MarkdownBodyProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
   const html = useMemo(() => renderMarkdown(source || ''), [source]);
   const spacing = compact ? 'space-y-1' : 'space-y-2';
@@ -291,6 +309,18 @@ export default function MarkdownBody({ source, className, compact, 'data-debug-i
     root.addEventListener('click', onClick);
     return () => root.removeEventListener('click', onClick);
   }, [html, onArtifactClick]);
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root || !onTextSelectionChange) return undefined;
+    const emitSelection = () => onTextSelectionChange(readMarkdownSelection(root));
+    root.addEventListener('mouseup', emitSelection);
+    root.addEventListener('keyup', emitSelection);
+    return () => {
+      root.removeEventListener('mouseup', emitSelection);
+      root.removeEventListener('keyup', emitSelection);
+    };
+  }, [html, onTextSelectionChange]);
 
   return (
     <div
