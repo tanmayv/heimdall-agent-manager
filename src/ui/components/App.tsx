@@ -320,6 +320,12 @@ type ChainProgress = {
   label: string;
 };
 
+type ChainActivityIndicator = {
+  label: string;
+  tone: string;
+  title: string;
+};
+
 const TASK_PROGRESS_COMPLETE_STATUSES = new Set(['approved', 'done', 'completed']);
 const TASK_PROGRESS_EXCLUDED_STATUSES = new Set(['cancelled', 'archived', 'abandoned']);
 
@@ -340,18 +346,91 @@ function chainMeta(chainId: string, chainTaskIds: Record<string, string[]>, task
   return `${progress.completed} / ${progress.total} done · ${progress.blocked} blocked · ${progress.reviewReady} review-ready`;
 }
 
-function isUserActionableTask(task: any): boolean {
+const USER_REVIEWER_IDS = new Set(['user_proxy', 'operator@local']);
+
+function taskIsUserBlocking(task: any): boolean {
   if (!task) return false;
   if (task.status === 'review_ready') {
-    return (task.participants || []).some((p: any) => p.agentInstanceId === 'user_proxy' && p.role === 'lgtm_required');
+    if (USER_REVIEWER_IDS.has(task.reviewerAgentInstanceId)) return true;
+    return (task.participants || []).some((p: any) => USER_REVIEWER_IDS.has(p.agentInstanceId) && (p.role === 'lgtm_required' || p.role === 'lgtm_optional'));
   }
   if (task.status === 'blocked') {
     const reason = String(task.notActionableReason || '');
-    if (reason.startsWith('awaiting_user')) return true;
-    if (reason.startsWith('manual_block:') && /operator|user/i.test(reason)) return true;
-    return false;
+    return reason.startsWith('awaiting_user') || (reason.startsWith('manual_block:') && /operator|user/i.test(reason));
   }
   return false;
+}
+
+function chainAgentIds(chain: any, tasks: any[]): Set<string> {
+  const ids = new Set<string>();
+  if (chain?.coordinatorAgentInstanceId) ids.add(chain.coordinatorAgentInstanceId);
+  if (chain?.defaultReviewerAgentInstanceId) ids.add(chain.defaultReviewerAgentInstanceId);
+  for (const task of tasks) {
+    if (task.assigneeAgentInstanceId) ids.add(task.assigneeAgentInstanceId);
+    if (task.coordinatorAgentInstanceId) ids.add(task.coordinatorAgentInstanceId);
+    if (task.reviewerAgentInstanceId) ids.add(task.reviewerAgentInstanceId);
+    for (const p of task.participants || []) {
+      if (p.agentInstanceId) ids.add(p.agentInstanceId);
+    }
+  }
+  ids.delete('');
+  ids.delete('user_proxy');
+  ids.delete('operator@local');
+  return ids;
+}
+
+function agentIsLive(agent: any): boolean {
+  const startup = String(agent?.startupStatus || '').toLowerCase();
+  const state = String(agent?.state || agent?.status || '').toLowerCase();
+  return Boolean(agent?.connected || startup === 'ready' || state === 'ready' || state === 'live' || state === 'connected' || state === 'idle');
+}
+
+function agentIsActive(agent: any): boolean {
+  if (!agentIsLive(agent)) return false;
+  const activity = String(agent?.activityStatus || agent?.activity_status || '').toLowerCase();
+  const status = String(agent?.status || '').toLowerCase();
+  return activity === 'active' || status === 'connected' || Boolean(agent?.currentTaskId);
+}
+
+function buildChainActivityIndicator(chain: any, chainTaskIds: Record<string, string[]>, tasksById: Record<string, any>, agents: any[]): ChainActivityIndicator {
+  const taskIds = chainTaskIds?.[chain.chainId] || [];
+  const tasks = taskIds.map((id) => tasksById?.[id]).filter(Boolean).filter((task) => !TASK_PROGRESS_EXCLUDED_STATUSES.has(String(task.status || '')));
+  const userBlocking = tasks.filter(taskIsUserBlocking).length;
+  if (userBlocking > 0) {
+    return { label: 'Needs user', tone: 'border-fuchsia-400/30 bg-fuchsia-400/10 text-fuchsia-200', title: `${userBlocking} task${userBlocking === 1 ? '' : 's'} waiting on user/operator input` };
+  }
+
+  const blocked = tasks.filter((task) => task.status === 'blocked').length;
+  if (blocked > 0) {
+    return { label: 'Blocked', tone: 'border-red-400/30 bg-red-400/10 text-red-200', title: `${blocked} blocked task${blocked === 1 ? '' : 's'}` };
+  }
+
+  const agentIds = chainAgentIds(chain, tasks);
+  const relevantAgents = (agents || []).filter((agent: any) => {
+    const id = agent.id || agent.agentInstanceId || agent.agent_instance_id || '';
+    return agentIds.has(id) || (chain.chainId && id.includes(chain.chainId));
+  });
+  const liveAgents = relevantAgents.filter(agentIsLive);
+  const activeAgents = relevantAgents.filter(agentIsActive);
+  if (activeAgents.length > 0) {
+    return { label: 'Active', tone: 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200', title: `${activeAgents.length} active agent${activeAgents.length === 1 ? '' : 's'} on this chain` };
+  }
+  if (liveAgents.length > 0) {
+    return { label: 'Idle', tone: 'border-amber-300/30 bg-amber-300/10 text-amber-100', title: `All ${liveAgents.length} live agent${liveAgents.length === 1 ? '' : 's'} appear idle` };
+  }
+
+  const progress = buildChainProgress(chain.chainId, chainTaskIds, tasksById);
+  if (progress.incomplete === 0 && progress.total > 0) {
+    return { label: 'Done', tone: 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200', title: 'All tracked tasks are complete' };
+  }
+  if (chain.status === 'planning' || chain.status === 'paused') {
+    return { label: chain.status === 'paused' ? 'Paused' : 'Planning', tone: 'border-violet-400/30 bg-violet-400/10 text-violet-200', title: `Chain is ${chain.status}` };
+  }
+  return { label: 'Offline', tone: 'border-zinc-500/40 bg-zinc-500/10 text-zinc-300', title: 'No live agents detected for this chain' };
+}
+
+function isUserActionableTask(task: any): boolean {
+  return taskIsUserBlocking(task);
 }
 
 function attentionCount(tasksById: Record<string, any>, attention: any, pendingMemoryIds: number, mergeReviewingChains: number) {
@@ -868,6 +947,7 @@ export default function App() {
                           const coordinatorId = chain.coordinatorAgentInstanceId || '';
                           const unread = coordinatorId && !active ? (unreadByAgentId[coordinatorId] || 0) : 0;
                           const progress = buildChainProgress(chain.chainId, chainTaskIds, tasksById);
+                          const activity = buildChainActivityIndicator(chain, chainTaskIds, tasksById, agents);
                           return (
                             <button
                               key={chain.chainId}
@@ -875,12 +955,17 @@ export default function App() {
                               data-status={chain.status}
                               data-unread={unread > 0 ? unread : undefined}
                               onClick={() => openChain(chain.chainId)}
-                              title={`${chain.title || chain.chainId} · ${chain.status} · ${progress.label}${unread ? ` · ${unread} unread` : ''}`}
+                              title={`${chain.title || chain.chainId} · ${chain.status} · ${progress.label} · ${activity.title}${unread ? ` · ${unread} unread` : ''}`}
                               className={`group flex w-full flex-col gap-1 border-l-2 px-2 py-1.5 text-left text-[12px] transition ${accent.border} ${active ? 'bg-white/[0.06] text-zinc-50' : 'text-zinc-400 hover:bg-white/[0.03] hover:text-zinc-100'}`}
                             >
                               <span className="flex w-full min-w-0 items-center gap-2">
                                 <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${accent.dot}`}></span>
                                 <span className="min-w-0 flex-1 truncate">{chain.title || chain.chainId}</span>
+                                <span
+                                  data-debug-id={`sidebar-chain-activity-${chain.chainId}`}
+                                  title={activity.title}
+                                  className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-medium leading-none ${activity.tone}`}
+                                >{activity.label}</span>
                                 {unread > 0 && (
                                   <span
                                     data-debug-id={`sidebar-chain-unread-${chain.chainId}`}
@@ -2625,6 +2710,7 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ex
                     <button data-debug-id={`task-detail-status-done-btn-${task.taskId}`} disabled={Boolean(busyAction)} onClick={() => runAction(`done-${task.taskId}`, () => onSetTaskStatus(task, 'review_ready', 'Submitted for review from ChainView.'))} className="rounded-xl bg-emerald-400/90 px-3 py-2 text-xs font-semibold text-black hover:bg-emerald-300 disabled:opacity-60">Done / review</button>
                     <button data-debug-id={`task-detail-status-block-btn-${task.taskId}`} disabled={Boolean(busyAction)} onClick={() => runAction(`block-${task.taskId}`, () => onSetTaskStatus(task, 'blocked', 'Blocked from ChainView.'))} className="rounded-xl bg-amber-400/90 px-3 py-2 text-xs font-semibold text-black hover:bg-amber-300 disabled:opacity-60">Block</button>
                     <button data-debug-id={`task-detail-status-later-btn-${task.taskId}`} disabled={Boolean(busyAction)} onClick={() => runAction(`later-${task.taskId}`, () => onSetTaskStatus(task, 'queued', 'Moved later from ChainView.'))} className="rounded-xl bg-white/10 px-3 py-2 text-xs hover:bg-white/15 disabled:opacity-60">Later</button>
+                    <button data-debug-id={`task-detail-status-cancel-btn-${task.taskId}`} disabled={Boolean(busyAction)} onClick={() => runAction(`cancel-${task.taskId}`, () => onSetTaskStatus(task, 'cancelled', 'Cancelled from ChainView.'))} className="rounded-xl bg-red-400/90 px-3 py-2 text-xs font-semibold text-black hover:bg-red-300 disabled:opacity-60">Cancel</button>
                     {busyAction.endsWith(task.taskId) && <span className="self-center text-xs text-sky-200">Working…</span>}
                   </div>
                   <div className="mt-3 rounded-xl bg-black/20 p-3">
