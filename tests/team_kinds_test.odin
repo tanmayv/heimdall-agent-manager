@@ -63,6 +63,8 @@ main :: proc() {
 	check(solo.collaborating_agent_count == 3, "solo must report 3 collaborating agents")
 	check(solo.memory_templates_inherit_from_role == "worker", "solo must inherit memory templates from worker role")
 	check(solo.wants_vcs_follows_project, "solo must follow project vcs_kind")
+
+	test_fig_google3_detection()
 }
 
 count_role :: proc(roles: []daemon.Team_Role_Slot, key: string) -> int {
