@@ -130,6 +130,7 @@ export function mapAgent(agent: any) {
 
   return {
     id: agent.agent_instance_id || agent.agentInstanceId || agent.id,
+    agentId: agent.agent_id || agent.agentId || agent.agent_instance_id || agent.agentInstanceId || agent.id || '',
     agentRecordId: agent.agent_record_id || agent.agentRecordId || '',
     label: agent.display_name || agent.displayName || agent.alias || agent.agent_instance_id || agent.id,
     status,

@@ -3070,7 +3070,8 @@ function NewChainModal({ projectId, projects, agents, creating, error, onClose, 
   const savedScaffoldDefault = savedKindScaffoldDefault.scaffold === 'none' ? NONE_SCAFFOLD_META : findScaffold(savedKindDef, savedKindScaffoldDefault.scaffold);
   const selectionDiffersFromDefault = !newChainKindScaffoldSelectionsMatch({ kind, scaffold }, savedKindScaffoldDefault);
   const [setSelectionAsDefault, setSetSelectionAsDefault] = useState(false);
-  const coordinatorAgentInstanceId = '';
+  const [coordinatorAgentInstanceId, setCoordinatorAgentInstanceId] = useState('');
+  const coordinatorAgents = useMemo(() => (agents || []).filter((agent: any) => agent?.id && String(agent.state || '').toLowerCase() !== 'archived'), [agents]);
 
   useEffect(() => {
     setWantsVcs(defaultWantsVcs(findTeamKind(kind), selectedProjectSupportsVcs));
@@ -3196,7 +3197,16 @@ function NewChainModal({ projectId, projects, agents, creating, error, onClose, 
             Project VCS: {selectedProjectSupportsVcs ? `enabled via ${projectAnchorValue(selectedProject, 'vcs_kind', 'auto')} repo ${projectAnchorValue(selectedProject, 'directory')}` : 'disabled — add directory/vcs_kind anchors in project settings'}
           </div>
 
-          <div data-debug-id="new-chain-coordinator-preview" className="rounded-xl bg-white/[0.04] p-3 text-xs text-zinc-500">Coordinator: generated on create as coordinator@project-chain</div>
+          <label className="block text-sm text-zinc-300">
+            Coordinator
+            <select data-debug-id="new-chain-coordinator-select" value={coordinatorAgentInstanceId} onChange={(event) => setCoordinatorAgentInstanceId(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
+              <option value="">Generate coordinator for this chain</option>
+              {coordinatorAgents.map((agent: any) => <option key={agent.id} value={agent.id}>{agent.label || agent.id}{agent.agentId && agent.agentId !== agent.id ? ` · ${agent.agentId}` : ''}{agent.projectId ? ` · home ${agent.projectId}` : ''}</option>)}
+            </select>
+            <div data-debug-id="new-chain-coordinator-preview" className="mt-2 rounded-xl bg-white/[0.04] p-3 text-xs text-zinc-500">
+              {coordinatorAgentInstanceId ? `Coordinator: reuse ${coordinatorAgentInstanceId}` : 'Coordinator: generated on create as coordinator@project-chain'}
+            </div>
+          </label>
           {error && <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-200">{error}</div>}
         </div>
 
