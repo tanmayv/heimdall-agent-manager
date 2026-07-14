@@ -709,9 +709,12 @@ task_service_maybe_provision_workspace :: proc(project_id, chain_id, team_id, ti
 	if kind == "none" || repo == "" do return Vcs_Workspace_Record{}, false, "no vcs"
 	backend_kind := vcs.Vcs_Kind.Git
 	if kind == "jj" do backend_kind = .Jj
+	if kind == "fig" do backend_kind = .Fig
 	if kind == "auto" {
 		jj_detected := vcs.vcs_backend_for(.Jj).detect(repo)
+		fig_detected := vcs.vcs_backend_for(.Fig).detect(repo)
 		if jj_detected.ok do backend_kind = .Jj
+		else if fig_detected.ok do backend_kind = .Fig
 		else do backend_kind = .Git
 	}
 	backend := vcs.vcs_backend_for(backend_kind)
@@ -726,6 +729,7 @@ task_service_maybe_provision_workspace :: proc(project_id, chain_id, team_id, ti
 	now := router_now_unix_ms()
 	rec := Vcs_Workspace_Record{workspace_id=fmt.tprintf("ws_%s", chain_id), chain_id=chain_id, project_id=project_id, vcs_kind="git", path=handle.path, branch_or_change=handle.branch_or_change, base_ref=handle.base_ref, status="clean", created_unix_ms=now, updated_unix_ms=now}
 	if backend_kind == .Jj do rec.vcs_kind = "jj"
+	if backend_kind == .Fig do rec.vcs_kind = "fig"
 	if !vcs_db_insert_workspace(rec) {
 		_, _ = backend.workspace_remove(handle, true)
 		return Vcs_Workspace_Record{}, false, "persist workspace failed"
