@@ -27,13 +27,6 @@ function agentTemplate(agent: any): string {
   return agent?.templateId || agent?.template_id || agent?.agentRole || agent?.agent_role || agent?.roleHint || agent?.role_hint || '';
 }
 
-function isGeneratedChainAgent(agent: any) {
-  const scope = String(agent?.agentScope || agent?.agent_scope || '').toLowerCase();
-  const id = agentId(agent);
-  const suffix = id.includes('@') ? id.split('@').slice(1).join('@') : id;
-  return scope === 'generated_chain' || /(?:^|-)chain-/i.test(suffix);
-}
-
 function roleMatches(agent: any, roleHint: string) {
   if (!roleHint) return true;
   const hint = roleHint.toLowerCase();
@@ -64,13 +57,31 @@ function providerDefault(providers: any[]) {
 }
 
 function statusLabel(agent: any) {
-  const status = agent?.status || agent?.startupStatus || (agent?.connected ? 'connected' : 'offline');
-  const task = agent?.currentTaskId ? ` · busy ${agent.currentTaskId}` : '';
-  return `${status || 'offline'}${task}`;
+  const connection = String(agent?.connectionState || agent?.connection_state || '').toLowerCase();
+  const live = Boolean(agent?.connected) || connection === 'connected';
+  const status = live ? 'live' : 'offline';
+  const task = agent?.currentTaskId ? ` · task ${agent.currentTaskId}` : '';
+  return `${status}${task}`;
+}
+
+function searchMatches(agent: any, query: string) {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  const haystack = [
+    agentId(agent),
+    agentLabel(agent),
+    agentTemplate(agent),
+    agent?.agentRole || agent?.agent_role || '',
+    agent?.providerProfile || agent?.provider_profile || '',
+    agent?.projectId || agent?.project_id || '',
+    statusLabel(agent),
+  ].join(' ').toLowerCase();
+  return haystack.includes(q);
 }
 
 export default function AgentPicker({ debugId, daemonUrl, agents, projects, templates = [], providers = [], value = '', roleHint = '', defaultProjectId = '', onSelected, onRefreshAgents }: AgentPickerProps) {
-  const filteredAgents = useMemo(() => (agents || []).filter((agent) => agentId(agent) && !isGeneratedChainAgent(agent) && roleMatches(agent, roleHint)), [agents, roleHint]);
+  const [query, setQuery] = useState('');
+  const filteredAgents = useMemo(() => (agents || []).filter((agent) => agentId(agent) && roleMatches(agent, roleHint) && searchMatches(agent, query)), [agents, roleHint, query]);
   const fallbackTemplate = templateDefault(templates, roleHint);
   const fallbackProvider = providerDefault(providers);
   const [existingId, setExistingId] = useState(value || filteredAgents[0]?.id || '');
@@ -139,12 +150,20 @@ export default function AgentPicker({ debugId, daemonUrl, agents, projects, temp
         {value && <div className="max-w-[220px] truncate rounded-full bg-white/5 px-2 py-1 text-xs text-zinc-400">Selected {value}</div>}
       </div>
 
+      <input
+        data-debug-id={`${debugId}-search-input`}
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        placeholder="Search agents by name, id, role, project, live/offline…"
+        className="mt-3 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"
+      />
+
       <div className="mt-3 grid min-w-0 gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto]">
         <select data-debug-id={`${debugId}-existing-select`} value={existingId} onChange={(event) => setExistingId(event.target.value)} className="min-w-0 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
           {filteredAgents.length === 0 && <option value="">No matching existing agents</option>}
           {filteredAgents.map((agent: any) => {
             const id = agentId(agent);
-            const bits = [agentLabel(agent), agentTemplate(agent), agent.projectId ? `home ${agent.projectId}` : 'no project', statusLabel(agent)].filter(Boolean).join(' · ');
+            const bits = [`[${statusLabel(agent).startsWith('live') ? 'LIVE' : 'OFFLINE'}]`, agentLabel(agent), agentTemplate(agent), agent.projectId ? `home ${agent.projectId}` : 'no project', statusLabel(agent)].filter(Boolean).join(' · ');
             return <option key={id} value={id}>{bits}</option>;
           })}
         </select>

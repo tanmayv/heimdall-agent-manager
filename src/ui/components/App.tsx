@@ -1326,10 +1326,17 @@ function SidebarAgentsList({ agents = [], chainsById = {}, projects = [], sessio
   const [chatAgentId, setChatAgentId] = useState('');
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [launchName, setLaunchName] = useState('');
+  const [launchRole, setLaunchRole] = useState('specialist');
+  const [launchBusy, setLaunchBusy] = useState(false);
+  const [launchError, setLaunchError] = useState('');
+  const [launchProgressId, setLaunchProgressId] = useState('');
+  const [launchStartedAt, setLaunchStartedAt] = useState(0);
   const upload = useArtifactUpload({ projectId: '', originKind: 'direct_agent_chat', originRef: chatAgentId });
   const taskAgents = useMemo(() => (agents || []).filter((agent: any) => isTaskGeneratedAgent(agent) && agentHasLiveSession(agent)), [agents]);
   const chatAgent = useMemo(() => (agents || []).find((agent: any) => agent.id === chatAgentId) || null, [agents, chatAgentId]);
   const chatMessages = useMemo(() => normalizeCoordinatorMessages((chats?.[chatAgentId] || []).map((msg: any) => ({ ...msg, agentInstanceId: chatAgentId }))), [chats, chatAgentId]);
+  const launchAgent = useMemo(() => (agents || []).find((agent: any) => agent.id === launchProgressId) || null, [agents, launchProgressId]);
 
   const openAgentChat = async (agentId: string) => {
     setChatAgentId(agentId);
@@ -1353,6 +1360,57 @@ function SidebarAgentsList({ agents = [], chainsById = {}, projects = [], sessio
     }
   };
 
+  const launchAgentId = useMemo(() => {
+    const base = launchName.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'specialist';
+    const existing = new Set((agents || []).map((agent: any) => String(agent.id || agent.agent_instance_id || '').toLowerCase()));
+    if (!existing.has(base)) return base;
+    for (let i = 2; i < 1000; i += 1) {
+      const candidate = `${base}-${i}`;
+      if (!existing.has(candidate)) return candidate;
+    }
+    return `${base}-${Date.now().toString(36)}`;
+  }, [agents, launchName]);
+
+  const launchStatus = String(launchAgent?.startupStatus || launchAgent?.startup_status || launchAgent?.status || '').toLowerCase();
+  const launchReason = String(launchAgent?.startupReason || launchAgent?.startup_reason_code || '').toLowerCase();
+  const launchConnected = Boolean(launchAgent?.connected) || String(launchAgent?.connectionState || launchAgent?.connection_state || '').toLowerCase() === 'connected';
+  const launchReady = Boolean(launchProgressId && (launchReason === 'start_success' || launchStatus === 'ready'));
+  const launchFailed = ['startup_failed', 'startup_blocked', 'startup_unknown'].includes(launchStatus);
+  const launchSteps = [
+    { key: 'create', label: 'Create agent identity', done: Boolean(launchProgressId), detail: launchProgressId || launchAgentId },
+    { key: 'start', label: 'Request wrapper launch', done: Boolean(launchProgressId), detail: launchProgressId ? 'start requested' : 'waiting' },
+    { key: 'connect', label: 'Agent connected', done: launchConnected, detail: launchConnected ? 'connected' : (launchProgressId ? 'waiting for wrapper/websocket' : 'not started') },
+    { key: 'ready', label: 'Agent start-success', done: launchReady, detail: launchReady ? 'start-success observed' : (launchFailed ? launchStatus : 'waiting for agent start-success') },
+  ];
+
+  useEffect(() => {
+    if (!pickerOpen || !launchProgressId || launchReady || launchFailed) return undefined;
+    const tick = () => onRefreshAgents?.();
+    tick();
+    const interval = window.setInterval(tick, 2000);
+    return () => window.clearInterval(interval);
+  }, [pickerOpen, launchProgressId, launchReady, launchFailed, onRefreshAgents]);
+
+  const launchNamedAgent = async () => {
+    const name = launchName.trim();
+    const role = launchRole.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-') || 'specialist';
+    if (!name || launchBusy) return;
+    setLaunchBusy(true);
+    setLaunchError('');
+    try {
+      const provider = providers?.[0]?.name || 'pi';
+      await daemonApi.createAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: launchAgentId, displayName: name, providerProfile: provider, templateId: role, modelTier: 'normal', agentRole: role });
+      setLaunchProgressId(launchAgentId);
+      setLaunchStartedAt(Date.now());
+      await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: launchAgentId, provider, templateId: role, displayName: name, modelTier: 'normal', agentRole: role });
+      await onRefreshAgents?.();
+    } catch (err: any) {
+      setLaunchError(err?.message || 'Unable to launch agent');
+    } finally {
+      setLaunchBusy(false);
+    }
+  };
+
   return (
     <div className="mb-4 rounded-xl border border-white/5 bg-black/10 p-2" data-debug-id="sidebar-agents-list">
       <button
@@ -1368,7 +1426,7 @@ function SidebarAgentsList({ agents = [], chainsById = {}, projects = [], sessio
             <div className="mb-4 flex items-start justify-between gap-4">
               <div>
                 <h2 className="text-lg font-semibold text-zinc-100">Launch agent</h2>
-                <p className="mt-1 text-sm text-zinc-500">Pick an existing agent or create/run a new one for coordinator, reviewer, or task assignment flows.</p>
+                <p className="mt-1 text-sm text-zinc-500">Create a new specialist agent and wait for start-success.</p>
               </div>
               <button
                 data-debug-id="sidebar-agent-picker-close-btn"
@@ -1376,19 +1434,63 @@ function SidebarAgentsList({ agents = [], chainsById = {}, projects = [], sessio
                 className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 transition hover:bg-white/15"
               >Close</button>
             </div>
-            <AgentPicker
-              debugId="sidebar-agent-picker"
-              daemonUrl={session?.daemonUrl || ''}
-              agents={agents}
-              projects={projects}
-              templates={templates}
-              providers={providers}
-              onRefreshAgents={onRefreshAgents}
-              onSelected={async () => {
-                await onRefreshAgents?.();
-                setPickerOpen(false);
-              }}
-            />
+            {!launchProgressId ? (
+              <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Agent name</label>
+                <input
+                  data-debug-id="sidebar-agent-launch-name-input"
+                  value={launchName}
+                  onChange={(event) => setLaunchName(event.target.value)}
+                  placeholder="e.g. Payments API Specialist"
+                  className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"
+                />
+                <label className="mt-4 block text-xs font-semibold uppercase tracking-wide text-zinc-500">Default role</label>
+                <input
+                  data-debug-id="sidebar-agent-launch-role-input"
+                  value={launchRole}
+                  onChange={(event) => setLaunchRole(event.target.value)}
+                  placeholder="specialist"
+                  className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"
+                />
+                <div data-debug-id="sidebar-agent-launch-id-preview" className="mt-3 rounded-xl bg-white/[0.04] px-3 py-2 text-xs text-zinc-400">Agent ID: <span className="font-mono text-zinc-200">{launchAgentId}</span></div>
+                {launchError && <div data-debug-id="sidebar-agent-launch-error" className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{launchError}</div>}
+                <div className="mt-4 flex justify-end gap-2">
+                  <button data-debug-id="sidebar-agent-launch-cancel-btn" onClick={() => setPickerOpen(false)} className="rounded-xl bg-white/10 px-4 py-2 text-sm text-zinc-200 hover:bg-white/15">Cancel</button>
+                  <button data-debug-id="sidebar-agent-launch-submit-btn" onClick={launchNamedAgent} disabled={!launchName.trim() || launchBusy} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">{launchBusy ? 'Launching…' : 'Launch'}</button>
+                </div>
+              </div>
+            ) : (
+              <div data-debug-id="sidebar-agent-launch-progress" className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-xs uppercase tracking-[0.22em] text-zinc-500">Launch progress</div>
+                    <div className="mt-1 truncate font-semibold text-zinc-100">{launchAgent?.label || launchName || launchProgressId}</div>
+                    <div className="mt-1 truncate font-mono text-xs text-zinc-500">{launchProgressId}</div>
+                  </div>
+                  <span className={`rounded-full px-2 py-1 text-xs ${launchReady ? 'bg-emerald-400/15 text-emerald-200' : launchFailed ? 'bg-red-400/15 text-red-200' : 'bg-sky-400/15 text-sky-200'}`}>{launchReady ? 'Ready' : launchFailed ? 'Needs attention' : 'Starting'}</span>
+                </div>
+                <div className="mt-4 h-2 overflow-hidden rounded-full bg-white/10">
+                  <div className="h-full rounded-full bg-sky-400 transition-all" style={{ width: `${Math.round((launchSteps.filter((step) => step.done).length / launchSteps.length) * 100)}%` }} />
+                </div>
+                <div className="mt-4 space-y-2">
+                  {launchSteps.map((step) => (
+                    <div key={step.key} data-debug-id={`sidebar-agent-launch-step-${step.key}`} className="flex items-start gap-3 rounded-xl bg-white/[0.035] px-3 py-2">
+                      <span className={`mt-1 h-2 w-2 shrink-0 rounded-full ${step.done ? 'bg-emerald-300' : launchFailed && step.key === 'ready' ? 'bg-red-300' : 'bg-zinc-600'}`} />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium text-zinc-100">{step.label}</div>
+                        <div className="truncate text-xs text-zinc-500">{step.detail}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {launchAgent?.startupReason && <div className="mt-3 rounded-xl bg-white/[0.04] px-3 py-2 text-xs text-zinc-400">Reason: {launchAgent.startupReason}</div>}
+                {launchAgent?.startupReason && launchAgent?.startupReason !== 'start_success' && launchAgent?.startupReason !== 'register' && launchAgent?.startupReason !== 'startup_report' && <div className="mt-2 rounded-xl bg-white/[0.04] px-3 py-2 text-xs text-zinc-400">{launchAgent.startupReason}</div>}
+                <div className="mt-4 flex justify-end gap-2">
+                  <button data-debug-id="sidebar-agent-launch-new-btn" onClick={() => { setLaunchProgressId(''); setLaunchStartedAt(0); setLaunchName(''); setLaunchRole('specialist'); }} className="rounded-xl bg-white/10 px-4 py-2 text-sm text-zinc-200 hover:bg-white/15">Launch another</button>
+                  <button data-debug-id="sidebar-agent-launch-done-btn" onClick={() => setPickerOpen(false)} disabled={!launchReady && !launchFailed} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">Done</button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
