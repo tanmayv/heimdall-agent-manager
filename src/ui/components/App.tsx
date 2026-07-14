@@ -459,6 +459,9 @@ export default function App() {
   const [chainCreationProgress, setChainCreationProgress] = useState<any>(null);
   const [daemonPickerOpen, setDaemonPickerOpen] = useState(false);
   const [agentPageId, setAgentPageId] = useState('');
+  // Keep direct agent chat drafts at App scope so a transient AgentDetailPage
+  // remount during refresh/revalidation cannot wipe a long in-progress message.
+  const [agentChatDraftsById, setAgentChatDraftsById] = useState<Record<string, string>>({});
   const [guideDebugInfo, setGuideDebugInfo] = useState<{ enabled: boolean; port: number; pid: number } | null>(null);
   const [daemonModalMode, setDaemonModalMode] = useState<null | 'add' | 'rename' | 'connect_failed'>(null);
   const [daemonModalContext, setDaemonModalContext] = useState<{ url?: string; label?: string }>({});
@@ -1082,6 +1085,8 @@ export default function App() {
               session={session}
               projects={projects}
               providers={settingsProviders}
+              chatDraft={agentChatDraftsById[agentPageId] || ''}
+              onChatDraftChange={(value: string) => setAgentChatDraftsById((current) => ({ ...current, [agentPageId]: value }))}
               onBack={() => { setAgentPageId(''); updateUrlParams({ view: 'home', agentId: null }); }}
               onOpenChain={(chainId: string) => { setAgentPageId(''); openChain(chainId); }}
               onAgentDeleted={() => { setAgentPageId(''); dispatch(refreshAgents()); }}
@@ -1712,8 +1717,12 @@ function AgentTaskList({ title, emptyText, tasks, chainsById, agentId, completed
   );
 }
 
-function AgentDetailPage({ agent, tasksById, chainsById, chats, session, projects = [], providers = [], onBack, onOpenChain, onRefreshChat, onSendAgentMessage, onRefreshAgents, onAgentDeleted }: any) {
-  const [draft, setDraft] = useState('');
+function AgentDetailPage({ agent, tasksById, chainsById, chats, session, projects = [], providers = [], chatDraft = '', onChatDraftChange, onBack, onOpenChain, onRefreshChat, onSendAgentMessage, onRefreshAgents, onAgentDeleted }: any) {
+  const draft = chatDraft;
+  const setDraft = (next: any) => {
+    const value = typeof next === 'function' ? next(draft) : next;
+    onChatDraftChange?.(value);
+  };
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState('');
   const [agentBusy, setAgentBusy] = useState('');
