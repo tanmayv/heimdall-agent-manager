@@ -613,6 +613,7 @@ export default function App() {
   const [daemonPickerOpen, setDaemonPickerOpen] = useState(false);
   const [agentPageId, setAgentPageId] = useState('');
   const [selectedSidebarAgentId, setSelectedSidebarAgentId] = useState('');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarAgentLaunchingId, setSidebarAgentLaunchingId] = useState('');
   const [sidebarFetchedAgents, setSidebarFetchedAgents] = useState<any[]>([]);
   const [newConversationBusy, setNewConversationBusy] = useState(false);
@@ -1219,7 +1220,7 @@ export default function App() {
     <VimSidebarProvider>
       <div className="h-screen overflow-hidden bg-[#08090b] text-zinc-100">
       <div className="flex h-full">
-        <aside className="w-[296px] shrink-0 border-r border-white/10 bg-[#090909]">
+        <aside className={`${sidebarCollapsed ? 'w-[64px]' : 'w-[296px]'} shrink-0 border-r border-white/10 bg-[#090909] transition-[width] duration-200`}>
           <ConversationFocusedSidebar
             conversations={conversationAgents}
             chats={chats}
@@ -1228,6 +1229,8 @@ export default function App() {
             onOpenConversation={openAgentPage}
             onNewConversation={createNewConversation}
             newConversationBusy={newConversationBusy}
+            collapsed={sidebarCollapsed}
+            onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
             agents={sidebarFetchedAgents.length > 0 ? sidebarFetchedAgents : agents}
             allAgents={agents}
             onFetchAgentPage={fetchSidebarAgentPage}
@@ -1250,7 +1253,7 @@ export default function App() {
             onSettings={() => selectSurfaceWithUrl('settings')}
           />
         </aside>
-        {selectedSidebarAgentId ? (
+        {selectedSidebarAgentId && !sidebarCollapsed ? (
           <SidebarAgentInstancesPanel
             agentId={selectedSidebarAgentId}
             agents={agents}
@@ -1867,10 +1870,9 @@ function SidebarConversationSection({ conversations = [], chats = {}, projectsBy
                           title={`${title} · ${group.projectName}`}
                           className="flex w-full min-w-0 items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px]"
                         >
-                          <span className={`h-2 w-2 shrink-0 rounded-full ${runtime.color}`}></span>
+                          <span data-debug-id={`conversation-thread-status-${agent.id}`} aria-label={`${agent.id} status: ${status.label}`} title={status.title} className={`h-2 w-2 shrink-0 rounded-full ${status.color} ${status.pulse}`}></span>
                           <span className="min-w-0 flex-1 truncate text-zinc-100">{title}</span>
                           {unread > 0 ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-sky-400" title="Unread messages"></span> : null}
-                          <span data-debug-id={`conversation-thread-status-${agent.id}`} aria-label={`${agent.id} status: ${status.label}`} title={status.title} className={`h-2 w-2 shrink-0 rounded-full ${status.color} ${status.pulse}`}></span>
                           <span data-debug-id={`conversation-thread-status-label-${agent.id}`} aria-label={`${agent.id} ${status.label} detail`} title={status.title} className="shrink-0 text-[10px] tabular-nums text-zinc-600">{status.compact}</span>
                         </button>
                       </div>
@@ -1899,15 +1901,37 @@ function SidebarConversationSection({ conversations = [], chats = {}, projectsBy
 }
 
 
-function ConversationFocusedSidebar({ conversations = [], chats = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, agents = [], allAgents = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onStartAgentInstance, onFetchAgentPage, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onAttention, onMemory, onAgents, onTaskChains, onProjects, onSettings }: any) {
+function ConversationFocusedSidebar({ conversations = [], chats = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, collapsed = false, onToggleCollapsed, agents = [], allAgents = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onStartAgentInstance, onFetchAgentPage, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onAttention, onMemory, onAgents, onTaskChains, onProjects, onSettings }: any) {
   const chainUpdatedMs = (chain: any) => Number(chain?.updatedAtUnixMs || chain?.updated_at_unix_ms || chain?.updatedAt || chain?.updated_at || chain?.createdAtUnixMs || chain?.created_at_unix_ms || 0);
   const sortedChains = [...(chains || [])].sort((a: any, b: any) => chainUpdatedMs(b) - chainUpdatedMs(a));
   const activeChains = sortedChains.filter((chain: any) => !isChainCompleted(chain)).slice(0, 4);
   const agentGroups = durableAgentGroups(agents);
+  if (collapsed) {
+    const railItems = [
+      { id: 'home', icon: '⌂', label: 'Home', onClick: onHome },
+      { id: 'attention', icon: '◷', label: 'Attention', onClick: onAttention },
+      { id: 'memory', icon: '✦', label: 'Memory', onClick: onMemory },
+      { id: 'agents', icon: '◎', label: 'Agents', onClick: onAgents },
+      { id: 'task-chains', icon: '☷', label: 'Task chains', onClick: onTaskChains },
+      { id: 'projects', icon: '▣', label: 'Projects', onClick: onProjects },
+      { id: 'settings', icon: '⚙', label: 'Settings', onClick: onSettings },
+    ];
+    return (
+      <div data-debug-id="conversation-focused-sidebar" data-sidebar-collapsed="true" className="flex h-full flex-col items-center bg-[#090909] py-3 text-zinc-100">
+        <button type="button" data-debug-id="conversation-sidebar-expand-btn" onClick={onToggleCollapsed} title="Expand sidebar" aria-label="Expand sidebar" className="mb-3 grid h-9 w-9 place-items-center rounded-xl border border-white/10 bg-[#141414] text-zinc-300 hover:bg-[#1c1c1c] hover:text-zinc-100">☰</button>
+        <button type="button" data-debug-id="sidebar-new-conversation-collapsed-btn" onClick={() => onNewConversation?.()} disabled={newConversationBusy} title="New Conversation" aria-label="New Conversation" className="mb-3 grid h-9 w-9 place-items-center rounded-xl border border-white/10 bg-[#141414] text-zinc-200 hover:border-white/20 disabled:cursor-not-allowed disabled:opacity-50">＋</button>
+        <nav data-debug-id="conversation-collapsed-nav" className="flex flex-1 flex-col items-center gap-1" aria-label="Collapsed navigation">
+          {railItems.map((item) => <button key={item.id} type="button" data-debug-id={`nav-${item.id}-collapsed-btn`} onClick={item.onClick} title={item.label} aria-label={item.label} className="grid h-9 w-9 place-items-center rounded-xl text-zinc-500 hover:bg-[#141414] hover:text-zinc-100">{item.icon}</button>)}
+        </nav>
+        <div className="h-2 w-2 rounded-full bg-emerald-400/70" title="Single active daemon" aria-label="Single active daemon"></div>
+      </div>
+    );
+  }
   return (
-    <div data-debug-id="conversation-focused-sidebar" className="flex h-full flex-col bg-[#090909] text-zinc-100">
+    <div data-debug-id="conversation-focused-sidebar" data-sidebar-collapsed="false" className="flex h-full flex-col bg-[#090909] text-zinc-100">
       <div className="flex items-center justify-between px-4 pb-2 pt-3">
         <div className="text-sm font-semibold tracking-[0.02em]">Heimdall</div>
+        <button type="button" data-debug-id="conversation-sidebar-collapse-btn" onClick={onToggleCollapsed} title="Collapse sidebar" aria-label="Collapse sidebar" className="grid h-8 w-8 place-items-center rounded-lg border border-white/10 text-zinc-500 hover:bg-[#141414] hover:text-zinc-100">☰</button>
       </div>
       <button
         data-debug-id="sidebar-new-conversation-btn"
@@ -2023,7 +2047,7 @@ function SidebarDurableAgentsSection({ groups = [], selectedAgentId = '', launch
                   <div className="flex min-w-0 items-center gap-2">
                     <span data-debug-id={`sidebar-agent-status-${group.agentId}`} aria-label={`${group.agentId} status: ${status.label}`} title={status.title} className={`h-2 w-2 shrink-0 rounded-full ${status.color} ${status.pulse}`}></span>
                     <span className="min-w-0 flex-1 truncate text-[13px] text-zinc-100">{group.agentId}</span>
-                    <span data-debug-id={`sidebar-agent-status-label-${group.agentId}`} aria-label={`${group.agentId} ${status.label} detail`} title={status.title} className="shrink-0 text-[10px] tabular-nums text-zinc-600">{status.compact}</span>
+                    <span data-debug-id={`sidebar-agent-status-label-${group.agentId}`} aria-label={`${group.agentId} ${status.label} detail`} title={status.title} className="shrink-0 text-[10px] tabular-nums text-zinc-600">{status.compact || `${live}`}</span>
                   </div>
                 </button>
                 <button
