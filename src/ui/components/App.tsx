@@ -61,6 +61,7 @@ import Markdown from './Markdown';
 import ArtifactUploadButton, { appendArtifactLink, useArtifactUpload } from './ArtifactUpload';
 import ChainArtifactsPanel from './ChainArtifactsPanel';
 import ArtifactViewer from './ArtifactViewer';
+import ChatHoverCopyButton from './ChatHoverCopyButton';
 import { updateUrlParams, useUrlParams } from './useUrlParams';
 import { VimSidebarProvider, VimEditButton } from './VimSidebar';
 import AgentPicker from './AgentPicker';
@@ -3271,16 +3272,10 @@ function ConversationThreadPage({ agent, chats, session, projects = [], provider
                     <div className={`flex ${msg.isUser ? 'max-w-[74%] items-end' : 'w-full items-start'} flex-col`}>
                       {assistantMessage && live && index === messages.length - 1 && <span data-debug-id="conversation-thread-worked-status" className="mb-3 inline-flex items-center gap-1 rounded-full border border-[#262626] bg-[#141414] px-3 py-1 text-[12px] text-zinc-500">Worked for 36s ›</span>}
                       <div className={`${msg.isUser ? 'rounded-[15px] border border-[#262626] bg-[#1c1c1c] px-[14px] py-[10px] text-zinc-100' : 'max-w-full text-zinc-200'}`}>
-                        {msg.isUser ? (
-                          <Markdown source={msg.body} compact />
-                        ) : (
-                          <>
-                            <Markdown source={msg.body} compact />
-                            <div data-debug-id={`conversation-thread-message-actions-${msg.messageId}`} className="mt-1 flex items-center gap-[10px] text-[13px] text-zinc-500">
-                              <button data-debug-id={`conversation-thread-message-copy-btn-${msg.messageId}`} title="Copy" onClick={() => globalThis.navigator?.clipboard?.writeText?.(msg.body)} className="opacity-0 transition-opacity hover:text-zinc-100 group-hover:opacity-100 focus:opacity-100">⧉</button>
-                            </div>
-                          </>
-                        )}
+                        <Markdown source={msg.body} compact />
+                      </div>
+                      <div data-debug-id={`conversation-thread-message-actions-${msg.messageId}`} className={`mt-1 flex items-center gap-[10px] text-[13px] text-zinc-500 ${msg.isUser ? 'self-end' : 'self-start'}`}>
+                        <ChatHoverCopyButton debugId={`conversation-thread-message-copy-btn-${msg.messageId}`} text={msg.body} />
                       </div>
                     </div>
                   </div>
@@ -4554,6 +4549,9 @@ function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'cha
                       />
                     );
                   })()}
+                </div>
+                <div data-debug-id={`${debugPrefix}-message-actions-${msg.messageId}`} className={`mt-1 flex items-center gap-[10px] text-[13px] text-zinc-500 ${msg.isUser ? 'self-end' : 'self-start'}`}>
+                  <ChatHoverCopyButton debugId={`${debugPrefix}-message-copy-btn-${msg.messageId}`} text={msg.body} />
                 </div>
                 {msg.isUser && delivery.glyph && (
                   <div

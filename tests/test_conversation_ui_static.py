@@ -7,6 +7,8 @@ ROOT = Path(__file__).resolve().parents[1]
 APP = (ROOT / 'src/ui/components/App.tsx').read_text(encoding='utf-8')
 AGENTS = (ROOT / 'AGENTS.md').read_text(encoding='utf-8')
 SETTINGS = (ROOT / 'src/ui/components/SettingsPage.tsx').read_text(encoding='utf-8')
+MESSAGE_BUBBLE = (ROOT / 'src/ui/components/MessageBubble.tsx').read_text(encoding='utf-8')
+STYLES = (ROOT / 'src/ui/styles.css').read_text(encoding='utf-8')
 UPLOAD = (ROOT / 'src/ui/components/ArtifactUpload.tsx').read_text(encoding='utf-8')
 
 checks = [
@@ -329,11 +331,22 @@ checks = [
         'data-debug-id="conversation-tier-select"',
         'data-debug-id="conversation-composer-send-btn"',
     ])),
-    ('conversation thread page renders only actionable message actions for assistant replies', all(snippet in APP for snippet in [
+    ('chat surfaces use shared hover/focus message copy affordance for message bodies', all(snippet in APP + SETTINGS + MESSAGE_BUBBLE + STYLES + (ROOT / 'src/ui/components/ChatHoverCopyButton.tsx').read_text(encoding='utf-8') for snippet in [
+        "import ChatHoverCopyButton from './ChatHoverCopyButton';",
         'data-debug-id={`conversation-thread-message-actions-${msg.messageId}`}',
-        'data-debug-id={`conversation-thread-message-copy-btn-${msg.messageId}`}',
-        'group-hover:opacity-100 focus:opacity-100',
-    ]) and 'conversation-thread-message-like-btn' not in APP and 'conversation-thread-message-dislike-btn' not in APP),
+        'debugId={`conversation-thread-message-copy-btn-${msg.messageId}`}',
+        'data-debug-id={`${debugPrefix}-message-actions-${msg.messageId}`}',
+        'debugId={`${debugPrefix}-message-copy-btn-${msg.messageId}`}',
+        'data-debug-id={`settings-direct-chat-message-actions-${messageId}`}',
+        'debugId={`settings-direct-chat-message-copy-btn-${messageId}`}',
+        'debugId={`message-bubble-copy-btn-${message.id || message.messageId || \'message\'}`}',
+        '.group:hover .message-copy-button',
+        'group-hover:opacity-100 focus:opacity-100 focus-visible:opacity-100',
+    ]) and all(snippet not in APP + SETTINGS + MESSAGE_BUBBLE for snippet in [
+        'conversation-thread-message-like-btn',
+        'conversation-thread-message-dislike-btn',
+        'globalThis.navigator?.clipboard?.writeText?.(msg.body)',
+    ])),
     ('other chat surfaces use conversation-style transcript and composer patterns', all(snippet in APP + SETTINGS for snippet in [
         'className="chat-scrollbar h-full min-h-0 space-y-[22px] overflow-y-auto rounded-[18px] bg-[#090909] p-5 scroll-smooth"',
         'data-debug-id="agent-detail-chat-composer-shell" className="mt-3 shrink-0 rounded-[15px] border border-white/10 bg-[#141414] p-0 focus-within:border-white/35"',
@@ -445,6 +458,7 @@ checks = [
         '`chain-view`',
         '`chain-tasks-toggle-btn`',
         '`chain-open-editor-btn`',
+        '`chain-coordinator-message-copy-btn-${messageId}`',
         '`global-right-sidebar-toggle-btn`',
         '`global-right-sidebar`',
         '`global-right-sidebar-close-btn`',
@@ -462,12 +476,18 @@ checks = [
         '`home-running-agent-chat-composer-shell`',
         '`home-running-agent-chat-send-error`',
         '`home-running-agent-chat-upload-error`',
+        '`home-running-agent-chat-message-copy-btn-${messageId}`',
+        '`guide-chat-message-copy-btn-${messageId}`',
+        '`settings-direct-chat-message-copy-btn-${messageId}`',
+        '`MessageBubble`',
+        '`message-bubble-copy-btn-${messageId}`',
         '`ConversationThreadPage`',
         '`conversation-thread-page`',
         '`agent-detail-chat-artifacts-toggle-btn`',
         '`agent-detail-chat-artifacts-panel`',
         '`agent-detail-chat-artifacts-upload-btn`',
         '`agent-detail-chat-artifacts-close-btn`',
+        '`agent-detail-chat-message-copy-btn-${messageId}`',
         '`agent-detail-chat-provider-select`',
         '`agent-detail-chat-tier-select`',
         '`agent-detail-chat-runtime-restart-status`',

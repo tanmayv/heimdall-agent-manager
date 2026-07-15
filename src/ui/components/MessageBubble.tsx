@@ -6,6 +6,7 @@ import { updateTaskStateDirectly, updateChainStateDirectly } from '../store/task
 import { fetchMemoryDetail, refreshMemory } from '../store/memorySlice';
 import * as daemonApi from '../api/daemonApi';
 import Markdown from './Markdown';
+import ChatHoverCopyButton from './ChatHoverCopyButton';
 
 function isSafeUrl(url: string) {
   const trimmed = url.trim();
@@ -89,35 +90,6 @@ function renderHeading(level: number, key: string, children: ReturnType<typeof r
 function MarkdownContent({ text, className = '' }: { text: string; className?: string }) {
   console.log('[Render] MarkdownContent');
   return <Markdown source={text} compact className={`text-sm leading-6 ${className}`} />;
-}
-
-async function copyMessageText(text: string) {
-  if (navigator.clipboard?.writeText) {
-    try {
-      await navigator.clipboard.writeText(text);
-      return;
-    } catch {
-      // Fall through to the textarea fallback; Electron/Chromium can expose the
-      // Clipboard API while rejecting writes for permission/focus reasons.
-    }
-  }
-
-  const textarea = document.createElement('textarea');
-  try {
-    textarea.value = text;
-    textarea.setAttribute('readonly', '');
-    textarea.style.position = 'fixed';
-    textarea.style.left = '-9999px';
-    textarea.style.opacity = '0';
-    document.body.appendChild(textarea);
-    textarea.select();
-
-    if (!document.execCommand('copy')) {
-      throw new Error('Copy command was not accepted');
-    }
-  } finally {
-    textarea.remove();
-  }
 }
 
 function parseReferences(text: string) {
@@ -366,7 +338,6 @@ function EntityCard({ id, type, session }: { id: string; type: 'task' | 'chain' 
 function MessageBubble({ message, session }: { message: any; session: any }) {
   console.log('[Render] MessageBubble', message.id);
   const dispatch = useDispatch<any>();
-  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'error'>('idle');
   const [selectedAnswer, setSelectedAnswer] = useState<string | null>(null);
 
   // Wizard state for multi-question questionnaire
@@ -452,21 +423,11 @@ function MessageBubble({ message, session }: { message: any; session: any }) {
       : 'Sent')
     : '';
 
-  async function handleCopy() {
-    try {
-      const rawText = multiQuestion
-        ? 'Questionnaire Card'
-        : structuredQuestion
-        ? structuredQuestion.question
-        : displayBody;
-      await copyMessageText(rawText);
-      setCopyState('copied');
-    } catch {
-      setCopyState('error');
-    } finally {
-      window.setTimeout(() => setCopyState('idle'), 1800);
-    }
-  }
+  const copyText = multiQuestion
+    ? 'Questionnaire Card'
+    : structuredQuestion
+    ? structuredQuestion.question
+    : displayBody;
 
   function renderMultiQuestionCard(mq: MultiQuestion) {
     const currentQ = mq.questions[currentQuestionIndex];
@@ -581,20 +542,11 @@ function MessageBubble({ message, session }: { message: any; session: any }) {
             : 'border-[var(--fd-hairline)] bg-[var(--fd-surface-1)] text-white before:-left-3 before:border-r-[12px] before:border-r-[var(--fd-surface-1)]'
         } ${message.sending ? 'opacity-60 animate-pulse' : ''}`}
       >
-        <button
-          type="button"
+        <ChatHoverCopyButton
+          debugId={`message-bubble-copy-btn-${message.id || message.messageId || 'message'}`}
+          text={copyText}
           className={`message-copy-button ${isUser ? 'message-copy-button-user' : ''}`}
-          onClick={handleCopy}
-          aria-label={copyState === 'copied' ? 'Message copied' : 'Copy message text'}
-          title={copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy message'}
-        >
-          {copyState === 'copied' ? '✓' : copyState === 'error' ? '!' : (
-            <svg aria-hidden="true" viewBox="0 0 20 20" fill="none">
-              <path d="M7 6.5A2.5 2.5 0 0 1 9.5 4H14a2 2 0 0 1 2 2v7.5a2.5 2.5 0 0 1-2.5 2.5H9a2 2 0 0 1-2-2V6.5Z" stroke="currentColor" strokeWidth="1.5" />
-              <path d="M5 13.5H4.5A2.5 2.5 0 0 1 2 11V5.5A2.5 2.5 0 0 1 4.5 3H10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-            </svg>
-          )}
-        </button>
+        />
         {isInterrupt && (
           <div className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider mb-2 border ${
             isUser 

@@ -2,11 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import SessionConfig from './SessionConfig';
 import { TEAM_KIND_METADATA, paceLabel, taskCountLabel, wantsVcsLabel } from './teamKinds';
-import { fetchPreferences, fetchSelectedChat, refreshAgents, refreshSettingsCatalog, saveUserPreference, selectAgent, sendMessageToSelectedAgent } from '../store/chatSlice';
+import { addDaemonProfile, fetchPreferences, fetchSelectedChat, refreshAgents, refreshSettingsCatalog, removeDaemonProfile, saveUserPreference, selectAgent, sendMessageToSelectedAgent } from '../store/chatSlice';
 import * as daemonApi from '../api/daemonApi';
 import { refreshMemory } from '../store/memorySlice';
 import { clearProjectError, deleteProjectFromUi, fetchProjectDetail, refreshProjects, selectProject, updateProjectFromUi } from '../store/projectSlice';
 import { VimEditButton } from './VimSidebar';
+import ChatHoverCopyButton from './ChatHoverCopyButton';
 
 const SETTINGS_ITEMS = [
   { key: 'templates', label: 'Agent templates' },
@@ -31,10 +32,10 @@ function normalizeTemplate(template: any) {
 
 export default function SettingsPage({ session, onReconnect, onBack }: any) {
   const dispatch = useDispatch<any>();
-  const { agents, preferences, session: reduxSession, settingsTemplates, settingsProviders, chats, sending } = useSelector((state: any) => state.chat);
+  const { agents, preferences, session: reduxSession, settingsTemplates, settingsProviders, chats, sending, daemonProfiles = [] } = useSelector((state: any) => state.chat);
   const { recordsById, recordIds, loading: memoryLoading } = useSelector((state: any) => state.memory);
   const { projectsById, projectIds, selectedProjectId, detailLoading: projectDetailLoading, mutating: projectMutating, error: projectError } = useSelector((state: any) => state.projects);
-  const [selected, setSelected] = useState('templates');
+  const [selected, setSelected] = useState('daemon');
   const [directAgentId, setDirectAgentId] = useState('');
   const [directDraft, setDirectDraft] = useState('');
   const [debugInfo, setDebugInfo] = useState<{ enabled: boolean; port: number; pid: number } | null>(null);
@@ -70,38 +71,39 @@ export default function SettingsPage({ session, onReconnect, onBack }: any) {
   const memoryRecords = useMemo(() => (recordIds || []).map((id: string) => recordsById[id]).filter(Boolean), [recordIds, recordsById]);
   const directMessages = chats[directAgentId] || [];
 
-  return (
-    <main className="h-full min-h-0 bg-[#08090b] text-zinc-100">
-      <header className="flex items-center justify-between border-b border-white/10 bg-[#0d0f14] px-6 py-4">
-        <div>
-          <div className="text-xs uppercase tracking-[0.24em] text-zinc-500">Settings</div>
-          <h1 className="mt-1 text-2xl font-semibold">System, debug, and daemon views</h1>
-          <p className="mt-1 text-sm text-zinc-500">Moved legacy top-level tabs into this Settings surface. Data is hydrated by shared Redux/HTTP loads.</p>
-        </div>
-        <button data-debug-id="settings-back-btn" type="button" onClick={onBack} className="rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15">Back</button>
-      </header>
+  const settingsGroups = [
+    { title: 'General', items: [{ key: 'templates', label: 'Defaults' }, { key: 'kinds', label: 'Team kinds' }] },
+    { title: 'Connections', items: [{ key: 'daemon', label: 'Daemons' }, { key: 'providers', label: 'Providers' }] },
+    { title: 'Workspace', items: [{ key: 'agents', label: 'Agents & templates' }, { key: 'projects', label: 'Projects' }, { key: 'memory', label: 'Memory browser' }, { key: 'direct-chat', label: 'Direct chat' }] },
+  ];
 
-      <div className="grid h-[calc(100%-73px)] grid-cols-[240px_minmax(0,1fr)]">
-        <nav className="border-r border-white/10 bg-[#0d0f14] p-3">
-          <div className="space-y-1">
-            {SETTINGS_ITEMS.map((item) => (
-              <button key={item.key} data-debug-id={`settings-nav-${item.key}`} onClick={() => setSelected(item.key)} className={`w-full rounded-xl px-3 py-2 text-left text-sm ${selected === item.key ? 'bg-white text-black' : 'bg-white/5 text-zinc-300 hover:bg-white/10'}`}>{item.label}</button>
-            ))}
-          </div>
-          <div className="mt-4 rounded-xl bg-white/[0.04] p-3 text-[11px] text-zinc-500">
-            Freshness: Home-level periodic and WebSocket refreshes keep agents/tasks/chains current; Settings mounts dispatch HTTP-backed Redux loads for templates, preferences, and memory.
-          </div>
+  return (
+    <main data-debug-id="settings-modal" className="h-full min-h-0 bg-[#08090b] p-5 text-zinc-100">
+      <div className="mx-auto grid h-full max-w-6xl overflow-hidden rounded-[22px] border border-white/10 bg-[#0f0f0f] shadow-2xl shadow-black/40 md:grid-cols-[250px_minmax(0,1fr)]">
+        <nav data-debug-id="settings-rail" className="min-h-0 overflow-y-auto border-r border-[#262626] bg-[#090909] p-4">
+          {settingsGroups.map((group) => (
+            <div key={group.title} className="mb-5">
+              <div className="mb-2 px-2 text-[10.5px] uppercase tracking-[0.18em] text-zinc-600">{group.title}</div>
+              <div className="space-y-1">
+                {group.items.map((item) => (
+                  <button key={item.key} data-debug-id={`settings-nav-${item.key}`} onClick={() => setSelected(item.key)} className={`w-full rounded-md px-3 py-2 text-left text-[13px] transition ${selected === item.key ? 'bg-[#1c1c1c] text-zinc-100' : 'text-zinc-500 hover:bg-[#141414] hover:text-zinc-100'}`}>{item.label}</button>
+                ))}
+              </div>
+            </div>
+          ))}
+          <div data-debug-id="settings-single-daemon-note" className="rounded-xl border border-sky-400/20 bg-sky-400/10 p-3 text-[11.5px] leading-5 text-sky-100">v1 is single-active-daemon-first. Switching changes the active daemon; merged multi-daemon views are intentionally not shown.</div>
         </nav>
 
-        <section className="min-w-0 overflow-y-auto p-6">
+        <section data-debug-id="settings-body" className="relative min-w-0 overflow-y-auto p-6">
+          <button data-debug-id="settings-close-btn" type="button" onClick={onBack} title="Close settings" className="absolute right-5 top-5 rounded-md border border-white/10 bg-[#141414] px-2 py-1 text-sm text-zinc-400 hover:text-zinc-100">✕</button>
           {selected === 'templates' && <TemplatesPanel templates={templates} />}
           {selected === 'kinds' && <TeamKindsPanel />}
-          {selected === 'providers' && <ProvidersPanel providers={providers} preferences={preferences || []} onSaveDefault={async (key: string, value: string) => { await dispatch(saveUserPreference({ key, value })); dispatch(fetchPreferences()); }} />}
+          {selected === 'providers' && <ProvidersPanel providers={providers} preferences={preferences || []} session={effectiveSession} daemonProfiles={daemonProfiles} onSaveDefault={async (key: string, value: string) => { await dispatch(saveUserPreference({ key, value })); dispatch(fetchPreferences()); }} />}
           {selected === 'projects' && <ProjectsPanel projects={projects} selectedProjectId={selectedProjectId} selectedProject={selectedProject} loading={projectDetailLoading} mutating={projectMutating} error={projectError} onSelect={(projectId: string) => { dispatch(selectProject(projectId)); dispatch(fetchProjectDetail(projectId)); }} onSave={(payload: any) => dispatch(updateProjectFromUi(payload))} onDelete={async (projectId: string) => { await dispatch(deleteProjectFromUi({ projectId })); dispatch(clearProjectError()); }} />}
           {selected === 'memory' && <MemoryPanel records={memoryRecords} loading={memoryLoading} />}
           {selected === 'agents' && <AgentsPanel agents={agents} templates={templates} providers={providers} onCreateAgent={async (payload: any) => { await daemonApi.createAgent({ daemonUrl: effectiveSession.daemonUrl, displayName: payload.displayName, templateId: payload.templateId, providerProfile: payload.providerProfile, modelTier: payload.modelTier }); await dispatch(refreshAgents()); }} />}
           {selected === 'direct-chat' && <DirectChatPanel agents={agents} agentId={directAgentId} setAgentId={setDirectAgentId} messages={directMessages} draft={directDraft} setDraft={setDirectDraft} sending={sending} onSend={() => { const body = directDraft.trim(); if (!body || !directAgentId) return; dispatch(sendMessageToSelectedAgent({ body, tempId: `settings_${Date.now()}` })); setDirectDraft(''); }} />}
-          {selected === 'daemon' && <DaemonPanel session={effectiveSession} onReconnect={onReconnect} debugInfo={debugInfo} setDebugInfo={setDebugInfo} />}
+          {selected === 'daemon' && <DaemonPanel session={effectiveSession} daemonProfiles={daemonProfiles} agents={agents} projects={projects} onReconnect={onReconnect} onAddProfile={(payload: any) => dispatch(addDaemonProfile(payload))} onRemoveProfile={(payload: any) => dispatch(removeDaemonProfile(payload))} debugInfo={debugInfo} setDebugInfo={setDebugInfo} />}
         </section>
       </div>
     </main>
@@ -125,20 +127,72 @@ function preferenceValue(preferences: any[], key: string, fallback = '') {
   return String(pref?.value ?? pref?.default_value ?? pref?.defaultValue ?? fallback);
 }
 
-function ProvidersPanel({ providers, preferences, onSaveDefault }: any) {
+
+function providerTierSummary(item: any): string {
+  const models = item?.models || item?.model_tiers || item?.modelTiers || {};
+  const cheap = models.cheap || item?.cheap || 'configured by daemon';
+  const normal = models.normal || item?.normal || 'configured by daemon';
+  const smart = models.smart || item?.smart || 'configured by daemon';
+  return `cheap → ${cheap} · normal → ${normal} · smart → ${smart}`;
+}
+
+function ProvidersPanel({ providers, preferences, session, daemonProfiles = [], onSaveDefault }: any) {
   const [provider, setProvider] = useState('');
   const [tier, setTier] = useState('normal');
+  const [selectedDaemon, setSelectedDaemon] = useState(session?.daemonUrl || '');
   useEffect(() => {
     setProvider(preferenceValue(preferences, 'default_agent_provider_profile', providers[0]?.name || 'pi'));
     setTier(preferenceValue(preferences, 'default_agent_model_tier', 'normal'));
   }, [preferences, providers]);
+  useEffect(() => { setSelectedDaemon(session?.daemonUrl || ''); }, [session?.daemonUrl]);
   const save = async (event: any) => {
     event.preventDefault();
     await onSaveDefault('default_agent_provider_profile', provider.trim() || 'pi');
     await onSaveDefault('default_agent_model_tier', tier || 'normal');
   };
-  const visiblePreferences = (preferences || []).slice(0, 12);
-  return <Panel title="Providers & model tiers" subtitle="Provider profiles, model tiers, and generated-team-agent defaults."><div className="grid gap-4 lg:grid-cols-2"><Card><h3 className="font-semibold">Generated team agent defaults</h3><p className="mt-1 text-sm text-zinc-500">Used for generated names such as coordinator@project-chain when a team role does not explicitly override provider/tier.</p><form onSubmit={save} className="mt-4 space-y-3"><label className="block text-sm text-zinc-300">Default provider<select data-debug-id="settings-default-agent-provider-select" value={provider} onChange={(event) => setProvider(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">{providers.length === 0 && <option value={provider || 'pi'}>{provider || 'pi'}</option>}{providers.map((item: any) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label><label className="block text-sm text-zinc-300">Default model tier<select data-debug-id="settings-default-agent-tier-select" value={tier} onChange={(event) => setTier(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="normal">normal</option><option value="smart">smart</option></select></label><button data-debug-id="settings-default-agent-save-btn" type="submit" className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300">Save defaults</button></form></Card><Card><h3 className="font-semibold">Providers</h3><div className="mt-3 space-y-2">{providers.length === 0 ? <div className="text-sm text-zinc-500">No providers loaded.</div> : providers.map((item: any) => <div key={item.name} className="rounded-lg bg-black/20 px-3 py-2 text-sm">{item.name}</div>)}</div></Card><Card><h3 className="font-semibold">Preference snapshot</h3><div className="mt-3 space-y-2">{visiblePreferences.length === 0 ? <div className="text-sm text-zinc-500">No preferences loaded.</div> : visiblePreferences.map((pref: any) => <div key={pref.key} className="rounded-lg bg-black/20 px-3 py-2 text-sm"><div className="text-zinc-300">{pref.key}</div><div className="truncate text-xs text-zinc-500">{String(pref.value || '')}</div></div>)}</div></Card></div></Panel>;
+  const activeLabel = daemonProfiles.find((profile: any) => profile.url === selectedDaemon)?.label || selectedDaemon || 'Active daemon';
+  return (
+    <Panel title="Providers" subtitle="Provider profiles and model-tier mappings are read from the selected daemon. Defaults saved here apply to the single active daemon in v1.">
+      <div data-debug-id="settings-providers-single-daemon-banner" className="mb-4 rounded-2xl border border-sky-400/20 bg-sky-400/10 p-4 text-sm text-sky-100">Single active daemon mode: provider profiles below belong to <span className="font-mono">{activeLabel}</span>. Merged multi-daemon provider views are deferred.</div>
+      <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div><div className="font-semibold">Daemon</div><div className="mt-1 text-sm text-zinc-500">Providers below belong to the selected daemon.</div></div>
+          <div className="flex items-center gap-2">
+            <span className="h-2 w-2 rounded-full bg-sky-400" />
+            <select data-debug-id="settings-providers-daemon-select" value={selectedDaemon} onChange={(event) => setSelectedDaemon(event.target.value)} className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
+              {(daemonProfiles.length ? daemonProfiles : [{ label: activeLabel, url: selectedDaemon }]).map((profile: any) => <option key={profile.url || profile.label} value={profile.url || ''}>{profile.label || profile.url || 'Active daemon'}</option>)}
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-6 flex items-center justify-between gap-3">
+        <div className="text-xs uppercase tracking-[0.18em] text-zinc-500">Provider profiles · {activeLabel}</div>
+        <span data-debug-id="settings-providers-list" className="rounded-full bg-white/10 px-2.5 py-1 text-xs text-zinc-400">{providers.length}</span>
+      </div>
+      <div className="mt-3 space-y-2">
+        {providers.length === 0 ? <Empty text="No providers loaded from this daemon." /> : providers.map((item: any) => {
+          const isDefault = item.name === provider;
+          return (
+            <div key={item.name} data-debug-id={`settings-provider-card-${item.name}`} className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+              <div className="min-w-0 flex-1"><div className="font-semibold text-zinc-100">{item.name}</div><div className="mt-1 text-sm text-zinc-500">{providerTierSummary(item)}</div></div>
+              {isDefault && <span className="rounded-full bg-emerald-400/10 px-2.5 py-1 text-xs text-emerald-100">default</span>}
+              <button data-debug-id={`settings-provider-default-btn-${item.name}`} type="button" onClick={() => setProvider(item.name)} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-zinc-100 hover:bg-white/15">Set default</button>
+            </div>
+          );
+        })}
+      </div>
+
+      <form onSubmit={save} className="mt-6 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+        <div className="mb-3 text-xs uppercase tracking-[0.18em] text-zinc-500">Default agent ({activeLabel})</div>
+        <div className="grid gap-3 md:grid-cols-2">
+          <label className="block text-sm text-zinc-300">Default provider<select data-debug-id="settings-default-agent-provider-select" value={provider} onChange={(event) => setProvider(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">{providers.length === 0 && <option value={provider || 'pi'}>{provider || 'pi'}</option>}{providers.map((item: any) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
+          <label className="block text-sm text-zinc-300">Default tier<select data-debug-id="settings-default-agent-tier-select" value={tier} onChange={(event) => setTier(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="normal">normal</option><option value="cheap">cheap</option><option value="smart">smart</option></select></label>
+        </div>
+        <div className="mt-4 flex justify-end"><button data-debug-id="settings-default-agent-save-btn" type="submit" className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300">Save</button></div>
+      </form>
+    </Panel>
+  );
 }
 
 function projectAnchorValue(project: any, type: string, fallback = '') {
@@ -304,7 +358,7 @@ function AgentsPanel({ agents, templates, providers, onCreateAgent }: any) {
 function DirectChatPanel({ agents, agentId, setAgentId, messages, draft, setDraft, sending, onSend }: any) {
   return (
     <Panel title="Direct agent chat (debug)" subtitle="Debug affordance only. Main-path chat remains chain coordinator-only.">
-      <Card>
+      <div className="rounded-3xl border border-white/10 bg-[#090909] p-5">
         <label className="text-sm text-zinc-300">
           Agent
           <select data-debug-id="settings-direct-chat-agent-select" value={agentId} onChange={(event) => setAgentId(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none">
@@ -312,23 +366,87 @@ function DirectChatPanel({ agents, agentId, setAgentId, messages, draft, setDraf
             {agents.map((agent: any) => <option key={agent.id} value={agent.id}>{agent.label || agent.id}</option>)}
           </select>
         </label>
-        <div data-debug-id="settings-direct-chat-feed" className="mt-4 max-h-80 min-h-48 overflow-y-auto rounded-xl bg-black/20 p-3">
-          {messages.length === 0 ? <div className="text-sm text-zinc-500">No direct debug messages loaded.</div> : messages.map((message: any, index: number) => (
-            <div key={message.id || message.messageId || index} className={`mb-2 rounded-xl px-3 py-2 text-sm ${message.direction === 'user_to_agent' || message.author === 'user' ? 'ml-8 bg-sky-500/15 text-sky-100' : 'mr-8 bg-white/5 text-zinc-200'}`}>{message.body}</div>
-          ))}
+        <div data-debug-id="settings-direct-chat-feed" className="mt-4 max-h-[420px] min-h-56 space-y-[18px] overflow-y-auto rounded-[18px] bg-[#090909] p-4">
+          {messages.length === 0 ? <div className="rounded-2xl border border-dashed border-white/10 p-6 text-sm text-zinc-500">No direct debug messages loaded.</div> : messages.map((message: any, index: number) => {
+            const isUser = message.direction === 'user_to_agent' || message.author === 'user';
+            const messageId = message.id || message.messageId || index;
+            return (
+              <div key={messageId} data-debug-id={`settings-direct-chat-message-${messageId}`} className={`msg group flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+                <div className={`flex ${isUser ? 'max-w-[74%] items-end' : 'max-w-full items-start'} flex-col text-sm`}>
+                  <div className={`${isUser ? 'rounded-[15px] border border-[#262626] bg-[#1c1c1c] px-[14px] py-[10px] text-zinc-100' : 'max-w-full text-zinc-200'}`}>{message.body}</div>
+                  <div data-debug-id={`settings-direct-chat-message-actions-${messageId}`} className={`mt-1 flex items-center gap-[10px] text-[13px] text-zinc-500 ${isUser ? 'self-end' : 'self-start'}`}>
+                    <ChatHoverCopyButton debugId={`settings-direct-chat-message-copy-btn-${messageId}`} text={message.body || ''} />
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
-        <div className="mt-3 flex gap-2">
-          <input data-debug-id="settings-direct-chat-input" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') onSend(); }} placeholder="Debug direct message to selected agent…" className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
-          <button data-debug-id="settings-direct-chat-send-btn" type="button" onClick={onSend} disabled={sending || !agentId || !draft.trim()} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:opacity-50">{sending ? 'Sending…' : 'Send'}</button>
+        <div data-debug-id="settings-direct-chat-composer-shell" className="mt-3 rounded-[15px] border border-white/10 bg-[#141414] p-0 focus-within:border-white/35">
+          <textarea data-debug-id="settings-direct-chat-input" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); onSend(); } }} placeholder="Debug direct message to selected agent…" rows={3} className="min-h-[74px] w-full resize-none bg-transparent px-3 pt-3 text-[15px] leading-relaxed text-zinc-100 outline-none placeholder:text-zinc-600" />
+          <div className="flex items-center justify-end gap-2 px-2 pb-2"><span className="hidden text-[11px] text-zinc-600 sm:inline">Enter to send · Shift+Enter for newline</span><button data-debug-id="settings-direct-chat-send-btn" type="button" onClick={onSend} disabled={sending || !agentId || !draft.trim()} className="inline-flex h-8 items-center justify-center rounded-full border border-white/10 px-3 text-sm text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">{sending ? 'Sending…' : '→'}</button></div>
         </div>
-      </Card>
+      </div>
     </Panel>
   );
 }
 
-function DaemonPanel({ session, onReconnect, debugInfo, setDebugInfo }: any) {
-  return <Panel title="Daemon connection" subtitle="Connection profile and Electron debug server."><div className="grid gap-4 lg:grid-cols-2"><Card><SessionConfig session={session} onReconnect={onReconnect} /></Card><Card><h3 className="font-semibold">Electron debug server</h3><label className="mt-4 flex items-center gap-3 text-sm text-zinc-300"><input type="checkbox" checked={Boolean(debugInfo?.enabled)} onChange={async () => { if (!debugInfo || !(window as any).odinApi?.toggleDebugServer) return; setDebugInfo(await (window as any).odinApi.toggleDebugServer(!debugInfo.enabled)); }} />Enabled</label>{debugInfo?.enabled && <div className="mt-3 rounded-xl bg-black/20 p-3 font-mono text-xs text-zinc-400">http://127.0.0.1:{debugInfo.port}<br />pid {debugInfo.pid}</div>}</Card></div></Panel>;
+
+function daemonDisplay(url: string): string {
+  try { return new URL(url).host || url; } catch { return url || 'daemon'; }
 }
+
+function DaemonPanel({ session, daemonProfiles = [], agents = [], projects = [], onReconnect, onAddProfile, onRemoveProfile, debugInfo, setDebugInfo }: any) {
+  const activeUrl = session?.daemonUrl || '';
+  const profiles = daemonProfiles.length ? daemonProfiles : [{ label: 'Local daemon', url: activeUrl }];
+  const [daemonUrl, setDaemonUrl] = useState(activeUrl || '');
+  const [label, setLabel] = useState('Local daemon');
+  const [userId, setUserId] = useState(session?.userId || 'operator@local');
+  useEffect(() => { setDaemonUrl(activeUrl || ''); setUserId(session?.userId || 'operator@local'); }, [activeUrl, session?.userId]);
+  const connect = () => {
+    const nextUrl = daemonUrl.trim();
+    if (!nextUrl) return;
+    onAddProfile?.({ daemonUrl: nextUrl, url: nextUrl, label: label.trim() || daemonDisplay(nextUrl) });
+    onReconnect?.({ daemonUrl: nextUrl, userId: userId.trim() || 'operator@local' });
+  };
+  return (
+    <Panel title="Daemons" subtitle="Connect and manage the daemon this UI controls. v1 uses one active daemon at a time; counts are scoped to that daemon.">
+      <div data-debug-id="settings-daemon-single-active-banner" className="mb-4 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-4 text-sm text-amber-100">Single active daemon mode: switch/reconnect changes the active daemon. Merged multi-daemon views are intentionally deferred for v1.</div>
+      <div className="mb-3 text-xs uppercase tracking-[0.18em] text-zinc-500">Connected</div>
+      <div data-debug-id="settings-daemon-list" className="space-y-2">
+        {profiles.map((profile: any, index: number) => {
+          const url = profile.url || activeUrl || '';
+          const active = url === activeUrl;
+          const slug = (profile.label || daemonDisplay(url) || `daemon-${index}`).toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+          return (
+            <div key={`${url}-${index}`} data-debug-id={`settings-daemon-row-${slug}`} className={`flex items-center gap-3 rounded-2xl border p-4 ${active ? 'border-sky-400/30 bg-sky-400/10' : 'border-white/10 bg-white/[0.035]'}`}>
+              <span className={`h-2.5 w-2.5 rounded-full ${active && session?.connected ? 'bg-sky-400' : 'bg-zinc-500'}`} />
+              <div className="min-w-0 flex-1"><div className="font-semibold text-zinc-100">{profile.label || daemonDisplay(url)}</div><div className="mt-1 truncate font-mono text-xs text-zinc-500">{url}</div><div className="mt-1 text-xs text-zinc-500">{active && session?.connected ? 'connected' : active ? 'configured' : 'stored'} · daemon_id {session?.daemonId || session?.daemon_id || daemonDisplay(url)} · version {session?.version || 'unknown'} · {projects.length} projects · {agents.length} agents</div></div>
+              <button data-debug-id={`settings-daemon-reconnect-btn-${slug}`} type="button" onClick={() => { onAddProfile?.({ daemonUrl: url, url, label: profile.label || daemonDisplay(url) }); onReconnect?.({ daemonUrl: url, userId }); }} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-zinc-100 hover:bg-white/15">Reconnect</button>
+              <button data-debug-id={`settings-daemon-remove-btn-${slug}`} type="button" onClick={() => onRemoveProfile?.({ daemonUrl: url, url })} disabled={active} title={active ? 'Cannot remove the active daemon from this v1 pane.' : 'Remove stored daemon'} className="rounded-xl bg-red-400/10 px-3 py-2 text-xs text-red-200 hover:bg-red-400/15 disabled:cursor-not-allowed disabled:opacity-40">Remove</button>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="mt-6 text-xs uppercase tracking-[0.18em] text-zinc-500">Add daemon</div>
+      <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+        <div className="grid gap-3 md:grid-cols-3">
+          <label className="block text-sm text-zinc-300">Daemon URL<input data-debug-id="settings-daemon-url-input" value={daemonUrl} onChange={(event) => setDaemonUrl(event.target.value)} placeholder="https://host:7777" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" /></label>
+          <label className="block text-sm text-zinc-300">Label<input data-debug-id="settings-daemon-label-input" value={label} onChange={(event) => setLabel(event.target.value)} placeholder="prod" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" /></label>
+          <label className="block text-sm text-zinc-300">User id<input data-debug-id="settings-daemon-user-input" value={userId} onChange={(event) => setUserId(event.target.value)} placeholder="operator@local" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" /></label>
+        </div>
+        <div className="mt-4 flex items-center justify-between gap-3"><div className="flex items-center gap-2 text-xs text-zinc-500"><span>Color</span><span className="h-4 w-4 rounded-full bg-sky-400" /><span className="h-4 w-4 rounded-full bg-emerald-400" /><span className="h-4 w-4 rounded-full bg-amber-400" /><span className="h-4 w-4 rounded-full bg-violet-400" /></div><button data-debug-id="settings-daemon-add-btn" type="button" onClick={connect} disabled={!daemonUrl.trim()} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:opacity-50">Connect</button></div>
+      </div>
+
+      <div className="mt-6 grid gap-4 lg:grid-cols-2">
+        <Card><SessionConfig session={session} onReconnect={onReconnect} /></Card>
+        <Card><h3 className="font-semibold">Electron debug server</h3><label className="mt-4 flex items-center gap-3 text-sm text-zinc-300"><input data-debug-id="settings-debug-server-checkbox" type="checkbox" checked={Boolean(debugInfo?.enabled)} onChange={async () => { if (!debugInfo || !(window as any).odinApi?.toggleDebugServer) return; setDebugInfo(await (window as any).odinApi.toggleDebugServer(!debugInfo.enabled)); }} />Enabled</label>{debugInfo?.enabled && <div className="mt-3 rounded-xl bg-black/20 p-3 font-mono text-xs text-zinc-400">http://127.0.0.1:{debugInfo.port}<br />pid {debugInfo.pid}</div>}</Card>
+      </div>
+    </Panel>
+  );
+}
+
 
 function Card({ children }: any) { return <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">{children}</div>; }
 function Empty({ text }: { text: string }) { return <div className="rounded-2xl border border-dashed border-white/10 p-5 text-sm text-zinc-500">{text}</div>; }
