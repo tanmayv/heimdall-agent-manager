@@ -1293,17 +1293,17 @@ export default function App() {
               onBack: () => { setAgentPageId(''); updateUrlParams({ view: 'home', agentId: null }); },
               onRefreshAgents: () => dispatch(refreshAgents()).unwrap().catch(() => undefined),
               onRefreshChat: (agentId: string) => dispatch(fetchSelectedChat({ agentId })).unwrap().catch(() => undefined),
-              onSendAgentMessage: async (agentId: string, body: string, interrupt = false) => {
+              onSendAgentMessage: async (agentId: string, body: string, interrupt = false, runtime: any = {}) => {
                 const exactAgent = (agents || []).find((agent: any) => agentInstanceId(agent) === agentId) || selectedPageAgent;
                 if (agentId && !agentHasLiveSession(exactAgent)) {
                   await daemonApi.startAgent({
                     daemonUrl: session?.daemonUrl || '',
                     agentInstanceId: agentId,
-                    provider: exactAgent?.providerProfile || defaultConversationProvider(settingsProviders),
+                    provider: runtime.provider || exactAgent?.providerProfile || defaultConversationProvider(settingsProviders),
                     templateId: exactAgent?.templateId || exactAgent?.agentRole || durableAgentId(exactAgent) || String(agentId).split('@')[0],
                     projectId: exactAgent?.projectId || '',
                     displayName: exactAgent?.label || agentId,
-                    modelTier: exactAgent?.modelTier || 'normal',
+                    modelTier: runtime.modelTier || exactAgent?.modelTier || 'normal',
                     agentRole: exactAgent?.agentRole || exactAgent?.templateId || durableAgentId(exactAgent) || String(agentId).split('@')[0],
                   });
                   await dispatch(refreshAgents()).unwrap().catch(() => undefined);
@@ -2181,25 +2181,39 @@ function AgentsManagementSurface({ agents = [], chats = {}, tasksById = {}, chai
       <div className="grid gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
         <div data-debug-id="agents-management-create-card" className="rounded-2xl border border-[#262626] bg-[#101010] p-4">
           <div className="mb-3 text-sm font-medium text-zinc-200">Create / launch agent</div>
-          <SidebarAgentsList agents={agents} projects={projects} session={session} providers={providers} onOpenAgentPage={onOpenInstance} onRefreshAgents={onRefreshAgents} />
+          <p className="mb-3 text-xs leading-relaxed text-zinc-500">Create a durable agent identity and start its first concrete instance. Existing instance navigation stays in the main/secondary sidebars.</p>
+          <SidebarAgentsList agents={agents} projects={projects} session={session} providers={providers} onOpenAgentPage={onOpenInstance} onRefreshAgents={onRefreshAgents} showAgentList={false} />
         </div>
         <div data-debug-id="agents-management-list" className="rounded-2xl border border-[#262626] bg-[#101010] p-4">
           <div className="mb-3 flex items-center justify-between"><div className="text-sm font-medium text-zinc-200">Agent identities</div><div className="text-xs text-zinc-600">{groups.length} durable</div></div>
           {groups.length === 0 ? <div className="rounded-xl border border-dashed border-[#2a2a2a] p-6 text-sm text-zinc-500">No agents yet.</div> : groups.map((group: any) => (
             <div key={group.agentId} data-debug-id={`agents-management-agent-${group.agentId}`} className="mb-3 rounded-xl border border-[#262626] bg-[#0b0b0b] p-3">
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0"><div className="truncate text-sm font-medium text-zinc-100">{group.agentId}</div><div className="mt-1 text-xs text-zinc-600">{group.instances.length} total · {group.running} live</div></div>
-                <div className="flex shrink-0 gap-2">
-                  <button type="button" data-debug-id={`agents-management-edit-btn-${group.agentId}`} onClick={() => onOpenIdentity?.(group.agentId)} className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-zinc-300 hover:bg-[#171717]">Edit</button>
-                  <button type="button" data-debug-id={`agents-management-new-instance-btn-${group.agentId}`} onClick={() => onStartInstance?.(group.agentId)} className="rounded-lg bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-white">+ Instance</button>
-                </div>
-              </div>
-              <div className="mt-3 grid gap-2 md:grid-cols-2">
-                {group.instances.slice(0, 4).map((instance: any) => {
-                  const id = agentInstanceId(instance);
-                  return <button key={id} type="button" data-debug-id={`agents-management-instance-btn-${id}`} onClick={() => onOpenInstance?.(id)} className="truncate rounded-lg border border-white/10 px-2 py-1.5 text-left text-xs text-zinc-500 hover:bg-[#151515] hover:text-zinc-200">{agentHasLiveSession(instance) ? '● ' : '○ '}{id}</button>;
-                })}
-              </div>
+              {(() => {
+                const representative = group.instances.find((instance: any) => agentHasLiveSession(instance)) || group.instances[0] || {};
+                const status = agentStatusIndicator(representative, group.running ? `${group.running} live instance${group.running === 1 ? '' : 's'}` : 'No live instances; open the main sidebar for runtime navigation');
+                const projectId = representative.projectId || representative.project_id || '';
+                const project = (projects || []).find((item: any) => (item.projectId || item.project_id) === projectId);
+                const template = representative.templateId || representative.template_id || representative.agentRole || representative.agent_role || 'agent';
+                const provider = representative.providerProfile || representative.provider_profile || 'default';
+                const tier = representative.modelTier || representative.model_tier || 'normal';
+                return (
+                  <>
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0"><div className="truncate text-sm font-medium text-zinc-100">{group.agentId}</div><div data-debug-id={`agents-management-counts-${group.agentId}`} className="mt-1 text-xs text-zinc-600">{group.instances.length} concrete · {group.running} live · {template}</div></div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <span data-debug-id={`agents-management-status-${group.agentId}`} aria-label={status.label} title={status.title} className="inline-flex items-center gap-1 rounded-full border border-white/10 px-2 py-1 text-[11px] text-zinc-400"><span className={`h-2 w-2 rounded-full ${status.color} ${status.pulse}`} />{status.compact}</span>
+                        <button type="button" data-debug-id={`agents-management-edit-btn-${group.agentId}`} onClick={() => onOpenIdentity?.(group.agentId)} className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-zinc-300 hover:bg-[#171717]">Edit</button>
+                        <button type="button" data-debug-id={`agents-management-new-instance-btn-${group.agentId}`} onClick={() => onStartInstance?.(group.agentId)} className="rounded-lg bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-white">+ Instance</button>
+                      </div>
+                    </div>
+                    <div data-debug-id={`agents-management-summary-${group.agentId}`} className="mt-3 grid gap-2 text-xs text-zinc-500 md:grid-cols-3">
+                      <div className="rounded-lg border border-white/10 px-2 py-1.5">Provider / tier · <span className="text-zinc-300">{provider} · {tier}</span></div>
+                      <div className="rounded-lg border border-white/10 px-2 py-1.5">Project · <span className="text-zinc-300">{project?.name || projectId || 'none'}</span></div>
+                      <div className="rounded-lg border border-white/10 px-2 py-1.5">Instances · <span className="text-zinc-300">open via main sidebar</span></div>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           ))}
         </div>
@@ -2253,7 +2267,7 @@ function ProjectsSurface({ projects = [], chains = [], onBack, onOpenProject, on
 }
 
 
-function SidebarAgentsList({ agents = [], projects = [], session = {}, providers = [], onOpenAgentPage, onRefreshAgents }: any) {
+function SidebarAgentsList({ agents = [], projects = [], session = {}, providers = [], onOpenAgentPage, onRefreshAgents, showAgentList = true }: any) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [launchName, setLaunchName] = useState('');
   const [launchRole, setLaunchRole] = useState(() => readLaunchAgentDefaults(session?.daemonUrl || '').role || 'specialist');
@@ -2421,12 +2435,16 @@ function SidebarAgentsList({ agents = [], projects = [], session = {}, providers
           </div>
         </div>
       )}
-      <div className="mb-1.5 flex items-center justify-between gap-2 px-1"><div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Agents</div><div className="text-[10px] text-zinc-600">{sidebarAgents.length}</div></div>
-      {sidebarAgents.length === 0 ? <div className="px-1 py-1 text-[10px] text-zinc-600">No agents</div> : <div className="space-y-1">{sidebarAgents.slice(0, 100).map((agent: any) => {
-        const chainId = taskGeneratedAgentChainId(agent);
-        const live = agentHasLiveSession(agent);
-        return <button key={agent.id} data-debug-id={`sidebar-agent-${agent.id}`} onClick={() => onOpenAgentPage?.(agent.id)} title={`${agent.label || agent.id} · ${live ? 'live' : 'offline'}`} className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] transition hover:bg-white/[0.04] hover:text-zinc-100 ${live ? 'text-zinc-300' : 'text-zinc-500'}`}><span className={`h-1.5 w-1.5 shrink-0 rounded-full ${live ? 'bg-emerald-300' : 'bg-zinc-600'}`} /><span className="min-w-0 flex-1 truncate">{agent.label || agent.id}</span>{!live && <span className="shrink-0 rounded bg-white/[0.04] px-1 text-[9px] text-zinc-600">off</span>}{chainId && <span className="shrink-0 rounded bg-white/[0.05] px-1 text-[9px] text-zinc-500">chain</span>}</button>;
-      })}{sidebarAgents.length > 100 && <div className="px-2 py-1 text-[10px] text-zinc-600">+{sidebarAgents.length - 100} more agents</div>}</div>}
+      {showAgentList && (
+        <>
+          <div className="mb-1.5 flex items-center justify-between gap-2 px-1"><div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Agents</div><div className="text-[10px] text-zinc-600">{sidebarAgents.length}</div></div>
+          {sidebarAgents.length === 0 ? <div className="px-1 py-1 text-[10px] text-zinc-600">No agents</div> : <div className="space-y-1">{sidebarAgents.slice(0, 100).map((agent: any) => {
+            const chainId = taskGeneratedAgentChainId(agent);
+            const live = agentHasLiveSession(agent);
+            return <button key={agent.id} data-debug-id={`sidebar-agent-${agent.id}`} onClick={() => onOpenAgentPage?.(agent.id)} title={`${agent.label || agent.id} · ${live ? 'live' : 'offline'}`} className={`flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[11px] transition hover:bg-white/[0.04] hover:text-zinc-100 ${live ? 'text-zinc-300' : 'text-zinc-500'}`}><span className={`h-1.5 w-1.5 shrink-0 rounded-full ${live ? 'bg-emerald-300' : 'bg-zinc-600'}`} /><span className="min-w-0 flex-1 truncate">{agent.label || agent.id}</span>{!live && <span className="shrink-0 rounded bg-white/[0.04] px-1 text-[9px] text-zinc-600">off</span>}{chainId && <span className="shrink-0 rounded bg-white/[0.05] px-1 text-[9px] text-zinc-500">chain</span>}</button>;
+          })}{sidebarAgents.length > 100 && <div className="px-2 py-1 text-[10px] text-zinc-600">+{sidebarAgents.length - 100} more agents</div>}</div>}
+        </>
+      )}
     </div>
   );
 }
@@ -2633,6 +2651,10 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
   const [memoryEditor, setMemoryEditor] = useState<any>(null);
   const [memorySaving, setMemorySaving] = useState(false);
   const [artifactsOpen, setArtifactsOpen] = useState(false);
+  const [chatProvider, setChatProvider] = useState(agent?.providerProfile || defaultConversationProvider(providers));
+  const [chatTier, setChatTier] = useState(agent?.modelTier || 'normal');
+  const [runtimeRestarting, setRuntimeRestarting] = useState('');
+  const [runtimeRestartError, setRuntimeRestartError] = useState('');
   const upload = useArtifactUpload({ projectId: agent?.projectId || '', originKind: 'direct_agent_chat', originRef: agent?.id || '' });
   const runtime = agentRuntimeDot(agent);
   const agentLive = agentHasLiveSession(agent);
@@ -2677,7 +2699,10 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
     setEditProvider(agent?.providerProfile || '');
     setEditProject(agent?.projectId || '');
     setEditTier(agent?.modelTier || 'normal');
-  }, [agent?.id, agent?.label, agent?.providerProfile, agent?.projectId, agent?.modelTier]);
+    setChatProvider(agent?.providerProfile || defaultConversationProvider(providers));
+    setChatTier(agent?.modelTier || 'normal');
+    setRuntimeRestartError('');
+  }, [agent?.id, agent?.label, agent?.providerProfile, agent?.projectId, agent?.modelTier, providers]);
 
   useEffect(() => {
     if (!startProgress?.active || startProgress.agentId !== agent?.id || startProgress.completed) return;
@@ -2750,7 +2775,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
 
   const startAgent = () => runAgentAction('start', async () => {
     setStartProgress({ active: true, agentId: agent.id, requestedAt: Date.now(), completed: false });
-    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || agent.agentRole || 'specialist', projectId: agent.projectId || '', displayName: agent.label || agent.id, modelTier: agent.modelTier || 'normal', agentRole: agent.agentRole || agent.templateId || '' });
+    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: chatProvider || agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || agent.agentRole || 'specialist', projectId: agent.projectId || '', displayName: agent.label || agent.id, modelTier: chatTier || agent.modelTier || 'normal', agentRole: agent.agentRole || agent.templateId || '' });
   });
   const stopAgent = () => runAgentAction('stop', async () => {
     setStopProgress({ active: true, agentId: agent.id, requestedAt: Date.now(), completed: false });
@@ -2767,13 +2792,30 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
     await onAgentDeleted?.();
   });
 
+  const restartExactRuntime = async (nextProvider: string, nextTier: string, reason: string) => {
+    if (!agent?.id || runtimeRestarting) return;
+    setRuntimeRestarting(reason);
+    setRuntimeRestartError('');
+    setStartProgress({ active: true, agentId: agent.id, requestedAt: Date.now(), completed: false, reason });
+    try {
+      if (agentHasLiveSession(agent)) await daemonApi.stopAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, timeInSec: 1 }).catch(() => undefined);
+      await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: nextProvider || agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || agent.agentRole || durableAgentId(agent), projectId: agent.projectId || '', displayName: agent.label || agent.id, modelTier: nextTier || agent.modelTier || 'normal', agentRole: agent.agentRole || agent.templateId || durableAgentId(agent) });
+      await onRefreshAgents?.();
+    } catch (err: any) {
+      setRuntimeRestartError(String(err?.message || err || 'Unable to restart exact agent instance.'));
+      setStartProgress((current: any) => current?.agentId === agent?.id ? { ...current, failed: true, error: err?.message || 'Runtime restart failed' } : current);
+    } finally {
+      setRuntimeRestarting('');
+    }
+  };
+
   const submit = async (interrupt = false) => {
     const body = draft.trim();
     if (!body || !agent?.id || sending) return;
     setSending(true);
     setSendError('');
     try {
-      await onSendAgentMessage?.(agent.id, body, interrupt);
+      await onSendAgentMessage?.(agent.id, body, interrupt, { provider: chatProvider, modelTier: chatTier });
       setDraft('');
     } catch (err: any) {
       setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`);
@@ -2903,9 +2945,18 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
           />
           {sendError && <div data-debug-id="agent-detail-chat-send-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{sendError}</div>}
           {upload.error && <div data-debug-id="agent-detail-chat-upload-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
-          <div className="flex items-center justify-between gap-2 px-2 pb-2">
-            <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }} context={{ projectId: agent?.projectId || '', originKind: 'direct_agent_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending} debugIdPrefix="agent-detail-chat-artifact-upload" label="⇧" buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-lg text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50" />
-            <div className="flex items-center gap-2"><span className="hidden text-[11px] text-zinc-600 sm:inline">Enter to send · Shift+Enter for newline</span><button data-debug-id="agent-detail-chat-send-btn" aria-label="Send direct agent message" title={sending ? 'Sending…' : 'Send'} onClick={() => { void submit(false); }} disabled={!agent?.id || sending || !draft.trim()} className="inline-flex h-8 items-center justify-center rounded-full border border-white/10 px-3 text-sm text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">→</button></div>
+          {runtimeRestartError && <div data-debug-id="agent-detail-chat-runtime-restart-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{runtimeRestartError}</div>}
+          {runtimeRestarting && <div data-debug-id="agent-detail-chat-runtime-restart-status" className="mx-3 mb-2 rounded-xl border border-sky-400/30 bg-sky-400/10 px-3 py-2 text-xs text-sky-100">Restarting exact instance {agent?.id} with selected {runtimeRestarting}…</div>}
+          <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }} context={{ projectId: agent?.projectId || '', originKind: 'direct_agent_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending || Boolean(runtimeRestarting)} debugIdPrefix="agent-detail-chat-artifact-upload" label="⇧" buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-lg text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50" />
+              <select data-debug-id="agent-detail-chat-provider-select" aria-label="Agent chat provider" value={chatProvider} onChange={(event) => { const nextProvider = event.target.value; setChatProvider(nextProvider); void restartExactRuntime(nextProvider, chatTier, 'provider'); }} disabled={!agent?.id || Boolean(runtimeRestarting)} className="h-8 rounded-md border border-white/10 bg-[#141414] px-2 text-xs text-zinc-400 outline-none hover:border-white/20 focus:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50">
+                {(providers || []).map((provider: any) => <option key={provider.name} value={provider.name}>{provider.name}</option>)}
+                {!(providers || []).some((provider: any) => provider.name === chatProvider) && chatProvider ? <option value={chatProvider}>{chatProvider}</option> : null}
+              </select>
+              <select data-debug-id="agent-detail-chat-tier-select" aria-label="Agent chat model tier" value={chatTier} onChange={(event) => { const nextTier = event.target.value; setChatTier(nextTier); void restartExactRuntime(chatProvider, nextTier, 'tier'); }} disabled={!agent?.id || Boolean(runtimeRestarting)} className="h-8 rounded-md border border-white/10 bg-[#141414] px-2 text-xs text-zinc-400 outline-none hover:border-white/20 focus:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50"><option value="normal">normal</option><option value="smart">smart</option><option value="cheap">cheap</option></select>
+            </div>
+            <div className="flex items-center gap-2"><span className="hidden text-[11px] text-zinc-600 sm:inline">Enter to send · Shift+Enter for newline</span><button data-debug-id="agent-detail-chat-send-btn" aria-label="Send direct agent message" title={sending ? 'Sending…' : 'Send'} onClick={() => { void submit(false); }} disabled={!agent?.id || sending || Boolean(runtimeRestarting) || !draft.trim()} className="inline-flex h-8 items-center justify-center rounded-full border border-white/10 px-3 text-sm text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">→</button></div>
           </div>
         </div>
       </section>

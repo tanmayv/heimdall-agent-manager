@@ -60,7 +60,7 @@ checks = [
         'setSendError(`Send failed.',
     ])),
     ('direct agent chat composers preserve drafts on failure and expose inline send errors', all(snippet in APP for snippet in [
-        'await onSendAgentMessage?.(agent.id, body, interrupt);',
+        'await onSendAgentMessage?.(agent.id, body, interrupt, { provider: chatProvider, modelTier: chatTier });',
         'await onSendAgentMessage?.(selectedAgentId, body);',
         'data-debug-id="agent-detail-chat-send-error"',
         'data-debug-id="home-running-agent-chat-send-error"',
