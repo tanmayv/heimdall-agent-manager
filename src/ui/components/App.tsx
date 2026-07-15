@@ -1338,16 +1338,7 @@ export default function App() {
               providers={settingsProviders}
               session={session}
               onBack={() => selectSurfaceWithUrl('home')}
-              onOpenInstance={(instanceId: string) => openAgentPage(instanceId)}
-              onResumeInstance={async (instance: any) => {
-                const instanceId = agentInstanceId(instance);
-                if (!instanceId) return;
-                if (!agentHasLiveSession(instance)) {
-                  await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: instanceId, provider: instance.providerProfile || defaultConversationProvider(settingsProviders), templateId: instance.templateId || instance.agentRole || durableAgentId(instance), projectId: instance.projectId || '', displayName: instance.label || instanceId, modelTier: instance.modelTier || 'normal', agentRole: instance.agentRole || instance.templateId || durableAgentId(instance) });
-                  await dispatch(refreshAgents()).unwrap().catch(() => undefined);
-                }
-                openAgentPage(instanceId);
-              }}
+              onRefreshAgents={() => dispatch(refreshAgents()).unwrap().catch(() => undefined)}
               onNewInstance={async (identity: any) => {
                 const durableId = durableAgentId(identity);
                 const requestedId = `${durableId}@s-${(globalThis.crypto?.randomUUID?.().replace(/-/g, '').slice(0, 10) || Date.now().toString(16))}`;
@@ -1355,7 +1346,6 @@ export default function App() {
                 await dispatch(refreshAgents()).unwrap().catch(() => undefined);
                 openAgentPage(result?.agent_instance_id || result?.agentInstanceId || requestedId);
               }}
-              onEditIdentity={(identity: any) => openAgentPage(agentInstanceId(identity))}
             />
           ) : urlParams.view === 'new-conversation' ? (
             <NewConversationPage
@@ -2523,46 +2513,32 @@ function AgentTaskList({ title, emptyText, tasks, chainsById, agentId, completed
 }
 
 
-function AgentInstanceRow({ agent, group, context, onOpen, onResume }: any) {
+function AgentIdentityInstanceSummaryRow({ agent, context }: any) {
   const id = agentInstanceId(agent);
-  const running = agentHasLiveSession(agent);
   const runtime = agentRuntimeDot(agent);
-  const actionLabel = running || group !== 'stopped' ? 'Open' : 'Resume';
+  const status = agentStatusIndicator(agent, context);
   const slug = id.replace(/[^a-zA-Z0-9_-]/g, '-');
   return (
-    <div data-debug-id={`agent-instance-row-${slug}`} className="flex items-center gap-3 rounded-[15px] border border-[#262626] bg-[#111111] px-3 py-3 text-[13px] text-zinc-300">
-      <span data-debug-id={`agent-instance-status-${slug}`} className={`shrink-0 rounded-full border px-2 py-1 text-[11px] ${running ? 'border-sky-400/30 bg-sky-400/10 text-sky-200' : 'border-white/10 bg-[#141414] text-zinc-400'}`}>{running ? 'running' : runtime.label || 'stopped'}</span>
-      <code data-debug-id={`agent-instance-id-${slug}`} className="shrink-0 text-[12px] text-zinc-100">{id}</code>
-      <span data-debug-id={`agent-instance-context-${slug}`} className="min-w-0 flex-1 truncate text-zinc-500">{context}</span>
-      {actionLabel === 'Resume' ? (
-        <button
-          data-debug-id={`agent-instance-resume-btn-${slug}`}
-          onClick={() => onResume?.(agent)}
-          className="shrink-0 rounded-xl bg-white/10 px-3 py-1.5 text-xs text-zinc-100 hover:bg-white/15"
-        >Resume</button>
-      ) : (
-        <button
-          data-debug-id={`agent-instance-open-btn-${slug}`}
-          onClick={() => onOpen?.(id)}
-          className="shrink-0 rounded-xl bg-white/10 px-3 py-1.5 text-xs text-zinc-100 hover:bg-white/15"
-        >Open</button>
-      )}
+    <div data-debug-id={`agent-identity-instance-summary-row-${slug}`} className="flex items-center gap-3 rounded-[15px] border border-[#262626] bg-[#111111] px-3 py-3 text-[13px] text-zinc-300">
+      <span data-debug-id={`agent-identity-instance-summary-status-${slug}`} aria-label={`${id} status: ${status.label}`} title={status.title} className="inline-flex shrink-0 items-center gap-1 rounded-full border border-white/10 px-2 py-1 text-[11px] text-zinc-400"><span className={`h-2 w-2 rounded-full ${status.color} ${status.pulse}`} />{status.compact || runtime.label || 'unknown'}</span>
+      <code data-debug-id={`agent-identity-instance-summary-id-${slug}`} className="shrink-0 text-[12px] text-zinc-100">{id}</code>
+      <span data-debug-id={`agent-identity-instance-summary-context-${slug}`} className="min-w-0 flex-1 truncate text-zinc-500">{context}</span>
     </div>
   );
 }
 
-function AgentInstanceGroup({ title, group, instances, chats, tasksById, chainsById, onOpen, onResume }: any) {
+function AgentIdentityInstanceSummaryGroup({ title, group, instances, chats, tasksById, chainsById }: any) {
   return (
-    <section data-debug-id={`agent-instance-group-${group}`} className="mt-4">
+    <section data-debug-id={`agent-identity-instance-summary-group-${group}`} className="mt-4">
       <div className="mb-2 flex items-center justify-between px-1 text-[11px] uppercase tracking-[0.18em] text-zinc-500"><span>{title}</span><span>{instances.length}</span></div>
       <div className="space-y-2">
-        {instances.length === 0 ? <div className="rounded-[15px] border border-dashed border-[#262626] px-4 py-3 text-sm text-zinc-600">No {title.toLowerCase()} instances.</div> : instances.map((instance: any) => <AgentInstanceRow key={agentInstanceId(instance)} agent={instance} group={group} context={agentInstanceContext(instance, chats, tasksById, chainsById)} onOpen={onOpen} onResume={onResume} />)}
+        {instances.length === 0 ? <div className="rounded-[15px] border border-dashed border-[#262626] px-4 py-3 text-sm text-zinc-600">No {title.toLowerCase()} instances.</div> : instances.map((instance: any) => <AgentIdentityInstanceSummaryRow key={agentInstanceId(instance)} agent={instance} context={agentInstanceContext(instance, chats, tasksById, chainsById)} />)}
       </div>
     </section>
   );
 }
 
-function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, chainsById = {}, projects = [], providers = [], session = {}, onBack, onOpenInstance, onResumeInstance, onNewInstance, onEditIdentity }: any) {
+function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, chainsById = {}, projects = [], providers = [], session = {}, onBack, onNewInstance, onRefreshAgents }: any) {
   const durableId = String(agentId || '').split('@')[0];
   const instances = useMemo(() => (agents || [])
     .filter((agent: any) => durableAgentId(agent) === durableId || (!durableId && agentInstanceId(agent)))
@@ -2582,6 +2558,36 @@ function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, c
   const providerName = identity?.providerProfile || identity?.provider_profile || providers?.[0]?.name || 'default';
   const tier = identity?.modelTier || identity?.model_tier || 'normal';
   const memoryCount = 0;
+  const [editOpen, setEditOpen] = useState(false);
+  const [editName, setEditName] = useState(identity?.label || identity?.displayName || identity?.display_name || durableId || '');
+  const [editProvider, setEditProvider] = useState(identity?.providerProfile || identity?.provider_profile || providers?.[0]?.name || 'pi');
+  const [editProject, setEditProject] = useState(projectId || '');
+  const [editTier, setEditTier] = useState(tier || 'normal');
+  const [editError, setEditError] = useState('');
+  const [editSaving, setEditSaving] = useState(false);
+
+  useEffect(() => {
+    setEditName(identity?.label || identity?.displayName || identity?.display_name || durableId || '');
+    setEditProvider(identity?.providerProfile || identity?.provider_profile || providers?.[0]?.name || 'pi');
+    setEditProject(projectId || '');
+    setEditTier(tier || 'normal');
+    setEditError('');
+  }, [identity?.id, identity?.label, identity?.displayName, identity?.display_name, identity?.providerProfile, identity?.provider_profile, projectId, tier, durableId, providers]);
+
+  const saveIdentityDefaults = async () => {
+    if (!identity || editSaving) return;
+    setEditSaving(true);
+    setEditError('');
+    try {
+      await daemonApi.updateAgent({ daemonUrl: session?.daemonUrl || '', agentRecordId: identity.agentRecordId || identity.agent_record_id || '', agentInstanceId: agentInstanceId(identity) || durableId, displayName: editName.trim() || durableId, providerProfile: editProvider, projectId: editProject, modelTier: editTier });
+      setEditOpen(false);
+      await onRefreshAgents?.();
+    } catch (err: any) {
+      setEditError(String(err?.message || err || 'Unable to save agent defaults.'));
+    } finally {
+      setEditSaving(false);
+    }
+  };
 
   return (
     <div data-debug-id="agent-identity-page" className="flex min-h-full flex-col bg-[#090909] text-zinc-100">
@@ -2593,10 +2599,26 @@ function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, c
           <span className="truncate text-zinc-100">{durableId || 'agent'}</span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <button data-debug-id="agent-identity-edit-btn" onClick={() => onEditIdentity?.(identity)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400">✎ Edit identity</button>
+          <button data-debug-id="agent-identity-edit-btn" onClick={() => setEditOpen(true)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400">✎ Edit identity</button>
           <button data-debug-id="agent-identity-new-instance-btn" onClick={() => onNewInstance?.(identity)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400">＋ New instance</button>
         </div>
       </div>
+
+      {editOpen && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 py-16 backdrop-blur-sm" onMouseDown={() => setEditOpen(false)}>
+          <div data-debug-id="agent-identity-edit-modal" className="w-full max-w-2xl rounded-3xl border border-white/10 bg-[#101217] p-5 shadow-2xl shadow-black/50" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="mb-4 flex items-center justify-between gap-3"><h2 className="text-lg font-semibold text-zinc-100">Edit durable agent defaults</h2><IconActionButton debugId="agent-identity-edit-close-btn" title="Close" icon="×" onClick={() => setEditOpen(false)} /></div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Display name<input data-debug-id="agent-identity-edit-name-input" value={editName} onChange={(event) => setEditName(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400" /></label>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Default provider<select data-debug-id="agent-identity-edit-provider-select" value={editProvider} onChange={(event) => setEditProvider(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400">{(providers?.length ? providers : [{ name: 'pi' }]).map((provider: any) => <option key={provider.name} value={provider.name}>{provider.name}</option>)}</select></label>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Default project<select data-debug-id="agent-identity-edit-project-select" value={editProject} onChange={(event) => setEditProject(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400"><option value="">No project</option>{(projects || []).map((project: any) => <option key={project.projectId || project.project_id} value={project.projectId || project.project_id}>{project.name || project.projectId || project.project_id}</option>)}</select></label>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Default tier<select data-debug-id="agent-identity-edit-tier-select" value={editTier} onChange={(event) => setEditTier(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400"><option value="normal">normal</option><option value="smart">smart</option><option value="cheap">cheap</option></select></label>
+            </div>
+            {editError && <div data-debug-id="agent-identity-edit-error" className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{editError}</div>}
+            <div className="mt-5 flex justify-end gap-2"><IconActionButton debugId="agent-identity-edit-cancel-btn" title="Cancel" icon="×" onClick={() => setEditOpen(false)} /><IconActionButton debugId="agent-identity-edit-save-btn" title="Save defaults" icon="✓" onClick={saveIdentityDefaults} disabled={editSaving || !editName.trim()} tone="primary" /></div>
+          </div>
+        </div>
+      )}
 
       <div className="flex-1 overflow-y-auto px-8 py-7">
         <div className="mx-auto max-w-5xl">
@@ -2604,7 +2626,7 @@ function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, c
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
                 <h1 data-debug-id="agent-identity-title" className="truncate text-xl font-semibold text-zinc-100">Durable identity · <code>agent_id = {durableId || '—'}</code></h1>
-                <p className="mt-2 text-sm text-zinc-500">Every concrete instance below inherits these defaults while keeping its own chat, task, inbox, and runtime state.</p>
+                <p className="mt-2 text-sm text-zinc-500">Edit durable defaults here. Concrete instance navigation stays in the main sidebar and secondary instance sidebar; rows below are read-only summaries.</p>
               </div>
               <span data-debug-id="agent-identity-instance-count" className="rounded-full bg-white/10 px-3 py-1 text-xs text-zinc-400">{instances.length} instances</span>
             </div>
@@ -2616,11 +2638,11 @@ function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, c
             </div>
           </section>
 
-          <div data-debug-id="agent-instance-list" className="mt-7">
-            <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-zinc-500">Live &amp; recent instances</div>
-            <AgentInstanceGroup title="Running" group="running" instances={running} chats={chats} tasksById={tasksById} chainsById={chainsById} onOpen={onOpenInstance} onResume={onResumeInstance} />
-            <AgentInstanceGroup title="Recent" group="recent" instances={recent} chats={chats} tasksById={tasksById} chainsById={chainsById} onOpen={onOpenInstance} onResume={onResumeInstance} />
-            <AgentInstanceGroup title="Stopped" group="stopped" instances={stopped} chats={chats} tasksById={tasksById} chainsById={chainsById} onOpen={onOpenInstance} onResume={onResumeInstance} />
+          <div data-debug-id="agent-identity-instance-summary-list" className="mt-7">
+            <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-zinc-500">Read-only instance summary</div>
+            <AgentIdentityInstanceSummaryGroup title="Running" group="running" instances={running} chats={chats} tasksById={tasksById} chainsById={chainsById} />
+            <AgentIdentityInstanceSummaryGroup title="Recent" group="recent" instances={recent} chats={chats} tasksById={tasksById} chainsById={chainsById} />
+            <AgentIdentityInstanceSummaryGroup title="Stopped" group="stopped" instances={stopped} chats={chats} tasksById={tasksById} chainsById={chainsById} />
           </div>
         </div>
       </div>
