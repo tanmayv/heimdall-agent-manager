@@ -151,6 +151,9 @@ checks = [
     ('secondary sidebar lists live non-conversation instances only', all(snippet in APP for snippet in [
         'function SidebarAgentInstancesPanel',
         'data-debug-id="sidebar-agent-instances-panel"',
+        'data-debug-id={`sidebar-agent-instances-new-instance-btn-${agentId}`}',
+        'data-debug-id={`sidebar-agent-instances-launch-row-${agentId}`}',
+        'onStartInstance={startSidebarAgentInstance}',
         '.filter((agent: any) => durableAgentId(agent) === agentId && !isConversationAgent(agent))',
         '.filter((agent: any) => agentHasLiveSession(agent))',
         'data-debug-id={`sidebar-agent-instance-row-${id}`}',
@@ -361,6 +364,8 @@ checks = [
         '`sidebar-agents-show-more-btn`',
         '`sidebar-agents-loading`',
         '`sidebar-agent-instances-panel`',
+        '`sidebar-agent-instances-new-instance-btn-${agentId}`',
+        '`sidebar-agent-instances-launch-row-${agentId}`',
         '`sidebar-agent-instance-row-${agentInstanceId}`',
         '`task-chains-surface`',
         '`task-chains-new-btn`',

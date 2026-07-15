@@ -1261,7 +1261,9 @@ export default function App() {
             tasksById={tasksById}
             chainsById={chainsById}
             selectedAgentId={agentPageId}
+            launchingAgentId={sidebarAgentLaunchingId}
             onOpenInstance={openAgentPage}
+            onStartInstance={startSidebarAgentInstance}
             onClose={() => setSelectedSidebarAgentId('')}
           />
         ) : null}
@@ -2096,11 +2098,12 @@ function SidebarDurableAgentsSection({ groups = [], selectedAgentId = '', launch
 }
 
 
-function SidebarAgentInstancesPanel({ agentId = '', agents = [], chats = {}, tasksById = {}, chainsById = {}, selectedAgentId = '', onOpenInstance, onClose }: any) {
+function SidebarAgentInstancesPanel({ agentId = '', agents = [], chats = {}, tasksById = {}, chainsById = {}, selectedAgentId = '', launchingAgentId = '', onOpenInstance, onStartInstance, onClose }: any) {
   const allInstances = useMemo(() => (agents || [])
     .filter((agent: any) => durableAgentId(agent) === agentId && !isConversationAgent(agent))
     .filter((agent: any) => agentHasLiveSession(agent))
     .sort((a: any, b: any) => agentUpdatedUnixMs(b) - agentUpdatedUnixMs(a)), [agents, agentId]);
+  const launching = launchingAgentId === agentId;
   return (
     <aside data-debug-id="sidebar-agent-instances-panel" className="flex w-[320px] shrink-0 flex-col border-r border-white/10 bg-[#0d0d0d] text-zinc-100">
       <div className="border-b border-[#1f1f1f] px-4 py-3">
@@ -2109,11 +2112,18 @@ function SidebarAgentInstancesPanel({ agentId = '', agents = [], chats = {}, tas
             <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-500">Live instances</div>
             <div data-debug-id={`sidebar-agent-instances-title-${agentId}`} className="truncate text-sm font-semibold text-zinc-100">{agentId}</div>
           </div>
-          <button type="button" data-debug-id="sidebar-agent-instances-close-btn" onClick={onClose} className="rounded-md border border-white/10 px-2 py-1 text-xs text-zinc-400 hover:bg-[#171717] hover:text-zinc-100">Close</button>
+          <div className="flex shrink-0 items-center gap-1">
+            <button type="button" data-debug-id={`sidebar-agent-instances-new-instance-btn-${agentId}`} onClick={() => onStartInstance?.(agentId)} disabled={launching} className="rounded-md border border-white/10 px-2 py-1 text-xs text-zinc-300 hover:bg-[#171717] hover:text-zinc-100 disabled:cursor-wait disabled:opacity-50" title={`Launch a new ${agentId} instance`} aria-label={`Launch a new ${agentId} instance`}>{launching ? 'Launching…' : 'New'}</button>
+            <button type="button" data-debug-id="sidebar-agent-instances-close-btn" onClick={onClose} className="rounded-md border border-white/10 px-2 py-1 text-xs text-zinc-400 hover:bg-[#171717] hover:text-zinc-100">Close</button>
+          </div>
         </div>
         <p className="mt-2 text-xs text-zinc-600">Stopped non-conversation instances are hidden here; open Agents for management/history.</p>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        <button type="button" data-debug-id={`sidebar-agent-instances-launch-row-${agentId}`} onClick={() => onStartInstance?.(agentId)} disabled={launching} className="mb-3 flex w-full items-center justify-between rounded-xl border border-dashed border-white/10 bg-[#111] px-3 py-2 text-left text-sm text-zinc-300 hover:border-white/20 hover:bg-[#171717] disabled:cursor-wait disabled:opacity-50">
+          <span>Launch new instance</span>
+          <span className="text-zinc-500">{launching ? '…' : '›'}</span>
+        </button>
         {allInstances.length === 0 ? (
           <div data-debug-id="sidebar-agent-instances-empty" className="rounded-xl border border-dashed border-[#2a2a2a] p-4 text-sm text-zinc-500">No live instances for this agent.</div>
         ) : allInstances.map((instance: any) => {
