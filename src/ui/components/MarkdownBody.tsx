@@ -29,6 +29,7 @@ export type MarkdownBodyProps = {
   source: string;
   className?: string;
   compact?: boolean;
+  copyAll?: boolean;
   'data-debug-id'?: string;
   onArtifactClick?: (artifactId: string) => void;
   onTextSelectionChange?: (selection: MarkdownTextSelection | null) => void;
@@ -217,10 +218,11 @@ function renderBlocks(source: string): string {
   return out.join('');
 }
 
-export function renderMarkdown(source: string): string {
+export function renderMarkdown(source: string, copyAll = true): string {
   if (!source) return '';
   const raw = normalizeMarkdownSource(source);
   if (!raw.trim()) return '';
+  if (!copyAll) return renderBlocks(source);
   const escapedSource = escapeHtml(raw);
   const copyBtn = `<div class="mb-1 flex items-center justify-end"><button type="button" data-markdown-copy-all="true" data-debug-id="markdown-copy-all-btn" data-markdown-source="${escapedSource}" title="Copy entire markdown" class="inline-flex h-6 w-6 items-center justify-center rounded-md border border-white/10 bg-white/5 text-zinc-400 opacity-60 transition hover:bg-white/15 hover:text-zinc-100 hover:opacity-100"><span aria-hidden="true" class="text-xs">\u{1F4CB}</span></button></div>`;
   return copyBtn + renderBlocks(source);
@@ -251,9 +253,9 @@ function readMarkdownSelection(root: HTMLElement): MarkdownTextSelection | null 
   return { selectedText };
 }
 
-export default function MarkdownBody({ source, className, compact, 'data-debug-id': dataDebugId, onArtifactClick, onTextSelectionChange }: MarkdownBodyProps) {
+export default function MarkdownBody({ source, className, compact, copyAll = true, 'data-debug-id': dataDebugId, onArtifactClick, onTextSelectionChange }: MarkdownBodyProps) {
   const rootRef = useRef<HTMLDivElement | null>(null);
-  const html = useMemo(() => renderMarkdown(source || ''), [source]);
+  const html = useMemo(() => renderMarkdown(source || '', copyAll), [source, copyAll]);
   const spacing = compact ? 'space-y-1' : 'space-y-2';
   const session = useSelector((state: any) => state.chat?.session || {});
   const daemonUrl = session?.daemonUrl || '';

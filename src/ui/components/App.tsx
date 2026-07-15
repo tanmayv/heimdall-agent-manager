@@ -3272,7 +3272,7 @@ function ConversationThreadPage({ agent, chats, session, projects = [], provider
                     <div className={`flex ${msg.isUser ? 'max-w-[74%] items-end' : 'w-full items-start'} flex-col`}>
                       {assistantMessage && live && index === messages.length - 1 && <span data-debug-id="conversation-thread-worked-status" className="mb-3 inline-flex items-center gap-1 rounded-full border border-[#262626] bg-[#141414] px-3 py-1 text-[12px] text-zinc-500">Worked for 36s ›</span>}
                       <div className={`${msg.isUser ? 'rounded-[15px] border border-[#262626] bg-[#1c1c1c] px-[14px] py-[10px] text-zinc-100' : 'max-w-full text-zinc-200'}`}>
-                        <Markdown source={msg.body} compact />
+                        <Markdown source={msg.body} compact copyAll={false} />
                       </div>
                       <div data-debug-id={`conversation-thread-message-actions-${msg.messageId}`} className={`mt-1 flex items-center gap-[10px] text-[13px] text-zinc-500 ${msg.isUser ? 'self-end' : 'self-start'}`}>
                         <ChatHoverCopyButton debugId={`conversation-thread-message-copy-btn-${msg.messageId}`} text={msg.body} />
@@ -4214,7 +4214,7 @@ function CoordinatorActionCard({ action, messageId, debugPrefix, usedReply, onUs
     return (
       <div data-debug-id={`${debugPrefix}-smart-answer-${messageId}`} className={`mt-2 rounded-xl border p-3 ${used ? 'border-emerald-400/25 bg-emerald-400/[0.06]' : 'border-amber-400/20 bg-amber-400/[0.06]'}`}>
         <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-amber-200">{used ? 'Reply selected' : 'Needs approval'}</div>
-        <Markdown source={action.body} compact className="mt-2" />
+        <Markdown source={action.body} compact copyAll={false} className="mt-2" />
         {used && <div data-debug-id={`${debugPrefix}-smart-answer-${messageId}-used`} className="mt-2 text-xs text-emerald-200">Sent: {prettifyReply(usedReply)}</div>}
         <div className="mt-3 flex flex-wrap gap-2">
           {action.suggestedReplies.map((reply) => (
@@ -4234,7 +4234,7 @@ function CoordinatorActionCard({ action, messageId, debugPrefix, usedReply, onUs
   return (
     <div data-debug-id={`${debugPrefix}-multi-question-${messageId}`} className={`mt-2 rounded-xl border p-3 ${used ? 'border-emerald-400/25 bg-emerald-400/[0.06]' : 'border-amber-400/20 bg-amber-400/[0.06]'}`}>
       <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-amber-200">{used ? 'Reply selected' : 'Needs answers'}</div>
-      {action.body && <Markdown source={action.body} compact className="mt-2" />}
+      {action.body && <Markdown source={action.body} compact copyAll={false} className="mt-2" />}
       <div className="mt-3 space-y-3">
         {action.questions.map((question, index) => (
           <div key={`${messageId}-question-${index}`} className="rounded-xl bg-black/20 p-3">
@@ -4304,7 +4304,7 @@ function MultiQuestionAnswerSummary({ reply, debugId }: { reply: string; debugId
 function UserActionReplyBubble({ body }: { body: string }) {
   const multi = parseMultiQuestionAnswerReply(body);
   if (multi) return <MultiQuestionAnswerSummary reply={body} debugId="coordinator-user-multi-question-answer" />;
-  return <Markdown source={body} compact className="mt-1" />;
+  return <Markdown source={body} compact copyAll={false} className="mt-1" />;
 }
 
 function deriveCoordinatorActionReplies(messages: CoordinatorMessage[]): Record<string, string> {
@@ -4535,7 +4535,7 @@ function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'cha
                   {(() => {
                     if (msg.isUser) return <UserActionReplyBubble body={msg.body} />;
                     const action = parseCoordinatorActionPayload(msg.body);
-                    if (!action) return <Markdown source={msg.body} compact />;
+                    if (!action) return <Markdown source={msg.body} compact copyAll={false} />;
                     return (
                       <CoordinatorActionCard
                         action={action}

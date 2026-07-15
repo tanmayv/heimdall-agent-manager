@@ -8,6 +8,7 @@ APP = (ROOT / 'src/ui/components/App.tsx').read_text(encoding='utf-8')
 AGENTS = (ROOT / 'AGENTS.md').read_text(encoding='utf-8')
 SETTINGS = (ROOT / 'src/ui/components/SettingsPage.tsx').read_text(encoding='utf-8')
 MESSAGE_BUBBLE = (ROOT / 'src/ui/components/MessageBubble.tsx').read_text(encoding='utf-8')
+MARKDOWN_BODY = (ROOT / 'src/ui/components/MarkdownBody.tsx').read_text(encoding='utf-8')
 STYLES = (ROOT / 'src/ui/styles.css').read_text(encoding='utf-8')
 UPLOAD = (ROOT / 'src/ui/components/ArtifactUpload.tsx').read_text(encoding='utf-8')
 
@@ -346,7 +347,26 @@ checks = [
         'conversation-thread-message-like-btn',
         'conversation-thread-message-dislike-btn',
         'globalThis.navigator?.clipboard?.writeText?.(msg.body)',
+    ]) and all(snippet in APP + MESSAGE_BUBBLE + MARKDOWN_BODY for snippet in [
+        '<Markdown source={msg.body} compact copyAll={false} />',
+        '<Markdown source={action.body} compact copyAll={false} className="mt-2" />',
+        '<Markdown source={body} compact copyAll={false} className="mt-1" />',
+        'if (!action) return <Markdown source={msg.body} compact copyAll={false} />;',
+        'return <Markdown source={text} compact copyAll={false} className={`text-sm leading-6 ${className}`} />;',
+        'copyAll?: boolean;',
+        'if (!copyAll) return renderBlocks(source);',
+        'data-markdown-copy-code="true"',
+        'data-markdown-copy-table="true"',
     ])),
+    ('chat message markdown disables global markdown copy-all while non-chat markdown can retain it', all(snippet in MARKDOWN_BODY for snippet in [
+        'copyAll = true',
+        'data-markdown-copy-all="true"',
+        'markdown-copy-all-btn',
+        'Copy entire markdown',
+    ]) and all(snippet in APP + MESSAGE_BUBBLE for snippet in [
+        'copyAll={false}',
+    ])),
+
     ('other chat surfaces use conversation-style transcript and composer patterns', all(snippet in APP + SETTINGS for snippet in [
         'className="chat-scrollbar h-full min-h-0 space-y-[22px] overflow-y-auto rounded-[18px] bg-[#090909] p-5 scroll-smooth"',
         'data-debug-id="agent-detail-chat-composer-shell" className="mt-3 shrink-0 rounded-[15px] border border-white/10 bg-[#141414] p-0 focus-within:border-white/35"',

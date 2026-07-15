@@ -89,7 +89,7 @@ function renderHeading(level: number, key: string, children: ReturnType<typeof r
 
 function MarkdownContent({ text, className = '' }: { text: string; className?: string }) {
   console.log('[Render] MarkdownContent');
-  return <Markdown source={text} compact className={`text-sm leading-6 ${className}`} />;
+  return <Markdown source={text} compact copyAll={false} className={`text-sm leading-6 ${className}`} />;
 }
 
 function parseReferences(text: string) {
