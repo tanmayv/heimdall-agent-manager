@@ -60,6 +60,7 @@ import { dismissToast, showToast } from '../store/toastSlice';
 import Markdown from './Markdown';
 import ArtifactUploadButton, { appendArtifactLink, useArtifactUpload } from './ArtifactUpload';
 import ChainArtifactsPanel from './ChainArtifactsPanel';
+import ArtifactViewer from './ArtifactViewer';
 import { updateUrlParams, useUrlParams } from './useUrlParams';
 import { VimSidebarProvider, VimEditButton } from './VimSidebar';
 import AgentPicker from './AgentPicker';
@@ -1220,7 +1221,7 @@ export default function App() {
     <VimSidebarProvider>
       <div className="h-screen overflow-hidden bg-[#08090b] text-zinc-100">
       <div className="flex h-full">
-        <aside className={`${sidebarCollapsed ? 'w-[64px]' : 'w-[296px]'} shrink-0 border-r border-white/10 bg-[#090909] transition-[width] duration-200`}>
+        <aside className={`${sidebarCollapsed ? 'w-0 border-r-0' : 'w-[296px] border-r'} shrink-0 border-white/10 bg-[#090909] transition-[width] duration-200`}>
           <ConversationFocusedSidebar
             conversations={conversationAgents}
             chats={chats}
@@ -1873,7 +1874,7 @@ function SidebarConversationSection({ conversations = [], chats = {}, projectsBy
                           <span data-debug-id={`conversation-thread-status-${agent.id}`} aria-label={`${agent.id} status: ${status.label}`} title={status.title} className={`h-2 w-2 shrink-0 rounded-full ${status.color} ${status.pulse}`}></span>
                           <span className="min-w-0 flex-1 truncate text-zinc-100">{title}</span>
                           {unread > 0 ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-sky-400" title="Unread messages"></span> : null}
-                          <span data-debug-id={`conversation-thread-status-label-${agent.id}`} aria-label={`${agent.id} ${status.label} detail`} title={status.title} className="shrink-0 text-[10px] tabular-nums text-zinc-600">{status.compact}</span>
+                          <span data-debug-id={`conversation-thread-status-label-${agent.id}`} aria-label={`${agent.id} ${status.label} detail`} title={status.title} className={`shrink-0 text-[10px] tabular-nums text-zinc-600 ${status.key === 'working' ? 'animate-pulse' : ''}`}>{status.key === 'working' ? '…' : status.compact}</span>
                         </button>
                       </div>
                     );
@@ -1901,29 +1902,15 @@ function SidebarConversationSection({ conversations = [], chats = {}, projectsBy
 }
 
 
-function ConversationFocusedSidebar({ conversations = [], chats = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, collapsed = false, onToggleCollapsed, agents = [], allAgents = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onStartAgentInstance, onFetchAgentPage, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onAttention, onMemory, onAgents, onTaskChains, onProjects, onSettings }: any) {
+function ConversationFocusedSidebar({ conversations = [], chats = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, collapsed = false, onToggleCollapsed, agents = [], allAgents = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onOpenAgentInstance, onStartAgentInstance, onFetchAgentPage, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onAttention, onMemory, onAgents, onTaskChains, onProjects, onSettings }: any) {
   const chainUpdatedMs = (chain: any) => Number(chain?.updatedAtUnixMs || chain?.updated_at_unix_ms || chain?.updatedAt || chain?.updated_at || chain?.createdAtUnixMs || chain?.created_at_unix_ms || 0);
   const sortedChains = [...(chains || [])].sort((a: any, b: any) => chainUpdatedMs(b) - chainUpdatedMs(a));
   const activeChains = sortedChains.filter((chain: any) => !isChainCompleted(chain)).slice(0, 4);
   const agentGroups = durableAgentGroups(agents);
   if (collapsed) {
-    const railItems = [
-      { id: 'home', icon: '⌂', label: 'Home', onClick: onHome },
-      { id: 'attention', icon: '◷', label: 'Attention', onClick: onAttention },
-      { id: 'memory', icon: '✦', label: 'Memory', onClick: onMemory },
-      { id: 'agents', icon: '◎', label: 'Agents', onClick: onAgents },
-      { id: 'task-chains', icon: '☷', label: 'Task chains', onClick: onTaskChains },
-      { id: 'projects', icon: '▣', label: 'Projects', onClick: onProjects },
-      { id: 'settings', icon: '⚙', label: 'Settings', onClick: onSettings },
-    ];
     return (
-      <div data-debug-id="conversation-focused-sidebar" data-sidebar-collapsed="true" className="flex h-full flex-col items-center bg-[#090909] py-3 text-zinc-100">
-        <button type="button" data-debug-id="conversation-sidebar-expand-btn" onClick={onToggleCollapsed} title="Expand sidebar" aria-label="Expand sidebar" className="mb-3 grid h-9 w-9 place-items-center rounded-xl border border-white/10 bg-[#141414] text-zinc-300 hover:bg-[#1c1c1c] hover:text-zinc-100">☰</button>
-        <button type="button" data-debug-id="sidebar-new-conversation-collapsed-btn" onClick={() => onNewConversation?.()} disabled={newConversationBusy} title="New Conversation" aria-label="New Conversation" className="mb-3 grid h-9 w-9 place-items-center rounded-xl border border-white/10 bg-[#141414] text-zinc-200 hover:border-white/20 disabled:cursor-not-allowed disabled:opacity-50">＋</button>
-        <nav data-debug-id="conversation-collapsed-nav" className="flex flex-1 flex-col items-center gap-1" aria-label="Collapsed navigation">
-          {railItems.map((item) => <button key={item.id} type="button" data-debug-id={`nav-${item.id}-collapsed-btn`} onClick={item.onClick} title={item.label} aria-label={item.label} className="grid h-9 w-9 place-items-center rounded-xl text-zinc-500 hover:bg-[#141414] hover:text-zinc-100">{item.icon}</button>)}
-        </nav>
-        <div className="h-2 w-2 rounded-full bg-emerald-400/70" title="Single active daemon" aria-label="Single active daemon"></div>
+      <div data-debug-id="conversation-focused-sidebar" data-sidebar-collapsed="true" className="pointer-events-none h-full w-0 overflow-visible bg-transparent text-zinc-100">
+        <button type="button" data-debug-id="conversation-sidebar-expand-btn" onClick={onToggleCollapsed} title="Expand sidebar" aria-label="Expand sidebar" className="pointer-events-auto fixed left-3 top-3 z-50 grid h-9 w-9 place-items-center rounded-xl border border-white/10 bg-[#141414]/95 text-zinc-300 shadow-xl shadow-black/30 backdrop-blur hover:bg-[#1c1c1c] hover:text-zinc-100">☰</button>
       </div>
     );
   }
@@ -1968,6 +1955,7 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, projectsBy
           selectedAgentId={selectedSidebarAgentId}
           launchingAgentId={sidebarAgentLaunchingId}
           onSelectAgent={onSelectSidebarAgent}
+          onOpenInstance={onOpenAgentInstance}
           onStartAgent={onStartAgentInstance}
         />
         <div data-debug-id="conversation-active-chains" className="mt-2">
@@ -2002,7 +1990,7 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, projectsBy
   );
 }
 
-function SidebarDurableAgentsSection({ groups = [], selectedAgentId = '', launchingAgentId = '', onSelectAgent, onStartAgent, onFetchAgentPage }: any) {
+function SidebarDurableAgentsSection({ groups = [], selectedAgentId = '', launchingAgentId = '', onSelectAgent, onOpenInstance, onStartAgent, onFetchAgentPage }: any) {
   const [agentLimit, setAgentLimit] = useState(SIDEBAR_PAGE_SIZE);
   const [agentsLoadingMore, setAgentsLoadingMore] = useState(false);
   useEffect(() => { setAgentLimit((current) => Math.min(Math.max(SIDEBAR_PAGE_SIZE, current), Math.max(SIDEBAR_PAGE_SIZE, (groups || []).length))); }, [groups?.length]);
@@ -2028,14 +2016,15 @@ function SidebarDurableAgentsSection({ groups = [], selectedAgentId = '', launch
         {groups.length === 0 ? (
           <div className="px-2 py-2 text-xs text-zinc-600">No durable agents yet</div>
         ) : visibleGroups.map((group: any) => {
-          const live = Number(group.running || 0);
+          const liveInstances = (group.instances || []).filter((instance: any) => agentHasLiveSession(instance)).sort((a: any, b: any) => agentUpdatedUnixMs(b) - agentUpdatedUnixMs(a));
+          const live = liveInstances.length;
           const selected = selectedAgentId === group.agentId;
           const launching = launchingAgentId === group.agentId;
-          const workingInstance = (group.instances || []).find((instance: any) => agentStatusIndicator(instance).key === 'working');
-          const representative = workingInstance || (group.instances || []).find((instance: any) => agentHasLiveSession(instance)) || group.identity;
+          const workingInstance = liveInstances.find((instance: any) => agentStatusIndicator(instance).key === 'working');
+          const representative = workingInstance || liveInstances[0] || group.identity;
           const status = agentStatusIndicator(representative, agentInstanceContext(representative, {}, {}, {}));
           return (
-            <div key={group.agentId} data-debug-id={`sidebar-agent-group-${group.agentId}`} className={`mb-0.5 rounded-lg ${selected ? 'bg-[#1c1c1c]' : 'hover:bg-[#141414]'}`}>
+            <div key={group.agentId} data-debug-id={`sidebar-agent-group-${group.agentId}`} className={`mb-1 rounded-lg ${selected ? 'bg-[#1c1c1c]' : 'hover:bg-[#141414]'}`}>
               <div className="flex items-center gap-1 px-2 py-1.5">
                 <button
                   type="button"
@@ -2047,7 +2036,7 @@ function SidebarDurableAgentsSection({ groups = [], selectedAgentId = '', launch
                   <div className="flex min-w-0 items-center gap-2">
                     <span data-debug-id={`sidebar-agent-status-${group.agentId}`} aria-label={`${group.agentId} status: ${status.label}`} title={status.title} className={`h-2 w-2 shrink-0 rounded-full ${status.color} ${status.pulse}`}></span>
                     <span className="min-w-0 flex-1 truncate text-[13px] text-zinc-100">{group.agentId}</span>
-                    <span data-debug-id={`sidebar-agent-status-label-${group.agentId}`} aria-label={`${group.agentId} ${status.label} detail`} title={status.title} className="shrink-0 text-[10px] tabular-nums text-zinc-600">{status.compact || `${live}`}</span>
+                    <span data-debug-id={`sidebar-agent-status-label-${group.agentId}`} aria-label={`${group.agentId} ${status.label} detail`} title={status.title} className={`shrink-0 text-[10px] tabular-nums text-zinc-600 ${status.key === 'working' ? 'animate-pulse' : ''}`}>{status.key === 'working' ? '…' : status.compact}</span>
                   </div>
                 </button>
                 <button
@@ -2055,12 +2044,28 @@ function SidebarDurableAgentsSection({ groups = [], selectedAgentId = '', launch
                   data-debug-id={`sidebar-agent-new-instance-btn-${group.agentId}`}
                   onClick={(event) => { event.stopPropagation(); onStartAgent?.(group.agentId); }}
                   disabled={launching}
-                  className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-white/10 bg-[#101010] text-sm text-zinc-300 transition hover:border-white/25 hover:bg-[#1b1b1b] disabled:cursor-not-allowed disabled:opacity-50"
+                  className="grid h-7 w-6 shrink-0 place-items-center rounded-md text-lg leading-none text-zinc-600 transition hover:bg-[#171717] hover:text-zinc-200 disabled:cursor-not-allowed disabled:opacity-50"
                   title={`Start a new ${group.agentId} instance`}
+                  aria-label={`Start a new ${group.agentId} instance`}
                 >
-                  {launching ? '…' : '+'}
+                  {launching ? '…' : '›'}
                 </button>
               </div>
+              {liveInstances.length > 0 ? (
+                <div data-debug-id={`sidebar-agent-live-instances-${group.agentId}`} className="space-y-0.5 pb-1 pl-6 pr-1">
+                  {liveInstances.map((instance: any) => {
+                    const id = agentInstanceId(instance);
+                    const instanceStatus = agentStatusIndicator(instance, agentInstanceContext(instance, {}, {}, {}));
+                    return (
+                      <button key={id} type="button" data-debug-id={`sidebar-agent-live-instance-row-${id}`} onClick={() => onOpenInstance?.(id)} title={id} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] text-zinc-500 hover:bg-[#191919] hover:text-zinc-200">
+                        <span data-debug-id={`sidebar-agent-live-instance-status-${id}`} aria-label={`${id} status: ${instanceStatus.label}`} title={instanceStatus.title} className={`h-1.5 w-1.5 shrink-0 rounded-full ${instanceStatus.color} ${instanceStatus.pulse}`}></span>
+                        <span className="min-w-0 flex-1 truncate">{id}</span>
+                        <span className={`shrink-0 text-[10px] tabular-nums text-zinc-700 ${instanceStatus.key === 'working' ? 'animate-pulse' : ''}`}>{instanceStatus.key === 'working' ? '…' : instanceStatus.compact}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
             </div>
           );
         })}
@@ -2119,7 +2124,7 @@ function SidebarAgentInstancesPanel({ agentId = '', agents = [], chats = {}, tas
               <div className="flex items-center gap-2">
                 <span data-debug-id={`sidebar-agent-instance-status-${id}`} aria-label={`${id} status: ${status.label}`} title={status.title} className={`h-2 w-2 rounded-full ${status.color} ${status.pulse}`}></span>
                 <span className="min-w-0 flex-1 truncate text-sm text-zinc-100">{id}</span>
-                <span data-debug-id={`sidebar-agent-instance-status-label-${id}`} aria-label={`${id} ${status.label} detail`} title={status.title} className="text-[10px] tabular-nums text-zinc-500">{status.compact}</span>
+                <span data-debug-id={`sidebar-agent-instance-status-label-${id}`} aria-label={`${id} ${status.label} detail`} title={status.title} className={`text-[10px] tabular-nums text-zinc-500 ${status.key === 'working' ? 'animate-pulse' : ''}`}>{status.key === 'working' ? '…' : status.compact}</span>
               </div>
               <div className="mt-1 line-clamp-2 text-xs text-zinc-500">{context}</div>
             </button>
@@ -2596,6 +2601,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
   const [memoryError, setMemoryError] = useState('');
   const [memoryEditor, setMemoryEditor] = useState<any>(null);
   const [memorySaving, setMemorySaving] = useState(false);
+  const [artifactsOpen, setArtifactsOpen] = useState(false);
   const upload = useArtifactUpload({ projectId: agent?.projectId || '', originKind: 'direct_agent_chat', originRef: agent?.id || '' });
   const runtime = agentRuntimeDot(agent);
   const agentLive = agentHasLiveSession(agent);
@@ -2821,12 +2827,27 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
             <p className="mt-1 text-sm text-zinc-500">Direct agent messages. Attach artifacts or paste screenshots into the composer.</p>
           </div>
           <div className="flex gap-2">
+            <IconActionButton debugId="agent-detail-chat-artifacts-toggle-btn" title={artifactsOpen ? 'Hide artifacts' : 'Show artifacts'} icon="▣" onClick={() => setArtifactsOpen((current) => !current)} />
             <IconActionButton debugId="agent-detail-refresh-chat-btn" title="Refresh chat" icon="↻" onClick={() => agent?.id && onRefreshChat?.(agent.id)} />
             <IconActionButton debugId="agent-detail-nudge-btn" title="Nudge" icon="⚡" onClick={() => submit(true)} disabled={!agent?.id || sending || !draft.trim()} tone="warn" />
           </div>
         </div>
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-          <CoordinatorMessageList chainId={agent?.id || 'agent-detail'} messages={messages} onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))} debugPrefix="agent-detail-chat" emptyText="No direct messages loaded for this agent." />
+        <div className="flex min-h-0 flex-1 overflow-hidden rounded-[18px]">
+          <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+            <CoordinatorMessageList chainId={agent?.id || 'agent-detail'} messages={messages} onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))} debugPrefix="agent-detail-chat" emptyText="No direct messages loaded for this agent." />
+          </div>
+          {artifactsOpen ? (
+            <ChatArtifactsSidePanel
+              debugPrefix="agent-detail-chat"
+              daemonUrl={session?.daemonUrl || ''}
+              clientToken={session?.clientToken || ''}
+              projectId={agent?.projectId || ''}
+              originKind="direct_agent_chat"
+              originRef={agent?.id || ''}
+              onUploaded={(link: string) => setDraft((prev) => appendArtifactLink(prev, link))}
+              onClose={() => setArtifactsOpen(false)}
+            />
+          ) : null}
         </div>
         <div data-debug-id="agent-detail-chat-composer-shell" className="mt-3 shrink-0 rounded-[15px] border border-white/10 bg-[#141414] p-0 focus-within:border-white/35">
           <textarea
@@ -2852,7 +2873,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
           {sendError && <div data-debug-id="agent-detail-chat-send-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{sendError}</div>}
           {upload.error && <div data-debug-id="agent-detail-chat-upload-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
           <div className="flex items-center justify-between gap-2 px-2 pb-2">
-            <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }} context={{ originKind: 'direct_agent_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending} debugIdPrefix="agent-detail-chat-artifact-upload" label="＋" buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-lg text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50" />
+            <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }} context={{ projectId: agent?.projectId || '', originKind: 'direct_agent_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending} debugIdPrefix="agent-detail-chat-artifact-upload" label="＋" buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-lg text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50" />
             <div className="flex items-center gap-2"><span className="hidden text-[11px] text-zinc-600 sm:inline">Enter to send · Shift+Enter for newline</span><button data-debug-id="agent-detail-chat-send-btn" aria-label="Send direct agent message" title={sending ? 'Sending…' : 'Send'} onClick={() => { void submit(false); }} disabled={!agent?.id || sending || !draft.trim()} className="inline-flex h-8 items-center justify-center rounded-full border border-white/10 px-3 text-sm text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">→</button></div>
           </div>
         </div>
@@ -3037,6 +3058,7 @@ function ConversationThreadPage({ agent, chats, session, projects = [], provider
   const [threadError, setThreadError] = useState('');
   const [locallyStopped, setLocallyStopped] = useState(false);
   const [messageTier, setMessageTier] = useState(agent?.modelTier || 'smart');
+  const [artifactsOpen, setArtifactsOpen] = useState(false);
   const upload = useArtifactUpload({ projectId: agent?.projectId || '', originKind: 'conversation_chat', originRef: agent?.id || '' });
   const messages = useMemo(() => normalizeCoordinatorMessages((chats?.[agent?.id] || []).map((msg: any) => ({ ...msg, agentInstanceId: agent?.id }))), [chats, agent?.id]);
   const projectName = agent?.projectName || projects.find((project: any) => (project.projectId || project.project_id) === agent?.projectId)?.name || agent?.projectId || 'No project';
@@ -3122,18 +3144,20 @@ function ConversationThreadPage({ agent, chats, session, projects = [], provider
         <div className="flex shrink-0 items-center gap-2">
           <span data-debug-id="conversation-thread-project-chip" className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400">🗂 {projectName}</span>
           <span data-debug-id="conversation-thread-status-chip" className={`rounded-full border px-3 py-1 text-[11.5px] ${live ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200' : sendPhase === 'starting' ? 'border-sky-400/35 bg-sky-400/10 text-sky-200' : 'border-white/10 bg-[#141414] text-zinc-400'}`}>{sendPhase === 'starting' ? 'Starting' : live ? 'Active' : runtime.label}</span>
+          <button data-debug-id="conversation-thread-artifacts-toggle-btn" onClick={() => setArtifactsOpen((current) => !current)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">{artifactsOpen ? 'Hide artifacts' : 'Artifacts'}</button>
           <button data-debug-id="conversation-thread-refresh-btn" onClick={() => agent?.id && onRefreshChat?.(agent.id)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">Refresh</button>
           {!live ? <button data-debug-id="conversation-thread-start-btn" onClick={startConversation} disabled={Boolean(threadBusy || sending)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50">Start</button> : <button data-debug-id="conversation-thread-stop-btn" onClick={stopConversation} disabled={Boolean(threadBusy || sending)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50">Close</button>}
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-[780px] px-5 pb-5 pt-[26px]">
-          <h1 data-debug-id="conversation-thread-title" className="sr-only">{title}</h1>
-          {threadError && <div data-debug-id="conversation-thread-action-error" className="mb-4 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{threadError}</div>}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <div className="chat-scrollbar min-w-0 flex-1 overflow-y-auto">
+          <div className="mx-auto max-w-[780px] px-5 pb-5 pt-[26px]">
+            <h1 data-debug-id="conversation-thread-title" className="sr-only">{title}</h1>
+            {threadError && <div data-debug-id="conversation-thread-action-error" className="mb-4 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{threadError}</div>}
 
-          <section data-debug-id="conversation-thread-transcript" className="flex flex-col">
-            <div className="space-y-[22px]">
+            <section data-debug-id="conversation-thread-transcript" className="flex flex-col">
+              <div className="space-y-[22px]">
               {messages.length === 0 ? <div className="rounded-2xl border border-dashed border-white/10 p-6 text-sm text-zinc-500">No messages yet. Send the first message to start this conversation.</div> : messages.map((msg, index) => {
                 const assistantMessage = !msg.isUser;
                 return (
@@ -3156,9 +3180,22 @@ function ConversationThreadPage({ agent, chats, session, projects = [], provider
                   </div>
                 );
               })}
-            </div>
-          </section>
+              </div>
+            </section>
+          </div>
         </div>
+        {artifactsOpen ? (
+          <ChatArtifactsSidePanel
+            debugPrefix="conversation-thread"
+            daemonUrl={session?.daemonUrl || ''}
+            clientToken={session?.clientToken || ''}
+            projectId={agent?.projectId || ''}
+            originKind="conversation_chat"
+            originRef={agent?.id || ''}
+            onUploaded={(link: string) => setDraft((prev: string) => appendArtifactLink(prev, link))}
+            onClose={() => setArtifactsOpen(false)}
+          />
+        ) : null}
       </div>
 
       <div className="px-5 pb-[18px] pt-3">
@@ -3192,7 +3229,7 @@ function ConversationThreadPage({ agent, chats, session, projects = [], provider
           )}
           <div className="flex items-center justify-between gap-3 px-3 py-2">
             <div className="flex items-center gap-2">
-              <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev: string) => appendArtifactLink(prev, link)); }} context={{ originKind: 'conversation_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending} debugIdPrefix="conversation-attach" label="＋" buttonClassName="inline-flex h-7 w-7 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-sm text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40" />
+              <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev: string) => appendArtifactLink(prev, link)); }} context={{ projectId: agent?.projectId || '', originKind: 'conversation_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending} debugIdPrefix="conversation-attach" label="＋" buttonClassName="inline-flex h-7 w-7 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-sm text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40" />
               <select data-debug-id="conversation-tier-select" value={messageTier} onChange={(event) => setMessageTier(event.target.value)} className="rounded-md border border-white/10 bg-[#141414] px-2 py-1.5 text-xs text-zinc-400 outline-none focus:border-sky-400">
                 <option value="smart">Tier: smart</option>
                 <option value="normal">Tier: normal</option>
@@ -4193,6 +4230,129 @@ function deriveCoordinatorActionReplies(messages: CoordinatorMessage[]): Record<
   return replies;
 }
 
+type ChatArtifactRow = {
+  artifact_id: string;
+  name?: string;
+  kind?: string;
+  mime?: string;
+  size_bytes?: number;
+  created_unix_ms?: number;
+  updated_unix_ms?: number;
+  origin_kind?: string;
+  origin_ref?: string;
+};
+
+function formatArtifactBytes(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return '';
+  if (value < 1024) return `${value} B`;
+  const kb = value / 1024;
+  if (kb < 1024) return `${kb.toFixed(kb >= 10 ? 0 : 1)} KB`;
+  const mb = kb / 1024;
+  return `${mb.toFixed(mb >= 10 ? 0 : 1)} MB`;
+}
+
+function formatArtifactWhen(value: number) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+function normalizeChatArtifacts(data: any): ChatArtifactRow[] {
+  const rows = Array.isArray(data?.artifacts) ? data.artifacts : [];
+  return rows.filter((row: any) => row?.artifact_id).map((row: any) => ({
+    artifact_id: String(row.artifact_id),
+    name: String(row.name || ''),
+    kind: String(row.kind || ''),
+    mime: String(row.mime || ''),
+    size_bytes: Number(row.size_bytes || 0),
+    created_unix_ms: Number(row.created_unix_ms || 0),
+    updated_unix_ms: Number(row.updated_unix_ms || 0),
+    origin_kind: String(row.origin_kind || ''),
+    origin_ref: String(row.origin_ref || ''),
+  }));
+}
+
+function ChatArtifactsSidePanel({ debugPrefix, daemonUrl = '', clientToken = '', projectId = '', originKind = 'chat', originRef = '', onUploaded, onClose }: any) {
+  const [artifacts, setArtifacts] = useState<ChatArtifactRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [activeArtifactId, setActiveArtifactId] = useState('');
+
+  const refreshArtifacts = useCallback(async () => {
+    if (!projectId) {
+      setArtifacts([]);
+      setError('No project context for artifacts.');
+      setLoading(false);
+      return;
+    }
+    if (!daemonUrl || !clientToken) {
+      setArtifacts([]);
+      setError('Artifact listing is unavailable until connected.');
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError('');
+    try {
+      const data = await daemonApi.listArtifacts({ daemonUrl, clientToken, projectId, limit: 100 });
+      setArtifacts(normalizeChatArtifacts(data));
+    } catch (err: any) {
+      setArtifacts([]);
+      setError(String(err?.message || err || 'Failed to load artifacts.'));
+    } finally {
+      setLoading(false);
+    }
+  }, [daemonUrl, clientToken, projectId]);
+
+  useEffect(() => { refreshArtifacts(); }, [refreshArtifacts, originRef]);
+
+  return (
+    <aside data-debug-id={`${debugPrefix}-artifacts-panel`} className="flex w-[300px] shrink-0 flex-col border-l border-white/10 bg-[#0d0d0d]">
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 px-3 py-3">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-zinc-100">Artifacts</div>
+          <div className="truncate text-[11px] text-zinc-500">{projectId || 'No project'}</div>
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
+          <ArtifactUploadButton
+            onUploaded={(link) => { onUploaded?.(link); refreshArtifacts(); }}
+            context={{ projectId, originKind, originRef }}
+            disabled={!projectId || !daemonUrl || !clientToken}
+            debugIdPrefix={`${debugPrefix}-artifacts-upload`}
+            label="＋"
+            buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-[#141414] text-lg leading-none text-zinc-300 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-45"
+          />
+          <button type="button" data-debug-id={`${debugPrefix}-artifacts-refresh-btn`} onClick={() => refreshArtifacts()} disabled={loading || !projectId} className="grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-[#141414] text-xs text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-45" title="Refresh artifacts" aria-label="Refresh artifacts">↻</button>
+          <button type="button" data-debug-id={`${debugPrefix}-artifacts-close-btn`} onClick={onClose} className="grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-[#141414] text-sm text-zinc-400 hover:text-zinc-100" title="Close artifacts" aria-label="Close artifacts">×</button>
+        </div>
+      </div>
+      {error ? <div data-debug-id={`${debugPrefix}-artifacts-error`} className="m-3 rounded-xl border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">{error}</div> : null}
+      {loading && artifacts.length === 0 ? (
+        <div data-debug-id={`${debugPrefix}-artifacts-loading`} className="flex flex-1 items-center justify-center px-4 text-sm text-zinc-500">Loading artifacts…</div>
+      ) : artifacts.length === 0 ? (
+        <div data-debug-id={`${debugPrefix}-artifacts-empty`} className="flex flex-1 items-center justify-center px-4 text-center text-sm text-zinc-500">No project artifacts yet. Use ＋ to upload one.</div>
+      ) : (
+        <div data-debug-id={`${debugPrefix}-artifacts-list`} className="chat-scrollbar min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
+          {artifacts.map((artifact) => {
+            const artifactId = artifact.artifact_id;
+            const label = artifact.name || artifactId;
+            const details = [artifact.kind || artifact.mime || 'artifact', formatArtifactBytes(Number(artifact.size_bytes || 0)), formatArtifactWhen(Number(artifact.updated_unix_ms || artifact.created_unix_ms || 0))].filter(Boolean).join(' · ');
+            return (
+              <button key={artifactId} type="button" data-debug-id={`${debugPrefix}-artifact-row-${artifactId}`} onClick={() => setActiveArtifactId(artifactId)} className="w-full rounded-2xl border border-white/10 bg-black/20 p-3 text-left hover:border-white/20 hover:bg-[#141414]">
+                <div className="truncate text-sm font-medium text-zinc-100">{label}</div>
+                <div className="mt-1 truncate font-mono text-[10px] text-zinc-600">artifact://{artifactId}</div>
+                {details ? <div className="mt-2 truncate text-[11px] text-zinc-500">{details}</div> : null}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {activeArtifactId && daemonUrl && clientToken ? <ArtifactViewer artifactId={activeArtifactId} daemonUrl={daemonUrl} clientToken={clientToken} onClose={() => setActiveArtifactId('')} /> : null}
+    </aside>
+  );
+}
+
 function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'chain-coordinator', emptyText = 'No coordinator chat loaded for this chain.' }: { chainId: string; messages: CoordinatorMessage[]; onReply: (reply: string) => void; debugPrefix?: string; emptyText?: string }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickyRef = useRef(true);
@@ -4247,7 +4407,7 @@ function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'cha
         ref={scrollRef}
         data-debug-id={`${debugPrefix}-scroll`}
         onScroll={onScroll}
-        className="h-full min-h-0 space-y-[22px] overflow-y-auto rounded-[18px] bg-[#090909] p-5 scroll-smooth"
+        className="chat-scrollbar h-full min-h-0 space-y-[22px] overflow-y-auto rounded-[18px] bg-[#090909] p-5 scroll-smooth"
       >
         {messages.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-white/10 p-6 text-sm text-zinc-500">{emptyText}</div>

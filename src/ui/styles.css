@@ -41,7 +41,7 @@ body {
 * {
   box-sizing: border-box;
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in oklab, var(--fd-accent-blue), transparent 42%) var(--fd-surface-1);
+  scrollbar-color: #525252 var(--fd-surface-1);
 }
 
 *::-webkit-scrollbar {
@@ -60,17 +60,33 @@ body {
   border-radius: var(--fd-radius-pill);
   background: linear-gradient(
     180deg,
-    color-mix(in oklab, var(--fd-accent-blue), white 18%),
-    color-mix(in oklab, var(--fd-accent-blue), transparent 26%)
+    #737373,
+    #4a4a4a
   );
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background: var(--fd-accent-blue);
+  background: #8a8a8a;
 }
 
 *::-webkit-scrollbar-corner {
   background: var(--fd-canvas);
+}
+
+.chat-scrollbar {
+  scrollbar-color: #525252 #090909;
+}
+
+.chat-scrollbar::-webkit-scrollbar-track {
+  background: #090909;
+}
+
+.chat-scrollbar::-webkit-scrollbar-thumb {
+  border-color: #090909;
+}
+
+.chat-scrollbar::-webkit-scrollbar-corner {
+  background: #090909;
 }
 
 ::selection {
