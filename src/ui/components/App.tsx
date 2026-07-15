@@ -315,6 +315,147 @@ function chainProjectId(chain: Chain) {
   return chain.projectId || 'default';
 }
 
+function daemonDisplayLabel(daemonUrl: string): string {
+  try {
+    const parsed = new URL(String(daemonUrl || ''));
+    return parsed.host || daemonUrl || 'daemon';
+  } catch {
+    return String(daemonUrl || 'daemon');
+  }
+}
+
+function durableAgentId(agent: any): string {
+  const durable = String(agent?.agentId || agent?.agent_id || '');
+  if (durable) return durable;
+  const id = String(agent?.id || agent?.agent_instance_id || '');
+  const at = id.indexOf('@');
+  return at >= 0 ? id.slice(0, at) : id;
+}
+
+function isConversationAgent(agent: any): boolean {
+  const durable = durableAgentId(agent).toLowerCase();
+  const templateId = String(agent?.templateId || agent?.template_id || '').toLowerCase();
+  const role = String(agent?.agentRole || agent?.agent_role || agent?.roleHint || agent?.role_hint || '').toLowerCase();
+  return durable === 'conversation' || templateId === 'conversation' || role === 'conversation';
+}
+
+function isConcreteConversationThread(agent: any): boolean {
+  if (!isConversationAgent(agent)) return false;
+  const id = String(agent?.id || agent?.agent_instance_id || '');
+  return id.startsWith('conversation@');
+}
+
+function createConversationInstanceId(): string {
+  const token = globalThis.crypto?.randomUUID?.().replace(/-/g, '').slice(0, 10) || `${Date.now().toString(16)}${Math.random().toString(16).slice(2, 8)}`;
+  return `conversation@s-${token}`;
+}
+
+function defaultConversationProvider(providers: any[] = []): string {
+  return (providers || []).find((provider: any) => String(provider?.name || provider?.id || '').toLowerCase() === 'pi')?.name || providers?.[0]?.name || providers?.[0]?.id || 'pi';
+}
+
+function conversationProjectId(agent: any): string {
+  return String(agent?.projectId || agent?.project_id || 'default') || 'default';
+}
+
+function conversationProjectName(agent: any, projectsById: Record<string, any>): string {
+  const projectId = conversationProjectId(agent);
+  return projectsById?.[projectId]?.name || String(agent?.projectName || agent?.project_name || projectId || 'No project');
+}
+
+function conversationTitle(agent: any, messages: any[] = []): string {
+  const explicit = String(agent?.label || agent?.display_name || '').trim();
+  const id = String(agent?.id || agent?.agent_instance_id || '').trim();
+  const durable = durableAgentId(agent);
+  if (explicit && explicit !== id && explicit.toLowerCase() !== durable.toLowerCase()) return explicit;
+  const firstUser = (messages || []).find((msg: any) => {
+    const direction = String(msg?.direction || '').toLowerCase();
+    return msg?.author === 'user' || direction === 'user_to_agent';
+  });
+  const body = String(firstUser?.body || '').trim().replace(/\s+/g, ' ');
+  if (!body) return explicit || 'New conversation';
+  return body.length > 56 ? `${body.slice(0, 53)}…` : body;
+}
+
+function conversationSortUnixMs(agent: any, messages: any[] = []): number {
+  const latestMessage = (messages || []).reduce((max: number, msg: any) => Math.max(max, Number(msg?.createdUnixMs || msg?.created_unix_ms || 0)), 0);
+  return latestMessage || Number(agent?.lastSeenUnixMs || agent?.last_seen_unix_ms || 0);
+}
+
+function agentInstanceId(agent: any): string {
+  return String(agent?.id || agent?.agent_instance_id || '');
+}
+
+function agentTemplateLabel(agent: any): string {
+  return String(agent?.templateId || agent?.template_id || agent?.agentRole || agent?.agent_role || agent?.roleHint || agent?.role_hint || durableAgentId(agent) || 'agent');
+}
+
+function agentUpdatedUnixMs(agent: any): number {
+  return Number(agent?.updatedUnixMs || agent?.updated_unix_ms || agent?.lastSeenUnixMs || agent?.last_seen_unix_ms || agent?.createdUnixMs || agent?.created_unix_ms || 0);
+}
+
+function agentInstanceContext(agent: any, chats: Record<string, any[]> = {}, tasksById: Record<string, any> = {}, chainsById: Record<string, any> = {}): string {
+  const id = agentInstanceId(agent);
+  const currentTaskId = String(agent?.currentTaskId || agent?.current_task_id || '');
+  const task = currentTaskId ? tasksById?.[currentTaskId] : null;
+  const chain = task?.chainId ? chainsById?.[task.chainId] : null;
+  if (task) return `${task.title || currentTaskId}${chain?.title ? ` · ${chain.title}` : ''}`;
+  const messages = chats?.[id] || [];
+  const last = messages[messages.length - 1];
+  const body = String(last?.body || '').trim().replace(/\s+/g, ' ');
+  if (body) return `Chat · “${body.length > 54 ? `${body.slice(0, 51)}…` : body}”`;
+  return agentHasLiveSession(agent) ? 'Idle · ready for chat or task work' : 'Stopped · reopen to resume exact history';
+}
+
+
+function durableAgentGroups(agents: any[] = []): Array<{ agentId: string; label: string; instances: any[]; running: number; updatedUnixMs: number; identity: any }> {
+  const byId = new Map<string, any>();
+  for (const agent of agents || []) {
+    if (!agent || isConversationAgent(agent)) continue;
+    const agentId = durableAgentId(agent);
+    if (!agentId) continue;
+    const current = byId.get(agentId) || { agentId, label: agentId, instances: [], running: 0, updatedUnixMs: 0, identity: agent };
+    current.instances.push(agent);
+    current.running += agentHasLiveSession(agent) ? 1 : 0;
+    const updated = agentUpdatedUnixMs(agent);
+    if (updated > current.updatedUnixMs) { current.updatedUnixMs = updated; current.identity = agent; }
+    current.label = current.identity?.label && durableAgentId(current.identity) === agentId ? agentId : agentId;
+    byId.set(agentId, current);
+  }
+  return Array.from(byId.values()).map((group: any) => ({
+    ...group,
+    instances: group.instances.sort((a: any, b: any) => {
+      const liveDelta = Number(agentHasLiveSession(b)) - Number(agentHasLiveSession(a));
+      if (liveDelta) return liveDelta;
+      return agentUpdatedUnixMs(b) - agentUpdatedUnixMs(a);
+    }),
+  })).sort((a, b) => {
+    const liveDelta = Number(b.running > 0) - Number(a.running > 0);
+    if (liveDelta) return liveDelta;
+    return a.agentId.localeCompare(b.agentId);
+  });
+}
+
+function createAgentSessionToken(): string {
+  return globalThis.crypto?.randomUUID?.().replace(/-/g, '').slice(0, 10) || `${Date.now().toString(16)}${Math.random().toString(16).slice(2, 8)}`;
+}
+
+
+function agentStatusIndicator(agent: any, context = ''): { key: string; label: string; color: string; title: string } {
+  const taskId = String(agent?.currentTaskId || agent?.current_task_id || '');
+  const runtime = String(agent?.runtimeState || agent?.runtime_state || agent?.state || agent?.status || '').toLowerCase();
+  const working = Boolean(taskId) || ['working', 'busy', 'running_task', 'in_progress'].some((item) => runtime.includes(item));
+  if (working) {
+    return { key: 'working', label: 'Working', color: 'bg-sky-400', title: context || taskId || 'Agent is working' };
+  }
+  if (agentHasLiveSession(agent)) {
+    return { key: 'idle', label: 'Idle', color: 'bg-emerald-400', title: context || 'Connected and idle' };
+  }
+  const last = Number(agent?.lastSeenUnixMs || agent?.last_seen_unix_ms || agent?.updatedUnixMs || agent?.updated_unix_ms || 0);
+  const title = last > 0 ? `Last seen ${new Date(last).toLocaleString()}` : 'Last seen unavailable';
+  return { key: 'last-seen', label: last > 0 ? 'Last seen' : 'Unknown', color: 'bg-zinc-600', title };
+}
+
 type ChainProgress = {
   total: number;
   completed: number;
@@ -460,6 +601,9 @@ export default function App() {
   const [chainCreationProgress, setChainCreationProgress] = useState<any>(null);
   const [daemonPickerOpen, setDaemonPickerOpen] = useState(false);
   const [agentPageId, setAgentPageId] = useState('');
+  const [selectedSidebarAgentId, setSelectedSidebarAgentId] = useState('');
+  const [sidebarAgentLaunchingId, setSidebarAgentLaunchingId] = useState('');
+  const [newConversationBusy, setNewConversationBusy] = useState(false);
   // Keep direct agent chat drafts at App scope so a transient AgentDetailPage
   // remount during refresh/revalidation cannot wipe a long in-progress message.
   const [agentChatDraftsById, setAgentChatDraftsById] = useState<Record<string, string>>({});
@@ -571,6 +715,10 @@ export default function App() {
       dispatch(selectSurface('settings'));
       return;
     }
+    if ((urlParams.view === 'agents' || urlParams.view === 'task-chains' || urlParams.view === 'projects') && home.surface !== urlParams.view) {
+      dispatch(selectSurface(urlParams.view));
+      return;
+    }
     if (urlParams.view === 'agent' && urlParams.agentId && agentPageId !== urlParams.agentId) {
       setAgentPageId(urlParams.agentId);
       dispatch(fetchSelectedChat({ agentId: urlParams.agentId })).catch(() => undefined);
@@ -670,14 +818,15 @@ export default function App() {
   }, [guideDebugInfo, guideDebugMessage, sendGuideBody]);
   useEffect(() => {
     if (firstRunPromptedRef.current) return;
-    let hasStoredProfiles = false;
+    let hasStoredDaemon = false;
     try {
-      const raw = window.localStorage.getItem('odin.daemonProfiles');
-      hasStoredProfiles = Boolean(raw && raw !== '[]');
+      const rawProfiles = window.localStorage.getItem('odin.daemonProfiles');
+      const rawDaemonUrl = window.localStorage.getItem('odin.daemonUrl');
+      hasStoredDaemon = Boolean((rawProfiles && rawProfiles !== '[]') || rawDaemonUrl || sessionRef.current?.daemonUrl);
     } catch (_err) {
-      hasStoredProfiles = false;
+      hasStoredDaemon = false;
     }
-    if (!hasStoredProfiles) {
+    if (!hasStoredDaemon) {
       firstRunPromptedRef.current = true;
       setDaemonModalMode('add');
       setDaemonModalContext({ url: sessionRef.current?.daemonUrl || '', label: 'Local daemon' });
@@ -887,7 +1036,7 @@ export default function App() {
       dispatch(selectSurface('home'));
       return;
     }
-    if (next === 'attention' || next === 'settings') {
+    if (next === 'attention' || next === 'settings' || next === 'agents' || next === 'task-chains' || next === 'projects') {
       updateUrlParams({ view: next, chainId: null, taskId: null, memoryId: null, agentId: null });
       dispatch(selectSurface(next));
       return;
@@ -908,6 +1057,79 @@ export default function App() {
     dispatch(fetchSelectedChat({ agentId })).catch(() => undefined);
   }, [dispatch]);
 
+  const openAgentIdentityPage = useCallback((agentId: string) => {
+    const durableId = String(agentId || '').split('@')[0];
+    setAgentPageId('');
+    updateUrlParams({ view: 'agent-identity', agentId: durableId, chainId: null, taskId: null, memoryId: null });
+  }, []);
+
+
+  const startSidebarAgentInstance = useCallback(async (agentId: string) => {
+    const durableId = String(agentId || '').trim();
+    if (!durableId || sidebarAgentLaunchingId) return;
+    setSidebarAgentLaunchingId(durableId);
+    try {
+      const identity = (agents || []).find((agent: any) => durableAgentId(agent) === durableId) || { id: durableId, agentId: durableId };
+      const requestedId = `${durableId}@s-${createAgentSessionToken()}`;
+      const result = await daemonApi.startAgent({
+        daemonUrl: session?.daemonUrl || '',
+        agentInstanceId: requestedId,
+        provider: identity.providerProfile || defaultConversationProvider(settingsProviders),
+        templateId: identity.templateId || identity.agentRole || durableId,
+        projectId: identity.projectId || '',
+        displayName: '',
+        modelTier: identity.modelTier || 'normal',
+        agentRole: identity.agentRole || identity.templateId || durableId,
+      });
+      await dispatch(refreshAgents()).unwrap().catch(() => undefined);
+      const resolvedId = result?.agent_instance_id || result?.agentInstanceId || requestedId;
+      setSelectedSidebarAgentId(durableId);
+      openAgentPage(resolvedId);
+    } finally {
+      setSidebarAgentLaunchingId('');
+    }
+  }, [agents, dispatch, openAgentPage, session?.daemonUrl, settingsProviders, sidebarAgentLaunchingId]);
+
+  const createNewConversation = useCallback(() => {
+    if (newConversationBusy) return;
+    setAgentPageId('');
+    updateUrlParams({ view: 'new-conversation', agentId: null, chainId: null, taskId: null, memoryId: null, projectId: selectedProjectId || projects[0]?.projectId || null });
+  }, [newConversationBusy, projects, selectedProjectId]);
+
+  const startFirstMessageConversation = useCallback(async ({ body, projectId, provider, modelTier }: { body: string; projectId: string; provider: string; modelTier: string }) => {
+    setNewConversationBusy(true);
+    try {
+      const requestedId = createConversationInstanceId();
+      const effectiveProvider = provider || defaultConversationProvider(settingsProviders);
+      await daemonApi.createAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, displayName: '', providerProfile: effectiveProvider, templateId: 'conversation', projectId: projectId || '', modelTier: modelTier || 'smart', agentRole: 'conversation' }).catch((err: any) => {
+        const message = String(err?.message || err || '').toLowerCase();
+        if (!message.includes('already') && !message.includes('exists')) throw err;
+      });
+      const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, provider: effectiveProvider, templateId: 'conversation', projectId: projectId || '', displayName: '', modelTier: modelTier || 'smart', agentRole: 'conversation' });
+      const resolvedId = result?.agent_instance_id || result?.agentInstanceId || requestedId;
+      let sent = false;
+      let lastSendError: any = null;
+      for (let attempt = 0; attempt < 60 && !sent; attempt += 1) {
+        if (attempt > 0) await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        try {
+          await daemonApi.sendToAgent({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, agentInstanceId: resolvedId, body, interrupt: false });
+          sent = true;
+        } catch (err: any) {
+          lastSendError = err;
+          if (!String(err?.message || err || '').toLowerCase().includes('unknown agent')) throw err;
+        }
+      }
+      if (!sent) throw lastSendError || new Error('Timed out waiting for conversation agent');
+      setAgentPageId(resolvedId);
+      updateUrlParams({ view: 'agent', agentId: resolvedId, chainId: null, taskId: null, memoryId: null, projectId: projectId || null });
+      await dispatch(refreshAgents()).unwrap().catch(() => undefined);
+      dispatch(fetchSelectedChat({ agentId: resolvedId })).catch(() => undefined);
+      return resolvedId;
+    } finally {
+      setNewConversationBusy(false);
+    }
+  }, [dispatch, session.clientInstanceId, session.clientToken, session.daemonUrl, settingsProviders]);
+
   const chainGroups = projects.map((project) => ({
     project,
     chains: chains.filter((chain) => chainProjectId(chain) === project.projectId || (project.projectId === 'default' && !chain.projectId)),
@@ -917,6 +1139,11 @@ export default function App() {
 
   const activeProject = projectsById[selectedProjectId] || projects[0];
   const shownGroups = chainGroups;
+  const conversationAgents = useMemo(() => {
+    const concrete = (agents || []).filter((agent: any) => isConcreteConversationThread(agent));
+    if (concrete.length > 0) return concrete;
+    return (agents || []).filter((agent: any) => isConversationAgent(agent));
+  }, [agents]);
   const closeNewProjectModal = useCallback(() => {
     setNewProjectModalOpen(false);
     dispatch(clearProjectError());
@@ -965,146 +1192,189 @@ export default function App() {
     setChainCreationProgress((current: any) => current?.chainId === chainCreationProgress.chainId ? { ...current, completed: true } : current);
   }, [chainCreationProgress?.active, chainCreationProgress?.chainId, creationProgressState?.coordinatorReady]);
 
-  const sidebarChains = chains.filter((chain) => !isChainCompleted(chain));
+  const sidebarChains = chains;
 
   return (
     <VimSidebarProvider>
       <div className="h-screen overflow-hidden bg-[#08090b] text-zinc-100">
       <div className="flex h-full">
-        <SurfaceRail
-          surface={home.surface}
-          badgeCount={badgeCount}
-          onSelect={selectSurfaceWithUrl}
-        />
-        <aside className="w-80 shrink-0 border-r border-white/10 bg-gradient-to-b from-[#0d0f14] to-[#0a0c11] flex flex-col">
-          <div className="px-4 pt-4 pb-3 border-b border-white/5">
-            <div className="flex items-center gap-2">
-              <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-sky-500/15 text-sky-300">
-                <span className="text-sm font-semibold">✦</span>
-              </div>
-              <div className="min-w-0">
-                <div className="text-[10px] uppercase tracking-[0.22em] text-zinc-500">Heimdall</div>
-                <div className="truncate text-sm font-semibold text-zinc-100">Chains</div>
-              </div>
-            </div>
-            <DaemonSwitcher
-              open={daemonPickerOpen}
-              profiles={daemonProfiles}
-              activeUrl={session.daemonUrl}
-              connected={session.connected}
-              onToggle={() => setDaemonPickerOpen((current) => !current)}
-              onSelect={switchDaemonProfile}
-              onAdd={() => openAddDaemonModal()}
-              onRename={(profile: any) => openRenameDaemonModal(profile)}
-              onRemove={(profile: any) => dispatch(removeDaemonProfile(profile.url))}
-            />
-          </div>
-          <div className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
-            <div className="mb-3">
-              <button
-                data-debug-id="sidebar-new-chain-btn"
-                onClick={() => dispatch(openNewChainModal({}))}
-                className="flex w-full items-center justify-center gap-1 rounded-lg bg-white/[0.04] px-2 py-2 text-[11px] font-medium text-zinc-200 transition hover:bg-white/[0.09] hover:text-sky-100"
-              >
-                <span className="text-sm leading-none">+</span> New task chain
-              </button>
-            </div>
-            <div className="mb-3 rounded-xl border border-white/5 bg-black/10 p-2" data-debug-id="sidebar-chain-list">
-              <div className="mb-1.5 flex items-center justify-between gap-2 px-1">
-                <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Task chains</div>
-                <div className="text-[10px] text-zinc-600">{sidebarChains.length}</div>
-              </div>
-              {sidebarChains.length === 0 ? (
-                <div className="px-1 py-1 text-[10px] text-zinc-600">No active chains</div>
-              ) : sidebarChains.map((chain) => {
-                const active = home.selectedChainId === chain.chainId;
-                const accent = chainStatusAccent(chain.status);
-                const coordinatorId = chain.coordinatorAgentInstanceId || '';
-                const unread = coordinatorId && !active ? (unreadByAgentId[coordinatorId] || 0) : 0;
-                const progress = buildChainProgress(chain.chainId, chainTaskIds, tasksById);
-                const activity = buildChainActivityIndicator(chain, chainTaskIds, tasksById, agents);
-                const project = projectsById[chainProjectId(chain)];
-                const projectName = project?.name || chain.projectId || '';
-                return (
-                  <button
-                    key={chain.chainId}
-                    data-debug-id={`sidebar-chain-${chain.chainId}`}
-                    data-status={chain.status}
-                    data-unread={unread > 0 ? unread : undefined}
-                    onClick={() => openChain(chain.chainId)}
-                    title={`${chain.title || chain.chainId} · ${chain.status}${projectName ? ` · ${projectName}` : ''} · ${progress.label} · ${activity.title}${unread ? ` · ${unread} unread` : ''}`}
-                    className={`group mb-1 flex w-full flex-col gap-1 rounded-lg border-l-2 px-2 py-1.5 text-left text-[12px] transition ${accent.border} ${active ? 'bg-white/[0.06] text-zinc-50' : 'text-zinc-400 hover:bg-white/[0.03] hover:text-zinc-100'}`}
-                  >
-                    <span className="flex w-full min-w-0 items-center gap-2">
-                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${accent.dot}`}></span>
-                      <span className="min-w-0 flex-1 truncate">{chain.title || chain.chainId}</span>
-                      <span
-                        data-debug-id={`sidebar-chain-activity-${chain.chainId}`}
-                        title={activity.title}
-                        className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-medium leading-none ${activity.tone}`}
-                      >{activity.label}</span>
-                      {unread > 0 && (
-                        <span
-                          data-debug-id={`sidebar-chain-unread-${chain.chainId}`}
-                          className="shrink-0 rounded-full bg-sky-400 px-1.5 py-0.5 text-[9px] font-semibold text-black"
-                        >{unread > 99 ? '99+' : unread}</span>
-                      )}
-                    </span>
-                    <span className="ml-3 truncate text-[9px] text-zinc-600">{projectName || 'No project'}</span>
-                    <span data-debug-id={`sidebar-chain-progress-${chain.chainId}`} className="ml-3 flex w-[calc(100%-0.75rem)] items-center gap-1.5 text-[9px] text-zinc-500">
-                      <span className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-white/10">
-                        <span className="block h-full rounded-full bg-sky-400/80" style={{ width: `${progress.percent}%` }} />
-                      </span>
-                      <span className="shrink-0 tabular-nums">{progress.total === 0 ? '—' : `${progress.percent}%`}</span>
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-            <SidebarAgentsList
-              agents={agents}
-              chainsById={chainsById}
-              projects={projects}
-              session={session}
-              templates={settingsTemplates}
-              providers={settingsProviders}
-              onOpenChain={openChain}
-              onOpenAgentPage={openAgentPage}
-              onRefreshAgents={() => dispatch(refreshAgents()).unwrap().catch(() => undefined)}
-            />
-          </div>
-          <div className="border-t border-white/5 p-2">
-            <button
-              data-debug-id="home-new-project-btn"
-              onClick={() => { dispatch(clearProjectError()); setNewProjectModalOpen(true); }}
-              className="flex w-full items-center justify-center gap-1 rounded-lg bg-white/[0.04] px-2 py-2 text-[11px] font-medium text-zinc-200 transition hover:bg-white/[0.09]"
-            >
-              <span className="text-sm leading-none">+</span> New project
-            </button>
-          </div>
+        <aside className="w-[296px] shrink-0 border-r border-white/10 bg-[#090909]">
+          <ConversationFocusedSidebar
+            conversations={conversationAgents}
+            chats={chats}
+            projectsById={projectsById}
+            selectedAgentId={agentPageId}
+            onOpenConversation={openAgentPage}
+            onNewConversation={createNewConversation}
+            newConversationBusy={newConversationBusy}
+            agents={agents}
+            selectedSidebarAgentId={selectedSidebarAgentId}
+            sidebarAgentLaunchingId={sidebarAgentLaunchingId}
+            onSelectSidebarAgent={setSelectedSidebarAgentId}
+            onOpenAgentInstance={openAgentPage}
+            onStartAgentInstance={startSidebarAgentInstance}
+            chains={sidebarChains}
+            projects={projectsById}
+            selectedChainId={home.selectedChainId}
+            onOpenChain={openChain}
+            onNewChain={() => dispatch(openNewChainModal({}))}
+            onHome={() => selectSurfaceWithUrl('home')}
+            onAttention={() => selectSurfaceWithUrl('attention')}
+            onMemory={() => selectSurfaceWithUrl('memory')}
+            onAgents={() => selectSurfaceWithUrl('agents')}
+            onTaskChains={() => selectSurfaceWithUrl('task-chains')}
+            onProjects={() => selectSurfaceWithUrl('projects')}
+            onSettings={() => selectSurfaceWithUrl('settings')}
+          />
         </aside>
+        {selectedSidebarAgentId ? (
+          <SidebarAgentInstancesPanel
+            agentId={selectedSidebarAgentId}
+            agents={agents}
+            chats={chats}
+            tasksById={tasksById}
+            chainsById={chainsById}
+            selectedAgentId={agentPageId}
+            onOpenInstance={openAgentPage}
+            onClose={() => setSelectedSidebarAgentId('')}
+          />
+        ) : null}
 
         <main className="min-w-0 flex-1 overflow-y-auto">
-          {agentPageId ? (
-            <AgentDetailPage
-              agent={(agents || []).find((agent: any) => agent.id === agentPageId) || { id: agentPageId, label: agentPageId, status: 'unknown' }}
+          {agentPageId ? (() => {
+            const selectedPageAgent = (agents || []).find((agent: any) => agent.id === agentPageId) || { id: agentPageId, label: agentPageId, status: 'unknown' };
+            const sharedAgentPageProps = {
+              agent: selectedPageAgent,
+              chats,
+              session,
+              projects,
+              providers: settingsProviders,
+              chatDraft: agentChatDraftsById[agentPageId] || '',
+              onChatDraftChange: (value: string) => setAgentChatDraftsById((current) => ({ ...current, [agentPageId]: value })),
+              onBack: () => { setAgentPageId(''); updateUrlParams({ view: 'home', agentId: null }); },
+              onRefreshAgents: () => dispatch(refreshAgents()).unwrap().catch(() => undefined),
+              onRefreshChat: (agentId: string) => dispatch(fetchSelectedChat({ agentId })).unwrap().catch(() => undefined),
+              onSendAgentMessage: async (agentId: string, body: string, interrupt = false) => {
+                const exactAgent = (agents || []).find((agent: any) => agentInstanceId(agent) === agentId) || selectedPageAgent;
+                if (agentId && !agentHasLiveSession(exactAgent)) {
+                  await daemonApi.startAgent({
+                    daemonUrl: session?.daemonUrl || '',
+                    agentInstanceId: agentId,
+                    provider: exactAgent?.providerProfile || defaultConversationProvider(settingsProviders),
+                    templateId: exactAgent?.templateId || exactAgent?.agentRole || durableAgentId(exactAgent) || String(agentId).split('@')[0],
+                    projectId: exactAgent?.projectId || '',
+                    displayName: exactAgent?.label || agentId,
+                    modelTier: exactAgent?.modelTier || 'normal',
+                    agentRole: exactAgent?.agentRole || exactAgent?.templateId || durableAgentId(exactAgent) || String(agentId).split('@')[0],
+                  });
+                  await dispatch(refreshAgents()).unwrap().catch(() => undefined);
+                }
+                await daemonApi.sendToAgent({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, agentInstanceId: agentId, body, interrupt });
+                dispatch(fetchSelectedChat({ agentId }));
+              },
+            };
+            return isConversationAgent(selectedPageAgent) ? (
+              <ConversationThreadPage
+                {...sharedAgentPageProps}
+              />
+            ) : (
+              <AgentDetailPage
+                {...sharedAgentPageProps}
+                tasksById={tasksById}
+                chainsById={chainsById}
+                allAgents={agents}
+                onOpenIdentity={openAgentIdentityPage}
+                onOpenChain={(chainId: string) => { setAgentPageId(''); openChain(chainId); }}
+                onAgentDeleted={() => { setAgentPageId(''); dispatch(refreshAgents()); }}
+              />
+            );
+          })() : urlParams.view === 'agent-identity' ? (
+            <AgentIdentityPage
+              agentId={urlParams.agentId || ''}
+              agents={agents}
+              chats={chats}
               tasksById={tasksById}
               chainsById={chainsById}
-              chats={chats}
+              projects={projects}
+              providers={settingsProviders}
+              session={session}
+              onBack={() => selectSurfaceWithUrl('home')}
+              onOpenInstance={(instanceId: string) => openAgentPage(instanceId)}
+              onResumeInstance={async (instance: any) => {
+                const instanceId = agentInstanceId(instance);
+                if (!instanceId) return;
+                if (!agentHasLiveSession(instance)) {
+                  await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: instanceId, provider: instance.providerProfile || defaultConversationProvider(settingsProviders), templateId: instance.templateId || instance.agentRole || durableAgentId(instance), projectId: instance.projectId || '', displayName: instance.label || instanceId, modelTier: instance.modelTier || 'normal', agentRole: instance.agentRole || instance.templateId || durableAgentId(instance) });
+                  await dispatch(refreshAgents()).unwrap().catch(() => undefined);
+                }
+                openAgentPage(instanceId);
+              }}
+              onNewInstance={async (identity: any) => {
+                const durableId = durableAgentId(identity);
+                const requestedId = `${durableId}@s-${(globalThis.crypto?.randomUUID?.().replace(/-/g, '').slice(0, 10) || Date.now().toString(16))}`;
+                const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, provider: identity.providerProfile || defaultConversationProvider(settingsProviders), templateId: identity.templateId || identity.agentRole || durableId, projectId: identity.projectId || '', displayName: '', modelTier: identity.modelTier || 'normal', agentRole: identity.agentRole || identity.templateId || durableId });
+                await dispatch(refreshAgents()).unwrap().catch(() => undefined);
+                openAgentPage(result?.agent_instance_id || result?.agentInstanceId || requestedId);
+              }}
+              onEditIdentity={(identity: any) => openAgentPage(agentInstanceId(identity))}
+            />
+          ) : urlParams.view === 'new-conversation' ? (
+            <NewConversationPage
               session={session}
               projects={projects}
               providers={settingsProviders}
-              chatDraft={agentChatDraftsById[agentPageId] || ''}
-              onChatDraftChange={(value: string) => setAgentChatDraftsById((current) => ({ ...current, [agentPageId]: value }))}
-              onBack={() => { setAgentPageId(''); updateUrlParams({ view: 'home', agentId: null }); }}
-              onOpenChain={(chainId: string) => { setAgentPageId(''); openChain(chainId); }}
-              onAgentDeleted={() => { setAgentPageId(''); dispatch(refreshAgents()); }}
-              onRefreshAgents={() => dispatch(refreshAgents()).unwrap().catch(() => undefined)}
-              onRefreshChat={(agentId: string) => dispatch(fetchSelectedChat({ agentId })).unwrap().catch(() => undefined)}
-              onSendAgentMessage={async (agentId: string, body: string, interrupt = false) => {
-                await daemonApi.sendToAgent({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, agentInstanceId: agentId, body, interrupt });
-                dispatch(fetchSelectedChat({ agentId }));
+              defaultProjectId={urlParams.projectId || selectedProjectId}
+              busy={newConversationBusy}
+              onBack={() => selectSurfaceWithUrl('home')}
+              onFirstMessage={startFirstMessageConversation}
+              onOpenChain={() => {
+                const chain = chains.find((item: any) => !isChainCompleted(item)) || chains[0];
+                if (chain?.chainId) openChain(chain.chainId);
+                else dispatch(openNewChainModal({ projectId: selectedProjectId }));
               }}
+              onPickAgent={() => {
+                const agent = (agents || []).find((item: any) => !isConversationAgent(item));
+                if (agent?.id) openAgentPage(agent.id);
+                else selectSurfaceWithUrl('settings');
+              }}
+              onPlanWork={() => {
+                const chain = chains.find((item: any) => !isChainCompleted(item)) || chains[0];
+                if (chain?.chainId) openChainEditor(chain.chainId);
+                else dispatch(openNewChainModal({ projectId: selectedProjectId }));
+              }}
+            />
+          ) : home.surface === 'agents' ? (
+            <AgentsManagementSurface
+              agents={agents}
+              chats={chats}
+              tasksById={tasksById}
+              chainsById={chainsById}
+              projects={projects}
+              session={session}
+              providers={settingsProviders}
+              onBack={() => selectSurfaceWithUrl('home')}
+              onOpenIdentity={openAgentIdentityPage}
+              onOpenInstance={openAgentPage}
+              onStartInstance={startSidebarAgentInstance}
+              onRefreshAgents={() => dispatch(refreshAgents()).unwrap().catch(() => undefined)}
+            />
+          ) : home.surface === 'task-chains' ? (
+            <TaskChainsSurface
+              chains={chains}
+              projectsById={projectsById}
+              selectedChainId={home.selectedChainId}
+              onBack={() => selectSurfaceWithUrl('home')}
+              onOpenChain={openChain}
+              onNewChain={() => dispatch(openNewChainModal({ projectId: selectedProjectId }))}
+            />
+          ) : home.surface === 'projects' ? (
+            <ProjectsSurface
+              projects={projects}
+              chains={chains}
+              onBack={() => selectSurfaceWithUrl('home')}
+              onOpenProject={openProject}
+              onNewProject={() => setNewProjectModalOpen(true)}
+              onNewChain={(projectId: string) => dispatch(openNewChainModal({ projectId }))}
             />
           ) : home.surface === 'settings' ? (
             <SettingsPage session={session} onBack={() => selectSurfaceWithUrl('home')} onReconnect={(config: any) => { dispatch(updateSessionConfig(config)); window.setTimeout(connectSession, 0); }} />
@@ -1491,6 +1761,407 @@ function writeLaunchAgentDefaults(daemonUrl: string, defaults: any) {
   } catch { /* UI-only defaults are best-effort. */ }
 }
 
+const SIDEBAR_PAGE_SIZE = 5;
+function shouldLoadMoreFromScroll(event: any): boolean {
+  const target = event?.currentTarget;
+  if (!target) return false;
+  return target.scrollTop + target.clientHeight >= target.scrollHeight - 24;
+}
+
+function SidebarConversationSection({ conversations = [], chats = {}, projectsById = {}, selectedAgentId = '', onOpenConversation, onNewConversation, newConversationBusy = false, compact = false }: any) {
+  const [conversationLimit, setConversationLimit] = useState(SIDEBAR_PAGE_SIZE);
+  const [conversationLoadingMore, setConversationLoadingMore] = useState(false);
+  const sortedConversations = useMemo(() => [...(conversations || [])].sort((left: any, right: any) => conversationSortUnixMs(right, chats?.[right.id] || []) - conversationSortUnixMs(left, chats?.[left.id] || [])), [conversations, chats]);
+  useEffect(() => { setConversationLimit((current) => Math.min(Math.max(SIDEBAR_PAGE_SIZE, current), Math.max(SIDEBAR_PAGE_SIZE, sortedConversations.length))); }, [sortedConversations.length]);
+  const visibleConversations = sortedConversations.slice(0, conversationLimit);
+  const hiddenConversationCount = Math.max(0, sortedConversations.length - visibleConversations.length);
+  const loadMoreConversations = useCallback(() => {
+    if (conversationLoadingMore || hiddenConversationCount <= 0) return;
+    setConversationLoadingMore(true);
+    window.setTimeout(() => {
+      setConversationLimit((current) => Math.min(sortedConversations.length, current + SIDEBAR_PAGE_SIZE));
+      setConversationLoadingMore(false);
+    }, 180);
+  }, [conversationLoadingMore, hiddenConversationCount, sortedConversations.length]);
+  const groups = useMemo(() => {
+    const grouped: Record<string, { projectId: string; projectName: string; rows: any[] }> = {};
+    for (const agent of visibleConversations || []) {
+      const projectId = conversationProjectId(agent);
+      const projectName = conversationProjectName(agent, projectsById);
+      if (!grouped[projectId]) grouped[projectId] = { projectId, projectName, rows: [] };
+      grouped[projectId].rows.push(agent);
+    }
+    return Object.values(grouped)
+      .map((group) => ({
+        ...group,
+        rows: group.rows.sort((left: any, right: any) => conversationSortUnixMs(right, chats?.[right.id] || []) - conversationSortUnixMs(left, chats?.[left.id] || [])),
+      }))
+      .sort((left, right) => {
+        const leftLatest = Math.max(0, ...left.rows.map((row: any) => conversationSortUnixMs(row, chats?.[row.id] || [])));
+        const rightLatest = Math.max(0, ...right.rows.map((row: any) => conversationSortUnixMs(row, chats?.[row.id] || [])));
+        if (leftLatest !== rightLatest) return rightLatest - leftLatest;
+        return left.projectName.localeCompare(right.projectName);
+      });
+  }, [visibleConversations, chats, projectsById]);
+
+  return (
+    <div className="mb-3" data-debug-id="sidebar-conversations">
+      {onNewConversation && (
+        <button
+          data-debug-id="sidebar-new-conversation-btn"
+          onClick={() => onNewConversation?.()}
+          disabled={newConversationBusy}
+          className="mx-1 mb-3 flex w-[calc(100%-0.5rem)] items-center gap-2 rounded-xl border border-white/10 bg-[#141414] px-3 py-2 text-[12px] font-medium text-zinc-100 transition hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <span className="text-sm leading-none">＋</span> {newConversationBusy ? 'Starting…' : 'New Conversation'}
+        </button>
+      )}
+      <div className="mb-1 flex items-center justify-between gap-2 px-2 text-[10px] uppercase tracking-[0.18em] text-zinc-500">
+        <div className="font-semibold">Conversations · by project</div>
+        <div className="text-zinc-600 normal-case tracking-normal">{visibleConversations.length}/{conversations.length}</div>
+      </div>
+      <div data-debug-id="sidebar-conversations-paged-list" onScroll={(event) => { if (shouldLoadMoreFromScroll(event)) loadMoreConversations(); }} className="max-h-[300px] overflow-y-auto pr-1">
+        {groups.length === 0 ? <div className="px-2 py-1 text-[11px] text-zinc-600">No conversations yet</div> : (
+          <div className="space-y-2 px-1">
+            {groups.map((group) => (
+              <div key={group.projectId}>
+                <div className="px-2 pb-1 text-[10px] text-zinc-600">{group.projectName}</div>
+                <div className="space-y-0.5">
+                  {group.rows.map((agent: any) => {
+                    const active = selectedAgentId === agent.id;
+                    const title = conversationTitle(agent, chats?.[agent.id] || []);
+                    const unread = Number(agent?.unreadCount || 0);
+                    const runtime = agentRuntimeDot(agent);
+                    const live = isAgentRunning(agent);
+                    return (
+                      <div key={agent.id} data-debug-id={`conversation-thread-${agent.id}`} className={`rounded-lg ${active ? 'bg-[#1c1c1c]' : 'bg-transparent hover:bg-[#141414]'}`}>
+                        <button
+                          data-debug-id={`conversation-thread-open-btn-${agent.id}`}
+                          onClick={() => onOpenConversation?.(agent.id)}
+                          title={`${title} · ${group.projectName}`}
+                          className="flex w-full min-w-0 items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px]"
+                        >
+                          <span className={`h-2 w-2 shrink-0 rounded-full ${runtime.color}`}></span>
+                          <span className="min-w-0 flex-1 truncate text-zinc-100">{title}</span>
+                          {unread > 0 ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-sky-400"></span> : null}
+                          {!compact && <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] ${live ? 'border-emerald-400/30 text-emerald-200' : 'border-white/10 text-zinc-500'}`}>{live ? 'live' : 'stopped'}</span>}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {conversationLoadingMore ? <div data-debug-id="sidebar-conversations-loading" className="px-2 py-2 text-xs text-zinc-500">Loading more conversations…</div> : null}
+      </div>
+      {hiddenConversationCount > 0 ? (
+        <button
+          type="button"
+          data-debug-id="sidebar-conversations-show-more-btn"
+          onClick={loadMoreConversations}
+          disabled={conversationLoadingMore}
+          className="mt-2 w-full rounded-lg border border-white/10 px-2 py-1.5 text-xs text-zinc-400 transition hover:bg-[#141414] hover:text-zinc-100 disabled:cursor-wait disabled:opacity-60"
+        >
+          {conversationLoadingMore ? 'Loading…' : `Show ${Math.min(SIDEBAR_PAGE_SIZE, hiddenConversationCount)} more conversations`}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+
+function ConversationFocusedSidebar({ conversations = [], chats = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, agents = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onStartAgentInstance, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onAttention, onMemory, onAgents, onTaskChains, onProjects, onSettings }: any) {
+  const chainUpdatedMs = (chain: any) => Number(chain?.updatedAtUnixMs || chain?.updated_at_unix_ms || chain?.updatedAt || chain?.updated_at || chain?.createdAtUnixMs || chain?.created_at_unix_ms || 0);
+  const sortedChains = [...(chains || [])].sort((a: any, b: any) => chainUpdatedMs(b) - chainUpdatedMs(a));
+  const activeChains = sortedChains.filter((chain: any) => !isChainCompleted(chain)).slice(0, 4);
+  const agentGroups = durableAgentGroups(agents);
+  return (
+    <div data-debug-id="conversation-focused-sidebar" className="flex h-full flex-col bg-[#090909] text-zinc-100">
+      <div className="flex items-center justify-between px-4 pb-2 pt-3">
+        <div className="text-sm font-semibold tracking-[0.02em]">Heimdall</div>
+      </div>
+      <button
+        data-debug-id="sidebar-new-conversation-btn"
+        onClick={() => onNewConversation?.()}
+        disabled={newConversationBusy}
+        className="mx-3 mb-2 flex items-center gap-2 rounded-[10px] border border-[#262626] bg-[#141414] px-3 py-2 text-[13px] font-medium text-zinc-100 transition hover:border-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <span className="text-sm leading-none">＋</span> {newConversationBusy ? 'Starting…' : 'New Conversation'}
+      </button>
+      <nav className="flex flex-col gap-px px-2 pb-2" aria-label="Conversation navigation">
+        <button data-debug-id="nav-home-btn" onClick={onHome} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">⌂</span> Home</button>
+        <button data-debug-id="nav-attention-btn" onClick={onAttention} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">◷</span> Attention</button>
+        <button data-debug-id="nav-memory-btn" onClick={onMemory} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">✦</span> Memory</button>
+        <button data-debug-id="nav-agents-btn" onClick={onAgents} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">◎</span> Agents</button>
+        <button data-debug-id="nav-task-chains-btn" onClick={onTaskChains} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">☷</span> Task chains</button>
+        <button data-debug-id="nav-projects-btn" onClick={onProjects} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">▣</span> Projects</button>
+        <button data-debug-id="nav-settings-btn" onClick={onSettings} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">⚙</span> Settings</button>
+      </nav>
+      <div className="min-h-0 flex-1 overflow-y-auto px-2">
+        <SidebarConversationSection
+          conversations={conversations}
+          chats={chats}
+          projectsById={projectsById}
+          selectedAgentId={selectedAgentId}
+          onOpenConversation={onOpenConversation}
+          onNewConversation={null}
+          newConversationBusy={newConversationBusy}
+          compact
+        />
+        <SidebarDurableAgentsSection
+          groups={agentGroups}
+          selectedAgentId={selectedSidebarAgentId}
+          launchingAgentId={sidebarAgentLaunchingId}
+          onSelectAgent={onSelectSidebarAgent}
+          onStartAgent={onStartAgentInstance}
+        />
+        <div data-debug-id="conversation-active-chains" className="mt-2">
+          <button data-debug-id="sidebar-new-chain-btn" onClick={() => onNewChain?.()} className="mb-2 flex w-full items-center justify-center gap-1 rounded-md bg-[#141414] px-2 py-2 text-[12px] font-medium text-zinc-200 transition hover:bg-[#1c1c1c] hover:text-zinc-100"><span className="text-sm leading-none">+</span> New task chain</button>
+          <div className="px-2 pb-1 pt-3 text-[10.5px] uppercase tracking-[0.18em] text-zinc-500">Active task chains</div>
+          {activeChains.length === 0 ? <div className="px-2 py-2 text-xs text-zinc-600">No active task chains</div> : activeChains.map((chain: any) => {
+            const project = projects?.[chainProjectId(chain)];
+            const accent = chainStatusAccent(chain.status);
+            const isCurrent = selectedChainId === chain.chainId;
+            return (
+              <button
+                key={chain.chainId}
+                type="button"
+                data-debug-id={`conversation-sidebar-chain-${chain.chainId}`}
+                onClick={() => onOpenChain?.(chain.chainId)}
+                aria-current={isCurrent ? 'page' : undefined}
+                title={`${chain.title || chain.chainId}${project?.name ? ` · ${project.name}` : ''} · open task chain`}
+                className={`relative mb-0.5 flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-left text-[13px] transition ${isCurrent ? 'bg-[#1c1c1c] text-zinc-100 ring-1 ring-sky-400/25' : 'text-zinc-300 hover:bg-[#141414]'}`}
+              >
+                <span className={`h-2 w-2 shrink-0 rounded-full ${accent.dot}`}></span>
+                <span className="min-w-0 flex-1 truncate">{chain.title || chain.chainId}</span>
+                <span className="shrink-0 text-[10px] text-zinc-600">{project?.name || ''}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+      <div className="border-t border-[#262626] px-3 py-3 text-[11px] text-zinc-700">
+        Single active daemon · global shell
+      </div>
+    </div>
+  );
+}
+
+function SidebarDurableAgentsSection({ groups = [], selectedAgentId = '', launchingAgentId = '', onSelectAgent, onStartAgent }: any) {
+  const [agentLimit, setAgentLimit] = useState(SIDEBAR_PAGE_SIZE);
+  const [agentsLoadingMore, setAgentsLoadingMore] = useState(false);
+  useEffect(() => { setAgentLimit((current) => Math.min(Math.max(SIDEBAR_PAGE_SIZE, current), Math.max(SIDEBAR_PAGE_SIZE, (groups || []).length))); }, [groups?.length]);
+  const visibleGroups = (groups || []).slice(0, agentLimit);
+  const hiddenAgentCount = Math.max(0, (groups || []).length - visibleGroups.length);
+  const loadMoreAgents = useCallback(() => {
+    if (agentsLoadingMore || hiddenAgentCount <= 0) return;
+    setAgentsLoadingMore(true);
+    window.setTimeout(() => {
+      setAgentLimit((current) => Math.min((groups || []).length, current + SIDEBAR_PAGE_SIZE));
+      setAgentsLoadingMore(false);
+    }, 180);
+  }, [agentsLoadingMore, hiddenAgentCount, groups]);
+  return (
+    <section data-debug-id="sidebar-durable-agents" className="mb-3 border-b border-[#171717] pb-3">
+      <div className="flex items-center justify-between px-2 pb-1 pt-2 text-[10.5px] uppercase tracking-[0.18em] text-zinc-500">
+        <span>Agents</span>
+        <span className="text-[10px] normal-case tracking-normal text-zinc-700">{visibleGroups.length}/{(groups || []).length} durable</span>
+      </div>
+      <div data-debug-id="sidebar-agents-paged-list" onScroll={(event) => { if (shouldLoadMoreFromScroll(event)) loadMoreAgents(); }} className="max-h-[248px] overflow-y-auto pr-1">
+        {groups.length === 0 ? (
+          <div className="px-2 py-2 text-xs text-zinc-600">No durable agents yet</div>
+        ) : visibleGroups.map((group: any) => {
+          const live = Number(group.running || 0);
+          const selected = selectedAgentId === group.agentId;
+          const launching = launchingAgentId === group.agentId;
+          const workingInstance = (group.instances || []).find((instance: any) => agentStatusIndicator(instance).key === 'working');
+          const representative = workingInstance || (group.instances || []).find((instance: any) => agentHasLiveSession(instance)) || group.identity;
+          const status = agentStatusIndicator(representative, agentInstanceContext(representative, {}, {}, {}));
+          return (
+            <div key={group.agentId} data-debug-id={`sidebar-agent-group-${group.agentId}`} className={`mb-0.5 rounded-lg ${selected ? 'bg-[#1c1c1c]' : 'hover:bg-[#141414]'}`}>
+              <div className="flex items-center gap-1 px-2 py-1.5">
+                <button
+                  type="button"
+                  data-debug-id={`sidebar-agent-group-open-btn-${group.agentId}`}
+                  onClick={() => onSelectAgent?.(group.agentId)}
+                  className="min-w-0 flex-1 text-left"
+                  title={`${group.agentId} · ${live} live instance${live === 1 ? '' : 's'}`}
+                >
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span data-debug-id={`sidebar-agent-status-${group.agentId}`} aria-label={`${group.agentId} status: ${status.label}`} title={status.title} className={`h-2 w-2 shrink-0 rounded-full ${status.color}`}></span>
+                    <span className="min-w-0 flex-1 truncate text-[13px] text-zinc-100">{group.agentId}</span>
+                    <span data-debug-id={`sidebar-agent-status-label-${group.agentId}`} title={status.title} className="shrink-0 text-[10px] text-zinc-600">{status.label}</span>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  data-debug-id={`sidebar-agent-new-instance-btn-${group.agentId}`}
+                  onClick={(event) => { event.stopPropagation(); onStartAgent?.(group.agentId); }}
+                  disabled={launching}
+                  className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-white/10 bg-[#101010] text-sm text-zinc-300 transition hover:border-white/25 hover:bg-[#1b1b1b] disabled:cursor-not-allowed disabled:opacity-50"
+                  title={`Start a new ${group.agentId} instance`}
+                >
+                  {launching ? '…' : '+'}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+        {agentsLoadingMore ? <div data-debug-id="sidebar-agents-loading" className="px-2 py-2 text-xs text-zinc-500">Loading more agents…</div> : null}
+      </div>
+      {hiddenAgentCount > 0 ? (
+        <button
+          type="button"
+          data-debug-id="sidebar-agents-show-more-btn"
+          onClick={loadMoreAgents}
+          disabled={agentsLoadingMore}
+          className="mt-2 w-full rounded-lg border border-white/10 px-2 py-1.5 text-xs text-zinc-400 transition hover:bg-[#141414] hover:text-zinc-100 disabled:cursor-wait disabled:opacity-60"
+        >
+          {agentsLoadingMore ? 'Loading…' : `Show ${Math.min(SIDEBAR_PAGE_SIZE, hiddenAgentCount)} more agents`}
+        </button>
+      ) : null}
+    </section>
+  );
+}
+
+
+function SidebarAgentInstancesPanel({ agentId = '', agents = [], chats = {}, tasksById = {}, chainsById = {}, selectedAgentId = '', onOpenInstance, onClose }: any) {
+  const allInstances = useMemo(() => (agents || [])
+    .filter((agent: any) => durableAgentId(agent) === agentId && !isConversationAgent(agent))
+    .filter((agent: any) => agentHasLiveSession(agent))
+    .sort((a: any, b: any) => agentUpdatedUnixMs(b) - agentUpdatedUnixMs(a)), [agents, agentId]);
+  return (
+    <aside data-debug-id="sidebar-agent-instances-panel" className="flex w-[320px] shrink-0 flex-col border-r border-white/10 bg-[#0d0d0d] text-zinc-100">
+      <div className="border-b border-[#1f1f1f] px-4 py-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="min-w-0">
+            <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-500">Live instances</div>
+            <div data-debug-id={`sidebar-agent-instances-title-${agentId}`} className="truncate text-sm font-semibold text-zinc-100">{agentId}</div>
+          </div>
+          <button type="button" data-debug-id="sidebar-agent-instances-close-btn" onClick={onClose} className="rounded-md border border-white/10 px-2 py-1 text-xs text-zinc-400 hover:bg-[#171717] hover:text-zinc-100">Close</button>
+        </div>
+        <p className="mt-2 text-xs text-zinc-600">Stopped non-conversation instances are hidden here; open Agents for management/history.</p>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        {allInstances.length === 0 ? (
+          <div data-debug-id="sidebar-agent-instances-empty" className="rounded-xl border border-dashed border-[#2a2a2a] p-4 text-sm text-zinc-500">No live instances for this agent.</div>
+        ) : allInstances.map((instance: any) => {
+          const id = agentInstanceId(instance);
+          const selected = selectedAgentId === id;
+          const context = agentInstanceContext(instance, chats, tasksById, chainsById);
+          const status = agentStatusIndicator(instance, context);
+          return (
+            <button
+              key={id}
+              type="button"
+              data-debug-id={`sidebar-agent-instance-row-${id}`}
+              onClick={() => onOpenInstance?.(id)}
+              aria-current={selected ? 'page' : undefined}
+              className={`mb-2 w-full rounded-xl border px-3 py-3 text-left transition ${selected ? 'border-sky-400/35 bg-sky-400/10' : 'border-[#262626] bg-[#111] hover:border-white/20 hover:bg-[#171717]'}`}
+            >
+              <div className="flex items-center gap-2">
+                <span data-debug-id={`sidebar-agent-instance-status-${id}`} aria-label={`${id} status: ${status.label}`} title={status.title} className={`h-2 w-2 rounded-full ${status.color}`}></span>
+                <span className="min-w-0 flex-1 truncate text-sm text-zinc-100">{id}</span>
+                <span data-debug-id={`sidebar-agent-instance-status-label-${id}`} title={status.title} className="text-[10px] uppercase tracking-[0.16em] text-zinc-400">{status.label}</span>
+              </div>
+              <div className="mt-1 line-clamp-2 text-xs text-zinc-500">{context}</div>
+            </button>
+          );
+        })}
+      </div>
+    </aside>
+  );
+}
+
+function AgentsManagementSurface({ agents = [], chats = {}, tasksById = {}, chainsById = {}, projects = [], session = {}, providers = [], onBack, onOpenIdentity, onOpenInstance, onStartInstance, onRefreshAgents }: any) {
+  const groups = durableAgentGroups(agents);
+  return (
+    <div data-debug-id="agents-management-surface" className="mx-auto max-w-6xl px-8 py-8">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="text-xs uppercase tracking-[0.22em] text-zinc-500">Agents</div>
+          <h1 className="mt-1 text-2xl font-semibold text-zinc-100">Durable agent identities</h1>
+          <p className="mt-1 text-sm text-zinc-500">Use this tab to list, create, and edit agents. Primary live-instance navigation lives in the main sidebar.</p>
+        </div>
+        <button type="button" data-debug-id="agents-management-back-btn" onClick={onBack} className="rounded-xl border border-white/10 px-3 py-2 text-sm text-zinc-300 hover:bg-[#171717]">Back</button>
+      </div>
+      <div className="grid gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
+        <div data-debug-id="agents-management-create-card" className="rounded-2xl border border-[#262626] bg-[#101010] p-4">
+          <div className="mb-3 text-sm font-medium text-zinc-200">Create / launch agent</div>
+          <SidebarAgentsList agents={agents} projects={projects} session={session} providers={providers} onOpenAgentPage={onOpenInstance} onRefreshAgents={onRefreshAgents} />
+        </div>
+        <div data-debug-id="agents-management-list" className="rounded-2xl border border-[#262626] bg-[#101010] p-4">
+          <div className="mb-3 flex items-center justify-between"><div className="text-sm font-medium text-zinc-200">Agent identities</div><div className="text-xs text-zinc-600">{groups.length} durable</div></div>
+          {groups.length === 0 ? <div className="rounded-xl border border-dashed border-[#2a2a2a] p-6 text-sm text-zinc-500">No agents yet.</div> : groups.map((group: any) => (
+            <div key={group.agentId} data-debug-id={`agents-management-agent-${group.agentId}`} className="mb-3 rounded-xl border border-[#262626] bg-[#0b0b0b] p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0"><div className="truncate text-sm font-medium text-zinc-100">{group.agentId}</div><div className="mt-1 text-xs text-zinc-600">{group.instances.length} total · {group.running} live</div></div>
+                <div className="flex shrink-0 gap-2">
+                  <button type="button" data-debug-id={`agents-management-edit-btn-${group.agentId}`} onClick={() => onOpenIdentity?.(group.agentId)} className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-zinc-300 hover:bg-[#171717]">Edit</button>
+                  <button type="button" data-debug-id={`agents-management-new-instance-btn-${group.agentId}`} onClick={() => onStartInstance?.(group.agentId)} className="rounded-lg bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-white">+ Instance</button>
+                </div>
+              </div>
+              <div className="mt-3 grid gap-2 md:grid-cols-2">
+                {group.instances.slice(0, 4).map((instance: any) => {
+                  const id = agentInstanceId(instance);
+                  return <button key={id} type="button" data-debug-id={`agents-management-instance-btn-${id}`} onClick={() => onOpenInstance?.(id)} className="truncate rounded-lg border border-white/10 px-2 py-1.5 text-left text-xs text-zinc-500 hover:bg-[#151515] hover:text-zinc-200">{agentHasLiveSession(instance) ? '● ' : '○ '}{id}</button>;
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TaskChainsSurface({ chains = [], projectsById = {}, selectedChainId = '', onBack, onOpenChain, onNewChain }: any) {
+  const chainUpdatedMs = (chain: any) => Number(chain?.updatedAtUnixMs || chain?.updated_at_unix_ms || chain?.createdAtUnixMs || chain?.created_at_unix_ms || 0);
+  const sorted = [...(chains || [])].sort((a: any, b: any) => chainUpdatedMs(b) - chainUpdatedMs(a));
+  const active = sorted.filter((chain: any) => !isChainCompleted(chain));
+  const completed = sorted.filter((chain: any) => isChainCompleted(chain));
+  const renderChain = (chain: any, completedRow = false) => {
+    const project = projectsById?.[chainProjectId(chain)];
+    const current = selectedChainId === chain.chainId;
+    return (
+      <button key={chain.chainId} type="button" data-debug-id={`${completedRow ? 'task-chains-completed-row' : 'task-chains-active-row'}-${chain.chainId}`} onClick={() => onOpenChain?.(chain.chainId)} aria-current={current ? 'page' : undefined} className={`w-full rounded-xl border px-4 py-3 text-left transition ${current ? 'border-sky-400/35 bg-sky-400/10' : 'border-[#262626] bg-[#101010] hover:border-white/20 hover:bg-[#151515]'}`}>
+        <div className="flex items-center gap-2"><span className={`h-2 w-2 rounded-full ${completedRow ? 'bg-emerald-400' : 'bg-sky-400'}`}></span><span className="min-w-0 flex-1 truncate text-sm font-medium text-zinc-100">{chain.title || chain.chainId}</span><span className="text-xs text-zinc-600">{project?.name || chainProjectId(chain) || 'default'}</span></div>
+        <div className="mt-1 text-xs text-zinc-500">{chain.status || (completedRow ? 'completed' : 'active')} · {chain.chainId}</div>
+      </button>
+    );
+  };
+  return (
+    <div data-debug-id="task-chains-surface" className="mx-auto max-w-5xl px-8 py-8">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3"><div><div className="text-xs uppercase tracking-[0.22em] text-zinc-500">Task chains</div><h1 className="mt-1 text-2xl font-semibold text-zinc-100">All task chains</h1><p className="mt-1 text-sm text-zinc-500">Completed chains live here instead of the sidebar.</p></div><div className="flex gap-2"><button type="button" data-debug-id="task-chains-back-btn" onClick={onBack} className="rounded-xl border border-white/10 px-3 py-2 text-sm text-zinc-300 hover:bg-[#171717]">Back</button><button type="button" data-debug-id="task-chains-new-btn" onClick={() => onNewChain?.()} className="rounded-xl bg-zinc-100 px-3 py-2 text-sm font-medium text-zinc-950 hover:bg-white">+ New task chain</button></div></div>
+      <section data-debug-id="task-chains-active-list" className="mb-6"><div className="mb-2 text-xs uppercase tracking-[0.18em] text-zinc-500">Active</div><div className="grid gap-2">{active.length ? active.map((chain: any) => renderChain(chain, false)) : <div className="rounded-xl border border-dashed border-[#2a2a2a] p-4 text-sm text-zinc-500">No active chains.</div>}</div></section>
+      <section data-debug-id="task-chains-completed-list"><div className="mb-2 text-xs uppercase tracking-[0.18em] text-zinc-500">Completed</div><div className="grid gap-2">{completed.length ? completed.map((chain: any) => renderChain(chain, true)) : <div className="rounded-xl border border-dashed border-[#2a2a2a] p-4 text-sm text-zinc-500">No completed chains yet.</div>}</div></section>
+    </div>
+  );
+}
+
+function ProjectsSurface({ projects = [], chains = [], onBack, onOpenProject, onNewProject, onNewChain }: any) {
+  return (
+    <div data-debug-id="projects-surface" className="mx-auto max-w-5xl px-8 py-8">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3"><div><div className="text-xs uppercase tracking-[0.22em] text-zinc-500">Projects</div><h1 className="mt-1 text-2xl font-semibold text-zinc-100">All projects</h1><p className="mt-1 text-sm text-zinc-500">Create projects and start task chains scoped to them.</p></div><div className="flex gap-2"><button type="button" data-debug-id="projects-back-btn" onClick={onBack} className="rounded-xl border border-white/10 px-3 py-2 text-sm text-zinc-300 hover:bg-[#171717]">Back</button><button type="button" data-debug-id="projects-new-btn" onClick={onNewProject} className="rounded-xl bg-zinc-100 px-3 py-2 text-sm font-medium text-zinc-950 hover:bg-white">+ New project</button></div></div>
+      <div data-debug-id="projects-list" className="grid gap-3 md:grid-cols-2">
+        {(projects || []).map((project: any) => {
+          const projectId = project.projectId || project.project_id || 'default';
+          const count = (chains || []).filter((chain: any) => chainProjectId(chain) === projectId || (projectId === 'default' && !chainProjectId(chain))).length;
+          return (
+            <article key={projectId} data-debug-id={`projects-row-${projectId}`} className="rounded-2xl border border-[#262626] bg-[#101010] p-4">
+              <div className="flex items-start justify-between gap-3"><div className="min-w-0"><h2 className="truncate text-base font-semibold text-zinc-100">{project.name || projectId}</h2><p className="mt-1 line-clamp-2 text-sm text-zinc-500">{project.description || 'No description'}</p><div className="mt-2 text-xs text-zinc-600">{projectId} · {count} chains</div></div></div>
+              <div className="mt-4 flex gap-2"><button type="button" data-debug-id={`projects-open-btn-${projectId}`} onClick={() => onOpenProject?.(projectId)} className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-zinc-300 hover:bg-[#171717]">Open</button><button type="button" data-debug-id={`projects-new-chain-btn-${projectId}`} onClick={() => onNewChain?.(projectId)} className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-zinc-300 hover:bg-[#171717]">+ Chain</button></div>
+            </article>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+
 function SidebarAgentsList({ agents = [], projects = [], session = {}, providers = [], onOpenAgentPage, onRefreshAgents }: any) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [launchName, setLaunchName] = useState('');
@@ -1504,6 +2175,7 @@ function SidebarAgentsList({ agents = [], projects = [], session = {}, providers
   const [launchProgressId, setLaunchProgressId] = useState('');
   const [launchStartedAt, setLaunchStartedAt] = useState(0);
   const sidebarAgents = useMemo(() => (agents || [])
+    .filter((agent: any) => !isConversationAgent(agent))
     .filter((agent: any) => !isTaskGeneratedAgent(agent) || agentHasLiveSession(agent))
     .sort((a: any, b: any) => {
       const liveDelta = Number(agentHasLiveSession(b)) - Number(agentHasLiveSession(a));
@@ -1741,7 +2413,113 @@ function AgentTaskList({ title, emptyText, tasks, chainsById, agentId, completed
   );
 }
 
-function AgentDetailPage({ agent, tasksById, chainsById, chats, session, projects = [], providers = [], chatDraft = '', onChatDraftChange, onBack, onOpenChain, onRefreshChat, onSendAgentMessage, onRefreshAgents, onAgentDeleted }: any) {
+
+function AgentInstanceRow({ agent, group, context, onOpen, onResume }: any) {
+  const id = agentInstanceId(agent);
+  const running = agentHasLiveSession(agent);
+  const runtime = agentRuntimeDot(agent);
+  const actionLabel = running || group !== 'stopped' ? 'Open' : 'Resume';
+  const slug = id.replace(/[^a-zA-Z0-9_-]/g, '-');
+  return (
+    <div data-debug-id={`agent-instance-row-${slug}`} className="flex items-center gap-3 rounded-[15px] border border-[#262626] bg-[#111111] px-3 py-3 text-[13px] text-zinc-300">
+      <span data-debug-id={`agent-instance-status-${slug}`} className={`shrink-0 rounded-full border px-2 py-1 text-[11px] ${running ? 'border-sky-400/30 bg-sky-400/10 text-sky-200' : 'border-white/10 bg-[#141414] text-zinc-400'}`}>{running ? 'running' : runtime.label || 'stopped'}</span>
+      <code data-debug-id={`agent-instance-id-${slug}`} className="shrink-0 text-[12px] text-zinc-100">{id}</code>
+      <span data-debug-id={`agent-instance-context-${slug}`} className="min-w-0 flex-1 truncate text-zinc-500">{context}</span>
+      {actionLabel === 'Resume' ? (
+        <button
+          data-debug-id={`agent-instance-resume-btn-${slug}`}
+          onClick={() => onResume?.(agent)}
+          className="shrink-0 rounded-xl bg-white/10 px-3 py-1.5 text-xs text-zinc-100 hover:bg-white/15"
+        >Resume</button>
+      ) : (
+        <button
+          data-debug-id={`agent-instance-open-btn-${slug}`}
+          onClick={() => onOpen?.(id)}
+          className="shrink-0 rounded-xl bg-white/10 px-3 py-1.5 text-xs text-zinc-100 hover:bg-white/15"
+        >Open</button>
+      )}
+    </div>
+  );
+}
+
+function AgentInstanceGroup({ title, group, instances, chats, tasksById, chainsById, onOpen, onResume }: any) {
+  return (
+    <section data-debug-id={`agent-instance-group-${group}`} className="mt-4">
+      <div className="mb-2 flex items-center justify-between px-1 text-[11px] uppercase tracking-[0.18em] text-zinc-500"><span>{title}</span><span>{instances.length}</span></div>
+      <div className="space-y-2">
+        {instances.length === 0 ? <div className="rounded-[15px] border border-dashed border-[#262626] px-4 py-3 text-sm text-zinc-600">No {title.toLowerCase()} instances.</div> : instances.map((instance: any) => <AgentInstanceRow key={agentInstanceId(instance)} agent={instance} group={group} context={agentInstanceContext(instance, chats, tasksById, chainsById)} onOpen={onOpen} onResume={onResume} />)}
+      </div>
+    </section>
+  );
+}
+
+function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, chainsById = {}, projects = [], providers = [], session = {}, onBack, onOpenInstance, onResumeInstance, onNewInstance, onEditIdentity }: any) {
+  const durableId = String(agentId || '').split('@')[0];
+  const instances = useMemo(() => (agents || [])
+    .filter((agent: any) => durableAgentId(agent) === durableId || (!durableId && agentInstanceId(agent)))
+    .sort((a: any, b: any) => agentUpdatedUnixMs(b) - agentUpdatedUnixMs(a)), [agents, durableId]);
+  const identity = instances[0] || { id: durableId, agentId: durableId, agent_id: durableId };
+  const running = instances.filter((agent: any) => agentHasLiveSession(agent));
+  const stopped = instances.filter((agent: any) => {
+    if (agentHasLiveSession(agent)) return false;
+    const identityState = String(agent?.identityState || agent?.identity_state || agent?.state || '').toLowerCase();
+    const connectionState = String(agent?.connectionState || agent?.connection_state || '').toLowerCase();
+    return identityState.includes('stop') || identityState === 'provisioned' || connectionState === 'offline' || connectionState === 'disconnected';
+  });
+  const recent = instances.filter((agent: any) => !running.includes(agent) && !stopped.includes(agent));
+  const projectId = identity?.projectId || identity?.project_id || '';
+  const project = (projects || []).find((item: any) => (item.projectId || item.project_id) === projectId);
+  const projectName = project?.name || identity?.projectName || identity?.project_name || projectId || 'No project';
+  const providerName = identity?.providerProfile || identity?.provider_profile || providers?.[0]?.name || 'default';
+  const tier = identity?.modelTier || identity?.model_tier || 'normal';
+  const memoryCount = 0;
+
+  return (
+    <div data-debug-id="agent-identity-page" className="flex min-h-full flex-col bg-[#090909] text-zinc-100">
+      <div className="flex h-[46px] items-center justify-between gap-3 border-b border-[#262626] px-[18px] text-[12.5px] text-zinc-500">
+        <div data-debug-id="agent-identity-breadcrumb" className="flex min-w-0 items-center gap-2 overflow-hidden">
+          <button data-debug-id="agent-identity-back-btn" onClick={onBack} className="rounded-md px-2 py-1 text-zinc-400 hover:bg-[#141414] hover:text-zinc-100">← Home</button>
+          <span>Agents</span>
+          <span>/</span>
+          <span className="truncate text-zinc-100">{durableId || 'agent'}</span>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <button data-debug-id="agent-identity-edit-btn" onClick={() => onEditIdentity?.(identity)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400">✎ Edit identity</button>
+          <button data-debug-id="agent-identity-new-instance-btn" onClick={() => onNewInstance?.(identity)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400">＋ New instance</button>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-8 py-7">
+        <div className="mx-auto max-w-5xl">
+          <section data-debug-id="agent-identity-summary" className="rounded-[18px] border border-[#262626] bg-[#111111] p-5">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <h1 data-debug-id="agent-identity-title" className="truncate text-xl font-semibold text-zinc-100">Durable identity · <code>agent_id = {durableId || '—'}</code></h1>
+                <p className="mt-2 text-sm text-zinc-500">Every concrete instance below inherits these defaults while keeping its own chat, task, inbox, and runtime state.</p>
+              </div>
+              <span data-debug-id="agent-identity-instance-count" className="rounded-full bg-white/10 px-3 py-1 text-xs text-zinc-400">{instances.length} instances</span>
+            </div>
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              <div data-debug-id="agent-identity-template" className="text-sm text-zinc-400"><span className="text-zinc-600">Template</span> · {agentTemplateLabel(identity)} — role {identity?.agentRole || identity?.agent_role || 'agent'}</div>
+              <div data-debug-id="agent-identity-default-project" className="text-sm text-zinc-400"><span className="text-zinc-600">Default project</span> · {projectName}</div>
+              <div data-debug-id="agent-identity-provider-tier" className="text-sm text-zinc-400"><span className="text-zinc-600">Provider / tier</span> · {providerName} · {tier}</div>
+              <div data-debug-id="agent-identity-memory-summary" className="text-sm text-zinc-400"><span className="text-zinc-600">Shared memories</span> · {memoryCount ? `${memoryCount} active` : 'load via Memory page'} (target_agent_id = {durableId || '—'})</div>
+            </div>
+          </section>
+
+          <div data-debug-id="agent-instance-list" className="mt-7">
+            <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-zinc-500">Live &amp; recent instances</div>
+            <AgentInstanceGroup title="Running" group="running" instances={running} chats={chats} tasksById={tasksById} chainsById={chainsById} onOpen={onOpenInstance} onResume={onResumeInstance} />
+            <AgentInstanceGroup title="Recent" group="recent" instances={recent} chats={chats} tasksById={tasksById} chainsById={chainsById} onOpen={onOpenInstance} onResume={onResumeInstance} />
+            <AgentInstanceGroup title="Stopped" group="stopped" instances={stopped} chats={chats} tasksById={tasksById} chainsById={chainsById} onOpen={onOpenInstance} onResume={onResumeInstance} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AgentDetailPage({ agent, tasksById, chainsById, chats, session, projects = [], providers = [], allAgents = [], chatDraft = '', onChatDraftChange, onBack, onOpenIdentity, onOpenChain, onRefreshChat, onSendAgentMessage, onRefreshAgents, onAgentDeleted }: any) {
   const draft = chatDraft;
   const setDraft = (next: any) => {
     const value = typeof next === 'function' ? next(draft) : next;
@@ -1924,6 +2702,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
         <div className="flex shrink-0 flex-col items-end gap-3">
           <span data-debug-id="agent-detail-live-status" className={`rounded-full px-3 py-1 text-sm ${agentLive ? 'bg-emerald-400/15 text-emerald-200' : 'bg-zinc-500/15 text-zinc-300'}`}>{agentLive ? 'Live' : runtime.label}</span>
           <div className="flex flex-wrap justify-end gap-2">
+            <button data-debug-id="agent-detail-all-instances-btn" onClick={() => onOpenIdentity?.(durableAgentId(agent))} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-zinc-100 hover:bg-white/15">All instances</button>
             {!agentLive && <IconActionButton debugId="agent-detail-start-btn" title="Start agent" icon="▶" onClick={startAgent} disabled={!agent?.id || Boolean(agentBusy)} tone="success" />}
             {agentLive && <IconActionButton debugId="agent-detail-stop-btn" title="Force stop agent" icon="■" onClick={stopAgent} disabled={Boolean(agentBusy)} tone="warn" />}
             <IconActionButton debugId="agent-detail-edit-btn" title="Edit agent" icon="✎" onClick={() => setEditOpen(true)} disabled={!agent?.id || Boolean(agentBusy)} />
@@ -1980,7 +2759,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
         <div data-debug-id="agent-detail-runtime" className="rounded-2xl border border-white/10 bg-white/[0.035] p-4"><div className="text-xs uppercase tracking-wide text-zinc-500">Runtime</div><div className="mt-1 flex items-center gap-2 text-sm text-zinc-100"><span className={`h-2 w-2 rounded-full ${runtime.color}`} />{runtime.label}</div></div>
       </div>
 
-      <section data-debug-id="agent-detail-chat" className="mt-6 flex h-[75vh] flex-col overflow-hidden rounded-3xl border border-white/10 bg-white/[0.035] p-5">
+      <section data-debug-id="agent-detail-chat" className="mt-6 flex h-[75vh] flex-col overflow-hidden rounded-3xl border border-white/10 bg-[#090909] p-5">
         <div className="mb-3 flex shrink-0 items-center justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold text-zinc-100">Chat</h2>
@@ -1991,10 +2770,10 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
             <IconActionButton debugId="agent-detail-nudge-btn" title="Nudge" icon="⚡" onClick={() => submit(true)} disabled={!agent?.id || sending || !draft.trim()} tone="warn" />
           </div>
         </div>
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-white/10 bg-black/20 p-3">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <CoordinatorMessageList chainId={agent?.id || 'agent-detail'} messages={messages} onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))} debugPrefix="agent-detail-chat" emptyText="No direct messages loaded for this agent." />
         </div>
-        <div data-debug-id="agent-detail-chat-composer-shell" className="mt-3 shrink-0 rounded-2xl border border-white/10 bg-black/20 p-2 focus-within:border-sky-400/70">
+        <div data-debug-id="agent-detail-chat-composer-shell" className="mt-3 shrink-0 rounded-[15px] border border-white/10 bg-[#141414] p-0 focus-within:border-white/35">
           <textarea
             data-debug-id="agent-detail-chat-input"
             value={draft}
@@ -2012,14 +2791,14 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
               }
             }}
             placeholder="Message or nudge this agent…"
-            rows={4}
-            className="w-full resize-none bg-transparent px-2 py-2 text-sm outline-none"
+            rows={3}
+            className="min-h-[74px] w-full resize-none bg-transparent px-3 pt-3 text-[15px] leading-relaxed text-zinc-100 outline-none placeholder:text-zinc-600"
           />
-          {sendError && <div data-debug-id="agent-detail-chat-send-error" className="mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{sendError}</div>}
-          {upload.error && <div data-debug-id="agent-detail-chat-upload-error" className="mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
-          <div className="flex items-center justify-between gap-2">
-            <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }} context={{ originKind: 'direct_agent_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending} debugIdPrefix="agent-detail-chat-artifact-upload" label="＋" buttonClassName="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-lg text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40" />
-            <button data-debug-id="agent-detail-chat-send-btn" aria-label="Send direct agent message" title={sending ? 'Sending…' : 'Send'} onClick={() => { void submit(false); }} disabled={!agent?.id || sending || !draft.trim()} className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-sky-400 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">➤</button>
+          {sendError && <div data-debug-id="agent-detail-chat-send-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{sendError}</div>}
+          {upload.error && <div data-debug-id="agent-detail-chat-upload-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
+          <div className="flex items-center justify-between gap-2 px-2 pb-2">
+            <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }} context={{ originKind: 'direct_agent_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending} debugIdPrefix="agent-detail-chat-artifact-upload" label="＋" buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-lg text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50" />
+            <div className="flex items-center gap-2"><span className="hidden text-[11px] text-zinc-600 sm:inline">Enter to send · Shift+Enter for newline</span><button data-debug-id="agent-detail-chat-send-btn" aria-label="Send direct agent message" title={sending ? 'Sending…' : 'Send'} onClick={() => { void submit(false); }} disabled={!agent?.id || sending || !draft.trim()} className="inline-flex h-8 items-center justify-center rounded-full border border-white/10 px-3 text-sm text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">→</button></div>
           </div>
         </div>
       </section>
@@ -2060,6 +2839,322 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
   );
 }
 
+
+function NewConversationPage({ session, projects = [], providers = [], defaultProjectId = '', busy = false, onBack, onFirstMessage, onOpenChain, onPickAgent, onPlanWork }: any) {
+  const [draft, setDraft] = useState('');
+  const [projectId, setProjectId] = useState(defaultProjectId || projects?.[0]?.projectId || projects?.[0]?.project_id || '');
+  const [provider, setProvider] = useState(defaultConversationProvider(providers));
+  const [tier, setTier] = useState('smart');
+  const [error, setError] = useState('');
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const providerOptions = providers?.length ? providers : [{ name: 'pi' }];
+  const selectedProject = (projects || []).find((project: any) => (project.projectId || project.project_id) === projectId) || projects?.[0] || null;
+  const projectName = selectedProject?.name || projectId || 'No project';
+  const daemonLabel = daemonDisplayLabel(session?.daemonUrl || '');
+
+  useEffect(() => {
+    setProjectId(defaultProjectId || projects?.[0]?.projectId || projects?.[0]?.project_id || '');
+  }, [defaultProjectId, projects]);
+
+  useEffect(() => {
+    setProvider(defaultConversationProvider(providers));
+  }, [providers]);
+
+  const submit = async () => {
+    const body = draft.trim();
+    if (!body || busy) return;
+    setError('');
+    try {
+      await onFirstMessage?.({ body, projectId, provider, modelTier: tier });
+      setDraft('');
+    } catch (err: any) {
+      setError(`Unable to start the conversation. ${String(err?.message || err || 'Try again.')}`);
+    }
+  };
+
+  const optionCards = [
+    { id: 'ask', title: 'Ask a question', detail: 'One-off help using shared memory & skills.', action: () => inputRef.current?.focus() },
+    { id: 'open-chain', title: 'Open a task chain →', detail: 'Escalate to a multi-agent chain with review.', action: () => onOpenChain?.() },
+    { id: 'pick-agent', title: 'Pick another agent', detail: 'Run a coder / reviewer / planner identity.', action: () => onPickAgent?.() },
+    { id: 'plan-work', title: 'Plan work', detail: 'Draft tasks in the chain editor.', action: () => onPlanWork?.() },
+  ];
+
+  return (
+    <div data-debug-id="new-conversation-page" className="flex min-h-full flex-col bg-[#090909] text-zinc-100">
+      <div className="flex h-[46px] items-center justify-between gap-3 border-b border-[#262626] px-[18px] text-[12.5px] text-zinc-500">
+        <div data-debug-id="new-convo-breadcrumb" className="flex min-w-0 items-center gap-2 overflow-hidden">
+          <button data-debug-id="new-convo-back-btn" onClick={onBack} className="rounded-md px-2 py-1 text-zinc-400 hover:bg-[#141414] hover:text-zinc-100">← Home</button>
+          <span>{daemonLabel}</span>
+          <span>/</span>
+          <span className="text-zinc-100">New Conversation</span>
+        </div>
+        <label className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400">
+          <span>🗂</span>
+          <select data-debug-id="new-convo-project-select" value={projectId} onChange={(event) => { setProjectId(event.target.value); setError(''); }} className="bg-transparent text-zinc-300 outline-none">
+            {(projects || []).map((project: any) => {
+              const id = project.projectId || project.project_id || '';
+              return <option key={id || 'project'} value={id}>{project.name || id || 'No project'}</option>;
+            })}
+            {(!projects || projects.length === 0) && <option value="">No project</option>}
+          </select>
+        </label>
+      </div>
+
+      <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex flex-1 items-center justify-center px-6 py-8">
+          <div className="w-full max-w-[760px] text-center">
+            <h1 data-debug-id="new-convo-title" className="text-[30px] font-semibold tracking-[-0.03em] text-zinc-100">What should we work on?</h1>
+            <p data-debug-id="new-convo-subtitle" className="mx-auto mt-3 max-w-[640px] text-sm leading-6 text-zinc-500">
+              Your message starts a fresh <code className="rounded bg-white/5 px-1 py-0.5 text-zinc-300">conversation</code> instance. It inherits the identity&apos;s project, memories, and skills — and can be assigned tasks or promoted into a chain later.
+            </p>
+            <div data-debug-id="new-convo-suggestion-grid" className="mt-7 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {optionCards.map((card) => (
+                <button
+                  key={card.id}
+                  data-debug-id={`new-convo-option-${card.id}-btn`}
+                  onClick={card.action}
+                  className="rounded-[15px] border border-[#262626] bg-[#111111] p-4 text-left transition hover:border-sky-400/50 hover:bg-[#141414]"
+                >
+                  <div className="text-[14px] font-semibold text-zinc-100">{card.title}</div>
+                  <div className="mt-1 text-[12.5px] leading-5 text-zinc-500">{card.detail}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="px-5 pb-[18px] pt-3">
+          <div data-debug-id="new-convo-composer-shell" className="mx-auto max-w-[780px] rounded-[15px] border border-white/10 bg-[#141414] p-0 focus-within:border-white/35">
+            <textarea
+              ref={inputRef}
+              data-debug-id="new-convo-input"
+              value={draft}
+              onChange={(event) => { setDraft(event.target.value); setError(''); }}
+              onKeyDown={(event) => {
+                if (event.key !== 'Enter' || !(event.metaKey || event.ctrlKey)) return;
+                event.preventDefault();
+                void submit();
+              }}
+              placeholder="Ask anything…"
+              rows={3}
+              className="w-full resize-none bg-transparent px-4 py-3 text-sm text-zinc-100 outline-none placeholder:text-zinc-500"
+            />
+            {error && <div data-debug-id="new-convo-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{error}</div>}
+            {busy && <div data-debug-id="new-convo-progress" className="mx-3 mb-2 rounded-xl border border-sky-400/30 bg-sky-400/10 px-3 py-2 text-xs text-sky-100">Creating <code>conversation@s-…</code> and sending your first message…</div>}
+            <div className="flex items-center justify-between gap-3 px-3 py-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-sm text-zinc-500">＋</span>
+                <select data-debug-id="new-convo-agent-select" value="conversation" onChange={() => undefined} className="rounded-md border border-white/10 bg-[#141414] px-2 py-1.5 text-xs text-zinc-400 outline-none focus:border-sky-400">
+                  <option value="conversation">Agent: conversation</option>
+                </select>
+                <select data-debug-id="new-convo-provider-select" value={provider} onChange={(event) => { setProvider(event.target.value); setError(''); }} className="rounded-md border border-white/10 bg-[#141414] px-2 py-1.5 text-xs text-zinc-400 outline-none focus:border-sky-400">
+                  {providerOptions.map((item: any) => <option key={item.name || item.id || 'provider'} value={item.name || item.id || 'pi'}>Provider: {item.name || item.id || 'pi'}</option>)}
+                </select>
+                <select data-debug-id="new-convo-tier-select" value={tier} onChange={(event) => { setTier(event.target.value); setError(''); }} className="rounded-md border border-white/10 bg-[#141414] px-2 py-1.5 text-xs text-zinc-400 outline-none focus:border-sky-400">
+                  <option value="smart">Tier: smart</option>
+                  <option value="normal">Tier: normal</option>
+                  <option value="cheap">Tier: cheap</option>
+                </select>
+              </div>
+              <button data-debug-id="new-convo-send-btn" aria-label="Start conversation with first message" title={busy ? 'Starting…' : 'Send'} onClick={() => { void submit(); }} disabled={busy || !draft.trim()} className="inline-flex h-8 items-center justify-center rounded-full border border-white/10 px-3 text-sm text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">→</button>
+            </div>
+            <div className="flex items-center justify-between border-t border-white/5 px-3 py-2 text-[11.5px] text-zinc-500">
+              <span>🗂 {projectName} · new instance <code>conversation@s-…</code> is created on first message</span>
+              <span>⌘↵ to send</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConversationThreadPage({ agent, chats, session, projects = [], providers = [], chatDraft = '', onChatDraftChange, onBack, onRefreshChat, onRefreshAgents, onSendAgentMessage }: any) {
+  const draft = chatDraft;
+  const setDraft = (next: any) => {
+    const value = typeof next === 'function' ? next(draft) : next;
+    onChatDraftChange?.(value);
+  };
+  const [sending, setSending] = useState(false);
+  const [sendError, setSendError] = useState('');
+  const [sendPhase, setSendPhase] = useState('');
+  const [threadBusy, setThreadBusy] = useState('');
+  const [threadError, setThreadError] = useState('');
+  const [locallyStopped, setLocallyStopped] = useState(false);
+  const [messageTier, setMessageTier] = useState(agent?.modelTier || 'smart');
+  const upload = useArtifactUpload({ projectId: agent?.projectId || '', originKind: 'conversation_chat', originRef: agent?.id || '' });
+  const messages = useMemo(() => normalizeCoordinatorMessages((chats?.[agent?.id] || []).map((msg: any) => ({ ...msg, agentInstanceId: agent?.id }))), [chats, agent?.id]);
+  const projectName = agent?.projectName || projects.find((project: any) => (project.projectId || project.project_id) === agent?.projectId)?.name || agent?.projectId || 'No project';
+  const runtime = agentRuntimeDot(agent);
+  const live = isAgentRunning(agent) && !locallyStopped;
+  const title = conversationTitle(agent, chats?.[agent?.id] || []);
+  const daemonLabel = daemonDisplayLabel(session?.daemonUrl || '');
+
+  useEffect(() => {
+    setMessageTier(agent?.modelTier || 'smart');
+    setLocallyStopped(false);
+  }, [agent?.id, agent?.modelTier]);
+
+  useEffect(() => {
+    if (agent?.id) onRefreshChat?.(agent.id);
+    // Parent callbacks are intentionally omitted.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent?.id]);
+
+  const submit = async () => {
+    const body = draft.trim();
+    if (!body || !agent?.id || sending) return;
+    const shouldRestartForSend = !live;
+    setSending(true);
+    setSendError('');
+    setSendPhase(shouldRestartForSend ? 'starting' : 'sending');
+    try {
+      if (shouldRestartForSend) {
+        await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || 'conversation', projectId: agent.projectId || '', displayName: '', modelTier: messageTier || agent.modelTier || 'smart', agentRole: agent.agentRole || 'conversation' });
+        setLocallyStopped(false);
+        await onRefreshAgents?.();
+        setSendPhase('sending');
+      }
+      await onSendAgentMessage?.(agent.id, body, false);
+      setDraft('');
+      await onRefreshChat?.(agent.id);
+    } catch (err: any) {
+      setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`);
+    } finally {
+      setSending(false);
+      setSendPhase('');
+    }
+  };
+
+  const runThreadAction = async (kind: string, action: () => Promise<any>) => {
+    if (!agent?.id || threadBusy) return;
+    setThreadBusy(kind);
+    setThreadError('');
+    try {
+      await action();
+      await onRefreshAgents?.();
+    } catch (err: any) {
+      const message = err?.message || 'Conversation action failed';
+      if (kind === 'stop' && String(message).toLowerCase().includes('not connected')) setLocallyStopped(true);
+      setThreadError(message);
+    } finally {
+      setThreadBusy('');
+    }
+  };
+
+  const startConversation = () => runThreadAction('start', async () => {
+    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || 'conversation', projectId: agent.projectId || '', displayName: '', modelTier: messageTier || agent.modelTier || 'smart', agentRole: agent.agentRole || 'conversation' });
+    setLocallyStopped(false);
+  });
+  const stopConversation = () => runThreadAction('stop', async () => {
+    await daemonApi.stopAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, timeInSec: 1 });
+    setLocallyStopped(true);
+  });
+
+  return (
+    <div data-debug-id="conversation-thread-page" className="flex min-h-full flex-col bg-[#090909] text-zinc-100">
+      <div className="flex h-[46px] items-center justify-between gap-3 border-b border-[#262626] px-[18px] text-[12.5px] text-zinc-500">
+        <div data-debug-id="conversation-thread-breadcrumb" className="flex min-w-0 items-center gap-2 overflow-hidden">
+          <button data-debug-id="conversation-thread-back-btn" onClick={onBack} className="rounded-md px-2 py-1 text-zinc-400 hover:bg-[#141414] hover:text-zinc-100">← Home</button>
+          <span>{daemonLabel}</span>
+          <span>/</span>
+          <span>{projectName}</span>
+          <span>/</span>
+          <span className="truncate font-mono">{agent?.id || 'conversation'}</span>
+          <span>/</span>
+          <span className="truncate text-zinc-100">{title}</span>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          <span data-debug-id="conversation-thread-project-chip" className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400">🗂 {projectName}</span>
+          <span data-debug-id="conversation-thread-status-chip" className={`rounded-full border px-3 py-1 text-[11.5px] ${live ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200' : sendPhase === 'starting' ? 'border-sky-400/35 bg-sky-400/10 text-sky-200' : 'border-white/10 bg-[#141414] text-zinc-400'}`}>{sendPhase === 'starting' ? 'Starting' : live ? 'Active' : runtime.label}</span>
+          <button data-debug-id="conversation-thread-refresh-btn" onClick={() => agent?.id && onRefreshChat?.(agent.id)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">Refresh</button>
+          {!live ? <button data-debug-id="conversation-thread-start-btn" onClick={startConversation} disabled={Boolean(threadBusy || sending)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50">Start</button> : <button data-debug-id="conversation-thread-stop-btn" onClick={stopConversation} disabled={Boolean(threadBusy || sending)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50">Close</button>}
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-[780px] px-5 pb-5 pt-[26px]">
+          <h1 data-debug-id="conversation-thread-title" className="sr-only">{title}</h1>
+          {threadError && <div data-debug-id="conversation-thread-action-error" className="mb-4 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{threadError}</div>}
+
+          <section data-debug-id="conversation-thread-transcript" className="flex flex-col">
+            <div className="space-y-[22px]">
+              {messages.length === 0 ? <div className="rounded-2xl border border-dashed border-white/10 p-6 text-sm text-zinc-500">No messages yet. Send the first message to start this conversation.</div> : messages.map((msg, index) => {
+                const assistantMessage = !msg.isUser;
+                return (
+                  <div key={msg.key} data-debug-id={`conversation-thread-message-${msg.messageId}`} className={`msg group flex ${msg.isUser ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`flex ${msg.isUser ? 'max-w-[74%] items-end' : 'w-full items-start'} flex-col`}>
+                      {assistantMessage && live && index === messages.length - 1 && <span data-debug-id="conversation-thread-worked-status" className="mb-3 inline-flex items-center gap-1 rounded-full border border-[#262626] bg-[#141414] px-3 py-1 text-[12px] text-zinc-500">Worked for 36s ›</span>}
+                      <div className={`${msg.isUser ? 'rounded-[15px] border border-[#262626] bg-[#1c1c1c] px-[14px] py-[10px] text-zinc-100' : 'max-w-full text-zinc-200'}`}>
+                        {msg.isUser ? (
+                          <Markdown source={msg.body} compact />
+                        ) : (
+                          <>
+                            <Markdown source={msg.body} compact />
+                            <div data-debug-id={`conversation-thread-message-actions-${msg.messageId}`} className="mt-1 flex items-center gap-[10px] text-[13px] text-zinc-500">
+                              <button data-debug-id={`conversation-thread-message-copy-btn-${msg.messageId}`} title="Copy" onClick={() => globalThis.navigator?.clipboard?.writeText?.(msg.body)} className="opacity-0 transition-opacity hover:text-zinc-100 group-hover:opacity-100 focus:opacity-100">⧉</button>
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <div className="px-5 pb-[18px] pt-3">
+        <div data-debug-id="conversation-composer-shell" className="mx-auto max-w-[780px] rounded-[15px] border border-white/10 bg-[#141414] p-0 focus-within:border-white/35">
+          <textarea
+            data-debug-id="conversation-composer-input"
+            value={draft}
+            onChange={(event) => { setDraft(event.target.value); setSendError(''); }}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' || event.shiftKey) return;
+              event.preventDefault();
+              void submit();
+            }}
+            onPaste={async (event) => {
+              const result = await upload.uploadClipboardImage(event, { originRef: agent?.id || '' });
+              if (result.link) {
+                setSendError('');
+                setDraft((prev: string) => appendArtifactLink(prev, result.link || ''));
+              }
+            }}
+            placeholder="Ask anything…"
+            rows={3}
+            className="w-full resize-none bg-transparent px-4 py-3 text-sm text-zinc-100 outline-none placeholder:text-zinc-500"
+          />
+          {sendError && <div data-debug-id="conversation-composer-send-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{sendError}</div>}
+          {upload.error && <div data-debug-id="conversation-composer-upload-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
+          {(!live || sendPhase === 'starting') && (
+            <div data-debug-id="conversation-composer-starting-indicator" className={`mx-3 mb-2 rounded-xl border px-3 py-2 text-xs ${sendPhase === 'starting' ? 'border-sky-400/30 bg-sky-400/10 text-sky-100' : 'border-amber-400/20 bg-amber-400/10 text-amber-100'}`}>
+              {sendPhase === 'starting' ? 'Starting this conversation agent before sending your message…' : 'This thread is stopped. Sending will start the conversation agent and preserve this history.'}
+            </div>
+          )}
+          <div className="flex items-center justify-between gap-3 px-3 py-2">
+            <div className="flex items-center gap-2">
+              <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev: string) => appendArtifactLink(prev, link)); }} context={{ originKind: 'conversation_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending} debugIdPrefix="conversation-attach" label="＋" buttonClassName="inline-flex h-7 w-7 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-sm text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40" />
+              <select data-debug-id="conversation-tier-select" value={messageTier} onChange={(event) => setMessageTier(event.target.value)} className="rounded-md border border-white/10 bg-[#141414] px-2 py-1.5 text-xs text-zinc-400 outline-none focus:border-sky-400">
+                <option value="smart">Tier: smart</option>
+                <option value="normal">Tier: normal</option>
+                <option value="cheap">Tier: cheap</option>
+              </select>
+            </div>
+            <button data-debug-id="conversation-composer-send-btn" aria-label="Send conversation message" title={sending ? 'Sending…' : 'Send'} onClick={() => { void submit(); }} disabled={!agent?.id || sending || !draft.trim()} className="inline-flex h-8 items-center justify-center rounded-full border border-white/10 px-3 text-sm text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">→</button>
+          </div>
+          <div className="flex items-center justify-between border-t border-white/5 px-3 py-2 text-[11.5px] text-zinc-500">
+            <span>🗂 {projectName} · shares memories &amp; skills from the <code>conversation</code> identity</span>
+            <span>⌘↵ to send</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function normalizeChainSearchText(value: any) {
   return String(value || '').toLowerCase().trim();
@@ -2250,7 +3345,7 @@ function HomeRunningAgentsPanel({ agents, projects, session, chats, templates, p
             })}
           </div>
         </div>
-        <div data-debug-id="home-running-agent-chat" className="flex h-[75vh] flex-col overflow-hidden rounded-2xl border border-white/10 bg-black/20 p-4">
+        <div data-debug-id="home-running-agent-chat" className="flex h-[75vh] flex-col overflow-hidden rounded-3xl border border-white/10 bg-[#090909] p-5">
           <div className="flex shrink-0 items-center justify-between gap-3">
             <div className="min-w-0">
               <div className="text-xs uppercase tracking-[0.22em] text-zinc-500">Direct agent chat</div>
@@ -2259,7 +3354,7 @@ function HomeRunningAgentsPanel({ agents, projects, session, chats, templates, p
             {selectedAgent && <span data-debug-id="home-running-agent-chat-status" className="rounded-full bg-white/10 px-2 py-1 text-xs text-zinc-400">{agentRuntimeDot(selectedAgent).label}</span>}
           </div>
           <CoordinatorMessageList chainId={selectedAgentId || 'running-agents'} messages={messages} onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))} debugPrefix="home-running-agent-chat" emptyText="No direct messages loaded for this agent." />
-          <div data-debug-id="home-running-agent-chat-composer-shell" className="mt-3 shrink-0 rounded-2xl border border-white/10 bg-black/20 p-2 focus-within:border-sky-400/70">
+          <div data-debug-id="home-running-agent-chat-composer-shell" className="mt-3 shrink-0 rounded-[15px] border border-white/10 bg-[#141414] p-0 focus-within:border-white/35">
             <textarea
               ref={chatInputRef}
               data-debug-id="home-running-agent-chat-input"
@@ -2279,13 +3374,13 @@ function HomeRunningAgentsPanel({ agents, projects, session, chats, templates, p
               }}
               placeholder="Message selected running agent…"
               rows={3}
-              className="w-full resize-none bg-transparent px-2 py-2 text-sm outline-none"
+              className="min-h-[74px] w-full resize-none bg-transparent px-3 pt-3 text-[15px] leading-relaxed text-zinc-100 outline-none placeholder:text-zinc-600"
             />
-            {sendError && <div data-debug-id="home-running-agent-chat-send-error" className="mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{sendError}</div>}
-            {upload.error && <div data-debug-id="home-running-agent-chat-upload-error" className="mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
-            <div className="flex items-center justify-between gap-2">
-              <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }} context={{ originKind: 'direct_agent_chat', originRef: selectedAgentId }} disabled={!selectedAgentId || sending} debugIdPrefix="home-running-agent-chat-artifact-upload" label="＋" buttonClassName="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-lg text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40" />
-              <button data-debug-id="home-running-agent-chat-send-btn" aria-label="Send running agent message" title={sending ? 'Sending…' : 'Send'} onClick={() => { void submit(); }} disabled={!selectedAgentId || sending || !draft.trim()} className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-sky-400 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">➤</button>
+            {sendError && <div data-debug-id="home-running-agent-chat-send-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{sendError}</div>}
+            {upload.error && <div data-debug-id="home-running-agent-chat-upload-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
+            <div className="flex items-center justify-between gap-2 px-2 pb-2">
+              <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }} context={{ originKind: 'direct_agent_chat', originRef: selectedAgentId }} disabled={!selectedAgentId || sending} debugIdPrefix="home-running-agent-chat-artifact-upload" label="＋" buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-lg text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50" />
+              <div className="flex items-center gap-2"><span className="hidden text-[11px] text-zinc-600 sm:inline">Enter to send · Shift+Enter for newline</span><button data-debug-id="home-running-agent-chat-send-btn" aria-label="Send running agent message" title={sending ? 'Sending…' : 'Send'} onClick={() => { void submit(); }} disabled={!selectedAgentId || sending || !draft.trim()} className="inline-flex h-8 items-center justify-center rounded-full border border-white/10 px-3 text-sm text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">→</button></div>
             </div>
           </div>
         </div>
@@ -3092,15 +4187,15 @@ function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'cha
   }, [messages.length]);
 
   return (
-    <div className="relative mt-4 min-h-0 flex-1 overflow-hidden">
+    <div className="relative min-h-0 flex-1 overflow-hidden">
       <div
         ref={scrollRef}
         data-debug-id={`${debugPrefix}-scroll`}
         onScroll={onScroll}
-        className="h-full min-h-0 space-y-3 overflow-y-auto rounded-xl bg-black/20 p-4 scroll-smooth"
+        className="h-full min-h-0 space-y-[22px] overflow-y-auto rounded-[18px] bg-[#090909] p-5 scroll-smooth"
       >
         {messages.length === 0 ? (
-          <div className="text-sm text-zinc-500">{emptyText}</div>
+          <div className="rounded-2xl border border-dashed border-white/10 p-6 text-sm text-zinc-500">{emptyText}</div>
         ) : messages.map((msg) => {
           const timestamp = formatChatTimestamp(msg.createdUnixMs);
           const delivery = deliveryStatusFor(msg);
@@ -3108,38 +4203,42 @@ function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'cha
             <div
               key={msg.key}
               data-debug-id={`${debugPrefix}-message-${msg.messageId}`}
-              className={`rounded-2xl px-4 py-3 text-sm ${msg.isUser ? 'ml-8 bg-sky-500/15 text-sky-100' : 'mr-8 bg-white/5 text-zinc-200'}`}
+              className={`msg group flex ${msg.isUser ? 'justify-end' : 'justify-start'}`}
             >
-              <div className="flex items-baseline justify-between gap-3 text-[10px] uppercase tracking-wider text-zinc-500">
-                <span className="truncate">{msg.authorLabel}</span>
-                {timestamp.label && (
-                  <time data-debug-id={`${debugPrefix}-message-${msg.messageId}-time`} dateTime={timestamp.iso} title={timestamp.iso} className="shrink-0">{timestamp.label}</time>
+              <div className={`flex ${msg.isUser ? 'max-w-[74%] items-end' : 'w-full items-start'} flex-col text-sm`}>
+                <div className="mb-1 flex max-w-full items-center gap-2 text-[10px] uppercase tracking-wider text-zinc-600">
+                  <span className="truncate">{msg.authorLabel}</span>
+                  {timestamp.label && (
+                    <time data-debug-id={`${debugPrefix}-message-${msg.messageId}-time`} dateTime={timestamp.iso} title={timestamp.iso} className="shrink-0">{timestamp.label}</time>
+                  )}
+                </div>
+                <div className={`${msg.isUser ? 'rounded-[15px] border border-[#262626] bg-[#1c1c1c] px-[14px] py-[10px] text-zinc-100' : 'max-w-full text-zinc-200'}`}>
+                  {(() => {
+                    if (msg.isUser) return <UserActionReplyBubble body={msg.body} />;
+                    const action = parseCoordinatorActionPayload(msg.body);
+                    if (!action) return <Markdown source={msg.body} compact />;
+                    return (
+                      <CoordinatorActionCard
+                        action={action}
+                        messageId={msg.messageId}
+                        debugPrefix={debugPrefix}
+                        usedReply={usedActionCards[msg.messageId] || persistedActionReplies[msg.messageId] || ''}
+                        onUse={(reply) => {
+                          setUsedActionCards((prev) => ({ ...prev, [msg.messageId]: reply }));
+                          onReply(reply);
+                        }}
+                      />
+                    );
+                  })()}
+                </div>
+                {msg.isUser && delivery.glyph && (
+                  <div
+                    data-debug-id={`${debugPrefix}-message-${msg.messageId}-status`}
+                    title={delivery.label}
+                    className={`mt-1 text-right text-[10px] ${delivery.tone}`}
+                  >{delivery.glyph} {delivery.label}</div>
                 )}
               </div>
-              {(() => {
-                if (msg.isUser) return <UserActionReplyBubble body={msg.body} />;
-                const action = parseCoordinatorActionPayload(msg.body);
-                if (!action) return <Markdown source={msg.body} compact className="mt-1" />;
-                return (
-                  <CoordinatorActionCard
-                    action={action}
-                    messageId={msg.messageId}
-                    debugPrefix={debugPrefix}
-                    usedReply={usedActionCards[msg.messageId] || persistedActionReplies[msg.messageId] || ''}
-                    onUse={(reply) => {
-                      setUsedActionCards((prev) => ({ ...prev, [msg.messageId]: reply }));
-                      onReply(reply);
-                    }}
-                  />
-                );
-              })()}
-              {msg.isUser && delivery.glyph && (
-                <div
-                  data-debug-id={`${debugPrefix}-message-${msg.messageId}-status`}
-                  title={delivery.label}
-                  className={`mt-1 text-right text-[10px] ${delivery.tone}`}
-                >{delivery.glyph} {delivery.label}</div>
-              )}
             </div>
           );
         })}
@@ -3210,7 +4309,7 @@ function GuideSidePanel({ agent, messages, loading, sending, debugInfo, currentP
           debugPrefix="guide-chat"
           emptyText="No guide chat yet. Ask Heimdall Guide about daemon, UI, tasks, teams, agents, or troubleshooting."
         />
-        <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-2 focus-within:border-amber-300/70">
+        <div data-debug-id="guide-chat-composer-shell" className="mt-4 rounded-[15px] border border-white/10 bg-[#141414] p-0 focus-within:border-white/35">
           <textarea
             data-debug-id="guide-chat-composer-input"
             ref={composerRef}
@@ -3226,13 +4325,13 @@ function GuideSidePanel({ agent, messages, loading, sending, debugInfo, currentP
             }}
             placeholder="Ask Heimdall Guide…"
             rows={3}
-            className="w-full resize-none bg-transparent px-2 py-2 text-sm outline-none"
+            className="min-h-[74px] w-full resize-none bg-transparent px-3 pt-3 text-[15px] leading-relaxed text-zinc-100 outline-none placeholder:text-zinc-600"
           />
-          {sendError && <div data-debug-id="guide-chat-send-error" className="mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{sendError}</div>}
-          {guideUpload.error && <div data-debug-id="guide-chat-upload-error" className="mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{guideUpload.error}</div>}
-          <div className="flex items-center justify-between gap-2">
-            <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }} context={{ originKind: 'guide_chat', originRef: GUIDE_AGENT_ID }} disabled={sending} debugIdPrefix="guide-chat-artifact-upload" label="＋" buttonClassName="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-lg text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40" />
-            <button data-debug-id="guide-chat-send-btn" aria-label="Send guide message" title="Send" disabled={sending || !draft.trim()} onClick={() => { void submit(); }} className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-amber-300 text-sm font-semibold text-black hover:bg-amber-200 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">➤</button>
+          {sendError && <div data-debug-id="guide-chat-send-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{sendError}</div>}
+          {guideUpload.error && <div data-debug-id="guide-chat-upload-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{guideUpload.error}</div>}
+          <div className="flex items-center justify-between gap-2 px-2 pb-2">
+            <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }} context={{ originKind: 'guide_chat', originRef: GUIDE_AGENT_ID }} disabled={sending} debugIdPrefix="guide-chat-artifact-upload" label="＋" buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-lg text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50" />
+            <div className="flex items-center gap-2"><span className="hidden text-[11px] text-zinc-600 sm:inline">Enter to send · Shift+Enter for newline</span><button data-debug-id="guide-chat-send-btn" aria-label="Send guide message" title="Send" disabled={sending || !draft.trim()} onClick={() => { void submit(); }} className="inline-flex h-8 items-center justify-center rounded-full border border-white/10 px-3 text-sm text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">→</button></div>
           </div>
         </div>
         <p className="mt-2 text-xs text-zinc-500">Global guide chat is not chain-scoped. Mutating actions should remain explicit and auditable.</p>
@@ -3283,19 +4382,19 @@ function ChainProgressPanel({ chain, progress }: { chain: any; progress: ChainPr
   const pctLabel = progress.total === 0 ? 'No task plan yet' : `${progress.percent}% complete`;
   const incompleteLabel = progress.total === 0 ? 'Waiting for tasks to be created' : `${progress.incomplete} remaining`;
   return (
-    <section data-debug-id="chain-progress-panel" className="mt-8 overflow-hidden rounded-3xl border border-sky-400/20 bg-gradient-to-br from-sky-400/15 via-white/[0.04] to-emerald-400/10 p-5 shadow-2xl shadow-sky-950/20">
+    <section data-debug-id="chain-progress-panel" className="overflow-hidden rounded-[15px] border border-white/10 bg-gradient-to-b from-sky-400/10 to-[#141414] p-4">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="text-xs uppercase tracking-[0.22em] text-sky-200/80">Chain progress</div>
-          <h2 className="mt-2 text-2xl font-semibold text-white">{pctLabel}</h2>
+          <h2 className="mt-1 text-2xl font-semibold text-white">{pctLabel}</h2>
           <p data-debug-id="chain-progress-summary" className="mt-1 text-sm text-zinc-300">{progress.label} · {incompleteLabel}</p>
         </div>
-        <div className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-right">
+        <div className="rounded-[10px] border border-white/10 bg-[#0f0f0f] px-3 py-2 text-right">
           <div className="text-3xl font-semibold tabular-nums text-white">{progress.total === 0 ? '—' : `${progress.percent}%`}</div>
           <div className="mt-1 text-xs text-zinc-400">{chain.status || 'unknown'} chain</div>
         </div>
       </div>
-      <div className="mt-5 h-3 overflow-hidden rounded-full bg-black/30 ring-1 ring-white/10">
+      <div className="mt-4 h-[7px] overflow-hidden rounded-full bg-[#0f0f0f] ring-1 ring-white/10">
         <div data-debug-id="chain-progress-bar" className="h-full rounded-full bg-gradient-to-r from-sky-300 via-cyan-300 to-emerald-300 shadow-lg shadow-sky-400/25 transition-all" style={{ width: `${progress.percent}%` }} />
       </div>
       <div className="mt-3 flex flex-wrap gap-2 text-xs text-zinc-300">
@@ -3319,6 +4418,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   useEffect(() => {
     if (!chain?.chainId) return;
+    document.querySelector('main')?.scrollTo({ top: 0, left: 0 });
     const node = composerRef.current;
     if (!node) return;
     // Skip when the user is already typing somewhere else (e.g. task comment)
@@ -3391,63 +4491,53 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
       setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`);
     }
   };
+  const [tasksPaneOpen, setTasksPaneOpen] = useState(true);
+  const coordinatorInitial = (coordinatorLabel || 'L').trim().slice(0, 1).toUpperCase() || 'L';
   return (
-    <div className="mx-auto max-w-6xl px-8 py-8">
-      <div className="flex items-center gap-3">
-        <button data-debug-id="chain-back-btn" onClick={onBack} className="rounded-xl bg-white/5 px-3 py-2 text-sm hover:bg-white/10">← Home</button>
-        <button data-debug-id="chain-open-editor-btn" onClick={() => onOpenEditor?.(selectedTaskId)} className="rounded-xl bg-sky-400 px-3 py-2 text-sm font-semibold text-black hover:bg-sky-300">Open editor</button>
+    <div data-debug-id="chain-view" className="flex h-full min-h-0 flex-col bg-[#090909] text-zinc-100">
+      <div className="flex h-[46px] items-center justify-between gap-3 border-b border-[#262626] px-[18px] text-[12.5px] text-zinc-500">
+        <div className="flex min-w-0 items-center gap-2 overflow-hidden">
+          <button data-debug-id="chain-back-btn" onClick={onBack} className="rounded-md px-2 py-1 text-zinc-400 hover:bg-[#141414] hover:text-zinc-100">← Home</button>
+          <span>/</span>
+          <span className="truncate text-zinc-100">{chain.title || chain.chainId}</span>
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {hasWorkspace && <button data-debug-id="chain-workspace-btn" onClick={onToggleDiff} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">⌥ Workspace</button>}
+          <button data-debug-id="chain-open-editor-btn" onClick={() => onOpenEditor?.(selectedTaskId)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">✎ Editor</button>
+          <button data-debug-id="chain-tasks-toggle-btn" onClick={() => setTasksPaneOpen((current) => !current)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">▤ Tasks</button>
+        </div>
       </div>
-      <div className="mt-6 flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-4xl font-semibold">{chain.title || chain.chainId}</h1>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <span className={`rounded-full border px-3 py-1 text-xs ${statusTone(chain.status)}`}>{chain.status}</span>
-            <span className="rounded-full bg-white/5 px-3 py-1 text-xs text-zinc-400">Coordinator {coordinatorAgentId || '—'}</span>
-            <span data-debug-id="chain-coordinator-live-status-chip" className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs ${agentRuntimeStatusTone(coordinatorStatus)}`} title={`${coordinatorLabel} · ${coordinatorStatusLabel}${coordinatorLastSeen ? ` · ${coordinatorLastSeen}` : ''}`}>
+
+      {chain.description && descOpen && (
+        <section data-debug-id="chain-description-panel" className="border-b border-[#262626] bg-[#0f0f0f] px-[18px] py-4">
+          <div data-debug-id="chain-description-content" className="prose prose-invert max-w-none text-sm text-zinc-300">
+            <Markdown source={chain.description} />
+          </div>
+        </section>
+      )}
+
+      <div data-debug-id="chain-split-view" data-tasks-open={tasksPaneOpen ? 'true' : 'false'} className={`grid min-h-0 flex-1 ${tasksPaneOpen ? 'grid-cols-[minmax(0,1fr)_460px]' : 'grid-cols-[minmax(0,1fr)_0px]'}`}>
+        <section data-debug-id="chain-coordinator-panel" className="flex min-h-0 min-w-0 flex-col border-r border-[#262626]">
+          <div className="flex items-center gap-2 border-b border-[#262626] px-[18px] py-3 text-[12.5px] text-zinc-500">
+            <span className="grid h-7 w-7 place-items-center rounded-full bg-sky-400/10 text-xs font-semibold text-sky-100">{coordinatorInitial}</span>
+            <b className="text-zinc-100">Coordinator</b>
+            <span className="truncate">{coordinatorAgentId || 'unassigned'} · lead</span>
+            <div className="flex-1" />
+            <span data-debug-id="chain-coordinator-live-status" className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${agentRuntimeStatusTone(coordinatorStatus)}`} title={`${coordinatorLabel} · ${coordinatorStatusLabel}${coordinatorLastSeen ? ` · ${coordinatorLastSeen}` : ''}`}>
               <span className={`h-1.5 w-1.5 rounded-full shadow ${agentRuntimeDotTone(coordinatorStatus)}`} />
               {coordinatorStatusLabel}
             </span>
           </div>
-        </div>
-        <div />
-      </div>
-
-      <div className="mt-8 space-y-4">
-        {chain.description && (
-          <section data-debug-id="chain-description-panel" className="flex flex-col rounded-2xl border border-white/10 bg-white/[0.035] p-4">
-            <button
-              data-debug-id="chain-description-toggle"
-              onClick={() => setDescOpen(!descOpen)}
-              className="flex items-center justify-between text-left font-semibold text-zinc-300 hover:text-white"
-            >
-              <span>Chain Description</span>
-              <span className="text-xs">{descOpen ? 'Hide' : 'Show'}</span>
-            </button>
-            {descOpen && (
-              <div data-debug-id="chain-description-content" className="mt-4 text-sm text-zinc-300">
-                <Markdown source={chain.description} />
-              </div>
-            )}
-          </section>
-        )}
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)] xl:items-stretch">
-          <section data-debug-id="chain-coordinator-panel" className="flex h-[70vh] max-h-[70vh] min-h-[420px] flex-col rounded-2xl border border-white/10 bg-white/[0.035] p-4">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h2 className="font-semibold">Coordinator chat</h2>
-                <p data-debug-id="chain-coordinator-agent-id" className="mt-0.5 text-xs text-zinc-500">{coordinatorAgentId || 'No coordinator assigned'}</p>
-              </div>
-              <div data-debug-id="chain-coordinator-live-status" className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium ${agentRuntimeStatusTone(coordinatorStatus)}`} title={`${coordinatorLabel} · ${coordinatorStatusLabel}${coordinatorLastSeen ? ` · ${coordinatorLastSeen}` : ''}`}>
-                <span className={`h-2 w-2 rounded-full shadow ${agentRuntimeDotTone(coordinatorStatus)}`} />
-                <span>{coordinatorStatusLabel}</span>
-                {coordinatorLastSeen && <span className="hidden text-[10px] opacity-70 sm:inline">· {coordinatorLastSeen}</span>}
-              </div>
+          <div className="min-h-0 flex-1 overflow-hidden px-5 py-5">
+            <div className="mx-auto flex h-full max-w-[760px] flex-col">
+              <CoordinatorMessageList chainId={chain.chainId} messages={messages} onReply={(reply) => {
+                setSendError('');
+                void onSend(reply).catch((err: any) => setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`));
+              }} />
             </div>
-            <CoordinatorMessageList chainId={chain.chainId} messages={messages} onReply={(reply) => {
-              setSendError('');
-              void onSend(reply).catch((err: any) => setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`));
-            }} />
-            <div data-debug-id="chain-coordinator-composer-shell" className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-2 focus-within:border-sky-400/70">
+          </div>
+          <div className="px-5 pb-[18px] pt-3">
+            <div data-debug-id="chain-coordinator-composer-shell" className="mx-auto max-w-[760px] rounded-[15px] border border-white/10 bg-[#141414] p-0 focus-within:border-white/35">
               <textarea
                 data-debug-id="chain-coordinator-composer-input"
                 ref={composerRef}
@@ -3461,45 +4551,112 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
                   }
                 }}
                 onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submit(); } }}
-                placeholder="Message coordinator only…"
+                placeholder="Message the coordinator, @ an agent…"
                 autoFocus
                 rows={3}
-                className="w-full resize-none bg-transparent px-2 py-2 text-sm outline-none"
+                className="w-full resize-none bg-transparent px-4 py-3 text-sm outline-none placeholder:text-zinc-500"
               />
-              <div className="flex items-center justify-between gap-2">
-                <ArtifactUploadButton
-                  onUploaded={(link) => { setSendError(''); setDraft((current) => appendArtifactLink(current, link)); }}
-                  debugIdPrefix="chain-coordinator-artifact-upload"
-                  context={{ projectId: projectId, originRef: chain.chainId || '' }}
-                  buttonClassName="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-lg text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
-                  label="＋"
-                />
-                <button data-debug-id="chain-coordinator-send-btn" aria-label="Send coordinator message" title="Send" onClick={() => { void submit(); }} className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-sky-400 text-sm font-semibold text-black hover:bg-sky-300">➤</button>
+              <div className="flex items-center justify-between gap-2 px-3 py-2">
+                <div className="flex items-center gap-2">
+                  <ArtifactUploadButton
+                    onUploaded={(link) => { setSendError(''); setDraft((current) => appendArtifactLink(current, link)); }}
+                    debugIdPrefix="chain-coordinator-artifact-upload"
+                    context={{ projectId: projectId, originRef: chain.chainId || '' }}
+                    buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-lg text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    label="＋"
+                  />
+                  <span className="rounded-md border border-white/10 bg-[#1c1c1c] px-2 py-1.5 text-xs text-zinc-500">@ mention agent</span>
+                </div>
+                <button data-debug-id="chain-coordinator-send-btn" aria-label="Send coordinator message" title="Send" onClick={() => { void submit(); }} disabled={!draft.trim()} className="inline-flex h-8 items-center justify-center rounded-full border border-white/10 px-3 text-sm text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">→</button>
               </div>
+              {sendError ? <div data-debug-id="chain-coordinator-send-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{sendError}</div> : null}
+              {composerArtifactUpload.error ? <div data-debug-id="chain-coordinator-paste-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{composerArtifactUpload.error}</div> : null}
             </div>
-            {sendError ? (
-              <div data-debug-id="chain-coordinator-send-error" className="mt-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">
-                {sendError}
+          </div>
+        </section>
+
+        {tasksPaneOpen && (
+          <aside data-debug-id="chain-task-surface" className="min-h-0 overflow-y-auto border-l border-[#262626] bg-[#0f0f0f]">
+            <div className="px-[18px] py-4">
+              <ChainProgressPanel chain={chain} progress={chainProgress} />
+              <div className="mt-5 flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-[14px] font-semibold text-zinc-100">Task chain plan</h2>
+                  <p className="mt-1 text-[11.5px] text-zinc-500">Dependency-ordered. Click a task to expand.</p>
+                </div>
+                <span data-debug-id="chain-task-count" className="rounded-full border border-white/10 bg-[#141414] px-2.5 py-1 text-[11px] text-zinc-400">{activeTasks.length} · {completedTasks.length}</span>
               </div>
-            ) : null}
-            {composerArtifactUpload.error ? (
-              <div data-debug-id="chain-coordinator-paste-error" className="mt-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">
-                {composerArtifactUpload.error}
-              </div>
-            ) : null}
-            <p className="mt-2 text-xs text-zinc-500">Sending routes to the chain coordinator. Opening this view records focus and warms the chain team when needed.</p>
-          </section>
-          <ChainArtifactsPanel
-            daemonUrl={session.daemonUrl}
-            clientToken={session.clientToken}
-            projectId={projectId}
-            chainId={chain.chainId}
-          />
-        </div>
+              <TaskTodoList
+                title="Active"
+                emptyText="No active tasks."
+                tasks={activeTasks}
+                tasksById={tasksById}
+                taskLogsByTaskId={taskLogsByTaskId}
+                expandedTaskId={selectedTaskId}
+                commentDraft={commentDraft}
+                nudgeDraft={nudgeDraft}
+                projectId={projectId}
+                chainId={chain.chainId}
+                onCommentDraft={setCommentDraft}
+                onNudgeDraft={setNudgeDraft}
+                onOpenTask={openTask}
+                onOpenTaskById={openTaskById}
+                onCloseTask={closeTask}
+                onAddComment={onAddComment}
+                onSetTaskStatus={onSetTaskStatus}
+                onVoteTask={onVoteTask}
+                onNudgeTask={onNudgeTask}
+                onAssignTask={onAssignTask}
+                onSetReviewer={onSetReviewer}
+                agents={agents}
+                taskIndexMap={taskIndexMap}
+              />
+              {completedTasks.length > 0 && (
+                <div data-debug-id="chain-completed-task-section" className="mt-5 border-t border-white/10 pt-4">
+                  <TaskTodoList
+                    title="Completed"
+                    emptyText="No completed tasks."
+                    tasks={completedTasks}
+                    tasksById={tasksById}
+                    taskLogsByTaskId={taskLogsByTaskId}
+                    expandedTaskId={selectedTaskId}
+                    commentDraft={commentDraft}
+                    nudgeDraft={nudgeDraft}
+                    projectId={projectId}
+                    chainId={chain.chainId}
+                    onCommentDraft={setCommentDraft}
+                    onNudgeDraft={setNudgeDraft}
+                    onOpenTask={openTask}
+                    onOpenTaskById={openTaskById}
+                    onCloseTask={closeTask}
+                    onAddComment={onAddComment}
+                    onSetTaskStatus={onSetTaskStatus}
+                    onVoteTask={onVoteTask}
+                    onNudgeTask={onNudgeTask}
+                    onAssignTask={onAssignTask}
+                    onSetReviewer={onSetReviewer}
+                    agents={agents}
+                    taskIndexMap={taskIndexMap}
+                    completed
+                  />
+                </div>
+              )}
+            </div>
+          </aside>
+        )}
       </div>
 
-      {hasWorkspace && (
-        <div data-debug-id="chain-workspace-row" className="mt-8">
+      <div className="hidden xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]" aria-hidden="true">
+        <ChainArtifactsPanel
+          daemonUrl={session.daemonUrl}
+          clientToken={session.clientToken}
+          projectId={projectId}
+          chainId={chain.chainId}
+        />
+      </div>
+
+      {hasWorkspace && diffOpen && (
+        <div data-debug-id="chain-workspace-row" className="border-t border-[#262626] bg-[#090909] px-5 py-4">
           <WorkspaceBox
             chainId={chain.chainId}
             workspace={workspaceForDisplay}
@@ -3513,73 +4670,6 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
           />
         </div>
       )}
-
-      <ChainProgressPanel chain={chain} progress={chainProgress} />
-
-      <section data-debug-id="chain-task-surface" className="mt-6 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h2 className="font-semibold">Task chain plan</h2>
-            <p className="text-xs text-zinc-500">A dependency-ordered todo list. Click a task to expand its description, actions, and comments.</p>
-          </div>
-          <span data-debug-id="chain-task-count" className="rounded-full bg-white/5 px-3 py-1 text-xs text-zinc-400">{activeTasks.length} active · {completedTasks.length} completed</span>
-        </div>
-        <TaskTodoList
-          title="Active tasks"
-          emptyText="No active tasks."
-          tasks={activeTasks}
-          tasksById={tasksById}
-          taskLogsByTaskId={taskLogsByTaskId}
-          expandedTaskId={selectedTaskId}
-          commentDraft={commentDraft}
-          nudgeDraft={nudgeDraft}
-          projectId={projectId}
-          chainId={chain.chainId}
-          onCommentDraft={setCommentDraft}
-          onNudgeDraft={setNudgeDraft}
-          onOpenTask={openTask}
-          onOpenTaskById={openTaskById}
-          onCloseTask={closeTask}
-          onAddComment={onAddComment}
-          onSetTaskStatus={onSetTaskStatus}
-          onVoteTask={onVoteTask}
-          onNudgeTask={onNudgeTask}
-          onAssignTask={onAssignTask}
-          onSetReviewer={onSetReviewer}
-          agents={agents}
-          taskIndexMap={taskIndexMap}
-        />
-        {completedTasks.length > 0 && (
-          <div data-debug-id="chain-completed-task-section" className="mt-5 border-t border-white/10 pt-4">
-            <TaskTodoList
-              title="Completed tasks"
-              emptyText="No completed tasks."
-              tasks={completedTasks}
-              tasksById={tasksById}
-              taskLogsByTaskId={taskLogsByTaskId}
-              expandedTaskId={selectedTaskId}
-              commentDraft={commentDraft}
-              nudgeDraft={nudgeDraft}
-              projectId={projectId}
-              chainId={chain.chainId}
-              onCommentDraft={setCommentDraft}
-              onNudgeDraft={setNudgeDraft}
-              onOpenTask={openTask}
-              onOpenTaskById={openTaskById}
-              onCloseTask={closeTask}
-              onAddComment={onAddComment}
-              onSetTaskStatus={onSetTaskStatus}
-              onVoteTask={onVoteTask}
-              onNudgeTask={onNudgeTask}
-              onAssignTask={onAssignTask}
-              onSetReviewer={onSetReviewer}
-              agents={agents}
-              taskIndexMap={taskIndexMap}
-              completed
-            />
-          </div>
-        )}
-      </section>
     </div>
   );
 }
