@@ -1919,10 +1919,25 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, projectsBy
   const sortedChains = [...(chains || [])].sort((a: any, b: any) => chainUpdatedMs(b) - chainUpdatedMs(a));
   const activeChains = sortedChains.filter((chain: any) => !isChainCompleted(chain)).slice(0, 4);
   const agentGroups = durableAgentGroups(agents);
+  const [collapsedMenuOpen, setCollapsedMenuOpen] = useState(false);
   if (collapsed) {
+    const collapsedItems = [
+      { id: 'home', icon: '⌂', label: 'Home', onClick: onHome },
+      { id: 'memory', icon: '✦', label: 'Memory', onClick: onMemory },
+      { id: 'agents', icon: '◎', label: 'Agents', onClick: onAgents },
+      { id: 'task-chains', icon: '☷', label: 'Task chains', onClick: onTaskChains },
+      { id: 'projects', icon: '▣', label: 'Projects', onClick: onProjects },
+      { id: 'settings', icon: '⚙', label: 'Settings', onClick: onSettings },
+    ];
     return (
       <div data-debug-id="conversation-focused-sidebar" data-sidebar-collapsed="true" className="pointer-events-none h-full w-0 overflow-visible bg-transparent text-zinc-100">
-        <button type="button" data-debug-id="conversation-sidebar-expand-btn" onClick={onToggleCollapsed} title="Expand sidebar" aria-label="Expand sidebar" className="pointer-events-auto fixed left-3 top-3 z-50 grid h-9 w-9 place-items-center rounded-xl border border-white/10 bg-[#141414]/95 text-zinc-300 shadow-xl shadow-black/30 backdrop-blur hover:bg-[#1c1c1c] hover:text-zinc-100">☰</button>
+        <button type="button" data-debug-id="conversation-sidebar-expand-btn" onClick={() => setCollapsedMenuOpen((current) => !current)} title="Open collapsed navigation" aria-label="Open collapsed navigation" aria-expanded={collapsedMenuOpen} className="pointer-events-auto fixed left-3 top-3 z-50 grid h-9 w-9 place-items-center rounded-xl border border-white/10 bg-[#141414]/95 text-zinc-300 shadow-xl shadow-black/30 backdrop-blur hover:bg-[#1c1c1c] hover:text-zinc-100">☰</button>
+        {collapsedMenuOpen ? (
+          <nav data-debug-id="conversation-collapsed-nav" className="pointer-events-auto fixed left-3 top-14 z-50 flex flex-col gap-1 rounded-2xl border border-white/10 bg-[#101010]/95 p-1.5 shadow-2xl shadow-black/40 backdrop-blur" aria-label="Collapsed navigation">
+            <button type="button" data-debug-id="conversation-sidebar-expand-full-btn" onClick={onToggleCollapsed} title="Expand sidebar" aria-label="Expand sidebar" className="grid h-9 w-9 place-items-center rounded-xl text-zinc-400 hover:bg-[#1c1c1c] hover:text-zinc-100">⇥</button>
+            {collapsedItems.map((item) => <button key={item.id} type="button" data-debug-id={`nav-${item.id}-collapsed-btn`} onClick={() => { item.onClick?.(); setCollapsedMenuOpen(false); }} title={item.label} aria-label={item.label} className="grid h-9 w-9 place-items-center rounded-xl text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100">{item.icon}</button>)}
+          </nav>
+        ) : null}
       </div>
     );
   }
@@ -2112,10 +2127,7 @@ function SidebarAgentInstancesPanel({ agentId = '', agents = [], chats = {}, tas
             <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-500">Live instances</div>
             <div data-debug-id={`sidebar-agent-instances-title-${agentId}`} className="truncate text-sm font-semibold text-zinc-100">{agentId}</div>
           </div>
-          <div className="flex shrink-0 items-center gap-1">
-            <button type="button" data-debug-id={`sidebar-agent-instances-new-instance-btn-${agentId}`} onClick={() => onStartInstance?.(agentId)} disabled={launching} className="rounded-md border border-white/10 px-2 py-1 text-xs text-zinc-300 hover:bg-[#171717] hover:text-zinc-100 disabled:cursor-wait disabled:opacity-50" title={`Launch a new ${agentId} instance`} aria-label={`Launch a new ${agentId} instance`}>{launching ? 'Launching…' : 'New'}</button>
-            <button type="button" data-debug-id="sidebar-agent-instances-close-btn" onClick={onClose} className="rounded-md border border-white/10 px-2 py-1 text-xs text-zinc-400 hover:bg-[#171717] hover:text-zinc-100">Close</button>
-          </div>
+          <button type="button" data-debug-id="sidebar-agent-instances-close-btn" onClick={onClose} className="rounded-md border border-white/10 px-2 py-1 text-xs text-zinc-400 hover:bg-[#171717] hover:text-zinc-100">Close</button>
         </div>
         <p className="mt-2 text-xs text-zinc-600">Stopped non-conversation instances are hidden here; open Agents for management/history.</p>
       </div>
