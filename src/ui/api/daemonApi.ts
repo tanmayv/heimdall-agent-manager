@@ -124,6 +124,20 @@ export async function listKnownAgents({ daemonUrl, projectId = '' }: { daemonUrl
   return data.agents ?? data.records ?? [];
 }
 
+export async function listKnownAgentsPage({ daemonUrl, projectId = '', limit = 20, offset = 0 }: { daemonUrl: string; projectId?: string; limit?: number; offset?: number }) {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (projectId) params.set('project_id', projectId);
+  const data = await requestJson(joinUrl(daemonUrl, `/agents?${params.toString()}`));
+  return {
+    agents: data.agents ?? data.records ?? [],
+    limit: Number(data.limit || limit),
+    offset: Number(data.offset || offset),
+    nextOffset: Number(data.next_offset || data.nextOffset || (offset + ((data.agents ?? data.records ?? []).length))),
+    hasMore: Boolean(data.has_more || data.hasMore),
+    total: Number(data.total || 0),
+  };
+}
+
 export async function fetchTeam({ daemonUrl, teamId }: { daemonUrl: string; teamId: string }) {
   if (!teamId) return null;
   return requestJson(joinUrl(daemonUrl, `/teams/${encodeURIComponent(teamId)}`));

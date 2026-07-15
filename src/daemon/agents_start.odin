@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:net"
 import "core:os"
+import "core:strconv"
 import "core:strings"
 
 valid_model_tier :: proc(tier: string) -> bool {
@@ -75,9 +76,20 @@ handle_agents_templates :: proc(client: net.TCP_Socket) {
 handle_agents_list :: proc(client: net.TCP_Socket, request: string) {
 	project_id := query_param(request, "project_id")
 	role_hint := query_param(request, "role_hint")
+	limit_str := query_param(request, "limit")
+	offset_str := query_param(request, "offset")
+	limit := 0
+	offset := 0
+	if limit_str != "" {
+		if val, parse_ok := strconv.parse_int(limit_str); parse_ok && val > 0 do limit = int(val)
+	}
+	if offset_str != "" {
+		if val, parse_ok := strconv.parse_int(offset_str); parse_ok && val > 0 do offset = int(val)
+	}
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"ok":true,"agents":[`)
 	wrote := 0
+	matched := 0
 	for i in 0..<agent_instance_record_count {
 		rec := agent_instance_records[i]
 		if rec.archived_at_unix_ms != 0 do continue
@@ -87,9 +99,12 @@ handle_agents_list :: proc(client: net.TCP_Socket, request: string) {
 			if tidx < 0 do continue
 			if agent_template_records[tidx].role_hint != role_hint do continue
 		}
+		if matched < offset { matched += 1; continue }
+		if limit > 0 && wrote >= limit { matched += 1; continue }
 		if wrote > 0 do strings.write_string(&builder, `,`)
 		agent_instance_record_json(&builder, rec)
 		wrote += 1
+		matched += 1
 	}
 	// Preserve existing live-registry visibility for callers that used /clients only.
 	if project_id == "" && role_hint == "" {
@@ -97,8 +112,10 @@ handle_agents_list :: proc(client: net.TCP_Socket, request: string) {
 			ag := agents[i]
 			if is_test_token(ag.agent_token) do continue
 			if agent_record_index_by_instance(ag.agent_instance_id) >= 0 do continue
+			if matched < offset { matched += 1; continue }
+			if limit > 0 && wrote >= limit { matched += 1; continue }
 			if wrote > 0 do strings.write_string(&builder, `,`)
-			strings.write_string(&builder, `{"agent_record_id":"","agent_instance_id":"`); json_write_string(&builder, ag.agent_instance_id)
+			strings.write_string(&builder, `{"agent_record_id":"`); json_write_string(&builder, ag.agent_instance_id)
 			strings.write_string(&builder, `","display_name":"`); json_write_string(&builder, ag.display_name)
 			// provider_profile is set on startup report; fall back to agent_class (always set on register)
 			live_pp := ag.provider_profile; if live_pp == "" do live_pp = ag.agent_class
@@ -120,9 +137,17 @@ handle_agents_list :: proc(client: net.TCP_Socket, request: string) {
 			strings.write_string(&builder, `","activity_source":"`); json_write_string(&builder, ag.activity_source)
 			strings.write_string(&builder, `","activity_checked_unix_ms":`); strings.write_string(&builder, fmt.tprintf("%d", ag.activity_checked_unix_ms)); strings.write_string(&builder, `}`)
 			wrote += 1
+			matched += 1
 		}
 	}
-	strings.write_string(&builder, `]}`)
+	has_more := limit > 0 && matched > offset + wrote
+	next_offset := offset + wrote
+	strings.write_string(&builder, `],"total":`); strings.write_string(&builder, fmt.tprintf("%d", matched))
+	strings.write_string(&builder, `,"limit":`); strings.write_string(&builder, fmt.tprintf("%d", limit))
+	strings.write_string(&builder, `,"offset":`); strings.write_string(&builder, fmt.tprintf("%d", offset))
+	strings.write_string(&builder, `,"next_offset":`); strings.write_string(&builder, fmt.tprintf("%d", next_offset))
+	strings.write_string(&builder, `,"has_more":`); strings.write_string(&builder, "true" if has_more else "false")
+	strings.write_string(&builder, `}`)
 	write_response(client, 200, "OK", strings.to_string(builder))
 }
 
@@ -190,6 +215,8 @@ agent_record_upsert :: proc(
 		// must NOT clobber the stored association. Use the stored value as the
 		// fallback; explicit disassociation goes through /agents/disassociate.
 		if resolved_project_id == "" do resolved_project_id = agent_instance_records[idx].project_id
+	} else if resolved_project_id == "" {
+		resolved_project_id = agent_id_default_project_id(agent_id_from_instance_id(agent_instance_id))
 	}
 	if state == "" do state = AGENT_IDENTITY_STATE_PROVISIONED
 	if scope == "" do scope = agent_scope_infer(agent_instance_id, template_id)
@@ -305,7 +332,7 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 	strings.write_string(&builder, `","model_tier":"`)
 	json_write_string(&builder, final_tier)
 	strings.write_string(&builder, `","project_id":"`)
-	json_write_string(&builder, project_id)
+	json_write_string(&builder, resolved_project_id)
 	strings.write_string(&builder, `","conversation_id":"`)
 	json_write_string(&builder, conversation_id_for_instance(agent_instance_id))
 	strings.write_string(&builder, `","agent_token":"`)
@@ -591,10 +618,10 @@ handle_agent_instance_create :: proc(client: net.TCP_Socket, body: string) {
 	if agent_instance_id_is_reserved(agent_instance_id) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"reserved agent_instance_id cannot be created"}`); return }
 	if !valid_agent_instance_id(agent_instance_id) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid agent_instance_id"}`); return }
 	// teams-v2: authoritatively create/update the durable agent_id identity with its
-	// defaults (template/persona + default provider/tier), shared across all of this
-	// agent's project-instances. project_id may be empty here (create-without-project).
+	// defaults (template/persona + default provider/tier/project), shared across all of this
+	// agent's concrete instances. project_id may be empty here (create-without-project).
 	resolved_agent_id := agent_id_from_instance_id(agent_instance_id)
-	agent_id_upsert(resolved_agent_id, display_name, template_id, provider_profile, model_tier, "api", agent_role)
+	agent_id_upsert(resolved_agent_id, display_name, template_id, provider_profile, model_tier, project_id, "api", agent_role)
 	agent_record_id, _, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, provider_profile, project_id, "", model_tier, AGENT_IDENTITY_STATE_PROVISIONED, AGENT_SCOPE_DURABLE, agent_role)
 	if !upsert_ok { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`); return }
 	write_agent_ok_response(client, "created", agent_instance_records[agent_record_index(agent_record_id)])

@@ -441,19 +441,30 @@ function createAgentSessionToken(): string {
 }
 
 
-function agentStatusIndicator(agent: any, context = ''): { key: string; label: string; color: string; title: string } {
+function shortLastSeenLabel(agent: any): string {
+  const last = Number(agent?.lastSeenUnixMs || agent?.last_seen_unix_ms || agent?.updatedUnixMs || agent?.updated_unix_ms || 0);
+  if (!last) return '—';
+  const deltaMin = Math.max(0, Math.floor((Date.now() - last) / 60000));
+  if (deltaMin < 1) return 'now';
+  if (deltaMin < 60) return `${deltaMin}m`;
+  const deltaHours = Math.floor(deltaMin / 60);
+  if (deltaHours < 24) return `${deltaHours}h`;
+  return `${Math.floor(deltaHours / 24)}d`;
+}
+
+function agentStatusIndicator(agent: any, context = ''): { key: string; label: string; color: string; title: string; compact: string; pulse: string } {
   const taskId = String(agent?.currentTaskId || agent?.current_task_id || '');
   const runtime = String(agent?.runtimeState || agent?.runtime_state || agent?.state || agent?.status || '').toLowerCase();
   const working = Boolean(taskId) || ['working', 'busy', 'running_task', 'in_progress'].some((item) => runtime.includes(item));
   if (working) {
-    return { key: 'working', label: 'Working', color: 'bg-sky-400', title: context || taskId || 'Agent is working' };
+    return { key: 'working', label: 'Working', color: 'bg-sky-400', title: context || taskId || 'Agent is working', compact: '', pulse: 'animate-pulse' };
   }
   if (agentHasLiveSession(agent)) {
-    return { key: 'idle', label: 'Idle', color: 'bg-emerald-400', title: context || 'Connected and idle' };
+    return { key: 'idle', label: 'Idle', color: 'bg-emerald-400', title: context || 'Connected and idle', compact: '', pulse: '' };
   }
   const last = Number(agent?.lastSeenUnixMs || agent?.last_seen_unix_ms || agent?.updatedUnixMs || agent?.updated_unix_ms || 0);
   const title = last > 0 ? `Last seen ${new Date(last).toLocaleString()}` : 'Last seen unavailable';
-  return { key: 'last-seen', label: last > 0 ? 'Last seen' : 'Unknown', color: 'bg-zinc-600', title };
+  return { key: 'last-seen', label: last > 0 ? 'Last seen' : 'Unknown', color: 'bg-zinc-600', title, compact: shortLastSeenLabel(agent), pulse: '' };
 }
 
 type ChainProgress = {
@@ -603,6 +614,7 @@ export default function App() {
   const [agentPageId, setAgentPageId] = useState('');
   const [selectedSidebarAgentId, setSelectedSidebarAgentId] = useState('');
   const [sidebarAgentLaunchingId, setSidebarAgentLaunchingId] = useState('');
+  const [sidebarFetchedAgents, setSidebarFetchedAgents] = useState<any[]>([]);
   const [newConversationBusy, setNewConversationBusy] = useState(false);
   // Keep direct agent chat drafts at App scope so a transient AgentDetailPage
   // remount during refresh/revalidation cannot wipe a long in-progress message.
@@ -1063,6 +1075,15 @@ export default function App() {
     updateUrlParams({ view: 'agent-identity', agentId: durableId, chainId: null, taskId: null, memoryId: null });
   }, []);
 
+  const fetchSidebarAgentPage = useCallback(async ({ offset, limit }: { offset: number; limit: number }) => {
+    const page = await daemonApi.listKnownAgentsPage({ daemonUrl: session?.daemonUrl || '', offset, limit });
+    setSidebarFetchedAgents((current) => {
+      const byId = new Map<string, any>();
+      for (const agent of [...current, ...(page.agents || [])]) byId.set(agentInstanceId(agent), agent);
+      return Array.from(byId.values());
+    });
+    return page;
+  }, [session?.daemonUrl]);
 
   const startSidebarAgentInstance = useCallback(async (agentId: string) => {
     const durableId = String(agentId || '').trim();
@@ -1207,7 +1228,9 @@ export default function App() {
             onOpenConversation={openAgentPage}
             onNewConversation={createNewConversation}
             newConversationBusy={newConversationBusy}
-            agents={agents}
+            agents={sidebarFetchedAgents.length > 0 ? sidebarFetchedAgents : agents}
+            allAgents={agents}
+            onFetchAgentPage={fetchSidebarAgentPage}
             selectedSidebarAgentId={selectedSidebarAgentId}
             sidebarAgentLaunchingId={sidebarAgentLaunchingId}
             onSelectSidebarAgent={setSelectedSidebarAgentId}
@@ -1768,21 +1791,23 @@ function shouldLoadMoreFromScroll(event: any): boolean {
   return target.scrollTop + target.clientHeight >= target.scrollHeight - 24;
 }
 
-function SidebarConversationSection({ conversations = [], chats = {}, projectsById = {}, selectedAgentId = '', onOpenConversation, onNewConversation, newConversationBusy = false, compact = false }: any) {
+function SidebarConversationSection({ conversations = [], chats = {}, projectsById = {}, selectedAgentId = '', onOpenConversation, onNewConversation, newConversationBusy = false, compact = false, onFetchAgentPage }: any) {
   const [conversationLimit, setConversationLimit] = useState(SIDEBAR_PAGE_SIZE);
   const [conversationLoadingMore, setConversationLoadingMore] = useState(false);
   const sortedConversations = useMemo(() => [...(conversations || [])].sort((left: any, right: any) => conversationSortUnixMs(right, chats?.[right.id] || []) - conversationSortUnixMs(left, chats?.[left.id] || [])), [conversations, chats]);
   useEffect(() => { setConversationLimit((current) => Math.min(Math.max(SIDEBAR_PAGE_SIZE, current), Math.max(SIDEBAR_PAGE_SIZE, sortedConversations.length))); }, [sortedConversations.length]);
   const visibleConversations = sortedConversations.slice(0, conversationLimit);
   const hiddenConversationCount = Math.max(0, sortedConversations.length - visibleConversations.length);
-  const loadMoreConversations = useCallback(() => {
+  const loadMoreConversations = useCallback(async () => {
     if (conversationLoadingMore || hiddenConversationCount <= 0) return;
     setConversationLoadingMore(true);
-    window.setTimeout(() => {
+    try {
+      await onFetchAgentPage?.({ offset: visibleConversations.length, limit: SIDEBAR_PAGE_SIZE, kind: 'conversation' });
       setConversationLimit((current) => Math.min(sortedConversations.length, current + SIDEBAR_PAGE_SIZE));
+    } finally {
       setConversationLoadingMore(false);
-    }, 180);
-  }, [conversationLoadingMore, hiddenConversationCount, sortedConversations.length]);
+    }
+  }, [conversationLoadingMore, hiddenConversationCount, onFetchAgentPage, sortedConversations.length, visibleConversations.length]);
   const groups = useMemo(() => {
     const grouped: Record<string, { projectId: string; projectName: string; rows: any[] }> = {};
     for (const agent of visibleConversations || []) {
@@ -1833,6 +1858,7 @@ function SidebarConversationSection({ conversations = [], chats = {}, projectsBy
                     const unread = Number(agent?.unreadCount || 0);
                     const runtime = agentRuntimeDot(agent);
                     const live = isAgentRunning(agent);
+                    const status = agentStatusIndicator(agent, live ? 'Conversation thread is live' : 'Conversation thread is available as history');
                     return (
                       <div key={agent.id} data-debug-id={`conversation-thread-${agent.id}`} className={`rounded-lg ${active ? 'bg-[#1c1c1c]' : 'bg-transparent hover:bg-[#141414]'}`}>
                         <button
@@ -1843,8 +1869,9 @@ function SidebarConversationSection({ conversations = [], chats = {}, projectsBy
                         >
                           <span className={`h-2 w-2 shrink-0 rounded-full ${runtime.color}`}></span>
                           <span className="min-w-0 flex-1 truncate text-zinc-100">{title}</span>
-                          {unread > 0 ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-sky-400"></span> : null}
-                          {!compact && <span className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] ${live ? 'border-emerald-400/30 text-emerald-200' : 'border-white/10 text-zinc-500'}`}>{live ? 'live' : 'stopped'}</span>}
+                          {unread > 0 ? <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-sky-400" title="Unread messages"></span> : null}
+                          <span data-debug-id={`conversation-thread-status-${agent.id}`} aria-label={`${agent.id} status: ${status.label}`} title={status.title} className={`h-2 w-2 shrink-0 rounded-full ${status.color} ${status.pulse}`}></span>
+                          <span data-debug-id={`conversation-thread-status-label-${agent.id}`} aria-label={`${agent.id} ${status.label} detail`} title={status.title} className="shrink-0 text-[10px] tabular-nums text-zinc-600">{status.compact}</span>
                         </button>
                       </div>
                     );
@@ -1872,7 +1899,7 @@ function SidebarConversationSection({ conversations = [], chats = {}, projectsBy
 }
 
 
-function ConversationFocusedSidebar({ conversations = [], chats = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, agents = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onStartAgentInstance, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onAttention, onMemory, onAgents, onTaskChains, onProjects, onSettings }: any) {
+function ConversationFocusedSidebar({ conversations = [], chats = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, agents = [], allAgents = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onStartAgentInstance, onFetchAgentPage, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onAttention, onMemory, onAgents, onTaskChains, onProjects, onSettings }: any) {
   const chainUpdatedMs = (chain: any) => Number(chain?.updatedAtUnixMs || chain?.updated_at_unix_ms || chain?.updatedAt || chain?.updated_at || chain?.createdAtUnixMs || chain?.created_at_unix_ms || 0);
   const sortedChains = [...(chains || [])].sort((a: any, b: any) => chainUpdatedMs(b) - chainUpdatedMs(a));
   const activeChains = sortedChains.filter((chain: any) => !isChainCompleted(chain)).slice(0, 4);
@@ -1909,9 +1936,11 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, projectsBy
           onNewConversation={null}
           newConversationBusy={newConversationBusy}
           compact
+          onFetchAgentPage={onFetchAgentPage}
         />
         <SidebarDurableAgentsSection
           groups={agentGroups}
+          onFetchAgentPage={onFetchAgentPage}
           selectedAgentId={selectedSidebarAgentId}
           launchingAgentId={sidebarAgentLaunchingId}
           onSelectAgent={onSelectSidebarAgent}
@@ -1949,20 +1978,22 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, projectsBy
   );
 }
 
-function SidebarDurableAgentsSection({ groups = [], selectedAgentId = '', launchingAgentId = '', onSelectAgent, onStartAgent }: any) {
+function SidebarDurableAgentsSection({ groups = [], selectedAgentId = '', launchingAgentId = '', onSelectAgent, onStartAgent, onFetchAgentPage }: any) {
   const [agentLimit, setAgentLimit] = useState(SIDEBAR_PAGE_SIZE);
   const [agentsLoadingMore, setAgentsLoadingMore] = useState(false);
   useEffect(() => { setAgentLimit((current) => Math.min(Math.max(SIDEBAR_PAGE_SIZE, current), Math.max(SIDEBAR_PAGE_SIZE, (groups || []).length))); }, [groups?.length]);
   const visibleGroups = (groups || []).slice(0, agentLimit);
   const hiddenAgentCount = Math.max(0, (groups || []).length - visibleGroups.length);
-  const loadMoreAgents = useCallback(() => {
+  const loadMoreAgents = useCallback(async () => {
     if (agentsLoadingMore || hiddenAgentCount <= 0) return;
     setAgentsLoadingMore(true);
-    window.setTimeout(() => {
+    try {
+      await onFetchAgentPage?.({ offset: visibleGroups.length, limit: SIDEBAR_PAGE_SIZE, kind: 'durable-agent' });
       setAgentLimit((current) => Math.min((groups || []).length, current + SIDEBAR_PAGE_SIZE));
+    } finally {
       setAgentsLoadingMore(false);
-    }, 180);
-  }, [agentsLoadingMore, hiddenAgentCount, groups]);
+    }
+  }, [agentsLoadingMore, hiddenAgentCount, groups, onFetchAgentPage, visibleGroups.length]);
   return (
     <section data-debug-id="sidebar-durable-agents" className="mb-3 border-b border-[#171717] pb-3">
       <div className="flex items-center justify-between px-2 pb-1 pt-2 text-[10.5px] uppercase tracking-[0.18em] text-zinc-500">
@@ -1990,9 +2021,9 @@ function SidebarDurableAgentsSection({ groups = [], selectedAgentId = '', launch
                   title={`${group.agentId} · ${live} live instance${live === 1 ? '' : 's'}`}
                 >
                   <div className="flex min-w-0 items-center gap-2">
-                    <span data-debug-id={`sidebar-agent-status-${group.agentId}`} aria-label={`${group.agentId} status: ${status.label}`} title={status.title} className={`h-2 w-2 shrink-0 rounded-full ${status.color}`}></span>
+                    <span data-debug-id={`sidebar-agent-status-${group.agentId}`} aria-label={`${group.agentId} status: ${status.label}`} title={status.title} className={`h-2 w-2 shrink-0 rounded-full ${status.color} ${status.pulse}`}></span>
                     <span className="min-w-0 flex-1 truncate text-[13px] text-zinc-100">{group.agentId}</span>
-                    <span data-debug-id={`sidebar-agent-status-label-${group.agentId}`} title={status.title} className="shrink-0 text-[10px] text-zinc-600">{status.label}</span>
+                    <span data-debug-id={`sidebar-agent-status-label-${group.agentId}`} aria-label={`${group.agentId} ${status.label} detail`} title={status.title} className="shrink-0 text-[10px] tabular-nums text-zinc-600">{status.compact}</span>
                   </div>
                 </button>
                 <button
@@ -2062,9 +2093,9 @@ function SidebarAgentInstancesPanel({ agentId = '', agents = [], chats = {}, tas
               className={`mb-2 w-full rounded-xl border px-3 py-3 text-left transition ${selected ? 'border-sky-400/35 bg-sky-400/10' : 'border-[#262626] bg-[#111] hover:border-white/20 hover:bg-[#171717]'}`}
             >
               <div className="flex items-center gap-2">
-                <span data-debug-id={`sidebar-agent-instance-status-${id}`} aria-label={`${id} status: ${status.label}`} title={status.title} className={`h-2 w-2 rounded-full ${status.color}`}></span>
+                <span data-debug-id={`sidebar-agent-instance-status-${id}`} aria-label={`${id} status: ${status.label}`} title={status.title} className={`h-2 w-2 rounded-full ${status.color} ${status.pulse}`}></span>
                 <span className="min-w-0 flex-1 truncate text-sm text-zinc-100">{id}</span>
-                <span data-debug-id={`sidebar-agent-instance-status-label-${id}`} title={status.title} className="text-[10px] uppercase tracking-[0.16em] text-zinc-400">{status.label}</span>
+                <span data-debug-id={`sidebar-agent-instance-status-label-${id}`} aria-label={`${id} ${status.label} detail`} title={status.title} className="text-[10px] tabular-nums text-zinc-500">{status.compact}</span>
               </div>
               <div className="mt-1 line-clamp-2 text-xs text-zinc-500">{context}</div>
             </button>
