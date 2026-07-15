@@ -91,6 +91,11 @@ Message_Db_Service :: struct {
 	db_path: string,
 }
 
+Chat_List_Entry :: struct {
+	agent_instance_id: string,
+	last_message_unix_ms: i64,
+}
+
 message_db: Message_Db_Service
 
 message_db_init :: proc(data_dir: string) -> bool {
@@ -686,26 +691,42 @@ message_db_get_created_time :: proc(message_id: string) -> i64 {
 	return 0
 }
 
-message_db_get_distinct_agents :: proc(user_id: string) -> [dynamic]string {
-	agents := make([dynamic]string)
+message_db_list_chat_entries :: proc(user_id: string) -> [dynamic]Chat_List_Entry {
+	entries := make([dynamic]Chat_List_Entry)
 	stmt: sqlite3_stmt = nil
 
-	query := `SELECT agent_instance_id FROM messages WHERE user_id = ? GROUP BY agent_instance_id ORDER BY MAX(created_unix_ms) DESC`
+	query := `SELECT agent_instance_id, MAX(created_unix_ms) FROM messages WHERE user_id = ? GROUP BY agent_instance_id ORDER BY MAX(created_unix_ms) DESC, agent_instance_id ASC`
 
 	rc := sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
-		fmt.println("message_db_get_distinct_agents: prepare failed:", rc)
-		return agents
+		fmt.println("message_db_list_chat_entries: prepare failed:", rc)
+		return entries
 	}
 	defer sqlite3_finalize(stmt)
 
 	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), i32(len(user_id)), SQLITE_TRANSIENT)
 
 	for sqlite3_step(stmt) == SQLITE_ROW {
-		agent := strings.clone_from_cstring(sqlite3_column_text(stmt, 0))
-		append(&agents, agent)
+		entry := Chat_List_Entry{
+			agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 0)),
+			last_message_unix_ms = sqlite3_column_int64(stmt, 1),
+		}
+		append(&entries, entry)
 	}
 
+	return entries
+}
+
+message_db_free_chat_list_entries :: proc(entries: [dynamic]Chat_List_Entry) {
+	for entry in entries do delete(entry.agent_instance_id)
+	delete(entries)
+}
+
+message_db_get_distinct_agents :: proc(user_id: string) -> [dynamic]string {
+	entries := message_db_list_chat_entries(user_id)
+	agents := make([dynamic]string, len(entries))
+	for entry in entries do append(&agents, strings.clone(entry.agent_instance_id))
+	message_db_free_chat_list_entries(entries)
 	return agents
 }
 

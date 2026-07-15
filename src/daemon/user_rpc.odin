@@ -129,7 +129,7 @@ handle_user_rpc_task_log :: proc(client: net.TCP_Socket, body: string) {
 }
 
 handle_user_rpc_task_create :: proc(client: net.TCP_Socket, body, user_id: string) {
-	result := task_service_create_task(Task_Create_Command{task_id = extract_json_string(body, "task_id", ""), chain_id = extract_json_string(body, "chain_id", ""), project_id = extract_json_string(body, "project_id", ""), standalone = extract_json_bool(body, "standalone", false), title = extract_json_string(body, "title", ""), description = extract_json_string(body, "description", ""), acceptance_criteria = extract_json_string(body, "acceptance_criteria", ""), priority = extract_json_string(body, "priority", ""), status = extract_json_string(body, "status", ""), assignee_agent_instance_id = extract_json_string(body, "assignee_agent_instance_id", ""), depends_on = extract_json_string(body, "depends_on", ""), created_by = user_id, author_agent_instance_id = user_id})
+	result := task_service_create_task(Task_Create_Command{task_id = extract_json_string(body, "task_id", ""), chain_id = extract_json_string(body, "chain_id", ""), project_id = extract_json_string(body, "project_id", ""), standalone = extract_json_bool(body, "standalone", false), title = extract_json_string(body, "title", ""), description = extract_json_string(body, "description", ""), acceptance_criteria = extract_json_string(body, "acceptance_criteria", ""), priority = extract_json_string(body, "priority", ""), status = extract_json_string(body, "status", ""), assignee_agent_instance_id = extract_json_string(body, "assignee_agent_instance_id", extract_json_string(body, "assignee_agent_id", "")), reviewer_agent_instance_id = extract_json_string(body, "reviewer_agent_instance_id", extract_json_string(body, "reviewer_agent_id", "")), depends_on = extract_json_string(body, "depends_on", ""), created_by = user_id, author_agent_instance_id = user_id})
 	write_task_service_response(client, result)
 }
 
@@ -197,12 +197,12 @@ handle_user_rpc_task_delete :: proc(client: net.TCP_Socket, body, user_id: strin
 }
 
 handle_user_rpc_task_assign :: proc(client: net.TCP_Socket, body, user_id: string) {
-	result := task_service_assign(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "agent_instance_id", ""), user_id)
+	result := task_service_assign(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "agent_instance_id", extract_json_string(body, "agent_id", "")), user_id)
 	write_task_service_response(client, result)
 }
 
 handle_user_rpc_task_participant :: proc(client: net.TCP_Socket, body, user_id: string) {
-	result := task_service_add_participant(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "agent_instance_id", ""), extract_json_string(body, "role", ""), user_id)
+	result := task_service_add_participant(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "agent_instance_id", extract_json_string(body, "agent_id", "")), extract_json_string(body, "role", ""), user_id)
 	write_task_service_response(client, result)
 }
 
@@ -282,18 +282,33 @@ chat_list_json :: proc(user_id: string) -> string {
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"ok":true,"chats":[`)
 
-	agents := message_db_get_distinct_agents(user_id)
+	entries := message_db_list_chat_entries(user_id)
+	defer message_db_free_chat_list_entries(entries)
 
 	first := true
-	for agent_id in agents {
+	for entry in entries {
 		if !first do strings.write_string(&builder, `,`)
 		first = false
-		strings.write_string(&builder, `{"agent_instance_id":"`); json_write_string(&builder, agent_id)
-		strings.write_string(&builder, `","unread_count":`); strings.write_string(&builder, fmt.tprintf("%d", chat_unread_count(user_id, agent_id)))
-		strings.write_string(&builder, `}`)
+		chat_write_list_entry_json(&builder, user_id, entry.agent_instance_id, entry.last_message_unix_ms)
 	}
 	strings.write_string(&builder, `]}`)
 	return strings.to_string(builder)
+}
+
+chat_write_list_entry_json :: proc(builder: ^strings.Builder, user_id, agent_instance_id: string, last_message_unix_ms: i64) {
+	agent_id := ""
+	project_id := ""
+	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 {
+		rec := agent_instance_records[idx]
+		agent_id = rec.agent_id
+		project_id = rec.project_id
+	}
+	strings.write_string(builder, `{"agent_instance_id":"`); json_write_string(builder, agent_instance_id)
+	strings.write_string(builder, `","agent_id":"`); json_write_string(builder, agent_id)
+	strings.write_string(builder, `","project_id":"`); json_write_string(builder, project_id)
+	strings.write_string(builder, `","unread_count":`); strings.write_string(builder, fmt.tprintf("%d", chat_unread_count(user_id, agent_instance_id)))
+	strings.write_string(builder, `,"last_message_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", last_message_unix_ms))
+	strings.write_string(builder, `}`)
 }
 
 chat_write_message_json :: proc(builder: ^strings.Builder, msg: Chat_Message) {

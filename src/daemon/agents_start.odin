@@ -190,6 +190,8 @@ agent_record_upsert :: proc(
 		// must NOT clobber the stored association. Use the stored value as the
 		// fallback; explicit disassociation goes through /agents/disassociate.
 		if resolved_project_id == "" do resolved_project_id = agent_instance_records[idx].project_id
+	} else if resolved_project_id == "" {
+		resolved_project_id = agent_id_default_project_id(agent_id_from_instance_id(agent_instance_id))
 	}
 	if state == "" do state = AGENT_IDENTITY_STATE_PROVISIONED
 	if scope == "" do scope = agent_scope_infer(agent_instance_id, template_id)
@@ -214,6 +216,8 @@ agent_record_upsert :: proc(
 }
 
 handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
+	requested_agent_id := extract_json_string(body, "agent_id", "")
+	start_mode := extract_json_string(body, "start_mode", "")
 	template_id := extract_json_string(body, "template_id", extract_json_string(body, "persona", ""))
 	project_id := extract_json_string(body, "project_id", "")
 	provider_profile := extract_json_string(body, "provider_profile", extract_json_string(body, "agent", ""))
@@ -221,61 +225,120 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 	agent_role := extract_json_string(body, "agent_role", extract_json_string(body, "role", ""))
 	agent_instance_id := extract_json_string(body, "agent_instance_id", "")
 	config_path := extract_json_string(body, "config_path", server_config_path)
-	if agent_instance_id == "" {
+	exact_instance_requested := agent_instance_id != ""
+
+	if exact_instance_requested {
+		resolved_agent_id := agent_id_from_instance_id(agent_instance_id)
+		if requested_agent_id == "" do requested_agent_id = resolved_agent_id
+		if requested_agent_id != resolved_agent_id {
+			write_response(client, 400, "Bad Request", `{"ok":false,"message":"agent_id must match agent_instance_id prefix"}`)
+			return
+		}
+		if start_mode == "" do start_mode = "reuse_instance"
+	} else if requested_agent_id != "" {
+		if start_mode == "" do start_mode = "new_instance"
+		if start_mode != "new_instance" {
+			write_response(client, 400, "Bad Request", `{"ok":false,"message":"agent_id start requires start_mode=new_instance"}`)
+			return
+		}
+		agent_instance_id = agent_instance_id_new(requested_agent_id)
+	} else {
+		if start_mode == "" do start_mode = "new_instance"
 		id_base := display_name if display_name != "" else template_id
 		agent_instance_id = agent_generated_instance_id(id_base)
+		if requested_agent_id == "" do requested_agent_id = agent_id_from_instance_id(agent_instance_id)
 	}
-	if display_name == "" do display_name = agent_instance_id
-	if template_id == "" do template_id = derive_agent_class(agent_instance_id)
+
+	if start_mode != "new_instance" && start_mode != "reuse_instance" {
+		write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid start_mode; expected new_instance or reuse_instance"}`)
+		return
+	}
+	if start_mode == "new_instance" && exact_instance_requested {
+		write_response(client, 400, "Bad Request", `{"ok":false,"message":"new_instance start must not target an exact agent_instance_id"}`)
+		return
+	}
 	if !valid_agent_instance_id(agent_instance_id) {
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid agent_instance_id"}`)
 		return
 	}
+	if requested_agent_id == "" do requested_agent_id = agent_id_from_instance_id(agent_instance_id)
 
-	// Model tier is runtime-only launch info. Capture just the explicit request
-	// override (if any); the durable value used to persist the instance is the
-	// resolved operator/config default, not a per-instance memory.
+	identity_display_name := agent_id_display_name(requested_agent_id)
+	identity_template_id := agent_id_template_id(requested_agent_id)
+	identity_provider_profile := agent_id_default_provider_profile(requested_agent_id)
+	identity_model_tier := agent_id_default_model_tier(requested_agent_id)
+	identity_project_id := agent_id_default_project_id(requested_agent_id)
+	identity_role := agent_id_role(requested_agent_id)
+	if display_name == "" && identity_display_name != "" do display_name = identity_display_name
+	if template_id == "" && identity_template_id != "" do template_id = identity_template_id
+	if project_id == "" && identity_project_id != "" do project_id = identity_project_id
+	if agent_role == "" && identity_role != "" do agent_role = identity_role
+	if display_name == "" do display_name = agent_instance_id
+	if template_id == "" do template_id = derive_agent_class(agent_instance_id)
+	if agent_role == "" do agent_role = agent_role_from_template(template_id)
+
+	persisted_provider_profile := identity_provider_profile
+	if persisted_provider_profile == "" do persisted_provider_profile = agent_resolve_provider_profile("")
+	persisted_model_tier := identity_model_tier
+	if persisted_model_tier == "" do persisted_model_tier = agent_resolve_model_tier("")
+	if !agent_id_exists(requested_agent_id) {
+		durable_display_name := display_name
+		if identity_display_name != "" {
+			durable_display_name = identity_display_name
+		} else if durable_display_name == "" || durable_display_name == agent_instance_id {
+			durable_display_name = requested_agent_id
+		}
+		if !agent_id_upsert(requested_agent_id, durable_display_name, template_id, persisted_provider_profile, persisted_model_tier, project_id, "api_start", agent_role) {
+			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist durable agent identity"}`)
+			return
+		}
+	}
+	if existing_idx := agent_record_index_by_instance(agent_instance_id); existing_idx >= 0 {
+		if display_name == "" || display_name == agent_instance_id do display_name = agent_instance_records[existing_idx].display_name
+		if template_id == "" do template_id = agent_instance_records[existing_idx].template_id
+		if agent_role == "" do agent_role = agent_instance_records[existing_idx].agent_role
+		persisted_provider_profile = agent_instance_records[existing_idx].provider_profile
+		persisted_model_tier = agent_instance_records[existing_idx].model_tier
+		if project_id == "" do project_id = agent_instance_records[existing_idx].project_id
+	}
+
 	request_tier := extract_json_string(body, "model_tier", "")
 	if request_tier != "" && !valid_model_tier(request_tier) {
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid model_tier; expected cheap, normal, or smart"}`)
 		return
 	}
-	launch_model_tier := agent_resolve_model_tier(request_tier)
+	launch_provider_profile := provider_profile
+	if launch_provider_profile == "" do launch_provider_profile = persisted_provider_profile
+	if launch_provider_profile == "" do launch_provider_profile = agent_resolve_provider_profile("")
+	final_tier := request_tier
+	if final_tier == "" do final_tier = persisted_model_tier
+	if final_tier == "" do final_tier = agent_resolve_model_tier("")
+	final_tier = normalize_model_tier(final_tier)
 
 	log_path := wrapper_log_path(agent_instance_id)
-	manual_scope := agent_scope_infer(agent_instance_id, template_id)
-	// /agents/start accepts provider/tier as launch overrides only. Never persist
-	// explicit request provider/tier from a start call. Existing durable identities
-	// keep their stored provider/tier; first-start records get operator/config
-	// defaults so runtime roster choices do not become durable identity memory.
-	persisted_provider_profile := agent_resolve_provider_profile("")
-	persisted_model_tier := agent_resolve_model_tier("")
+	manual_scope := AGENT_SCOPE_DURABLE
 	if existing_idx := agent_record_index_by_instance(agent_instance_id); existing_idx >= 0 {
-		persisted_provider_profile = agent_instance_records[existing_idx].provider_profile
-		persisted_model_tier = agent_instance_records[existing_idx].model_tier
+		manual_scope = agent_instance_records[existing_idx].agent_scope
 	}
 	agent_record_id, _, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, persisted_provider_profile, project_id, "", persisted_model_tier, "", manual_scope, agent_role)
 	if !upsert_ok {
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`)
 		return
 	}
-	// Reload project_id as resolved by upsert (may have fallen back to the stored
-	// value if the caller didn't provide a fresh one). Provider is runtime-only
-	// and intentionally NOT reloaded from the instance record here.
 	resolved_project_id := project_id
 	if idx := agent_record_index(agent_record_id); idx >= 0 {
 		resolved_project_id = agent_instance_records[idx].project_id
 	}
-	// Provider and tier are runtime-only launch info: request override, else the
-	// operator/config default. Neither is sourced from the durable instance record.
-	provider_profile = agent_resolve_provider_profile(provider_profile)
-	final_tier := launch_model_tier
 
 	agent_token := auth_db_get_token("agent", agent_instance_id)
 	if agent_token == "" do agent_token = generate_agent_token()
 	if !agent_runtime_tracker_try_begin_launch(agent_instance_id, agent_token, "manual_agent_start", "", router_now_unix_ms()) {
 		builder := strings.builder_make()
-		strings.write_string(&builder, `{"ok":true,"mode":"remote_detached","message":"already running or launch in progress","agent_record_id":"`)
+		strings.write_string(&builder, `{"ok":true,"mode":"remote_detached","message":"already running or launch in progress","start_mode":"`)
+		json_write_string(&builder, start_mode)
+		strings.write_string(&builder, `","agent_id":"`)
+		json_write_string(&builder, requested_agent_id)
+		strings.write_string(&builder, `","agent_record_id":"`)
 		json_write_string(&builder, agent_record_id)
 		strings.write_string(&builder, `","agent_instance_id":"`)
 		json_write_string(&builder, agent_instance_id)
@@ -284,7 +347,7 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 		return
 	}
 	registry_add_pending_agent_token(agent_instance_id, agent_token)
-	ok := launch_wrapper_detached(agent_instance_id, provider_profile, config_path, log_path, agent_token, display_name, final_tier, resolved_project_id, "manual_agent_start", "", "", "")
+	ok := launch_wrapper_detached(agent_instance_id, launch_provider_profile, config_path, log_path, agent_token, display_name, final_tier, resolved_project_id, "manual_agent_start", "", "", "")
 	if !ok {
 		agent_runtime_tracker_launch_failed(agent_instance_id, agent_token, "manual_agent_start")
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to start wrapper"}`)
@@ -292,7 +355,11 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 	}
 
 	builder := strings.builder_make()
-	strings.write_string(&builder, `{"ok":true,"mode":"remote_detached","message":"started","agent_record_id":"`)
+	strings.write_string(&builder, `{"ok":true,"mode":"remote_detached","message":"started","start_mode":"`)
+	json_write_string(&builder, start_mode)
+	strings.write_string(&builder, `","agent_id":"`)
+	json_write_string(&builder, requested_agent_id)
+	strings.write_string(&builder, `","agent_record_id":"`)
 	json_write_string(&builder, agent_record_id)
 	strings.write_string(&builder, `","agent_instance_id":"`)
 	json_write_string(&builder, agent_instance_id)
@@ -301,11 +368,11 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 	strings.write_string(&builder, `","template_id":"`)
 	json_write_string(&builder, template_id)
 	strings.write_string(&builder, `","provider_profile":"`)
-	json_write_string(&builder, provider_profile)
+	json_write_string(&builder, launch_provider_profile)
 	strings.write_string(&builder, `","model_tier":"`)
 	json_write_string(&builder, final_tier)
 	strings.write_string(&builder, `","project_id":"`)
-	json_write_string(&builder, project_id)
+	json_write_string(&builder, resolved_project_id)
 	strings.write_string(&builder, `","conversation_id":"`)
 	json_write_string(&builder, conversation_id_for_instance(agent_instance_id))
 	strings.write_string(&builder, `","agent_token":"`)
@@ -591,10 +658,10 @@ handle_agent_instance_create :: proc(client: net.TCP_Socket, body: string) {
 	if agent_instance_id_is_reserved(agent_instance_id) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"reserved agent_instance_id cannot be created"}`); return }
 	if !valid_agent_instance_id(agent_instance_id) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid agent_instance_id"}`); return }
 	// teams-v2: authoritatively create/update the durable agent_id identity with its
-	// defaults (template/persona + default provider/tier), shared across all of this
-	// agent's project-instances. project_id may be empty here (create-without-project).
+	// defaults (template/persona + default provider/tier/project), shared across all of this
+	// agent's concrete instances. project_id may be empty here (create-without-project).
 	resolved_agent_id := agent_id_from_instance_id(agent_instance_id)
-	agent_id_upsert(resolved_agent_id, display_name, template_id, provider_profile, model_tier, "api", agent_role)
+	agent_id_upsert(resolved_agent_id, display_name, template_id, provider_profile, model_tier, project_id, "api", agent_role)
 	agent_record_id, _, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, provider_profile, project_id, "", model_tier, AGENT_IDENTITY_STATE_PROVISIONED, AGENT_SCOPE_DURABLE, agent_role)
 	if !upsert_ok { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`); return }
 	write_agent_ok_response(client, "created", agent_instance_records[agent_record_index(agent_record_id)])

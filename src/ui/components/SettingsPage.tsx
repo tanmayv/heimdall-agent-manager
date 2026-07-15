@@ -9,14 +9,23 @@ import { clearProjectError, deleteProjectFromUi, fetchProjectDetail, refreshProj
 import { VimEditButton } from './VimSidebar';
 
 const SETTINGS_ITEMS = [
+  { key: 'daemon', label: 'Daemons' },
+  { key: 'providers', label: 'Providers' },
   { key: 'templates', label: 'Agent templates' },
   { key: 'kinds', label: 'Team kinds' },
-  { key: 'providers', label: 'Providers & model tiers' },
   { key: 'projects', label: 'Projects' },
   { key: 'memory', label: 'Memory browser' },
   { key: 'agents', label: 'Agents (raw registry)' },
   { key: 'direct-chat', label: 'Direct agent chat (debug)' },
-  { key: 'daemon', label: 'Daemon connection' },
+];
+
+const DAEMON_COLOR_OPTIONS = [
+  { key: 'sky', label: 'Sky', dot: 'bg-sky-400' },
+  { key: 'emerald', label: 'Emerald', dot: 'bg-emerald-400' },
+  { key: 'violet', label: 'Violet', dot: 'bg-violet-400' },
+  { key: 'amber', label: 'Amber', dot: 'bg-amber-400' },
+  { key: 'rose', label: 'Rose', dot: 'bg-rose-400' },
+  { key: 'cyan', label: 'Cyan', dot: 'bg-cyan-400' },
 ];
 
 function normalizeTemplate(template: any) {
@@ -29,12 +38,12 @@ function normalizeTemplate(template: any) {
   };
 }
 
-export default function SettingsPage({ session, onReconnect, onBack }: any) {
+export default function SettingsPage({ session, profiles = [], onReconnect, onBack, onActivateDaemon, onAddDaemon, onRenameDaemon, onRemoveDaemon, onUpdateDaemonAppearance }: any) {
   const dispatch = useDispatch<any>();
   const { agents, preferences, session: reduxSession, settingsTemplates, settingsProviders, chats, sending } = useSelector((state: any) => state.chat);
   const { recordsById, recordIds, loading: memoryLoading } = useSelector((state: any) => state.memory);
   const { projectsById, projectIds, selectedProjectId, detailLoading: projectDetailLoading, mutating: projectMutating, error: projectError } = useSelector((state: any) => state.projects);
-  const [selected, setSelected] = useState('templates');
+  const [selected, setSelected] = useState('daemon');
   const [directAgentId, setDirectAgentId] = useState('');
   const [directDraft, setDirectDraft] = useState('');
   const [debugInfo, setDebugInfo] = useState<{ enabled: boolean; port: number; pid: number } | null>(null);
@@ -94,14 +103,14 @@ export default function SettingsPage({ session, onReconnect, onBack }: any) {
         </nav>
 
         <section className="min-w-0 overflow-y-auto p-6">
+          {selected === 'daemon' && <DaemonsPanel profiles={profiles} session={effectiveSession} onReconnect={onReconnect} onActivateDaemon={onActivateDaemon} onAddDaemon={onAddDaemon} onRenameDaemon={onRenameDaemon} onRemoveDaemon={onRemoveDaemon} onUpdateDaemonAppearance={onUpdateDaemonAppearance} debugInfo={debugInfo} setDebugInfo={setDebugInfo} />}
+          {selected === 'providers' && <ProvidersPanel session={effectiveSession} providers={providers} preferences={preferences || []} onSaveDefault={async (key: string, value: string) => { await dispatch(saveUserPreference({ key, value })); dispatch(fetchPreferences()); }} />}
           {selected === 'templates' && <TemplatesPanel templates={templates} />}
           {selected === 'kinds' && <TeamKindsPanel />}
-          {selected === 'providers' && <ProvidersPanel providers={providers} preferences={preferences || []} onSaveDefault={async (key: string, value: string) => { await dispatch(saveUserPreference({ key, value })); dispatch(fetchPreferences()); }} />}
           {selected === 'projects' && <ProjectsPanel projects={projects} selectedProjectId={selectedProjectId} selectedProject={selectedProject} loading={projectDetailLoading} mutating={projectMutating} error={projectError} onSelect={(projectId: string) => { dispatch(selectProject(projectId)); dispatch(fetchProjectDetail(projectId)); }} onSave={(payload: any) => dispatch(updateProjectFromUi(payload))} onDelete={async (projectId: string) => { await dispatch(deleteProjectFromUi({ projectId })); dispatch(clearProjectError()); }} />}
           {selected === 'memory' && <MemoryPanel records={memoryRecords} loading={memoryLoading} />}
           {selected === 'agents' && <AgentsPanel agents={agents} templates={templates} providers={providers} onCreateAgent={async (payload: any) => { await daemonApi.createAgent({ daemonUrl: effectiveSession.daemonUrl, displayName: payload.displayName, templateId: payload.templateId, providerProfile: payload.providerProfile, modelTier: payload.modelTier }); await dispatch(refreshAgents()); }} />}
           {selected === 'direct-chat' && <DirectChatPanel agents={agents} agentId={directAgentId} setAgentId={setDirectAgentId} messages={directMessages} draft={directDraft} setDraft={setDirectDraft} sending={sending} onSend={() => { const body = directDraft.trim(); if (!body || !directAgentId) return; dispatch(sendMessageToSelectedAgent({ body, tempId: `settings_${Date.now()}` })); setDirectDraft(''); }} />}
-          {selected === 'daemon' && <DaemonPanel session={effectiveSession} onReconnect={onReconnect} debugInfo={debugInfo} setDebugInfo={setDebugInfo} />}
         </section>
       </div>
     </main>
@@ -125,7 +134,11 @@ function preferenceValue(preferences: any[], key: string, fallback = '') {
   return String(pref?.value ?? pref?.default_value ?? pref?.defaultValue ?? fallback);
 }
 
-function ProvidersPanel({ providers, preferences, onSaveDefault }: any) {
+function providerTierMapping(provider: any) {
+  return provider?.model_tier_mapping || provider?.modelTierMapping || provider?.tiers || provider?.tier_map || {};
+}
+
+function ProvidersPanel({ session, providers, preferences, onSaveDefault }: any) {
   const [provider, setProvider] = useState('');
   const [tier, setTier] = useState('normal');
   useEffect(() => {
@@ -138,7 +151,7 @@ function ProvidersPanel({ providers, preferences, onSaveDefault }: any) {
     await onSaveDefault('default_agent_model_tier', tier || 'normal');
   };
   const visiblePreferences = (preferences || []).slice(0, 12);
-  return <Panel title="Providers & model tiers" subtitle="Provider profiles, model tiers, and generated-team-agent defaults."><div className="grid gap-4 lg:grid-cols-2"><Card><h3 className="font-semibold">Generated team agent defaults</h3><p className="mt-1 text-sm text-zinc-500">Used for generated names such as coordinator@project-chain when a team role does not explicitly override provider/tier.</p><form onSubmit={save} className="mt-4 space-y-3"><label className="block text-sm text-zinc-300">Default provider<select data-debug-id="settings-default-agent-provider-select" value={provider} onChange={(event) => setProvider(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">{providers.length === 0 && <option value={provider || 'pi'}>{provider || 'pi'}</option>}{providers.map((item: any) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label><label className="block text-sm text-zinc-300">Default model tier<select data-debug-id="settings-default-agent-tier-select" value={tier} onChange={(event) => setTier(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="normal">normal</option><option value="smart">smart</option></select></label><button data-debug-id="settings-default-agent-save-btn" type="submit" className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300">Save defaults</button></form></Card><Card><h3 className="font-semibold">Providers</h3><div className="mt-3 space-y-2">{providers.length === 0 ? <div className="text-sm text-zinc-500">No providers loaded.</div> : providers.map((item: any) => <div key={item.name} className="rounded-lg bg-black/20 px-3 py-2 text-sm">{item.name}</div>)}</div></Card><Card><h3 className="font-semibold">Preference snapshot</h3><div className="mt-3 space-y-2">{visiblePreferences.length === 0 ? <div className="text-sm text-zinc-500">No preferences loaded.</div> : visiblePreferences.map((pref: any) => <div key={pref.key} className="rounded-lg bg-black/20 px-3 py-2 text-sm"><div className="text-zinc-300">{pref.key}</div><div className="truncate text-xs text-zinc-500">{String(pref.value || '')}</div></div>)}</div></Card></div></Panel>;
+  return <Panel title="Providers" subtitle="Per-active-daemon provider profiles and generated-agent defaults."><div className="mb-4 flex flex-wrap items-center gap-2"><span className="rounded-full bg-sky-400/10 px-3 py-1 text-xs text-sky-100" data-debug-id="settings-provider-daemon-pill">Active daemon: {session?.daemonId || session?.daemonUrl || 'Unknown'}</span><span className="rounded-full bg-white/10 px-3 py-1 text-xs text-zinc-400">Version {session?.daemonVersion || 'unknown'}</span></div><div className="grid gap-4 lg:grid-cols-2"><Card><h3 className="font-semibold">Generated team agent defaults</h3><p className="mt-1 text-sm text-zinc-500">Used for generated names such as coordinator@project-chain when a team role does not explicitly override provider/tier.</p><form onSubmit={save} className="mt-4 space-y-3"><label className="block text-sm text-zinc-300">Default provider<select data-debug-id="settings-default-agent-provider-select" value={provider} onChange={(event) => setProvider(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">{providers.length === 0 && <option value={provider || 'pi'}>{provider || 'pi'}</option>}{providers.map((item: any) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label><label className="block text-sm text-zinc-300">Default model tier<select data-debug-id="settings-default-agent-tier-select" value={tier} onChange={(event) => setTier(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="cheap">cheap</option><option value="normal">normal</option><option value="smart">smart</option></select></label><button data-debug-id="settings-default-agent-save-btn" type="submit" className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300">Save defaults</button></form></Card><Card><h3 className="font-semibold">Provider profiles</h3><div className="mt-3 space-y-2">{providers.length === 0 ? <div className="text-sm text-zinc-500">No providers loaded for the active daemon.</div> : providers.map((item: any) => { const mapping = providerTierMapping(item); return <div key={item.name} data-debug-id={`settings-provider-card-${item.name}`} className="rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-sm"><div className="font-medium text-zinc-100">{item.name}</div><div className="mt-1 text-xs text-zinc-500">{item.description || item.provider || 'Configured on the active daemon.'}</div><div className="mt-2 flex flex-wrap gap-2">{Object.keys(mapping || {}).length === 0 ? <span className="rounded-full bg-white/10 px-2 py-0.5 text-[11px] text-zinc-400">No tier mapping exposed</span> : Object.entries(mapping).map(([tierName, model]: any) => <span key={tierName} className="rounded-full bg-white/10 px-2 py-0.5 text-[11px] text-zinc-300">{tierName}: {String(model)}</span>)}</div></div>; })}</div></Card><Card><h3 className="font-semibold">Preference snapshot</h3><div className="mt-3 space-y-2">{visiblePreferences.length === 0 ? <div className="text-sm text-zinc-500">No preferences loaded.</div> : visiblePreferences.map((pref: any) => <div key={pref.key} className="rounded-lg bg-black/20 px-3 py-2 text-sm"><div className="text-zinc-300">{pref.key}</div><div className="truncate text-xs text-zinc-500">{String(pref.value || '')}</div></div>)}</div></Card></div></Panel>;
 }
 
 function projectAnchorValue(project: any, type: string, fallback = '') {
@@ -326,8 +339,13 @@ function DirectChatPanel({ agents, agentId, setAgentId, messages, draft, setDraf
   );
 }
 
-function DaemonPanel({ session, onReconnect, debugInfo, setDebugInfo }: any) {
-  return <Panel title="Daemon connection" subtitle="Connection profile and Electron debug server."><div className="grid gap-4 lg:grid-cols-2"><Card><SessionConfig session={session} onReconnect={onReconnect} /></Card><Card><h3 className="font-semibold">Electron debug server</h3><label className="mt-4 flex items-center gap-3 text-sm text-zinc-300"><input type="checkbox" checked={Boolean(debugInfo?.enabled)} onChange={async () => { if (!debugInfo || !(window as any).odinApi?.toggleDebugServer) return; setDebugInfo(await (window as any).odinApi.toggleDebugServer(!debugInfo.enabled)); }} />Enabled</label>{debugInfo?.enabled && <div className="mt-3 rounded-xl bg-black/20 p-3 font-mono text-xs text-zinc-400">http://127.0.0.1:{debugInfo.port}<br />pid {debugInfo.pid}</div>}</Card></div></Panel>;
+function daemonColorDotClass(color: string) {
+  return (DAEMON_COLOR_OPTIONS.find((option) => option.key === color)?.dot) || 'bg-sky-400';
+}
+
+function DaemonsPanel({ profiles, session, onReconnect, onActivateDaemon, onAddDaemon, onRenameDaemon, onRemoveDaemon, onUpdateDaemonAppearance, debugInfo, setDebugInfo }: any) {
+  const activeIdentity = String(session?.daemonId || session?.daemonUrl || '');
+  return <Panel title="Daemons" subtitle="Single active-daemon switcher, UI-only daemon labels/colors, and connection details."><div className="grid gap-4 lg:grid-cols-[minmax(320px,0.95fr)_minmax(0,1.05fr)]"><Card><div className="flex items-center justify-between gap-3"><div><h3 className="font-semibold">Known daemons</h3><p className="mt-1 text-sm text-zinc-500">Names and colors are stored in the UI and keyed by daemon identity when available.</p></div><button data-debug-id="settings-daemon-add-btn" type="button" onClick={() => onAddDaemon?.({ url: session?.daemonUrl || '', label: '' })} className="rounded-xl bg-sky-400 px-3 py-2 text-sm font-semibold text-black hover:bg-sky-300">+ Add daemon</button></div><div data-debug-id="settings-daemons-list" className="mt-4 space-y-2">{(profiles || []).map((profile: any) => { const identity = String(profile?.daemonId || profile?.url || ''); const active = identity === activeIdentity || profile?.url === session?.daemonUrl; return <div key={identity || profile?.url} data-debug-id={`settings-daemon-row-${identity || profile?.url}`} className={`rounded-2xl border px-3 py-3 ${active ? 'border-sky-400/30 bg-sky-400/10' : 'border-white/10 bg-black/20'}`}><div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="flex items-center gap-2"><span className={`h-2.5 w-2.5 rounded-full ${daemonColorDotClass(profile?.color)}`} /><div className="truncate text-sm font-medium text-zinc-100">{profile?.label || profile?.url}</div>{active && <span className="rounded-full bg-sky-400 px-2 py-0.5 text-[10px] font-semibold text-black">Active</span>}</div><div className="mt-1 truncate text-[11px] text-zinc-500">{profile?.daemonId || 'daemon id pending'} · {profile?.url}</div><div className="mt-1 text-[11px] text-zinc-500">{profile?.version ? `version ${profile.version}` : 'Version unknown until connected'}</div></div><select data-debug-id={`settings-daemon-color-select-${identity || profile?.url}`} value={profile?.color || 'sky'} onChange={(event) => onUpdateDaemonAppearance?.({ daemonId: profile?.daemonId, daemonUrl: profile?.url, color: event.target.value })} className="rounded-xl border border-white/10 bg-black/30 px-2 py-1 text-xs text-zinc-100 outline-none focus:border-sky-400">{DAEMON_COLOR_OPTIONS.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}</select></div><div className="mt-3 flex flex-wrap gap-2"><button data-debug-id={`settings-daemon-connect-btn-${identity || profile?.url}`} type="button" onClick={() => active ? onReconnect?.({ daemonUrl: profile?.url, userId: session?.userId }) : onActivateDaemon?.(profile)} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-100 hover:bg-white/15">{active ? 'Reconnect' : 'Switch'}</button><button data-debug-id={`settings-daemon-rename-btn-${identity || profile?.url}`} type="button" onClick={() => onRenameDaemon?.(profile)} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-100 hover:bg-white/15">Rename</button><button data-debug-id={`settings-daemon-remove-btn-${identity || profile?.url}`} type="button" onClick={() => onRemoveDaemon?.(profile)} disabled={active} className="rounded-xl bg-red-500/10 px-3 py-2 text-sm text-red-200 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-50">Remove</button></div></div>; })}</div></Card><div className="space-y-4"><Card><h3 className="font-semibold">Active daemon details</h3><div className="mt-3 grid gap-3 sm:grid-cols-2"><div className="rounded-xl bg-black/20 p-3"><div className="text-xs uppercase tracking-wide text-zinc-500">Daemon ID</div><div className="mt-1 break-all font-mono text-sm text-zinc-100">{session?.daemonId || 'Unavailable'}</div></div><div className="rounded-xl bg-black/20 p-3"><div className="text-xs uppercase tracking-wide text-zinc-500">Version</div><div className="mt-1 text-sm text-zinc-100">{session?.daemonVersion || 'Unavailable'}</div></div><div className="rounded-xl bg-black/20 p-3"><div className="text-xs uppercase tracking-wide text-zinc-500">Protocol</div><div className="mt-1 text-sm text-zinc-100">{session?.daemonProtocolVersion || 'Unavailable'}</div></div><div className="rounded-xl bg-black/20 p-3"><div className="text-xs uppercase tracking-wide text-zinc-500">Connection</div><div className="mt-1 text-sm text-zinc-100">{session?.connected ? 'Connected' : session?.status || 'Disconnected'}</div></div></div><div className="mt-4"><SessionConfig session={session} onReconnect={onReconnect} /></div></Card><Card><h3 className="font-semibold">Electron debug server</h3><label className="mt-4 flex items-center gap-3 text-sm text-zinc-300"><input type="checkbox" checked={Boolean(debugInfo?.enabled)} onChange={async () => { if (!debugInfo || !(window as any).odinApi?.toggleDebugServer) return; setDebugInfo(await (window as any).odinApi.toggleDebugServer(!debugInfo.enabled)); }} />Enabled</label>{debugInfo?.enabled && <div className="mt-3 rounded-xl bg-black/20 p-3 font-mono text-xs text-zinc-400">http://127.0.0.1:{debugInfo.port}<br />pid {debugInfo.pid}</div>}</Card></div></div></Panel>;
 }
 
 function Card({ children }: any) { return <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">{children}</div>; }

@@ -17,8 +17,8 @@ handle_task_create :: proc(client: net.TCP_Socket, body: string) {
 		acceptance_criteria           = extract_json_string(body, "acceptance_criteria", ""),
 		priority                      = extract_json_string(body, "priority", ""),
 		status                        = extract_json_string(body, "status", ""),
-		assignee_agent_instance_id    = extract_json_string(body, "assignee_agent_instance_id", ""),
-		reviewer_agent_instance_id    = extract_json_string(body, "reviewer_agent_instance_id", ""),
+		assignee_agent_instance_id    = extract_json_string(body, "assignee_agent_instance_id", extract_json_string(body, "assignee_agent_id", "")),
+		reviewer_agent_instance_id    = extract_json_string(body, "reviewer_agent_instance_id", extract_json_string(body, "reviewer_agent_id", "")),
 		depends_on                    = extract_json_string(body, "depends_on", ""),
 		created_by                    = author,
 		author_agent_instance_id      = author,
@@ -132,14 +132,14 @@ handle_task_comments :: proc(client: net.TCP_Socket, body: string) {
 handle_task_assign :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
-	result := task_service_assign(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "agent_instance_id", ""), author)
+	result := task_service_assign(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "agent_instance_id", extract_json_string(body, "agent_id", "")), author)
 	write_task_service_response(client, result)
 }
 
 handle_task_participant :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
-	result := task_service_add_participant(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "agent_instance_id", ""), extract_json_string(body, "role", ""), author)
+	result := task_service_add_participant(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "agent_instance_id", extract_json_string(body, "agent_id", "")), extract_json_string(body, "role", ""), author)
 	write_task_service_response(client, result)
 }
 

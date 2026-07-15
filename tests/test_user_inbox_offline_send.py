@@ -1,3 +1,4 @@
+import glob
 import json
 import os
 import shutil
@@ -16,10 +17,32 @@ AGENT_ID = "offline-user-inbox-agent@default"
 
 
 def bin_path(repo_dir, preferred, fallback, binary):
+    env_key = {
+        "ham-daemon": "HEIMDALL_DAEMON_BIN",
+        "ham-ctl": "HEIMDALL_CTL_BIN",
+        "ham-wrapper": "HEIMDALL_WRAPPER_BIN",
+    }.get(binary, "")
+    env_override = os.environ.get(env_key, "") if env_key else ""
+    if env_override and os.path.exists(env_override):
+        return env_override
+
     preferred_path = os.path.join(repo_dir, preferred, "bin", binary)
     if os.path.exists(preferred_path):
         return preferred_path
-    return os.path.join(repo_dir, fallback, "bin", binary)
+
+    fallback_path = os.path.join(repo_dir, fallback, "bin", binary)
+    if os.path.exists(fallback_path):
+        return fallback_path
+
+    for path in sorted(glob.glob(os.path.join(repo_dir, "result*", "bin", binary))):
+        if os.path.exists(path):
+            return path
+
+    which = shutil.which(binary)
+    if which:
+        return which
+
+    raise FileNotFoundError(f"could not locate {binary}")
 
 
 def request_post(path, data):

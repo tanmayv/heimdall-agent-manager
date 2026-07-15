@@ -76,14 +76,21 @@ main :: proc() {
 		return
 	}
 
-	if cmd[0] == "start" || (len(cmd) >= 2 && cmd[0] == "agents" && cmd[1] == "start") {
+	if cmd[0] == "start" || (len(cmd) >= 2 && cmd[0] == "agents" && (cmd[1] == "start" || cmd[1] == "run")) {
 		idx := 1
 		if cmd[0] == "agents" do idx = 2
 		if idx >= len(cmd) {
-			fmt.println("usage: ham-ctl agents start <agent_instance_id>")
+			fmt.println("usage: ham-ctl agents run <agent_id|agent_instance_id> [--new] [--project <id>] [--tier cheap|normal|smart] [--provider <profile>]")
 			return
 		}
-		ctl_agents_start(cmd[idx], os.args, config_path, daemon_url)
+		ctl_agents_run(cmd[idx], os.args, config_path, daemon_url)
+		return
+	}
+
+	if len(cmd) >= 2 && cmd[0] == "agents" && cmd[1] == "instances" {
+		filter_agent_id := option_value(os.args, "--agent-id", "")
+		if filter_agent_id == "" && len(cmd) >= 3 do filter_agent_id = cmd[2]
+		ctl_agents_instances(daemon_url, filter_agent_id, os.args)
 		return
 	}
 
@@ -186,20 +193,34 @@ ctl_agents_list :: proc(daemon_url: string) {
 	fmt.println(response.body)
 }
 
-ctl_agents_start :: proc(agent_instance_id: string, args: []string, config_path, daemon_url: string) {
+ctl_agents_run :: proc(target: string, args: []string, config_path, daemon_url: string) {
 	health_response, health_ok := http.get(daemon_url, contracts.ROUTE_HEALTH)
 	if !health_ok || health_response.status != 200 {
 		fmt.println(`{"ok":false,"message":"daemon is not reachable; start ham-daemon first"}`)
 		return
 	}
 
-	request := remote_start_request_json(agent_instance_id, option_value(args, "--agent", ""), config_path)
+	request := remote_start_request_json(target, args, config_path)
 	response, ok := http.post(daemon_url, contracts.ROUTE_AGENTS_START, request)
 	if !ok {
 		fmt.println(`{"ok":false,"message":"remote start request failed"}`)
 		return
 	}
 	fmt.println(response.body)
+}
+
+ctl_agents_instances :: proc(daemon_url, filter_agent_id: string, args: []string) {
+	response, ok := http.get(daemon_url, "/agents")
+	if !ok {
+		fmt.println(`{"ok":false,"message":"agents instances request failed"}`)
+		return
+	}
+	filtered_json := ctl_agents_instances_json(response.body, filter_agent_id)
+	if has_flag(args, "--json") {
+		fmt.println(filtered_json)
+		return
+	}
+	ctl_print_agent_instances_human(filtered_json)
 }
 
 ctl_agents_create :: proc(daemon_url: string, args: []string) {
@@ -324,14 +345,43 @@ send_request_json :: proc(token, target, body: string) -> string {
 	return strings.to_string(builder)
 }
 
-remote_start_request_json :: proc(agent_instance_id, agent, config_path: string) -> string {
+remote_start_request_json :: proc(target: string, args: []string, config_path: string) -> string {
 	builder := strings.builder_make()
-	strings.write_string(&builder, `{"agent_instance_id":"`)
-	json_write_string(&builder, agent_instance_id)
-	strings.write_string(&builder, `"`)
-	if agent != "" {
-		strings.write_string(&builder, `,"agent":"`)
-		json_write_string(&builder, agent)
+	provider_profile := option_value(args, "--provider", option_value(args, "--agent", ""))
+	resolved_target := target
+	use_exact_instance := strings.index_byte(target, '@') >= 0
+	if has_flag(args, "--new") {
+		use_exact_instance = false
+		if at := strings.index_byte(target, '@'); at >= 0 {
+			resolved_target = target[:at]
+		}
+		strings.write_string(&builder, `{"start_mode":"new_instance"`)
+	} else {
+		strings.write_string(&builder, `{`)
+	}
+	if use_exact_instance {
+		strings.write_string(&builder, `"agent_instance_id":"`)
+		json_write_string(&builder, resolved_target)
+		strings.write_string(&builder, `"`)
+	} else {
+		if has_flag(args, "--new") do strings.write_string(&builder, `,`)
+		strings.write_string(&builder, `"agent_id":"`)
+		json_write_string(&builder, resolved_target)
+		strings.write_string(&builder, `"`)
+	}
+	if provider_profile != "" {
+		strings.write_string(&builder, `,"provider_profile":"`)
+		json_write_string(&builder, provider_profile)
+		strings.write_string(&builder, `"`)
+	}
+	if tier := option_value(args, "--tier", ""); tier != "" {
+		strings.write_string(&builder, `,"model_tier":"`)
+		json_write_string(&builder, tier)
+		strings.write_string(&builder, `"`)
+	}
+	if project_id := option_value(args, "--project", option_value(args, "--project-id", "")); project_id != "" {
+		strings.write_string(&builder, `,"project_id":"`)
+		json_write_string(&builder, project_id)
 		strings.write_string(&builder, `"`)
 	}
 	if config_path != "" {
@@ -341,6 +391,30 @@ remote_start_request_json :: proc(agent_instance_id, agent, config_path: string)
 	}
 	strings.write_string(&builder, `}`)
 	return strings.to_string(builder)
+}
+
+ctl_agents_instances_json :: proc(body, filter_agent_id: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"agents":[`)
+	first := true
+	for object, ok, next := next_json_object_with_key(body, "agent_instance_id", 0); ok; object, ok, next = next_json_object_with_key(body, "agent_instance_id", next) {
+		object_agent_id := extract_json_string(object, "agent_id", "")
+		if filter_agent_id != "" && object_agent_id != filter_agent_id do continue
+		if !first do strings.write_string(&b, `,`)
+		first = false
+		strings.write_string(&b, object)
+	}
+	strings.write_string(&b, `]}`)
+	return strings.to_string(b)
+}
+
+ctl_print_agent_instances_human :: proc(body: string) {
+	printed := false
+	for object, ok, next := next_json_object_with_key(body, "agent_instance_id", 0); ok; object, ok, next = next_json_object_with_key(body, "agent_instance_id", next) {
+		fmt.println("instance", extract_json_string(object, "agent_instance_id", ""), "agent", extract_json_string(object, "agent_id", ""), "project", extract_json_string(object, "project_id", ""), "identity", extract_json_string(object, "identity_state", ""), "state", extract_json_string(object, "state", ""))
+		printed = true
+	}
+	if !printed do fmt.println("instances none")
 }
 
 ctl_tasks :: proc(daemon_url, action: string, args: []string) {
@@ -414,10 +488,20 @@ ctl_tasks :: proc(daemon_url, action: string, args: []string) {
 		strings.write_string(&body, `,"body":"`);   json_write_string(&body, option_value(args, "--body", option_value(args, "--reason", "Later/Deferred.")));   strings.write_string(&body, `"`)
 	case "assign":
 		path = "/tasks/assign"
-		strings.write_string(&body, `,"agent_instance_id":"`); json_write_string(&body, option_value(args, "--agent-instance-id", "")); strings.write_string(&body, `"`)
+		task_agent_target := option_value(args, "--agent", option_value(args, "--agent-instance-id", ""))
+		if has_flag(args, "--new-instance") && task_agent_target != "" {
+			strings.write_string(&body, `,"agent_id":"`); json_write_string(&body, ctl_agent_id_from_target(task_agent_target)); strings.write_string(&body, `"`)
+		} else {
+			strings.write_string(&body, `,"agent_instance_id":"`); json_write_string(&body, task_agent_target); strings.write_string(&body, `"`)
+		}
 	case "participant":
 		path = "/tasks/participant"
-		strings.write_string(&body, `,"agent_instance_id":"`); json_write_string(&body, option_value(args, "--agent-instance-id", "")); strings.write_string(&body, `"`)
+		task_agent_target := option_value(args, "--agent", option_value(args, "--agent-instance-id", ""))
+		if has_flag(args, "--new-instance") && task_agent_target != "" {
+			strings.write_string(&body, `,"agent_id":"`); json_write_string(&body, ctl_agent_id_from_target(task_agent_target)); strings.write_string(&body, `"`)
+		} else {
+			strings.write_string(&body, `,"agent_instance_id":"`); json_write_string(&body, task_agent_target); strings.write_string(&body, `"`)
+		}
 		strings.write_string(&body, `,"role":"`);              json_write_string(&body, option_value(args, "--role", ""));              strings.write_string(&body, `"`)
 	case "vote":
 		path = "/tasks/vote"
@@ -1175,7 +1259,7 @@ command_tokens :: proc(args: []string) -> [dynamic]string {
 	cmd := make([dynamic]string)
 	for i := 1; i < len(args); i += 1 {
 		arg := args[i]
-		if arg == cfg_lib.CONFIG_PATH_FLAG || arg == "--daemon-url" || arg == "--wrapper-bin" || arg == "--agent" || arg == "--token" || arg == "--to" || arg == "--body" || arg == "--limit" || arg == "--task-id" || arg == "--task" || arg == "--chain-id" || arg == "--chain" || arg == "--status" || arg == "--agent-instance-id" || arg == "--role" || arg == "--final-summary" || arg == "--summary" || arg == "--user-id" || arg == "--client-instance-id" || arg == "--message-id" || arg == "--result" || arg == "--comment" || arg == "--title" || arg == "--description" || arg == "--goal" || arg == "--priority" || arg == "--assignee-agent-instance-id" || arg == "--assignee" || arg == "--coordinator-agent-instance-id" || arg == "--coordinator" || arg == "--reviewer" || arg == "--comment-id" || arg == "--depends-on" || arg == "--subject-agent" || arg == "--subject-key" || arg == "--scope" || arg == "--type" || arg == "--memory-id" || arg == "--memory" || arg == "--proposal-id" || arg == "--decision" || arg == "--reason" || arg == "--evidence" || arg == "--source-task-id" || arg == "--source-task" || arg == "--expected-version" || arg == "--project-id" || arg == "--project" || arg == "--name" || arg == "--anchor-type" || arg == "--anchor-value" || arg == "--anchor-note" || arg == "--cursor" || arg == "--target-team-kind" || arg == "--target-role" || arg == "--target-project-id" || arg == "--team" || arg == "--team-id" || arg == "--project-ids" || arg == "--role-key" || arg == "--role-keys" || arg == "--task-chain-type" || arg == "--task-chain-types" || arg == "--template-key" || arg == "--template" || arg == "--file" || arg == "--out" || arg == "--artifact-id" || arg == "--artifact" || arg == "--kind" || arg == "--mime" || arg == "--creator-id" || arg == "--origin-kind" || arg == "--origin-ref" || arg == "--data" {
+		if arg == cfg_lib.CONFIG_PATH_FLAG || arg == "--daemon-url" || arg == "--wrapper-bin" || arg == "--agent" || arg == "--agent-id" || arg == "--provider" || arg == "--token" || arg == "--to" || arg == "--body" || arg == "--limit" || arg == "--task-id" || arg == "--task" || arg == "--chain-id" || arg == "--chain" || arg == "--status" || arg == "--agent-instance-id" || arg == "--role" || arg == "--final-summary" || arg == "--summary" || arg == "--user-id" || arg == "--client-instance-id" || arg == "--message-id" || arg == "--result" || arg == "--comment" || arg == "--title" || arg == "--description" || arg == "--goal" || arg == "--priority" || arg == "--tier" || arg == "--id" || arg == "--display-name" || arg == "--assignee-agent-instance-id" || arg == "--assignee" || arg == "--coordinator-agent-instance-id" || arg == "--coordinator" || arg == "--reviewer" || arg == "--comment-id" || arg == "--depends-on" || arg == "--subject-agent" || arg == "--subject-key" || arg == "--scope" || arg == "--type" || arg == "--memory-id" || arg == "--memory" || arg == "--proposal-id" || arg == "--decision" || arg == "--reason" || arg == "--evidence" || arg == "--source-task-id" || arg == "--source-task" || arg == "--expected-version" || arg == "--project-id" || arg == "--project" || arg == "--name" || arg == "--anchor-type" || arg == "--anchor-value" || arg == "--anchor-note" || arg == "--cursor" || arg == "--target-team-kind" || arg == "--target-role" || arg == "--target-project-id" || arg == "--team" || arg == "--team-id" || arg == "--project-ids" || arg == "--role-key" || arg == "--role-keys" || arg == "--task-chain-type" || arg == "--task-chain-types" || arg == "--template-key" || arg == "--template" || arg == "--file" || arg == "--out" || arg == "--artifact-id" || arg == "--artifact" || arg == "--kind" || arg == "--mime" || arg == "--creator-id" || arg == "--origin-kind" || arg == "--origin-ref" || arg == "--data" {
 			i += 1
 			continue
 		}
@@ -1203,7 +1287,10 @@ has_flag :: proc(args: []string, name: string) -> bool {
 	return false
 }
 
-
+ctl_agent_id_from_target :: proc(target: string) -> string {
+	if at := strings.index_byte(target, '@'); at >= 0 do return target[:at]
+	return target
+}
 
 normalize_daemon_url :: proc(value: string) -> string {
 	if strings.has_prefix(value, "http://") do return value
@@ -1351,7 +1438,8 @@ print_usage :: proc(config_path, daemon_url: string) {
 	fmt.println("commands:")
 	fmt.println("  health")
 	fmt.println("  agents list        (alias: list)")
-	fmt.println("  agents start <agent_instance_id> [--agent pi|claude]  (alias: start)")
+	fmt.println("  agents run <agent_id|agent_instance_id> [--new] [--project <id>] [--tier cheap|normal|smart] [--provider <profile>]  (aliases: agents start, start)")
+	fmt.println("  agents instances <agent_id> [--json]")
 	fmt.println("  agents create --name <agent_instance_id> [--provider pi|claude] [--tier cheap|normal|smart] [--display-name <name>] [--template <id>] [--project <id>]")
 	fmt.println("  agents update --id <agent_instance_id> [--tier cheap|normal|smart] [--display-name <name>] [--provider <profile>]")
 	fmt.println("  send --token <token> --to <agent_instance_id> --body <text>")
@@ -1373,8 +1461,8 @@ print_usage :: proc(config_path, daemon_url: string) {
 	fmt.println("  tasks done --token <token> --task-id <id> [--comment <text>] [--force]")
 	fmt.println("  tasks blocked --token <token> --task-id <id> [--reason <text>]")
 	fmt.println("  tasks later --token <token> --task-id <id> [--reason <text>]")
-	fmt.println("  tasks assign --token <token> --task-id <id> --agent-instance-id <agent>")
-	fmt.println("  tasks participant --token <token> --task-id <id> --agent-instance-id <agent> --role <assignee|lgtm_required|lgtm_optional|coordinator|subscriber>")
+	fmt.println("  tasks assign --token <token> --task-id <id> (--agent <agent_id|agent_instance_id>|--agent-instance-id <agent>) [--new-instance]")
+	fmt.println("  tasks participant --token <token> --task-id <id> (--agent <agent_id|agent_instance_id>|--agent-instance-id <agent>) --role <assignee|lgtm_required|lgtm_optional|coordinator|subscriber> [--new-instance]")
 	fmt.println("  tasks vote --token <token> --task-id <id> --result lgtm|ngtm --comment <text>")
 	fmt.println("  tasks nudge --token <token> --task-id <id> --body <text>")
 	fmt.println("  artifacts create --token <token> --file <path> [--name <name>] [--kind <kind>] [--project <id>] [--description <text>]")

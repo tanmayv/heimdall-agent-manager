@@ -92,6 +92,10 @@ export async function registerUserClient({ daemonUrl, userId, clientInstanceId, 
   });
 }
 
+export async function fetchDaemonInfo({ daemonUrl }: { daemonUrl: string }) {
+  return requestJson(joinUrl(daemonUrl, '/daemon/info'));
+}
+
 export async function listAgentTemplates({ daemonUrl }: { daemonUrl: string }) {
   const data = await requestJson(joinUrl(daemonUrl, '/agents/templates'));
   return data.templates ?? [];
@@ -146,7 +150,7 @@ export async function listAgentProviders({ daemonUrl }: { daemonUrl: string }) {
   return data.providers ?? [];
 }
 
-export async function startAgent({ daemonUrl, agentInstanceId = '', provider, templateId, projectId, alias, displayName, modelTier, agentRole }: { daemonUrl: string; agentInstanceId?: string; provider: string; templateId?: string; projectId?: string; alias?: string; displayName?: string; modelTier?: string; agentRole?: string }) {
+export async function startAgent({ daemonUrl, agentId = '', agentInstanceId = '', provider, templateId, projectId, alias, displayName, modelTier, agentRole, startMode = '' }: { daemonUrl: string; agentId?: string; agentInstanceId?: string; provider: string; templateId?: string; projectId?: string; alias?: string; displayName?: string; modelTier?: string; agentRole?: string; startMode?: string }) {
   const body: any = {
     agent: provider || '',
     provider_profile: provider || '',
@@ -157,7 +161,9 @@ export async function startAgent({ daemonUrl, agentInstanceId = '', provider, te
     model_tier: modelTier || 'normal',
     agent_role: agentRole || '',
   };
+  if (agentId) body.agent_id = agentId;
   if (agentInstanceId) body.agent_instance_id = agentInstanceId;
+  if (startMode) body.start_mode = startMode;
   return requestJson(joinUrl(daemonUrl, '/agents/start'), {
     method: 'POST',
     body,
@@ -245,6 +251,16 @@ export async function fetchChat({ daemonUrl, clientToken, agentInstanceId, limit
   });
 }
 
+export async function listChats({ daemonUrl, clientInstanceId, clientToken }: UserRpcRequest) {
+  return requestJson(joinUrl(daemonUrl, '/user-rpc'), {
+    method: 'POST',
+    body: {
+      action: 'list_chats',
+      client_instance_id: clientInstanceId,
+      client_token: clientToken,
+    },
+  });
+}
 
 export async function sendToAgent({ daemonUrl, clientInstanceId, clientToken, agentInstanceId, body, interrupt }: AgentRequest & { body: string; interrupt?: boolean }) {
   return requestJson(joinUrl(daemonUrl, '/user-rpc'), {

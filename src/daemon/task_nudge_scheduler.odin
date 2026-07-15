@@ -394,6 +394,7 @@ task_autoscaler_idle_shutdown :: proc(now: i64) -> int {
 		rec := agent_instance_records[i]
 		if rec.agent_instance_id == "" || rec.current_task_id != "" do continue
 		if guide_agent_is_singleton(rec.agent_instance_id) || rec.template_id == "guide" do continue
+		if rec.template_id == "conversation" do continue // REQ-CONV-007: free chat threads are durable and must not be auto-reaped without task work.
 		if task_autoscaler_agent_is_active_chain_coordinator(rec.agent_instance_id) do continue
 		if !agent_runtime_tracker_has_ws(rec.agent_instance_id) do continue
 		idx := registry_find_agent(rec.agent_instance_id)

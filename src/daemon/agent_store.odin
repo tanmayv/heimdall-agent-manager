@@ -131,7 +131,7 @@ agent_store_apply_event :: proc(event: Agent_Instance_Event) -> bool {
 	// teams-v2: derive the durable agent_id from the instance id prefix and ensure
 	// a backing Agent_Id_Record exists (backfill for pre-existing instances).
 	rec.agent_id = agent_id_from_instance_id(event.agent_instance_id)
-	agent_id_ensure_backfill(rec.agent_id, event.display_name, event.template_id, event.provider_profile, event.model_tier, event.created_unix_ms)
+	agent_id_ensure_backfill(rec.agent_id, event.display_name, event.template_id, event.provider_profile, event.model_tier, event.project_id, event.created_unix_ms)
 	rec.display_name = strings.clone(event.display_name)
 	rec.template_id = strings.clone(event.template_id)
 	rec.provider_profile = strings.clone(event.provider_profile)
@@ -234,20 +234,18 @@ agent_store_next_sequence :: proc() -> i64 {
 
 agent_new_record_id :: proc() -> string { return fmt.tprintf("agent_rec_%d_%d", router_now_unix_ms(), agent_store_next_sequence()) }
 
-// teams-v2: generate a project-free, unique agent_instance_id from a display
-// name only. The id is a slug of the name; if that slug already exists it is
-// uniquified with a short numeric suffix. Project is NEVER part of the id.
+// Generate a fresh concrete agent_instance_id for the durable agent identity
+// derived from the provided name. The suffix is an opaque per-instance session
+// token (`@s-...`); project is NEVER encoded in the id.
 agent_generated_instance_id :: proc(name: string) -> string {
 	base := safe_agent_id_part(name)
 	if base == "" do base = "agent"
-	if agent_record_index_by_instance(base) < 0 && !agent_instance_id_is_reserved(base) {
-		return strings.clone(base)
-	}
-	for n := 2; ; n += 1 {
-		candidate := fmt.tprintf("%s-%d", base, n)
+	for {
+		candidate := agent_instance_id_new(base)
 		if agent_record_index_by_instance(candidate) < 0 && !agent_instance_id_is_reserved(candidate) {
-			return strings.clone(candidate)
+			return candidate
 		}
+		delete(candidate)
 	}
 }
 

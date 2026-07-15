@@ -19,20 +19,14 @@ handle_get_chats :: proc(client: net.TCP_Socket, ctx: ^Route_Context) {
 
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"chats":[`)
-	agents := message_db_get_distinct_agents(author)
+	entries := message_db_list_chat_entries(author)
+	defer message_db_free_chat_list_entries(entries)
 	first := true
-	for agent_id in agents {
+	for entry in entries {
 		if !first do strings.write_string(&builder, `,`)
 		first = false
-		unread := chat_unread_count(author, agent_id)
-		strings.write_string(&builder, `{"agent_instance_id":"`)
-		json_write_string(&builder, agent_id)
-		strings.write_string(&builder, `","unread_count":`)
-		strings.write_string(&builder, fmt.tprintf("%d", unread))
-		strings.write_string(&builder, `}`)
-		delete(agent_id)
+		chat_write_list_entry_json(&builder, author, entry.agent_instance_id, entry.last_message_unix_ms)
 	}
-	delete(agents)
 	strings.write_string(&builder, `]}`)
 
 	write_response(client, 200, "OK", strings.to_string(builder))

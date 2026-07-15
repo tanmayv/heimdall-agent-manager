@@ -353,7 +353,24 @@ seed_default_templates_if_empty :: proc() {
 		})
 	}
 
-	// 10. Specialist
+	// 10. Conversation
+	if exists, customized := agent_template_get_customized_status("conversation"); !exists || !customized {
+		agent_template_db_save(Agent_Template_Record{
+			template_id = "conversation",
+			display_name = "Conversation",
+			description = "Use this template for general-purpose chat threads that behave like normal assistant conversations unless explicit task work is assigned.",
+			role_hint = "conversation",
+			suggested_model_tier = "normal",
+			persona = strings.trim_space(#load("../prompts/conversation_persona.md", string)),
+			instructions = strings.trim_space(#load("../prompts/conversation_instructions.md", string)),
+			default_provider_profile = "",
+			created_unix_ms = now,
+			updated_unix_ms = now,
+			is_customized = false,
+		})
+	}
+
+	// 11. Specialist
 	if exists, customized := agent_template_get_customized_status("specialist"); !exists || !customized {
 		agent_template_db_save(Agent_Template_Record{
 			template_id = "specialist",

@@ -4,6 +4,7 @@ import * as daemonApi from '../api/daemonApi';
 const DEFAULT_DAEMON_URL = 'http://127.0.0.1:49322';
 const DEFAULT_USER_ID = 'operator@local';
 const DAEMON_PROFILES_KEY = 'odin.daemonProfiles';
+const DAEMON_PROFILE_COLORS = ['sky', 'emerald', 'violet', 'amber', 'rose', 'cyan'];
 export const GUIDE_AGENT_ID = 'guide@heimdall';
 const CHAT_OPTIMISTIC_GRACE_MS = 30_000;
 
@@ -36,16 +37,86 @@ function daemonLabelForUrl(url: string): string {
   }
 }
 
+function normalizeDaemonProfileColor(value: any): string {
+  const color = String(value || '').trim().toLowerCase();
+  return DAEMON_PROFILE_COLORS.includes(color) ? color : 'sky';
+}
+
+function daemonProfileIdentity(profile: any): string {
+  return String(profile?.daemonId || profile?.daemon_id || profile?.url || profile?.daemonUrl || '').trim();
+}
+
+function nextDaemonProfileColor(existingProfiles: any[]): string {
+  const used = new Set((existingProfiles || []).map((profile: any) => normalizeDaemonProfileColor(profile?.color)));
+  return DAEMON_PROFILE_COLORS.find((color) => !used.has(color)) || 'sky';
+}
+
 function normalizeDaemonProfiles(items: any[], activeUrl: string) {
-  const byUrl: Record<string, any> = {};
+  const normalizedUrl = normalizeDaemonUrl(activeUrl);
+  const byIdentity = new Map<string, any>();
   for (const item of items || []) {
     const url = normalizeDaemonUrl(item?.url || item?.daemonUrl || '');
     if (!url) continue;
-    byUrl[url] = { label: String(item?.label || daemonLabelForUrl(url)), url };
+    const daemonId = String(item?.daemonId || item?.daemon_id || '').trim();
+    const identity = daemonId || url;
+    const existing = byIdentity.get(identity) || {};
+    byIdentity.set(identity, {
+      ...existing,
+      url,
+      daemonId,
+      label: String(item?.label || existing.label || daemonLabelForUrl(url)),
+      color: normalizeDaemonProfileColor(item?.color || existing.color || nextDaemonProfileColor(Array.from(byIdentity.values()))),
+      version: String(item?.version || existing.version || ''),
+      protocolVersion: String(item?.protocolVersion || item?.protocol_version || existing.protocolVersion || ''),
+    });
   }
-  if (activeUrl && !byUrl[activeUrl]) byUrl[activeUrl] = { label: daemonLabelForUrl(activeUrl), url: activeUrl };
-  if (!byUrl[DEFAULT_DAEMON_URL]) byUrl[DEFAULT_DAEMON_URL] = { label: 'Local daemon', url: DEFAULT_DAEMON_URL };
-  return Object.values(byUrl).sort((left: any, right: any) => (left.label || '').localeCompare(right.label || ''));
+  if (normalizedUrl) {
+    const hasActive = Array.from(byIdentity.values()).some((profile: any) => normalizeDaemonUrl(profile?.url || '') === normalizedUrl);
+    if (!hasActive) {
+      const localIdentity = normalizedUrl;
+      byIdentity.set(localIdentity, {
+        url: normalizedUrl,
+        daemonId: '',
+        label: normalizedUrl === DEFAULT_DAEMON_URL ? 'Local daemon' : daemonLabelForUrl(normalizedUrl),
+        color: nextDaemonProfileColor(Array.from(byIdentity.values())),
+        version: '',
+        protocolVersion: '',
+      });
+    }
+  }
+  const hasDefault = Array.from(byIdentity.values()).some((profile: any) => normalizeDaemonUrl(profile?.url || '') === DEFAULT_DAEMON_URL);
+  if (!hasDefault) {
+    byIdentity.set(DEFAULT_DAEMON_URL, {
+      url: DEFAULT_DAEMON_URL,
+      daemonId: '',
+      label: 'Local daemon',
+      color: nextDaemonProfileColor(Array.from(byIdentity.values())),
+      version: '',
+      protocolVersion: '',
+    });
+  }
+  return Array.from(byIdentity.values()).sort((left: any, right: any) => (left.label || '').localeCompare(right.label || ''));
+}
+
+function mergeDaemonProfileMetadata(items: any[], metadata: any, activeUrl: string) {
+  const daemonUrl = normalizeDaemonUrl(metadata?.url || metadata?.daemonUrl || activeUrl || '');
+  if (!daemonUrl) return normalizeDaemonProfiles(items, activeUrl);
+  const daemonId = String(metadata?.daemonId || metadata?.daemon_id || '').trim();
+  const identity = daemonId || daemonUrl;
+  const profiles = normalizeDaemonProfiles(items, activeUrl);
+  const next = new Map<string, any>(profiles.map((profile: any) => [daemonProfileIdentity(profile), profile]));
+  const existing = next.get(identity) || profiles.find((profile: any) => normalizeDaemonUrl(profile?.url || '') === daemonUrl) || {};
+  next.delete(daemonProfileIdentity(existing));
+  next.set(identity, {
+    ...existing,
+    url: daemonUrl,
+    daemonId: daemonId || existing.daemonId || '',
+    label: String(metadata?.label || existing.label || daemonLabelForUrl(daemonUrl)),
+    color: normalizeDaemonProfileColor(metadata?.color || existing.color || nextDaemonProfileColor(Array.from(next.values()))),
+    version: String(metadata?.version || existing.version || ''),
+    protocolVersion: String(metadata?.protocolVersion || metadata?.protocol_version || existing.protocolVersion || ''),
+  });
+  return normalizeDaemonProfiles(Array.from(next.values()), activeUrl);
 }
 
 function loadDaemonProfiles(activeUrl: string) {
@@ -334,7 +405,9 @@ function mergeMessages(existingMessages: any[], incomingMessages: any[]) {
 
 export const registerSession = createAsyncThunk('chat/registerSession', async (_, { getState }) => {
   const { session } = (getState() as any).chat;
-  return daemonApi.registerUserClient(session);
+  const register = await daemonApi.registerUserClient(session);
+  const daemonInfo = await daemonApi.fetchDaemonInfo({ daemonUrl: session.daemonUrl }).catch(() => null);
+  return { ...register, daemon_info: daemonInfo };
 });
 
 export const fetchPreferences = createAsyncThunk('chat/fetchPreferences', async (_, { getState }) => {
@@ -559,6 +632,9 @@ const initialState = {
   daemonProfiles: loadDaemonProfiles(initialDaemonUrl),
   session: {
     daemonUrl: initialDaemonUrl,
+    daemonId: '',
+    daemonVersion: '',
+    daemonProtocolVersion: '',
     userId: getStoredValue('odin.userId', DEFAULT_USER_ID),
     userDisplayName: getStoredValue('odin.userDisplayName', ''),
     clientInstanceId: createClientInstanceId(),
@@ -649,25 +725,47 @@ const chatSlice = createSlice({
     addDaemonProfile(state, action) {
       const daemonUrl = normalizeDaemonUrl(action.payload?.daemonUrl || action.payload?.url || '');
       if (!daemonUrl) return;
-      const profile = { label: String(action.payload?.label || daemonLabelForUrl(daemonUrl)), url: daemonUrl };
-      state.daemonProfiles = normalizeDaemonProfiles([...state.daemonProfiles, profile], daemonUrl);
+      state.daemonProfiles = mergeDaemonProfileMetadata(state.daemonProfiles, {
+        url: daemonUrl,
+        label: String(action.payload?.label || daemonLabelForUrl(daemonUrl)),
+        color: action.payload?.color,
+        daemonId: action.payload?.daemonId || action.payload?.daemon_id || '',
+      }, daemonUrl);
       storeDaemonProfiles(state.daemonProfiles);
     },
     renameDaemonProfile(state, action) {
       const daemonUrl = normalizeDaemonUrl(action.payload?.daemonUrl || action.payload?.url || '');
+      const daemonId = String(action.payload?.daemonId || action.payload?.daemon_id || '').trim();
       const label = String(action.payload?.label || '').trim();
-      if (!daemonUrl || !label) return;
+      if ((!daemonUrl && !daemonId) || !label) return;
       state.daemonProfiles = state.daemonProfiles.map((profile: any) => (
-        normalizeDaemonUrl(profile?.url || '') === daemonUrl ? { ...profile, label } : profile
+        daemonProfileIdentity(profile) === (daemonId || daemonUrl) || normalizeDaemonUrl(profile?.url || '') === daemonUrl
+          ? { ...profile, label }
+          : profile
+      ));
+      state.daemonProfiles = normalizeDaemonProfiles(state.daemonProfiles, state.session.daemonUrl);
+      storeDaemonProfiles(state.daemonProfiles);
+    },
+    updateDaemonProfileAppearance(state, action) {
+      const daemonUrl = normalizeDaemonUrl(action.payload?.daemonUrl || action.payload?.url || '');
+      const daemonId = String(action.payload?.daemonId || action.payload?.daemon_id || '').trim();
+      const label = action.payload?.label === undefined ? undefined : String(action.payload?.label || '').trim();
+      const color = action.payload?.color === undefined ? undefined : normalizeDaemonProfileColor(action.payload?.color);
+      if (!daemonUrl && !daemonId) return;
+      state.daemonProfiles = state.daemonProfiles.map((profile: any) => (
+        daemonProfileIdentity(profile) === (daemonId || daemonUrl) || normalizeDaemonUrl(profile?.url || '') === daemonUrl
+          ? { ...profile, ...(label ? { label } : {}), ...(color ? { color } : {}) }
+          : profile
       ));
       state.daemonProfiles = normalizeDaemonProfiles(state.daemonProfiles, state.session.daemonUrl);
       storeDaemonProfiles(state.daemonProfiles);
     },
     removeDaemonProfile(state, action) {
       const daemonUrl = normalizeDaemonUrl(action.payload?.daemonUrl || action.payload?.url || action.payload || '');
-      if (!daemonUrl) return;
-      if (daemonUrl === state.session.daemonUrl) return; // never delete the active profile
-      state.daemonProfiles = state.daemonProfiles.filter((profile: any) => normalizeDaemonUrl(profile?.url || '') !== daemonUrl);
+      const daemonId = String(action.payload?.daemonId || action.payload?.daemon_id || '').trim();
+      if (!daemonUrl && !daemonId) return;
+      if (daemonUrl === state.session.daemonUrl || (daemonId && daemonId === state.session.daemonId)) return; // never delete the active profile
+      state.daemonProfiles = state.daemonProfiles.filter((profile: any) => daemonProfileIdentity(profile) !== (daemonId || daemonUrl) && normalizeDaemonUrl(profile?.url || '') !== daemonUrl);
       state.daemonProfiles = normalizeDaemonProfiles(state.daemonProfiles, state.session.daemonUrl);
       storeDaemonProfiles(state.daemonProfiles);
     },
@@ -679,6 +777,9 @@ const chatSlice = createSlice({
       state.session.daemonUrl = daemonUrl;
       state.session.userId = userId;
       state.session.connected = false;
+      state.session.daemonId = '';
+      state.session.daemonVersion = '';
+      state.session.daemonProtocolVersion = '';
       state.session.status = 'idle';
       state.session.wsConnected = false;
       state.session.wsStatus = 'idle';
@@ -917,6 +1018,18 @@ const chatSlice = createSlice({
         state.session.userId = action.payload.user_id;
         state.session.clientInstanceId = action.payload.client_instance_id;
         state.session.clientToken = action.payload.client_token;
+        state.session.daemonId = String(action.payload?.daemon_info?.daemon_id || '');
+        state.session.daemonVersion = String(action.payload?.daemon_info?.version || '');
+        state.session.daemonProtocolVersion = String(action.payload?.daemon_info?.protocol_version || '');
+        if (action.payload?.daemon_info) {
+          state.daemonProfiles = mergeDaemonProfileMetadata(state.daemonProfiles, {
+            url: state.session.daemonUrl,
+            daemonId: action.payload.daemon_info.daemon_id,
+            version: action.payload.daemon_info.version,
+            protocolVersion: action.payload.daemon_info.protocol_version,
+          }, state.session.daemonUrl);
+          storeDaemonProfiles(state.daemonProfiles);
+        }
         setStoredValue('odin.userId', action.payload.user_id);
         setStoredValue('odin.clientInstanceId', action.payload.client_instance_id);
         setStoredValue('odin.clientToken', action.payload.client_token);
@@ -1093,7 +1206,7 @@ const chatSlice = createSlice({
   },
 });
 
-export const { selectAgent, setView, setDaemonUrl, addDaemonProfile, renameDaemonProfile, removeDaemonProfile, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived, agentRuntimeEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage, reorderAgentsLocally, markAgentReadLocally, openGuidePanel, closeGuidePanel, toggleGuidePanel } = chatSlice.actions;
+export const { selectAgent, setView, setDaemonUrl, addDaemonProfile, renameDaemonProfile, updateDaemonProfileAppearance, removeDaemonProfile, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived, agentRuntimeEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage, reorderAgentsLocally, markAgentReadLocally, openGuidePanel, closeGuidePanel, toggleGuidePanel } = chatSlice.actions;
 
 export const markCoordinatorRead = createAsyncThunk('chat/markCoordinatorRead', async (agentInstanceId: string, { dispatch, getState }) => {
   const state = getState() as any;

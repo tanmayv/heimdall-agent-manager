@@ -27,6 +27,7 @@ import {
   userWsConnecting,
   userWsDisconnected,
   userWsError,
+  updateDaemonProfileAppearance,
 } from '../store/chatSlice';
 import { addCommentToSelectedTask, addParticipantToSelectedTask, assignSelectedTask, fetchSelectedTaskLog, fetchTasksForChain, nudgeSelectedTask, refreshTaskBoard, removeParticipantFromSelectedTask, taskEventReceived, updateChainStateDirectly, updateSelectedTaskStatus, updateTaskStateDirectly, voteOnAttentionTask, voteOnSelectedTask } from '../store/taskSlice';
 import { clearProjectError, createProjectFromUi, refreshProjects } from '../store/projectSlice';
@@ -315,6 +316,26 @@ function chainProjectId(chain: Chain) {
   return chain.projectId || 'default';
 }
 
+function isConversationAgent(agent: any) {
+  return String(agent?.templateId || agent?.template_id || '').toLowerCase() === 'conversation' || String(agent?.agentRole || agent?.agent_role || '').toLowerCase() === 'conversation';
+}
+
+function conversationFirstUserMessage(messages: any[]) {
+  const first = (messages || []).find((message: any) => message?.author === 'user' && String(message?.body || '').trim());
+  return String(first?.body || '').trim();
+}
+
+function conversationTitleFromMessages(messages: any[], fallback = 'New conversation') {
+  const firstBody = conversationFirstUserMessage(messages);
+  if (!firstBody) return fallback;
+  const title = firstBody.split('\n').map((line) => line.trim()).find(Boolean) || fallback;
+  return title.length > 72 ? `${title.slice(0, 69)}…` : title;
+}
+
+function conversationLastMessageFromCache(messages: any[]) {
+  return (messages || []).reduce((max: number, message: any) => Math.max(max, Number(message?.createdUnixMs || message?.created_unix_ms || 0)), 0);
+}
+
 type ChainProgress = {
   total: number;
   completed: number;
@@ -466,6 +487,13 @@ export default function App() {
   const [guideDebugInfo, setGuideDebugInfo] = useState<{ enabled: boolean; port: number; pid: number } | null>(null);
   const [daemonModalMode, setDaemonModalMode] = useState<null | 'add' | 'rename' | 'connect_failed'>(null);
   const [daemonModalContext, setDaemonModalContext] = useState<{ url?: string; label?: string }>({});
+  const [conversationModalOpen, setConversationModalOpen] = useState(false);
+  const [conversationLaunchBusy, setConversationLaunchBusy] = useState(false);
+  const [conversationLaunchError, setConversationLaunchError] = useState('');
+  const [conversationProvider, setConversationProvider] = useState('');
+  const [conversationProjectId, setConversationProjectId] = useState('');
+  const [conversationTier, setConversationTier] = useState('normal');
+  const [chatListEntries, setChatListEntries] = useState<any[]>([]);
   const connectAttemptsRef = useRef(0);
   const firstRunPromptedRef = useRef(false);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Record<string, boolean>>(() => {
@@ -917,6 +945,74 @@ export default function App() {
 
   const activeProject = projectsById[selectedProjectId] || projects[0];
   const shownGroups = chainGroups;
+
+  const loadChatList = useCallback(async () => {
+    if (!session.connected || !session.clientToken || !session.clientInstanceId) return;
+    try {
+      const data = await daemonApi.listChats({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken });
+      setChatListEntries(data?.chats || []);
+    } catch (_err) {
+      // Preserve the last successful sidebar snapshot during transient daemon errors.
+    }
+  }, [session.clientInstanceId, session.clientToken, session.connected, session.daemonUrl]);
+
+  const conversationEntries = useMemo(() => {
+    const byId = new Map<string, any>();
+    const conversationAgents = (agents || []).filter((agent: any) => isConversationAgent(agent));
+    conversationAgents.forEach((agent: any) => {
+      byId.set(String(agent.id), {
+        agentInstanceId: String(agent.id),
+        agentId: String(agent.agentId || agent.agent_id || 'conversation'),
+        projectId: String(agent.projectId || agent.project_id || 'default'),
+        unreadCount: Number(agent.unreadCount || 0),
+        lastMessageUnixMs: conversationLastMessageFromCache(chats?.[agent.id] || []),
+        agent,
+      });
+    });
+    (chatListEntries || []).forEach((entry: any) => {
+      const agentInstanceId = String(entry?.agent_instance_id || entry?.agentInstanceId || '');
+      if (!agentInstanceId) return;
+      const existing = byId.get(agentInstanceId) || {};
+      const agent = existing.agent || conversationAgents.find((item: any) => item.id === agentInstanceId) || null;
+      const agentId = String(entry?.agent_id || entry?.agentId || agent?.agentId || agent?.agent_id || '');
+      if (agentId !== 'conversation' && !isConversationAgent(agent)) return;
+      byId.set(agentInstanceId, {
+        ...existing,
+        agentInstanceId,
+        agentId: 'conversation',
+        projectId: String(entry?.project_id || entry?.projectId || agent?.projectId || agent?.project_id || existing.projectId || 'default'),
+        unreadCount: Number(agent?.unreadCount ?? entry?.unread_count ?? entry?.unreadCount ?? existing.unreadCount ?? 0),
+        lastMessageUnixMs: Number(entry?.last_message_unix_ms ?? entry?.lastMessageUnixMs ?? existing.lastMessageUnixMs ?? 0),
+        agent,
+      });
+    });
+    return [...byId.values()].map((entry: any) => {
+      const cachedMessages = chats?.[entry.agentInstanceId] || [];
+      const lastMessageUnixMs = Number(entry.lastMessageUnixMs || conversationLastMessageFromCache(cachedMessages) || 0);
+      const project = projectsById?.[entry.projectId];
+      return {
+        ...entry,
+        title: conversationTitleFromMessages(cachedMessages, lastMessageUnixMs > 0 ? 'Conversation' : 'New conversation'),
+        projectName: project?.name || (entry.projectId === 'default' ? 'No project' : entry.projectId || 'No project'),
+        lastMessageUnixMs,
+      };
+    }).sort((left: any, right: any) => {
+      if (left.projectName !== right.projectName) return left.projectName.localeCompare(right.projectName);
+      if ((right.lastMessageUnixMs || 0) !== (left.lastMessageUnixMs || 0)) return (right.lastMessageUnixMs || 0) - (left.lastMessageUnixMs || 0);
+      return String(left.title || '').localeCompare(String(right.title || ''));
+    });
+  }, [agents, chatListEntries, chats, projectsById]);
+
+  const conversationGroups = useMemo(() => {
+    const groups = new Map<string, { projectId: string; projectName: string; entries: any[] }>();
+    conversationEntries.forEach((entry: any) => {
+      const projectId = entry.projectId || 'default';
+      if (!groups.has(projectId)) groups.set(projectId, { projectId, projectName: entry.projectName, entries: [] });
+      groups.get(projectId)?.entries.push(entry);
+    });
+    return [...groups.values()];
+  }, [conversationEntries]);
+
   const closeNewProjectModal = useCallback(() => {
     setNewProjectModalOpen(false);
     dispatch(clearProjectError());
@@ -928,6 +1024,37 @@ export default function App() {
     }
     setNewProjectModalOpen(false);
   }, [dispatch]);
+  const createConversation = useCallback(async () => {
+    if (!session.connected || !session.clientToken || conversationLaunchBusy) return;
+    setConversationLaunchBusy(true);
+    setConversationLaunchError('');
+    try {
+      const provider = conversationProvider || settingsProviders?.[0]?.name || 'pi';
+      const result = await daemonApi.startAgent({ daemonUrl: session.daemonUrl, agentId: 'conversation', provider, templateId: 'conversation', projectId: conversationProjectId, displayName: 'Conversation', modelTier: conversationTier || 'normal', agentRole: 'conversation', startMode: 'new_instance' });
+      const agentInstanceId = String(result?.agent_instance_id || result?.agentInstanceId || '');
+      await dispatch(refreshAgents()).unwrap().catch(() => undefined);
+      await loadChatList();
+      setConversationModalOpen(false);
+      if (agentInstanceId) openAgentPage(agentInstanceId);
+    } catch (err: any) {
+      setConversationLaunchError(err?.message || 'Unable to create conversation');
+    } finally {
+      setConversationLaunchBusy(false);
+    }
+  }, [conversationLaunchBusy, conversationProjectId, conversationProvider, conversationTier, dispatch, loadChatList, openAgentPage, session.clientToken, session.connected, session.daemonUrl, settingsProviders]);
+  useEffect(() => {
+    if (!session.connected) return undefined;
+    loadChatList();
+    const interval = window.setInterval(() => { loadChatList(); }, 15000);
+    return () => window.clearInterval(interval);
+  }, [loadChatList, session.connected]);
+  useEffect(() => {
+    if (!conversationModalOpen) return;
+    setConversationLaunchError('');
+    setConversationProvider((current) => current || settingsProviders?.[0]?.name || 'pi');
+    setConversationProjectId((current) => current || selectedProjectId || '');
+    setConversationTier((current) => current || 'normal');
+  }, [conversationModalOpen, selectedProjectId, settingsProviders]);
   const sideSheetAgent = useMemo(() => {
     if (!chainView.sideSheetAgentId) return null;
     const live = agents.find((agent: any) => agent.id === chainView.sideSheetAgentId);
@@ -984,7 +1111,7 @@ export default function App() {
               </div>
               <div className="min-w-0">
                 <div className="text-[10px] uppercase tracking-[0.22em] text-zinc-500">Heimdall</div>
-                <div className="truncate text-sm font-semibold text-zinc-100">Chains</div>
+                <div className="truncate text-sm font-semibold text-zinc-100">Conversations</div>
               </div>
             </div>
             <DaemonSwitcher
@@ -1000,18 +1127,60 @@ export default function App() {
             />
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
-            <div className="mb-3">
+            <div className="mb-3 flex gap-2">
+              <button
+                data-debug-id="sidebar-new-conversation-btn"
+                onClick={() => setConversationModalOpen(true)}
+                className="flex flex-1 items-center justify-center gap-1 rounded-lg bg-sky-400/10 px-2 py-2 text-[11px] font-medium text-sky-100 transition hover:bg-sky-400/15"
+              >
+                <span className="text-sm leading-none">+</span> New conversation
+              </button>
               <button
                 data-debug-id="sidebar-new-chain-btn"
                 onClick={() => dispatch(openNewChainModal({}))}
-                className="flex w-full items-center justify-center gap-1 rounded-lg bg-white/[0.04] px-2 py-2 text-[11px] font-medium text-zinc-200 transition hover:bg-white/[0.09] hover:text-sky-100"
+                className="flex flex-1 items-center justify-center gap-1 rounded-lg bg-white/[0.04] px-2 py-2 text-[11px] font-medium text-zinc-200 transition hover:bg-white/[0.09] hover:text-sky-100"
               >
                 <span className="text-sm leading-none">+</span> New task chain
               </button>
             </div>
+            <div className="mb-3 rounded-xl border border-white/5 bg-black/10 p-2" data-debug-id="sidebar-conversation-list">
+              <div className="mb-1.5 flex items-center justify-between gap-2 px-1">
+                <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Conversations</div>
+                <div className="text-[10px] text-zinc-600">{conversationEntries.length}</div>
+              </div>
+              {conversationGroups.length === 0 ? (
+                <div className="px-1 py-1 text-[10px] text-zinc-600">No conversations yet</div>
+              ) : conversationGroups.map((group) => (
+                <div key={group.projectId} className="mb-2 last:mb-0">
+                  <div className="px-1 pb-1 text-[10px] uppercase tracking-[0.16em] text-zinc-600">{group.projectName}</div>
+                  <div className="space-y-1">
+                    {group.entries.map((entry: any) => {
+                      const active = agentPageId === entry.agentInstanceId;
+                      const runtime = agentRuntimeDot(entry.agent || { status: 'offline' });
+                      return (
+                        <div key={entry.agentInstanceId} data-debug-id={`conversation-thread-${entry.agentInstanceId}`} className={`rounded-lg border px-2 py-1.5 transition ${active ? 'border-sky-400/30 bg-sky-400/10' : 'border-white/5 bg-white/[0.02] hover:bg-white/[0.04]'}`}>
+                          <div className="flex items-center gap-2">
+                            <button onClick={() => openAgentPage(entry.agentInstanceId)} className="min-w-0 flex-1 text-left">
+                              <div className="truncate text-[12px] font-medium text-zinc-100">{entry.title}</div>
+                              <div className="mt-0.5 flex items-center gap-2 text-[10px] text-zinc-500">
+                                <span className={`h-1.5 w-1.5 rounded-full ${runtime.color}`}></span>
+                                <span>{runtime.label}</span>
+                                {entry.lastMessageUnixMs > 0 && <span className="tabular-nums">{new Date(entry.lastMessageUnixMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>}
+                              </div>
+                            </button>
+                            {entry.unreadCount > 0 && <span className="shrink-0 rounded-full bg-sky-400 px-1.5 py-0.5 text-[9px] font-semibold text-black">{entry.unreadCount > 99 ? '99+' : entry.unreadCount}</span>}
+                            <button data-debug-id={`conversation-thread-open-btn-${entry.agentInstanceId}`} onClick={() => openAgentPage(entry.agentInstanceId)} className="shrink-0 rounded-md bg-white/10 px-2 py-1 text-[10px] text-zinc-200 hover:bg-white/15">Open</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
             <div className="mb-3 rounded-xl border border-white/5 bg-black/10 p-2" data-debug-id="sidebar-chain-list">
               <div className="mb-1.5 flex items-center justify-between gap-2 px-1">
-                <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Task chains</div>
+                <div className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Active task chains</div>
                 <div className="text-[10px] text-zinc-600">{sidebarChains.length}</div>
               </div>
               {sidebarChains.length === 0 ? (
@@ -1088,6 +1257,7 @@ export default function App() {
           {agentPageId ? (
             <AgentDetailPage
               agent={(agents || []).find((agent: any) => agent.id === agentPageId) || { id: agentPageId, label: agentPageId, status: 'unknown' }}
+              agents={agents}
               tasksById={tasksById}
               chainsById={chainsById}
               chats={chats}
@@ -1098,16 +1268,28 @@ export default function App() {
               onChatDraftChange={(value: string) => setAgentChatDraftsById((current) => ({ ...current, [agentPageId]: value }))}
               onBack={() => { setAgentPageId(''); updateUrlParams({ view: 'home', agentId: null }); }}
               onOpenChain={(chainId: string) => { setAgentPageId(''); openChain(chainId); }}
+              onOpenAgentPage={openAgentPage}
               onAgentDeleted={() => { setAgentPageId(''); dispatch(refreshAgents()); }}
               onRefreshAgents={() => dispatch(refreshAgents()).unwrap().catch(() => undefined)}
               onRefreshChat={(agentId: string) => dispatch(fetchSelectedChat({ agentId })).unwrap().catch(() => undefined)}
               onSendAgentMessage={async (agentId: string, body: string, interrupt = false) => {
                 await daemonApi.sendToAgent({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, agentInstanceId: agentId, body, interrupt });
                 dispatch(fetchSelectedChat({ agentId }));
+                loadChatList().catch(() => undefined);
               }}
             />
           ) : home.surface === 'settings' ? (
-            <SettingsPage session={session} onBack={() => selectSurfaceWithUrl('home')} onReconnect={(config: any) => { dispatch(updateSessionConfig(config)); window.setTimeout(connectSession, 0); }} />
+            <SettingsPage
+              session={session}
+              profiles={daemonProfiles}
+              onBack={() => selectSurfaceWithUrl('home')}
+              onReconnect={(config: any) => { dispatch(updateSessionConfig(config)); window.setTimeout(connectSession, 0); }}
+              onActivateDaemon={switchDaemonProfile}
+              onAddDaemon={openAddDaemonModal}
+              onRenameDaemon={openRenameDaemonModal}
+              onRemoveDaemon={(profile: any) => dispatch(removeDaemonProfile(profile))}
+              onUpdateDaemonAppearance={(payload: any) => dispatch(updateDaemonProfileAppearance(payload))}
+            />
           ) : home.surface === 'memory' ? (
             <MemoryManagementPage
               selectedMemoryId={urlParams.memoryId}
@@ -1274,6 +1456,42 @@ export default function App() {
             <span data-debug-id="guide-floating-unread" className="absolute -right-1 -top-1 rounded-full bg-sky-400 px-1.5 py-0.5 text-[10px] font-bold text-black">{guideUnread > 99 ? '99+' : guideUnread}</span>
           )}
         </button>
+      )}
+      {conversationModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 py-16 backdrop-blur-sm" onMouseDown={() => setConversationModalOpen(false)}>
+          <div className="w-full max-w-xl rounded-3xl border border-white/10 bg-[#101217] p-5 shadow-2xl shadow-black/50" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold text-zinc-100">New conversation</h2>
+                <p className="mt-1 text-sm text-zinc-500">Create a fresh `conversation@s-...` thread. The title will be derived from your first message.</p>
+              </div>
+              <IconActionButton debugId="conversation-modal-close-btn" title="Close" icon="×" onClick={() => setConversationModalOpen(false)} />
+            </div>
+            <div className="grid gap-3 md:grid-cols-3">
+              <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Model
+                <select data-debug-id="conversation-model-select" value={conversationProvider || settingsProviders?.[0]?.name || 'pi'} onChange={(event) => setConversationProvider(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400">
+                  {(settingsProviders?.length ? settingsProviders : [{ name: 'pi' }]).map((provider: any) => <option key={provider.name} value={provider.name}>{provider.name}</option>)}
+                </select>
+              </label>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Project
+                <select data-debug-id="conversation-project-select" value={conversationProjectId} onChange={(event) => setConversationProjectId(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400">
+                  <option value="">No project</option>
+                  {projects.map((project: any) => <option key={project.projectId || project.project_id} value={project.projectId || project.project_id}>{project.name || project.projectId || project.project_id}</option>)}
+                </select>
+              </label>
+              <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Tier
+                <select data-debug-id="conversation-tier-select" value={conversationTier} onChange={(event) => setConversationTier(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400">
+                  <option value="normal">normal</option><option value="smart">smart</option><option value="cheap">cheap</option>
+                </select>
+              </label>
+            </div>
+            {conversationLaunchError && <div className="mt-4 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{conversationLaunchError}</div>}
+            <div className="mt-5 flex justify-end gap-2">
+              <IconActionButton debugId="conversation-modal-cancel-btn" title="Cancel" icon="×" onClick={() => setConversationModalOpen(false)} />
+              <button data-debug-id="conversation-modal-submit-btn" onClick={() => { void createConversation(); }} disabled={conversationLaunchBusy} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">{conversationLaunchBusy ? 'Creating…' : 'Create conversation'}</button>
+            </div>
+          </div>
+        </div>
       )}
       {home.newChainModalOpen && (
         <NewChainModal
@@ -1741,8 +1959,10 @@ function AgentTaskList({ title, emptyText, tasks, chainsById, agentId, completed
   );
 }
 
-function AgentDetailPage({ agent, tasksById, chainsById, chats, session, projects = [], providers = [], chatDraft = '', onChatDraftChange, onBack, onOpenChain, onRefreshChat, onSendAgentMessage, onRefreshAgents, onAgentDeleted }: any) {
+function AgentDetailPage({ agent, agents = [], tasksById, chainsById, chats, session, projects = [], providers = [], chatDraft = '', onChatDraftChange, onBack, onOpenChain, onOpenAgentPage, onRefreshChat, onSendAgentMessage, onRefreshAgents, onAgentDeleted }: any) {
   const draft = chatDraft;
+  const conversationAgent = isConversationAgent(agent);
+  const conversationTitle = conversationAgent ? conversationTitleFromMessages(chats?.[agent?.id] || [], agent?.label || 'New conversation') : (agent?.label || agent?.id);
   const setDraft = (next: any) => {
     const value = typeof next === 'function' ? next(draft) : next;
     onChatDraftChange?.(value);
@@ -1795,6 +2015,13 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
   const messages = useMemo(() => normalizeCoordinatorMessages((chats?.[agent?.id] || []).map((msg: any) => ({ ...msg, agentInstanceId: agent?.id }))), [chats, agent?.id]);
   const buckets = useMemo(() => agentTaskBuckets(agent?.id || '', tasksById || {}), [agent?.id, tasksById]);
   const agentMemoryId = String(agent?.agentId || agent?.agent_id || agent?.id || '').split('@')[0];
+  const allInstances = useMemo(() => (agents || []).filter((item: any) => String(item?.agentId || item?.agent_id || item?.id || '').split('@')[0] === agentMemoryId).sort((left: any, right: any) => {
+    const liveDelta = Number(agentHasLiveSession(right)) - Number(agentHasLiveSession(left));
+    if (liveDelta) return liveDelta;
+    return Number(right?.lastSeenUnixMs || 0) - Number(left?.lastSeenUnixMs || 0);
+  }), [agentMemoryId, agents]);
+  const [newInstanceBusy, setNewInstanceBusy] = useState(false);
+  const [newInstanceError, setNewInstanceError] = useState('');
 
   useEffect(() => {
     if (agent?.id) onRefreshChat?.(agent.id);
@@ -1896,6 +2123,34 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
     await daemonApi.archiveAgent({ daemonUrl: session?.daemonUrl || '', agentRecordId: agent.agentRecordId || '', agentInstanceId: agent.id });
     await onAgentDeleted?.();
   });
+  const createNewInstance = async () => {
+    if (!agentMemoryId || newInstanceBusy) return;
+    setNewInstanceBusy(true);
+    setNewInstanceError('');
+    try {
+      const result = await daemonApi.startAgent({
+        daemonUrl: session?.daemonUrl || '',
+        agentId: agentMemoryId,
+        provider: agent.providerProfile || providers?.[0]?.name || 'pi',
+        templateId: agent.templateId || agent.agentRole || '',
+        projectId: agent.projectId || '',
+        displayName: agent.label || agentMemoryId,
+        modelTier: agent.modelTier || 'normal',
+        agentRole: agent.agentRole || agent.templateId || '',
+        startMode: 'new_instance',
+      });
+      const nextInstanceId = String(result?.agent_instance_id || result?.agentInstanceId || '');
+      await onRefreshAgents?.();
+      if (nextInstanceId) {
+        await onRefreshChat?.(nextInstanceId);
+        onOpenAgentPage?.(nextInstanceId);
+      }
+    } catch (err: any) {
+      setNewInstanceError(err?.message || 'Unable to create a new instance');
+    } finally {
+      setNewInstanceBusy(false);
+    }
+  };
 
   const submit = async (interrupt = false) => {
     const body = draft.trim();
@@ -1918,7 +2173,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
         <div className="min-w-0">
           <IconActionButton debugId="agent-detail-back-btn" title="Back" icon="←" onClick={onBack} />
           <div className="mt-3 text-xs uppercase tracking-[0.25em] text-zinc-500">Agent</div>
-          <h1 data-debug-id="agent-detail-title" className="mt-2 truncate text-3xl font-semibold text-zinc-100">{agent?.label || agent?.id}</h1>
+          <h1 data-debug-id="agent-detail-title" className="mt-2 truncate text-3xl font-semibold text-zinc-100">{conversationTitle}</h1>
           <div className="mt-2 truncate font-mono text-xs text-zinc-500">{agent?.id}</div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-3">
@@ -1980,11 +2235,50 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
         <div data-debug-id="agent-detail-runtime" className="rounded-2xl border border-white/10 bg-white/[0.035] p-4"><div className="text-xs uppercase tracking-wide text-zinc-500">Runtime</div><div className="mt-1 flex items-center gap-2 text-sm text-zinc-100"><span className={`h-2 w-2 rounded-full ${runtime.color}`} />{runtime.label}</div></div>
       </div>
 
-      <section data-debug-id="agent-detail-chat" className="mt-6 flex h-[75vh] flex-col overflow-hidden rounded-3xl border border-white/10 bg-white/[0.035] p-5">
+      <section className="mt-6 rounded-3xl border border-white/10 bg-white/[0.035] p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-semibold text-zinc-100">Agent instances</h2>
+            <p className="mt-1 text-sm text-zinc-500">All concrete instances for durable agent <span className="font-mono">{agentMemoryId || '—'}</span>. Open an exact instance to resume its own history and runtime state.</p>
+          </div>
+          <button
+            data-debug-id="agent-detail-new-instance-btn"
+            type="button"
+            onClick={() => { void createNewInstance(); }}
+            disabled={newInstanceBusy || !agentMemoryId}
+            className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500"
+          >
+            {newInstanceBusy ? 'Creating…' : '+ New instance'}
+          </button>
+        </div>
+        {newInstanceError && <div className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{newInstanceError}</div>}
+        <div className="mt-4 space-y-2">
+          {allInstances.length === 0 ? <div className="rounded-2xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No known concrete instances yet.</div> : allInstances.map((instance: any) => {
+            const live = agentHasLiveSession(instance);
+            const projectName = instance?.projectName || instance?.projectId || 'No project';
+            return (
+              <div key={instance.id} data-debug-id={`agent-instance-row-${instance.id}`} className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/10 bg-black/20 px-4 py-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className={`h-2 w-2 rounded-full ${agentRuntimeDot(instance).color}`} />
+                    <div className="truncate text-sm font-medium text-zinc-100">{instance.label || instance.id}</div>
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] ${live ? 'bg-emerald-400/15 text-emerald-200' : 'bg-white/10 text-zinc-400'}`}>{live ? 'Live' : 'Stopped'}</span>
+                  </div>
+                  <div className="mt-1 truncate font-mono text-[11px] text-zinc-500">{instance.id}</div>
+                  <div className="mt-1 text-xs text-zinc-500">Project {projectName} · Provider {instance.providerProfile || '—'} · Tier {instance.modelTier || 'normal'} · Task {instance.currentTaskId || 'idle'}</div>
+                </div>
+                <button data-debug-id={`agent-instance-open-btn-${instance.id}`} type="button" onClick={() => onOpenAgentPage?.(instance.id)} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-100 hover:bg-white/15">Open</button>
+              </div>
+            );
+          })}
+        </div>
+      </section>
+
+      <section data-debug-id={conversationAgent ? 'conversation-thread-panel' : 'agent-detail-chat'} className="mt-6 flex h-[75vh] flex-col overflow-hidden rounded-3xl border border-white/10 bg-white/[0.035] p-5">
         <div className="mb-3 flex shrink-0 items-center justify-between gap-3">
           <div>
-            <h2 className="text-lg font-semibold text-zinc-100">Chat</h2>
-            <p className="mt-1 text-sm text-zinc-500">Direct agent messages. Attach artifacts or paste screenshots into the composer.</p>
+            <h2 className="text-lg font-semibold text-zinc-100">{conversationAgent ? 'Conversation' : 'Chat'}</h2>
+            <p className="mt-1 text-sm text-zinc-500">{conversationAgent ? 'This thread resumes on the same exact conversation instance and keeps its full history.' : 'Direct agent messages. Attach artifacts or paste screenshots into the composer.'}</p>
           </div>
           <div className="flex gap-2">
             <IconActionButton debugId="agent-detail-refresh-chat-btn" title="Refresh chat" icon="↻" onClick={() => agent?.id && onRefreshChat?.(agent.id)} />
@@ -1996,7 +2290,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
         </div>
         <div data-debug-id="agent-detail-chat-composer-shell" className="mt-3 shrink-0 rounded-2xl border border-white/10 bg-black/20 p-2 focus-within:border-sky-400/70">
           <textarea
-            data-debug-id="agent-detail-chat-input"
+            data-debug-id={conversationAgent ? 'conversation-composer-input' : 'agent-detail-chat-input'}
             value={draft}
             onChange={(event) => { setDraft(event.target.value); setSendError(''); }}
             onKeyDown={(event) => {
@@ -2011,7 +2305,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
                 setDraft((prev) => appendArtifactLink(prev, result.link || ''));
               }
             }}
-            placeholder="Message or nudge this agent…"
+            placeholder={conversationAgent ? 'Message this conversation…' : 'Message or nudge this agent…'}
             rows={4}
             className="w-full resize-none bg-transparent px-2 py-2 text-sm outline-none"
           />
@@ -2019,7 +2313,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
           {upload.error && <div data-debug-id="agent-detail-chat-upload-error" className="mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
           <div className="flex items-center justify-between gap-2">
             <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }} context={{ originKind: 'direct_agent_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending} debugIdPrefix="agent-detail-chat-artifact-upload" label="＋" buttonClassName="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-lg text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40" />
-            <button data-debug-id="agent-detail-chat-send-btn" aria-label="Send direct agent message" title={sending ? 'Sending…' : 'Send'} onClick={() => { void submit(false); }} disabled={!agent?.id || sending || !draft.trim()} className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-sky-400 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">➤</button>
+            <button data-debug-id={conversationAgent ? 'conversation-composer-send-btn' : 'agent-detail-chat-send-btn'} aria-label={conversationAgent ? 'Send conversation message' : 'Send direct agent message'} title={sending ? 'Sending…' : 'Send'} onClick={() => { void submit(false); }} disabled={!agent?.id || sending || !draft.trim()} className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-sky-400 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">➤</button>
           </div>
         </div>
       </section>
@@ -2626,8 +2920,19 @@ function ChatApprovalCard({ approval, chain, now, onAnswer, onDismiss, onOpen }:
   );
 }
 
+function daemonSwitcherDotClass(color: string) {
+  switch (String(color || '').toLowerCase()) {
+    case 'emerald': return 'bg-emerald-400';
+    case 'violet': return 'bg-violet-400';
+    case 'amber': return 'bg-amber-400';
+    case 'rose': return 'bg-rose-400';
+    case 'cyan': return 'bg-cyan-400';
+    default: return 'bg-sky-400';
+  }
+}
+
 function DaemonSwitcher({ open, profiles, activeUrl, connected, onToggle, onSelect, onAdd, onRename, onRemove }: any) {
-  const active = (profiles || []).find((profile: any) => profile.url === activeUrl) || { url: activeUrl, label: activeUrl || 'Select daemon' };
+  const active = (profiles || []).find((profile: any) => profile.url === activeUrl) || { url: activeUrl, label: activeUrl || 'Select daemon', color: 'sky' };
   return (
     <div className="relative mt-3">
       <button
@@ -2640,7 +2945,7 @@ function DaemonSwitcher({ open, profiles, activeUrl, connected, onToggle, onSele
             <span className={`inline-block h-1.5 w-1.5 rounded-full ${connected ? 'bg-emerald-400' : 'bg-amber-400'}`}></span>
             <span>{connected ? 'Connected daemon' : 'Daemon offline'}</span>
           </div>
-          <div className="truncate text-sm font-medium text-zinc-100">{active.label || active.url}</div>
+          <div className="flex items-center gap-2 truncate text-sm font-medium text-zinc-100"><span className={`inline-block h-2 w-2 rounded-full ${daemonSwitcherDotClass(active.color)}`}></span><span className="truncate">{active.label || active.url}</span></div>
           <div className="truncate text-[10px] text-zinc-500">{active.url || 'No daemon configured'}</div>
         </div>
         <span className={`text-[10px] text-zinc-500 transition-transform ${open ? 'rotate-180' : ''}`}>▼</span>
@@ -2658,7 +2963,7 @@ function DaemonSwitcher({ open, profiles, activeUrl, connected, onToggle, onSele
                     className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left"
                   >
                     <div className="min-w-0">
-                      <div className="truncate text-sm font-medium text-zinc-100">{profile.label || profile.url}</div>
+                      <div className="flex items-center gap-2 truncate text-sm font-medium text-zinc-100"><span className={`inline-block h-2 w-2 rounded-full ${daemonSwitcherDotClass(profile.color)}`}></span><span className="truncate">{profile.label || profile.url}</span></div>
                       <div className="truncate text-[10px] text-zinc-500">{profile.url}</div>
                     </div>
                     {isActive && <span className="rounded-full bg-sky-400 px-1.5 py-0.5 text-[9px] font-semibold text-black">Active</span>}
@@ -3279,11 +3584,11 @@ function dependencyOrderedTasks(tasks: any[], tasksById: Record<string, any>): a
   return out;
 }
 
-function ChainProgressPanel({ chain, progress }: { chain: any; progress: ChainProgress }) {
+function ChainProgressPanel({ chain, progress, className = 'mt-8' }: { chain: any; progress: ChainProgress; className?: string }) {
   const pctLabel = progress.total === 0 ? 'No task plan yet' : `${progress.percent}% complete`;
   const incompleteLabel = progress.total === 0 ? 'Waiting for tasks to be created' : `${progress.incomplete} remaining`;
   return (
-    <section data-debug-id="chain-progress-panel" className="mt-8 overflow-hidden rounded-3xl border border-sky-400/20 bg-gradient-to-br from-sky-400/15 via-white/[0.04] to-emerald-400/10 p-5 shadow-2xl shadow-sky-950/20">
+    <section data-debug-id="chain-progress-panel" className={`${className} overflow-hidden rounded-3xl border border-sky-400/20 bg-gradient-to-br from-sky-400/15 via-white/[0.04] to-emerald-400/10 p-5 shadow-2xl shadow-sky-950/20`}>
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="text-xs uppercase tracking-[0.22em] text-sky-200/80">Chain progress</div>
@@ -3316,6 +3621,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
   const [commentDraft, setCommentDraft] = useState('');
   const [nudgeDraft, setNudgeDraft] = useState('Please take a look at this task when you are available.');
   const [descOpen, setDescOpen] = useState(false);
+  const [taskPaneOpen, setTaskPaneOpen] = useState(true);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   useEffect(() => {
     if (!chain?.chainId) return;
@@ -3391,132 +3697,10 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
       setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`);
     }
   };
-  return (
-    <div className="mx-auto max-w-6xl px-8 py-8">
-      <div className="flex items-center gap-3">
-        <button data-debug-id="chain-back-btn" onClick={onBack} className="rounded-xl bg-white/5 px-3 py-2 text-sm hover:bg-white/10">← Home</button>
-        <button data-debug-id="chain-open-editor-btn" onClick={() => onOpenEditor?.(selectedTaskId)} className="rounded-xl bg-sky-400 px-3 py-2 text-sm font-semibold text-black hover:bg-sky-300">Open editor</button>
-      </div>
-      <div className="mt-6 flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-4xl font-semibold">{chain.title || chain.chainId}</h1>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <span className={`rounded-full border px-3 py-1 text-xs ${statusTone(chain.status)}`}>{chain.status}</span>
-            <span className="rounded-full bg-white/5 px-3 py-1 text-xs text-zinc-400">Coordinator {coordinatorAgentId || '—'}</span>
-            <span data-debug-id="chain-coordinator-live-status-chip" className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs ${agentRuntimeStatusTone(coordinatorStatus)}`} title={`${coordinatorLabel} · ${coordinatorStatusLabel}${coordinatorLastSeen ? ` · ${coordinatorLastSeen}` : ''}`}>
-              <span className={`h-1.5 w-1.5 rounded-full shadow ${agentRuntimeDotTone(coordinatorStatus)}`} />
-              {coordinatorStatusLabel}
-            </span>
-          </div>
-        </div>
-        <div />
-      </div>
-
-      <div className="mt-8 space-y-4">
-        {chain.description && (
-          <section data-debug-id="chain-description-panel" className="flex flex-col rounded-2xl border border-white/10 bg-white/[0.035] p-4">
-            <button
-              data-debug-id="chain-description-toggle"
-              onClick={() => setDescOpen(!descOpen)}
-              className="flex items-center justify-between text-left font-semibold text-zinc-300 hover:text-white"
-            >
-              <span>Chain Description</span>
-              <span className="text-xs">{descOpen ? 'Hide' : 'Show'}</span>
-            </button>
-            {descOpen && (
-              <div data-debug-id="chain-description-content" className="mt-4 text-sm text-zinc-300">
-                <Markdown source={chain.description} />
-              </div>
-            )}
-          </section>
-        )}
-        <div className="grid gap-4 xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)] xl:items-stretch">
-          <section data-debug-id="chain-coordinator-panel" className="flex h-[70vh] max-h-[70vh] min-h-[420px] flex-col rounded-2xl border border-white/10 bg-white/[0.035] p-4">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <h2 className="font-semibold">Coordinator chat</h2>
-                <p data-debug-id="chain-coordinator-agent-id" className="mt-0.5 text-xs text-zinc-500">{coordinatorAgentId || 'No coordinator assigned'}</p>
-              </div>
-              <div data-debug-id="chain-coordinator-live-status" className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium ${agentRuntimeStatusTone(coordinatorStatus)}`} title={`${coordinatorLabel} · ${coordinatorStatusLabel}${coordinatorLastSeen ? ` · ${coordinatorLastSeen}` : ''}`}>
-                <span className={`h-2 w-2 rounded-full shadow ${agentRuntimeDotTone(coordinatorStatus)}`} />
-                <span>{coordinatorStatusLabel}</span>
-                {coordinatorLastSeen && <span className="hidden text-[10px] opacity-70 sm:inline">· {coordinatorLastSeen}</span>}
-              </div>
-            </div>
-            <CoordinatorMessageList chainId={chain.chainId} messages={messages} onReply={(reply) => {
-              setSendError('');
-              void onSend(reply).catch((err: any) => setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`));
-            }} />
-            <div data-debug-id="chain-coordinator-composer-shell" className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-2 focus-within:border-sky-400/70">
-              <textarea
-                data-debug-id="chain-coordinator-composer-input"
-                ref={composerRef}
-                value={draft}
-                onChange={(event) => { setDraft(event.target.value); setSendError(''); }}
-                onPaste={async (event) => {
-                  const result = await composerArtifactUpload.uploadClipboardImage(event, { projectId, originKind: 'clipboard_chat', originRef: chain.chainId || '' });
-                  if (result.link) {
-                    setSendError('');
-                    setDraft((current) => appendArtifactLink(current, result.link));
-                  }
-                }}
-                onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submit(); } }}
-                placeholder="Message coordinator only…"
-                autoFocus
-                rows={3}
-                className="w-full resize-none bg-transparent px-2 py-2 text-sm outline-none"
-              />
-              <div className="flex items-center justify-between gap-2">
-                <ArtifactUploadButton
-                  onUploaded={(link) => { setSendError(''); setDraft((current) => appendArtifactLink(current, link)); }}
-                  debugIdPrefix="chain-coordinator-artifact-upload"
-                  context={{ projectId: projectId, originRef: chain.chainId || '' }}
-                  buttonClassName="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-lg text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
-                  label="＋"
-                />
-                <button data-debug-id="chain-coordinator-send-btn" aria-label="Send coordinator message" title="Send" onClick={() => { void submit(); }} className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-sky-400 text-sm font-semibold text-black hover:bg-sky-300">➤</button>
-              </div>
-            </div>
-            {sendError ? (
-              <div data-debug-id="chain-coordinator-send-error" className="mt-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">
-                {sendError}
-              </div>
-            ) : null}
-            {composerArtifactUpload.error ? (
-              <div data-debug-id="chain-coordinator-paste-error" className="mt-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">
-                {composerArtifactUpload.error}
-              </div>
-            ) : null}
-            <p className="mt-2 text-xs text-zinc-500">Sending routes to the chain coordinator. Opening this view records focus and warms the chain team when needed.</p>
-          </section>
-          <ChainArtifactsPanel
-            daemonUrl={session.daemonUrl}
-            clientToken={session.clientToken}
-            projectId={projectId}
-            chainId={chain.chainId}
-          />
-        </div>
-      </div>
-
-      {hasWorkspace && (
-        <div data-debug-id="chain-workspace-row" className="mt-8">
-          <WorkspaceBox
-            chainId={chain.chainId}
-            workspace={workspaceForDisplay}
-            preview={preview}
-            diffOpen={diffOpen}
-            diffData={diffData}
-            onFetchDiff={onFetchDiff}
-            onToggleDiff={onToggleDiff}
-            onRescan={onRescan}
-            onPreviewMerge={onPreviewMerge}
-          />
-        </div>
-      )}
-
-      <ChainProgressPanel chain={chain} progress={chainProgress} />
-
-      <section data-debug-id="chain-task-surface" className="mt-6 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+  const taskPane = (
+    <>
+      <ChainProgressPanel chain={chain} progress={chainProgress} className="mt-0" />
+      <section data-debug-id="chain-task-surface" className="min-h-0 flex-1 overflow-y-auto rounded-2xl border border-white/10 bg-white/[0.035] p-4">
         <div className="flex items-center justify-between gap-3">
           <div>
             <h2 className="font-semibold">Task chain plan</h2>
@@ -3580,6 +3764,135 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
           </div>
         )}
       </section>
+    </>
+  );
+  return (
+    <div className="mx-auto max-w-6xl px-8 py-8">
+      <div className="flex items-center gap-3">
+        <button data-debug-id="chain-back-btn" onClick={onBack} className="rounded-xl bg-white/5 px-3 py-2 text-sm hover:bg-white/10">← Home</button>
+        <button data-debug-id="chain-open-editor-btn" onClick={() => onOpenEditor?.(selectedTaskId)} className="rounded-xl bg-sky-400 px-3 py-2 text-sm font-semibold text-black hover:bg-sky-300">Open editor</button>
+        <button data-debug-id="chain-tasks-toggle-btn" onClick={() => setTaskPaneOpen((current) => !current)} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">{taskPaneOpen ? 'Hide tasks pane' : 'Show tasks pane'}</button>
+      </div>
+      <div className="mt-6 flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-4xl font-semibold">{chain.title || chain.chainId}</h1>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <span className={`rounded-full border px-3 py-1 text-xs ${statusTone(chain.status)}`}>{chain.status}</span>
+            <span className="rounded-full bg-white/5 px-3 py-1 text-xs text-zinc-400">Coordinator {coordinatorAgentId || '—'}</span>
+            <span data-debug-id="chain-coordinator-live-status-chip" className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs ${agentRuntimeStatusTone(coordinatorStatus)}`} title={`${coordinatorLabel} · ${coordinatorStatusLabel}${coordinatorLastSeen ? ` · ${coordinatorLastSeen}` : ''}`}>
+              <span className={`h-1.5 w-1.5 rounded-full shadow ${agentRuntimeDotTone(coordinatorStatus)}`} />
+              {coordinatorStatusLabel}
+            </span>
+          </div>
+        </div>
+        <div />
+      </div>
+
+      <div className="mt-8 space-y-4">
+        {chain.description && (
+          <section data-debug-id="chain-description-panel" className="flex flex-col rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+            <button
+              data-debug-id="chain-description-toggle"
+              onClick={() => setDescOpen(!descOpen)}
+              className="flex items-center justify-between text-left font-semibold text-zinc-300 hover:text-white"
+            >
+              <span>Chain Description</span>
+              <span className="text-xs">{descOpen ? 'Hide' : 'Show'}</span>
+            </button>
+            {descOpen && (
+              <div data-debug-id="chain-description-content" className="mt-4 text-sm text-zinc-300">
+                <Markdown source={chain.description} />
+              </div>
+            )}
+          </section>
+        )}
+        <div className={`grid gap-4 ${taskPaneOpen ? 'xl:grid-cols-[minmax(0,1.6fr)_minmax(340px,1fr)] xl:items-stretch' : ''}`}>
+          <section data-debug-id="chain-coordinator-panel" className={`flex h-[70vh] max-h-[70vh] min-h-[420px] flex-col rounded-2xl border border-white/10 bg-white/[0.035] p-4 ${taskPaneOpen ? '' : 'xl:col-span-2'}`}>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="font-semibold">Coordinator chat</h2>
+                <p data-debug-id="chain-coordinator-agent-id" className="mt-0.5 text-xs text-zinc-500">{coordinatorAgentId || 'No coordinator assigned'}</p>
+              </div>
+              <div data-debug-id="chain-coordinator-live-status" className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium ${agentRuntimeStatusTone(coordinatorStatus)}`} title={`${coordinatorLabel} · ${coordinatorStatusLabel}${coordinatorLastSeen ? ` · ${coordinatorLastSeen}` : ''}`}>
+                <span className={`h-2 w-2 rounded-full shadow ${agentRuntimeDotTone(coordinatorStatus)}`} />
+                <span>{coordinatorStatusLabel}</span>
+                {coordinatorLastSeen && <span className="hidden text-[10px] opacity-70 sm:inline">· {coordinatorLastSeen}</span>}
+              </div>
+            </div>
+            <CoordinatorMessageList chainId={chain.chainId} messages={messages} onReply={(reply) => {
+              setSendError('');
+              void onSend(reply).catch((err: any) => setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`));
+            }} />
+            <div data-debug-id="chain-coordinator-composer-shell" className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-2 focus-within:border-sky-400/70">
+              <textarea
+                data-debug-id="chain-coordinator-composer-input"
+                ref={composerRef}
+                value={draft}
+                onChange={(event) => { setDraft(event.target.value); setSendError(''); }}
+                onPaste={async (event) => {
+                  const result = await composerArtifactUpload.uploadClipboardImage(event, { projectId, originKind: 'clipboard_chat', originRef: chain.chainId || '' });
+                  if (result.link) {
+                    setSendError('');
+                    setDraft((current) => appendArtifactLink(current, result.link));
+                  }
+                }}
+                onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submit(); } }}
+                placeholder="Message coordinator only…"
+                autoFocus
+                rows={3}
+                className="w-full resize-none bg-transparent px-2 py-2 text-sm outline-none"
+              />
+              <div className="flex items-center justify-between gap-2">
+                <ArtifactUploadButton
+                  onUploaded={(link) => { setSendError(''); setDraft((current) => appendArtifactLink(current, link)); }}
+                  debugIdPrefix="chain-coordinator-artifact-upload"
+                  context={{ projectId: projectId, originRef: chain.chainId || '' }}
+                  buttonClassName="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-lg text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"
+                  label="＋"
+                />
+                <button data-debug-id="chain-coordinator-send-btn" aria-label="Send coordinator message" title="Send" onClick={() => { void submit(); }} className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-sky-400 text-sm font-semibold text-black hover:bg-sky-300">➤</button>
+              </div>
+            </div>
+            {sendError ? (
+              <div data-debug-id="chain-coordinator-send-error" className="mt-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">
+                {sendError}
+              </div>
+            ) : null}
+            {composerArtifactUpload.error ? (
+              <div data-debug-id="chain-coordinator-paste-error" className="mt-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">
+                {composerArtifactUpload.error}
+              </div>
+            ) : null}
+            <p className="mt-2 text-xs text-zinc-500">Sending routes to the chain coordinator. Opening this view records focus and warms the chain team when needed.</p>
+          </section>
+          {taskPaneOpen ? <aside data-debug-id="chain-task-pane" className="flex h-[70vh] max-h-[70vh] min-h-[420px] flex-col gap-4 overflow-hidden">{taskPane}</aside> : null}
+        </div>
+      </div>
+
+      {hasWorkspace && (
+        <div data-debug-id="chain-workspace-row" className="mt-8">
+          <WorkspaceBox
+            chainId={chain.chainId}
+            workspace={workspaceForDisplay}
+            preview={preview}
+            diffOpen={diffOpen}
+            diffData={diffData}
+            onFetchDiff={onFetchDiff}
+            onToggleDiff={onToggleDiff}
+            onRescan={onRescan}
+            onPreviewMerge={onPreviewMerge}
+          />
+        </div>
+      )}
+
+      <div className="mt-8">
+        <ChainArtifactsPanel
+          daemonUrl={session.daemonUrl}
+          clientToken={session.clientToken}
+          projectId={projectId}
+          chainId={chain.chainId}
+        />
+      </div>
     </div>
   );
 }

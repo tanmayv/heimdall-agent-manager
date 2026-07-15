@@ -55,6 +55,14 @@ EXPECTED_TEMPLATES = {
         "description": "Use this template for decision-making agents that inspect and approve/reject proposed memories.",
         "default_provider_profile": ""
     },
+    "conversation": {
+        "template_id": "conversation",
+        "display_name": "Conversation",
+        "description": "Use this template for general-purpose chat threads that behave like normal assistant conversations unless explicit task work is assigned.",
+        "role_hint": "conversation",
+        "suggested_model_tier": "normal",
+        "default_provider_profile": ""
+    },
     "specialist": {
         "template_id": "specialist",
         "display_name": "Specialist",

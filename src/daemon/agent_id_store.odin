@@ -4,19 +4,20 @@ package main
 //
 // Three-tier identity model:
 //   agent_id            durable identity (name + role/template + defaults + memory target)
-//   agent_instance_id   = agent_id@project, runtime binding, 1:1 with a live session
+//   agent_instance_id   = agent_id@s-<opaque-token>, concrete runtime/thread session
 //   (chains)            served by an instance via association records
 //
 // The agent_id record is the durable "who" that survives across projects and
 // restarts. Instance records (agent_store.odin) reference it via `agent_id` and
-// hold the per-(agent,project) runtime binding. Under Rule A the instance's home
-// project is authoritative for restart.
+// hold the per-instance runtime binding. Project is stored on the record and is
+// never parsed from the id suffix.
 //
 // This store is append-only (JSONL) and mirrors the style of agent_store.odin so
 // it replays deterministically on daemon start. It is intentionally in-memory +
 // event-log (no sqlite) to match the instance store.
 
 import "core:fmt"
+import "core:math/rand"
 import "core:os"
 import "core:strings"
 
@@ -33,6 +34,7 @@ Agent_Id_Record :: struct {
 	agent_role: string,
 	default_provider_profile: string,
 	default_model_tier: string,
+	default_project_id: string,
 	state: string,
 	created_unix_ms: i64,
 	updated_unix_ms: i64,
@@ -50,6 +52,7 @@ Agent_Id_Event :: struct {
 	agent_role: string,
 	default_provider_profile: string,
 	default_model_tier: string,
+	default_project_id: string,
 	state: string,
 	author: string,
 	created_unix_ms: i64,
@@ -94,7 +97,7 @@ agent_id_is_active :: proc(agent_id: string) -> bool {
 
 // Derive the durable agent_id from an agent_instance_id. Reserved identities
 // (operator@local, user_proxy) map to themselves. Otherwise the id is the prefix
-// before the first '@' (the instance's home-project separator).
+// before the first '@'; the suffix is an opaque session token, not project data.
 agent_id_from_instance_id :: proc(agent_instance_id: string) -> string {
 	if agent_instance_id_is_reserved(agent_instance_id) do return strings.clone(agent_instance_id)
 	if at := strings.index_byte(agent_instance_id, '@'); at >= 0 {
@@ -103,11 +106,32 @@ agent_id_from_instance_id :: proc(agent_instance_id: string) -> string {
 	return strings.clone(agent_instance_id)
 }
 
-// Compose an agent_instance_id from a durable agent_id and a project.
-// project_id "" yields the bare agent_id (a not-yet-bound identity).
+agent_session_token :: proc() -> string {
+	bytes: [6]byte
+	if rand.read(bytes[:]) != len(bytes) {
+		now := u64(now_unix_ms())
+		for i in 0..<len(bytes) {
+			bytes[i] = byte((now >> uint((i % 8) * 8)) & 0xff)
+		}
+	}
+	builder := strings.builder_make()
+	strings.write_string(&builder, "s-")
+	for b in bytes do hex_write_byte(&builder, b)
+	return strings.to_string(builder)
+}
+
+agent_instance_id_new :: proc(agent_id: string) -> string {
+	base := safe_agent_id_part(agent_id)
+	if base == "" do base = "agent"
+	return strings.clone(fmt.tprintf("%s@%s", base, agent_session_token()))
+}
+
+// Compose a fresh concrete agent_instance_id from a durable agent_id. The
+// project argument is retained for source compatibility and intentionally
+// ignored: project_id is authoritative stored data, never part of the suffix.
 agent_instance_id_compose :: proc(agent_id, project_id: string) -> string {
-	if project_id == "" do return strings.clone(agent_id)
-	return strings.clone(fmt.tprintf("%s@%s", agent_id, project_id))
+	_ = project_id
+	return agent_instance_id_new(agent_id)
 }
 
 agent_id_append_event :: proc(event: Agent_Id_Event) -> bool {
@@ -145,6 +169,7 @@ agent_id_apply_event :: proc(event: Agent_Id_Event) -> bool {
 	tier := event.default_model_tier
 	if tier != "" do tier = normalize_model_tier(tier)
 	rec.default_model_tier = strings.clone(tier)
+	if event.default_project_id != "" || rec.default_project_id == "" do rec.default_project_id = strings.clone(event.default_project_id)
 	state := event.state
 	if state == "" do state = rec.state
 	if state == "" do state = AGENT_ID_STATE_ACTIVE
@@ -160,7 +185,7 @@ agent_id_apply_event :: proc(event: Agent_Id_Event) -> bool {
 // Called from instance event replay so every pre-existing instance gets a
 // durable identity. Does not overwrite an already-present record's fields
 // (identity defaults are authoritative once created); only fills blanks.
-agent_id_ensure_backfill :: proc(agent_id, display_name, template_id, provider_profile, model_tier: string, created_unix_ms: i64, agent_role: string = "") {
+agent_id_ensure_backfill :: proc(agent_id, display_name, template_id, provider_profile, model_tier, default_project_id: string, created_unix_ms: i64, agent_role: string = "") {
 	if agent_id == "" do return
 	if agent_instance_id_is_reserved(agent_id) do return
 	idx := agent_id_index(agent_id)
@@ -173,6 +198,7 @@ agent_id_ensure_backfill :: proc(agent_id, display_name, template_id, provider_p
 		if rec.agent_role == "" { rec.agent_role = strings.clone(agent_role_normalize(agent_role if agent_role != "" else agent_role_from_template(template_id))); changed = true }
 		if rec.default_provider_profile == "" && provider_profile != "" { rec.default_provider_profile = strings.clone(provider_profile); changed = true }
 		if rec.default_model_tier == "" && model_tier != "" { rec.default_model_tier = strings.clone(normalize_model_tier(model_tier)); changed = true }
+		if rec.default_project_id == "" && default_project_id != "" { rec.default_project_id = strings.clone(default_project_id); changed = true }
 		if changed do agent_id_append_event(agent_id_record_to_event(rec^, "backfill"))
 		return
 	}
@@ -186,6 +212,7 @@ agent_id_ensure_backfill :: proc(agent_id, display_name, template_id, provider_p
 		agent_role = agent_role_normalize(agent_role if agent_role != "" else agent_role_from_template(template_id)),
 		default_provider_profile = provider_profile,
 		default_model_tier = model_tier,
+		default_project_id = default_project_id,
 		state = AGENT_ID_STATE_ACTIVE,
 		author = "backfill",
 		created_unix_ms = ts,
@@ -193,7 +220,7 @@ agent_id_ensure_backfill :: proc(agent_id, display_name, template_id, provider_p
 }
 
 // Explicit create/update from the API (Create Agent button).
-agent_id_upsert :: proc(agent_id, display_name, template_id, default_provider_profile, default_model_tier, author: string, agent_role: string = "") -> bool {
+agent_id_upsert :: proc(agent_id, display_name, template_id, default_provider_profile, default_model_tier, default_project_id, author: string, agent_role: string = "") -> bool {
 	if agent_id == "" do return false
 	tier := default_model_tier; if tier != "" do tier = normalize_model_tier(tier)
 	return agent_id_append_event(Agent_Id_Event{
@@ -204,6 +231,7 @@ agent_id_upsert :: proc(agent_id, display_name, template_id, default_provider_pr
 		agent_role = agent_role_normalize(agent_role if agent_role != "" else agent_role_from_template(template_id)),
 		default_provider_profile = default_provider_profile,
 		default_model_tier = tier,
+		default_project_id = default_project_id,
 		state = AGENT_ID_STATE_ACTIVE,
 		author = author,
 	})
@@ -218,6 +246,7 @@ agent_id_record_to_event :: proc(rec: Agent_Id_Record, author: string) -> Agent_
 		agent_role = rec.agent_role,
 		default_provider_profile = rec.default_provider_profile,
 		default_model_tier = rec.default_model_tier,
+		default_project_id = rec.default_project_id,
 		state = rec.state,
 		author = author,
 		order = rec.order,
@@ -233,6 +262,7 @@ agent_id_event_clone :: proc(e: Agent_Id_Event) -> Agent_Id_Event {
 	out.agent_role = strings.clone(e.agent_role)
 	out.default_provider_profile = strings.clone(e.default_provider_profile)
 	out.default_model_tier = strings.clone(e.default_model_tier)
+	out.default_project_id = strings.clone(e.default_project_id)
 	out.state = strings.clone(e.state)
 	out.author = strings.clone(e.author)
 	return out
@@ -248,6 +278,7 @@ agent_id_event_json :: proc(event: Agent_Id_Event) -> string {
 	strings.write_string(&b, `","agent_role":"`); json_write_string(&b, agent_role_normalize(event.agent_role))
 	strings.write_string(&b, `","default_provider_profile":"`); json_write_string(&b, event.default_provider_profile)
 	strings.write_string(&b, `","default_model_tier":"`); json_write_string(&b, event.default_model_tier)
+	strings.write_string(&b, `","default_project_id":"`); json_write_string(&b, event.default_project_id)
 	strings.write_string(&b, `","state":"`); json_write_string(&b, event.state)
 	strings.write_string(&b, `","author":"`); json_write_string(&b, event.author)
 	strings.write_string(&b, `","order":`); strings.write_string(&b, fmt.tprintf("%d", event.order))
@@ -306,6 +337,41 @@ agent_id_template_id :: proc(agent_id: string) -> string {
 	return agent_id
 }
 
+agent_id_display_name :: proc(agent_id: string) -> string {
+	if idx := agent_id_index(agent_id); idx >= 0 && agent_id_records[idx].display_name != "" {
+		return strings.clone(agent_id_records[idx].display_name)
+	}
+	return ""
+}
+
+agent_id_default_provider_profile :: proc(agent_id: string) -> string {
+	if idx := agent_id_index(agent_id); idx >= 0 && agent_id_records[idx].default_provider_profile != "" {
+		return strings.clone(agent_id_records[idx].default_provider_profile)
+	}
+	return ""
+}
+
+agent_id_default_model_tier :: proc(agent_id: string) -> string {
+	if idx := agent_id_index(agent_id); idx >= 0 && agent_id_records[idx].default_model_tier != "" {
+		return strings.clone(agent_id_records[idx].default_model_tier)
+	}
+	return ""
+}
+
+agent_id_default_project_id :: proc(agent_id: string) -> string {
+	if idx := agent_id_index(agent_id); idx >= 0 && agent_id_records[idx].default_project_id != "" {
+		return strings.clone(agent_id_records[idx].default_project_id)
+	}
+	return ""
+}
+
+agent_id_role :: proc(agent_id: string) -> string {
+	if idx := agent_id_index(agent_id); idx >= 0 && agent_id_records[idx].agent_role != "" {
+		return strings.clone(agent_id_records[idx].agent_role)
+	}
+	return ""
+}
+
 agent_id_event_from_json :: proc(line: string) -> (Agent_Id_Event, bool) {
 	kind := Agent_Id_Event_Kind.Agent_Id_Upserted
 	if extract_json_string(line, "kind", "") == "Agent_Id_Archived" do kind = .Agent_Id_Archived
@@ -315,8 +381,10 @@ agent_id_event_from_json :: proc(line: string) -> (Agent_Id_Event, bool) {
 		agent_id = extract_json_string(line, "agent_id", ""),
 		display_name = extract_json_string(line, "display_name", ""),
 		template_id = extract_json_string(line, "template_id", ""),
+		agent_role = extract_json_string(line, "agent_role", ""),
 		default_provider_profile = extract_json_string(line, "default_provider_profile", ""),
 		default_model_tier = extract_json_string(line, "default_model_tier", ""),
+		default_project_id = extract_json_string(line, "default_project_id", ""),
 		state = extract_json_string(line, "state", ""),
 		author = extract_json_string(line, "author", ""),
 		order = extract_json_int(line, "order", 0),

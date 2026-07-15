@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Heimdall — UI mockups</title>
+<link rel="stylesheet" href="mock.css" />
+<style>
+  .wrap { max-width: 900px; margin: 56px auto; padding: 0 20px; }
+  .wrap h1 { font-size: 22px; margin-bottom: 6px; }
+  .wrap h2 { font-size: 14px; margin: 26px 0 10px; color: var(--fd-ink-muted); text-transform: uppercase; letter-spacing:.6px; }
+  .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  a.card { text-decoration: none; color: inherit; display:block; }
+  a.card:hover { border-color: var(--fd-accent-blue); }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Heimdall — UI mockups</h1>
+    <p class="muted">Static, cross-linked mockups on the app's real design tokens
+       (<code>src/ui/styles.css</code>). Every page shares the same sidebar so you can click
+       through the navigation. Each page has a footer noting its real data sources and any new
+       backend fields (Plan §3b, §5). Small blue tags show <code>data-debug-id</code>s.</p>
+
+    <h2>New conversation model</h2>
+    <div class="cards">
+      <a class="card suggest" href="01-conversation.html"><div class="s-t">01 · Conversation</div><div class="s-d">Active thread; project-grouped sidebar; real fields only.</div></a>
+      <a class="card suggest" href="02-new-conversation.html"><div class="s-t">02 · New conversation</div><div class="s-d">Empty state; instance minted on first message.</div></a>
+      <a class="card suggest" href="04-agent-instances.html"><div class="s-t">04 · Agent identity &amp; instances</div><div class="s-d">One agent_id, many live instances sharing details.</div></a>
+    </div>
+
+    <h2>Existing features (restyled)</h2>
+    <div class="cards">
+      <a class="card suggest" href="10-home.html"><div class="s-t">10 · Home</div><div class="s-d">Chains by project + running agents.</div></a>
+      <a class="card suggest" href="11-chain-view.html"><div class="s-t">11 · Chain view</div><div class="s-d">Roster, task board, task detail drawer.</div></a>
+      <a class="card suggest" href="12-vcs-diff.html"><div class="s-t">12 · Workspace / VCS diff</div><div class="s-d">Changed files + rich diff + merge preview.</div></a>
+      <a class="card suggest" href="13-chain-editor.html"><div class="s-t">13 · Chain editor</div><div class="s-d">Create chain, seed tasks.</div></a>
+      <a class="card suggest" href="14-artifact-viewer.html"><div class="s-t">14 · Artifact viewer</div><div class="s-d">Markdown + PNG annotations.</div></a>
+      <a class="card suggest" href="15-attention.html"><div class="s-t">15 · Attention</div><div class="s-d">Approvals, blocked, merge decisions.</div></a>
+      <a class="card suggest" href="16-agent-detail.html"><div class="s-t">16 · Agent detail</div><div class="s-d">Status, chat, tasks, memory.</div></a>
+      <a class="card suggest" href="17-settings.html"><div class="s-t">17 · Settings · Daemons</div><div class="s-d">Two-pane modal; connect/manage multiple daemons.</div></a>
+      <a class="card suggest" href="17b-settings-providers.html"><div class="s-t">17b · Settings · Providers</div><div class="s-d">Per-daemon provider profiles &amp; defaults.</div></a>
+      <a class="card suggest" href="18-memory.html"><div class="s-t">18 · Memory</div><div class="s-d">Browser, proposal form, history.</div></a>
+    </div>
+
+    <h2>Multi-daemon</h2>
+    <p class="muted">Connect one UI to several daemons; views merge with a per-daemon <b>colored dot</b>
+       on every conversation / agent / chain (flat structure, no renaming). See
+       <code>01-conversation.html</code> (dots + filter chips) and <code>17-settings.html</code>
+       (Daemons pane). Model &amp; phases: <code>../../multi-daemon/PLAN.md</code>.</p>
+
+    <p class="muted" style="margin-top:24px">Conversation model &amp; phases: <code>../PLAN.md</code>.</p>
+  </div>
+</body>
+</html>
