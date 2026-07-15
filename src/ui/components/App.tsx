@@ -1246,7 +1246,6 @@ export default function App() {
             onOpenChain={openChain}
             onNewChain={() => dispatch(openNewChainModal({}))}
             onHome={() => selectSurfaceWithUrl('home')}
-            onAttention={() => selectSurfaceWithUrl('attention')}
             onMemory={() => selectSurfaceWithUrl('memory')}
             onAgents={() => selectSurfaceWithUrl('agents')}
             onTaskChains={() => selectSurfaceWithUrl('task-chains')}
@@ -1267,7 +1266,18 @@ export default function App() {
           />
         ) : null}
 
-        <main className="min-w-0 flex-1 overflow-y-auto">
+        <main className="relative min-w-0 flex-1 overflow-y-auto">
+          <button
+            type="button"
+            data-debug-id="attention-bell-btn"
+            onClick={() => selectSurfaceWithUrl('attention')}
+            title={badgeCount > 0 ? `${badgeCount} item${badgeCount === 1 ? '' : 's'} need attention` : 'Attention'}
+            aria-label={badgeCount > 0 ? `${badgeCount} item${badgeCount === 1 ? '' : 's'} need attention` : 'Attention'}
+            className="fixed right-4 top-3 z-40 grid h-9 w-9 place-items-center rounded-xl border border-white/10 bg-[#141414]/95 text-zinc-300 shadow-xl shadow-black/30 backdrop-blur transition hover:bg-[#1c1c1c] hover:text-zinc-100"
+          >
+            <span aria-hidden="true" className="text-[16px] leading-none">◷</span>
+            {badgeCount > 0 ? <span data-debug-id="attention-bell-badge" className="absolute -right-1 -top-1 min-w-4 rounded-full bg-sky-400 px-1 text-center text-[10px] font-semibold leading-4 text-black">{badgeCount > 99 ? '99+' : badgeCount}</span> : null}
+          </button>
           {agentPageId ? (() => {
             const selectedPageAgent = (agents || []).find((agent: any) => agent.id === agentPageId) || { id: agentPageId, label: agentPageId, status: 'unknown' };
             const sharedAgentPageProps = {
@@ -1902,7 +1912,7 @@ function SidebarConversationSection({ conversations = [], chats = {}, projectsBy
 }
 
 
-function ConversationFocusedSidebar({ conversations = [], chats = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, collapsed = false, onToggleCollapsed, agents = [], allAgents = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onOpenAgentInstance, onStartAgentInstance, onFetchAgentPage, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onAttention, onMemory, onAgents, onTaskChains, onProjects, onSettings }: any) {
+function ConversationFocusedSidebar({ conversations = [], chats = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, collapsed = false, onToggleCollapsed, agents = [], allAgents = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onOpenAgentInstance, onStartAgentInstance, onFetchAgentPage, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onMemory, onAgents, onTaskChains, onProjects, onSettings }: any) {
   const chainUpdatedMs = (chain: any) => Number(chain?.updatedAtUnixMs || chain?.updated_at_unix_ms || chain?.updatedAt || chain?.updated_at || chain?.createdAtUnixMs || chain?.created_at_unix_ms || 0);
   const sortedChains = [...(chains || [])].sort((a: any, b: any) => chainUpdatedMs(b) - chainUpdatedMs(a));
   const activeChains = sortedChains.filter((chain: any) => !isChainCompleted(chain)).slice(0, 4);
@@ -1930,7 +1940,6 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, projectsBy
       </button>
       <nav className="flex flex-col gap-px px-2 pb-2" aria-label="Conversation navigation">
         <button data-debug-id="nav-home-btn" onClick={onHome} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">⌂</span> Home</button>
-        <button data-debug-id="nav-attention-btn" onClick={onAttention} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">◷</span> Attention</button>
         <button data-debug-id="nav-memory-btn" onClick={onMemory} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">✦</span> Memory</button>
         <button data-debug-id="nav-agents-btn" onClick={onAgents} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">◎</span> Agents</button>
         <button data-debug-id="nav-task-chains-btn" onClick={onTaskChains} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">☷</span> Task chains</button>
@@ -2873,7 +2882,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
           {sendError && <div data-debug-id="agent-detail-chat-send-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{sendError}</div>}
           {upload.error && <div data-debug-id="agent-detail-chat-upload-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
           <div className="flex items-center justify-between gap-2 px-2 pb-2">
-            <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }} context={{ projectId: agent?.projectId || '', originKind: 'direct_agent_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending} debugIdPrefix="agent-detail-chat-artifact-upload" label="＋" buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-lg text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50" />
+            <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }} context={{ projectId: agent?.projectId || '', originKind: 'direct_agent_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending} debugIdPrefix="agent-detail-chat-artifact-upload" label="⇧" buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-lg text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50" />
             <div className="flex items-center gap-2"><span className="hidden text-[11px] text-zinc-600 sm:inline">Enter to send · Shift+Enter for newline</span><button data-debug-id="agent-detail-chat-send-btn" aria-label="Send direct agent message" title={sending ? 'Sending…' : 'Send'} onClick={() => { void submit(false); }} disabled={!agent?.id || sending || !draft.trim()} className="inline-flex h-8 items-center justify-center rounded-full border border-white/10 px-3 text-sm text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">→</button></div>
           </div>
         </div>
@@ -3058,6 +3067,7 @@ function ConversationThreadPage({ agent, chats, session, projects = [], provider
   const [threadError, setThreadError] = useState('');
   const [locallyStopped, setLocallyStopped] = useState(false);
   const [messageTier, setMessageTier] = useState(agent?.modelTier || 'smart');
+  const [messageProvider, setMessageProvider] = useState(agent?.providerProfile || defaultConversationProvider(providers));
   const [artifactsOpen, setArtifactsOpen] = useState(false);
   const upload = useArtifactUpload({ projectId: agent?.projectId || '', originKind: 'conversation_chat', originRef: agent?.id || '' });
   const messages = useMemo(() => normalizeCoordinatorMessages((chats?.[agent?.id] || []).map((msg: any) => ({ ...msg, agentInstanceId: agent?.id }))), [chats, agent?.id]);
@@ -3069,8 +3079,9 @@ function ConversationThreadPage({ agent, chats, session, projects = [], provider
 
   useEffect(() => {
     setMessageTier(agent?.modelTier || 'smart');
+    setMessageProvider(agent?.providerProfile || defaultConversationProvider(providers));
     setLocallyStopped(false);
-  }, [agent?.id, agent?.modelTier]);
+  }, [agent?.id, agent?.modelTier, agent?.providerProfile, providers]);
 
   useEffect(() => {
     if (agent?.id) onRefreshChat?.(agent.id);
@@ -3087,7 +3098,7 @@ function ConversationThreadPage({ agent, chats, session, projects = [], provider
     setSendPhase(shouldRestartForSend ? 'starting' : 'sending');
     try {
       if (shouldRestartForSend) {
-        await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || 'conversation', projectId: agent.projectId || '', displayName: '', modelTier: messageTier || agent.modelTier || 'smart', agentRole: agent.agentRole || 'conversation' });
+        await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: messageProvider || agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || 'conversation', projectId: agent.projectId || '', displayName: '', modelTier: messageTier || agent.modelTier || 'smart', agentRole: agent.agentRole || 'conversation' });
         setLocallyStopped(false);
         await onRefreshAgents?.();
         setSendPhase('sending');
@@ -3120,7 +3131,7 @@ function ConversationThreadPage({ agent, chats, session, projects = [], provider
   };
 
   const startConversation = () => runThreadAction('start', async () => {
-    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || 'conversation', projectId: agent.projectId || '', displayName: '', modelTier: messageTier || agent.modelTier || 'smart', agentRole: agent.agentRole || 'conversation' });
+    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: messageProvider || agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || 'conversation', projectId: agent.projectId || '', displayName: '', modelTier: messageTier || agent.modelTier || 'smart', agentRole: agent.agentRole || 'conversation' });
     setLocallyStopped(false);
   });
   const stopConversation = () => runThreadAction('stop', async () => {
@@ -3229,7 +3240,10 @@ function ConversationThreadPage({ agent, chats, session, projects = [], provider
           )}
           <div className="flex items-center justify-between gap-3 px-3 py-2">
             <div className="flex items-center gap-2">
-              <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev: string) => appendArtifactLink(prev, link)); }} context={{ projectId: agent?.projectId || '', originKind: 'conversation_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending} debugIdPrefix="conversation-attach" label="＋" buttonClassName="inline-flex h-7 w-7 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-sm text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40" />
+              <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev: string) => appendArtifactLink(prev, link)); }} context={{ projectId: agent?.projectId || '', originKind: 'conversation_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending} debugIdPrefix="conversation-attach" label="⇧" buttonClassName="inline-flex h-7 w-7 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-sm text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40" />
+              <select data-debug-id="conversation-provider-select" value={messageProvider} onChange={(event) => setMessageProvider(event.target.value)} className="rounded-md border border-white/10 bg-[#141414] px-2 py-1.5 text-xs text-zinc-400 outline-none focus:border-sky-400">
+                {(providers?.length ? providers : [{ name: 'pi' }]).map((provider: any) => <option key={provider.name || provider.id || 'pi'} value={provider.name || provider.id || 'pi'}>Provider: {provider.name || provider.id || 'pi'}</option>)}
+              </select>
               <select data-debug-id="conversation-tier-select" value={messageTier} onChange={(event) => setMessageTier(event.target.value)} className="rounded-md border border-white/10 bg-[#141414] px-2 py-1.5 text-xs text-zinc-400 outline-none focus:border-sky-400">
                 <option value="smart">Tier: smart</option>
                 <option value="normal">Tier: normal</option>
@@ -3471,7 +3485,7 @@ function HomeRunningAgentsPanel({ agents, projects, session, chats, templates, p
             {sendError && <div data-debug-id="home-running-agent-chat-send-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{sendError}</div>}
             {upload.error && <div data-debug-id="home-running-agent-chat-upload-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
             <div className="flex items-center justify-between gap-2 px-2 pb-2">
-              <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }} context={{ originKind: 'direct_agent_chat', originRef: selectedAgentId }} disabled={!selectedAgentId || sending} debugIdPrefix="home-running-agent-chat-artifact-upload" label="＋" buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-lg text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50" />
+              <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }} context={{ originKind: 'direct_agent_chat', originRef: selectedAgentId }} disabled={!selectedAgentId || sending} debugIdPrefix="home-running-agent-chat-artifact-upload" label="⇧" buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-lg text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50" />
               <div className="flex items-center gap-2"><span className="hidden text-[11px] text-zinc-600 sm:inline">Enter to send · Shift+Enter for newline</span><button data-debug-id="home-running-agent-chat-send-btn" aria-label="Send running agent message" title={sending ? 'Sending…' : 'Send'} onClick={() => { void submit(); }} disabled={!selectedAgentId || sending || !draft.trim()} className="inline-flex h-8 items-center justify-center rounded-full border border-white/10 px-3 text-sm text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">→</button></div>
             </div>
           </div>
@@ -4320,7 +4334,7 @@ function ChatArtifactsSidePanel({ debugPrefix, daemonUrl = '', clientToken = '',
             context={{ projectId, originKind, originRef }}
             disabled={!projectId || !daemonUrl || !clientToken}
             debugIdPrefix={`${debugPrefix}-artifacts-upload`}
-            label="＋"
+            label="⇧"
             buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-[#141414] text-lg leading-none text-zinc-300 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-45"
           />
           <button type="button" data-debug-id={`${debugPrefix}-artifacts-refresh-btn`} onClick={() => refreshArtifacts()} disabled={loading || !projectId} className="grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-[#141414] text-xs text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-45" title="Refresh artifacts" aria-label="Refresh artifacts">↻</button>
@@ -4545,7 +4559,7 @@ function GuideSidePanel({ agent, messages, loading, sending, debugInfo, currentP
           {sendError && <div data-debug-id="guide-chat-send-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{sendError}</div>}
           {guideUpload.error && <div data-debug-id="guide-chat-upload-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{guideUpload.error}</div>}
           <div className="flex items-center justify-between gap-2 px-2 pb-2">
-            <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }} context={{ originKind: 'guide_chat', originRef: GUIDE_AGENT_ID }} disabled={sending} debugIdPrefix="guide-chat-artifact-upload" label="＋" buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-lg text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50" />
+            <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }} context={{ originKind: 'guide_chat', originRef: GUIDE_AGENT_ID }} disabled={sending} debugIdPrefix="guide-chat-artifact-upload" label="⇧" buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-lg text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50" />
             <div className="flex items-center gap-2"><span className="hidden text-[11px] text-zinc-600 sm:inline">Enter to send · Shift+Enter for newline</span><button data-debug-id="guide-chat-send-btn" aria-label="Send guide message" title="Send" disabled={sending || !draft.trim()} onClick={() => { void submit(); }} className="inline-flex h-8 items-center justify-center rounded-full border border-white/10 px-3 text-sm text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">→</button></div>
           </div>
         </div>
@@ -4707,6 +4721,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
     }
   };
   const [tasksPaneOpen, setTasksPaneOpen] = useState(true);
+  const rightPaneOpen = diffOpen || tasksPaneOpen;
   const coordinatorInitial = (coordinatorLabel || 'L').trim().slice(0, 1).toUpperCase() || 'L';
   return (
     <div data-debug-id="chain-view" className="flex h-full min-h-0 flex-col bg-[#090909] text-zinc-100">
@@ -4731,7 +4746,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
         </section>
       )}
 
-      <div data-debug-id="chain-split-view" data-tasks-open={tasksPaneOpen ? 'true' : 'false'} className={`grid min-h-0 flex-1 ${tasksPaneOpen ? 'grid-cols-[minmax(0,1fr)_460px]' : 'grid-cols-[minmax(0,1fr)_0px]'}`}>
+      <div data-debug-id="chain-split-view" data-tasks-open={tasksPaneOpen ? 'true' : 'false'} data-workspace-open={diffOpen ? 'true' : 'false'} className={`grid min-h-0 flex-1 ${rightPaneOpen ? 'grid-cols-[minmax(0,1fr)_460px]' : 'grid-cols-[minmax(0,1fr)_0px]'}`}>
         <section data-debug-id="chain-coordinator-panel" className="flex min-h-0 min-w-0 flex-col border-r border-[#262626]">
           <div className="flex items-center gap-2 border-b border-[#262626] px-[18px] py-3 text-[12.5px] text-zinc-500">
             <span className="grid h-7 w-7 place-items-center rounded-full bg-sky-400/10 text-xs font-semibold text-sky-100">{coordinatorInitial}</span>
@@ -4778,7 +4793,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
                     debugIdPrefix="chain-coordinator-artifact-upload"
                     context={{ projectId: projectId, originRef: chain.chainId || '' }}
                     buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-lg text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
-                    label="＋"
+                    label="⇧"
                   />
                   <span className="rounded-md border border-white/10 bg-[#1c1c1c] px-2 py-1.5 text-xs text-zinc-500">@ mention agent</span>
                 </div>
@@ -4790,7 +4805,29 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
           </div>
         </section>
 
-        {tasksPaneOpen && (
+        {rightPaneOpen && (
+          diffOpen ? (
+            <aside data-debug-id="chain-workspace-sidebar" className="min-h-0 overflow-y-auto border-l border-[#262626] bg-[#0f0f0f] p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-[14px] font-semibold text-zinc-100">Workspace</h2>
+                  <p className="mt-1 text-[11.5px] text-zinc-500">Right-side workspace view for this chain.</p>
+                </div>
+                <button type="button" data-debug-id="chain-workspace-close-btn" onClick={onToggleDiff} className="grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-[#141414] text-sm text-zinc-400 hover:text-zinc-100" title="Close workspace" aria-label="Close workspace">×</button>
+              </div>
+              <WorkspaceBox
+                chainId={chain.chainId}
+                workspace={workspaceForDisplay}
+                preview={preview}
+                diffOpen={diffOpen}
+                diffData={diffData}
+                onFetchDiff={onFetchDiff}
+                onToggleDiff={onToggleDiff}
+                onRescan={onRescan}
+                onPreviewMerge={onPreviewMerge}
+              />
+            </aside>
+          ) : (
           <aside data-debug-id="chain-task-surface" className="min-h-0 overflow-y-auto border-l border-[#262626] bg-[#0f0f0f]">
             <div className="px-[18px] py-4">
               <ChainProgressPanel chain={chain} progress={chainProgress} />
@@ -4858,6 +4895,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
               )}
             </div>
           </aside>
+          )
         )}
       </div>
 
@@ -4870,21 +4908,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
         />
       </div>
 
-      {hasWorkspace && diffOpen && (
-        <div data-debug-id="chain-workspace-row" className="border-t border-[#262626] bg-[#090909] px-5 py-4">
-          <WorkspaceBox
-            chainId={chain.chainId}
-            workspace={workspaceForDisplay}
-            preview={preview}
-            diffOpen={diffOpen}
-            diffData={diffData}
-            onFetchDiff={onFetchDiff}
-            onToggleDiff={onToggleDiff}
-            onRescan={onRescan}
-            onPreviewMerge={onPreviewMerge}
-          />
-        </div>
-      )}
+
     </div>
   );
 }

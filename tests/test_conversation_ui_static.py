@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 APP = (ROOT / 'src/ui/components/App.tsx').read_text(encoding='utf-8')
 AGENTS = (ROOT / 'AGENTS.md').read_text(encoding='utf-8')
 SETTINGS = (ROOT / 'src/ui/components/SettingsPage.tsx').read_text(encoding='utf-8')
+UPLOAD = (ROOT / 'src/ui/components/ArtifactUpload.tsx').read_text(encoding='utf-8')
 
 checks = [
     ('conversation sidebar section exists', all(snippet in APP for snippet in [
@@ -119,7 +120,7 @@ checks = [
         'data-debug-id={`sidebar-agent-live-instance-row-${id}`}',
         'data-debug-id={`sidebar-agent-live-instance-status-${id}`}',
         "{launching ? '…' : '›'}",
-    ])),
+    ]) and 'data-debug-id="nav-attention-btn"' not in APP),
     ('global sidebar collapse expand hides sidebar and leaves one expand control', all(snippet in APP for snippet in [
         'const [sidebarCollapsed, setSidebarCollapsed] = useState(false);',
         "${sidebarCollapsed ? 'w-0 border-r-0' : 'w-[296px] border-r'}",
@@ -201,16 +202,20 @@ checks = [
         'await dispatch(refreshAgents()).unwrap().catch(() => undefined);',
         'await daemonApi.sendToAgent({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, agentInstanceId: agentId, body, interrupt });',
     ])),
-    ('task chain view keeps mock split layout with toggleable right task pane', all(snippet in APP for snippet in [
+    ('task chain view keeps mock split layout with toggleable right task/workspace pane', all(snippet in APP for snippet in [
         'data-debug-id="chain-view"',
         'data-debug-id="chain-split-view"',
         'const [tasksPaneOpen, setTasksPaneOpen] = useState(true);',
+        'const rightPaneOpen = diffOpen || tasksPaneOpen;',
+        'data-workspace-open={diffOpen ? \'true\' : \'false\'}',
         'data-debug-id="chain-tasks-toggle-btn"',
         'data-debug-id="chain-open-editor-btn"',
         'grid-cols-[minmax(0,1fr)_460px]',
         'data-debug-id="chain-coordinator-panel"',
         'data-debug-id="chain-task-surface"',
-    ])),
+        'data-debug-id="chain-workspace-sidebar"',
+        'data-debug-id="chain-workspace-close-btn"',
+    ]) and 'data-debug-id="chain-workspace-row"' not in APP),
     ('task chain pane uses progress card and dependency ordered todo list, not kanban', all(snippet in APP for snippet in [
         'const orderedTasks = useMemo(() => dependencyOrderedTasks(tasks, tasksById || {})',
         'data-debug-id="chain-progress-panel"',
@@ -265,6 +270,12 @@ checks = [
         'await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || \'\', agentInstanceId: agent.id',
         'data-debug-id="conversation-composer-starting-indicator"',
     ])),
+    ('global attention bell is always available outside the sidebar with badge support', all(snippet in APP for snippet in [
+        'data-debug-id="attention-bell-btn"',
+        'data-debug-id="attention-bell-badge"',
+        "onClick={() => selectSurfaceWithUrl('attention')}",
+        '{badgeCount > 99 ? \'99+\' : badgeCount}',
+    ])),
     ('dedicated conversation thread page exposes mock-aligned debug ids', all(snippet in APP for snippet in [
         'function ConversationThreadPage',
         'data-debug-id="conversation-thread-page"',
@@ -275,6 +286,7 @@ checks = [
         'data-debug-id="conversation-composer-shell"',
         'data-debug-id="conversation-composer-input"',
         'data-debug-id="conversation-composer-starting-indicator"',
+        'data-debug-id="conversation-provider-select"',
         'data-debug-id="conversation-tier-select"',
         'data-debug-id="conversation-composer-send-btn"',
     ])),
@@ -319,10 +331,15 @@ checks = [
         'debugPrefix="conversation-thread"',
         'className="chat-scrollbar min-h-0 flex-1 space-y-2 overflow-y-auto p-3"',
         'className="chat-scrollbar min-w-0 flex-1 overflow-y-auto"',
+    ]) and all(snippet in UPLOAD for snippet in [
+        'aria-label="Uploading artifact"',
+        'inline-block animate-bounce',
     ])),
     ('debug id registry includes conversation sidebar and page ids', all(snippet in AGENTS for snippet in [
         '`sidebar-conversations`',
         '`conversation-focused-sidebar`',
+        '`attention-bell-btn`',
+        '`attention-bell-badge`',
         '`nav-task-chains-btn`',
         '`nav-projects-btn`',
         '`conversation-sidebar-collapse-btn`',
@@ -365,6 +382,8 @@ checks = [
         '`chain-view`',
         '`chain-tasks-toggle-btn`',
         '`chain-open-editor-btn`',
+        '`chain-workspace-sidebar`',
+        '`chain-workspace-close-btn`',
         '`chain-split-view`',
         '`chain-progress-panel`',
         '`settings-modal`',
@@ -384,6 +403,7 @@ checks = [
         '`conversation-thread-artifacts-panel`',
         '`conversation-thread-artifacts-upload-btn`',
         '`conversation-thread-artifacts-close-btn`',
+        '`conversation-provider-select`',
         '`conversation-composer-input`',
         '`conversation-composer-starting-indicator`',
         '`conversation-composer-send-btn`',

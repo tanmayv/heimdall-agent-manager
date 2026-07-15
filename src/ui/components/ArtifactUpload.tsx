@@ -254,7 +254,7 @@ export default function ArtifactUploadButton({
         title="Upload a supported artifact"
         className={buttonClassName || 'framer-pill bg-white/10 text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40'}
       >
-        {uploading ? 'Uploading…' : label}
+        {uploading ? <span className="inline-block animate-bounce" aria-label="Uploading artifact">⇧</span> : label}
       </button>
       {error && (
         <div data-debug-id={`${debugIdPrefix}-error`} className="mt-1 text-xs text-red-300">{error}</div>

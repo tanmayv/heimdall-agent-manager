@@ -31,13 +31,16 @@ checks = [
         'if (originKind) body.origin_kind = originKind;',
         'if (originRef) body.origin_ref = originRef;',
     ])),
-    ('chain coordinator composer renders integrated plus upload affordance and debug ids', all(snippet in APP for snippet in [
+    ('chain coordinator composer renders integrated animated upload affordance and debug ids', all(snippet in APP for snippet in [
         'data-debug-id="chain-coordinator-composer-shell"',
         'data-debug-id="chain-coordinator-composer-input"',
         '<ArtifactUploadButton',
         'debugIdPrefix="chain-coordinator-artifact-upload"',
-        'label="＋"',
-        'buttonClassName="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-lg text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40"',
+        'label="⇧"',
+        'buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-lg text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"',
+    ]) and all(snippet in UPLOAD for snippet in [
+        'aria-label="Uploading artifact"',
+        'inline-block animate-bounce',
     ])),
     ('chain coordinator upload uses project and chain context', all(snippet in APP for snippet in [
         "const projectId = chain.projectId || chain.project_id || '';",
@@ -63,11 +66,11 @@ checks = [
         'data-debug-id="home-running-agent-chat-send-error"',
         'onChange={(event) => { setDraft(event.target.value); setSendError(\'\'); }}',
     ])),
-    ('direct agent chat composers mirror the integrated plus attachment affordance', all(snippet in APP for snippet in [
+    ('direct agent chat composers mirror the integrated animated upload affordance', all(snippet in APP for snippet in [
         'data-debug-id="agent-detail-chat-composer-shell"',
         'data-debug-id="home-running-agent-chat-composer-shell"',
-        'debugIdPrefix="agent-detail-chat-artifact-upload" label="＋"',
-        'debugIdPrefix="home-running-agent-chat-artifact-upload" label="＋"',
+        'debugIdPrefix="agent-detail-chat-artifact-upload" label="⇧"',
+        'debugIdPrefix="home-running-agent-chat-artifact-upload" label="⇧"',
         'data-debug-id="agent-detail-chat-send-btn"',
         'data-debug-id="home-running-agent-chat-send-btn"',
     ])),
