@@ -4816,7 +4816,17 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
     }
   };
   const [tasksPaneOpen, setTasksPaneOpen] = useState(true);
-  const rightPaneOpen = diffOpen || tasksPaneOpen;
+  const [rightSidebarTab, setRightSidebarTab] = useState<'diffs' | 'artifacts'>('diffs');
+  const evidenceSidebarOpen = diffOpen;
+  const toggleEvidenceSidebar = () => {
+    if (!evidenceSidebarOpen) setRightSidebarTab('diffs');
+    onToggleDiff?.();
+  };
+  const openEvidenceTab = (tab: 'diffs' | 'artifacts') => {
+    setRightSidebarTab(tab);
+    if (!evidenceSidebarOpen) onToggleDiff?.();
+  };
+  const rightPaneOpen = evidenceSidebarOpen || tasksPaneOpen;
   const coordinatorInitial = (coordinatorLabel || 'L').trim().slice(0, 1).toUpperCase() || 'L';
   return (
     <div data-debug-id="chain-view" className="flex h-full min-h-0 flex-col bg-[#090909] text-zinc-100">
@@ -4827,7 +4837,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
           <span className="truncate text-zinc-100">{chain.title || chain.chainId}</span>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          {hasWorkspace && <button data-debug-id="chain-workspace-btn" onClick={onToggleDiff} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">⌥ Workspace</button>}
+          <button data-debug-id="global-right-sidebar-toggle-btn" onClick={toggleEvidenceSidebar} className={`rounded-full border px-3 py-1 text-[11.5px] ${evidenceSidebarOpen ? 'border-sky-400/35 bg-sky-400/10 text-sky-100' : 'border-white/10 bg-[#141414] text-zinc-400 hover:text-zinc-100'}`}>▣ Evidence</button>
           <button data-debug-id="chain-open-editor-btn" onClick={() => onOpenEditor?.(selectedTaskId)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">✎ Editor</button>
           <button data-debug-id="chain-tasks-toggle-btn" onClick={() => setTasksPaneOpen((current) => !current)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">▤ Tasks</button>
         </div>
@@ -4841,7 +4851,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
         </section>
       )}
 
-      <div data-debug-id="chain-split-view" data-tasks-open={tasksPaneOpen ? 'true' : 'false'} data-workspace-open={diffOpen ? 'true' : 'false'} className={`grid min-h-0 flex-1 ${rightPaneOpen ? 'grid-cols-[minmax(0,1fr)_460px]' : 'grid-cols-[minmax(0,1fr)_0px]'}`}>
+      <div data-debug-id="chain-split-view" data-tasks-open={tasksPaneOpen ? 'true' : 'false'} data-workspace-open={evidenceSidebarOpen ? 'true' : 'false'} data-right-sidebar-open={evidenceSidebarOpen ? 'true' : 'false'} className={`grid min-h-0 flex-1 ${rightPaneOpen ? 'grid-cols-[minmax(0,1fr)_460px]' : 'grid-cols-[minmax(0,1fr)_0px]'}`}>
         <section data-debug-id="chain-coordinator-panel" className="flex min-h-0 min-w-0 flex-col border-r border-[#262626]">
           <div className="flex items-center gap-2 border-b border-[#262626] px-[18px] py-3 text-[12.5px] text-zinc-500">
             <span className="grid h-7 w-7 place-items-center rounded-full bg-sky-400/10 text-xs font-semibold text-sky-100">{coordinatorInitial}</span>
@@ -4901,27 +4911,25 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
         </section>
 
         {rightPaneOpen && (
-          diffOpen ? (
-            <aside data-debug-id="chain-workspace-sidebar" className="min-h-0 overflow-y-auto border-l border-[#262626] bg-[#0f0f0f] p-4">
-              <div className="mb-3 flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-[14px] font-semibold text-zinc-100">Workspace</h2>
-                  <p className="mt-1 text-[11.5px] text-zinc-500">Right-side workspace view for this chain.</p>
-                </div>
-                <button type="button" data-debug-id="chain-workspace-close-btn" onClick={onToggleDiff} className="grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-[#141414] text-sm text-zinc-400 hover:text-zinc-100" title="Close workspace" aria-label="Close workspace">×</button>
-              </div>
-              <WorkspaceBox
-                chainId={chain.chainId}
-                workspace={workspaceForDisplay}
-                preview={preview}
-                diffOpen={diffOpen}
-                diffData={diffData}
-                onFetchDiff={onFetchDiff}
-                onToggleDiff={onToggleDiff}
-                onRescan={onRescan}
-                onPreviewMerge={onPreviewMerge}
-              />
-            </aside>
+          evidenceSidebarOpen ? (
+            <GlobalRightSidebar
+              chain={chain}
+              projectId={projectId}
+              workspace={workspaceForDisplay}
+              hasWorkspace={hasWorkspace}
+              preview={preview}
+              diffOpen={evidenceSidebarOpen}
+              diffData={diffData}
+              activeTab={rightSidebarTab}
+              daemonUrl={session.daemonUrl}
+              clientToken={session.clientToken}
+              onTabChange={openEvidenceTab}
+              onClose={toggleEvidenceSidebar}
+              onFetchDiff={onFetchDiff}
+              onToggleDiff={toggleEvidenceSidebar}
+              onRescan={onRescan}
+              onPreviewMerge={onPreviewMerge}
+            />
           ) : (
           <aside data-debug-id="chain-task-surface" className="min-h-0 overflow-y-auto border-l border-[#262626] bg-[#0f0f0f]">
             <div className="px-[18px] py-4">
@@ -4994,17 +5002,65 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
         )}
       </div>
 
-      <div className="hidden xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]" aria-hidden="true">
-        <ChainArtifactsPanel
-          daemonUrl={session.daemonUrl}
-          clientToken={session.clientToken}
-          projectId={projectId}
-          chainId={chain.chainId}
-        />
-      </div>
-
-
     </div>
+  );
+}
+
+function GlobalRightSidebar({ chain, projectId = '', workspace, hasWorkspace = false, preview, diffOpen = false, diffData = {}, activeTab = 'diffs', daemonUrl = '', clientToken = '', onTabChange, onClose, onFetchDiff, onToggleDiff, onRescan, onPreviewMerge }: any) {
+  const chainId = chain?.chainId || chain?.chain_id || '';
+  const tabButton = (tab: 'diffs' | 'artifacts', label: string) => (
+    <button
+      type="button"
+      data-debug-id={tab === 'diffs' ? 'global-right-sidebar-diffs-tab' : 'global-right-sidebar-artifacts-tab'}
+      aria-pressed={activeTab === tab}
+      onClick={() => onTabChange?.(tab)}
+      className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${activeTab === tab ? 'bg-sky-400 text-black' : 'border border-white/10 bg-[#141414] text-zinc-300 hover:bg-white/10'}`}
+    >
+      {label}
+    </button>
+  );
+  return (
+    <aside data-debug-id="global-right-sidebar" className="min-h-0 overflow-y-auto border-l border-[#262626] bg-[#0f0f0f] p-4">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-[14px] font-semibold text-zinc-100">Evidence</h2>
+          <p className="mt-1 truncate text-[11.5px] text-zinc-500">Diffs and artifacts for {chain?.title || chainId || 'this context'}.</p>
+        </div>
+        <button type="button" data-debug-id="global-right-sidebar-close-btn" onClick={onClose} className="grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-[#141414] text-sm text-zinc-400 hover:text-zinc-100" title="Close evidence sidebar" aria-label="Close evidence sidebar">×</button>
+      </div>
+      <div className="mb-4 flex flex-wrap gap-2">
+        {tabButton('diffs', 'Diffs')}
+        {tabButton('artifacts', 'Artifacts')}
+      </div>
+      {activeTab === 'diffs' ? (
+        <section data-debug-id="global-right-sidebar-diff-list" className="space-y-3">
+          {!hasWorkspace ? (
+            <div data-debug-id="global-right-sidebar-diff-empty" className="rounded-2xl border border-dashed border-white/10 bg-black/20 p-4 text-sm text-zinc-400">
+              No VCS workspace or repo diff data is available for this chain yet. The sidebar will show changed files and diff previews here when workspace data is present.
+            </div>
+          ) : (
+            <WorkspaceBox
+              chainId={chainId}
+              workspace={workspace}
+              preview={preview}
+              diffOpen={diffOpen}
+              diffData={diffData}
+              onFetchDiff={onFetchDiff}
+              onToggleDiff={() => undefined}
+              onRescan={onRescan}
+              onPreviewMerge={onPreviewMerge}
+            />
+          )}
+        </section>
+      ) : (
+        <section data-debug-id="global-right-sidebar-artifact-list" className="space-y-3">
+          <div className="rounded-2xl border border-white/10 bg-black/20 p-3 text-xs text-zinc-400">
+            Browse project artifacts here. Open an artifact to use the existing annotation-capable viewer.
+          </div>
+          <ChainArtifactsPanel daemonUrl={daemonUrl} clientToken={clientToken} projectId={projectId} chainId={chainId} />
+        </section>
+      )}
+    </aside>
   );
 }
 

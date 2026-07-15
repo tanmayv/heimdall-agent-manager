@@ -139,12 +139,12 @@ checks = [
         r'\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)',
     ])),
     ('message bubbles use shared Markdown component', 'return <Markdown source={text} compact' in MESSAGE_BUBBLE),
-    ('chain view renders the project artifacts panel beside coordinator chat', all(snippet in APP for snippet in [
+    ('chain view renders the project artifacts panel in the global right sidebar artifacts tab', all(snippet in APP for snippet in [
         "import ChainArtifactsPanel from './ChainArtifactsPanel';",
-        'xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]',
-        '<ChainArtifactsPanel',
-        'projectId={projectId}',
-        'chainId={chain.chainId}',
+        'global-right-sidebar-artifacts-tab',
+        'data-debug-id="global-right-sidebar-artifact-list"',
+        '<ChainArtifactsPanel daemonUrl={daemonUrl} clientToken={clientToken} projectId={projectId} chainId={chainId} />',
+        'Open an artifact to use the existing annotation-capable viewer.',
     ])),
     ('artifacts panel uses project-scoped list api and viewer', all(snippet in PANEL for snippet in [
         'data-debug-id="chain-artifacts-panel"',
