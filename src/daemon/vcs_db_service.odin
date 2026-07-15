@@ -95,7 +95,7 @@ vcs_handle_from_record :: proc(rec: Vcs_Workspace_Record) -> vcs.Vcs_Workspace_H
 	return vcs.Vcs_Workspace_Handle{path=rec.path, branch_or_change=rec.branch_or_change, base_ref=rec.base_ref, kind=kind}
 }
 
-vcs_write_workspace_json :: proc(b: ^strings.Builder, rec: Vcs_Workspace_Record, status: vcs.Vcs_Status) {
+vcs_write_workspace_json :: proc(b: ^strings.Builder, rec: Vcs_Workspace_Record, status: vcs.Vcs_Status, source_kind, source_label: string) {
 	strings.write_string(b, `{"workspace_id":"`); json_write_string(b, rec.workspace_id)
 	strings.write_string(b, `","chain_id":"`); json_write_string(b, rec.chain_id)
 	strings.write_string(b, `","project_id":"`); json_write_string(b, rec.project_id)
@@ -104,6 +104,8 @@ vcs_write_workspace_json :: proc(b: ^strings.Builder, rec: Vcs_Workspace_Record,
 	strings.write_string(b, `","branch_or_change":"`); json_write_string(b, rec.branch_or_change)
 	strings.write_string(b, `","base_ref":"`); json_write_string(b, rec.base_ref)
 	strings.write_string(b, `","status":"`); json_write_string(b, rec.status)
+	strings.write_string(b, `","source_kind":"`); json_write_string(b, source_kind)
+	strings.write_string(b, `","source_label":"`); json_write_string(b, source_label)
 	strings.write_string(b, `","summary_line":"`); json_write_string(b, status.summary_line)
 	strings.write_string(b, `","ahead_commits":`); strings.write_string(b, fmt.tprintf("%d", status.ahead_commits))
 	strings.write_string(b, `,"behind_commits":`); strings.write_string(b, fmt.tprintf("%d", status.behind_commits))

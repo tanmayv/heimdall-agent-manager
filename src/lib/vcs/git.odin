@@ -5,6 +5,35 @@ import "core:os"
 import "core:strconv"
 import "core:strings"
 
+git_is_hex_pair :: proc(text: string) -> bool {
+	if len(text) != 2 do return false
+	for r in text {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) do return false
+	}
+	return true
+}
+
+git_is_probable_artifact_blob_path :: proc(path: string) -> bool {
+	parts := strings.split(strings.trim_space(path), "/")
+	defer delete(parts)
+	if len(parts) < 3 do return false
+	for i in 0..<(len(parts) - 2) {
+		artifact_id := parts[i + 2]
+		if !git_is_hex_pair(parts[i]) || !git_is_hex_pair(parts[i + 1]) do continue
+		if len(artifact_id) != 36 || !strings.has_prefix(artifact_id, "art_") do continue
+		hex_suffix := artifact_id[len("art_"):]
+		valid_hex := true
+		for r in hex_suffix {
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+				valid_hex = false
+				break
+			}
+		}
+		if valid_hex do return true
+	}
+	return false
+}
+
 git_detect :: proc(repo_path: string) -> Vcs_Detect_Result {
 	root, ok, msg := vcs_run([]string{"git", "-C", repo_path, "rev-parse", "--show-toplevel"})
 	if !ok do return Vcs_Detect_Result{kind = .Git, ok = false, message = msg}
@@ -115,6 +144,7 @@ git_repo_status :: proc(repo, diff_base_sha: string) -> (Vcs_Status, bool, strin
 		if strings.trim_space(line) == "" || len(line) < 3 do continue
 		status := strings.trim_space(line[:2])
 		path := strings.trim_space(line[3:])
+		if strings.contains(status, "?") && git_is_probable_artifact_blob_path(path) do continue
 		if strings.contains(status, "U") || status == "AA" || status == "DD" do conflicted += 1
 		append(&files, Vcs_File_Change{path = strings.clone(path), status = strings.clone(status)})
 	}
@@ -175,6 +205,7 @@ git_untracked_diff :: proc(repo, path: string) -> (string, bool, string) {
 	for line in strings.split(out, "\n") {
 		file := strings.trim_space(line)
 		if file == "" do continue
+		if git_is_probable_artifact_blob_path(file) do continue
 		diff, diff_ok, diff_msg := git_diff_no_index(repo, file)
 		if !diff_ok do return "", false, diff_msg
 		if diff != "" {

@@ -3926,6 +3926,7 @@ function WorkspaceBox({ chainId, workspace, preview, diffOpen, diffData, onFetch
   const currentDiff = diffData?.[diffKey];
   const repoBaseSha = workspace?.diff_base_sha || workspace?.diffBaseSha || '';
   const diffLabel = currentDiff?.diff_label || currentDiff?.diffLabel || workspace?.diff_label || workspace?.diffLabel || (isRepoLevel ? (repoBaseSha ? 'Changes since chain started (whole repo)' : 'Uncommitted changes') : 'Worktree changes');
+  const sourceLabel = workspace?.source_label || workspace?.sourceLabel || (isRepoLevel ? 'Project repo fallback' : 'Dedicated chain worktree');
 
   // Auto-select the first file when files load. Repo-level chains may still use
   // an empty file selection to fetch the whole-repo diff when no file list exists.
@@ -3952,6 +3953,7 @@ function WorkspaceBox({ chainId, workspace, preview, diffOpen, diffData, onFetch
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="font-semibold">Workspace</h2>
             <span data-debug-id="workspace-diff-mode-label" className="rounded-full bg-sky-400/10 px-2 py-0.5 text-xs text-sky-100">{diffLabel}</span>
+            <span data-debug-id="workspace-source-label" className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-zinc-200">{sourceLabel}</span>
           </div>
           <div className="mt-2 text-sm text-zinc-300">{workspace?.branch_or_change || workspace?.branchOrChange || workspace?.workspace_id || (isRepoLevel ? 'repo-level' : chainId)}</div>
           <div className="mt-1 text-xs text-zinc-500">base {workspace?.base_ref || workspace?.baseRef || workspace?.diff_base_sha || workspace?.diffBaseSha || 'main'} · {workspace?.path || 'workspace path pending'}</div>
