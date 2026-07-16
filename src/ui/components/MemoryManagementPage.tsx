@@ -253,22 +253,24 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
   return (
     <main data-debug-id="memory-management-surface" className="mx-auto flex h-full max-w-[1600px] flex-col px-6 py-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div className="text-xs uppercase tracking-[0.24em] text-zinc-500">Memory Management</div>
-          <h1 className="mt-2 text-4xl font-semibold text-zinc-100">Simplified memory targeting</h1>
-          <p className="mt-2 max-w-4xl text-sm text-zinc-400">Browse memory records, inspect history, propose changes, and review pending proposals using only team kind, role, and project targets.</p>
+        <div className="min-w-0">
+          <div className="text-[10.5px] font-semibold uppercase tracking-[0.24em] text-zinc-500">Memory</div>
+          <h1 className="mt-1 text-2xl font-semibold tracking-[-0.01em] text-zinc-100">Memory management</h1>
+          <p className="mt-1 text-[13px] text-zinc-500">Browse records, inspect history, propose changes, and review pending proposals.</p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <button data-debug-id="memory-management-home-btn" onClick={onBackToHome} className="rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15">Back to Home</button>
-          <button data-debug-id="memory-refresh-btn" onClick={() => dispatch(refreshMemory())} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300">Refresh</button>
+        <div className="flex flex-wrap items-center gap-2">
+          <div data-debug-id="memory-stat-strip" className="flex items-center gap-2 rounded-full border border-white/10 bg-black/20 px-3 py-1.5 text-[11.5px] text-zinc-400">
+            <span data-debug-id="memory-metric-total"><span className="text-zinc-200">{allRecords.length}</span> loaded</span>
+            <span className="text-zinc-700">·</span>
+            <span data-debug-id="memory-metric-filtered"><span className="text-zinc-200">{filteredRecords.length}</span> shown</span>
+            <span className="text-zinc-700">·</span>
+            <span data-debug-id="memory-metric-pending"><span className="text-zinc-200">{pendingRecords.length}</span> pending</span>
+            <span className="text-zinc-700">·</span>
+            <span data-debug-id="memory-metric-selected">v<span className="text-zinc-200">{selectedRecord ? String(selectedRecord.version || 0) : '—'}</span></span>
+          </div>
+          <button data-debug-id="memory-management-home-btn" onClick={onBackToHome} className="rounded-full border border-white/10 bg-[#141414] px-3.5 py-1.5 text-[12.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">Back to Home</button>
+          <button data-debug-id="memory-refresh-btn" onClick={() => dispatch(refreshMemory())} className="rounded-full bg-sky-400 px-3.5 py-1.5 text-[12.5px] font-semibold text-black hover:bg-sky-300">Refresh</button>
         </div>
-      </div>
-
-      <div className="mt-5 grid gap-3 md:grid-cols-4">
-        <MetricCard debugId="memory-metric-total" label="Loaded records" value={String(allRecords.length)} />
-        <MetricCard debugId="memory-metric-filtered" label="Filtered records" value={String(filteredRecords.length)} />
-        <MetricCard debugId="memory-metric-pending" label="Pending proposals" value={String(pendingRecords.length)} />
-        <MetricCard debugId="memory-metric-selected" label="Selected version" value={selectedRecord ? String(selectedRecord.version || 0) : '—'} />
       </div>
 
       <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(360px,0.95fr)]">
@@ -545,15 +547,6 @@ function Badge({ children }: any) {
 
 function Empty({ text }: { text: string }) {
   return <div className="rounded-2xl border border-dashed border-white/10 p-5 text-sm text-zinc-500">{text}</div>;
-}
-
-function MetricCard({ debugId, label, value }: { debugId: string; label: string; value: string }) {
-  return (
-    <div data-debug-id={debugId} className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
-      <div className="text-xs uppercase tracking-[0.18em] text-zinc-500">{label}</div>
-      <div className="mt-2 text-2xl font-semibold text-zinc-100">{value}</div>
-    </div>
-  );
 }
 
 function FilterInput({ debugId, label, value, onChange, placeholder }: any) {

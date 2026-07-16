@@ -35,6 +35,9 @@ def main() -> None:
 
     for marker, message in [
         ('data-debug-id="memory-management-surface"', 'memory surface root debug id missing'),
+        ('data-debug-id="memory-stat-strip"', 'memory compact stat strip debug id missing'),
+        ('data-debug-id="memory-metric-total"', 'memory loaded metric missing'),
+        ('data-debug-id="memory-metric-pending"', 'memory pending metric missing'),
         ('data-debug-id="memory-refresh-btn"', 'memory refresh button debug id missing'),
         ('data-debug-id="memory-filters"', 'memory filters debug id missing'),
         ('debugId="memory-filter-team-kind-input"', 'memory target_team_kind filter missing'),

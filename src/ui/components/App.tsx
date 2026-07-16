@@ -4810,12 +4810,10 @@ function GuideSidePanel({ agent, messages, loading, sending, debugInfo, currentP
         <button data-debug-id="guide-side-panel-close-btn" onClick={onClose} title="Close" aria-label="Close Heimdall Guide" className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 text-sm text-zinc-200 hover:bg-white/15">×</button>
       </div>
       <div className="flex min-h-0 flex-1 flex-col p-4">
-        <div className="mb-3 rounded-2xl border border-white/10 bg-black/20 p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <button data-debug-id="guide-debug-toggle-btn" onClick={onToggleDebugServer} className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold ${debugInfo?.enabled ? 'bg-emerald-400/15 text-emerald-100 hover:bg-emerald-400/20' : 'bg-white/10 text-zinc-200 hover:bg-white/15'}`} title="Start/stop Electron debug server"><span>{debugInfo?.enabled ? '●' : '○'}</span><span>Debug</span></button>
-            {debugInfo?.enabled && <button data-debug-id="guide-current-page-send-btn" onClick={onSendPageContext} className="min-w-0 flex-1 truncate rounded-xl bg-sky-400/10 px-3 py-2 text-left text-xs text-sky-100 hover:bg-sky-400/15" title="Send current UI context and Electron debug context endpoint to Guide">{currentPageLabel || currentPageInfo?.view || 'Current context'}</button>}
-          </div>
-          {debugInfo?.enabled && <div data-debug-id="guide-debug-info" className="mt-2 truncate font-mono text-[10px] text-zinc-500">http://127.0.0.1:{debugInfo.port} · pid {debugInfo.pid}</div>}
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <button data-debug-id="guide-debug-toggle-btn" onClick={onToggleDebugServer} className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] transition ${debugInfo?.enabled ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-100 hover:bg-emerald-400/15' : 'border-white/10 bg-transparent text-zinc-500 hover:text-zinc-300'}`} title="Start/stop Electron debug server"><span className="text-[9px]">{debugInfo?.enabled ? '●' : '○'}</span><span>Debug</span></button>
+          {debugInfo?.enabled && <button data-debug-id="guide-current-page-send-btn" onClick={onSendPageContext} className="min-w-0 flex-1 truncate rounded-full border border-white/10 bg-black/20 px-2.5 py-1 text-left text-[11px] text-zinc-400 hover:text-zinc-100" title="Send current UI context and Electron debug context endpoint to Guide">{currentPageLabel || currentPageInfo?.view || 'Current context'}</button>}
+          {debugInfo?.enabled && <span data-debug-id="guide-debug-info" className="truncate font-mono text-[10px] text-zinc-600">:{debugInfo.port} · pid {debugInfo.pid}</span>}
         </div>
         <CoordinatorMessageList
           chainId={GUIDE_AGENT_ID}
