@@ -187,6 +187,7 @@ agent_record_upsert :: proc(
 	identity_state: string = "",
 	agent_scope: string = "",
 	agent_role: string = "",
+	project_id_set: bool = false,
 ) -> (agent_record_id: string, final_tier: string, ok: bool) {
 	if template_id == "guide" && !guide_agent_is_singleton(agent_instance_id) {
 		fmt.printfln("GUIDE_LAUNCH ts_unix_ms=%d stage=record_upsert_rejected target=%s template=%s reason=guide_template_reserved", router_now_unix_ms(), agent_instance_id, template_id)
@@ -214,7 +215,9 @@ agent_record_upsert :: proc(
 		// Empty project_id from caller (e.g. /agents/start with no body project_id)
 		// must NOT clobber the stored association. Use the stored value as the
 		// fallback; explicit disassociation goes through /agents/disassociate.
-		if resolved_project_id == "" do resolved_project_id = agent_instance_records[idx].project_id
+		// However, an explicit project_id_set (e.g. runtime restart selecting
+		// "Project: none") applies the caller value verbatim, including clearing it.
+		if resolved_project_id == "" && !project_id_set do resolved_project_id = agent_instance_records[idx].project_id
 	} else if resolved_project_id == "" {
 		resolved_project_id = agent_id_default_project_id(agent_id_from_instance_id(agent_instance_id))
 	}
@@ -243,6 +246,10 @@ agent_record_upsert :: proc(
 handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 	template_id := extract_json_string(body, "template_id", extract_json_string(body, "persona", ""))
 	project_id := extract_json_string(body, "project_id", "")
+	// Explicit runtime restart with a project override (including clearing to
+	// "none") sets project_id_set so an empty value applies verbatim instead of
+	// preserving the stored instance project.
+	project_id_set := extract_json_bool(body, "project_id_set", false)
 	provider_profile := extract_json_string(body, "provider_profile", extract_json_string(body, "agent", ""))
 	display_name := extract_json_string(body, "display_name", extract_json_string(body, "alias", ""))
 	agent_role := extract_json_string(body, "agent_role", extract_json_string(body, "role", ""))
@@ -307,7 +314,7 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 		if identity.default_provider_profile != "" do persisted_provider_profile = identity.default_provider_profile
 		if identity.default_model_tier != "" do persisted_model_tier = identity.default_model_tier
 	}
-	agent_record_id, _, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, persisted_provider_profile, project_id, "", persisted_model_tier, "", manual_scope, agent_role)
+	agent_record_id, _, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, persisted_provider_profile, project_id, "", persisted_model_tier, "", manual_scope, agent_role, project_id_set)
 	if !upsert_ok {
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`)
 		return

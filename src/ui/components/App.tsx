@@ -2867,8 +2867,9 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
       if (agentHasLiveSession(agent)) await daemonApi.stopAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, timeInSec: 1 }).catch(() => undefined);
       // Restart the EXACT instance (agent.id) with runtime overrides. provider/tier
       // are runtime-only; project overrides only this concrete instance record and
-      // never mutates the durable identity default.
-      await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: nextProvider || agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || agent.agentRole || durableAgentId(agent), projectId: nextProjectId !== undefined ? nextProjectId : (agent.projectId || ''), displayName: agent.label || agent.id, modelTier: nextTier || agent.modelTier || 'normal', agentRole: agent.agentRole || agent.templateId || durableAgentId(agent) });
+      // never mutates the durable identity default. project_id_set applies the
+      // selected project verbatim (including clearing to none).
+      await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: nextProvider || agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || agent.agentRole || durableAgentId(agent), projectId: nextProjectId !== undefined ? nextProjectId : (agent.projectId || ''), projectIdSet: nextProjectId !== undefined, displayName: agent.label || agent.id, modelTier: nextTier || agent.modelTier || 'normal', agentRole: agent.agentRole || agent.templateId || durableAgentId(agent) });
       await onRefreshAgents?.();
     } catch (err: any) {
       setRuntimeRestartError(String(err?.message || err || 'Unable to restart exact agent instance.'));
@@ -3291,7 +3292,7 @@ function ConversationThreadPage({ agent, chats, session, projects = [], provider
     setMessageProvider(next.provider);
     setMessageTier(next.modelTier);
     if (agentHasLiveSession(agent)) await daemonApi.stopAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, timeInSec: 1 }).catch(() => undefined);
-    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: next.provider || agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || 'conversation', projectId: next.projectId || '', displayName: '', modelTier: next.modelTier || 'smart', agentRole: agent.agentRole || 'conversation' });
+    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: next.provider || agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || 'conversation', projectId: next.projectId || '', projectIdSet: true, displayName: '', modelTier: next.modelTier || 'smart', agentRole: agent.agentRole || 'conversation' });
     setLocallyStopped(false);
   });
 

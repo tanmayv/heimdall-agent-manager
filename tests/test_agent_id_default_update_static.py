@@ -50,4 +50,11 @@ require("updateAgentIdDefaults?: boolean" in DAEMON_API, "updateAgent API should
 require("if (updateAgentIdDefaults) body.update_agent_id_defaults = true;" in DAEMON_API, "updateAgent API should forward the flag")
 require("modelTier: editTier, updateAgentIdDefaults: true" in APP, "identity edit save must request durable default update")
 
+# Runtime restart must be able to set/clear an EXACT instance project via
+# /agents/start project_id_set, without going through /agents/disassociate.
+require("project_id_set: bool = false," in AGENTS_START, "agent_record_upsert must accept an explicit project_id_set flag")
+require('if resolved_project_id == "" && !project_id_set do resolved_project_id = agent_instance_records[idx].project_id' in AGENTS_START, "empty project must only be preserved when not explicitly set")
+require('project_id_set := extract_json_bool(body, "project_id_set", false)' in AGENTS_START, "/agents/start must read project_id_set")
+require("persisted_model_tier, \"\", manual_scope, agent_role, project_id_set)" in AGENTS_START, "/agents/start must forward project_id_set to agent_record_upsert")
+
 print("PASS: agent_id durable default update static checks")

@@ -377,6 +377,7 @@ checks = [
         'data-debug-id="conversation-composer-starting-indicator"',
         'debugPrefix="conversation" providers={providers} projects={projects} provider={messageProvider} modelTier={messageTier} projectId={agent?.projectId || \'\'}',
         'onRestart={restartConversationRuntime}',
+        'projectId: next.projectId || \'\', projectIdSet: true',
         'data-debug-id="conversation-composer-send-btn"',
     ])),
     ('chat surfaces use shared hover/focus message copy affordance for message bodies', all(snippet in APP + SETTINGS + MESSAGE_BUBBLE + STYLES + (ROOT / 'src/ui/components/ChatHoverCopyButton.tsx').read_text(encoding='utf-8') for snippet in [
@@ -445,6 +446,7 @@ checks = [
         'void restartExactRuntime(next.provider, next.modelTier, \'runtime\', next.projectId)',
         'agentInstanceId: agent.id, provider: nextProvider',
         'projectId: nextProjectId !== undefined ? nextProjectId : (agent.projectId || \'\')',
+        'projectIdSet: nextProjectId !== undefined',
         'await onSendAgentMessage?.(agent.id, body, interrupt, { provider: chatProvider, modelTier: chatTier });',
         'onSendAgentMessage: async (agentId: string, body: string, interrupt = false, runtime: any = {})',
         'provider: runtime.provider || exactAgent?.providerProfile',
