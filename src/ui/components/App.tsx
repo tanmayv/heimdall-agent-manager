@@ -5286,9 +5286,17 @@ export function isAgentRunning(agent: any): boolean {
   if (!agent) return false;
   const startup = String(agent.startupStatus || '').toLowerCase();
   const state = String(agent.state || agent.status || '').toLowerCase();
+  const mappedStatus = String(agent.status || '').toLowerCase();
   if (agent.blockedReason || state === 'blocked' || startup === 'blocked' || startup === 'startup_blocked') return false;
+  // An explicitly stopped/stopping instance is not running even if its durable
+  // `state` field is still `idle`. The mapped status is `offline` for stopped
+  // agents (see chatSlice), so a disconnected offline instance must not be
+  // treated as live — otherwise the conversation thread hides its Start/resume
+  // affordance after a stop.
+  if (startup === 'stopped' || startup === 'stopping') return false;
+  if (mappedStatus === 'offline' && !agent.connected) return false;
   if (agent.currentTaskId || agent.connected) return true;
-  return ['ready', 'live', 'connected', 'idle', 'working', 'active'].includes(state) || ['ready', 'connected'].includes(startup);
+  return ['ready', 'live', 'connected', 'working', 'active'].includes(state) || ['ready', 'connected'].includes(startup);
 }
 
 function TaskAgentChip({ role, agentId, agent, active, onClick }: any) {
