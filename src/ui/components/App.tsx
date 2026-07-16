@@ -710,6 +710,7 @@ export default function App() {
   useEffect(() => {
     (window as any).__heimdallPageContext = currentPageInfo;
   }, [currentPageInfo]);
+  const lastUrlTaskLogKeyRef = useRef('');
 
   const pendingMemoryIds = useMemo(() => (memory?.recordIds || []).filter((id: string) => memory.recordsById?.[id]?.status === 'pending').length, [memory?.recordIds, memory?.recordsById]);
   const mergeReviewingChains = useMemo(() => (Object.values(chainsById || {}) as any[]).filter((chain) => chain?.status === 'reviewing').length, [chainsById]);
@@ -747,8 +748,14 @@ export default function App() {
       dispatch(focusChainView(urlParams.chainId));
       return;
     }
-    if ((urlParams.view === 'chain' || urlParams.view === 'chain-editor') && urlParams.taskId) {
+    const routeTaskKey = (urlParams.view === 'chain' || urlParams.view === 'chain-editor') && urlParams.taskId
+      ? `${urlParams.view}:${urlParams.chainId || home.selectedChainId || ''}:${urlParams.taskId}`
+      : '';
+    if (routeTaskKey && lastUrlTaskLogKeyRef.current !== routeTaskKey) {
+      lastUrlTaskLogKeyRef.current = routeTaskKey;
       dispatch(fetchSelectedTaskLog(urlParams.taskId));
+    } else if (!routeTaskKey) {
+      lastUrlTaskLogKeyRef.current = '';
     }
     if (urlParams.projectId && home.selectedProjectId !== urlParams.projectId) {
       dispatch(selectProject(urlParams.projectId));
@@ -1836,11 +1843,6 @@ function writeLaunchAgentDefaults(daemonUrl: string, defaults: any) {
 }
 
 const SIDEBAR_PAGE_SIZE = 5;
-function shouldLoadMoreFromScroll(event: any): boolean {
-  const target = event?.currentTarget;
-  if (!target) return false;
-  return target.scrollTop + target.clientHeight >= target.scrollHeight - 24;
-}
 
 function SidebarConversationSection({ conversations = [], chats = {}, projectsById = {}, selectedAgentId = '', onOpenConversation, onNewConversation, newConversationBusy = false, compact = false, onFetchAgentPage }: any) {
   const [conversationLimit, setConversationLimit] = useState(SIDEBAR_PAGE_SIZE);
@@ -1896,7 +1898,7 @@ function SidebarConversationSection({ conversations = [], chats = {}, projectsBy
         <div className="font-semibold">Conversations · by project</div>
         <div className="text-zinc-600 normal-case tracking-normal">{visibleConversations.length}/{conversations.length}</div>
       </div>
-      <div data-debug-id="sidebar-conversations-paged-list" onScroll={(event) => { if (shouldLoadMoreFromScroll(event)) loadMoreConversations(); }} className="max-h-[300px] overflow-y-auto pr-1">
+      <div data-debug-id="sidebar-conversations-paged-list" className="max-h-[300px] overflow-y-auto pr-1">
         {groups.length === 0 ? <div className="px-2 py-1 text-[11px] text-zinc-600">No conversations yet</div> : (
           <div className="space-y-2 px-1">
             {groups.map((group) => (
@@ -2073,7 +2075,7 @@ function SidebarDurableAgentsSection({ groups = [], selectedAgentId = '', launch
         <span>Agents</span>
         <span className="text-[10px] normal-case tracking-normal text-zinc-700">{visibleGroups.length}/{(groups || []).length} durable</span>
       </div>
-      <div data-debug-id="sidebar-agents-paged-list" onScroll={(event) => { if (shouldLoadMoreFromScroll(event)) loadMoreAgents(); }} className="max-h-[248px] overflow-y-auto pr-1">
+      <div data-debug-id="sidebar-agents-paged-list" className="max-h-[248px] overflow-y-auto pr-1">
         {groups.length === 0 ? (
           <div className="px-2 py-2 text-xs text-zinc-600">No durable agents yet</div>
         ) : visibleGroups.map((group: any) => {
@@ -5135,7 +5137,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
               onPreviewMerge={onPreviewMerge}
             />
           ) : (
-          <aside data-debug-id="chain-task-surface" tabIndex={0} onFocus={refreshSelectedTaskLog} className="min-h-0 overflow-y-auto border-l border-[#262626] bg-[#0f0f0f] outline-none focus-visible:ring-1 focus-visible:ring-sky-400/40">
+          <aside data-debug-id="chain-task-surface" tabIndex={0} className="min-h-0 overflow-y-auto border-l border-[#262626] bg-[#0f0f0f] outline-none focus-visible:ring-1 focus-visible:ring-sky-400/40">
             <div className="px-[18px] py-4">
               <ChainProgressPanel chain={chain} progress={chainProgress} />
               <div className="mt-5 flex items-start justify-between gap-3">
