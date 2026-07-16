@@ -27,9 +27,15 @@ require("Chat_List_Summary" in MSG_DB, "summary struct missing")
 require("chat_list_derive_title" in USER_RPC, "daemon-side title derivation missing")
 require('"last_message_unix_ms":' in USER_RPC, "list_chats must emit last_message_unix_ms")
 require('"title":' in USER_RPC, "list_chats must emit persisted title")
-require("message_db_get_chat_list_summaries(user_id)" in USER_RPC, "list_chats must use ordered summaries")
-require("message_db_get_chat_list_summaries(author)" in CHAT_REST, "/chats must use ordered summaries")
-require('"last_message_unix_ms":' in CHAT_REST, "/chats must emit last_message_unix_ms")
+require("chat_list_build_rows(user_id)" in USER_RPC, "list_chats must use the merged row builder")
+require("chat_list_build_rows(author)" in CHAT_REST, "/chats must use the merged row builder")
+
+# Empty/new conversation instances (no messages) must be included with a stable
+# fallback ordering + title fallback.
+require("chat_list_build_rows" in USER_RPC, "merged conversation row builder missing")
+require('is_conversation := durable == "conversation"' in USER_RPC, "builder must detect conversation instances")
+require("fallback_ts := rec.updated_unix_ms" in USER_RPC, "empty threads must use updated/created fallback ordering")
+require("slice.sort_by(rows[:]" in USER_RPC, "rows must be sorted most-recent-first")
 
 # UI API + slice: daemon-authoritative conversation summaries.
 require("export async function listConversations" in API, "listConversations API missing")

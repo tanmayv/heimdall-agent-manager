@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import "core:net"
+import "core:slice"
 import "core:strings"
 
 handle_user_rpc :: proc(client: net.TCP_Socket, body: string) {
@@ -316,36 +317,109 @@ chat_list_derive_title :: proc(agent_instance_id, first_user_body: string) -> st
 	return strings.clone(one_line)
 }
 
-// Chat list for the conversation sidebar. The daemon is authoritative for both
-// ordering (most recent durable message first) and titles; the client must not
-// re-sort by locally-loaded messages. Rows carry agent_id/project_id/title and
-// last_message_unix_ms so the sidebar can group + order without extra fetches.
-chat_list_json :: proc(user_id: string) -> string {
-	builder := strings.builder_make()
-	strings.write_string(&builder, `{"ok":true,"chats":[`)
+Chat_List_Row :: struct {
+	agent_instance_id:    string,
+	agent_id:             string,
+	project_id:           string,
+	title:                string,
+	last_message_unix_ms: i64,
+	unread_count:         int,
+}
+
+chat_list_free_rows :: proc(rows: [dynamic]Chat_List_Row) {
+	for row in rows {
+		delete(row.agent_instance_id)
+		delete(row.agent_id)
+		delete(row.project_id)
+		delete(row.title)
+	}
+	delete(rows)
+}
+
+// Build the authoritative conversation-list rows for a user. Rows come from two
+// sources unioned by agent_instance_id:
+//   1. conversations that have messages (message-DB summaries: ordering ts +
+//      first-user-message title source);
+//   2. empty/new conversation instances that have no messages yet (durable
+//      Agent_Instance_Records with durable id "conversation"), so the daemon
+//      returns a stable fallback ordering (updated/created ts) + title fallback.
+// The merged set is sorted most-recent-first with a deterministic id tiebreak.
+chat_list_build_rows :: proc(user_id: string) -> [dynamic]Chat_List_Row {
+	rows := make([dynamic]Chat_List_Row)
+	seen := make(map[string]bool)
+	defer delete(seen)
 
 	summaries := message_db_get_chat_list_summaries(user_id)
 	defer message_db_free_chat_list_summaries(summaries)
-
-	first := true
 	for summary in summaries {
-		if !first do strings.write_string(&builder, `,`)
-		first = false
 		agent_id := summary.agent_instance_id
-		title := chat_list_derive_title(agent_id, summary.first_user_body)
-		defer delete(title)
-		durable := agent_id_from_instance_id(agent_id)
-		defer delete(durable)
-		project_id := ""
-		if idx := agent_record_index_by_instance(agent_id); idx >= 0 do project_id = agent_instance_records[idx].project_id
-		strings.write_string(&builder, `{"agent_instance_id":"`); json_write_string(&builder, agent_id)
-		strings.write_string(&builder, `","agent_id":"`); json_write_string(&builder, durable)
-		strings.write_string(&builder, `","project_id":"`); json_write_string(&builder, project_id)
-		strings.write_string(&builder, `","title":"`); json_write_string(&builder, title)
-		strings.write_string(&builder, `","last_message_unix_ms":`); strings.write_string(&builder, fmt.tprintf("%d", summary.last_message_unix_ms))
-		strings.write_string(&builder, `,"unread_count":`); strings.write_string(&builder, fmt.tprintf("%d", chat_unread_count(user_id, agent_id)))
-		strings.write_string(&builder, `}`)
+		row := Chat_List_Row{}
+		row.agent_instance_id = strings.clone(agent_id)
+		row.agent_id = agent_id_from_instance_id(agent_id)
+		row.title = chat_list_derive_title(agent_id, summary.first_user_body)
+		if idx := agent_record_index_by_instance(agent_id); idx >= 0 do row.project_id = strings.clone(agent_instance_records[idx].project_id)
+		else do row.project_id = strings.clone("")
+		row.last_message_unix_ms = summary.last_message_unix_ms
+		row.unread_count = chat_unread_count(user_id, agent_id)
+		append(&rows, row)
+		seen[agent_id] = true
 	}
+
+	// Add empty/new conversation instances that have no message row yet.
+	for i in 0..<agent_instance_record_count {
+		rec := agent_instance_records[i]
+		if rec.archived_at_unix_ms != 0 do continue
+		if rec.agent_instance_id == "" do continue
+		if seen[rec.agent_instance_id] do continue
+		durable := agent_id_from_instance_id(rec.agent_instance_id)
+		is_conversation := durable == "conversation" || rec.template_id == "conversation" || rec.agent_role == "conversation"
+		if !is_conversation { delete(durable); continue }
+		row := Chat_List_Row{}
+		row.agent_instance_id = strings.clone(rec.agent_instance_id)
+		row.agent_id = durable
+		row.project_id = strings.clone(rec.project_id)
+		row.title = chat_list_derive_title(rec.agent_instance_id, "")
+		// Stable fallback ordering for empty threads: updated, else created.
+		fallback_ts := rec.updated_unix_ms
+		if fallback_ts == 0 do fallback_ts = rec.created_unix_ms
+		row.last_message_unix_ms = fallback_ts
+		row.unread_count = chat_unread_count(user_id, rec.agent_instance_id)
+		append(&rows, row)
+		seen[rec.agent_instance_id] = true
+	}
+
+	// Most-recent-first; deterministic id tiebreak for equal timestamps.
+	slice.sort_by(rows[:], proc(a, b: Chat_List_Row) -> bool {
+		if a.last_message_unix_ms != b.last_message_unix_ms do return a.last_message_unix_ms > b.last_message_unix_ms
+		return a.agent_instance_id < b.agent_instance_id
+	})
+	return rows
+}
+
+chat_list_write_rows :: proc(builder: ^strings.Builder, rows: [dynamic]Chat_List_Row) {
+	first := true
+	for row in rows {
+		if !first do strings.write_string(builder, `,`)
+		first = false
+		strings.write_string(builder, `{"agent_instance_id":"`); json_write_string(builder, row.agent_instance_id)
+		strings.write_string(builder, `","agent_id":"`); json_write_string(builder, row.agent_id)
+		strings.write_string(builder, `","project_id":"`); json_write_string(builder, row.project_id)
+		strings.write_string(builder, `","title":"`); json_write_string(builder, row.title)
+		strings.write_string(builder, `","last_message_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", row.last_message_unix_ms))
+		strings.write_string(builder, `,"unread_count":`); strings.write_string(builder, fmt.tprintf("%d", row.unread_count))
+		strings.write_string(builder, `}`)
+	}
+}
+
+// Chat list for the conversation sidebar. The daemon is authoritative for both
+// ordering (most recent durable message first, empty threads by created/updated)
+// and titles; the client must not re-sort by locally-loaded messages.
+chat_list_json :: proc(user_id: string) -> string {
+	builder := strings.builder_make()
+	strings.write_string(&builder, `{"ok":true,"chats":[`)
+	rows := chat_list_build_rows(user_id)
+	defer chat_list_free_rows(rows)
+	chat_list_write_rows(&builder, rows)
 	strings.write_string(&builder, `]}`)
 	return strings.to_string(builder)
 }

@@ -128,6 +128,21 @@ daemon_url = "{URL}"
         require(chats[0]["agent_instance_id"] == c1, "newer message must move conversation to top")
         require(chats[0]["title"] == "Fix the flaky websocket reconnect loop please", "title must stay the first user message")
 
+        # Empty/new conversation instance (no messages) must still appear in the
+        # daemon list with a deterministic fallback ordering + empty title.
+        _, s3 = req("POST", "/agents/start", {"agent_id": "conversation"})
+        c3 = s3["agent_instance_id"]
+        data = rpc("list_chats", ctok)
+        ids = [c["agent_instance_id"] for c in data.get("chats", [])]
+        require(c3 in ids, "empty/new conversation instance must appear in daemon list")
+        empty_row = next(c for c in data["chats"] if c["agent_instance_id"] == c3)
+        require(empty_row["last_message_unix_ms"] > 0, "empty thread must have a deterministic fallback timestamp")
+        require(empty_row["title"] == "", "empty thread title should be empty (client renders New conversation)")
+        require(empty_row.get("agent_id") == "conversation", "empty row must carry durable agent_id")
+        # Rows remain globally sorted most-recent-first.
+        ts = [c["last_message_unix_ms"] for c in data["chats"]]
+        require(ts == sorted(ts, reverse=True), "all rows (incl. empty) must be sorted desc by last_message_unix_ms")
+
         # Restart -> ordering + titles preserved from durable message store.
         proc.terminate()
         try:
@@ -140,9 +155,14 @@ daemon_url = "{URL}"
         req("POST", "/user-client/register", {"user_id": "operator@local", "client_instance_id": CID, "client_token": ctok})
         data = rpc("list_chats", ctok)
         chats = data.get("chats", [])
-        require(len(chats) == 2, "conversations must survive restart")
-        require(chats[0]["agent_instance_id"] == c1, "order must survive restart")
-        require(chats[0]["title"] == "Fix the flaky websocket reconnect loop please", "title must survive restart")
+        ids = [c["agent_instance_id"] for c in chats]
+        require(c1 in ids and c2 in ids and c3 in ids, "conversations (incl. empty) must survive restart")
+        # c1 (newer message) must still sort ahead of c2 after restart.
+        require(ids.index(c1) < ids.index(c2), "relative message-order must survive restart")
+        c1_row = next(c for c in chats if c["agent_instance_id"] == c1)
+        require(c1_row["title"] == "Fix the flaky websocket reconnect loop please", "title must survive restart")
+        restart_ts = [c["last_message_unix_ms"] for c in chats]
+        require(restart_ts == sorted(restart_ts, reverse=True), "restart list must remain sorted desc")
 
         print("test_conversation_list_ordering_titles: ok")
     finally:
