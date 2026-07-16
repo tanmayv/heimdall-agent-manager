@@ -261,14 +261,21 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
     setAcceptanceDraft(taskAcceptance(selectedTask));
     setNewDepId('');
     setEditorError('');
-  }, [selectedTaskId, selectedTask?.title, selectedTask?.description, selectedTask ? taskAcceptance(selectedTask) : '']);
+    // Rehydrate drafts only when the selected task identity changes. Depending
+    // on task title/description/acceptance would re-run on background task
+    // refreshes and wipe long-form edits mid-typing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTaskId]);
 
   useEffect(() => {
     setChainTitleDraft(chain.title || '');
     setChainDescriptionDraft(chain.description || '');
     setChainCoordinatorDraft(chain.coordinatorAgentInstanceId || chain.coordinator_agent_instance_id || '');
     setChainReviewerDraft(chain.defaultReviewerAgentInstanceId || chain.default_reviewer_agent_instance_id || '');
-  }, [chain.chainId, chain.title, chain.description, chain.coordinatorAgentInstanceId, chain.coordinator_agent_instance_id, chain.defaultReviewerAgentInstanceId, chain.default_reviewer_agent_instance_id]);
+    // Rehydrate only when switching chains. Chain metadata refreshes rebuild the
+    // chain object and must not clobber in-progress chain description edits.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chain.chainId]);
 
   const runMutation = async (label: string, fn: () => Promise<any>, successTitle: string, successMessage = '') => {
     if (!auth.clientToken) throw new Error('Not connected to daemon');

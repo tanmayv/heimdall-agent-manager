@@ -84,7 +84,6 @@ type Project = {
 };
 
 const EMPTY: any[] = [];
-const PERIODIC_REVALIDATE_MS = 30000;
 const NEW_CHAIN_KIND_SCAFFOLD_DEFAULT_KEY = 'heimdall.newChain.kindScaffoldDefault';
 
 type NewChainKindScaffoldDefault = {
@@ -711,6 +710,7 @@ export default function App() {
     (window as any).__heimdallPageContext = currentPageInfo;
   }, [currentPageInfo]);
   const lastUrlTaskLogKeyRef = useRef('');
+  const lastUrlChainFocusKeyRef = useRef('');
 
   const pendingMemoryIds = useMemo(() => (memory?.recordIds || []).filter((id: string) => memory.recordsById?.[id]?.status === 'pending').length, [memory?.recordIds, memory?.recordsById]);
   const mergeReviewingChains = useMemo(() => (Object.values(chainsById || {}) as any[]).filter((chain) => chain?.status === 'reviewing').length, [chainsById]);
@@ -741,12 +741,18 @@ export default function App() {
       dispatch(fetchSelectedChat({ agentId: urlParams.agentId })).catch(() => undefined);
       return;
     }
-    if ((urlParams.view === 'chain' || urlParams.view === 'chain-editor') && urlParams.chainId && home.selectedChainId !== urlParams.chainId) {
+    const routeChainKey = (urlParams.view === 'chain' || urlParams.view === 'chain-editor') && urlParams.chainId
+      ? `${urlParams.view}:${urlParams.chainId}`
+      : '';
+    if (routeChainKey && lastUrlChainFocusKeyRef.current !== routeChainKey) {
+      lastUrlChainFocusKeyRef.current = routeChainKey;
       setAgentPageId('');
-      dispatch(selectChain(urlParams.chainId));
+      if (home.selectedChainId !== urlParams.chainId) dispatch(selectChain(urlParams.chainId));
       dispatch(fetchTasksForChain(urlParams.chainId));
       dispatch(focusChainView(urlParams.chainId));
       return;
+    } else if (!routeChainKey) {
+      lastUrlChainFocusKeyRef.current = '';
     }
     const routeTaskKey = (urlParams.view === 'chain' || urlParams.view === 'chain-editor') && urlParams.taskId
       ? `${urlParams.view}:${urlParams.chainId || home.selectedChainId || ''}:${urlParams.taskId}`
@@ -802,11 +808,6 @@ export default function App() {
     if (!guidePanelOpen || !session.connected) return undefined;
     dispatch(fetchGuideChat()).catch(() => undefined);
     dispatch(refreshAgents()).catch(() => undefined);
-    const interval = window.setInterval(() => {
-      dispatch(fetchGuideChat()).catch(() => undefined);
-      dispatch(refreshAgents()).catch(() => undefined);
-    }, 10000);
-    return () => window.clearInterval(interval);
   }, [dispatch, guidePanelOpen, session.connected]);
   useEffect(() => {
     if (!guidePanelOpen || !(window as any).odinApi?.getDebugInfo) return;
@@ -877,20 +878,6 @@ export default function App() {
     dispatch(updateSessionConfig({ daemonUrl: profile.url, userId: session.userId }));
     window.setTimeout(() => connectSession(0), 0);
   }, [dispatch, connectSession, session.daemonUrl, session.userId]);
-
-  useEffect(() => {
-    if (!session.connected) return undefined;
-    const periodic = window.setInterval(() => loadHomeData(true, 'periodic'), PERIODIC_REVALIDATE_MS);
-    const onFocus = () => loadHomeData(false, 'focus');
-    const onVisibility = () => { if (document.visibilityState === 'visible') loadHomeData(false, 'visibility'); };
-    window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => {
-      window.clearInterval(periodic);
-      window.removeEventListener('focus', onFocus);
-      document.removeEventListener('visibilitychange', onVisibility);
-    };
-  }, [loadHomeData, session.connected]);
 
   useEffect(() => {
     if (!session.connected || !session.clientToken || !session.clientInstanceId) return undefined;
@@ -1013,6 +1000,7 @@ export default function App() {
 
   const openChain = useCallback((chainId: string) => {
     setAgentPageId('');
+    lastUrlChainFocusKeyRef.current = `chain:${chainId}`;
     updateUrlParams({ chainId, view: 'chain', taskId: null, agentId: null, memoryId: null });
     dispatch(selectChain(chainId));
     dispatch(fetchTasksForChain(chainId));
@@ -1021,6 +1009,7 @@ export default function App() {
 
   const openChainEditor = useCallback((chainId: string, taskId = '') => {
     setAgentPageId('');
+    lastUrlChainFocusKeyRef.current = `chain-editor:${chainId}`;
     updateUrlParams({ chainId, view: 'chain-editor', taskId: taskId || null, agentId: null, memoryId: null });
     dispatch(selectChain(chainId));
     dispatch(fetchTasksForChain(chainId));
@@ -1028,23 +1017,12 @@ export default function App() {
   }, [dispatch]);
 
   useEffect(() => {
-    if (home.surface !== 'chain' || !home.selectedChainId || !session.connected) return undefined;
-    dispatch(focusChainView(home.selectedChainId));
-    const interval = window.setInterval(() => dispatch(revalidateChainView(home.selectedChainId)), PERIODIC_REVALIDATE_MS);
-    return () => window.clearInterval(interval);
-  }, [dispatch, home.surface, home.selectedChainId, session.connected]);
-
-  useEffect(() => {
     if (home.surface !== 'attention' || !session.connected) return undefined;
     dispatch(refreshChatApprovals());
     dispatch(refreshMergeDecisions());
     dispatch(refreshMemory());
-    const refresh = window.setInterval(() => {
-      dispatch(refreshChatApprovals());
-      dispatch(refreshMergeDecisions());
-    }, 30_000);
     const expiry = window.setInterval(() => dispatch(tickChatApprovalExpiry()), 15_000);
-    return () => { window.clearInterval(refresh); window.clearInterval(expiry); };
+    return () => window.clearInterval(expiry);
   }, [dispatch, home.surface, session.connected]);
 
   const selectSurfaceWithUrl = useCallback((next: string) => {
@@ -2764,14 +2742,6 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
   }, [agent?.id]);
 
   useEffect(() => {
-    const reloadOnFocus = () => { if (agent?.id) onRefreshChat?.(agent.id); };
-    window.addEventListener('focus', reloadOnFocus);
-    return () => window.removeEventListener('focus', reloadOnFocus);
-    // Parent callbacks are intentionally omitted.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agent?.id]);
-
-  useEffect(() => {
     setEditName(agent?.label || agent?.id || '');
     setEditProvider(agent?.providerProfile || '');
     setEditProject(agent?.projectId || '');
@@ -3235,14 +3205,6 @@ function ConversationThreadPage({ agent, chats, session, projects = [], provider
 
   useEffect(() => {
     if (agent?.id) onRefreshChat?.(agent.id);
-    // Parent callbacks are intentionally omitted.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agent?.id]);
-
-  useEffect(() => {
-    const reloadOnFocus = () => { if (agent?.id) onRefreshChat?.(agent.id); };
-    window.addEventListener('focus', reloadOnFocus);
-    return () => window.removeEventListener('focus', reloadOnFocus);
     // Parent callbacks are intentionally omitted.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent?.id]);
@@ -4769,11 +4731,6 @@ function GuideSidePanel({ agent, messages, loading, sending, debugInfo, currentP
     const timer = window.setTimeout(() => composerRef.current?.focus({ preventScroll: true }), 120);
     return () => window.clearTimeout(timer);
   }, []);
-  useEffect(() => {
-    const reloadOnFocus = () => onRefresh?.();
-    window.addEventListener('focus', reloadOnFocus);
-    return () => window.removeEventListener('focus', reloadOnFocus);
-  }, [onRefresh]);
   const submit = async () => {
     const body = draft.trim();
     if (!body || sending) return;
@@ -4947,11 +4904,6 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
   const chat = chainView.chatByChainId[chain.chainId] || [];
   const optimistic = chainView.optimisticMessagesByChainId[chain.chainId] || [];
   const messages = useMemo(() => normalizeCoordinatorMessages([...chat, ...optimistic]), [chat, optimistic]);
-  useEffect(() => {
-    const reloadOnFocus = () => { if (chain?.chainId) onLoadCoordinatorChatPage?.(chain.chainId, 0); };
-    window.addEventListener('focus', reloadOnFocus);
-    return () => window.removeEventListener('focus', reloadOnFocus);
-  }, [chain?.chainId, onLoadCoordinatorChatPage]);
   const diffOpen = Boolean(chainView.diffOpenByChainId[chain.chainId]);
   const diffData = chainView.workspaceDiffByChainId?.[chain.chainId] || {};
   const preview = chainView.mergePreviewByChainId[chain.chainId];
@@ -5017,11 +4969,6 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
   const [rightSidebarTab, setRightSidebarTab] = useState<'diffs' | 'artifacts'>('diffs');
   useEffect(() => {
     if (tasksPaneOpen && selectedTaskId) refreshSelectedTaskLog();
-  }, [tasksPaneOpen, selectedTaskId, refreshSelectedTaskLog]);
-  useEffect(() => {
-    const reloadOnFocus = () => { if (tasksPaneOpen && selectedTaskId) refreshSelectedTaskLog(); };
-    window.addEventListener('focus', reloadOnFocus);
-    return () => window.removeEventListener('focus', reloadOnFocus);
   }, [tasksPaneOpen, selectedTaskId, refreshSelectedTaskLog]);
   const evidenceSidebarOpen = diffOpen;
   const toggleEvidenceSidebar = () => {

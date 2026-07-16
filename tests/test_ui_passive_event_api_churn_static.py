@@ -26,10 +26,11 @@ def main() -> None:
     require("lastUrlTaskLogKeyRef.current !== routeTaskKey" in app, "task-log URL effect must be guarded by route key")
     require("dispatch(fetchSelectedTaskLog(urlParams.taskId));" in app, "URL task-log fetch should still exist for intentional route task open")
 
-    # Task pane focus/hover must not refresh logs. Explicit task open, window
-    # focus, and action completion remain the allowed refresh paths.
+    # Task pane focus/hover/window-focus must not refresh logs. Explicit task
+    # open, load-older, WS events, and action completion remain the allowed paths.
     require('data-debug-id="chain-task-surface" tabIndex={0} onFocus=' not in app, "task pane must not fetch on bubbled focus/hover-like interactions")
-    require('const reloadOnFocus = () => { if (tasksPaneOpen && selectedTaskId) refreshSelectedTaskLog(); };' in app, "window focus task-log refresh should remain")
+    require("window.addEventListener('focus'" not in app, "window focus must not trigger durable API fetches")
+    require("visibilitychange" not in app, "visibility changes must not trigger durable API fetches")
     require('if (initialTaskId) onOpenTask?.(initialTaskId);' in app, "explicit selected task open should remain")
 
     # Sidebar passive scroll must not call page fetches. Show More is the
@@ -41,10 +42,12 @@ def main() -> None:
     require('data-debug-id="sidebar-agents-show-more-btn"' in app and 'onClick={loadMoreAgents}' in app, "agent Show More pagination must remain")
 
     # Chain focus endpoint remains centralized and should only be reached through
-    # explicit chain open/revalidation call sites.
+    # explicit chain open/route-change and WS-event revalidation call sites.
     require("daemonApi.focusTaskChain" in chain_view, "focusTaskChain API should remain for explicit chain focus")
-    require("dispatch(focusChainView(chainId));" in app, "explicit chain open should still focus")
-    require("dispatch(revalidateChainView(home.selectedChainId))" in app, "periodic explicit chain revalidation should remain")
+    require("const routeChainKey" in app and "lastUrlChainFocusKeyRef.current !== routeChainKey" in app, "URL chain focus must be route-change guarded")
+    require("lastUrlChainFocusKeyRef.current = `chain:${chainId}`;" in app, "explicit chain open should mark route focus handled")
+    require("dispatch(revalidateChainView(focused));" in app or "dispatch(revalidateChainView(chainId));" in app, "WS events should still revalidate focused chain")
+    require("PERIODIC_REVALIDATE_MS" not in app, "periodic chain revalidation should be removed")
 
     print("PASS: passive UI event API churn static checks")
 

@@ -439,7 +439,7 @@ checks = [
         'aria-label="Uploading artifact"',
         'inline-block animate-bounce',
     ])),
-    ('chat and coordinator surfaces expose durable load-older pagination and focus reload hooks', all(snippet in APP + (ROOT / 'src/ui/store/chatSlice.ts').read_text(encoding='utf-8') + (ROOT / 'src/ui/store/chainViewSlice.ts').read_text(encoding='utf-8') for snippet in [
+    ('chat and coordinator surfaces expose durable load-older pagination and view/WS reload hooks', all(snippet in APP + (ROOT / 'src/ui/store/chatSlice.ts').read_text(encoding='utf-8') + (ROOT / 'src/ui/store/chainViewSlice.ts').read_text(encoding='utf-8') for snippet in [
         'chatsCursor',
         'chatsHasMore',
         'data-debug-id="conversation-thread-load-older-messages-btn"',
@@ -448,8 +448,9 @@ checks = [
         'fetchChainCoordinatorChatPage',
         'chatCursorByChainId',
         'chatHasMoreByChainId',
-        'window.addEventListener(\'focus\', reloadOnFocus)',
-    ])),
+        'dispatch(fetchSelectedChat({ agentId: selectedDirectAgent }))',
+        'dispatch(revalidateChainView(focused));',
+    ]) and "window.addEventListener('focus'" not in APP),
     ('task panel paginates task comment logs and highlights completion comments', all(snippet in APP + (ROOT / 'src/ui/store/taskSlice.ts').read_text(encoding='utf-8') + (ROOT / 'src/ui/api/daemonApi.ts').read_text(encoding='utf-8') for snippet in [
         'taskLogCursorByTaskId',
         'taskLogHasMoreByTaskId',
@@ -458,7 +459,7 @@ checks = [
         'data-debug-id={`task-detail-comments-load-older-btn-${task.taskId}`}',
         'data-debug-id={completionComment ? `task-detail-completion-comment-${task.taskId}-${commentIndex}`',
         "Completion comment · review handoff",
-        'const reloadOnFocus = () => { if (tasksPaneOpen && selectedTaskId) refreshSelectedTaskLog(); };',
+        'if (tasksPaneOpen && selectedTaskId) refreshSelectedTaskLog();',
         'fetchSelectedTaskLog({ taskId, cursor })',
         'limit,\n      cursor,',
     ])),
