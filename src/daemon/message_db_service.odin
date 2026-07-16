@@ -709,6 +709,59 @@ message_db_get_distinct_agents :: proc(user_id: string) -> [dynamic]string {
 	return agents
 }
 
+// Summary row for the conversation sidebar/list. Ordering is authoritative here
+// (most recent durable message first); the UI must not re-sort by locally-loaded
+// messages. first_user_body is the first user->agent message body, used to derive
+// a durable-ish conversation title server-side when no explicit title exists.
+Chat_List_Summary :: struct {
+	agent_instance_id:    string,
+	last_message_unix_ms: i64,
+	first_user_body:      string,
+}
+
+message_db_free_chat_list_summaries :: proc(rows: [dynamic]Chat_List_Summary) {
+	for row in rows {
+		delete(row.agent_instance_id)
+		delete(row.first_user_body)
+	}
+	delete(rows)
+}
+
+// Returns one summary per distinct agent_instance_id for this user, ordered by
+// most recent message timestamp descending. Each row also carries the first
+// user_to_agent message body (empty if none) so the daemon can provide a title
+// without the client loading every thread's messages.
+message_db_get_chat_list_summaries :: proc(user_id: string) -> [dynamic]Chat_List_Summary {
+	rows := make([dynamic]Chat_List_Summary)
+	stmt: sqlite3_stmt = nil
+
+	// Per conversation: MAX(created) for ordering, plus the body of the earliest
+	// user->agent message (title source). Ordered most-recent-first.
+	query := `SELECT m.agent_instance_id, MAX(m.created_unix_ms) AS last_ms,
+		(SELECT u.body FROM messages u WHERE u.user_id = m.user_id AND u.agent_instance_id = m.agent_instance_id AND u.direction = 'user_to_agent' ORDER BY u.created_unix_ms ASC LIMIT 1) AS first_user_body
+		FROM messages m WHERE m.user_id = ? GROUP BY m.agent_instance_id ORDER BY last_ms DESC`
+
+	rc := sqlite3_prepare_v2(message_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK {
+		fmt.println("message_db_get_chat_list_summaries: prepare failed:", rc)
+		return rows
+	}
+	defer sqlite3_finalize(stmt)
+
+	sqlite3_bind_text(stmt, 1, cstring(raw_data(user_id)), i32(len(user_id)), SQLITE_TRANSIENT)
+
+	for sqlite3_step(stmt) == SQLITE_ROW {
+		summary := Chat_List_Summary{}
+		summary.agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 0))
+		summary.last_message_unix_ms = sqlite3_column_int64(stmt, 1)
+		body_ptr := sqlite3_column_text(stmt, 2)
+		if body_ptr != nil do summary.first_user_body = strings.clone_from_cstring(body_ptr)
+		append(&rows, summary)
+	}
+
+	return rows
+}
+
 message_db_get_max_unread_timestamp :: proc(user_id, agent_instance_id, direction: string) -> i64 {
 	stmt: sqlite3_stmt = nil
 

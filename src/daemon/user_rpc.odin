@@ -280,18 +280,70 @@ chat_fetch_json :: proc(user_id, agent_instance_id: string, unread_only: bool = 
 	return strings.to_string(builder)
 }
 
+// Derive a durable-ish conversation title server-side. Precedence:
+//   1. explicit persisted instance display_name (when it is not just the id or
+//      the durable agent_id),
+//   2. first user->agent message body (truncated),
+//   3. empty string (client renders a "New conversation" fallback while empty).
+chat_list_derive_title :: proc(agent_instance_id, first_user_body: string) -> string {
+	durable := agent_id_from_instance_id(agent_instance_id)
+	defer delete(durable)
+	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 {
+		dn := strings.trim_space(agent_instance_records[idx].display_name)
+		if dn != "" && dn != agent_instance_id && !strings.equal_fold(dn, durable) {
+			return strings.clone(dn)
+		}
+	}
+	body := strings.trim_space(first_user_body)
+	if body == "" do return ""
+	// Collapse internal whitespace to single spaces for a clean one-line title.
+	collapsed := strings.builder_make()
+	defer strings.builder_destroy(&collapsed)
+	prev_space := false
+	for r in body {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			if !prev_space do strings.write_rune(&collapsed, ' ')
+			prev_space = true
+		} else {
+			strings.write_rune(&collapsed, r)
+			prev_space = false
+		}
+	}
+	one_line := strings.trim_space(strings.to_string(collapsed))
+	if len(one_line) > 56 {
+		return strings.clone(fmt.tprintf("%s…", one_line[:53]))
+	}
+	return strings.clone(one_line)
+}
+
+// Chat list for the conversation sidebar. The daemon is authoritative for both
+// ordering (most recent durable message first) and titles; the client must not
+// re-sort by locally-loaded messages. Rows carry agent_id/project_id/title and
+// last_message_unix_ms so the sidebar can group + order without extra fetches.
 chat_list_json :: proc(user_id: string) -> string {
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"ok":true,"chats":[`)
 
-	agents := message_db_get_distinct_agents(user_id)
+	summaries := message_db_get_chat_list_summaries(user_id)
+	defer message_db_free_chat_list_summaries(summaries)
 
 	first := true
-	for agent_id in agents {
+	for summary in summaries {
 		if !first do strings.write_string(&builder, `,`)
 		first = false
+		agent_id := summary.agent_instance_id
+		title := chat_list_derive_title(agent_id, summary.first_user_body)
+		defer delete(title)
+		durable := agent_id_from_instance_id(agent_id)
+		defer delete(durable)
+		project_id := ""
+		if idx := agent_record_index_by_instance(agent_id); idx >= 0 do project_id = agent_instance_records[idx].project_id
 		strings.write_string(&builder, `{"agent_instance_id":"`); json_write_string(&builder, agent_id)
-		strings.write_string(&builder, `","unread_count":`); strings.write_string(&builder, fmt.tprintf("%d", chat_unread_count(user_id, agent_id)))
+		strings.write_string(&builder, `","agent_id":"`); json_write_string(&builder, durable)
+		strings.write_string(&builder, `","project_id":"`); json_write_string(&builder, project_id)
+		strings.write_string(&builder, `","title":"`); json_write_string(&builder, title)
+		strings.write_string(&builder, `","last_message_unix_ms":`); strings.write_string(&builder, fmt.tprintf("%d", summary.last_message_unix_ms))
+		strings.write_string(&builder, `,"unread_count":`); strings.write_string(&builder, fmt.tprintf("%d", chat_unread_count(user_id, agent_id)))
 		strings.write_string(&builder, `}`)
 	}
 	strings.write_string(&builder, `]}`)

@@ -372,6 +372,27 @@ export const refreshSettingsCatalog = createAsyncThunk('chat/refreshSettingsCata
   return { templates, providers };
 });
 
+export const refreshConversationSummaries = createAsyncThunk('chat/refreshConversationSummaries', async (_, { getState }) => {
+  const state = getState() as any;
+  const { daemonUrl, clientInstanceId, clientToken } = state.chat.session;
+  if (!clientToken) return {} as Record<string, any>;
+  const data = await daemonApi.listConversations({ daemonUrl, clientInstanceId, clientToken });
+  const byId: Record<string, any> = {};
+  for (const row of data.chats || []) {
+    const id = row.agent_instance_id || row.agentInstanceId || '';
+    if (!id) continue;
+    byId[id] = {
+      agentInstanceId: id,
+      agentId: row.agent_id || row.agentId || '',
+      projectId: row.project_id || row.projectId || '',
+      title: String(row.title || ''),
+      lastMessageUnixMs: Number(row.last_message_unix_ms || row.lastMessageUnixMs || 0),
+      unreadCount: Number(row.unread_count || row.unreadCount || 0),
+    };
+  }
+  return byId;
+});
+
 export const refreshAgents = createAsyncThunk('chat/refreshAgents', async (_, { getState }) => {
   const state = getState() as any;
   const { daemonUrl } = state.chat.session;
@@ -581,6 +602,11 @@ const initialState = {
   settingsProviders: [] as any[],
   selectedAgentId: '',
   agents: [],
+  // Daemon-authoritative conversation summaries keyed by agent_instance_id:
+  // { title, lastMessageUnixMs, projectId, agentId, unreadCount }. Populated from
+  // list_chats on explicit triggers only; the sidebar uses these for ordering +
+  // titles instead of locally-loaded messages.
+  conversationSummaryById: {} as Record<string, any>,
   chats: {},
   chatsCursor: {} as Record<string, number>,   // Track cursor per agent (identity)
   chatsHasMore: {} as Record<string, boolean>,  // Track if there are more messages per agent
@@ -935,6 +961,9 @@ const chatSlice = createSlice({
       .addCase(refreshSettingsCatalog.fulfilled, (state: any, action) => {
         state.settingsTemplates = action.payload.templates || [];
         state.settingsProviders = action.payload.providers || [];
+      })
+      .addCase(refreshConversationSummaries.fulfilled, (state: any, action) => {
+        state.conversationSummaryById = action.payload || {};
       })
       .addCase(refreshAgents.fulfilled, (state, action) => {
         state.agents = action.payload;

@@ -249,6 +249,14 @@ export async function disassociateAgentFromProject({ daemonUrl, agentRecordId, a
   });
 }
 
+// Daemon-authoritative conversation list for the sidebar: rows are returned
+// most-recent-first with persisted titles and last_message_unix_ms. Used only
+// on explicit triggers (open/create/send/refresh) — never passive events.
+export async function listConversations({ daemonUrl, clientInstanceId, clientToken }: UserRpcRequest) {
+  const data = await userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action: 'list_chats' });
+  return { ...data, chats: data.chats ?? [] };
+}
+
 export async function fetchChat({ daemonUrl, clientToken, agentInstanceId, limit = 50, cursor = 0, chainId = '' }: Partial<AgentRequest> & { limit?: number; cursor?: number; chainId?: string }) {
   let path = `/chats/${encodeURIComponent(agentInstanceId || '')}/messages?limit=${limit}`;
   if (cursor > 0) {

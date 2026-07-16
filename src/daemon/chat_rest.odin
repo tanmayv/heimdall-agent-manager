@@ -17,22 +17,35 @@ handle_get_chats :: proc(client: net.TCP_Socket, ctx: ^Route_Context) {
 		return
 	}
 
+	// Daemon-authoritative ordering (most recent first) + titles; mirrors
+	// chat_list_json used by /user-rpc list_chats.
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"chats":[`)
-	agents := message_db_get_distinct_agents(author)
+	summaries := message_db_get_chat_list_summaries(author)
+	defer message_db_free_chat_list_summaries(summaries)
 	first := true
-	for agent_id in agents {
+	for summary in summaries {
 		if !first do strings.write_string(&builder, `,`)
 		first = false
+		agent_id := summary.agent_instance_id
 		unread := chat_unread_count(author, agent_id)
+		title := chat_list_derive_title(agent_id, summary.first_user_body)
+		defer delete(title)
+		durable := agent_id_from_instance_id(agent_id)
+		defer delete(durable)
+		project_id := ""
+		if idx := agent_record_index_by_instance(agent_id); idx >= 0 do project_id = agent_instance_records[idx].project_id
 		strings.write_string(&builder, `{"agent_instance_id":"`)
 		json_write_string(&builder, agent_id)
-		strings.write_string(&builder, `","unread_count":`)
+		strings.write_string(&builder, `","agent_id":"`); json_write_string(&builder, durable)
+		strings.write_string(&builder, `","project_id":"`); json_write_string(&builder, project_id)
+		strings.write_string(&builder, `","title":"`); json_write_string(&builder, title)
+		strings.write_string(&builder, `","last_message_unix_ms":`)
+		strings.write_string(&builder, fmt.tprintf("%d", summary.last_message_unix_ms))
+		strings.write_string(&builder, `,"unread_count":`)
 		strings.write_string(&builder, fmt.tprintf("%d", unread))
 		strings.write_string(&builder, `}`)
-		delete(agent_id)
 	}
-	delete(agents)
 	strings.write_string(&builder, `]}`)
 
 	write_response(client, 200, "OK", strings.to_string(builder))

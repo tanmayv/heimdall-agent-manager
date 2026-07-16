@@ -16,6 +16,7 @@ import {
   fetchPreferences,
   fetchSelectedChat,
   refreshAgents,
+  refreshConversationSummaries,
   refreshSettingsCatalog,
   registerSession,
   removeDaemonProfile,
@@ -366,7 +367,10 @@ function conversationProjectName(agent: any, projectsById: Record<string, any>):
   return projectsById?.[projectId]?.name || String(agent?.projectName || agent?.project_name || projectId || 'No project');
 }
 
-function conversationTitle(agent: any, messages: any[] = []): string {
+function conversationTitle(agent: any, messages: any[] = [], summary?: any): string {
+  // Daemon-persisted title is authoritative when present (survives reload/resume).
+  const daemonTitle = String(summary?.title || '').trim();
+  if (daemonTitle) return daemonTitle;
   const explicit = String(agent?.label || agent?.display_name || '').trim();
   const id = String(agent?.id || agent?.agent_instance_id || '').trim();
   const durable = durableAgentId(agent);
@@ -380,7 +384,11 @@ function conversationTitle(agent: any, messages: any[] = []): string {
   return body.length > 56 ? `${body.slice(0, 53)}…` : body;
 }
 
-function conversationSortUnixMs(agent: any, messages: any[] = []): number {
+function conversationSortUnixMs(agent: any, messages: any[] = [], summary?: any): number {
+  // Daemon-provided last_message_unix_ms is authoritative for ordering so the
+  // sidebar does not depend on locally-loaded messages (avoids extra fetches).
+  const daemonTs = Number(summary?.lastMessageUnixMs || 0);
+  if (daemonTs) return daemonTs;
   const latestMessage = (messages || []).reduce((max: number, msg: any) => Math.max(max, Number(msg?.createdUnixMs || msg?.created_unix_ms || 0)), 0);
   return latestMessage || Number(agent?.lastSeenUnixMs || agent?.last_seen_unix_ms || 0);
 }
@@ -601,7 +609,7 @@ function attentionCount(tasksById: Record<string, any>, attention: any, pendingM
 
 export default function App() {
   const dispatch = useDispatch<any>();
-  const { agents, session, daemonProfiles, selectedAgentId, chats, chatsCursor, chatsHasMore, guidePanelOpen, guideSending, fetchingChatsByAgentId, settingsTemplates, settingsProviders } = useSelector((state: any) => state.chat);
+  const { agents, session, daemonProfiles, selectedAgentId, chats, chatsCursor, chatsHasMore, guidePanelOpen, guideSending, fetchingChatsByAgentId, settingsTemplates, settingsProviders, conversationSummaryById } = useSelector((state: any) => state.chat);
   const { projectsById, projectIds, mutating: projectMutating, error: projectError } = useSelector((state: any) => state.projects);
   const { chainsById, tasksById, chainTaskIds, taskLogsByTaskId, taskLogCursorByTaskId, taskLogHasMoreByTaskId, taskLogLoadingByTaskId, taskLogTotalByTaskId, loading } = useSelector((state: any) => state.tasks);
   const home = useSelector((state: any) => state.home);
@@ -777,6 +785,7 @@ export default function App() {
     await Promise.all([
       dispatch(refreshProjects()).catch(() => undefined),
       dispatch(refreshAgents()).catch(() => undefined),
+      dispatch(refreshConversationSummaries()).catch(() => undefined),
       dispatch(fetchPreferences()).catch(() => undefined),
       dispatch(refreshSettingsCatalog()).catch(() => undefined),
     ]);
@@ -1157,6 +1166,7 @@ export default function App() {
       updateUrlParams({ view: 'agent', agentId: resolvedId, chainId: null, taskId: null, memoryId: null, projectId: projectId || null });
       await dispatch(refreshAgents()).unwrap().catch(() => undefined);
       dispatch(fetchSelectedChat({ agentId: resolvedId })).catch(() => undefined);
+      dispatch(refreshConversationSummaries()).catch(() => undefined);
       return resolvedId;
     } finally {
       setNewConversationBusy(false);
@@ -1235,6 +1245,7 @@ export default function App() {
           <ConversationFocusedSidebar
             conversations={conversationAgents}
             chats={chats}
+            summaryById={conversationSummaryById}
             projectsById={projectsById}
             selectedAgentId={agentPageId}
             onOpenConversation={openAgentPage}
@@ -1295,6 +1306,7 @@ export default function App() {
             const sharedAgentPageProps = {
               agent: selectedPageAgent,
               chats,
+              conversationSummary: conversationSummaryById?.[agentPageId],
               session,
               projects,
               providers: settingsProviders,
@@ -1326,6 +1338,10 @@ export default function App() {
                 }
                 await daemonApi.sendToAgent({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, agentInstanceId: agentId, body, interrupt });
                 dispatch(fetchSelectedChat({ agentId }));
+                // Explicit send may create/refresh a conversation title and bump
+                // its last_message_unix_ms; refresh daemon summaries so sidebar
+                // ordering/title stay correct (explicit trigger, not passive).
+                dispatch(refreshConversationSummaries()).catch(() => undefined);
               },
             };
             return isConversationAgent(selectedPageAgent) ? (
@@ -1823,10 +1839,10 @@ function writeLaunchAgentDefaults(daemonUrl: string, defaults: any) {
 
 const SIDEBAR_PAGE_SIZE = 5;
 
-function SidebarConversationSection({ conversations = [], chats = {}, projectsById = {}, selectedAgentId = '', onOpenConversation, onNewConversation, newConversationBusy = false, compact = false, onFetchAgentPage }: any) {
+function SidebarConversationSection({ conversations = [], chats = {}, summaryById = {}, projectsById = {}, selectedAgentId = '', onOpenConversation, onNewConversation, newConversationBusy = false, compact = false, onFetchAgentPage }: any) {
   const [conversationLimit, setConversationLimit] = useState(SIDEBAR_PAGE_SIZE);
   const [conversationLoadingMore, setConversationLoadingMore] = useState(false);
-  const sortedConversations = useMemo(() => [...(conversations || [])].sort((left: any, right: any) => conversationSortUnixMs(right, chats?.[right.id] || []) - conversationSortUnixMs(left, chats?.[left.id] || [])), [conversations, chats]);
+  const sortedConversations = useMemo(() => [...(conversations || [])].sort((left: any, right: any) => conversationSortUnixMs(right, chats?.[right.id] || [], summaryById?.[right.id]) - conversationSortUnixMs(left, chats?.[left.id] || [], summaryById?.[left.id])), [conversations, chats, summaryById]);
   useEffect(() => { setConversationLimit((current) => Math.min(Math.max(SIDEBAR_PAGE_SIZE, current), Math.max(SIDEBAR_PAGE_SIZE, sortedConversations.length))); }, [sortedConversations.length]);
   const visibleConversations = sortedConversations.slice(0, conversationLimit);
   const hiddenConversationCount = Math.max(0, sortedConversations.length - visibleConversations.length);
@@ -1851,15 +1867,15 @@ function SidebarConversationSection({ conversations = [], chats = {}, projectsBy
     return Object.values(grouped)
       .map((group) => ({
         ...group,
-        rows: group.rows.sort((left: any, right: any) => conversationSortUnixMs(right, chats?.[right.id] || []) - conversationSortUnixMs(left, chats?.[left.id] || [])),
+        rows: group.rows.sort((left: any, right: any) => conversationSortUnixMs(right, chats?.[right.id] || [], summaryById?.[right.id]) - conversationSortUnixMs(left, chats?.[left.id] || [], summaryById?.[left.id])),
       }))
       .sort((left, right) => {
-        const leftLatest = Math.max(0, ...left.rows.map((row: any) => conversationSortUnixMs(row, chats?.[row.id] || [])));
-        const rightLatest = Math.max(0, ...right.rows.map((row: any) => conversationSortUnixMs(row, chats?.[row.id] || [])));
+        const leftLatest = Math.max(0, ...left.rows.map((row: any) => conversationSortUnixMs(row, chats?.[row.id] || [], summaryById?.[row.id])));
+        const rightLatest = Math.max(0, ...right.rows.map((row: any) => conversationSortUnixMs(row, chats?.[row.id] || [], summaryById?.[row.id])));
         if (leftLatest !== rightLatest) return rightLatest - leftLatest;
         return left.projectName.localeCompare(right.projectName);
       });
-  }, [visibleConversations, chats, projectsById]);
+  }, [visibleConversations, chats, summaryById, projectsById]);
 
   return (
     <div className="mb-3" data-debug-id="sidebar-conversations">
@@ -1886,8 +1902,8 @@ function SidebarConversationSection({ conversations = [], chats = {}, projectsBy
                 <div className="space-y-0.5">
                   {group.rows.map((agent: any) => {
                     const active = selectedAgentId === agent.id;
-                    const title = conversationTitle(agent, chats?.[agent.id] || []);
-                    const unread = Number(agent?.unreadCount || 0);
+                    const title = conversationTitle(agent, chats?.[agent.id] || [], summaryById?.[agent.id]);
+                    const unread = Number(summaryById?.[agent.id]?.unreadCount ?? agent?.unreadCount ?? 0);
                     const runtime = agentRuntimeDot(agent);
                     const live = isAgentRunning(agent);
                     const status = agentStatusIndicator(agent, live ? 'Conversation thread is live' : 'Conversation thread is available as history');
@@ -1930,7 +1946,7 @@ function SidebarConversationSection({ conversations = [], chats = {}, projectsBy
 }
 
 
-function ConversationFocusedSidebar({ conversations = [], chats = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, collapsed = false, onToggleCollapsed, agents = [], allAgents = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onOpenAgentInstance, onStartAgentInstance, onFetchAgentPage, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onMemory, onAgents, onTaskChains, onProjects, onSettings }: any) {
+function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryById = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, collapsed = false, onToggleCollapsed, agents = [], allAgents = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onOpenAgentInstance, onStartAgentInstance, onFetchAgentPage, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onMemory, onAgents, onTaskChains, onProjects, onSettings }: any) {
   const chainUpdatedMs = (chain: any) => Number(chain?.updatedAtUnixMs || chain?.updated_at_unix_ms || chain?.updatedAt || chain?.updated_at || chain?.createdAtUnixMs || chain?.created_at_unix_ms || 0);
   const sortedChains = [...(chains || [])].sort((a: any, b: any) => chainUpdatedMs(b) - chainUpdatedMs(a));
   const activeChains = sortedChains.filter((chain: any) => !isChainCompleted(chain)).slice(0, 4);
@@ -1983,6 +1999,7 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, projectsBy
         <SidebarConversationSection
           conversations={conversations}
           chats={chats}
+          summaryById={summaryById}
           projectsById={projectsById}
           selectedAgentId={selectedAgentId}
           onOpenConversation={onOpenConversation}
@@ -3204,7 +3221,7 @@ function NewConversationPage({ session, projects = [], providers = [], defaultPr
   );
 }
 
-function ConversationThreadPage({ agent, chats, session, projects = [], providers = [], chatDraft = '', chatPagination = {}, onChatDraftChange, onBack, onRefreshChat, onRefreshAgents, onSendAgentMessage }: any) {
+function ConversationThreadPage({ agent, chats, conversationSummary, session, projects = [], providers = [], chatDraft = '', chatPagination = {}, onChatDraftChange, onBack, onRefreshChat, onRefreshAgents, onSendAgentMessage }: any) {
   const draft = chatDraft;
   const setDraft = (next: any) => {
     const value = typeof next === 'function' ? next(draft) : next;
@@ -3224,7 +3241,7 @@ function ConversationThreadPage({ agent, chats, session, projects = [], provider
   const projectName = agent?.projectName || projects.find((project: any) => (project.projectId || project.project_id) === agent?.projectId)?.name || agent?.projectId || 'No project';
   const runtime = agentRuntimeDot(agent);
   const live = isAgentRunning(agent) && !locallyStopped;
-  const title = conversationTitle(agent, chats?.[agent?.id] || []);
+  const title = conversationTitle(agent, chats?.[agent?.id] || [], conversationSummary);
   const daemonLabel = daemonDisplayLabel(session?.daemonUrl || '');
 
   useEffect(() => {
