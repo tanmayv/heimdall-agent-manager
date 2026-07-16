@@ -199,8 +199,8 @@ task_notify_fallback :: proc(state: Task_State, payload, author: string) -> (rec
 	}
 	for c in candidates {
 		if c == "" || c == author do continue
-		_ = task_notify_recipient(c, payload)
-		return c, true
+		delivery := task_notify_recipient_delivery(c, payload)
+		return c, !delivery.failed
 	}
 	// Last resort: durable-queue to the human inbox so the event has an audit trail.
 	_ = notification_outbox_insert_pending(HUMAN_RECIPIENT_ID, payload)
@@ -356,8 +356,8 @@ task_notify_all_lgtm_required :: proc(task_id, chain_id: string) {
 		if task_reviewer_has_voted(task_id, p.agent_instance_id) do continue
 		if task_reviewer_active_slot_blocker(p.agent_instance_id, task_id) != "" do continue
 		task_notify_review_ready_agent(state, p.agent_instance_id)
-		task_notify_recipient(p.agent_instance_id, payload)
-		notified_count += 1
+		delivery := task_notify_recipient_delivery(p.agent_instance_id, payload)
+		if !delivery.failed do notified_count += 1
 	}
 	if notified_count > 0 {
 		fmt.printfln("NOTIFY: task=%s chain=%s status=review_ready lgtm_required_notified=%d", task_id, chain_id, notified_count)
@@ -372,16 +372,20 @@ task_notify_all_lgtm_required :: proc(task_id, chain_id: string) {
 	if default_reviewer != "" {
 		if !task_reviewer_has_voted(task_id, default_reviewer) && task_reviewer_active_slot_blocker(default_reviewer, task_id) == "" {
 			task_notify_review_ready_agent(state, default_reviewer)
-			task_notify_recipient(default_reviewer, payload)
-			fmt.printfln("NOTIFY: task=%s chain=%s status=review_ready fallback=default_reviewer=%s has_required=%t", task_id, chain_id, default_reviewer, has_required)
-			return
+			delivery := task_notify_recipient_delivery(default_reviewer, payload)
+			if !delivery.failed {
+				fmt.printfln("NOTIFY: task=%s chain=%s status=review_ready fallback=default_reviewer=%s has_required=%t", task_id, chain_id, default_reviewer, has_required)
+				return
+			}
 		}
 	}
 	coord := task_runtime_agent_target(task_coordinator_agent_instance_id(state))
 	if coord != "" {
-		task_notify_recipient(coord, payload)
-		fmt.printfln("NOTIFY: task=%s chain=%s status=review_ready fallback=coordinator=%s has_required=%t", task_id, chain_id, coord, has_required)
-		return
+		delivery := task_notify_recipient_delivery(coord, payload)
+		if !delivery.failed {
+			fmt.printfln("NOTIFY: task=%s chain=%s status=review_ready fallback=coordinator=%s has_required=%t", task_id, chain_id, coord, has_required)
+			return
+		}
 	}
 	_ = notification_outbox_insert_pending(HUMAN_RECIPIENT_ID, payload)
 	fmt.printfln("NOTIFY: task=%s chain=%s status=review_ready fallback=operator_durable has_required=%t", task_id, chain_id, has_required)
@@ -459,13 +463,14 @@ task_notify_recipient_delivery_except :: proc(agent_instance_id, payload, skip_a
 }
 
 task_notify_recipient :: proc(agent_instance_id, payload: string) -> bool {
-	return task_notify_recipient_delivery(agent_instance_id, payload).live_delivered
+	delivery := task_notify_recipient_delivery(agent_instance_id, payload)
+	return !delivery.failed
 }
 
 task_notify_recipient_delivery :: proc(agent_instance_id, payload: string) -> Task_Notification_Delivery {
 	if agent_instance_id == "" do return Task_Notification_Delivery{failed = true}
 	event_id := notification_outbox_insert_pending(agent_instance_id, payload)
-	ok := registry_send_ws_text(agent_instance_id, payload)
+	ok := registry_send_ws_text_or_remote(agent_instance_id, payload)
 	if event_id != "" {
 		_ = notification_outbox_mark_attempt(agent_instance_id, event_id, ok)
 	}

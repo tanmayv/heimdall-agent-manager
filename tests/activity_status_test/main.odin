@@ -9,6 +9,7 @@ import wrapper "odin_test:wrapper"
 main :: proc() {
 	test_activity_config_defaults()
 	test_activity_config_override_and_clamp()
+	test_peer_config_parse()
 	test_capture_classification()
 	test_heartbeat_payload_privacy()
 	fmt.println("activity_status_test: ok")
@@ -60,6 +61,26 @@ max_gap_ms = 444
 	check(effective.ignore_bottom_lines == 1, "ignore_bottom_lines should clamp to sample_line_count - 1")
 	check(effective.check_interval_seconds == 15, "check_interval_seconds should fall back to 15")
 	check(effective.min_gap_ms == 100 && effective.max_gap_ms == 700, "gap range should swap into ascending order")
+}
+
+test_peer_config_parse :: proc() {
+	cfg := config.default_config()
+	config.parse_config(`
+[daemon]
+federation_advertised_agent_instance_ids = ["reviewer@s-1", "coder@s-2"]
+
+[[peer]]
+name = "studio-mini"
+endpoint = "http://studio-mini.local:49322/"
+token = "peer-secret"
+`, &cfg)
+	check(len(cfg.daemon.peers) == 1, "expected one parsed peer")
+	check(cfg.daemon.peers[0].name == "studio-mini", "peer name did not parse")
+	check(cfg.daemon.peers[0].endpoint == "http://studio-mini.local:49322/", "peer endpoint did not parse")
+	check(cfg.daemon.peers[0].token == "peer-secret", "peer token did not parse")
+	check(len(cfg.daemon.federation_advertised_agent_instance_ids) == 2, "expected advertised agent allowlist to parse")
+	check(cfg.daemon.federation_advertised_agent_instance_ids[0] == "reviewer@s-1", "first advertised agent id did not parse")
+	check(cfg.daemon.federation_advertised_agent_instance_ids[1] == "coder@s-2", "second advertised agent id did not parse")
 }
 
 test_capture_classification :: proc() {

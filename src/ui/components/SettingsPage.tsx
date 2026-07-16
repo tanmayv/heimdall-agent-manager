@@ -399,19 +399,104 @@ function daemonDisplay(url: string): string {
 
 function DaemonPanel({ session, daemonProfiles = [], agents = [], projects = [], onReconnect, onAddProfile, onRemoveProfile, debugInfo, setDebugInfo }: any) {
   const activeUrl = session?.daemonUrl || '';
+  const clientToken = session?.clientToken || '';
   const profiles = daemonProfiles.length ? daemonProfiles : [{ label: 'Local daemon', url: activeUrl }];
   const [daemonUrl, setDaemonUrl] = useState(activeUrl || '');
   const [label, setLabel] = useState('Local daemon');
   const [userId, setUserId] = useState(session?.userId || 'operator@local');
+  const [peerUrl, setPeerUrl] = useState('');
+  const [peerLabel, setPeerLabel] = useState('');
+  const [peerToken, setPeerToken] = useState('');
+  const [peers, setPeers] = useState<any[]>([]);
+  const [peerAgentCounts, setPeerAgentCounts] = useState<Record<string, number>>({});
+  const [peerBusy, setPeerBusy] = useState('');
+  const [peerError, setPeerError] = useState('');
+
   useEffect(() => { setDaemonUrl(activeUrl || ''); setUserId(session?.userId || 'operator@local'); }, [activeUrl, session?.userId]);
+
+  async function refreshPeers() {
+    if (!activeUrl || !clientToken) {
+      setPeers([]);
+      setPeerAgentCounts({});
+      return;
+    }
+    setPeerError('');
+    const nextPeers = await daemonApi.listFederationPeers({ daemonUrl: activeUrl, clientToken });
+    setPeers(nextPeers || []);
+    const counts: Record<string, number> = {};
+    await Promise.all((nextPeers || []).map(async (peer: any) => {
+      if (String(peer?.status || '') !== 'linked') return;
+      try {
+        const data = await daemonApi.listPeerAdvertisedAgents({ daemonUrl: activeUrl, clientToken, peerId: peer.peer_id });
+        counts[String(peer.peer_id || '')] = Array.isArray(data?.agents) ? data.agents.length : 0;
+      } catch {
+        // Peer rows still render from the peer list even if the live directory call fails.
+      }
+    }));
+    setPeerAgentCounts(counts);
+  }
+
+  useEffect(() => {
+    refreshPeers().catch((err: any) => setPeerError(err?.message || 'Unable to load peer daemons'));
+  }, [activeUrl, clientToken]);
+
   const connect = () => {
     const nextUrl = daemonUrl.trim();
     if (!nextUrl) return;
     onAddProfile?.({ daemonUrl: nextUrl, url: nextUrl, label: label.trim() || daemonDisplay(nextUrl) });
     onReconnect?.({ daemonUrl: nextUrl, userId: userId.trim() || 'operator@local' });
   };
+
+  const connectPeer = async () => {
+    const nextUrl = peerUrl.trim();
+    const nextPeerId = peerLabel.trim() || daemonDisplay(nextUrl);
+    const nextPeerToken = peerToken.trim();
+    if (!nextUrl || !nextPeerId || !nextPeerToken || !clientToken) return;
+    setPeerBusy('connect');
+    setPeerError('');
+    try {
+      await daemonApi.linkFederationPeer({ daemonUrl: activeUrl, clientToken, peerId: nextPeerId, peerUrl: nextUrl, peerToken: nextPeerToken });
+      setPeerUrl('');
+      setPeerLabel('');
+      setPeerToken('');
+      await refreshPeers();
+    } catch (err: any) {
+      setPeerError(err?.message || 'Unable to connect peer daemon');
+    } finally {
+      setPeerBusy('');
+    }
+  };
+
+  const reconnectPeer = async (peerId: string) => {
+    if (!clientToken) return;
+    setPeerBusy(`reconnect-${peerId}`);
+    setPeerError('');
+    try {
+      await daemonApi.reconnectFederationPeer({ daemonUrl: activeUrl, clientToken, peerId });
+      await refreshPeers();
+    } catch (err: any) {
+      setPeerError(err?.message || 'Unable to reconnect peer daemon');
+    } finally {
+      setPeerBusy('');
+    }
+  };
+
+  const removePeer = async (peerId: string) => {
+    if (!clientToken) return;
+    setPeerBusy(`remove-${peerId}`);
+    setPeerError('');
+    try {
+      await daemonApi.removeFederationPeer({ daemonUrl: activeUrl, clientToken, peerId });
+      await refreshPeers();
+    } catch (err: any) {
+      setPeerError(err?.message || 'Unable to remove peer daemon');
+    } finally {
+      setPeerBusy('');
+    }
+  };
+
   return (
-    <Panel title="Daemons" subtitle="Connect and manage the daemon this UI controls. v1 uses one active daemon at a time; counts are scoped to that daemon.">
+    <Panel title="Daemons" subtitle="Connect and manage the daemon this UI controls, plus peer daemons that lend agents. v1 uses one active daemon; peers are used for remote reviewers only.">
       <div data-debug-id="settings-daemon-single-active-banner" className="mb-4 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-4 text-sm text-amber-100">Single active daemon mode: switch/reconnect changes the active daemon. Merged multi-daemon views are intentionally deferred for v1.</div>
       <div className="mb-3 text-xs uppercase tracking-[0.18em] text-zinc-500">Connected</div>
       <div data-debug-id="settings-daemon-list" className="space-y-2">
@@ -430,6 +515,26 @@ function DaemonPanel({ session, daemonProfiles = [], agents = [], projects = [],
         })}
       </div>
 
+      <div className="mt-6 text-xs uppercase tracking-[0.18em] text-zinc-500">Peer daemons</div>
+      <div className="mt-3 rounded-2xl border border-teal-400/20 bg-teal-400/10 p-4 text-sm text-teal-100">Peers are linked in the background and not switched to. Connecting a peer copies no projects or agents into this UI; remote agents are fetched live when the picker opens.</div>
+      {peerError && <div className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{peerError}</div>}
+      <div data-debug-id="settings-peer-daemon-list" className="mt-3 space-y-2">
+        {peers.length === 0 ? <Empty text="No peer daemons linked yet." /> : peers.map((peer: any) => {
+          const peerId = String(peer?.peer_id || 'peer');
+          const slug = peerId.toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+          const linked = String(peer?.status || '') === 'linked';
+          const count = peerAgentCounts[peerId];
+          return (
+            <div key={peerId} data-debug-id={`settings-peer-daemon-row-${slug}`} className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+              <span className={`h-2.5 w-2.5 rounded-full ${linked ? 'bg-emerald-400' : 'bg-zinc-500'}`} />
+              <div className="min-w-0 flex-1"><div className="font-semibold text-zinc-100">{peerId}</div><div className="mt-1 truncate font-mono text-xs text-zinc-500">{peer.peer_url || '—'}</div><div className="mt-1 text-xs text-zinc-500">{linked ? 'linked' : 'unreachable'} · daemon_id {peer.daemon_id || 'unknown'} · version {peer.version || 'unknown'}{linked && count !== undefined ? ` · lends ${count} agents` : ''}</div></div>
+              <button data-debug-id={`settings-peer-daemon-reconnect-btn-${slug}`} type="button" onClick={() => reconnectPeer(peerId)} disabled={Boolean(peerBusy)} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-50">Reconnect</button>
+              <button data-debug-id={`settings-peer-daemon-remove-btn-${slug}`} type="button" onClick={() => removePeer(peerId)} disabled={Boolean(peerBusy)} className="rounded-xl bg-red-400/10 px-3 py-2 text-xs text-red-200 hover:bg-red-400/15 disabled:cursor-not-allowed disabled:opacity-50">Remove</button>
+            </div>
+          );
+        })}
+      </div>
+
       <div className="mt-6 text-xs uppercase tracking-[0.18em] text-zinc-500">Add daemon</div>
       <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
         <div className="grid gap-3 md:grid-cols-3">
@@ -438,6 +543,16 @@ function DaemonPanel({ session, daemonProfiles = [], agents = [], projects = [],
           <label className="block text-sm text-zinc-300">User id<input data-debug-id="settings-daemon-user-input" value={userId} onChange={(event) => setUserId(event.target.value)} placeholder="operator@local" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" /></label>
         </div>
         <div className="mt-4 flex items-center justify-between gap-3"><div className="flex items-center gap-2 text-xs text-zinc-500"><span>Color</span><span className="h-4 w-4 rounded-full bg-sky-400" /><span className="h-4 w-4 rounded-full bg-emerald-400" /><span className="h-4 w-4 rounded-full bg-amber-400" /><span className="h-4 w-4 rounded-full bg-violet-400" /></div><button data-debug-id="settings-daemon-add-btn" type="button" onClick={connect} disabled={!daemonUrl.trim()} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:opacity-50">Connect</button></div>
+      </div>
+
+      <div className="mt-6 text-xs uppercase tracking-[0.18em] text-zinc-500">Add peer daemon</div>
+      <div className="mt-3 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+        <div className="grid gap-3 md:grid-cols-3">
+          <label className="block text-sm text-zinc-300">Peer URL<input data-debug-id="settings-peer-daemon-url-input" value={peerUrl} onChange={(event) => setPeerUrl(event.target.value)} placeholder="https://peer:7777" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-teal-400" /></label>
+          <label className="block text-sm text-zinc-300">Label<input data-debug-id="settings-peer-daemon-label-input" value={peerLabel} onChange={(event) => setPeerLabel(event.target.value)} placeholder="studio-mini" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-teal-400" /></label>
+          <label className="block text-sm text-zinc-300">Access token<input data-debug-id="settings-peer-daemon-token-input" type="password" value={peerToken} onChange={(event) => setPeerToken(event.target.value)} placeholder="Paste peer token" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-teal-400" /></label>
+        </div>
+        <div className="mt-4 flex items-center justify-between gap-3"><div className="text-xs text-zinc-500">Saved peer tokens stay on the daemon and are never shown again in the UI.</div><button data-debug-id="settings-peer-daemon-connect-btn" type="button" onClick={() => { void connectPeer(); }} disabled={!peerUrl.trim() || !peerToken.trim() || Boolean(peerBusy)} className="rounded-xl bg-teal-400 px-4 py-2 text-sm font-semibold text-black hover:bg-teal-300 disabled:cursor-not-allowed disabled:opacity-50">Connect peer</button></div>
       </div>
 
       <div className="mt-6 grid gap-4 lg:grid-cols-2">

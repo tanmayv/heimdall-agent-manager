@@ -43,6 +43,12 @@ Config :: struct {
 	ctl: Ctl_Config,
 }
 
+Peer_Config :: struct {
+	name: string,
+	endpoint: string,
+	token: string,
+}
+
 Daemon_Config :: struct {
 	bind_host: string,
 	advertise_host: string,
@@ -70,6 +76,8 @@ Daemon_Config :: struct {
 	wrapper_bin: string,
 	artifact_max_bytes: int,
 	artifact_blob_dir: string,
+	peers: [dynamic]Peer_Config,
+	federation_advertised_agent_instance_ids: []string,
 }
 
 Guide_Agent_Config :: struct {
@@ -176,6 +184,7 @@ Load_Result :: struct {
 Section :: enum {
 	None,
 	Daemon,
+	Peer,
 	Wrapper,
 	Wrapper_Agent_Command,
 	Wrapper_Agent_Bootstrap,
@@ -230,6 +239,7 @@ parse_config :: proc(content: string, cfg: ^Config) {
 	section := Section.None
 	current_agent_command := ""
 	current_bootstrap_feature := ""
+	current_peer_index := -1
 	legacy_warned := make([dynamic]string)
 	lines := strings.split(content, "\n")
 
@@ -245,6 +255,11 @@ parse_config :: proc(content: string, cfg: ^Config) {
 		if line == "[wrapper]" {
 			section = .Wrapper
 			current_agent_command = ""
+			continue
+		}
+		if line == "[[peer]]" {
+			section = .Peer
+			current_peer_index = ensure_peer(&cfg.daemon)
 			continue
 		}
 		if line == "[guide_agent]" {
@@ -318,6 +333,8 @@ parse_config :: proc(content: string, cfg: ^Config) {
 		#partial switch section {
 		case .Daemon:
 			parse_daemon_key(key, value, &cfg.daemon)
+		case .Peer:
+			parse_peer_key(current_peer_index, key, value, &cfg.daemon)
 		case .Wrapper:
 			parse_wrapper_key(key, value, &cfg.wrapper)
 		case .Wrapper_Agent_Command:
@@ -423,6 +440,26 @@ parse_daemon_key :: proc(key, value: string, cfg: ^Daemon_Config) {
 		if n, ok := strconv.parse_int(value); ok do cfg.artifact_max_bytes = int(n)
 	case "artifact_blob_dir":
 		cfg.artifact_blob_dir = expand_home(parse_string(value))
+	case "federation_advertised_agent_instance_ids":
+		cfg.federation_advertised_agent_instance_ids = parse_string_array(value)
+	case:
+	}
+}
+
+ensure_peer :: proc(cfg: ^Daemon_Config) -> int {
+	append(&cfg.peers, Peer_Config{})
+	return len(cfg.peers) - 1
+}
+
+parse_peer_key :: proc(idx: int, key, value: string, cfg: ^Daemon_Config) {
+	if idx < 0 || idx >= len(cfg.peers) do return
+	switch key {
+	case "name":
+		cfg.peers[idx].name = parse_string(value)
+	case "endpoint":
+		cfg.peers[idx].endpoint = parse_string(value)
+	case "token":
+		cfg.peers[idx].token = parse_string(value)
 	case:
 	}
 }
@@ -733,6 +770,8 @@ default_config :: proc() -> Config {
 	cfg.daemon.default_agent_model_tier = "normal"
 	cfg.daemon.artifact_max_bytes = 10 * 1024 * 1024
 	cfg.daemon.artifact_blob_dir = ""
+	cfg.daemon.peers = make([dynamic]Peer_Config)
+	cfg.daemon.federation_advertised_agent_instance_ids = nil
 
 	cfg.guide_agent.enabled = true
 	cfg.guide_agent.autostart = true

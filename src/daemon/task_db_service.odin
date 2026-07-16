@@ -160,6 +160,41 @@ task_db_create_schema :: proc() -> bool {
 		PRIMARY KEY (recipient_agent_instance_id, event_id)
 	);
 
+	CREATE TABLE IF NOT EXISTS federation_delivery_outbox (
+		peer_id TEXT NOT NULL,
+		route_kind TEXT NOT NULL,
+		idempotency_key TEXT NOT NULL,
+		payload TEXT NOT NULL,
+		created_unix_ms INTEGER NOT NULL,
+		delivered_unix_ms INTEGER NOT NULL DEFAULT 0,
+		attempts INTEGER NOT NULL DEFAULT 0,
+		last_attempt_unix_ms INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (peer_id, route_kind, idempotency_key)
+	);
+
+	CREATE TABLE IF NOT EXISTS federation_delivery_dedupe (
+		scope TEXT NOT NULL,
+		idempotency_key TEXT NOT NULL,
+		created_unix_ms INTEGER NOT NULL,
+		PRIMARY KEY (scope, idempotency_key)
+	);
+
+	CREATE TABLE IF NOT EXISTS federation_remote_messages (
+		record_key TEXT PRIMARY KEY,
+		message_id TEXT NOT NULL,
+		owner_peer_id TEXT NOT NULL,
+		owner_daemon_id TEXT NOT NULL,
+		local_agent_instance_id TEXT NOT NULL,
+		remote_agent_instance_id TEXT NOT NULL,
+		proxy_agent_instance_id TEXT NOT NULL,
+		conversation_id TEXT NOT NULL,
+		origin_conversation_id TEXT NOT NULL,
+		body TEXT NOT NULL,
+		body_available INTEGER NOT NULL DEFAULT 0,
+		created_unix_ms INTEGER NOT NULL,
+		read_unix_ms INTEGER NOT NULL DEFAULT 0
+	);
+
 	CREATE TABLE IF NOT EXISTS task_events (
 		journal_seq INTEGER PRIMARY KEY AUTOINCREMENT,
 		event_id TEXT NOT NULL,
@@ -175,6 +210,9 @@ task_db_create_schema :: proc() -> bool {
 	CREATE INDEX IF NOT EXISTS idx_votes_task ON task_lgtm_votes(task_id);
 	CREATE INDEX IF NOT EXISTS idx_participants_task ON task_participants(task_id);
 	CREATE INDEX IF NOT EXISTS idx_task_notification_outbox_pending ON task_notification_outbox(recipient_agent_instance_id, delivered_unix_ms, created_unix_ms);
+	CREATE INDEX IF NOT EXISTS idx_federation_delivery_outbox_pending ON federation_delivery_outbox(peer_id, delivered_unix_ms, created_unix_ms);
+	CREATE INDEX IF NOT EXISTS idx_federation_remote_messages_lookup ON federation_remote_messages(local_agent_instance_id, conversation_id, created_unix_ms);
+	CREATE INDEX IF NOT EXISTS idx_federation_remote_messages_origin ON federation_remote_messages(owner_peer_id, message_id);
 	CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, journal_seq);
 	CREATE INDEX IF NOT EXISTS idx_task_events_chain ON task_events(chain_id, journal_seq);
 	`

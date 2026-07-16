@@ -126,6 +126,19 @@ rest_authorize :: proc(client: net.TCP_Socket, ctx: ^Route_Context) -> (string, 
 	return author, true
 }
 
+rest_authorize_user :: proc(client: net.TCP_Socket, ctx: ^Route_Context) -> (string, bool) {
+	if ctx.token == "" {
+		write_response(client, 401, "Unauthorized", `{"error":"unauthorized","message":"missing authorization token"}`)
+		return "", false
+	}
+	user_id := user_client_id_for_token(ctx.token)
+	if user_id == "" {
+		write_response(client, 401, "Unauthorized", `{"error":"unauthorized","message":"user client token required"}`)
+		return "", false
+	}
+	return user_id, true
+}
+
 // Handle REST routes. Returns true if handled, false if it should fall back to old routes
 handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_Context) -> bool {
 	if len(ctx.segments) == 0 do return false
@@ -243,6 +256,66 @@ handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_C
 	if len(ctx.segments) == 3 && ctx.segments[0] == "tasks" && ctx.segments[2] == "comments" && ctx.method == "GET" {
 		task_id := ctx.segments[1]
 		handle_get_task_comments(client, task_id, ctx)
+		return true
+	}
+
+	// GET /federation/agents?peer_token=...
+	if len(ctx.segments) == 2 && ctx.segments[0] == "federation" && ctx.segments[1] == "agents" && ctx.method == "GET" {
+		handle_get_federation_agents(client, ctx)
+		return true
+	}
+
+	// GET /federation/peers
+	if len(ctx.segments) == 2 && ctx.segments[0] == "federation" && ctx.segments[1] == "peers" && ctx.method == "GET" {
+		handle_get_federation_peers(client, ctx)
+		return true
+	}
+
+	// POST /federation/proxies/bind
+	if len(ctx.segments) == 3 && ctx.segments[0] == "federation" && ctx.segments[1] == "proxies" && ctx.segments[2] == "bind" && ctx.method == "POST" {
+		handle_post_federation_proxy_bind(client, request_body(request), ctx)
+		return true
+	}
+
+	// POST /federation/inbox
+	if len(ctx.segments) == 2 && ctx.segments[0] == "federation" && ctx.segments[1] == "inbox" && ctx.method == "POST" {
+		handle_post_federation_inbox(client, request_body(request), ctx)
+		return true
+	}
+
+	// POST /federation/callback
+	if len(ctx.segments) == 2 && ctx.segments[0] == "federation" && ctx.segments[1] == "callback" && ctx.method == "POST" {
+		handle_post_federation_callback(client, request_body(request), ctx)
+		return true
+	}
+
+	// POST /federation/peers/link
+	if len(ctx.segments) == 3 && ctx.segments[0] == "federation" && ctx.segments[1] == "peers" && ctx.segments[2] == "link" && ctx.method == "POST" {
+		handle_post_federation_peer_link(client, request_body(request), ctx)
+		return true
+	}
+
+	// POST /federation/peers/reconnect
+	if len(ctx.segments) == 3 && ctx.segments[0] == "federation" && ctx.segments[1] == "peers" && ctx.segments[2] == "reconnect" && ctx.method == "POST" {
+		handle_post_federation_peer_reconnect(client, request_body(request), ctx)
+		return true
+	}
+
+	// POST /federation/peers/remove
+	if len(ctx.segments) == 3 && ctx.segments[0] == "federation" && ctx.segments[1] == "peers" && ctx.segments[2] == "remove" && ctx.method == "POST" {
+		handle_post_federation_peer_remove(client, request_body(request), ctx)
+		return true
+	}
+
+	// GET /federation/peers/{peer_id}/agents
+	if len(ctx.segments) == 4 && ctx.segments[0] == "federation" && ctx.segments[1] == "peers" && ctx.segments[3] == "agents" && ctx.method == "GET" {
+		handle_get_federation_peer_agents(client, ctx.segments[2], ctx)
+		return true
+	}
+
+	// GET /federation/messages/{message_id}
+	if len(ctx.segments) == 3 && ctx.segments[0] == "federation" && ctx.segments[1] == "messages" && ctx.method == "GET" {
+		handle_get_federation_message(client, ctx.segments[2], ctx)
 		return true
 	}
 

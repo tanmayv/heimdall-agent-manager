@@ -118,10 +118,94 @@ export async function archiveAgentTemplate({ daemonUrl, templateId }: { daemonUr
   });
 }
 
+export type FederationPeerRecord = {
+  peer_record_id: string;
+  peer_id: string;
+  peer_url: string;
+  daemon_id: string;
+  version: string;
+  status: string;
+  created_unix_ms: number;
+  updated_unix_ms: number;
+  last_checked_unix_ms: number;
+};
+
+export type FederationAgentRecord = {
+  agent_instance_id: string;
+  display_name: string;
+  template_id: string;
+  agent_role: string;
+  provider_profile: string;
+  model_tier: string;
+  identity_state: string;
+};
+
 export async function listKnownAgents({ daemonUrl, projectId = '' }: { daemonUrl: string; projectId?: string }) {
   const path = projectId ? `/agents?project_id=${encodeURIComponent(projectId)}` : '/agents';
   const data = await requestJson(joinUrl(daemonUrl, path));
   return data.agents ?? data.records ?? [];
+}
+
+export async function listFederationPeers({ daemonUrl, clientToken }: { daemonUrl: string; clientToken: string }) {
+  const data = await requestJson(joinUrl(daemonUrl, '/federation/peers'), {
+    headers: { Authorization: `Bearer ${clientToken}` },
+  });
+  return data.peers ?? [];
+}
+
+export async function linkFederationPeer({ daemonUrl, clientToken, peerId, peerUrl, peerToken }: { daemonUrl: string; clientToken: string; peerId: string; peerUrl: string; peerToken: string }) {
+  return requestJson(joinUrl(daemonUrl, '/federation/peers/link'), {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${clientToken}` },
+    body: {
+      peer_id: peerId,
+      peer_url: peerUrl,
+      peer_token: peerToken,
+    },
+  });
+}
+
+export async function reconnectFederationPeer({ daemonUrl, clientToken, peerId }: { daemonUrl: string; clientToken: string; peerId: string }) {
+  return requestJson(joinUrl(daemonUrl, '/federation/peers/reconnect'), {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${clientToken}` },
+    body: { peer_id: peerId },
+  });
+}
+
+export async function removeFederationPeer({ daemonUrl, clientToken, peerId }: { daemonUrl: string; clientToken: string; peerId: string }) {
+  return requestJson(joinUrl(daemonUrl, '/federation/peers/remove'), {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${clientToken}` },
+    body: { peer_id: peerId },
+  });
+}
+
+export async function listPeerAdvertisedAgents({ daemonUrl, clientToken, peerId }: { daemonUrl: string; clientToken: string; peerId: string }) {
+  const data = await requestJson(joinUrl(daemonUrl, `/federation/peers/${encodeURIComponent(peerId)}/agents`), {
+    headers: { Authorization: `Bearer ${clientToken}` },
+  });
+  return {
+    daemonId: String(data.daemon_id || data.daemonId || ''),
+    version: String(data.version || ''),
+    agents: data.agents ?? [],
+  };
+}
+
+export async function bindRemoteProxy({ daemonUrl, clientToken, peerId, remoteAgentInstanceId, displayName = '', templateId = '', providerProfile = '', modelTier = 'normal', agentRole = '' }: { daemonUrl: string; clientToken: string; peerId: string; remoteAgentInstanceId: string; displayName?: string; templateId?: string; providerProfile?: string; modelTier?: string; agentRole?: string }) {
+  return requestJson(joinUrl(daemonUrl, '/federation/proxies/bind'), {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${clientToken}` },
+    body: {
+      peer_id: peerId,
+      remote_agent_instance_id: remoteAgentInstanceId,
+      display_name: displayName,
+      template_id: templateId,
+      provider_profile: providerProfile,
+      model_tier: modelTier,
+      agent_role: agentRole,
+    },
+  });
 }
 
 export async function listKnownAgentsPage({ daemonUrl, projectId = '', limit = 20, offset = 0 }: { daemonUrl: string; projectId?: string; limit?: number; offset?: number }) {

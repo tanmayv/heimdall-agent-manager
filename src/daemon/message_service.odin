@@ -28,7 +28,13 @@ message_service_send_message :: proc(command: Command) -> Service_Result {
 		fmt.println("send_message failure invalid_target", target_agent_instance_id, "from", from_agent_instance_id)
 		return Service_Result{ok = false, message = `{"ok":false,"message":"invalid target_agent_instance_id"}`, status_code = 400, status_text = "Bad Request"}
 	}
+	if _, _, remote_proxy := agent_remote_proxy_lookup(target_agent_instance_id); remote_proxy {
+		return federation_remote_send_message(from_agent_instance_id, target_agent_instance_id, request.payload)
+	}
 	if !registry_agent_exists(target_agent_instance_id) {
+		if routed := federation_remote_route_reply(from_agent_instance_id, target_agent_instance_id, request.payload); routed.ok {
+			return routed
+		}
 		routed := message_bus_emit(Message_Event {
 			kind = .Remote_Route_Required,
 			from_agent_instance_id = request.from_agent_instance_id,
@@ -149,6 +155,13 @@ message_service_process_fetch :: proc(command: Fetch_Messages_Command) -> Servic
 	}
 
 	response := mp.fetch_messages(&message_provider, request)
+	remote_response := federation_remote_fetch_messages(request)
+	if len(remote_response.messages) > 0 {
+		merged := make([dynamic]contracts.Message)
+		for msg in response.messages do append(&merged, msg)
+		for msg in remote_response.messages do append(&merged, msg)
+		response.messages = merged[:]
+	}
 	for i in 0..<len(response.messages) {
 		msg := response.messages[i]
 		if msg.target_agent_instance_id != request.agent_instance_id do continue
@@ -181,6 +194,17 @@ message_service_process_fetch :: proc(command: Fetch_Messages_Command) -> Servic
 }
 
 message_service_process_mark_read :: proc(command: Mark_Read_Command) -> Service_Result {
+	if remote_rec, remote_ok := federation_remote_message_get(string(command.message_id)); remote_ok && remote_rec.local_agent_instance_id == string(command.agent_instance_id) {
+		read_unix_ms := router_now_unix_ms()
+		_ = federation_remote_message_mark_read(remote_rec.record_key, read_unix_ms)
+		payload := federation_callback_read_receipt_json(remote_rec.message_id, remote_rec.remote_agent_instance_id, remote_rec.proxy_agent_instance_id, remote_rec.origin_conversation_id, remote_rec.local_agent_instance_id, read_unix_ms)
+		idempotency_key := federation_idempotency_key("read", server_daemon_id, remote_rec.message_id)
+		_ = federation_delivery_outbox_insert_pending(remote_rec.owner_peer_id, FEDERATION_ROUTE_CALLBACK, idempotency_key, payload)
+		sent := federation_forward(remote_rec.owner_peer_id, FEDERATION_ROUTE_CALLBACK, payload, idempotency_key)
+		_ = federation_delivery_outbox_mark_attempt(remote_rec.owner_peer_id, FEDERATION_ROUTE_CALLBACK, idempotency_key, sent)
+		return Service_Result{ok = true, message = `{"ok":true,"message":"mark_read applied"}`, status_code = 200, status_text = "OK"}
+	}
+
 	fetch_response := mp.fetch_messages(&message_provider, contracts.Fetch_Messages_Request {
 		agent_instance_id = command.agent_instance_id,
 		conversation_id = command.conversation_id,
