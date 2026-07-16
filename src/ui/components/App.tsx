@@ -2664,24 +2664,28 @@ function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, c
 
       <div className="flex-1 overflow-y-auto px-8 py-7">
         <div className="mx-auto max-w-5xl">
-          <section data-debug-id="agent-identity-summary" className="rounded-[18px] border border-[#262626] bg-[#111111] p-5">
+          <section data-debug-id="agent-identity-summary" className="rounded-[20px] border border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(56,189,248,0.07),rgba(17,17,17,0.92)_46%,rgba(12,12,12,0.96))] p-6 shadow-[0_18px_60px_rgba(0,0,0,0.26)]">
             <div className="flex items-start justify-between gap-4">
               <div className="min-w-0">
-                <h1 data-debug-id="agent-identity-title" className="truncate text-xl font-semibold text-zinc-100">Durable identity · <code>agent_id = {durableId || '—'}</code></h1>
-                <p className="mt-2 text-sm text-zinc-500">Edit durable defaults here. Concrete instance navigation stays in the main sidebar and secondary instance sidebar; rows below are read-only summaries.</p>
+                <div className="text-[10.5px] font-semibold uppercase tracking-[0.2em] text-sky-200/70">Durable identity</div>
+                <h1 data-debug-id="agent-identity-title" className="mt-1 truncate text-[22px] font-semibold tracking-[-0.02em] text-zinc-100"><code className="font-mono">agent_id = {durableId || '—'}</code></h1>
               </div>
-              <span data-debug-id="agent-identity-instance-count" className="rounded-full bg-white/10 px-3 py-1 text-xs text-zinc-400">{instances.length} instances</span>
+              <div className="flex shrink-0 items-center gap-2">
+                <span data-debug-id="agent-identity-instance-count" className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-zinc-300">{instances.length} instances</span>
+                <button type="button" data-debug-id="agent-identity-edit-defaults-btn" onClick={() => setEditOpen(true)} className="rounded-full border border-sky-400/30 bg-sky-400/10 px-3 py-1 text-xs font-medium text-sky-100 hover:bg-sky-400/20">Edit defaults →</button>
+              </div>
             </div>
-            <div className="mt-4 grid gap-3 md:grid-cols-2">
-              <div data-debug-id="agent-identity-template" className="text-sm text-zinc-400"><span className="text-zinc-600">Template</span> · {agentTemplateLabel(identity)} — role {identity?.agentRole || identity?.agent_role || 'agent'}</div>
-              <div data-debug-id="agent-identity-default-project" className="text-sm text-zinc-400"><span className="text-zinc-600">Default project</span> · {projectName}</div>
-              <div data-debug-id="agent-identity-provider-tier" className="text-sm text-zinc-400"><span className="text-zinc-600">Provider / tier</span> · {providerName} · {tier}</div>
-              <div data-debug-id="agent-identity-memory-summary" className="text-sm text-zinc-400"><span className="text-zinc-600">Shared memories</span> · {memoryCount ? `${memoryCount} active` : 'load via Memory page'} (target_agent_id = {durableId || '—'})</div>
+            <div className="mt-5 grid gap-x-6 gap-y-4 md:grid-cols-2">
+              <div data-debug-id="agent-identity-template"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Template</div><div className="mt-1 text-sm text-zinc-200">{agentTemplateLabel(identity)} — role {identity?.agentRole || identity?.agent_role || 'agent'}</div></div>
+              <div data-debug-id="agent-identity-default-project"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Default project</div><div className="mt-1 text-sm text-zinc-200">{projectName}</div></div>
+              <div data-debug-id="agent-identity-provider-tier"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Provider / tier</div><div className="mt-1 text-sm text-zinc-200">{providerName} · {tier}</div></div>
+              <div data-debug-id="agent-identity-memory-summary"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Shared memories</div><div className="mt-1 text-sm text-zinc-200">{memoryCount ? `${memoryCount} active` : 'load via Memory page'} <span className="text-zinc-500">(target_agent_id = {durableId || '—'})</span></div></div>
             </div>
+            <p className="mt-5 border-t border-white/[0.06] pt-4 text-[12.5px] text-zinc-500">Every instance below inherits these defaults. Concrete instance navigation stays in the main and secondary sidebars; rows below are read-only summaries.</p>
           </section>
 
           <div data-debug-id="agent-identity-instance-summary-list" className="mt-7">
-            <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-zinc-500">Read-only instance summary</div>
+            <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-zinc-500">Live &amp; recent instances</div>
             <AgentIdentityInstanceSummaryGroup title="Running" group="running" instances={running} chats={chats} tasksById={tasksById} chainsById={chainsById} />
             <AgentIdentityInstanceSummaryGroup title="Recent" group="recent" instances={recent} chats={chats} tasksById={tasksById} chainsById={chainsById} />
             <AgentIdentityInstanceSummaryGroup title="Stopped" group="stopped" instances={stopped} chats={chats} tasksById={tasksById} chainsById={chainsById} />
@@ -2963,16 +2967,16 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
         <div data-debug-id="agent-detail-runtime" className="rounded-2xl border border-white/10 bg-white/[0.035] p-4"><div className="text-xs uppercase tracking-wide text-zinc-500">Runtime</div><div className="mt-1 flex items-center gap-2 text-sm text-zinc-100"><span className={`h-2 w-2 rounded-full ${runtime.color}`} />{runtime.label}</div></div>
       </div>
 
-      <section data-debug-id="agent-detail-chat" className="mt-6 flex h-[75vh] flex-col overflow-hidden rounded-3xl border border-white/10 bg-[#090909] p-5">
+      <section data-debug-id="agent-detail-chat" className="mt-6 flex h-[62vh] max-h-[720px] min-h-[420px] flex-col overflow-hidden rounded-3xl border border-white/10 bg-[#090909] p-5">
         <div className="mb-3 flex shrink-0 items-center justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold text-zinc-100">Chat</h2>
             <p className="mt-1 text-sm text-zinc-500">Direct agent messages. Attach artifacts or paste screenshots into the composer.</p>
           </div>
-          <div className="flex gap-2">
-            <IconActionButton debugId="agent-detail-chat-artifacts-toggle-btn" title={artifactsOpen ? 'Hide artifacts' : 'Show artifacts'} icon="▣" onClick={() => setArtifactsOpen((current) => !current)} />
-            <IconActionButton debugId="agent-detail-refresh-chat-btn" title="Refresh chat" icon="↻" onClick={() => agent?.id && onRefreshChat?.(agent.id)} />
-            <IconActionButton debugId="agent-detail-nudge-btn" title="Nudge" icon="⚡" onClick={() => submit(true)} disabled={!agent?.id || sending || !draft.trim()} tone="warn" />
+          <div className="flex items-center gap-1.5">
+            <button type="button" data-debug-id="agent-detail-chat-artifacts-toggle-btn" onClick={() => setArtifactsOpen((current) => !current)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1.5 text-[11.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">{artifactsOpen ? 'Hide artifacts' : 'Artifacts'}</button>
+            <button type="button" data-debug-id="agent-detail-refresh-chat-btn" onClick={() => agent?.id && onRefreshChat?.(agent.id)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1.5 text-[11.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">Refresh</button>
+            <button type="button" data-debug-id="agent-detail-nudge-btn" onClick={() => submit(true)} disabled={!agent?.id || sending || !draft.trim()} className="rounded-full border border-amber-400/25 bg-amber-400/10 px-3 py-1.5 text-[11.5px] text-amber-100 hover:bg-amber-400/20 disabled:cursor-not-allowed disabled:opacity-50">⚡ Nudge</button>
           </div>
         </div>
         <div className="flex min-h-0 flex-1 overflow-hidden rounded-[18px]">
