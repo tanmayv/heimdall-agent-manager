@@ -2194,10 +2194,26 @@ function AgentsManagementSurface({ agents = [], chats = {}, tasksById = {}, chai
         <button type="button" data-debug-id="agents-management-back-btn" onClick={onBack} className="rounded-xl border border-white/10 px-3 py-2 text-sm text-zinc-300 hover:bg-[#171717]">Back</button>
       </div>
       <div className="grid gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
-        <div data-debug-id="agents-management-create-card" className="rounded-2xl border border-[#262626] bg-[#101010] p-4">
-          <div className="mb-3 text-sm font-medium text-zinc-200">Create / launch agent</div>
-          <p className="mb-3 text-xs leading-relaxed text-zinc-500">Create a durable agent identity and start its first concrete instance. Existing instance navigation stays in the main/secondary sidebars.</p>
-          <SidebarAgentsList agents={agents} projects={projects} session={session} providers={providers} onOpenAgentPage={onOpenInstance} onRefreshAgents={onRefreshAgents} showAgentList={false} />
+        <div data-debug-id="agents-management-create-card" className="h-fit rounded-2xl border border-[#262626] bg-[#101010] p-5">
+          <div className="text-xs uppercase tracking-[0.18em] text-zinc-500">New identity</div>
+          <div className="mt-1 text-base font-semibold text-zinc-100">Create agent identity</div>
+          <p className="mt-2 text-xs leading-relaxed text-zinc-500">Define a durable agent identity (name, role, provider, tier, project) and start its first concrete instance. Live instances are listed under Agent identities and navigable from the main sidebar.</p>
+          <div className="mt-4">
+            <SidebarAgentsList
+              agents={agents}
+              projects={projects}
+              session={session}
+              providers={providers}
+              onOpenAgentPage={onOpenInstance}
+              onRefreshAgents={onRefreshAgents}
+              showAgentList={false}
+              launchButtonLabel="Create Agent Identity"
+              launchButtonDebugId="agents-management-create-identity-btn"
+              launchModalTitle="Create agent identity"
+              launchModalSubtitle="Define a durable agent identity and start its first concrete instance."
+            />
+          </div>
+          <div data-debug-id="agents-management-create-hint" className="mt-3 rounded-xl border border-white/5 bg-white/[0.03] px-3 py-2 text-[11px] leading-relaxed text-zinc-500">Tip: durable ids are simple role names like <span className="font-mono text-zinc-300">coder</span> or <span className="font-mono text-zinc-300">reviewer</span>. Each launch mints a fresh concrete instance such as <span className="font-mono text-zinc-300">coder@s-…</span>.</div>
         </div>
         <div data-debug-id="agents-management-list" className="rounded-2xl border border-[#262626] bg-[#101010] p-4">
           <div className="mb-3 flex items-center justify-between"><div className="text-sm font-medium text-zinc-200">Agent identities</div><div className="text-xs text-zinc-600">{groups.length} durable</div></div>
@@ -2282,7 +2298,7 @@ function ProjectsSurface({ projects = [], chains = [], onBack, onOpenProject, on
 }
 
 
-function SidebarAgentsList({ agents = [], projects = [], session = {}, providers = [], onOpenAgentPage, onRefreshAgents, showAgentList = true }: any) {
+function SidebarAgentsList({ agents = [], projects = [], session = {}, providers = [], onOpenAgentPage, onRefreshAgents, showAgentList = true, launchButtonLabel = 'Launch agent', launchButtonDebugId = 'sidebar-agent-launch-btn', launchModalTitle = 'Launch agent', launchModalSubtitle = 'Create a new specialist agent and wait for start-success.' }: any) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [launchName, setLaunchName] = useState('');
   const [launchRole, setLaunchRole] = useState(() => readLaunchAgentDefaults(session?.daemonUrl || '').role || 'specialist');
@@ -2383,21 +2399,21 @@ function SidebarAgentsList({ agents = [], projects = [], session = {}, providers
   };
 
   return (
-    <div className="mb-4 rounded-xl border border-white/5 bg-black/10 p-2" data-debug-id="sidebar-agents-list">
+    <div className={showAgentList ? 'mb-4 rounded-xl border border-white/5 bg-black/10 p-2' : ''} data-debug-id="sidebar-agents-list">
       <button
-        data-debug-id="sidebar-agent-launch-btn"
+        data-debug-id={launchButtonDebugId}
         onClick={() => setPickerOpen((current) => !current)}
-        className="mb-2 flex w-full items-center justify-center gap-1 rounded-lg bg-sky-400/10 px-2 py-1.5 text-[11px] font-medium text-sky-100 transition hover:bg-sky-400/15"
+        className={`flex w-full items-center justify-center gap-1 rounded-lg bg-sky-400/10 font-medium text-sky-100 transition hover:bg-sky-400/15 ${showAgentList ? 'mb-2 px-2 py-1.5 text-[11px]' : 'px-3 py-2.5 text-sm'}`}
       >
-        <span className="text-sm leading-none">+</span> Launch agent
+        <span className="text-sm leading-none">+</span> {launchButtonLabel}
       </button>
       {pickerOpen && (
         <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 py-16 backdrop-blur-sm" onMouseDown={() => setPickerOpen(false)}>
           <div className="w-full max-w-2xl rounded-3xl border border-white/10 bg-[#101217] p-5 shadow-2xl shadow-black/50" onMouseDown={(event) => event.stopPropagation()}>
             <div className="mb-4 flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-lg font-semibold text-zinc-100">Launch agent</h2>
-                <p className="mt-1 text-sm text-zinc-500">Create a new specialist agent and wait for start-success.</p>
+                <h2 className="text-lg font-semibold text-zinc-100">{launchModalTitle}</h2>
+                <p className="mt-1 text-sm text-zinc-500">{launchModalSubtitle}</p>
               </div>
               <IconActionButton debugId="sidebar-agent-picker-close-btn" title="Close" icon="×" onClick={() => setPickerOpen(false)} />
             </div>
