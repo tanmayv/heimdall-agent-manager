@@ -593,16 +593,44 @@ task_chain_state_json :: proc(chain: Task_Chain_State) -> string {
 }
 
 task_log_json :: proc(task_id: string) -> string {
+	return task_log_json_paginated(task_id, 0, 0)
+}
+
+task_log_json_paginated :: proc(task_id: string, limit: int, cursor: int) -> string {
 	builder := strings.builder_make()
+	all_events := store_all_events()
+	total := 0
+	for event in all_events {
+		if event.task_id == task_id do total += 1
+	}
+	page_limit := limit
+	if page_limit <= 0 || page_limit > total do page_limit = total
+	end := cursor
+	if end <= 0 || end > total do end = total
+	start := end - page_limit
+	if start < 0 do start = 0
+	next_cursor := 0
+	if start > 0 do next_cursor = start
+
 	strings.write_string(&builder, `{"ok":true,"events":[`)
 	first := true
-	for event in store_all_events() {
+	matched := 0
+	for event in all_events {
 		if event.task_id != task_id do continue
-		if !first do strings.write_string(&builder, `,`)
-		first = false
-		strings.write_string(&builder, task_event_json(event))
+		if matched >= start && matched < end {
+			if !first do strings.write_string(&builder, `,`)
+			first = false
+			strings.write_string(&builder, task_event_json(event))
+		}
+		matched += 1
 	}
-	strings.write_string(&builder, `]}`)
+	strings.write_string(&builder, `],"next_cursor":`)
+	strings.write_string(&builder, fmt.tprintf("%d", next_cursor))
+	strings.write_string(&builder, `,"has_more":`)
+	strings.write_string(&builder, "true" if next_cursor > 0 else "false")
+	strings.write_string(&builder, `,"total":`)
+	strings.write_string(&builder, fmt.tprintf("%d", total))
+	strings.write_string(&builder, `}`)
 	return strings.to_string(builder)
 }
 

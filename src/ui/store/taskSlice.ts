@@ -157,18 +157,22 @@ export const fetchTasksForChain = createAsyncThunk('tasks/fetchTasksForChain', a
 });
 
 
-export const fetchSelectedTaskLog = createAsyncThunk('tasks/fetchSelectedTaskLog', async (taskId: string | undefined, { getState }) => {
+export const fetchSelectedTaskLog = createAsyncThunk('tasks/fetchSelectedTaskLog', async (payload: string | { taskId?: string; limit?: number; cursor?: number } | undefined, { getState }) => {
   const state = getState() as any;
   const { session } = state.chat;
-  const selectedTaskId = taskId || getActiveTaskId(null);
-  if (!selectedTaskId || !session.clientToken) return { taskId: selectedTaskId, events: [] };
+  const selectedTaskId = typeof payload === 'string' ? payload : (payload?.taskId || getActiveTaskId(null));
+  const limit = typeof payload === 'object' && payload?.limit !== undefined ? payload.limit : 50;
+  const cursor = typeof payload === 'object' && payload?.cursor !== undefined ? payload.cursor : 0;
+  if (!selectedTaskId || !session.clientToken) return { taskId: selectedTaskId, events: [], nextCursor: 0, hasMore: false, total: 0, isAppend: false };
   const data = await daemonApi.fetchTaskLog({
     daemonUrl: session.daemonUrl,
     clientInstanceId: session.clientInstanceId,
     clientToken: session.clientToken,
     taskId: selectedTaskId,
+    limit,
+    cursor,
   });
-  return { taskId: selectedTaskId, events: (data.events ?? []).map(normalizeEvent) };
+  return { taskId: selectedTaskId, events: (data.events ?? []).map(normalizeEvent), nextCursor: Number(data.next_cursor || data.nextCursor || 0), hasMore: Boolean(data.has_more || data.hasMore), total: Number(data.total || 0), isAppend: cursor > 0 };
 });
 
 function taskMutationAuth(session: any, agentToken: string) {
@@ -346,6 +350,10 @@ const initialState = {
   participantsByTaskId: {},
   expandedChainIds: {},
   taskLogsByTaskId: {},
+  taskLogCursorByTaskId: {},
+  taskLogHasMoreByTaskId: {},
+  taskLogTotalByTaskId: {},
+  taskLogLoadingByTaskId: {},
   loading: false,
   error: '',
   lastTaskEvent: null,
@@ -441,10 +449,33 @@ const taskSlice = createSlice({
         state.loading = false;
         state.error = action.error.message || 'Failed to load tasks';
       })
+      .addCase(fetchSelectedTaskLog.pending, (state: any, action) => {
+        const arg: any = action.meta.arg;
+        const taskId = typeof arg === 'string' ? arg : (arg?.taskId || getActiveTaskId(null));
+        if (taskId) state.taskLogLoadingByTaskId[taskId] = true;
+      })
       .addCase(fetchSelectedTaskLog.fulfilled, (state: any, action) => {
-        if (action.payload.taskId) state.taskLogsByTaskId[action.payload.taskId] = action.payload.events;
+        const { taskId, events, nextCursor, hasMore, total, isAppend } = action.payload;
+        if (taskId) {
+          state.taskLogLoadingByTaskId[taskId] = false;
+          if (isAppend) {
+            const byId = new Map<string, any>();
+            for (const event of [...(state.taskLogsByTaskId[taskId] || []), ...(events || [])]) {
+              byId.set(event.eventId || `${event.kind}-${event.createdUnixMs}-${event.body}`, event);
+            }
+            state.taskLogsByTaskId[taskId] = Array.from(byId.values()).sort((left: any, right: any) => Number(left.createdUnixMs || 0) - Number(right.createdUnixMs || 0));
+          } else {
+            state.taskLogsByTaskId[taskId] = events;
+          }
+          state.taskLogCursorByTaskId[taskId] = nextCursor;
+          state.taskLogHasMoreByTaskId[taskId] = hasMore || nextCursor > 0;
+          state.taskLogTotalByTaskId[taskId] = total;
+        }
       })
       .addCase(fetchSelectedTaskLog.rejected, (state: any, action) => {
+        const arg: any = action.meta.arg;
+        const taskId = typeof arg === 'string' ? arg : (arg?.taskId || getActiveTaskId(null));
+        if (taskId) state.taskLogLoadingByTaskId[taskId] = false;
         state.error = action.error.message || 'Failed to load task log';
       })
       .addCase(fetchTasksForChain.fulfilled, (state: any, action) => {

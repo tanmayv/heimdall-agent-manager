@@ -471,22 +471,27 @@ export const sendMessageToSelectedAgent = createAsyncThunk(
   }
 );
 
-export const fetchGuideChat = createAsyncThunk('chat/fetchGuideChat', async (_payload: void | undefined, { getState }) => {
+export const fetchGuideChat = createAsyncThunk('chat/fetchGuideChat', async (payload: { cursor?: number; limit?: number } | void | undefined, { getState }) => {
   const { session } = (getState() as any).chat;
-  if (!session.clientToken) return { agentId: GUIDE_AGENT_ID, messages: [], nextCursor: 0, markedRead: false };
-  await daemonApi.markChatRead({
-    daemonUrl: session.daemonUrl,
-    clientInstanceId: session.clientInstanceId,
-    clientToken: session.clientToken,
-    agentInstanceId: GUIDE_AGENT_ID,
-  }).catch(() => undefined);
+  const cursor = typeof payload === 'object' && payload?.cursor !== undefined ? payload.cursor : 0;
+  const limit = typeof payload === 'object' && payload?.limit !== undefined ? payload.limit : 80;
+  if (!session.clientToken) return { agentId: GUIDE_AGENT_ID, messages: [], nextCursor: 0, markedRead: false, isAppend: false };
+  if (cursor === 0) {
+    await daemonApi.markChatRead({
+      daemonUrl: session.daemonUrl,
+      clientInstanceId: session.clientInstanceId,
+      clientToken: session.clientToken,
+      agentInstanceId: GUIDE_AGENT_ID,
+    }).catch(() => undefined);
+  }
   const data = await daemonApi.fetchChat({
     daemonUrl: session.daemonUrl,
     clientToken: session.clientToken,
     agentInstanceId: GUIDE_AGENT_ID,
-    limit: 80,
+    limit,
+    cursor,
   });
-  return { agentId: GUIDE_AGENT_ID, messages: (data.messages ?? []).map(mapMessage).reverse(), nextCursor: data.next_cursor || 0, markedRead: true };
+  return { agentId: GUIDE_AGENT_ID, messages: (data.messages ?? []).map(mapMessage).reverse(), nextCursor: data.next_cursor || 0, markedRead: cursor === 0, isAppend: cursor > 0 };
 });
 
 export const sendGuideMessage = createAsyncThunk('chat/sendGuideMessage', async (payload: { body: string; tempId: string; interrupt?: boolean }, { getState }) => {
@@ -986,10 +991,14 @@ const chatSlice = createSlice({
       })
       .addCase(fetchGuideChat.fulfilled, (state: any, action) => {
         state.fetchingChatsByAgentId[GUIDE_AGENT_ID] = false;
-        const { messages, nextCursor, markedRead } = action.payload;
-        const optimistic = (state.chats[GUIDE_AGENT_ID] || []).filter(isRecentOptimisticMessage);
-        const unmatchedOptimistic = optimistic.filter((local: any) => !messages.some((server: any) => server.id === local.id || (server.author === local.author && server.body === local.body)));
-        state.chats[GUIDE_AGENT_ID] = [...messages, ...unmatchedOptimistic];
+        const { messages, nextCursor, markedRead, isAppend } = action.payload;
+        if (isAppend) {
+          state.chats[GUIDE_AGENT_ID] = mergeMessages(messages || [], state.chats[GUIDE_AGENT_ID] || []);
+        } else {
+          const optimistic = (state.chats[GUIDE_AGENT_ID] || []).filter(isRecentOptimisticMessage);
+          const unmatchedOptimistic = optimistic.filter((local: any) => !messages.some((server: any) => server.id === local.id || (server.author === local.author && server.body === local.body)));
+          state.chats[GUIDE_AGENT_ID] = [...messages, ...unmatchedOptimistic];
+        }
         state.chatsCursor[GUIDE_AGENT_ID] = nextCursor;
         state.chatsHasMore[GUIDE_AGENT_ID] = nextCursor > 0;
         if (markedRead) {

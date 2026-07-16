@@ -489,7 +489,7 @@ export async function listTasks({ daemonUrl, clientToken, chainId = '', createdA
 }
 
 
-export async function fetchTaskLog({ daemonUrl, clientInstanceId, clientToken, taskId }: UserRpcRequest & { taskId: string }) {
+export async function fetchTaskLog({ daemonUrl, clientInstanceId, clientToken, taskId, limit = 50, cursor = 0 }: UserRpcRequest & { taskId: string; limit?: number; cursor?: number }) {
   return requestJson(joinUrl(daemonUrl, '/user-rpc'), {
     method: 'POST',
     body: {
@@ -497,6 +497,8 @@ export async function fetchTaskLog({ daemonUrl, clientInstanceId, clientToken, t
       client_instance_id: clientInstanceId,
       client_token: clientToken,
       task_id: taskId,
+      limit,
+      cursor,
     },
   });
 }

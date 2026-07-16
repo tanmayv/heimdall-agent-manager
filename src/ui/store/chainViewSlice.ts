@@ -30,6 +30,18 @@ export const revalidateChainView = createAsyncThunk('chainView/revalidateChainVi
   return { chainId, at: Date.now() };
 });
 
+export const fetchChainCoordinatorChatPage = createAsyncThunk('chainView/fetchChainCoordinatorChatPage', async (payload: { chainId: string; cursor?: number; limit?: number }, { getState }) => {
+  const state = getState() as any;
+  const session = auth(state);
+  const chainId = payload.chainId || '';
+  const chain = state.tasks.chainsById?.[chainId];
+  const coordinator = chain?.coordinatorAgentInstanceId || chain?.coordinator_agent_instance_id || '';
+  if (!chainId || !coordinator || !session.clientToken) return { chainId, messages: [], nextCursor: 0, isAppend: false };
+  const cursor = Number(payload.cursor || 0);
+  const data = await daemonApi.fetchChat({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, agentInstanceId: coordinator, chainId, limit: payload.limit || 50, cursor });
+  return { chainId, messages: data?.messages || [], nextCursor: Number(data?.next_cursor || data?.nextCursor || 0), isAppend: cursor > 0 };
+});
+
 export const sendCoordinatorMessage = createAsyncThunk('chainView/sendCoordinatorMessage', async (payload: { chainId: string; body: string; localId: string }, { getState }) => {
   const state = getState() as any;
   const session = auth(state);
@@ -80,6 +92,9 @@ const initialState = {
   workspaceByChainId: {} as Record<string, any>,
   teamByChainId: {} as Record<string, any>,
   chatByChainId: {} as Record<string, any[]>,
+  chatCursorByChainId: {} as Record<string, number>,
+  chatHasMoreByChainId: {} as Record<string, boolean>,
+  chatLoadingByChainId: {} as Record<string, boolean>,
   optimisticMessagesByChainId: {} as Record<string, any[]>,
   mergePreviewByChainId: {} as Record<string, any>,
   workspaceDiffByChainId: {} as Record<string, Record<string, any>>,
@@ -140,6 +155,8 @@ const chainViewSlice = createSlice({
         if (team?.team) state.teamByChainId[chainId] = team;
         if (chat?.messages) {
           state.chatByChainId[chainId] = chat.messages;
+          state.chatCursorByChainId[chainId] = Number(chat.next_cursor || chat.nextCursor || 0);
+          state.chatHasMoreByChainId[chainId] = Number(chat.next_cursor || chat.nextCursor || 0) > 0;
           const serverIds = new Set(chat.messages.map((m: any) => m.message_id || m.id).filter(Boolean));
           const now = Date.now();
           state.optimisticMessagesByChainId[chainId] = (state.optimisticMessagesByChainId[chainId] || []).filter((m: any) => {
@@ -156,6 +173,29 @@ const chainViewSlice = createSlice({
       })
       .addCase(focusChainView.rejected, (state: any, action) => { state.loading = false; state.error = action.error.message || 'Failed to load chain'; })
       .addCase(revalidateChainView.fulfilled, (state: any, action) => { if (action.payload.chainId) state.lastPeriodicRefreshByChainId[action.payload.chainId] = action.payload.at; })
+      .addCase(fetchChainCoordinatorChatPage.pending, (state: any, action) => {
+        if (action.meta.arg?.chainId) state.chatLoadingByChainId[action.meta.arg.chainId] = true;
+      })
+      .addCase(fetchChainCoordinatorChatPage.fulfilled, (state: any, action) => {
+        const { chainId, messages, nextCursor, isAppend } = action.payload;
+        if (!chainId) return;
+        state.chatLoadingByChainId[chainId] = false;
+        if (isAppend) {
+          const byId = new Map<string, any>();
+          for (const msg of [...(state.chatByChainId[chainId] || []), ...(messages || [])]) {
+            byId.set(String(msg.message_id || msg.messageId || msg.id || `${msg.created_unix_ms}-${msg.body}`), msg);
+          }
+          state.chatByChainId[chainId] = Array.from(byId.values());
+        } else {
+          state.chatByChainId[chainId] = messages || [];
+        }
+        state.chatCursorByChainId[chainId] = nextCursor;
+        state.chatHasMoreByChainId[chainId] = nextCursor > 0;
+      })
+      .addCase(fetchChainCoordinatorChatPage.rejected, (state: any, action) => {
+        if (action.meta.arg?.chainId) state.chatLoadingByChainId[action.meta.arg.chainId] = false;
+        state.error = action.error.message || 'Failed to load coordinator chat page';
+      })
       .addCase(sendCoordinatorMessage.pending, (state: any) => {
         state.error = '';
       })

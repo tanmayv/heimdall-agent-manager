@@ -52,6 +52,7 @@ import {
   sendCoordinatorMessage,
   toggleWorkspaceDiff,
   fetchWorkspaceDiff,
+  fetchChainCoordinatorChatPage,
   wsChainViewRefreshRequested,
 } from '../store/chainViewSlice';
 import { answerChatApproval, chatApprovalEventReceived, dismissChatApproval, refreshChatApprovals, tickChatApprovalExpiry, refreshMergeDecisions, executeMergeViaChain, MergeDecision } from '../store/attentionSlice';
@@ -600,9 +601,9 @@ function attentionCount(tasksById: Record<string, any>, attention: any, pendingM
 
 export default function App() {
   const dispatch = useDispatch<any>();
-  const { agents, session, daemonProfiles, selectedAgentId, chats, guidePanelOpen, guideSending, fetchingChatsByAgentId, settingsTemplates, settingsProviders } = useSelector((state: any) => state.chat);
+  const { agents, session, daemonProfiles, selectedAgentId, chats, chatsCursor, chatsHasMore, guidePanelOpen, guideSending, fetchingChatsByAgentId, settingsTemplates, settingsProviders } = useSelector((state: any) => state.chat);
   const { projectsById, projectIds, mutating: projectMutating, error: projectError } = useSelector((state: any) => state.projects);
-  const { chainsById, tasksById, chainTaskIds, taskLogsByTaskId, loading } = useSelector((state: any) => state.tasks);
+  const { chainsById, tasksById, chainTaskIds, taskLogsByTaskId, taskLogCursorByTaskId, taskLogHasMoreByTaskId, taskLogLoadingByTaskId, taskLogTotalByTaskId, loading } = useSelector((state: any) => state.tasks);
   const home = useSelector((state: any) => state.home);
   const chainView = useSelector((state: any) => state.chainView);
   const [urlParams] = useUrlParams();
@@ -1311,6 +1312,12 @@ export default function App() {
               session,
               projects,
               providers: settingsProviders,
+              chatPagination: {
+                cursor: chatsCursor?.[agentPageId] || 0,
+                hasMore: Boolean(chatsHasMore?.[agentPageId]),
+                loading: Boolean(fetchingChatsByAgentId?.[agentPageId]),
+                onLoadOlder: () => dispatch(fetchSelectedChat({ agentId: agentPageId, cursor: chatsCursor?.[agentPageId] || 0 })).unwrap().catch(() => undefined),
+              },
               chatDraft: agentChatDraftsById[agentPageId] || '',
               onChatDraftChange: (value: string) => setAgentChatDraftsById((current) => ({ ...current, [agentPageId]: value })),
               onBack: () => { setAgentPageId(''); updateUrlParams({ view: 'home', agentId: null }); },
@@ -1459,6 +1466,10 @@ export default function App() {
               agents={agents}
               chainView={chainView}
               taskLogsByTaskId={taskLogsByTaskId}
+              taskLogCursorByTaskId={taskLogCursorByTaskId}
+              taskLogHasMoreByTaskId={taskLogHasMoreByTaskId}
+              taskLogLoadingByTaskId={taskLogLoadingByTaskId}
+              taskLogTotalByTaskId={taskLogTotalByTaskId}
               initialTaskId={urlParams.taskId}
               onOpenChain={openChain}
               onBack={() => { updateUrlParams({ chainId: null, taskId: null, agentId: null, view: 'home' }); dispatch(selectSurface('home')); }}
@@ -1472,7 +1483,9 @@ export default function App() {
               onRescan={() => dispatch(fetchWorkspaceForChain(selectedChain.chainId))}
               onPreviewMerge={() => dispatch(previewWorkspaceMerge(selectedChain.chainId))}
               onOpenAgent={(agentId: string) => { dispatch(openAgentSideSheet(agentId)); dispatch(loadAgentSideSheet(agentId)); }}
-              onOpenTask={(taskId: string) => { updateUrlParams({ view: 'chain', chainId: selectedChain.chainId, taskId }); dispatch(fetchSelectedTaskLog(taskId)); }}
+              onOpenTask={(taskId: string) => { updateUrlParams({ view: 'chain', chainId: selectedChain.chainId, taskId }); dispatch(fetchSelectedTaskLog({ taskId })); }}
+              onLoadTaskLogPage={(taskId: string, cursor = 0) => dispatch(fetchSelectedTaskLog({ taskId, cursor })).unwrap().catch(() => undefined)}
+              onLoadCoordinatorChatPage={(chainId: string, cursor = 0) => dispatch(fetchChainCoordinatorChatPage({ chainId, cursor })).unwrap().catch(() => undefined)}
               onOpenEditor={(taskId?: string) => openChainEditor(selectedChain.chainId, taskId || urlParams.taskId || '')}
               onAddComment={async (task: any, body: string) => {
                 try {
@@ -1584,6 +1597,10 @@ export default function App() {
               onToggleDebugServer={toggleGuideDebugServer}
               onSendPageContext={sendGuidePageContext}
               onSend={sendGuideBody}
+              onRefresh={() => dispatch(fetchGuideChat()).unwrap().catch(() => undefined)}
+              onLoadOlder={() => dispatch(fetchGuideChat({ cursor: chatsCursor?.[GUIDE_AGENT_ID] || 0 })).unwrap().catch(() => undefined)}
+              hasMore={Boolean(chatsHasMore?.[GUIDE_AGENT_ID])}
+              loadingOlder={Boolean(fetchingChatsByAgentId?.[GUIDE_AGENT_ID])}
             />
           )}
         </div>
@@ -2678,7 +2695,7 @@ function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, c
   );
 }
 
-function AgentDetailPage({ agent, tasksById, chainsById, chats, session, projects = [], providers = [], allAgents = [], chatDraft = '', onChatDraftChange, onBack, onOpenIdentity, onOpenChain, onRefreshChat, onSendAgentMessage, onRefreshAgents, onAgentDeleted }: any) {
+function AgentDetailPage({ agent, tasksById, chainsById, chats, session, projects = [], providers = [], allAgents = [], chatDraft = '', chatPagination = {}, onChatDraftChange, onBack, onOpenIdentity, onOpenChain, onRefreshChat, onSendAgentMessage, onRefreshAgents, onAgentDeleted }: any) {
   const draft = chatDraft;
   const setDraft = (next: any) => {
     const value = typeof next === 'function' ? next(draft) : next;
@@ -2740,6 +2757,14 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
 
   useEffect(() => {
     if (agent?.id) onRefreshChat?.(agent.id);
+    // Parent callbacks are intentionally omitted.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent?.id]);
+
+  useEffect(() => {
+    const reloadOnFocus = () => { if (agent?.id) onRefreshChat?.(agent.id); };
+    window.addEventListener('focus', reloadOnFocus);
+    return () => window.removeEventListener('focus', reloadOnFocus);
     // Parent callbacks are intentionally omitted.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent?.id]);
@@ -2957,7 +2982,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
         </div>
         <div className="flex min-h-0 flex-1 overflow-hidden rounded-[18px]">
           <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-            <CoordinatorMessageList chainId={agent?.id || 'agent-detail'} messages={messages} onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))} debugPrefix="agent-detail-chat" emptyText="No direct messages loaded for this agent." />
+            <CoordinatorMessageList chainId={agent?.id || 'agent-detail'} messages={messages} onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))} debugPrefix="agent-detail-chat" emptyText="No direct messages loaded for this agent." hasMore={Boolean(chatPagination.hasMore)} loadingOlder={Boolean(chatPagination.loading)} onLoadOlder={chatPagination.onLoadOlder} />
           </div>
           {artifactsOpen ? (
             <ChatArtifactsSidePanel
@@ -3177,7 +3202,7 @@ function NewConversationPage({ session, projects = [], providers = [], defaultPr
   );
 }
 
-function ConversationThreadPage({ agent, chats, session, projects = [], providers = [], chatDraft = '', onChatDraftChange, onBack, onRefreshChat, onRefreshAgents, onSendAgentMessage }: any) {
+function ConversationThreadPage({ agent, chats, session, projects = [], providers = [], chatDraft = '', chatPagination = {}, onChatDraftChange, onBack, onRefreshChat, onRefreshAgents, onSendAgentMessage }: any) {
   const draft = chatDraft;
   const setDraft = (next: any) => {
     const value = typeof next === 'function' ? next(draft) : next;
@@ -3208,6 +3233,14 @@ function ConversationThreadPage({ agent, chats, session, projects = [], provider
 
   useEffect(() => {
     if (agent?.id) onRefreshChat?.(agent.id);
+    // Parent callbacks are intentionally omitted.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [agent?.id]);
+
+  useEffect(() => {
+    const reloadOnFocus = () => { if (agent?.id) onRefreshChat?.(agent.id); };
+    window.addEventListener('focus', reloadOnFocus);
+    return () => window.removeEventListener('focus', reloadOnFocus);
     // Parent callbacks are intentionally omitted.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent?.id]);
@@ -3291,6 +3324,13 @@ function ConversationThreadPage({ agent, chats, session, projects = [], provider
             {threadError && <div data-debug-id="conversation-thread-action-error" className="mb-4 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{threadError}</div>}
 
             <section data-debug-id="conversation-thread-transcript" className="flex flex-col">
+              {chatPagination.hasMore ? (
+                <div className="mb-4 flex justify-center">
+                  <button data-debug-id="conversation-thread-load-older-messages-btn" type="button" onClick={chatPagination.onLoadOlder} disabled={Boolean(chatPagination.loading)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">
+                    {chatPagination.loading ? 'Loading older messages…' : 'Load older messages'}
+                  </button>
+                </div>
+              ) : null}
               <div className="space-y-[22px]">
               {messages.length === 0 ? <div className="rounded-2xl border border-dashed border-white/10 p-6 text-sm text-zinc-500">No messages yet. Send the first message to start this conversation.</div> : messages.map((msg, index) => {
                 const assistantMessage = !msg.isUser;
@@ -4591,7 +4631,7 @@ function ChatArtifactsSidePanel({ debugPrefix, daemonUrl = '', clientToken = '',
   );
 }
 
-function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'chain-coordinator', emptyText = 'No coordinator chat loaded for this chain.' }: { chainId: string; messages: CoordinatorMessage[]; onReply: (reply: string) => void; debugPrefix?: string; emptyText?: string }) {
+function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'chain-coordinator', emptyText = 'No coordinator chat loaded for this chain.', hasMore = false, loadingOlder = false, onLoadOlder }: { chainId: string; messages: CoordinatorMessage[]; onReply: (reply: string) => void; debugPrefix?: string; emptyText?: string; hasMore?: boolean; loadingOlder?: boolean; onLoadOlder?: () => void }) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickyRef = useRef(true);
   const lastCountRef = useRef(0);
@@ -4647,6 +4687,13 @@ function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'cha
         onScroll={onScroll}
         className="chat-scrollbar h-full min-h-0 space-y-[22px] overflow-y-auto rounded-[18px] bg-[#090909] p-5 scroll-smooth"
       >
+        {hasMore ? (
+          <div className="flex justify-center">
+            <button data-debug-id={`${debugPrefix}-load-older-messages-btn`} type="button" onClick={onLoadOlder} disabled={loadingOlder || !onLoadOlder} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">
+              {loadingOlder ? 'Loading older messages…' : 'Load older messages'}
+            </button>
+          </div>
+        ) : null}
         {messages.length === 0 ? (
           <div className="rounded-2xl border border-dashed border-white/10 p-6 text-sm text-zinc-500">{emptyText}</div>
         ) : messages.map((msg) => {
@@ -4710,7 +4757,7 @@ function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'cha
   );
 }
 
-function GuideSidePanel({ agent, messages, loading, sending, debugInfo, currentPageInfo, currentPageLabel, onClose, onSend, onToggleDebugServer, onSendPageContext }: any) {
+function GuideSidePanel({ agent, messages, loading, sending, debugInfo, currentPageInfo, currentPageLabel, hasMore = false, loadingOlder = false, onLoadOlder, onRefresh, onClose, onSend, onToggleDebugServer, onSendPageContext }: any) {
   const [draft, setDraft] = useState('');
   const [sendError, setSendError] = useState('');
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
@@ -4720,6 +4767,11 @@ function GuideSidePanel({ agent, messages, loading, sending, debugInfo, currentP
     const timer = window.setTimeout(() => composerRef.current?.focus({ preventScroll: true }), 120);
     return () => window.clearTimeout(timer);
   }, []);
+  useEffect(() => {
+    const reloadOnFocus = () => onRefresh?.();
+    window.addEventListener('focus', reloadOnFocus);
+    return () => window.removeEventListener('focus', reloadOnFocus);
+  }, [onRefresh]);
   const submit = async () => {
     const body = draft.trim();
     if (!body || sending) return;
@@ -4764,6 +4816,9 @@ function GuideSidePanel({ agent, messages, loading, sending, debugInfo, currentP
           onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))}
           debugPrefix="guide-chat"
           emptyText="No guide chat yet. Ask Heimdall Guide about daemon, UI, tasks, teams, agents, or troubleshooting."
+          hasMore={hasMore}
+          loadingOlder={loadingOlder}
+          onLoadOlder={onLoadOlder}
         />
         <div data-debug-id="guide-chat-composer-shell" className="mt-4 rounded-[15px] border border-white/10 bg-[#141414] p-0 focus-within:border-white/35">
           <textarea
@@ -4863,7 +4918,7 @@ function ChainProgressPanel({ chain, progress }: { chain: any; progress: ChainPr
   );
 }
 
-function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, taskLogsByTaskId, initialTaskId = '', onBack, onSend, onToggleDiff, onFetchDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenChain, onOpenTask, onOpenEditor, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer }: any) {
+function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, initialTaskId = '', onBack, onSend, onToggleDiff, onFetchDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenChain, onOpenTask, onLoadTaskLogPage, onLoadCoordinatorChatPage, onOpenEditor, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer }: any) {
   const session = useSelector((state: any) => state.chat?.session || {});
   const [draft, setDraft] = useState('');
   const [sendError, setSendError] = useState('');
@@ -4890,6 +4945,11 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
   const chat = chainView.chatByChainId[chain.chainId] || [];
   const optimistic = chainView.optimisticMessagesByChainId[chain.chainId] || [];
   const messages = useMemo(() => normalizeCoordinatorMessages([...chat, ...optimistic]), [chat, optimistic]);
+  useEffect(() => {
+    const reloadOnFocus = () => { if (chain?.chainId) onLoadCoordinatorChatPage?.(chain.chainId, 0); };
+    window.addEventListener('focus', reloadOnFocus);
+    return () => window.removeEventListener('focus', reloadOnFocus);
+  }, [chain?.chainId, onLoadCoordinatorChatPage]);
   const diffOpen = Boolean(chainView.diffOpenByChainId[chain.chainId]);
   const diffData = chainView.workspaceDiffByChainId?.[chain.chainId] || {};
   const preview = chainView.mergePreviewByChainId[chain.chainId];
@@ -4921,6 +4981,10 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
     setCommentDraft('');
     onOpenTask?.(task.taskId);
   };
+  const refreshSelectedTaskLog = useCallback(() => {
+    if (selectedTaskId) onLoadTaskLogPage?.(selectedTaskId, 0);
+  }, [onLoadTaskLogPage, selectedTaskId]);
+
   const openTaskById = (taskId: string) => {
     if (!taskId) return;
     const local = tasks.find((task: any) => task.taskId === taskId);
@@ -4949,6 +5013,14 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
   };
   const [tasksPaneOpen, setTasksPaneOpen] = useState(true);
   const [rightSidebarTab, setRightSidebarTab] = useState<'diffs' | 'artifacts'>('diffs');
+  useEffect(() => {
+    if (tasksPaneOpen && selectedTaskId) refreshSelectedTaskLog();
+  }, [tasksPaneOpen, selectedTaskId, refreshSelectedTaskLog]);
+  useEffect(() => {
+    const reloadOnFocus = () => { if (tasksPaneOpen && selectedTaskId) refreshSelectedTaskLog(); };
+    window.addEventListener('focus', reloadOnFocus);
+    return () => window.removeEventListener('focus', reloadOnFocus);
+  }, [tasksPaneOpen, selectedTaskId, refreshSelectedTaskLog]);
   const evidenceSidebarOpen = diffOpen;
   const toggleEvidenceSidebar = () => {
     if (!evidenceSidebarOpen) setRightSidebarTab('diffs');
@@ -5000,7 +5072,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
               <CoordinatorMessageList chainId={chain.chainId} messages={messages} onReply={(reply) => {
                 setSendError('');
                 void onSend(reply).catch((err: any) => setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`));
-              }} />
+              }} hasMore={Boolean(chainView.chatHasMoreByChainId?.[chain.chainId])} loadingOlder={Boolean(chainView.chatLoadingByChainId?.[chain.chainId])} onLoadOlder={() => onLoadCoordinatorChatPage?.(chain.chainId, chainView.chatCursorByChainId?.[chain.chainId] || 0)} />
             </div>
           </div>
           <div className="px-5 pb-[18px] pt-3">
@@ -5063,7 +5135,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
               onPreviewMerge={onPreviewMerge}
             />
           ) : (
-          <aside data-debug-id="chain-task-surface" className="min-h-0 overflow-y-auto border-l border-[#262626] bg-[#0f0f0f]">
+          <aside data-debug-id="chain-task-surface" tabIndex={0} onFocus={refreshSelectedTaskLog} className="min-h-0 overflow-y-auto border-l border-[#262626] bg-[#0f0f0f] outline-none focus-visible:ring-1 focus-visible:ring-sky-400/40">
             <div className="px-[18px] py-4">
               <ChainProgressPanel chain={chain} progress={chainProgress} />
               <div className="mt-5 flex items-start justify-between gap-3">
@@ -5079,6 +5151,10 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
                 tasks={activeTasks}
                 tasksById={tasksById}
                 taskLogsByTaskId={taskLogsByTaskId}
+                taskLogCursorByTaskId={taskLogCursorByTaskId}
+                taskLogHasMoreByTaskId={taskLogHasMoreByTaskId}
+                taskLogLoadingByTaskId={taskLogLoadingByTaskId}
+                taskLogTotalByTaskId={taskLogTotalByTaskId}
                 expandedTaskId={selectedTaskId}
                 commentDraft={commentDraft}
                 nudgeDraft={nudgeDraft}
@@ -5087,6 +5163,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
                 onCommentDraft={setCommentDraft}
                 onNudgeDraft={setNudgeDraft}
                 onOpenTask={openTask}
+                onLoadTaskLogPage={onLoadTaskLogPage}
                 onOpenTaskById={openTaskById}
                 onCloseTask={closeTask}
                 onAddComment={onAddComment}
@@ -5106,6 +5183,10 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
                     tasks={completedTasks}
                     tasksById={tasksById}
                     taskLogsByTaskId={taskLogsByTaskId}
+                    taskLogCursorByTaskId={taskLogCursorByTaskId}
+                    taskLogHasMoreByTaskId={taskLogHasMoreByTaskId}
+                    taskLogLoadingByTaskId={taskLogLoadingByTaskId}
+                    taskLogTotalByTaskId={taskLogTotalByTaskId}
                     expandedTaskId={selectedTaskId}
                     commentDraft={commentDraft}
                     nudgeDraft={nudgeDraft}
@@ -5114,6 +5195,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
                     onCommentDraft={setCommentDraft}
                     onNudgeDraft={setNudgeDraft}
                     onOpenTask={openTask}
+                    onLoadTaskLogPage={onLoadTaskLogPage}
                     onOpenTaskById={openTaskById}
                     onCloseTask={closeTask}
                     onAddComment={onAddComment}
@@ -5240,7 +5322,7 @@ function TaskAgentChip({ role, agentId, agent, active, onClick }: any) {
   return <span data-debug-id={`chain-task-${role.toLowerCase()}-${agentId || 'none'}`} className={className} title={`${role}: ${agentId || 'none'} · ${runtime.label}`}>{content}</span>;
 }
 
-function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, expandedTaskId, commentDraft, nudgeDraft, projectId = '', chainId = '', onCommentDraft, onNudgeDraft, onOpenTask, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, agents = [], taskIndexMap = new Map(), completed = false }: any) {
+function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, expandedTaskId, commentDraft, nudgeDraft, projectId = '', chainId = '', onCommentDraft, onNudgeDraft, onOpenTask, onLoadTaskLogPage, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, agents = [], taskIndexMap = new Map(), completed = false }: any) {
   const [commentsOpenByTaskId, setCommentsOpenByTaskId] = useState<Record<string, boolean>>({});
   const [busyAction, setBusyAction] = useState('');
   const [localError, setLocalError] = useState('');
@@ -5305,8 +5387,14 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ex
           const perceived = perceivedTaskStatus(task, tasksById || {});
           const commentsOpen = Boolean(commentsOpenByTaskId[task.taskId]);
           const taskLog = taskLogsByTaskId?.[task.taskId] || [];
-          const comments = taskLog.filter((event: any) => event.kind === 'Task_Comment');
+          const completionEvents = taskLog.filter((event: any) => event.kind === 'Task_Status_Changed' && event.status === 'review_ready' && String(event.body || '').trim());
+          const commentTimeline = taskLog.filter((event: any) => event.kind === 'Task_Comment' || (event.kind === 'Task_Status_Changed' && event.status === 'review_ready' && String(event.body || '').trim()));
+          const comments = commentTimeline;
           const reviewEvents = taskLog.filter((event: any) => event.kind === 'Task_Review_Vote');
+          const taskLogHasMore = Boolean(taskLogHasMoreByTaskId?.[task.taskId]);
+          const taskLogLoading = Boolean(taskLogLoadingByTaskId?.[task.taskId]);
+          const taskLogCursor = Number(taskLogCursorByTaskId?.[task.taskId] || 0);
+          const taskLogTotal = Number(taskLogTotalByTaskId?.[task.taskId] || 0);
           const votes = task.votes || [];
           const blockers = unmetDependencyIds(task, tasksById || {});
           const startDisabledReason = blockers.length > 0 ? `Waiting on ${blockers.join(', ')}` : (task.notActionableReason?.startsWith('assignee_busy:') ? task.notActionableReason : '');
@@ -5404,15 +5492,23 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ex
                     </div>
                   )}
                   <div className="mt-3 rounded-xl bg-black/20 p-3">
-                    <button data-debug-id={`task-detail-comments-toggle-${task.taskId}`} onClick={() => setCommentsOpenByTaskId((prev) => ({ ...prev, [task.taskId]: !prev[task.taskId] }))} className="flex w-full items-center justify-between text-left text-xs uppercase tracking-wider text-zinc-500"><span>Comments</span><span>{comments.length} · {commentsOpen ? 'hide' : 'show'}</span></button>
+                    <button data-debug-id={`task-detail-comments-toggle-${task.taskId}`} onClick={() => setCommentsOpenByTaskId((prev) => ({ ...prev, [task.taskId]: !prev[task.taskId] }))} className="flex w-full items-center justify-between text-left text-xs uppercase tracking-wider text-zinc-500"><span>Comments</span><span>{comments.length}{taskLogTotal ? ` / ${taskLogTotal} events` : ''} · {completionEvents.length ? `${completionEvents.length} completion · ` : ''}{commentsOpen ? 'hide' : 'show'}</span></button>
                     {commentsOpen && (
                       <div data-debug-id={`task-detail-comments-${task.taskId}`} className="mt-3 space-y-2">
-                        {comments.length === 0 ? <div className="text-sm text-zinc-500">No comments loaded.</div> : comments.map((comment: any, commentIndex: number) => (
-                          <div key={comment.commentId || commentIndex} data-debug-id={`task-detail-comment-${task.taskId}-${commentIndex}`} className="rounded-lg bg-white/[0.04] p-2 text-sm text-zinc-300">
-                            <div className="text-[10px] uppercase tracking-wider text-zinc-500">{comment.authorAgentInstanceId || 'comment'}</div>
-                            <Markdown source={comment.body || ''} compact className="mt-1 text-sm text-zinc-300" />
-                          </div>
-                        ))}
+                        {taskLogHasMore ? (
+                          <button data-debug-id={`task-detail-comments-load-older-btn-${task.taskId}`} type="button" disabled={taskLogLoading || !onLoadTaskLogPage} onClick={() => onLoadTaskLogPage?.(task.taskId, taskLogCursor)} className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">
+                            {taskLogLoading ? 'Loading older task comments…' : 'Load older task comments'}
+                          </button>
+                        ) : null}
+                        {comments.length === 0 ? <div className="text-sm text-zinc-500">No comments loaded.</div> : comments.map((comment: any, commentIndex: number) => {
+                          const completionComment = comment.kind === 'Task_Status_Changed' && comment.status === 'review_ready';
+                          return (
+                            <div key={comment.commentId || comment.eventId || commentIndex} data-debug-id={completionComment ? `task-detail-completion-comment-${task.taskId}-${commentIndex}` : `task-detail-comment-${task.taskId}-${commentIndex}`} className={`rounded-lg border p-2 text-sm ${completionComment ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-50' : 'border-transparent bg-white/[0.04] text-zinc-300'}`}>
+                              <div className={`text-[10px] uppercase tracking-wider ${completionComment ? 'text-emerald-200' : 'text-zinc-500'}`}>{completionComment ? 'Completion comment · review handoff' : (comment.authorAgentInstanceId || 'comment')}</div>
+                              <Markdown source={comment.body || ''} compact className={`mt-1 text-sm ${completionComment ? 'text-emerald-50' : 'text-zinc-300'}`} />
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                     <div className="mt-3 flex items-center justify-between">

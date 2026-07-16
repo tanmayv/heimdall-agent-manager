@@ -125,7 +125,9 @@ handle_user_rpc_task_log :: proc(client: net.TCP_Socket, body: string) {
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"task_log requires task_id"}`)
 		return
 	}
-	write_response(client, 200, "OK", task_log_json(task_id))
+	limit := extract_json_int(body, "limit", 0)
+	cursor := extract_json_int(body, "cursor", 0)
+	write_response(client, 200, "OK", task_log_json_paginated(task_id, limit, cursor))
 }
 
 handle_user_rpc_task_create :: proc(client: net.TCP_Socket, body, user_id: string) {
