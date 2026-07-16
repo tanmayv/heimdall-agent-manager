@@ -37,12 +37,10 @@ def main() -> None:
         ('data-debug-id="memory-management-surface"', 'memory surface root debug id missing'),
         ('data-debug-id="memory-refresh-btn"', 'memory refresh button debug id missing'),
         ('data-debug-id="memory-filters"', 'memory filters debug id missing'),
-        ('debugId="memory-filter-subject-input"', 'memory subject filter missing'),
-        ('debugId="memory-filter-project-input"', 'memory project filter missing'),
-        ('debugId="memory-filter-role-input"', 'memory role filter missing'),
-        ('debugId="memory-filter-task-chain-type-input"', 'memory task-chain-type filter missing'),
+        ('debugId="memory-filter-team-kind-input"', 'memory target_team_kind filter missing'),
+        ('debugId="memory-filter-project-input"', 'memory target_project_id filter missing'),
+        ('debugId="memory-filter-role-input"', 'memory target_role filter missing'),
         ('debugId="memory-filter-search-input"', 'memory free-text filter missing'),
-        ('debugId="memory-filter-scope-select"', 'memory scope filter missing'),
         ('debugId="memory-filter-type-select"', 'memory type filter missing'),
         ('debugId="memory-filter-status-select"', 'memory status filter missing'),
         ('debugId="memory-filter-targeting-select"', 'memory targeting filter missing'),
@@ -61,11 +59,10 @@ def main() -> None:
     for marker, message in [
         ('debugId="memory-form-title-input"', 'memory form title input missing'),
         ('data-debug-id="memory-form-type-select"', 'memory form type select missing'),
-        ('debugId="memory-form-subject-agent-input"', 'memory form subject-agent input missing'),
-        ('debugId="memory-form-subject-key-input"', 'memory form subject-key input missing'),
-        ('debugId="memory-form-project-ids-input"', 'memory form project_ids input missing'),
-        ('debugId="memory-form-role-keys-input"', 'memory form role_keys input missing'),
-        ('debugId="memory-form-task-chain-types-input"', 'memory form task_chain_types input missing'),
+        ('debugId="memory-form-team-kind-input"', 'memory form target_team_kind input missing'),
+        ('debugId="memory-form-role-input"', 'memory form target_role input missing'),
+        ('debugId="memory-form-project-input"', 'memory form target_project_id input missing'),
+        ('debugId="memory-form-source-task-input"', 'memory form source_task_id input missing'),
         ('debugId="memory-form-body-textarea"', 'memory form body textarea missing'),
         ('debugId="memory-form-metadata-textarea"', 'memory form metadata textarea missing'),
         ('debugId="memory-form-reason-textarea"', 'memory form reason textarea missing'),
@@ -79,7 +76,7 @@ def main() -> None:
     require("proposalAction: 'rollback'" in memory_page, "Memory page should submit rollback proposals")
     require("expectedVersion: selectedRecord.version" in memory_page, "Memory page should submit selected version for edit/archive/rollback")
     require("decideMemoryProposal" in memory_page, "Memory page should use decideMemoryProposal for approve/reject")
-    require("subject_key" in memory_page and "project_ids" in memory_page and "role_keys" in memory_page and "task_chain_types" in memory_page, "Memory page should display targeting fields")
+    require("target_team_kind" in memory_page and "target_role" in memory_page and "target_project_id" in memory_page and "source_task_id" in memory_page, "Memory page should display simplified targeting fields")
     require("metadata_json" in memory_page and "Evidence" in memory_page and "Reason" in memory_page and "Version" in memory_page, "Memory page should display metadata/evidence/reason/version details")
 
     print("UI MEMORY MANAGEMENT SURFACE TEST PASSED")

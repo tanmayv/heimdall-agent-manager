@@ -20,8 +20,9 @@ def main() -> None:
     project_slice = PROJECT_SLICE.read_text(encoding="utf-8")
 
     require("createProjectFromUi" in project_slice, "projectSlice should expose createProjectFromUi thunk")
-    require("data-debug-id=\"home-new-project-btn\"" in app, "App should expose home-new-project-btn")
-    require("setNewProjectModalOpen(true)" in app, "New Project button should open a modal instead of routing away")
+    require("debugId: 'home-create-project-btn'" in app, "Home getting-started surface should expose a create-project entry point")
+    require("data-debug-id=\"projects-new-btn\"" in app, "Projects surface should expose a + New project button")
+    require("setNewProjectModalOpen(true)" in app, "New Project entry points should open a modal instead of routing away")
     require("function NewProjectModal" in app, "App should render a NewProjectModal")
     require("data-debug-id=\"new-project-name-input\"" in app, "NewProjectModal should collect project name")
     require("data-debug-id=\"new-project-vcs-enabled-checkbox\"" in app, "NewProjectModal should expose VCS enablement")
