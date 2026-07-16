@@ -82,6 +82,55 @@ Peer_Link_Record
 For v1 the operator configures peer links explicitly. No directory auto-sharing of agent
 lists yet (deferred).
 
+### 4.1 Config source: `[[peer]]` in `config.toml`
+
+Peers are configured statically in `config.toml`. Each peer entry carries exactly three
+fields — **name, endpoint, token** — and nothing else is persisted. The token is a
+long-lived shared secret used for **all** federation calls to that peer; there is **no
+separate re-authentication handshake** per request or per session.
+
+```toml
+# Peer daemons this daemon can borrow agents from (remote reviewers in v1).
+# Repeatable array-of-tables: one [[peer]] block per peer.
+[[peer]]
+name     = "studio-mini"                       # stable display/link name (peer_id)
+endpoint = "http://studio-mini.local:49322"    # peer daemon base URL
+token    = "plk_studio_mini_shared_secret"     # bearer used for every call to this peer
+
+[[peer]]
+name     = "ci-box"
+endpoint = "http://ci-box.local:49322"
+token    = "plk_ci_box_shared_secret"
+```
+
+Rules:
+- **Only these three fields are configured.** No per-peer client id, no issued session
+  token, no refresh/expiry, no negotiated credential. The `token` value is the whole auth
+  story for that link.
+- **No re-authentication.** The same `token` authorizes every federation request in both
+  directions (push wake-ups, proxied reads/writes, artifact fetch-through, health poll). A
+  peer accepts a call iff the presented bearer matches the `token` it has configured for the
+  caller. Rotating a link = editing the `token` on both sides and reloading config.
+- **Bidirectional by symmetric config.** For A↔B to work, A lists B under `[[peer]]` and B
+  lists A. There is no auto-registration; each side opts in by config. (Tokens may match or
+  differ per direction; simplest is one shared secret per link pair.)
+- **Config is the source of truth for links.** `Peer_Link_Record.status` (linked |
+  unreachable) is **runtime-only** — derived from the health poll (§8), never written back to
+  `config.toml`. The durable identity of a peer is its `[[peer]]` block; status is a live
+  projection, consistent with Heimdall's "durable state on disk, transport/session state in
+  memory" invariant.
+- **Token stays server-side.** The `token` is read from `config.toml` by the daemon and is
+  never surfaced to the UI/clients (§7.5). The Settings "Peer daemons" pane shows name +
+  endpoint + live status only; it does not display the token after entry.
+
+Parser note (implementation detail, not in this doc's scope to build): `[[peer]]` is a
+repeatable array-of-tables, parsed like the existing `[[wrapper.agent-cmd.*]]`-style
+repeated sections — a new `Peer_Config { name, endpoint, token }` collected into a
+`peers: [dynamic]Peer_Config` on the daemon config, with a matching `Section.Peer` and an
+`ensure_peer`/`parse_peer_key` pair mirroring `ensure_agent_command`/`parse_agent_command_key`.
+The runtime `Peer_Link_Record` is hydrated from these config entries at startup; `status` is
+filled by the health poll.
+
 ---
 
 ## 5. Routing rule: route by record-owner, not by actor
@@ -271,7 +320,9 @@ existing dormant-instance create flow and notification outbox are reused as-is. 
 "happy path" → "with the §7 invariants done properly."
 
 ### Phase 0 — Peer link plumbing  ·  ~2–3 d
-- `Peer_Link_Record` durable store + operator config (add/remove/list peer).
+- `[[peer]]` config parsing in `config.toml` (§4.1): `Peer_Config { name, endpoint, token }`
+  collected into `peers: [dynamic]Peer_Config`; hydrate runtime `Peer_Link_Record` from it.
+  (Three fields only; token is the whole auth story, no re-auth.)
 - `GET peer/health` reachability check → `linked | unreachable`.
 - `/daemon/info` self-id (already proposed in `multi-daemon/PLAN.md`) so peers key stably.
 - **Exit:** two daemons can be linked and show reachable status. No agents yet.
