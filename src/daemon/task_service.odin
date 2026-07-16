@@ -25,9 +25,18 @@ Task_Service_Result :: struct {
 
 USER_PROXY_REVIEWER_WARNING :: "operator@local reviewer normalized to user_proxy; prefer user_proxy for user-facing task reviews"
 
+task_reviewer_ref_is_user_proxy :: proc(agent_instance_id: string) -> (bool, bool) {
+	if agent_instance_id == "" do return false, false
+	if task_actor_is_user_proxy(agent_instance_id) do return true, false
+	if task_actor_is_human_recipient(agent_instance_id) {
+		if task_actor_is_user(agent_instance_id) do return true, true
+	}
+	return false, false
+}
+
 task_normalize_user_reviewer :: proc(agent_instance_id: string) -> (string, bool) {
-	if task_actor_is_user(agent_instance_id) {
-		return "user_proxy", true
+	if is_proxy, normalized := task_reviewer_ref_is_user_proxy(agent_instance_id); is_proxy {
+		return USER_PROXY_AGENT_INSTANCE_ID, normalized
 	}
 	return agent_instance_id, false
 }

@@ -4,6 +4,19 @@ import "core:fmt"
 import "core:strings"
 
 HUMAN_RECIPIENT_ID :: "operator@local"
+USER_PROXY_AGENT_INSTANCE_ID :: "user_proxy"
+
+task_actor_is_user_proxy :: proc(actor: string) -> bool {
+	return actor == USER_PROXY_AGENT_INSTANCE_ID
+}
+
+task_actor_is_human_recipient :: proc(actor: string) -> bool {
+	return actor == HUMAN_RECIPIENT_ID
+}
+
+task_reviewer_ref_is_proxy_or_human :: proc(actor: string) -> bool {
+	return task_actor_is_user_proxy(actor) || task_actor_is_human_recipient(actor)
+}
 
 task_runtime_agent_target :: proc(agent_instance_id: string) -> string {
 	if !identity_is_agent(agent_instance_id) do return ""

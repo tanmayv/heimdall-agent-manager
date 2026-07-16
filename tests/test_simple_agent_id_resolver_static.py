@@ -47,6 +47,10 @@ def main() -> None:
     require(task_service, "reviewer_agent_instance_id    = event_default_reviewer", TASK_SERVICE)
     require(task_service, "coordinator_agent_instance_id = coordinator_agent_instance_id", TASK_SERVICE)
     require(task_service, "reviewer_agent_instance_id    = default_reviewer_agent_instance_id", TASK_SERVICE)
+    require(task_service, "task_reviewer_ref_is_user_proxy", TASK_SERVICE)
+    require(task_service, "if task_actor_is_user_proxy(agent_instance_id) do return true, false", TASK_SERVICE)
+    require(task_service, "if task_actor_is_human_recipient(agent_instance_id)", TASK_SERVICE)
+    require(task_service, "return agent_instance_id, false", TASK_SERVICE)
 
     # Generated team-chain instances must not seed durable identity default projects.
     require(agent_store, "if normalized_scope != AGENT_SCOPE_DURABLE do default_project_id = \"\"", AGENT_STORE)
