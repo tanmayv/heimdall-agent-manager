@@ -301,12 +301,16 @@ degradation.
 
 ## 14. Starter scope: remote agents in task-assignment selection only
 
-For the **first** milestone we deliberately limit the surface to **one entry point**: remote
-agents appear as selectable options in the **task assignment / reviewer picker**. Everything
-else (chat, inbox DMs, coordinator, artifacts) is added in later phases.
+For the **first** UI milestone we limit the visible entry point to remote agents appearing as
+selectable options in the **task assignment / reviewer picker** (Phases 0–1). The **priority
+capability**, delivered in **Phase 2**, is **cross-daemon agent-to-agent messaging** — a local
+agent can send to and read replies from a remote agent — with task wake-ups riding the same
+channel. Full remote review (reading the task + voting back), artifacts, and dead-peer
+hardening follow in Phases 3–5.
 
-This keeps the first shippable slice tiny: a peer link, a remote proxy instance, the picker
-showing it, and the notification redirect so an assigned remote reviewer actually gets pinged.
+This keeps the first shippable slices tight: a peer link, a remote proxy instance, the picker
+showing it, then the shared `/federation/inbox` channel carrying both agent messages and task
+notifications so an assigned remote reviewer can be messaged and pinged.
 
 Setup mock: `docs/plan/daemon-federation/setup-mock.html` (peer link setup + remote agents in
 the assignment picker).
@@ -336,12 +340,27 @@ existing dormant-instance create flow and notification outbox are reused as-is. 
   Phase 2.)
 - *This is the demoable "remote agent in task assignment" slice, minus live delivery.*
 
-### Phase 2 — Notification push (wake-ups)  ·  ~4–6 d
-- `registry_send_ws_text_or_remote` redirect at the chokepoint.
-- `POST /federation/inbox` on the remote; **durable-accept before ACK** (§7.1).
+### Phase 2 — Notification push + agent-to-agent messaging  ·  ~6–8 d
+**Priority: cross-daemon message send/read between agents is the core of this phase, delivered
+alongside task wake-ups since both ride the same `/federation/inbox` channel.**
+- `POST /federation/inbox` on the remote; **durable-accept before ACK** (§7.1). Carries two
+  payload kinds from day one: `kind="notification"` (task wake-ups) and `kind="inbox_message"`
+  (agent-to-agent DMs).
+- **Agent-to-agent send (A → B):** wire `.Remote_Route_Required` in
+  `message_service_send_message` (currently `message_bus_emit` returns `false` → 404) to push
+  the message to `POST peerB/federation/inbox` when the target is a `remote_proxy`. B injects
+  it as a normal local inbox message (metadata-only notify; agent fetches the body — identical
+  to local inbox semantics).
+- **Agent-to-agent read/reply (B → A):** B's agent reads/replies via its normal inbox; B
+  forwards the reply back through `POST peerA/federation/callback` (`kind="inbox_message"`),
+  A delivers it into the original sender's durable inbox. Read receipts flow the same way.
+- `registry_send_ws_text_or_remote` redirect at the chokepoint (reuses the same push path for
+  task notifications).
 - Idempotency keys (§7.2); peer-token auth swap (§7.5).
 - Peer-liveness poll triggers `notification_outbox_replay_pending` for remote instances (§7.4).
-- **Exit:** assigning/`review_ready` on A actually pings `reviewer@B`; survives B restart.
+- **Exit:** a local agent can DM a remote agent and receive its reply end-to-end; assigning/
+  `review_ready` on A also pings `reviewer@B`; both survive a B restart.
+- *This is the priority milestone: bidirectional agent messaging across daemons works.*
 
 ### Phase 3 — State proxy (reads) + results (writes)  ·  ~5–7 d
 - Route-by-owner interceptor: forward reads for remote-owned records.
@@ -354,20 +373,248 @@ existing dormant-instance create flow and notification outbox are reused as-is. 
 - Result-artifact reference from remote (accepted ownership asymmetry).
 - **Exit:** remote reviewer reviews a diff artifact and returns a result artifact.
 
-### Phase 5 — Inbox DMs + hardening  ·  ~3–5 d
-- Wire `.Remote_Route_Required` so agent-to-agent DMs to remote agents work.
+### Phase 5 — Hardening  ·  ~2–4 d
 - Attention surfacing for `unreachable` peers / stuck gates; timeouts everywhere.
 - Operator override / fallback reviewer for permanently-down peers (§9).
-- **Exit:** coordinator can DM the remote reviewer; a dead peer is visible and resolvable.
+- Replay hygiene on `unreachable → linked` (drains queued wake-ups, callbacks, and messages).
+- **Exit:** a dead peer is visible in attention within one poll interval and the operator can
+  unblock a wedged gate without editing the DB. (Agent-to-agent DMs already work from Phase 2.)
 
-**Rough total:** ~20–29 engineer-days to full v1. **Starter demo (Phase 0→2):** ~9–13 d gets a
-remote reviewer selectable *and* actually notified.
+**Rough total:** ~21–30 engineer-days to full v1. **Priority slice (Phase 0→2):** ~11–15 d gets
+cross-daemon **agent-to-agent messaging** working, plus a remote reviewer selectable and
+notified.
 
 | Phase | Focus | Est (d) | Cumulative |
 |---|---|---|---|
 | 0 | Peer link plumbing | 2–3 | 2–3 |
-| 1 | Remote proxy + picker (starter) | 3–4 | 5–7 |
-| 2 | Notification push | 4–6 | 9–13 |
-| 3 | State proxy + results | 5–7 | 14–20 |
-| 4 | Artifacts | 3–4 | 17–24 |
-| 5 | Inbox DMs + hardening | 3–5 | 20–29 |
+| 1 | Remote proxy + picker | 3–4 | 5–7 |
+| 2 | **Notification push + agent-to-agent messaging** | 6–8 | 11–15 |
+| 3 | State proxy + results | 5–7 | 16–22 |
+| 4 | Artifacts | 3–4 | 19–26 |
+| 5 | Hardening | 2–4 | 21–30 |
+
+---
+
+## 16. Phase 2–5 implementation design
+
+Phase 2 delivers the priority capability — **cross-daemon agent-to-agent messaging** — plus
+task wake-ups over the same channel. Phases 3–5 let a remote reviewer **do the review
+end-to-end** (read the task, vote back), exchange **artifacts** without FS access, and become
+**robust** (dead-peer handling). This section is the concrete build plan for each.
+
+### Terminology recap
+- **Origin (A):** owns the task/chain/vote. Holds the local proxy instance
+  `reviewer-remote@peerB`.
+- **Peer (B):** runs the real agent `reviewer@s-r7f42`. B's agent talks only to B.
+- **Local proxy id:** `reviewer-remote@peerB` (A-side). **Peer id:** `reviewer@s-r7f42` (B-side).
+
+---
+
+### Phase 2 — Notification push + agent-to-agent messaging (priority)
+
+**Goal:** a local agent can send a message to a remote agent and read its reply, end-to-end;
+task wake-ups ride the same channel.
+
+#### 2a. One channel, two payload kinds
+`POST /federation/inbox` (on the receiver) accepts a tagged envelope so messaging and
+notifications share transport, auth, idempotency, and replay:
+```json
+{
+  "origin_peer_id": "peerA",
+  "kind": "inbox_message" | "notification",
+  "target_agent_instance_id": "reviewer@s-r7f42",   // receiver-local (peer) id
+  "conversation_id": "conv-...",                     // for inbox_message
+  "message_id": "msg-...",                            // origin-assigned, dedupe key
+  "body_ref": { "origin_peer_id": "peerA", "message_id": "msg-..." },
+  "idempotency_key": "peerA:msg:conv-...:msg-..."
+}
+```
+Bodies are **not** shipped inline (mirrors Heimdall's metadata-only notify): the receiver
+injects a normal local inbox notification, and the agent fetches the body via a proxied read
+(2c).
+
+#### 2b. Send: A → B
+- A's agent sends to the local proxy id `reviewer-remote@peerB` via the normal message path.
+- `message_service_send_message` currently emits `.Remote_Route_Required` for unregistered
+  targets and `message_bus_emit` returns `false` → 404. **Wire it:** if the target is a
+  `remote_proxy`, resolve its `{ peer_id, remote_agent_instance_id }` and
+  `POST peerB/federation/inbox` with `kind="inbox_message"`, mapping the target to B's peer id.
+- B validates the peer token, records the conversation in its runtime **remote-work map**
+  (`conversation_id → origin_peer_id`), and injects a metadata-only inbox notification for its
+  local agent — identical to a local inbound message.
+
+#### 2c. Read + reply: B → A
+- B's agent fetches the message body via a proxied inbox read:
+  `GET peerA/federation/messages/{message_id}` (or a conversation fetch), authenticated with
+  A's peer token. B stores nothing durably.
+- B's agent replies via its normal inbox send; B detects the conversation is origin-owned and
+  forwards the reply to `POST peerA/federation/callback` (`kind="inbox_message"`). A stores it
+  as a normal durable inbox message in that conversation and notifies the original A-side
+  sender.
+- **Read receipts** flow the same callback path (`kind="read_receipt"`), so unread counts stay
+  correct on both sides. (Consistent with the agent-facing read-receipt model; no user-facing
+  read fanout.)
+
+#### 2d. Task wake-ups (same plumbing)
+- `registry_send_ws_text_or_remote` redirect at the delivery chokepoint pushes
+  `kind="notification"` envelopes for task assign/`review_ready`/nudges to `peerB` instead of a
+  local WS. Reuses the durable outbox for retry/replay.
+
+#### 2e. Invariants (MUST)
+- **Durable-accept before ACK** (§7.1): B inserts into its own inbox/outbox before returning
+  200; A only marks the send delivered on that ACK.
+- **Idempotency** (§7.2): dedupe by `message_id` / `idempotency_key`; replays are no-ops.
+- **Peer-token auth swap** (§7.5): A and B present the shared `[[peer]]` token; never exposed
+  to clients/agents.
+- **Replay** (§7.4): on `unreachable → linked`, queued messages and notifications drain in
+  order via `notification_outbox_replay_pending`.
+
+#### 2f. Exit criteria
+A local agent DMs a remote agent; the remote agent reads the body (proxied) and replies; the
+reply lands in A's durable inbox with correct unread/read state. Task wake-ups also reach the
+remote reviewer. All of it survives a B restart mid-exchange.
+
+---
+
+### Phase 3 — State proxy (reads) + results (writes)
+
+**Goal:** B's agent can read the A-owned task and cast a vote/comment that lands durably on A.
+
+#### 3a. Route-by-owner read interceptor (on B)
+When B's agent asks *its own* daemon for a task that is actually owned by A, B must forward
+the read to A instead of looking in its local store.
+
+- **How B knows it's remote:** the wake-up B received in Phase 2 (`/federation/inbox`) carries
+  `origin_peer_id` + the origin task/chain ids. B records a lightweight, in-memory
+  **remote-work map**: `{ origin_task_id → origin_peer_id }` for tasks its agents were pinged
+  about. (Runtime-only; rebuilt from re-pushes on restart — consistent with "no remote
+  storage.")
+- **Interceptor:** in B's task read handlers (`handle_get_task`, `handle_get_task_comments`,
+  `handle_get_task_chain`, `handle_get_task_chains/tasks`), before hitting the local store,
+  check the remote-work map. If the id is origin-owned:
+  ```
+  GET  peerA/tasks/{task_id}            (+ peer_token for A)
+  GET  peerA/tasks/{task_id}/comments
+  ```
+  stream A's response back to B's agent verbatim. B stores nothing.
+- **Auth:** B presents A's `peer_token` (the shared secret from B's `[[peer]]` block for A).
+  A authorizes because the token matches; A additionally checks the requested task actually
+  has `reviewer-remote@peerB` as a participant (scoped read, mirrors §7.3).
+- **List reads:** a remote agent's "my tasks" list on B is the **union** of B-local tasks and
+  a per-origin `GET peerA/tasks?assignee=<local proxy id>` fan-out across linked peers it has
+  remote work on. Keep it lazy: only query peers present in the remote-work map.
+
+#### 3b. Result write forwarding (B → A)
+B's agent votes/comments using the **normal** ctl/RPC against B (`tasks vote`, `tasks comment`,
+`tasks done`). B detects the target task is origin-owned and forwards the mutation instead of
+applying locally.
+
+- **New endpoint on A:** `POST /federation/callback`
+  ```json
+  {
+    "origin_peer_id": "peerB",
+    "kind": "vote" | "comment" | "status",
+    "task_id": "task-...",            // A's id
+    "chain_id": "chain-...",
+    "as_agent_instance_id": "reviewer-remote@peerB",  // the LOCAL proxy id on A
+    "result": "lgtm" | "ngtm",        // for kind=vote
+    "comment": "...",
+    "idempotency_key": "peerB:vote:task-...:<hash>"
+  }
+  ```
+- **A translates the callback into the existing durable mutation** — it records a normal
+  `Task_LGTM_Vote_State` / `Task_Comment_State` **as the local proxy id**, reusing the same
+  store paths as a local reviewer (`task_store` vote/comment append + `task_db_save_vote` /
+  `task_db_save_comment`). No new vote model; the chain's `lgtm_required` gate resolves
+  exactly as for a local reviewer.
+- **Scoped write authority (§7.3, MUST):** A rejects the callback unless `as_agent_instance_id`
+  is a `remote_proxy` bound to `origin_peer_id` **and** is a participant/required-reviewer on
+  `task_id`. A peer can never vote as an arbitrary instance or on an unrelated task.
+- **Idempotency (§7.2, MUST):** A dedupes by `idempotency_key`; a replayed callback is a no-op
+  that returns the same result. B retries via its own outbox until A ACKs durably.
+- **Timestamps (§11):** A stamps the vote/comment with **A's** clock on ingestion; B's clock is
+  ignored to avoid skew reordering.
+
+#### 3c. Exit criteria
+Remote reviewer opens the task (proxied read), submits `lgtm`, the vote lands on A as
+`reviewer-remote@peerB`, and A's chain gate auto-approves. Survives duplicate callbacks and a
+B restart mid-review.
+
+---
+
+### Phase 4 — Artifacts (FS-free review channel)
+
+**Goal:** the remote reviewer reviews a **diff artifact** (never touching A's FS) and returns a
+**review-result artifact**.
+
+#### 4a. Fetch-through by id (B pulls A's artifacts)
+- The review request / task references artifacts by **id** (e.g. the chain's diff artifact),
+  never by path.
+- **New endpoint (both daemons):** `GET /federation/artifacts/{artifact_id}` — authenticated
+  with the peer token; internally delegates to the existing `handle_get_artifact_content`
+  blob-store read.
+- On B, when its agent requests artifact `X` that resolves to an origin ref, B forwards
+  `GET peerA/federation/artifacts/X`, streams the bytes to its agent, and **caches by id**
+  (blobs are immutable → safe to cache indefinitely; key `(origin_peer_id, artifact_id)`).
+- **Safety gate:** only **fully-baked, self-contained** artifacts are fetchable. A must refuse
+  to serve artifacts that are pointers into a VCS workspace/FS (would leak the FS-free
+  promise). Practically: the chain diff is materialized into a standalone artifact blob before
+  it's referenced in a remote review request.
+
+#### 4b. Result artifact (B → A, the accepted asymmetry)
+- B's agent produces the review as a normal **artifact on B** (its blob store owns the bytes).
+- The Phase 3 `/federation/callback` (kind=comment or a new `kind="artifact_ref"`) carries an
+  **artifact reference**, not bytes: `{ origin_peer_id, remote_artifact_id }`.
+- A stores a **reference** in its artifact metadata (a `remote` origin ref), and when the UI/
+  agent opens it, A fetch-throughs `GET peerB/federation/artifacts/<remote_artifact_id>` and
+  caches. This is the **one ownership asymmetry** (§10): result artifacts are owned by B,
+  referenced from A.
+- **Auth for reverse fetch:** A presents B's peer token (A's `[[peer]]` block for B).
+
+#### 4c. Exit criteria
+Remote reviewer fetches the chain diff artifact by id (no FS access), writes a review-result
+artifact on B, and A can open/read that result via fetch-through. Cached blobs are not
+re-fetched.
+
+---
+
+### Phase 5 — Hardening
+
+**Goal:** a dead/slow peer is visible and
+operator-resolvable rather than silently wedging a chain.
+
+> Agent-to-agent inbox messaging (send/read/reply/receipts) is delivered in **Phase 2**, not
+> here. Phase 5 is purely operational hardening on top of the already-working message and
+> notification channels.
+
+#### 5a. Dead-peer handling & attention
+- **Liveness feeds attention:** when a peer flips to `unreachable` (§8 health poll), surface a
+  derived item in `GET /attention` (mirrors how `merge_lifecycle` derives merge-decision
+  items). One item per stuck `lgtm_required` gate that is waiting on a remote reviewer whose
+  peer is down.
+- **Timeouts everywhere:** all forwarded federation calls get bounded timeouts; a slow peer
+  fails fast to `unreachable` rather than blocking A's request threads.
+- **Operator override (§9):** an attention item for a wedged remote gate offers: (a) reassign
+  the reviewer to a local agent, or (b) drop the remote `lgtm_required` participant so the
+  gate can resolve on the remaining reviewers. Both are existing participant/reviewer
+  mutations — no new task model.
+- **Replay hygiene:** on `unreachable → linked`, the Phase 2 poll triggers
+  `notification_outbox_replay_pending` for that peer's proxy instances so queued wake-ups and
+  callbacks drain in order.
+
+#### 5b. Exit criteria
+Killing a peer surfaces an attention item within one poll interval, and the operator can
+unblock the wedged gate without editing the DB. (Agent-to-agent DMs already work from Phase 2.)
+
+---
+
+### Cross-phase invariants (apply to every forwarded call in 3–5)
+- **Durable-accept before ACK** (§7.1): every forward — read, callback, artifact ref, inbox —
+  is only "done" once the receiver has durably accepted it.
+- **Idempotency keys** (§7.2): every write/callback/DM carries one; receivers dedupe.
+- **Scoped authority** (§7.3): a peer may only read/write records its mapped instance
+  participates in.
+- **Owner writes, peer references** (§12): A stays the source of truth for the task/vote; only
+  result-artifact bytes are owned by B and referenced from A.
+- **No new remote storage:** B's remote-work map and artifact cache are runtime-only and
+  rebuildable; nothing durable about A's records is persisted on B.
