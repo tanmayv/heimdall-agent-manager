@@ -34,6 +34,13 @@ require("agent_id_update_defaults :: proc(agent_id, display_name, default_provid
 require("template_id = rec.template_id," in ID_STORE, "update helper must preserve template id")
 require("default_project_set = true," in ID_STORE, "update helper must apply project verbatim")
 
+# Explicit set/clear must be sticky across replay: backfill from older instance
+# events MUST NOT rehydrate an explicitly cleared default project.
+require("default_project_explicit: bool," in ID_STORE, "record must track explicit default-project set/clear")
+require("if event.default_project_set do rec.default_project_explicit = true" in ID_STORE, "apply must mark explicit on default_project_set events")
+require('if !rec.default_project_explicit && rec.default_project_id == "" && default_project_id != ""' in ID_STORE, "backfill must not rehydrate an explicitly cleared default project")
+require("default_project_set = rec.default_project_explicit," in ID_STORE, "record->event re-emit must preserve explicit flag, not fabricate it")
+
 # Backend handler wires the durable update behind an explicit flag.
 require('extract_json_bool(body, "update_agent_id_defaults", false)' in AGENTS_START, "instance update should gate durable defaults on explicit flag")
 require("agent_id_update_defaults(resolved_agent_id, display_name, provider_profile, model_tier, project_id, \"api\")" in AGENTS_START, "instance update should propagate to durable agent_id defaults")

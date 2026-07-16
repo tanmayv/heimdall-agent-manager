@@ -35,6 +35,10 @@ Agent_Id_Record :: struct {
 	default_provider_profile: string,
 	default_model_tier: string,
 	default_project_id: string,
+	// True once the default project has been explicitly set or cleared via an
+	// authoritative upsert (default_project_set=true). Backfill from older instance
+	// events must not rehydrate/override an explicitly cleared default project.
+	default_project_explicit: bool,
 	state: string,
 	created_unix_ms: i64,
 	updated_unix_ms: i64,
@@ -174,6 +178,7 @@ agent_id_apply_event :: proc(event: Agent_Id_Event) -> bool {
 	if tier != "" do tier = normalize_model_tier(tier)
 	rec.default_model_tier = strings.clone(tier)
 	if event.default_project_set || event.default_project_id != "" || rec.default_project_id == "" do rec.default_project_id = strings.clone(event.default_project_id)
+	if event.default_project_set do rec.default_project_explicit = true
 	state := event.state
 	if state == "" do state = rec.state
 	if state == "" do state = AGENT_ID_STATE_ACTIVE
@@ -202,7 +207,10 @@ agent_id_ensure_backfill :: proc(agent_id, display_name, template_id, provider_p
 		if rec.agent_role == "" { rec.agent_role = strings.clone(agent_role_normalize(agent_role if agent_role != "" else agent_role_from_template(template_id))); changed = true }
 		if rec.default_provider_profile == "" && provider_profile != "" { rec.default_provider_profile = strings.clone(provider_profile); changed = true }
 		if rec.default_model_tier == "" && model_tier != "" { rec.default_model_tier = strings.clone(normalize_model_tier(model_tier)); changed = true }
-		if rec.default_project_id == "" && default_project_id != "" { rec.default_project_id = strings.clone(default_project_id); changed = true }
+		// Only backfill a blank default project when it was never explicitly set/cleared.
+		// An explicit clear (default_project_explicit) must survive replay and not be
+		// rehydrated from older instance records.
+		if !rec.default_project_explicit && rec.default_project_id == "" && default_project_id != "" { rec.default_project_id = strings.clone(default_project_id); changed = true }
 		if changed do agent_id_append_event(agent_id_record_to_event(rec^, "backfill"))
 		return
 	}
@@ -251,7 +259,7 @@ agent_id_record_to_event :: proc(rec: Agent_Id_Record, author: string) -> Agent_
 		default_provider_profile = rec.default_provider_profile,
 		default_model_tier = rec.default_model_tier,
 		default_project_id = rec.default_project_id,
-		default_project_set = true,
+		default_project_set = rec.default_project_explicit,
 		state = rec.state,
 		author = author,
 		order = rec.order,
