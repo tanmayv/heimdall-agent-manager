@@ -7,7 +7,22 @@
 - Uses an isolated daemon/data directory only.
 - Default isolated daemon port is `49422`.
 - Writes per-scenario transcripts under `tests/e2e/transcripts/<timestamp>/` unless `--artifacts-dir` is provided.
-- Drives user-visible actions through the Electron debug UI endpoints (`/click`, `/type`, `/select`, `/state`, `/elements`, `/screenshot`).
+- Drives user-visible actions through the Electron debug UI endpoints (`/click`, `/type`, `/select`, `/state`, `/elements`, `/screenshot`, `/upload-file`).
+
+### Driving artifact upload without a native file chooser
+
+The debug harness cannot open the OS file chooser or deliver a clipboard paste, so
+UI artifact create/upload is exercised via `POST /upload-file`, which injects a
+synthetic `File` into a real artifact upload `<input type="file">` and dispatches a
+genuine `change` event (running the production upload path end-to-end).
+
+```bash
+# Open a conversation thread and its Artifacts side panel first (via /click), then:
+curl -s -X POST "http://127.0.0.1:<debug-port>/upload-file" \
+  -d '{"debug_id":"conversation-thread-artifacts-upload-input","file_name":"harness.png","mime":"image/png"}'
+# Optional: pass base64 bytes with "content_base64"; omitted content defaults to a 1x1 PNG.
+# The new artifact then appears in the right-sidebar Artifacts list and via `ham-ctl artifacts list`.
+```
 - Uses CLI/HTTP helpers only for isolated setup/teardown, passive assertions, model/preflight checks, and transcript collection.
 - Does **not** substitute synthetic agents for the required real `pi`/Codex scenario. Missing `pi`, Codex model mapping, display server, or Electron dependencies produce explicit preflight blockers.
 - Uses a runner-owned isolated wrapper credentials path. Pass `--wrapper-credentials-path <file>` or set `HEIMDALL_E2E_WRAPPER_CREDENTIALS=<file>` to copy an existing provider credentials file into that isolated path; otherwise the runner creates an isolated empty credentials file and relies on provider config/environment.

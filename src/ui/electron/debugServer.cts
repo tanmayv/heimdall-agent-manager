@@ -290,6 +290,51 @@ const routes: Array<{ method: string; path: string; handler: Handler }> = [
       try { return JSON.parse(json as string); } catch { return { ok: false, message: 'eval failed' }; }
     },
   },
+  {
+    // Drive a real artifact upload <input type="file"> end-to-end without a native
+    // file chooser. Builds a File from base64 content, assigns it to the target
+    // input's files, and dispatches a real 'change' event so the production
+    // onChange -> uploadFile -> createArtifact path runs unchanged. This unblocks
+    // debug-harness validation of UI artifact create/upload (task-19f68af38b7).
+    method: 'POST',
+    path: '/upload-file',
+    handler: async (body) => {
+      let params: any = {};
+      try { params = JSON.parse(body); } catch { return { ok: false, message: 'invalid json' }; }
+      const debugId: string = params.debug_id ?? params.debugId ?? '';
+      const query: string = params.query ?? (debugId ? `[data-debug-id="${debugId}"]` : '');
+      const index: number = params.index ?? 0;
+      const fileName: string = params.file_name ?? params.fileName ?? 'debug-artifact.png';
+      const mime: string = params.mime ?? 'image/png';
+      // 1x1 transparent PNG default so callers can omit content.
+      const contentBase64: string = params.content_base64 ?? params.contentBase64
+        ?? 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+      if (!query) return { ok: false, message: 'debug_id or query required' };
+      const js = `(async function() {
+        const els = Array.from(document.querySelectorAll(${JSON.stringify(query)}));
+        const el = els[${index}];
+        if (!el) return JSON.stringify({ ok: false, found: false, message: 'no input at index ${index}' });
+        if (el.tagName !== 'INPUT' || el.type !== 'file') return JSON.stringify({ ok: false, found: true, message: 'target is not a file input' });
+        try {
+          const bin = atob(${JSON.stringify(contentBase64)});
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          const file = new File([bytes], ${JSON.stringify(fileName)}, { type: ${JSON.stringify(mime)} });
+          const dt = new DataTransfer();
+          dt.items.add(file);
+          const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'files');
+          if (descriptor && descriptor.set) descriptor.set.call(el, dt.files); else el.files = dt.files;
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return JSON.stringify({ ok: true, found: true, file_name: ${JSON.stringify(fileName)}, mime: ${JSON.stringify(mime)} });
+        } catch (err) {
+          return JSON.stringify({ ok: false, found: true, message: String(err && err.message || err) });
+        }
+      })()`;
+      const json = await evalInRenderer(js);
+      try { return JSON.parse(json as string); } catch { return { ok: false, message: 'eval failed' }; }
+    },
+  },
 ];
 
 let activeServer: http.Server | null = null;
