@@ -41,7 +41,7 @@ Team_Kind_Def :: struct {
 	scaffolds: []Team_Chain_Scaffold,
 	wants_vcs: bool,
 	wants_vcs_follows_project: bool,
-	idle_shutdown_ms: int,
+	idle_shutdown_ms: int, // TODO(phase 2): remove; idle auto-close disabled in phase 1
 }
 
 coding_roles := [4]Team_Role_Slot{

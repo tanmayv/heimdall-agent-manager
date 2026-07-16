@@ -146,7 +146,18 @@ team_boot_lease_count: int
 
 task_autoscaler_tick :: proc(now: i64) -> int {
 	changed := task_runtime_reconcile_all_active("periodic_fallback", "normal")
-	changed += task_autoscaler_idle_shutdown(now)
+	// Idle auto-close disabled (phase 1): the idle-shutdown sweep also stopped
+	// non-chain agents on its own. Chain-terminal cleanup via
+	// task_autoscaler_stop_chain_agents is unaffected.
+	// TODO(phase 2): fully remove idle-shutdown dead code and config:
+	//   - delete task_autoscaler_idle_shutdown / task_autoscaler_idle_shutdown_seconds
+	//   - delete now-unused helpers task_autoscaler_agent_is_active_chain_coordinator
+	//     and task_autoscaler_has_unread_mentions (verify no other callers)
+	//   - remove config team_idle_shutdown_seconds (src/lib/config/config.odin)
+	//   - remove Team_Kind_Def.idle_shutdown_ms + DEFAULT_IDLE_SHUTDOWN_MS (src/daemon/team_kinds.odin)
+	//   - update config.toml and docs/teams-v1/{02,03,08}
+	// changed += task_autoscaler_idle_shutdown(now)
+	_ = now
 	return changed
 }
 
@@ -388,6 +399,8 @@ task_autoscaler_team_role_defaults :: proc(chain: Task_Chain_State, agent_instan
 	return "", "", "", false
 }
 
+// TODO(phase 2): remove idle auto-close. Disabled in phase 1 (no longer called
+// from task_autoscaler_tick) because it also stopped non-chain agents on its own.
 task_autoscaler_idle_shutdown :: proc(now: i64) -> int {
 	changed := 0
 	for i in 0..<agent_instance_record_count {

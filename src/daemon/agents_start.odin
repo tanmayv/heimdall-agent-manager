@@ -247,8 +247,30 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 	display_name := extract_json_string(body, "display_name", extract_json_string(body, "alias", ""))
 	agent_role := extract_json_string(body, "agent_role", extract_json_string(body, "role", ""))
 	agent_instance_id := extract_json_string(body, "agent_instance_id", "")
+	agent_id_ref := extract_json_string(body, "agent_id", "")
 	config_path := extract_json_string(body, "config_path", server_config_path)
-	if agent_instance_id == "" {
+	// Starting by durable agent_id creates a fresh concrete instance. Supplying an
+	// existing concrete/legacy agent_instance_id resumes that exact instance.
+	if agent_id_ref == "" && agent_instance_id != "" && strings.index_byte(agent_instance_id, '@') < 0 && agent_record_index_by_instance(agent_instance_id) < 0 {
+		agent_id_ref = agent_instance_id
+		agent_instance_id = ""
+	}
+	if agent_id_ref != "" && agent_instance_id == "" {
+		if task_service_agent_ref_looks_indexed_slot(agent_id_ref) {
+			write_response(client, 400, "Bad Request", `{"ok":false,"message":"indexed role slots are not durable agent_id values"}`)
+			return
+		}
+		if safe_agent_id_part(agent_id_ref) != agent_id_ref {
+			write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid agent_id"}`)
+			return
+		}
+		agent_instance_id = agent_instance_id_new(agent_id_ref)
+		if display_name == "" do display_name = agent_id_ref
+		if template_id == "" {
+			template_id = agent_id_template_id(agent_id_ref)
+			if agent_id_ref == "coordinator" && template_id == "coordinator" do template_id = "lead"
+		}
+	} else if agent_instance_id == "" {
 		id_base := display_name if display_name != "" else template_id
 		agent_instance_id = agent_generated_instance_id(id_base)
 	}
@@ -280,6 +302,10 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 	if existing_idx := agent_record_index_by_instance(agent_instance_id); existing_idx >= 0 {
 		persisted_provider_profile = agent_instance_records[existing_idx].provider_profile
 		persisted_model_tier = agent_instance_records[existing_idx].model_tier
+	} else if aid_idx := agent_id_index(agent_id_from_instance_id(agent_instance_id)); aid_idx >= 0 {
+		identity := agent_id_records[aid_idx]
+		if identity.default_provider_profile != "" do persisted_provider_profile = identity.default_provider_profile
+		if identity.default_model_tier != "" do persisted_model_tier = identity.default_model_tier
 	}
 	agent_record_id, _, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, persisted_provider_profile, project_id, "", persisted_model_tier, "", manual_scope, agent_role)
 	if !upsert_ok {

@@ -76,14 +76,16 @@ main :: proc() {
 		return
 	}
 
-	if cmd[0] == "start" || (len(cmd) >= 2 && cmd[0] == "agents" && cmd[1] == "start") {
+	if cmd[0] == "start" || cmd[0] == "run" || (len(cmd) >= 2 && cmd[0] == "agents" && (cmd[1] == "start" || cmd[1] == "run")) {
 		idx := 1
 		if cmd[0] == "agents" do idx = 2
-		if idx >= len(cmd) {
-			fmt.println("usage: ham-ctl agents start <agent_instance_id>")
+		target := option_value(os.args, "--agent-id", "")
+		if target == "" && idx < len(cmd) do target = cmd[idx]
+		if target == "" {
+			fmt.println("usage: ham-ctl agents run <agent_id|agent_instance_id> [--agent-id <agent_id>]")
 			return
 		}
-		ctl_agents_start(cmd[idx], os.args, config_path, daemon_url)
+		ctl_agents_start(target, os.args, config_path, daemon_url)
 		return
 	}
 
@@ -186,14 +188,14 @@ ctl_agents_list :: proc(daemon_url: string) {
 	fmt.println(response.body)
 }
 
-ctl_agents_start :: proc(agent_instance_id: string, args: []string, config_path, daemon_url: string) {
+ctl_agents_start :: proc(target: string, args: []string, config_path, daemon_url: string) {
 	health_response, health_ok := http.get(daemon_url, contracts.ROUTE_HEALTH)
 	if !health_ok || health_response.status != 200 {
 		fmt.println(`{"ok":false,"message":"daemon is not reachable; start ham-daemon first"}`)
 		return
 	}
 
-	request := remote_start_request_json(agent_instance_id, option_value(args, "--agent", ""), config_path)
+	request := remote_start_request_json(target, option_value(args, "--agent", ""), config_path, option_value(args, "--agent-id", "") != "")
 	response, ok := http.post(daemon_url, contracts.ROUTE_AGENTS_START, request)
 	if !ok {
 		fmt.println(`{"ok":false,"message":"remote start request failed"}`)
@@ -324,10 +326,14 @@ send_request_json :: proc(token, target, body: string) -> string {
 	return strings.to_string(builder)
 }
 
-remote_start_request_json :: proc(agent_instance_id, agent, config_path: string) -> string {
+remote_start_request_json :: proc(target, agent, config_path: string, target_is_agent_id: bool = false) -> string {
 	builder := strings.builder_make()
-	strings.write_string(&builder, `{"agent_instance_id":"`)
-	json_write_string(&builder, agent_instance_id)
+	if target_is_agent_id {
+		strings.write_string(&builder, `{"agent_id":"`)
+	} else {
+		strings.write_string(&builder, `{"agent_instance_id":"`)
+	}
+	json_write_string(&builder, target)
 	strings.write_string(&builder, `"`)
 	if agent != "" {
 		strings.write_string(&builder, `,"agent":"`)
@@ -1351,7 +1357,7 @@ print_usage :: proc(config_path, daemon_url: string) {
 	fmt.println("commands:")
 	fmt.println("  health")
 	fmt.println("  agents list        (alias: list)")
-	fmt.println("  agents start <agent_instance_id> [--agent pi|claude]  (alias: start)")
+	fmt.println("  agents run <agent_id|agent_instance_id> [--agent-id <agent_id>] [--agent pi|claude]  (aliases: agents start, run, start)")
 	fmt.println("  agents create --name <agent_instance_id> [--provider pi|claude] [--tier cheap|normal|smart] [--display-name <name>] [--template <id>] [--project <id>]")
 	fmt.println("  agents update --id <agent_instance_id> [--tier cheap|normal|smart] [--display-name <name>] [--provider <profile>]")
 	fmt.println("  send --token <token> --to <agent_instance_id> --body <text>")

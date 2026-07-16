@@ -6,6 +6,7 @@ import "core:strings"
 import "core:thread"
 import "core:time"
 import "core:sys/posix"
+import contracts "odin_test:contracts"
 import cfg_lib "odin_test:lib/config"
 import mp "odin_test:lib/message_provider"
 
@@ -13,6 +14,7 @@ server_bind_host: string
 server_port: int
 server_config_path: string
 server_data_dir: string
+server_daemon_id: string
 server_wrapper_bin: string
 server_agent_providers: [dynamic]string
 server_agent_cmd_configs: [dynamic]cfg_lib.Agent_Command_Config
@@ -26,6 +28,8 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 	server_config_path = strings.clone(config_path)
 	expanded_data_dir := expand_home(cfg.daemon.data_dir)
 	server_data_dir = strings.clone(expanded_data_dir)
+	server_daemon_id = strings.clone(cfg.daemon.daemon_id)
+	if server_daemon_id == "" do server_daemon_id = "local-daemon"
 	server_wrapper_bin = strings.clone(cfg.daemon.wrapper_bin)
 	server_agent_providers = make([dynamic]string)
 	server_agent_cmd_configs = make([dynamic]cfg_lib.Agent_Command_Config)
@@ -131,6 +135,18 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 	}
 }
 
+daemon_info_json :: proc() -> string {
+	builder := strings.builder_make()
+	strings.write_string(&builder, `{"ok":true,"daemon_id":"`)
+	json_write_string(&builder, server_daemon_id)
+	strings.write_string(&builder, `","version":"`)
+	json_write_string(&builder, contracts.APP_VERSION)
+	strings.write_string(&builder, `","protocol_version":`)
+	strings.write_string(&builder, fmt.tprintf("%d", contracts.PROTOCOL_VERSION))
+	strings.write_string(&builder, `}`)
+	return strings.to_string(builder)
+}
+
 socket_set_close_on_exec :: proc(socket: net.TCP_Socket) -> bool {
 	flags := posix.fcntl(posix.FD(socket), .GETFD, 0)
 	if flags < 0 do return false
@@ -165,6 +181,11 @@ handle_client :: proc(client: net.TCP_Socket) {
 	defer current_telemetry = nil
 
 	if handle_rest_route(client, request, &ctx) {
+		return
+	}
+
+	if strings.has_prefix(request, "GET /daemon/info ") {
+		write_response(client, 200, "OK", daemon_info_json())
 		return
 	}
 

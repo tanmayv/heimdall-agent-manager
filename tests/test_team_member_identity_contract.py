@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Static contract checks for team-member scoped identity/routing.
+"""Static contract checks for team role-slot identity/routing.
 
-Teams v1 must route work to durable team member slots, not ambiguous role names
-or parsed agent strings. This complements daemon integration coverage by guarding
-critical implementation points.
+Team rows keep stable indexed role-slot labels, while task assignment/review
+routing persists concrete agent instances resolved from simple durable agent ids.
+This complements daemon integration coverage by guarding critical implementation
+points.
 """
 from pathlib import Path
 
@@ -37,19 +38,26 @@ def main() -> None:
     require(team_db, "if m.team_member_id == \"\" do m.team_member_id", TEAM_DB)
     require(team_db, "if m.agent_instance_id == \"\" && !m.is_user_proxy", TEAM_DB)
 
-    # Stable generated identity shape: <role>-<index+1>@<team-id>.
+    # Stable generated role-slot label shape: <role>-<index+1>@<team-scope>.
+    # The slot label is not the runtime identity; route_to stores the concrete
+    # <durable-agent-id>@s-... instance used by tasks.
     require(team_service, "team_service_member_id", TEAM_SERVICE)
     require(team_service, "team_service_member_agent_instance_id", TEAM_SERVICE)
     require(team_service, '"%s-%d@%s"', TEAM_SERVICE)
-    require(team_service, "coordinator_agent_instance_id != \"\"", TEAM_SERVICE)
-    require(team_service, "member.agent_instance_id = coordinator_agent_instance_id", TEAM_SERVICE)
+    require(team_service, "team_service_member_slot_label", TEAM_SERVICE)
+    require(team_service, "team_service_role_durable_agent_id", TEAM_SERVICE)
+    require(team_service, "member.route_to = resolved_instance_id", TEAM_SERVICE)
+    require(team_service, "agent_instance_id_new(durable_agent_id)", TEAM_SERVICE)
     require(task_service, "team_service_create_for_chain(cmd.project_id, chain_id, cmd.kind, \"\", cmd.coordinator_agent_instance_id)", TASK_SERVICE)
-    require(task_service, "if member.agent_instance_id != \"\" do return member.agent_instance_id", TASK_SERVICE)
+    require(task_service, "team_service_ensure_member_route", TASK_SERVICE)
+    require(task_service, "task_service_resolve_agent_reference_for_chain", TASK_SERVICE)
+    require(task_service, "task_service_create_concrete_instance_for_agent_id", TASK_SERVICE)
 
-    # Direct assignments/participants validate same-chain team membership.
+    # Direct assignments/participants resolve slot/durable refs, then validate
+    # known concrete instances for the chain.
     require(task_service, "task_agent_instance_allowed_for_chain", TASK_SERVICE)
-    require(task_service, "assignee is not a member of this chain team", TASK_SERVICE)
-    require(task_service, "agent is not a member of this chain team", TASK_SERVICE)
+    require(task_service, "role slot is unknown for this chain", TASK_SERVICE)
+    require(task_service, "agent is not an eligible agent", TASK_SERVICE)
 
     # HTTP roster exposes the stable member identity to UI/testers.
     require(team_http, "team_member_id", TEAM_HTTP)

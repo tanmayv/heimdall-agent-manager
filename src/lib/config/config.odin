@@ -64,7 +64,7 @@ Daemon_Config :: struct {
 	nudge_restart_grace_seconds: int,
 	nudge_send_escape_prefix: bool,
 	startup_stale_after_seconds: int,
-	team_idle_shutdown_seconds: int,
+	team_idle_shutdown_seconds: int, // TODO(phase 2): remove; idle auto-close disabled in phase 1
 	default_agent_provider_profile: string,
 	default_agent_model_tier: string,
 	wrapper_bin: string,

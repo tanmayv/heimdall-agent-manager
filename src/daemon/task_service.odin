@@ -46,13 +46,8 @@ task_service_create_task :: proc(cmd: Task_Create_Command) -> Task_Service_Resul
 	if cmd.title == "" {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"task create requires title"}`}
 	}
+	assignee_agent_instance_id := cmd.assignee_agent_instance_id
 	reviewer_agent_instance_id, reviewer_normalized := task_normalize_user_reviewer(cmd.reviewer_agent_instance_id)
-	if cmd.assignee_agent_instance_id != "" && cmd.assignee_agent_instance_id == reviewer_agent_instance_id {
-		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"assignee cannot be the reviewer"}`}
-	}
-	if cmd.assignee_agent_instance_id != "" && reviewer_agent_instance_id == "" && cmd.chain_id != "" && task_chain_default_reviewer_agent_instance_id(cmd.chain_id) == cmd.assignee_agent_instance_id {
-		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"assignee cannot be the default reviewer"}`}
-	}
 	task_id := task_generate_id()
 	status := cmd.status
 	if status == "" do status = "planning"
@@ -70,11 +65,6 @@ task_service_create_task :: proc(cmd: Task_Create_Command) -> Task_Service_Resul
 	if status == "ready" || status == "in_progress" {
 		if dep_blockers := task_dependency_blocking_ids(cmd.depends_on); dep_blockers != "" {
 			return task_gating_error("dependency", "unmet task dependencies", dep_blockers)
-		}
-		if cmd.assignee_agent_instance_id != "" {
-			if active := task_active_slot_blocker(cmd.assignee_agent_instance_id, ""); active != "" {
-				return task_gating_error("assignee_active_task", "assignee already has an active task", active)
-			}
 		}
 	}
 	chain_id      := cmd.chain_id
@@ -96,10 +86,33 @@ task_service_create_task :: proc(cmd: Task_Create_Command) -> Task_Service_Resul
 		}
 		created_chain = true
 	}
-	if cmd.assignee_agent_instance_id != "" && !task_agent_instance_allowed_for_chain(chain_id, cmd.assignee_agent_instance_id) {
+	if assignee_agent_instance_id != "" {
+		resolved, resolve_ok, resolve_msg := task_service_resolve_agent_reference_for_chain(chain_id, cmd.project_id, assignee_agent_instance_id, "assignee", cmd.author_agent_instance_id)
+		if !resolve_ok do return Task_Service_Result{ok = false, status_code = 400, message = task_service_error_json(resolve_msg)}
+		assignee_agent_instance_id = resolved
+	}
+	if reviewer_agent_instance_id != "" && reviewer_agent_instance_id != "user_proxy" {
+		resolved, resolve_ok, resolve_msg := task_service_resolve_agent_reference_for_chain(chain_id, cmd.project_id, reviewer_agent_instance_id, "lgtm_required", cmd.author_agent_instance_id)
+		if !resolve_ok do return Task_Service_Result{ok = false, status_code = 400, message = task_service_error_json(resolve_msg)}
+		reviewer_agent_instance_id = resolved
+	}
+	if assignee_agent_instance_id != "" && assignee_agent_instance_id == reviewer_agent_instance_id {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"assignee cannot be the reviewer"}`}
+	}
+	if assignee_agent_instance_id != "" && reviewer_agent_instance_id == "" && chain_id != "" && task_chain_default_reviewer_agent_instance_id(chain_id) == assignee_agent_instance_id {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"assignee cannot be the default reviewer"}`}
+	}
+	if status == "ready" || status == "in_progress" {
+		if assignee_agent_instance_id != "" {
+			if active := task_active_slot_blocker(assignee_agent_instance_id, ""); active != "" {
+				return task_gating_error("assignee_active_task", "assignee already has an active task", active)
+			}
+		}
+	}
+	if assignee_agent_instance_id != "" && !task_agent_instance_allowed_for_chain(chain_id, assignee_agent_instance_id) {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"assignee is not an eligible agent (unknown or archived)"}`}
 	}
-	if cmd.assignee_agent_instance_id != "" && task_agent_instance_has_chain_role(chain_id, cmd.assignee_agent_instance_id, "reviewer") {
+	if assignee_agent_instance_id != "" && task_agent_instance_has_chain_role(chain_id, assignee_agent_instance_id, "reviewer") {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"reviewer role agent cannot be the assignee"}`}
 	}
 	if reviewer_agent_instance_id != "" && !task_agent_instance_allowed_for_chain(chain_id, reviewer_agent_instance_id) {
@@ -116,7 +129,7 @@ task_service_create_task :: proc(cmd: Task_Create_Command) -> Task_Service_Resul
 		acceptance_criteria           = cmd.acceptance_criteria,
 		priority                      = priority,
 		status                        = status,
-		assignee_agent_instance_id    = cmd.assignee_agent_instance_id,
+		assignee_agent_instance_id    = assignee_agent_instance_id,
 		reviewer_agent_instance_id    = reviewer_agent_instance_id,
 		depends_on                    = cmd.depends_on,
 		created_by                    = cmd.created_by,
@@ -247,6 +260,9 @@ task_service_chain_member_for_role :: proc(team_id, role_key: string) -> string 
 	members := team_db_list_members(team_service_db, team_id)
 	for member in members {
 		if member.role_key != role_key do continue
+		if member.is_user_proxy do return "user_proxy"
+		if routed, ok := team_service_ensure_member_route(member); ok && routed != "" do return routed
+		if member.route_to != "" do return member.route_to
 		if member.agent_instance_id != "" do return member.agent_instance_id
 		return team_service_member_agent_instance_id("", "", team_id, member.role_key, member.role_index)
 	}
@@ -565,6 +581,9 @@ task_service_pick_non_user_reviewer :: proc(team_id, project_id, chain_id, assig
 }
 
 task_service_member_agent_id :: proc(team_id, project_id, chain_id: string, member: Team_Member_Record) -> string {
+	if member.is_user_proxy do return "user_proxy"
+	if routed, ok := team_service_ensure_member_route(member); ok && routed != "" do return routed
+	if member.route_to != "" do return member.route_to
 	if member.agent_instance_id != "" do return member.agent_instance_id
 	return team_service_member_agent_instance_id(project_id, chain_id, team_id, member.role_key, member.role_index)
 }
@@ -673,6 +692,8 @@ task_service_scaffold_reviewers :: proc(team_id, kind_key: string, cmd: Task_Cha
 
 task_service_scaffold_member_agent_instance_id :: proc(team_id, kind_key: string, cmd: Task_Chain_Create_Command, member: Team_Member_Record) -> string {
 	if member.is_user_proxy do return "user_proxy"
+	if routed, ok := team_service_ensure_member_route(member); ok && routed != "" do return routed
+	if member.route_to != "" do return member.route_to
 	if member.agent_instance_id != "" do return member.agent_instance_id
 	return team_service_member_agent_instance_id(cmd.project_id, cmd.chain_id, team_id, member.role_key, member.role_index)
 }
@@ -887,6 +908,87 @@ task_service_comment_resolve :: proc(cmd: Task_Comment_Resolve_Command) -> Task_
 	return Task_Service_Result{ok = true, status_code = 200, message = `{"ok":true}`}
 }
 
+task_service_resolve_agent_reference_for_chain :: proc(chain_id, project_id, agent_ref, participant_role, author: string) -> (string, bool, string) {
+	if agent_ref == "" do return "", false, "agent reference is required"
+	if agent_ref == "user_proxy" || agent_ref == HUMAN_RECIPIENT_ID do return agent_ref, true, "ok"
+	// Existing instance records are exact targets, including legacy non-session ids.
+	if idx := agent_record_index_by_instance(agent_ref); idx >= 0 {
+		if agent_instance_records[idx].archived_at_unix_ms != 0 do return "", false, "agent is archived"
+		return agent_ref, true, "ok"
+	}
+	// Team role-slot labels are roster metadata; resolve them to the concrete
+	// instance persisted in route_to (or provision one if the row predates route_to).
+	if resolved, ok := task_service_resolve_team_slot_reference(chain_id, agent_ref); ok {
+		return resolved, true, "ok"
+	}
+	// Unknown @-qualified refs look like exact instances/legacy aliases and should
+	// not be reinterpreted as durable agent ids. Likewise, an unknown indexed name
+	// such as coder-1 is a role-slot typo, not a new durable agent_id.
+	if strings.index_byte(agent_ref, '@') >= 0 do return "", false, "agent instance is unknown"
+	if task_service_agent_ref_looks_indexed_slot(agent_ref) do return "", false, "role slot is unknown for this chain"
+	return task_service_create_concrete_instance_for_agent_id(agent_ref, chain_id, project_id, participant_role, author)
+}
+
+task_service_agent_ref_looks_indexed_slot :: proc(agent_ref: string) -> bool {
+	idx := strings.last_index_byte(agent_ref, '-')
+	if idx <= 0 || idx + 1 >= len(agent_ref) do return false
+	for ch in agent_ref[idx + 1:] {
+		if ch < '0' || ch > '9' do return false
+	}
+	return true
+}
+
+task_service_resolve_team_slot_reference :: proc(chain_id, agent_ref: string) -> (string, bool) {
+	if chain_id == "" || agent_ref == "" do return "", false
+	chain, chain_found := store_get_chain(chain_id)
+	if !chain_found || chain.team_id == "" do return "", false
+	members := team_db_list_members(team_service_db, chain.team_id)
+	defer delete(members)
+	for member in members {
+		if !task_service_member_slot_ref_matches(agent_ref, member) do continue
+		if member.is_user_proxy do return "user_proxy", true
+		return team_service_ensure_member_route(member)
+	}
+	return "", false
+}
+
+task_service_member_slot_ref_matches :: proc(agent_ref: string, member: Team_Member_Record) -> bool {
+	if agent_ref == member.team_member_id do return true
+	if member.agent_instance_id != "" && agent_ref == member.agent_instance_id do return true
+	if agent_ref == team_service_member_slot_label(member.role_key, member.role_index) do return true
+	return false
+}
+
+task_service_create_concrete_instance_for_agent_id :: proc(agent_id_ref, chain_id, project_id, participant_role, author: string) -> (string, bool, string) {
+	durable_agent_id := safe_agent_id_part(agent_id_ref)
+	if durable_agent_id == "" || durable_agent_id == "unnamed" || durable_agent_id != agent_id_ref do return "", false, "invalid agent_id"
+	resolved_project_id := project_id
+	template_id := agent_id_template_id(durable_agent_id)
+	if durable_agent_id == "coordinator" && template_id == "coordinator" do template_id = "lead"
+	provider_profile := agent_resolve_provider_profile("")
+	model_tier := agent_resolve_model_tier("")
+	if idx := agent_id_index(durable_agent_id); idx >= 0 {
+		rec := agent_id_records[idx]
+		if rec.state != "" && rec.state != AGENT_ID_STATE_ACTIVE do return "", false, "agent_id is archived"
+		if rec.template_id != "" do template_id = rec.template_id
+		if rec.default_provider_profile != "" do provider_profile = rec.default_provider_profile
+		if rec.default_model_tier != "" do model_tier = rec.default_model_tier
+		if resolved_project_id == "" && rec.default_project_id != "" do resolved_project_id = rec.default_project_id
+	} else {
+		_ = agent_id_upsert(durable_agent_id, durable_agent_id, template_id, provider_profile, model_tier, "", author, agent_role_from_template(template_id))
+	}
+	if resolved_project_id == "" {
+		if chain, found := store_get_chain(chain_id); found do resolved_project_id = chain.project_id
+	}
+	instance_id := agent_instance_id_new(durable_agent_id)
+	if !valid_agent_instance_id(instance_id) do return "", false, "failed to generate agent instance id"
+	display_name := durable_agent_id
+	if participant_role != "" && participant_role != "assignee" do display_name = fmt.tprintf("%s %s", durable_agent_id, participant_role)
+	_, _, upsert_ok := agent_record_upsert(instance_id, display_name, template_id, provider_profile, resolved_project_id, "", model_tier, AGENT_IDENTITY_STATE_PROVISIONED, AGENT_SCOPE_DURABLE, agent_role_from_template(template_id))
+	if !upsert_ok do return "", false, "failed to persist resolved agent instance"
+	return instance_id, true, "ok"
+}
+
 task_service_assign :: proc(task_id, chain_id, agent_instance_id, author: string) -> Task_Service_Result {
 	return task_service_assign_command(Task_Assign_Command{task_id = task_id, chain_id = chain_id, agent_instance_id = agent_instance_id, author_agent_instance_id = author})
 }
@@ -899,22 +1001,24 @@ task_service_assign_command :: proc(cmd: Task_Assign_Command) -> Task_Service_Re
 	if !found {
 		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"task not found"}`}
 	}
-	if task_actor_has_role(state, cmd.agent_instance_id, "lgtm_required") || task_actor_has_role(state, cmd.agent_instance_id, "lgtm_optional") {
+	agent_instance_id, resolve_ok, resolve_msg := task_service_resolve_agent_reference_for_chain(state.chain_id, "", cmd.agent_instance_id, "assignee", cmd.author_agent_instance_id)
+	if !resolve_ok do return Task_Service_Result{ok = false, status_code = 400, message = task_service_error_json(resolve_msg)}
+	if task_actor_has_role(state, agent_instance_id, "lgtm_required") || task_actor_has_role(state, agent_instance_id, "lgtm_optional") {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"agent is already a reviewer"}`}
 	}
-	if task_chain_default_reviewer_agent_instance_id(state.chain_id) == cmd.agent_instance_id {
+	if task_chain_default_reviewer_agent_instance_id(state.chain_id) == agent_instance_id {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"assignee cannot be the default reviewer"}`}
 	}
-	if task_agent_instance_has_chain_role(state.chain_id, cmd.agent_instance_id, "reviewer") {
+	if task_agent_instance_has_chain_role(state.chain_id, agent_instance_id, "reviewer") {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"reviewer role agent cannot be the assignee"}`}
 	}
-	if !task_agent_instance_allowed_for_chain(state.chain_id, cmd.agent_instance_id) {
+	if !task_agent_instance_allowed_for_chain(state.chain_id, agent_instance_id) {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"agent is not an eligible agent (unknown or archived)"}`}
 	}
 	old_assignee := state.assignee_agent_instance_id
 	queued_behind_task_id := ""
 	if task_status_active_for_assignee(state) {
-		if active := task_active_slot_blocker(cmd.agent_instance_id, state.task_id); active != "" {
+		if active := task_active_slot_blocker(agent_instance_id, state.task_id); active != "" {
 			if active == "pending_reviews_exist" {
 				return task_gating_error("assignee_active_task", "assignee already has pending reviews", active)
 			}
@@ -925,7 +1029,7 @@ task_service_assign_command :: proc(cmd: Task_Assign_Command) -> Task_Service_Re
 		kind                     = .Task_Assigned,
 		task_id                  = cmd.task_id,
 		chain_id                 = cmd.chain_id,
-		agent_instance_id        = cmd.agent_instance_id,
+		agent_instance_id        = agent_instance_id,
 		role                     = "assignee",
 		author_agent_instance_id = cmd.author_agent_instance_id,
 	}
@@ -933,11 +1037,11 @@ task_service_assign_command :: proc(cmd: Task_Assign_Command) -> Task_Service_Re
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append task assignment failed"}`}
 	}
 	task_notify_event(event)
-	if old_assignee != "" && old_assignee != cmd.agent_instance_id {
+	if old_assignee != "" && old_assignee != agent_instance_id {
 		_ = task_notify_task_role_change_recipients(event, task_status_to_string(state.status), "assignee", old_assignee, "")
 	}
 	if task_status_active_for_assignee(state) {
-		if state.assignee_agent_instance_id != "" && state.assignee_agent_instance_id != cmd.agent_instance_id {
+		if state.assignee_agent_instance_id != "" && state.assignee_agent_instance_id != agent_instance_id {
 			_ = agent_store_clear_current_task_if_matches(state.assignee_agent_instance_id, cmd.task_id)
 		}
 		if queued_behind_task_id != "" {
@@ -953,7 +1057,7 @@ task_service_assign_command :: proc(cmd: Task_Assign_Command) -> Task_Service_Re
 				task_notify_event(block_event)
 			}
 		} else if state.status == .In_Progress {
-			_ = agent_store_set_current_task(cmd.agent_instance_id, cmd.task_id)
+			_ = agent_store_set_current_task(agent_instance_id, cmd.task_id)
 			_ = task_runtime_reconcile_task(cmd.task_id, "assignment", "high")
 		}
 	}
@@ -986,6 +1090,11 @@ task_service_participant_command :: proc(cmd: Task_Participant_Command) -> Task_
 	state, found := store_get_task_in_chain(cmd.task_id, cmd.chain_id)
 	if !found {
 		return Task_Service_Result{ok = false, status_code = 404, message = `{"ok":false,"message":"task not found"}`}
+	}
+	if agent_instance_id != "user_proxy" && agent_instance_id != HUMAN_RECIPIENT_ID {
+		resolved, resolve_ok, resolve_msg := task_service_resolve_agent_reference_for_chain(state.chain_id, "", agent_instance_id, cmd.role, cmd.author_agent_instance_id)
+		if !resolve_ok do return Task_Service_Result{ok = false, status_code = 400, message = task_service_error_json(resolve_msg)}
+		agent_instance_id = resolved
 	}
 	if (cmd.role == "lgtm_required" || cmd.role == "lgtm_optional") && state.assignee_agent_instance_id == agent_instance_id {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"assignee cannot be a reviewer"}`}
