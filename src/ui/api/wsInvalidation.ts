@@ -183,7 +183,12 @@ function handleTaskEvent(dispatch: any, payload: any) {
       }));
     }
   } else if (payload.fetch_required && taskId) {
-    dispatch(tasksApi.endpoints.fetchTask.initiate({ taskId }, { subscribe: false })).unwrap().then((data: any) => {
+    // Oversized task/chain records arrive as a compact fetch_required event.
+    // In practice this is the common case (full task+chain JSON exceeds the WS
+    // inline limit for any real chain), so this path MUST fetch authoritative
+    // state. forceRefetch is required: without it RTK Query dedupes against the
+    // stale cache entry and the status/comments never change in the UI.
+    dispatch(tasksApi.endpoints.fetchTask.initiate({ taskId }, { subscribe: false, forceRefetch: true })).unwrap().then((data: any) => {
       const normalizedTask = data?.task;
       if (!normalizedTask) return;
       if (chainId) {
@@ -196,6 +201,9 @@ function handleTaskEvent(dispatch: any, payload: any) {
         }));
       }
     }).catch(() => undefined);
+    // The compact fallback omits the chain payload and comment_id, so refetch the
+    // authoritative task log (comments live here) for any open task-detail view.
+    dispatch(heimdallApi.util.invalidateTags([{ type: 'TaskLog', id: taskId }]));
   }
 
   if (taskId) {
