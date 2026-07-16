@@ -30,15 +30,23 @@ def main() -> None:
     require(team_service, "member.route_to = resolved_instance_id", TEAM_SERVICE)
     require(team_service, "AGENT_SCOPE_GENERATED_CHAIN", TEAM_SERVICE)
 
-    # Assignment/participants resolve in this order: exact instance, team slot,
-    # then simple durable agent_id -> new concrete instance.
+    # Assignment/participants and chain role overrides resolve in this order:
+    # exact instance, team slot, then simple durable agent_id -> new concrete
+    # instance. Chain coordinator/default reviewer events must persist concrete
+    # ids, not raw durable/slot refs.
     require(task_service, "task_service_resolve_agent_reference_for_chain", TASK_SERVICE)
+    require(task_service, "task_service_resolve_agent_reference_for_new_chain", TASK_SERVICE)
     require(task_service, "agent_record_index_by_instance(agent_ref)", TASK_SERVICE)
     require(task_service, "task_service_resolve_team_slot_reference(chain_id, agent_ref)", TASK_SERVICE)
+    require(task_service, "task_service_resolve_team_slot_reference_for_team", TASK_SERVICE)
     require(task_service, "task_service_agent_ref_looks_indexed_slot", TASK_SERVICE)
     require(task_service, "task_service_create_concrete_instance_for_agent_id", TASK_SERVICE)
     require(task_service, "instance_id := agent_instance_id_new(durable_agent_id)", TASK_SERVICE)
     require(task_service, "agent_instance_id        = agent_instance_id", TASK_SERVICE)
+    require(task_service, "coordinator_agent_instance_id = event_coordinator", TASK_SERVICE)
+    require(task_service, "reviewer_agent_instance_id    = event_default_reviewer", TASK_SERVICE)
+    require(task_service, "coordinator_agent_instance_id = coordinator_agent_instance_id", TASK_SERVICE)
+    require(task_service, "reviewer_agent_instance_id    = default_reviewer_agent_instance_id", TASK_SERVICE)
 
     # Generated team-chain instances must not seed durable identity default projects.
     require(agent_store, "if normalized_scope != AGENT_SCOPE_DURABLE do default_project_id = \"\"", AGENT_STORE)

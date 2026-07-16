@@ -48,7 +48,7 @@ def main() -> None:
     require(team_service, "team_service_role_durable_agent_id", TEAM_SERVICE)
     require(team_service, "member.route_to = resolved_instance_id", TEAM_SERVICE)
     require(team_service, "agent_instance_id_new(durable_agent_id)", TEAM_SERVICE)
-    require(task_service, "team_service_create_for_chain(cmd.project_id, chain_id, cmd.kind, \"\", cmd.coordinator_agent_instance_id)", TASK_SERVICE)
+    require(task_service, "team_service_create_for_chain(cmd.project_id, chain_id, cmd.kind, \"\", team_coordinator_override)", TASK_SERVICE)
     require(task_service, "team_service_ensure_member_route", TASK_SERVICE)
     require(task_service, "task_service_resolve_agent_reference_for_chain", TASK_SERVICE)
     require(task_service, "task_service_create_concrete_instance_for_agent_id", TASK_SERVICE)

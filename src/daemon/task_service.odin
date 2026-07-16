@@ -162,12 +162,29 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 	if chain_title == "" do chain_title = task_service_default_chain_title(kind)
 	chain_id := cmd.chain_id
 	if chain_id == "" do chain_id = task_generate_chain_id()
-	team_id := team_service_create_for_chain(cmd.project_id, chain_id, cmd.kind, "", cmd.coordinator_agent_instance_id)
+	team_coordinator_override := ""
+	if cmd.coordinator_agent_instance_id != "" {
+		if idx := agent_record_index_by_instance(cmd.coordinator_agent_instance_id); idx >= 0 && agent_instance_records[idx].archived_at_unix_ms == 0 {
+			team_coordinator_override = cmd.coordinator_agent_instance_id
+		}
+	}
+	team_id := team_service_create_for_chain(cmd.project_id, chain_id, cmd.kind, "", team_coordinator_override)
 	if team_id == "" {
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"team allocation failed"}`}
 	}
-	coordinator_agent_instance_id := cmd.coordinator_agent_instance_id
-	if coordinator_agent_instance_id == "" {
+	coordinator_agent_instance_id := ""
+	if cmd.coordinator_agent_instance_id != "" {
+		resolved, resolve_ok, resolve_msg := task_service_resolve_agent_reference_for_new_chain(chain_id, team_id, cmd.project_id, cmd.coordinator_agent_instance_id, "coordinator", cmd.author_agent_instance_id)
+		if !resolve_ok {
+			_ = team_service_archive(team_id, "coordinator_resolve_failed")
+			return Task_Service_Result{ok = false, status_code = 400, message = task_service_error_json(resolve_msg)}
+		}
+		if resolved == "user_proxy" || resolved == HUMAN_RECIPIENT_ID {
+			_ = team_service_archive(team_id, "invalid_coordinator")
+			return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"coordinator cannot be user_proxy"}`}
+		}
+		coordinator_agent_instance_id = resolved
+	} else {
 		coordinator_agent_instance_id = task_service_chain_member_for_role(team_id, "coordinator")
 	}
 	if coordinator_agent_instance_id == "" {
@@ -175,6 +192,14 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"coordinator allocation failed"}`}
 	}
 	default_reviewer_agent_instance_id, default_reviewer_normalized := task_normalize_user_reviewer(cmd.default_reviewer_agent_instance_id)
+	if default_reviewer_agent_instance_id != "" && default_reviewer_agent_instance_id != "user_proxy" && default_reviewer_agent_instance_id != HUMAN_RECIPIENT_ID {
+		resolved, resolve_ok, resolve_msg := task_service_resolve_agent_reference_for_new_chain(chain_id, team_id, cmd.project_id, default_reviewer_agent_instance_id, "lgtm_required", cmd.author_agent_instance_id)
+		if !resolve_ok {
+			_ = team_service_archive(team_id, "default_reviewer_resolve_failed")
+			return Task_Service_Result{ok = false, status_code = 400, message = task_service_error_json(resolve_msg)}
+		}
+		default_reviewer_agent_instance_id = resolved
+	}
 	if default_reviewer_agent_instance_id != "" && default_reviewer_agent_instance_id == coordinator_agent_instance_id {
 		_ = team_service_archive(team_id, "invalid_default_reviewer")
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"default reviewer cannot equal coordinator"}`}
@@ -938,11 +963,31 @@ task_service_agent_ref_looks_indexed_slot :: proc(agent_ref: string) -> bool {
 	return true
 }
 
+task_service_resolve_agent_reference_for_new_chain :: proc(chain_id, team_id, project_id, agent_ref, participant_role, author: string) -> (string, bool, string) {
+	if agent_ref == "" do return "", false, "agent reference is required"
+	if agent_ref == "user_proxy" || agent_ref == HUMAN_RECIPIENT_ID do return agent_ref, true, "ok"
+	if idx := agent_record_index_by_instance(agent_ref); idx >= 0 {
+		if agent_instance_records[idx].archived_at_unix_ms != 0 do return "", false, "agent is archived"
+		return agent_ref, true, "ok"
+	}
+	if resolved, ok := task_service_resolve_team_slot_reference_for_team(team_id, agent_ref); ok {
+		return resolved, true, "ok"
+	}
+	if strings.index_byte(agent_ref, '@') >= 0 do return "", false, "agent instance is unknown"
+	if task_service_agent_ref_looks_indexed_slot(agent_ref) do return "", false, "role slot is unknown for this chain"
+	return task_service_create_concrete_instance_for_agent_id(agent_ref, chain_id, project_id, participant_role, author)
+}
+
 task_service_resolve_team_slot_reference :: proc(chain_id, agent_ref: string) -> (string, bool) {
 	if chain_id == "" || agent_ref == "" do return "", false
 	chain, chain_found := store_get_chain(chain_id)
 	if !chain_found || chain.team_id == "" do return "", false
-	members := team_db_list_members(team_service_db, chain.team_id)
+	return task_service_resolve_team_slot_reference_for_team(chain.team_id, agent_ref)
+}
+
+task_service_resolve_team_slot_reference_for_team :: proc(team_id, agent_ref: string) -> (string, bool) {
+	if team_id == "" || agent_ref == "" do return "", false
+	members := team_db_list_members(team_service_db, team_id)
 	defer delete(members)
 	for member in members {
 		if !task_service_member_slot_ref_matches(agent_ref, member) do continue
@@ -1853,8 +1898,22 @@ task_service_update_chain :: proc(cmd: Task_Chain_Update_Command) -> Task_Servic
 	old_coordinator := chain.coordinator_agent_instance_id
 	old_default_reviewer := chain.default_reviewer_agent_instance_id
 	new_coordinator := cmd.coordinator_agent_instance_id
-	if new_coordinator == "" do new_coordinator = old_coordinator
+	if new_coordinator != "" {
+		resolved, resolve_ok, resolve_msg := task_service_resolve_agent_reference_for_chain(cmd.chain_id, chain.project_id, new_coordinator, "coordinator", cmd.author_agent_instance_id)
+		if !resolve_ok do return Task_Service_Result{ok = false, status_code = 400, message = task_service_error_json(resolve_msg)}
+		if resolved == "user_proxy" || resolved == HUMAN_RECIPIENT_ID {
+			return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"coordinator cannot be user_proxy"}`}
+		}
+		new_coordinator = resolved
+	} else {
+		new_coordinator = old_coordinator
+	}
 	new_default_reviewer, default_reviewer_normalized := task_normalize_user_reviewer(cmd.default_reviewer_agent_instance_id)
+	if new_default_reviewer != "" && new_default_reviewer != "user_proxy" && new_default_reviewer != HUMAN_RECIPIENT_ID {
+		resolved, resolve_ok, resolve_msg := task_service_resolve_agent_reference_for_chain(cmd.chain_id, chain.project_id, new_default_reviewer, "lgtm_required", cmd.author_agent_instance_id)
+		if !resolve_ok do return Task_Service_Result{ok = false, status_code = 400, message = task_service_error_json(resolve_msg)}
+		new_default_reviewer = resolved
+	}
 	if new_default_reviewer == "" do new_default_reviewer = old_default_reviewer
 	if new_default_reviewer != "" && new_default_reviewer == new_coordinator {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"default reviewer cannot equal coordinator"}`}
@@ -1869,6 +1928,8 @@ task_service_update_chain :: proc(cmd: Task_Chain_Update_Command) -> Task_Servic
 	}
 	event_default_reviewer := ""
 	if cmd.default_reviewer_agent_instance_id != "" do event_default_reviewer = new_default_reviewer
+	event_coordinator := ""
+	if cmd.coordinator_agent_instance_id != "" do event_coordinator = new_coordinator
 	audit_body := fmt.tprintf("chain metadata updated by %s; old_description=%s; new_description=%s", cmd.author_agent_instance_id, chain.description, cmd.description)
 	event := Task_Event{
 		kind                          = .Chain_Metadata_Updated,
@@ -1876,7 +1937,7 @@ task_service_update_chain :: proc(cmd: Task_Chain_Update_Command) -> Task_Servic
 		title                         = cmd.title,
 		description                   = cmd.description,
 		body                          = audit_body,
-		coordinator_agent_instance_id = cmd.coordinator_agent_instance_id,
+		coordinator_agent_instance_id = event_coordinator,
 		reviewer_agent_instance_id    = event_default_reviewer,
 		author_agent_instance_id      = cmd.author_agent_instance_id,
 	}
