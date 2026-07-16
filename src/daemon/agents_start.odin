@@ -11,7 +11,7 @@ valid_model_tier :: proc(tier: string) -> bool {
 }
 
 normalize_model_tier :: proc(tier: string) -> string {
-	if tier == "" || tier == "cheap" do return "normal"
+	if tier == "" do return "normal"
 	return tier
 }
 
@@ -78,6 +78,8 @@ handle_agents_list :: proc(client: net.TCP_Socket, request: string) {
 	role_hint := query_param(request, "role_hint")
 	limit_str := query_param(request, "limit")
 	offset_str := query_param(request, "offset")
+	include_identities := query_param(request, "include_identities") == "true"
+	_ = query_param(request, "include_conversations") // concrete conversation instances are already part of /agents
 	limit := 0
 	offset := 0
 	if limit_str != "" {
@@ -147,6 +149,35 @@ handle_agents_list :: proc(client: net.TCP_Socket, request: string) {
 	strings.write_string(&builder, `,"offset":`); strings.write_string(&builder, fmt.tprintf("%d", offset))
 	strings.write_string(&builder, `,"next_offset":`); strings.write_string(&builder, fmt.tprintf("%d", next_offset))
 	strings.write_string(&builder, `,"has_more":`); strings.write_string(&builder, "true" if has_more else "false")
+	if include_identities {
+		// Defensive backfill for old/migrated stores: if the durable agent_id log is
+		// incomplete, ensure every non-reserved concrete instance contributes a
+		// durable identity record before serializing picker identities.
+		for i in 0..<agent_instance_record_count {
+			rec := agent_instance_records[i]
+			if rec.archived_at_unix_ms != 0 do continue
+			if rec.agent_instance_id == "" do continue
+			resolved_agent_id := rec.agent_id
+			if resolved_agent_id == "" do resolved_agent_id = agent_id_from_instance_id(rec.agent_instance_id)
+			agent_id_ensure_backfill(resolved_agent_id, rec.display_name, rec.template_id, rec.provider_profile, rec.model_tier, rec.project_id, rec.created_unix_ms, rec.agent_role)
+		}
+		strings.write_string(&builder, `,"identities":[`)
+		identity_wrote := 0
+		for i in 0..<agent_id_record_count {
+			rec := agent_id_records[i]
+			if rec.archived_at_unix_ms != 0 do continue
+			if agent_instance_id_is_reserved(rec.agent_id) do continue
+			if role_hint != "" {
+				tidx := agent_template_index(rec.template_id)
+				if tidx < 0 do continue
+				if agent_template_records[tidx].role_hint != role_hint do continue
+			}
+			if identity_wrote > 0 do strings.write_string(&builder, `,`)
+			agent_id_record_json(&builder, rec)
+			identity_wrote += 1
+		}
+		strings.write_string(&builder, `]`)
+	}
 	strings.write_string(&builder, `}`)
 	write_response(client, 200, "OK", strings.to_string(builder))
 }
@@ -432,6 +463,20 @@ write_agent_ok_response :: proc(client: net.TCP_Socket, message: string, rec: Ag
 	b := strings.builder_make(); strings.write_string(&b, `{"ok":true,"message":"`); json_write_string(&b, message); strings.write_string(&b, `","agent":`); agent_instance_record_json(&b, rec); strings.write_string(&b, `}`); write_response(client, 200, "OK", strings.to_string(b))
 }
 
+agent_id_record_json :: proc(builder: ^strings.Builder, rec: Agent_Id_Record) {
+	strings.write_string(builder, `{"kind":"identity","agent_id":"`); json_write_string(builder, rec.agent_id)
+	strings.write_string(builder, `","display_name":"`); json_write_string(builder, rec.display_name if rec.display_name != "" else rec.agent_id)
+	strings.write_string(builder, `","template_id":"`); json_write_string(builder, rec.template_id)
+	strings.write_string(builder, `","agent_role":"`); json_write_string(builder, agent_role_normalize(rec.agent_role))
+	strings.write_string(builder, `","default_provider_profile":"`); json_write_string(builder, rec.default_provider_profile)
+	strings.write_string(builder, `","default_model_tier":"`); json_write_string(builder, normalize_model_tier(rec.default_model_tier if rec.default_model_tier != "" else "normal"))
+	strings.write_string(builder, `","default_project_id":"`); json_write_string(builder, rec.default_project_id)
+	strings.write_string(builder, `","state":"`); json_write_string(builder, rec.state if rec.state != "" else AGENT_ID_STATE_ACTIVE)
+	strings.write_string(builder, `","created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.created_unix_ms))
+	strings.write_string(builder, `,"updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.updated_unix_ms))
+	strings.write_string(builder, `}`)
+}
+
 query_param :: proc(request, name: string) -> string {
 	first := strings.index_byte(request, ' ')
 	if first < 0 do return ""
@@ -640,31 +685,71 @@ handle_agent_instance_update :: proc(client: net.TCP_Socket, body: string) {
 
 handle_agent_instance_create :: proc(client: net.TCP_Socket, body: string) {
 	agent_instance_id := extract_json_string(body, "agent_instance_id", "")
+	agent_id_ref := extract_json_string(body, "agent_id", "")
 	display_name := extract_json_string(body, "display_name", extract_json_string(body, "name", ""))
 	provider_profile := extract_json_string(body, "provider_profile", extract_json_string(body, "agent", ""))
 	template_id := extract_json_string(body, "template_id", "")
 	project_id := extract_json_string(body, "project_id", "")
-	model_tier := extract_json_string(body, "model_tier", "normal")
+	model_tier := extract_json_string(body, "model_tier", "")
 	agent_role := extract_json_string(body, "agent_role", extract_json_string(body, "role", ""))
+
+	created_from_agent_id := false
+	if agent_id_ref != "" && agent_instance_id == "" {
+		if task_service_agent_ref_looks_indexed_slot(agent_id_ref) {
+			write_response(client, 400, "Bad Request", `{"ok":false,"message":"indexed role slots are not durable agent_id values"}`)
+			return
+		}
+		if safe_agent_id_part(agent_id_ref) != agent_id_ref {
+			write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid agent_id"}`)
+			return
+		}
+		if agent_instance_id_is_reserved(agent_id_ref) {
+			write_response(client, 400, "Bad Request", `{"ok":false,"message":"reserved agent_id cannot be created"}`)
+			return
+		}
+		created_from_agent_id = true
+		agent_instance_id = agent_instance_id_new(agent_id_ref)
+		if idx := agent_id_index(agent_id_ref); idx >= 0 {
+			identity := agent_id_records[idx]
+			if identity.archived_at_unix_ms != 0 { write_response(client, 400, "Bad Request", `{"ok":false,"message":"agent_id is archived"}`); return }
+			if display_name == "" do display_name = identity.display_name
+			if template_id == "" do template_id = identity.template_id
+			if provider_profile == "" do provider_profile = identity.default_provider_profile
+			if model_tier == "" do model_tier = identity.default_model_tier
+			if project_id == "" do project_id = identity.default_project_id
+			if agent_role == "" do agent_role = identity.agent_role
+		}
+	}
+
+	if model_tier == "" do model_tier = "normal"
 	if !valid_model_tier(model_tier) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid model_tier; expected cheap, normal, or smart"}`); return }
 	model_tier = normalize_model_tier(model_tier)
 	if agent_instance_id == "" {
 		id_base := display_name if display_name != "" else template_id
 		agent_instance_id = agent_generated_instance_id(id_base)
 	}
-	if display_name == "" do display_name = agent_instance_id
-	if template_id == "" do template_id = derive_agent_class(agent_instance_id)
+	if display_name == "" do display_name = agent_id_ref if agent_id_ref != "" else agent_instance_id
+	if template_id == "" do template_id = agent_id_template_id(agent_id_ref) if agent_id_ref != "" else derive_agent_class(agent_instance_id)
+	if agent_role == "" do agent_role = agent_role_from_template(template_id)
 	// teams-v2: reserved identities (operator@local, user_proxy) are not creatable.
 	if agent_instance_id_is_reserved(agent_instance_id) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"reserved agent_instance_id cannot be created"}`); return }
 	if !valid_agent_instance_id(agent_instance_id) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid agent_instance_id"}`); return }
-	// teams-v2: authoritatively create/update the durable agent_id identity with its
-	// defaults (template/persona + default provider/tier/project), shared across all of this
-	// agent's concrete instances. project_id may be empty here (create-without-project).
 	resolved_agent_id := agent_id_from_instance_id(agent_instance_id)
-	agent_id_upsert(resolved_agent_id, display_name, template_id, provider_profile, model_tier, project_id, "api", agent_role)
+	// Explicit instance creation remains an identity-default create/update. Creating
+	// a new instance from an existing durable agent_id must not rewrite that
+	// identity's defaults with a one-off picker provider/tier override.
+	if !created_from_agent_id || !agent_id_exists(resolved_agent_id) {
+		agent_id_upsert(resolved_agent_id, display_name, template_id, provider_profile, model_tier, project_id, "api", agent_role)
+	}
 	agent_record_id, _, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, provider_profile, project_id, "", model_tier, AGENT_IDENTITY_STATE_PROVISIONED, AGENT_SCOPE_DURABLE, agent_role)
 	if !upsert_ok { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`); return }
-	write_agent_ok_response(client, "created", agent_instance_records[agent_record_index(agent_record_id)])
+	rec := agent_instance_records[agent_record_index(agent_record_id)]
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"message":"created","started":false,"agent_id":"`); json_write_string(&b, resolved_agent_id)
+	strings.write_string(&b, `","agent_instance_id":"`); json_write_string(&b, rec.agent_instance_id)
+	strings.write_string(&b, `","agent":`); agent_instance_record_json(&b, rec)
+	strings.write_string(&b, `}`)
+	write_response(client, 200, "OK", strings.to_string(b))
 }
 
 handle_agent_instance_archive :: proc(client: net.TCP_Socket, body: string) {

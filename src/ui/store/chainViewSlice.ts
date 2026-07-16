@@ -1,8 +1,6 @@
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
 import * as daemonApi from '../api/daemonApi';
-import { chatEndpoints } from '../api/endpoints/chats';
-
-const OPTIMISTIC_MESSAGE_GRACE_MS = 30_000;
+import { fetchSelectedChat, appendMessage } from './chatSlice';
 
 function auth(state: any) {
   const { session } = state.chat;
@@ -12,18 +10,20 @@ function auth(state: any) {
 export const focusChainView = createAsyncThunk('chainView/focusChainView', async (chainId: string, { dispatch, getState }) => {
   const state = getState() as any;
   const session = auth(state);
-  if (!chainId || !session.clientToken) return { chainId, focus: null, workspace: null, chat: null, team: null };
+  if (!chainId || !session.clientToken) return { chainId, focus: null, workspace: null, team: null };
   dispatch(chainViewSlice.actions.chainFocusStarted(chainId));
   const chain = state.tasks.chainsById[chainId];
-  const coordinator = chain?.coordinatorAgentInstanceId || '';
-  const teamId = chain?.teamId || '';
-  const [focus, workspace, chat, team] = await Promise.all([
+  const coordinator = chain?.coordinatorAgentInstanceId || chain?.coordinator_agent_instance_id || '';
+  const teamId = chain?.teamId || chain?.team_id || '';
+  const [focus, workspace, team] = await Promise.all([
     daemonApi.focusTaskChain({ ...session, chainId }).catch((err: any) => ({ ok: false, message: err?.message || 'focus failed' })),
     daemonApi.fetchWorkspace({ ...session, chainId }).catch(() => null),
-    (coordinator ? (dispatch as any)(chatEndpoints.endpoints.fetchCoordinatorChat.initiate({ chainId, coordinatorAgentInstanceId: coordinator, limit: 50 })).unwrap().catch(() => null) : Promise.resolve(null)),
     (teamId ? daemonApi.fetchTeam({ daemonUrl: session.daemonUrl, teamId }).catch(() => null) : Promise.resolve(null)),
   ]);
-  return { chainId, focus, workspace, chat, team };
+  if (coordinator) {
+    await (dispatch as any)(fetchSelectedChat({ agentId: coordinator, limit: 50 })).unwrap().catch(() => undefined);
+  }
+  return { chainId, focus, workspace, team };
 });
 
 export const revalidateChainView = createAsyncThunk('chainView/revalidateChainView', async (chainId: string, { dispatch }) => {
@@ -39,17 +39,36 @@ export const fetchChainCoordinatorChatPage = createAsyncThunk('chainView/fetchCh
   const coordinator = chain?.coordinatorAgentInstanceId || chain?.coordinator_agent_instance_id || '';
   if (!chainId || !coordinator || !session.clientToken) return { chainId, messages: [], nextCursor: 0, isAppend: false };
   const cursor = Number(payload.cursor || 0);
-  const data = cursor > 0
-    ? await (dispatch as any)(chatEndpoints.endpoints.fetchCoordinatorChatPage.initiate({ chainId, coordinatorAgentInstanceId: coordinator, cursor, limit: payload.limit || 50 })).unwrap()
-    : await (dispatch as any)(chatEndpoints.endpoints.fetchCoordinatorChat.initiate({ chainId, coordinatorAgentInstanceId: coordinator, limit: payload.limit || 50 })).unwrap();
-  return { chainId, messages: data?.messages || [], nextCursor: Number(data?.nextCursor || 0), isAppend: cursor > 0 };
+  return await (dispatch as any)(fetchSelectedChat({ agentId: coordinator, cursor, limit: payload.limit || 50 })).unwrap();
 });
 
 export const sendCoordinatorMessage = createAsyncThunk('chainView/sendCoordinatorMessage', async (payload: { chainId: string; body: string; localId: string }, { dispatch, getState }) => {
   const state = getState() as any;
-  const coordinatorAgentInstanceId = state.tasks.chainsById?.[payload.chainId]?.coordinatorAgentInstanceId || '';
-  const result = await (dispatch as any)(chatEndpoints.endpoints.sendCoordinatorMessage.initiate({ ...payload, coordinatorAgentInstanceId })).unwrap();
-  return { chainId: payload.chainId, localId: payload.localId, result: { message_id: result.messageId } };
+  const session = auth(state);
+  const coordinatorAgentInstanceId = state.tasks.chainsById?.[payload.chainId]?.coordinatorAgentInstanceId || state.tasks.chainsById?.[payload.chainId]?.coordinator_agent_instance_id || '';
+  if (coordinatorAgentInstanceId) {
+    dispatch(appendMessage({
+      agentId: coordinatorAgentInstanceId,
+      message: {
+        id: payload.localId,
+        author: 'user',
+        body: payload.body,
+        createdUnixMs: Date.now(),
+        deliveredUnixMs: 0,
+        readUnixMs: 0,
+        sending: true,
+        optimistic: true,
+      },
+    }));
+  }
+  const result = await daemonApi.sendToCoordinator({
+    daemonUrl: session.daemonUrl,
+    clientInstanceId: session.clientInstanceId,
+    clientToken: session.clientToken,
+    chainId: payload.chainId,
+    body: payload.body,
+  });
+  return { chainId: payload.chainId, localId: payload.localId, result: { message_id: result?.message_id || '' }, coordinatorAgentInstanceId };
 });
 
 export const fetchWorkspaceForChain = createAsyncThunk('chainView/fetchWorkspaceForChain', async (chainId: string, { getState }) => {
@@ -94,11 +113,6 @@ const initialState = {
   focusByChainId: {} as Record<string, any>,
   workspaceByChainId: {} as Record<string, any>,
   teamByChainId: {} as Record<string, any>,
-  chatByChainId: {} as Record<string, any[]>,
-  chatCursorByChainId: {} as Record<string, number>,
-  chatHasMoreByChainId: {} as Record<string, boolean>,
-  chatLoadingByChainId: {} as Record<string, boolean>,
-  optimisticMessagesByChainId: {} as Record<string, any[]>,
   mergePreviewByChainId: {} as Record<string, any>,
   workspaceDiffByChainId: {} as Record<string, Record<string, any>>,
   diffOpenByChainId: {} as Record<string, boolean>,
@@ -135,29 +149,6 @@ const chainViewSlice = createSlice({
       state.sideSheetAgentId = '';
       state.lastLocalAction = 'closeAgent';
     },
-    optimisticCoordinatorMessage(state: any, action) {
-      const { chainId, body } = action.payload || {};
-      if (!chainId || !body) return;
-      if (!state.optimisticMessagesByChainId[chainId]) state.optimisticMessagesByChainId[chainId] = [];
-      state.optimisticMessagesByChainId[chainId].push({ id: action.payload?.localId || `local_${Date.now()}`, localId: action.payload?.localId || '', body, author: 'user', sending: true, createdUnixMs: Date.now() });
-      state.lastLocalAction = `sendCoordinator:${chainId}`;
-    },
-    appendCoordinatorChatMessage(state: any, action) {
-      const { chainId, message } = action.payload || {};
-      if (!chainId || !message) return;
-      const existing = state.chatByChainId[chainId] || [];
-      const key = String(message.message_id || message.messageId || message.id || `${message.created_unix_ms || message.createdUnixMs || Date.now()}-${message.body || ''}`);
-      const byId = new Map<string, any>();
-      for (const entry of [...existing, message]) {
-        const entryKey = String(entry.message_id || entry.messageId || entry.id || `${entry.created_unix_ms || entry.createdUnixMs || Date.now()}-${entry.body || ''}`);
-        byId.set(entryKey, { ...(byId.get(entryKey) || {}), ...entry });
-      }
-      if (!byId.has(key)) {
-        byId.set(key, message);
-      }
-      state.chatByChainId[chainId] = Array.from(byId.values()).sort((left: any, right: any) => Number(left.created_unix_ms || left.createdUnixMs || 0) - Number(right.created_unix_ms || right.createdUnixMs || 0));
-      state.lastLocalAction = `wsChat:${chainId}`;
-    },
     wsChainViewRefreshRequested(state: any, action) {
       state.lastWsRefreshReason = action.payload || 'ws';
     },
@@ -166,90 +157,29 @@ const chainViewSlice = createSlice({
     builder
       .addCase(focusChainView.pending, (state: any) => { state.loading = true; state.error = ''; })
       .addCase(focusChainView.fulfilled, (state: any, action) => {
-        const { chainId, focus, workspace, chat, team } = action.payload;
+        const { chainId, focus, workspace, team } = action.payload;
         state.loading = false;
         if (!chainId) return;
         state.focusByChainId[chainId] = focus;
         if (workspace?.workspace) state.workspaceByChainId[chainId] = workspace.workspace;
         if (team?.team) state.teamByChainId[chainId] = team;
-        if (chat?.messages) {
-          state.chatByChainId[chainId] = chat.messages;
-          state.chatCursorByChainId[chainId] = Number(chat.next_cursor || chat.nextCursor || 0);
-          state.chatHasMoreByChainId[chainId] = Number(chat.next_cursor || chat.nextCursor || 0) > 0;
-          const serverIds = new Set(chat.messages.map((m: any) => m.message_id || m.id).filter(Boolean));
-          const now = Date.now();
-          state.optimisticMessagesByChainId[chainId] = (state.optimisticMessagesByChainId[chainId] || []).filter((m: any) => {
-            if (m.messageId && serverIds.has(m.messageId)) return false;
-            // Keep recently delivered optimistic messages briefly. A focus/revalidate
-            // request can race ahead of chat persistence/read-your-write visibility;
-            // dropping non-sending optimistic rows immediately makes the message
-            // disappear until a later restart/refetch.
-            const lastLocalAt = Number(m.deliveredUnixMs || m.createdUnixMs || 0);
-            return Boolean(m.sending) || (lastLocalAt > 0 && now - lastLocalAt < OPTIMISTIC_MESSAGE_GRACE_MS);
-          });
-        }
         state.lastHttpLoadByChainId[chainId] = Date.now();
       })
       .addCase(focusChainView.rejected, (state: any, action) => { state.loading = false; state.error = action.error.message || 'Failed to load chain'; })
       .addCase(revalidateChainView.fulfilled, (state: any, action) => { if (action.payload.chainId) state.lastPeriodicRefreshByChainId[action.payload.chainId] = action.payload.at; })
-      .addCase(fetchChainCoordinatorChatPage.pending, (state: any, action) => {
-        if (action.meta.arg?.chainId) state.chatLoadingByChainId[action.meta.arg.chainId] = true;
-      })
-      .addCase(fetchChainCoordinatorChatPage.fulfilled, (state: any, action) => {
-        const { chainId, messages, nextCursor, isAppend } = action.payload;
-        if (!chainId) return;
-        state.chatLoadingByChainId[chainId] = false;
-        if (isAppend) {
-          const byId = new Map<string, any>();
-          for (const msg of [...(state.chatByChainId[chainId] || []), ...(messages || [])]) {
-            byId.set(String(msg.message_id || msg.messageId || msg.id || `${msg.created_unix_ms}-${msg.body}`), msg);
-          }
-          state.chatByChainId[chainId] = Array.from(byId.values());
-        } else {
-          state.chatByChainId[chainId] = messages || [];
-        }
-        state.chatCursorByChainId[chainId] = nextCursor;
-        state.chatHasMoreByChainId[chainId] = nextCursor > 0;
-      })
       .addCase(fetchChainCoordinatorChatPage.rejected, (state: any, action) => {
-        if (action.meta.arg?.chainId) state.chatLoadingByChainId[action.meta.arg.chainId] = false;
         state.error = action.error.message || 'Failed to load coordinator chat page';
       })
       .addCase(sendCoordinatorMessage.pending, (state: any) => {
         state.error = '';
       })
       .addCase(sendCoordinatorMessage.fulfilled, (state: any, action) => {
-        const { chainId, localId, result } = action.payload;
-        const pending = state.optimisticMessagesByChainId[chainId] || [];
-        const messageId = result?.message_id || '';
-        state.optimisticMessagesByChainId[chainId] = pending.map((m: any) => {
-          if (m.id !== localId && m.localId !== localId) return m;
-          return {
-            ...m,
-            id: messageId || m.id,
-            message_id: messageId || m.id,
-            messageId: messageId || m.id,
-            sending: false,
-            deliveredUnixMs: Number(m.deliveredUnixMs || Date.now()),
-            deliveryFailedUnixMs: 0,
-            deliveryError: '',
-          };
-        });
+        const { chainId } = action.payload;
         state.lastLocalAction = `sentCoordinator:${chainId}`;
       })
       .addCase(sendCoordinatorMessage.rejected, (state: any, action) => {
-        const { chainId, localId } = action.meta.arg || {};
+        const { chainId } = action.meta.arg || {};
         const errorMessage = action.error.message || 'Failed to send coordinator message';
-        const pending = state.optimisticMessagesByChainId[chainId] || [];
-        state.optimisticMessagesByChainId[chainId] = pending.map((m: any) => {
-          if (m.id !== localId && m.localId !== localId) return m;
-          return {
-            ...m,
-            sending: false,
-            deliveryFailedUnixMs: Date.now(),
-            deliveryError: errorMessage,
-          };
-        });
         state.error = errorMessage;
         state.lastLocalAction = `sendCoordinatorFailed:${chainId}`;
       })
@@ -273,8 +203,6 @@ export const {
   toggleWorkspaceDiff,
   openAgentSideSheet,
   closeAgentSideSheet,
-  optimisticCoordinatorMessage,
-  appendCoordinatorChatMessage,
   wsChainViewRefreshRequested,
 } = chainViewSlice.actions;
 

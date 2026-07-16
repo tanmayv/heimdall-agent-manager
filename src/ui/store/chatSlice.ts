@@ -333,6 +333,28 @@ function mergeMessages(existingMessages: any[], incomingMessages: any[]) {
   return result;
 }
 
+function applyReceivedChatPage(state: any, payload: any) {
+  const { agentId: payloadAgentId, messages, nextCursor, isAppend, markedRead } = payload || {};
+  if (!payloadAgentId) return;
+  if (!state.chats[payloadAgentId]) {
+    state.chats[payloadAgentId] = [];
+  }
+  if (isAppend) {
+    state.chats[payloadAgentId] = mergeMessages(messages || [], state.chats[payloadAgentId]);
+  } else {
+    const optimistic = state.chats[payloadAgentId].filter(isRecentOptimisticMessage);
+    const unmatchedOptimistic = optimistic.filter((local: any) => !(messages || []).some((server: any) => server.id === local.id || (server.author === local.author && server.body === local.body)));
+    state.chats[payloadAgentId] = [...(messages || []), ...unmatchedOptimistic];
+  }
+  state.chatsCursor[payloadAgentId] = Number(nextCursor || 0);
+  state.chatsHasMore[payloadAgentId] = Number(nextCursor || 0) > 0;
+
+  if (markedRead) {
+    const agent = state.agents.find((item: any) => item.id === payloadAgentId);
+    if (agent) agent.unreadCount = 0;
+  }
+}
+
 export const registerSession = createAsyncThunk('chat/registerSession', async (_, { getState }) => {
   const { session } = (getState() as any).chat;
   return daemonApi.registerUserClient(session);
@@ -375,26 +397,30 @@ export const refreshSettingsCatalog = createAsyncThunk('chat/refreshSettingsCata
 
 // TODO(rtkq-migration owner=task-19f69e242e4): compatibility wrapper for non-hook call sites. Conversation summaries are owned by chatEndpoints.listConversationSummaries as the recurring cache authority.
 export const refreshConversationSummaries = createAsyncThunk('chat/refreshConversationSummaries', async (_, { dispatch }) => {
-  return await (dispatch as any)(chatEndpoints.endpoints.listConversationSummaries.initiate()).unwrap();
+  return await (dispatch as any)(chatEndpoints.endpoints.listConversationSummaries.initiate(undefined, { subscribe: false })).unwrap();
 });
 
 export const refreshAgents = createAsyncThunk('chat/refreshAgents', async (_, { getState }) => {
   const state = getState() as any;
   const { daemonUrl } = state.chat.session;
-  
+
   const localKnown = loadKnownAgents();
   let daemonAgents: any[] = [];
+  let daemonIdentities: any[] = [];
   let daemonReachable = false;
   try {
-    daemonAgents = await daemonApi.listKnownAgents({ daemonUrl });
+    const catalog = await daemonApi.listKnownAgentsCatalog({ daemonUrl, includeIdentities: true, includeConversations: true });
+    daemonAgents = catalog.agents || [];
+    daemonIdentities = catalog.identities || [];
     daemonReachable = true;
   } catch {
     daemonAgents = [];
+    daemonIdentities = [];
   }
   const merged = mergeKnownAndLiveAgents(localKnown, daemonAgents, daemonReachable);
 
   storeKnownAgents(merged);
-  return merged;
+  return { agents: merged, identities: daemonIdentities };
 });
 
 // TODO(rtkq-migration owner=task-19f69e242e4): compatibility wrapper for remaining direct-chat component callers. Live conversation caching/dedupe belongs to chatEndpoints.fetchDirectChat/fetchDirectChatPage.
@@ -419,8 +445,8 @@ export const fetchSelectedChat = createAsyncThunk(
     if (!agentInstanceId || !session.clientToken) return { agentId: agentInstanceId, messages: [], nextCursor: 0, isAppend: false, markedRead: false };
 
     const result = cursor > 0
-      ? await (dispatch as any)(chatEndpoints.endpoints.fetchDirectChatPage.initiate({ agentInstanceId, cursor, limit })).unwrap()
-      : await (dispatch as any)(chatEndpoints.endpoints.fetchDirectChat.initiate({ agentInstanceId, limit })).unwrap();
+      ? await (dispatch as any)(chatEndpoints.endpoints.fetchDirectChatPage.initiate({ agentInstanceId, cursor, limit }, { subscribe: false })).unwrap()
+      : await (dispatch as any)(chatEndpoints.endpoints.fetchDirectChat.initiate({ agentInstanceId, limit }, { subscribe: false })).unwrap();
 
     return {
       agentId: agentInstanceId,
@@ -470,8 +496,8 @@ export const fetchGuideChat = createAsyncThunk('chat/fetchGuideChat', async (pay
   const limit = typeof payload === 'object' && payload?.limit !== undefined ? payload.limit : 80;
   if (!session.clientToken) return { agentId: GUIDE_AGENT_ID, messages: [], nextCursor: 0, markedRead: false, isAppend: false };
   const result = cursor > 0
-    ? await (dispatch as any)(chatEndpoints.endpoints.fetchGuideChatPage.initiate({ cursor, limit })).unwrap()
-    : await (dispatch as any)(chatEndpoints.endpoints.fetchGuideChat.initiate({ limit })).unwrap();
+    ? await (dispatch as any)(chatEndpoints.endpoints.fetchGuideChatPage.initiate({ cursor, limit }, { subscribe: false })).unwrap()
+    : await (dispatch as any)(chatEndpoints.endpoints.fetchGuideChat.initiate({ limit }, { subscribe: false })).unwrap();
   return { agentId: GUIDE_AGENT_ID, messages: result.messages || [], nextCursor: result.nextCursor || 0, markedRead: cursor === 0, isAppend: cursor > 0 };
 });
 
@@ -558,6 +584,7 @@ const initialState = {
   settingsProviders: [] as any[],
   selectedAgentId: '',
   agents: [],
+  agentIdentities: [] as any[],
   // Daemon-authoritative conversation summaries keyed by agent_instance_id:
   // { title, lastMessageUnixMs, projectId, agentId, unreadCount }. Populated from
   // list_chats on explicit triggers only; the sidebar uses these for ordering +
@@ -818,6 +845,9 @@ const chatSlice = createSlice({
       }
       state.chats[agentId] = mergeMessages(state.chats[agentId], [mapMessage(message)]);
     },
+    receiveChatPage(state, action) {
+      applyReceivedChatPage(state, action.payload);
+    },
     agentRuntimeEventReceived(state, action) {
       const payload = action.payload || {};
       const agentId = payload.agent_instance_id;
@@ -922,7 +952,8 @@ const chatSlice = createSlice({
         state.conversationSummaryById = action.payload || {};
       })
       .addCase(refreshAgents.fulfilled, (state, action) => {
-        state.agents = action.payload;
+        state.agents = action.payload.agents || [];
+        state.agentIdentities = action.payload.identities || [];
         if (!state.selectedAgentId || !state.agents.some((agent) => agent.id === state.selectedAgentId)) {
           state.selectedAgentId = state.agents[0]?.id ?? '';
         }
@@ -941,28 +972,7 @@ const chatSlice = createSlice({
         if (agentId) {
           state.fetchingChatsByAgentId[agentId] = false;
         }
-        const { agentId: payloadAgentId, messages, nextCursor, isAppend } = action.payload;
-        if (payloadAgentId) {
-          if (!state.chats[payloadAgentId]) {
-            state.chats[payloadAgentId] = [];
-          }
-          if (isAppend) {
-            // Prepend older paginated messages to the top, but merge duplicates/status updates.
-            state.chats[payloadAgentId] = mergeMessages(messages, state.chats[payloadAgentId]);
-          } else {
-            // Initial load - daemon truth plus any still-unmatched optimistic sends.
-            const optimistic = state.chats[payloadAgentId].filter(isRecentOptimisticMessage);
-            const unmatchedOptimistic = optimistic.filter((local: any) => !messages.some((server: any) => server.id === local.id || (server.author === local.author && server.body === local.body)));
-            state.chats[payloadAgentId] = [...messages, ...unmatchedOptimistic];
-          }
-          state.chatsCursor[payloadAgentId] = nextCursor;
-          state.chatsHasMore[payloadAgentId] = nextCursor > 0;
-
-          if (action.payload.markedRead) {
-            const agent = state.agents.find((item) => item.id === payloadAgentId);
-            if (agent) agent.unreadCount = 0;
-          }
-        }
+        applyReceivedChatPage(state, action.payload);
       })
       .addCase(fetchSelectedChat.rejected, (state: any, action) => {
         const agentId = getAgentIdFromPayload(action.meta.arg, state.selectedAgentId);
@@ -976,20 +986,7 @@ const chatSlice = createSlice({
       })
       .addCase(fetchGuideChat.fulfilled, (state: any, action) => {
         state.fetchingChatsByAgentId[GUIDE_AGENT_ID] = false;
-        const { messages, nextCursor, markedRead, isAppend } = action.payload;
-        if (isAppend) {
-          state.chats[GUIDE_AGENT_ID] = mergeMessages(messages || [], state.chats[GUIDE_AGENT_ID] || []);
-        } else {
-          const optimistic = (state.chats[GUIDE_AGENT_ID] || []).filter(isRecentOptimisticMessage);
-          const unmatchedOptimistic = optimistic.filter((local: any) => !messages.some((server: any) => server.id === local.id || (server.author === local.author && server.body === local.body)));
-          state.chats[GUIDE_AGENT_ID] = [...messages, ...unmatchedOptimistic];
-        }
-        state.chatsCursor[GUIDE_AGENT_ID] = nextCursor;
-        state.chatsHasMore[GUIDE_AGENT_ID] = nextCursor > 0;
-        if (markedRead) {
-          const agent = state.agents.find((item: any) => item.id === GUIDE_AGENT_ID);
-          if (agent) agent.unreadCount = 0;
-        }
+        applyReceivedChatPage(state, action.payload);
       })
       .addCase(fetchGuideChat.rejected, (state: any, action) => {
         state.fetchingChatsByAgentId[GUIDE_AGENT_ID] = false;
@@ -1087,7 +1084,7 @@ const chatSlice = createSlice({
   },
 });
 
-export const { selectAgent, setView, setDaemonUrl, addDaemonProfile, renameDaemonProfile, removeDaemonProfile, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived, agentRuntimeEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage, reorderAgentsLocally, markAgentReadLocally, openGuidePanel, closeGuidePanel, toggleGuidePanel } = chatSlice.actions;
+export const { selectAgent, setView, setDaemonUrl, addDaemonProfile, renameDaemonProfile, removeDaemonProfile, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived, agentRuntimeEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage, receiveChatPage, reorderAgentsLocally, markAgentReadLocally, openGuidePanel, closeGuidePanel, toggleGuidePanel } = chatSlice.actions;
 
 export const markCoordinatorRead = createAsyncThunk('chat/markCoordinatorRead', async (agentInstanceId: string, { dispatch, getState }) => {
   const state = getState() as any;

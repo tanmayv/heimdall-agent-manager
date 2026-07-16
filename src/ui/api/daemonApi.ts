@@ -119,9 +119,32 @@ export async function archiveAgentTemplate({ daemonUrl, templateId }: { daemonUr
 }
 
 export async function listKnownAgents({ daemonUrl, projectId = '' }: { daemonUrl: string; projectId?: string }) {
-  const path = projectId ? `/agents?project_id=${encodeURIComponent(projectId)}` : '/agents';
+  const data = await listKnownAgentsCatalog({ daemonUrl, projectId });
+  return data.agents;
+}
+
+export async function listKnownAgentsCatalog({
+  daemonUrl,
+  projectId = '',
+  includeIdentities = false,
+  includeConversations = false,
+}: {
+  daemonUrl: string;
+  projectId?: string;
+  includeIdentities?: boolean;
+  includeConversations?: boolean;
+}) {
+  const params = new URLSearchParams();
+  if (projectId) params.set('project_id', projectId);
+  if (includeIdentities) params.set('include_identities', 'true');
+  if (includeConversations) params.set('include_conversations', 'true');
+  const query = params.toString();
+  const path = query ? `/agents?${query}` : '/agents';
   const data = await requestJson(joinUrl(daemonUrl, path));
-  return data.agents ?? data.records ?? [];
+  return {
+    agents: data.agents ?? data.records ?? [],
+    identities: data.identities ?? [],
+  };
 }
 
 export async function listKnownAgentsPage({ daemonUrl, projectId = '', limit = 20, offset = 0 }: { daemonUrl: string; projectId?: string; limit?: number; offset?: number }) {
@@ -189,10 +212,11 @@ export async function showAgent({ daemonUrl, agentRecordId, agentInstanceId }: {
   });
 }
 
-export async function createAgent({ daemonUrl, agentInstanceId, displayName, providerProfile, templateId, projectId, modelTier, agentRole }: { daemonUrl: string; agentInstanceId?: string; displayName?: string; providerProfile?: string; templateId?: string; projectId?: string; modelTier?: string; agentRole?: string }) {
+export async function createAgent({ daemonUrl, agentId, agentInstanceId, displayName, providerProfile, templateId, projectId, modelTier, agentRole, start }: { daemonUrl: string; agentId?: string; agentInstanceId?: string; displayName?: string; providerProfile?: string; templateId?: string; projectId?: string; modelTier?: string; agentRole?: string; start?: boolean }) {
   return requestJson(joinUrl(daemonUrl, '/agents/create'), {
     method: 'POST',
     body: {
+      agent_id: agentId || '',
       agent_instance_id: agentInstanceId || '',
       display_name: displayName || '',
       provider_profile: providerProfile || '',
@@ -200,6 +224,7 @@ export async function createAgent({ daemonUrl, agentInstanceId, displayName, pro
       project_id: projectId || '',
       model_tier: modelTier || 'normal',
       agent_role: agentRole || '',
+      start: Boolean(start),
     },
   });
 }
@@ -266,6 +291,13 @@ export async function fetchChat({ daemonUrl, clientToken, agentInstanceId, limit
     path += `&chain_id=${encodeURIComponent(chainId)}`;
   }
   return requestJson(joinUrl(daemonUrl, path), {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${clientToken || ''}` }
+  });
+}
+
+export async function fetchChatMessage({ daemonUrl, clientToken, messageId }: { daemonUrl: string; clientToken: string; messageId: string }) {
+  return requestJson(joinUrl(daemonUrl, `/chats/messages/${encodeURIComponent(messageId)}`), {
     method: 'GET',
     headers: { 'Authorization': `Bearer ${clientToken || ''}` }
   });
@@ -580,7 +612,13 @@ export async function resolveTaskComment({ daemonUrl, agentToken, clientInstance
 }
 
 export async function updateTaskChain({ daemonUrl, agentToken, clientInstanceId, clientToken, chainId, title, description, coordinatorAgentInstanceId, defaultReviewerAgentInstanceId, finalSummary }: Partial<TaskAgentRequest & UserRpcRequest> & { chainId: string; title?: string; description?: string; coordinatorAgentInstanceId?: string; defaultReviewerAgentInstanceId?: string; finalSummary?: string }) {
-  return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_chain_update', agentPath: '/task-chains/update', body: { chain_id: chainId, title: title || '', description: description || '', coordinator_agent_instance_id: coordinatorAgentInstanceId || '', default_reviewer_agent_instance_id: defaultReviewerAgentInstanceId || '', final_summary: finalSummary || '' } });
+  const body: any = { chain_id: chainId };
+  if (title !== undefined) body.title = title;
+  if (description !== undefined) body.description = description;
+  if (coordinatorAgentInstanceId !== undefined) body.coordinator_agent_instance_id = coordinatorAgentInstanceId;
+  if (defaultReviewerAgentInstanceId !== undefined) body.default_reviewer_agent_instance_id = defaultReviewerAgentInstanceId;
+  if (finalSummary !== undefined) body.final_summary = finalSummary;
+  return taskMutationRequest({ daemonUrl, agentToken, clientInstanceId, clientToken, action: 'task_chain_update', agentPath: '/task-chains/update', body });
 }
 
 export async function updateTaskChainStatus({ daemonUrl, agentToken, clientInstanceId, clientToken, chainId, status, finalSummary }: Partial<TaskAgentRequest & UserRpcRequest> & { chainId: string; status: string; finalSummary?: string }) {

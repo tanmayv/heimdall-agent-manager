@@ -3,13 +3,14 @@ import { tasksApi } from './endpoints/tasks';
 import { chatEndpoints } from './endpoints/chats';
 import { chatApprovalEventReceived, mergeDecisionEventReceived } from '../store/attentionSlice';
 import { GUIDE_AGENT_ID, agentLifecycleEventReceived, agentRuntimeEventReceived, appendMessage, chatEventReceived } from '../store/chatSlice';
-import { appendCoordinatorChatMessage, wsChainViewRefreshRequested } from '../store/chainViewSlice';
+import { wsChainViewRefreshRequested } from '../store/chainViewSlice';
 import { wsRefreshRequested } from '../store/homeSlice';
 import { applyMemoryEventRecord, auditEndedReceived, auditStartedReceived, memoryEventReceived } from '../store/memorySlice';
 import { taskEventReceived, updateChainStateDirectly, updateTaskStateDirectly } from '../store/taskSlice';
 
 type WsCtx = {
   selectedAgentId?: string;
+  visibleChatAgentId?: string;
   focusedChainId?: string;
   focusedCoordinatorAgentInstanceId?: string;
   guidePanelOpen?: boolean;
@@ -142,8 +143,22 @@ function guideChatArgs() {
   return { limit: 80 };
 }
 
-function coordinatorChatArgs(chainId: string, coordinatorAgentInstanceId: string) {
-  return { chainId, coordinatorAgentInstanceId, limit: 50 };
+function applyChatMessageToCaches(dispatch: any, message: ChatMessage, rawMessage: any, agentId: string, _chainId: string, _ctx: WsCtx) {
+  if (agentId === GUIDE_AGENT_ID) {
+    dispatch(chatEndpoints.util.updateQueryData('fetchGuideChat', guideChatArgs(), (draft: any) => {
+      if (!draft) return;
+      upsertChatMessage(draft.messages || (draft.messages = []), message);
+    }));
+  } else if (agentId) {
+    dispatch(chatEndpoints.util.updateQueryData('fetchDirectChat', directChatArgs(agentId), (draft: any) => {
+      if (!draft) return;
+      upsertChatMessage(draft.messages || (draft.messages = []), message);
+    }));
+  }
+  if (agentId) {
+    dispatch(chatEndpoints.util.updateQueryData('listConversationSummaries', undefined, (draft: any) => patchConversationSummary(draft, agentId, { message: rawMessage })));
+    dispatch(appendMessage({ agentId, message: rawMessage }));
+  }
 }
 
 function handleTaskEvent(dispatch: any, payload: any) {
@@ -167,11 +182,20 @@ function handleTaskEvent(dispatch: any, payload: any) {
         else tasks.unshift(normalizedTask);
       }));
     }
-  } else {
-    const tags: Array<{ type: 'Task' | 'ChainTasks'; id: string }> = [];
-    if (taskId) tags.push({ type: 'Task', id: taskId });
-    if (chainId) tags.push({ type: 'ChainTasks', id: chainId });
-    if (tags.length) dispatch(heimdallApi.util.invalidateTags(tags));
+  } else if (payload.fetch_required && taskId) {
+    dispatch(tasksApi.endpoints.fetchTask.initiate({ taskId }, { subscribe: false })).unwrap().then((data: any) => {
+      const normalizedTask = data?.task;
+      if (!normalizedTask) return;
+      if (chainId) {
+        dispatch(tasksApi.util.updateQueryData('fetchChainTasks', { chainId }, (draft: any) => {
+          if (!draft) return;
+          const tasks = draft.tasks || (draft.tasks = []);
+          const index = tasks.findIndex((task: any) => task.taskId === taskId);
+          if (index >= 0) tasks[index] = { ...tasks[index], ...normalizedTask };
+          else tasks.unshift(normalizedTask);
+        }));
+      }
+    }).catch(() => undefined);
   }
 
   if (taskId) {
@@ -198,65 +222,45 @@ function handleChatEvent(dispatch: any, payload: any, ctx: WsCtx) {
   dispatch(chatEventReceived(payload));
   const agentId = String(payload.agent_instance_id || '');
   const eventChainId = String(payload.chain_id || '');
-  const selectedAgentId = String(ctx.selectedAgentId || '');
   const focusedChainId = String(ctx.focusedChainId || '');
   const focusedCoordinatorAgentInstanceId = String(ctx.focusedCoordinatorAgentInstanceId || '');
-  const coordinatorChainId = eventChainId || (focusedCoordinatorAgentInstanceId && focusedCoordinatorAgentInstanceId === agentId ? focusedChainId : '');
+  const focusedCoordinatorEvent = Boolean(focusedChainId && focusedCoordinatorAgentInstanceId && focusedCoordinatorAgentInstanceId === agentId);
   const hasInlineMessage = Boolean(payload.message);
   const message = hasInlineMessage ? normalizeChatMessage(payload.message) : null;
+  const direction = String(payload.direction || '');
+  const isStatusOnlyEvent = !message && (direction === 'read' || direction === 'delivered' || direction === 'delivery_failed');
 
-  dispatch(wsRefreshRequested(`chat_event:${coordinatorChainId || agentId || payload.message_id || 'unknown'}`));
-  if (coordinatorChainId) {
-    dispatch(wsChainViewRefreshRequested(`chat_event:${coordinatorChainId}:${payload.message_id || ''}`));
+  dispatch(wsRefreshRequested(`chat_event:${agentId || payload.message_id || 'unknown'}`));
+  if (isStatusOnlyEvent) {
+    if (agentId) {
+      dispatch(chatEndpoints.util.updateQueryData('listConversationSummaries', undefined, (draft: any) => {
+        if (draft?.[agentId] && payload.unread_count !== undefined) draft[agentId].unreadCount = Number(payload.unread_count || 0);
+      }));
+    }
+    return;
+  }
+  if (!message && payload.fetch_required && String(payload.fetch_kind || '') === 'chat_message') {
+    const messageId = String(payload.fetch_id || payload.message_id || '');
+    if (messageId) {
+      dispatch(chatEndpoints.endpoints.fetchChatMessage.initiate({ messageId }, { subscribe: false })).unwrap().catch(() => undefined);
+    }
+    return;
+  }
+  if (focusedCoordinatorEvent || eventChainId) {
+    dispatch(wsChainViewRefreshRequested(`chat_event:${focusedChainId || eventChainId}:${payload.message_id || ''}`));
   }
 
-  if (message && agentId && !coordinatorChainId) {
+  if (message && agentId) {
+    applyChatMessageToCaches(dispatch, message, payload.message, agentId, eventChainId, ctx);
+  }
+
+  if (!message) {
     if (agentId === GUIDE_AGENT_ID) {
-      dispatch(chatEndpoints.util.updateQueryData('fetchGuideChat', guideChatArgs(), (draft: any) => {
-        if (!draft) return;
-        upsertChatMessage(draft.messages || (draft.messages = []), message);
-        draft.nextCursor = Number(draft.nextCursor || 0);
-        draft.hasMore = Boolean(draft.hasMore);
-      }));
-    } else {
-      dispatch(chatEndpoints.util.updateQueryData('fetchDirectChat', directChatArgs(agentId), (draft: any) => {
-        if (!draft) return;
-        upsertChatMessage(draft.messages || (draft.messages = []), message);
-        draft.nextCursor = Number(draft.nextCursor || 0);
-        draft.hasMore = Boolean(draft.hasMore);
-      }));
+      dispatch(heimdallApi.util.invalidateTags([{ type: 'GuideChat', id: GUIDE_AGENT_ID }]));
+    } else if (agentId) {
+      dispatch(heimdallApi.util.invalidateTags([{ type: 'Chat', id: agentId }]));
     }
-    dispatch(chatEndpoints.util.updateQueryData('listConversationSummaries', undefined, (draft: any) => patchConversationSummary(draft, agentId, payload)));
-  }
-
-  if (message && coordinatorChainId && focusedCoordinatorAgentInstanceId) {
-    dispatch(chatEndpoints.util.updateQueryData('fetchCoordinatorChat', coordinatorChatArgs(coordinatorChainId, focusedCoordinatorAgentInstanceId), (draft: any) => {
-      if (!draft) return;
-      upsertChatMessage(draft.messages || (draft.messages = []), message);
-    }));
-    dispatch(appendCoordinatorChatMessage({ chainId: coordinatorChainId, message: { ...payload.message, agent_instance_id: agentId } }));
-  }
-
-  if (selectedAgentId && selectedAgentId === agentId && message && !coordinatorChainId) {
-    dispatch(appendMessage({ agentId, message: payload.message }));
-  }
-
-  if (agentId === GUIDE_AGENT_ID && ctx.guidePanelOpen && message && !coordinatorChainId) {
-    dispatch(appendMessage({ agentId: GUIDE_AGENT_ID, message: payload.message }));
-  }
-
-  if (coordinatorChainId && !message) {
-    dispatch(heimdallApi.util.invalidateTags([{ type: 'CoordinatorChat', id: coordinatorChainId }]));
-  } else if (!coordinatorChainId && agentId === GUIDE_AGENT_ID && !message) {
-    dispatch(heimdallApi.util.invalidateTags([{ type: 'GuideChat', id: GUIDE_AGENT_ID }]));
-  } else if (!coordinatorChainId && agentId && !message) {
-    dispatch(heimdallApi.util.invalidateTags([{ type: 'Chat', id: agentId }]));
-  }
-
-  if (!coordinatorChainId) {
-    if (!message) {
-      dispatch(heimdallApi.util.invalidateTags([{ type: 'ConversationSummaries', id: 'ALL' }]));
-    }
+    dispatch(heimdallApi.util.invalidateTags([{ type: 'ConversationSummaries', id: 'ALL' }]));
   }
 }
 
@@ -292,14 +296,15 @@ function handleAgentEvent(dispatch: any, payload: any, ctx: WsCtx) {
   if (payload?.type === 'agent_runtime_changed') {
     dispatch(agentRuntimeEventReceived(payload));
   }
-  const agentId = String(payload.agent_instance_id || payload.agent?.agent_instance_id || payload.record?.agent_instance_id || '');
+  const agentId = String(payload.target_agent_instance_id || payload.agent_instance_id || payload.agent?.agent_instance_id || payload.record?.agent_instance_id || '');
   dispatch(wsRefreshRequested(`${payload.type}:${agentId}`));
   if (ctx.focusedChainId) {
     dispatch(wsChainViewRefreshRequested(`${payload.type}:${agentId}`));
   }
-  if (agentId) {
-    dispatch(heimdallApi.util.invalidateTags([{ type: 'Agents', id: agentId }]));
-  }
+  // Agent lifecycle/runtime/update events are targeted and contain enough fields
+  // for chatSlice reducers to patch the single agent row. Do not invalidate an
+  // Agents list tag here; that can turn frequent heartbeats/runtime events into
+  // full agents-list refetches once the Agents domain moves to RTKQ.
 }
 
 export function handleUserWsEvent(dispatch: any, payload: any, ctx: WsCtx = {}) {

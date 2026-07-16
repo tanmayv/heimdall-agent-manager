@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import SettingsPage from './SettingsPage';
 import MemoryManagementPage from './MemoryManagementPage';
@@ -25,6 +25,7 @@ import {
   sendMessageToSelectedAgent,
   toggleGuidePanel,
   updateSessionConfig,
+  upsertKnownAgent,
   userWsConnected,
   userWsConnecting,
   userWsDisconnected,
@@ -47,7 +48,6 @@ import {
   focusChainView,
   fetchWorkspaceForChain,
   loadAgentSideSheet,
-  optimisticCoordinatorMessage,
   openAgentSideSheet,
   previewWorkspaceMerge,
   revalidateChainView,
@@ -353,6 +353,14 @@ function isConcreteConversationThread(agent: any): boolean {
   return id.startsWith('conversation@');
 }
 
+function isGuideAgent(agent: any): boolean {
+  const id = agentInstanceId(agent).toLowerCase();
+  const durable = durableAgentId(agent).toLowerCase();
+  const templateId = String(agent?.templateId || agent?.template_id || '').toLowerCase();
+  const role = String(agent?.agentRole || agent?.agent_role || agent?.roleHint || agent?.role_hint || '').toLowerCase();
+  return id === GUIDE_AGENT_ID || id.startsWith('guide@') || durable === 'guide' || templateId === 'guide' || role === 'guide';
+}
+
 function createConversationInstanceId(): string {
   const token = globalThis.crypto?.randomUUID?.().replace(/-/g, '').slice(0, 10) || `${Date.now().toString(16)}${Math.random().toString(16).slice(2, 8)}`;
   return `conversation@s-${token}`;
@@ -426,7 +434,7 @@ function agentInstanceContext(agent: any, chats: Record<string, any[]> = {}, tas
 function durableAgentGroups(agents: any[] = []): Array<{ agentId: string; label: string; instances: any[]; running: number; updatedUnixMs: number; identity: any }> {
   const byId = new Map<string, any>();
   for (const agent of agents || []) {
-    if (!agent || isConversationAgent(agent)) continue;
+    if (!agent || isConversationAgent(agent) || isGuideAgent(agent)) continue;
     const agentId = durableAgentId(agent);
     if (!agentId) continue;
     const current = byId.get(agentId) || { agentId, label: agentId, instances: [], running: 0, updatedUnixMs: 0, identity: agent };
@@ -613,7 +621,7 @@ function attentionCount(tasksById: Record<string, any>, attention: any, pendingM
 
 export default function App() {
   const dispatch = useDispatch<any>();
-  const { agents, session, daemonProfiles, selectedAgentId, chats, chatsCursor, chatsHasMore, guidePanelOpen, guideSending, fetchingChatsByAgentId, settingsTemplates, settingsProviders, conversationSummaryById } = useSelector((state: any) => state.chat);
+  const { agents, agentIdentities, session, daemonProfiles, selectedAgentId, chats, chatsCursor, chatsHasMore, guidePanelOpen, guideSending, fetchingChatsByAgentId, settingsTemplates, settingsProviders, conversationSummaryById } = useSelector((state: any) => state.chat);
   const conversationSummariesQuery = useListConversationSummariesQuery(undefined, { skip: !session.clientToken });
   const effectiveConversationSummaryById = conversationSummariesQuery.data || conversationSummaryById;
   const { projectsById, projectIds, mutating: projectMutating, error: projectError } = useSelector((state: any) => state.projects);
@@ -625,6 +633,8 @@ export default function App() {
   const chainViewRef = useRef(chainView);
   const chainsByIdRef = useRef(chainsById);
   const selectedAgentRef = useRef(selectedAgentId);
+  const visibleChatAgentRef = useRef('');
+  const lastMarkReadAtByAgentRef = useRef<Record<string, number>>({});
   const [newProjectModalOpen, setNewProjectModalOpen] = useState(false);
   const [chainCreationProgress, setChainCreationProgress] = useState<any>(null);
   const [daemonPickerOpen, setDaemonPickerOpen] = useState(false);
@@ -659,6 +669,19 @@ export default function App() {
   useEffect(() => { chainViewRef.current = chainView; }, [chainView]);
   useEffect(() => { chainsByIdRef.current = chainsById; }, [chainsById]);
   useEffect(() => { selectedAgentRef.current = selectedAgentId; }, [selectedAgentId]);
+  useEffect(() => {
+    if (urlParams.view === 'agent') {
+      visibleChatAgentRef.current = agentPageId || urlParams.agentId || '';
+      return;
+    }
+    if (home.surface === 'chain') {
+      const chainId = home.selectedChainId || urlParams.chainId || '';
+      const chain = chainId ? chainsByIdRef.current?.[chainId] : null;
+      visibleChatAgentRef.current = chain?.coordinatorAgentInstanceId || chain?.coordinator_agent_instance_id || '';
+      return;
+    }
+    visibleChatAgentRef.current = '';
+  }, [agentPageId, home.selectedChainId, home.surface, urlParams.agentId, urlParams.chainId, urlParams.view]);
 
   const projects: Project[] = useMemo(() => {
     const known = projectIds.map((id: string) => projectsById[id]).filter(Boolean);
@@ -751,6 +774,31 @@ export default function App() {
     agentInstanceId: GUIDE_AGENT_ID,
   }))), [chats]);
   const guideLoading = Boolean(fetchingChatsByAgentId?.[GUIDE_AGENT_ID]);
+  useEffect(() => {
+    if (!session.connected || !session.clientToken) return;
+    const visibleCoordinatorId = home.surface === 'chain'
+      ? (chainsById?.[home.selectedChainId || urlParams.chainId || '']?.coordinatorAgentInstanceId || chainsById?.[home.selectedChainId || urlParams.chainId || '']?.coordinator_agent_instance_id || '')
+      : '';
+    const visibleAgentId = urlParams.view === 'agent'
+      ? (agentPageId || urlParams.agentId || selectedAgentId || '')
+      : visibleCoordinatorId;
+    const markIfUnread = (agentInstanceId: string, unread: number) => {
+      if (!agentInstanceId || unread <= 0) return;
+      const now = Date.now();
+      const last = Number(lastMarkReadAtByAgentRef.current[agentInstanceId] || 0);
+      if (last && now - last < 5000) return;
+      lastMarkReadAtByAgentRef.current[agentInstanceId] = now;
+      dispatch(chatEndpoints.endpoints.markChatRead.initiate({ agentInstanceId }));
+    };
+    if (guidePanelOpen) {
+      const unread = Number(effectiveConversationSummaryById?.[GUIDE_AGENT_ID]?.unreadCount ?? guideUnread ?? 0);
+      markIfUnread(GUIDE_AGENT_ID, unread);
+    }
+    if (visibleAgentId) {
+      const unread = Number(effectiveConversationSummaryById?.[visibleAgentId]?.unreadCount ?? unreadByAgentId[visibleAgentId] ?? 0);
+      markIfUnread(visibleAgentId, unread);
+    }
+  }, [agentPageId, chainsById, dispatch, effectiveConversationSummaryById, guidePanelOpen, guideUnread, home.selectedChainId, home.surface, selectedAgentId, session.clientToken, session.connected, unreadByAgentId, urlParams.agentId, urlParams.chainId, urlParams.view]);
   const attention = useSelector((state: any) => state.attention);
   const memory = useSelector((state: any) => state.memory);
   const toasts = useSelector((state: any) => state.toasts?.toasts || []);
@@ -841,6 +889,18 @@ export default function App() {
       dispatch(selectSurface('home'));
     }
   }, [agentPageId, dispatch, home.selectedChainId, home.selectedProjectId, home.surface, urlParams.agentId, urlParams.chainId, urlParams.projectId, urlParams.taskId, urlParams.view]);
+
+  useEffect(() => {
+    const routeChainActive = (urlParams.view === 'chain' || urlParams.view === 'chain-editor');
+    const routeChainId = routeChainActive ? (urlParams.chainId || home.selectedChainId || '') : '';
+    if (!routeChainId || !session.connected || !session.clientToken) return;
+    const routeChain = chainsById?.[routeChainId];
+    const coordinatorAgentId = routeChain?.coordinatorAgentInstanceId || routeChain?.coordinator_agent_instance_id || '';
+    if (!coordinatorAgentId) return;
+    if (fetchingChatsByAgentId?.[coordinatorAgentId]) return;
+    if (Object.prototype.hasOwnProperty.call(chats || {}, coordinatorAgentId)) return;
+    dispatch(fetchSelectedChat({ agentId: coordinatorAgentId })).catch(() => undefined);
+  }, [chainsById, chats, dispatch, fetchingChatsByAgentId, home.selectedChainId, session.clientToken, session.connected, urlParams.chainId, urlParams.view]);
 
   const loadHomeData = useCallback(async (periodic = false, reason = 'startup') => {
     const result = await dispatch(refreshTaskBoard()).unwrap().catch(() => null);
@@ -975,6 +1035,7 @@ export default function App() {
         const focusedChain = focusedChainId ? chainsByIdRef.current[focusedChainId] : null;
         handleUserWsEvent(dispatch, payload, {
           selectedAgentId: selectedAgentRef.current,
+          visibleChatAgentId: visibleChatAgentRef.current,
           focusedChainId,
           focusedCoordinatorAgentInstanceId: focusedChain?.coordinatorAgentInstanceId || focusedChain?.coordinator_agent_instance_id || '',
           guidePanelOpen,
@@ -1226,7 +1287,7 @@ export default function App() {
     <VimSidebarProvider>
       <div className="h-screen overflow-hidden bg-[#08090b] text-zinc-100">
       <div className="flex h-full">
-        <aside className={`${sidebarCollapsed ? 'w-0 border-r-0' : 'w-[296px] border-r'} shrink-0 border-white/10 bg-[#090909] transition-[width] duration-200`}>
+        <aside className={`${sidebarCollapsed ? 'w-0 border-r-0' : 'w-[320px] border-r'} shrink-0 border-white/10 bg-[#090909] transition-[width] duration-200`}>
           <ConversationFocusedSidebar
             conversations={conversationAgents}
             chats={chats}
@@ -1458,7 +1519,6 @@ export default function App() {
               onBack={() => { updateUrlParams({ chainId: null, taskId: null, agentId: null, view: 'home' }); dispatch(selectSurface('home')); }}
               onSend={async (body: string) => {
                 const localId = `local_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-                dispatch(optimisticCoordinatorMessage({ chainId: selectedChain.chainId, body, localId }));
                 await dispatch(sendCoordinatorMessage({ chainId: selectedChain.chainId, body, localId })).unwrap();
               }}
               onToggleDiff={() => dispatch(toggleWorkspaceDiff(selectedChain.chainId))}
@@ -1509,12 +1569,16 @@ export default function App() {
                   throw err;
                 }
               }}
-              onAssignTask={async (task: any, agentInstanceId: string) => {
+              onAssignTask={async (task: any, agentInstanceId: string, pickerResult?: any) => {
+                const updatedAgent = pickerResult?.agent || pickerResult?.result?.agent;
+                if (updatedAgent) dispatch(upsertKnownAgent(updatedAgent));
                 await dispatch(assignSelectedTask({ taskId: task.taskId, chainId: task.chainId, agentInstanceId })).unwrap();
                 dispatch(showToast({ kind: 'success', title: 'Assignee updated', message: agentInstanceId }));
               }}
               onCloseTask={() => updateUrlParams({ taskId: null })}
-              onSetReviewer={async (task: any, agentInstanceId: string) => {
+              onSetReviewer={async (task: any, agentInstanceId: string, pickerResult?: any) => {
+                const updatedAgent = pickerResult?.agent || pickerResult?.result?.agent;
+                if (updatedAgent) dispatch(upsertKnownAgent(updatedAgent));
                 const reviewers = taskReviewerIds(task);
                 for (const reviewerId of reviewers) {
                   await dispatch(removeParticipantFromSelectedTask({ taskId: task.taskId, chainId: task.chainId, agentInstanceId: reviewerId, role: 'lgtm_required' })).unwrap().catch(() => undefined);
@@ -1585,20 +1649,19 @@ export default function App() {
           )}
         </div>
       </div>
-      {!guidePanelOpen && (
-        <button
-          data-debug-id="guide-floating-btn"
-          onClick={() => dispatch(toggleGuidePanel())}
-          title="Open Heimdall Guide"
-          aria-label="Open Heimdall Guide"
-          className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full border border-amber-200/30 bg-amber-300 text-2xl text-black shadow-2xl shadow-black/40 transition hover:scale-105 hover:bg-amber-200"
-        >
-          <span aria-hidden="true">🪖</span>
-          {guideUnread > 0 && (
-            <span data-debug-id="guide-floating-unread" className="absolute -right-1 -top-1 rounded-full bg-sky-400 px-1.5 py-0.5 text-[10px] font-bold text-black">{guideUnread > 99 ? '99+' : guideUnread}</span>
-          )}
-        </button>
-      )}
+      <button
+        data-debug-id="guide-floating-btn"
+        onClick={() => dispatch(toggleGuidePanel())}
+        title={guidePanelOpen ? 'Close Heimdall Guide' : 'Open Heimdall Guide'}
+        aria-label={guidePanelOpen ? 'Close Heimdall Guide' : 'Open Heimdall Guide'}
+        aria-pressed={guidePanelOpen}
+        className={`fixed z-50 flex items-center justify-center rounded-full shadow-2xl shadow-black/40 transition hover:scale-105 ${guidePanelOpen ? 'bottom-4 right-4 h-11 w-11 border border-white/10 bg-[#171717]/95 text-2xl text-zinc-100 hover:bg-[#222]' : 'bottom-6 right-6 h-14 w-14 border border-amber-200/30 bg-amber-300 text-2xl text-black hover:bg-amber-200'}`}
+      >
+        <span aria-hidden="true">{guidePanelOpen ? '×' : '🪖'}</span>
+        {!guidePanelOpen && guideUnread > 0 && (
+          <span data-debug-id="guide-floating-unread" className="absolute -right-1 -top-1 rounded-full bg-sky-400 px-1.5 py-0.5 text-[10px] font-bold text-black">{guideUnread > 99 ? '99+' : guideUnread}</span>
+        )}
+      </button>
       {home.newChainModalOpen && (
         <NewChainModal
           projectId={home.selectedProjectId || selectedProjectId}
@@ -4643,6 +4706,7 @@ function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'cha
   const stickyRef = useRef(true);
   const lastCountRef = useRef(0);
   const lastChainRef = useRef(chainId);
+  const didInitialScrollRef = useRef(false);
   const [showJump, setShowJump] = useState(false);
   const [usedActionCards, setUsedActionCards] = useState<Record<string, string>>({});
   const persistedActionReplies = useMemo(() => deriveCoordinatorActionReplies(messages), [messages]);
@@ -4655,19 +4719,25 @@ function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'cha
     setShowJump(false);
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (lastChainRef.current !== chainId) {
       lastChainRef.current = chainId;
       lastCountRef.current = 0;
       stickyRef.current = true;
-      // Give the browser a paint before we jump so the new list is measured.
-      requestAnimationFrame(() => scrollToBottom('auto'));
+      didInitialScrollRef.current = false;
+      setShowJump(false);
     }
-  }, [chainId, scrollToBottom]);
 
-  useEffect(() => {
     const count = messages.length;
     if (count === 0) { lastCountRef.current = 0; return; }
+
+    if (!didInitialScrollRef.current) {
+      didInitialScrollRef.current = true;
+      lastCountRef.current = count;
+      scrollToBottom('auto');
+      return;
+    }
+
     if (count !== lastCountRef.current) {
       const grew = count > lastCountRef.current;
       lastCountRef.current = count;
@@ -4675,7 +4745,7 @@ function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'cha
         requestAnimationFrame(() => scrollToBottom('smooth'));
       }
     }
-  }, [messages.length, scrollToBottom]);
+  }, [chainId, messages.length, scrollToBottom]);
 
   const onScroll = useCallback(() => {
     const node = scrollRef.current;
@@ -4692,7 +4762,7 @@ function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'cha
         ref={scrollRef}
         data-debug-id={`${debugPrefix}-scroll`}
         onScroll={onScroll}
-        className="chat-scrollbar h-full min-h-0 space-y-[22px] overflow-y-auto rounded-[18px] bg-[#090909] p-5 scroll-smooth"
+        className="chat-scrollbar h-full min-h-0 space-y-[22px] overflow-y-auto rounded-[18px] bg-[#090909] p-5"
       >
         {hasMore ? (
           <div className="flex justify-center">
@@ -4922,6 +4992,7 @@ function ChainProgressPanel({ chain, progress }: { chain: any; progress: ChainPr
 
 function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, initialTaskId = '', onBack, onSend, onToggleDiff, onFetchDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenChain, onOpenTask, onLoadTaskLogPage, onLoadCoordinatorChatPage, onOpenEditor, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer }: any) {
   const session = useSelector((state: any) => state.chat?.session || {});
+  const chatState = useSelector((state: any) => state.chat || {});
   const [draft, setDraft] = useState('');
   const [sendError, setSendError] = useState('');
   const [selectedTaskId, setSelectedTaskId] = useState(initialTaskId || '');
@@ -4944,14 +5015,16 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
     return () => window.clearTimeout(timer);
   }, [chain?.chainId]);
   const workspace = chainView.workspaceByChainId[chain.chainId];
-  const chat = chainView.chatByChainId[chain.chainId] || [];
-  const optimistic = chainView.optimisticMessagesByChainId[chain.chainId] || [];
-  const messages = useMemo(() => normalizeCoordinatorMessages([...chat, ...optimistic]), [chat, optimistic]);
   const diffOpen = Boolean(chainView.diffOpenByChainId[chain.chainId]);
   const diffData = chainView.workspaceDiffByChainId?.[chain.chainId] || {};
   const preview = chainView.mergePreviewByChainId[chain.chainId];
   const coordinatorAgentId = chain.coordinatorAgentInstanceId || chain.coordinator_agent_instance_id || '';
   const coordinatorAgent = useMemo(() => agents.find((agent: any) => agent.id === coordinatorAgentId || agent.agentInstanceId === coordinatorAgentId || agent.agent_instance_id === coordinatorAgentId), [agents, coordinatorAgentId]);
+  const coordinatorMessages = chatState?.chats?.[coordinatorAgentId] || [];
+  const coordinatorHasMore = Boolean(chatState?.chatsHasMore?.[coordinatorAgentId]);
+  const coordinatorCursor = Number(chatState?.chatsCursor?.[coordinatorAgentId] || 0);
+  const coordinatorLoading = Boolean(chatState?.fetchingChatsByAgentId?.[coordinatorAgentId]);
+  const messages = useMemo(() => normalizeCoordinatorMessages(coordinatorMessages), [coordinatorMessages]);
   const projectId = chain.projectId || chain.project_id || '';
   const composerArtifactUpload = useArtifactUpload({ projectId, originRef: chain.chainId || '', originKind: 'clipboard_chat' });
   const coordinatorStatus = agentRuntimeStatus(coordinatorAgent);
@@ -5064,7 +5137,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
               <CoordinatorMessageList chainId={chain.chainId} messages={messages} onReply={(reply) => {
                 setSendError('');
                 void onSend(reply).catch((err: any) => setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`));
-              }} hasMore={Boolean(chainView.chatHasMoreByChainId?.[chain.chainId])} loadingOlder={Boolean(chainView.chatLoadingByChainId?.[chain.chainId])} onLoadOlder={() => onLoadCoordinatorChatPage?.(chain.chainId, chainView.chatCursorByChainId?.[chain.chainId] || 0)} />
+              }} hasMore={coordinatorHasMore} loadingOlder={coordinatorLoading} onLoadOlder={() => onLoadCoordinatorChatPage?.(chain.chainId, coordinatorCursor)} />
             </div>
           </div>
           <div className="px-5 pb-[18px] pt-3">
@@ -5329,6 +5402,12 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
   const [localError, setLocalError] = useState('');
   const [lastPasteTarget, setLastPasteTarget] = useState('');
   const [agentPicker, setAgentPicker] = useState<{ taskId: string; mode: 'assignee' | 'reviewer' } | null>(null);
+  const session = useSelector((state: any) => state.chat?.session || {});
+  const agentIdentities = useSelector((state: any) => state.chat?.agentIdentities || []);
+  const conversationSummaryById = useSelector((state: any) => state.chat?.conversationSummaryById || {});
+  const conversationSummariesQuery = useListConversationSummariesQuery(undefined, { skip: !session.clientToken });
+  const effectiveConversationSummaryById = conversationSummariesQuery.data || conversationSummaryById;
+  const chainTeam = useSelector((state: any) => state.chainView?.teamByChainId?.[chainId] || null);
   const taskTextArtifactUpload = useArtifactUpload({ projectId, originRef: chainId || '', originKind: 'clipboard_chain_text' });
   const selectableAgents = useMemo(() => [{ id: 'user_proxy', label: 'User / operator', agentRole: 'user', templateId: 'user', providerProfile: 'heimdall', projectId: projectId || '', connected: true, connectionState: 'connected' }, ...(agents || [])], [agents, projectId]);
   const agentsById = useMemo(() => {
@@ -5348,10 +5427,10 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
     }
   };
   const pickerTask = agentPicker ? tasksById?.[agentPicker.taskId] : null;
-  const applyAgentPick = async (agentInstanceId: string) => {
+  const applyAgentPick = async (agentInstanceId: string, result?: any) => {
     if (!agentPicker || !pickerTask) return;
-    if (agentPicker.mode === 'assignee') await onAssignTask?.(pickerTask, agentInstanceId);
-    else await onSetReviewer?.(pickerTask, agentInstanceId);
+    if (agentPicker.mode === 'assignee') await onAssignTask?.(pickerTask, agentInstanceId, result);
+    else await onSetReviewer?.(pickerTask, agentInstanceId, result);
     setAgentPicker(null);
   };
 
@@ -5369,13 +5448,17 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
             </div>
             <AgentPicker
               debugId={`task-${agentPicker.mode}-agent-picker`}
-              daemonUrl=""
+              daemonUrl={session.daemonUrl || ''}
               agents={selectableAgents}
-              projects={[]}
+              identities={agentIdentities}
+              team={chainTeam}
+              projects={projectId ? [{ projectId, name: projectId }] : []}
               roleHint=""
+              defaultProjectId={projectId || ''}
+              conversationSummaryById={effectiveConversationSummaryById}
               value={agentPicker.mode === 'assignee' ? (pickerTask.assigneeAgentInstanceId || '') : (taskReviewerIds(pickerTask)[0] || '')}
               selectionOnly
-              onSelected={(agentInstanceId) => applyAgentPick(agentInstanceId)}
+              onSelected={(agentInstanceId, result) => applyAgentPick(agentInstanceId, result)}
             />
           </div>
         </div>

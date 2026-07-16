@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { VimEditButton } from './VimSidebar';
+import AgentPicker from './AgentPicker';
 import { showToast } from '../store/toastSlice';
 import * as daemonApi from '../api/daemonApi';
 import { tasksApi } from '../api/endpoints/tasks';
+import { useListConversationSummariesQuery } from '../api/endpoints/chats';
 
 const NODE_W = 180;
 const NODE_H = 92;
@@ -171,6 +173,10 @@ function saveLayout(chainId: string, positions: Record<string, Point>) {
 export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents = [], providers = [], initialTaskId = '', onBack, onReturnToChain, onRefresh, onSelectTask }: ChainEditorProps) {
   const dispatch = useDispatch<any>();
   const session = useSelector((state: any) => state.chat?.session || {});
+  const agentIdentities = useSelector((state: any) => state.chat?.agentIdentities || []);
+  const conversationSummaryById = useSelector((state: any) => state.chat?.conversationSummaryById || {});
+  const conversationSummariesQuery = useListConversationSummariesQuery(undefined, { skip: !session.clientToken });
+  const effectiveConversationSummaryById = conversationSummariesQuery.data || conversationSummaryById;
   const auth = { daemonUrl: session.daemonUrl || '', clientInstanceId: session.clientInstanceId || '', clientToken: session.clientToken || '' };
   const orderedTasks = useMemo(() => [...tasks].sort((a, b) => taskId(a).localeCompare(taskId(b))), [tasks]);
   const ids = useMemo(() => new Set(orderedTasks.map(taskId).filter(Boolean)), [orderedTasks]);
@@ -193,6 +199,7 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
   const [chainDescriptionDraft, setChainDescriptionDraft] = useState('');
   const [chainCoordinatorDraft, setChainCoordinatorDraft] = useState('');
   const [chainReviewerDraft, setChainReviewerDraft] = useState('');
+  const [chainRolePicker, setChainRolePicker] = useState<null | 'coordinator' | 'reviewer'>(null);
   const [completeSummaryDraft, setCompleteSummaryDraft] = useState('Completed from Task Chain Editor.');
   const [edgeCreateMode, setEdgeCreateMode] = useState(false);
   const [edgeSourceTaskId, setEdgeSourceTaskId] = useState('');
@@ -234,6 +241,7 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
     return rows;
   }, [selectedTask]);
   const members = team?.members || [];
+  const chainProjectId = chain.projectId || chain.project_id || '';
   const agentOptions = useMemo(() => Array.from(new Set([
     ...members.map(chainMemberAgentId),
     ...agents.map((agent: any) => agent.id || agent.agentInstanceId || agent.agent_instance_id || ''),
@@ -440,6 +448,17 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
     await runMutation('save-chain', () => daemonApi.updateTaskChain({ ...auth, chainId: chain.chainId, title: chainTitleDraft, description: chainDescriptionDraft, coordinatorAgentInstanceId: chainCoordinatorDraft, defaultReviewerAgentInstanceId: chainReviewerDraft }), 'Chain saved', chainTitleDraft || chain.chainId, true);
   };
 
+  const handleChainRolePick = async (agentInstanceId: string) => {
+    if (!chainRolePicker) return;
+    if (chainRolePicker === 'coordinator') {
+      if (agentInstanceId === 'user_proxy') throw new Error('Coordinator cannot be user_proxy');
+      setChainCoordinatorDraft(agentInstanceId);
+    } else {
+      setChainReviewerDraft(agentInstanceId);
+    }
+    setChainRolePicker(null);
+  };
+
   const setChainStatus = async (status: string) => {
     const summary = status === 'completed' ? (completeSummaryDraft.trim() || 'Completed from Task Chain Editor.') : undefined;
     await runMutation(`chain-${status}`, () => daemonApi.updateTaskChainStatus({ ...auth, chainId: chain.chainId, status, finalSummary: summary }), status === 'completed' ? 'Chain completed' : 'Chain status updated', status, true);
@@ -491,6 +510,36 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
 
   return (
     <div data-debug-id="chain-editor-page" className="mx-auto max-w-[1360px] px-8 py-8 text-zinc-100">
+      {chainRolePicker ? (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 py-16 backdrop-blur-sm" onMouseDown={() => setChainRolePicker(null)}>
+          <div className="w-full max-w-2xl rounded-3xl border border-white/10 bg-[#101217] p-5 shadow-2xl shadow-black/50" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="mb-4 flex items-start justify-between gap-4">
+              <div className="min-w-0">
+                <h2 className="text-lg font-semibold text-zinc-100">Set chain {chainRolePicker}</h2>
+                <p className="mt-1 truncate text-sm text-zinc-500">{chain.title || chain.chainId}</p>
+              </div>
+              <button data-debug-id="chain-editor-role-picker-close-btn" onClick={() => setChainRolePicker(null)} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 transition hover:bg-white/15">Close</button>
+            </div>
+            <AgentPicker
+              debugId={`chain-editor-${chainRolePicker}-picker`}
+              daemonUrl={auth.daemonUrl}
+              agents={chainRolePicker === 'coordinator'
+                ? agents.filter((agent: any) => String(agent?.id || agent?.agent_instance_id || '') !== 'user_proxy')
+                : [{ id: 'user_proxy', label: 'User / operator', agentRole: 'user', templateId: 'user', providerProfile: 'heimdall', projectId: chainProjectId || '', connected: true, connectionState: 'connected' }, ...agents]}
+              identities={agentIdentities}
+              team={team}
+              projects={chainProjectId ? [{ projectId: chainProjectId, name: chainProjectId }] : []}
+              providers={providers}
+              roleHint={chainRolePicker === 'reviewer' ? '' : 'coordinator'}
+              defaultProjectId={chainProjectId}
+              conversationSummaryById={effectiveConversationSummaryById}
+              value={chainRolePicker === 'coordinator' ? chainCoordinatorDraft : chainReviewerDraft}
+              selectionOnly
+              onSelected={(agentInstanceId) => handleChainRolePick(agentInstanceId)}
+            />
+          </div>
+        </div>
+      ) : null}
       <div className="flex items-center gap-3">
         <button data-debug-id="chain-editor-back-btn" onClick={onReturnToChain} className="rounded-full bg-white/5 px-4 py-2 text-sm hover:bg-white/10">← Chain</button>
         <div className="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">Task Chain Editor</div>
@@ -755,18 +804,18 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
                 <div className="mb-2 flex items-center justify-between gap-3"><span>Description</span><VimEditButton debugId="chain-editor-description-vim-edit-btn" title="Chain description" value={chainDescriptionDraft} onApply={(value) => setChainDescriptionDraft(value)} lang="markdown" /></div>
                 <textarea data-debug-id="chain-editor-chain-description-textarea" value={chainDescriptionDraft} onChange={(event) => setChainDescriptionDraft(event.target.value)} rows={7} className="w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 font-mono text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400" />
               </label>
-              <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Coordinator
-                <select data-debug-id="chain-editor-chain-coordinator-select" value={chainCoordinatorDraft} onChange={(event) => setChainCoordinatorDraft(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400">
-                  <option value="">Choose coordinator…</option>
-                  {agentOptions.map((agentId) => <option key={agentId} value={agentId}>{agentId}</option>)}
-                </select>
-              </label>
-              <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Default reviewer
-                <select data-debug-id="chain-editor-chain-reviewer-select" value={chainReviewerDraft} onChange={(event) => setChainReviewerDraft(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400">
-                  <option value="">Choose reviewer…</option>
-                  {agentOptions.map((agentId) => <option key={agentId} value={agentId}>{agentId}</option>)}
-                </select>
-              </label>
+              <div className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Coordinator
+                <button data-debug-id="chain-editor-chain-coordinator-picker-btn" onClick={() => setChainRolePicker('coordinator')} className="mt-2 flex w-full items-center justify-between rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none hover:bg-white/[0.05]">
+                  <span className="truncate">{chainCoordinatorDraft || 'Choose coordinator…'}</span>
+                  <span className="text-zinc-500">Pick</span>
+                </button>
+              </div>
+              <div className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Default reviewer
+                <button data-debug-id="chain-editor-chain-reviewer-picker-btn" onClick={() => setChainRolePicker('reviewer')} className="mt-2 flex w-full items-center justify-between rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none hover:bg-white/[0.05]">
+                  <span className="truncate">{chainReviewerDraft || 'Choose reviewer…'}</span>
+                  <span className="text-zinc-500">Pick</span>
+                </button>
+              </div>
               <button data-debug-id="chain-editor-chain-save-btn" disabled={Boolean(busyAction)} onClick={() => { void saveChainMetadata(); }} className="w-full rounded-xl bg-white px-4 py-2 text-sm font-semibold text-black hover:bg-zinc-200 disabled:cursor-not-allowed disabled:opacity-50">Save chain controls</button>
               <div className="rounded-2xl border border-white/10 bg-black/20 p-3">
                 <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Completion summary
