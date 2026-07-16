@@ -295,8 +295,9 @@ checks = [
         'data-debug-id="global-right-sidebar-diff-list"',
         'data-debug-id="global-right-sidebar-diff-empty"',
         'data-debug-id="global-right-sidebar-artifact-list"',
+        'data-debug-id="global-right-sidebar-tabs"',
         '<ChainArtifactsPanel daemonUrl={daemonUrl} clientToken={clientToken} projectId={projectId} chainId={chainId} />',
-        'Open an artifact to use the existing annotation-capable viewer.',
+        'Open any artifact to read, annotate, and download it in the full viewer.',
     ])),
     ('task chain pane uses progress card and dependency ordered todo list, not kanban', all(snippet in APP for snippet in [
         'const orderedTasks = useMemo(() => dependencyOrderedTasks(tasks, tasksById || {})',

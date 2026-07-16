@@ -5223,21 +5223,22 @@ function GlobalRightSidebar({ chain, projectId = '', workspace, hasWorkspace = f
       data-debug-id={tab === 'diffs' ? 'global-right-sidebar-diffs-tab' : 'global-right-sidebar-artifacts-tab'}
       aria-pressed={activeTab === tab}
       onClick={() => onTabChange?.(tab)}
-      className={`rounded-full px-3 py-1.5 text-xs font-medium transition ${activeTab === tab ? 'bg-sky-400 text-black' : 'border border-white/10 bg-[#141414] text-zinc-300 hover:bg-white/10'}`}
+      className={`flex-1 rounded-lg px-3 py-1.5 text-xs font-medium transition ${activeTab === tab ? 'bg-white/[0.08] text-zinc-100 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.10)]' : 'text-zinc-400 hover:text-zinc-200'}`}
     >
       {label}
     </button>
   );
   return (
-    <aside data-debug-id="global-right-sidebar" className="min-h-0 overflow-y-auto border-l border-[#262626] bg-[#0f0f0f] p-4">
-      <div className="mb-3 flex items-start justify-between gap-3">
+    <aside data-debug-id="global-right-sidebar" className="min-h-0 overflow-y-auto border-l border-[#262626] bg-[#0d0d0d] p-4">
+      <div className="mb-4 flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="text-[14px] font-semibold text-zinc-100">Evidence</h2>
-          <p className="mt-1 truncate text-[11.5px] text-zinc-500">Diffs and artifacts for {chain?.title || chainId || 'this context'}.</p>
+          <div className="text-[10.5px] font-semibold uppercase tracking-[0.2em] text-zinc-500">Evidence</div>
+          <h2 className="mt-1 truncate text-[15px] font-semibold text-zinc-100">{chain?.title || chainId || 'This context'}</h2>
+          <p className="mt-0.5 truncate text-[11.5px] text-zinc-500">Workspace diffs &amp; project artifacts</p>
         </div>
-        <button type="button" data-debug-id="global-right-sidebar-close-btn" onClick={onClose} className="grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-[#141414] text-sm text-zinc-400 hover:text-zinc-100" title="Close evidence sidebar" aria-label="Close evidence sidebar">×</button>
+        <button type="button" data-debug-id="global-right-sidebar-close-btn" onClick={onClose} className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-white/10 bg-[#141414] text-sm text-zinc-400 hover:text-zinc-100" title="Close evidence sidebar" aria-label="Close evidence sidebar">×</button>
       </div>
-      <div className="mb-4 flex flex-wrap gap-2">
+      <div data-debug-id="global-right-sidebar-tabs" className="mb-4 flex gap-1 rounded-xl border border-white/[0.06] bg-black/30 p-1">
         {tabButton('diffs', 'Diffs')}
         {tabButton('artifacts', 'Artifacts')}
       </div>
@@ -5263,8 +5264,8 @@ function GlobalRightSidebar({ chain, projectId = '', workspace, hasWorkspace = f
         </section>
       ) : (
         <section data-debug-id="global-right-sidebar-artifact-list" className="space-y-3">
-          <div className="rounded-2xl border border-white/10 bg-black/20 p-3 text-xs text-zinc-400">
-            Browse project artifacts here. Open an artifact to use the existing annotation-capable viewer.
+          <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] px-3 py-2.5 text-[11.5px] leading-relaxed text-zinc-500">
+            Project artifacts for this chain. Open any artifact to read, annotate, and download it in the full viewer.
           </div>
           <ChainArtifactsPanel daemonUrl={daemonUrl} clientToken={clientToken} projectId={projectId} chainId={chainId} />
         </section>

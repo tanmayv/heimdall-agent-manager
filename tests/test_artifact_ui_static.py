@@ -144,7 +144,11 @@ checks = [
         'global-right-sidebar-artifacts-tab',
         'data-debug-id="global-right-sidebar-artifact-list"',
         '<ChainArtifactsPanel daemonUrl={daemonUrl} clientToken={clientToken} projectId={projectId} chainId={chainId} />',
-        'Open an artifact to use the existing annotation-capable viewer.',
+        'Open any artifact to read, annotate, and download it in the full viewer.',
+    ])),
+    ('evidence sidebar uses a segmented tab control and refined header', all(snippet in APP for snippet in [
+        'data-debug-id="global-right-sidebar-tabs"',
+        'Workspace diffs &amp; project artifacts',
     ])),
     ('artifacts panel uses project-scoped list api and viewer', all(snippet in PANEL for snippet in [
         'data-debug-id="chain-artifacts-panel"',
@@ -182,6 +186,8 @@ checks = [
     ])),
     ('artifact viewer core debug ids present', all(snippet in VIEWER for snippet in [
         'data-debug-id="artifact-viewer"',
+        'data-debug-id="artifact-viewer-breadcrumb"',
+        'data-debug-id="artifact-viewer-meta-strip"',
         'data-debug-id="artifact-viewer-download-btn"',
         'data-debug-id="artifact-viewer-close-btn"',
         'data-debug-id="artifact-viewer-markdown-preview"',

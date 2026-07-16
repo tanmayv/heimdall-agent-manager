@@ -629,16 +629,21 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
   }
 
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/70 p-4" onClick={onClose}>
-      <div data-debug-id="artifact-viewer" className="flex max-h-[90vh] w-full max-w-6xl flex-col overflow-hidden rounded-3xl border border-white/10 bg-[#0d0f14] shadow-2xl" onClick={(event) => event.stopPropagation()}>
-        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/10 px-5 py-4">
+    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm" onClick={onClose}>
+      <div data-debug-id="artifact-viewer" className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-[22px] border border-white/10 bg-[#0b0d12] shadow-[0_40px_120px_rgba(0,0,0,0.55)]" onClick={(event) => event.stopPropagation()}>
+        <div data-debug-id="artifact-viewer-breadcrumb" className="flex items-center gap-2 border-b border-white/[0.06] bg-[#0d0f14]/80 px-5 py-2.5 text-[12px] text-zinc-500">
+          <span className="text-zinc-400">Artifact</span>
+          <span className="text-zinc-700">/</span>
+          <span className="truncate text-zinc-200">{title}</span>
+        </div>
+        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/10 px-5 pb-4 pt-4">
           <div className="min-w-0">
-            <div className="truncate text-lg font-semibold text-zinc-100">{title}</div>
-            <div className="mt-1 flex flex-wrap gap-2 text-xs text-zinc-400">
-              <span>{meta?.kind || 'artifact'}</span>
-              {meta?.mime && <span>{meta.mime}</span>}
-              {meta?.size_bytes != null && <span>{formatBytes(Number(meta.size_bytes))}</span>}
-              {(meta?.link || artifactId) && <span className="font-mono">{meta?.link || `artifact://${artifactId}`}</span>}
+            <div className="truncate text-xl font-semibold tracking-[-0.01em] text-zinc-100">{title}</div>
+            <div data-debug-id="artifact-viewer-meta-strip" className="mt-2 flex flex-wrap items-center gap-2 text-[11.5px] text-zinc-400">
+              <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-0.5 uppercase tracking-wide text-zinc-300">{meta?.kind || 'artifact'}</span>
+              {meta?.mime && <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-0.5">{meta.mime}</span>}
+              {meta?.size_bytes != null && <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-0.5">{formatBytes(Number(meta.size_bytes))}</span>}
+              {(meta?.link || artifactId) && <span className="max-w-full truncate rounded-full border border-white/10 bg-black/20 px-2.5 py-0.5 font-mono">{meta?.link || `artifact://${artifactId}`}</span>}
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
