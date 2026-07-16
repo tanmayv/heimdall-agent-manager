@@ -1120,6 +1120,28 @@ export default function App() {
     updateUrlParams({ view: 'new-conversation', agentId: null, chainId: null, taskId: null, memoryId: null, projectId: selectedProjectId || projects[0]?.projectId || null });
   }, [newConversationBusy, projects, selectedProjectId]);
 
+  const startEmptyConversation = useCallback(async ({ projectId, provider, modelTier }: { projectId?: string; provider?: string; modelTier?: string } = {}) => {
+    if (newConversationBusy) return '';
+    setNewConversationBusy(true);
+    try {
+      const requestedId = createConversationInstanceId();
+      const effectiveProvider = provider || defaultConversationProvider(settingsProviders);
+      await daemonApi.createAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, displayName: '', providerProfile: effectiveProvider, templateId: 'conversation', projectId: projectId || '', modelTier: modelTier || 'smart', agentRole: 'conversation' }).catch((err: any) => {
+        const message = String(err?.message || err || '').toLowerCase();
+        if (!message.includes('already') && !message.includes('exists')) throw err;
+      });
+      const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, provider: effectiveProvider, templateId: 'conversation', projectId: projectId || '', displayName: '', modelTier: modelTier || 'smart', agentRole: 'conversation' });
+      const resolvedId = result?.agent_instance_id || result?.agentInstanceId || requestedId;
+      setAgentPageId(resolvedId);
+      updateUrlParams({ view: 'agent', agentId: resolvedId, chainId: null, taskId: null, memoryId: null, projectId: projectId || null });
+      await dispatch(refreshAgents()).unwrap().catch(() => undefined);
+      dispatch(fetchSelectedChat({ agentId: resolvedId })).catch(() => undefined);
+      return resolvedId;
+    } finally {
+      setNewConversationBusy(false);
+    }
+  }, [dispatch, newConversationBusy, session?.daemonUrl, settingsProviders]);
+
   const startFirstMessageConversation = useCallback(async ({ body, projectId, provider, modelTier }: { body: string; projectId: string; provider: string; modelTier: string }) => {
     setNewConversationBusy(true);
     try {
@@ -1536,6 +1558,11 @@ export default function App() {
               openChain={openChain}
               openMemory={() => selectSurfaceWithUrl('memory')}
               newChain={(projectId?: string) => dispatch(openNewChainModal({ projectId: projectId || selectedProjectId }))}
+              onCreateAgent={() => selectSurfaceWithUrl('agents')}
+              onCreateConversation={() => startEmptyConversation({ projectId: activeProject?.projectId || selectedProjectId || '' })}
+              onCreateProject={() => setNewProjectModalOpen(true)}
+              onPromptConversation={(body: string) => startFirstMessageConversation({ body, projectId: activeProject?.projectId || selectedProjectId || '', provider: defaultConversationProvider(settingsProviders), modelTier: 'smart' })}
+              conversationBusy={newConversationBusy}
             />
           )}
         </main>
@@ -3360,8 +3387,10 @@ function chainSearchName(chain: any) {
   return normalizeChainSearchText(chain?.title || chain?.name || chain?.chainId || '');
 }
 
-function HomePage({ groups, activeProject, loading, chainTaskIds, tasksById, home, totalMemoryRecords, pendingMemoryIds, openChain, openMemory, newChain }: any) {
+function HomePage({ groups, activeProject, loading, chainTaskIds, tasksById, home, totalMemoryRecords, pendingMemoryIds, openChain, openMemory, newChain, onCreateAgent, onCreateConversation, onCreateProject, onPromptConversation, conversationBusy }: any) {
   const [chainSearch, setChainSearch] = useState('');
+  const [homePrompt, setHomePrompt] = useState('');
+  const [homePromptError, setHomePromptError] = useState('');
   const query = normalizeChainSearchText(chainSearch);
   const filteredGroups = useMemo(() => {
     if (!query) return groups;
@@ -3372,73 +3401,178 @@ function HomePage({ groups, activeProject, loading, chainTaskIds, tasksById, hom
   }, [groups, query, chainTaskIds, tasksById]);
   const totalChains = useMemo(() => (groups || []).reduce((sum: number, group: any) => sum + (group.chains?.length || 0), 0), [groups]);
   const visibleChains = useMemo(() => (filteredGroups || []).reduce((sum: number, group: any) => sum + (group.chains?.length || 0), 0), [filteredGroups]);
+  const projectId = activeProject?.projectId || activeProject?.project_id || '';
+  const projectName = activeProject?.name || projectId || 'No project';
+
+  const submitHomePrompt = async () => {
+    const body = homePrompt.trim();
+    if (!body || conversationBusy) return;
+    setHomePromptError('');
+    try {
+      await onPromptConversation?.(body);
+      setHomePrompt('');
+    } catch (err: any) {
+      setHomePromptError(`Unable to start a conversation. ${String(err?.message || err || 'Try again.')}`);
+    }
+  };
+
+  const startEmptyHomeConversation = async () => {
+    if (conversationBusy) return;
+    setHomePromptError('');
+    try {
+      await onCreateConversation?.();
+    } catch (err: any) {
+      setHomePromptError(`Unable to create a conversation. ${String(err?.message || err || 'Try again.')}`);
+    }
+  };
+
+  const actionCards = [
+    { id: 'agent', label: 'Create Agent', icon: '◎', detail: 'Define a durable agent identity, then launch concrete instances when you need focused help.', debugId: 'home-create-agent-btn', onClick: () => onCreateAgent?.() },
+    { id: 'conversation', label: 'Create Conversation', icon: '✦', detail: 'Immediately start a fresh conversation@s-… thread and open it, even before you type a prompt.', debugId: 'home-create-conversation-btn', onClick: startEmptyHomeConversation },
+    { id: 'task-chain', label: 'Create Task Chain', icon: '▦', detail: 'Start a coordinator-led multi-agent workflow with tasks, review gates, and evidence.', debugId: 'home-create-task-chain-btn', onClick: () => newChain(projectId) },
+    { id: 'project', label: 'Create Project', icon: '▣', detail: 'Organize conversations, agents, chains, workspaces, artifacts, and memories by project.', debugId: 'home-create-project-btn', onClick: () => onCreateProject?.() },
+  ];
 
   return (
-    <div className="mx-auto max-w-6xl px-8 py-8">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <div className="text-xs uppercase tracking-[0.25em] text-zinc-500">Home</div>
-          <h1 className="mt-2 text-4xl font-semibold">Task chains</h1>
-          <p className="mt-2 max-w-2xl text-sm text-zinc-400">Create and open all team task chains across projects. Search by task-chain name.</p>
-        </div>
-        <button data-debug-id="home-new-chain-btn" onClick={() => newChain(activeProject?.projectId)} className="rounded-2xl bg-sky-400 px-5 py-3 font-semibold text-black hover:bg-sky-300">+ New chain</button>
-      </div>
-      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(320px,0.8fr)]">
-        <button data-debug-id="home-open-memory-btn" onClick={openMemory} className="rounded-3xl border border-sky-400/20 bg-sky-400/10 p-5 text-left transition hover:border-sky-300/40 hover:bg-sky-400/15">
-          <div className="text-xs uppercase tracking-[0.22em] text-sky-200">Memory Management</div>
-          <div className="mt-2 text-xl font-semibold text-zinc-100">Open memory browser, detail view, proposal forms, and review queue</div>
-          <div className="mt-3 flex flex-wrap gap-2 text-xs text-zinc-300">
-            <span data-debug-id="home-memory-total" className="rounded-full bg-black/20 px-3 py-1">{totalMemoryRecords} loaded</span>
-            <span data-debug-id="home-memory-pending" className="rounded-full bg-black/20 px-3 py-1">{pendingMemoryIds} pending</span>
-          </div>
-        </button>
-      </div>
-      <div className="mt-6 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-        <label htmlFor="home-chain-search-input" className="mb-2 block text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">Search task chains</label>
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-          <input
-            id="home-chain-search-input"
-            data-debug-id="home-chain-search-input"
-            value={chainSearch}
-            onChange={(event) => setChainSearch(event.target.value)}
-            placeholder="Search task-chain name"
-            className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-sky-400"
-          />
-          <div data-debug-id="home-chain-search-count" className="text-xs text-zinc-500">{visibleChains} of {totalChains} chains</div>
-        </div>
-      </div>
-      <div className="mt-8 space-y-8">
-        {loading && <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-400">Loading chains…</div>}
-        {!loading && filteredGroups.length === 0 && (
-          <div data-debug-id="home-chain-search-empty" className="rounded-2xl border border-dashed border-white/10 p-5 text-sm text-zinc-500">No task chains match “{chainSearch}”.</div>
-        )}
-        {filteredGroups.map((group: any) => (
-          <section key={group.project.projectId}>
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-lg font-semibold">{group.project.name || group.project.projectId}</h2>
-              <button data-debug-id={`home-project-new-chain-btn-${group.project.projectId}`} onClick={() => newChain(group.project.projectId)} className="text-sm text-sky-300 hover:text-sky-100">+ New chain</button>
-            </div>
-            <div className="grid gap-3">
-              {group.chains.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-white/10 p-5 text-sm text-zinc-500">No chains yet for this project.</div>
-              ) : group.chains.map((chain: Chain) => (
-                <div key={chain.chainId} data-debug-id={`home-chain-row-${chain.chainId}`} className="rounded-2xl border border-white/10 bg-white/[0.035] p-4 shadow-2xl shadow-black/10">
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2">
-                        <h3 className="truncate text-lg font-semibold">{chain.title || chain.chainId}</h3>
-                        <span className={`rounded-full border px-2 py-0.5 text-[11px] ${statusTone(chain.status)}`}>{chain.status}</span>
-                      </div>
-                      <div className="mt-1 text-xs text-zinc-500">Project: {group.project.name || group.project.projectId} · Coordinator: {chain.coordinatorAgentInstanceId || '—'}</div>
-                      <div className="mt-2 text-sm text-zinc-400">{chainMeta(chain.chainId, chainTaskIds, tasksById)}</div>
-                    </div>
-                    <button data-debug-id={`home-chain-open-btn-${chain.chainId}`} onClick={() => openChain(chain.chainId)} className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-zinc-200">Open</button>
+    <div data-debug-id="home-getting-started-page" className="min-h-full bg-[#090909] text-zinc-100">
+      <div className="mx-auto max-w-7xl px-8 py-9">
+        <section data-debug-id="home-getting-started-hero" className="rounded-[32px] border border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(56,189,248,0.18),transparent_34%),linear-gradient(135deg,rgba(255,255,255,0.08),rgba(255,255,255,0.025))] p-8 shadow-2xl shadow-black/30 md:p-10">
+          <div className="grid gap-8 lg:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)] lg:items-end">
+            <div>
+              <div className="text-xs uppercase tracking-[0.28em] text-sky-200/80">Getting started</div>
+              <h1 data-debug-id="home-getting-started-title" className="mt-4 max-w-4xl text-5xl font-semibold tracking-[-0.055em] text-zinc-50 md:text-6xl">Heimdall is your local multi-agent workbench.</h1>
+              <p data-debug-id="home-getting-started-subtitle" className="mt-5 max-w-3xl text-lg leading-8 text-zinc-300">Create focused agents, open ChatGPT-style conversation threads, coordinate task chains with review, and keep every project&apos;s context, artifacts, memory, and workspace evidence in one durable local daemon.</p>
+              <div data-debug-id="home-getting-started-feature-grid" className="mt-7 grid gap-3 sm:grid-cols-2">
+                {[['Conversations', 'Fast, durable chat threads powered by normal conversation agents.'], ['Agents', 'Reusable identities with provider, tier, memory, skills, and many live instances.'], ['Task chains', 'Coordinator-led plans, assignment, review, dependencies, and validation evidence.'], ['Projects', 'Group chats, chains, artifacts, VCS workspaces, and settings by product area.']].map(([title, detail]) => (
+                  <div key={title} className="rounded-2xl border border-white/10 bg-black/20 p-4">
+                    <div className="text-sm font-semibold text-zinc-100">{title}</div>
+                    <div className="mt-1 text-sm leading-6 text-zinc-500">{detail}</div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
-          </section>
-        ))}
+            <div data-debug-id="home-prompt-card" className="rounded-[26px] border border-white/10 bg-[#101010]/90 p-4 shadow-2xl shadow-black/25">
+              <div className="mb-3 flex items-center justify-between gap-3 px-1">
+                <div>
+                  <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Start with a prompt</div>
+                  <div className="mt-1 text-sm text-zinc-300">New conversation in <span data-debug-id="home-active-project-label" className="text-zinc-100">{projectName}</span></div>
+                </div>
+                <span className="rounded-full border border-sky-400/30 bg-sky-400/10 px-2.5 py-1 text-xs text-sky-100">conversation@s-…</span>
+              </div>
+              <div data-debug-id="home-prompt-composer-shell" className="rounded-[18px] border border-white/10 bg-[#141414] p-0 focus-within:border-white/35">
+                <textarea
+                  data-debug-id="home-prompt-input"
+                  value={homePrompt}
+                  onChange={(event) => { setHomePrompt(event.target.value); setHomePromptError(''); }}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'Enter' || !(event.metaKey || event.ctrlKey)) return;
+                    event.preventDefault();
+                    void submitHomePrompt();
+                  }}
+                  placeholder="Ask Heimdall to explain code, plan a change, or investigate an issue…"
+                  rows={5}
+                  className="min-h-[132px] w-full resize-none bg-transparent px-4 py-4 text-[15px] leading-7 text-zinc-100 outline-none placeholder:text-zinc-600"
+                />
+                {homePromptError && <div data-debug-id="home-prompt-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{homePromptError}</div>}
+                {conversationBusy && <div data-debug-id="home-conversation-progress" className="mx-3 mb-2 rounded-xl border border-sky-400/30 bg-sky-400/10 px-3 py-2 text-xs text-sky-100">Starting a new <code>conversation@s-…</code> thread…</div>}
+                <div className="flex items-center justify-between gap-3 border-t border-white/5 px-3 py-2">
+                  <span className="text-[11.5px] text-zinc-500">⌘↵ to start and send · creates a unique conversation instance</span>
+                  <button data-debug-id="home-prompt-submit-btn" type="button" aria-label="Start conversation with prompt" title={conversationBusy ? 'Starting…' : 'Start conversation'} onClick={() => { void submitHomePrompt(); }} disabled={conversationBusy || !homePrompt.trim()} className="inline-flex h-9 items-center justify-center rounded-full bg-zinc-100 px-4 text-sm font-semibold text-black hover:bg-white disabled:cursor-not-allowed disabled:bg-white/10 disabled:text-zinc-500">Start →</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section data-debug-id="home-action-grid" className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          {actionCards.map((card) => (
+            <button key={card.id} data-debug-id={card.debugId} type="button" onClick={card.onClick} disabled={card.id === 'conversation' && conversationBusy} className="group rounded-[24px] border border-white/10 bg-[#101010] p-5 text-left transition hover:-translate-y-0.5 hover:border-sky-400/40 hover:bg-[#151515] disabled:cursor-not-allowed disabled:opacity-60">
+              <div className="flex items-start justify-between gap-4">
+                <span className="grid h-11 w-11 place-items-center rounded-2xl border border-white/10 bg-white/5 text-xl text-zinc-200 group-hover:border-sky-400/30 group-hover:text-sky-100">{card.icon}</span>
+                <span className="text-zinc-600 group-hover:text-sky-300">→</span>
+              </div>
+              <div className="mt-5 text-xl font-semibold text-zinc-100">{card.label}</div>
+              <div className="mt-2 text-sm leading-6 text-zinc-500">{card.detail}</div>
+            </button>
+          ))}
+        </section>
+
+        <section data-debug-id="home-feature-overview" className="mt-8 grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+          <div className="rounded-[26px] border border-white/10 bg-white/[0.035] p-6">
+            <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">How to use Heimdall</div>
+            <div className="mt-4 grid gap-4 md:grid-cols-3">
+              <div><div className="text-base font-semibold text-zinc-100">1. Chat first</div><p className="mt-2 text-sm leading-6 text-zinc-500">Use the prompt above or Create Conversation for quick questions, planning, and context gathering.</p></div>
+              <div><div className="text-base font-semibold text-zinc-100">2. Promote work</div><p className="mt-2 text-sm leading-6 text-zinc-500">When work needs coordination, create a task chain so agents can implement, review, test, and record evidence.</p></div>
+              <div><div className="text-base font-semibold text-zinc-100">3. Keep context</div><p className="mt-2 text-sm leading-6 text-zinc-500">Projects and memories keep durable context while exact instances preserve each thread&apos;s chat history.</p></div>
+            </div>
+          </div>
+          <button data-debug-id="home-open-memory-btn" onClick={openMemory} className="rounded-[26px] border border-sky-400/20 bg-sky-400/10 p-6 text-left transition hover:border-sky-300/40 hover:bg-sky-400/15">
+            <div className="text-xs uppercase tracking-[0.22em] text-sky-200">Memory Management</div>
+            <div className="mt-2 text-xl font-semibold text-zinc-100">Open memory browser and review queue</div>
+            <div className="mt-3 flex flex-wrap gap-2 text-xs text-zinc-300">
+              <span data-debug-id="home-memory-total" className="rounded-full bg-black/20 px-3 py-1">{totalMemoryRecords} loaded</span>
+              <span data-debug-id="home-memory-pending" className="rounded-full bg-black/20 px-3 py-1">{pendingMemoryIds} pending</span>
+            </div>
+          </button>
+        </section>
+
+        <section data-debug-id="home-recent-task-chains" className="mt-9">
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <div className="text-xs uppercase tracking-[0.25em] text-zinc-500">Task chains</div>
+              <h2 className="mt-2 text-3xl font-semibold tracking-[-0.04em] text-zinc-100">Recent work by project</h2>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-500">Open existing team workflows or create another chain for the active project.</p>
+            </div>
+            <button data-debug-id="home-new-chain-btn" onClick={() => newChain(projectId)} className="rounded-2xl bg-sky-400 px-5 py-3 font-semibold text-black hover:bg-sky-300">+ New chain</button>
+          </div>
+          <div className="mt-5 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+            <label htmlFor="home-chain-search-input" className="mb-2 block text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">Search task chains</label>
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <input
+                id="home-chain-search-input"
+                data-debug-id="home-chain-search-input"
+                value={chainSearch}
+                onChange={(event) => setChainSearch(event.target.value)}
+                placeholder="Search task-chain name"
+                className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-sky-400"
+              />
+              <div data-debug-id="home-chain-search-count" className="text-xs text-zinc-500">{visibleChains} of {totalChains} chains</div>
+            </div>
+          </div>
+          <div className="mt-6 space-y-8">
+            {loading && <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm text-zinc-400">Loading chains…</div>}
+            {!loading && filteredGroups.length === 0 && (
+              <div data-debug-id="home-chain-search-empty" className="rounded-2xl border border-dashed border-white/10 p-5 text-sm text-zinc-500">No task chains match “{chainSearch}”.</div>
+            )}
+            {filteredGroups.map((group: any) => (
+              <section key={group.project.projectId}>
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-lg font-semibold">{group.project.name || group.project.projectId}</h3>
+                  <button data-debug-id={`home-project-new-chain-btn-${group.project.projectId}`} onClick={() => newChain(group.project.projectId)} className="text-sm text-sky-300 hover:text-sky-100">+ New chain</button>
+                </div>
+                <div className="grid gap-3">
+                  {group.chains.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-white/10 p-5 text-sm text-zinc-500">No chains yet for this project.</div>
+                  ) : group.chains.map((chain: Chain) => (
+                    <div key={chain.chainId} data-debug-id={`home-chain-row-${chain.chainId}`} className="rounded-2xl border border-white/10 bg-white/[0.035] p-4 shadow-2xl shadow-black/10">
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <h3 className="truncate text-lg font-semibold">{chain.title || chain.chainId}</h3>
+                            <span className={`rounded-full border px-2 py-0.5 text-[11px] ${statusTone(chain.status)}`}>{chain.status}</span>
+                          </div>
+                          <div className="mt-1 text-xs text-zinc-500">Project: {group.project.name || group.project.projectId} · Coordinator: {chain.coordinatorAgentInstanceId || '—'}</div>
+                          <div className="mt-2 text-sm text-zinc-400">{chainMeta(chain.chainId, chainTaskIds, tasksById)}</div>
+                        </div>
+                        <button data-debug-id={`home-chain-open-btn-${chain.chainId}`} onClick={() => openChain(chain.chainId)} className="rounded-xl bg-white px-4 py-2 text-sm font-medium text-black hover:bg-zinc-200">Open</button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+        </section>
       </div>
     </div>
   );
