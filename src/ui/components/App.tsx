@@ -2038,30 +2038,9 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryByI
         <button data-debug-id="nav-settings-btn" onClick={onSettings} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">⚙</span> Settings</button>
       </nav>
       <div className="min-h-0 flex-1 overflow-y-auto px-2">
-        <SidebarConversationSection
-          conversations={conversations}
-          chats={chats}
-          summaryById={summaryById}
-          projectsById={projectsById}
-          selectedAgentId={selectedAgentId}
-          onOpenConversation={onOpenConversation}
-          onNewConversation={null}
-          newConversationBusy={newConversationBusy}
-          compact
-          onFetchAgentPage={onFetchAgentPage}
-        />
-        <SidebarDurableAgentsSection
-          groups={agentGroups}
-          onFetchAgentPage={onFetchAgentPage}
-          selectedAgentId={selectedSidebarAgentId}
-          launchingAgentId={sidebarAgentLaunchingId}
-          onSelectAgent={onSelectSidebarAgent}
-          onOpenInstance={onOpenAgentInstance}
-          onStartAgent={onStartAgentInstance}
-        />
-        <div data-debug-id="conversation-active-chains" className="mt-2">
+        <div data-debug-id="conversation-active-chains" className="mb-4 mt-1">
           <button data-debug-id="sidebar-new-chain-btn" onClick={() => onNewChain?.()} className="mb-2 flex w-full items-center justify-center gap-1 rounded-md bg-[#141414] px-2 py-2 text-[12px] font-medium text-zinc-200 transition hover:bg-[#1c1c1c] hover:text-zinc-100"><span className="text-sm leading-none">+</span> New task chain</button>
-          <div className="px-2 pb-1 pt-3 text-[10.5px] uppercase tracking-[0.18em] text-zinc-500">Active task chains</div>
+          <div className="px-2 pb-1 pt-1 text-[10.5px] uppercase tracking-[0.18em] text-zinc-500">Active task chains</div>
           {activeChains.length === 0 ? <div className="px-2 py-2 text-xs text-zinc-600">No active task chains</div> : activeChains.map((chain: any) => {
             const project = projects?.[chainProjectId(chain)];
             const accent = chainStatusAccent(chain.status);
@@ -2083,6 +2062,27 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryByI
             );
           })}
         </div>
+        <SidebarConversationSection
+          conversations={conversations}
+          chats={chats}
+          summaryById={summaryById}
+          projectsById={projectsById}
+          selectedAgentId={selectedAgentId}
+          onOpenConversation={onOpenConversation}
+          onNewConversation={null}
+          newConversationBusy={newConversationBusy}
+          compact
+          onFetchAgentPage={onFetchAgentPage}
+        />
+        <SidebarDurableAgentsSection
+          groups={agentGroups}
+          onFetchAgentPage={onFetchAgentPage}
+          selectedAgentId={selectedSidebarAgentId}
+          launchingAgentId={sidebarAgentLaunchingId}
+          onSelectAgent={onSelectSidebarAgent}
+          onOpenInstance={onOpenAgentInstance}
+          onStartAgent={onStartAgentInstance}
+        />
       </div>
       <div className="border-t border-[#262626] px-3 py-3 text-[11px] text-zinc-700">
         Single active daemon · global shell

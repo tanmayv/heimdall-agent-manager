@@ -561,27 +561,67 @@ task_notification_agent_json :: proc(event: Task_Event, status: string) -> strin
 }
 
 task_notification_json :: proc(event: Task_Event, status: string) -> string {
-	b := strings.builder_make()
-	task_notification_write_base_json(&b, event, status)
-
-	// Augment with full task payload if task_id is present
+	task_state: Task_State
+	has_task: bool
 	if event.task_id != "" {
-		if state, found := store_get_task_in_chain(event.task_id, event.chain_id); found {
-			strings.write_string(&b, `,"task":`)
-			task_write_state_json(&b, state)
-		}
+		task_state, has_task = store_get_task_in_chain(event.task_id, event.chain_id)
 	}
 
-	// Augment with full task chain payload if chain_id is present
+	chain_state: Task_Chain_State
+	has_chain: bool
 	if event.chain_id != "" {
-		if chain, found := store_get_chain(event.chain_id); found {
-			strings.write_string(&b, `,"chain":`)
-			task_write_chain_json(&b, chain)
-		}
+		chain_state, has_chain = store_get_chain(event.chain_id)
 	}
 
-	strings.write_string(&b, `}`)
-	return strings.to_string(b)
+	// Tier 1: task + chain inline
+	b1 := strings.builder_make()
+	task_notification_write_base_json(&b1, event, status)
+	if has_task {
+		strings.write_string(&b1, `,"task":`)
+		task_write_state_json(&b1, task_state)
+	}
+	if has_chain {
+		strings.write_string(&b1, `,"chain":`)
+		task_write_chain_json(&b1, chain_state)
+	}
+	strings.write_string(&b1, `}`)
+	p1 := strings.to_string(b1)
+	if len(p1) <= WS_INLINE_PAYLOAD_LIMIT do return p1
+	delete(p1)
+
+	// Tier 2: task inline, chain fetch-required
+	if has_task {
+		b2 := strings.builder_make()
+		task_notification_write_base_json(&b2, event, status)
+		strings.write_string(&b2, `,"task":`)
+		task_write_state_json(&b2, task_state)
+		if has_chain {
+			strings.write_string(&b2, `,"chain_fetch_required":true,"fetch_chain_id":"`)
+			json_write_string(&b2, event.chain_id)
+			strings.write_string(&b2, `"`)
+		}
+		strings.write_string(&b2, `}`)
+		p2 := strings.to_string(b2)
+		if len(p2) <= WS_INLINE_PAYLOAD_LIMIT do return p2
+		delete(p2)
+	}
+
+	// Tier 3: compact fetch_required (unchanged)
+	fallback := strings.builder_make()
+	task_notification_write_base_json(&fallback, event, status)
+	strings.write_string(&fallback, `,"fetch_required":true,"fetch_kind":"task"`)
+	if event.task_id != "" {
+		strings.write_string(&fallback, `,"fetch_task_id":"`)
+		json_write_string(&fallback, event.task_id)
+		strings.write_string(&fallback, `"`)
+	}
+	if event.chain_id != "" {
+		strings.write_string(&fallback, `,"fetch_chain_id":"`)
+		json_write_string(&fallback, event.chain_id)
+		strings.write_string(&fallback, `"`)
+	}
+	strings.write_string(&fallback, `}`)
+	return strings.to_string(fallback)
 }
 
 task_notification_summary :: proc(event: Task_Event) -> string {

@@ -206,6 +206,13 @@ function handleTaskEvent(dispatch: any, payload: any) {
     dispatch(heimdallApi.util.invalidateTags([{ type: 'TaskLog', id: taskId }]));
   }
 
+  if (payload.chain_fetch_required && chainId) {
+    dispatch(heimdallApi.util.invalidateTags([
+      { type: 'Chain', id: chainId },
+      { type: 'ChainTasks', id: chainId },
+    ]));
+  }
+
   if (taskId) {
     const eventRecord = normalizeTaskLogEvent(payload);
     const patchLog = (args: { taskId: string; limit?: number }) => {
