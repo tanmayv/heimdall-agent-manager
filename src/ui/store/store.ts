@@ -1,4 +1,7 @@
 import { configureStore } from '@reduxjs/toolkit';
+import { heimdallApi, setupHeimdallApiListeners } from '../api/heimdallApi';
+import '../api/endpoints/tasks';
+import '../api/endpoints/chats';
 import chatReducer from './chatSlice';
 import taskReducer from './taskSlice';
 import memoryReducer from './memorySlice';
@@ -25,7 +28,10 @@ export const store = configureStore({
     chainView: chainViewReducer,
     attention: attentionReducer,
     toasts: toastReducer,
+    [heimdallApi.reducerPath]: heimdallApi.reducer,
   },
   middleware: (getDefaultMiddleware) =>
-    getDefaultMiddleware().concat(actionLogger),
+    getDefaultMiddleware().concat(actionLogger, heimdallApi.middleware),
 });
+
+setupHeimdallApiListeners(store.dispatch);

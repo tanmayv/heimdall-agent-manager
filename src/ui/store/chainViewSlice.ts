@@ -1,5 +1,6 @@
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
 import * as daemonApi from '../api/daemonApi';
+import { chatEndpoints } from '../api/endpoints/chats';
 
 const OPTIMISTIC_MESSAGE_GRACE_MS = 30_000;
 
@@ -19,7 +20,7 @@ export const focusChainView = createAsyncThunk('chainView/focusChainView', async
   const [focus, workspace, chat, team] = await Promise.all([
     daemonApi.focusTaskChain({ ...session, chainId }).catch((err: any) => ({ ok: false, message: err?.message || 'focus failed' })),
     daemonApi.fetchWorkspace({ ...session, chainId }).catch(() => null),
-    (coordinator ? daemonApi.fetchChat({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, agentInstanceId: coordinator, chainId, limit: 50 }).catch(() => null) : Promise.resolve(null)),
+    (coordinator ? (dispatch as any)(chatEndpoints.endpoints.fetchCoordinatorChat.initiate({ chainId, coordinatorAgentInstanceId: coordinator, limit: 50 })).unwrap().catch(() => null) : Promise.resolve(null)),
     (teamId ? daemonApi.fetchTeam({ daemonUrl: session.daemonUrl, teamId }).catch(() => null) : Promise.resolve(null)),
   ]);
   return { chainId, focus, workspace, chat, team };
@@ -30,7 +31,7 @@ export const revalidateChainView = createAsyncThunk('chainView/revalidateChainVi
   return { chainId, at: Date.now() };
 });
 
-export const fetchChainCoordinatorChatPage = createAsyncThunk('chainView/fetchChainCoordinatorChatPage', async (payload: { chainId: string; cursor?: number; limit?: number }, { getState }) => {
+export const fetchChainCoordinatorChatPage = createAsyncThunk('chainView/fetchChainCoordinatorChatPage', async (payload: { chainId: string; cursor?: number; limit?: number }, { dispatch, getState }) => {
   const state = getState() as any;
   const session = auth(state);
   const chainId = payload.chainId || '';
@@ -38,15 +39,17 @@ export const fetchChainCoordinatorChatPage = createAsyncThunk('chainView/fetchCh
   const coordinator = chain?.coordinatorAgentInstanceId || chain?.coordinator_agent_instance_id || '';
   if (!chainId || !coordinator || !session.clientToken) return { chainId, messages: [], nextCursor: 0, isAppend: false };
   const cursor = Number(payload.cursor || 0);
-  const data = await daemonApi.fetchChat({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, agentInstanceId: coordinator, chainId, limit: payload.limit || 50, cursor });
-  return { chainId, messages: data?.messages || [], nextCursor: Number(data?.next_cursor || data?.nextCursor || 0), isAppend: cursor > 0 };
+  const data = cursor > 0
+    ? await (dispatch as any)(chatEndpoints.endpoints.fetchCoordinatorChatPage.initiate({ chainId, coordinatorAgentInstanceId: coordinator, cursor, limit: payload.limit || 50 })).unwrap()
+    : await (dispatch as any)(chatEndpoints.endpoints.fetchCoordinatorChat.initiate({ chainId, coordinatorAgentInstanceId: coordinator, limit: payload.limit || 50 })).unwrap();
+  return { chainId, messages: data?.messages || [], nextCursor: Number(data?.nextCursor || 0), isAppend: cursor > 0 };
 });
 
-export const sendCoordinatorMessage = createAsyncThunk('chainView/sendCoordinatorMessage', async (payload: { chainId: string; body: string; localId: string }, { getState }) => {
+export const sendCoordinatorMessage = createAsyncThunk('chainView/sendCoordinatorMessage', async (payload: { chainId: string; body: string; localId: string }, { dispatch, getState }) => {
   const state = getState() as any;
-  const session = auth(state);
-  const result = await daemonApi.sendToCoordinator({ ...session, chainId: payload.chainId, body: payload.body });
-  return { chainId: payload.chainId, localId: payload.localId, result };
+  const coordinatorAgentInstanceId = state.tasks.chainsById?.[payload.chainId]?.coordinatorAgentInstanceId || '';
+  const result = await (dispatch as any)(chatEndpoints.endpoints.sendCoordinatorMessage.initiate({ ...payload, coordinatorAgentInstanceId })).unwrap();
+  return { chainId: payload.chainId, localId: payload.localId, result: { message_id: result.messageId } };
 });
 
 export const fetchWorkspaceForChain = createAsyncThunk('chainView/fetchWorkspaceForChain', async (chainId: string, { getState }) => {
@@ -138,6 +141,22 @@ const chainViewSlice = createSlice({
       if (!state.optimisticMessagesByChainId[chainId]) state.optimisticMessagesByChainId[chainId] = [];
       state.optimisticMessagesByChainId[chainId].push({ id: action.payload?.localId || `local_${Date.now()}`, localId: action.payload?.localId || '', body, author: 'user', sending: true, createdUnixMs: Date.now() });
       state.lastLocalAction = `sendCoordinator:${chainId}`;
+    },
+    appendCoordinatorChatMessage(state: any, action) {
+      const { chainId, message } = action.payload || {};
+      if (!chainId || !message) return;
+      const existing = state.chatByChainId[chainId] || [];
+      const key = String(message.message_id || message.messageId || message.id || `${message.created_unix_ms || message.createdUnixMs || Date.now()}-${message.body || ''}`);
+      const byId = new Map<string, any>();
+      for (const entry of [...existing, message]) {
+        const entryKey = String(entry.message_id || entry.messageId || entry.id || `${entry.created_unix_ms || entry.createdUnixMs || Date.now()}-${entry.body || ''}`);
+        byId.set(entryKey, { ...(byId.get(entryKey) || {}), ...entry });
+      }
+      if (!byId.has(key)) {
+        byId.set(key, message);
+      }
+      state.chatByChainId[chainId] = Array.from(byId.values()).sort((left: any, right: any) => Number(left.created_unix_ms || left.createdUnixMs || 0) - Number(right.created_unix_ms || right.createdUnixMs || 0));
+      state.lastLocalAction = `wsChat:${chainId}`;
     },
     wsChainViewRefreshRequested(state: any, action) {
       state.lastWsRefreshReason = action.payload || 'ws';
@@ -255,6 +274,7 @@ export const {
   openAgentSideSheet,
   closeAgentSideSheet,
   optimisticCoordinatorMessage,
+  appendCoordinatorChatMessage,
   wsChainViewRefreshRequested,
 } = chainViewSlice.actions;
 

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Source regression checks for live chat WS fallback behavior in App.tsx."""
+"""Static regression checks for live chat WS fallback behavior in wsInvalidation."""
 
 from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "src" / "ui" / "components" / "App.tsx"
+WS = ROOT / "src" / "ui" / "api" / "wsInvalidation.ts"
 
 
 def require(condition: bool, message: str) -> None:
@@ -15,23 +16,22 @@ def require(condition: bool, message: str) -> None:
 
 
 def main() -> None:
-    src = APP.read_text(encoding="utf-8")
+    app = APP.read_text(encoding="utf-8")
+    ws = WS.read_text(encoding="utf-8")
 
     onopen_marker = "socket.onopen = () => {"
-    onopen_idx = src.find(onopen_marker)
+    onopen_idx = app.find(onopen_marker)
     require(onopen_idx >= 0, "socket.onopen handler not found")
-    onopen_block = src[onopen_idx:src.find("      };", onopen_idx) + len("      };")]
+    onopen_block = app[onopen_idx:app.find("      };", onopen_idx) + len("      };")]
     require("dispatch(refreshAgents());" in onopen_block, "onopen should still refresh agents")
-    require("selectedAgentRef.current" in onopen_block, "onopen should read selectedAgentRef")
-    require("dispatch(fetchSelectedChat({ agentId: selected }));" in onopen_block, "onopen should refresh selected chat")
+    require("dispatch(fetchSelectedChat({ agentId: selected }));" not in onopen_block, "onopen should not refresh selected chat directly anymore")
 
-    chat_marker = "if (payload?.type === 'chat_event') {"
-    chat_idx = src.find(chat_marker)
-    require(chat_idx >= 0, "chat_event handler not found")
-    chat_block = src[chat_idx:src.find("      };", chat_idx) + len("      };")]
-    require("dispatch(chatEventReceived(payload));" in chat_block, "chat_event should update unread/session metadata")
-    require("payload.message" in chat_block and "dispatch(appendMessage" in chat_block, "embedded message path should append")
-    require("dispatch(fetchSelectedChat({ agentId: selectedDirectAgent }));" in chat_block, "message-less chat_event should fetch chat")
+    require("dispatch(fetchSelectedChat({ agentId: selectedAgentId }));" not in ws, "message-less direct chat WS path should not explicitly fetch")
+    require("dispatch(fetchGuideChat());" not in ws, "message-less guide WS path should not explicitly fetch")
+    require("dispatch(appendMessage({ agentId, message: payload.message }));" in ws, "embedded direct chat messages should append locally")
+    require("dispatch(appendMessage({ agentId: GUIDE_AGENT_ID, message: payload.message }));" in ws, "embedded guide messages should append locally")
+    require("dispatch(chatEndpoints.util.updateQueryData('fetchDirectChat'" in ws, "record-bearing direct chat events should patch RTKQ cache")
+    require("dispatch(chatEndpoints.util.updateQueryData('fetchGuideChat'" in ws, "record-bearing guide events should patch RTKQ cache")
 
     print("UI LIVE CHAT WS FALLBACK TEST PASSED")
 

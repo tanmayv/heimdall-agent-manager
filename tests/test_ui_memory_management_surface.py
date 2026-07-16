@@ -28,8 +28,10 @@ def main() -> None:
     require("home.surface === 'memory' ? (" in app, "App should route a dedicated memory surface")
     require("selectedMemoryId={urlParams.memoryId}" in app, "Memory surface should preserve memory selection via URL")
     require("if (urlParams.view === 'memory' && home.surface !== 'memory')" in app, "App should respond to memory URL navigation")
-    require("if (payload?.type === 'memory_event')" in app, "App should refresh memory from websocket memory events")
-    require("if (payload?.type === 'audit_start')" in app and "if (payload?.type === 'audit_end')" in app, "App should refresh audit lifecycle events for memory workflows")
+    require("import { handleUserWsEvent } from '../api/wsInvalidation';" in app, "App should delegate websocket memory handling through wsInvalidation")
+    ws = (ROOT / "src" / "ui" / "api" / "wsInvalidation.ts").read_text(encoding="utf-8")
+    require("case 'memory_event':" in ws and "dispatch(memoryEventReceived(payload));" in ws, "wsInvalidation should handle memory_event")
+    require("case 'audit_start':" in ws and "case 'audit_end':" in ws, "wsInvalidation should handle audit lifecycle events for memory workflows")
 
     require("if (view === 'memory') return { surface: 'memory', chainId };" in home_slice, "homeSlice should support initial memory deep links")
 

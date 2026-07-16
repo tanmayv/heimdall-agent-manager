@@ -4,6 +4,7 @@ import SettingsPage from './SettingsPage';
 import MemoryManagementPage from './MemoryManagementPage';
 import ChainEditor from './ChainEditor';
 import { defaultWantsVcs, findScaffold, findTeamKind, kindOptionLabel, NONE_SCAFFOLD_META, paceLabel, scaffoldOptionLabel, taskCountLabel } from './teamKinds';
+// TODO(rtkq-migration owner=task-19f69e242e4): App still has explicit component-level task/chat thunk dispatches for open/load-more flows; replace these with RTKQ hooks or endpoint initiate calls during cleanup.
 import {
   addDaemonProfile,
   agentLifecycleEventReceived,
@@ -16,12 +17,12 @@ import {
   fetchPreferences,
   fetchSelectedChat,
   refreshAgents,
-  refreshConversationSummaries,
   refreshSettingsCatalog,
   registerSession,
   removeDaemonProfile,
   renameDaemonProfile,
   sendGuideMessage,
+  sendMessageToSelectedAgent,
   toggleGuidePanel,
   updateSessionConfig,
   userWsConnected,
@@ -29,7 +30,7 @@ import {
   userWsDisconnected,
   userWsError,
 } from '../store/chatSlice';
-import { addCommentToSelectedTask, addParticipantToSelectedTask, assignSelectedTask, fetchSelectedTaskLog, fetchTasksForChain, nudgeSelectedTask, refreshTaskBoard, removeParticipantFromSelectedTask, taskEventReceived, updateChainStateDirectly, updateSelectedTaskStatus, updateTaskStateDirectly, voteOnAttentionTask, voteOnSelectedTask } from '../store/taskSlice';
+import { addCommentToSelectedTask, addParticipantToSelectedTask, assignSelectedTask, fetchTasksForChain, nudgeSelectedTask, refreshTaskBoard, removeParticipantFromSelectedTask, taskEventReceived, updateChainStateDirectly, updateSelectedTaskStatus, updateTaskStateDirectly, voteOnAttentionTask, voteOnSelectedTask } from '../store/taskSlice';
 import { clearProjectError, createProjectFromUi, refreshProjects } from '../store/projectSlice';
 import {
   closeNewChainModal,
@@ -69,6 +70,9 @@ import { VimSidebarProvider, VimEditButton } from './VimSidebar';
 import AgentPicker from './AgentPicker';
 import RuntimeRestartControls from './RuntimeRestartControls';
 import * as daemonApi from '../api/daemonApi';
+import { useFetchChainTasksQuery, useFetchTaskLogQuery, useLazyFetchTaskLogPageQuery } from '../api/endpoints/tasks';
+import { chatEndpoints, useListConversationSummariesQuery } from '../api/endpoints/chats';
+import { handleUserWsEvent } from '../api/wsInvalidation';
 
 type Chain = {
   chainId: string;
@@ -610,6 +614,8 @@ function attentionCount(tasksById: Record<string, any>, attention: any, pendingM
 export default function App() {
   const dispatch = useDispatch<any>();
   const { agents, session, daemonProfiles, selectedAgentId, chats, chatsCursor, chatsHasMore, guidePanelOpen, guideSending, fetchingChatsByAgentId, settingsTemplates, settingsProviders, conversationSummaryById } = useSelector((state: any) => state.chat);
+  const conversationSummariesQuery = useListConversationSummariesQuery(undefined, { skip: !session.clientToken });
+  const effectiveConversationSummaryById = conversationSummariesQuery.data || conversationSummaryById;
   const { projectsById, projectIds, mutating: projectMutating, error: projectError } = useSelector((state: any) => state.projects);
   const { chainsById, tasksById, chainTaskIds, taskLogsByTaskId, taskLogCursorByTaskId, taskLogHasMoreByTaskId, taskLogLoadingByTaskId, taskLogTotalByTaskId, loading } = useSelector((state: any) => state.tasks);
   const home = useSelector((state: any) => state.home);
@@ -663,6 +669,64 @@ export default function App() {
   const chains: Chain[] = useMemo(() => Object.values(chainsById || {}) as Chain[], [chainsById]);
   const selectedProjectId = home.selectedProjectId || projects[0]?.projectId || 'default';
   const selectedChain = home.selectedChainId ? chainsById[home.selectedChainId] : null;
+  const selectedChainTasksQuery = useFetchChainTasksQuery(
+    { chainId: selectedChain?.chainId || '' },
+    { skip: !selectedChain?.chainId },
+  );
+  const creationProgressChainTasksQuery = useFetchChainTasksQuery(
+    { chainId: chainCreationProgress?.chainId || '' },
+    {
+      skip: !chainCreationProgress?.active || !chainCreationProgress?.chainId,
+      pollingInterval: chainCreationProgress?.active ? 2000 : 0,
+    },
+  );
+  const selectedTaskIdForQuery = ((urlParams.view === 'chain' || urlParams.view === 'chain-editor') ? (urlParams.taskId || '') : '');
+  const selectedTaskLogQuery = useFetchTaskLogQuery(
+    { taskId: selectedTaskIdForQuery },
+    { skip: !selectedTaskIdForQuery },
+  );
+  const [loadTaskLogPage] = useLazyFetchTaskLogPageQuery();
+  const selectedChainTasks = selectedChainTasksQuery.data?.tasks || ((selectedChain?.chainId ? (chainTaskIds[selectedChain.chainId] || []).map((id: string) => tasksById[id]).filter(Boolean) : []) as any[]);
+  const selectedTasksById = useMemo(() => {
+    if (!selectedChain?.chainId) return tasksById;
+    const next = { ...tasksById } as Record<string, any>;
+    for (const task of selectedChainTasks) {
+      if (task?.taskId) next[task.taskId] = task;
+    }
+    return next;
+  }, [selectedChain?.chainId, selectedChainTasks, tasksById]);
+  const selectedTaskLogsByTaskId = useMemo(() => {
+    if (!selectedTaskIdForQuery || !selectedTaskLogQuery.data) return taskLogsByTaskId;
+    return {
+      ...taskLogsByTaskId,
+      [selectedTaskIdForQuery]: selectedTaskLogQuery.data.events || [],
+    };
+  }, [selectedTaskIdForQuery, selectedTaskLogQuery.data, taskLogsByTaskId]);
+  const selectedTaskLogCursorByTaskId = useMemo(() => {
+    if (!selectedTaskIdForQuery || !selectedTaskLogQuery.data) return taskLogCursorByTaskId;
+    return {
+      ...taskLogCursorByTaskId,
+      [selectedTaskIdForQuery]: Number(selectedTaskLogQuery.data.nextCursor || 0),
+    };
+  }, [selectedTaskIdForQuery, selectedTaskLogQuery.data, taskLogCursorByTaskId]);
+  const selectedTaskLogHasMoreByTaskId = useMemo(() => {
+    if (!selectedTaskIdForQuery || !selectedTaskLogQuery.data) return taskLogHasMoreByTaskId;
+    return {
+      ...taskLogHasMoreByTaskId,
+      [selectedTaskIdForQuery]: Boolean(selectedTaskLogQuery.data.hasMore),
+    };
+  }, [selectedTaskIdForQuery, selectedTaskLogQuery.data, taskLogHasMoreByTaskId]);
+  const selectedTaskLogLoadingByTaskId = useMemo(() => ({
+    ...taskLogLoadingByTaskId,
+    ...(selectedTaskIdForQuery ? { [selectedTaskIdForQuery]: Boolean(selectedTaskLogQuery.isFetching) } : {}),
+  }), [selectedTaskIdForQuery, selectedTaskLogQuery.isFetching, taskLogLoadingByTaskId]);
+  const selectedTaskLogTotalByTaskId = useMemo(() => {
+    if (!selectedTaskIdForQuery || !selectedTaskLogQuery.data) return taskLogTotalByTaskId;
+    return {
+      ...taskLogTotalByTaskId,
+      [selectedTaskIdForQuery]: Number(selectedTaskLogQuery.data.total || 0),
+    };
+  }, [selectedTaskIdForQuery, selectedTaskLogQuery.data, taskLogTotalByTaskId]);
   const unreadByAgentId = useMemo(() => {
     const byId: Record<string, number> = {};
     for (const agent of agents || []) {
@@ -757,7 +821,6 @@ export default function App() {
       lastUrlChainFocusKeyRef.current = routeChainKey;
       setAgentPageId('');
       if (home.selectedChainId !== urlParams.chainId) dispatch(selectChain(urlParams.chainId));
-      dispatch(fetchTasksForChain(urlParams.chainId));
       dispatch(focusChainView(urlParams.chainId));
       return;
     } else if (!routeChainKey) {
@@ -768,7 +831,6 @@ export default function App() {
       : '';
     if (routeTaskKey && lastUrlTaskLogKeyRef.current !== routeTaskKey) {
       lastUrlTaskLogKeyRef.current = routeTaskKey;
-      dispatch(fetchSelectedTaskLog(urlParams.taskId));
     } else if (!routeTaskKey) {
       lastUrlTaskLogKeyRef.current = '';
     }
@@ -785,7 +847,6 @@ export default function App() {
     await Promise.all([
       dispatch(refreshProjects()).catch(() => undefined),
       dispatch(refreshAgents()).catch(() => undefined),
-      dispatch(refreshConversationSummaries()).catch(() => undefined),
       dispatch(fetchPreferences()).catch(() => undefined),
       dispatch(refreshSettingsCatalog()).catch(() => undefined),
     ]);
@@ -905,93 +966,19 @@ export default function App() {
         dispatch(userWsConnected());
         dispatch(wsRefreshRequested('user_ws_connected'));
         dispatch(refreshAgents());
-        const selected = selectedAgentRef.current;
-        if (selected) {
-          dispatch(fetchSelectedChat({ agentId: selected }));
-        }
         loadHomeData(false, 'user_ws_connected').catch(() => undefined);
       };
       socket.onmessage = (event) => {
         let payload: any;
         try { payload = JSON.parse(event.data); } catch { return; }
-        if (payload?.type === 'task_event') {
-          dispatch(taskEventReceived(payload));
-          if (payload.task) dispatch(updateTaskStateDirectly(payload.task));
-          if (payload.chain) dispatch(updateChainStateDirectly(payload.chain));
-          const chainId = payload.chain_id || payload.chain?.chain_id || payload.task?.chain_id;
-          dispatch(wsRefreshRequested(`task_event:${chainId || 'all'}`));
-          const focused = chainViewRef.current.focusedChainId;
-          if (chainId) {
-            dispatch(fetchTasksForChain(chainId));
-            if (focused === chainId) {
-              dispatch(wsChainViewRefreshRequested(`task_event:${chainId}`));
-              dispatch(revalidateChainView(chainId));
-            }
-          }
-          else dispatch(refreshTaskBoard());
-          return;
-        }
-        if (payload?.type === 'chat_event') {
-          dispatch(chatEventReceived(payload));
-          const agentId = payload.agent_instance_id || '';
-          const focused = chainViewRef.current.focusedChainId;
-          const focusedChain = focused ? chainsByIdRef.current[focused] : null;
-          const eventChainId = payload.chain_id || '';
-          if (focused && eventChainId && focused === eventChainId) {
-            dispatch(wsChainViewRefreshRequested(`chat_event:${eventChainId}:${payload.message_id || ''}`));
-            dispatch(revalidateChainView(focused));
-          } else if (focused && !eventChainId && focusedChain?.coordinatorAgentInstanceId === agentId) {
-            dispatch(wsChainViewRefreshRequested(`chat_event:${payload.message_id || ''}`));
-            dispatch(revalidateChainView(focused));
-          }
-          const selectedDirectAgent = selectedAgentRef.current;
-          if (selectedDirectAgent && selectedDirectAgent === agentId) {
-            if (payload.message) {
-              dispatch(appendMessage({ agentId, message: payload.message }));
-            } else {
-              dispatch(fetchSelectedChat({ agentId: selectedDirectAgent }));
-            }
-          }
-          return;
-        }
-        if (payload?.type === 'chat_approval') {
-          dispatch(chatApprovalEventReceived(payload));
-          return;
-        }
-        if (payload?.type === 'memory_event') {
-          dispatch(memoryEventReceived(payload));
-          dispatch(refreshMemory());
-          if (payload.memory_id) dispatch(fetchMemoryDetail(payload.memory_id));
-          return;
-        }
-        if (payload?.type === 'audit_start') {
-          dispatch(auditStartedReceived(payload));
-          return;
-        }
-        if (payload?.type === 'audit_end') {
-          dispatch(auditEndedReceived(payload));
-          return;
-        }
-        if (payload?.type === 'merge_decision_pending') {
-          const focused = chainViewRef.current.focusedChainId;
-          const chainId = payload.chain_id || '';
-          if (focused && focused === chainId) {
-            dispatch(wsChainViewRefreshRequested(`merge_decision_pending:${chainId}`));
-            dispatch(fetchWorkspaceForChain(chainId));
-          }
-          return;
-        }
-        if (payload?.type === 'agent_update' || payload?.type === 'agent_lifecycle_changed' || payload?.type === 'agent_runtime_changed') {
-          if (payload?.type === 'agent_lifecycle_changed') dispatch(agentLifecycleEventReceived(payload));
-          if (payload?.type === 'agent_runtime_changed') dispatch(agentRuntimeEventReceived(payload));
-          dispatch(wsRefreshRequested(`${payload.type}:${payload.agent_instance_id || ''}`));
-          dispatch(refreshAgents());
-          const focused = chainViewRef.current.focusedChainId;
-          if (focused) {
-            dispatch(wsChainViewRefreshRequested(`${payload.type}:${payload.agent_instance_id || ''}`));
-            dispatch(revalidateChainView(focused));
-          }
-        }
+        const focusedChainId = chainViewRef.current.focusedChainId;
+        const focusedChain = focusedChainId ? chainsByIdRef.current[focusedChainId] : null;
+        handleUserWsEvent(dispatch, payload, {
+          selectedAgentId: selectedAgentRef.current,
+          focusedChainId,
+          focusedCoordinatorAgentInstanceId: focusedChain?.coordinatorAgentInstanceId || focusedChain?.coordinator_agent_instance_id || '',
+          guidePanelOpen,
+        });
       };
       socket.onerror = () => dispatch(userWsError('User WebSocket connection error'));
       socket.onclose = () => {
@@ -1013,7 +1000,6 @@ export default function App() {
     lastUrlChainFocusKeyRef.current = `chain:${chainId}`;
     updateUrlParams({ chainId, view: 'chain', taskId: null, agentId: null, memoryId: null });
     dispatch(selectChain(chainId));
-    dispatch(fetchTasksForChain(chainId));
     dispatch(focusChainView(chainId));
   }, [dispatch]);
 
@@ -1022,7 +1008,6 @@ export default function App() {
     lastUrlChainFocusKeyRef.current = `chain-editor:${chainId}`;
     updateUrlParams({ chainId, view: 'chain-editor', taskId: taskId || null, agentId: null, memoryId: null });
     dispatch(selectChain(chainId));
-    dispatch(fetchTasksForChain(chainId));
     dispatch(focusChainView(chainId));
   }, [dispatch]);
 
@@ -1150,11 +1135,13 @@ export default function App() {
       const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, provider: effectiveProvider, templateId: 'conversation', projectId: projectId || '', displayName: '', modelTier: modelTier || 'smart', agentRole: 'conversation' });
       const resolvedId = result?.agent_instance_id || result?.agentInstanceId || requestedId;
       let sent = false;
+      let sendResult: any = null;
       let lastSendError: any = null;
+      const tempId = `local_temp_chat_${Date.now()}_${Math.random().toString(36).slice(2)}`;
       for (let attempt = 0; attempt < 60 && !sent; attempt += 1) {
         if (attempt > 0) await new Promise((resolve) => window.setTimeout(resolve, 1000));
         try {
-          await daemonApi.sendToAgent({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, agentInstanceId: resolvedId, body, interrupt: false });
+          sendResult = await (dispatch as any)(chatEndpoints.endpoints.sendAgentMessage.initiate({ agentInstanceId: resolvedId, body, tempId, interrupt: false })).unwrap();
           sent = true;
         } catch (err: any) {
           lastSendError = err;
@@ -1165,8 +1152,7 @@ export default function App() {
       setAgentPageId(resolvedId);
       updateUrlParams({ view: 'agent', agentId: resolvedId, chainId: null, taskId: null, memoryId: null, projectId: projectId || null });
       await dispatch(refreshAgents()).unwrap().catch(() => undefined);
-      dispatch(fetchSelectedChat({ agentId: resolvedId })).catch(() => undefined);
-      dispatch(refreshConversationSummaries()).catch(() => undefined);
+      dispatch(appendMessage({ agentId: resolvedId, message: { id: sendResult?.messageId || `local_${Date.now()}`, author: 'user', body, createdUnixMs: Date.now(), deliveredUnixMs: Date.now(), readUnixMs: 0 } }));
       return resolvedId;
     } finally {
       setNewConversationBusy(false);
@@ -1217,13 +1203,12 @@ export default function App() {
     };
   }, [agents, chainView.sideSheetAgentId, chainView.teamByChainId, selectedChain]);
   const sideSheetDetails = chainView.sideSheetByAgentId[chainView.sideSheetAgentId] || null;
-  const creationProgressState = useMemo(() => chainCreationProgress ? buildChainCreationProgress(chainCreationProgress, chainsById, chainTaskIds, tasksById, agents, chainView) : null, [chainCreationProgress, chainsById, chainTaskIds, tasksById, agents, chainView]);
+  const creationProgressState = useMemo(() => chainCreationProgress ? buildChainCreationProgress(chainCreationProgress, chainsById, chainTaskIds, tasksById, agents, chainView, creationProgressChainTasksQuery.data?.tasks || []) : null, [chainCreationProgress, chainsById, chainTaskIds, tasksById, agents, chainView, creationProgressChainTasksQuery.data?.tasks]);
+  // TODO(rtkq-migration owner=task-19f69e242e4): chain creation progress still polls refreshAgents() until the Agents domain moves to RTKQ-backed list/detail hooks. Keep this bounded to the active modal only.
   useEffect(() => {
     if (!chainCreationProgress?.active || !chainCreationProgress.chainId) return undefined;
     const tick = () => {
       dispatch(refreshAgents()).catch(() => undefined);
-      dispatch(refreshTaskBoard()).catch(() => undefined);
-      dispatch(fetchTasksForChain(chainCreationProgress.chainId)).catch(() => undefined);
       dispatch(revalidateChainView(chainCreationProgress.chainId)).catch(() => undefined);
     };
     tick();
@@ -1245,7 +1230,7 @@ export default function App() {
           <ConversationFocusedSidebar
             conversations={conversationAgents}
             chats={chats}
-            summaryById={conversationSummaryById}
+            summaryById={effectiveConversationSummaryById}
             projectsById={projectsById}
             selectedAgentId={agentPageId}
             onOpenConversation={openAgentPage}
@@ -1306,7 +1291,7 @@ export default function App() {
             const sharedAgentPageProps = {
               agent: selectedPageAgent,
               chats,
-              conversationSummary: conversationSummaryById?.[agentPageId],
+              conversationSummary: effectiveConversationSummaryById?.[agentPageId],
               session,
               projects,
               providers: settingsProviders,
@@ -1336,12 +1321,8 @@ export default function App() {
                   });
                   await dispatch(refreshAgents()).unwrap().catch(() => undefined);
                 }
-                await daemonApi.sendToAgent({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, agentInstanceId: agentId, body, interrupt });
-                dispatch(fetchSelectedChat({ agentId }));
-                // Explicit send may create/refresh a conversation title and bump
-                // its last_message_unix_ms; refresh daemon summaries so sidebar
-                // ordering/title stay correct (explicit trigger, not passive).
-                dispatch(refreshConversationSummaries()).catch(() => undefined);
+                const tempId = `local_temp_chat_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+                await dispatch(sendMessageToSelectedAgent({ agentId, body, tempId, interrupt })).unwrap();
               },
             };
             return isConversationAgent(selectedPageAgent) ? (
@@ -1448,30 +1429,30 @@ export default function App() {
           ) : home.surface === 'chain' && selectedChain && urlParams.view === 'chain-editor' ? (
             <ChainEditor
               chain={selectedChain}
-              tasks={(chainTaskIds[selectedChain.chainId] || []).map((id: string) => tasksById[id]).filter(Boolean)}
-              tasksById={tasksById}
+              tasks={selectedChainTasks}
+              tasksById={selectedTasksById}
               team={chainView.teamByChainId[selectedChain.chainId]}
               agents={agents}
               providers={settingsProviders}
               initialTaskId={urlParams.taskId}
               onBack={() => { updateUrlParams({ chainId: null, taskId: null, agentId: null, view: 'home' }); dispatch(selectSurface('home')); }}
               onReturnToChain={() => updateUrlParams({ view: 'chain', chainId: selectedChain.chainId, taskId: urlParams.taskId || null })}
-              onRefresh={() => { dispatch(fetchTasksForChain(selectedChain.chainId)); dispatch(focusChainView(selectedChain.chainId)); }}
-              onSelectTask={(taskId: string) => { updateUrlParams({ view: 'chain-editor', chainId: selectedChain.chainId, taskId }); dispatch(fetchSelectedTaskLog(taskId)); }}
+              onRefresh={() => { void selectedChainTasksQuery.refetch(); dispatch(focusChainView(selectedChain.chainId)); }}
+              onSelectTask={(taskId: string) => { updateUrlParams({ view: 'chain-editor', chainId: selectedChain.chainId, taskId }); }}
             />
           ) : home.surface === 'chain' && selectedChain ? (
             <ChainView
               chain={selectedChain}
-              tasks={(chainTaskIds[selectedChain.chainId] || []).map((id: string) => tasksById[id]).filter(Boolean)}
-              tasksById={tasksById}
+              tasks={selectedChainTasks}
+              tasksById={selectedTasksById}
               chainsById={chainsById}
               agents={agents}
               chainView={chainView}
-              taskLogsByTaskId={taskLogsByTaskId}
-              taskLogCursorByTaskId={taskLogCursorByTaskId}
-              taskLogHasMoreByTaskId={taskLogHasMoreByTaskId}
-              taskLogLoadingByTaskId={taskLogLoadingByTaskId}
-              taskLogTotalByTaskId={taskLogTotalByTaskId}
+              taskLogsByTaskId={selectedTaskLogsByTaskId}
+              taskLogCursorByTaskId={selectedTaskLogCursorByTaskId}
+              taskLogHasMoreByTaskId={selectedTaskLogHasMoreByTaskId}
+              taskLogLoadingByTaskId={selectedTaskLogLoadingByTaskId}
+              taskLogTotalByTaskId={selectedTaskLogTotalByTaskId}
               initialTaskId={urlParams.taskId}
               onOpenChain={openChain}
               onBack={() => { updateUrlParams({ chainId: null, taskId: null, agentId: null, view: 'home' }); dispatch(selectSurface('home')); }}
@@ -1485,15 +1466,17 @@ export default function App() {
               onRescan={() => dispatch(fetchWorkspaceForChain(selectedChain.chainId))}
               onPreviewMerge={() => dispatch(previewWorkspaceMerge(selectedChain.chainId))}
               onOpenAgent={(agentId: string) => { dispatch(openAgentSideSheet(agentId)); dispatch(loadAgentSideSheet(agentId)); }}
-              onOpenTask={(taskId: string) => { updateUrlParams({ view: 'chain', chainId: selectedChain.chainId, taskId }); dispatch(fetchSelectedTaskLog({ taskId })); }}
-              onLoadTaskLogPage={(taskId: string, cursor = 0) => dispatch(fetchSelectedTaskLog({ taskId, cursor })).unwrap().catch(() => undefined)}
+              onOpenTask={(taskId: string) => { updateUrlParams({ view: 'chain', chainId: selectedChain.chainId, taskId }); }}
+              onLoadTaskLogPage={(taskId: string, cursor = 0) => {
+                if (cursor <= 0) return Promise.resolve(undefined);
+                return loadTaskLogPage({ taskId, cursor }).unwrap().catch(() => undefined);
+              }}
               onLoadCoordinatorChatPage={(chainId: string, cursor = 0) => dispatch(fetchChainCoordinatorChatPage({ chainId, cursor })).unwrap().catch(() => undefined)}
               onOpenEditor={(taskId?: string) => openChainEditor(selectedChain.chainId, taskId || urlParams.taskId || '')}
               onAddComment={async (task: any, body: string) => {
                 try {
                   await dispatch(addCommentToSelectedTask({ taskId: task.taskId, chainId: task.chainId, body })).unwrap();
                   dispatch(showToast({ kind: 'success', title: 'Comment added', message: task.title || task.taskId }));
-                  dispatch(fetchTasksForChain(task.chainId)); dispatch(fetchSelectedTaskLog(task.taskId));
                 } catch (err: any) {
                   dispatch(showToast({ kind: 'error', title: 'Comment failed', message: err?.message || 'Unable to add task comment' }));
                   throw err;
@@ -1503,7 +1486,6 @@ export default function App() {
                 try {
                   await dispatch(updateSelectedTaskStatus({ taskId: task.taskId, chainId: task.chainId, status, body })).unwrap();
                   dispatch(showToast({ kind: 'success', title: 'Task updated', message: `${task.title || task.taskId} → ${status}` }));
-                  dispatch(fetchTasksForChain(task.chainId)); dispatch(fetchSelectedTaskLog(task.taskId));
                 } catch (err: any) {
                   dispatch(showToast({ kind: 'error', title: 'Task update failed', message: err?.message || `Unable to set ${status}` }));
                   throw err;
@@ -1513,7 +1495,6 @@ export default function App() {
                 try {
                   await dispatch(voteOnSelectedTask({ taskId: task.taskId, chainId: task.chainId, approved, comment: comment || (approved ? 'LGTM from ChainView.' : 'Changes requested from ChainView.') })).unwrap();
                   dispatch(showToast({ kind: 'success', title: approved ? 'LGTM recorded' : 'Changes requested', message: task.title || task.taskId }));
-                  dispatch(fetchTasksForChain(task.chainId)); dispatch(fetchSelectedTaskLog(task.taskId));
                 } catch (err: any) {
                   dispatch(showToast({ kind: 'error', title: 'Review vote failed', message: err?.message || 'Unable to vote on task' }));
                   throw err;
@@ -1523,7 +1504,6 @@ export default function App() {
                 try {
                   await dispatch(nudgeSelectedTask({ taskId: task.taskId, chainId: task.chainId, body, interrupt: false })).unwrap();
                   dispatch(showToast({ kind: 'success', title: 'Nudge sent', message: task.title || task.taskId }));
-                  dispatch(fetchTasksForChain(task.chainId)); dispatch(fetchSelectedTaskLog(task.taskId));
                 } catch (err: any) {
                   dispatch(showToast({ kind: 'error', title: 'Nudge failed', message: err?.message || 'Unable to nudge task' }));
                   throw err;
@@ -1531,7 +1511,6 @@ export default function App() {
               }}
               onAssignTask={async (task: any, agentInstanceId: string) => {
                 await dispatch(assignSelectedTask({ taskId: task.taskId, chainId: task.chainId, agentInstanceId })).unwrap();
-                dispatch(fetchTasksForChain(task.chainId)); dispatch(fetchSelectedTaskLog(task.taskId));
                 dispatch(showToast({ kind: 'success', title: 'Assignee updated', message: agentInstanceId }));
               }}
               onCloseTask={() => updateUrlParams({ taskId: null })}
@@ -1541,7 +1520,6 @@ export default function App() {
                   await dispatch(removeParticipantFromSelectedTask({ taskId: task.taskId, chainId: task.chainId, agentInstanceId: reviewerId, role: 'lgtm_required' })).unwrap().catch(() => undefined);
                 }
                 await dispatch(addParticipantToSelectedTask({ taskId: task.taskId, chainId: task.chainId, agentInstanceId, role: 'lgtm_required' })).unwrap();
-                dispatch(fetchTasksForChain(task.chainId)); dispatch(fetchSelectedTaskLog(task.taskId));
                 dispatch(showToast({ kind: 'success', title: 'Reviewer updated', message: agentInstanceId }));
               }}
             />
@@ -1727,12 +1705,13 @@ function ToastStack({ toasts, onDismiss }: { toasts: any[]; onDismiss: (id: stri
   );
 }
 
-function buildChainCreationProgress(progress: any, chainsById: Record<string, any>, chainTaskIds: Record<string, string[]>, tasksById: Record<string, any>, agents: any[], chainView: any) {
+function buildChainCreationProgress(progress: any, chainsById: Record<string, any>, chainTaskIds: Record<string, string[]>, tasksById: Record<string, any>, agents: any[], chainView: any, polledTasks: any[] = []) {
   const chainId = progress.chainId || '';
   const chain = chainsById?.[chainId] || null;
   const team = chainView.teamByChainId?.[chainId]?.team || chainView.teamByChainId?.[chainId] || null;
   const taskIds = chainTaskIds?.[chainId] || [];
-  const tasks = taskIds.map((id: string) => tasksById?.[id]).filter(Boolean);
+  const fallbackTasks = taskIds.map((id: string) => tasksById?.[id]).filter(Boolean);
+  const tasks = polledTasks.length > 0 ? polledTasks : fallbackTasks;
   const workspaceSetupTask = (progress.workspaceSetupTaskId && tasksById?.[progress.workspaceSetupTaskId]) || tasks.find((task: any) => String(task.title || '').toLowerCase().includes('prepare chain workspace')) || null;
   const discoveryTask = (progress.discoveryTaskId && tasksById?.[progress.discoveryTaskId]) || tasks.find((task: any) => String(task.title || '').toLowerCase().includes('discover goal')) || null;
   const coordinatorId = progress.coordinatorAgentInstanceId || chain?.coordinatorAgentInstanceId || chain?.coordinator_agent_instance_id || '';
@@ -3272,7 +3251,6 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
       }
       await onSendAgentMessage?.(agent.id, body, false);
       setDraft('');
-      await onRefreshChat?.(agent.id);
     } catch (err: any) {
       setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`);
     } finally {

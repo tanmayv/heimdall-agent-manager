@@ -3,6 +3,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import { VimEditButton } from './VimSidebar';
 import { showToast } from '../store/toastSlice';
 import * as daemonApi from '../api/daemonApi';
+import { tasksApi } from '../api/endpoints/tasks';
 
 const NODE_W = 180;
 const NODE_H = 92;
@@ -277,14 +278,14 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chain.chainId]);
 
-  const runMutation = async (label: string, fn: () => Promise<any>, successTitle: string, successMessage = '') => {
+  const runMutation = async (label: string, fn: () => Promise<any>, successTitle: string, successMessage = '', refresh = false) => {
     if (!auth.clientToken) throw new Error('Not connected to daemon');
     setBusyAction(label);
     setEditorError('');
     try {
       const result = await fn();
       dispatch(showToast({ kind: 'success', title: successTitle, message: successMessage }));
-      await Promise.resolve(onRefresh?.());
+      if (refresh) await Promise.resolve(onRefresh?.());
       return result;
     } catch (err: any) {
       const message = formatError(err);
@@ -299,31 +300,31 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
   const saveSelectedTaskText = async () => {
     if (!selectedTask) return;
     const id = taskId(selectedTask);
-    await runMutation('save-text', () => daemonApi.updateTask({ ...auth, taskId: id, chainId: chain.chainId, title: titleDraft, description: descriptionDraft, acceptanceCriteria: acceptanceDraft }), 'Task saved', titleDraft || id);
+    await runMutation('save-text', () => dispatch(tasksApi.endpoints.updateTask.initiate({ taskId: id, chainId: chain.chainId, title: titleDraft, description: descriptionDraft, acceptanceCriteria: acceptanceDraft })).unwrap(), 'Task saved', titleDraft || id);
   };
 
   const setTaskStatus = async (status: string) => {
     if (!selectedTask || !status || status === selectedTask.status) return;
     const id = taskId(selectedTask);
-    await runMutation(`status-${status}`, () => daemonApi.updateTaskStatus({ ...auth, taskId: id, chainId: chain.chainId, status, body: 'Status set via Task Chain Editor.' }), 'Task status updated', `${id} → ${status}`);
+    await runMutation(`status-${status}`, () => dispatch(tasksApi.endpoints.setTaskStatus.initiate({ taskId: id, chainId: chain.chainId, status, body: 'Status set via Task Chain Editor.' })).unwrap(), 'Task status updated', `${id} → ${status}`);
   };
 
   const setTaskAssignee = async (agentInstanceId: string) => {
     if (!selectedTask) return;
     const id = taskId(selectedTask);
-    await runMutation('assign', () => daemonApi.assignTask({ ...auth, taskId: id, chainId: chain.chainId, agentInstanceId }), 'Assignee updated', agentInstanceId || 'unassigned');
+    await runMutation('assign', () => dispatch(tasksApi.endpoints.assignTask.initiate({ taskId: id, chainId: chain.chainId, agentInstanceId })).unwrap(), 'Assignee updated', agentInstanceId || 'unassigned');
   };
 
   const addTaskParticipant = async (agentInstanceId: string, role: string) => {
     if (!selectedTask || !agentInstanceId || !role) return;
     const id = taskId(selectedTask);
-    await runMutation('add-participant', () => daemonApi.addTaskParticipant({ ...auth, taskId: id, chainId: chain.chainId, agentInstanceId, role }), `${participantRoleLabel(role)} added`, agentInstanceId);
+    await runMutation('add-participant', () => dispatch(tasksApi.endpoints.addTaskParticipant.initiate({ taskId: id, chainId: chain.chainId, agentInstanceId, role })).unwrap(), `${participantRoleLabel(role)} added`, agentInstanceId);
   };
 
   const removeTaskParticipant = async (agentInstanceId: string, role: string) => {
     if (!selectedTask || !agentInstanceId || !role) return;
     const id = taskId(selectedTask);
-    await runMutation('remove-participant', () => daemonApi.removeTaskParticipant({ ...auth, taskId: id, chainId: chain.chainId, agentInstanceId, role }), `${participantRoleLabel(role)} removed`, agentInstanceId);
+    await runMutation('remove-participant', () => dispatch(tasksApi.endpoints.removeTaskParticipant.initiate({ taskId: id, chainId: chain.chainId, agentInstanceId, role })).unwrap(), `${participantRoleLabel(role)} removed`, agentInstanceId);
   };
 
   const setTaskReviewer = async (agentInstanceId: string) => {
@@ -343,7 +344,7 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
     if (!selectedTask) return;
     const id = taskId(selectedTask);
     const unique = Array.from(new Set(deps.map((dep) => dep.trim()).filter(Boolean)));
-    await runMutation(label, () => daemonApi.updateTask({ ...auth, taskId: id, chainId: chain.chainId, dependsOn: unique.join(',') }), 'Dependencies updated', id);
+    await runMutation(label, () => dispatch(tasksApi.endpoints.updateTask.initiate({ taskId: id, chainId: chain.chainId, dependsOn: unique.join(',') })).unwrap(), 'Dependencies updated', id);
   };
 
   const addDependency = async () => {
@@ -361,7 +362,7 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
     const target = tasksById[toTaskId] || orderedTasks.find((task) => taskId(task) === toTaskId);
     if (!target) return;
     const nextDeps = taskDependsOn(target).filter((dep) => dep !== fromTaskId);
-    await runMutation('remove-edge', () => daemonApi.updateTask({ ...auth, taskId: toTaskId, chainId: chain.chainId, dependsOn: nextDeps.join(',') }), 'Dependency removed', `${fromTaskId} → ${toTaskId}`);
+    await runMutation('remove-edge', () => dispatch(tasksApi.endpoints.updateTask.initiate({ taskId: toTaskId, chainId: chain.chainId, dependsOn: nextDeps.join(',') })).unwrap(), 'Dependency removed', `${fromTaskId} → ${toTaskId}`);
     selectTask(toTaskId);
   };
 
@@ -376,7 +377,7 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
     const target = tasksById[toTaskId] || orderedTasks.find((task) => taskId(task) === toTaskId);
     if (!target) return;
     const nextDeps = Array.from(new Set([...taskDependsOn(target), fromTaskId]));
-    await runMutation('create-edge', () => daemonApi.updateTask({ ...auth, taskId: toTaskId, chainId: chain.chainId, dependsOn: nextDeps.join(',') }), 'Dependency created', `${fromTaskId} → ${toTaskId}`);
+    await runMutation('create-edge', () => dispatch(tasksApi.endpoints.updateTask.initiate({ taskId: toTaskId, chainId: chain.chainId, dependsOn: nextDeps.join(',') })).unwrap(), 'Dependency created', `${fromTaskId} → ${toTaskId}`);
     setEdgeSourceTaskId('');
     selectTask(toTaskId);
   };
@@ -399,7 +400,7 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
   const createNewTask = async () => {
     const title = newTaskTitle.trim();
     if (!title) return;
-    const result = await runMutation('create-task', () => daemonApi.createTask({ ...auth, chain_id: chain.chainId, title, status: 'planning' }), 'Task added', title);
+    const result = await runMutation('create-task', () => dispatch(tasksApi.endpoints.createTask.initiate({ chainId: chain.chainId, title, status: 'planning' })).unwrap(), 'Task added', title);
     const createdId = result?.task?.task_id || result?.task_id || '';
     setNewTaskTitle('');
     if (createdId) selectTask(createdId);
@@ -409,7 +410,7 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
     if (!selectedTask) return;
     const id = taskId(selectedTask);
     if (!window.confirm(`Delete task ${id}? This is distinct from cancellation and will be rejected if active dependents exist.`)) return;
-    await runMutation('delete-task', () => daemonApi.deleteTask({ ...auth, taskId: id, chainId: chain.chainId }), 'Task deleted', id);
+    await runMutation('delete-task', () => dispatch(tasksApi.endpoints.deleteTask.initiate({ taskId: id, chainId: chain.chainId })).unwrap(), 'Task deleted', id);
     const next = orderedTasks.find((task) => taskId(task) !== id);
     setSelectedTaskId(next ? taskId(next) : '');
   };
@@ -417,7 +418,7 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
   const addTeamMember = async () => {
     const agentId = newMemberAgentId.trim();
     if (!agentId) return;
-    await runMutation('add-member', () => daemonApi.addTeamMember({ daemonUrl: auth.daemonUrl, clientToken: auth.clientToken, teamId: chain.teamId || chain.team_id || '', roleKey: newMemberRole || 'specialist', agentInstanceId: agentId }), 'Team member added', agentId);
+    await runMutation('add-member', () => daemonApi.addTeamMember({ daemonUrl: auth.daemonUrl, clientToken: auth.clientToken, teamId: chain.teamId || chain.team_id || '', roleKey: newMemberRole || 'specialist', agentInstanceId: agentId }), 'Team member added', agentId, true);
     setNewMemberAgentId('');
   };
 
@@ -426,22 +427,22 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
     if (!agentId) return;
     const provider = runtimeProviderByAgent[agentId] || providerOptions[0] || 'pi';
     const tier = runtimeTierByAgent[agentId] || 'normal';
-    await runMutation(`start-${agentId}`, () => daemonApi.startAgent({ daemonUrl: auth.daemonUrl, agentInstanceId: agentId, provider, modelTier: tier, projectId: chain.projectId || chain.project_id || '', displayName: agentId, agentRole: member.role_key || member.roleKey || '' }), 'Agent start requested', `${agentId} · ${provider}/${tier}`);
+    await runMutation(`start-${agentId}`, () => daemonApi.startAgent({ daemonUrl: auth.daemonUrl, agentInstanceId: agentId, provider, modelTier: tier, projectId: chain.projectId || chain.project_id || '', displayName: agentId, agentRole: member.role_key || member.roleKey || '' }), 'Agent start requested', `${agentId} · ${provider}/${tier}`, true);
   };
 
   const stopRosterAgent = async (member: any) => {
     const agentId = chainMemberAgentId(member);
     if (!agentId) return;
-    await runMutation(`stop-${agentId}`, () => daemonApi.stopAgent({ daemonUrl: auth.daemonUrl, agentInstanceId: agentId, timeInSec: 30 }), 'Agent stop requested', agentId);
+    await runMutation(`stop-${agentId}`, () => daemonApi.stopAgent({ daemonUrl: auth.daemonUrl, agentInstanceId: agentId, timeInSec: 30 }), 'Agent stop requested', agentId, true);
   };
 
   const saveChainMetadata = async () => {
-    await runMutation('save-chain', () => daemonApi.updateTaskChain({ ...auth, chainId: chain.chainId, title: chainTitleDraft, description: chainDescriptionDraft, coordinatorAgentInstanceId: chainCoordinatorDraft, defaultReviewerAgentInstanceId: chainReviewerDraft }), 'Chain saved', chainTitleDraft || chain.chainId);
+    await runMutation('save-chain', () => daemonApi.updateTaskChain({ ...auth, chainId: chain.chainId, title: chainTitleDraft, description: chainDescriptionDraft, coordinatorAgentInstanceId: chainCoordinatorDraft, defaultReviewerAgentInstanceId: chainReviewerDraft }), 'Chain saved', chainTitleDraft || chain.chainId, true);
   };
 
   const setChainStatus = async (status: string) => {
     const summary = status === 'completed' ? (completeSummaryDraft.trim() || 'Completed from Task Chain Editor.') : undefined;
-    await runMutation(`chain-${status}`, () => daemonApi.updateTaskChainStatus({ ...auth, chainId: chain.chainId, status, finalSummary: summary }), status === 'completed' ? 'Chain completed' : 'Chain status updated', status);
+    await runMutation(`chain-${status}`, () => daemonApi.updateTaskChainStatus({ ...auth, chainId: chain.chainId, status, finalSummary: summary }), status === 'completed' ? 'Chain completed' : 'Chain status updated', status, true);
   };
 
   const selectTask = (id: string) => {

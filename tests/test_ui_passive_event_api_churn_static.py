@@ -20,11 +20,12 @@ def main() -> None:
     app = APP.read_text(encoding="utf-8")
     chain_view = CHAIN_VIEW.read_text(encoding="utf-8")
 
-    # URL task-log loading is guarded by route key, so parent rerenders from local
-    # draft typing cannot call task_log repeatedly for the same selected task.
+    # URL task-log ownership is now RTKQ-backed via useFetchTaskLogQuery, with the
+    # route key still guarding rerender churn from local draft typing.
     require("const lastUrlTaskLogKeyRef = useRef('');" in app, "missing URL task-log route guard ref")
     require("lastUrlTaskLogKeyRef.current !== routeTaskKey" in app, "task-log URL effect must be guarded by route key")
-    require("dispatch(fetchSelectedTaskLog(urlParams.taskId));" in app, "URL task-log fetch should still exist for intentional route task open")
+    require("const selectedTaskLogQuery = useFetchTaskLogQuery(" in app, "URL task-log should be owned by the RTKQ hook")
+    require("dispatch(fetchSelectedTaskLog(urlParams.taskId));" not in app, "App should not manually dispatch fetchSelectedTaskLog for route task open anymore")
 
     # Task pane focus/hover/window-focus must not refresh logs. Explicit task
     # open, load-older, WS events, and action completion remain the allowed paths.
@@ -42,11 +43,13 @@ def main() -> None:
     require('data-debug-id="sidebar-agents-show-more-btn"' in app and 'onClick={loadMoreAgents}' in app, "agent Show More pagination must remain")
 
     # Chain focus endpoint remains centralized and should only be reached through
-    # explicit chain open/route-change and WS-event revalidation call sites.
+    # explicit chain open/route-change paths; WS handling now delegates to
+    # wsInvalidation instead of broad revalidation fan-out in App.
     require("daemonApi.focusTaskChain" in chain_view, "focusTaskChain API should remain for explicit chain focus")
     require("const routeChainKey" in app and "lastUrlChainFocusKeyRef.current !== routeChainKey" in app, "URL chain focus must be route-change guarded")
     require("lastUrlChainFocusKeyRef.current = `chain:${chainId}`;" in app, "explicit chain open should mark route focus handled")
-    require("dispatch(revalidateChainView(focused));" in app or "dispatch(revalidateChainView(chainId));" in app, "WS events should still revalidate focused chain")
+    require("import { handleUserWsEvent } from '../api/wsInvalidation';" in app, "App should delegate WS handling to wsInvalidation")
+    require("dispatch(revalidateChainView(focused));" not in app and "dispatch(revalidateChainView(chainId));" not in app, "App should not broadly revalidate chain view from websocket handlers")
     require("PERIODIC_REVALIDATE_MS" not in app, "periodic chain revalidation should be removed")
 
     print("PASS: passive UI event API churn static checks")

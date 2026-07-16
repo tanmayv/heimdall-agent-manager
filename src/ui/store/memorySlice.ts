@@ -222,6 +222,29 @@ const memorySlice = createSlice({
     memoryEventReceived(state: any, action) {
       state.lastMemoryEvent = action.payload;
     },
+    applyMemoryEventRecord(state: any, action) {
+      const payload = action.payload || {};
+      const memoryId = String(payload.memory_id || '');
+      if (!memoryId) return;
+      const now = Date.now();
+      const existing = state.recordsById[memoryId] || {};
+      state.recordsById[memoryId] = {
+        ...existing,
+        id: memoryId,
+        memoryId,
+        proposalId: payload.proposal_id || existing.proposalId || '',
+        targetTeamKind: payload.target_team_kind || existing.targetTeamKind || '',
+        targetRole: payload.target_role || existing.targetRole || '',
+        targetProjectId: payload.target_project_id || existing.targetProjectId || '',
+        target: payload.target || existing.target || '',
+        type: payload.memory_type || existing.type || 'fact',
+        status: payload.status || existing.status || 'pending',
+        sourceTaskId: payload.source_task_id || existing.sourceTaskId || '',
+        updatedUnixMs: now,
+        createdUnixMs: existing.createdUnixMs || now,
+      };
+      state.recordIds = sortMemoryIds(state.recordsById);
+    },
     auditStartedReceived(state: any, action) {
       state.activeAudit = {
         auditId: action.payload.audit_id || '',
@@ -329,5 +352,5 @@ export const selectPendingMemoryRecords = (state: any) => selectMemoryRecords(st
 export const selectPendingMemoryCount = (state: any) => selectPendingMemoryRecords(state).length;
 export const selectPendingActiveMemoryRecords = (state: any) => selectMemoryRecords(state).filter((record: any) => ['pending', 'active'].includes(record.status));
 
-export const { setMemoryFilters, resetMemoryFilters, memoryEventReceived, auditStartedReceived, auditEndedReceived, clearActiveAudit } = memorySlice.actions;
+export const { setMemoryFilters, resetMemoryFilters, memoryEventReceived, applyMemoryEventRecord, auditStartedReceived, auditEndedReceived, clearActiveAudit } = memorySlice.actions;
 export default memorySlice.reducer;

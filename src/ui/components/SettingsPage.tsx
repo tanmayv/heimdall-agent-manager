@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import SessionConfig from './SessionConfig';
 import { TEAM_KIND_METADATA, paceLabel, taskCountLabel, wantsVcsLabel } from './teamKinds';
+// TODO(rtkq-migration owner=task-19f69e242e4): Settings direct-chat debug panel still opens chats via component-level thunk dispatch; replace with RTKQ hooks/initiate during cleanup.
 import { addDaemonProfile, fetchPreferences, fetchSelectedChat, refreshAgents, refreshSettingsCatalog, removeDaemonProfile, saveUserPreference, selectAgent, sendMessageToSelectedAgent } from '../store/chatSlice';
 import * as daemonApi from '../api/daemonApi';
 import { refreshMemory } from '../store/memorySlice';

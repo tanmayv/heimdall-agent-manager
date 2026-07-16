@@ -1,6 +1,6 @@
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
 import * as daemonApi from '../api/daemonApi';
-import { fetchTasksForChain, refreshTaskBoard } from './taskSlice';
+import { refreshTaskBoard } from './taskSlice';
 
 function initialUrlState() {
   try {
@@ -36,6 +36,7 @@ const initialState = {
   lastPeriodicRefreshUnixMs: 0,
 };
 
+// TODO(rtkq-migration owner=task-19f69e242e4): new-chain creation still performs a board refresh to surface the created chain in the home overview. Keep this quarantined to creation flow; do not expand it into task/chat recurring cache ownership.
 export const submitNewChain = createAsyncThunk('home/submitNewChain', async (payload: any, { dispatch, getState }) => {
   const state = getState() as any;
   const { session } = state.chat;
@@ -65,7 +66,6 @@ export const submitNewChain = createAsyncThunk('home/submitNewChain', async (pay
     });
   }
   await (dispatch as any)(refreshTaskBoard()).catch(() => undefined);
-  if (chainId) await (dispatch as any)(fetchTasksForChain(chainId)).catch(() => undefined);
   return { ...result, activation, chainId };
 });
 

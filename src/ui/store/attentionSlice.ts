@@ -218,6 +218,15 @@ const attentionSlice = createSlice({
         state.chatApprovalIds = kept;
       }
     },
+    mergeDecisionEventReceived(state: any, action) {
+      const decision = normalizeMergeDecision(action.payload || {});
+      if (!decision.chainId) return;
+      state.lastEventAt = Date.now();
+      state.mergeDecisionsById[decision.chainId] = decision;
+      if (!state.mergeDecisionIds.includes(decision.chainId)) {
+        state.mergeDecisionIds = [decision.chainId, ...state.mergeDecisionIds];
+      }
+    },
   },
   extraReducers: (builder) => {
     builder
@@ -275,5 +284,5 @@ const attentionSlice = createSlice({
   },
 });
 
-export const { chatApprovalEventReceived, tickChatApprovalExpiry } = attentionSlice.actions;
+export const { chatApprovalEventReceived, tickChatApprovalExpiry, mergeDecisionEventReceived } = attentionSlice.actions;
 export default attentionSlice.reducer;

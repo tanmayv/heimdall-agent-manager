@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Source regression checks for chain-aware chat_event targeting in App.tsx."""
+"""Static regression checks for chain-aware chat_event targeting in wsInvalidation."""
 
 from pathlib import Path
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "src" / "ui" / "components" / "App.tsx"
+WS = ROOT / "src" / "ui" / "api" / "wsInvalidation.ts"
 
 
 def require(condition: bool, message: str) -> None:
@@ -15,14 +16,20 @@ def require(condition: bool, message: str) -> None:
 
 
 def main() -> None:
-    src = APP.read_text(encoding="utf-8")
+    app = APP.read_text(encoding="utf-8")
+    ws = WS.read_text(encoding="utf-8")
 
-    require("dispatch(chatEventReceived(payload));" in src, "chat_event handler should update unread metadata")
-    require("const eventChainId = payload.chain_id || '';" in src, "chat_event handler should read payload.chain_id")
-    require("if (focused && eventChainId && focused === eventChainId)" in src, "focused chain should refresh only on matching chain_id")
-    require("focusedChain?.coordinatorAgentInstanceId === agentId" in src, "legacy fallback should still match focused coordinator for unscoped events")
-    require("dispatch(revalidateChainView(focused));" in src, "matching chain-scoped events should revalidate chain view")
-    require("dispatch(fetchSelectedChat({ agentId: selectedDirectAgent }));" in src, "selected direct chat should still refresh on message-less events")
+    require("import { handleUserWsEvent } from '../api/wsInvalidation';" in app, "App should import handleUserWsEvent")
+    require("handleUserWsEvent(dispatch, payload, {" in app, "App websocket onmessage should delegate to wsInvalidation")
+    require("const coordinatorChainId = eventChainId || (focusedCoordinatorAgentInstanceId and focusedCoordinatorAgentInstanceId === agentId ? focusedChainId : '')".replace(" and ", " && ") in ws, "wsInvalidation should derive coordinator chain targeting")
+    require("dispatch(chatEventReceived(payload));" in ws, "chat_event should still update unread/session metadata")
+    require("dispatch(wsChainViewRefreshRequested(`chat_event:${coordinatorChainId}:${payload.message_id || ''}`));" in ws, "focused coordinator chat should mark scoped WS refresh reason")
+    require("dispatch(fetchSelectedChat({ agentId: selectedAgentId }));" not in ws, "wsInvalidation should not explicitly fetch direct chat on id-only events")
+    require("dispatch(fetchGuideChat());" not in ws, "wsInvalidation should not explicitly fetch guide chat on id-only events")
+    require("dispatch(fetchChainCoordinatorChatPage({ chainId: coordinatorChainId }));" not in ws, "wsInvalidation should not explicitly fetch coordinator chat on id-only events")
+    require("dispatch(heimdallApi.util.invalidateTags([{ type: 'CoordinatorChat', id: coordinatorChainId }]));" in ws, "coordinator chat invalidation must be chain-scoped")
+    require("dispatch(heimdallApi.util.invalidateTags([{ type: 'GuideChat', id: GUIDE_AGENT_ID }]));" in ws, "guide chat invalidation must be guide-scoped")
+    require("dispatch(heimdallApi.util.invalidateTags([{ type: 'Chat', id: agentId }]));" in ws, "direct chat invalidation must be agent-scoped")
 
     print("UI CHAIN CHAT EVENT TARGETING TEST PASSED")
 

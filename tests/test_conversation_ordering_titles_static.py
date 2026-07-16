@@ -8,6 +8,7 @@ USER_RPC = (ROOT / "src/daemon/user_rpc.odin").read_text(encoding="utf-8")
 CHAT_REST = (ROOT / "src/daemon/chat_rest.odin").read_text(encoding="utf-8")
 MSG_DB = (ROOT / "src/daemon/message_db_service.odin").read_text(encoding="utf-8")
 API = (ROOT / "src/ui/api/daemonApi.ts").read_text(encoding="utf-8")
+CHAT_ENDPOINTS = (ROOT / "src/ui/api/endpoints/chats.ts").read_text(encoding="utf-8")
 SLICE = (ROOT / "src/ui/store/chatSlice.ts").read_text(encoding="utf-8")
 APP = (ROOT / "src/ui/components/App.tsx").read_text(encoding="utf-8")
 
@@ -42,14 +43,15 @@ require("export async function listConversations" in API, "listConversations API
 require("action: 'list_chats'" in API, "listConversations must call list_chats")
 require("refreshConversationSummaries" in SLICE, "conversation summary thunk missing")
 require("conversationSummaryById" in SLICE, "conversation summary state missing")
-require("lastMessageUnixMs: Number(row.last_message_unix_ms" in SLICE, "summary must map last_message_unix_ms")
+require("lastMessageUnixMs: Number(row.last_message_unix_ms" in CHAT_ENDPOINTS, "summary must map last_message_unix_ms")
 
 # UI: sidebar uses daemon summary for ordering + titles; not passive.
 require("function conversationSortUnixMs(agent: any, messages: any[] = [], summary?: any)" in APP, "sort must accept daemon summary")
 require("const daemonTs = Number(summary?.lastMessageUnixMs || 0);" in APP, "sort must prefer daemon last_message_unix_ms")
 require("function conversationTitle(agent: any, messages: any[] = [], summary?: any)" in APP, "title must accept daemon summary")
 require("const daemonTitle = String(summary?.title || '').trim();" in APP, "title must prefer daemon title")
-require("dispatch(refreshConversationSummaries())" in APP, "summaries must refresh on explicit triggers")
-require("summaryById={conversationSummaryById}" in APP, "sidebar must receive daemon summaries")
+require("useListConversationSummariesQuery(" in APP, "conversation summaries should be owned by an RTKQ hook")
+require("dispatch(refreshConversationSummaries())" not in APP, "App should not manually refresh conversation summaries anymore")
+require("summaryById={effectiveConversationSummaryById}" in APP, "sidebar must receive RTKQ-backed daemon summaries")
 
 print("PASS: conversation ordering + daemon title static checks")

@@ -1,5 +1,6 @@
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
 import * as daemonApi from '../api/daemonApi';
+import { chatEndpoints } from '../api/endpoints/chats';
 
 const DEFAULT_DAEMON_URL = 'http://127.0.0.1:49322';
 const DEFAULT_USER_ID = 'operator@local';
@@ -372,25 +373,9 @@ export const refreshSettingsCatalog = createAsyncThunk('chat/refreshSettingsCata
   return { templates, providers };
 });
 
-export const refreshConversationSummaries = createAsyncThunk('chat/refreshConversationSummaries', async (_, { getState }) => {
-  const state = getState() as any;
-  const { daemonUrl, clientInstanceId, clientToken } = state.chat.session;
-  if (!clientToken) return {} as Record<string, any>;
-  const data = await daemonApi.listConversations({ daemonUrl, clientInstanceId, clientToken });
-  const byId: Record<string, any> = {};
-  for (const row of data.chats || []) {
-    const id = row.agent_instance_id || row.agentInstanceId || '';
-    if (!id) continue;
-    byId[id] = {
-      agentInstanceId: id,
-      agentId: row.agent_id || row.agentId || '',
-      projectId: row.project_id || row.projectId || '',
-      title: String(row.title || ''),
-      lastMessageUnixMs: Number(row.last_message_unix_ms || row.lastMessageUnixMs || 0),
-      unreadCount: Number(row.unread_count || row.unreadCount || 0),
-    };
-  }
-  return byId;
+// TODO(rtkq-migration owner=task-19f69e242e4): compatibility wrapper for non-hook call sites. Conversation summaries are owned by chatEndpoints.listConversationSummaries as the recurring cache authority.
+export const refreshConversationSummaries = createAsyncThunk('chat/refreshConversationSummaries', async (_, { dispatch }) => {
+  return await (dispatch as any)(chatEndpoints.endpoints.listConversationSummaries.initiate()).unwrap();
 });
 
 export const refreshAgents = createAsyncThunk('chat/refreshAgents', async (_, { getState }) => {
@@ -412,16 +397,17 @@ export const refreshAgents = createAsyncThunk('chat/refreshAgents', async (_, { 
   return merged;
 });
 
+// TODO(rtkq-migration owner=task-19f69e242e4): compatibility wrapper for remaining direct-chat component callers. Live conversation caching/dedupe belongs to chatEndpoints.fetchDirectChat/fetchDirectChatPage.
 export const fetchSelectedChat = createAsyncThunk(
   'chat/fetchSelectedChat',
-  async (payload: { agentId?: string; limit?: number; cursor?: number } | string | undefined, { getState }) => {
+  async (payload: { agentId?: string; limit?: number; cursor?: number } | string | undefined, { dispatch, getState }) => {
     const state = (getState() as any).chat;
     const { session, selectedAgentId } = state;
-    
+
     let agentInstanceId = selectedAgentId;
     let limit = 50;
     let cursor = 0;
-    
+
     if (typeof payload === 'string') {
       agentInstanceId = payload;
     } else if (payload && typeof payload === 'object') {
@@ -429,33 +415,19 @@ export const fetchSelectedChat = createAsyncThunk(
       if (payload.limit !== undefined) limit = payload.limit;
       if (payload.cursor !== undefined) cursor = payload.cursor;
     }
-    
+
     if (!agentInstanceId || !session.clientToken) return { agentId: agentInstanceId, messages: [], nextCursor: 0, isAppend: false, markedRead: false };
-    
-    const isOpenChat = agentInstanceId === selectedAgentId;
-    if (isOpenChat && cursor === 0) { // Only mark as read on initial load
-      await daemonApi.markChatRead({
-        daemonUrl: session.daemonUrl,
-        clientInstanceId: session.clientInstanceId,
-        clientToken: session.clientToken,
-        agentInstanceId,
-      });
-    }
-    
-    const data = await daemonApi.fetchChat({
-      daemonUrl: session.daemonUrl,
-      clientToken: session.clientToken,
-      agentInstanceId,
-      limit,
-      cursor,
-    });
-    
-    return { 
-      agentId: agentInstanceId, 
-      messages: (data.messages ?? []).map(mapMessage).reverse(), 
-      nextCursor: data.next_cursor || 0, 
-      isAppend: cursor > 0, 
-      markedRead: isOpenChat && cursor === 0 
+
+    const result = cursor > 0
+      ? await (dispatch as any)(chatEndpoints.endpoints.fetchDirectChatPage.initiate({ agentInstanceId, cursor, limit })).unwrap()
+      : await (dispatch as any)(chatEndpoints.endpoints.fetchDirectChat.initiate({ agentInstanceId, limit })).unwrap();
+
+    return {
+      agentId: agentInstanceId,
+      messages: result.messages || [],
+      nextCursor: result.nextCursor || 0,
+      isAppend: cursor > 0,
+      markedRead: cursor === 0,
     };
   },
   {
@@ -478,54 +450,38 @@ export const fetchSelectedChat = createAsyncThunk(
 
 export const sendMessageToSelectedAgent = createAsyncThunk(
   'chat/sendMessageToSelectedAgent',
-  async (payload: { body: string; tempId: string; interrupt?: boolean }, { getState }) => {
-    const { session, selectedAgentId } = (getState() as any).chat;
-    const res = await daemonApi.sendToAgent({
-      daemonUrl: session.daemonUrl,
-      clientInstanceId: session.clientInstanceId,
-      clientToken: session.clientToken,
-      agentInstanceId: selectedAgentId,
+  async (payload: { agentId?: string; body: string; tempId: string; interrupt?: boolean }, { dispatch, getState }) => {
+    const { selectedAgentId } = (getState() as any).chat;
+    const agentInstanceId = payload.agentId || selectedAgentId;
+    const res = await (dispatch as any)(chatEndpoints.endpoints.sendAgentMessage.initiate({
+      agentInstanceId,
       body: payload.body,
+      tempId: payload.tempId,
       interrupt: payload.interrupt,
-    });
-    return { messageId: res.message_id };
+    })).unwrap();
+    return { messageId: res.messageId, agentId: agentInstanceId };
   }
 );
 
-export const fetchGuideChat = createAsyncThunk('chat/fetchGuideChat', async (payload: { cursor?: number; limit?: number } | void | undefined, { getState }) => {
+// TODO(rtkq-migration owner=task-19f69e242e4): compatibility wrapper for remaining guide-chat component callers. Live guide chat caching/dedupe belongs to chatEndpoints.fetchGuideChat/fetchGuideChatPage.
+export const fetchGuideChat = createAsyncThunk('chat/fetchGuideChat', async (payload: { cursor?: number; limit?: number } | void | undefined, { dispatch, getState }) => {
   const { session } = (getState() as any).chat;
   const cursor = typeof payload === 'object' && payload?.cursor !== undefined ? payload.cursor : 0;
   const limit = typeof payload === 'object' && payload?.limit !== undefined ? payload.limit : 80;
   if (!session.clientToken) return { agentId: GUIDE_AGENT_ID, messages: [], nextCursor: 0, markedRead: false, isAppend: false };
-  if (cursor === 0) {
-    await daemonApi.markChatRead({
-      daemonUrl: session.daemonUrl,
-      clientInstanceId: session.clientInstanceId,
-      clientToken: session.clientToken,
-      agentInstanceId: GUIDE_AGENT_ID,
-    }).catch(() => undefined);
-  }
-  const data = await daemonApi.fetchChat({
-    daemonUrl: session.daemonUrl,
-    clientToken: session.clientToken,
-    agentInstanceId: GUIDE_AGENT_ID,
-    limit,
-    cursor,
-  });
-  return { agentId: GUIDE_AGENT_ID, messages: (data.messages ?? []).map(mapMessage).reverse(), nextCursor: data.next_cursor || 0, markedRead: cursor === 0, isAppend: cursor > 0 };
+  const result = cursor > 0
+    ? await (dispatch as any)(chatEndpoints.endpoints.fetchGuideChatPage.initiate({ cursor, limit })).unwrap()
+    : await (dispatch as any)(chatEndpoints.endpoints.fetchGuideChat.initiate({ limit })).unwrap();
+  return { agentId: GUIDE_AGENT_ID, messages: result.messages || [], nextCursor: result.nextCursor || 0, markedRead: cursor === 0, isAppend: cursor > 0 };
 });
 
-export const sendGuideMessage = createAsyncThunk('chat/sendGuideMessage', async (payload: { body: string; tempId: string; interrupt?: boolean }, { getState }) => {
-  const { session } = (getState() as any).chat;
-  const res = await daemonApi.sendToAgent({
-    daemonUrl: session.daemonUrl,
-    clientInstanceId: session.clientInstanceId,
-    clientToken: session.clientToken,
-    agentInstanceId: GUIDE_AGENT_ID,
+export const sendGuideMessage = createAsyncThunk('chat/sendGuideMessage', async (payload: { body: string; tempId: string; interrupt?: boolean }, { dispatch }) => {
+  const res = await (dispatch as any)(chatEndpoints.endpoints.sendGuideMessage.initiate({
     body: payload.body,
+    tempId: payload.tempId,
     interrupt: payload.interrupt,
-  });
-  return { messageId: res.message_id };
+  })).unwrap();
+  return { messageId: res.messageId };
 });
 
 export const startAgentInstance = createAsyncThunk('chat/startAgentInstance', async (agent: any, { dispatch, getState }) => {
@@ -1081,8 +1037,8 @@ const chatSlice = createSlice({
       .addCase(sendMessageToSelectedAgent.pending, (state: any, action) => {
         state.sending = true;
         state.session.error = '';
-        const { body, tempId } = action.meta.arg;
-        const agentId = state.selectedAgentId;
+        const { body, tempId, agentId: explicitAgentId } = action.meta.arg;
+        const agentId = explicitAgentId || state.selectedAgentId;
         if (agentId && tempId) {
           if (!state.chats[agentId]) {
             state.chats[agentId] = [];
@@ -1102,8 +1058,8 @@ const chatSlice = createSlice({
       })
       .addCase(sendMessageToSelectedAgent.fulfilled, (state: any, action) => {
         state.sending = false;
-        const { tempId } = action.meta.arg;
-        const agentId = state.selectedAgentId;
+        const { tempId, agentId: explicitAgentId } = action.meta.arg;
+        const agentId = action.payload.agentId || explicitAgentId || state.selectedAgentId;
         const { messageId } = action.payload;
         if (agentId && tempId && state.chats[agentId]) {
           const msg = state.chats[agentId].find((m: any) => m.id === tempId);
@@ -1117,8 +1073,8 @@ const chatSlice = createSlice({
       })
       .addCase(sendMessageToSelectedAgent.rejected, (state: any, action) => {
         state.sending = false;
-        const { tempId } = action.meta.arg;
-        const agentId = state.selectedAgentId;
+        const { tempId, agentId: explicitAgentId } = action.meta.arg;
+        const agentId = explicitAgentId || state.selectedAgentId;
         if (agentId && tempId && state.chats[agentId]) {
           const msg = state.chats[agentId].find((m: any) => m.id === tempId);
           if (msg) {
