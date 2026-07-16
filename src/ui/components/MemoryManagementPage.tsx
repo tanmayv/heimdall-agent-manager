@@ -177,8 +177,15 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
             reason: form.reason,
             evidence: form.evidence,
           })).unwrap();
-          await dispatch(fetchMemoryDetail(selectedRecord.memoryId)).catch(() => undefined);
-          setSubmitMessage(`Submitted edit proposal for ${selectedRecord.memoryId}${result?.proposal_id ? ` (${result.proposal_id})` : ''}.`);
+          // Edit uses a supersede model: approving the proposal creates a NEW active
+          // record (result.memory_id) and archives the original. Surface/select the
+          // resulting record so the durable change is directly verifiable instead of
+          // re-showing the now-archived original id.
+          const editedId = result?.memory_id || selectedRecord.memoryId;
+          if (editedId && editedId !== selectedRecord.memoryId) onSelectMemory(editedId);
+          await dispatch(fetchMemoryDetail(editedId)).catch(() => undefined);
+          if (editedId !== selectedRecord.memoryId) await dispatch(fetchMemoryDetail(selectedRecord.memoryId)).catch(() => undefined);
+          setSubmitMessage(`Submitted edit proposal for ${selectedRecord.memoryId}${result?.proposal_id ? ` (${result.proposal_id})` : ''}. On approval this supersedes into ${editedId} (original archived).`);
         } else if (formMode === 'archive') {
           const result = await dispatch(proposeMemoryChange({
             proposalAction: 'archive',
@@ -188,7 +195,7 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
             evidence: form.evidence,
           })).unwrap();
           await dispatch(fetchMemoryDetail(selectedRecord.memoryId)).catch(() => undefined);
-          setSubmitMessage(`Submitted archive proposal for ${selectedRecord.memoryId}${result?.proposal_id ? ` (${result.proposal_id})` : ''}.`);
+          setSubmitMessage(`Submitted archive proposal for ${selectedRecord.memoryId}${result?.proposal_id ? ` (${result.proposal_id})` : ''}. On approval the record becomes status=archived.`);
         } else if (formMode === 'rollback') {
           const result = await dispatch(proposeMemoryChange({
             proposalAction: 'rollback',

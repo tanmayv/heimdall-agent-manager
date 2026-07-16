@@ -23,6 +23,28 @@ curl -s -X POST "http://127.0.0.1:<debug-port>/upload-file" \
 # Optional: pass base64 bytes with "content_base64"; omitted content defaults to a 1x1 PNG.
 # The new artifact then appears in the right-sidebar Artifacts list and via `ham-ctl artifacts list`.
 ```
+
+### Validating memory edit/archive (supersede model)
+
+Memory edit is a **supersede**, not an in-place mutation. Submitting an edit
+proposal for `mem_A` and approving it creates a NEW active record `mem_B`
+(`result.memory_id` from the propose response) and archives the original
+`mem_A`. Archive marks the target record `status=archived` on approval. Both
+edit and archive land as pending proposals that require approval before the
+durable change applies.
+
+To validate edit durably through the UI (Memory Management surface):
+
+1. Select the record, choose `edit`, change the body, and `memory-form-submit-btn`.
+   The success message now names the resulting record id (`supersedes into mem_B`).
+2. Approve the pending proposal via `memory-pending-approve-<memoryId>`.
+3. Verify durability: the resulting record (auto-selected) is `status=active` with
+   the new body and an incremented `version`; the original is `status=archived`.
+   Backend check: `POST /user-rpc {action: memory_show, memory_id: mem_B}` (or
+   `memory_list include_all_statuses=true`).
+
+Archive: choose `archive`, submit, approve via `memory-pending-approve-<memoryId>`,
+then confirm the record is `status=archived` (version incremented).
 - Uses CLI/HTTP helpers only for isolated setup/teardown, passive assertions, model/preflight checks, and transcript collection.
 - Does **not** substitute synthetic agents for the required real `pi`/Codex scenario. Missing `pi`, Codex model mapping, display server, or Electron dependencies produce explicit preflight blockers.
 - Uses a runner-owned isolated wrapper credentials path. Pass `--wrapper-credentials-path <file>` or set `HEIMDALL_E2E_WRAPPER_CREDENTIALS=<file>` to copy an existing provider credentials file into that isolated path; otherwise the runner creates an isolated empty credentials file and relies on provider config/environment.
