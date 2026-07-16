@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Remote agents — peers in Settings + reviewer picker (matches real UI)</title>
+  <style>
+    :root{color-scheme:dark;--line:rgba(255,255,255,.10);--line2:rgba(255,255,255,.18);--sky:#38bdf8;--skySoft:rgba(56,189,248,.10);--emerald:#34d399;--emeraldSoft:rgba(52,211,153,.15);--violet:#c4b5fd;--violetSoft:rgba(124,58,237,.13);--teal:#5eead4;--tealSoft:rgba(45,212,191,.12);--red:#fca5a5;--redSoft:rgba(248,113,113,.13);--amber:#fbbf24}
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;background:#08090b;color:#f4f4f5;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;padding:26px}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+    code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:#dbeafe}
+    .wrap{max-width:1200px;margin:0 auto}
+    .eyebrow{font-size:11px;font-weight:850;letter-spacing:.15em;text-transform:uppercase;color:var(--sky)}
+    h1{margin:7px 0 0;font-size:24px;letter-spacing:-.03em}
+    .lede{max-width:860px;margin:8px 0 18px;color:#a1a1aa;font-size:13.5px;line-height:1.55}
+    .caption{margin:22px 0 10px;font-size:12px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:#71717a}
+    /* ---- Settings modal shell (mirrors settings-modal / rail / body) ---- */
+    .settings{background:#08090b;padding:20px;border-radius:22px;border:1px solid var(--line)}
+    .shell{display:grid;grid-template-columns:250px minmax(0,1fr);overflow:hidden;border-radius:22px;border:1px solid rgba(255,255,255,.10);background:#0f0f0f;box-shadow:0 24px 70px rgba(0,0,0,.4)}
+    .rail{border-right:1px solid #262626;background:#090909;padding:16px;min-height:560px}
+    .railGroup{margin-bottom:20px}
+    .railTitle{margin:0 0 8px;padding:0 8px;font-size:10.5px;letter-spacing:.18em;text-transform:uppercase;color:#525257}
+    .railItem{display:block;width:100%;text-align:left;border:0;border-radius:6px;background:transparent;color:#71717a;padding:8px 12px;font-size:13px}
+    .railItem.active{background:#1c1c1c;color:#f4f4f5}
+    .railNote{border-radius:12px;border:1px solid rgba(56,189,248,.2);background:var(--skySoft);color:#bae6fd;padding:12px;font-size:11.5px;line-height:1.45}
+    .body{position:relative;padding:24px;min-width:0}
+    .bclose{position:absolute;right:20px;top:20px;border:1px solid var(--line);background:#141414;color:#a1a1aa;border-radius:6px;padding:3px 8px;font-size:14px}
+    h2.title{margin:0;font-size:28px;font-weight:600;letter-spacing:-.02em}
+    .psub{margin:5px 0 20px;font-size:13.5px;color:#71717a}
+    .banner{border-radius:16px;border:1px solid rgba(251,191,36,.2);background:rgba(251,191,36,.1);color:#fde68a;padding:14px;font-size:13px;margin-bottom:16px}
+    .banner.teal{border-color:rgba(45,212,191,.25);background:var(--tealSoft);color:#c7fff4}
+    .subcap{margin:0 0 12px;font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:#71717a}
+    .subcap.mt{margin-top:24px}
+    /* daemon / peer rows (mirror settings-daemon-row) */
+    .drow{display:flex;align-items:center;gap:12px;border-radius:16px;border:1px solid var(--line);background:rgba(255,255,255,.035);padding:14px;margin-bottom:8px}
+    .drow.active{border-color:rgba(56,189,248,.3);background:var(--skySoft)}
+    .ddot{width:10px;height:10px;border-radius:999px;flex:0 0 auto}
+    .ddot.sky{background:var(--sky)}
+    .ddot.on{background:var(--emerald);box-shadow:0 0 12px rgba(52,211,153,.55)}
+    .ddot.off{background:#71717a}
+    .dmain{min-width:0;flex:1}
+    .dname{font-weight:600;color:#f4f4f5}
+    .durl{margin-top:3px;font-size:12px;color:#71717a}
+    .dmeta{margin-top:3px;font-size:12px;color:#71717a}
+    .btn{border:0;border-radius:12px;padding:8px 12px;font-size:12px;font-weight:600}
+    .btn.ghost{background:rgba(255,255,255,.1);color:#f4f4f5}
+    .btn.danger{background:rgba(248,113,113,.1);color:#fecaca}
+    .btn.danger[disabled]{opacity:.4}
+    /* add card (mirror add daemon) */
+    .addcard{border-radius:16px;border:1px solid var(--line);background:rgba(255,255,255,.035);padding:16px}
+    .cols3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+    .fl{font-size:13px;color:#d4d4d8}
+    .fi{margin-top:4px;width:100%;border:1px solid var(--line);border-radius:12px;background:rgba(0,0,0,.3);color:#f4f4f5;padding:9px 12px;font-size:13px;outline:0}
+    .fi:focus{border-color:rgba(56,189,248,.6)}
+    .addfoot{margin-top:16px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+    .swatches{display:flex;align-items:center;gap:8px;font-size:12px;color:#71717a}
+    .sw{width:16px;height:16px;border-radius:999px}
+    .connect{border:0;border-radius:12px;background:var(--sky);color:#000;padding:9px 16px;font-size:13px;font-weight:700}
+    .connect.teal{background:var(--teal)}
+    .peerhint{margin-top:9px;font-size:11.5px;color:#71717a;line-height:1.45}
+    .badge{display:inline-flex;align-items:center;gap:5px;border-radius:999px;background:var(--tealSoft);color:#c7fff4;padding:1px 7px;font-size:9.5px;font-weight:800;vertical-align:middle}
+    .badge .d{width:5px;height:5px;border-radius:999px;background:var(--teal)}
+    .pill{border-radius:999px;padding:4px 9px;font-size:10px;font-weight:800}
+    .pill.on{background:var(--emeraldSoft);color:#bbf7d0}
+    .pill.off{background:var(--redSoft);color:#fecaca}
+    /* ---- reviewer picker (mirrors AgentPicker) ---- */
+    .modal{border:1px solid var(--line2);border-radius:22px;background:rgba(16,18,23,.94);padding:18px;max-width:560px}
+    .mh{display:flex;justify-content:space-between;gap:14px;margin-bottom:12px}
+    .mt{font-size:19px;font-weight:800;letter-spacing:-.02em}
+    .mtask{margin-top:5px;color:#a1a1aa;font-size:13px}
+    .mclose{border:0;border-radius:12px;background:rgba(255,255,255,.1);color:#e4e4e7;padding:8px 12px;font-size:13px;font-weight:700}
+    .picker{border-radius:16px;border:1px solid var(--line);background:rgba(0,0,0,.2);padding:12px}
+    .phead{display:flex;justify-content:space-between;gap:12px}
+    .ptitle{font-weight:600}.pfilter{font-size:12px;color:#71717a}
+    .selchip{max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border-radius:999px;background:rgba(255,255,255,.05);padding:5px 9px;font-size:12px;color:#a1a1aa}
+    .selchip b{color:#e4e4e7}
+    .tabs{margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:4px;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.03);padding:4px}
+    .tab{border:0;border-radius:8px;background:transparent;color:#71717a;text-align:left;padding:8px 12px;font-size:12px;font-weight:700}
+    .tab.active{background:var(--skySoft);color:#e0f2fe;box-shadow:inset 0 0 0 1px rgba(56,189,248,.35)}
+    .psearch{margin-top:12px;width:100%;border:1px solid var(--line);border-radius:12px;background:rgba(0,0,0,.3);color:#f4f4f5;padding:9px 12px;font-size:13px;outline:0}
+    .results{margin-top:12px;display:grid;gap:8px}
+    .shead{padding:0 4px;font-size:10px;font-weight:750;letter-spacing:.18em;text-transform:uppercase;color:#71717a}
+    .row{border-radius:16px;border:1px solid var(--line);background:rgba(0,0,0,.2);padding:10px 12px}
+    .row.sel{border-color:rgba(56,189,248,.5);background:var(--skySoft)}
+    .row.identity{border-style:dashed;border-color:rgba(124,58,237,.25);background:rgba(124,58,237,.05)}
+    .row.remote{border-style:dashed;border-color:rgba(45,212,191,.28);background:rgba(45,212,191,.05)}
+    .row.remote.sel{border-style:solid;border-color:rgba(45,212,191,.6);background:rgba(45,212,191,.10)}
+    .rtop{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+    .rmain{min-width:0;flex:1}
+    .rtitle{font-size:14px;font-weight:600;display:flex;align-items:center;gap:7px}
+    .rid{margin-top:4px;font-size:11px;color:#71717a}
+    .rchips{margin-top:8px;display:flex;flex-wrap:wrap;gap:6px}
+    .chip{border-radius:999px;background:rgba(255,255,255,.05);padding:2px 8px;font-size:10px;color:#a1a1aa}
+    .chip.rem{background:var(--tealSoft);color:#c7fff4}
+    .startwith{margin-top:10px;display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+    .swl{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#71717a}
+    .sel-in{height:28px;border:1px solid var(--line);border-radius:8px;background:rgba(0,0,0,.3);color:#f4f4f5;padding:0 8px;font-size:11px}
+    .status{flex:0 0 auto;border-radius:999px;padding:4px 9px;font-size:10px;font-weight:600}
+    .st-live{background:var(--emeraldSoft);color:#bbf7d0}
+    .st-off{background:rgba(113,113,122,.15);color:#d4d4d8}
+    .st-id{background:var(--violetSoft);color:#ede9fe}
+    .st-remote{background:var(--tealSoft);color:#c7fff4}
+    .st-peeroff{background:var(--redSoft);color:#fecaca}
+    .notes{margin-top:22px;border:1px solid var(--line);border-radius:20px;background:rgba(16,18,23,.88);padding:18px}
+    .notes h2{margin:0 0 6px;font-size:15px}
+    .notes p.s{margin:0 0 10px;color:#71717a;font-size:12px}
+    .notes li{color:#babcc7;font-size:13px;line-height:1.6}.notes ul{margin:0 0 0 18px;padding:0}
+    @media(max-width:920px){.shell{grid-template-columns:1fr}.rail{display:none}.cols3{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <div class="eyebrow">Mockup · Remote agents · fits real Settings + AgentPicker</div>
+    <h1>Peers live in Settings → Daemons; remote agents show in the reviewer picker</h1>
+    <p class="lede">This reuses the actual <code>SettingsPage</code> layout — the two-pane modal with the General / Connections / Workspace rail and the <b>Daemons</b> pane. Peer daemons are a new subsection <i>inside</i> that pane (below the existing active-daemon list), styled with the same rows and add-card. The reviewer picker reuses the real <code>AgentPicker</code> and adds a remote section per connected peer.</p>
+
+    <!-- =============== SETTINGS PAGE (Daemons pane) =============== -->
+    <div class="caption">1 · Settings → Connections → Daemons</div>
+    <section class="settings">
+      <div class="shell">
+        <!-- rail mirrors settingsGroups -->
+        <nav class="rail">
+          <div class="railGroup"><div class="railTitle">General</div><button class="railItem">Defaults</button><button class="railItem">Team kinds</button></div>
+          <div class="railGroup"><div class="railTitle">Connections</div><button class="railItem active">Daemons</button><button class="railItem">Providers</button></div>
+          <div class="railGroup"><div class="railTitle">Workspace</div><button class="railItem">Agents &amp; templates</button><button class="railItem">Projects</button><button class="railItem">Memory browser</button><button class="railItem">Direct chat</button></div>
+          <div class="railNote">v1 is single-active-daemon-first. Switching changes the active daemon; merged multi-daemon views are intentionally not shown.</div>
+        </nav>
+
+        <section class="body">
+          <button class="bclose">✕</button>
+          <h2 class="title">Daemons</h2>
+          <p class="psub">Connect and manage the daemon this UI controls, plus peer daemons that lend agents. v1 uses one active daemon; peers are used for remote reviewers only.</p>
+
+          <div class="banner">Single active daemon mode: switch/reconnect changes the active daemon. Merged multi-daemon views are intentionally deferred for v1.</div>
+
+          <!-- existing active-daemon list -->
+          <div class="subcap">Connected</div>
+          <div class="drow active">
+            <span class="ddot sky"></span>
+            <div class="dmain"><div class="dname">Local daemon</div><div class="durl mono">http://127.0.0.1:49322</div><div class="dmeta">connected · daemon_id local-a1b2 · version 0.4.1 · 6 projects · 12 agents</div></div>
+            <button class="btn ghost">Reconnect</button>
+            <button class="btn danger" disabled>Remove</button>
+          </div>
+
+          <!-- NEW peer daemons subsection -->
+          <div class="subcap mt">Peer daemons <span class="badge"><span class="d"></span>lend agents</span></div>
+          <div class="banner teal">Peers are not switched to — they stay linked in the background so their agents can be picked as remote reviewers. Connecting copies no projects, chains, or agents; peers are queried live.</div>
+          <div class="drow">
+            <span class="ddot on"></span>
+            <div class="dmain"><div class="dname">studio-mini</div><div class="durl mono">http://studio-mini.local:49322</div><div class="dmeta">connected · daemon_id studio-9f3 · version 0.4.1 · lends 3 agents</div></div>
+            <button class="btn ghost">Reconnect</button>
+            <button class="btn danger">Remove</button>
+          </div>
+          <div class="drow">
+            <span class="ddot off"></span>
+            <div class="dmain"><div class="dname">ci-box</div><div class="durl mono">http://ci-box.local:49322</div><div class="dmeta">disconnected · last seen 12m ago · its remote agents show offline</div></div>
+            <button class="btn ghost">Reconnect</button>
+            <button class="btn danger">Remove</button>
+          </div>
+
+          <!-- add peer card mirrors add-daemon card -->
+          <div class="subcap mt">Add peer daemon</div>
+          <div class="addcard">
+            <div class="cols3">
+              <label class="fl">Peer URL<input class="fi mono" value="http://studio-mini.local:49322" /></label>
+              <label class="fl">Label<input class="fi" value="studio-mini" /></label>
+              <label class="fl">Access token<input class="fi mono" value="•••••••••••••" /></label>
+            </div>
+            <div class="addfoot">
+              <div class="swatches"><span>Color</span><span class="sw" style="background:var(--sky)"></span><span class="sw" style="background:var(--emerald)"></span><span class="sw" style="background:var(--amber)"></span><span class="sw" style="background:var(--violet)"></span></div>
+              <button class="connect teal">Connect peer</button>
+            </div>
+            <p class="peerhint">A peer link is bidirectional: this daemon verifies the peer via <code>/health</code> + <code>/daemon/info</code>, and results/reviews flow back over the same link. The token stays on the daemon and is never shown to the UI after saving.</p>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <!-- =============== REVIEWER PICKER =============== -->
+    <div class="caption">2 · Set task reviewer (AgentPicker with a remote section per peer)</div>
+    <section class="modal">
+      <div class="mh"><div><div class="mt">Set task reviewer</div><div class="mtask">Fix chat scroll jump on first load</div></div><button class="mclose">Close</button></div>
+      <div class="picker">
+        <div class="phead"><div><div class="ptitle">Agent picker</div><div class="pfilter">Filter: reviewer</div></div><div class="selchip">Selected <b>reviewer@s-r7f42</b></div></div>
+        <div class="tabs"><button class="tab active">Suggested</button><button class="tab">All instances</button></div>
+        <input class="psearch" value="review" aria-label="Search agents" />
+        <div class="results">
+          <div class="shead">Team instances</div>
+          <div class="row"><div class="rtop"><div class="rmain"><div class="rtitle">Reviewer · chain team</div><div class="rid mono">reviewer@s-review-7f42</div><div class="rchips"><span class="chip">reviewer</span><span class="chip">home heimdall-agent-manager</span></div><div class="startwith"><span class="swl">Start with</span><select class="sel-in"><option>pi</option></select><select class="sel-in"><option>smart</option><option>normal</option></select></div></div><span class="status st-off">OFFLINE</span></div></div>
+
+          <div class="shead">Remote · studio-mini</div>
+          <div class="row remote sel"><div class="rtop"><div class="rmain"><div class="rtitle">Reviewer <span class="badge"><span class="d"></span>remote</span></div><div class="rid mono">reviewer@s-r7f42 · studio-mini</div><div class="rchips"><span class="chip rem">reviewer</span><span class="chip">no file access · artifacts only</span></div></div><span class="status st-remote">REMOTE · LIVE</span></div></div>
+          <div class="row remote"><div class="rtop"><div class="rmain"><div class="rtitle">Odin Reviewer <span class="badge"><span class="d"></span>remote</span></div><div class="rid mono">odin-reviewer@s-2a1 · studio-mini</div><div class="rchips"><span class="chip rem">reviewer</span><span class="chip">odin</span></div></div><span class="status st-remote">REMOTE · LIVE</span></div></div>
+
+          <div class="shead">Remote · ci-box (disconnected)</div>
+          <div class="row remote" style="opacity:.5"><div class="rtop"><div class="rmain"><div class="rtitle">CI Reviewer <span class="badge"><span class="d"></span>remote</span></div><div class="rid mono">ci-review@s-9f3 · ci-box</div><div class="rchips"><span class="chip rem">reviewer</span><span class="chip">peer offline</span></div></div><span class="status st-peeroff">OFFLINE</span></div></div>
+
+          <div class="shead">Durable agent IDs</div>
+          <div class="row identity"><div class="rtop"><div class="rmain"><div class="rtitle">Reviewer</div><div class="rid mono">agent_id: reviewer</div><div class="rchips"><span class="chip">reviewer</span><span class="chip">new dormant instance</span></div><div class="startwith"><span class="swl">Start with</span><select class="sel-in"><option>pi</option></select><select class="sel-in"><option>smart</option><option>normal</option></select></div></div><span class="status st-id">AGENT ID</span></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="notes">
+      <h2>What changes vs today</h2>
+      <p class="s">Both surfaces reuse existing components; no new modals.</p>
+      <ul>
+        <li><b>Settings → Daemons pane</b> gains a <b>Peer daemons</b> subsection (rows + add-card reuse the exact <code>settings-daemon-row</code> / add-daemon styling). Peers are <b>linked, not switched to</b> — distinct from the single active daemon.</li>
+        <li><b>Peer row meta</b> shows connectivity + how many agents it lends; a disconnected peer is dimmed and its remote agents go offline.</li>
+        <li><b>AgentPicker</b> gains a <b>Remote · &lt;peer&gt;</b> section and a <span class="badge"><span class="d"></span>remote</span> row kind, reusing the row template. Only the peer agent's own instance id + daemon name are shown; the local proxy id stays hidden.</li>
+        <li><b>No "Start with"</b> on remote rows — provider/tier belong to the peer.</li>
+        <li><b>Selecting a remote row</b> behaves like the identity row: creates a dormant proxy behind the scenes and returns a concrete <code>agent_instance_id</code> to the role; callers are unchanged.</li>
+        <li><b>v1 scope:</b> remote agents appear only in the reviewer/assignee picker.</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>
