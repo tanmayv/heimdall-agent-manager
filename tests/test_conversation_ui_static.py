@@ -246,7 +246,7 @@ checks = [
         'data-debug-id={`agents-management-status-${group.agentId}`}',
         'data-debug-id={`agents-management-summary-${group.agentId}`}',
         'open the main sidebar for runtime navigation',
-        'Instances · <span className="text-zinc-300">open via main sidebar</span>',
+        'Edit defaults · <span className="text-zinc-300">provider · tier · project</span>',
         'function SidebarAgentsList({ agents = [], projects = [], session = {}, providers = [], onOpenAgentPage, onRefreshAgents, showAgentList = true',
         'launchButtonLabel = \'Launch agent\'',
         'data-debug-id={launchButtonDebugId}',

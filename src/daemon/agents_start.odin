@@ -621,6 +621,13 @@ handle_agent_instance_update :: proc(client: net.TCP_Socket, body: string) {
 		model_tier = normalize_model_tier(req_tier)
 	}
 	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = display_name, template_id = template_id, provider_profile = provider_profile, project_id = project_id, run_dir = run_dir, model_tier = model_tier, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`); return }
+	// Agents tab identity edits update the durable agent_id defaults (provider /
+	// tier / default project) that seed every future concrete instance. The flag
+	// keeps ordinary per-instance updates from mutating shared identity defaults.
+	if extract_json_bool(body, "update_agent_id_defaults", false) {
+		resolved_agent_id := agent_id_from_instance_id(rec.agent_instance_id)
+		_ = agent_id_update_defaults(resolved_agent_id, display_name, provider_profile, model_tier, project_id, "api")
+	}
 	write_agent_ok_response(client, "updated", agent_instance_records[agent_record_index(rec.agent_record_id)])
 }
 

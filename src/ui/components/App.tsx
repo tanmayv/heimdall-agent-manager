@@ -2240,7 +2240,7 @@ function AgentsManagementSurface({ agents = [], chats = {}, tasksById = {}, chai
                     <div data-debug-id={`agents-management-summary-${group.agentId}`} className="mt-3 grid gap-2 text-xs text-zinc-500 md:grid-cols-3">
                       <div className="rounded-lg border border-white/10 px-2 py-1.5">Provider / tier · <span className="text-zinc-300">{provider} · {tier}</span></div>
                       <div className="rounded-lg border border-white/10 px-2 py-1.5">Project · <span className="text-zinc-300">{project?.name || projectId || 'none'}</span></div>
-                      <div className="rounded-lg border border-white/10 px-2 py-1.5">Instances · <span className="text-zinc-300">open via main sidebar</span></div>
+                      <div className="rounded-lg border border-white/10 px-2 py-1.5">Edit defaults · <span className="text-zinc-300">provider · tier · project</span></div>
                     </div>
                   </>
                 );
@@ -2620,7 +2620,7 @@ function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, c
     setEditSaving(true);
     setEditError('');
     try {
-      await daemonApi.updateAgent({ daemonUrl: session?.daemonUrl || '', agentRecordId: identity.agentRecordId || identity.agent_record_id || '', agentInstanceId: agentInstanceId(identity) || durableId, displayName: editName.trim() || durableId, providerProfile: editProvider, projectId: editProject, modelTier: editTier });
+      await daemonApi.updateAgent({ daemonUrl: session?.daemonUrl || '', agentRecordId: identity.agentRecordId || identity.agent_record_id || '', agentInstanceId: agentInstanceId(identity) || durableId, displayName: editName.trim() || durableId, providerProfile: editProvider, projectId: editProject, modelTier: editTier, updateAgentIdDefaults: true });
       setEditOpen(false);
       await onRefreshAgents?.();
     } catch (err: any) {

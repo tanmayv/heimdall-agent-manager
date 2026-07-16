@@ -53,6 +53,10 @@ Agent_Id_Event :: struct {
 	default_provider_profile: string,
 	default_model_tier: string,
 	default_project_id: string,
+	// When true, default_project_id is applied verbatim (including empty to clear
+	// the default project). When false, an empty default_project_id preserves the
+	// existing value so unrelated upserts do not wipe the durable default.
+	default_project_set: bool,
 	state: string,
 	author: string,
 	created_unix_ms: i64,
@@ -169,7 +173,7 @@ agent_id_apply_event :: proc(event: Agent_Id_Event) -> bool {
 	tier := event.default_model_tier
 	if tier != "" do tier = normalize_model_tier(tier)
 	rec.default_model_tier = strings.clone(tier)
-	if event.default_project_id != "" || rec.default_project_id == "" do rec.default_project_id = strings.clone(event.default_project_id)
+	if event.default_project_set || event.default_project_id != "" || rec.default_project_id == "" do rec.default_project_id = strings.clone(event.default_project_id)
 	state := event.state
 	if state == "" do state = rec.state
 	if state == "" do state = AGENT_ID_STATE_ACTIVE
@@ -247,10 +251,38 @@ agent_id_record_to_event :: proc(rec: Agent_Id_Record, author: string) -> Agent_
 		default_provider_profile = rec.default_provider_profile,
 		default_model_tier = rec.default_model_tier,
 		default_project_id = rec.default_project_id,
+		default_project_set = true,
 		state = rec.state,
 		author = author,
 		order = rec.order,
 	}
+}
+
+// Update the durable defaults for an existing agent_id from the Agents tab
+// identity edit / instance update. Only updates a record that already exists;
+// preserves template/role/state and always applies the requested default
+// project verbatim (empty clears the default). Returns false if unknown.
+agent_id_update_defaults :: proc(agent_id, display_name, default_provider_profile, default_model_tier, default_project_id, author: string) -> bool {
+	if agent_id == "" do return false
+	idx := agent_id_index(agent_id)
+	if idx < 0 do return false
+	rec := agent_id_records[idx]
+	if rec.archived_at_unix_ms != 0 do return false
+	tier := default_model_tier; if tier != "" do tier = normalize_model_tier(tier)
+	return agent_id_append_event(Agent_Id_Event{
+		kind = .Agent_Id_Upserted,
+		agent_id = agent_id,
+		display_name = display_name if display_name != "" else rec.display_name,
+		template_id = rec.template_id,
+		agent_role = rec.agent_role,
+		default_provider_profile = default_provider_profile,
+		default_model_tier = tier,
+		default_project_id = default_project_id,
+		default_project_set = true,
+		state = rec.state,
+		author = author,
+		order = rec.order,
+	})
 }
 
 agent_id_event_clone :: proc(e: Agent_Id_Event) -> Agent_Id_Event {
@@ -279,7 +311,8 @@ agent_id_event_json :: proc(event: Agent_Id_Event) -> string {
 	strings.write_string(&b, `","default_provider_profile":"`); json_write_string(&b, event.default_provider_profile)
 	strings.write_string(&b, `","default_model_tier":"`); json_write_string(&b, event.default_model_tier)
 	strings.write_string(&b, `","default_project_id":"`); json_write_string(&b, event.default_project_id)
-	strings.write_string(&b, `","state":"`); json_write_string(&b, event.state)
+	strings.write_string(&b, `","default_project_set":`); strings.write_string(&b, "true" if event.default_project_set else "false")
+	strings.write_string(&b, `,"state":"`); json_write_string(&b, event.state)
 	strings.write_string(&b, `","author":"`); json_write_string(&b, event.author)
 	strings.write_string(&b, `","order":`); strings.write_string(&b, fmt.tprintf("%d", event.order))
 	strings.write_string(&b, `,"created_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", event.created_unix_ms))
@@ -357,6 +390,7 @@ agent_id_event_from_json :: proc(line: string) -> (Agent_Id_Event, bool) {
 		default_provider_profile = extract_json_string(line, "default_provider_profile", ""),
 		default_model_tier = extract_json_string(line, "default_model_tier", ""),
 		default_project_id = extract_json_string(line, "default_project_id", ""),
+		default_project_set = extract_json_bool(line, "default_project_set", false),
 		state = extract_json_string(line, "state", ""),
 		author = extract_json_string(line, "author", ""),
 		order = extract_json_int(line, "order", 0),

@@ -39,7 +39,7 @@ require(runtime_body is not None, 'task_runtime_agent_target missing')
 require('!identity_is_agent(agent_instance_id)' in runtime_body.group(1), 'runtime target should gate through authoritative classifier')
 
 require('team_service_provision_member_agent' in TEAM, 'team service should provision generated agent identities')
-require('agent_record_upsert(agent_instance_id, agent_instance_id, template, provider_profile, project_id, "", tier, AGENT_IDENTITY_STATE_PROVISIONED)' in TEAM, 'generated team agent ids should be persisted as provisioned at creation')
+require('agent_record_upsert(concrete_agent_instance_id, slot_agent_instance_id, template, provider_profile, project_id, "", tier, AGENT_IDENTITY_STATE_PROVISIONED, AGENT_SCOPE_GENERATED_CHAIN, role_key)' in TEAM, 'generated team agent ids should be persisted as provisioned concrete instances of the simple durable id')
 require('member.agent_record_id = rec_id' in TEAM, 'team members should retain their durable agent record id')
 require('coordinator := task_runtime_agent_target(chain.coordinator_agent_instance_id)' in NUDGE, 'coordinator boot path should use runtime target helper')
 require('coordinator == HUMAN_RECIPIENT_ID' not in NUDGE and 'coordinator == "user_proxy"' not in NUDGE and 'coordinator == "operator@local"' not in NUDGE, 'coordinator boot path should not carry emergency human-placeholder string list')

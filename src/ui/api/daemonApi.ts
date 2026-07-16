@@ -201,7 +201,7 @@ export async function createAgent({ daemonUrl, agentInstanceId, displayName, pro
   });
 }
 
-export async function updateAgent({ daemonUrl, agentRecordId, agentInstanceId, displayName, templateId, providerProfile, projectId, runDir, modelTier }: { daemonUrl: string; agentRecordId?: string; agentInstanceId?: string; displayName?: string; templateId?: string; providerProfile?: string; projectId?: string; runDir?: string; modelTier?: string }) {
+export async function updateAgent({ daemonUrl, agentRecordId, agentInstanceId, displayName, templateId, providerProfile, projectId, runDir, modelTier, updateAgentIdDefaults }: { daemonUrl: string; agentRecordId?: string; agentInstanceId?: string; displayName?: string; templateId?: string; providerProfile?: string; projectId?: string; runDir?: string; modelTier?: string; updateAgentIdDefaults?: boolean }) {
   const body: any = { agent_record_id: agentRecordId || '', agent_instance_id: agentInstanceId || '' };
   if (displayName !== undefined) body.display_name = displayName;
   if (templateId !== undefined) body.template_id = templateId;
@@ -209,6 +209,7 @@ export async function updateAgent({ daemonUrl, agentRecordId, agentInstanceId, d
   if (projectId !== undefined) body.project_id = projectId;
   if (runDir !== undefined) body.run_dir = runDir;
   if (modelTier !== undefined) body.model_tier = modelTier;
+  if (updateAgentIdDefaults) body.update_agent_id_defaults = true;
   return requestJson(joinUrl(daemonUrl, '/agents/update'), {
     method: 'POST',
     body,
