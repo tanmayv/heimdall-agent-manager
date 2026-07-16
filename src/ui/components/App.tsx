@@ -4893,14 +4893,16 @@ function dependencyOrderedTasks(tasks: any[], tasksById: Record<string, any>): a
 }
 
 function ChainProgressPanel({ chain, progress }: { chain: any; progress: ChainProgress }) {
-  const pctLabel = progress.total === 0 ? 'No task plan yet' : `${progress.percent}% complete`;
+  // Progress percent is shown once here (numeric badge on the right). The heading
+  // stays a textual status label to avoid duplicating the percent value.
+  const headingLabel = progress.total === 0 ? 'No task plan yet' : (progress.percent >= 100 ? 'All tasks complete' : 'In progress');
   const incompleteLabel = progress.total === 0 ? 'Waiting for tasks to be created' : `${progress.incomplete} remaining`;
   return (
     <section data-debug-id="chain-progress-panel" className="overflow-hidden rounded-[15px] border border-white/10 bg-gradient-to-b from-sky-400/10 to-[#141414] p-4">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="text-xs uppercase tracking-[0.22em] text-sky-200/80">Chain progress</div>
-          <h2 className="mt-1 text-2xl font-semibold text-white">{pctLabel}</h2>
+          <h2 className="mt-1 text-2xl font-semibold text-white">{headingLabel}</h2>
           <p data-debug-id="chain-progress-summary" className="mt-1 text-sm text-zinc-300">{progress.label} · {incompleteLabel}</p>
         </div>
         <div className="rounded-[10px] border border-white/10 bg-[#0f0f0f] px-3 py-2 text-right">

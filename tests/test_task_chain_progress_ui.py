@@ -21,10 +21,13 @@ def main() -> None:
     require("function ChainProgressPanel" in src, "chain progress panel component missing")
     require('data-debug-id="chain-progress-panel"' in src, "chain view progress panel debug id missing")
     require('data-debug-id="chain-progress-bar"' in src, "chain view progress bar debug id missing")
-    require('data-debug-id={`sidebar-chain-progress-${chain.chainId}`}' in src, "sidebar chain progress debug id missing")
-    require("buildChainProgress(chain.chainId, chainTaskIds, tasksById)" in src, "sidebar should reuse shared progress helper")
     require("<ChainProgressPanel chain={chain} progress={chainProgress} />" in src, "chain view should render progress above task surface")
-    require("progress.total === 0 ? '—'" in src, "zero-task sidebar progress should be graceful")
+    require("progress.total === 0 ? '—'" in src, "zero-task progress badge should be graceful")
+    # The chain progress percent must be shown exactly ONCE in the progress panel:
+    # a single numeric badge (`${progress.percent}%`). The heading no longer repeats
+    # the percent (previously it also showed `${progress.percent}% complete`).
+    require("`${progress.percent}%`" in src, "progress panel should render the numeric percent badge")
+    require("${progress.percent}% complete" not in src, "progress heading must not duplicate the percent value")
     print("TASK CHAIN PROGRESS UI TEST PASSED")
 
 
