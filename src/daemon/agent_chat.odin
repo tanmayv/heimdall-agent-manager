@@ -38,6 +38,18 @@ agent_chat_notify_user_message :: proc(agent_instance_id, user_id, message_id: s
 	return registry_send_ws_text(agent_instance_id, strings.to_string(builder))
 }
 
+agent_chat_notify_user_read :: proc(agent_instance_id, user_id, message_id: string) -> bool {
+	idx := registry_find_agent(agent_instance_id)
+	if idx < 0 || !agents[idx].has_ws do return false
+	builder := strings.builder_make()
+	strings.write_string(&builder, `{"type":"user_chat_event","event":"user_messages_read","user_id":"`)
+	json_write_string(&builder, user_id)
+	strings.write_string(&builder, `","message_id":"`)
+	json_write_string(&builder, message_id)
+	strings.write_string(&builder, `"}`)
+	return registry_send_ws_text(agent_instance_id, strings.to_string(builder))
+}
+
 chat_unread_for_agent :: proc(user_id, agent_instance_id: string) -> int {
 	count := message_db_count_unread_for_agent(user_id, agent_instance_id)
 	if count <= 0 do count = 1

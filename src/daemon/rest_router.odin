@@ -193,6 +193,13 @@ handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_C
 		return true
 	}
 
+	// GET /chats/messages/{message_id}
+	if len(ctx.segments) == 3 && ctx.segments[0] == "chats" && ctx.segments[1] == "messages" && ctx.method == "GET" {
+		message_id := ctx.segments[2]
+		handle_get_chat_message(client, message_id, ctx)
+		return true
+	}
+
 	// GET /chats/{agent_id}/messages
 	if len(ctx.segments) == 3 && ctx.segments[0] == "chats" && ctx.segments[2] == "messages" && ctx.method == "GET" {
 		agent_id := ctx.segments[1]

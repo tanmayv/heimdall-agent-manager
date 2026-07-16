@@ -273,7 +273,6 @@ message_db_bind_text :: proc(stmt: sqlite3_stmt, index: int, val: string) {
 }
 
 message_db_insert :: proc(msg: Chat_Message) -> bool {
-	fmt.println("DEBUG: message_db_insert called for message_id =", msg.message_id, "user_id =", msg.user_id, "agent_instance_id =", msg.agent_instance_id, "direction =", msg.direction, "interrupt =", msg.interrupt)
 	stmt: sqlite3_stmt = nil
 
 	query := fmt.tprintf(
@@ -308,7 +307,6 @@ message_db_insert :: proc(msg: Chat_Message) -> bool {
 		return false
 	}
 
-	fmt.println("DEBUG: message_db_insert succeeded for", msg.message_id)
 	return true
 }
 
@@ -351,7 +349,6 @@ message_db_mark_conversation_read :: proc(user_id, agent_instance_id, direction:
 		return false
 	}
 
-	fmt.println("DEBUG: message_db_mark_conversation_read set", user_id, agent_instance_id, "to", read_unix_ms, "for", direction)
 	return true
 }
 
@@ -429,11 +426,9 @@ message_db_get_last_read_status :: proc(user_id, agent_instance_id: string) -> (
 			user_to_agent_read = legacy_read
 			agent_to_user_read = legacy_read
 		}
-		fmt.println("DEBUG: message_db_get_last_read_status for", user_id, agent_instance_id, "= [", user_to_agent_read, ",", agent_to_user_read, "]")
 		return
 	}
 
-	fmt.println("DEBUG: message_db_get_last_read_status for", user_id, agent_instance_id, "= [0,0] (no row)")
 	return 0, 0
 }
 
@@ -524,8 +519,6 @@ message_db_fetch_unread :: proc(user_id, agent_instance_id, direction: string, l
 	if direction == "agent_to_user" do start_time = agent_to_user_read
 	if cursor > start_time do start_time = cursor
 
-	fmt.println("DEBUG: message_db_fetch_unread for", user_id, agent_instance_id, "last_read user_to_agent =", user_to_agent_read, "agent_to_user=", agent_to_user_read, "direction=", direction, "limit=", limit, "cursor=", cursor)
-
 	query: string
 	if direction == "user_to_agent" {
 		query = `SELECT message_id, user_id, agent_instance_id, direction, body, chain_id, delivered_unix_ms, delivery_failed_unix_ms, delivery_error, created_unix_ms FROM messages WHERE user_id = ? AND agent_instance_id = ? AND direction = 'user_to_agent' AND created_unix_ms > ? ORDER BY created_unix_ms ASC LIMIT ?`
@@ -559,8 +552,6 @@ message_db_fetch_unread :: proc(user_id, agent_instance_id, direction: string, l
 		sqlite3_bind_int64(stmt, 3, start_time)
 		sqlite3_bind_int64(stmt, 4, i64(limit))
 	}
-	fmt.println("DEBUG: Query bound with user_id =", user_id, "agent_instance_id =", agent_instance_id)
-
 	for sqlite3_step(stmt) == SQLITE_ROW {
 		msg := Chat_Message{
 			message_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 0)),
@@ -575,11 +566,9 @@ message_db_fetch_unread :: proc(user_id, agent_instance_id, direction: string, l
 			delivery_error = strings.clone_from_cstring(sqlite3_column_text(stmt, 8)),
 			created_unix_ms = sqlite3_column_int64(stmt, 9),
 		}
-		fmt.println("DEBUG: Found unread message:", msg.message_id, "created at", msg.created_unix_ms)
 		append(&messages, msg)
 	}
 
-	fmt.println("DEBUG: message_db_fetch_unread returning", len(messages), "messages")
 	return messages
 }
 

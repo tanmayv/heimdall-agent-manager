@@ -15,7 +15,9 @@ agent_lifecycle_emit :: proc(agent_instance_id, connection_state, reason: string
 	}
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"type":"agent_lifecycle_changed","agent_instance_id":"`); json_write_string(&builder, agent.agent_instance_id)
-	strings.write_string(&builder, `","agent_class":"`); json_write_string(&builder, agent.agent_class)
+	strings.write_string(&builder, `","target_agent_instance_id":"`); json_write_string(&builder, agent.agent_instance_id)
+	strings.write_string(&builder, `","fetch_required":false`)
+	strings.write_string(&builder, `,"agent_class":"`); json_write_string(&builder, agent.agent_class)
 	strings.write_string(&builder, `","display_name":"`); json_write_string(&builder, agent.display_name)
 	strings.write_string(&builder, `","connected":`); strings.write_string(&builder, "true" if agent.connected else "false")
 	strings.write_string(&builder, `,"connection_state":"`); json_write_string(&builder, connection_state)
@@ -75,7 +77,9 @@ agent_runtime_emit :: proc(agent_instance_id, reason: string) {
 	if is_test_token(agent.agent_token) do return
 	b := strings.builder_make()
 	strings.write_string(&b, `{"type":"agent_runtime_changed","agent_instance_id":"`); json_write_string(&b, agent.agent_instance_id)
-	strings.write_string(&b, `","reason":"`); json_write_string(&b, reason)
+	strings.write_string(&b, `","target_agent_instance_id":"`); json_write_string(&b, agent.agent_instance_id)
+	strings.write_string(&b, `","fetch_required":false`)
+	strings.write_string(&b, `,"reason":"`); json_write_string(&b, reason)
 	strings.write_string(&b, `","tmux_pane":"`); json_write_string(&b, agent.tmux_pane)
 	strings.write_string(&b, `","pid":`); strings.write_string(&b, fmt.tprintf("%d", agent.pid))
 	strings.write_string(&b, `,"exec_state":"`); json_write_string(&b, agent.exec_state)

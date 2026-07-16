@@ -29,6 +29,36 @@ handle_get_chats :: proc(client: net.TCP_Socket, ctx: ^Route_Context) {
 	write_response(client, 200, "OK", strings.to_string(builder))
 }
 
+// GET /chats/messages/{message_id}
+handle_get_chat_message :: proc(client: net.TCP_Socket, message_id: string, ctx: ^Route_Context) {
+	author, ok := rest_authorize(client, ctx)
+	if !ok do return
+
+	msg, found := message_db_get_message(message_id)
+	if !found {
+		write_response(client, 404, "Not Found", `{"error":"not_found","message":"message not found"}`)
+		return
+	}
+	defer free_chat_message(msg)
+
+	is_user := user_client_id_for_token(ctx.token) != ""
+	if is_user {
+		if msg.user_id != author {
+			write_response(client, 403, "Forbidden", `{"error":"forbidden","message":"message belongs to another user"}`)
+			return
+		}
+	} else if msg.agent_instance_id != author {
+		write_response(client, 403, "Forbidden", `{"error":"forbidden","message":"message belongs to another agent"}`)
+		return
+	}
+
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"message":`)
+	chat_write_message_json(&b, msg)
+	strings.write_string(&b, `}`)
+	write_response(client, 200, "OK", strings.to_string(b))
+}
+
 // GET /chats/{agent_id}/messages
 handle_get_chat_messages :: proc(client: net.TCP_Socket, agent_id: string, ctx: ^Route_Context) {
 	author, ok := rest_authorize(client, ctx)
@@ -100,14 +130,19 @@ handle_get_chat_messages :: proc(client: net.TCP_Socket, agent_id: string, ctx: 
 	write_response(client, 200, "OK", strings.to_string(b))
 }
 
+free_chat_message :: proc(msg: Chat_Message) {
+	delete(msg.message_id)
+	delete(msg.user_id)
+	delete(msg.agent_instance_id)
+	delete(msg.direction)
+	delete(msg.body)
+	delete(msg.chain_id)
+	delete(msg.delivery_error)
+}
+
 free_chat_messages :: proc(messages: [dynamic]Chat_Message) {
 	for msg in messages {
-		delete(msg.message_id)
-		delete(msg.user_id)
-		delete(msg.agent_instance_id)
-		delete(msg.direction)
-		delete(msg.body)
-		delete(msg.delivery_error)
+		free_chat_message(msg)
 	}
 	delete(messages)
 }

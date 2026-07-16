@@ -475,7 +475,9 @@ agent_store_clear_current_task_if_matches :: proc(agent_instance_id, task_id: st
 agent_store_emit_agent_update :: proc(rec: Agent_Instance_Record) {
 	b := strings.builder_make()
 	strings.write_string(&b, `{"type":"agent_update","agent_instance_id":"`); json_write_string(&b, rec.agent_instance_id)
-	strings.write_string(&b, `","agent_record_id":"`); json_write_string(&b, rec.agent_record_id)
+	strings.write_string(&b, `","target_agent_instance_id":"`); json_write_string(&b, rec.agent_instance_id)
+	strings.write_string(&b, `","fetch_required":false`)
+	strings.write_string(&b, `,"agent_record_id":"`); json_write_string(&b, rec.agent_record_id)
 	strings.write_string(&b, `","display_name":"`); json_write_string(&b, rec.display_name)
 	strings.write_string(&b, `","current_task_id":"`); json_write_string(&b, rec.current_task_id)
 	strings.write_string(&b, `","current_task_since":`); strings.write_string(&b, fmt.tprintf("%d", rec.current_task_since))

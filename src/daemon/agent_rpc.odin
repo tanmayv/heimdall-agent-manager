@@ -231,8 +231,6 @@ handle_agent_rpc_fetch_user_chat :: proc(client: net.TCP_Socket, body, from_agen
 		if read_time > 0 {
 			if !chat_store_append_event(Chat_Event{kind = .Read_Marked, user_id = user_id, agent_instance_id = from_agent_instance_id, direction = "user_to_agent", read_unix_ms = read_time}) {
 				fmt.println("WARNING: fetch_user_chat mark read failed")
-			} else {
-				chat_event_fanout(user_id, from_agent_instance_id, "", "read")
 			}
 		}
 	}

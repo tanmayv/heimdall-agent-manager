@@ -66,7 +66,6 @@ handle_user_rpc_send_to_agent :: proc(client: net.TCP_Socket, body, user_id: str
 		message_body = message_body[len("\u001b"):]
 	}
 
-	fmt.println("DEBUG: handle_user_rpc_send_to_agent called for user", user_id, "to agent", agent_instance_id)
 	if agent_instance_id == "" || message_body == "" {
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"send_to_agent requires agent_instance_id and body"}`)
 		return
@@ -81,7 +80,6 @@ handle_user_rpc_send_to_agent :: proc(client: net.TCP_Socket, body, user_id: str
 		return
 	}
 	message_id, ok := chat_store_append_message(user_id, agent_instance_id, "user_to_agent", message_body, is_interrupt)
-	fmt.println("DEBUG: chat_store_append_message returned message_id =", message_id, "ok =", ok)
 	if !ok {
 		fmt.printf("ERROR: send_to_agent failed: chat_store_append_message failed for user '%s' to agent '%s'\n", user_id, agent_instance_id)
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"append chat failed"}`)
@@ -108,7 +106,6 @@ handle_user_rpc_fetch_chat :: proc(client: net.TCP_Socket, body, user_id: string
 	unread_only := extract_json_bool(body, "unread_only", true)
 	limit := extract_json_int(body, "limit", 50)
 	cursor := extract_json_i64(body, "cursor", 0)
-	fmt.println("DEBUG: handle_user_rpc_fetch_chat for user", user_id, "agent", agent_instance_id, "unread_only =", unread_only, "limit =", limit, "cursor =", cursor)
 	write_response(client, 200, "OK", chat_fetch_json(user_id, agent_instance_id, unread_only, "", limit, cursor))
 }
 
@@ -241,7 +238,12 @@ handle_user_rpc_mark_read :: proc(client: net.TCP_Socket, body, user_id: string)
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"mark_read failed"}`)
 		return
 	}
-	chat_event_fanout(user_id, agent_instance_id, message_id, "read")
+	// Do not fan read receipts back to the same user clients. The UI already
+	// initiated this mark-read request and patches unread state locally; sending
+	// a no-message chat_event here can invalidate chat caches and create a
+	// mark-read -> WS read-event -> refetch -> mark-read loop. Read receipts are
+	// agent-facing only.
+	_ = agent_chat_notify_user_read(agent_instance_id, user_id, message_id)
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"ok":true,"read_unix_ms":`)
 	strings.write_string(&builder, fmt.tprintf("%d", now))
