@@ -66,6 +66,7 @@ import ChatHoverCopyButton from './ChatHoverCopyButton';
 import { updateUrlParams, useUrlParams } from './useUrlParams';
 import { VimSidebarProvider, VimEditButton } from './VimSidebar';
 import AgentPicker from './AgentPicker';
+import RuntimeRestartControls from './RuntimeRestartControls';
 import * as daemonApi from '../api/daemonApi';
 
 type Chain = {
@@ -2855,14 +2856,19 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
     await onAgentDeleted?.();
   });
 
-  const restartExactRuntime = async (nextProvider: string, nextTier: string, reason: string) => {
+  const restartExactRuntime = async (nextProvider: string, nextTier: string, reason: string, nextProjectId?: string) => {
     if (!agent?.id || runtimeRestarting) return;
     setRuntimeRestarting(reason);
     setRuntimeRestartError('');
     setStartProgress({ active: true, agentId: agent.id, requestedAt: Date.now(), completed: false, reason });
     try {
+      setChatProvider(nextProvider);
+      setChatTier(nextTier);
       if (agentHasLiveSession(agent)) await daemonApi.stopAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, timeInSec: 1 }).catch(() => undefined);
-      await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: nextProvider || agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || agent.agentRole || durableAgentId(agent), projectId: agent.projectId || '', displayName: agent.label || agent.id, modelTier: nextTier || agent.modelTier || 'normal', agentRole: agent.agentRole || agent.templateId || durableAgentId(agent) });
+      // Restart the EXACT instance (agent.id) with runtime overrides. provider/tier
+      // are runtime-only; project overrides only this concrete instance record and
+      // never mutates the durable identity default.
+      await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: nextProvider || agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || agent.agentRole || durableAgentId(agent), projectId: nextProjectId !== undefined ? nextProjectId : (agent.projectId || ''), displayName: agent.label || agent.id, modelTier: nextTier || agent.modelTier || 'normal', agentRole: agent.agentRole || agent.templateId || durableAgentId(agent) });
       await onRefreshAgents?.();
     } catch (err: any) {
       setRuntimeRestartError(String(err?.message || err || 'Unable to restart exact agent instance.'));
@@ -3013,11 +3019,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
           <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-2">
             <div className="flex flex-wrap items-center gap-2">
               <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }} context={{ projectId: agent?.projectId || '', originKind: 'direct_agent_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending || Boolean(runtimeRestarting)} debugIdPrefix="agent-detail-chat-artifact-upload" label="⇧" buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-lg text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50" />
-              <select data-debug-id="agent-detail-chat-provider-select" aria-label="Agent chat provider" value={chatProvider} onChange={(event) => { const nextProvider = event.target.value; setChatProvider(nextProvider); void restartExactRuntime(nextProvider, chatTier, 'provider'); }} disabled={!agent?.id || Boolean(runtimeRestarting)} className="h-8 rounded-md border border-white/10 bg-[#141414] px-2 text-xs text-zinc-400 outline-none hover:border-white/20 focus:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50">
-                {(providers || []).map((provider: any) => <option key={provider.name} value={provider.name}>{provider.name}</option>)}
-                {!(providers || []).some((provider: any) => provider.name === chatProvider) && chatProvider ? <option value={chatProvider}>{chatProvider}</option> : null}
-              </select>
-              <select data-debug-id="agent-detail-chat-tier-select" aria-label="Agent chat model tier" value={chatTier} onChange={(event) => { const nextTier = event.target.value; setChatTier(nextTier); void restartExactRuntime(chatProvider, nextTier, 'tier'); }} disabled={!agent?.id || Boolean(runtimeRestarting)} className="h-8 rounded-md border border-white/10 bg-[#141414] px-2 text-xs text-zinc-400 outline-none hover:border-white/20 focus:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50"><option value="normal">normal</option><option value="smart">smart</option><option value="cheap">cheap</option></select>
+              <RuntimeRestartControls debugPrefix="agent-detail-chat" providers={providers} projects={projects} provider={chatProvider} modelTier={chatTier} projectId={agent?.projectId || ''} disabled={!agent?.id} restarting={Boolean(runtimeRestarting)} showProject onRestart={(next) => { void restartExactRuntime(next.provider, next.modelTier, 'runtime', next.projectId); }} />
             </div>
             <div className="flex items-center gap-2"><span className="hidden text-[11px] text-zinc-600 sm:inline">Enter to send · Shift+Enter for newline</span><button data-debug-id="agent-detail-chat-send-btn" aria-label="Send direct agent message" title={sending ? 'Sending…' : 'Send'} onClick={() => { void submit(false); }} disabled={!agent?.id || sending || Boolean(runtimeRestarting) || !draft.trim()} className="inline-flex h-8 items-center justify-center rounded-full border border-white/10 px-3 text-sm text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">→</button></div>
           </div>
@@ -3282,6 +3284,17 @@ function ConversationThreadPage({ agent, chats, session, projects = [], provider
     setLocallyStopped(true);
   });
 
+  // Restart the EXACT conversation instance with selected runtime overrides.
+  // Preserves agent_instance_id (and thus inbox/history); provider/tier are
+  // runtime-only and project overrides the concrete instance, never durable defaults.
+  const restartConversationRuntime = (next: { provider: string; modelTier: string; projectId: string }) => runThreadAction('restart', async () => {
+    setMessageProvider(next.provider);
+    setMessageTier(next.modelTier);
+    if (agentHasLiveSession(agent)) await daemonApi.stopAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, timeInSec: 1 }).catch(() => undefined);
+    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: next.provider || agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || 'conversation', projectId: next.projectId || '', displayName: '', modelTier: next.modelTier || 'smart', agentRole: agent.agentRole || 'conversation' });
+    setLocallyStopped(false);
+  });
+
   return (
     <div data-debug-id="conversation-thread-page" className="flex min-h-full flex-col bg-[#090909] text-zinc-100">
       <div className="flex h-[52px] items-center justify-between gap-3 border-b border-[#1f1f1f] bg-[#0b0b0b]/95 px-[18px] text-[12.5px] text-zinc-500">
@@ -3399,14 +3412,7 @@ function ConversationThreadPage({ agent, chats, session, projects = [], provider
           <div className="flex items-center justify-between gap-3 px-3 py-2">
             <div className="flex items-center gap-2">
               <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev: string) => appendArtifactLink(prev, link)); }} context={{ projectId: agent?.projectId || '', originKind: 'conversation_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending} debugIdPrefix="conversation-attach" label="⇧" buttonClassName="inline-flex h-7 w-7 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-sm text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40" />
-              <select data-debug-id="conversation-provider-select" value={messageProvider} onChange={(event) => setMessageProvider(event.target.value)} className="rounded-md border border-white/10 bg-[#141414] px-2 py-1.5 text-xs text-zinc-400 outline-none focus:border-sky-400">
-                {(providers?.length ? providers : [{ name: 'pi' }]).map((provider: any) => <option key={provider.name || provider.id || 'pi'} value={provider.name || provider.id || 'pi'}>Provider: {provider.name || provider.id || 'pi'}</option>)}
-              </select>
-              <select data-debug-id="conversation-tier-select" value={messageTier} onChange={(event) => setMessageTier(event.target.value)} className="rounded-md border border-white/10 bg-[#141414] px-2 py-1.5 text-xs text-zinc-400 outline-none focus:border-sky-400">
-                <option value="smart">Tier: smart</option>
-                <option value="normal">Tier: normal</option>
-                <option value="cheap">Tier: cheap</option>
-              </select>
+              <RuntimeRestartControls debugPrefix="conversation" providers={providers} projects={projects} provider={messageProvider} modelTier={messageTier} projectId={agent?.projectId || ''} disabled={!agent?.id || sending} restarting={threadBusy === 'restart'} showProject onRestart={restartConversationRuntime} />
             </div>
             <button data-debug-id="conversation-composer-send-btn" aria-label="Send conversation message" title={sending ? 'Sending…' : 'Send'} onClick={() => { void submit(); }} disabled={!agent?.id || sending || !draft.trim()} className="inline-flex h-8 items-center justify-center rounded-full border border-white/10 px-3 text-sm text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">→</button>
           </div>

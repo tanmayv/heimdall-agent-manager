@@ -11,8 +11,20 @@ MESSAGE_BUBBLE = (ROOT / 'src/ui/components/MessageBubble.tsx').read_text(encodi
 MARKDOWN_BODY = (ROOT / 'src/ui/components/MarkdownBody.tsx').read_text(encoding='utf-8')
 STYLES = (ROOT / 'src/ui/styles.css').read_text(encoding='utf-8')
 UPLOAD = (ROOT / 'src/ui/components/ArtifactUpload.tsx').read_text(encoding='utf-8')
+RUNTIME = (ROOT / 'src/ui/components/RuntimeRestartControls.tsx').read_text(encoding='utf-8')
 
 checks = [
+    ('shared runtime restart controls gate provider/tier/project behind explicit restart without mutating defaults', all(snippet in RUNTIME for snippet in [
+        'export default function RuntimeRestartControls',
+        'data-debug-id={`${debugPrefix}-runtime-controls`}',
+        'data-debug-id={`${debugPrefix}-provider-select`}',
+        'data-debug-id={`${debugPrefix}-tier-select`}',
+        'data-debug-id={`${debugPrefix}-project-select`}',
+        'data-debug-id={`${debugPrefix}-restart-btn`}',
+        'const pending = useMemo(',
+        '{pending ? (',
+        '{restarting ? \'Restarting\u2026\' : \'\u21bb Restart to apply\'}',
+    ]) and 'daemonApi' not in RUNTIME and 'updateAgent' not in RUNTIME),
     ('conversation sidebar section exists', all(snippet in APP for snippet in [
         'function SidebarConversationSection',
         'data-debug-id="sidebar-conversations"',
@@ -363,8 +375,8 @@ checks = [
         'data-debug-id="conversation-composer-shell"',
         'data-debug-id="conversation-composer-input"',
         'data-debug-id="conversation-composer-starting-indicator"',
-        'data-debug-id="conversation-provider-select"',
-        'data-debug-id="conversation-tier-select"',
+        'debugPrefix="conversation" providers={providers} projects={projects} provider={messageProvider} modelTier={messageTier} projectId={agent?.projectId || \'\'}',
+        'onRestart={restartConversationRuntime}',
         'data-debug-id="conversation-composer-send-btn"',
     ])),
     ('chat surfaces use shared hover/focus message copy affordance for message bodies', all(snippet in APP + SETTINGS + MESSAGE_BUBBLE + STYLES + (ROOT / 'src/ui/components/ChatHoverCopyButton.tsx').read_text(encoding='utf-8') for snippet in [
@@ -427,13 +439,12 @@ checks = [
         'background: #8a8a8a;',
     ]) and 'focus-within:border-sky-400/70' not in APP + SETTINGS and 'focus-within:border-white/35' in APP and 'focus-within:border-white/35' in SETTINGS),
     ('agent detail composer restarts/resumes selected exact instance with provider tier controls', all(snippet in APP for snippet in [
-        'data-debug-id="agent-detail-chat-provider-select"',
-        'data-debug-id="agent-detail-chat-tier-select"',
+        'debugPrefix="agent-detail-chat" providers={providers} projects={projects} provider={chatProvider} modelTier={chatTier} projectId={agent?.projectId || \'\'}',
         'data-debug-id="agent-detail-chat-runtime-restart-status"',
         'data-debug-id="agent-detail-chat-runtime-restart-error"',
-        'void restartExactRuntime(nextProvider, chatTier, \'provider\')',
-        'void restartExactRuntime(chatProvider, nextTier, \'tier\')',
+        'void restartExactRuntime(next.provider, next.modelTier, \'runtime\', next.projectId)',
         'agentInstanceId: agent.id, provider: nextProvider',
+        'projectId: nextProjectId !== undefined ? nextProjectId : (agent.projectId || \'\')',
         'await onSendAgentMessage?.(agent.id, body, interrupt, { provider: chatProvider, modelTier: chatTier });',
         'onSendAgentMessage: async (agentId: string, body: string, interrupt = false, runtime: any = {})',
         'provider: runtime.provider || exactAgent?.providerProfile',
