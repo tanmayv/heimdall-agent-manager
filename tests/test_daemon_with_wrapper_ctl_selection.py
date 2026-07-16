@@ -12,6 +12,7 @@ checks = [
     ('daemon-with-wrapper rewrites wrapper.ham_ctl_bin in generated config', 'print "ham_ctl_bin = \\\"" ctl "\\\""' in FLAKE),
     ('ctl help documents task-chains create --kind', 'task-chains create --token <token> [--project-id <id>] --kind <kind>' in CTL),
     ('ctl help documents artifact commands', 'artifacts create --token <token> --file <path>' in CTL and 'artifacts delete --token <token> --artifact-id <art_...|artifact://art_...>' in CTL),
+    ('ctl help documents chat send-to-user --chain-id', 'chat send-to-user --token <agent_token> --user-id <user> [--body <text>] [--chain-id <chain>|--chain <chain>] [--type questions --data <json>]' in CTL),
 ]
 
 failed = [name for name, ok in checks if not ok]
@@ -21,4 +22,4 @@ if failed:
         print('-', name)
     sys.exit(1)
 
-print('TEST PASSED: daemon-with-wrapper pins same-build ham-ctl and ctl help covers --kind/artifacts')
+print('TEST PASSED: daemon-with-wrapper pins same-build ham-ctl and ctl help covers --kind/artifacts/chat send-to-user --chain-id')

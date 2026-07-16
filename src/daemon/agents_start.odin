@@ -215,8 +215,6 @@ agent_record_upsert :: proc(
 		// must NOT clobber the stored association. Use the stored value as the
 		// fallback; explicit disassociation goes through /agents/disassociate.
 		if resolved_project_id == "" do resolved_project_id = agent_instance_records[idx].project_id
-	} else if resolved_project_id == "" {
-		resolved_project_id = agent_id_default_project_id(agent_id_from_instance_id(agent_instance_id))
 	}
 	if state == "" do state = AGENT_IDENTITY_STATE_PROVISIONED
 	if scope == "" do scope = agent_scope_infer(agent_instance_id, template_id)
@@ -621,7 +619,7 @@ handle_agent_instance_create :: proc(client: net.TCP_Socket, body: string) {
 	// defaults (template/persona + default provider/tier/project), shared across all of this
 	// agent's concrete instances. project_id may be empty here (create-without-project).
 	resolved_agent_id := agent_id_from_instance_id(agent_instance_id)
-	agent_id_upsert(resolved_agent_id, display_name, template_id, provider_profile, model_tier, project_id, "api", agent_role)
+	agent_id_upsert(resolved_agent_id, display_name, template_id, provider_profile, model_tier, "api", agent_role)
 	agent_record_id, _, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, provider_profile, project_id, "", model_tier, AGENT_IDENTITY_STATE_PROVISIONED, AGENT_SCOPE_DURABLE, agent_role)
 	if !upsert_ok { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`); return }
 	write_agent_ok_response(client, "created", agent_instance_records[agent_record_index(agent_record_id)])
