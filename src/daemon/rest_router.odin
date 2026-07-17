@@ -296,6 +296,12 @@ handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_C
 		return true
 	}
 
+	// POST /federation/start (owner starts the real agent for a peer's remote_proxy)
+	if len(ctx.segments) == 2 && ctx.segments[0] == "federation" && ctx.segments[1] == "start" && ctx.method == "POST" {
+		handle_post_federation_start(client, request_body(request), ctx)
+		return true
+	}
+
 	// POST /federation/peers/link
 	if len(ctx.segments) == 3 && ctx.segments[0] == "federation" && ctx.segments[1] == "peers" && ctx.segments[2] == "link" && ctx.method == "POST" {
 		handle_post_federation_peer_link(client, request_body(request), ctx)

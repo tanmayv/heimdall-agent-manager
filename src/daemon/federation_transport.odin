@@ -74,6 +74,40 @@ federation_forward :: proc(peer_id, route_kind, payload, idempotency_key: string
 	return true
 }
 
+// federation_forward_start asks the owning peer to start the real agent that a
+// local remote_proxy stands in for. Returns (ok, status_code, response_body).
+// Synchronous request/response (not the delivery outbox) so the operator/UI gets
+// immediate feedback on whether the remote start succeeded.
+federation_forward_start :: proc(peer_id, remote_agent_instance_id, provider_profile, model_tier: string) -> (bool, int, string) {
+	rec, ok := peer_link_find(peer_id)
+	if !ok do return false, 404, `{"ok":false,"message":"peer not found"}`
+	if rec.status != PEER_STATUS_LINKED {
+		return false, 503, `{"ok":false,"message":"peer unreachable"}`
+	}
+	b := strings.builder_make()
+	strings.write_string(&b, `{"agent_instance_id":"`)
+	json_write_string(&b, remote_agent_instance_id)
+	if provider_profile != "" {
+		strings.write_string(&b, `","provider_profile":"`)
+		json_write_string(&b, provider_profile)
+	}
+	if model_tier != "" {
+		strings.write_string(&b, `","model_tier":"`)
+		json_write_string(&b, model_tier)
+	}
+	strings.write_string(&b, `"}`)
+	payload := strings.to_string(b)
+	path := fmt.tprintf("/federation/start?peer_token=%s&peer_daemon_id=%s", rec.peer_token, server_daemon_id)
+	resp, forward_ok := http.post(rec.peer_url, path, payload)
+	if !forward_ok {
+		rec.status = strings.clone(PEER_STATUS_UNREACHABLE)
+		rec.last_checked_unix_ms = router_now_unix_ms()
+		return false, 503, `{"ok":false,"message":"peer unreachable"}`
+	}
+	rec.last_checked_unix_ms = router_now_unix_ms()
+	return resp.status == 200, resp.status, strings.clone(resp.body)
+}
+
 federation_delivery_outbox_insert_pending :: proc(peer_id, route_kind, idempotency_key, payload: string) -> bool {
 	if peer_id == "" || route_kind == "" || idempotency_key == "" || payload == "" || !task_db_ready do return false
 	stmt: sqlite3_stmt = nil
@@ -718,6 +752,35 @@ handle_get_federation_message :: proc(client: net.TCP_Socket, message_id: string
 	json_write_string(&b, rec.body)
 	strings.write_string(&b, `"}`)
 	write_response(client, 200, "OK", strings.to_string(b))
+}
+
+// handle_post_federation_start starts a REAL local agent on request from a peer
+// that holds a remote_proxy pointing at it. Authenticated by the peer link. The
+// target must be a genuine local agent (not itself a remote_proxy), preventing a
+// peer from asking us to relay a start onward.
+handle_post_federation_start :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
+	_, ok := federation_peer_id_for_request(query_param_value(ctx.query, "peer_token"), query_param_value(ctx.query, "peer_daemon_id"))
+	if !ok {
+		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"peer not configured or token mismatch"}`)
+		return
+	}
+	agent_instance_id := extract_json_string(body, "agent_instance_id", "")
+	if agent_instance_id == "" {
+		write_response(client, 400, "Bad Request", `{"ok":false,"message":"agent_instance_id required"}`)
+		return
+	}
+	idx := agent_record_index_by_instance(agent_instance_id)
+	if idx < 0 {
+		write_response(client, 404, "Not Found", `{"ok":false,"message":"target agent not found on owner daemon"}`)
+		return
+	}
+	if agent_record_is_remote_proxy(agent_instance_records[idx]) {
+		write_response(client, 400, "Bad Request", `{"ok":false,"message":"target is itself a remote proxy; refusing to relay start"}`)
+		return
+	}
+	// Delegate to the normal local start path. It writes the /agents/start
+	// response straight back to the requesting peer.
+	handle_agents_start(client, body)
 }
 
 handle_post_federation_callback :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {

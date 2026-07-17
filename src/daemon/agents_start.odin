@@ -337,7 +337,14 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 		return
 	}
 	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 && agent_record_is_remote_proxy(agent_instance_records[idx]) {
-		write_response(client, 400, "Bad Request", `{"ok":false,"message":"remote_proxy instances are dormant and cannot launch local wrappers"}`)
+		// Starting a remote_proxy must start the REAL agent on the owning peer,
+		// not launch a local wrapper. Forward the start over the peer link and
+		// return the owner's response verbatim.
+		proxy := agent_instance_records[idx]
+		start_ok, status_code, resp_body := federation_forward_start(proxy.remote_peer_id, proxy.remote_agent_instance_id, provider_profile, extract_json_string(body, "model_tier", ""))
+		status_text := "OK" if start_ok else ("Service Unavailable" if status_code == 503 else "Bad Gateway")
+		if status_code == 404 do status_text = "Not Found"
+		write_response(client, status_code, status_text, resp_body)
 		return
 	}
 
