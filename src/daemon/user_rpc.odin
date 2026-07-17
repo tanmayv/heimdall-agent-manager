@@ -88,9 +88,7 @@ handle_user_rpc_send_to_agent :: proc(client: net.TCP_Socket, body, user_id: str
 
 	sent := chat_event_fanout(user_id, agent_instance_id, message_id, "user_to_agent")
 	if agent_chat_notify_user_message(agent_instance_id, user_id, message_id) {
-		if chat_store_append_event(Chat_Event{kind = .Delivered_Marked, user_id = user_id, agent_instance_id = agent_instance_id, message_id = message_id, direction = "user_to_agent", delivered_unix_ms = router_now_unix_ms()}) {
-			chat_event_fanout(user_id, agent_instance_id, message_id, "delivered")
-		}
+		_ = chat_mark_delivered_and_fanout(user_id, agent_instance_id, message_id, "user_to_agent")
 	} else {
 		fmt.printf("WARNING: send_to_agent: failed to deliver WebSocket notification to agent '%s' for message '%s' (chat will load on manual fetch)\n", agent_instance_id, message_id)
 	}

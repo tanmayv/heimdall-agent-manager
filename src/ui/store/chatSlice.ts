@@ -298,24 +298,61 @@ function mapMessage(message: any) {
     deliveryFailedUnixMs,
     deliveryError: message.delivery_error ?? message.deliveryError ?? '',
     interrupt: !!message.interrupt,
+    sending: Boolean(message.sending),
+    optimistic: Boolean(message.optimistic),
+    error: Boolean(message.error),
   };
 }
 
 function mergeMessage(existing: any, incoming: any) {
-  const merged = { ...existing, ...incoming };
+  const deliveredUnixMs = Math.max(Number(existing.deliveredUnixMs || 0), Number(incoming.deliveredUnixMs || 0));
+  const readUnixMs = Math.max(Number(existing.readUnixMs || 0), Number(incoming.readUnixMs || 0));
+  const deliveryFailedUnixMs = Math.max(Number(existing.deliveryFailedUnixMs || 0), Number(incoming.deliveryFailedUnixMs || 0));
+  const merged = { ...existing, ...incoming, deliveredUnixMs, readUnixMs, deliveryFailedUnixMs };
   return {
     ...merged,
     body: incoming.body ?? existing.body,
     timestamp: incoming.timestamp || existing.timestamp,
+    deliveredAt: deliveredUnixMs > 0 ? new Date(deliveredUnixMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : (incoming.deliveredAt || existing.deliveredAt || ''),
+    readAt: readUnixMs > 0 ? new Date(readUnixMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : (incoming.readAt || existing.readAt || ''),
+    deliveryFailedAt: deliveryFailedUnixMs > 0 ? new Date(deliveryFailedUnixMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : (incoming.deliveryFailedAt || existing.deliveryFailedAt || ''),
     sending: false,
     optimistic: false,
-    error: incoming.deliveryFailedUnixMs > 0 ? false : (existing.error && !incoming.id ? existing.error : false),
+    error: deliveryFailedUnixMs > 0 ? false : (existing.error && !incoming.id ? existing.error : false),
   };
+}
+
+function patchMessageStatus(messages: any[], status: any) {
+  const messageId = String(status.messageId || status.message_id || '');
+  const readUnixMs = Number(status.readUnixMs ?? status.read_unix_ms ?? 0);
+  const deliveredUnixMs = Number(status.deliveredUnixMs ?? status.delivered_unix_ms ?? 0);
+  const deliveryFailedUnixMs = Number(status.deliveryFailedUnixMs ?? status.delivery_failed_unix_ms ?? 0);
+  const deliveryError = String(status.deliveryError ?? status.delivery_error ?? '');
+  for (const message of messages || []) {
+    const matchesId = messageId && String(message.id || '') === messageId;
+    const matchesReadWatermark = !messageId && readUnixMs > 0 && message.author === 'user' && Number(message.createdUnixMs || 0) <= readUnixMs;
+    if (!matchesId && !matchesReadWatermark) continue;
+    if (deliveredUnixMs > 0 && deliveredUnixMs > Number(message.deliveredUnixMs || 0)) {
+      message.deliveredUnixMs = deliveredUnixMs;
+      message.deliveredAt = new Date(deliveredUnixMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    if (readUnixMs > 0 && readUnixMs > Number(message.readUnixMs || 0)) {
+      message.readUnixMs = readUnixMs;
+      message.readAt = new Date(readUnixMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    if (deliveryFailedUnixMs > 0 && deliveryFailedUnixMs > Number(message.deliveryFailedUnixMs || 0)) {
+      message.deliveryFailedUnixMs = deliveryFailedUnixMs;
+      message.deliveryFailedAt = new Date(deliveryFailedUnixMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      message.deliveryError = deliveryError || message.deliveryError || 'delivery failed';
+    }
+    message.sending = false;
+    message.optimistic = false;
+  }
 }
 
 function isRecentOptimisticMessage(message: any): boolean {
   if (!message) return false;
-  const marker = Boolean(message.sending || message.optimistic || String(message.id || '').startsWith('local_temp_'));
+  const marker = Boolean(message.sending || message.optimistic || String(message.id || '').startsWith('local_'));
   if (!marker) return false;
   const at = Number(message.deliveredUnixMs || message.createdUnixMs || 0);
   return Boolean(message.sending) || !at || Date.now() - at < CHAT_OPTIMISTIC_GRACE_MS;
@@ -330,7 +367,7 @@ function mergeMessages(existingMessages: any[], incomingMessages: any[]) {
       continue;
     }
     const optimisticIndex = incoming.author === 'user'
-      ? result.findIndex((m: any) => m.author === 'user' && m.body === incoming.body && (m.sending || String(m.id).startsWith('local_temp_')))
+      ? result.findIndex((m: any) => m.author === 'user' && m.body === incoming.body && (m.sending || m.optimistic || String(m.id).startsWith('local_')))
       : -1;
     if (optimisticIndex >= 0) {
       result[optimisticIndex] = mergeMessage(result[optimisticIndex], incoming);
@@ -853,6 +890,11 @@ const chatSlice = createSlice({
       }
       state.chats[agentId] = mergeMessages(state.chats[agentId], [mapMessage(message)]);
     },
+    patchChatMessageStatus(state, action) {
+      const agentId = action.payload?.agentId || action.payload?.agent_instance_id || '';
+      if (!agentId || !state.chats[agentId]) return;
+      patchMessageStatus(state.chats[agentId], action.payload || {});
+    },
     receiveChatPage(state, action) {
       applyReceivedChatPage(state, action.payload);
     },
@@ -1092,7 +1134,7 @@ const chatSlice = createSlice({
   },
 });
 
-export const { selectAgent, setView, setDaemonUrl, addDaemonProfile, renameDaemonProfile, removeDaemonProfile, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived, agentRuntimeEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage, receiveChatPage, reorderAgentsLocally, markAgentReadLocally, openGuidePanel, closeGuidePanel, toggleGuidePanel } = chatSlice.actions;
+export const { selectAgent, setView, setDaemonUrl, addDaemonProfile, renameDaemonProfile, removeDaemonProfile, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived, agentRuntimeEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage, patchChatMessageStatus, receiveChatPage, reorderAgentsLocally, markAgentReadLocally, openGuidePanel, closeGuidePanel, toggleGuidePanel } = chatSlice.actions;
 
 export const markCoordinatorRead = createAsyncThunk('chat/markCoordinatorRead', async (agentInstanceId: string, { dispatch, getState }) => {
   const state = getState() as any;

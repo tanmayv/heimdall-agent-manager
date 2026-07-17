@@ -68,6 +68,19 @@ export const sendCoordinatorMessage = createAsyncThunk('chainView/sendCoordinato
     chainId: payload.chainId,
     body: payload.body,
   });
+  if (coordinatorAgentInstanceId && result?.message_id) {
+    dispatch(appendMessage({
+      agentId: coordinatorAgentInstanceId,
+      message: {
+        id: result.message_id,
+        author: 'user',
+        body: payload.body,
+        createdUnixMs: Date.now(),
+        deliveredUnixMs: Number(result.delivered_unix_ms || 0),
+        readUnixMs: 0,
+      },
+    }));
+  }
   return { chainId: payload.chainId, localId: payload.localId, result: { message_id: result?.message_id || '' }, coordinatorAgentInstanceId };
 });
 

@@ -449,9 +449,20 @@ message_db_get_last_read_for_direction :: proc(user_id, agent_instance_id, direc
 	return message_db_get_last_read(user_id, agent_instance_id)
 }
 
+message_db_read_unix_for_message :: proc(direction: string, created_unix_ms, user_to_agent_read, agent_to_user_read: i64) -> i64 {
+	switch direction {
+	case "user_to_agent":
+		if user_to_agent_read >= created_unix_ms do return user_to_agent_read
+	case "agent_to_user":
+		if agent_to_user_read >= created_unix_ms do return agent_to_user_read
+	}
+	return 0
+}
+
 message_db_fetch_all :: proc(user_id, agent_instance_id: string, direction: string = "", limit: int = 50, cursor: i64 = 0) -> [dynamic]Chat_Message {
 	messages := make([dynamic]Chat_Message)
 	stmt: sqlite3_stmt = nil
+	user_to_agent_read, agent_to_user_read := message_db_get_last_read_status(user_id, agent_instance_id)
 
 	query: string
 	if direction == "user_to_agent" || direction == "agent_to_user" {
@@ -503,6 +514,7 @@ message_db_fetch_all :: proc(user_id, agent_instance_id: string, direction: stri
 			delivery_error = strings.clone_from_cstring(sqlite3_column_text(stmt, 8)),
 			created_unix_ms = sqlite3_column_int64(stmt, 9),
 		}
+		msg.read_unix_ms = message_db_read_unix_for_message(msg.direction, msg.created_unix_ms, user_to_agent_read, agent_to_user_read)
 		append(&messages, msg)
 	}
 
@@ -794,6 +806,7 @@ message_db_fetch_cursor_paginated :: proc(user_id, agent_instance_id: string, li
 message_db_fetch_cursor_paginated_for_chain :: proc(user_id, agent_instance_id, chain_id: string, limit: int = 50, cursor: i64 = 0) -> [dynamic]Chat_Message {
 	messages := make([dynamic]Chat_Message)
 	stmt: sqlite3_stmt = nil
+	user_to_agent_read, agent_to_user_read := message_db_get_last_read_status(user_id, agent_instance_id)
 
 	query: string
 	if chain_id != "" {
@@ -848,6 +861,7 @@ message_db_fetch_cursor_paginated_for_chain :: proc(user_id, agent_instance_id, 
 			created_unix_ms = sqlite3_column_int64(stmt, 9),
 			interrupt = sqlite3_column_int64(stmt, 10) != 0,
 		}
+		msg.read_unix_ms = message_db_read_unix_for_message(msg.direction, msg.created_unix_ms, user_to_agent_read, agent_to_user_read)
 		append(&messages, msg)
 	}
 
@@ -882,6 +896,8 @@ message_db_get_message :: proc(message_id: string) -> (Chat_Message, bool) {
 			created_unix_ms = sqlite3_column_int64(stmt, 9),
 			interrupt = sqlite3_column_int64(stmt, 10) != 0,
 		}
+		user_to_agent_read, agent_to_user_read := message_db_get_last_read_status(msg.user_id, msg.agent_instance_id)
+		msg.read_unix_ms = message_db_read_unix_for_message(msg.direction, msg.created_unix_ms, user_to_agent_read, agent_to_user_read)
 		return msg, true
 	}
 

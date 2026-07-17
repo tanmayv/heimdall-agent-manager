@@ -49,11 +49,9 @@ scheduled_prompt_scheduler_tick :: proc() {
 		// Trigger prompt
 		message_id, msg_ok := chat_store_append_message(HUMAN_RECIPIENT_ID, rec.agent_instance_id, "user_to_agent", rec.prompt, false)
 		if msg_ok {
-			sent := chat_event_fanout(HUMAN_RECIPIENT_ID, rec.agent_instance_id, message_id, "user_to_agent")
+			chat_event_fanout(HUMAN_RECIPIENT_ID, rec.agent_instance_id, message_id, "user_to_agent")
 			if agent_chat_notify_user_message(rec.agent_instance_id, HUMAN_RECIPIENT_ID, message_id) {
-				if chat_store_append_event(Chat_Event{kind = .Delivered_Marked, user_id = HUMAN_RECIPIENT_ID, agent_instance_id = rec.agent_instance_id, message_id = message_id, direction = "user_to_agent", delivered_unix_ms = router_now_unix_ms()}) {
-					chat_event_fanout(HUMAN_RECIPIENT_ID, rec.agent_instance_id, message_id, "delivered")
-				}
+				_ = chat_mark_delivered_and_fanout(HUMAN_RECIPIENT_ID, rec.agent_instance_id, message_id, "user_to_agent")
 			}
 			fmt.printfln("SCHEDULED PROMPT: Triggered prompt for agent '%s': %s (message_id=%s)", rec.agent_instance_id, rec.prompt, message_id)
 		} else {

@@ -49,12 +49,16 @@ handle_chat_send_to_coordinator :: proc(client: net.TCP_Socket, body: string) {
 		return
 	}
 	chat_event_fanout(user_id, coordinator, message_id, "user_to_agent", chain_id)
-	_ = agent_chat_notify_user_message(coordinator, user_id, message_id)
+	delivered_unix_ms: i64 = 0
+	if agent_chat_notify_user_message(coordinator, user_id, message_id) {
+		delivered_unix_ms = chat_mark_delivered_and_fanout(user_id, coordinator, message_id, "user_to_agent", chain_id)
+	}
 	superseded := chat_approval_supersede_for_chain(chain_id, message_body, message_id, user_id)
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"message_id":"`); json_write_string(&b, message_id)
 	strings.write_string(&b, `","chain_id":"`); json_write_string(&b, chain_id)
-	strings.write_string(&b, `","superseded_approvals":`); strings.write_string(&b, fmt.tprintf("%d", superseded))
+	strings.write_string(&b, `","delivered_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", delivered_unix_ms))
+	strings.write_string(&b, `,"superseded_approvals":`); strings.write_string(&b, fmt.tprintf("%d", superseded))
 	strings.write_string(&b, `,"agent_instance_id":"`); json_write_string(&b, coordinator)
 	strings.write_string(&b, `","coordinator_boot_requested":false`)
 	strings.write_string(&b, `}`)
@@ -73,6 +77,13 @@ handle_chat_inbox :: proc(client: net.TCP_Socket, target: string) {
 	if limit <= 0 do limit = 50
 	include_read := query_value(target, "include_read") == "true" || query_value(target, "include_read") == "1"
 	chain_id := query_value(target, "chain_id")
-	write_response(client, 200, "OK", chat_fetch_json(HUMAN_RECIPIENT_ID, agent_instance_id, !include_read, "user_to_agent", limit, 0, chain_id))
+	response_json := chat_fetch_json(HUMAN_RECIPIENT_ID, agent_instance_id, !include_read, "user_to_agent", limit, 0, chain_id)
+	if !include_read && chat_has_unread_direction(HUMAN_RECIPIENT_ID, agent_instance_id, "user_to_agent") {
+		read_time := message_db_get_max_unread_timestamp(HUMAN_RECIPIENT_ID, agent_instance_id, "user_to_agent")
+		if read_time > 0 {
+			_ = chat_mark_read_and_fanout(HUMAN_RECIPIENT_ID, agent_instance_id, "user_to_agent", "", chain_id, read_time)
+		}
+	}
+	write_response(client, 200, "OK", response_json)
 }
 

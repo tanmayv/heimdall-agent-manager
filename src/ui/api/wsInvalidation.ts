@@ -2,7 +2,7 @@ import { heimdallApi } from './heimdallApi';
 import { tasksApi } from './endpoints/tasks';
 import { chatEndpoints } from './endpoints/chats';
 import { chatApprovalEventReceived, mergeDecisionEventReceived } from '../store/attentionSlice';
-import { GUIDE_AGENT_ID, agentLifecycleEventReceived, agentRuntimeEventReceived, appendMessage, chatEventReceived } from '../store/chatSlice';
+import { GUIDE_AGENT_ID, agentLifecycleEventReceived, agentRuntimeEventReceived, appendMessage, chatEventReceived, patchChatMessageStatus } from '../store/chatSlice';
 import { wsChainViewRefreshRequested } from '../store/chainViewSlice';
 import { wsRefreshRequested } from '../store/homeSlice';
 import { applyMemoryEventRecord, auditEndedReceived, auditStartedReceived, memoryEventReceived } from '../store/memorySlice';
@@ -248,9 +248,38 @@ function handleChatEvent(dispatch: any, payload: any, ctx: WsCtx) {
   dispatch(wsRefreshRequested(`chat_event:${agentId || payload.message_id || 'unknown'}`));
   if (isStatusOnlyEvent) {
     if (agentId) {
+      const statusPatch = {
+        agentId,
+        messageId: String(payload.message_id || ''),
+        deliveredUnixMs: Number(payload.delivered_unix_ms || payload.deliveredUnixMs || 0),
+        readUnixMs: Number(payload.read_unix_ms || payload.readUnixMs || 0),
+        deliveryFailedUnixMs: Number(payload.delivery_failed_unix_ms || payload.deliveryFailedUnixMs || 0),
+        deliveryError: String(payload.delivery_error || payload.deliveryError || ''),
+      };
+      dispatch(patchChatMessageStatus(statusPatch));
+      const patchCache = (draft: any) => {
+        if (!draft?.messages) return;
+        const messageId = statusPatch.messageId;
+        for (const message of draft.messages) {
+          const matchesId = messageId && String(message.id || '') === messageId;
+          const matchesReadWatermark = !messageId && statusPatch.readUnixMs > 0 && message.author === 'user' && Number(message.createdUnixMs || 0) <= statusPatch.readUnixMs;
+          if (!matchesId && !matchesReadWatermark) continue;
+          if (statusPatch.deliveredUnixMs > 0) message.deliveredUnixMs = Math.max(Number(message.deliveredUnixMs || 0), statusPatch.deliveredUnixMs);
+          if (statusPatch.readUnixMs > 0) message.readUnixMs = Math.max(Number(message.readUnixMs || 0), statusPatch.readUnixMs);
+          if (statusPatch.deliveryFailedUnixMs > 0) message.deliveryFailedUnixMs = Math.max(Number(message.deliveryFailedUnixMs || 0), statusPatch.deliveryFailedUnixMs);
+          if (statusPatch.deliveryError) message.deliveryError = statusPatch.deliveryError;
+          message.sending = false;
+          message.optimistic = false;
+        }
+      };
+      if (agentId === GUIDE_AGENT_ID) dispatch(chatEndpoints.util.updateQueryData('fetchGuideChat', guideChatArgs(), patchCache));
+      else dispatch(chatEndpoints.util.updateQueryData('fetchDirectChat', directChatArgs(agentId), patchCache));
       dispatch(chatEndpoints.util.updateQueryData('listConversationSummaries', undefined, (draft: any) => {
         if (draft?.[agentId] && payload.unread_count !== undefined) draft[agentId].unreadCount = Number(payload.unread_count || 0);
       }));
+      if (statusPatch.messageId && !statusPatch.deliveredUnixMs && !statusPatch.readUnixMs && !statusPatch.deliveryFailedUnixMs) {
+        dispatch(chatEndpoints.endpoints.fetchChatMessage.initiate({ messageId: statusPatch.messageId }, { subscribe: false, forceRefetch: true })).unwrap().catch(() => undefined);
+      }
     }
     return;
   }

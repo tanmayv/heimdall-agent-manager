@@ -101,9 +101,21 @@ function optimisticMessage(id: string, body: string): ChatMessage {
 }
 
 function upsertMessage(messages: ChatMessage[], next: ChatMessage) {
-  const index = messages.findIndex((message) => message.id === next.id);
+  let index = messages.findIndex((message) => message.id === next.id);
+  if (index < 0 && next.author === 'user') {
+    index = messages.findIndex((message) => message.author === 'user' && message.body === next.body && (message.sending || message.optimistic || String(message.id || '').startsWith('local_')));
+  }
   if (index >= 0) {
-    messages[index] = { ...messages[index], ...next };
+    const current = messages[index];
+    messages[index] = {
+      ...current,
+      ...next,
+      deliveredUnixMs: Math.max(Number(current.deliveredUnixMs || 0), Number(next.deliveredUnixMs || 0)),
+      readUnixMs: Math.max(Number(current.readUnixMs || 0), Number(next.readUnixMs || 0)),
+      deliveryFailedUnixMs: Math.max(Number(current.deliveryFailedUnixMs || 0), Number(next.deliveryFailedUnixMs || 0)),
+      sending: false,
+      optimistic: false,
+    };
     return;
   }
   messages.push(next);
