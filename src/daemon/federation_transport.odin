@@ -385,7 +385,7 @@ federation_inbox_notification_json :: proc(target_agent_instance_id, payload, id
 	return strings.to_string(b)
 }
 
-federation_inbox_message_json :: proc(message_id, from_agent_instance_id, target_agent_instance_id, proxy_agent_instance_id, origin_conversation_id: string, created_unix_ms: i64) -> string {
+federation_inbox_message_json :: proc(message_id, from_agent_instance_id, target_agent_instance_id, proxy_agent_instance_id, origin_conversation_id, body: string, created_unix_ms: i64) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, `{"kind":"inbox_message","idempotency_key":"`)
 	json_write_string(&b, federation_idempotency_key("msg", server_daemon_id, message_id))
@@ -399,6 +399,11 @@ federation_inbox_message_json :: proc(message_id, from_agent_instance_id, target
 	json_write_string(&b, proxy_agent_instance_id)
 	strings.write_string(&b, `","origin_conversation_id":"`)
 	json_write_string(&b, origin_conversation_id)
+	// Inbox message bodies are immutable, single-recipient content: ship the body
+	// on the daemon-to-daemon push (plain HTTP, no WS size limit) and store it
+	// durably on the receiver so reads are offline-capable (store-and-forward).
+	strings.write_string(&b, `","body":"`)
+	json_write_string(&b, body)
 	strings.write_string(&b, `","created_unix_ms":`)
 	strings.write_string(&b, fmt.tprintf("%d", created_unix_ms))
 	strings.write_string(&b, `}`)
@@ -449,7 +454,12 @@ federation_callback_read_receipt_json :: proc(message_id, target_agent_instance_
 	return strings.to_string(b)
 }
 
-federation_remote_message_receive_placeholder :: proc(owner_peer_id, owner_daemon_id, message_id, from_agent_instance_id, target_agent_instance_id, proxy_agent_instance_id, origin_conversation_id: string, created_unix_ms: i64) -> bool {
+federation_remote_message_receive_placeholder :: proc(owner_peer_id, owner_daemon_id, message_id, from_agent_instance_id, target_agent_instance_id, proxy_agent_instance_id, origin_conversation_id, body: string, created_unix_ms: i64) -> bool {
+	// Key the stored message by the RECIPIENT's conversation id so the recipient's
+	// own fetch_messages (which queries registry_conversation_id(self)) finds it.
+	// The local agent-to-agent model keys a message by the target's conversation;
+	// mirror that here. Store the body inline (store-and-forward) so reads work even
+	// when the origin daemon/link is down.
 	return federation_remote_message_upsert(Federation_Remote_Message_Record{
 		record_key = federation_remote_message_record_key(owner_daemon_id, message_id),
 		message_id = strings.clone(message_id),
@@ -458,10 +468,10 @@ federation_remote_message_receive_placeholder :: proc(owner_peer_id, owner_daemo
 		local_agent_instance_id = strings.clone(target_agent_instance_id),
 		remote_agent_instance_id = strings.clone(from_agent_instance_id),
 		proxy_agent_instance_id = strings.clone(proxy_agent_instance_id),
-		conversation_id = conversation_id_for_instance(from_agent_instance_id),
+		conversation_id = conversation_id_for_instance(target_agent_instance_id),
 		origin_conversation_id = strings.clone(origin_conversation_id),
-		body = "",
-		body_available = false,
+		body = strings.clone(body),
+		body_available = strings.trim_space(body) != "",
 		created_unix_ms = created_unix_ms,
 		read_unix_ms = 0,
 	})
@@ -535,7 +545,7 @@ federation_remote_send_message :: proc(from_agent_instance_id, proxy_agent_insta
 	if !federation_remote_message_store_origin_copy(peer_id, string(response.message_id), from_agent_instance_id, remote_agent_instance_id, proxy_agent_instance_id, string(response.conversation_id), body, response.created_unix_ms) {
 		return Service_Result{ok = false, message = `{"ok":false,"message":"failed to persist remote message body"}`, status_code = 500, status_text = "Internal Server Error"}
 	}
-	payload := federation_inbox_message_json(string(response.message_id), from_agent_instance_id, remote_agent_instance_id, proxy_agent_instance_id, string(response.conversation_id), response.created_unix_ms)
+	payload := federation_inbox_message_json(string(response.message_id), from_agent_instance_id, remote_agent_instance_id, proxy_agent_instance_id, string(response.conversation_id), body, response.created_unix_ms)
 	idempotency_key := federation_idempotency_key("msg", server_daemon_id, string(response.message_id))
 	_ = federation_delivery_outbox_insert_pending(peer_id, FEDERATION_ROUTE_INBOX, idempotency_key, payload)
 	sent := federation_forward(peer_id, FEDERATION_ROUTE_INBOX, payload, idempotency_key)
@@ -664,8 +674,9 @@ handle_post_federation_inbox :: proc(client: net.TCP_Socket, body: string, ctx: 
 		target_agent_instance_id := extract_json_string(body, "target_agent_instance_id", "")
 		proxy_agent_instance_id := extract_json_string(body, "proxy_agent_instance_id", "")
 		origin_conversation_id := extract_json_string(body, "origin_conversation_id", "")
+		message_body := extract_json_string(body, "body", "")
 		created_unix_ms := i64(extract_json_int(body, "created_unix_ms", int(router_now_unix_ms())))
-		if !federation_remote_message_receive_placeholder(peer_id, query_param_value(ctx.query, "peer_daemon_id"), message_id, from_agent_instance_id, target_agent_instance_id, proxy_agent_instance_id, origin_conversation_id, created_unix_ms) {
+		if !federation_remote_message_receive_placeholder(peer_id, query_param_value(ctx.query, "peer_daemon_id"), message_id, from_agent_instance_id, target_agent_instance_id, proxy_agent_instance_id, origin_conversation_id, message_body, created_unix_ms) {
 			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist remote placeholder"}`)
 			return
 		}
@@ -676,7 +687,7 @@ handle_post_federation_inbox :: proc(client: net.TCP_Socket, body: string, ctx: 
 		notified := message_bus_emit(Message_Event{
 			kind = .Messages_Available,
 			message_id = contracts.Message_ID(strings.clone(message_id)),
-			conversation_id = contracts.Conversation_ID(conversation_id_for_instance(from_agent_instance_id)),
+			conversation_id = contracts.Conversation_ID(conversation_id_for_instance(target_agent_instance_id)),
 			from_agent_instance_id = contracts.Agent_Instance_ID(strings.clone(from_agent_instance_id)),
 			target_agent_instance_id = contracts.Agent_Instance_ID(strings.clone(target_agent_instance_id)),
 			pending_count = 1,
