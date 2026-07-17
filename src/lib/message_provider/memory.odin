@@ -30,7 +30,13 @@ memory_capabilities := [?]contracts.Message_Provider_Capability {
 memory_state: Memory_State
 
 new_memory_provider :: proc() -> Message_Provider {
-	memory_state = Memory_State{next_id = 1, boot_epoch = now_unix_ms()}
+	// NOTE: keep any function call OUT of the Memory_State compound literal. This
+	// struct embeds a huge fixed array, and a call inside the literal forces the
+	// compiler to materialize the whole struct as a STACK temporary before the
+	// assignment -> stack overflow / segfault at init. Zero-init in place, then set
+	// the boot epoch on the global directly.
+	memory_state = Memory_State{next_id = 1}
+	memory_state.boot_epoch = now_unix_ms()
 	return Message_Provider {
 		name = "memory",
 		capabilities = memory_capabilities[:],
