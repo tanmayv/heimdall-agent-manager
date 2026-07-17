@@ -949,6 +949,11 @@ export default function App() {
     const tempId = `local_temp_guide_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     await dispatch(sendGuideMessage({ body, tempId })).unwrap();
   }, [dispatch]);
+  const startGuideAgent = useCallback(async () => {
+    const agent = guideAgent || { id: GUIDE_AGENT_ID, agentRole: 'guide', templateId: 'guide' };
+    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id || GUIDE_AGENT_ID, provider: agent.providerProfile || defaultConversationProvider(settingsProviders), templateId: agent.templateId || agent.agentRole || 'guide', projectId: agent.projectId || '', displayName: agent.label || 'Heimdall Guide', modelTier: agent.modelTier || 'smart', agentRole: agent.agentRole || agent.templateId || 'guide' });
+    await dispatch(refreshAgents()).unwrap().catch(() => undefined);
+  }, [dispatch, guideAgent, session?.daemonUrl, settingsProviders]);
   const guideContextLabel = useMemo(() => {
     if (currentPageInfo.taskId) return `Task ${currentPageInfo.taskId}`;
     if (currentPageInfo.chainId) return `Chain ${currentPageInfo.chainTitle || currentPageInfo.chainId}`;
@@ -1656,6 +1661,7 @@ export default function App() {
               onToggleDebugServer={toggleGuideDebugServer}
               onSendPageContext={sendGuidePageContext}
               onSend={sendGuideBody}
+              onStart={startGuideAgent}
               onRefresh={() => dispatch(fetchGuideChat()).unwrap().catch(() => undefined)}
               onLoadOlder={() => dispatch(fetchGuideChat({ cursor: chatsCursor?.[GUIDE_AGENT_ID] || 0 })).unwrap().catch(() => undefined)}
               hasMore={Boolean(chatsHasMore?.[GUIDE_AGENT_ID])}
@@ -1887,6 +1893,45 @@ export function agentHasLiveSession(agent: any): boolean {
   if (['ready', 'live', 'connected', 'idle', 'working', 'active'].includes(status) || ['ready', 'live', 'connected', 'idle', 'working'].includes(state)) return true;
   if (execState === 'running') return true;
   return false;
+}
+
+function agentWorkingBannerState(agent: any): 'working' | 'stopped' | '' {
+  if (!agent?.id && !agent?.agent_instance_id && !agent?.agentInstanceId) return '';
+  const live = agentHasLiveSession(agent);
+  const activity = String(agent.activityStatus || agent.activity_status || '').toLowerCase();
+  const status = String(agent.status || '').toLowerCase();
+  const state = String(agent.state || '').toLowerCase();
+  const startup = String(agent.startupStatus || agent.startup_status || '').toLowerCase();
+  if (!live || startup === 'stopped' || status === 'offline' || status === 'stopped' || state === 'stopped') return 'stopped';
+  if (activity === 'idle' || status === 'idle' || state === 'idle') return '';
+  if (activity === 'active' || agent.currentTaskId || agent.current_task_id || status === 'active' || status === 'working' || state === 'working') return 'working';
+  return '';
+}
+
+function agentCurrentTaskLabel(agent: any, tasksById: Record<string, any> = {}): string {
+  const taskId = String(agent?.currentTaskId || agent?.current_task_id || '');
+  if (!taskId) return '';
+  const task = tasksById?.[taskId];
+  return task?.title ? `Task: ${task.title}` : `Task: ${taskId}`;
+}
+
+function ChatRuntimeBanner({ agent, tasksById = {}, debugPrefix, onStart, startDisabled = false }: { agent: any; tasksById?: Record<string, any>; debugPrefix: string; onStart?: () => void; startDisabled?: boolean }) {
+  const mode = agentWorkingBannerState(agent);
+  if (!mode) return null;
+  const label = agent?.label || agent?.displayName || agent?.id || 'Agent';
+  const taskLabel = mode === 'working' ? agentCurrentTaskLabel(agent, tasksById) : '';
+  return (
+    <div data-debug-id={`${debugPrefix}-status-banner`} className="mb-2 flex items-center gap-2 rounded-[14px] border border-white/10 bg-[#101010] px-3 py-2 text-[12px] text-zinc-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
+      <span className={`h-2 w-2 shrink-0 rounded-full ${mode === 'working' ? 'animate-pulse bg-zinc-300' : 'bg-zinc-600'}`} />
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-medium text-zinc-200">{label} is {mode}</div>
+        {taskLabel ? <div className="mt-0.5 truncate text-[11px] text-zinc-500">{taskLabel}</div> : null}
+      </div>
+      {mode === 'stopped' && onStart ? (
+        <button data-debug-id={`${debugPrefix}-status-start-btn`} type="button" onClick={onStart} disabled={startDisabled} className="rounded-full border border-white/15 bg-zinc-200 px-2.5 py-1 text-[11px] font-semibold text-zinc-950 hover:bg-white disabled:cursor-not-allowed disabled:opacity-50">Start</button>
+      ) : null}
+    </div>
+  );
 }
 
 const LAUNCH_AGENT_DEFAULTS_KEY = 'heimdall.ui.launchAgentDefaultsByDaemon';
@@ -3083,6 +3128,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
             />
           ) : null}
         </div>
+        <ChatRuntimeBanner agent={agent} tasksById={tasksById} debugPrefix="agent-detail-chat" onStart={startAgent} startDisabled={!agent?.id || Boolean(agentBusy)} />
         <div data-debug-id="agent-detail-chat-composer-shell" className="mt-3 shrink-0 rounded-[15px] border border-white/10 bg-[#141414] p-0 focus-within:border-white/35">
           <textarea
             data-debug-id="agent-detail-chat-input"
@@ -3472,6 +3518,9 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
       </div>
 
       <div className="px-5 pb-[18px] pt-3">
+        <div className="mx-auto max-w-[820px]">
+          <ChatRuntimeBanner agent={locallyStopped ? { ...agent, status: 'stopped', startupStatus: 'stopped' } : agent} debugPrefix="conversation-composer" onStart={startConversation} startDisabled={Boolean(threadBusy || sending)} />
+        </div>
         <div data-debug-id="conversation-composer-shell" className="mx-auto max-w-[820px] rounded-[18px] border border-white/10 bg-[#141414] p-0 shadow-[0_18px_70px_rgba(0,0,0,0.30)] focus-within:border-white/35">
           <textarea
             data-debug-id="conversation-composer-input"
@@ -3495,9 +3544,9 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
           />
           {sendError && <div data-debug-id="conversation-composer-send-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{sendError}</div>}
           {upload.error && <div data-debug-id="conversation-composer-upload-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
-          {(!live || sendPhase === 'starting') && (
-            <div data-debug-id="conversation-composer-starting-indicator" className={`mx-3 mb-2 rounded-xl border px-3 py-2 text-xs ${sendPhase === 'starting' ? 'border-sky-400/30 bg-sky-400/10 text-sky-100' : 'border-amber-400/20 bg-amber-400/10 text-amber-100'}`}>
-              {sendPhase === 'starting' ? 'Starting this conversation agent before sending your message…' : 'This thread is stopped. Sending will start the conversation agent and preserve this history.'}
+          {sendPhase === 'starting' && (
+            <div data-debug-id="conversation-composer-starting-indicator" className="mx-3 mb-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-zinc-300">
+              Starting this conversation agent before sending your message…
             </div>
           )}
           <div className="flex items-center justify-between gap-3 px-3 py-2">
@@ -3822,6 +3871,7 @@ function HomeRunningAgentsPanel({ agents, projects, session, chats, templates, p
             {selectedAgent && <span data-debug-id="home-running-agent-chat-status" className="rounded-full bg-white/10 px-2 py-1 text-xs text-zinc-400">{agentRuntimeDot(selectedAgent).label}</span>}
           </div>
           <CoordinatorMessageList chainId={selectedAgentId || 'running-agents'} messages={messages} onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))} debugPrefix="home-running-agent-chat" emptyText="No direct messages loaded for this agent." />
+          <ChatRuntimeBanner agent={selectedAgent} debugPrefix="home-running-agent-chat" onStart={() => { if (selectedAgentId) void ensureSelectedAgentRunning(selectedAgentId); }} startDisabled={!selectedAgentId || sending} />
           <div data-debug-id="home-running-agent-chat-composer-shell" className="mt-3 shrink-0 rounded-[15px] border border-white/10 bg-[#141414] p-0 focus-within:border-white/35">
             <textarea
               ref={chatInputRef}
@@ -4877,7 +4927,7 @@ function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'cha
   );
 }
 
-function GuideSidePanel({ agent, messages, loading, sending, debugInfo, currentPageInfo, currentPageLabel, hasMore = false, loadingOlder = false, onLoadOlder, onRefresh, onClose, onSend, onToggleDebugServer, onSendPageContext }: any) {
+function GuideSidePanel({ agent, messages, loading, sending, debugInfo, currentPageInfo, currentPageLabel, hasMore = false, loadingOlder = false, onLoadOlder, onRefresh, onClose, onSend, onStart, onToggleDebugServer, onSendPageContext }: any) {
   const [draft, setDraft] = useState('');
   const [sendError, setSendError] = useState('');
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
@@ -4933,6 +4983,7 @@ function GuideSidePanel({ agent, messages, loading, sending, debugInfo, currentP
           loadingOlder={loadingOlder}
           onLoadOlder={onLoadOlder}
         />
+        <ChatRuntimeBanner agent={agent || { id: GUIDE_AGENT_ID, label: 'Heimdall Guide', status: 'offline' }} debugPrefix="guide-chat" onStart={onStart} startDisabled={sending} />
         <div data-debug-id="guide-chat-composer-shell" className="mt-4 rounded-[15px] border border-white/10 bg-[#141414] p-0 focus-within:border-white/35">
           <textarea
             data-debug-id="guide-chat-composer-input"
@@ -5114,6 +5165,11 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
   const chainRepoDiffSupported = Boolean(chain.repoDiffSupported || chain.repo_diff_supported);
   const workspaceForDisplay = workspace || (chainRepoDiffSupported ? { repo_diff_supported: true, diff_base_sha: chain.diffBaseSha || chain.diff_base_sha || '' } : null);
   const hasWorkspace = Boolean(chain.vcsWorkspaceId || workspaceForDisplay?.workspace_id || workspaceForDisplay?.repo_diff_supported || workspaceForDisplay?.repoDiffSupported || chainRepoDiffSupported);
+  const startCoordinator = async () => {
+    if (!coordinatorAgentId) return;
+    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: coordinatorAgentId, provider: coordinatorAgent?.providerProfile || 'pi', templateId: coordinatorAgent?.templateId || coordinatorAgent?.agentRole || 'coordinator', projectId: projectId || coordinatorAgent?.projectId || '', displayName: coordinatorAgent?.label || coordinatorAgentId, modelTier: coordinatorAgent?.modelTier || 'normal', agentRole: coordinatorAgent?.agentRole || coordinatorAgent?.templateId || 'coordinator' });
+    await dispatch(refreshAgents()).unwrap().catch(() => undefined);
+  };
   const submit = async () => {
     const body = draft.trim();
     if (!body) return;
@@ -5185,6 +5241,9 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
             </div>
           </div>
           <div className="px-5 pb-[18px] pt-3">
+            <div className="mx-auto max-w-[760px]">
+              <ChatRuntimeBanner agent={coordinatorAgent || { id: coordinatorAgentId, label: coordinatorLabel, status: coordinatorAgentId ? 'offline' : 'unknown' }} tasksById={tasksById} debugPrefix="chain-coordinator" onStart={startCoordinator} startDisabled={!coordinatorAgentId} />
+            </div>
             <div data-debug-id="chain-coordinator-composer-shell" className="mx-auto max-w-[760px] rounded-[15px] border border-white/10 bg-[#141414] p-0 focus-within:border-white/35">
               <textarea
                 data-debug-id="chain-coordinator-composer-input"
