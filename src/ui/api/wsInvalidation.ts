@@ -191,6 +191,11 @@ function handleTaskEvent(dispatch: any, payload: any) {
     dispatch(tasksApi.endpoints.fetchTask.initiate({ taskId }, { subscribe: false, forceRefetch: true })).unwrap().then((data: any) => {
       const normalizedTask = data?.task;
       if (!normalizedTask) return;
+      // TODO(rtkq-task-state): collapse the legacy tasksById projection and RTK
+      // Query task caches behind one applyAuthoritativeTask helper. Until then,
+      // compact fetch_required task events must patch both or completed tasks can
+      // remain in legacy active lists until a full refresh.
+      dispatch(updateTaskStateDirectly(normalizedTask));
       if (chainId) {
         dispatch(tasksApi.util.updateQueryData('fetchChainTasks', { chainId }, (draft: any) => {
           if (!draft) return;
