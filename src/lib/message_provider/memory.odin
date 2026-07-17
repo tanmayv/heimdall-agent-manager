@@ -12,6 +12,12 @@ Memory_State :: struct {
 	messages: [MAX_MESSAGES]contracts.Message,
 	message_count: int,
 	next_id: int,
+	// Per-boot epoch mixed into message ids. The counter alone resets to 1 on
+	// every restart, so bare "msg_<n>" ids collide across restarts. Those ids feed
+	// federation idempotency keys (msg:<daemon>:<message_id>), so a collision made
+	// a fresh message look like an already-delivered duplicate and get silently
+	// deduped. The boot epoch makes ids unique across restarts.
+	boot_epoch: i64,
 }
 
 memory_capabilities := [?]contracts.Message_Provider_Capability {
@@ -24,7 +30,7 @@ memory_capabilities := [?]contracts.Message_Provider_Capability {
 memory_state: Memory_State
 
 new_memory_provider :: proc() -> Message_Provider {
-	memory_state = Memory_State{next_id = 1}
+	memory_state = Memory_State{next_id = 1, boot_epoch = now_unix_ms()}
 	return Message_Provider {
 		name = "memory",
 		capabilities = memory_capabilities[:],
@@ -44,7 +50,9 @@ memory_send_message :: proc(state: rawptr, request: contracts.Send_Message_Reque
 	}
 
 	now := now_unix_ms()
-	message_id := contracts.Message_ID(strings.clone(fmt.tprintf("msg_%d", st.next_id)))
+	// Include the per-boot epoch so ids stay unique across daemon restarts (see
+	// Memory_State.boot_epoch). Format: msg_<boot_epoch>_<counter>.
+	message_id := contracts.Message_ID(strings.clone(fmt.tprintf("msg_%d_%d", st.boot_epoch, st.next_id)))
 	st.next_id += 1
 
 	st.messages[st.message_count] = contracts.Message {
