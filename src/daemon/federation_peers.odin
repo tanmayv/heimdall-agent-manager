@@ -363,10 +363,16 @@ federation_peers_list_json :: proc() -> string {
 }
 
 federation_agent_is_advertised :: proc(agent_instance_id: string) -> bool {
+	// Empty allow-list means "advertise all" (all agents that already pass the
+	// scope/role filters in federation_advertised_agents_json). A non-empty list
+	// is an explicit allow-list restricting advertisement to those ids.
+	has_allow_entry := false
 	for allowed in server_config.daemon.federation_advertised_agent_instance_ids {
+		if strings.trim_space(allowed) == "" do continue
+		has_allow_entry = true
 		if strings.trim_space(allowed) == agent_instance_id do return true
 	}
-	return false
+	return !has_allow_entry
 }
 
 federation_advertised_agents_json :: proc() -> string {
