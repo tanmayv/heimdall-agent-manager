@@ -285,6 +285,7 @@ let
   mkDaemon = d:
     { bind_host = d.bindHost; port = d.port; data_dir = d.dataDir;
       wrapper_bin = "${wrapperPkg}/bin/ham-wrapper"; }
+    // lib.optionalAttrs (d.daemonId != null) { daemon_id = d.daemonId; }
     // lib.optionalAttrs (d.defaultAgentProviderProfile != null) { default_agent_provider_profile = d.defaultAgentProviderProfile; }
     // lib.optionalAttrs (d.defaultAgentModelTier != null) { default_agent_model_tier = d.defaultAgentModelTier; }
     // lib.optionalAttrs (d.startupStaleAfterSeconds != null)           { startup_stale_after_seconds          = d.startupStaleAfterSeconds; }
@@ -417,6 +418,18 @@ in
         type        = lib.types.port;
         default     = 49322;
         description = "TCP port the daemon listens on.";
+      };
+      daemonId = lib.mkOption {
+        type        = lib.types.nullOr lib.types.str;
+        default     = null;
+        example     = "home-A";
+        description = ''
+          Stable, globally-unique identifier for this daemon (`[daemon].daemon_id`).
+          Required for federation: peers match incoming requests on both the shared
+          token AND the caller's daemon_id (learned via /daemon/info). Leave null for
+          a standalone daemon (falls back to the built-in "local-daemon"); set a
+          distinct value on every daemon that participates in a peer mesh.
+        '';
       };
       defaultAgentProviderProfile = lib.mkOption {
         type        = lib.types.nullOr lib.types.str;
