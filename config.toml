@@ -10,6 +10,15 @@ wrapper_bin = "./result-wrapper/bin/ham-wrapper"
 default_agent_provider_profile = "pi"
 default_agent_model_tier = "normal"
 
+# Federation peers this daemon can borrow agents from (remote reviewers/agents).
+# Repeatable top-level array-of-tables: one [[peer]] block per peer. Each peer
+# carries exactly name, endpoint, and token. The token is a shared bearer used
+# for every federation call to that peer; there is no per-request re-auth.
+# [[peer]]
+# name     = "studio-mini"
+# endpoint = "http://studio-mini.local:49322"
+# token    = "plk_studio_mini_shared_secret"
+
 [guide_agent]
 enabled = true
 autostart = true
