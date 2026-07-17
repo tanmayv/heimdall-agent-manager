@@ -7,10 +7,10 @@ ws_events_handle_message_event :: proc(event: Message_Event) -> bool {
 	#partial switch event.kind {
 	case .Messages_Available:
 		notification := messages_available_event_json(event)
-		return registry_send_ws_text(string(event.target_agent_instance_id), notification)
+		return registry_send_ws_text_or_remote(string(event.target_agent_instance_id), notification)
 	case .Message_Read:
 		notification := message_read_event_json(event)
-		return registry_send_ws_text(string(event.from_agent_instance_id), notification)
+		return registry_send_ws_text_or_remote(string(event.from_agent_instance_id), notification)
 	case:
 		return true
 	}

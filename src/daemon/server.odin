@@ -74,6 +74,7 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 	time_step("task_store_init", &step)
 	project_store_init(server_data_dir); time_step("project_store_init", &step)
 	agent_store_init(server_data_dir); time_step("agent_store_init", &step)
+	peer_link_store_init(server_data_dir, cfg.daemon.peers[:]); time_step("peer_link_store_init", &step)
 	chat_store_init(server_data_dir); time_step("chat_store_init", &step)
 	_ = team_service_init(server_data_dir); time_step("team_service_init", &step)
 	teams_v1_migration_maybe_run(server_data_dir); time_step("teams_v1_migration_maybe_run", &step)

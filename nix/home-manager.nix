@@ -327,8 +327,13 @@ let
     // lib.optionalAttrs (w.useRandomDir != null)   { use_random_dir = w.useRandomDir; }
     // lib.optionalAttrs (w.agentCommands != {})    { "agent-cmd"   = lib.mapAttrs (_: mkAgentCmd) w.agentCommands; };
 
+  # Federation peers render as repeatable top-level [[peer]] tables. TOML
+  # arrays-of-tables come from a Nix list of attrsets.
+  mkPeers = peers: map (p: { name = p.name; endpoint = p.endpoint; token = p.token; }) peers;
+
   configAttrs =
     lib.optionalAttrs cfg.daemon.enable  { daemon  = mkDaemon cfg.daemon; }
+    // lib.optionalAttrs (cfg.daemon.enable && cfg.daemon.peers != []) { peer = mkPeers cfg.daemon.peers; }
     // { guide_agent = mkGuideAgent cfg.guideAgent; }
     // lib.optionalAttrs cfg.wrapper.enable { wrapper = mkWrapper cfg.wrapper; }
     // lib.optionalAttrs cfg.ctl.enable     { ctl     = { daemon_url = cfg.ctl.daemonUrl; }; };
@@ -477,6 +482,39 @@ in
           type    = lib.types.nullOr lib.types.bool;
           default = null;
         };
+      };
+
+      peers = lib.mkOption {
+        type = lib.types.listOf (lib.types.submodule {
+          options = {
+            name = lib.mkOption {
+              type        = lib.types.str;
+              description = "Stable peer link name (peer_id). Emitted as `[[peer]].name`.";
+            };
+            endpoint = lib.mkOption {
+              type        = lib.types.str;
+              example     = "http://studio-mini.local:49322";
+              description = "Peer daemon base URL. Emitted as `[[peer]].endpoint`.";
+            };
+            token = lib.mkOption {
+              type        = lib.types.str;
+              description = ''
+                Shared bearer token used for every federation call to this peer.
+                Emitted as `[[peer]].token`. This is the whole auth story for the
+                link; there is no per-request/session re-authentication.
+              '';
+            };
+          };
+        });
+        default     = [];
+        example     = [
+          { name = "studio-mini"; endpoint = "http://studio-mini.local:49322"; token = "plk_studio_mini_shared_secret"; }
+        ];
+        description = ''
+          Peer daemons this daemon can federate with (remote reviewers/agents).
+          Each entry is emitted as a repeatable top-level `[[peer]]` table with
+          exactly `name`, `endpoint`, and `token`. No other persistent state.
+        '';
       };
     };
 

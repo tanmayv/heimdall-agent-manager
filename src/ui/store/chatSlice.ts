@@ -154,6 +154,14 @@ export function mapAgent(agent: any) {
     templateId: agent.template_id || agent.templateId || '',
     agentScope: agent.agent_scope || agent.agentScope || 'durable',
     agentRole: agent.agent_role || agent.agentRole || agent.role_hint || agent.roleHint || '',
+    agentKind: agent.agent_kind || agent.agentKind || 'local',
+    remote: agent.remote ? {
+      peerId: agent.remote.peer_id || agent.remote.peerId || '',
+      remoteAgentInstanceId: agent.remote.remote_agent_instance_id || agent.remote.remoteAgentInstanceId || '',
+    } : ((agent.remote_peer_id || agent.remotePeerId || agent.remote_agent_instance_id || agent.remoteAgentInstanceId) ? {
+      peerId: agent.remote_peer_id || agent.remotePeerId || '',
+      remoteAgentInstanceId: agent.remote_agent_instance_id || agent.remoteAgentInstanceId || '',
+    } : null),
     providerProfile: agent.provider_profile || agent.providerProfile || agent.agent_class || '',
     connected: Boolean(agent.connected),
     connectionState: agent.connection_state || agent.connectionState || '',

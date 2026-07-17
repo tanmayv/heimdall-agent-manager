@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import * as daemonApi from '../api/daemonApi';
 
-type AgentPickerProps = {
+export type AgentPickerProps = {
   debugId: string;
   daemonUrl: string;
+  clientToken?: string;
   agents: any[];
   identities?: any[];
   team?: any;
@@ -14,6 +15,7 @@ type AgentPickerProps = {
   roleHint?: string;
   defaultProjectId?: string;
   conversationSummaryById?: Record<string, any>;
+  remotePeersEnabled?: boolean;
   onSelected: (agentInstanceId: string, result?: any) => void | Promise<void>;
   onRefreshAgents?: () => void | Promise<void>;
   selectionOnly?: boolean;
@@ -37,11 +39,15 @@ type PickerRow = {
 };
 
 function slug(value: string): string {
-  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'item';
+  return String(value || '').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'item';
 }
 
 function agentInstanceId(agent: any): string {
   return String(agent?.id || agent?.agentInstanceId || agent?.agent_instance_id || '');
+}
+
+function agentId(agent: any): string {
+  return agentInstanceId(agent);
 }
 
 function durableAgentId(agent: any): string {
@@ -80,9 +86,31 @@ function isRunning(agent: any): boolean {
   return ['connected', 'ready', 'active', 'working', 'running', 'idle'].includes(state) && state !== 'offline';
 }
 
+function agentKind(agent: any): string {
+  return String(agent?.agentKind || agent?.agent_kind || 'local');
+}
+
+function agentRemote(agent: any): { peerId: string; remoteAgentInstanceId: string } | null {
+  const remote = agent?.remote;
+  if (remote) {
+    const peerId = String(remote.peerId || remote.peer_id || '');
+    const remoteAgentInstanceId = String(remote.remoteAgentInstanceId || remote.remote_agent_instance_id || '');
+    if (peerId || remoteAgentInstanceId) return { peerId, remoteAgentInstanceId };
+  }
+  const peerId = String(agent?.remote_peer_id || agent?.remotePeerId || '');
+  const remoteAgentInstanceId = String(agent?.remote_agent_instance_id || agent?.remoteAgentInstanceId || '');
+  if (peerId || remoteAgentInstanceId) return { peerId, remoteAgentInstanceId };
+  return null;
+}
+
+function isRemoteProxyAgent(agent: any): boolean {
+  return agentKind(agent) === 'remote_proxy' && Boolean(agentRemote(agent)?.peerId) && Boolean(agentRemote(agent)?.remoteAgentInstanceId);
+}
+
 function roleMatches(value: any, roleHint: string) {
   if (!roleHint) return true;
   const hint = roleHint.toLowerCase();
+  const remote = agentRemote(value);
   const haystack = [
     agentInstanceId(value),
     durableAgentId(value),
@@ -91,6 +119,8 @@ function roleMatches(value: any, roleHint: string) {
     value?.agentRole || value?.agent_role || value?.roleHint || value?.role_hint || '',
     value?.template_id || value?.templateId || '',
     value?.display_name || value?.displayName || '',
+    value?.providerProfile || value?.provider_profile || '',
+    remote?.remoteAgentInstanceId || '',
   ].join(' ').toLowerCase();
   if (hint === 'coder' || hint === 'assignee') return haystack.includes('coder') || haystack.includes('code') || haystack.includes('implement');
   if (hint === 'reviewer') return haystack.includes('review') || haystack.includes('verify') || haystack.includes('test');
@@ -102,10 +132,37 @@ function statusLabel(agent: any): string {
   return isRunning(agent) ? 'LIVE' : (agentInstanceId(agent) === 'user_proxy' ? 'USER' : 'OFFLINE');
 }
 
-function searchMatches(row: PickerRow, query: string) {
+function searchMatches(item: any, query: string) {
   const q = query.trim().toLowerCase();
   if (!q) return true;
-  return row.searchText.includes(q);
+  if (item && typeof item.searchText === 'string') {
+    return item.searchText.includes(q);
+  }
+  const remote = agentRemote(item);
+  const haystack = [
+    agentId(item),
+    agentLabel(item),
+    agentTemplate(item),
+    item?.agentRole || item?.agent_role || '',
+    item?.providerProfile || item?.provider_profile || '',
+    item?.projectId || item?.project_id || '',
+    statusLabel(item),
+    remote?.peerId || '',
+    remote?.remoteAgentInstanceId || '',
+  ].join(' ').toLowerCase();
+  return haystack.includes(q);
+}
+
+function remoteAgentId(agent: any): string {
+  return String(agent?.agent_instance_id || agent?.agentInstanceId || agent?.remoteAgentInstanceId || '');
+}
+
+function remoteAgentLabel(agent: any): string {
+  return remoteAgentId(agent) || String(agent?.display_name || agent?.displayName || '');
+}
+
+function peerStatus(peer: any): string {
+  return String(peer?.status || '').toLowerCase() === 'linked' ? 'linked' : 'unreachable';
 }
 
 function conversationTitleFor(agent: any, conversationSummaryById: Record<string, any>) {
@@ -186,6 +243,7 @@ function buildIdentityRow(identity: any): PickerRow {
 export default function AgentPicker({
   debugId,
   daemonUrl,
+  clientToken = '',
   agents,
   identities = [],
   team,
@@ -196,6 +254,7 @@ export default function AgentPicker({
   roleHint = '',
   defaultProjectId = '',
   conversationSummaryById = {},
+  remotePeersEnabled = false,
   onSelected,
   onRefreshAgents,
   selectionOnly = false,
@@ -274,44 +333,79 @@ export default function AgentPicker({
   const selectedId = value || '';
   const selectedLabel = useMemo(() => {
     const row = [...instanceRows, ...identityRows].find((item) => item.id === selectedId || item.subtitle === selectedId);
-    return row?.id || selectedId;
-  }, [identityRows, instanceRows, selectedId]);
+    if (row) return row.id;
+    const selectedAgent = (agents || []).find((agent) => agentId(agent) === selectedId);
+    const remote = selectedAgent ? agentRemote(selectedAgent) : null;
+    if (selectedAgent && isRemoteProxyAgent(selectedAgent) && remote) return `${remote.remoteAgentInstanceId} · ${remote.peerId}`;
+    return selectedId;
+  }, [identityRows, instanceRows, selectedId, agents]);
+
+  const [runId, setRunId] = useState('');
+  const [runTemplate, setRunTemplate] = useState(fallbackTemplate);
+  const [runProvider, setRunProvider] = useState(providerOptions[0] || 'pi');
+  const [runProject, setRunProject] = useState(defaultProjectId || '');
+  const [runTier, setRunTier] = useState('normal');
+  const [createId, setCreateId] = useState('');
+  const [createName, setCreateName] = useState('');
+  const [createTemplate, setCreateTemplate] = useState(fallbackTemplate);
+  const [createProvider, setCreateProvider] = useState(providerOptions[0] || 'pi');
+  const [createProject, setCreateProject] = useState(defaultProjectId || '');
+  const [createTier, setCreateTier] = useState('normal');
+  const [remotePeers, setRemotePeers] = useState<any[]>([]);
+  const [remoteLoading, setRemoteLoading] = useState(false);
+  const [remoteError, setRemoteError] = useState('');
+
+  useEffect(() => {
+    setRunTemplate(fallbackTemplate);
+    setCreateTemplate(fallbackTemplate);
+  }, [fallbackTemplate]);
+
+  useEffect(() => {
+    setRunProvider(providerOptions[0] || 'pi');
+    setCreateProvider(providerOptions[0] || 'pi');
+  }, [providerOptions]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadRemotePeers() {
+      if (!remotePeersEnabled || !daemonUrl || !clientToken) {
+        if (!cancelled) {
+          setRemotePeers([]);
+          setRemoteError('');
+          setRemoteLoading(false);
+        }
+        return;
+      }
+      setRemoteLoading(true);
+      setRemoteError('');
+      try {
+        const peers = await daemonApi.listFederationPeers({ daemonUrl, clientToken });
+        const loaded = await Promise.all((peers || []).map(async (peer: any) => {
+          const effectiveStatus = peerStatus(peer);
+          if (effectiveStatus !== 'linked') return { ...peer, remoteAgents: [], loadError: '' };
+          try {
+            const data = await daemonApi.listPeerAdvertisedAgents({ daemonUrl, clientToken, peerId: peer.peer_id });
+            return { ...peer, daemonName: data.daemonId || peer.daemon_id || peer.peer_id, remoteAgents: data.agents || [], loadError: '' };
+          } catch (err: any) {
+            return { ...peer, daemonName: peer.daemon_id || peer.peer_id, status: 'unreachable', remoteAgents: [], loadError: err?.message || 'Unable to load peer agents' };
+          }
+        }));
+        if (!cancelled) setRemotePeers(loaded);
+      } catch (err: any) {
+        if (!cancelled) {
+          setRemotePeers([]);
+          setRemoteError(err?.message || 'Unable to load peer daemons');
+        }
+      } finally {
+        if (!cancelled) setRemoteLoading(false);
+      }
+    }
+    loadRemotePeers().catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [remotePeersEnabled, daemonUrl, clientToken]);
 
   async function refresh() {
     if (onRefreshAgents) await onRefreshAgents();
-  }
-
-  async function runAgent(agentInstanceIdValue: string, templateId: string, provider: string, projectId: string, modelTier: string) {
-    const trimmed = agentInstanceIdValue.trim();
-    if (!trimmed) return;
-    setBusyKey(`run:${trimmed}`);
-    setError('');
-    try {
-      const result = await daemonApi.startAgent({ daemonUrl, agentInstanceId: trimmed, provider, templateId, projectId, modelTier, agentRole: templateId });
-      await refresh();
-      await onSelected(trimmed, result);
-    } catch (err: any) {
-      setError(err?.message || 'Unable to run agent');
-    } finally {
-      setBusyKey('');
-    }
-  }
-
-  async function createAndRun(agentIdValue: string, displayName: string, templateId: string, provider: string, projectId: string, modelTier: string) {
-    const trimmed = agentIdValue.trim();
-    if (!trimmed) return;
-    setBusyKey(`create-run:${trimmed}`);
-    setError('');
-    try {
-      await daemonApi.createAgent({ daemonUrl, agentInstanceId: trimmed, displayName: displayName.trim() || trimmed, providerProfile: provider, templateId, projectId, modelTier, agentRole: templateId });
-      const result = await daemonApi.startAgent({ daemonUrl, agentInstanceId: trimmed, provider, templateId, projectId, displayName: displayName.trim() || trimmed, modelTier, agentRole: templateId });
-      await refresh();
-      await onSelected(trimmed, result);
-    } catch (err: any) {
-      setError(err?.message || 'Unable to create agent');
-    } finally {
-      setBusyKey('');
-    }
   }
 
   async function useRow(row: PickerRow) {
@@ -362,17 +456,103 @@ export default function AgentPicker({
     }
   }
 
-  const [runId, setRunId] = useState('');
-  const [runTemplate, setRunTemplate] = useState(fallbackTemplate);
-  const [runProvider, setRunProvider] = useState(providerOptions[0] || 'pi');
-  const [runProject, setRunProject] = useState(defaultProjectId || '');
-  const [runTier, setRunTier] = useState('normal');
-  const [createId, setCreateId] = useState('');
-  const [createName, setCreateName] = useState('');
-  const [createTemplate, setCreateTemplate] = useState(fallbackTemplate);
-  const [createProvider, setCreateProvider] = useState(providerOptions[0] || 'pi');
-  const [createProject, setCreateProject] = useState(defaultProjectId || '');
-  const [createTier, setCreateTier] = useState('normal');
+  async function runAgent(agentInstanceIdValue: string, templateId: string, provider: string, projectId: string, modelTier: string) {
+    const trimmed = agentInstanceIdValue.trim();
+    if (!trimmed) return;
+    setBusyKey(`run:${trimmed}`);
+    setError('');
+    try {
+      const result = await daemonApi.startAgent({ daemonUrl, agentInstanceId: trimmed, provider, templateId, projectId, modelTier, agentRole: templateId });
+      await refresh();
+      await onSelected(trimmed, result);
+    } catch (err: any) {
+      setError(err?.message || 'Unable to run agent');
+    } finally {
+      setBusyKey('');
+    }
+  }
+
+  async function createAndRun(agentIdValue: string, displayName: string, templateId: string, provider: string, projectId: string, modelTier: string) {
+    const trimmed = agentIdValue.trim();
+    if (!trimmed) return;
+    setBusyKey(`create-run:${trimmed}`);
+    setError('');
+    try {
+      await daemonApi.createAgent({ daemonUrl, agentInstanceId: trimmed, displayName: displayName.trim() || trimmed, providerProfile: provider, templateId, projectId, modelTier, agentRole: templateId });
+      const result = await daemonApi.startAgent({ daemonUrl, agentInstanceId: trimmed, provider, templateId, projectId, displayName: displayName.trim() || trimmed, modelTier, agentRole: templateId });
+      await refresh();
+      await onSelected(trimmed, result);
+    } catch (err: any) {
+      setError(err?.message || 'Unable to create agent');
+    } finally {
+      setBusyKey('');
+    }
+  }
+
+  async function selectRemoteAgent(peer: any, remoteAgent: any) {
+    if (!clientToken || peerStatus(peer) !== 'linked' || busyKey) return;
+    const remoteId = remoteAgentId(remoteAgent).trim();
+    if (!remoteId) return;
+    const peerId = String(peer?.peer_id || '').trim();
+    if (!peerId) return;
+    setBusyKey(`remote-${peerId}-${remoteId}`);
+    setError('');
+    try {
+      const result = await daemonApi.bindRemoteProxy({
+        daemonUrl,
+        clientToken,
+        peerId,
+        remoteAgentInstanceId: remoteId,
+        displayName: String(remoteAgent?.display_name || remoteAgent?.displayName || ''),
+        templateId: String(remoteAgent?.template_id || remoteAgent?.templateId || ''),
+        providerProfile: String(remoteAgent?.provider_profile || remoteAgent?.providerProfile || ''),
+        modelTier: String(remoteAgent?.model_tier || remoteAgent?.modelTier || 'normal'),
+        agentRole: String(remoteAgent?.agent_role || remoteAgent?.agentRole || ''),
+      });
+      const localProxyId = String(result?.agent?.agent_instance_id || result?.agent?.agentInstanceId || '');
+      if (!localProxyId) throw new Error('Daemon did not return a local proxy id');
+      await refresh();
+      await onSelected(localProxyId, result);
+    } catch (err: any) {
+      setError(err?.message || 'Unable to select remote agent');
+    } finally {
+      setBusyKey('');
+    }
+  }
+
+  const remoteProxyAgents = useMemo(() => (agents || []).filter((agent) => isRemoteProxyAgent(agent)), [agents]);
+  const remoteProxyByKey = useMemo(() => {
+    const map = new Map<string, any>();
+    for (const agent of remoteProxyAgents) {
+      const remote = agentRemote(agent);
+      if (!remote?.peerId || !remote?.remoteAgentInstanceId) continue;
+      map.set(`${remote.peerId}::${remote.remoteAgentInstanceId}`, agent);
+    }
+    return map;
+  }, [remoteProxyAgents]);
+
+  const remoteSections = useMemo(() => {
+    if (!remotePeersEnabled) return [];
+    return (remotePeers || []).map((peer: any) => {
+      const peerId = String(peer?.peer_id || '');
+      const liveRows = (peer.remoteAgents || []).map((item: any) => ({ ...item, __rowKind: 'live' }));
+      const proxyRows = remoteProxyAgents
+        .filter((agent) => agentRemote(agent)?.peerId === peerId)
+        .map((agent) => ({
+          agent_instance_id: agentRemote(agent)?.remoteAgentInstanceId || '',
+          display_name: agentLabel(agent),
+          template_id: agentTemplate(agent),
+          agent_role: agent?.agentRole || agent?.agent_role || '',
+          provider_profile: agent?.providerProfile || agent?.provider_profile || '',
+          model_tier: agent?.modelTier || agent?.model_tier || 'normal',
+          identity_state: agent?.state || 'provisioned',
+          __rowKind: 'proxy',
+        }))
+        .filter((item: any) => !liveRows.some((live: any) => remoteAgentId(live) === remoteAgentId(item)));
+      const rows = [...liveRows, ...proxyRows].filter((item: any) => remoteAgentId(item) && roleMatches(item, roleHint) && searchMatches(item, query));
+      return { peer, rows };
+    });
+  }, [remotePeersEnabled, remotePeers, remoteProxyAgents, roleHint, query]);
 
   function renderRow(row: PickerRow) {
     const pref = prefsByKey[row.key] || { provider: row.provider || providerOptions[0] || 'pi', tier: row.tier || 'normal' };
@@ -491,6 +671,65 @@ export default function AgentPicker({
           </>
         )}
       </div>
+
+      {remotePeersEnabled && (
+        <div className="mt-4 space-y-3">
+          {remoteLoading && <div data-debug-id={`${debugId}-remote-loading`} className="rounded-xl border border-dashed border-white/10 p-3 text-xs text-zinc-500">Loading remote agents…</div>}
+          {remoteError && <div data-debug-id={`${debugId}-remote-error`} className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{remoteError}</div>}
+          {remoteSections.map(({ peer, rows }: any) => {
+            const peerId = String(peer?.peer_id || 'peer');
+            const offline = peerStatus(peer) !== 'linked';
+            return (
+              <div key={peerId} data-debug-id={`${debugId}-remote-section-${peerId}`}>
+                <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Remote - {peerId}</div>
+                <div className="grid gap-2 md:grid-cols-2">
+                  {rows.length === 0 ? (
+                    <div data-debug-id={`${debugId}-remote-empty-${peerId}`} className={`rounded-2xl border border-dashed p-4 text-sm ${offline ? 'border-red-400/20 bg-red-400/5 text-red-100/80 opacity-70' : 'border-white/10 text-zinc-500'}`}>
+                      {offline ? 'Peer offline. Remote agents are unavailable right now.' : 'No matching remote agents.'}
+                    </div>
+                  ) : rows.map((remoteAgent: any) => {
+                    const remoteId = remoteAgentId(remoteAgent);
+                    const key = `${peerId}::${remoteId}`;
+                    const localProxy = remoteProxyByKey.get(key);
+                    const selected = Boolean(localProxy && agentId(localProxy) === selectedId);
+                    return (
+                      <div
+                        key={key}
+                        role="button"
+                        tabIndex={offline ? -1 : 0}
+                        data-debug-id={`${debugId}-remote-card-${peerId}-${slug(remoteId)}`}
+                        aria-disabled={offline || Boolean(busyKey)}
+                        onClick={() => { if (offline || busyKey) return; void selectRemoteAgent(peer, remoteAgent); }}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter' && event.key !== ' ') return;
+                          event.preventDefault();
+                          if (offline || busyKey) return;
+                          void selectRemoteAgent(peer, remoteAgent);
+                        }}
+                        className={`min-w-0 rounded-2xl border border-dashed p-3 text-left transition ${offline ? 'cursor-not-allowed opacity-55 border-red-400/20 bg-red-400/[0.03]' : 'cursor-pointer border-teal-400/25 bg-teal-400/[0.05] hover:border-teal-300/40 hover:bg-teal-400/[0.08]'} ${selected ? 'border-solid border-teal-300/60 bg-teal-400/[0.12]' : ''}`}
+                        title={`${remoteId} · ${peerId}`}
+                      >
+                        <div className="flex min-w-0 items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-semibold text-zinc-100">{remoteAgentLabel(remoteAgent)}</div>
+                            <div className="mt-1 truncate font-mono text-[11px] text-zinc-500">{remoteId} · {peerId}</div>
+                          </div>
+                          <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${offline ? 'bg-red-400/15 text-red-100' : 'bg-teal-400/15 text-teal-100'}`}>{offline ? 'OFFLINE' : 'REMOTE · LIVE'}</span>
+                        </div>
+                        <div className="mt-3 flex min-w-0 flex-wrap gap-1.5 text-[10px] text-zinc-400">
+                          <span className="max-w-full truncate rounded-full bg-teal-400/10 px-2 py-0.5 text-teal-100">remote</span>
+                          {(remoteAgent.agent_role || remoteAgent.agentRole) && <span className="max-w-full truncate rounded-full bg-white/[0.05] px-2 py-0.5">{remoteAgent.agent_role || remoteAgent.agentRole}</span>}
+                          {offline && <span className="max-w-full truncate rounded-full bg-white/[0.05] px-2 py-0.5">peer offline</span>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {!selectionOnly ? (
         <>

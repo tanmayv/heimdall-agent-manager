@@ -28,7 +28,7 @@ notification_outbox_insert_pending :: proc(recipient_agent_instance_id, payload:
 	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
 		fmt.println("notification_outbox_insert_pending: prepare failed:", rc)
-		return event_id
+		return ""
 	}
 	defer sqlite3_finalize(stmt)
 
@@ -40,6 +40,7 @@ notification_outbox_insert_pending :: proc(recipient_agent_instance_id, payload:
 	rc = sqlite3_step(stmt)
 	if rc != SQLITE_DONE {
 		fmt.printf("notification_outbox_insert_pending: step failed: %d (%s)\n", rc, sqlite3_errmsg(task_db.db))
+		return ""
 	}
 	return event_id
 }
@@ -139,7 +140,7 @@ notification_outbox_replay_pending :: proc(recipient_agent_instance_id: string) 
 
 	delivered := 0
 	for i in 0..<len(event_ids) {
-		sent := registry_send_ws_text(recipient_agent_instance_id, payloads[i])
+		sent := registry_send_ws_text_or_remote(recipient_agent_instance_id, payloads[i])
 		_ = notification_outbox_mark_attempt(recipient_agent_instance_id, event_ids[i], sent)
 		if !sent do break
 		delivered += 1

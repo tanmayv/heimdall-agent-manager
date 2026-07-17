@@ -347,6 +347,10 @@ task_autoscaler_launch_agent :: proc(chain: Task_Chain_State, agent_instance_id:
 	launch_project_id := chain.project_id
 	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 {
 		rec := agent_instance_records[idx]
+		if agent_record_is_remote_proxy(rec) {
+			fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=remote_proxy_skip source=%s chain=%s team=%s task=%s target=%s", router_now_unix_ms(), launch_source, chain.chain_id, chain.team_id, launch_task_id, agent_instance_id)
+			return false
+		}
 		if rec.template_id != "" do template_id = rec.template_id
 		if rec.display_name != "" do display_name = rec.display_name
 		if rec.provider_profile != "" do provider_profile = rec.provider_profile

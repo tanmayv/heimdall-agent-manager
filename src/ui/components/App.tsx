@@ -4991,6 +4991,7 @@ function ChainProgressPanel({ chain, progress }: { chain: any; progress: ChainPr
 }
 
 function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, initialTaskId = '', onBack, onSend, onToggleDiff, onFetchDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenChain, onOpenTask, onLoadTaskLogPage, onLoadCoordinatorChatPage, onOpenEditor, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer }: any) {
+  const dispatch = useDispatch<any>();
   const session = useSelector((state: any) => state.chat?.session || {});
   const chatState = useSelector((state: any) => state.chat || {});
   const [draft, setDraft] = useState('');
@@ -5225,6 +5226,9 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
                 nudgeDraft={nudgeDraft}
                 projectId={projectId}
                 chainId={chain.chainId}
+                daemonUrl={session.daemonUrl}
+                clientToken={session.clientToken}
+                onRefreshAgents={() => dispatch(refreshAgents()).unwrap().catch(() => undefined)}
                 onCommentDraft={setCommentDraft}
                 onNudgeDraft={setNudgeDraft}
                 onOpenTask={openTask}
@@ -5257,6 +5261,9 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
                     nudgeDraft={nudgeDraft}
                     projectId={projectId}
                     chainId={chain.chainId}
+                    daemonUrl={session.daemonUrl}
+                    clientToken={session.clientToken}
+                    onRefreshAgents={() => dispatch(refreshAgents()).unwrap().catch(() => undefined)}
                     onCommentDraft={setCommentDraft}
                     onNudgeDraft={setNudgeDraft}
                     onOpenTask={openTask}
@@ -5396,7 +5403,7 @@ function TaskAgentChip({ role, agentId, agent, active, onClick }: any) {
   return <span data-debug-id={`chain-task-${role.toLowerCase()}-${agentId || 'none'}`} className={className} title={`${role}: ${agentId || 'none'} · ${runtime.label}`}>{content}</span>;
 }
 
-function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, expandedTaskId, commentDraft, nudgeDraft, projectId = '', chainId = '', onCommentDraft, onNudgeDraft, onOpenTask, onLoadTaskLogPage, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, agents = [], taskIndexMap = new Map(), completed = false }: any) {
+function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, expandedTaskId, commentDraft, nudgeDraft, projectId = '', chainId = '', daemonUrl = '', clientToken = '', onRefreshAgents, onCommentDraft, onNudgeDraft, onOpenTask, onLoadTaskLogPage, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, agents = [], taskIndexMap = new Map(), completed = false }: any) {
   const [commentsOpenByTaskId, setCommentsOpenByTaskId] = useState<Record<string, boolean>>({});
   const [busyAction, setBusyAction] = useState('');
   const [localError, setLocalError] = useState('');
@@ -5448,16 +5455,19 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
             </div>
             <AgentPicker
               debugId={`task-${agentPicker.mode}-agent-picker`}
-              daemonUrl={session.daemonUrl || ''}
+              daemonUrl={session.daemonUrl || daemonUrl || ''}
+              clientToken={session.clientToken || clientToken || ''}
+              remotePeersEnabled
               agents={selectableAgents}
               identities={agentIdentities}
               team={chainTeam}
               projects={projectId ? [{ projectId, name: projectId }] : []}
-              roleHint=""
+              roleHint={agentPicker.mode === 'reviewer' ? 'reviewer' : ''}
               defaultProjectId={projectId || ''}
               conversationSummaryById={effectiveConversationSummaryById}
               value={agentPicker.mode === 'assignee' ? (pickerTask.assigneeAgentInstanceId || '') : (taskReviewerIds(pickerTask)[0] || '')}
               selectionOnly
+              onRefreshAgents={onRefreshAgents}
               onSelected={(agentInstanceId, result) => applyAgentPick(agentInstanceId, result)}
             />
           </div>

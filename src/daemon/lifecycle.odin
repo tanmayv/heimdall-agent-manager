@@ -58,6 +58,12 @@ handle_register :: proc(client: net.TCP_Socket, body: string) {
 	}
 
 	display_name := extract_json_string(body, "display_name", "")
+	if durable_agent_exists {
+		if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 && agent_record_is_remote_proxy(agent_instance_records[idx]) {
+			write_response(client, 400, "Bad Request", `{"ok":false,"message":"remote_proxy instances cannot register local wrapper sessions"}`)
+			return
+		}
+	}
 	if !durable_agent_exists {
 		stored_display := display_name
 		if stored_display == "" do stored_display = agent_instance_id
@@ -131,7 +137,7 @@ handle_startup_report :: proc(client: net.TCP_Socket, body: string) {
 		if run_dir != "" do rec.run_dir = run_dir
 		// Preserve stored model_tier — startup_report doesn't carry tier and
 		// emitting with empty tier would clobber the value set at /agents/start.
-		_ = agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = rec.provider_profile, project_id = rec.project_id, run_dir = rec.run_dir, model_tier = rec.model_tier, author = "startup_report"})
+		_ = agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = rec.provider_profile, project_id = rec.project_id, run_dir = rec.run_dir, model_tier = rec.model_tier, agent_scope = rec.agent_scope, agent_role = rec.agent_role, agent_kind = rec.agent_kind, remote_peer_id = rec.remote_peer_id, remote_agent_instance_id = rec.remote_agent_instance_id, author = "startup_report"})
 	}
 	write_response(client, 200, "OK", `{"ok":true}`)
 }
