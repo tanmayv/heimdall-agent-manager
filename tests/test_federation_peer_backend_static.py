@@ -44,5 +44,6 @@ require('peer not configured or token mismatch' in FED, "federation endpoint mus
 require('/federation/agents?peer_token=%s&peer_daemon_id=%s' in FED, "peer agent fetches must include caller daemon id")
 require("rest_authorize_user(client, ctx)" in FED, "peer management endpoints must require user/operator auth")
 require("federation_advertised_agents_json()" in FED, "federation agents endpoint must serve advertised agents")
+require('"origin_daemon_id":"' in FED and '"native_id":"' in FED, "advertised agents JSON must expose absolute origin/native identity")
 
 print("federation_peer_backend_static: ok")

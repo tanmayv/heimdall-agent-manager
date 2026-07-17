@@ -255,7 +255,7 @@ def main():
         }).get("messages", [])
         require(not forged_messages, f"forged reply should not create local conversation state: {forged_messages}")
 
-        conversation_b = conv_id(sender_id)
+        conversation_b = conv_id(receiver_id)
         fetched_b = wait_for(
             lambda: request_json(base_b, "/agent-rpc", method="POST", body={
                 "agent_token": receiver_token,

@@ -101,6 +101,20 @@ export type MergeDecision = {
   };
 };
 
+export type FederationPeerBlock = {
+  key: string;
+  kind: string;
+  taskId: string;
+  chainId: string;
+  taskTitle: string;
+  chainTitle: string;
+  peerId: string;
+  peerDaemonId: string;
+  peerStatus: string;
+  proxyAgentInstanceId: string;
+  reviewerRole: string;
+};
+
 function normalizeMergeDecision(record: any): MergeDecision {
   const preview = record.preview || {};
   return {
@@ -117,6 +131,22 @@ function normalizeMergeDecision(record: any): MergeDecision {
       conflicts: preview.conflicts || [],
       commands: preview.commands || [],
     },
+  };
+}
+
+function normalizeFederationPeerBlock(record: any): FederationPeerBlock {
+  return {
+    key: `${record.task_id || ''}:${record.proxy_agent_instance_id || ''}:${record.peer_id || ''}`,
+    kind: String(record.kind || 'federation_peer_block'),
+    taskId: String(record.task_id || ''),
+    chainId: String(record.chain_id || ''),
+    taskTitle: String(record.task_title || ''),
+    chainTitle: String(record.chain_title || ''),
+    peerId: String(record.peer_id || ''),
+    peerDaemonId: String(record.peer_daemon_id || ''),
+    peerStatus: String(record.peer_status || ''),
+    proxyAgentInstanceId: String(record.proxy_agent_instance_id || ''),
+    reviewerRole: String(record.reviewer_role || ''),
   };
 }
 
@@ -148,9 +178,12 @@ export const dismissChatApproval = createAsyncThunk('attention/dismissChatApprov
 
 export const refreshMergeDecisions = createAsyncThunk('attention/refreshMergeDecisions', async (_, { getState }) => {
   const state = getState() as any;
-  if (!state.chat.session.clientToken) return { mergeDecisions: [] };
+  if (!state.chat.session.clientToken) return { mergeDecisions: [], federationPeerBlocks: [] };
   const data = await daemonApi.fetchAttention({ daemonUrl: state.chat.session.daemonUrl, clientToken: state.chat.session.clientToken });
-  return { mergeDecisions: (data.merge_decisions || []).map(normalizeMergeDecision) };
+  return {
+    mergeDecisions: (data.merge_decisions || []).map(normalizeMergeDecision),
+    federationPeerBlocks: (data.blocked || []).filter((row: any) => (row?.kind || '') === 'federation_peer_block').map(normalizeFederationPeerBlock),
+  };
 });
 
 export const executeMergeViaChain = createAsyncThunk(
@@ -176,6 +209,8 @@ const initialState = {
   chatApprovalIds: [] as string[],
   mergeDecisionsById: {} as Record<string, MergeDecision>,
   mergeDecisionIds: [] as string[],
+  federationPeerBlocksById: {} as Record<string, FederationPeerBlock>,
+  federationPeerBlockIds: [] as string[],
   loading: false,
   error: '',
   lastEventAt: 0,
@@ -273,6 +308,15 @@ const attentionSlice = createSlice({
         }
         state.mergeDecisionsById = byId;
         state.mergeDecisionIds = ids;
+        const blocks: FederationPeerBlock[] = action.payload.federationPeerBlocks || [];
+        const blocksById: Record<string, FederationPeerBlock> = {};
+        const blockIds: string[] = [];
+        for (const block of blocks) {
+          blocksById[block.key] = block;
+          blockIds.push(block.key);
+        }
+        state.federationPeerBlocksById = blocksById;
+        state.federationPeerBlockIds = blockIds;
       })
       .addCase(refreshMergeDecisions.rejected, (state: any, action) => {
         state.loading = false;

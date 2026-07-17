@@ -10,6 +10,18 @@ Task_Db_Service :: struct {
 	db_path: string,
 }
 
+Federation_Remote_Work_Record :: struct {
+	task_id: string,
+	chain_id: string,
+	owner_peer_id: string,
+	origin_daemon_id: string,
+	local_agent_instance_id: string,
+	proxy_agent_instance_id: string,
+	status: string,
+	created_unix_ms: i64,
+	updated_unix_ms: i64,
+}
+
 task_db: Task_Db_Service
 
 task_db_open :: proc(db_path: string) -> bool {
@@ -195,6 +207,19 @@ task_db_create_schema :: proc() -> bool {
 		read_unix_ms INTEGER NOT NULL DEFAULT 0
 	);
 
+	CREATE TABLE IF NOT EXISTS federation_remote_work (
+		task_id TEXT NOT NULL,
+		chain_id TEXT NOT NULL,
+		owner_peer_id TEXT NOT NULL,
+		origin_daemon_id TEXT NOT NULL,
+		local_agent_instance_id TEXT NOT NULL,
+		proxy_agent_instance_id TEXT NOT NULL,
+		status TEXT NOT NULL,
+		created_unix_ms INTEGER NOT NULL,
+		updated_unix_ms INTEGER NOT NULL,
+		PRIMARY KEY (origin_daemon_id, task_id, local_agent_instance_id)
+	);
+
 	CREATE TABLE IF NOT EXISTS task_events (
 		journal_seq INTEGER PRIMARY KEY AUTOINCREMENT,
 		event_id TEXT NOT NULL,
@@ -213,6 +238,10 @@ task_db_create_schema :: proc() -> bool {
 	CREATE INDEX IF NOT EXISTS idx_federation_delivery_outbox_pending ON federation_delivery_outbox(peer_id, delivered_unix_ms, created_unix_ms);
 	CREATE INDEX IF NOT EXISTS idx_federation_remote_messages_lookup ON federation_remote_messages(local_agent_instance_id, conversation_id, created_unix_ms);
 	CREATE INDEX IF NOT EXISTS idx_federation_remote_messages_origin ON federation_remote_messages(owner_peer_id, message_id);
+	CREATE INDEX IF NOT EXISTS idx_federation_remote_work_agent ON federation_remote_work(local_agent_instance_id, updated_unix_ms, origin_daemon_id, task_id);
+	CREATE INDEX IF NOT EXISTS idx_federation_remote_work_chain ON federation_remote_work(origin_daemon_id, chain_id, local_agent_instance_id, updated_unix_ms);
+	CREATE INDEX IF NOT EXISTS idx_federation_remote_work_task_lookup ON federation_remote_work(task_id, local_agent_instance_id, updated_unix_ms, origin_daemon_id);
+	CREATE INDEX IF NOT EXISTS idx_federation_remote_work_chain_lookup ON federation_remote_work(chain_id, local_agent_instance_id, updated_unix_ms, origin_daemon_id);
 	CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, journal_seq);
 	CREATE INDEX IF NOT EXISTS idx_task_events_chain ON task_events(chain_id, journal_seq);
 	`
@@ -424,6 +453,161 @@ task_db_save_participant :: proc(part: Task_Participant) -> bool {
 		return false
 	}
 	return true
+}
+
+federation_remote_work_row_from_stmt :: proc(stmt: sqlite3_stmt) -> Federation_Remote_Work_Record {
+	return Federation_Remote_Work_Record{
+		task_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 0)),
+		chain_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 1)),
+		owner_peer_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 2)),
+		origin_daemon_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 3)),
+		local_agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 4)),
+		proxy_agent_instance_id = strings.clone_from_cstring(sqlite3_column_text(stmt, 5)),
+		status = strings.clone_from_cstring(sqlite3_column_text(stmt, 6)),
+		created_unix_ms = sqlite3_column_int64(stmt, 7),
+		updated_unix_ms = sqlite3_column_int64(stmt, 8),
+	}
+}
+
+federation_remote_work_delete_record :: proc(rec: Federation_Remote_Work_Record) {
+	delete(rec.task_id)
+	delete(rec.chain_id)
+	delete(rec.owner_peer_id)
+	delete(rec.origin_daemon_id)
+	delete(rec.local_agent_instance_id)
+	delete(rec.proxy_agent_instance_id)
+	delete(rec.status)
+}
+
+federation_remote_work_upsert :: proc(rec: Federation_Remote_Work_Record) -> bool {
+	if rec.task_id == "" || rec.owner_peer_id == "" || rec.origin_daemon_id == "" || rec.local_agent_instance_id == "" || rec.proxy_agent_instance_id == "" || !task_db_ready do return false
+	stmt: sqlite3_stmt = nil
+	query := `INSERT OR REPLACE INTO federation_remote_work (
+		task_id, chain_id, owner_peer_id, origin_daemon_id, local_agent_instance_id,
+		proxy_agent_instance_id, status, created_unix_ms, updated_unix_ms
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK do return false
+	defer sqlite3_finalize(stmt)
+	task_db_bind_text(stmt, 1, rec.task_id)
+	task_db_bind_text(stmt, 2, rec.chain_id)
+	task_db_bind_text(stmt, 3, rec.owner_peer_id)
+	task_db_bind_text(stmt, 4, rec.origin_daemon_id)
+	task_db_bind_text(stmt, 5, rec.local_agent_instance_id)
+	task_db_bind_text(stmt, 6, rec.proxy_agent_instance_id)
+	task_db_bind_text(stmt, 7, rec.status)
+	sqlite3_bind_int64(stmt, 8, rec.created_unix_ms)
+	sqlite3_bind_int64(stmt, 9, rec.updated_unix_ms)
+	return sqlite3_step(stmt) == SQLITE_DONE
+}
+
+federation_remote_work_find_task :: proc(origin_daemon_id, task_id, local_agent_instance_id: string) -> (Federation_Remote_Work_Record, bool) {
+	if origin_daemon_id == "" || task_id == "" || local_agent_instance_id == "" || !task_db_ready do return Federation_Remote_Work_Record{}, false
+	stmt: sqlite3_stmt = nil
+	query := `SELECT task_id, chain_id, owner_peer_id, origin_daemon_id, local_agent_instance_id, proxy_agent_instance_id, status, created_unix_ms, updated_unix_ms
+		FROM federation_remote_work
+		WHERE origin_daemon_id = ? AND task_id = ? AND local_agent_instance_id = ?
+		LIMIT 1`
+	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK do return Federation_Remote_Work_Record{}, false
+	defer sqlite3_finalize(stmt)
+	task_db_bind_text(stmt, 1, origin_daemon_id)
+	task_db_bind_text(stmt, 2, task_id)
+	task_db_bind_text(stmt, 3, local_agent_instance_id)
+	if sqlite3_step(stmt) != SQLITE_ROW do return Federation_Remote_Work_Record{}, false
+	return federation_remote_work_row_from_stmt(stmt), true
+}
+
+federation_remote_work_resolve_task :: proc(task_id, origin_daemon_id, local_agent_instance_id: string) -> (Federation_Remote_Work_Record, bool, bool) {
+	if task_id == "" || local_agent_instance_id == "" || !task_db_ready do return Federation_Remote_Work_Record{}, false, false
+	if origin_daemon_id != "" {
+		work, ok := federation_remote_work_find_task(origin_daemon_id, task_id, local_agent_instance_id)
+		return work, ok, false
+	}
+	stmt: sqlite3_stmt = nil
+	query := `SELECT task_id, chain_id, owner_peer_id, origin_daemon_id, local_agent_instance_id, proxy_agent_instance_id, status, created_unix_ms, updated_unix_ms
+		FROM federation_remote_work
+		WHERE task_id = ? AND local_agent_instance_id = ?
+		ORDER BY updated_unix_ms DESC, origin_daemon_id ASC
+		LIMIT 2`
+	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK do return Federation_Remote_Work_Record{}, false, false
+	defer sqlite3_finalize(stmt)
+	task_db_bind_text(stmt, 1, task_id)
+	task_db_bind_text(stmt, 2, local_agent_instance_id)
+	if sqlite3_step(stmt) != SQLITE_ROW do return Federation_Remote_Work_Record{}, false, false
+	work := federation_remote_work_row_from_stmt(stmt)
+	if sqlite3_step(stmt) == SQLITE_ROW {
+		federation_remote_work_delete_record(work)
+		return Federation_Remote_Work_Record{}, false, true
+	}
+	return work, true, false
+}
+
+federation_remote_work_find_chain :: proc(origin_daemon_id, chain_id, local_agent_instance_id: string) -> (Federation_Remote_Work_Record, bool) {
+	if origin_daemon_id == "" || chain_id == "" || local_agent_instance_id == "" || !task_db_ready do return Federation_Remote_Work_Record{}, false
+	stmt: sqlite3_stmt = nil
+	query := `SELECT task_id, chain_id, owner_peer_id, origin_daemon_id, local_agent_instance_id, proxy_agent_instance_id, status, created_unix_ms, updated_unix_ms
+		FROM federation_remote_work
+		WHERE origin_daemon_id = ? AND chain_id = ? AND local_agent_instance_id = ?
+		ORDER BY updated_unix_ms DESC, task_id ASC
+		LIMIT 1`
+	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK do return Federation_Remote_Work_Record{}, false
+	defer sqlite3_finalize(stmt)
+	task_db_bind_text(stmt, 1, origin_daemon_id)
+	task_db_bind_text(stmt, 2, chain_id)
+	task_db_bind_text(stmt, 3, local_agent_instance_id)
+	if sqlite3_step(stmt) != SQLITE_ROW do return Federation_Remote_Work_Record{}, false
+	return federation_remote_work_row_from_stmt(stmt), true
+}
+
+federation_remote_work_resolve_chain :: proc(chain_id, origin_daemon_id, local_agent_instance_id: string) -> (Federation_Remote_Work_Record, bool, bool) {
+	if chain_id == "" || local_agent_instance_id == "" || !task_db_ready do return Federation_Remote_Work_Record{}, false, false
+	if origin_daemon_id != "" {
+		work, ok := federation_remote_work_find_chain(origin_daemon_id, chain_id, local_agent_instance_id)
+		return work, ok, false
+	}
+	stmt: sqlite3_stmt = nil
+	query := `SELECT task_id, chain_id, owner_peer_id, origin_daemon_id, local_agent_instance_id, proxy_agent_instance_id, status, created_unix_ms, updated_unix_ms
+		FROM federation_remote_work
+		WHERE chain_id = ? AND local_agent_instance_id = ?
+		ORDER BY updated_unix_ms DESC, origin_daemon_id ASC, task_id ASC`
+	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK do return Federation_Remote_Work_Record{}, false, false
+	defer sqlite3_finalize(stmt)
+	task_db_bind_text(stmt, 1, chain_id)
+	task_db_bind_text(stmt, 2, local_agent_instance_id)
+	if sqlite3_step(stmt) != SQLITE_ROW do return Federation_Remote_Work_Record{}, false, false
+	work := federation_remote_work_row_from_stmt(stmt)
+	for sqlite3_step(stmt) == SQLITE_ROW {
+		candidate_origin_daemon_id := strings.clone_from_cstring(sqlite3_column_text(stmt, 3))
+		if candidate_origin_daemon_id != work.origin_daemon_id {
+			delete(candidate_origin_daemon_id)
+			federation_remote_work_delete_record(work)
+			return Federation_Remote_Work_Record{}, false, true
+		}
+		delete(candidate_origin_daemon_id)
+	}
+	return work, true, false
+}
+
+federation_remote_work_list_for_agent :: proc(local_agent_instance_id: string) -> []Federation_Remote_Work_Record {
+	rows := make([dynamic]Federation_Remote_Work_Record)
+	if local_agent_instance_id == "" || !task_db_ready do return rows[:]
+	stmt: sqlite3_stmt = nil
+	query := `SELECT task_id, chain_id, owner_peer_id, origin_daemon_id, local_agent_instance_id, proxy_agent_instance_id, status, created_unix_ms, updated_unix_ms
+		FROM federation_remote_work
+		WHERE local_agent_instance_id = ?
+		ORDER BY updated_unix_ms DESC, origin_daemon_id ASC, task_id ASC`
+	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK do return rows[:]
+	defer sqlite3_finalize(stmt)
+	task_db_bind_text(stmt, 1, local_agent_instance_id)
+	for sqlite3_step(stmt) == SQLITE_ROW {
+		append(&rows, federation_remote_work_row_from_stmt(stmt))
+	}
+	return rows[:]
 }
 
 task_db_save_agent_chain_association :: proc(assoc: Agent_Chain_Association) -> bool {
@@ -757,7 +941,7 @@ task_db_execute :: proc(query: string) -> bool {
 	return true
 }
 
-TASK_DB_SCHEMA_VERSION :: 8 // Version 1: evaluation, Version 2: last_audit_at_unix_ms, Version 3: default_reviewer_agent_instance_id, Version 4: team_id, Version 5: vcs_workspace_id, Version 6: diff_base_sha, Version 7: reset old persisted task.db files for caller-identity review robustness (no migration path), Version 8: agent_chain_associations
+TASK_DB_SCHEMA_VERSION :: 9 // Version 1: evaluation, Version 2: last_audit_at_unix_ms, Version 3: default_reviewer_agent_instance_id, Version 4: team_id, Version 5: vcs_workspace_id, Version 6: diff_base_sha, Version 7: reset old persisted task.db files for caller-identity review robustness (no migration path), Version 8: agent_chain_associations, Version 9: federation_remote_work absolute-identity primary key/reset (no migration path)
 
 task_db_backfill_team_ids :: proc() -> bool {
 	if !db_has_column(task_db.db, "task_chains", "team_id") do return true

@@ -4,6 +4,33 @@ import "core:fmt"
 import "core:net"
 import "core:strings"
 
+write_remote_task_callback_response :: proc(client: net.TCP_Socket, work: Federation_Remote_Work_Record, payload, idempotency_key, kind, task_id: string) {
+	_ = federation_delivery_outbox_insert_pending(work.owner_peer_id, FEDERATION_ROUTE_CALLBACK, idempotency_key, payload)
+	resp, sent := federation_remote_post_callback(work.owner_peer_id, payload, idempotency_key)
+	_ = federation_delivery_outbox_mark_attempt(work.owner_peer_id, FEDERATION_ROUTE_CALLBACK, idempotency_key, sent)
+	if !sent && federation_delivery_outbox_pending_exists(work.owner_peer_id, FEDERATION_ROUTE_CALLBACK, idempotency_key) {
+		write_response(client, 202, "Accepted", federation_task_callback_pending_json(kind, task_id))
+		return
+	}
+	federation_write_forwarded_response(client, resp, sent)
+}
+
+write_remote_task_identity_ambiguous_response :: proc(client: net.TCP_Socket, task_id: string) {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":false,"message":"ambiguous remote task identity; include origin_daemon_id with task_id","task_id":"`)
+	json_write_string(&b, task_id)
+	strings.write_string(&b, `"}`)
+	write_response(client, 409, "Conflict", strings.to_string(b))
+}
+
+write_remote_chain_identity_ambiguous_response :: proc(client: net.TCP_Socket, chain_id: string) {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":false,"message":"ambiguous remote chain identity; include origin_daemon_id with chain_id","chain_id":"`)
+	json_write_string(&b, chain_id)
+	strings.write_string(&b, `"}`)
+	write_response(client, 409, "Conflict", strings.to_string(b))
+}
+
 handle_task_create :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
@@ -66,6 +93,27 @@ handle_task_comment :: proc(client: net.TCP_Socket, body: string) {
 	chain_id := extract_json_string(body, "chain_id", "")
 	comment_body := extract_json_string(body, "body", "")
 	artifact_content_base64 := extract_json_string(body, "artifact_content_base64", "")
+	remote_origin_daemon_id := extract_json_string(body, "origin_daemon_id", "")
+	if remote_work, remote, ambiguous := federation_remote_work_resolve_task(task_id, remote_origin_daemon_id, author); ambiguous {
+		write_remote_task_identity_ambiguous_response(client, task_id)
+		return
+	} else if remote {
+		created_artifact := Artifact_Record{}
+		if strings.trim_space(artifact_content_base64) != "" {
+			artifact_result := artifact_create_record(author, false, extract_json_string(body, "artifact_name", ""), extract_json_string(body, "artifact_kind", ""), "", "", "comment", task_id, "", artifact_content_base64)
+			if !artifact_result.ok {
+				artifact_write_error(client, artifact_result.status, artifact_result.status_text, artifact_result.error_kind, artifact_result.message)
+				return
+			}
+			created_artifact = artifact_result.rec
+			comment_body = artifact_append_link_body(comment_body, created_artifact.artifact_id)
+		}
+		if chain_id == "" do chain_id = remote_work.chain_id
+		idempotency_key := fmt.tprintf("task-comment:%s:%s:%d", task_id, author, router_now_unix_ms())
+		payload := federation_task_comment_callback_json(remote_work, author, comment_body, idempotency_key, created_artifact)
+		write_remote_task_callback_response(client, remote_work, payload, idempotency_key, FEDERATION_ENVELOPE_TASK_COMMENT, task_id)
+		return
+	}
 	created_artifact := Artifact_Record{}
 	if strings.trim_space(artifact_content_base64) != "" {
 		state, found := store_get_task_in_chain(task_id, chain_id)
@@ -105,9 +153,18 @@ handle_task_comment_resolve :: proc(client: net.TCP_Socket, body: string) {
 }
 
 handle_task_comments :: proc(client: net.TCP_Socket, body: string) {
-	_, ok := task_author_from_body(client, body)
+	author, ok := task_author_from_body(client, body)
 	if !ok do return
 	task_id       := extract_json_string(body, "task_id", "")
+	remote_origin_daemon_id := extract_json_string(body, "origin_daemon_id", "")
+	if remote_work, remote, ambiguous := federation_remote_work_resolve_task(task_id, remote_origin_daemon_id, author); ambiguous {
+		write_remote_task_identity_ambiguous_response(client, task_id)
+		return
+	} else if remote {
+		resp, forwarded := federation_remote_task_comments_fetch_response(remote_work)
+		federation_write_forwarded_response(client, resp, forwarded)
+		return
+	}
 	unresolved_only := extract_json_bool(body, "unresolved_only", false)
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"comments":[`)
@@ -154,11 +211,26 @@ handle_task_status :: proc(client: net.TCP_Socket, body: string) {
 	author, is_user, ok := task_author_and_type_from_body(client, body)
 	if !ok do return
 	force := extract_json_bool(body, "force", false)
+	task_id := extract_json_string(body, "task_id", "")
+	chain_id := extract_json_string(body, "chain_id", "")
+	status_value := extract_json_string(body, "status", "")
+	status_body := extract_json_string(body, "body", "")
+	remote_origin_daemon_id := extract_json_string(body, "origin_daemon_id", "")
+	if remote_work, remote, ambiguous := federation_remote_work_resolve_task(task_id, remote_origin_daemon_id, author); ambiguous {
+		write_remote_task_identity_ambiguous_response(client, task_id)
+		return
+	} else if remote {
+		if chain_id == "" do chain_id = remote_work.chain_id
+		idempotency_key := fmt.tprintf("task-status:%s:%s:%s:%d", task_id, status_value, author, router_now_unix_ms())
+		payload := federation_task_status_callback_json(remote_work, author, status_value, status_body, idempotency_key, force)
+		write_remote_task_callback_response(client, remote_work, payload, idempotency_key, FEDERATION_ENVELOPE_TASK_STATUS, task_id)
+		return
+	}
 	if !is_user && !force {
 		write_response(client, 403, "Forbidden", `{"ok":false,"message":"manual status changes restricted to user tokens unless force is used by coordinator"}`)
 		return
 	}
-	result := task_service_status_command(Task_Status_Command{task_id = extract_json_string(body, "task_id", ""), chain_id = extract_json_string(body, "chain_id", ""), status = extract_json_string(body, "status", ""), body = extract_json_string(body, "body", ""), force = force, author_agent_instance_id = author})
+	result := task_service_status_command(Task_Status_Command{task_id = task_id, chain_id = chain_id, status = status_value, body = status_body, force = force, author_agent_instance_id = author})
 	write_task_service_response(client, result)
 }
 
@@ -197,22 +269,64 @@ handle_task_done :: proc(client: net.TCP_Socket, body: string) {
 	force := extract_json_bool(body, "force", false)
 	status := "review_ready"
 	if force do status = "approved"
-	result := task_service_status_command(Task_Status_Command{task_id = extract_json_string(body, "task_id", ""), chain_id = extract_json_string(body, "chain_id", ""), status = status, body = extract_json_string(body, "body", "Done."), force = force, author_agent_instance_id = author})
+	task_id := extract_json_string(body, "task_id", "")
+	chain_id := extract_json_string(body, "chain_id", "")
+	status_body := extract_json_string(body, "body", "Done.")
+	remote_origin_daemon_id := extract_json_string(body, "origin_daemon_id", "")
+	if remote_work, remote, ambiguous := federation_remote_work_resolve_task(task_id, remote_origin_daemon_id, author); ambiguous {
+		write_remote_task_identity_ambiguous_response(client, task_id)
+		return
+	} else if remote {
+		if chain_id == "" do chain_id = remote_work.chain_id
+		idempotency_key := fmt.tprintf("task-status:%s:%s:%s:%d", task_id, status, author, router_now_unix_ms())
+		payload := federation_task_status_callback_json(remote_work, author, status, status_body, idempotency_key, force)
+		write_remote_task_callback_response(client, remote_work, payload, idempotency_key, FEDERATION_ENVELOPE_TASK_STATUS, task_id)
+		return
+	}
+	result := task_service_status_command(Task_Status_Command{task_id = task_id, chain_id = chain_id, status = status, body = status_body, force = force, author_agent_instance_id = author})
 	write_task_service_response(client, result)
 }
 
 handle_task_blocked :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
-	result := task_service_set_status(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), "blocked", extract_json_string(body, "body", "Blocked."), author)
+	task_id := extract_json_string(body, "task_id", "")
+	chain_id := extract_json_string(body, "chain_id", "")
+	status_body := extract_json_string(body, "body", "Blocked.")
+	remote_origin_daemon_id := extract_json_string(body, "origin_daemon_id", "")
+	if remote_work, remote, ambiguous := federation_remote_work_resolve_task(task_id, remote_origin_daemon_id, author); ambiguous {
+		write_remote_task_identity_ambiguous_response(client, task_id)
+		return
+	} else if remote {
+		if chain_id == "" do chain_id = remote_work.chain_id
+		idempotency_key := fmt.tprintf("task-status:%s:blocked:%s:%d", task_id, author, router_now_unix_ms())
+		payload := federation_task_status_callback_json(remote_work, author, "blocked", status_body, idempotency_key, false)
+		write_remote_task_callback_response(client, remote_work, payload, idempotency_key, FEDERATION_ENVELOPE_TASK_STATUS, task_id)
+		return
+	}
+	result := task_service_set_status(task_id, chain_id, "blocked", status_body, author)
 	write_task_service_response(client, result)
 }
 
 handle_task_later :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
+	task_id := extract_json_string(body, "task_id", "")
+	chain_id := extract_json_string(body, "chain_id", "")
 	reason := extract_json_string(body, "body", "Later/Deferred.")
-	result := task_service_set_status(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), "queued", strings.concatenate({"system_auto:manual_unblocked:", reason}), author)
+	queued_body := strings.concatenate({"system_auto:manual_unblocked:", reason})
+	remote_origin_daemon_id := extract_json_string(body, "origin_daemon_id", "")
+	if remote_work, remote, ambiguous := federation_remote_work_resolve_task(task_id, remote_origin_daemon_id, author); ambiguous {
+		write_remote_task_identity_ambiguous_response(client, task_id)
+		return
+	} else if remote {
+		if chain_id == "" do chain_id = remote_work.chain_id
+		idempotency_key := fmt.tprintf("task-status:%s:queued:%s:%d", task_id, author, router_now_unix_ms())
+		payload := federation_task_status_callback_json(remote_work, author, "queued", queued_body, idempotency_key, false)
+		write_remote_task_callback_response(client, remote_work, payload, idempotency_key, FEDERATION_ENVELOPE_TASK_STATUS, task_id)
+		return
+	}
+	result := task_service_set_status(task_id, chain_id, "queued", queued_body, author)
 	write_task_service_response(client, result)
 }
 
@@ -220,12 +334,26 @@ handle_task_review_vote :: proc(client: net.TCP_Socket, body: string) {
 	author, is_user, ok := task_author_and_type_from_body(client, body)
 	if !ok do return
 	result_str := extract_json_string(body, "result", "")
+	comment_body := extract_json_string(body, "comment", "")
+	task_id := extract_json_string(body, "task_id", "")
+	chain_id := extract_json_string(body, "chain_id", "")
 	approved   := result_str == "lgtm" || result_str == "approved" || result_str == "true"
+	remote_origin_daemon_id := extract_json_string(body, "origin_daemon_id", "")
+	if remote_work, remote, ambiguous := federation_remote_work_resolve_task(task_id, remote_origin_daemon_id, author); ambiguous {
+		write_remote_task_identity_ambiguous_response(client, task_id)
+		return
+	} else if remote {
+		if chain_id == "" do chain_id = remote_work.chain_id
+		idempotency_key := fmt.tprintf("task-vote:%s:%s:%d", task_id, author, router_now_unix_ms())
+		payload := federation_task_vote_callback_json(remote_work, author, comment_body, result_str, idempotency_key)
+		write_remote_task_callback_response(client, remote_work, payload, idempotency_key, FEDERATION_ENVELOPE_TASK_VOTE, task_id)
+		return
+	}
 	result := task_service_review_vote(Task_Review_Vote_Command{
-		task_id                  = extract_json_string(body, "task_id", ""),
-		chain_id                 = extract_json_string(body, "chain_id", ""),
+		task_id                  = task_id,
+		chain_id                 = chain_id,
 		approved                 = approved,
-		comment                  = extract_json_string(body, "comment", ""),
+		comment                  = comment_body,
 		author_agent_instance_id = author,
 		author_is_user           = is_user,
 	})
@@ -295,8 +423,16 @@ handle_task_list :: proc(client: net.TCP_Socket) {
 }
 
 handle_task_list_authed :: proc(client: net.TCP_Socket, body: string) {
-	_, ok := task_author_from_body(client, body)
+	author, ok := task_author_from_body(client, body)
 	if !ok do return
+	if remote_rows := federation_remote_work_list_for_agent(author); len(remote_rows) > 0 {
+		for row in remote_rows {
+			delete(row.task_id); delete(row.chain_id); delete(row.owner_peer_id); delete(row.origin_daemon_id); delete(row.local_agent_instance_id); delete(row.proxy_agent_instance_id); delete(row.status)
+		}
+		delete(remote_rows)
+		write_response(client, 200, "OK", federation_remote_tasks_state_json(author))
+		return
+	}
 	write_response(client, 200, "OK", task_store_state_json())
 }
 
@@ -306,6 +442,10 @@ handle_task_next :: proc(client: net.TCP_Socket, body: string) {
 	task_recompute_promotions(author)
 	state, found := task_claim_next_for_agent(author)
 	if !found {
+		if remote_next_json, remote_ok := federation_remote_task_next_json(author); remote_ok {
+			write_response(client, 200, "OK", remote_next_json)
+			return
+		}
 		write_response(client, 200, "OK", `{"ok":true,"task":null}`)
 		return
 	}
@@ -318,9 +458,18 @@ handle_task_next :: proc(client: net.TCP_Socket, body: string) {
 }
 
 handle_task_show :: proc(client: net.TCP_Socket, body: string) {
-	_, ok := task_author_from_body(client, body)
+	author, ok := task_author_from_body(client, body)
 	if !ok do return
 	task_id := extract_json_string(body, "task_id", "")
+	remote_origin_daemon_id := extract_json_string(body, "origin_daemon_id", "")
+	if remote_work, remote, ambiguous := federation_remote_work_resolve_task(task_id, remote_origin_daemon_id, author); ambiguous {
+		write_remote_task_identity_ambiguous_response(client, task_id)
+		return
+	} else if remote {
+		resp, forwarded := federation_remote_task_fetch_response(remote_work)
+		federation_write_forwarded_response(client, resp, forwarded)
+		return
+	}
 	if state, found := store_get_task(task_id); found {
 		b := strings.builder_make()
 		strings.write_string(&b, `{"ok":true,"task":`)
@@ -339,9 +488,18 @@ handle_task_log :: proc(client: net.TCP_Socket, body: string) {
 }
 
 handle_task_chain_show :: proc(client: net.TCP_Socket, body: string) {
-	_, ok := task_author_from_body(client, body)
+	author, ok := task_author_from_body(client, body)
 	if !ok do return
 	chain_id := extract_json_string(body, "chain_id", "")
+	remote_origin_daemon_id := extract_json_string(body, "origin_daemon_id", "")
+	if remote_work, remote, ambiguous := federation_remote_work_resolve_chain(chain_id, remote_origin_daemon_id, author); ambiguous {
+		write_remote_chain_identity_ambiguous_response(client, chain_id)
+		return
+	} else if remote {
+		resp, forwarded := federation_remote_chain_fetch_response(remote_work)
+		federation_write_forwarded_response(client, resp, forwarded)
+		return
+	}
 	chain, found := store_get_chain(chain_id)
 	if !found {
 		write_response(client, 404, "Not Found", `{"ok":false,"message":"chain not found"}`)

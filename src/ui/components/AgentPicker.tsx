@@ -90,16 +90,18 @@ function agentKind(agent: any): string {
   return String(agent?.agentKind || agent?.agent_kind || 'local');
 }
 
-function agentRemote(agent: any): { peerId: string; remoteAgentInstanceId: string } | null {
+function agentRemote(agent: any): { peerId: string; originDaemonId: string; remoteAgentInstanceId: string } | null {
   const remote = agent?.remote;
   if (remote) {
     const peerId = String(remote.peerId || remote.peer_id || '');
+    const originDaemonId = String(remote.originDaemonId || remote.origin_daemon_id || '');
     const remoteAgentInstanceId = String(remote.remoteAgentInstanceId || remote.remote_agent_instance_id || '');
-    if (peerId || remoteAgentInstanceId) return { peerId, remoteAgentInstanceId };
+    if (peerId || originDaemonId || remoteAgentInstanceId) return { peerId, originDaemonId, remoteAgentInstanceId };
   }
   const peerId = String(agent?.remote_peer_id || agent?.remotePeerId || '');
+  const originDaemonId = String(agent?.remote_origin_daemon_id || agent?.remoteOriginDaemonId || agent?.origin_daemon_id || agent?.originDaemonId || '');
   const remoteAgentInstanceId = String(agent?.remote_agent_instance_id || agent?.remoteAgentInstanceId || '');
-  if (peerId || remoteAgentInstanceId) return { peerId, remoteAgentInstanceId };
+  if (peerId || originDaemonId || remoteAgentInstanceId) return { peerId, originDaemonId, remoteAgentInstanceId };
   return null;
 }
 
@@ -120,6 +122,7 @@ function roleMatches(value: any, roleHint: string) {
     value?.template_id || value?.templateId || '',
     value?.display_name || value?.displayName || '',
     value?.providerProfile || value?.provider_profile || '',
+    remote?.originDaemonId || '',
     remote?.remoteAgentInstanceId || '',
   ].join(' ').toLowerCase();
   if (hint === 'coder' || hint === 'assignee') return haystack.includes('coder') || haystack.includes('code') || haystack.includes('implement');
@@ -148,6 +151,7 @@ function searchMatches(item: any, query: string) {
     item?.projectId || item?.project_id || '',
     statusLabel(item),
     remote?.peerId || '',
+    remote?.originDaemonId || '',
     remote?.remoteAgentInstanceId || '',
   ].join(' ').toLowerCase();
   return haystack.includes(q);
@@ -336,7 +340,7 @@ export default function AgentPicker({
     if (row) return row.id;
     const selectedAgent = (agents || []).find((agent) => agentId(agent) === selectedId);
     const remote = selectedAgent ? agentRemote(selectedAgent) : null;
-    if (selectedAgent && isRemoteProxyAgent(selectedAgent) && remote) return `${remote.remoteAgentInstanceId} · ${remote.peerId}`;
+    if (selectedAgent && isRemoteProxyAgent(selectedAgent) && remote) return `${remote.remoteAgentInstanceId} · ${remote.originDaemonId || remote.peerId}`;
     return selectedId;
   }, [identityRows, instanceRows, selectedId, agents]);
 
@@ -502,6 +506,7 @@ export default function AgentPicker({
         daemonUrl,
         clientToken,
         peerId,
+        originDaemonId: String(remoteAgent?.origin_daemon_id || remoteAgent?.originDaemonId || ''),
         remoteAgentInstanceId: remoteId,
         displayName: String(remoteAgent?.display_name || remoteAgent?.displayName || ''),
         templateId: String(remoteAgent?.template_id || remoteAgent?.templateId || ''),
@@ -526,7 +531,7 @@ export default function AgentPicker({
     for (const agent of remoteProxyAgents) {
       const remote = agentRemote(agent);
       if (!remote?.peerId || !remote?.remoteAgentInstanceId) continue;
-      map.set(`${remote.peerId}::${remote.remoteAgentInstanceId}`, agent);
+      map.set(`${remote.peerId}::${remote.originDaemonId || remote.peerId}::${remote.remoteAgentInstanceId}`, agent);
     }
     return map;
   }, [remoteProxyAgents]);
@@ -540,6 +545,7 @@ export default function AgentPicker({
         .filter((agent) => agentRemote(agent)?.peerId === peerId)
         .map((agent) => ({
           agent_instance_id: agentRemote(agent)?.remoteAgentInstanceId || '',
+          origin_daemon_id: agentRemote(agent)?.originDaemonId || '',
           display_name: agentLabel(agent),
           template_id: agentTemplate(agent),
           agent_role: agent?.agentRole || agent?.agent_role || '',
@@ -689,7 +695,8 @@ export default function AgentPicker({
                     </div>
                   ) : rows.map((remoteAgent: any) => {
                     const remoteId = remoteAgentId(remoteAgent);
-                    const key = `${peerId}::${remoteId}`;
+                    const originDaemonId = String(remoteAgent?.origin_daemon_id || remoteAgent?.originDaemonId || peer?.daemon_id || peerId);
+                    const key = `${peerId}::${originDaemonId}::${remoteId}`;
                     const localProxy = remoteProxyByKey.get(key);
                     const selected = Boolean(localProxy && agentId(localProxy) === selectedId);
                     return (
@@ -707,12 +714,12 @@ export default function AgentPicker({
                           void selectRemoteAgent(peer, remoteAgent);
                         }}
                         className={`min-w-0 rounded-2xl border border-dashed p-3 text-left transition ${offline ? 'cursor-not-allowed opacity-55 border-red-400/20 bg-red-400/[0.03]' : 'cursor-pointer border-teal-400/25 bg-teal-400/[0.05] hover:border-teal-300/40 hover:bg-teal-400/[0.08]'} ${selected ? 'border-solid border-teal-300/60 bg-teal-400/[0.12]' : ''}`}
-                        title={`${remoteId} · ${peerId}`}
+                        title={`${remoteId} · ${originDaemonId} via ${peerId}`}
                       >
                         <div className="flex min-w-0 items-start justify-between gap-3">
                           <div className="min-w-0">
                             <div className="truncate text-sm font-semibold text-zinc-100">{remoteAgentLabel(remoteAgent)}</div>
-                            <div className="mt-1 truncate font-mono text-[11px] text-zinc-500">{remoteId} · {peerId}</div>
+                            <div className="mt-1 truncate font-mono text-[11px] text-zinc-500">{remoteId} · {originDaemonId} via {peerId}</div>
                           </div>
                           <span className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${offline ? 'bg-red-400/15 text-red-100' : 'bg-teal-400/15 text-teal-100'}`}>{offline ? 'OFFLINE' : 'REMOTE · LIVE'}</span>
                         </div>

@@ -40,6 +40,7 @@ Agent_Instance_Record :: struct {
 	agent_role: string,
 	agent_kind: string,
 	remote_peer_id: string,
+	remote_origin_daemon_id: string,
 	remote_agent_instance_id: string,
 	state: string,
 	created_unix_ms: i64,
@@ -67,6 +68,7 @@ Agent_Instance_Event :: struct {
 	agent_role: string,
 	agent_kind: string,
 	remote_peer_id: string,
+	remote_origin_daemon_id: string,
 	remote_agent_instance_id: string,
 	state: string,
 	current_task_id: string,
@@ -163,9 +165,11 @@ agent_store_apply_event :: proc(event: Agent_Instance_Event) -> bool {
 	rec.agent_kind = strings.clone(kind)
 	if kind == AGENT_KIND_REMOTE_PROXY {
 		rec.remote_peer_id = strings.clone(strings.trim_space(event.remote_peer_id))
+		rec.remote_origin_daemon_id = strings.clone(strings.trim_space(event.remote_origin_daemon_id))
 		rec.remote_agent_instance_id = strings.clone(strings.trim_space(event.remote_agent_instance_id))
 	} else {
 		rec.remote_peer_id = ""
+		rec.remote_origin_daemon_id = ""
 		rec.remote_agent_instance_id = ""
 	}
 	identity_state := event.state
@@ -206,14 +210,48 @@ agent_record_is_remote_proxy :: proc(rec: Agent_Instance_Record) -> bool {
 	return agent_kind_normalize(rec.agent_kind) == AGENT_KIND_REMOTE_PROXY
 }
 
-agent_remote_proxy_lookup :: proc(agent_instance_id: string) -> (peer_id, remote_agent_instance_id: string, ok: bool) {
+agent_remote_proxy_origin_daemon_id :: proc(rec: Agent_Instance_Record) -> (string, bool) {
+	if !agent_record_is_remote_proxy(rec) do return "", false
+	stored_origin := strings.trim_space(rec.remote_origin_daemon_id)
+	if stored_origin != "" do return strings.clone(stored_origin), true
+	if rec.remote_peer_id != "" {
+		if peer, ok := peer_link_find(rec.remote_peer_id); ok {
+			inferred_origin := strings.trim_space(peer.daemon_id)
+			if inferred_origin != "" do return strings.clone(inferred_origin), true
+		}
+	}
+	return "", false
+}
+
+agent_remote_proxy_identity_lookup :: proc(agent_instance_id: string) -> (peer_id, origin_daemon_id, remote_agent_instance_id: string, ok: bool) {
 	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 {
 		rec := agent_instance_records[idx]
 		if agent_record_is_remote_proxy(rec) && rec.remote_peer_id != "" && rec.remote_agent_instance_id != "" {
-			return strings.clone(rec.remote_peer_id), strings.clone(rec.remote_agent_instance_id), true
+			origin_daemon_id, _ := agent_remote_proxy_origin_daemon_id(rec)
+			return strings.clone(rec.remote_peer_id), origin_daemon_id, strings.clone(rec.remote_agent_instance_id), true
 		}
 	}
-	return "", "", false
+	return "", "", "", false
+}
+
+agent_remote_proxy_lookup :: proc(agent_instance_id: string) -> (peer_id, remote_agent_instance_id: string, ok: bool) {
+	resolved_peer_id, _, resolved_remote_agent_instance_id, resolved_ok := agent_remote_proxy_identity_lookup(agent_instance_id)
+	return resolved_peer_id, resolved_remote_agent_instance_id, resolved_ok
+}
+
+agent_remote_proxy_find_absolute :: proc(origin_daemon_id, remote_agent_instance_id: string) -> (Agent_Instance_Record, bool) {
+	trimmed_origin := strings.trim_space(origin_daemon_id)
+	trimmed_remote_id := strings.trim_space(remote_agent_instance_id)
+	if trimmed_origin == "" || trimmed_remote_id == "" do return Agent_Instance_Record{}, false
+	for i in 0..<agent_instance_record_count {
+		rec := agent_instance_records[i]
+		if !agent_record_is_remote_proxy(rec) do continue
+		if rec.remote_agent_instance_id != trimmed_remote_id do continue
+		resolved_origin, ok := agent_remote_proxy_origin_daemon_id(rec)
+		if !ok || resolved_origin != trimmed_origin do continue
+		return rec, true
+	}
+	return Agent_Instance_Record{}, false
 }
 
 agent_remote_proxy_find :: proc(peer_id, remote_agent_instance_id: string) -> (Agent_Instance_Record, bool) {
@@ -267,16 +305,16 @@ agent_record_identity_state :: proc(rec: Agent_Instance_Record) -> string {
 	return agent_identity_state_normalize(rec.state)
 }
 
-agent_instance_event_clone :: proc(e: Agent_Instance_Event) -> Agent_Instance_Event { out := e; out.event_id = strings.clone(e.event_id); out.agent_record_id = strings.clone(e.agent_record_id); out.agent_instance_id = strings.clone(e.agent_instance_id); out.display_name = strings.clone(e.display_name); out.template_id = strings.clone(e.template_id); out.provider_profile = strings.clone(e.provider_profile); out.project_id = strings.clone(e.project_id); out.run_dir = strings.clone(e.run_dir); out.model_tier = strings.clone(e.model_tier); out.agent_scope = strings.clone(e.agent_scope); out.agent_role = strings.clone(e.agent_role); out.agent_kind = strings.clone(e.agent_kind); out.remote_peer_id = strings.clone(e.remote_peer_id); out.remote_agent_instance_id = strings.clone(e.remote_agent_instance_id); out.state = strings.clone(e.state); out.current_task_id = strings.clone(e.current_task_id); out.author = strings.clone(e.author); return out }
+agent_instance_event_clone :: proc(e: Agent_Instance_Event) -> Agent_Instance_Event { out := e; out.event_id = strings.clone(e.event_id); out.agent_record_id = strings.clone(e.agent_record_id); out.agent_instance_id = strings.clone(e.agent_instance_id); out.display_name = strings.clone(e.display_name); out.template_id = strings.clone(e.template_id); out.provider_profile = strings.clone(e.provider_profile); out.project_id = strings.clone(e.project_id); out.run_dir = strings.clone(e.run_dir); out.model_tier = strings.clone(e.model_tier); out.agent_scope = strings.clone(e.agent_scope); out.agent_role = strings.clone(e.agent_role); out.agent_kind = strings.clone(e.agent_kind); out.remote_peer_id = strings.clone(e.remote_peer_id); out.remote_origin_daemon_id = strings.clone(e.remote_origin_daemon_id); out.remote_agent_instance_id = strings.clone(e.remote_agent_instance_id); out.state = strings.clone(e.state); out.current_task_id = strings.clone(e.current_task_id); out.author = strings.clone(e.author); return out }
 
 agent_instance_event_json :: proc(event: Agent_Instance_Event) -> string {
-	b := strings.builder_make(); strings.write_string(&b, `{"event_id":"`); json_write_string(&b, event.event_id); strings.write_string(&b, `","kind":"`); json_write_string(&b, fmt.tprintf("%v", event.kind)); strings.write_string(&b, `","agent_record_id":"`); json_write_string(&b, event.agent_record_id); strings.write_string(&b, `","agent_instance_id":"`); json_write_string(&b, event.agent_instance_id); strings.write_string(&b, `","display_name":"`); json_write_string(&b, event.display_name); strings.write_string(&b, `","template_id":"`); json_write_string(&b, event.template_id); strings.write_string(&b, `","provider_profile":"`); json_write_string(&b, event.provider_profile); strings.write_string(&b, `","project_id":"`); json_write_string(&b, event.project_id); strings.write_string(&b, `","run_dir":"`); json_write_string(&b, event.run_dir); strings.write_string(&b, `","model_tier":"`); json_write_string(&b, event.model_tier); strings.write_string(&b, `","agent_scope":"`); json_write_string(&b, agent_scope_normalize(event.agent_scope if event.agent_scope != "" else agent_scope_infer(event.agent_instance_id, event.template_id))); strings.write_string(&b, `","agent_role":"`); json_write_string(&b, agent_role_normalize(event.agent_role if event.agent_role != "" else agent_role_from_template(event.template_id))); strings.write_string(&b, `","agent_kind":"`); json_write_string(&b, agent_kind_normalize(event.agent_kind)); strings.write_string(&b, `","remote_peer_id":"`); json_write_string(&b, event.remote_peer_id); strings.write_string(&b, `","remote_agent_instance_id":"`); json_write_string(&b, event.remote_agent_instance_id); strings.write_string(&b, `","identity_state":"`); json_write_string(&b, agent_identity_state_normalize(event.state)); strings.write_string(&b, `","current_task_id":"`); json_write_string(&b, event.current_task_id); strings.write_string(&b, `","current_task_since":`); strings.write_string(&b, fmt.tprintf("%d", event.current_task_since)); strings.write_string(&b, `,"last_needed_at_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", event.last_needed_at_unix_ms)); strings.write_string(&b, `,"order":`); strings.write_string(&b, fmt.tprintf("%d", event.order)); strings.write_string(&b, `,"author":"`); json_write_string(&b, event.author); strings.write_string(&b, `","created_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", event.created_unix_ms)); strings.write_string(&b, `}`); return strings.to_string(b)
+	b := strings.builder_make(); strings.write_string(&b, `{"event_id":"`); json_write_string(&b, event.event_id); strings.write_string(&b, `","kind":"`); json_write_string(&b, fmt.tprintf("%v", event.kind)); strings.write_string(&b, `","agent_record_id":"`); json_write_string(&b, event.agent_record_id); strings.write_string(&b, `","agent_instance_id":"`); json_write_string(&b, event.agent_instance_id); strings.write_string(&b, `","display_name":"`); json_write_string(&b, event.display_name); strings.write_string(&b, `","template_id":"`); json_write_string(&b, event.template_id); strings.write_string(&b, `","provider_profile":"`); json_write_string(&b, event.provider_profile); strings.write_string(&b, `","project_id":"`); json_write_string(&b, event.project_id); strings.write_string(&b, `","run_dir":"`); json_write_string(&b, event.run_dir); strings.write_string(&b, `","model_tier":"`); json_write_string(&b, event.model_tier); strings.write_string(&b, `","agent_scope":"`); json_write_string(&b, agent_scope_normalize(event.agent_scope if event.agent_scope != "" else agent_scope_infer(event.agent_instance_id, event.template_id))); strings.write_string(&b, `","agent_role":"`); json_write_string(&b, agent_role_normalize(event.agent_role if event.agent_role != "" else agent_role_from_template(event.template_id))); strings.write_string(&b, `","agent_kind":"`); json_write_string(&b, agent_kind_normalize(event.agent_kind)); strings.write_string(&b, `","remote_peer_id":"`); json_write_string(&b, event.remote_peer_id); strings.write_string(&b, `","remote_origin_daemon_id":"`); json_write_string(&b, event.remote_origin_daemon_id); strings.write_string(&b, `","remote_agent_instance_id":"`); json_write_string(&b, event.remote_agent_instance_id); strings.write_string(&b, `","identity_state":"`); json_write_string(&b, agent_identity_state_normalize(event.state)); strings.write_string(&b, `","current_task_id":"`); json_write_string(&b, event.current_task_id); strings.write_string(&b, `","current_task_since":`); strings.write_string(&b, fmt.tprintf("%d", event.current_task_since)); strings.write_string(&b, `,"last_needed_at_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", event.last_needed_at_unix_ms)); strings.write_string(&b, `,"order":`); strings.write_string(&b, fmt.tprintf("%d", event.order)); strings.write_string(&b, `,"author":"`); json_write_string(&b, event.author); strings.write_string(&b, `","created_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", event.created_unix_ms)); strings.write_string(&b, `}`); return strings.to_string(b)
 }
 
 agent_instance_event_from_json :: proc(line: string) -> (Agent_Instance_Event, bool) {
 	kind := Agent_Instance_Event_Kind.Agent_Instance_Upserted
 	if extract_json_string(line, "kind", "") == "Agent_Instance_Archived" do kind = .Agent_Instance_Archived
-	ev := Agent_Instance_Event{event_id = extract_json_string(line, "event_id", ""), kind = kind, agent_record_id = extract_json_string(line, "agent_record_id", ""), agent_instance_id = extract_json_string(line, "agent_instance_id", ""), display_name = extract_json_string(line, "display_name", ""), template_id = extract_json_string(line, "template_id", ""), provider_profile = extract_json_string(line, "provider_profile", ""), project_id = extract_json_string(line, "project_id", ""), run_dir = extract_json_string(line, "run_dir", ""), model_tier = extract_json_string(line, "model_tier", ""), agent_scope = extract_json_string(line, "agent_scope", ""), agent_role = extract_json_string(line, "agent_role", ""), agent_kind = extract_json_string(line, "agent_kind", ""), remote_peer_id = extract_json_string(line, "remote_peer_id", ""), remote_agent_instance_id = extract_json_string(line, "remote_agent_instance_id", ""), state = extract_json_string(line, "identity_state", extract_json_string(line, "state", "")), current_task_id = extract_json_string(line, "current_task_id", ""), current_task_since = i64(extract_json_int(line, "current_task_since", 0)), last_needed_at_unix_ms = i64(extract_json_int(line, "last_needed_at_unix_ms", 0)), author = extract_json_string(line, "author", ""), created_unix_ms = i64(extract_json_int(line, "created_unix_ms", 0)), order = extract_json_int(line, "order", 0)}
+	ev := Agent_Instance_Event{event_id = extract_json_string(line, "event_id", ""), kind = kind, agent_record_id = extract_json_string(line, "agent_record_id", ""), agent_instance_id = extract_json_string(line, "agent_instance_id", ""), display_name = extract_json_string(line, "display_name", ""), template_id = extract_json_string(line, "template_id", ""), provider_profile = extract_json_string(line, "provider_profile", ""), project_id = extract_json_string(line, "project_id", ""), run_dir = extract_json_string(line, "run_dir", ""), model_tier = extract_json_string(line, "model_tier", ""), agent_scope = extract_json_string(line, "agent_scope", ""), agent_role = extract_json_string(line, "agent_role", ""), agent_kind = extract_json_string(line, "agent_kind", ""), remote_peer_id = extract_json_string(line, "remote_peer_id", ""), remote_origin_daemon_id = extract_json_string(line, "remote_origin_daemon_id", ""), remote_agent_instance_id = extract_json_string(line, "remote_agent_instance_id", ""), state = extract_json_string(line, "identity_state", extract_json_string(line, "state", "")), current_task_id = extract_json_string(line, "current_task_id", ""), current_task_since = i64(extract_json_int(line, "current_task_since", 0)), last_needed_at_unix_ms = i64(extract_json_int(line, "last_needed_at_unix_ms", 0)), author = extract_json_string(line, "author", ""), created_unix_ms = i64(extract_json_int(line, "created_unix_ms", 0)), order = extract_json_int(line, "order", 0)}
 	return ev, ev.agent_record_id != "" || ev.agent_instance_id != ""
 }
 
@@ -486,7 +524,7 @@ agent_store_update_work_state :: proc(agent_instance_id, current_task_id: string
 	if idx < 0 do return false
 	rec := agent_instance_records[idx]
 	now := router_now_unix_ms()
-	event := Agent_Instance_Event{kind=.Agent_Instance_Upserted, agent_record_id=rec.agent_record_id, agent_instance_id=rec.agent_instance_id, display_name=rec.display_name, template_id=rec.template_id, provider_profile=rec.provider_profile, project_id=rec.project_id, run_dir=rec.run_dir, model_tier=rec.model_tier, agent_scope=rec.agent_scope, agent_role=rec.agent_role, agent_kind=rec.agent_kind, remote_peer_id=rec.remote_peer_id, remote_agent_instance_id=rec.remote_agent_instance_id, state=rec.state, current_task_id=rec.current_task_id, current_task_since=rec.current_task_since, last_needed_at_unix_ms=rec.last_needed_at_unix_ms, author="autoscaler"}
+	event := Agent_Instance_Event{kind=.Agent_Instance_Upserted, agent_record_id=rec.agent_record_id, agent_instance_id=rec.agent_instance_id, display_name=rec.display_name, template_id=rec.template_id, provider_profile=rec.provider_profile, project_id=rec.project_id, run_dir=rec.run_dir, model_tier=rec.model_tier, agent_scope=rec.agent_scope, agent_role=rec.agent_role, agent_kind=rec.agent_kind, remote_peer_id=rec.remote_peer_id, remote_origin_daemon_id=rec.remote_origin_daemon_id, remote_agent_instance_id=rec.remote_agent_instance_id, state=rec.state, current_task_id=rec.current_task_id, current_task_since=rec.current_task_since, last_needed_at_unix_ms=rec.last_needed_at_unix_ms, author="autoscaler"}
 	if set_current {
 		event.current_task_id = current_task_id
 		event.current_task_since = now
@@ -506,7 +544,7 @@ agent_store_set_identity_state :: proc(agent_instance_id, identity_state, author
 	idx := agent_record_index_by_instance(agent_instance_id)
 	if idx < 0 do return false
 	rec := agent_instance_records[idx]
-	event := Agent_Instance_Event{kind=.Agent_Instance_Upserted, agent_record_id=rec.agent_record_id, agent_instance_id=rec.agent_instance_id, display_name=rec.display_name, template_id=rec.template_id, provider_profile=rec.provider_profile, project_id=rec.project_id, run_dir=rec.run_dir, model_tier=rec.model_tier, agent_scope=rec.agent_scope, agent_role=rec.agent_role, agent_kind=rec.agent_kind, remote_peer_id=rec.remote_peer_id, remote_agent_instance_id=rec.remote_agent_instance_id, state=agent_identity_state_normalize(identity_state), current_task_id=rec.current_task_id, current_task_since=rec.current_task_since, last_needed_at_unix_ms=rec.last_needed_at_unix_ms, author=author}
+	event := Agent_Instance_Event{kind=.Agent_Instance_Upserted, agent_record_id=rec.agent_record_id, agent_instance_id=rec.agent_instance_id, display_name=rec.display_name, template_id=rec.template_id, provider_profile=rec.provider_profile, project_id=rec.project_id, run_dir=rec.run_dir, model_tier=rec.model_tier, agent_scope=rec.agent_scope, agent_role=rec.agent_role, agent_kind=rec.agent_kind, remote_peer_id=rec.remote_peer_id, remote_origin_daemon_id=rec.remote_origin_daemon_id, remote_agent_instance_id=rec.remote_agent_instance_id, state=agent_identity_state_normalize(identity_state), current_task_id=rec.current_task_id, current_task_since=rec.current_task_since, last_needed_at_unix_ms=rec.last_needed_at_unix_ms, author=author}
 	return agent_store_append_event(event)
 }
 

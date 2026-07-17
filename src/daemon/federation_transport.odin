@@ -10,11 +10,15 @@ import mp "odin_test:lib/message_provider"
 
 FEDERATION_ROUTE_INBOX :: "inbox"
 FEDERATION_ROUTE_CALLBACK :: "callback"
+FEDERATION_HTTP_TIMEOUT_MS :: 5000
 FEDERATION_DEDUPE_SCOPE_INBOX :: "inbox"
 FEDERATION_DEDUPE_SCOPE_CALLBACK :: "callback"
 FEDERATION_ENVELOPE_NOTIFICATION :: "notification"
 FEDERATION_ENVELOPE_INBOX_MESSAGE :: "inbox_message"
 FEDERATION_ENVELOPE_READ_RECEIPT :: "read_receipt"
+FEDERATION_ENVELOPE_TASK_COMMENT :: "comment"
+FEDERATION_ENVELOPE_TASK_VOTE :: "vote"
+FEDERATION_ENVELOPE_TASK_STATUS :: "status"
 FEDERATION_REPLAY_LIMIT :: 100
 
 Federation_Remote_Message_Record :: struct {
@@ -63,7 +67,7 @@ federation_forward :: proc(peer_id, route_kind, payload, idempotency_key: string
 	path := "/federation/inbox"
 	if route_kind == FEDERATION_ROUTE_CALLBACK do path = "/federation/callback"
 	path = fmt.tprintf("%s?peer_token=%s&peer_daemon_id=%s", path, rec.peer_token, server_daemon_id)
-	resp, forward_ok := http.post(rec.peer_url, path, payload)
+	resp, forward_ok := http.post_with_timeout(rec.peer_url, path, payload, FEDERATION_HTTP_TIMEOUT_MS)
 	if !forward_ok || resp.status != 200 {
 		rec.status = strings.clone(PEER_STATUS_UNREACHABLE)
 		rec.last_checked_unix_ms = router_now_unix_ms()
@@ -98,7 +102,7 @@ federation_forward_start :: proc(peer_id, remote_agent_instance_id, provider_pro
 	strings.write_string(&b, `"}`)
 	payload := strings.to_string(b)
 	path := fmt.tprintf("/federation/start?peer_token=%s&peer_daemon_id=%s", rec.peer_token, server_daemon_id)
-	resp, forward_ok := http.post(rec.peer_url, path, payload)
+	resp, forward_ok := http.post_with_timeout(rec.peer_url, path, payload, FEDERATION_HTTP_TIMEOUT_MS)
 	if !forward_ok {
 		rec.status = strings.clone(PEER_STATUS_UNREACHABLE)
 		rec.last_checked_unix_ms = router_now_unix_ms()
@@ -402,7 +406,7 @@ federation_remote_message_body_fetch :: proc(peer_id, message_id: string) -> (st
 	rec, ok := peer_link_find(peer_id)
 	if !ok do return "", false
 	path := fmt.tprintf("/federation/messages/%s?peer_token=%s&peer_daemon_id=%s", message_id, rec.peer_token, server_daemon_id)
-	resp, fetch_ok := http.get(rec.peer_url, path)
+	resp, fetch_ok := http.get_with_timeout(rec.peer_url, path, FEDERATION_HTTP_TIMEOUT_MS)
 	if !fetch_ok || resp.status != 200 do return "", false
 	return extract_json_string(resp.body, "body", ""), true
 }
@@ -411,7 +415,11 @@ federation_inbox_notification_json :: proc(target_agent_instance_id, payload, id
 	b := strings.builder_make()
 	strings.write_string(&b, `{"kind":"notification","idempotency_key":"`)
 	json_write_string(&b, idempotency_key)
+	strings.write_string(&b, `","origin_daemon_id":"`)
+	json_write_string(&b, server_daemon_id)
 	strings.write_string(&b, `","target_agent_instance_id":"`)
+	json_write_string(&b, target_agent_instance_id)
+	strings.write_string(&b, `","target_native_id":"`)
 	json_write_string(&b, target_agent_instance_id)
 	strings.write_string(&b, `","payload":"`)
 	json_write_string(&b, payload)
@@ -423,11 +431,17 @@ federation_inbox_message_json :: proc(message_id, from_agent_instance_id, target
 	b := strings.builder_make()
 	strings.write_string(&b, `{"kind":"inbox_message","idempotency_key":"`)
 	json_write_string(&b, federation_idempotency_key("msg", server_daemon_id, message_id))
+	strings.write_string(&b, `","origin_daemon_id":"`)
+	json_write_string(&b, server_daemon_id)
 	strings.write_string(&b, `","message_id":"`)
 	json_write_string(&b, message_id)
 	strings.write_string(&b, `","from_agent_instance_id":"`)
 	json_write_string(&b, from_agent_instance_id)
+	strings.write_string(&b, `","from_native_id":"`)
+	json_write_string(&b, from_agent_instance_id)
 	strings.write_string(&b, `","target_agent_instance_id":"`)
+	json_write_string(&b, target_agent_instance_id)
+	strings.write_string(&b, `","target_native_id":"`)
 	json_write_string(&b, target_agent_instance_id)
 	strings.write_string(&b, `","proxy_agent_instance_id":"`)
 	json_write_string(&b, proxy_agent_instance_id)
@@ -448,13 +462,19 @@ federation_callback_message_json :: proc(message_id, origin_message_id, from_age
 	b := strings.builder_make()
 	strings.write_string(&b, `{"kind":"inbox_message","idempotency_key":"`)
 	json_write_string(&b, federation_idempotency_key("reply", server_daemon_id, message_id))
+	strings.write_string(&b, `","origin_daemon_id":"`)
+	json_write_string(&b, server_daemon_id)
 	strings.write_string(&b, `","message_id":"`)
 	json_write_string(&b, message_id)
 	strings.write_string(&b, `","origin_message_id":"`)
 	json_write_string(&b, origin_message_id)
 	strings.write_string(&b, `","from_agent_instance_id":"`)
 	json_write_string(&b, from_agent_instance_id)
+	strings.write_string(&b, `","from_native_id":"`)
+	json_write_string(&b, from_agent_instance_id)
 	strings.write_string(&b, `","target_agent_instance_id":"`)
+	json_write_string(&b, target_agent_instance_id)
+	strings.write_string(&b, `","target_native_id":"`)
 	json_write_string(&b, target_agent_instance_id)
 	strings.write_string(&b, `","proxy_agent_instance_id":"`)
 	json_write_string(&b, proxy_agent_instance_id)
@@ -472,15 +492,21 @@ federation_callback_read_receipt_json :: proc(message_id, target_agent_instance_
 	b := strings.builder_make()
 	strings.write_string(&b, `{"kind":"read_receipt","idempotency_key":"`)
 	json_write_string(&b, federation_idempotency_key("read", server_daemon_id, message_id))
+	strings.write_string(&b, `","origin_daemon_id":"`)
+	json_write_string(&b, server_daemon_id)
 	strings.write_string(&b, `","message_id":"`)
 	json_write_string(&b, message_id)
 	strings.write_string(&b, `","target_agent_instance_id":"`)
+	json_write_string(&b, target_agent_instance_id)
+	strings.write_string(&b, `","target_native_id":"`)
 	json_write_string(&b, target_agent_instance_id)
 	strings.write_string(&b, `","proxy_agent_instance_id":"`)
 	json_write_string(&b, proxy_agent_instance_id)
 	strings.write_string(&b, `","origin_conversation_id":"`)
 	json_write_string(&b, origin_conversation_id)
 	strings.write_string(&b, `","read_by_agent_instance_id":"`)
+	json_write_string(&b, read_by_agent_instance_id)
+	strings.write_string(&b, `","read_by_native_id":"`)
 	json_write_string(&b, read_by_agent_instance_id)
 	strings.write_string(&b, `","read_unix_ms":`)
 	strings.write_string(&b, fmt.tprintf("%d", read_unix_ms))
@@ -665,6 +691,510 @@ federation_remote_fetch_messages :: proc(request: contracts.Fetch_Messages_Reque
 	return contracts.Fetch_Messages_Response{ok = true, message = "fetched", messages = messages[:], has_more = false}
 }
 
+federation_status_text :: proc(status_code: int) -> string {
+	switch status_code {
+	case 200, 201, 202:
+		return "OK"
+	case 400:
+		return "Bad Request"
+	case 401:
+		return "Unauthorized"
+	case 403:
+		return "Forbidden"
+	case 404:
+		return "Not Found"
+	case 409:
+		return "Conflict"
+	case 500:
+		return "Internal Server Error"
+	case 503:
+		return "Service Unavailable"
+	}
+	return "OK"
+}
+
+federation_response_path_with_auth :: proc(path, peer_token, peer_daemon_id: string) -> string {
+	sep := "?"
+	if strings.index_byte(path, '?') >= 0 do sep = "&"
+	return fmt.tprintf("%s%speer_token=%s&peer_daemon_id=%s", path, sep, peer_token, peer_daemon_id)
+}
+
+federation_remote_get :: proc(peer_id, path: string) -> (http.Response, bool) {
+	rec, ok := peer_link_find(peer_id)
+	if !ok do return http.Response{}, false
+	full_path := federation_response_path_with_auth(path, rec.peer_token, server_daemon_id)
+	resp, fetch_ok := http.get_with_timeout(rec.peer_url, full_path, FEDERATION_HTTP_TIMEOUT_MS)
+	if !fetch_ok {
+		rec.status = strings.clone(PEER_STATUS_UNREACHABLE)
+		rec.last_checked_unix_ms = router_now_unix_ms()
+		return http.Response{}, false
+	}
+	rec.status = strings.clone(PEER_STATUS_LINKED)
+	rec.last_checked_unix_ms = router_now_unix_ms()
+	return resp, true
+}
+
+federation_remote_post_callback :: proc(peer_id, payload, idempotency_key: string) -> (http.Response, bool) {
+	rec, ok := peer_link_find(peer_id)
+	if !ok do return http.Response{}, false
+	full_path := federation_response_path_with_auth("/federation/callback", rec.peer_token, server_daemon_id)
+	resp, post_ok := http.post_with_timeout(rec.peer_url, full_path, payload, FEDERATION_HTTP_TIMEOUT_MS)
+	if !post_ok {
+		rec.status = strings.clone(PEER_STATUS_UNREACHABLE)
+		rec.last_checked_unix_ms = router_now_unix_ms()
+		return http.Response{}, false
+	}
+	rec.status = strings.clone(PEER_STATUS_LINKED)
+	rec.last_checked_unix_ms = router_now_unix_ms()
+	_ = idempotency_key
+	return resp, true
+}
+
+federation_write_forwarded_response :: proc(client: net.TCP_Socket, resp: http.Response, ok: bool) {
+	if !ok {
+		write_response(client, 503, "Service Unavailable", `{"ok":false,"message":"peer unreachable"}`)
+		return
+	}
+	write_response(client, resp.status, federation_status_text(resp.status), resp.body)
+}
+
+federation_remote_work_track_notification :: proc(owner_peer_id, origin_daemon_id, local_agent_instance_id, payload: string) -> bool {
+	if extract_json_string(payload, "type", "") != "task_event" do return true
+	task_id := extract_json_string(payload, "task_id", extract_json_string(payload, "fetch_task_id", ""))
+	if task_id == "" do return true
+	proxy_agent_instance_id := extract_json_string(payload, "target_agent_instance_id", "")
+	if proxy_agent_instance_id == "" do return false
+	chain_id := extract_json_string(payload, "chain_id", extract_json_string(payload, "fetch_chain_id", ""))
+	status := extract_json_string(payload, "status", "")
+	owner_origin_daemon_id := extract_json_string(payload, "origin_daemon_id", origin_daemon_id)
+	if owner_origin_daemon_id == "" do return false
+	created_unix_ms := i64(extract_json_int(payload, "created_unix_ms", int(router_now_unix_ms())))
+	if existing, ok := federation_remote_work_find_task(owner_origin_daemon_id, task_id, local_agent_instance_id); ok {
+		if existing.created_unix_ms != 0 do created_unix_ms = existing.created_unix_ms
+		federation_remote_work_delete_record(existing)
+	}
+	return federation_remote_work_upsert(Federation_Remote_Work_Record{
+		task_id = strings.clone(task_id),
+		chain_id = strings.clone(chain_id),
+		owner_peer_id = strings.clone(owner_peer_id),
+		origin_daemon_id = strings.clone(owner_origin_daemon_id),
+		local_agent_instance_id = strings.clone(local_agent_instance_id),
+		proxy_agent_instance_id = strings.clone(proxy_agent_instance_id),
+		status = strings.clone(status),
+		created_unix_ms = created_unix_ms,
+		updated_unix_ms = router_now_unix_ms(),
+	})
+}
+
+federation_remote_task_read_allowed :: proc(state: Task_State, proxy_agent_instance_id: string) -> bool {
+	if proxy_agent_instance_id == "" do return false
+	if task_actor_has_role(state, proxy_agent_instance_id, "assignee") do return true
+	if task_actor_has_role(state, proxy_agent_instance_id, "coordinator") do return true
+	if task_actor_has_role(state, proxy_agent_instance_id, "lgtm_required") do return true
+	if task_actor_has_role(state, proxy_agent_instance_id, "lgtm_optional") do return true
+	if task_actor_has_role(state, proxy_agent_instance_id, "subscriber") do return true
+	if task_reviewer_agent_instance_id(state) == proxy_agent_instance_id do return true
+	return false
+}
+
+federation_remote_task_authorized :: proc(peer_id, proxy_agent_instance_id, task_id, action: string) -> bool {
+	mapped_peer_id, remote_agent_instance_id, mapped := agent_remote_proxy_lookup(proxy_agent_instance_id)
+	if !mapped || mapped_peer_id != peer_id || remote_agent_instance_id == "" do return false
+	state, found := store_get_task(task_id)
+	if !found do return false
+	switch action {
+	case "read", "comment":
+		return federation_remote_task_read_allowed(state, proxy_agent_instance_id)
+	case "vote":
+		if task_actor_has_role(state, proxy_agent_instance_id, "lgtm_required") do return true
+		if task_actor_has_role(state, proxy_agent_instance_id, "lgtm_optional") do return true
+		return task_reviewer_agent_instance_id(state) == proxy_agent_instance_id
+	case "status":
+		return federation_remote_task_read_allowed(state, proxy_agent_instance_id)
+	}
+	return false
+}
+
+federation_remote_chain_authorized :: proc(peer_id, proxy_agent_instance_id, chain_id: string) -> bool {
+	mapped_peer_id, remote_agent_instance_id, mapped := agent_remote_proxy_lookup(proxy_agent_instance_id)
+	if !mapped || mapped_peer_id != peer_id || remote_agent_instance_id == "" do return false
+	for state in store_tasks_in_chain(chain_id) {
+		if federation_remote_task_read_allowed(state, proxy_agent_instance_id) do return true
+	}
+	return false
+}
+
+federation_json_value_extract :: proc(body, key: string) -> (string, bool) {
+	pattern := fmt.tprintf("\"%s\":", key)
+	idx := strings.index(body, pattern)
+	if idx < 0 do return "", false
+	start := idx + len(pattern)
+	for start < len(body) && (body[start] == ' ' || body[start] == '\n' || body[start] == '\r' || body[start] == '\t') {
+		start += 1
+	}
+	if start >= len(body) do return "", false
+	open := body[start]
+	close := byte('}')
+	if open == '[' do close = ']'
+	if open != '{' && open != '[' do return "", false
+	depth := 0
+	in_string := false
+	escaped := false
+	for i := start; i < len(body); i += 1 {
+		ch := body[i]
+		if in_string {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == '"' do in_string = false
+			continue
+		}
+		if ch == '"' {
+			in_string = true
+			continue
+		}
+		if ch == open {
+			depth += 1
+		} else if ch == close {
+			depth -= 1
+			if depth == 0 do return strings.clone(body[start:i + 1]), true
+		}
+	}
+	return "", false
+}
+
+federation_json_object_append_string :: proc(object_json, key, value: string) -> string {
+	if object_json == "" || key == "" do return strings.clone(object_json)
+	end := len(object_json) - 1
+	for end >= 0 && (object_json[end] == ' ' || object_json[end] == '\n' || object_json[end] == '\r' || object_json[end] == '\t') {
+		end -= 1
+	}
+	if end < 0 || object_json[end] != '}' do return strings.clone(object_json)
+	b := strings.builder_make()
+	strings.write_string(&b, object_json[:end])
+	strings.write_string(&b, `,"`)
+	strings.write_string(&b, key)
+	strings.write_string(&b, `":"`)
+	json_write_string(&b, value)
+	strings.write_string(&b, `"`)
+	strings.write_string(&b, object_json[end:])
+	return strings.to_string(b)
+}
+
+federation_remote_task_fetch_response :: proc(work: Federation_Remote_Work_Record) -> (http.Response, bool) {
+	return federation_remote_get(work.owner_peer_id, fmt.tprintf("/federation/tasks/%s?as_agent_instance_id=%s", work.task_id, work.proxy_agent_instance_id))
+}
+
+federation_remote_task_comments_fetch_response :: proc(work: Federation_Remote_Work_Record) -> (http.Response, bool) {
+	return federation_remote_get(work.owner_peer_id, fmt.tprintf("/federation/tasks/%s/comments?as_agent_instance_id=%s", work.task_id, work.proxy_agent_instance_id))
+}
+
+federation_remote_chain_fetch_response :: proc(work: Federation_Remote_Work_Record) -> (http.Response, bool) {
+	return federation_remote_get(work.owner_peer_id, fmt.tprintf("/federation/task-chains/%s?as_agent_instance_id=%s", work.chain_id, work.proxy_agent_instance_id))
+}
+
+federation_remote_chain_tasks_fetch_response :: proc(work: Federation_Remote_Work_Record) -> (http.Response, bool) {
+	return federation_remote_get(work.owner_peer_id, fmt.tprintf("/federation/task-chains/%s/tasks?as_agent_instance_id=%s", work.chain_id, work.proxy_agent_instance_id))
+}
+
+federation_remote_tasks_state_json :: proc(local_agent_instance_id: string) -> string {
+	rows := federation_remote_work_list_for_agent(local_agent_instance_id)
+	defer {
+		for row in rows {
+			delete(row.task_id)
+			delete(row.chain_id)
+			delete(row.owner_peer_id)
+			delete(row.origin_daemon_id)
+			delete(row.local_agent_instance_id)
+			delete(row.proxy_agent_instance_id)
+			delete(row.status)
+		}
+		delete(rows)
+	}
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"task_count":0,"chain_count":0,"event_count":0,"tasks":[`)
+	first := true
+	count := 0
+	for row in rows {
+		resp, ok := federation_remote_task_fetch_response(row)
+		if !ok || resp.status != 200 do continue
+		task_json, extracted := federation_json_value_extract(resp.body, "task")
+		if !extracted do continue
+		if !first do strings.write_string(&b, `,`)
+		first = false
+		strings.write_string(&b, task_json)
+		delete(task_json)
+		count += 1
+	}
+	strings.write_string(&b, `],"participants":[],"chains":[]}`)
+	out := strings.to_string(b)
+	count_str := fmt.tprintf(`"task_count":%d`, count)
+	replaced, _ := strings.replace_all(out, `"task_count":0`, count_str)
+	return replaced
+}
+
+federation_remote_task_next_json :: proc(local_agent_instance_id: string) -> (string, bool) {
+	rows := federation_remote_work_list_for_agent(local_agent_instance_id)
+	defer {
+		for row in rows {
+			delete(row.task_id)
+			delete(row.chain_id)
+			delete(row.owner_peer_id)
+			delete(row.origin_daemon_id)
+			delete(row.local_agent_instance_id)
+			delete(row.proxy_agent_instance_id)
+			delete(row.status)
+		}
+		delete(rows)
+	}
+	for row in rows {
+		resp, ok := federation_remote_task_fetch_response(row)
+		if !ok || resp.status != 200 do continue
+		status := extract_json_string(resp.body, "status", "")
+		if status != "review_ready" && status != "in_progress" && status != "queued" do continue
+		task_json, extracted := federation_json_value_extract(resp.body, "task")
+		if !extracted do continue
+		b := strings.builder_make()
+		strings.write_string(&b, `{"ok":true,"task":`)
+		strings.write_string(&b, task_json)
+		strings.write_string(&b, `}`)
+		delete(task_json)
+		return strings.to_string(b), true
+	}
+	return `{"ok":true,"task":null}`, true
+}
+
+federation_task_callback_pending_json :: proc(kind, task_id: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"queued":true,"kind":"`)
+		json_write_string(&b, kind)
+	strings.write_string(&b, `","task_id":"`)
+		json_write_string(&b, task_id)
+	strings.write_string(&b, `"}`)
+	return strings.to_string(b)
+}
+
+federation_task_comment_callback_json :: proc(work: Federation_Remote_Work_Record, from_agent_instance_id, body, idempotency_key: string, artifact: Artifact_Record) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"kind":"comment","idempotency_key":"`)
+	json_write_string(&b, idempotency_key)
+	strings.write_string(&b, `","origin_daemon_id":"`)
+	json_write_string(&b, work.origin_daemon_id)
+	strings.write_string(&b, `","actor_origin_daemon_id":"`)
+	json_write_string(&b, server_daemon_id)
+	strings.write_string(&b, `","task_id":"`)
+	json_write_string(&b, work.task_id)
+	strings.write_string(&b, `","chain_id":"`)
+	json_write_string(&b, work.chain_id)
+	strings.write_string(&b, `","proxy_agent_instance_id":"`)
+	json_write_string(&b, work.proxy_agent_instance_id)
+	strings.write_string(&b, `","from_agent_instance_id":"`)
+	json_write_string(&b, from_agent_instance_id)
+	strings.write_string(&b, `","body":"`)
+	json_write_string(&b, body)
+	strings.write_string(&b, `"`)
+	if artifact.artifact_id != "" {
+		strings.write_string(&b, `,"artifact_ref":{`)
+		strings.write_string(&b, `"artifact_id":"`); json_write_string(&b, artifact.artifact_id)
+		strings.write_string(&b, `","origin_daemon_id":"`); json_write_string(&b, server_daemon_id)
+		strings.write_string(&b, `","name":"`); json_write_string(&b, artifact.name)
+		strings.write_string(&b, `","kind":"`); json_write_string(&b, artifact.kind)
+		strings.write_string(&b, `","mime":"`); json_write_string(&b, artifact.mime)
+		strings.write_string(&b, `","ext":"`); json_write_string(&b, artifact.ext)
+		strings.write_string(&b, `","sha256":"`); json_write_string(&b, artifact.sha256)
+		strings.write_string(&b, `","description":"`); json_write_string(&b, artifact.description)
+		strings.write_string(&b, `","size_bytes":`); strings.write_string(&b, fmt.tprintf("%d", artifact.size_bytes))
+		strings.write_string(&b, `}`)
+	}
+	strings.write_string(&b, `}`)
+	return strings.to_string(b)
+}
+
+federation_task_vote_callback_json :: proc(work: Federation_Remote_Work_Record, from_agent_instance_id, comment, result, idempotency_key: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"kind":"vote","idempotency_key":"`)
+	json_write_string(&b, idempotency_key)
+	strings.write_string(&b, `","origin_daemon_id":"`)
+	json_write_string(&b, work.origin_daemon_id)
+	strings.write_string(&b, `","actor_origin_daemon_id":"`)
+	json_write_string(&b, server_daemon_id)
+	strings.write_string(&b, `","task_id":"`)
+	json_write_string(&b, work.task_id)
+	strings.write_string(&b, `","chain_id":"`)
+	json_write_string(&b, work.chain_id)
+	strings.write_string(&b, `","proxy_agent_instance_id":"`)
+	json_write_string(&b, work.proxy_agent_instance_id)
+	strings.write_string(&b, `","from_agent_instance_id":"`)
+	json_write_string(&b, from_agent_instance_id)
+	strings.write_string(&b, `","result":"`)
+	json_write_string(&b, result)
+	strings.write_string(&b, `","comment":"`)
+	json_write_string(&b, comment)
+	strings.write_string(&b, `"}`)
+	return strings.to_string(b)
+}
+
+federation_task_status_callback_json :: proc(work: Federation_Remote_Work_Record, from_agent_instance_id, status, body, idempotency_key: string, force: bool) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"kind":"status","idempotency_key":"`)
+	json_write_string(&b, idempotency_key)
+	strings.write_string(&b, `","origin_daemon_id":"`)
+	json_write_string(&b, work.origin_daemon_id)
+	strings.write_string(&b, `","actor_origin_daemon_id":"`)
+	json_write_string(&b, server_daemon_id)
+	strings.write_string(&b, `","task_id":"`)
+	json_write_string(&b, work.task_id)
+	strings.write_string(&b, `","chain_id":"`)
+	json_write_string(&b, work.chain_id)
+	strings.write_string(&b, `","proxy_agent_instance_id":"`)
+	json_write_string(&b, work.proxy_agent_instance_id)
+	strings.write_string(&b, `","from_agent_instance_id":"`)
+	json_write_string(&b, from_agent_instance_id)
+	strings.write_string(&b, `","status":"`)
+	json_write_string(&b, status)
+	strings.write_string(&b, `","body":"`)
+	json_write_string(&b, body)
+	strings.write_string(&b, `","force":`)
+	strings.write_string(&b, "true" if force else "false")
+	strings.write_string(&b, `}`)
+	return strings.to_string(b)
+}
+
+handle_get_federation_task :: proc(client: net.TCP_Socket, task_id: string, ctx: ^Route_Context) {
+	peer_id, ok := federation_peer_id_for_request(query_param_value(ctx.query, "peer_token"), query_param_value(ctx.query, "peer_daemon_id"))
+	if !ok {
+		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"peer not configured or token mismatch"}`)
+		return
+	}
+	proxy_agent_instance_id := query_param_value(ctx.query, "as_agent_instance_id")
+	if !federation_remote_task_authorized(peer_id, proxy_agent_instance_id, task_id, "read") {
+		write_response(client, 403, "Forbidden", `{"ok":false,"message":"unauthorized remote task read"}`)
+		return
+	}
+	state, found := store_get_task(task_id)
+	if !found {
+		write_response(client, 404, "Not Found", `{"ok":false,"message":"task not found"}`)
+		return
+	}
+	task_builder := strings.builder_make()
+	task_write_state_json(&task_builder, state)
+	task_json := strings.to_string(task_builder)
+	annotated_task_json := federation_json_object_append_string(task_json, "origin_daemon_id", server_daemon_id)
+	delete(task_json)
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"task":`)
+	strings.write_string(&b, annotated_task_json)
+	strings.write_string(&b, `}`)
+	delete(annotated_task_json)
+	write_response(client, 200, "OK", strings.to_string(b))
+}
+
+handle_get_federation_task_comments :: proc(client: net.TCP_Socket, task_id: string, ctx: ^Route_Context) {
+	peer_id, ok := federation_peer_id_for_request(query_param_value(ctx.query, "peer_token"), query_param_value(ctx.query, "peer_daemon_id"))
+	if !ok {
+		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"peer not configured or token mismatch"}`)
+		return
+	}
+	proxy_agent_instance_id := query_param_value(ctx.query, "as_agent_instance_id")
+	if !federation_remote_task_authorized(peer_id, proxy_agent_instance_id, task_id, "read") {
+		write_response(client, 403, "Forbidden", `{"ok":false,"message":"unauthorized remote task read"}`)
+		return
+	}
+	unresolved_only := query_param_value(ctx.query, "unresolved") == "true"
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"comments":[`)
+	first := true
+	comments := store_comments_of(task_id)
+	defer delete(comments)
+	for c in comments {
+		if unresolved_only && c.resolved do continue
+		if !first do strings.write_string(&b, `,`)
+		first = false
+		strings.write_string(&b, `{"comment_id":"`); json_write_string(&b, c.comment_id)
+		strings.write_string(&b, `","body":"`); json_write_string(&b, c.body)
+		strings.write_string(&b, `","author_agent_instance_id":"`); json_write_string(&b, c.author_agent_instance_id)
+		strings.write_string(&b, `","resolved":`); strings.write_string(&b, "true" if c.resolved else "false")
+		strings.write_string(&b, `,"created_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", c.created_unix_ms))
+		strings.write_string(&b, `}`)
+	}
+	strings.write_string(&b, `]}`)
+	write_response(client, 200, "OK", strings.to_string(b))
+}
+
+handle_get_federation_task_chain :: proc(client: net.TCP_Socket, chain_id: string, ctx: ^Route_Context) {
+	peer_id, ok := federation_peer_id_for_request(query_param_value(ctx.query, "peer_token"), query_param_value(ctx.query, "peer_daemon_id"))
+	if !ok {
+		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"peer not configured or token mismatch"}`)
+		return
+	}
+	proxy_agent_instance_id := query_param_value(ctx.query, "as_agent_instance_id")
+	if !federation_remote_chain_authorized(peer_id, proxy_agent_instance_id, chain_id) {
+		write_response(client, 403, "Forbidden", `{"ok":false,"message":"unauthorized remote chain read"}`)
+		return
+	}
+	chain, found := store_get_chain(chain_id)
+	if !found {
+		write_response(client, 404, "Not Found", `{"ok":false,"message":"chain not found"}`)
+		return
+	}
+	chain_builder := strings.builder_make()
+	task_write_chain_json(&chain_builder, chain)
+	chain_json := strings.to_string(chain_builder)
+	annotated_chain_json := federation_json_object_append_string(chain_json, "origin_daemon_id", server_daemon_id)
+	delete(chain_json)
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"chain":`)
+	strings.write_string(&b, annotated_chain_json)
+	delete(annotated_chain_json)
+	strings.write_string(&b, `,"events":[`)
+	first := true
+	for event in store_all_events() {
+		if event.chain_id != chain_id || event.task_id != "" do continue
+		if !first do strings.write_string(&b, `,`)
+		first = false
+		strings.write_string(&b, task_event_json(event))
+	}
+	strings.write_string(&b, `]}`)
+	write_response(client, 200, "OK", strings.to_string(b))
+}
+
+handle_get_federation_task_chain_tasks :: proc(client: net.TCP_Socket, chain_id: string, ctx: ^Route_Context) {
+	peer_id, ok := federation_peer_id_for_request(query_param_value(ctx.query, "peer_token"), query_param_value(ctx.query, "peer_daemon_id"))
+	if !ok {
+		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"peer not configured or token mismatch"}`)
+		return
+	}
+	proxy_agent_instance_id := query_param_value(ctx.query, "as_agent_instance_id")
+	if !federation_remote_chain_authorized(peer_id, proxy_agent_instance_id, chain_id) {
+		write_response(client, 403, "Forbidden", `{"ok":false,"message":"unauthorized remote chain read"}`)
+		return
+	}
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"chain_id":"`)
+	json_write_string(&b, chain_id)
+	strings.write_string(&b, `","tasks":[`)
+	first := true
+	for state in store_tasks_in_chain(chain_id) {
+		if !federation_remote_task_read_allowed(state, proxy_agent_instance_id) do continue
+		if !first do strings.write_string(&b, `,`)
+		first = false
+		task_builder := strings.builder_make()
+		task_write_state_json(&task_builder, state)
+		task_json := strings.to_string(task_builder)
+		annotated_task_json := federation_json_object_append_string(task_json, "origin_daemon_id", server_daemon_id)
+		delete(task_json)
+		strings.write_string(&b, annotated_task_json)
+		delete(annotated_task_json)
+	}
+	strings.write_string(&b, `]}`)
+	write_response(client, 200, "OK", strings.to_string(b))
+}
+
 handle_post_federation_inbox :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
 	peer_id, ok := federation_peer_id_for_request(query_param_value(ctx.query, "peer_token"), query_param_value(ctx.query, "peer_daemon_id"))
 	if !ok {
@@ -688,6 +1218,10 @@ handle_post_federation_inbox :: proc(client: net.TCP_Socket, body: string, ctx: 
 		payload := extract_json_string(body, "payload", "")
 		if target_agent_instance_id == "" || payload == "" {
 			write_response(client, 400, "Bad Request", `{"ok":false,"message":"notification target/payload required"}`)
+			return
+		}
+		if !federation_remote_work_track_notification(peer_id, query_param_value(ctx.query, "peer_daemon_id"), target_agent_instance_id, payload) {
+			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist remote work mapping"}`)
 			return
 		}
 		event_id := notification_outbox_insert_pending(target_agent_instance_id, payload)
@@ -891,6 +1425,113 @@ handle_post_federation_callback :: proc(client: net.TCP_Socket, body: string, ct
 			return
 		}
 		write_response(client, 200, "OK", `{"ok":true,"accepted":true}`)
+	case FEDERATION_ENVELOPE_TASK_COMMENT:
+		target_origin_daemon_id := extract_json_string(body, "origin_daemon_id", "")
+		task_id := extract_json_string(body, "task_id", "")
+		chain_id := extract_json_string(body, "chain_id", "")
+		from_agent_instance_id := extract_json_string(body, "from_agent_instance_id", "")
+		comment_body := extract_json_string(body, "body", "")
+		if target_origin_daemon_id == "" || target_origin_daemon_id != server_daemon_id || task_id == "" || comment_body == "" || from_agent_instance_id != remote_agent_instance_id || !federation_remote_task_authorized(peer_id, proxy_agent_instance_id, task_id, "comment") {
+			write_response(client, 403, "Forbidden", `{"ok":false,"message":"unauthorized remote callback"}`)
+			return
+		}
+		scope := federation_delivery_dedupe_scope(FEDERATION_DEDUPE_SCOPE_CALLBACK, peer_id, fmt.tprintf("%s:%s", kind, task_id))
+		if federation_delivery_dedupe_completed(scope, idempotency_key) {
+			write_response(client, 200, "OK", `{"ok":true,"deduped":true}`)
+			return
+		}
+		if artifact_ref_json, has_artifact_ref := federation_json_value_extract(body, "artifact_ref"); has_artifact_ref {
+			remote_artifact_id := extract_json_string(artifact_ref_json, "artifact_id", "")
+			artifact_origin_daemon_id := extract_json_string(artifact_ref_json, "origin_daemon_id", "")
+			project_id := ""
+			if chain, found := store_get_chain(chain_id); found do project_id = chain.project_id
+			local_artifact_id, upsert_ok := artifact_federation_reference_upsert(
+				peer_id,
+				artifact_origin_daemon_id,
+				remote_artifact_id,
+				extract_json_string(artifact_ref_json, "name", ""),
+				extract_json_string(artifact_ref_json, "kind", ""),
+				extract_json_string(artifact_ref_json, "mime", ""),
+				extract_json_string(artifact_ref_json, "ext", ""),
+				extract_json_string(artifact_ref_json, "description", ""),
+				project_id,
+				proxy_agent_instance_id,
+				extract_json_i64(artifact_ref_json, "size_bytes", 0),
+				extract_json_string(artifact_ref_json, "sha256", ""),
+			)
+			delete(artifact_ref_json)
+			if !upsert_ok {
+				write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist remote artifact reference"}`)
+				return
+			}
+			if local_artifact_id != "" && local_artifact_id != remote_artifact_id {
+				replaced, _ := strings.replace_all(comment_body, contracts.artifact_make_link(remote_artifact_id), contracts.artifact_make_link(local_artifact_id))
+				comment_body = replaced
+			}
+		}
+		result := task_service_comment(task_id, chain_id, comment_body, proxy_agent_instance_id)
+		if !result.ok {
+			write_response(client, result.status_code, federation_status_text(result.status_code), result.message)
+			return
+		}
+		if !federation_delivery_dedupe_record_completed(scope, idempotency_key) {
+			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to record callback dedupe"}`)
+			return
+		}
+		write_response(client, result.status_code, federation_status_text(result.status_code), result.message)
+	case FEDERATION_ENVELOPE_TASK_VOTE:
+		target_origin_daemon_id := extract_json_string(body, "origin_daemon_id", "")
+		task_id := extract_json_string(body, "task_id", "")
+		chain_id := extract_json_string(body, "chain_id", "")
+		from_agent_instance_id := extract_json_string(body, "from_agent_instance_id", "")
+		result_str := extract_json_string(body, "result", "")
+		comment_body := extract_json_string(body, "comment", "")
+		if target_origin_daemon_id == "" || target_origin_daemon_id != server_daemon_id || task_id == "" || comment_body == "" || from_agent_instance_id != remote_agent_instance_id || !federation_remote_task_authorized(peer_id, proxy_agent_instance_id, task_id, "vote") {
+			write_response(client, 403, "Forbidden", `{"ok":false,"message":"unauthorized remote callback"}`)
+			return
+		}
+		scope := federation_delivery_dedupe_scope(FEDERATION_DEDUPE_SCOPE_CALLBACK, peer_id, fmt.tprintf("%s:%s", kind, task_id))
+		if federation_delivery_dedupe_completed(scope, idempotency_key) {
+			write_response(client, 200, "OK", `{"ok":true,"deduped":true}`)
+			return
+		}
+		result := task_service_review_vote(Task_Review_Vote_Command{task_id = task_id, chain_id = chain_id, approved = result_str == "lgtm" || result_str == "approved" || result_str == "true", comment = comment_body, author_agent_instance_id = proxy_agent_instance_id, author_is_user = false})
+		if !result.ok {
+			write_response(client, result.status_code, federation_status_text(result.status_code), result.message)
+			return
+		}
+		if !federation_delivery_dedupe_record_completed(scope, idempotency_key) {
+			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to record callback dedupe"}`)
+			return
+		}
+		write_response(client, result.status_code, federation_status_text(result.status_code), result.message)
+	case FEDERATION_ENVELOPE_TASK_STATUS:
+		target_origin_daemon_id := extract_json_string(body, "origin_daemon_id", "")
+		task_id := extract_json_string(body, "task_id", "")
+		chain_id := extract_json_string(body, "chain_id", "")
+		from_agent_instance_id := extract_json_string(body, "from_agent_instance_id", "")
+		status_value := extract_json_string(body, "status", "")
+		status_body := extract_json_string(body, "body", "")
+		force := extract_json_bool(body, "force", false)
+		if target_origin_daemon_id == "" || target_origin_daemon_id != server_daemon_id || task_id == "" || status_value == "" || status_body == "" || from_agent_instance_id != remote_agent_instance_id || !federation_remote_task_authorized(peer_id, proxy_agent_instance_id, task_id, "status") {
+			write_response(client, 403, "Forbidden", `{"ok":false,"message":"unauthorized remote callback"}`)
+			return
+		}
+		scope := federation_delivery_dedupe_scope(FEDERATION_DEDUPE_SCOPE_CALLBACK, peer_id, fmt.tprintf("%s:%s:%s", kind, task_id, status_value))
+		if federation_delivery_dedupe_completed(scope, idempotency_key) {
+			write_response(client, 200, "OK", `{"ok":true,"deduped":true}`)
+			return
+		}
+		result := task_service_status_command(Task_Status_Command{task_id = task_id, chain_id = chain_id, status = status_value, body = status_body, force = force, author_agent_instance_id = proxy_agent_instance_id})
+		if !result.ok {
+			write_response(client, result.status_code, federation_status_text(result.status_code), result.message)
+			return
+		}
+		if !federation_delivery_dedupe_record_completed(scope, idempotency_key) {
+			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to record callback dedupe"}`)
+			return
+		}
+		write_response(client, result.status_code, federation_status_text(result.status_code), result.message)
 	case:
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"unsupported federation callback kind"}`)
 	}

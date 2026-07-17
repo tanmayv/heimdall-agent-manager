@@ -11,6 +11,7 @@ APP = ROOT / "src/ui/components/App.tsx"
 SLICE = ROOT / "src/ui/store/attentionSlice.ts"
 STORE = ROOT / "src/ui/store/store.ts"
 API = ROOT / "src/ui/api/daemonApi.ts"
+WS = ROOT / "src/ui/api/wsInvalidation.ts"
 
 
 def require(cond: bool, msg: str) -> None:
@@ -24,6 +25,7 @@ def main() -> None:
     slice_src = SLICE.read_text()
     store = STORE.read_text()
     api = API.read_text()
+    ws = WS.read_text()
 
     require("attentionReducer" in store and "attention: attentionReducer" in store, "attention slice not registered in store")
     require("listPendingChatApprovals" in api and "answerChatApproval" in api and "dismissChatApproval" in api, "daemon API must expose chat-approval endpoints")
@@ -32,7 +34,12 @@ def main() -> None:
         require(name in slice_src, f"attention slice missing {name}")
     require("state.chatApprovalIds = kept" in slice_src, "expiry tick must prune expired ids")
 
-    require("if (payload?.type === 'chat_approval')" in app, "App must handle chat_approval WS events")
+    require(
+        "if (payload?.type === 'chat_approval')" in app or
+        "if (payload?.type === 'chat_approval')" in ws or
+        "case 'chat_approval':" in ws,
+        "UI must handle chat_approval WS events",
+    )
     require("dispatch(refreshChatApprovals())" in app, "attention surface must refresh chat approvals when opened")
     require("dispatch(refreshMemory())" in app, "attention surface must refresh memory when opened")
     require("dispatch(tickChatApprovalExpiry())" in app, "attention surface must periodically prune expired cards")

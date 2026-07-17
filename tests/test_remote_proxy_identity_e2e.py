@@ -123,6 +123,7 @@ def main():
 
         first = request_json(base, "/federation/proxies/bind", method="POST", headers=auth, body={
             "peer_id": "self-peer",
+            "origin_daemon_id": "remote-proxy-self",
             "remote_agent_instance_id": "reviewer@s-remote-1",
             "display_name": "Remote Reviewer",
             "template_id": "reviewer",
@@ -133,12 +134,14 @@ def main():
         first_agent = first["agent"]
         require(first_agent["agent_kind"] == "remote_proxy", f"expected remote_proxy kind, got {first_agent}")
         require(first_agent.get("remote", {}).get("peer_id") == "self-peer", f"missing peer_id remote block: {first_agent}")
+        require(first_agent.get("remote", {}).get("origin_daemon_id") == "remote-proxy-self", f"missing origin daemon id remote block: {first_agent}")
         require(first_agent.get("remote", {}).get("remote_agent_instance_id") == "reviewer@s-remote-1", f"missing remote agent id block: {first_agent}")
         local_proxy_id = first_agent["agent_instance_id"]
         require(local_proxy_id and local_proxy_id != "reviewer@s-remote-1", "expected concrete local proxy id distinct from remote id")
 
         second = request_json(base, "/federation/proxies/bind", method="POST", headers=auth, body={
             "peer_id": "self-peer",
+            "origin_daemon_id": "remote-proxy-self",
             "remote_agent_instance_id": "reviewer@s-remote-1",
         })
         require(second["agent"]["agent_instance_id"] == local_proxy_id, "expected bind to reuse existing proxy id")
@@ -147,6 +150,7 @@ def main():
         shown = show["agent"]
         require(shown["agent_kind"] == "remote_proxy", f"show should preserve remote_proxy kind: {shown}")
         require(shown.get("remote", {}).get("peer_id") == "self-peer", f"show should include remote block: {shown}")
+        require(shown.get("remote", {}).get("origin_daemon_id") == "remote-proxy-self", f"show should include origin daemon id: {shown}")
 
         reorder = request_json(base, "/user-rpc", method="POST", body={
             "action": "agent_reorder",
@@ -159,15 +163,16 @@ def main():
         reordered = request_json(base, "/agents/show", method="POST", body={"agent_instance_id": local_proxy_id})["agent"]
         require(reordered["agent_kind"] == "remote_proxy", f"reorder should preserve remote_proxy kind: {reordered}")
         require(reordered.get("remote", {}).get("peer_id") == "self-peer", f"reorder should preserve remote peer block: {reordered}")
+        require(reordered.get("remote", {}).get("origin_daemon_id") == "remote-proxy-self", f"reorder should preserve origin daemon id block: {reordered}")
         require(reordered.get("remote", {}).get("remote_agent_instance_id") == "reviewer@s-remote-1", f"reorder should preserve remote agent id block: {reordered}")
 
-        start_denied = request_json(base, "/agents/start", method="POST", body={
+        start_forwarded = request_json(base, "/agents/start", method="POST", body={
             "agent_instance_id": local_proxy_id,
             "provider_profile": "pi",
             "template_id": "reviewer",
             "model_tier": "normal",
-        }, expect_status=400)
-        require("remote_proxy instances are dormant" in json.dumps(start_denied), f"expected dormant start rejection, got {start_denied}")
+        }, expect_status=404)
+        require("target agent not found on owner daemon" in json.dumps(start_forwarded), f"expected owner-forwarded start miss, got {start_forwarded}")
 
         print("remote_proxy_identity_e2e: ok")
     finally:

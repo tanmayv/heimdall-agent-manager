@@ -70,16 +70,21 @@ merge_preview_body_json :: proc(b: ^strings.Builder, p: vcs.Vcs_Merge_Preview) {
 }
 
 // GET /attention — aggregated operator view. Merge decisions are derived from
-// workspaces sitting in `merge_pending`. Approvals/blocked lists are surfaced by
-// their own subsystems; here we return the merge_decisions channel plus empty
-// approvals/blocked arrays so the shape matches docs/teams-v1/08-http-and-cli.md.
-// ponytail: approvals/blocked are left empty here (owned by the task-review and
-// blocked-task subsystems); upgrade path is to fold those two lists in when their
-// aggregate readers land, without changing this response shape.
+// workspaces sitting in `merge_pending`. Blocked federation review gates are
+// surfaced here too so operators can unblock unreachable remote reviewers using
+// the existing participant/reviewer mutation flow.
 handle_attention :: proc(client: net.TCP_Socket, request: string) {
 	if !workspace_query_auth(client, request_target_of(request)) do return
 	b := strings.builder_make()
-	strings.write_string(&b, `{"ok":true,"approvals":[],"blocked":[],"merge_decisions":[`)
+	strings.write_string(&b, `{"ok":true,"approvals":[],"blocked":[`)
+	blocked_first := true
+	for item in attention_federation_peer_blocks_json_items() {
+		if !blocked_first do strings.write_string(&b, `,`)
+		blocked_first = false
+		strings.write_string(&b, item)
+		delete(item)
+	}
+	strings.write_string(&b, `],"merge_decisions":[`)
 	first := true
 	rows := vcs_db_merge_pending_workspaces()
 	for rec in rows {
@@ -103,6 +108,42 @@ merge_decision_item_json :: proc(b: ^strings.Builder, rec: Vcs_Workspace_Record)
 	strings.write_string(b, `","path":"`); json_write_string(b, rec.path)
 	strings.write_string(b, `","preview":`); merge_preview_body_json(b, preview)
 	strings.write_string(b, `}`)
+}
+
+attention_federation_peer_blocks_json_items :: proc() -> []string {
+	items := make([dynamic]string)
+	tasks := store_all_tasks()
+	defer delete(tasks)
+	for state in tasks {
+		if state.status != .Review_Ready do continue
+		participants := store_participants_of(state.task_id)
+		for participant in participants {
+			if participant.role != "lgtm_required" do continue
+			if store_reviewer_has_approved_vote(state.task_id, participant.agent_instance_id) do continue
+			if idx := agent_record_index_by_instance(participant.agent_instance_id); idx >= 0 && agent_record_is_remote_proxy(agent_instance_records[idx]) {
+				peer_id, _, ok := agent_remote_proxy_lookup(participant.agent_instance_id)
+				if !ok || peer_id == "" do continue
+				peer_rec, found := peer_link_find(peer_id)
+				if !found || peer_rec.status != PEER_STATUS_UNREACHABLE do continue
+				chain_title := ""
+				if chain, chain_found := store_get_chain(state.chain_id); chain_found do chain_title = chain.title
+				item := strings.builder_make()
+				strings.write_string(&item, `{"kind":"federation_peer_block","task_id":"`); json_write_string(&item, state.task_id)
+				strings.write_string(&item, `","chain_id":"`); json_write_string(&item, state.chain_id)
+				strings.write_string(&item, `","task_title":"`); json_write_string(&item, state.title)
+				strings.write_string(&item, `","chain_title":"`); json_write_string(&item, chain_title)
+				strings.write_string(&item, `","peer_id":"`); json_write_string(&item, peer_rec.peer_id)
+				strings.write_string(&item, `","peer_daemon_id":"`); json_write_string(&item, peer_rec.daemon_id)
+				strings.write_string(&item, `","peer_status":"`); json_write_string(&item, peer_rec.status)
+				strings.write_string(&item, `","proxy_agent_instance_id":"`); json_write_string(&item, participant.agent_instance_id)
+				strings.write_string(&item, `","reviewer_role":"`); json_write_string(&item, participant.role)
+				strings.write_string(&item, `"}`)
+				append(&items, strings.to_string(item))
+			}
+		}
+		delete(participants)
+	}
+	return items[:]
 }
 
 request_target_of :: proc(request: string) -> string {

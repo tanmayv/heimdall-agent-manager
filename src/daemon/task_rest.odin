@@ -69,8 +69,17 @@ handle_get_task_chains :: proc(client: net.TCP_Socket, ctx: ^Route_Context) {
 
 // GET /task-chains/{chain_id}
 handle_get_task_chain :: proc(client: net.TCP_Socket, chain_id: string, ctx: ^Route_Context) {
-	_, ok := rest_authorize(client, ctx)
+	author, ok := rest_authorize(client, ctx)
 	if !ok do return
+	remote_origin_daemon_id := query_param_value(ctx.query, "origin_daemon_id")
+	if remote_work, remote, ambiguous := federation_remote_work_resolve_chain(chain_id, remote_origin_daemon_id, author); ambiguous {
+		write_remote_chain_identity_ambiguous_response(client, chain_id)
+		return
+	} else if remote {
+		resp, forwarded := federation_remote_chain_fetch_response(remote_work)
+		federation_write_forwarded_response(client, resp, forwarded)
+		return
+	}
 
 	chain, found := store_get_chain(chain_id)
 	if !found {
@@ -86,8 +95,17 @@ handle_get_task_chain :: proc(client: net.TCP_Socket, chain_id: string, ctx: ^Ro
 
 // GET /task-chains/{chain_id}/tasks
 handle_get_chain_tasks :: proc(client: net.TCP_Socket, chain_id: string, ctx: ^Route_Context) {
-	_, ok := rest_authorize(client, ctx)
+	author, ok := rest_authorize(client, ctx)
 	if !ok do return
+	remote_origin_daemon_id := query_param_value(ctx.query, "origin_daemon_id")
+	if remote_work, remote, ambiguous := federation_remote_work_resolve_chain(chain_id, remote_origin_daemon_id, author); ambiguous {
+		write_remote_chain_identity_ambiguous_response(client, chain_id)
+		return
+	} else if remote {
+		resp, forwarded := federation_remote_chain_tasks_fetch_response(remote_work)
+		federation_write_forwarded_response(client, resp, forwarded)
+		return
+	}
 
 	created_after_str := query_param_value(ctx.query, "created_after")
 	created_before_str := query_param_value(ctx.query, "created_before")
@@ -134,8 +152,17 @@ handle_get_chain_tasks :: proc(client: net.TCP_Socket, chain_id: string, ctx: ^R
 
 // GET /tasks/{task_id}
 handle_get_task :: proc(client: net.TCP_Socket, task_id: string, ctx: ^Route_Context) {
-	_, ok := rest_authorize(client, ctx)
+	author, ok := rest_authorize(client, ctx)
 	if !ok do return
+	remote_origin_daemon_id := query_param_value(ctx.query, "origin_daemon_id")
+	if remote_work, remote, ambiguous := federation_remote_work_resolve_task(task_id, remote_origin_daemon_id, author); ambiguous {
+		write_remote_task_identity_ambiguous_response(client, task_id)
+		return
+	} else if remote {
+		resp, forwarded := federation_remote_task_fetch_response(remote_work)
+		federation_write_forwarded_response(client, resp, forwarded)
+		return
+	}
 
 	if state, ok := store_get_task(task_id); ok {
 		b := strings.builder_make()
@@ -150,8 +177,17 @@ handle_get_task :: proc(client: net.TCP_Socket, task_id: string, ctx: ^Route_Con
 
 // GET /tasks/{task_id}/comments
 handle_get_task_comments :: proc(client: net.TCP_Socket, task_id: string, ctx: ^Route_Context) {
-	_, ok := rest_authorize(client, ctx)
+	author, ok := rest_authorize(client, ctx)
 	if !ok do return
+	remote_origin_daemon_id := query_param_value(ctx.query, "origin_daemon_id")
+	if remote_work, remote, ambiguous := federation_remote_work_resolve_task(task_id, remote_origin_daemon_id, author); ambiguous {
+		write_remote_task_identity_ambiguous_response(client, task_id)
+		return
+	} else if remote {
+		resp, forwarded := federation_remote_task_comments_fetch_response(remote_work)
+		federation_write_forwarded_response(client, resp, forwarded)
+		return
+	}
 
 	unresolved_str := query_param_value(ctx.query, "unresolved")
 	unresolved_only := unresolved_str == "true"
@@ -178,8 +214,16 @@ handle_get_task_comments :: proc(client: net.TCP_Socket, task_id: string, ctx: ^
 
 // GET /tasks
 handle_get_tasks :: proc(client: net.TCP_Socket, ctx: ^Route_Context) {
-	_, ok := rest_authorize(client, ctx)
+	author, ok := rest_authorize(client, ctx)
 	if !ok do return
+	if remote_rows := federation_remote_work_list_for_agent(author); len(remote_rows) > 0 {
+		for row in remote_rows {
+			delete(row.task_id); delete(row.chain_id); delete(row.owner_peer_id); delete(row.origin_daemon_id); delete(row.local_agent_instance_id); delete(row.proxy_agent_instance_id); delete(row.status)
+		}
+		delete(remote_rows)
+		write_response(client, 200, "OK", federation_remote_tasks_state_json(author))
+		return
+	}
 
 	chain_id := query_param_value(ctx.query, "chain_id")
 	created_after_str := query_param_value(ctx.query, "created_after")

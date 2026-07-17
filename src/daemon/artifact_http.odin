@@ -6,6 +6,7 @@ import "core:net"
 import "core:strconv"
 import "core:strings"
 import contracts "odin_test:contracts"
+import http "odin_test:lib/http_client"
 
 Artifact_Create_Result :: struct {
 	rec:         Artifact_Record,
@@ -14,6 +15,138 @@ Artifact_Create_Result :: struct {
 	status_text: string,
 	error_kind:  string,
 	message:     string,
+}
+
+ARTIFACT_ORIGIN_FEDERATION_REMOTE :: "federation_remote"
+ARTIFACT_FEDERATION_REMOTE_REF_SEPARATOR :: "|"
+
+artifact_is_federation_remote :: proc(rec: Artifact_Record) -> bool {
+	return strings.trim_space(rec.origin_kind) == ARTIFACT_ORIGIN_FEDERATION_REMOTE
+}
+
+artifact_federation_remote_origin_ref :: proc(origin_daemon_id, remote_artifact_id: string) -> string {
+	return fmt.tprintf("%s%s%s", strings.trim_space(origin_daemon_id), ARTIFACT_FEDERATION_REMOTE_REF_SEPARATOR, strings.trim_space(remote_artifact_id))
+}
+
+artifact_federation_remote_origin_ref_parse :: proc(origin_ref: string) -> (origin_daemon_id, remote_artifact_id: string, ok: bool) {
+	trimmed := strings.trim_space(origin_ref)
+	sep := strings.index(trimmed, ARTIFACT_FEDERATION_REMOTE_REF_SEPARATOR)
+	if sep < 0 do return "", "", false
+	origin_daemon_id = strings.trim_space(trimmed[:sep])
+	remote_artifact_id = strings.trim_space(trimmed[sep + len(ARTIFACT_FEDERATION_REMOTE_REF_SEPARATOR):])
+	if origin_daemon_id == "" || remote_artifact_id == "" do return "", "", false
+	return origin_daemon_id, remote_artifact_id, true
+}
+
+artifact_federation_self_contained_eligible :: proc(rec: Artifact_Record) -> (bool, string) {
+	if rec.deleted do return false, "artifact deleted"
+	if strings.trim_space(rec.rel_path) == "" do return false, "artifact blob rel_path missing"
+	if strings.trim_space(rec.sha256) == "" do return false, "artifact sha256 missing"
+	if rec.size_bytes <= 0 do return false, "artifact size_bytes missing"
+	switch strings.trim_space(rec.origin_kind) {
+	case "", "direct", "chat", "comment", "test", ARTIFACT_ORIGIN_FEDERATION_REMOTE:
+		return true, ""
+	case:
+		return false, "artifact origin is not self-contained for federation sharing"
+	}
+}
+
+artifact_write_binary_content_response :: proc(client: net.TCP_Socket, rec: Artifact_Record, data: []byte) {
+	validated := artifact_validate_payload(rec.kind, rec.mime, rec.ext, data, artifact_max_bytes_limit())
+	if !validated.ok {
+		artifact_write_validation_error(client, validated.message)
+		return
+	}
+	headers := make([]Response_Header, 1)
+	headers[0] = Response_Header{name = "Content-Disposition", value = fmt.tprintf("inline; filename=\"%s\"", artifact_header_filename(rec.name))}
+	write_binary_response(client, 200, "OK", rec.mime, data, headers)
+}
+
+federation_artifact_fetch_through :: proc(origin_daemon_id, route_peer_id, artifact_id: string) -> ([]byte, bool) {
+	resolved_origin_daemon_id := strings.trim_space(origin_daemon_id)
+	resolved_route_peer_id := strings.trim_space(route_peer_id)
+	resolved_artifact_id := strings.trim_space(artifact_id)
+	if resolved_origin_daemon_id == "" || resolved_artifact_id == "" do return nil, false
+	if resolved_route_peer_id == "" {
+		rec, found := peer_link_find_by_daemon_id(resolved_origin_daemon_id)
+		if !found do return nil, false
+		resolved_route_peer_id = rec.peer_id
+	}
+	rec, ok := peer_link_find(resolved_route_peer_id)
+	if !ok do return nil, false
+	path := fmt.tprintf("/federation/artifacts/%s?peer_token=%s&peer_daemon_id=%s", resolved_artifact_id, rec.peer_token, server_daemon_id)
+	resp, fetch_ok := http.get_with_timeout(rec.peer_url, path, FEDERATION_HTTP_TIMEOUT_MS)
+	if !fetch_ok || resp.status != 200 {
+		rec.status = strings.clone(PEER_STATUS_UNREACHABLE)
+		rec.last_checked_unix_ms = router_now_unix_ms()
+		return nil, false
+	}
+	rec.status = strings.clone(PEER_STATUS_LINKED)
+	rec.last_checked_unix_ms = router_now_unix_ms()
+	return transmute([]byte)strings.clone(resp.body), true
+}
+
+artifact_resolve_content :: proc(rec: Artifact_Record) -> (Artifact_Record, []byte, bool) {
+	if data, read_ok := artifact_read_blob(rec.rel_path); read_ok {
+		return rec, data, true
+	}
+	if !artifact_is_federation_remote(rec) do return rec, nil, false
+	origin_daemon_id, remote_artifact_id, parsed := artifact_federation_remote_origin_ref_parse(rec.origin_ref)
+	if !parsed do return rec, nil, false
+	data, fetch_ok := federation_artifact_fetch_through(origin_daemon_id, "", remote_artifact_id)
+	if !fetch_ok do return rec, nil, false
+	if rec.sha256 != "" && artifact_sha256_hex(data) != rec.sha256 do return rec, nil, false
+	if rec.size_bytes > 0 && i64(len(data)) != rec.size_bytes do return rec, nil, false
+	rel_path, sha256, size_bytes, write_ok := artifact_write_blob(rec.artifact_id, data)
+	if !write_ok do return rec, nil, false
+	updated := rec
+	updated.rel_path = rel_path
+	if updated.sha256 == "" do updated.sha256 = sha256
+	if updated.size_bytes == 0 do updated.size_bytes = size_bytes
+	updated.updated_unix_ms = router_now_unix_ms()
+	if !artifact_db_update(updated) do return rec, nil, false
+	return updated, data, true
+}
+
+artifact_federation_reference_upsert :: proc(route_peer_id, origin_daemon_id, remote_artifact_id, name, kind, mime, ext, description, project_id, creator_id: string, size_bytes: i64, sha256: string) -> (string, bool) {
+	origin_ref := artifact_federation_remote_origin_ref(origin_daemon_id, remote_artifact_id)
+	if existing, ok := artifact_db_find_origin(ARTIFACT_ORIGIN_FEDERATION_REMOTE, origin_ref); ok {
+		return existing.artifact_id, true
+	}
+	local_artifact_id := strings.trim_space(remote_artifact_id)
+	if local_artifact_id == "" do local_artifact_id = artifact_generate_id()
+	if existing, ok := artifact_db_get(local_artifact_id); ok {
+		if existing.origin_kind == ARTIFACT_ORIGIN_FEDERATION_REMOTE && existing.origin_ref == origin_ref {
+			return existing.artifact_id, true
+		}
+		local_artifact_id = artifact_generate_id()
+	}
+	creator := strings.trim_space(creator_id)
+	if creator == "" do creator = route_peer_id
+	clean_name := artifact_sanitize_name(name)
+	if clean_name == "" do clean_name = local_artifact_id
+	rec := Artifact_Record{
+		artifact_id = local_artifact_id,
+		name = clean_name,
+		kind = kind,
+		mime = mime,
+		ext = ext,
+		size_bytes = size_bytes,
+		sha256 = sha256,
+		rel_path = "",
+		creator_type = "agent",
+		creator_id = creator,
+		project_id = project_id,
+		origin_kind = ARTIFACT_ORIGIN_FEDERATION_REMOTE,
+		origin_ref = origin_ref,
+		description = description,
+		created_unix_ms = router_now_unix_ms(),
+		updated_unix_ms = router_now_unix_ms(),
+		deleted = false,
+		deleted_unix_ms = 0,
+	}
+	if !artifact_db_insert(rec) do return "", false
+	return rec.artifact_id, true
 }
 
 handle_post_artifact_create :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
@@ -89,21 +222,35 @@ handle_get_artifact_content :: proc(client: net.TCP_Socket, artifact_id: string,
 		return
 	}
 
+	resolved_rec, data, read_ok := artifact_resolve_content(rec)
+	if !read_ok {
+		artifact_write_error(client, 500, "Internal Server Error", "blob_read_failed", "artifact blob missing or unreadable")
+		return
+	}
+	artifact_write_binary_content_response(client, resolved_rec, data)
+}
+
+handle_get_federation_artifact_content :: proc(client: net.TCP_Socket, artifact_id: string, ctx: ^Route_Context) {
+	_, ok := federation_peer_id_for_request(query_param_value(ctx.query, "peer_token"), query_param_value(ctx.query, "peer_daemon_id"))
+	if !ok {
+		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"peer not configured or token mismatch"}`)
+		return
+	}
+	rec, found := artifact_db_get(artifact_id)
+	if !found {
+		artifact_write_error(client, 404, "Not Found", "not_found", "artifact not found")
+		return
+	}
+	if ok, reason := artifact_federation_self_contained_eligible(rec); !ok {
+		artifact_write_error(client, 403, "Forbidden", "not_shareable", reason)
+		return
+	}
 	data, read_ok := artifact_read_blob(rec.rel_path)
 	if !read_ok {
 		artifact_write_error(client, 500, "Internal Server Error", "blob_read_failed", "artifact blob missing or unreadable")
 		return
 	}
-
-	validated := artifact_validate_payload(rec.kind, rec.mime, rec.ext, data, artifact_max_bytes_limit())
-	if !validated.ok {
-		artifact_write_validation_error(client, validated.message)
-		return
-	}
-
-	headers := make([]Response_Header, 1)
-	headers[0] = Response_Header{name = "Content-Disposition", value = fmt.tprintf("inline; filename=\"%s\"", artifact_header_filename(rec.name))}
-	write_binary_response(client, 200, "OK", rec.mime, data, headers)
+	artifact_write_binary_content_response(client, rec, data)
 }
 
 handle_post_artifact_update :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {

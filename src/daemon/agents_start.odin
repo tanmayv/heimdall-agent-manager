@@ -193,7 +193,7 @@ handle_agents_associate :: proc(client: net.TCP_Socket, body: string) {
 	rec := agent_instance_records[idx]
 	rec.project_id = strings.clone(project_id)
 	assoc_tier := normalize_model_tier(rec.model_tier)
-	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = rec.provider_profile, project_id = rec.project_id, run_dir = rec.run_dir, model_tier = assoc_tier, agent_scope = rec.agent_scope, agent_role = rec.agent_role, agent_kind = rec.agent_kind, remote_peer_id = rec.remote_peer_id, remote_agent_instance_id = rec.remote_agent_instance_id, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent association"}`); return }
+	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = rec.provider_profile, project_id = rec.project_id, run_dir = rec.run_dir, model_tier = assoc_tier, agent_scope = rec.agent_scope, agent_role = rec.agent_role, agent_kind = rec.agent_kind, remote_peer_id = rec.remote_peer_id, remote_origin_daemon_id = rec.remote_origin_daemon_id, remote_agent_instance_id = rec.remote_agent_instance_id, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent association"}`); return }
 	write_agent_ok_response(client, "associated", agent_instance_records[agent_record_index(rec.agent_record_id)])
 }
 
@@ -206,7 +206,7 @@ handle_agents_disassociate :: proc(client: net.TCP_Socket, body: string) {
 	rec := agent_instance_records[idx]
 	rec.project_id = ""
 	disassoc_tier := normalize_model_tier(rec.model_tier)
-	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = rec.provider_profile, project_id = "", run_dir = rec.run_dir, model_tier = disassoc_tier, agent_scope = rec.agent_scope, agent_role = rec.agent_role, agent_kind = rec.agent_kind, remote_peer_id = rec.remote_peer_id, remote_agent_instance_id = rec.remote_agent_instance_id, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent disassociation"}`); return }
+	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = rec.provider_profile, project_id = "", run_dir = rec.run_dir, model_tier = disassoc_tier, agent_scope = rec.agent_scope, agent_role = rec.agent_role, agent_kind = rec.agent_kind, remote_peer_id = rec.remote_peer_id, remote_origin_daemon_id = rec.remote_origin_daemon_id, remote_agent_instance_id = rec.remote_agent_instance_id, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent disassociation"}`); return }
 	write_agent_ok_response(client, "disassociated", agent_instance_records[agent_record_index(rec.agent_record_id)])
 }
 
@@ -221,6 +221,7 @@ agent_record_upsert :: proc(
 	project_id_set: bool = false,
 	agent_kind: string = "",
 	remote_peer_id: string = "",
+	remote_origin_daemon_id: string = "",
 	remote_agent_instance_id: string = "",
 ) -> (agent_record_id: string, final_tier: string, ok: bool) {
 	if template_id == "guide" && !guide_agent_is_singleton(agent_instance_id) {
@@ -241,6 +242,7 @@ agent_record_upsert :: proc(
 	role := agent_role
 	kind := agent_kind
 	remote_peer := remote_peer_id
+	remote_origin := remote_origin_daemon_id
 	remote_agent := remote_agent_instance_id
 	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 {
 		rec_id = agent_instance_records[idx].agent_record_id
@@ -251,6 +253,7 @@ agent_record_upsert :: proc(
 		if role == "" do role = agent_instance_records[idx].agent_role
 		if kind == "" do kind = agent_instance_records[idx].agent_kind
 		if remote_peer == "" do remote_peer = agent_instance_records[idx].remote_peer_id
+		if remote_origin == "" do remote_origin = agent_instance_records[idx].remote_origin_daemon_id
 		if remote_agent == "" do remote_agent = agent_instance_records[idx].remote_agent_instance_id
 		// Empty project_id from caller (e.g. /agents/start with no body project_id)
 		// must NOT clobber the stored association. Use the stored value as the
@@ -284,6 +287,7 @@ agent_record_upsert :: proc(
 		agent_role = agent_role_normalize(role),
 		agent_kind = kind,
 		remote_peer_id = strings.trim_space(remote_peer),
+		remote_origin_daemon_id = strings.trim_space(remote_origin),
 		remote_agent_instance_id = strings.trim_space(remote_agent),
 		state = agent_identity_state_normalize(state),
 		author = "api",
@@ -467,7 +471,9 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 	strings.write_string(builder, `,"state":"`); json_write_string(builder, agent_store_agent_state(rec)); strings.write_string(builder, `"`)
 	strings.write_string(builder, `,"order":`); strings.write_string(builder, fmt.tprintf("%d", rec.order))
 	if agent_record_is_remote_proxy(rec) {
+		resolved_origin_daemon_id, _ := agent_remote_proxy_origin_daemon_id(rec)
 		strings.write_string(builder, `,"remote":{"peer_id":"`); json_write_string(builder, rec.remote_peer_id)
+		strings.write_string(builder, `","origin_daemon_id":"`); json_write_string(builder, resolved_origin_daemon_id)
 		strings.write_string(builder, `","remote_agent_instance_id":"`); json_write_string(builder, rec.remote_agent_instance_id)
 		strings.write_string(builder, `"}`)
 	}
@@ -707,7 +713,7 @@ handle_agent_instance_update :: proc(client: net.TCP_Socket, body: string) {
 		if !valid_model_tier(req_tier) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid model_tier; expected cheap, normal, or smart"}`); return }
 		model_tier = normalize_model_tier(req_tier)
 	}
-	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = display_name, template_id = template_id, provider_profile = provider_profile, project_id = project_id, run_dir = run_dir, model_tier = model_tier, agent_scope = rec.agent_scope, agent_role = rec.agent_role, agent_kind = rec.agent_kind, remote_peer_id = rec.remote_peer_id, remote_agent_instance_id = rec.remote_agent_instance_id, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`); return }
+	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = display_name, template_id = template_id, provider_profile = provider_profile, project_id = project_id, run_dir = run_dir, model_tier = model_tier, agent_scope = rec.agent_scope, agent_role = rec.agent_role, agent_kind = rec.agent_kind, remote_peer_id = rec.remote_peer_id, remote_origin_daemon_id = rec.remote_origin_daemon_id, remote_agent_instance_id = rec.remote_agent_instance_id, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`); return }
 	// Agents tab identity edits update the durable agent_id defaults (provider /
 	// tier / default project) that seed every future concrete instance. The flag
 	// keeps ordinary per-instance updates from mutating shared identity defaults.
@@ -912,6 +918,7 @@ handle_agent_reorder :: proc(client: net.TCP_Socket, body: string) {
 			agent_role = rec.agent_role,
 			agent_kind = rec.agent_kind,
 			remote_peer_id = rec.remote_peer_id,
+			remote_origin_daemon_id = rec.remote_origin_daemon_id,
 			remote_agent_instance_id = rec.remote_agent_instance_id,
 			state = rec.state,
 			current_task_id = rec.current_task_id,

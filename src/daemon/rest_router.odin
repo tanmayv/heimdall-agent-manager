@@ -332,6 +332,36 @@ handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_C
 		return true
 	}
 
+	// GET /federation/artifacts/{artifact_id}
+	if len(ctx.segments) == 3 && ctx.segments[0] == "federation" && ctx.segments[1] == "artifacts" && ctx.method == "GET" {
+		handle_get_federation_artifact_content(client, ctx.segments[2], ctx)
+		return true
+	}
+
+	// GET /federation/tasks/{task_id}
+	if len(ctx.segments) == 3 && ctx.segments[0] == "federation" && ctx.segments[1] == "tasks" && ctx.method == "GET" {
+		handle_get_federation_task(client, ctx.segments[2], ctx)
+		return true
+	}
+
+	// GET /federation/tasks/{task_id}/comments
+	if len(ctx.segments) == 4 && ctx.segments[0] == "federation" && ctx.segments[1] == "tasks" && ctx.segments[3] == "comments" && ctx.method == "GET" {
+		handle_get_federation_task_comments(client, ctx.segments[2], ctx)
+		return true
+	}
+
+	// GET /federation/task-chains/{chain_id}
+	if len(ctx.segments) == 3 && ctx.segments[0] == "federation" && ctx.segments[1] == "task-chains" && ctx.method == "GET" {
+		handle_get_federation_task_chain(client, ctx.segments[2], ctx)
+		return true
+	}
+
+	// GET /federation/task-chains/{chain_id}/tasks
+	if len(ctx.segments) == 4 && ctx.segments[0] == "federation" && ctx.segments[1] == "task-chains" && ctx.segments[3] == "tasks" && ctx.method == "GET" {
+		handle_get_federation_task_chain_tasks(client, ctx.segments[2], ctx)
+		return true
+	}
+
 	// GET /chat-approvals/pending
 	if len(ctx.segments) == 2 && ctx.segments[0] == "chat-approvals" && ctx.segments[1] == "pending" && ctx.method == "GET" {
 		handle_chat_approvals_pending(client, ctx)

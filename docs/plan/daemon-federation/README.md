@@ -451,33 +451,33 @@ task wake-ups ride the same channel.
 notifications share transport, auth, idempotency, and replay:
 ```json
 {
-  "origin_peer_id": "peerA",
+  "origin_daemon_id": "A",
   "kind": "inbox_message" | "notification",
   "target_agent_instance_id": "reviewer@s-r7f42",   // receiver-local (peer) id
   "conversation_id": "conv-...",                     // for inbox_message
   "message_id": "msg-...",                            // origin-assigned, dedupe key
-  "body_ref": { "origin_peer_id": "peerA", "message_id": "msg-..." },
-  "idempotency_key": "peerA:msg:conv-...:msg-..."
+  "body": "immutable delivered message body",         // for inbox_message only
+  "idempotency_key": "A:msg:conv-...:msg-..."
 }
 ```
-Bodies are **not** shipped inline (mirrors Heimdall's metadata-only notify): the receiver
-injects a normal local inbox notification, and the agent fetches the body via a proxied read
-(2c).
+Inbox message bodies are shipped inline on the daemon-to-daemon HTTP call and stored durably
+on the recipient daemon (see §2.1). The receiver then injects a normal metadata-only local
+inbox notification; the agent fetches the durable body from its home daemon.
 
 #### 2b. Send: A → B
 - A's agent sends to the local proxy id `reviewer-remote@peerB` via the normal message path.
 - `message_service_send_message` currently emits `.Remote_Route_Required` for unregistered
   targets and `message_bus_emit` returns `false` → 404. **Wire it:** if the target is a
-  `remote_proxy`, resolve its `{ peer_id, remote_agent_instance_id }` and
+  `remote_proxy`, resolve its `{ peer_id, origin_daemon_id, remote_agent_instance_id }` and
   `POST peerB/federation/inbox` with `kind="inbox_message"`, mapping the target to B's peer id.
-- B validates the peer token, records the conversation in its runtime **remote-work map**
-  (`conversation_id → origin_peer_id`), and injects a metadata-only inbox notification for its
-  local agent — identical to a local inbound message.
+- B validates the peer token, durably stores the delivered immutable body in the recipient
+  conversation, records the reply route as pairwise route peer plus `origin_daemon_id`, and
+  injects a metadata-only inbox notification for its local agent — identical to a local
+  inbound message.
 
 #### 2c. Read + reply: B → A
-- B's agent fetches the message body via a proxied inbox read:
-  `GET peerA/federation/messages/{message_id}` (or a conversation fetch), authenticated with
-  A's peer token. B stores nothing durably.
+- B's agent fetches the message body locally from B's durable inbox store; it does not need A
+  to be online for reads.
 - B's agent replies via its normal inbox send; B detects the conversation is origin-owned and
   forwards the reply to `POST peerA/federation/callback` (`kind="inbox_message"`). A stores it
   as a normal durable inbox message in that conversation and notifies the original A-side
@@ -501,9 +501,10 @@ injects a normal local inbox notification, and the agent fetches the body via a 
   order via `notification_outbox_replay_pending`.
 
 #### 2f. Exit criteria
-A local agent DMs a remote agent; the remote agent reads the body (proxied) and replies; the
-reply lands in A's durable inbox with correct unread/read state. Task wake-ups also reach the
-remote reviewer. All of it survives a B restart mid-exchange.
+A local agent DMs a remote agent; the remote daemon durably stores the delivered body, the
+remote agent reads it locally and replies; the reply lands in A's durable inbox with correct
+unread/read state. Task wake-ups also reach the remote reviewer. All of it survives a B
+restart mid-exchange.
 
 ---
 
@@ -516,10 +517,10 @@ When B's agent asks *its own* daemon for a task that is actually owned by A, B m
 the read to A instead of looking in its local store.
 
 - **How B knows it's remote:** the wake-up B received in Phase 2 (`/federation/inbox`) carries
-  `origin_peer_id` + the origin task/chain ids. B records a lightweight, in-memory
-  **remote-work map**: `{ origin_task_id → origin_peer_id }` for tasks its agents were pinged
-  about. (Runtime-only; rebuilt from re-pushes on restart — consistent with "no remote
-  storage.")
+  `origin_daemon_id`, the pairwise `owner_peer_id` route, and the origin task/chain ids. B
+  records a lightweight remote-work map keyed by absolute owner identity, e.g.
+  `(origin_daemon_id, origin_task_id, local_agent_instance_id) → owner_peer_id/proxy`. It may
+  be durable or rebuildable, but it is not a projection of mutable foreign task state.
 - **Interceptor:** in B's task read handlers (`handle_get_task`, `handle_get_task_comments`,
   `handle_get_task_chain`, `handle_get_task_chains/tasks`), before hitting the local store,
   check the remote-work map. If the id is origin-owned:
@@ -543,14 +544,15 @@ applying locally.
 - **New endpoint on A:** `POST /federation/callback`
   ```json
   {
-    "origin_peer_id": "peerB",
+    "origin_daemon_id": "A",          // target owner identity; equals work.origin_daemon_id
+    "actor_origin_daemon_id": "B",    // daemon running the real reviewer
     "kind": "vote" | "comment" | "status",
-    "task_id": "task-...",            // A's id
+    "task_id": "task-...",            // A's native id
     "chain_id": "chain-...",
     "as_agent_instance_id": "reviewer-remote@peerB",  // the LOCAL proxy id on A
     "result": "lgtm" | "ngtm",        // for kind=vote
     "comment": "...",
-    "idempotency_key": "peerB:vote:task-...:<hash>"
+    "idempotency_key": "B:vote:A:task-...:<hash>"
   }
   ```
 - **A translates the callback into the existing durable mutation** — it records a normal
@@ -558,9 +560,10 @@ applying locally.
   store paths as a local reviewer (`task_store` vote/comment append + `task_db_save_vote` /
   `task_db_save_comment`). No new vote model; the chain's `lgtm_required` gate resolves
   exactly as for a local reviewer.
-- **Scoped write authority (§7.3, MUST):** A rejects the callback unless `as_agent_instance_id`
-  is a `remote_proxy` bound to `origin_peer_id` **and** is a participant/required-reviewer on
-  `task_id`. A peer can never vote as an arbitrary instance or on an unrelated task.
+- **Scoped write authority (§7.3, MUST):** A rejects the callback unless
+  `origin_daemon_id == A`, the authenticated pairwise peer maps to `as_agent_instance_id` as
+  a `remote_proxy`, and that proxy **is** a participant/required-reviewer on `task_id`. A peer
+  can never vote as an arbitrary instance or on an unrelated task.
 - **Idempotency (§7.2, MUST):** A dedupes by `idempotency_key`; a replayed callback is a no-op
   that returns the same result. B retries via its own outbox until A ACKs durably.
 - **Timestamps (§11):** A stamps the vote/comment with **A's** clock on ingestion; B's clock is
@@ -586,7 +589,7 @@ B restart mid-review.
   blob-store read.
 - On B, when its agent requests artifact `X` that resolves to an origin ref, B forwards
   `GET peerA/federation/artifacts/X`, streams the bytes to its agent, and **caches by id**
-  (blobs are immutable → safe to cache indefinitely; key `(origin_peer_id, artifact_id)`).
+  (blobs are immutable → safe to cache indefinitely; key `(origin_daemon_id, artifact_id)`).
 - **Safety gate:** only **fully-baked, self-contained** artifacts are fetchable. A must refuse
   to serve artifacts that are pointers into a VCS workspace/FS (would leak the FS-free
   promise). Practically: the chain diff is materialized into a standalone artifact blob before
@@ -595,9 +598,9 @@ B restart mid-review.
 #### 4b. Result artifact (B → A, the accepted asymmetry)
 - B's agent produces the review as a normal **artifact on B** (its blob store owns the bytes).
 - The Phase 3 `/federation/callback` (kind=comment or a new `kind="artifact_ref"`) carries an
-  **artifact reference**, not bytes: `{ origin_peer_id, remote_artifact_id }`.
+  **artifact reference**, not bytes: `{ origin_daemon_id, artifact_id }`.
 - A stores a **reference** in its artifact metadata (a `remote` origin ref), and when the UI/
-  agent opens it, A fetch-throughs `GET peerB/federation/artifacts/<remote_artifact_id>` and
+  agent opens it, A fetch-throughs `GET peerB/federation/artifacts/<artifact_id>` and
   caches. This is the **one ownership asymmetry** (§10): result artifacts are owned by B,
   referenced from A.
 - **Auth for reverse fetch:** A presents B's peer token (A's `[[peer]]` block for B).

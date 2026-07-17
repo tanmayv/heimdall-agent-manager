@@ -157,9 +157,11 @@ export function mapAgent(agent: any) {
     agentKind: agent.agent_kind || agent.agentKind || 'local',
     remote: agent.remote ? {
       peerId: agent.remote.peer_id || agent.remote.peerId || '',
+      originDaemonId: agent.remote.origin_daemon_id || agent.remote.originDaemonId || '',
       remoteAgentInstanceId: agent.remote.remote_agent_instance_id || agent.remote.remoteAgentInstanceId || '',
-    } : ((agent.remote_peer_id || agent.remotePeerId || agent.remote_agent_instance_id || agent.remoteAgentInstanceId) ? {
+    } : ((agent.remote_peer_id || agent.remotePeerId || agent.remote_agent_instance_id || agent.remoteAgentInstanceId || agent.remote_origin_daemon_id || agent.remoteOriginDaemonId) ? {
       peerId: agent.remote_peer_id || agent.remotePeerId || '',
+      originDaemonId: agent.remote_origin_daemon_id || agent.remoteOriginDaemonId || '',
       remoteAgentInstanceId: agent.remote_agent_instance_id || agent.remoteAgentInstanceId || '',
     } : null),
     providerProfile: agent.provider_profile || agent.providerProfile || agent.agent_class || '',

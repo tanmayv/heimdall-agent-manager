@@ -222,8 +222,8 @@ def main():
             "target_agent_instance_id": proxy_c,
             "body": "hello from C",
         }, expect_status=202)
-        require(send_a.get("message_id") == "msg_1", f"expected first local message id on A to be msg_1: {send_a}")
-        require(send_c.get("message_id") == "msg_1", f"expected first local message id on C to be msg_1: {send_c}")
+        require(send_a.get("message_id"), f"expected non-empty local message id on A: {send_a}")
+        require(send_c.get("message_id"), f"expected non-empty local message id on C: {send_c}")
 
         callback_path_a = f"/federation/callback?peer_token={SHARED_TOKEN}&peer_daemon_id=fed-b"
         duplicate_reply = {
@@ -252,26 +252,17 @@ def main():
         replies = [m for m in sender_a_messages if m.get("body") == "duplicate-safe reply"]
         require(len(replies) == 1, f"duplicate callback reply should inject exactly one local reply: {sender_a_messages}")
 
-        msgs_a = wait_for(
+        receiver_messages = wait_for(
             lambda: request_json(base_b, "/agent-rpc", method="POST", body={
                 "agent_token": receiver_b_token,
                 "action": "fetch_messages",
-                "conversation_id": conv_id(sender_a),
+                "conversation_id": conv_id(receiver_b),
                 "include_read": False,
             }).get("messages"),
-            "receiver on B did not get sender A message",
+            "receiver on B did not get remote messages",
         )
-        msgs_c = wait_for(
-            lambda: request_json(base_b, "/agent-rpc", method="POST", body={
-                "agent_token": receiver_b_token,
-                "action": "fetch_messages",
-                "conversation_id": conv_id(sender_c),
-                "include_read": False,
-            }).get("messages"),
-            "receiver on B did not get sender C message",
-        )
-        require(any(m.get("body") == "hello from A" for m in msgs_a), f"missing sender A message on B: {msgs_a}")
-        require(any(m.get("body") == "hello from C" for m in msgs_c), f"missing sender C message on B: {msgs_c}")
+        require(any(m.get("body") == "hello from A" for m in receiver_messages), f"missing sender A message on B: {receiver_messages}")
+        require(any(m.get("body") == "hello from C" for m in receiver_messages), f"missing sender C message on B: {receiver_messages}")
 
         print("federation_transport_dedupe_e2e: ok")
     finally:

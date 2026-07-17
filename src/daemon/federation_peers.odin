@@ -166,6 +166,17 @@ peer_link_find :: proc(peer_id: string) -> (^Peer_Link_Record, bool) {
 	return &peer_link_records[idx], true
 }
 
+peer_link_find_by_daemon_id :: proc(daemon_id: string) -> (^Peer_Link_Record, bool) {
+	trimmed_daemon_id := strings.trim_space(daemon_id)
+	if trimmed_daemon_id == "" do return nil, false
+	for i in 0..<peer_link_record_count {
+		rec := &peer_link_records[i]
+		if rec.removed_at_unix_ms != 0 do continue
+		if strings.trim_space(rec.daemon_id) == trimmed_daemon_id do return rec, true
+	}
+	return nil, false
+}
+
 peer_link_validate_request :: proc(peer_token, peer_daemon_id: string) -> bool {
 	trimmed_token := strings.trim_space(peer_token)
 	trimmed_daemon_id := strings.trim_space(peer_daemon_id)
@@ -185,7 +196,7 @@ peer_link_probe :: proc(peer_id: string) -> bool {
 	if !ok do return false
 	was_linked := rec.status == PEER_STATUS_LINKED
 	now := router_now_unix_ms()
-	health, health_ok := http.get(rec.peer_url, "/health")
+	health, health_ok := http.get_with_timeout(rec.peer_url, "/health", FEDERATION_HTTP_TIMEOUT_MS)
 	if !health_ok || health.status != 200 {
 		rec.status = strings.clone(PEER_STATUS_UNREACHABLE)
 		rec.daemon_id = ""
@@ -193,7 +204,7 @@ peer_link_probe :: proc(peer_id: string) -> bool {
 		rec.last_checked_unix_ms = now
 		return false
 	}
-	info, info_ok := http.get(rec.peer_url, "/daemon/info")
+	info, info_ok := http.get_with_timeout(rec.peer_url, "/daemon/info", FEDERATION_HTTP_TIMEOUT_MS)
 	if !info_ok || info.status != 200 {
 		rec.status = strings.clone(PEER_STATUS_UNREACHABLE)
 		rec.daemon_id = ""
@@ -391,6 +402,8 @@ federation_advertised_agents_json :: proc() -> string {
 		if !federation_agent_is_advertised(rec.agent_instance_id) do continue
 		if wrote > 0 do strings.write_string(&b, `,`)
 		strings.write_string(&b, `{"agent_instance_id":"`); json_write_string(&b, rec.agent_instance_id)
+		strings.write_string(&b, `","origin_daemon_id":"`); json_write_string(&b, server_daemon_id)
+		strings.write_string(&b, `","native_id":"`); json_write_string(&b, rec.agent_instance_id)
 		strings.write_string(&b, `","display_name":"`); json_write_string(&b, rec.display_name)
 		strings.write_string(&b, `","template_id":"`); json_write_string(&b, rec.template_id)
 		strings.write_string(&b, `","agent_role":"`); json_write_string(&b, rec.agent_role)
@@ -414,14 +427,33 @@ handle_get_federation_agents :: proc(client: net.TCP_Socket, ctx: ^Route_Context
 	write_response(client, 200, "OK", federation_advertised_agents_json())
 }
 
-federation_remote_proxy_bind :: proc(peer_id, remote_agent_instance_id, display_name, template_id, provider_profile, model_tier, agent_role: string) -> (Agent_Instance_Record, bool, string) {
+federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_instance_id, display_name, template_id, provider_profile, model_tier, agent_role: string) -> (Agent_Instance_Record, bool, string) {
 	rec, found := peer_link_find(peer_id)
 	if !found || rec.peer_id == "" {
 		return Agent_Instance_Record{}, false, "peer not found"
 	}
 	remote_id := strings.trim_space(remote_agent_instance_id)
 	if remote_id == "" do return Agent_Instance_Record{}, false, "remote_agent_instance_id required"
+	resolved_origin_daemon_id := strings.trim_space(origin_daemon_id)
+	if resolved_origin_daemon_id == "" do resolved_origin_daemon_id = strings.trim_space(rec.daemon_id)
+	if resolved_origin_daemon_id != "" {
+		if existing, ok := agent_remote_proxy_find_absolute(resolved_origin_daemon_id, remote_id); ok {
+			if strings.trim_space(existing.remote_origin_daemon_id) == "" {
+				_, _, backfill_ok := agent_record_upsert(existing.agent_instance_id, existing.display_name, existing.template_id, existing.provider_profile, existing.project_id, existing.run_dir, existing.model_tier, existing.state, existing.agent_scope, existing.agent_role, false, existing.agent_kind, existing.remote_peer_id, resolved_origin_daemon_id, existing.remote_agent_instance_id)
+				if backfill_ok {
+					if idx := agent_record_index(existing.agent_record_id); idx >= 0 do return agent_instance_records[idx], true, ""
+				}
+			}
+			return existing, true, ""
+		}
+	}
 	if existing, ok := agent_remote_proxy_find(peer_id, remote_id); ok {
+		if resolved_origin_daemon_id != "" && strings.trim_space(existing.remote_origin_daemon_id) == "" {
+			_, _, backfill_ok := agent_record_upsert(existing.agent_instance_id, existing.display_name, existing.template_id, existing.provider_profile, existing.project_id, existing.run_dir, existing.model_tier, existing.state, existing.agent_scope, existing.agent_role, false, existing.agent_kind, existing.remote_peer_id, resolved_origin_daemon_id, existing.remote_agent_instance_id)
+			if backfill_ok {
+				if idx := agent_record_index(existing.agent_record_id); idx >= 0 do return agent_instance_records[idx], true, ""
+			}
+		}
 		return existing, true, ""
 	}
 	local_display_name := strings.trim_space(display_name)
@@ -434,7 +466,7 @@ federation_remote_proxy_bind :: proc(peer_id, remote_agent_instance_id, display_
 	if local_provider == "" do local_provider = agent_resolve_provider_profile("")
 	local_tier := normalize_model_tier(model_tier)
 	local_id := agent_generated_instance_id(fmt.tprintf("%s-%s", remote_id, peer_id))
-	rec_id, _, ok := agent_record_upsert(local_id, local_display_name, local_template_id, local_provider, "", "", local_tier, AGENT_IDENTITY_STATE_PROVISIONED, AGENT_SCOPE_DURABLE, local_role, false, AGENT_KIND_REMOTE_PROXY, peer_id, remote_id)
+	rec_id, _, ok := agent_record_upsert(local_id, local_display_name, local_template_id, local_provider, "", "", local_tier, AGENT_IDENTITY_STATE_PROVISIONED, AGENT_SCOPE_DURABLE, local_role, false, AGENT_KIND_REMOTE_PROXY, peer_id, resolved_origin_daemon_id, remote_id)
 	if !ok || rec_id == "" {
 		return Agent_Instance_Record{}, false, "failed to persist remote proxy"
 	}
@@ -454,6 +486,7 @@ handle_post_federation_proxy_bind :: proc(client: net.TCP_Socket, body: string, 
 	if !ok do return
 	rec, bind_ok, message := federation_remote_proxy_bind(
 		peer_id_normalize(extract_json_string(body, "peer_id", "")),
+		extract_json_string(body, "origin_daemon_id", ""),
 		extract_json_string(body, "remote_agent_instance_id", ""),
 		extract_json_string(body, "display_name", ""),
 		extract_json_string(body, "template_id", ""),
@@ -537,7 +570,7 @@ handle_get_federation_peer_agents :: proc(client: net.TCP_Socket, peer_id: strin
 		return
 	}
 	path := fmt.tprintf("/federation/agents?peer_token=%s&peer_daemon_id=%s", rec.peer_token, server_daemon_id)
-	resp, fetch_ok := http.get(rec.peer_url, path)
+	resp, fetch_ok := http.get_with_timeout(rec.peer_url, path, FEDERATION_HTTP_TIMEOUT_MS)
 	if !fetch_ok || resp.status != 200 {
 		rec.status = strings.clone(PEER_STATUS_UNREACHABLE)
 		rec.daemon_id = ""

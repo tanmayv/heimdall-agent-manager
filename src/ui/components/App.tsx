@@ -616,7 +616,8 @@ function isUserActionableTask(task: any): boolean {
 function attentionCount(tasksById: Record<string, any>, attention: any, pendingMemoryIds: number, mergeReviewingChains: number) {
   const tasks = Object.values(tasksById).filter(isUserActionableTask).length;
   const chatApprovals = (attention?.chatApprovalIds || []).filter((id: string) => attention.chatApprovalsById?.[id]?.kind !== 'multi_question').length;
-  return tasks + chatApprovals + pendingMemoryIds + mergeReviewingChains;
+  const federationPeerBlocks = (attention?.federationPeerBlockIds || []).length;
+  return tasks + chatApprovals + pendingMemoryIds + mergeReviewingChains + federationPeerBlocks;
 }
 
 export default function App() {
@@ -1610,6 +1611,11 @@ export default function App() {
               onDecideMemory={(proposalId: string, decision: 'approve' | 'reject') => dispatch(decideMemoryProposal({ proposalId, decision }))}
               onOpenMerge={(chainId: string) => { openChain(chainId); dispatch(previewWorkspaceMerge(chainId)); }}
               onMergeViaChain={(chainId: string, instructions: string) => dispatch(executeMergeViaChain({ chainId, instructions }))}
+              onRemoveBlockedReviewer={async (block: any) => {
+                await dispatch(removeParticipantFromSelectedTask({ taskId: block.taskId, chainId: block.chainId, agentInstanceId: block.proxyAgentInstanceId, role: block.reviewerRole || 'lgtm_required' })).unwrap();
+                dispatch(showToast({ kind: 'success', title: 'Reviewer gate removed', message: block.proxyAgentInstanceId || block.taskId }));
+                dispatch(refreshMergeDecisions());
+              }}
             />
           ) : (
             <HomePage
@@ -3919,7 +3925,7 @@ function MergeDecisionCard({ decision, chain, onMerge, onOpen, onOpenPreview }: 
   );
 }
 
-function AttentionSurface({ tasksById, chainsById, openChain, attention, memory, pendingMemoryIds, onVoteTask, onAnswerApproval, onDismissApproval, onDecideMemory, onOpenMerge, onMergeViaChain }: any) {
+function AttentionSurface({ tasksById, chainsById, openChain, attention, memory, pendingMemoryIds, onVoteTask, onAnswerApproval, onDismissApproval, onDecideMemory, onOpenMerge, onMergeViaChain, onRemoveBlockedReviewer }: any) {
   const [filter, setFilter] = useState<'all' | 'chat' | 'tasks' | 'merge' | 'memory'>('all');
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -3930,6 +3936,9 @@ function AttentionSurface({ tasksById, chainsById, openChain, attention, memory,
     .map((id: string) => attention.chatApprovalsById?.[id])
     .filter((approval: any) => approval && approval.state === 'open' && approval.expiresAtUnixMs > now && approval.kind !== 'multi_question');
   const taskApprovals = Object.values(tasksById || {}).filter(isUserActionableTask) as any[];
+  const federationPeerBlocks = (attention?.federationPeerBlockIds || [])
+    .map((id: string) => attention.federationPeerBlocksById?.[id])
+    .filter(Boolean);
   const mergeChains = (Object.values(chainsById || {}) as any[]).filter((chain: any) => chain?.status === 'reviewing');
   const mergeDecisions = (attention?.mergeDecisionIds || [])
     .map((id: string) => attention.mergeDecisionsById?.[id])
@@ -3939,9 +3948,9 @@ function AttentionSurface({ tasksById, chainsById, openChain, attention, memory,
     .filter((rec: any) => rec && rec.status === 'pending');
 
   const kinds: { key: typeof filter; label: string; count: number }[] = [
-    { key: 'all', label: 'All', count: chatApprovals.length + taskApprovals.length + mergeChains.length + mergeDecisions.length + memoryProposals.length },
+    { key: 'all', label: 'All', count: chatApprovals.length + taskApprovals.length + federationPeerBlocks.length + mergeChains.length + mergeDecisions.length + memoryProposals.length },
     { key: 'chat', label: 'Chat approvals', count: chatApprovals.length },
-    { key: 'tasks', label: 'Task approvals', count: taskApprovals.length },
+    { key: 'tasks', label: 'Task approvals', count: taskApprovals.length + federationPeerBlocks.length },
     { key: 'merge', label: 'Merge review', count: mergeChains.length + mergeDecisions.length },
     { key: 'memory', label: 'Memory proposals', count: memoryProposals.length },
   ];
@@ -3949,7 +3958,7 @@ function AttentionSurface({ tasksById, chainsById, openChain, attention, memory,
   const showTasks = filter === 'all' || filter === 'tasks';
   const showMerge = filter === 'all' || filter === 'merge';
   const showMemory = filter === 'all' || filter === 'memory';
-  const totalVisible = (showChat ? chatApprovals.length : 0) + (showTasks ? taskApprovals.length : 0) + (showMerge ? (mergeChains.length + mergeDecisions.length) : 0) + (showMemory ? memoryProposals.length : 0);
+  const totalVisible = (showChat ? chatApprovals.length : 0) + (showTasks ? (taskApprovals.length + federationPeerBlocks.length) : 0) + (showMerge ? (mergeChains.length + mergeDecisions.length) : 0) + (showMemory ? memoryProposals.length : 0);
   return (
     <div data-debug-id="attention-surface" className="mx-auto max-w-5xl px-8 py-8">
       <div className="text-xs uppercase tracking-[0.25em] text-zinc-500">Needs attention</div>
@@ -3979,6 +3988,18 @@ function AttentionSurface({ tasksById, chainsById, openChain, attention, memory,
             onDismiss={(reason?: string, notify?: boolean) => onDismissApproval(approval.approvalId, reason, notify)}
             onOpen={() => openChain(approval.chainId)}
           />
+        ))}
+        {showTasks && federationPeerBlocks.map((block: any) => (
+          <div key={`blocked-${block.key}`} data-debug-id={`attention-card-federation_peer_block-${block.taskId}`} className="rounded-2xl border border-amber-400/25 bg-amber-400/[0.04] p-4">
+            <div className="text-xs uppercase tracking-[0.2em] text-amber-200">Federation peer blocked</div>
+            <div className="mt-1 font-semibold">{block.chainTitle || block.chainId || 'Standalone'} · {block.taskTitle || block.taskId}</div>
+            <div className="mt-1 text-sm text-zinc-300">Remote reviewer {block.proxyAgentInstanceId || '—'} is blocked because peer {block.peerId || '—'} is {block.peerStatus || 'unreachable'}.</div>
+            <div className="mt-1 text-xs text-zinc-500">Origin daemon: {block.peerDaemonId || 'unknown'} · Role: {block.reviewerRole || 'lgtm_required'}</div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button data-debug-id={`attention-card-federation_peer_block-${block.taskId}-action-remove-reviewer`} onClick={() => onRemoveBlockedReviewer(block)} className="rounded-xl bg-amber-300 px-3 py-2 text-sm font-semibold text-black hover:bg-amber-200">Remove reviewer gate</button>
+              <button data-debug-id={`attention-card-federation_peer_block-${block.taskId}-action-open`} onClick={() => openChain(block.chainId)} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Open chain</button>
+            </div>
+          </div>
         ))}
         {showTasks && taskApprovals.map((task: any) => (
           <div key={`task-${task.taskId}`} data-debug-id={`attention-card-task_approval-${task.taskId}`} className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">

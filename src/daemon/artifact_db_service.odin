@@ -176,6 +176,32 @@ artifact_db_get :: proc(artifact_id: string) -> (Artifact_Record, bool) {
 	return artifact_record_from_json(strings.trim_space(out))
 }
 
+artifact_db_find_origin :: proc(origin_kind, origin_ref: string) -> (Artifact_Record, bool) {
+	if origin_kind == "" || origin_ref == "" do return Artifact_Record{}, false
+	out, ok := artifact_db_query(fmt.tprintf(`SELECT json_object(
+		'artifact_id', artifact_id,
+		'name', name,
+		'kind', kind,
+		'mime', mime,
+		'ext', ext,
+		'size_bytes', size_bytes,
+		'sha256', sha256,
+		'rel_path', rel_path,
+		'creator_type', creator_type,
+		'creator_id', creator_id,
+		'project_id', project_id,
+		'origin_kind', origin_kind,
+		'origin_ref', origin_ref,
+		'description', description,
+		'created_unix_ms', created_unix_ms,
+		'updated_unix_ms', updated_unix_ms,
+		'deleted', deleted,
+		'deleted_unix_ms', deleted_unix_ms
+	) FROM artifacts WHERE origin_kind=%s AND origin_ref=%s LIMIT 1;`, sql_text(origin_kind), sql_text(origin_ref)))
+	if !ok || strings.trim_space(out) == "" do return Artifact_Record{}, false
+	return artifact_record_from_json(strings.trim_space(out))
+}
+
 artifact_db_list :: proc(filter: Artifact_List_Filter) -> []Artifact_Record {
 	clauses := strings.builder_make()
 	strings.write_string(&clauses, " WHERE 1=1")
