@@ -65,7 +65,7 @@ import ArtifactUploadButton, { appendArtifactLink, useArtifactUpload } from './A
 import ChainArtifactsPanel from './ChainArtifactsPanel';
 import ArtifactViewer from './ArtifactViewer';
 import ChatHoverCopyButton from './ChatHoverCopyButton';
-import { updateUrlParams, useUrlParams } from './useUrlParams';
+import { navigateBackOr, updateUrlParams, useUrlParams } from './useUrlParams';
 import { VimSidebarProvider, VimEditButton } from './VimSidebar';
 import AgentPicker from './AgentPicker';
 import RuntimeRestartControls from './RuntimeRestartControls';
@@ -277,7 +277,7 @@ export function agentRuntimeDot(agent: any): { color: string; label: string } {
   if (state === 'missing' || state === 'archived') return { color: 'bg-zinc-500', label: state };
   if (state === 'disconnected' || state === 'offline' || state === 'stopped') return { color: 'bg-zinc-500', label: state };
   if (startup === 'starting' || state === 'starting' || state === 'warming' || state === 'restarting') return { color: 'bg-amber-400 animate-pulse', label: startup || state || 'starting' };
-  if (live && activity === 'active') return { color: 'bg-emerald-400', label: 'active' };
+  if (live && activity === 'active') return { color: 'bg-emerald-400', label: 'working' };
   if (live && activity === 'idle') return { color: 'bg-amber-300', label: 'idle' };
   if (live && agent.currentTaskId) return { color: 'bg-teal-400', label: 'working' };
   if (live) return { color: 'bg-emerald-400', label: state || 'connected' };
@@ -1101,6 +1101,14 @@ export default function App() {
     dispatch(selectSurface(next));
   }, [dispatch]);
 
+  const navigateBackOrHome = useCallback(() => {
+    const usedHistory = navigateBackOr({ view: 'home', chainId: null, taskId: null, memoryId: null, agentId: null, projectId: null });
+    if (!usedHistory) {
+      setAgentPageId('');
+      dispatch(selectSurface('home'));
+    }
+  }, [dispatch]);
+
   const openProject = useCallback((projectId: string) => {
     setAgentPageId('');
     updateUrlParams({ chainId: null, taskId: null, view: 'home', memoryId: null, agentId: null, projectId });
@@ -1364,7 +1372,7 @@ export default function App() {
               },
               chatDraft: agentChatDraftsById[agentPageId] || '',
               onChatDraftChange: (value: string) => setAgentChatDraftsById((current) => ({ ...current, [agentPageId]: value })),
-              onBack: () => { setAgentPageId(''); updateUrlParams({ view: 'home', agentId: null }); },
+              onBack: navigateBackOrHome,
               onRefreshAgents: () => dispatch(refreshAgents()).unwrap().catch(() => undefined),
               onRefreshChat: (agentId: string) => dispatch(fetchSelectedChat({ agentId })).unwrap().catch(() => undefined),
               onSendAgentMessage: async (agentId: string, body: string, interrupt = false, runtime: any = {}) => {
@@ -1411,7 +1419,7 @@ export default function App() {
               projects={projects}
               providers={settingsProviders}
               session={session}
-              onBack={() => selectSurfaceWithUrl('home')}
+              onBack={navigateBackOrHome}
               onRefreshAgents={() => dispatch(refreshAgents()).unwrap().catch(() => undefined)}
               onNewInstance={async (identity: any) => {
                 const durableId = durableAgentId(identity);
@@ -1428,7 +1436,7 @@ export default function App() {
               providers={settingsProviders}
               defaultProjectId={urlParams.projectId || selectedProjectId}
               busy={newConversationBusy}
-              onBack={() => selectSurfaceWithUrl('home')}
+              onBack={navigateBackOrHome}
               onFirstMessage={startFirstMessageConversation}
               onOpenChain={() => {
                 const chain = chains.find((item: any) => !isChainCompleted(item)) || chains[0];
@@ -1455,7 +1463,7 @@ export default function App() {
               projects={projects}
               session={session}
               providers={settingsProviders}
-              onBack={() => selectSurfaceWithUrl('home')}
+              onBack={navigateBackOrHome}
               onOpenIdentity={openAgentIdentityPage}
               onOpenInstance={openAgentPage}
               onStartInstance={startSidebarAgentInstance}
@@ -1466,7 +1474,7 @@ export default function App() {
               chains={chains}
               projectsById={projectsById}
               selectedChainId={home.selectedChainId}
-              onBack={() => selectSurfaceWithUrl('home')}
+              onBack={navigateBackOrHome}
               onOpenChain={openChain}
               onNewChain={() => dispatch(openNewChainModal({ projectId: selectedProjectId }))}
             />
@@ -1474,18 +1482,18 @@ export default function App() {
             <ProjectsSurface
               projects={projects}
               chains={chains}
-              onBack={() => selectSurfaceWithUrl('home')}
+              onBack={navigateBackOrHome}
               onOpenProject={openProject}
               onNewProject={() => setNewProjectModalOpen(true)}
               onNewChain={(projectId: string) => dispatch(openNewChainModal({ projectId }))}
             />
           ) : home.surface === 'settings' ? (
-            <SettingsPage session={session} onBack={() => selectSurfaceWithUrl('home')} onReconnect={(config: any) => { dispatch(updateSessionConfig(config)); window.setTimeout(connectSession, 0); }} />
+            <SettingsPage session={session} onBack={navigateBackOrHome} onReconnect={(config: any) => { dispatch(updateSessionConfig(config)); window.setTimeout(connectSession, 0); }} />
           ) : home.surface === 'memory' ? (
             <MemoryManagementPage
               selectedMemoryId={urlParams.memoryId}
               onSelectMemory={(memoryId: string) => updateUrlParams({ view: 'memory', memoryId, chainId: null, taskId: null, agentId: null })}
-              onBackToHome={() => selectSurfaceWithUrl('home')}
+              onBackToHome={navigateBackOrHome}
             />
           ) : home.surface === 'chain' && selectedChain && urlParams.view === 'chain-editor' ? (
             <ChainEditor
@@ -1516,7 +1524,7 @@ export default function App() {
               taskLogTotalByTaskId={selectedTaskLogTotalByTaskId}
               initialTaskId={urlParams.taskId}
               onOpenChain={openChain}
-              onBack={() => { updateUrlParams({ chainId: null, taskId: null, agentId: null, view: 'home' }); dispatch(selectSurface('home')); }}
+              onBack={navigateBackOrHome}
               onSend={async (body: string) => {
                 const localId = `local_${Date.now()}_${Math.random().toString(36).slice(2)}`;
                 await dispatch(sendCoordinatorMessage({ chainId: selectedChain.chainId, body, localId })).unwrap();
@@ -1526,6 +1534,7 @@ export default function App() {
               onRescan={() => dispatch(fetchWorkspaceForChain(selectedChain.chainId))}
               onPreviewMerge={() => dispatch(previewWorkspaceMerge(selectedChain.chainId))}
               onOpenAgent={(agentId: string) => { dispatch(openAgentSideSheet(agentId)); dispatch(loadAgentSideSheet(agentId)); }}
+              onOpenAgentChat={(agentId: string) => openAgentPage(agentId)}
               onOpenTask={(taskId: string) => { updateUrlParams({ view: 'chain', chainId: selectedChain.chainId, taskId }); }}
               onLoadTaskLogPage={(taskId: string, cursor = 0) => {
                 if (cursor <= 0) return Promise.resolve(undefined);
@@ -1855,10 +1864,23 @@ function isTaskGeneratedAgent(agent: any): boolean {
   return String(agent.agentScope || agent.agent_scope || '') === 'generated_chain' || Boolean(taskGeneratedAgentChainId(agent));
 }
 
-function agentHasLiveSession(agent: any): boolean {
+export function agentHasLiveSession(agent: any): boolean {
   if (!agent) return false;
   const connection = String(agent.connectionState || agent.connection_state || '').toLowerCase();
-  return Boolean(agent.connected) || connection === 'connected';
+  const startup = String(agent.startupStatus || agent.startup_status || '').toLowerCase();
+  const status = String(agent.status || '').toLowerCase();
+  const state = String(agent.state || '').toLowerCase();
+  const execState = String(agent.execState || agent.exec_state || '').toLowerCase();
+  const connected = Boolean(agent.connected) || connection === 'connected';
+  if (connected) return true;
+  if (startup === 'stopped' || startup === 'stopping') return false;
+  if (connection === 'offline' || connection === 'disconnected') return false;
+  if (['offline', 'stopped', 'disconnected', 'archived', 'missing'].includes(status) || ['offline', 'stopped', 'disconnected', 'archived', 'missing'].includes(state)) return false;
+  if (agent.currentTaskId || agent.current_task_id) return true;
+  if (['ready', 'start_success', 'connected'].includes(startup)) return true;
+  if (['ready', 'live', 'connected', 'idle', 'working', 'active'].includes(status) || ['ready', 'live', 'connected', 'idle', 'working'].includes(state)) return true;
+  if (execState === 'running') return true;
+  return false;
 }
 
 const LAUNCH_AGENT_DEFAULTS_KEY = 'heimdall.ui.launchAgentDefaultsByDaemon';
@@ -2694,7 +2716,7 @@ function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, c
     <div data-debug-id="agent-identity-page" className="flex min-h-full flex-col bg-[#090909] text-zinc-100">
       <div className="flex h-[46px] items-center justify-between gap-3 border-b border-[#262626] px-[18px] text-[12.5px] text-zinc-500">
         <div data-debug-id="agent-identity-breadcrumb" className="flex min-w-0 items-center gap-2 overflow-hidden">
-          <button data-debug-id="agent-identity-back-btn" onClick={onBack} className="rounded-md px-2 py-1 text-zinc-400 hover:bg-[#141414] hover:text-zinc-100">← Home</button>
+          <button data-debug-id="agent-identity-back-btn" onClick={onBack} className="rounded-md px-2 py-1 text-zinc-400 hover:bg-[#141414] hover:text-zinc-100">← Back</button>
           <span>Agents</span>
           <span>/</span>
           <span className="truncate text-zinc-100">{durableId || 'agent'}</span>
@@ -3170,7 +3192,7 @@ function NewConversationPage({ session, projects = [], providers = [], defaultPr
     <div data-debug-id="new-conversation-page" className="flex min-h-full flex-col bg-[#090909] text-zinc-100">
       <div className="flex h-[52px] items-center justify-between gap-3 border-b border-[#1f1f1f] bg-[#0b0b0b]/95 px-[18px] text-[12.5px] text-zinc-500">
         <div data-debug-id="new-convo-breadcrumb" className="flex min-w-0 items-center gap-2 overflow-hidden">
-          <button data-debug-id="new-convo-back-btn" onClick={onBack} className="rounded-full border border-white/10 bg-[#111111] px-3 py-1.5 text-zinc-400 hover:border-white/20 hover:text-zinc-100">← Home</button>
+          <button data-debug-id="new-convo-back-btn" onClick={onBack} className="rounded-full border border-white/10 bg-[#111111] px-3 py-1.5 text-zinc-400 hover:border-white/20 hover:text-zinc-100">← Back</button>
           <span className="hidden text-zinc-600 sm:inline">{daemonLabel}</span>
           <span className="hidden text-zinc-700 sm:inline">/</span>
           <span className="text-zinc-100">New Conversation</span>
@@ -3362,7 +3384,7 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
     <div data-debug-id="conversation-thread-page" className="flex min-h-full flex-col bg-[#090909] text-zinc-100">
       <div className="flex h-[52px] items-center justify-between gap-3 border-b border-[#1f1f1f] bg-[#0b0b0b]/95 px-[18px] text-[12.5px] text-zinc-500">
         <div data-debug-id="conversation-thread-breadcrumb" className="flex min-w-0 items-center gap-2 overflow-hidden">
-          <button data-debug-id="conversation-thread-back-btn" onClick={onBack} className="rounded-full border border-white/10 bg-[#111111] px-3 py-1.5 text-zinc-400 hover:border-white/20 hover:text-zinc-100">← Home</button>
+          <button data-debug-id="conversation-thread-back-btn" onClick={onBack} className="rounded-full border border-white/10 bg-[#111111] px-3 py-1.5 text-zinc-400 hover:border-white/20 hover:text-zinc-100">← Back</button>
           <span className="hidden text-zinc-600 md:inline">{daemonLabel}</span>
           <span className="hidden text-zinc-700 md:inline">/</span>
           <span className="truncate text-zinc-400">{projectName}</span>
@@ -4990,7 +5012,7 @@ function ChainProgressPanel({ chain, progress }: { chain: any; progress: ChainPr
   );
 }
 
-function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, initialTaskId = '', onBack, onSend, onToggleDiff, onFetchDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenChain, onOpenTask, onLoadTaskLogPage, onLoadCoordinatorChatPage, onOpenEditor, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer }: any) {
+function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, initialTaskId = '', onBack, onSend, onToggleDiff, onFetchDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenAgentChat, onOpenChain, onOpenTask, onLoadTaskLogPage, onLoadCoordinatorChatPage, onOpenEditor, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer }: any) {
   const dispatch = useDispatch<any>();
   const session = useSelector((state: any) => state.chat?.session || {});
   const chatState = useSelector((state: any) => state.chat || {});
@@ -5102,7 +5124,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
     <div data-debug-id="chain-view" className="flex h-full min-h-0 flex-col bg-[#090909] text-zinc-100">
       <div className="flex h-[46px] items-center justify-between gap-3 border-b border-[#262626] px-[18px] text-[12.5px] text-zinc-500">
         <div className="flex min-w-0 items-center gap-2 overflow-hidden">
-          <button data-debug-id="chain-back-btn" onClick={onBack} className="rounded-md px-2 py-1 text-zinc-400 hover:bg-[#141414] hover:text-zinc-100">← Home</button>
+          <button data-debug-id="chain-back-btn" onClick={onBack} className="rounded-md px-2 py-1 text-zinc-400 hover:bg-[#141414] hover:text-zinc-100">← Back</button>
           <span>/</span>
           <span className="truncate text-zinc-100">{chain.title || chain.chainId}</span>
         </div>
@@ -5241,6 +5263,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
                 onNudgeTask={onNudgeTask}
                 onAssignTask={onAssignTask}
                 onSetReviewer={onSetReviewer}
+                onOpenAgentChat={onOpenAgentChat}
                 agents={agents}
                 taskIndexMap={taskIndexMap}
               />
@@ -5276,6 +5299,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
                     onNudgeTask={onNudgeTask}
                     onAssignTask={onAssignTask}
                     onSetReviewer={onSetReviewer}
+                    onOpenAgentChat={onOpenAgentChat}
                     agents={agents}
                     taskIndexMap={taskIndexMap}
                     completed
@@ -5377,13 +5401,13 @@ export function isAgentRunning(agent: any): boolean {
   return ['ready', 'live', 'connected', 'working', 'active'].includes(state) || ['ready', 'connected'].includes(startup);
 }
 
-function TaskAgentChip({ role, agentId, agent, active, onClick }: any) {
+function TaskAgentChip({ role, agentId, agent, active, onClick, onChatClick }: any) {
   const runtime = agentRuntimeDot(agent || { id: agentId, state: agentId ? 'missing' : 'unknown' });
   const running = isAgentRunning(agent);
   const activity = String(agent?.activityStatus || agent?.activity_status || '').toLowerCase();
   const working = Boolean(active && running && (activity === '' || activity === 'unknown' || activity === 'active'));
   const idle = Boolean(active && running && activity === 'idle');
-  const workingLabel = activity === 'active' ? 'active' : 'working…';
+  const workingLabel = 'working';
   const tone = working
     ? 'border-emerald-400/35 bg-emerald-400/10 text-emerald-100'
     : idle
@@ -5396,14 +5420,34 @@ function TaskAgentChip({ role, agentId, agent, active, onClick }: any) {
     <span className="shrink-0 text-zinc-600">·</span>
     <span className="shrink-0">{working ? workingLabel : idle ? 'idle' : runtime.label}</span>
   </>);
+  const roleKey = role.toLowerCase();
+  const canChat = Boolean(agentId && agentId !== 'user_proxy' && onChatClick);
   const className = `inline-flex max-w-[220px] items-center gap-1.5 rounded-full border px-2 py-1 text-[11px] ${tone} ${onClick ? 'hover:bg-white/10' : ''}`;
-  if (onClick) {
-    return <button data-debug-id={`chain-task-${role.toLowerCase()}-${agentId || 'none'}`} onClick={(event) => { event.stopPropagation(); onClick(); }} className={className} title={`${role}: ${agentId || 'none'} · ${runtime.label}`}>{content}</button>;
-  }
-  return <span data-debug-id={`chain-task-${role.toLowerCase()}-${agentId || 'none'}`} className={className} title={`${role}: ${agentId || 'none'} · ${runtime.label}`}>{content}</span>;
+  const chip = onClick
+    ? <button data-debug-id={`chain-task-${roleKey}-${agentId || 'none'}`} onClick={(event) => { event.stopPropagation(); onClick(); }} className={className} title={`${role}: ${agentId || 'none'} · ${runtime.label}`}>{content}</button>
+    : <span data-debug-id={`chain-task-${roleKey}-${agentId || 'none'}`} className={className} title={`${role}: ${agentId || 'none'} · ${runtime.label}`}>{content}</span>;
+  return (
+    <span className="inline-flex items-center gap-1">
+      {chip}
+      {canChat && (
+        <button
+          data-debug-id={`chain-task-${roleKey}-chat-btn-${agentId}`}
+          type="button"
+          aria-label={`Open direct chat with ${agent?.label || agentId}`}
+          title={`Chat with ${agent?.label || agentId}`}
+          onClick={(event) => { event.stopPropagation(); onChatClick(agentId); }}
+          className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-white/10 bg-black/20 text-[11px] text-zinc-400 hover:border-white/20 hover:bg-white/10 hover:text-zinc-100"
+        >
+          <svg aria-hidden="true" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M7.5 18.25 4 20l1.05-3.15A7.25 7.25 0 0 1 3.75 12.7C3.75 8.7 7.44 5.5 12 5.5s8.25 3.2 8.25 7.2S16.56 19.9 12 19.9a9.4 9.4 0 0 1-4.5-1.65Z" />
+          </svg>
+        </button>
+      )}
+    </span>
+  );
 }
 
-function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, expandedTaskId, commentDraft, nudgeDraft, projectId = '', chainId = '', daemonUrl = '', clientToken = '', onRefreshAgents, onCommentDraft, onNudgeDraft, onOpenTask, onLoadTaskLogPage, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, agents = [], taskIndexMap = new Map(), completed = false }: any) {
+function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, expandedTaskId, commentDraft, nudgeDraft, projectId = '', chainId = '', daemonUrl = '', clientToken = '', onRefreshAgents, onCommentDraft, onNudgeDraft, onOpenTask, onLoadTaskLogPage, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onOpenAgentChat, agents = [], taskIndexMap = new Map(), completed = false }: any) {
   const [commentsOpenByTaskId, setCommentsOpenByTaskId] = useState<Record<string, boolean>>({});
   const [busyAction, setBusyAction] = useState('');
   const [localError, setLocalError] = useState('');
@@ -5512,8 +5556,8 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
                     <span data-debug-id={`chain-task-row-${task.taskId}-status`} className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] ${perceived.tone}`}>{perceived.label}</span>
                   </button>
                   <div data-debug-id={`chain-task-row-${task.taskId}-agents`} className="mt-2 ml-8 flex min-w-0 flex-wrap items-center gap-2">
-                    <TaskAgentChip role="Assignee" agentId={assigneeId} agent={assigneeAgent} active={assigneeWorking} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'assignee' })} />
-                    <TaskAgentChip role="Reviewer" agentId={reviewerId} agent={reviewerAgent} active={reviewerWorking} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'reviewer' })} />
+                    <TaskAgentChip role="Assignee" agentId={assigneeId} agent={assigneeAgent} active={assigneeWorking} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'assignee' })} onChatClick={onOpenAgentChat} />
+                    <TaskAgentChip role="Reviewer" agentId={reviewerId} agent={reviewerAgent} active={reviewerWorking} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'reviewer' })} onChatClick={onOpenAgentChat} />
                   </div>
                 </div>
                 {actionNeeded && (

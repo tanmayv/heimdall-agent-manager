@@ -268,7 +268,7 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
             <span className="text-zinc-700">·</span>
             <span data-debug-id="memory-metric-selected">v<span className="text-zinc-200">{selectedRecord ? String(selectedRecord.version || 0) : '—'}</span></span>
           </div>
-          <button data-debug-id="memory-management-home-btn" onClick={onBackToHome} className="rounded-full border border-white/10 bg-[#141414] px-3.5 py-1.5 text-[12.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">Back to Home</button>
+          <button data-debug-id="memory-management-home-btn" onClick={onBackToHome} className="rounded-full border border-white/10 bg-[#141414] px-3.5 py-1.5 text-[12.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">Back</button>
           <button data-debug-id="memory-refresh-btn" onClick={() => dispatch(refreshMemory())} className="rounded-full bg-sky-400 px-3.5 py-1.5 text-[12.5px] font-semibold text-black hover:bg-sky-300">Refresh</button>
         </div>
       </div>

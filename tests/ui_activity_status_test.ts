@@ -11,7 +11,7 @@ const storage = new Map<string, string>();
 };
 
 const { mapAgent } = await import('../src/ui/store/chatSlice');
-const { agentRuntimeDot, isAgentRunning } = await import('../src/ui/components/App');
+const { agentRuntimeDot, isAgentRunning, agentHasLiveSession } = await import('../src/ui/components/App');
 
 const active = mapAgent({ agent_instance_id: 'active@local', connected: true, activity_status: 'active' });
 assert.equal(active.status, 'connected', 'active activity should map to connected/active UI status');
@@ -28,6 +28,11 @@ assert.equal(startingWithActivity.status, 'starting', 'startup state must outran
 assert.equal(agentRuntimeDot({ status: 'offline', activityStatus: 'active' }).label, 'offline', 'runtime dot should preserve offline over stale activity');
 assert.equal(agentRuntimeDot({ startupStatus: 'starting', connected: true, activityStatus: 'idle' }).label, 'starting', 'runtime dot should preserve starting over activity');
 assert.equal(agentRuntimeDot({ connected: true, activityStatus: 'idle' }).label, 'idle', 'runtime dot should show idle for live idle activity');
+assert.equal(agentRuntimeDot({ connected: true, activityStatus: 'active' }).label, 'working', 'runtime dot should display active activity as working');
+
+assert.equal(agentHasLiveSession({ startupStatus: 'ready', activityStatus: 'active' }), true, 'ready active agent should count as live even before connected is populated');
+assert.equal(agentHasLiveSession({ status: 'active' }), true, 'active runtime status should count as live for start/stop controls');
+assert.equal(agentHasLiveSession({ status: 'offline', activityStatus: 'active' }), false, 'offline status should not count as live even with stale activity');
 
 assert.equal(isAgentRunning({ connected: false, status: 'offline' }), false, 'offline agent should not count as running');
 assert.equal(isAgentRunning({ connected: true, activityStatus: 'idle' }), true, 'connected idle agent should count as running');

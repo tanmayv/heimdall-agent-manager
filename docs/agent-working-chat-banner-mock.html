@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agent working chat banner mock</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #090909;
+      --panel: #111111;
+      --composer: #141414;
+      --border: rgba(255,255,255,.10);
+      --border-strong: rgba(255,255,255,.16);
+      --text: #f4f4f5;
+      --muted: #a1a1aa;
+      --faint: #71717a;
+      --glow: rgba(255,255,255,.10);
+      --dot: #d4d4d8;
+      --soft: #e4e4e7;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(circle at 15% 0%, rgba(255,255,255,.07), transparent 30%), #070707;
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    .page {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 32px;
+    }
+    h1 { margin: 0 0 8px; letter-spacing: -.04em; font-size: 28px; }
+    .subtitle { margin: 0 0 26px; color: var(--muted); font-size: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
+    .chat {
+      min-height: 520px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 28px;
+      background: rgba(9,9,9,.88);
+      box-shadow: 0 24px 90px rgba(0,0,0,.35);
+    }
+    .chat.wide { grid-column: 1 / -1; }
+    .header {
+      height: 54px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--border);
+      color: var(--faint);
+      font-size: 12px;
+    }
+    .avatar { width: 28px; height: 28px; border-radius: 999px; display: grid; place-items: center; background: rgba(255,255,255,.07); color: #f4f4f5; font-weight: 700; }
+    .title { color: var(--text); font-weight: 650; }
+    .spacer { flex: 1; }
+    .pill { border: 1px solid var(--border); border-radius: 999px; padding: 4px 8px; background: #141414; }
+    .messages {
+      flex: 1;
+      padding: 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 18px;
+      overflow: hidden;
+    }
+    .msg { max-width: 70%; font-size: 14px; line-height: 1.5; }
+    .msg.agent { color: #d4d4d8; }
+    .msg.user { align-self: flex-end; padding: 12px 14px; border: 1px solid #262626; border-radius: 16px; background: #1c1c1c; }
+    .meta { margin-bottom: 6px; color: #52525b; font-size: 10px; text-transform: uppercase; letter-spacing: .12em; }
+    .composer-wrap { padding: 0 22px 22px; }
+
+    /* Proposed reusable banner */
+    .working-banner {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 0 auto 10px;
+      padding: 10px 12px;
+      max-width: 760px;
+      border: 1px solid rgba(255,255,255,.09);
+      border-radius: 14px;
+      background: rgba(18,18,18,.92);
+      color: #d4d4d8;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.035);
+      font-size: 12px;
+    }
+    .working-banner.compact { max-width: none; }
+    .pulse {
+      position: relative;
+      width: 9px;
+      height: 9px;
+      flex: 0 0 9px;
+      border-radius: 999px;
+      background: var(--dot);
+      box-shadow: 0 0 0 4px rgba(255,255,255,.055);
+    }
+    .pulse::after {
+      content: "";
+      position: absolute;
+      inset: -5px;
+      border-radius: inherit;
+      border: 1px solid rgba(255,255,255,.20);
+      animation: ping 1.6s ease-out infinite;
+    }
+    @keyframes ping { from { transform: scale(.8); opacity: .85; } to { transform: scale(1.7); opacity: 0; } }
+    .banner-main { min-width: 0; flex: 1; }
+    .banner-title { font-weight: 600; color: #e4e4e7; }
+    .banner-sub { margin-top: 2px; color: #8b8b94; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .banner-actions { display: flex; gap: 8px; align-items: center; }
+    .ghost-btn { border: 1px solid rgba(255,255,255,.10); border-radius: 999px; padding: 5px 9px; background: rgba(255,255,255,.035); color: #d4d4d8; font-size: 11px; }
+    .primary-btn { border: 1px solid rgba(255,255,255,.18); border-radius: 999px; padding: 5px 10px; background: #e4e4e7; color: #090909; font-size: 11px; font-weight: 650; }
+    .stopped-banner { border-color: rgba(255,255,255,.12); background: rgba(12,12,12,.94); }
+    .stopped-dot { background: #71717a; box-shadow: 0 0 0 4px rgba(255,255,255,.035); }
+    .stopped-dot::after { display: none; }
+
+    .composer {
+      max-width: 760px;
+      margin: 0 auto;
+      border: 1px solid var(--border);
+      border-radius: 15px;
+      background: var(--composer);
+      overflow: hidden;
+    }
+    .composer textarea {
+      display: block;
+      width: 100%;
+      min-height: 76px;
+      resize: none;
+      border: 0;
+      outline: 0;
+      padding: 13px 15px;
+      background: transparent;
+      color: var(--text);
+      font: inherit;
+      font-size: 14px;
+    }
+    .composer-footer { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; border-top: 1px solid rgba(255,255,255,.04); color: var(--faint); font-size: 11px; }
+    .send { width: 32px; height: 32px; border-radius: 999px; border: 1px solid var(--border); background: #1c1c1c; color: #d4d4d8; }
+    .note { margin-top: 16px; color: var(--faint); font-size: 12px; line-height: 1.6; }
+    @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } .chat.wide { grid-column: auto; } }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <h1>Agent working banner — chat mock</h1>
+    <p class="subtitle">Subtle grayscale banner above the chat input: show “agent is working” only while active; show a stopped banner with Start action when stopped; show nothing while idle.</p>
+
+    <section class="grid">
+      <article class="chat wide">
+        <div class="header"><div class="avatar">C</div><div><div class="title">Coordinator</div><div>chain-19f700247dc · lead</div></div><div class="spacer"></div><span class="pill">Working</span></div>
+        <div class="messages">
+          <div class="msg agent"><div class="meta">Coordinator · 05:51 PM</div>I’m validating the federation task split and updating task descriptions before releasing work.</div>
+          <div class="msg user">Ensure testing uses a fresh daemon with HEIMDALL_HOME and verifies two-way peer communication.</div>
+        </div>
+        <div class="composer-wrap">
+          <div class="working-banner">
+            <span class="pulse"></span>
+            <div class="banner-main">
+              <div class="banner-title">Coordinator is working</div>
+              <div class="banner-sub">Task: Validate task chain scaffold</div>
+            </div>
+            <div class="banner-actions"><button class="ghost-btn">View task</button></div>
+          </div>
+          <div class="composer"><textarea placeholder="Message the coordinator…"></textarea><div class="composer-footer"><span>Enter to send · Shift+Enter for newline</span><button class="send">→</button></div></div>
+        </div>
+      </article>
+
+      <article class="chat">
+        <div class="header"><div class="avatar">A</div><div><div class="title">Direct agent chat</div><div>coder@s-ec1230af80e0</div></div><div class="spacer"></div><span class="pill">Active</span></div>
+        <div class="messages">
+          <div class="msg agent"><div class="meta">Coder · 05:48 PM</div>I’m applying the implementation changes now.</div>
+        </div>
+        <div class="composer-wrap">
+          <div class="working-banner compact">
+            <span class="pulse"></span>
+            <div class="banner-main"><div class="banner-title">Coder is working</div></div>
+          </div>
+          <div class="composer"><textarea placeholder="Send a direct message…"></textarea><div class="composer-footer"><span>Attach artifacts or ask a follow-up</span><button class="send">→</button></div></div>
+        </div>
+      </article>
+
+      <article class="chat">
+        <div class="header"><div class="avatar">G</div><div><div class="title">Stopped agent chat</div><div>guide@heimdall</div></div><div class="spacer"></div><span class="pill">Stopped</span></div>
+        <div class="messages">
+          <div class="msg agent"><div class="meta">Guide · 05:45 PM</div>I can help inspect task status and recent daemon events.</div>
+        </div>
+        <div class="composer-wrap">
+          <div class="working-banner compact stopped-banner">
+            <span class="pulse stopped-dot"></span>
+            <div class="banner-main"><div class="banner-title">Guide is stopped</div></div>
+            <div class="banner-actions"><button class="primary-btn">Start</button></div>
+          </div>
+          <div class="composer"><textarea placeholder="Ask the guide…"></textarea><div class="composer-footer"><span>Sending can start the agent</span><button class="send">→</button></div></div>
+        </div>
+      </article>
+    </section>
+
+    <p class="note"><b>Behavior:</b> if working, show only “{agent} is working” plus optional one-line task label when known. If idle, render no banner. If stopped, show “{agent} is stopped” with a Start button. Banner should be reusable across Chain coordinator, Agent detail, Conversation thread, Running agents chat, and Guide panel.</p>
+  </main>
+</body>
+</html>

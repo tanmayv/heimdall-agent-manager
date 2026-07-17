@@ -21,7 +21,26 @@ export function getUrlParams(): UrlParams {
   };
 }
 
+const HEIMDALL_ROUTE_DEPTH_STATE_KEY = '__heimdallRouteDepth';
+
+function routeDepth(): number {
+  const raw = Number((window.history.state || {})[HEIMDALL_ROUTE_DEPTH_STATE_KEY] || 0);
+  return Number.isFinite(raw) && raw > 0 ? raw : 0;
+}
+
+function ensureRouteState() {
+  const state = window.history.state || {};
+  if (Object.prototype.hasOwnProperty.call(state, HEIMDALL_ROUTE_DEPTH_STATE_KEY)) return;
+  window.history.replaceState({ ...state, [HEIMDALL_ROUTE_DEPTH_STATE_KEY]: 0 }, '', `${window.location.pathname}${window.location.search}`);
+}
+
+export function canNavigateBackInApp(): boolean {
+  ensureRouteState();
+  return routeDepth() > 0;
+}
+
 export function updateUrlParams(updates: Partial<Record<keyof UrlParams, string | null>>) {
+  ensureRouteState();
   const params = new URLSearchParams(window.location.search);
   Object.entries(updates).forEach(([key, val]) => {
     if (val === null || val === '') {
@@ -32,8 +51,17 @@ export function updateUrlParams(updates: Partial<Record<keyof UrlParams, string 
   });
   const search = params.toString() ? `?${params.toString()}` : '';
   const url = `${window.location.pathname}${search}`;
-  window.history.pushState(null, '', url);
+  window.history.pushState({ ...(window.history.state || {}), [HEIMDALL_ROUTE_DEPTH_STATE_KEY]: routeDepth() + 1 }, '', url);
   window.dispatchEvent(new Event('popstate'));
+}
+
+export function navigateBackOr(updates: Partial<Record<keyof UrlParams, string | null>>): boolean {
+  if (canNavigateBackInApp()) {
+    window.history.back();
+    return true;
+  }
+  updateUrlParams(updates);
+  return false;
 }
 
 export function useUrlParams() {
