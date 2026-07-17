@@ -42,6 +42,37 @@ This is the **same "metadata push + fetch durable state" split Heimdall already 
 the "fetch" a reverse-proxy hop. That is why it is the least-invasive option that holds
 together.
 
+### 2.1 Exception: inbox message bodies are store-and-forward
+
+"Zero remote storage" protects **owned, mutable records** — tasks, chains, votes, comments —
+where replicating creates ownership/consistency problems (two daemons disagreeing on a task's
+status). That reasoning does **not** apply to an agent-to-agent **inbox message body**, which
+is:
+
+- **immutable** — once sent, the body never changes (no consistency problem), and
+- **single-recipient content** — it is addressed *to* the receiver (no shared ownership).
+
+So inbox message bodies are **stored durably on the recipient daemon** at delivery
+(store-and-forward, like email), not lazily re-fetched from the origin at read time:
+
+- The body ships on the daemon-to-daemon `POST /federation/inbox` call (plain HTTP, **not** the
+  WS channel, so the 3900-byte inline cap does not apply).
+- The receiver stores it durably, keyed by the **recipient's** conversation id
+  (`conversation_id_for_instance(target)`), matching the local model where a message is keyed
+  by the target's conversation. Reads are then fully local and **offline-capable** — they do not
+  depend on the origin daemon or the link being up.
+- Read receipts still flow back to the origin sender via `POST /federation/callback`, so the
+  sender learns when its message was read.
+
+This is the correct application of the invariant, restated precisely:
+
+> **Owned mutable state stays with its owner; immutable delivered content lives with its
+> recipient.**
+
+Everything else (task/chain/vote reads and writes) remains proxied/route-by-owner per §2.
+(By the same logic, immutable artifact blobs are a future candidate for fetch-through +
+durable cache on the recipient; see the artifacts phase.)
+
 ### Rejected alternatives
 - **Replication / projection store** (each daemon keeps a synced copy): adds dedup, sync,
   staleness, `owner_peer_id` storage keys, reconciliation. Solves problems we don't have yet.
