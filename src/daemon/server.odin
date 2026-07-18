@@ -16,6 +16,8 @@ server_config_path: string
 server_data_dir: string
 server_daemon_id: string
 server_wrapper_bin: string
+server_bridge_url: string
+server_bridge_token_configured: bool
 server_agent_providers: [dynamic]string
 server_agent_cmd_configs: [dynamic]cfg_lib.Agent_Command_Config
 message_provider: mp.Message_Provider
@@ -31,6 +33,13 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 	server_daemon_id = strings.clone(cfg.daemon.daemon_id)
 	if server_daemon_id == "" do server_daemon_id = "local-daemon"
 	server_wrapper_bin = strings.clone(cfg.daemon.wrapper_bin)
+	server_bridge_url = strings.clone(cfg.daemon.bridge_url)
+	server_bridge_token_configured = strings.trim_space(cfg.daemon.bridge_token) != ""
+	if strings.trim_space(server_bridge_url) == "" {
+		fmt.println("federation bridge disabled: no daemon.bridge_url configured; running local-only")
+	} else {
+		fmt.println("federation bridge configured", server_bridge_url)
+	}
 	server_agent_providers = make([dynamic]string)
 	server_agent_cmd_configs = make([dynamic]cfg_lib.Agent_Command_Config)
 	for provider in cfg.wrapper.agent_commands {
@@ -74,7 +83,7 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 	time_step("task_store_init", &step)
 	project_store_init(server_data_dir); time_step("project_store_init", &step)
 	agent_store_init(server_data_dir); time_step("agent_store_init", &step)
-	peer_link_store_init(server_data_dir, cfg.daemon.peers[:]); time_step("peer_link_store_init", &step)
+	peer_link_store_init(server_data_dir); time_step("peer_link_store_init", &step)
 	chat_store_init(server_data_dir); time_step("chat_store_init", &step)
 	_ = team_service_init(server_data_dir); time_step("team_service_init", &step)
 	teams_v1_migration_maybe_run(server_data_dir); time_step("teams_v1_migration_maybe_run", &step)

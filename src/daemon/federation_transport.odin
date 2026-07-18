@@ -19,6 +19,7 @@ FEDERATION_ENVELOPE_READ_RECEIPT :: "read_receipt"
 FEDERATION_ENVELOPE_TASK_COMMENT :: "comment"
 FEDERATION_ENVELOPE_TASK_VOTE :: "vote"
 FEDERATION_ENVELOPE_TASK_STATUS :: "status"
+FEDERATION_ENVELOPE_DELIVERY_ACK :: "delivery_ack"
 FEDERATION_REPLAY_LIMIT :: 100
 
 Federation_Remote_Message_Record :: struct {
@@ -45,10 +46,99 @@ federation_peer_id_for_request :: proc(peer_token, peer_daemon_id: string) -> (s
 		rec := peer_link_records[i]
 		if rec.removed_at_unix_ms != 0 do continue
 		if rec.peer_token != trimmed_token do continue
-		if rec.daemon_id != trimmed_daemon_id do continue
+		if rec.daemon_id != trimmed_daemon_id && rec.peer_id != trimmed_daemon_id do continue
 		return strings.clone(rec.peer_id), true
 	}
 	return "", false
+}
+
+federation_peer_id_for_bridge_source :: proc(peer_daemon_id: string) -> (string, bool) {
+	trimmed_daemon_id := strings.trim_space(peer_daemon_id)
+	if trimmed_daemon_id == "" do return "", false
+	if peer_id, _, _, ok := federation_direct_peer_lookup(trimmed_daemon_id, trimmed_daemon_id); ok do return peer_id, true
+	return "", false
+}
+
+federation_peer_id_for_context :: proc(ctx: ^Route_Context) -> (string, string, bool) {
+	if strings.trim_space(ctx.bridge_source_daemon_id) != "" {
+		if peer_id, ok := federation_peer_id_for_bridge_source(ctx.bridge_source_daemon_id); ok {
+			return peer_id, strings.clone(ctx.bridge_source_daemon_id), true
+		}
+	}
+	peer_daemon_id := query_param_value(ctx.query, "peer_daemon_id")
+	peer_id, ok := federation_peer_id_for_request(query_param_value(ctx.query, "peer_token"), peer_daemon_id)
+	return peer_id, peer_daemon_id, ok
+}
+
+// Thin daemon -> ham-bridge loopback client.
+//
+// Result-state boundary (BR-4): bridge_send returning true means only that the
+// local bridge accepted/queued the opaque payload for transport. It MUST NOT be
+// treated as destination business success or as a durable outbox ACK. Durable
+// completion is driven by the destination daemon acceptance callback/ACK path.
+bridge_client_enabled :: proc() -> bool {
+	return strings.trim_space(server_bridge_url) != ""
+}
+
+bridge_client_contract_routes_covered :: proc() -> bool {
+	// Keep daemon bridge-client coverage tied to shared route constants so route
+	// drift is caught by builds/smoke checks instead of duplicated string values.
+	return contracts.bridge_loopback_route_supported(contracts.BRIDGE_HTTP_METHOD_POST, contracts.ROUTE_BRIDGE_SEND) &&
+	       contracts.bridge_loopback_route_supported(contracts.BRIDGE_HTTP_METHOD_POST, contracts.ROUTE_BRIDGE_REQUEST) &&
+	       contracts.bridge_loopback_route_supported(contracts.BRIDGE_HTTP_METHOD_GET, contracts.ROUTE_BRIDGE_REACHABLE) &&
+	       contracts.bridge_loopback_route_supported(contracts.BRIDGE_HTTP_METHOD_GET, contracts.ROUTE_BRIDGE_HEALTH)
+}
+
+bridge_client_headers :: proc() -> []http.Header {
+	headers := make([dynamic]http.Header)
+	if strings.trim_space(server_config.daemon.bridge_token) != "" {
+		append(&headers, http.Header{name = contracts.BRIDGE_LOOPBACK_AUTH_HEADER, value = strings.concatenate({contracts.BRIDGE_AUTH_BEARER_PREFIX, server_config.daemon.bridge_token})})
+	}
+	return headers[:]
+}
+
+bridge_send_route_kind :: proc(route_kind: string) -> string {
+	if route_kind == FEDERATION_ROUTE_CALLBACK do return contracts.BRIDGE_SEND_ROUTE_FEDERATION_CALLBACK
+	return contracts.BRIDGE_SEND_ROUTE_FEDERATION_INBOX
+}
+
+bridge_send :: proc(dest_daemon_id, route_kind, payload, idempotency_key: string) -> bool {
+	if !bridge_client_enabled() do return false
+	if !bridge_client_contract_routes_covered() do return false
+	b := strings.builder_make()
+	strings.write_string(&b, `{"contract_version":`); strings.write_string(&b, fmt.tprintf("%d", contracts.BRIDGE_LOOPBACK_CONTRACT_VERSION))
+	strings.write_string(&b, `,"src_daemon_id":"`); json_write_string(&b, server_daemon_id)
+	strings.write_string(&b, `","dest_daemon_id":"`); json_write_string(&b, dest_daemon_id)
+	strings.write_string(&b, `","route_kind":"`); json_write_string(&b, bridge_send_route_kind(route_kind))
+	strings.write_string(&b, `","idempotency_key":"`); json_write_string(&b, idempotency_key)
+	strings.write_string(&b, `","payload":"`); json_write_string(&b, payload)
+	strings.write_string(&b, `","created_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", router_now_unix_ms()))
+	strings.write_string(&b, `}`)
+	resp, ok := http.request_with_headers_timeout(contracts.BRIDGE_HTTP_METHOD_POST, server_bridge_url, contracts.ROUTE_BRIDGE_SEND, strings.to_string(b), bridge_client_headers(), FEDERATION_HTTP_TIMEOUT_MS)
+	if !ok || (resp.status != 200 && resp.status != 202) do return false
+	acceptance := extract_json_string(resp.body, "acceptance", "")
+	return acceptance == contracts.BRIDGE_SEND_ACCEPTANCE_ACCEPTED_QUEUED || acceptance == contracts.BRIDGE_SEND_ACCEPTANCE_DUPLICATE_QUEUED
+}
+
+bridge_request :: proc(dest_daemon_id, method, path, body, idempotency_key: string, timeout_ms: int) -> (http.Response, bool) {
+	if !bridge_client_enabled() do return http.Response{}, false
+	if !bridge_client_contract_routes_covered() do return http.Response{}, false
+	b := strings.builder_make()
+	strings.write_string(&b, `{"contract_version":`); strings.write_string(&b, fmt.tprintf("%d", contracts.BRIDGE_LOOPBACK_CONTRACT_VERSION))
+	strings.write_string(&b, `,"src_daemon_id":"`); json_write_string(&b, server_daemon_id)
+	strings.write_string(&b, `","dest_daemon_id":"`); json_write_string(&b, dest_daemon_id)
+	strings.write_string(&b, `","method":"`); json_write_string(&b, method)
+	strings.write_string(&b, `","path":"`); json_write_string(&b, path)
+	strings.write_string(&b, `","idempotency_key":"`); json_write_string(&b, idempotency_key)
+	strings.write_string(&b, `","body":"`); json_write_string(&b, body)
+	strings.write_string(&b, `","timeout_ms":`); strings.write_string(&b, fmt.tprintf("%d", timeout_ms))
+	strings.write_string(&b, `}`)
+	resp, ok := http.request_with_headers_timeout(contracts.BRIDGE_HTTP_METHOD_POST, server_bridge_url, contracts.ROUTE_BRIDGE_REQUEST, strings.to_string(b), bridge_client_headers(), timeout_ms)
+	if !ok do return http.Response{}, false
+	result_kind := extract_json_string(resp.body, "result_kind", "")
+	if result_kind != contracts.BRIDGE_RESULT_DESTINATION_DAEMON_HTTP_RESPONSE do return resp, false
+	status_code := extract_json_int(resp.body, "status_code", resp.status)
+	return http.Response{status = status_code, body = extract_json_string(resp.body, "body", resp.body)}, true
 }
 
 registry_send_ws_text_or_remote :: proc(agent_instance_id, text: string) -> bool {
@@ -61,21 +151,29 @@ registry_send_ws_text_or_remote :: proc(agent_instance_id, text: string) -> bool
 	return registry_send_ws_text(agent_instance_id, text)
 }
 
-federation_forward :: proc(peer_id, route_kind, payload, idempotency_key: string) -> bool {
-	rec, ok := peer_link_find(peer_id)
-	if !ok do return false
-	path := "/federation/inbox"
-	if route_kind == FEDERATION_ROUTE_CALLBACK do path = "/federation/callback"
-	path = fmt.tprintf("%s?peer_token=%s&peer_daemon_id=%s", path, rec.peer_token, server_daemon_id)
-	resp, forward_ok := http.post_with_timeout(rec.peer_url, path, payload, FEDERATION_HTTP_TIMEOUT_MS)
-	if !forward_ok || resp.status != 200 {
-		rec.status = strings.clone(PEER_STATUS_UNREACHABLE)
-		rec.last_checked_unix_ms = router_now_unix_ms()
-		return false
+registry_send_ws_text_or_remote_transport_accepted :: proc(agent_instance_id, text: string) -> bool {
+	if peer_id, remote_agent_instance_id, ok := agent_remote_proxy_lookup(agent_instance_id); ok {
+		idempotency_key := extract_json_string(text, "event_id", "")
+		if idempotency_key == "" do idempotency_key = notification_outbox_payload_event_id(agent_instance_id, text)
+		payload := federation_inbox_notification_json(remote_agent_instance_id, text, idempotency_key)
+		return federation_forward_transport_accepted(peer_id, FEDERATION_ROUTE_INBOX, payload, idempotency_key)
 	}
-	rec.status = strings.clone(PEER_STATUS_LINKED)
-	rec.last_checked_unix_ms = router_now_unix_ms()
+	return registry_send_ws_text(agent_instance_id, text)
+}
+
+federation_forward_transport_accepted :: proc(peer_id, route_kind, payload, idempotency_key: string) -> bool {
+	_, dest_daemon_id, status, ok := federation_direct_peer_lookup(peer_id, "")
+	if !ok || status != PEER_STATUS_LINKED do return false
+	if dest_daemon_id == "" || !bridge_send(dest_daemon_id, route_kind, payload, idempotency_key) do return false
 	return true
+}
+
+federation_forward :: proc(peer_id, route_kind, payload, idempotency_key: string) -> bool {
+	// BR-4: local bridge accepted/queued is only a transport attempt state.
+	// The daemon durable outbox stays pending until the destination daemon's
+	// acceptance is returned as a delivery_ack callback.
+	_ = federation_forward_transport_accepted(peer_id, route_kind, payload, idempotency_key)
+	return false
 }
 
 // federation_forward_start asks the owning peer to start the real agent that a
@@ -83,9 +181,9 @@ federation_forward :: proc(peer_id, route_kind, payload, idempotency_key: string
 // Synchronous request/response (not the delivery outbox) so the operator/UI gets
 // immediate feedback on whether the remote start succeeded.
 federation_forward_start :: proc(peer_id, remote_agent_instance_id, provider_profile, model_tier: string) -> (bool, int, string) {
-	rec, ok := peer_link_find(peer_id)
+	_, dest_daemon_id, status, ok := federation_direct_peer_lookup(peer_id, "")
 	if !ok do return false, 404, `{"ok":false,"message":"peer not found"}`
-	if rec.status != PEER_STATUS_LINKED {
+	if status != PEER_STATUS_LINKED {
 		return false, 503, `{"ok":false,"message":"peer unreachable"}`
 	}
 	b := strings.builder_make()
@@ -101,14 +199,14 @@ federation_forward_start :: proc(peer_id, remote_agent_instance_id, provider_pro
 	}
 	strings.write_string(&b, `"}`)
 	payload := strings.to_string(b)
-	path := fmt.tprintf("/federation/start?peer_token=%s&peer_daemon_id=%s", rec.peer_token, server_daemon_id)
-	resp, forward_ok := http.post_with_timeout(rec.peer_url, path, payload, FEDERATION_HTTP_TIMEOUT_MS)
-	if !forward_ok {
-		rec.status = strings.clone(PEER_STATUS_UNREACHABLE)
-		rec.last_checked_unix_ms = router_now_unix_ms()
+	path := contracts.ROUTE_FEDERATION_START
+	if dest_daemon_id == "" {
 		return false, 503, `{"ok":false,"message":"peer unreachable"}`
 	}
-	rec.last_checked_unix_ms = router_now_unix_ms()
+	resp, forward_ok := bridge_request(dest_daemon_id, contracts.BRIDGE_HTTP_METHOD_POST, path, payload, federation_idempotency_key("start", server_daemon_id, remote_agent_instance_id), FEDERATION_HTTP_TIMEOUT_MS)
+	if !forward_ok {
+		return false, 503, `{"ok":false,"message":"peer unreachable"}`
+	}
 	return resp.status == 200, resp.status, strings.clone(resp.body)
 }
 
@@ -149,6 +247,10 @@ federation_delivery_outbox_mark_attempt :: proc(peer_id, route_kind, idempotency
 	task_db_bind_text(stmt, 5, route_kind)
 	task_db_bind_text(stmt, 6, idempotency_key)
 	return sqlite3_step(stmt) == SQLITE_DONE
+}
+
+federation_delivery_outbox_mark_delivered_by_ack :: proc(peer_id, route_kind, idempotency_key: string) -> bool {
+	return federation_delivery_outbox_mark_attempt(peer_id, route_kind, idempotency_key, true)
 }
 
 federation_delivery_outbox_pending_exists :: proc(peer_id, route_kind, idempotency_key: string) -> bool {
@@ -193,14 +295,15 @@ federation_delivery_outbox_replay_peer :: proc(peer_id: string) -> int {
 		append(&idempotency_keys, strings.clone_from_cstring(sqlite3_column_text(stmt, 1)))
 		append(&payloads, strings.clone_from_cstring(sqlite3_column_text(stmt, 2)))
 	}
-	delivered := 0
+	accepted_count := 0
 	for i in 0..<len(route_kinds) {
-		sent := federation_forward(peer_id, route_kinds[i], payloads[i], idempotency_keys[i])
-		_ = federation_delivery_outbox_mark_attempt(peer_id, route_kinds[i], idempotency_keys[i], sent)
-		if !sent do break
-		delivered += 1
+		accepted := federation_forward_transport_accepted(peer_id, route_kinds[i], payloads[i], idempotency_keys[i])
+		// Bridge accepted/queued is not durable delivery; delivery_ack marks delivered.
+		_ = federation_delivery_outbox_mark_attempt(peer_id, route_kinds[i], idempotency_keys[i], false)
+		if !accepted do break
+		accepted_count += 1
 	}
-	return delivered
+	return accepted_count
 }
 
 federation_delivery_dedupe_scope :: proc(scope_kind, peer_id, kind: string) -> string {
@@ -403,10 +506,11 @@ federation_remote_messages_for_fetch :: proc(local_agent_instance_id, conversati
 }
 
 federation_remote_message_body_fetch :: proc(peer_id, message_id: string) -> (string, bool) {
-	rec, ok := peer_link_find(peer_id)
-	if !ok do return "", false
-	path := fmt.tprintf("/federation/messages/%s?peer_token=%s&peer_daemon_id=%s", message_id, rec.peer_token, server_daemon_id)
-	resp, fetch_ok := http.get_with_timeout(rec.peer_url, path, FEDERATION_HTTP_TIMEOUT_MS)
+	_, dest_daemon_id, status, ok := federation_direct_peer_lookup(peer_id, "")
+	if !ok || status != PEER_STATUS_LINKED do return "", false
+	path := fmt.tprintf("/federation/messages/%s", message_id)
+	if dest_daemon_id == "" do return "", false
+	resp, fetch_ok := bridge_request(dest_daemon_id, contracts.BRIDGE_HTTP_METHOD_GET, path, "", federation_idempotency_key("message_fetch", server_daemon_id, message_id), FEDERATION_HTTP_TIMEOUT_MS)
 	if !fetch_ok || resp.status != 200 do return "", false
 	return extract_json_string(resp.body, "body", ""), true
 }
@@ -713,41 +817,24 @@ federation_status_text :: proc(status_code: int) -> string {
 	return "OK"
 }
 
-federation_response_path_with_auth :: proc(path, peer_token, peer_daemon_id: string) -> string {
-	sep := "?"
-	if strings.index_byte(path, '?') >= 0 do sep = "&"
-	return fmt.tprintf("%s%speer_token=%s&peer_daemon_id=%s", path, sep, peer_token, peer_daemon_id)
-}
-
 federation_remote_get :: proc(peer_id, path: string) -> (http.Response, bool) {
-	rec, ok := peer_link_find(peer_id)
-	if !ok do return http.Response{}, false
-	full_path := federation_response_path_with_auth(path, rec.peer_token, server_daemon_id)
-	resp, fetch_ok := http.get_with_timeout(rec.peer_url, full_path, FEDERATION_HTTP_TIMEOUT_MS)
-	if !fetch_ok {
-		rec.status = strings.clone(PEER_STATUS_UNREACHABLE)
-		rec.last_checked_unix_ms = router_now_unix_ms()
-		return http.Response{}, false
-	}
-	rec.status = strings.clone(PEER_STATUS_LINKED)
-	rec.last_checked_unix_ms = router_now_unix_ms()
+	_, dest_daemon_id, status, ok := federation_direct_peer_lookup(peer_id, "")
+	if !ok || status != PEER_STATUS_LINKED do return http.Response{}, false
+	if dest_daemon_id == "" do return http.Response{}, false
+	resp, fetch_ok := bridge_request(dest_daemon_id, contracts.BRIDGE_HTTP_METHOD_GET, path, "", federation_idempotency_key("remote_get", server_daemon_id, path), FEDERATION_HTTP_TIMEOUT_MS)
+	if !fetch_ok do return http.Response{}, false
 	return resp, true
 }
 
 federation_remote_post_callback :: proc(peer_id, payload, idempotency_key: string) -> (http.Response, bool) {
-	rec, ok := peer_link_find(peer_id)
-	if !ok do return http.Response{}, false
-	full_path := federation_response_path_with_auth("/federation/callback", rec.peer_token, server_daemon_id)
-	resp, post_ok := http.post_with_timeout(rec.peer_url, full_path, payload, FEDERATION_HTTP_TIMEOUT_MS)
-	if !post_ok {
-		rec.status = strings.clone(PEER_STATUS_UNREACHABLE)
-		rec.last_checked_unix_ms = router_now_unix_ms()
+	_, dest_daemon_id, status, ok := federation_direct_peer_lookup(peer_id, "")
+	if !ok || status != PEER_STATUS_LINKED do return http.Response{}, false
+	if dest_daemon_id == "" || !bridge_send(dest_daemon_id, FEDERATION_ROUTE_CALLBACK, payload, idempotency_key) {
 		return http.Response{}, false
 	}
-	rec.status = strings.clone(PEER_STATUS_LINKED)
-	rec.last_checked_unix_ms = router_now_unix_ms()
-	_ = idempotency_key
-	return resp, true
+	// Bridge accepted/queued is not destination durable acceptance; keep daemon
+	// outbox entries pending until delivery_ack arrives over the callback path.
+	return http.Response{status = 202, body = `{"ok":true,"accepted":true}`}, false
 }
 
 federation_write_forwarded_response :: proc(client: net.TCP_Socket, resp: http.Response, ok: bool) {
@@ -887,19 +974,19 @@ federation_json_object_append_string :: proc(object_json, key, value: string) ->
 }
 
 federation_remote_task_fetch_response :: proc(work: Federation_Remote_Work_Record) -> (http.Response, bool) {
-	return federation_remote_get(work.owner_peer_id, fmt.tprintf("/federation/tasks/%s?as_agent_instance_id=%s", work.task_id, work.proxy_agent_instance_id))
+	return federation_remote_get(work.owner_peer_id, fmt.tprintf("%s/%s?as_agent_instance_id=%s", contracts.ROUTE_FEDERATION_TASKS_PREFIX, work.task_id, work.proxy_agent_instance_id))
 }
 
 federation_remote_task_comments_fetch_response :: proc(work: Federation_Remote_Work_Record) -> (http.Response, bool) {
-	return federation_remote_get(work.owner_peer_id, fmt.tprintf("/federation/tasks/%s/comments?as_agent_instance_id=%s", work.task_id, work.proxy_agent_instance_id))
+	return federation_remote_get(work.owner_peer_id, fmt.tprintf("%s/%s/comments?as_agent_instance_id=%s", contracts.ROUTE_FEDERATION_TASKS_PREFIX, work.task_id, work.proxy_agent_instance_id))
 }
 
 federation_remote_chain_fetch_response :: proc(work: Federation_Remote_Work_Record) -> (http.Response, bool) {
-	return federation_remote_get(work.owner_peer_id, fmt.tprintf("/federation/task-chains/%s?as_agent_instance_id=%s", work.chain_id, work.proxy_agent_instance_id))
+	return federation_remote_get(work.owner_peer_id, fmt.tprintf("%s/%s?as_agent_instance_id=%s", contracts.ROUTE_FEDERATION_TASK_CHAINS_PREFIX, work.chain_id, work.proxy_agent_instance_id))
 }
 
 federation_remote_chain_tasks_fetch_response :: proc(work: Federation_Remote_Work_Record) -> (http.Response, bool) {
-	return federation_remote_get(work.owner_peer_id, fmt.tprintf("/federation/task-chains/%s/tasks?as_agent_instance_id=%s", work.chain_id, work.proxy_agent_instance_id))
+	return federation_remote_get(work.owner_peer_id, fmt.tprintf("%s/%s/tasks?as_agent_instance_id=%s", contracts.ROUTE_FEDERATION_TASK_CHAINS_PREFIX, work.chain_id, work.proxy_agent_instance_id))
 }
 
 federation_remote_tasks_state_json :: proc(local_agent_instance_id: string) -> string {
@@ -1066,7 +1153,7 @@ federation_task_status_callback_json :: proc(work: Federation_Remote_Work_Record
 }
 
 handle_get_federation_task :: proc(client: net.TCP_Socket, task_id: string, ctx: ^Route_Context) {
-	peer_id, ok := federation_peer_id_for_request(query_param_value(ctx.query, "peer_token"), query_param_value(ctx.query, "peer_daemon_id"))
+	peer_id, peer_daemon_id, ok := federation_peer_id_for_context(ctx)
 	if !ok {
 		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"peer not configured or token mismatch"}`)
 		return
@@ -1095,7 +1182,7 @@ handle_get_federation_task :: proc(client: net.TCP_Socket, task_id: string, ctx:
 }
 
 handle_get_federation_task_comments :: proc(client: net.TCP_Socket, task_id: string, ctx: ^Route_Context) {
-	peer_id, ok := federation_peer_id_for_request(query_param_value(ctx.query, "peer_token"), query_param_value(ctx.query, "peer_daemon_id"))
+	peer_id, peer_daemon_id, ok := federation_peer_id_for_context(ctx)
 	if !ok {
 		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"peer not configured or token mismatch"}`)
 		return
@@ -1127,7 +1214,7 @@ handle_get_federation_task_comments :: proc(client: net.TCP_Socket, task_id: str
 }
 
 handle_get_federation_task_chain :: proc(client: net.TCP_Socket, chain_id: string, ctx: ^Route_Context) {
-	peer_id, ok := federation_peer_id_for_request(query_param_value(ctx.query, "peer_token"), query_param_value(ctx.query, "peer_daemon_id"))
+	peer_id, peer_daemon_id, ok := federation_peer_id_for_context(ctx)
 	if !ok {
 		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"peer not configured or token mismatch"}`)
 		return
@@ -1164,7 +1251,7 @@ handle_get_federation_task_chain :: proc(client: net.TCP_Socket, chain_id: strin
 }
 
 handle_get_federation_task_chain_tasks :: proc(client: net.TCP_Socket, chain_id: string, ctx: ^Route_Context) {
-	peer_id, ok := federation_peer_id_for_request(query_param_value(ctx.query, "peer_token"), query_param_value(ctx.query, "peer_daemon_id"))
+	peer_id, peer_daemon_id, ok := federation_peer_id_for_context(ctx)
 	if !ok {
 		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"peer not configured or token mismatch"}`)
 		return
@@ -1196,7 +1283,7 @@ handle_get_federation_task_chain_tasks :: proc(client: net.TCP_Socket, chain_id:
 }
 
 handle_post_federation_inbox :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
-	peer_id, ok := federation_peer_id_for_request(query_param_value(ctx.query, "peer_token"), query_param_value(ctx.query, "peer_daemon_id"))
+	peer_id, peer_daemon_id, ok := federation_peer_id_for_context(ctx)
 	if !ok {
 		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"peer not configured or token mismatch"}`)
 		return
@@ -1220,7 +1307,7 @@ handle_post_federation_inbox :: proc(client: net.TCP_Socket, body: string, ctx: 
 			write_response(client, 400, "Bad Request", `{"ok":false,"message":"notification target/payload required"}`)
 			return
 		}
-		if !federation_remote_work_track_notification(peer_id, query_param_value(ctx.query, "peer_daemon_id"), target_agent_instance_id, payload) {
+		if !federation_remote_work_track_notification(peer_id, peer_daemon_id, target_agent_instance_id, payload) {
 			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist remote work mapping"}`)
 			return
 		}
@@ -1244,7 +1331,7 @@ handle_post_federation_inbox :: proc(client: net.TCP_Socket, body: string, ctx: 
 		origin_conversation_id := extract_json_string(body, "origin_conversation_id", "")
 		message_body := extract_json_string(body, "body", "")
 		created_unix_ms := i64(extract_json_int(body, "created_unix_ms", int(router_now_unix_ms())))
-		if !federation_remote_message_receive_placeholder(peer_id, query_param_value(ctx.query, "peer_daemon_id"), message_id, from_agent_instance_id, target_agent_instance_id, proxy_agent_instance_id, origin_conversation_id, message_body, created_unix_ms) {
+		if !federation_remote_message_receive_placeholder(peer_id, peer_daemon_id, message_id, from_agent_instance_id, target_agent_instance_id, proxy_agent_instance_id, origin_conversation_id, message_body, created_unix_ms) {
 			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist remote placeholder"}`)
 			return
 		}
@@ -1269,7 +1356,7 @@ handle_post_federation_inbox :: proc(client: net.TCP_Socket, body: string, ctx: 
 }
 
 handle_get_federation_message :: proc(client: net.TCP_Socket, message_id: string, ctx: ^Route_Context) {
-	peer_id, ok := federation_peer_id_for_request(query_param_value(ctx.query, "peer_token"), query_param_value(ctx.query, "peer_daemon_id"))
+	peer_id, peer_daemon_id, ok := federation_peer_id_for_context(ctx)
 	if !ok {
 		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"peer not configured or token mismatch"}`)
 		return
@@ -1293,7 +1380,7 @@ handle_get_federation_message :: proc(client: net.TCP_Socket, message_id: string
 // target must be a genuine local agent (not itself a remote_proxy), preventing a
 // peer from asking us to relay a start onward.
 handle_post_federation_start :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
-	_, ok := federation_peer_id_for_request(query_param_value(ctx.query, "peer_token"), query_param_value(ctx.query, "peer_daemon_id"))
+	_, _, ok := federation_peer_id_for_context(ctx)
 	if !ok {
 		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"peer not configured or token mismatch"}`)
 		return
@@ -1318,7 +1405,7 @@ handle_post_federation_start :: proc(client: net.TCP_Socket, body: string, ctx: 
 }
 
 handle_post_federation_callback :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
-	peer_id, ok := federation_peer_id_for_request(query_param_value(ctx.query, "peer_token"), query_param_value(ctx.query, "peer_daemon_id"))
+	peer_id, peer_daemon_id, ok := federation_peer_id_for_context(ctx)
 	if !ok {
 		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"peer not configured or token mismatch"}`)
 		return
@@ -1327,6 +1414,29 @@ handle_post_federation_callback :: proc(client: net.TCP_Socket, body: string, ct
 	idempotency_key := extract_json_string(body, "idempotency_key", "")
 	if kind == "" || idempotency_key == "" {
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"kind and idempotency_key required"}`)
+		return
+	}
+	if kind == FEDERATION_ENVELOPE_DELIVERY_ACK {
+		ack_route_kind := extract_json_string(body, "ack_route_kind", "")
+		ack_idempotency_key := extract_json_string(body, "ack_idempotency_key", "")
+		if ack_idempotency_key == "" || (ack_route_kind != FEDERATION_ROUTE_INBOX && ack_route_kind != FEDERATION_ROUTE_CALLBACK) {
+			write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid delivery_ack"}`)
+			return
+		}
+		scope := federation_delivery_dedupe_scope(FEDERATION_DEDUPE_SCOPE_CALLBACK, peer_id, FEDERATION_ENVELOPE_DELIVERY_ACK)
+		if federation_delivery_dedupe_completed(scope, idempotency_key) {
+			write_response(client, 200, "OK", `{"ok":true,"deduped":true}`)
+			return
+		}
+		_ = federation_delivery_outbox_mark_delivered_by_ack(peer_id, ack_route_kind, ack_idempotency_key)
+		if ack_route_kind == FEDERATION_ROUTE_INBOX {
+			_ = notification_outbox_mark_remote_ack(ack_idempotency_key)
+		}
+		if !federation_delivery_dedupe_record_completed(scope, idempotency_key) {
+			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to record delivery_ack dedupe"}`)
+			return
+		}
+		write_response(client, 200, "OK", `{"ok":true,"accepted":true}`)
 		return
 	}
 	proxy_agent_instance_id := extract_json_string(body, "proxy_agent_instance_id", "")
@@ -1362,7 +1472,7 @@ handle_post_federation_callback :: proc(client: net.TCP_Socket, body: string, ct
 			write_response(client, 400, "Bad Request", `{"ok":false,"message":"callback message_id required"}`)
 			return
 		}
-		inserted, stored := federation_remote_message_store_reply_if_absent(peer_id, query_param_value(ctx.query, "peer_daemon_id"), callback_message_id, remote_agent_instance_id, origin_rec.local_agent_instance_id, proxy_agent_instance_id, origin_rec.origin_conversation_id, payload, created_unix_ms)
+		inserted, stored := federation_remote_message_store_reply_if_absent(peer_id, peer_daemon_id, callback_message_id, remote_agent_instance_id, origin_rec.local_agent_instance_id, proxy_agent_instance_id, origin_rec.origin_conversation_id, payload, created_unix_ms)
 		if !stored {
 			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to store remote reply"}`)
 			return
@@ -1374,7 +1484,7 @@ handle_post_federation_callback :: proc(client: net.TCP_Socket, body: string, ct
 		}
 		_ = message_bus_emit(Message_Event{
 			kind = .Messages_Available,
-			message_id = contracts.Message_ID(federation_remote_message_record_key(query_param_value(ctx.query, "peer_daemon_id"), callback_message_id)),
+			message_id = contracts.Message_ID(federation_remote_message_record_key(peer_daemon_id, callback_message_id)),
 			conversation_id = contracts.Conversation_ID(origin_rec.origin_conversation_id),
 			from_agent_instance_id = contracts.Agent_Instance_ID(proxy_agent_instance_id),
 			target_agent_instance_id = contracts.Agent_Instance_ID(origin_rec.local_agent_instance_id),

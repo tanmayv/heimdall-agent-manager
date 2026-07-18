@@ -60,6 +60,32 @@ notification_outbox_pending_exists :: proc(recipient_agent_instance_id, event_id
 	return sqlite3_step(stmt) == SQLITE_ROW
 }
 
+notification_outbox_mark_remote_ack :: proc(event_id: string) -> bool {
+	if event_id == "" || !task_db_ready do return false
+	stmt: sqlite3_stmt = nil
+	query := `UPDATE task_notification_outbox
+		SET attempts = attempts + 1,
+		    last_attempt_unix_ms = ?,
+		    delivered_unix_ms = CASE WHEN delivered_unix_ms = 0 THEN ? ELSE delivered_unix_ms END
+		WHERE event_id = ?`
+	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK {
+		fmt.println("notification_outbox_mark_remote_ack: prepare failed:", rc)
+		return false
+	}
+	defer sqlite3_finalize(stmt)
+	now := router_now_unix_ms()
+	sqlite3_bind_int64(stmt, 1, now)
+	sqlite3_bind_int64(stmt, 2, now)
+	task_db_bind_text(stmt, 3, event_id)
+	rc = sqlite3_step(stmt)
+	if rc != SQLITE_DONE {
+		fmt.printf("notification_outbox_mark_remote_ack: step failed: %d (%s)\n", rc, sqlite3_errmsg(task_db.db))
+		return false
+	}
+	return sqlite3_changes(task_db.db) > 0
+}
+
 notification_outbox_mark_attempt :: proc(recipient_agent_instance_id, event_id: string, delivered: bool) -> bool {
 	if recipient_agent_instance_id == "" || event_id == "" || !task_db_ready do return false
 	stmt: sqlite3_stmt = nil
@@ -140,6 +166,13 @@ notification_outbox_replay_pending :: proc(recipient_agent_instance_id: string) 
 
 	delivered := 0
 	for i in 0..<len(event_ids) {
+		if _, _, remote := agent_remote_proxy_lookup(recipient_agent_instance_id); remote {
+			accepted := registry_send_ws_text_or_remote_transport_accepted(recipient_agent_instance_id, payloads[i])
+			// Remote bridge acceptance is a transport attempt only; delivery_ack marks delivered.
+			_ = notification_outbox_mark_attempt(recipient_agent_instance_id, event_ids[i], false)
+			if !accepted do break
+			continue
+		}
 		sent := registry_send_ws_text_or_remote(recipient_agent_instance_id, payloads[i])
 		_ = notification_outbox_mark_attempt(recipient_agent_instance_id, event_ids[i], sent)
 		if !sent do break

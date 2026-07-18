@@ -77,6 +77,16 @@ write_response :: proc(client: net.TCP_Socket, status: int, status_text, body: s
 	write_binary_response(client, status, status_text, "application/json", transmute([]byte)body)
 }
 
+tcp_send_all :: proc(client: net.TCP_Socket, data: []byte) -> bool {
+	sent_total := 0
+	for sent_total < len(data) {
+		sent, err := net.send_tcp(client, data[sent_total:])
+		if err != nil || sent <= 0 do return false
+		sent_total += sent
+	}
+	return true
+}
+
 write_binary_response :: proc(client: net.TCP_Socket, status: int, status_text, content_type: string, body: []byte, headers: []Response_Header = nil) {
 	builder := strings.builder_make()
 	strings.write_string(&builder, fmt.tprintf("HTTP/1.1 %d %s\r\n", status, status_text))
@@ -96,8 +106,8 @@ write_binary_response :: proc(client: net.TCP_Socket, status: int, status_text, 
 	}
 	strings.write_string(&builder, "Connection: close\r\n\r\n")
 	header_bytes := transmute([]byte)strings.to_string(builder)
-	net.send_tcp(client, header_bytes)
-	if len(body) > 0 do net.send_tcp(client, body)
+	if !tcp_send_all(client, header_bytes) do return
+	if len(body) > 0 && !tcp_send_all(client, body) do return
 	log_http_response(status, body)
 }
 

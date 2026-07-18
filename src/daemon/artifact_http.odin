@@ -16,6 +16,8 @@ Artifact_Create_Result :: struct {
 	message:     string,
 }
 
+ARTIFACT_FEDERATION_FETCH_TIMEOUT_MS :: 60000
+
 artifact_annotation_generate_id :: proc() -> string {
 	artifact_id := artifact_generate_id()
 	if strings.has_prefix(artifact_id, contracts.ARTIFACT_ID_PREFIX) {
@@ -129,24 +131,14 @@ federation_artifact_fetch_through :: proc(origin_daemon_id, route_peer_id, artif
 	resolved_route_peer_id := strings.trim_space(route_peer_id)
 	resolved_artifact_id := strings.trim_space(artifact_id)
 	if resolved_origin_daemon_id == "" || resolved_artifact_id == "" do return nil, false
-	if resolved_route_peer_id == "" {
-		rec, found := peer_link_find_by_daemon_id(resolved_origin_daemon_id)
-		if !found do return nil, false
-		resolved_route_peer_id = rec.peer_id
-	}
-	rec, ok := peer_link_find(resolved_route_peer_id)
-	if !ok do return nil, false
+	_, dest_daemon_id, peer_status, found := federation_direct_peer_lookup(resolved_route_peer_id, resolved_origin_daemon_id)
+	if !found || peer_status != PEER_STATUS_LINKED || dest_daemon_id == "" do return nil, false
 	path := fmt.tprintf("%s/%s", contracts.ROUTE_FEDERATION_ARTIFACTS_PREFIX, resolved_artifact_id)
-	dest_daemon_id := peer_link_destination_daemon_id(rec)
-	if dest_daemon_id == "" do return nil, false
-	resp, fetch_ok := bridge_request(dest_daemon_id, contracts.BRIDGE_HTTP_METHOD_GET, path, "", federation_idempotency_key("artifact_fetch", server_daemon_id, resolved_artifact_id), FEDERATION_HTTP_TIMEOUT_MS)
+	resp, fetch_ok := bridge_request(dest_daemon_id, contracts.BRIDGE_HTTP_METHOD_GET, path, "", federation_idempotency_key("artifact_fetch", server_daemon_id, resolved_artifact_id), ARTIFACT_FEDERATION_FETCH_TIMEOUT_MS)
 	if !fetch_ok || resp.status != 200 {
-		rec.status = strings.clone(PEER_STATUS_UNREACHABLE)
-		rec.last_checked_unix_ms = router_now_unix_ms()
+		fmt.println("artifact_fetch_through: bridge request failed", "origin_daemon_id", resolved_origin_daemon_id, "artifact_id", resolved_artifact_id, "status", resp.status, "fetch_ok", fetch_ok)
 		return nil, false
 	}
-	rec.status = strings.clone(PEER_STATUS_LINKED)
-	rec.last_checked_unix_ms = router_now_unix_ms()
 	return transmute([]byte)strings.clone(resp.body), true
 }
 
@@ -159,10 +151,20 @@ artifact_resolve_content :: proc(rec: Artifact_Record) -> (Artifact_Record, []by
 	if !parsed do return rec, nil, false
 	data, fetch_ok := federation_artifact_fetch_through(origin_daemon_id, "", remote_artifact_id)
 	if !fetch_ok do return rec, nil, false
-	if rec.sha256 != "" && artifact_sha256_hex(data) != rec.sha256 do return rec, nil, false
-	if rec.size_bytes > 0 && i64(len(data)) != rec.size_bytes do return rec, nil, false
+	actual_sha256 := artifact_sha256_hex(data)
+	if rec.sha256 != "" && actual_sha256 != rec.sha256 {
+		fmt.println("artifact_resolve_content: remote artifact sha mismatch", "artifact_id", rec.artifact_id, "remote_artifact_id", remote_artifact_id, "bytes", len(data), "expected_sha", rec.sha256, "actual_sha", actual_sha256)
+		return rec, nil, false
+	}
+	if rec.size_bytes > 0 && i64(len(data)) != rec.size_bytes {
+		fmt.println("artifact_resolve_content: remote artifact size mismatch", "artifact_id", rec.artifact_id, "remote_artifact_id", remote_artifact_id, "expected_bytes", rec.size_bytes, "actual_bytes", len(data))
+		return rec, nil, false
+	}
 	rel_path, sha256, size_bytes, write_ok := artifact_write_blob(rec.artifact_id, rec.current_version_no, data)
-	if !write_ok do return rec, nil, false
+	if !write_ok {
+		fmt.println("artifact_resolve_content: remote artifact cache write failed", "artifact_id", rec.artifact_id, "remote_artifact_id", remote_artifact_id, "bytes", len(data))
+		return rec, nil, false
+	}
 	updated := rec
 	updated.rel_path = rel_path
 	if updated.sha256 == "" do updated.sha256 = sha256

@@ -3,12 +3,12 @@ package main
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:thread"
 import "core:time"
 import "core:net"
 import contracts "odin_test:contracts"
 import http "odin_test:lib/http_client"
-import config_lib "odin_test:lib/config"
 
 PEER_MAX_RECORDS :: 256
 PEER_MAX_EVENTS :: 2048
@@ -52,22 +52,38 @@ peer_link_store_dir: string
 peer_link_events_path: string
 peer_link_poll_started: bool
 
-peer_link_store_init :: proc(data_dir: string, config_peers: []config_lib.Peer_Config) {
+Reachable_Daemon_Record :: struct {
+	daemon_id: string,
+	peer_id: string,
+	reach: string,
+	next_hop_daemon_id: string,
+	hops: int,
+	status: string,
+	last_seen_unix_ms: i64,
+	updated_unix_ms: i64,
+}
+
+reachable_daemon_records: [PEER_MAX_RECORDS]Reachable_Daemon_Record
+reachable_daemon_count: int
+reachable_daemon_mutex: sync.Mutex
+
+peer_link_store_init :: proc(data_dir: string) {
 	peer_link_record_count = 0
 	peer_link_event_count = 0
 	peer_link_store_sequence = 0
 	peer_link_store_dir = strings.clone(fmt.tprintf("%s/federation", expand_home(data_dir)))
 	peer_link_events_path = strings.clone(fmt.tprintf("%s/peer-links.jsonl", peer_link_store_dir))
 	_ = os.make_directory_all(peer_link_store_dir)
+	reachable_daemon_count = 0
+	reachable_daemon_mutex = sync.Mutex{}
 	peer_link_store_replay()
-	for cfg in config_peers {
-		peer_id := peer_id_normalize(cfg.name)
-		peer_url := peer_url_normalize(cfg.endpoint)
-		peer_token := strings.trim_space(cfg.token)
-		if peer_id == "" || peer_url == "" || peer_token == "" do continue
-		_, _, _ = peer_link_create_or_update(peer_id, peer_url, peer_token, "config_bootstrap")
-	}
-	peer_link_poll_start()
+	// Federation v2 Phase 1 moves [[peer]] endpoint/token config and live
+	// link/session state to ham-bridge. The daemon still replays legacy peer-link
+	// records for compatibility, but it no longer bootstraps links from config or
+	// starts URL/token health polling. When a bridge is configured, this poller is
+	// loopback-only and exists to replay daemon durable outboxes when bridge WS
+	// reachability returns.
+	if bridge_client_enabled() do peer_link_poll_start()
 }
 
 peer_link_poll_start :: proc() {
@@ -84,6 +100,7 @@ peer_link_poll_worker :: proc() {
 }
 
 peer_link_probe_all :: proc() {
+	_ = reachable_daemon_hydrate_from_bridge()
 	for i in 0..<peer_link_record_count {
 		if peer_link_records[i].removed_at_unix_ms != 0 do continue
 		peer_link_probe(peer_link_records[i].peer_id)
@@ -172,7 +189,7 @@ peer_link_find_by_daemon_id :: proc(daemon_id: string) -> (^Peer_Link_Record, bo
 	for i in 0..<peer_link_record_count {
 		rec := &peer_link_records[i]
 		if rec.removed_at_unix_ms != 0 do continue
-		if strings.trim_space(rec.daemon_id) == trimmed_daemon_id do return rec, true
+		if strings.trim_space(rec.daemon_id) == trimmed_daemon_id || strings.trim_space(rec.peer_id) == trimmed_daemon_id do return rec, true
 	}
 	return nil, false
 }
@@ -185,56 +202,313 @@ peer_link_validate_request :: proc(peer_token, peer_daemon_id: string) -> bool {
 		rec := peer_link_records[i]
 		if rec.removed_at_unix_ms != 0 do continue
 		if rec.peer_token != trimmed_token do continue
-		if rec.daemon_id != trimmed_daemon_id do continue
+		if rec.daemon_id != trimmed_daemon_id && rec.peer_id != trimmed_daemon_id do continue
 		return true
 	}
 	return false
+}
+
+peer_link_bridge_reachable_body :: proc() -> (string, bool) {
+	if !bridge_client_enabled() do return "", false
+	resp, ok := http.request_with_headers_timeout(contracts.BRIDGE_HTTP_METHOD_GET, server_bridge_url, contracts.ROUTE_BRIDGE_REACHABLE, "", bridge_client_headers(), FEDERATION_HTTP_TIMEOUT_MS)
+	if !ok || resp.status != 200 do return "", false
+	return strings.clone(resp.body), true
+}
+
+reachable_daemon_status_normalize :: proc(value: string) -> string {
+	trimmed := strings.trim_space(value)
+	if trimmed == contracts.BRIDGE_REACHABILITY_STATUS_LINKED do return PEER_STATUS_LINKED
+	return PEER_STATUS_UNREACHABLE
+}
+
+reachable_daemon_index_locked :: proc(daemon_id: string) -> int {
+	for i in 0..<reachable_daemon_count {
+		if reachable_daemon_records[i].daemon_id == daemon_id do return i
+	}
+	return -1
+}
+
+reachable_daemon_apply_entry_locked :: proc(entry: string, changed_ids: ^strings.Builder, changed_count: ^int, replay_peer_ids: []string, replay_count: ^int) {
+	daemon_id := strings.trim_space(extract_json_string(entry, "daemon_id", ""))
+	if daemon_id == "" do return
+	status := reachable_daemon_status_normalize(extract_json_string(entry, "status", contracts.BRIDGE_REACHABILITY_STATUS_UNREACHABLE))
+	idx := reachable_daemon_index_locked(daemon_id)
+	if idx < 0 {
+		if reachable_daemon_count >= PEER_MAX_RECORDS do return
+		idx = reachable_daemon_count
+		reachable_daemon_count += 1
+		reachable_daemon_records[idx].daemon_id = strings.clone(daemon_id)
+		reachable_daemon_records[idx].peer_id = strings.clone(daemon_id)
+	}
+	rec := &reachable_daemon_records[idx]
+	old_status := rec.status
+	if old_status == "" do old_status = PEER_STATUS_UNREACHABLE
+	old_last_seen_unix_ms := rec.last_seen_unix_ms
+	new_last_seen_unix_ms := i64(extract_json_int(entry, "last_seen_unix_ms", 0))
+	rec.reach = strings.clone(extract_json_string(entry, "reach", contracts.DAEMON_FEDERATION_PEER_KIND_DIRECT))
+	rec.next_hop_daemon_id = strings.clone(extract_json_string(entry, "next_hop_daemon_id", daemon_id))
+	rec.hops = extract_json_int(entry, "hops", 1)
+	rec.status = strings.clone(status)
+	rec.last_seen_unix_ms = new_last_seen_unix_ms
+	rec.updated_unix_ms = router_now_unix_ms()
+	if old_status != status {
+		if changed_count^ > 0 do strings.write_string(changed_ids, `,`)
+		strings.write_string(changed_ids, `"`); json_write_string(changed_ids, daemon_id); strings.write_string(changed_ids, `"`)
+		changed_count^ += 1
+	}
+	if status == PEER_STATUS_LINKED && (old_status != PEER_STATUS_LINKED || old_last_seen_unix_ms != new_last_seen_unix_ms) {
+		peer_id := rec.peer_id
+		if peer_id == "" do peer_id = daemon_id
+		if rec_ptr, found := peer_link_find_by_daemon_id(daemon_id); found do peer_id = rec_ptr.peer_id
+		if peer_id != "" && replay_count^ < PEER_MAX_RECORDS && !reachable_daemon_id_seen(replay_peer_ids, replay_count^, peer_id) {
+			replay_peer_ids[replay_count^] = strings.clone(peer_id)
+			replay_count^ += 1
+		}
+	}
+}
+
+reachable_daemon_id_seen :: proc(seen_ids: []string, seen_count: int, daemon_id: string) -> bool {
+	for i in 0..<seen_count {
+		if seen_ids[i] == daemon_id do return true
+	}
+	return false
+}
+
+reachable_daemon_apply_body :: proc(body: string, emit_event: bool) -> int {
+	changed_ids := strings.builder_make()
+	changed_count := 0
+	seen_ids: [PEER_MAX_RECORDS]string
+	seen_count := 0
+	replay_peer_ids: [PEER_MAX_RECORDS]string
+	replay_count := 0
+	defer {
+		for i in 0..<replay_count do delete(replay_peer_ids[i])
+	}
+	now := router_now_unix_ms()
+	sync.mutex_lock(&reachable_daemon_mutex)
+	search := body
+	for {
+		idx := strings.index(search, `"daemon_id":"`)
+		if idx < 0 do break
+		entry := search[idx:]
+		end := strings.index_byte(entry, '}')
+		if end < 0 do break
+		entry_body := entry[:end]
+		daemon_id := strings.trim_space(extract_json_string(entry_body, "daemon_id", ""))
+		if daemon_id != "" && seen_count < PEER_MAX_RECORDS && !reachable_daemon_id_seen(seen_ids[:], seen_count, daemon_id) {
+			seen_ids[seen_count] = strings.clone(daemon_id)
+			seen_count += 1
+		}
+		reachable_daemon_apply_entry_locked(entry_body, &changed_ids, &changed_count, replay_peer_ids[:], &replay_count)
+		search = entry[end + 1:]
+	}
+	// A successful /bridge/reachable response is authoritative for Phase 1 direct
+	// peers. Any projected daemon omitted from that successful snapshot is no
+	// longer present in bridge WS session/config state, so it must not remain
+	// linked in the daemon's public live projection.
+	for i in 0..<reachable_daemon_count {
+		if reachable_daemon_records[i].status != PEER_STATUS_LINKED do continue
+		if reachable_daemon_id_seen(seen_ids[:], seen_count, reachable_daemon_records[i].daemon_id) do continue
+		if changed_count > 0 do strings.write_string(&changed_ids, `,`)
+		strings.write_string(&changed_ids, `"`); json_write_string(&changed_ids, reachable_daemon_records[i].daemon_id); strings.write_string(&changed_ids, `"`)
+		changed_count += 1
+		reachable_daemon_records[i].status = strings.clone(PEER_STATUS_UNREACHABLE)
+		reachable_daemon_records[i].updated_unix_ms = now
+	}
+	sync.mutex_unlock(&reachable_daemon_mutex)
+	for i in 0..<replay_count {
+		_ = federation_delivery_outbox_replay_peer(replay_peer_ids[i])
+		_ = peer_link_replay_remote_notifications(replay_peer_ids[i])
+	}
+	if emit_event && changed_count > 0 do federation_reachability_emit_event(strings.to_string(changed_ids), changed_count)
+	return changed_count
+}
+
+reachable_daemon_mark_all_unreachable :: proc(emit_event: bool) -> int {
+	changed_ids := strings.builder_make()
+	changed_count := 0
+	now := router_now_unix_ms()
+	sync.mutex_lock(&reachable_daemon_mutex)
+	for i in 0..<reachable_daemon_count {
+		old_status := reachable_daemon_records[i].status
+		if old_status == "" do old_status = PEER_STATUS_UNREACHABLE
+		if old_status == PEER_STATUS_LINKED {
+			if changed_count > 0 do strings.write_string(&changed_ids, `,`)
+			strings.write_string(&changed_ids, `"`); json_write_string(&changed_ids, reachable_daemon_records[i].daemon_id); strings.write_string(&changed_ids, `"`)
+			changed_count += 1
+		}
+		reachable_daemon_records[i].status = strings.clone(PEER_STATUS_UNREACHABLE)
+		reachable_daemon_records[i].updated_unix_ms = now
+	}
+	sync.mutex_unlock(&reachable_daemon_mutex)
+	if emit_event && changed_count > 0 do federation_reachability_emit_event(strings.to_string(changed_ids), changed_count)
+	return changed_count
+}
+
+reachable_daemon_hydrate_from_bridge :: proc() -> bool {
+	body, ok := peer_link_bridge_reachable_body()
+	if !ok {
+		_ = reachable_daemon_mark_all_unreachable(true)
+		return false
+	}
+	_ = reachable_daemon_apply_body(body, true)
+	return true
+}
+
+federation_direct_peer_lookup :: proc(peer_id, origin_daemon_id: string) -> (resolved_peer_id: string, daemon_id: string, status: string, found: bool) {
+	trimmed_peer_id := strings.trim_space(peer_id)
+	trimmed_origin := strings.trim_space(origin_daemon_id)
+	if bridge_client_enabled() {
+		_ = reachable_daemon_hydrate_from_bridge()
+		sync.mutex_lock(&reachable_daemon_mutex)
+		// Origin daemon id is the scoped authority when supplied. If both peer_id
+		// and origin are supplied, require them to identify the same projected direct
+		// peer so bridge-only multi-peer setups cannot bind/route to the wrong peer.
+		if trimmed_origin != "" {
+			for i in 0..<reachable_daemon_count {
+				rec := reachable_daemon_records[i]
+				if rec.peer_id != trimmed_origin && rec.daemon_id != trimmed_origin do continue
+				if trimmed_peer_id != "" && rec.peer_id != trimmed_peer_id && rec.daemon_id != trimmed_peer_id {
+					sync.mutex_unlock(&reachable_daemon_mutex)
+					return "", "", "", false
+				}
+				resolved := rec.peer_id
+				if resolved == "" do resolved = rec.daemon_id
+				st := rec.status
+				if st == "" do st = PEER_STATUS_UNREACHABLE
+				sync.mutex_unlock(&reachable_daemon_mutex)
+				return strings.clone(resolved), strings.clone(rec.daemon_id), strings.clone(st), true
+			}
+			sync.mutex_unlock(&reachable_daemon_mutex)
+			return "", "", "", false
+		}
+		if trimmed_peer_id != "" {
+			for i in 0..<reachable_daemon_count {
+				rec := reachable_daemon_records[i]
+				if rec.peer_id != trimmed_peer_id && rec.daemon_id != trimmed_peer_id do continue
+				resolved := rec.peer_id
+				if resolved == "" do resolved = rec.daemon_id
+				st := rec.status
+				if st == "" do st = PEER_STATUS_UNREACHABLE
+				sync.mutex_unlock(&reachable_daemon_mutex)
+				return strings.clone(resolved), strings.clone(rec.daemon_id), strings.clone(st), true
+			}
+		}
+		sync.mutex_unlock(&reachable_daemon_mutex)
+	}
+	if trimmed_origin != "" {
+		if rec, ok := peer_link_find_by_daemon_id(trimmed_origin); ok {
+			if trimmed_peer_id != "" && rec.peer_id != trimmed_peer_id && rec.daemon_id != trimmed_peer_id do return "", "", "", false
+			dest := peer_link_destination_daemon_id(rec)
+			return strings.clone(rec.peer_id), strings.clone(dest), strings.clone(rec.status), true
+		}
+		return "", "", "", false
+	}
+	if trimmed_peer_id != "" {
+		if rec, ok := peer_link_find(trimmed_peer_id); ok {
+			dest := peer_link_destination_daemon_id(rec)
+			return strings.clone(rec.peer_id), strings.clone(dest), strings.clone(rec.status), true
+		}
+	}
+	return "", "", "", false
+}
+
+federation_reachability_emit_event :: proc(changed_ids_json: string, changed_count: int) {
+	linked := 0
+	unreachable := 0
+	sync.mutex_lock(&reachable_daemon_mutex)
+	for i in 0..<reachable_daemon_count {
+		if reachable_daemon_records[i].status == PEER_STATUS_LINKED {
+			linked += 1
+		} else {
+			unreachable += 1
+		}
+	}
+	sync.mutex_unlock(&reachable_daemon_mutex)
+	b := strings.builder_make()
+	strings.write_string(&b, `{"type":"federation_event","event":"`); json_write_string(&b, contracts.DAEMON_FEDERATION_REACHABILITY_EVENT)
+	strings.write_string(&b, `","changed_daemon_ids":[`); strings.write_string(&b, changed_ids_json)
+	strings.write_string(&b, `],"changed_count":`); strings.write_string(&b, fmt.tprintf("%d", changed_count))
+	strings.write_string(&b, `,"linked_count":`); strings.write_string(&b, fmt.tprintf("%d", linked))
+	strings.write_string(&b, `,"unreachable_count":`); strings.write_string(&b, fmt.tprintf("%d", unreachable))
+	strings.write_string(&b, `,"changed_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", router_now_unix_ms()))
+	strings.write_string(&b, `}`)
+	user_client_fanout_all_ws_text(strings.to_string(b))
+}
+
+peer_link_bridge_entry_for_daemon :: proc(body, daemon_id: string) -> (string, bool) {
+	trimmed := strings.trim_space(daemon_id)
+	if trimmed == "" do return "", false
+	needle := fmt.tprintf(`"daemon_id":"%s"`, trimmed)
+	idx := strings.index(body, needle)
+	if idx < 0 do return "", false
+	entry := body[idx:]
+	if end := strings.index_byte(entry, '}'); end >= 0 do entry = entry[:end]
+	return entry, true
+}
+
+peer_link_bridge_resolve_daemon_id :: proc(peer_id, current_daemon_id: string) -> string {
+	body, ok := peer_link_bridge_reachable_body()
+	if !ok do return strings.trim_space(current_daemon_id)
+	if _, found := peer_link_bridge_entry_for_daemon(body, current_daemon_id); found do return strings.trim_space(current_daemon_id)
+	if _, found := peer_link_bridge_entry_for_daemon(body, peer_id); found do return strings.trim_space(peer_id)
+	return strings.trim_space(current_daemon_id)
+}
+
+peer_link_destination_daemon_id :: proc(rec: ^Peer_Link_Record) -> string {
+	if rec == nil do return ""
+	resolved := peer_link_bridge_resolve_daemon_id(rec.peer_id, rec.daemon_id)
+	if strings.trim_space(resolved) != "" && strings.trim_space(rec.daemon_id) == "" {
+		rec.daemon_id = strings.clone(resolved)
+	}
+	return resolved
+}
+
+peer_link_bridge_reachable :: proc(rec: ^Peer_Link_Record) -> bool {
+	if rec == nil do return false
+	body, ok := peer_link_bridge_reachable_body()
+	if !ok do return false
+	daemon_id := strings.trim_space(rec.daemon_id)
+	entry, found := peer_link_bridge_entry_for_daemon(body, daemon_id)
+	if !found {
+		entry, found = peer_link_bridge_entry_for_daemon(body, rec.peer_id)
+		if found && daemon_id == "" {
+			rec.daemon_id = strings.clone(strings.trim_space(rec.peer_id))
+		}
+	}
+	if !found do return false
+	// Phase 1 /bridge/reachable is direct-only and secret-free; linked status is
+	// sourced from bridge WebSocket session state. A lightweight per-entry string
+	// check keeps daemon business logic from learning peer endpoint/token/session details.
+	return strings.contains(entry, `"status":"linked"`)
+}
+
+peer_link_replay_remote_notifications :: proc(peer_id: string) -> int {
+	replayed := 0
+	for i in 0..<agent_instance_record_count {
+		rec := agent_instance_records[i]
+		if rec.archived_at_unix_ms != 0 do continue
+		if !agent_record_is_remote_proxy(rec) do continue
+		if rec.remote_peer_id != peer_id do continue
+		replayed += notification_outbox_replay_pending(rec.agent_instance_id)
+	}
+	return replayed
 }
 
 peer_link_probe :: proc(peer_id: string) -> bool {
 	rec, ok := peer_link_find(peer_id)
 	if !ok do return false
 	was_linked := rec.status == PEER_STATUS_LINKED
-	now := router_now_unix_ms()
-	health, health_ok := http.get_with_timeout(rec.peer_url, "/health", FEDERATION_HTTP_TIMEOUT_MS)
-	if !health_ok || health.status != 200 {
-		rec.status = strings.clone(PEER_STATUS_UNREACHABLE)
-		rec.daemon_id = ""
-		rec.version = ""
-		rec.last_checked_unix_ms = now
-		return false
-	}
-	info, info_ok := http.get_with_timeout(rec.peer_url, "/daemon/info", FEDERATION_HTTP_TIMEOUT_MS)
-	if !info_ok || info.status != 200 {
-		rec.status = strings.clone(PEER_STATUS_UNREACHABLE)
-		rec.daemon_id = ""
-		rec.version = ""
-		rec.last_checked_unix_ms = now
-		return false
-	}
-	daemon_id := extract_json_string(info.body, "daemon_id", "")
-	version := extract_json_string(info.body, "version", "")
-	if daemon_id == "" {
-		rec.status = strings.clone(PEER_STATUS_UNREACHABLE)
-		rec.daemon_id = ""
-		rec.version = ""
-		rec.last_checked_unix_ms = now
-		return false
-	}
-	rec.status = strings.clone(PEER_STATUS_LINKED)
-	rec.daemon_id = strings.clone(daemon_id)
-	rec.version = strings.clone(version)
-	rec.last_checked_unix_ms = now
-	if !was_linked {
-		for i in 0..<agent_instance_record_count {
-			agent := agent_instance_records[i]
-			if !agent_record_is_remote_proxy(agent) do continue
-			if agent.remote_peer_id != peer_id do continue
-			_ = notification_outbox_replay_pending(agent.agent_instance_id)
-		}
+	linked := peer_link_bridge_reachable(rec)
+	rec.status = strings.clone(PEER_STATUS_LINKED if linked else PEER_STATUS_UNREACHABLE)
+	rec.last_checked_unix_ms = router_now_unix_ms()
+	if linked {
 		_ = federation_delivery_outbox_replay_peer(peer_id)
+		_ = peer_link_replay_remote_notifications(peer_id)
+		_ = was_linked
+		return true
 	}
-	return true
+	return false
 }
 
 peer_link_create_or_update :: proc(peer_id, peer_url, peer_token, author: string) -> (Peer_Link_Record, bool, string) {
@@ -343,31 +617,48 @@ peer_url_normalize :: proc(value: string) -> string {
 	return trimmed
 }
 
-federation_peer_record_json :: proc(builder: ^strings.Builder, rec: Peer_Link_Record) {
-	strings.write_string(builder, `{"peer_record_id":"`); json_write_string(builder, rec.peer_record_id)
-	strings.write_string(builder, `","peer_id":"`); json_write_string(builder, rec.peer_id)
-	strings.write_string(builder, `","peer_url":"`); json_write_string(builder, rec.peer_url)
+federation_peer_record_json :: proc(builder: ^strings.Builder, rec: Reachable_Daemon_Record) {
+	strings.write_string(builder, `{"peer_id":"`); json_write_string(builder, rec.peer_id)
 	strings.write_string(builder, `","daemon_id":"`); json_write_string(builder, rec.daemon_id)
-	strings.write_string(builder, `","version":"`); json_write_string(builder, rec.version)
+	strings.write_string(builder, `","kind":"`); json_write_string(builder, contracts.DAEMON_FEDERATION_PEER_KIND_DIRECT)
+	reach := rec.reach
+	if reach == "" do reach = contracts.DAEMON_FEDERATION_PEER_KIND_DIRECT
+	next_hop := rec.next_hop_daemon_id
+	if next_hop == "" do next_hop = rec.daemon_id
+	strings.write_string(builder, `","reach":"`); json_write_string(builder, reach)
+	strings.write_string(builder, `","next_hop":"`); json_write_string(builder, next_hop)
+	strings.write_string(builder, `","hops":`); strings.write_string(builder, fmt.tprintf("%d", rec.hops))
+	strings.write_string(builder, `,"via":[]`)
 	status := rec.status
 	if status == "" do status = PEER_STATUS_UNREACHABLE
-	strings.write_string(builder, `","status":"`); json_write_string(builder, status)
-	strings.write_string(builder, `","created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.created_unix_ms))
+	strings.write_string(builder, `,"status":"`); json_write_string(builder, status)
+	strings.write_string(builder, `","last_seen_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.last_seen_unix_ms))
 	strings.write_string(builder, `,"updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.updated_unix_ms))
-	strings.write_string(builder, `,"last_checked_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.last_checked_unix_ms))
 	strings.write_string(builder, `}`)
 }
 
 federation_peers_list_json :: proc() -> string {
+	bridge_reachable := false
+	if bridge_client_enabled() {
+		bridge_reachable = reachable_daemon_hydrate_from_bridge()
+	}
 	b := strings.builder_make()
-	strings.write_string(&b, `{"ok":true,"peers":[`)
+	strings.write_string(&b, `{"ok":true,"contract_version":`)
+	strings.write_string(&b, fmt.tprintf("%d", contracts.BRIDGE_LOOPBACK_CONTRACT_VERSION))
+	strings.write_string(&b, `,"self_daemon_id":"`); json_write_string(&b, server_daemon_id)
+	strings.write_string(&b, `","bridge_configured":`); strings.write_string(&b, "true" if bridge_client_enabled() else "false")
+	strings.write_string(&b, `,"bridge_reachable":`); strings.write_string(&b, "true" if bridge_reachable else "false")
+	strings.write_string(&b, `,"peers":[`)
 	wrote := 0
-	for i in 0..<peer_link_record_count {
-		rec := peer_link_records[i]
-		if rec.removed_at_unix_ms != 0 do continue
-		if wrote > 0 do strings.write_string(&b, `,`)
-		federation_peer_record_json(&b, rec)
-		wrote += 1
+	if bridge_client_enabled() {
+		sync.mutex_lock(&reachable_daemon_mutex)
+		for i in 0..<reachable_daemon_count {
+			rec := reachable_daemon_records[i]
+			if wrote > 0 do strings.write_string(&b, `,`)
+			federation_peer_record_json(&b, rec)
+			wrote += 1
+		}
+		sync.mutex_unlock(&reachable_daemon_mutex)
 	}
 	strings.write_string(&b, `]}`)
 	return strings.to_string(b)
@@ -428,14 +719,14 @@ handle_get_federation_agents :: proc(client: net.TCP_Socket, ctx: ^Route_Context
 }
 
 federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_instance_id, display_name, template_id, provider_profile, model_tier, agent_role: string) -> (Agent_Instance_Record, bool, string) {
-	rec, found := peer_link_find(peer_id)
-	if !found || rec.peer_id == "" {
+	resolved_peer_id, bridge_daemon_id, _, found := federation_direct_peer_lookup(peer_id, origin_daemon_id)
+	if !found || strings.trim_space(resolved_peer_id) == "" {
 		return Agent_Instance_Record{}, false, "peer not found"
 	}
 	remote_id := strings.trim_space(remote_agent_instance_id)
 	if remote_id == "" do return Agent_Instance_Record{}, false, "remote_agent_instance_id required"
 	resolved_origin_daemon_id := strings.trim_space(origin_daemon_id)
-	if resolved_origin_daemon_id == "" do resolved_origin_daemon_id = strings.trim_space(rec.daemon_id)
+	if resolved_origin_daemon_id == "" do resolved_origin_daemon_id = strings.trim_space(bridge_daemon_id)
 	if resolved_origin_daemon_id != "" {
 		if existing, ok := agent_remote_proxy_find_absolute(resolved_origin_daemon_id, remote_id); ok {
 			if strings.trim_space(existing.remote_origin_daemon_id) == "" {
@@ -447,7 +738,7 @@ federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_ins
 			return existing, true, ""
 		}
 	}
-	if existing, ok := agent_remote_proxy_find(peer_id, remote_id); ok {
+	if existing, ok := agent_remote_proxy_find(resolved_peer_id, remote_id); ok {
 		if resolved_origin_daemon_id != "" && strings.trim_space(existing.remote_origin_daemon_id) == "" {
 			_, _, backfill_ok := agent_record_upsert(existing.agent_instance_id, existing.display_name, existing.template_id, existing.provider_profile, existing.project_id, existing.run_dir, existing.model_tier, existing.state, existing.agent_scope, existing.agent_role, false, existing.agent_kind, existing.remote_peer_id, resolved_origin_daemon_id, existing.remote_agent_instance_id)
 			if backfill_ok {
@@ -465,8 +756,8 @@ federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_ins
 	local_provider := strings.trim_space(provider_profile)
 	if local_provider == "" do local_provider = agent_resolve_provider_profile("")
 	local_tier := normalize_model_tier(model_tier)
-	local_id := agent_generated_instance_id(fmt.tprintf("%s-%s", remote_id, peer_id))
-	rec_id, _, ok := agent_record_upsert(local_id, local_display_name, local_template_id, local_provider, "", "", local_tier, AGENT_IDENTITY_STATE_PROVISIONED, AGENT_SCOPE_DURABLE, local_role, false, AGENT_KIND_REMOTE_PROXY, peer_id, resolved_origin_daemon_id, remote_id)
+	local_id := agent_generated_instance_id(fmt.tprintf("%s-%s", remote_id, resolved_peer_id))
+	rec_id, _, ok := agent_record_upsert(local_id, local_display_name, local_template_id, local_provider, "", "", local_tier, AGENT_IDENTITY_STATE_PROVISIONED, AGENT_SCOPE_DURABLE, local_role, false, AGENT_KIND_REMOTE_PROXY, resolved_peer_id, resolved_origin_daemon_id, remote_id)
 	if !ok || rec_id == "" {
 		return Agent_Instance_Record{}, false, "failed to persist remote proxy"
 	}
@@ -479,6 +770,20 @@ handle_get_federation_peers :: proc(client: net.TCP_Socket, ctx: ^Route_Context)
 	_, ok := rest_authorize_user(client, ctx)
 	if !ok do return
 	write_response(client, 200, "OK", federation_peers_list_json())
+}
+
+handle_post_federation_reachability :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
+	if strings.trim_space(server_config.daemon.bridge_token) == "" || ctx.token != server_config.daemon.bridge_token {
+		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"bridge reachability push unauthorized"}`)
+		return
+	}
+	changed := reachable_daemon_apply_body(body, true)
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"contract_version":`)
+	strings.write_string(&b, fmt.tprintf("%d", contracts.BRIDGE_LOOPBACK_CONTRACT_VERSION))
+	strings.write_string(&b, `,"changed_count":`); strings.write_string(&b, fmt.tprintf("%d", changed))
+	strings.write_string(&b, `}`)
+	write_response(client, 202, "Accepted", strings.to_string(b))
 }
 
 handle_post_federation_proxy_bind :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
@@ -506,84 +811,29 @@ handle_post_federation_proxy_bind :: proc(client: net.TCP_Socket, body: string, 
 }
 
 handle_post_federation_peer_link :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
-	author, ok := rest_authorize_user(client, ctx)
+	_, ok := rest_authorize_user(client, ctx)
 	if !ok do return
-	rec, save_ok, message := peer_link_create_or_update(
-		extract_json_string(body, "peer_id", extract_json_string(body, "name", "")),
-		extract_json_string(body, "peer_url", extract_json_string(body, "endpoint", "")),
-		extract_json_string(body, "peer_token", extract_json_string(body, "token", "")),
-		author,
-	)
-	if !save_ok {
-		b := strings.builder_make()
-		strings.write_string(&b, `{"ok":false,"message":"`)
-		json_write_string(&b, message)
-		strings.write_string(&b, `"}`)
-		write_response(client, 400, "Bad Request", strings.to_string(b))
-		return
-	}
-	b := strings.builder_make()
-	strings.write_string(&b, `{"ok":true,"peer":`)
-	federation_peer_record_json(&b, rec)
-	strings.write_string(&b, `}`)
-	write_response(client, 200, "OK", strings.to_string(b))
+	_ = body
+	write_response(client, 410, "Gone", `{"ok":false,"message":"peer link endpoint moved to ham-bridge config"}`)
 }
 
 handle_post_federation_peer_reconnect :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
 	_, ok := rest_authorize_user(client, ctx)
 	if !ok do return
-	peer_id := peer_id_normalize(extract_json_string(body, "peer_id", ""))
-	rec, found := peer_link_find(peer_id)
-	if !found {
-		write_response(client, 404, "Not Found", `{"ok":false,"message":"peer not found"}`)
-		return
-	}
-	_ = peer_link_probe(peer_id)
-	b := strings.builder_make()
-	strings.write_string(&b, `{"ok":true,"peer":`)
-	federation_peer_record_json(&b, rec^)
-	strings.write_string(&b, `}`)
-	write_response(client, 200, "OK", strings.to_string(b))
+	_ = body
+	write_response(client, 410, "Gone", `{"ok":false,"message":"peer reconnect moved to ham-bridge websocket dialer"}`)
 }
 
 handle_post_federation_peer_remove :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
-	author, ok := rest_authorize_user(client, ctx)
+	_, ok := rest_authorize_user(client, ctx)
 	if !ok do return
-	peer_id := peer_id_normalize(extract_json_string(body, "peer_id", ""))
-	if peer_id == "" {
-		write_response(client, 400, "Bad Request", `{"ok":false,"message":"peer_id required"}`)
-		return
-	}
-	if !peer_link_remove(peer_id, author) {
-		write_response(client, 404, "Not Found", `{"ok":false,"message":"peer not found"}`)
-		return
-	}
-	write_response(client, 200, "OK", `{"ok":true,"message":"removed"}`)
+	_ = body
+	write_response(client, 410, "Gone", `{"ok":false,"message":"peer removal moved to ham-bridge config"}`)
 }
 
 handle_get_federation_peer_agents :: proc(client: net.TCP_Socket, peer_id: string, ctx: ^Route_Context) {
 	_, ok := rest_authorize_user(client, ctx)
 	if !ok do return
-	rec, found := peer_link_find(peer_id)
-	if !found {
-		write_response(client, 404, "Not Found", `{"ok":false,"message":"peer not found"}`)
-		return
-	}
-	path := fmt.tprintf("/federation/agents?peer_token=%s&peer_daemon_id=%s", rec.peer_token, server_daemon_id)
-	resp, fetch_ok := http.get_with_timeout(rec.peer_url, path, FEDERATION_HTTP_TIMEOUT_MS)
-	if !fetch_ok || resp.status != 200 {
-		rec.status = strings.clone(PEER_STATUS_UNREACHABLE)
-		rec.daemon_id = ""
-		rec.version = ""
-		rec.last_checked_unix_ms = router_now_unix_ms()
-		write_response(client, 503, "Service Unavailable", `{"ok":false,"message":"peer unreachable"}`)
-		return
-	}
-	rec.status = strings.clone(PEER_STATUS_LINKED)
-	rec.last_checked_unix_ms = router_now_unix_ms()
-	remote_daemon_id := extract_json_string(resp.body, "daemon_id", "")
-	remote_version := extract_json_string(resp.body, "version", "")
-	if remote_daemon_id != "" do rec.daemon_id = strings.clone(remote_daemon_id)
-	if remote_version != "" do rec.version = strings.clone(remote_version)
-	write_response(client, 200, "OK", resp.body)
+	_ = peer_id
+	write_response(client, 410, "Gone", `{"ok":false,"message":"peer agent discovery moved to ham-bridge"}`)
 }

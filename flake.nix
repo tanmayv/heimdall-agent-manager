@@ -137,6 +137,7 @@
         in
         {
           ham-daemon = mkOdinDaemonPackage pkgs odin;
+          ham-bridge = mkOdinPackage pkgs odin "ham-bridge" "src/bridge";
           # ham-wrapper shells out to tmux (agent windows) and git/jj (VCS
           # workspaces). It must carry those on PATH because the daemon launches
           # the wrapper detached with only the daemon's PATH, which does not
@@ -162,6 +163,10 @@
         daemon = {
           type = "app";
           program = "${self.packages.${system}.ham-daemon}/bin/ham-daemon";
+        };
+        bridge = {
+          type = "app";
+          program = "${self.packages.${system}.ham-bridge}/bin/ham-bridge";
         };
         # daemon-with-wrapper: builds the current ham-wrapper and ham-ctl
         # alongside the ham-daemon and launches the daemon with a generated
@@ -285,6 +290,125 @@
             echo "[ham-daemon-with-wrapper] ctl: $HAM_CTL"
             exec "$HAM_DAEMON" "$@"
           ''}/bin/ham-daemon-with-wrapper";
+        };
+        daemon-with-bridge = {
+          type = "app";
+          program = "${pkgs.writeShellScriptBin "ham-daemon-with-bridge" ''
+            #!/usr/bin/env bash
+            set -euo pipefail
+
+            HAM_DAEMON="${self.packages.${system}.ham-daemon}/bin/ham-daemon"
+            HAM_BRIDGE="${self.packages.${system}.ham-bridge}/bin/ham-bridge"
+            BRIDGE_PORT="''${HAM_BRIDGE_PORT:-49323}"
+            BRIDGE_TOKEN="''${HAM_BRIDGE_TOKEN:-br_loopback_dev_token}"
+            BRIDGE_URL="http://127.0.0.1:$BRIDGE_PORT"
+
+            CONFIG_PATH=""
+            REST=()
+            while [ "$#" -gt 0 ]; do
+              case "$1" in
+                --config)
+                  if [ "$#" -lt 2 ]; then
+                    echo "[ham-daemon-with-bridge] --config requires a path" >&2
+                    exit 2
+                  fi
+                  CONFIG_PATH="$2"
+                  shift 2
+                  ;;
+                --bridge-port)
+                  if [ "$#" -lt 2 ]; then
+                    echo "[ham-daemon-with-bridge] --bridge-port requires a value" >&2
+                    exit 2
+                  fi
+                  BRIDGE_PORT="$2"
+                  BRIDGE_URL="http://127.0.0.1:$BRIDGE_PORT"
+                  shift 2
+                  ;;
+                --bridge-token)
+                  if [ "$#" -lt 2 ]; then
+                    echo "[ham-daemon-with-bridge] --bridge-token requires a value" >&2
+                    exit 2
+                  fi
+                  BRIDGE_TOKEN="$2"
+                  shift 2
+                  ;;
+                *)
+                  REST+=("$1")
+                  shift
+                  ;;
+              esac
+            done
+            if [ -z "$CONFIG_PATH" ]; then
+              XDG_CONFIG="''${XDG_CONFIG_HOME:-$HOME/.config}/heimdall/config.toml"
+              if [ -f "$XDG_CONFIG" ]; then
+                CONFIG_PATH="$XDG_CONFIG"
+                echo "[ham-daemon-with-bridge] using $CONFIG_PATH"
+              else
+                echo "[ham-daemon-with-bridge] no config at $XDG_CONFIG; pass --config <path> to override" >&2
+              fi
+            fi
+
+            TMP_CONFIG=""
+            if [ -n "$CONFIG_PATH" ]; then
+              TMP_CONFIG="$(${pkgs.coreutils}/bin/mktemp "''${TMPDIR:-/tmp}/heimdall-daemon-with-bridge.XXXXXX")"
+              ${pkgs.gawk}/bin/awk -v bridge_url="$BRIDGE_URL" -v bridge_token="$BRIDGE_TOKEN" '
+                function flush_section() {
+                  if (section == "daemon") {
+                    if (!replaced_bridge_url) {
+                      print "bridge_url = \"" bridge_url "\""
+                      replaced_bridge_url = 1
+                    }
+                    if (!replaced_bridge_token) {
+                      print "bridge_token = \"" bridge_token "\""
+                      replaced_bridge_token = 1
+                    }
+                  }
+                }
+                BEGIN { section = ""; replaced_bridge_url = 0; replaced_bridge_token = 0; saw_daemon = 0 }
+                /^\[daemon\][[:space:]]*$/ { flush_section(); section = "daemon"; saw_daemon = 1; print; next }
+                /^\[/ { flush_section(); section = ""; print; next }
+                section == "daemon" && /^[[:space:]]*bridge_url[[:space:]]*=/ {
+                  print "bridge_url = \"" bridge_url "\""
+                  replaced_bridge_url = 1
+                  next
+                }
+                section == "daemon" && /^[[:space:]]*bridge_token[[:space:]]*=/ {
+                  print "bridge_token = \"" bridge_token "\""
+                  replaced_bridge_token = 1
+                  next
+                }
+                { print }
+                END {
+                  flush_section()
+                  if (!saw_daemon) {
+                    print ""
+                    print "[daemon]"
+                    print "bridge_url = \"" bridge_url "\""
+                    print "bridge_token = \"" bridge_token "\""
+                  }
+                }
+              ' "$CONFIG_PATH" > "$TMP_CONFIG"
+              set -- --config "$TMP_CONFIG" "''${REST[@]}"
+            else
+              TMP_CONFIG="$(${pkgs.coreutils}/bin/mktemp "''${TMPDIR:-/tmp}/heimdall-daemon-with-bridge.XXXXXX")"
+              printf '[daemon]\nbridge_url = "%s"\nbridge_token = "%s"\n' "$BRIDGE_URL" "$BRIDGE_TOKEN" > "$TMP_CONFIG"
+              set -- --config "$TMP_CONFIG" "''${REST[@]}"
+            fi
+            cleanup() {
+              if [ -n "''${BRIDGE_PID:-}" ]; then
+                kill "$BRIDGE_PID" 2>/dev/null || true
+              fi
+              rm -f "$TMP_CONFIG"
+            }
+            trap cleanup EXIT INT TERM
+
+            echo "[ham-daemon-with-bridge] daemon: $HAM_DAEMON"
+            echo "[ham-daemon-with-bridge] bridge: $HAM_BRIDGE"
+            echo "[ham-daemon-with-bridge] bridge_url: $BRIDGE_URL"
+            "$HAM_BRIDGE" --config "$TMP_CONFIG" --bind-host 127.0.0.1 --port "$BRIDGE_PORT" --bridge-token "$BRIDGE_TOKEN" &
+            BRIDGE_PID=$!
+            exec "$HAM_DAEMON" "$@"
+          ''}/bin/ham-daemon-with-bridge";
         };
         wrapper = {
           type = "app";

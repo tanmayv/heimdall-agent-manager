@@ -38,6 +38,7 @@ default_config_path :: proc() -> string {
 
 Config :: struct {
 	daemon: Daemon_Config,
+	bridge: Bridge_Config,
 	wrapper: Wrapper_Config,
 	guide_agent: Guide_Agent_Config,
 	ctl: Ctl_Config,
@@ -47,6 +48,10 @@ Peer_Config :: struct {
 	name: string,
 	endpoint: string,
 	token: string,
+}
+
+Bridge_Config :: struct {
+	peers: [dynamic]Peer_Config,
 }
 
 Daemon_Config :: struct {
@@ -76,7 +81,8 @@ Daemon_Config :: struct {
 	wrapper_bin: string,
 	artifact_max_bytes: int,
 	artifact_blob_dir: string,
-	peers: [dynamic]Peer_Config,
+	bridge_url: string,
+	bridge_token: string,
 	federation_advertised_agent_instance_ids: []string,
 }
 
@@ -259,7 +265,7 @@ parse_config :: proc(content: string, cfg: ^Config) {
 		}
 		if line == "[[peer]]" {
 			section = .Peer
-			current_peer_index = ensure_peer(&cfg.daemon)
+			current_peer_index = ensure_peer(&cfg.bridge)
 			continue
 		}
 		if line == "[guide_agent]" {
@@ -334,7 +340,7 @@ parse_config :: proc(content: string, cfg: ^Config) {
 		case .Daemon:
 			parse_daemon_key(key, value, &cfg.daemon)
 		case .Peer:
-			parse_peer_key(current_peer_index, key, value, &cfg.daemon)
+			parse_peer_key(current_peer_index, key, value, &cfg.bridge)
 		case .Wrapper:
 			parse_wrapper_key(key, value, &cfg.wrapper)
 		case .Wrapper_Agent_Command:
@@ -440,18 +446,22 @@ parse_daemon_key :: proc(key, value: string, cfg: ^Daemon_Config) {
 		if n, ok := strconv.parse_int(value); ok do cfg.artifact_max_bytes = int(n)
 	case "artifact_blob_dir":
 		cfg.artifact_blob_dir = expand_home(parse_string(value))
+	case "bridge_url":
+		cfg.bridge_url = parse_string(value)
+	case "bridge_token":
+		cfg.bridge_token = parse_string(value)
 	case "federation_advertised_agent_instance_ids":
 		cfg.federation_advertised_agent_instance_ids = parse_string_array(value)
 	case:
 	}
 }
 
-ensure_peer :: proc(cfg: ^Daemon_Config) -> int {
+ensure_peer :: proc(cfg: ^Bridge_Config) -> int {
 	append(&cfg.peers, Peer_Config{})
 	return len(cfg.peers) - 1
 }
 
-parse_peer_key :: proc(idx: int, key, value: string, cfg: ^Daemon_Config) {
+parse_peer_key :: proc(idx: int, key, value: string, cfg: ^Bridge_Config) {
 	if idx < 0 || idx >= len(cfg.peers) do return
 	switch key {
 	case "name":
@@ -770,8 +780,10 @@ default_config :: proc() -> Config {
 	cfg.daemon.default_agent_model_tier = "normal"
 	cfg.daemon.artifact_max_bytes = 10 * 1024 * 1024
 	cfg.daemon.artifact_blob_dir = ""
-	cfg.daemon.peers = make([dynamic]Peer_Config)
+	cfg.daemon.bridge_url = ""
+	cfg.daemon.bridge_token = ""
 	cfg.daemon.federation_advertised_agent_instance_ids = nil
+	cfg.bridge.peers = make([dynamic]Peer_Config)
 
 	cfg.guide_agent.enabled = true
 	cfg.guide_agent.autostart = true

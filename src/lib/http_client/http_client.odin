@@ -15,6 +15,11 @@ Response :: struct {
 	body: string,
 }
 
+Header :: struct {
+	name: string,
+	value: string,
+}
+
 get :: proc(base_url, path: string) -> (Response, bool) {
 	return request_with_timeout("GET", base_url, path, "", DEFAULT_TIMEOUT_MS)
 }
@@ -39,7 +44,15 @@ request_with_timeout :: proc(method, base_url, path, body: string, timeout_ms: i
 	return request_blocking(method, base_url, path, body, timeout_ms)
 }
 
+request_with_headers_timeout :: proc(method, base_url, path, body: string, headers: []Header, timeout_ms: int) -> (Response, bool) {
+	return request_blocking_with_headers(method, base_url, path, body, headers, timeout_ms)
+}
+
 request_blocking :: proc(method, base_url, path, body: string, timeout_ms := 0) -> (Response, bool) {
+	return request_blocking_with_headers(method, base_url, path, body, nil, timeout_ms)
+}
+
+request_blocking_with_headers :: proc(method, base_url, path, body: string, extra_headers: []Header, timeout_ms := 0) -> (Response, bool) {
 	host, port, ok := parse_base_url(base_url)
 	if !ok do return {}, false
 
@@ -52,15 +65,17 @@ request_blocking :: proc(method, base_url, path, body: string, timeout_ms := 0) 
 		if net.set_option(socket, .Receive_Timeout, timeout) != nil do return {}, false
 	}
 
-	req := fmt.tprintf(
-		"%s %s HTTP/1.1\r\nHost: %s:%d\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s",
-		method,
-		path,
-		host,
-		port,
-		len(body),
-		body,
-	)
+	req_b := strings.builder_make()
+	strings.write_string(&req_b, fmt.tprintf("%s %s HTTP/1.1\r\nHost: %s:%d\r\nContent-Type: application/json\r\n", method, path, host, port))
+	for h in extra_headers {
+		if strings.trim_space(h.name) == "" do continue
+		strings.write_string(&req_b, h.name)
+		strings.write_string(&req_b, ": ")
+		strings.write_string(&req_b, h.value)
+		strings.write_string(&req_b, "\r\n")
+	}
+	strings.write_string(&req_b, fmt.tprintf("Content-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body))
+	req := strings.to_string(req_b)
 	_, send_err := net.send_tcp(socket, transmute([]byte)req)
 	if send_err != nil do return {}, false
 
@@ -83,8 +98,9 @@ request_blocking :: proc(method, base_url, path, body: string, timeout_ms := 0) 
 			response_body = response_decode_chunked_body(response_body)
 		} else {
 			content_length := response_content_length(headers)
-			if content_length >= 0 && len(response_body) > content_length {
-				response_body = response_body[:content_length]
+			if content_length >= 0 {
+				if len(response_body) < content_length do return {}, false
+				if len(response_body) > content_length do response_body = response_body[:content_length]
 			}
 		}
 	}

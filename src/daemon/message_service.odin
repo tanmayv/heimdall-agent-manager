@@ -200,8 +200,13 @@ message_service_process_mark_read :: proc(command: Mark_Read_Command) -> Service
 		payload := federation_callback_read_receipt_json(remote_rec.message_id, remote_rec.remote_agent_instance_id, remote_rec.proxy_agent_instance_id, remote_rec.origin_conversation_id, remote_rec.local_agent_instance_id, read_unix_ms)
 		idempotency_key := federation_idempotency_key("read", server_daemon_id, remote_rec.message_id)
 		_ = federation_delivery_outbox_insert_pending(remote_rec.owner_peer_id, FEDERATION_ROUTE_CALLBACK, idempotency_key, payload)
-		sent := federation_forward(remote_rec.owner_peer_id, FEDERATION_ROUTE_CALLBACK, payload, idempotency_key)
-		_ = federation_delivery_outbox_mark_attempt(remote_rec.owner_peer_id, FEDERATION_ROUTE_CALLBACK, idempotency_key, sent)
+		bridge_accepted := false
+		_, dest_daemon_id, peer_status, found := federation_direct_peer_lookup(remote_rec.owner_peer_id, remote_rec.owner_daemon_id)
+		if found && peer_status == PEER_STATUS_LINKED {
+			bridge_accepted = dest_daemon_id != "" && bridge_send(dest_daemon_id, FEDERATION_ROUTE_CALLBACK, payload, idempotency_key)
+		}
+		// Bridge acceptance is not destination durable delivery; keep outbox pending until delivery_ack.
+		_ = federation_delivery_outbox_mark_attempt(remote_rec.owner_peer_id, FEDERATION_ROUTE_CALLBACK, idempotency_key, false)
 		return Service_Result{ok = true, message = `{"ok":true,"message":"mark_read applied"}`, status_code = 200, status_text = "OK"}
 	}
 

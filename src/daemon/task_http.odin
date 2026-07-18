@@ -6,13 +6,19 @@ import "core:strings"
 
 write_remote_task_callback_response :: proc(client: net.TCP_Socket, work: Federation_Remote_Work_Record, payload, idempotency_key, kind, task_id: string) {
 	_ = federation_delivery_outbox_insert_pending(work.owner_peer_id, FEDERATION_ROUTE_CALLBACK, idempotency_key, payload)
-	resp, sent := federation_remote_post_callback(work.owner_peer_id, payload, idempotency_key)
-	_ = federation_delivery_outbox_mark_attempt(work.owner_peer_id, FEDERATION_ROUTE_CALLBACK, idempotency_key, sent)
-	if !sent && federation_delivery_outbox_pending_exists(work.owner_peer_id, FEDERATION_ROUTE_CALLBACK, idempotency_key) {
+	bridge_accepted := false
+	_, dest_daemon_id, peer_status, found := federation_direct_peer_lookup(work.owner_peer_id, work.origin_daemon_id)
+	if found && peer_status == PEER_STATUS_LINKED {
+		bridge_accepted = dest_daemon_id != "" && bridge_send(dest_daemon_id, FEDERATION_ROUTE_CALLBACK, payload, idempotency_key)
+	}
+	// Bridge accepted/queued is not destination durable delivery; the callback
+	// outbox entry remains pending until delivery_ack arrives.
+	_ = federation_delivery_outbox_mark_attempt(work.owner_peer_id, FEDERATION_ROUTE_CALLBACK, idempotency_key, false)
+	if federation_delivery_outbox_pending_exists(work.owner_peer_id, FEDERATION_ROUTE_CALLBACK, idempotency_key) {
 		write_response(client, 202, "Accepted", federation_task_callback_pending_json(kind, task_id))
 		return
 	}
-	federation_write_forwarded_response(client, resp, sent)
+	write_response(client, 503, "Service Unavailable", `{"ok":false,"message":"failed to queue remote callback"}`)
 }
 
 write_remote_task_identity_ambiguous_response :: proc(client: net.TCP_Socket, task_id: string) {
