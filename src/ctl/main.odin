@@ -1374,7 +1374,7 @@ print_usage :: proc(config_path, daemon_url: string) {
 	fmt.println("  tasks comment --token <token> --task-id <id> --body <text>")
 	fmt.println("  tasks comment-resolve --token <token> --task-id <id> --comment-id <id>")
 	fmt.println("  tasks comments --token <token> --task-id <id> [--unresolved]")
-	fmt.println("  tasks status --token <token> --task-id <id> --status <status> --body <text>   (restricted to user tokens)")
+	fmt.println("  tasks status --token <token> --task-id <id> --status <status> --body <text> [--force]   (user tokens, or coordinator/operator with --force for any status)")
 	fmt.println("  tasks update --token <token> --task-id <id> [--title <text>] [--description <text>]")
 	fmt.println("  tasks done --token <token> --task-id <id> [--comment <text>] [--force]")
 	fmt.println("  tasks blocked --token <token> --task-id <id> [--reason <text>]")

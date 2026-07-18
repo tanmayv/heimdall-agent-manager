@@ -1464,9 +1464,13 @@ task_service_status_command :: proc(cmd: Task_Status_Command) -> Task_Service_Re
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"invalid task status"}`}
 	}
 	if cmd.force {
-		if status_val != .Approved {
-			return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"force only supports approved status"}`}
-		}
+		// A coordinator/operator force bypasses gating (dependencies, assignee
+		// slot, unresolved comments, reviewer LGTM votes) for ANY valid status
+		// transition, not just approved. This lets the coordinator drive the
+		// control plane when they own the decision and no user gate is required.
+		// Authorization stays restricted to the chain coordinator or operator,
+		// and every forced transition is written as an audited
+		// FORCE_REVIEW_BYPASS event below.
 		if !task_force_advance_authorized(state, cmd.author_agent_instance_id) {
 			return Task_Service_Result{ok = false, status_code = 403, message = `{"ok":false,"message":"force requires chain coordinator or operator"}`}
 		}
