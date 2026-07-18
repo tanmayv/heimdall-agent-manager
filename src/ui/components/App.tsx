@@ -643,6 +643,10 @@ export default function App() {
   const sessionRef = useRef(session);
   const chainViewRef = useRef<any>(null);
   const chainsByIdRef = useRef(chainsById);
+  const chainsRef = useRef<Chain[]>([]);
+  const chainsRefetchRef = useRef<(() => any) | null>(null);
+  const agentsRefetchRef = useRef<(() => any) | null>(null);
+  const sessionRegisterInFlightRef = useRef(false);
   const selectedAgentRef = useRef(selectedAgentId);
   const visibleChatAgentRef = useRef('');
   const lastMarkReadAtByAgentRef = useRef<Record<string, number>>({});
@@ -661,6 +665,7 @@ export default function App() {
   const [daemonModalMode, setDaemonModalMode] = useState<null | 'add' | 'rename' | 'connect_failed'>(null);
   const [daemonModalContext, setDaemonModalContext] = useState<{ url?: string; label?: string }>({});
   const connectAttemptsRef = useRef(0);
+  const connectRetryTimerRef = useRef<number | undefined>(undefined);
   const firstRunPromptedRef = useRef(false);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Record<string, boolean>>(() => {
     try {
@@ -681,7 +686,12 @@ export default function App() {
   });
   const agents = agentsQuery.data?.agents || [];
   const agentIdentities = agentsQuery.data?.identities || [];
-  const refetchAgents = useCallback(() => agentsQuery.refetch().catch(() => undefined), [agentsQuery.refetch]);
+  useEffect(() => { agentsRefetchRef.current = agentsQuery.refetch; }, [agentsQuery.refetch]);
+  const refetchAgents = useCallback(() => {
+    const refetch = agentsRefetchRef.current;
+    if (!refetch) return Promise.resolve(undefined);
+    return Promise.resolve(refetch()).catch(() => undefined);
+  }, []);
   const selectedAgentDetailQuery = useFetchAgentQuery(
     { agentInstanceId: agentPageId || '' },
     {
@@ -720,6 +730,8 @@ export default function App() {
   const settingsProviders = settingsCatalogQuery.data?.providers || [];
 
   const chains: Chain[] = useMemo(() => Object.values(chainsById || {}) as Chain[], [chainsById]);
+  useEffect(() => { chainsRef.current = chains; }, [chains]);
+  useEffect(() => { chainsRefetchRef.current = chainsQuery.refetch; }, [chainsQuery.refetch]);
   const selectedProjectId = home.selectedProjectId || selectedProjectIdPreference || projects[0]?.projectId || 'default';
   const selectedChain = home.selectedChainId ? (chainsById[home.selectedChainId] || selectedChainQuery.data?.chain || null) : null;
   const selectedWorkspaceQuery = useFetchWorkspaceQuery(
@@ -1010,35 +1022,65 @@ export default function App() {
   }, [chainsById, chats, dispatch, fetchingChatsByAgentId, home.selectedChainId, session.clientToken, session.connected, urlParams.chainId, urlParams.view]);
 
   const loadHomeData = useCallback(async (periodic = false, reason = 'startup') => {
-    const chainResult = await chainsQuery.refetch().catch(() => null);
+    const chainRefetch = chainsRefetchRef.current;
+    const chainResult = chainRefetch ? await Promise.resolve(chainRefetch()).catch(() => null) : null;
     await Promise.all([
       refetchAgents(),
     ]);
-    const chainIds = ((chainResult as any)?.data?.chains || chains || []).map((chain: any) => chain.chainId).filter(Boolean);
+    const chainIds = ((chainResult as any)?.data?.chains || chainsRef.current || []).map((chain: any) => chain.chainId).filter(Boolean);
     await Promise.all(chainIds.slice(0, 20).map((chainId: string) => dispatch(fetchTasksForChain(chainId)).catch(() => undefined)));
     dispatch(httpLoadCompleted({ at: Date.now(), periodic, reason }));
-  }, [chains, chainsQuery, dispatch, refetchAgents]);
+  }, [dispatch, refetchAgents]);
+
+  // Registration retry policy. A daemon that is still booting (e.g. launched
+  // from a sketchybar click) can take several seconds to accept connections, so
+  // we retry with capped exponential backoff instead of a fixed short delay.
+  const CONNECT_MAX_ATTEMPTS = 8;
+  const CONNECT_BASE_DELAY_MS = 750;
+  const CONNECT_MAX_DELAY_MS = 15_000;
+  const clearConnectRetryTimer = useCallback(() => {
+    if (connectRetryTimerRef.current !== undefined) {
+      window.clearTimeout(connectRetryTimerRef.current);
+      connectRetryTimerRef.current = undefined;
+    }
+  }, []);
 
   const connectSession = useCallback((attempt = 0) => {
+    if (sessionRegisterInFlightRef.current) return;
+    // A fresh connect attempt supersedes any pending retry so we never run two
+    // overlapping retry chains (e.g. after a daemon switch).
+    clearConnectRetryTimer();
+    sessionRegisterInFlightRef.current = true;
     connectAttemptsRef.current = attempt;
     dispatch(registerSession())
       .unwrap()
       .then(() => {
+        sessionRegisterInFlightRef.current = false;
         connectAttemptsRef.current = 0;
+        clearConnectRetryTimer();
         setDaemonModalMode((current) => (current === 'connect_failed' ? null : current));
         loadHomeData(false, attempt ? `startup-retry-${attempt}` : 'startup');
       })
       .catch(() => {
-        if (attempt < 5) {
-          window.setTimeout(() => connectSession(attempt + 1), 750);
+        sessionRegisterInFlightRef.current = false;
+        if (attempt + 1 < CONNECT_MAX_ATTEMPTS) {
+          const delay = Math.min(CONNECT_BASE_DELAY_MS * 2 ** attempt, CONNECT_MAX_DELAY_MS);
+          clearConnectRetryTimer();
+          connectRetryTimerRef.current = window.setTimeout(() => {
+            connectRetryTimerRef.current = undefined;
+            connectSession(attempt + 1);
+          }, delay);
         } else {
           setDaemonModalMode('connect_failed');
           setDaemonModalContext({ url: sessionRef.current?.daemonUrl || '' });
         }
       });
-  }, [dispatch, loadHomeData]);
+  }, [dispatch, loadHomeData, clearConnectRetryTimer]);
 
-  useEffect(() => { connectSession(); }, [connectSession]);
+  useEffect(() => {
+    connectSession();
+    return () => clearConnectRetryTimer();
+  }, [connectSession, clearConnectRetryTimer]);
   useEffect(() => {
     if (!guidePanelOpen || !session.connected) return undefined;
     dispatch(fetchGuideChat()).catch(() => undefined);
