@@ -126,17 +126,22 @@ reachability is a live projection. Refresh = bridge **push on change** (`POST /f
 
 ## 5. Bridge internals (transport + routing only)
 
-### 5.1 Sessions (bidirectional, multiplexed)
+### 5.1 Sessions (WebSocket, single-dial, bidirectional message flow)
 
-- A **session** is a persistent connection between two bridges. **Whoever can dial, dials** (spoke
-  dials hub; A or B dials each other). Once up it is symmetric: either end initiates streams.
-- Carries multiplexed logical streams: request/response (proxied reads/writes), push frames
-  (wake-ups/callbacks), keepalive.
-- v1 transport: long-lived connection with length-prefixed frames (or WebSocket). Return traffic to
-  a NATed spoke rides **down the session the spoke dialed** — this is what makes one-way reachability
-  work.
-- **Liveness = session presence.** No separate health poll. `status linked` iff the whole path's
-  sessions are up.
+- A **session** is a **persistent WebSocket** between two bridges. **Only one side dials** — whoever
+  can reach the other (spoke dials hub; in a mutually reachable pair either side may dial, but a
+  single session is enough). **We do NOT require both sides to be able to dial each other.**
+- Once the WS is open it is **fully bidirectional**: either end sends frames over the same socket.
+  This is the core property that removes any bidirectional-reachability requirement — return traffic
+  to a non-dialable/NATed bridge rides **down the WebSocket that bridge dialed**. The dialer and the
+  destination of a message are independent.
+- The WS multiplexes logical streams by a per-frame `stream_id` + `kind`: request/response (proxied
+  reads/writes), push frames (wake-ups/callbacks), route announcements, keepalive.
+- **Reconnect is the dialer's job**: the side that dialed owns reconnect with backoff; the accepting
+  side just waits to be re-dialed. (Reuses the wrapper/user-WS reconnect discipline already in the
+  codebase.)
+- **Liveness = session presence.** No separate health poll. `status linked` iff every WS on the
+  path is currently open.
 
 ### 5.2 Routing table + forwarding
 
@@ -208,21 +213,29 @@ buffering — **not** the durable source of truth (that stays in the daemon's ou
 
 # Migration plan
 
-Two phases. **Phase 1 is a pure lift-and-shift**: create the bridge and move the existing
-direct-link transport out of the daemon behind the loopback seam, with **no topology/behavior
-change** (still direct links only, still bidirectional-reachability assumption). Phase 2 adds the
-routed overlay (relay, multi-hop, announced reachability) that the motivating topology needs.
+Two phases. **Phase 1** creates the bridge, moves all cross-daemon transport out of the daemon
+behind the loopback seam, **and replaces the direct request/response HTTP dials with a persistent
+WebSocket session** between bridges. This removes the bidirectional-reachability requirement in
+Phase 1 itself: a single dialed WS carries traffic **both** directions, so a bridge that cannot be
+dialed (NAT/one-way) still receives pushes/callbacks down the WS it dialed. Phase 2 adds the routed
+overlay (relay, multi-hop, announced reachability) for indirect paths (A→B→VPS→C).
 
-## Phase 1 — Extract the bridge (behavior-preserving)
+## Phase 1 — Extract the bridge onto a WebSocket session
 
-**Outcome:** `ham-bridge` binary exists; the daemon no longer dials peers directly; direct A↔B
-federation works exactly as it does today, but through the bridge. No relaying yet.
+**Outcome:** `ham-bridge` binary exists; the daemon no longer dials peers directly; bridges connect
+over a **persistent bidirectional WebSocket**; and direct federation (A↔B, and one-way A→B where
+only one side can dial) works through the bridge. No multi-hop relaying yet.
+
+**Reachability requirement dropped:** Phase 1 no longer assumes both peers can dial each other. Only
+one side needs to be able to open the WS; all message flow (including B→A pushes/callbacks) rides
+that single socket.
 
 ### What moves OUT of the daemon → into `src/bridge/`
 
 - `src/daemon/federation_transport.odin` outbound half: `federation_forward`,
   `federation_forward_start`, `post_with_timeout` peer dials, the delivery-outbox *transport* loop
-  (~15 outbound-dial sites).
+  (~15 outbound-dial sites). These per-call HTTP dials are **replaced** by frames over the persistent
+  bridge↔bridge WebSocket, not merely relocated.
 - `src/daemon/federation_peers.odin` link/session management: `Peer_Link_Record` URL+token+status,
   `peer_link_find/create/update/remove`, health poll → become bridge-owned session/link state.
 - `[[peer]]` parsing (`src/lib/config/config.odin` `Peer_Config`, `ensure_peer`, `parse_peer_key`)
@@ -248,11 +261,19 @@ federation works exactly as it does today, but through the bridge. No relaying y
 
 ### New: `ham-bridge` (phase 1 scope)
 
-- Loopback server: `/bridge/send`, `/bridge/request`, `/bridge/reachable`, `/bridge/health`.
+- Loopback server (from its daemon): `/bridge/send`, `/bridge/request`, `/bridge/reachable`,
+  `/bridge/health`.
+- **Bridge↔bridge WebSocket**: a WS server endpoint (`/bridge-ws`, peer-token authed) that accepts
+  inbound sessions, **and** a WS client that dials each configured peer's endpoint. Exactly one
+  persistent WS per peer pair is enough; whichever side can dial owns it (with reconnect+backoff).
+- Frame the multiplexed streams over the WS (`stream_id` + `kind`): request/response, push,
+  keepalive. Inbound frames are delivered into the local daemon's existing `/federation/*` endpoints;
+  responses/callbacks are sent back over the **same** WS.
+- Reuse `src/lib/ws` (wrapper/user-WS client) for the dialer and the codebase's WS server plumbing
+  for the acceptor.
 - Bridge config: `[[peer]]` (name, endpoint, token) — the direct links, moved from the daemon.
-- One persistent session per configured peer (dial out; accept inbound). Deliver inbound to the
-  local daemon's `/federation/*`. Transit outbox for a temporarily-down direct peer.
-- Reachability = just the directly-configured peers with live/dead session status (no multi-hop yet).
+- Transit outbox for a temporarily-disconnected peer WS; flush on reconnect.
+- Reachability = the directly-configured peers with live/dead **WS session** status (no multi-hop yet).
 
 ### Build / launch
 
@@ -269,27 +290,33 @@ federation works exactly as it does today, but through the bridge. No relaying y
   traffic goes daemon→loopback→bridge.
 - **BR-2** Existing direct A↔B flows (remote reviewer wake-up, proxied task read, vote callback,
   inbox DM store-and-forward, artifact fetch-through) pass unchanged through the bridge.
-- **BR-3** `GET /federation/peers` lists direct peers with live status sourced from the bridge.
+- **BR-3** `GET /federation/peers` lists direct peers with live status sourced from the bridge’s WS
+  session state.
 - **BR-4** ACK-means-durably-accepted, idempotency dedupe, and scoped write authority preserved
   (reuse existing daemon handlers + outbox).
 - **BR-5** No bridge configured ⇒ daemon runs local-only with federation disabled; no regressions.
+- **BR-6** Bridges connect over a **persistent bidirectional WebSocket**; per-call HTTP dials are
+  gone. The dialer owns reconnect+backoff; `linked` status tracks WS presence.
+- **BR-7** **One-way reachability works for a direct pair**: with only A able to dial B (B cannot
+  dial A), B→A pushes/callbacks are delivered down the WS A dialed. Verified with a directional
+  test (block B→A dials, confirm a B-owned callback still reaches A).
 
 ## Phase 2 — Routed overlay (relay + multi-hop + announced reachability)
 
 **Outcome:** the motivating topology works (A↔B, B→VPS, C→VPS, A cannot reach VPS; all talk to all).
 
-- **BR-6** Bridge envelope `{src,dest,kind,idempotency_key,ttl,hops,payload,sig?}`; forward
+- **BR-8** Bridge envelope `{src,dest,kind,idempotency_key,ttl,hops,payload,sig?}`; forward
   `if dest != self`; TTL drop.
-- **BR-7** Distance-vector reachability propagation across sessions; `GET /bridge/reachable` returns
-  `direct` + `relayed` entries with `via`/`hops`/end-to-end `status`.
-- **BR-8** Per-hop transit store-and-forward with bounded queue + TTL; flush on session reconnect.
-- **BR-9** Return traffic to a non-dialable spoke rides down the session the spoke dialed (one-way
-  reachability works); VPS never dials B or C.
-- **BR-10** End-to-end ACK + idempotency verified across 2 relay hops (A→B→VPS→C and back).
-- **BR-11** Daemon `/federation/peers` + UI Settings pane show indirect daemons with their path
+- **BR-9** Distance-vector reachability propagation across WS sessions; `GET /bridge/reachable`
+  returns `direct` + `relayed` entries with `via`/`hops`/end-to-end `status`.
+- **BR-10** Per-hop transit store-and-forward with bounded queue + TTL; flush on session reconnect.
+- **BR-11** Return traffic to a non-dialable spoke rides down the WS the spoke dialed; VPS never
+  dials B or C.
+- **BR-12** End-to-end ACK + idempotency verified across 2 relay hops (A→B→VPS→C and back).
+- **BR-13** Daemon `/federation/peers` + UI Settings pane show indirect daemons with their path
   (e.g. `B → VPS → C`) and live end-to-end status; `federation_reachability_changed` updates the UI
   live.
-- **BR-12** Replay-on-reconnect driven by bridge reachability transitions across relayed paths.
+- **BR-14** Replay-on-reconnect driven by bridge reachability transitions across relayed paths.
 
 ## Non-goals (v2)
 
