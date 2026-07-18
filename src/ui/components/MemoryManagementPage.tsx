@@ -3,17 +3,18 @@ import { useDispatch, useSelector } from 'react-redux';
 import Markdown from './Markdown';
 import { VimEditButton } from './VimSidebar';
 import {
-  decideMemoryProposal,
-  fetchMemoryDetail,
-  proposeMemoryChange,
-  refreshMemory,
+  matchesMemoryFilters,
   resetMemoryFilters,
-  selectFilteredMemoryRecords,
   selectMemoryFilters,
-  selectMemoryRecords,
-  selectPendingMemoryRecords,
   setMemoryFilters,
 } from '../store/memorySlice';
+import {
+  useDecideMemoryProposalMutation,
+  useFetchMemoryHistoryQuery,
+  useFetchMemoryQuery,
+  useListMemoryQuery,
+  useProposeMemoryChangeMutation,
+} from '../api/endpoints/memory';
 
 type Props = {
   selectedMemoryId: string;
@@ -56,10 +57,14 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
   const dispatch = useDispatch<any>();
   const session = useSelector((state: any) => state.chat.session);
   const filters = useSelector(selectMemoryFilters);
-  const allRecords = useSelector(selectMemoryRecords);
-  const filteredRecords = useSelector(selectFilteredMemoryRecords);
-  const pendingRecords = useSelector(selectPendingMemoryRecords);
-  const memory = useSelector((state: any) => state.memory);
+  const memoryListQuery = useListMemoryQuery(undefined, { skip: !session?.clientToken });
+  const allRecords = memoryListQuery.data?.records || [];
+  const filteredRecords = useMemo(() => allRecords.filter((record: any) => matchesMemoryFilters(record, filters)), [allRecords, filters]);
+  const pendingRecords = useMemo(() => allRecords.filter((record: any) => record.status === 'pending'), [allRecords]);
+  const selectedMemoryQuery = useFetchMemoryQuery({ memoryId: selectedMemoryId || '' }, { skip: !selectedMemoryId || !session?.clientToken });
+  const selectedHistoryQuery = useFetchMemoryHistoryQuery({ memoryId: selectedMemoryId || '' }, { skip: !selectedMemoryId || !session?.clientToken });
+  const [proposeMemoryChange] = useProposeMemoryChangeMutation();
+  const [decideMemoryProposal] = useDecideMemoryProposalMutation();
   const [formMode, setFormMode] = useState<FormMode>('new');
   const [submitMessage, setSubmitMessage] = useState('');
   const [submitError, setSubmitError] = useState('');
@@ -78,23 +83,13 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
   });
 
   useEffect(() => {
-    if (!session?.clientToken) return;
-    dispatch(refreshMemory()).catch(() => undefined);
-  }, [dispatch, session?.clientToken]);
-
-  useEffect(() => {
-    if (!selectedMemoryId || !session?.clientToken) return;
-    dispatch(fetchMemoryDetail(selectedMemoryId)).catch(() => undefined);
-  }, [dispatch, selectedMemoryId, session?.clientToken]);
-
-  useEffect(() => {
-    if (selectedMemoryId && memory.recordsById?.[selectedMemoryId]) return;
+    if (selectedMemoryId && allRecords.some((record: any) => record.memoryId === selectedMemoryId)) return;
     const next = filteredRecords[0]?.memoryId || allRecords[0]?.memoryId || '';
     if (next && next !== selectedMemoryId) onSelectMemory(next);
-  }, [allRecords, filteredRecords, memory.recordsById, onSelectMemory, selectedMemoryId]);
+  }, [allRecords, filteredRecords, onSelectMemory, selectedMemoryId]);
 
-  const selectedRecord = selectedMemoryId ? memory.recordsById?.[selectedMemoryId] || allRecords.find((record: any) => record.memoryId === selectedMemoryId) : null;
-  const history = selectedRecord ? (memory.historyById?.[selectedRecord.memoryId] || []) : [];
+  const selectedRecord = selectedMemoryId ? (selectedMemoryQuery.data?.record || allRecords.find((record: any) => record.memoryId === selectedMemoryId)) : null;
+  const history = selectedRecord ? (selectedHistoryQuery.data?.events || []) : [];
   const typeOptions = useMemo(() => optionValues(allRecords, 'type'), [allRecords]);
   const statusOptions = useMemo(() => optionValues(allRecords, 'status'), [allRecords]);
 
@@ -143,7 +138,7 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
     setSubmitError('');
     try {
       if (formMode === 'new') {
-        const result = await dispatch(proposeMemoryChange({
+        const result = await proposeMemoryChange({
           proposalAction: 'new',
           targetTeamKind: form.targetTeamKind,
           targetRole: form.targetRole,
@@ -155,14 +150,14 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
           sourceTaskId: form.sourceTaskId,
           reason: form.reason,
           evidence: form.evidence,
-        })).unwrap();
+        }).unwrap();
         if (result?.memory_id) onSelectMemory(result.memory_id);
-        if (result?.memory_id) await dispatch(fetchMemoryDetail(result.memory_id)).catch(() => undefined);
+        if (result?.memory_id) await memoryListQuery.refetch().catch(() => undefined);
         setSubmitMessage(`Submitted new memory proposal${result?.proposal_id ? ` (${result.proposal_id})` : ''}.`);
       } else {
         if (!selectedRecord?.memoryId) throw new Error('Select a memory record first.');
         if (formMode === 'edit') {
-          const result = await dispatch(proposeMemoryChange({
+          const result = await proposeMemoryChange({
             proposalAction: 'edit',
             memoryId: selectedRecord.memoryId,
             expectedVersion: selectedRecord.version,
@@ -176,35 +171,34 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
             sourceTaskId: form.sourceTaskId,
             reason: form.reason,
             evidence: form.evidence,
-          })).unwrap();
+          }).unwrap();
           // Edit uses a supersede model: approving the proposal creates a NEW active
           // record (result.memory_id) and archives the original. Surface/select the
           // resulting record so the durable change is directly verifiable instead of
           // re-showing the now-archived original id.
           const editedId = result?.memory_id || selectedRecord.memoryId;
           if (editedId && editedId !== selectedRecord.memoryId) onSelectMemory(editedId);
-          await dispatch(fetchMemoryDetail(editedId)).catch(() => undefined);
-          if (editedId !== selectedRecord.memoryId) await dispatch(fetchMemoryDetail(selectedRecord.memoryId)).catch(() => undefined);
+          await memoryListQuery.refetch().catch(() => undefined);
           setSubmitMessage(`Submitted edit proposal for ${selectedRecord.memoryId}${result?.proposal_id ? ` (${result.proposal_id})` : ''}. On approval this supersedes into ${editedId} (original archived).`);
         } else if (formMode === 'archive') {
-          const result = await dispatch(proposeMemoryChange({
+          const result = await proposeMemoryChange({
             proposalAction: 'archive',
             memoryId: selectedRecord.memoryId,
             expectedVersion: selectedRecord.version,
             reason: form.reason,
             evidence: form.evidence,
-          })).unwrap();
-          await dispatch(fetchMemoryDetail(selectedRecord.memoryId)).catch(() => undefined);
+          }).unwrap();
+          await memoryListQuery.refetch().catch(() => undefined);
           setSubmitMessage(`Submitted archive proposal for ${selectedRecord.memoryId}${result?.proposal_id ? ` (${result.proposal_id})` : ''}. On approval the record becomes status=archived.`);
         } else if (formMode === 'rollback') {
-          const result = await dispatch(proposeMemoryChange({
+          const result = await proposeMemoryChange({
             proposalAction: 'rollback',
             memoryId: selectedRecord.memoryId,
             expectedVersion: selectedRecord.version,
             reason: form.reason,
             evidence: form.evidence,
-          })).unwrap();
-          await dispatch(fetchMemoryDetail(selectedRecord.memoryId)).catch(() => undefined);
+          }).unwrap();
+          await memoryListQuery.refetch().catch(() => undefined);
           setSubmitMessage(`Submitted rollback proposal for ${selectedRecord.memoryId}${result?.proposal_id ? ` (${result.proposal_id})` : ''}.`);
         }
       }
@@ -224,12 +218,12 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
       },
     }));
     try {
-      await dispatch(decideMemoryProposal({
+      await decideMemoryProposal({
         proposalId: record.proposalId,
         decision,
         reason: reviewState[record.proposalId]?.reason || '',
-      })).unwrap();
-      if (record.memoryId) await dispatch(fetchMemoryDetail(record.memoryId)).catch(() => undefined);
+      }).unwrap();
+      if (record.memoryId) await memoryListQuery.refetch().catch(() => undefined);
       setReviewState((current) => ({
         ...current,
         [record.proposalId]: {
@@ -269,7 +263,7 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
             <span data-debug-id="memory-metric-selected">v<span className="text-zinc-200">{selectedRecord ? String(selectedRecord.version || 0) : '—'}</span></span>
           </div>
           <button data-debug-id="memory-management-home-btn" onClick={onBackToHome} className="rounded-full border border-white/10 bg-[#141414] px-3.5 py-1.5 text-[12.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">Back</button>
-          <button data-debug-id="memory-refresh-btn" onClick={() => dispatch(refreshMemory())} className="rounded-full bg-sky-400 px-3.5 py-1.5 text-[12.5px] font-semibold text-black hover:bg-sky-300">Refresh</button>
+          <button data-debug-id="memory-refresh-btn" onClick={() => memoryListQuery.refetch()} className="rounded-full bg-sky-400 px-3.5 py-1.5 text-[12.5px] font-semibold text-black hover:bg-sky-300">Refresh</button>
         </div>
       </div>
 
@@ -307,9 +301,9 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
               <div data-debug-id="memory-browser-count" className="rounded-full bg-white/10 px-3 py-1 text-xs text-zinc-300">{filteredRecords.length} shown</div>
             </div>
             <div className="mt-4 space-y-3">
-              {memory.loading && <Empty text="Loading memory records…" />}
-              {!memory.loading && filteredRecords.length === 0 && <Empty text="No memory records match the current filters." />}
-              {!memory.loading && filteredRecords.map((record: any) => {
+              {memoryListQuery.isFetching && <Empty text="Loading memory records…" />}
+              {!memoryListQuery.isFetching && filteredRecords.length === 0 && <Empty text="No memory records match the current filters." />}
+              {!memoryListQuery.isFetching && filteredRecords.map((record: any) => {
                 const active = record.memoryId === selectedRecord?.memoryId;
                 return (
                   <button
@@ -392,12 +386,12 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
                 <div>
                   <div className="mb-2 flex items-center justify-between gap-2">
                     <div className="text-sm font-semibold text-zinc-100">History events</div>
-                    <button data-debug-id="memory-detail-refresh-btn" onClick={() => dispatch(fetchMemoryDetail(selectedRecord.memoryId))} className="rounded-xl bg-white/10 px-3 py-1.5 text-xs hover:bg-white/15">Refresh detail</button>
+                    <button data-debug-id="memory-detail-refresh-btn" onClick={() => { selectedMemoryQuery.refetch(); selectedHistoryQuery.refetch(); }} className="rounded-xl bg-white/10 px-3 py-1.5 text-xs hover:bg-white/15">Refresh detail</button>
                   </div>
                   <div data-debug-id="memory-history-list" className="space-y-2">
-                    {memory.detailLoading && <div className="text-sm text-zinc-500">Loading detail…</div>}
-                    {!memory.detailLoading && history.length === 0 && <Empty text="No history events loaded for this record." />}
-                    {!memory.detailLoading && history.map((event: any) => (
+                    {selectedHistoryQuery.isFetching && <div className="text-sm text-zinc-500">Loading detail…</div>}
+                    {!selectedHistoryQuery.isFetching && history.length === 0 && <Empty text="No history events loaded for this record." />}
+                    {!selectedHistoryQuery.isFetching && history.map((event: any) => (
                       <div key={event.eventId || `${event.memoryId}-${event.createdUnixMs}`} className="rounded-2xl border border-white/10 bg-black/20 p-3 text-sm text-zinc-300">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="font-mono text-xs text-zinc-500">{event.eventId || 'event'}</div>
@@ -479,7 +473,7 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
 
               {submitError && <div data-debug-id="memory-form-error" className="rounded-2xl border border-red-400/20 bg-red-500/10 px-4 py-3 text-sm text-red-200">{submitError}</div>}
               {submitMessage && <div data-debug-id="memory-form-success" className="rounded-2xl border border-emerald-400/20 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-200">{submitMessage}</div>}
-              {memory.error && <div className="rounded-2xl border border-red-400/20 bg-red-500/10 px-4 py-3 text-sm text-red-200">{memory.error}</div>}
+              {(memoryListQuery.error || selectedMemoryQuery.error || selectedHistoryQuery.error) && <div className="rounded-2xl border border-red-400/20 bg-red-500/10 px-4 py-3 text-sm text-red-200">Memory request failed.</div>}
 
               <button data-debug-id="memory-form-submit-btn" type="submit" className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300">Submit {formMode} proposal</button>
             </form>

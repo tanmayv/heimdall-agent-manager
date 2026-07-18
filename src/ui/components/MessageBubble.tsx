@@ -2,9 +2,10 @@ import { useState, memo, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { updateUrlParams } from './useUrlParams';
 import { sendMessageToSelectedAgent } from '../store/chatSlice';
-import { updateTaskStateDirectly, updateChainStateDirectly } from '../store/taskSlice';
-import { fetchMemoryDetail, refreshMemory } from '../store/memorySlice';
-import * as daemonApi from '../api/daemonApi';
+import { selectCachedTaskById } from '../api/taskCache';
+import { tasksApi } from '../api/endpoints/tasks';
+import { useFetchChainQuery } from '../api/endpoints/workspace';
+import { useFetchMemoryQuery, useListMemoryQuery } from '../api/endpoints/memory';
 import Markdown from './Markdown';
 import ChatHoverCopyButton from './ChatHoverCopyButton';
 
@@ -122,19 +123,23 @@ function EntityCard({ id, type, session }: { id: string; type: 'task' | 'chain' 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const chainQuery = useFetchChainQuery({ chainId: id }, { skip: type !== 'chain' || !session?.clientToken });
+  const memoryDetailQuery = useFetchMemoryQuery({ memoryId: id }, { skip: type !== 'memory' || !session?.clientToken });
+  const memoryListQuery = useListMemoryQuery(undefined, { skip: type !== 'proposal' || !session?.clientToken });
   // Retrieve selector based on type
-  const entity = useSelector((state: any) => {
+  const storeEntity = useSelector((state: any) => {
     if (type === 'task') {
-      return state.tasks.tasksById[id];
-    } else if (type === 'chain') {
-      return state.tasks.chainsById[id];
-    } else if (type === 'memory' || type === 'proposal') {
-      return Object.values(state.memory.recordsById).find(
-        (r: any) => r.proposalId === id || r.memoryId === id
-      );
+      return selectCachedTaskById(state, id);
     }
     return null;
   });
+  const entity = type === 'memory'
+    ? memoryDetailQuery.data?.record
+    : type === 'proposal'
+      ? (memoryListQuery.data?.records || []).find((r: any) => r.proposalId === id || r.memoryId === id)
+      : type === 'chain'
+        ? chainQuery.data?.chain
+        : storeEntity;
   const handleClick = (e: React.MouseEvent) => {
     if (window.getSelection()?.toString()) return;
     if (type === 'task') {
@@ -148,39 +153,17 @@ function EntityCard({ id, type, session }: { id: string; type: 'task' | 'chain' 
     }
   };
   useEffect(() => {
-    if (entity || loading || error) return;
+    if (entity || loading || error || type === 'memory' || type === 'proposal' || type === 'chain') return;
 
     async function loadEntity() {
       setLoading(true);
       setError(null);
       try {
         if (type === 'task') {
-          const res = await daemonApi.fetchTask({
-            daemonUrl: session.daemonUrl,
-            clientToken: session.clientToken,
-            taskId: id,
-          });
-          if (res?.task) {
-            dispatch(updateTaskStateDirectly(res.task));
-          } else {
+          const res = await (dispatch as any)(tasksApi.endpoints.fetchTask.initiate({ taskId: id }, { subscribe: false, forceRefetch: true })).unwrap();
+          if (!res?.task) {
             throw new Error('Task details not found');
           }
-        } else if (type === 'chain') {
-          const res = await daemonApi.fetchTaskChain({
-            daemonUrl: session.daemonUrl,
-            clientToken: session.clientToken,
-            chainId: id,
-          });
-          if (res?.chain) {
-            dispatch(updateChainStateDirectly(res.chain));
-          } else {
-            throw new Error('Chain details not found');
-          }
-        } else if (type === 'memory') {
-          await dispatch(fetchMemoryDetail(id)).unwrap();
-        } else if (type === 'proposal') {
-          // For proposal_ ID, refresh all memories to find it in records
-          await dispatch(refreshMemory()).unwrap();
         }
       } catch (e: any) {
         console.error(`Failed to load ${type} reference ${id}:`, e);
@@ -193,7 +176,10 @@ function EntityCard({ id, type, session }: { id: string; type: 'task' | 'chain' 
     loadEntity();
   }, [id, type, entity, loading, error, session, dispatch]);
 
-  if (loading) {
+  const effectiveLoading = loading || (type === 'chain' && chainQuery.isFetching) || (type === 'memory' && memoryDetailQuery.isFetching) || (type === 'proposal' && memoryListQuery.isFetching);
+  const effectiveError = error || ((type === 'chain' && chainQuery.error) || (type === 'memory' && memoryDetailQuery.error) || (type === 'proposal' && memoryListQuery.error) ? `Failed to load ${type}` : null);
+
+  if (effectiveLoading) {
     return (
       <div className="w-full bg-[#141414]/50 border border-[#222] rounded-lg p-3 my-1.5 flex flex-col gap-1 text-xs">
         <div className="flex items-center justify-between">
@@ -207,7 +193,7 @@ function EntityCard({ id, type, session }: { id: string; type: 'task' | 'chain' 
     );
   }
 
-  if (error) {
+  if (effectiveError) {
     return (
       <div className="w-full bg-[#1a1212] border border-red-950/30 rounded-lg p-3 my-1.5 flex flex-col gap-1 text-xs text-red-200">
         <div className="flex items-center justify-between border-b border-red-950/20 pb-1 mb-1">
@@ -216,7 +202,7 @@ function EntityCard({ id, type, session }: { id: string; type: 'task' | 'chain' 
           </span>
           <span className="font-mono text-red-400/60">{id}</span>
         </div>
-        <p className="text-red-300/80">{error}</p>
+        <p className="text-red-300/80">{effectiveError}</p>
       </div>
     );
   }

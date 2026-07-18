@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { useDispatch } from 'react-redux';
-import { registerSession, fetchPreferences, setDaemonUrl } from '../store/chatSlice';
+import { registerSession, setDaemonUrl } from '../store/chatSlice';
+import { useFetchSettingsCatalogQuery, useSavePreferenceMutation } from '../api/endpoints/settings';
 import * as daemonApi from '../api/daemonApi';
 
 interface OnboardingWizardProps {
@@ -18,6 +19,9 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
   const [displayName, setDisplayName] = useState<string>('');
   const [backupDir, setBackupDir] = useState<string>('~/heimdall-backups');
   const [provisionMemoryAgents, setProvisionMemoryAgents] = useState<boolean>(true);
+
+  const settingsCatalogQuery = useFetchSettingsCatalogQuery({ scope: daemonIp }, { skip: step < 4 });
+  const [savePreference] = useSavePreferenceMutation();
 
   // New Smoke Test & Curation Agents State
   const [availableProviders, setAvailableProviders] = useState<any[]>([]);
@@ -39,7 +43,6 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
     try {
       dispatch(setDaemonUrl(daemonIp));
       await dispatch(registerSession()).unwrap();
-      await dispatch(fetchPreferences()).unwrap();
       setStep(2);
     } catch (err: any) {
       setError(err.message || 'Failed to connect to Heimdall Daemon. Please check the IP address and ensure the daemon is running.');
@@ -48,21 +51,16 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
     }
   };
 
-  // Load configured providers when entering Step 4
+  // Load configured providers when entering Step 4. The catalog is RTKQ-owned so
+  // repeated onboarding visits coalesce with the rest of the settings cache.
   useEffect(() => {
-    if (step >= 4 && daemonIp && availableProviders.length === 0) {
-      daemonApi.listAgentProviders({ daemonUrl: daemonIp })
-        .then((list) => {
-          setAvailableProviders(list);
-          setSelectedProvidersToTest(list.map((p: any) => p.name));
-          if (list.length > 0) {
-            setMemoryAuditorProvider(list[0].name);
-            setMemoryReviewerProvider(list[0].name);
-          }
-        })
-        .catch((err) => console.error('Failed to load providers:', err));
-    }
-  }, [step, daemonIp, availableProviders.length]);
+    const list = settingsCatalogQuery.data?.providers || [];
+    if (step < 4 || availableProviders.length > 0 || list.length === 0) return;
+    setAvailableProviders(list);
+    setSelectedProvidersToTest(list.map((p: any) => p.name));
+    setMemoryAuditorProvider(list[0].name);
+    setMemoryReviewerProvider(list[0].name);
+  }, [step, availableProviders.length, settingsCatalogQuery.data?.providers]);
 
   // Step 4: Run Agent Tests
   const handleTestAgents = async () => {
@@ -89,24 +87,10 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
     setLoading(true);
     setError(null);
     try {
-      const token = window.localStorage.getItem('odin.clientToken') || '';
-
       // 1. Save preferences
-      await daemonApi.savePreference({
-        daemonUrl: daemonIp,
-        clientToken: token,
-        key: 'user_display_name',
-        value: displayName,
-        interrupt: false,
-      });
+      await savePreference({ key: 'user_display_name', value: displayName, interrupt: false }).unwrap();
 
-      await daemonApi.savePreference({
-        daemonUrl: daemonIp,
-        clientToken: token,
-        key: 'backup_dir',
-        value: backupDir,
-        interrupt: false,
-      });
+      await savePreference({ key: 'backup_dir', value: backupDir, interrupt: false }).unwrap();
 
       // 2. Provision memory auditor & reviewer agents if requested
       if (provisionMemoryAgents) {
@@ -134,16 +118,9 @@ export default function OnboardingWizard({ onComplete }: OnboardingWizardProps) 
       }
 
       // 3. Save setup completed preference
-      await daemonApi.savePreference({
-        daemonUrl: daemonIp,
-        clientToken: token,
-        key: 'setup_completed',
-        value: 'true',
-        interrupt: false,
-      });
+      await savePreference({ key: 'setup_completed', value: 'true', interrupt: false }).unwrap();
 
-      // 4. Refresh preferences and state in Redux
-      await dispatch(fetchPreferences()).unwrap();
+      // 4. RTK Query preference subscribers will refresh through cache invalidation.
       onComplete();
     } catch (err: any) {
       setError(err.message || 'Failed to complete setup configuration.');

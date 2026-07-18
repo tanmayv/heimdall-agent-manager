@@ -1,5 +1,7 @@
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
 import * as daemonApi from '../api/daemonApi';
+import { storeKnownAgents } from '../api/agentCatalog';
+import { agentsApi } from '../api/endpoints/agents';
 import { chatEndpoints } from '../api/endpoints/chats';
 
 const DEFAULT_DAEMON_URL = 'http://127.0.0.1:49322';
@@ -76,208 +78,6 @@ function createClientInstanceId() {
   const clientInstanceId = newClientInstanceId();
   setStoredValue('odin.clientInstanceId', clientInstanceId);
   return clientInstanceId;
-}
-
-function loadKnownAgents(): any[] {
-  try {
-    return JSON.parse(window.localStorage.getItem('odin.knownAgents') || '[]');
-  } catch {
-    return [];
-  }
-}
-
-function storeKnownAgents(agents: any[]) {
-  try {
-    window.localStorage.setItem('odin.knownAgents', JSON.stringify(agents));
-  } catch {
-    // Local known-agent records are a UI convenience when daemon persistence is unavailable.
-  }
-}
-
-function safeStartupStatus(agent: any) {
-  const status = agent.startup_status || agent.startupStatus || agent.lifecycle_state || agent.lifecycleState || '';
-  if (status === 'startup_blocked' || status === 'startup_failed' || status === 'startup_unknown' || status === 'starting' || status === 'ready' || status === 'start_success' || status === 'stopping' || status === 'stopped') return status;
-  return '';
-}
-
-export function mapAgent(agent: any) {
-  const lastSeenUnixMs = Number(agent.last_seen_unix_ms ?? agent.lastSeenUnixMs ?? 0);
-  const startupStatus = safeStartupStatus(agent);
-  const execState = agent.exec_state || agent.execState || '';
-  const execStateSinceUnixMs = Number(agent.exec_state_since_unix_ms ?? agent.execStateSinceUnixMs ?? 0);
-  const blockedReason = agent.blocked_reason || agent.blockedReason || '';
-  const activityStatus = agent.activity_status || agent.activityStatus || '';
-  const activityCheckedUnixMs = Number(agent.activity_checked_unix_ms ?? agent.activityCheckedUnixMs ?? 0);
-  const activitySource = agent.activity_source || agent.activitySource || '';
-
-  let status = 'offline';
-  if (startupStatus === 'stopped') {
-    status = 'offline';
-  } else if (startupStatus) {
-    status = startupStatus;
-  } else if (agent.connected) {
-    if (activityStatus === 'active') {
-      status = 'connected';
-    } else if (activityStatus === 'idle') {
-      status = 'idle';
-    } else if (execState === 'running') {
-      status = 'connected';
-    } else if (execState === 'blocked') {
-      status = 'startup_blocked';
-    } else if (execState === 'idle') {
-      status = 'idle';
-    } else {
-      status = 'connected';
-    }
-  }
-
-  return {
-    id: agent.agent_instance_id || agent.agentInstanceId || agent.id,
-    agentId: agent.agent_id || agent.agentId || agent.agent_instance_id || agent.agentInstanceId || agent.id || '',
-    agentRecordId: agent.agent_record_id || agent.agentRecordId || '',
-    label: agent.display_name || agent.displayName || agent.alias || agent.agent_instance_id || agent.id,
-    status,
-    startupStatus,
-    startupReason: agent.safe_diagnostic || agent.safeDiagnostic || agent.startup_safe_diagnostic || agent.startupSafeDiagnostic || agent.reason || agent.startup_reason_code || agent.startupReasonCode || agent.reason_code || agent.reasonCode || '',
-    startupReasonCode: agent.startup_reason_code || agent.startupReasonCode || agent.reason_code || agent.reasonCode || '',
-    startupSuggestedFix: agent.suggested_fix || agent.suggestedFix || '',
-    runDir: agent.run_dir || agent.runDir || '',
-    tmuxTarget: agent.tmux_pane || agent.tmuxPane || agent.tmux_target || agent.tmuxTarget || '',
-    logPath: agent.log_path || agent.logPath || agent.wrapper_log || agent.wrapperLog || '',
-    lastSeenUnixMs,
-    lastSeen: lastSeenUnixMs ? new Date(lastSeenUnixMs).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—',
-    conversationId: agent.conversation_id || agent.conversationId,
-    unreadCount: Number(agent.unread_count ?? agent.unreadCount ?? 0),
-    order: agent.order ?? 0,
-    projectId: agent.project_id || agent.projectId || '',
-    projectName: agent.project_name || agent.projectName || '',
-    templateId: agent.template_id || agent.templateId || '',
-    agentScope: agent.agent_scope || agent.agentScope || 'durable',
-    agentRole: agent.agent_role || agent.agentRole || agent.role_hint || agent.roleHint || '',
-    agentKind: agent.agent_kind || agent.agentKind || 'local',
-    remote: agent.remote ? {
-      peerId: agent.remote.peer_id || agent.remote.peerId || '',
-      originDaemonId: agent.remote.origin_daemon_id || agent.remote.originDaemonId || '',
-      remoteAgentInstanceId: agent.remote.remote_agent_instance_id || agent.remote.remoteAgentInstanceId || '',
-    } : ((agent.remote_peer_id || agent.remotePeerId || agent.remote_agent_instance_id || agent.remoteAgentInstanceId || agent.remote_origin_daemon_id || agent.remoteOriginDaemonId) ? {
-      peerId: agent.remote_peer_id || agent.remotePeerId || '',
-      originDaemonId: agent.remote_origin_daemon_id || agent.remoteOriginDaemonId || '',
-      remoteAgentInstanceId: agent.remote_agent_instance_id || agent.remoteAgentInstanceId || '',
-    } : null),
-    providerProfile: agent.provider_profile || agent.providerProfile || agent.agent_class || '',
-    connected: Boolean(agent.connected),
-    connectionState: agent.connection_state || agent.connectionState || '',
-    roleHint: agent.role_hint || agent.roleHint || agent.agent_role || agent.agentRole || '',
-    modelTier: agent.model_tier || agent.modelTier || 'normal',
-    known: agent.known ?? true,
-    execState,
-    execStateSinceUnixMs,
-    blockedReason,
-    activityStatus,
-    activityCheckedUnixMs,
-    activitySource,
-    currentTaskId: agent.current_task_id || agent.currentTaskId || '',
-    currentTaskSince: Number(agent.current_task_since ?? agent.currentTaskSince ?? 0),
-    state: agent.state || '',
-  };
-}
-
-function metadataOnlyAgent(agent: any) {
-  return {
-    ...agent,
-    connected: false,
-    status: 'offline',
-    startup_status: '',
-    startupStatus: '',
-    lifecycle_state: '',
-    lifecycleState: '',
-  };
-}
-
-function getStatusPriority(status: string): number {
-  switch (status) {
-    case 'ready': return 6;
-    case 'connected': return 5;
-    case 'idle': return 4;
-    case 'startup_blocked': return 3;
-    case 'starting': return 2;
-    default: return 1;
-  }
-}
-
-function defaultRuntimeBaseId(agent: any): string {
-  const id = String(agent?.id || agent?.agent_instance_id || agent?.agentInstanceId || '');
-  const durableId = String(agent?.agentId || agent?.agent_id || '');
-  if (!id || !durableId) return '';
-  if (id === durableId) return durableId;
-  if (id === `${durableId}@default`) return durableId;
-  return '';
-}
-
-function shouldPreferAgentRecord(candidate: any, existing: any): boolean {
-  if (!existing) return true;
-  const candidateLive = Boolean(candidate.connected) || String(candidate.connectionState || candidate.connection_state || '').toLowerCase() === 'connected';
-  const existingLive = Boolean(existing.connected) || String(existing.connectionState || existing.connection_state || '').toLowerCase() === 'connected';
-  if (candidateLive !== existingLive) return candidateLive;
-  const candidatePriority = getStatusPriority(candidate.status || candidate.startupStatus || '');
-  const existingPriority = getStatusPriority(existing.status || existing.startupStatus || '');
-  if (candidatePriority !== existingPriority) return candidatePriority > existingPriority;
-  return Number(candidate.lastSeenUnixMs || 0) >= Number(existing.lastSeenUnixMs || 0);
-}
-
-// Merge persisted-and-live agent records from /agents with the UI's localStorage
-// cache (so the sidebar isn't blank during a daemon round-trip). /agents already
-// embeds live registry fields (connected, tmux_pane, startup_status, etc.) when
-// a wrapper is up, so we no longer need a second /clients fetch.
-function mergeKnownAndLiveAgents(localKnownAgents: any[], daemonAgents: any[], daemonReachable = false) {
-  const byId: any = {};
-  const defaultRuntimeAliases: any = {};
-  const putAgent = (agent: any) => {
-    if (!agent?.id) return;
-    const baseId = defaultRuntimeBaseId(agent);
-    if (baseId) {
-      const previousId = defaultRuntimeAliases[baseId];
-      const previous = previousId ? byId[previousId] : null;
-      if (!previous || shouldPreferAgentRecord(agent, previous)) {
-        if (previousId && previousId !== agent.id) delete byId[previousId];
-        defaultRuntimeAliases[baseId] = agent.id;
-        byId[agent.id] = previous ? { ...previous, ...agent } : agent;
-      }
-      return;
-    }
-    byId[agent.id] = agent;
-  };
-  const daemonIds = new Set<string>();
-  if (daemonReachable) {
-    for (const a of daemonAgents) {
-      const id = a.agent_instance_id || a.agentInstanceId || a.id;
-      if (id) daemonIds.add(id);
-    }
-  }
-  for (const agent of localKnownAgents.map((item) => mapAgent(metadataOnlyAgent(item)))) {
-    if (!agent.id) continue;
-    if (daemonReachable && !daemonIds.has(agent.id)) continue;
-    putAgent({ ...agent, status: 'offline', startupStatus: '', known: true });
-  }
-  for (const rawDaemonAgent of daemonAgents) {
-    const daemonAgent = mapAgent(rawDaemonAgent);
-    if (!daemonAgent.id) continue;
-    const existing = byId[daemonAgent.id] || {};
-    const status = daemonAgent.status || daemonAgent.startupStatus || ((daemonAgent as any).connected ? 'connected' : 'offline');
-    const hasDaemonUnread = rawDaemonAgent.unread_count !== undefined || rawDaemonAgent.unreadCount !== undefined;
-    const unreadCount = hasDaemonUnread ? daemonAgent.unreadCount : (existing.unreadCount || 0);
-    putAgent({ ...existing, ...daemonAgent, status, unreadCount, known: true });
-  }
-  return Object.values(byId).sort((left: any, right: any) => {
-    const diff = (left.order ?? 0) - (right.order ?? 0);
-    if (diff !== 0) return diff;
-    const leftPriority = getStatusPriority(left.status);
-    const rightPriority = getStatusPriority(right.status);
-    if (leftPriority !== rightPriority) {
-      return rightPriority - leftPriority;
-    }
-    return (left.label || '').localeCompare(right.label || '');
-  });
 }
 
 function mapMessage(message: any) {
@@ -396,9 +196,8 @@ function applyReceivedChatPage(state: any, payload: any) {
   state.chatsCursor[payloadAgentId] = Number(nextCursor || 0);
   state.chatsHasMore[payloadAgentId] = Number(nextCursor || 0) > 0;
 
-  if (markedRead) {
-    const agent = state.agents.find((item: any) => item.id === payloadAgentId);
-    if (agent) agent.unreadCount = 0;
+  if (markedRead && state.conversationSummaryById?.[payloadAgentId]) {
+    state.conversationSummaryById[payloadAgentId].unreadCount = 0;
   }
 }
 
@@ -407,67 +206,13 @@ export const registerSession = createAsyncThunk('chat/registerSession', async (_
   return daemonApi.registerUserClient(session);
 });
 
-export const fetchPreferences = createAsyncThunk('chat/fetchPreferences', async (_, { getState }) => {
-  const { session } = (getState() as any).chat;
-  const data = await daemonApi.fetchPreferences({
-    daemonUrl: session.daemonUrl,
-    clientToken: session.clientToken,
-  });
-  return data?.preferences ?? [];
-});
-
-export const saveUserPreference = createAsyncThunk(
-  'chat/saveUserPreference',
-  async (payload: { key: string; value: string; interrupt?: boolean }, { getState }) => {
-    const { session } = (getState() as any).chat;
-    const res = await daemonApi.savePreference({
-      daemonUrl: session.daemonUrl,
-      clientToken: session.clientToken,
-      key: payload.key,
-      value: payload.value,
-      interrupt: payload.interrupt ?? false,
-    });
-    return res.preference;
-  }
-);
-
-
-export const refreshSettingsCatalog = createAsyncThunk('chat/refreshSettingsCatalog', async (_, { getState }) => {
-  const state = getState() as any;
-  const { daemonUrl } = state.chat.session;
-  const [templates, providers] = await Promise.all([
-    daemonApi.listAgentTemplates({ daemonUrl }).catch(() => []),
-    daemonApi.listAgentProviders({ daemonUrl }).catch(() => []),
-  ]);
-  return { templates, providers };
-});
-
 // TODO(rtkq-migration owner=task-19f69e242e4): compatibility wrapper for non-hook call sites. Conversation summaries are owned by chatEndpoints.listConversationSummaries as the recurring cache authority.
 export const refreshConversationSummaries = createAsyncThunk('chat/refreshConversationSummaries', async (_, { dispatch }) => {
   return await (dispatch as any)(chatEndpoints.endpoints.listConversationSummaries.initiate(undefined, { subscribe: false })).unwrap();
 });
 
-export const refreshAgents = createAsyncThunk('chat/refreshAgents', async (_, { getState }) => {
-  const state = getState() as any;
-  const { daemonUrl } = state.chat.session;
-
-  const localKnown = loadKnownAgents();
-  let daemonAgents: any[] = [];
-  let daemonIdentities: any[] = [];
-  let daemonReachable = false;
-  try {
-    const catalog = await daemonApi.listKnownAgentsCatalog({ daemonUrl, includeIdentities: true, includeConversations: true });
-    daemonAgents = catalog.agents || [];
-    daemonIdentities = catalog.identities || [];
-    daemonReachable = true;
-  } catch {
-    daemonAgents = [];
-    daemonIdentities = [];
-  }
-  const merged = mergeKnownAndLiveAgents(localKnown, daemonAgents, daemonReachable);
-
-  storeKnownAgents(merged);
-  return { agents: merged, identities: daemonIdentities };
+export const refreshAgents = createAsyncThunk('chat/refreshAgents', async (_, { dispatch }) => {
+  return await (dispatch as any)(agentsApi.endpoints.listAgents.initiate(undefined, { subscribe: false, forceRefetch: true })).unwrap();
 });
 
 // TODO(rtkq-migration owner=task-19f69e242e4): compatibility wrapper for remaining direct-chat component callers. Live conversation caching/dedupe belongs to chatEndpoints.fetchDirectChat/fetchDirectChatPage.
@@ -582,7 +327,6 @@ export const stopAgentInstance = createAsyncThunk('chat/stopAgentInstance', asyn
 export const reorderAgentsFromUi = createAsyncThunk(
   'chat/reorderAgentsFromUi',
   async (agentIds: string[], { dispatch, getState }) => {
-    dispatch(chatSlice.actions.reorderAgentsLocally(agentIds));
     const state = getState() as any;
     const { session } = state.chat;
     try {
@@ -625,13 +369,7 @@ const initialState = {
     lastChatEvent: null,
     error: '',
   },
-  preferences: [] as any[],
-  userPreferences: {} as Record<string, string>,
-  settingsTemplates: [] as any[],
-  settingsProviders: [] as any[],
   selectedAgentId: '',
-  agents: [],
-  agentIdentities: [] as any[],
   // Daemon-authoritative conversation summaries keyed by agent_instance_id:
   // { title, lastMessageUnixMs, projectId, agentId, unreadCount }. Populated from
   // list_chats on explicit triggers only; the sidebar uses these for ordering +
@@ -667,39 +405,6 @@ const chatSlice = createSlice({
     },
     toggleGuidePanel(state) {
       state.guidePanelOpen = !state.guidePanelOpen;
-    },
-    markAgentReadLocally(state, action) {
-      const agentInstanceId = String(action.payload || '');
-      if (!agentInstanceId) return;
-      const agent = state.agents.find((item: any) => item.id === agentInstanceId);
-      if (agent) {
-        agent.unreadCount = 0;
-        storeKnownAgents(state.agents);
-      }
-    },
-    reorderAgentsLocally(state, action) {
-      const agentIds = action.payload;
-      const agentsById = new Map<string, any>();
-      for (const agent of state.agents) {
-        agentsById.set(agent.id, agent);
-      }
-      agentIds.forEach((id: string, index: number) => {
-        const agent = agentsById.get(id);
-        if (agent) {
-          agent.order = index;
-        }
-      });
-      state.agents.sort((left: any, right: any) => {
-        const diff = (left.order ?? 0) - (right.order ?? 0);
-        if (diff !== 0) return diff;
-        const leftPriority = getStatusPriority(left.status);
-        const rightPriority = getStatusPriority(right.status);
-        if (leftPriority !== rightPriority) {
-          return rightPriority - leftPriority;
-        }
-        return (left.label || '').localeCompare(right.label || '');
-      });
-      storeKnownAgents(state.agents);
     },
 
     setDaemonUrl(state, action) {
@@ -748,7 +453,6 @@ const chatSlice = createSlice({
         state.session.clientInstanceId = newClientInstanceId();
         state.session.clientToken = '';
         state.session.lastChatEvent = null;
-        state.agents = [];
         state.chats = {};
         state.chatsCursor = {};
         state.chatsHasMore = {};
@@ -789,27 +493,6 @@ const chatSlice = createSlice({
     },
     chatEventReceived(state, action) {
       state.session.lastChatEvent = action.payload;
-      const agentId = action.payload?.agent_instance_id;
-      if (agentId) {
-        const agent = state.agents.find((item) => item.id === agentId);
-        if (agent) {
-          agent.unreadCount = action.payload.unread_count ?? agent.unreadCount;
-          storeKnownAgents(state.agents);
-        }
-      }
-    },
-     upsertKnownAgent(state, action) {
-      const mapped: any = mapAgent(action.payload);
-      if (!mapped.id) return;
-      const existingIndex = state.agents.findIndex((agent) => agent.id === mapped.id);
-      if (existingIndex >= 0) {
-        const existing: any = state.agents[existingIndex];
-        const unreadCount = existing.unreadCount || mapped.unreadCount || 0;
-        state.agents[existingIndex] = { ...existing, ...mapped, unreadCount, known: true } as never;
-      } else {
-        state.agents.unshift(mapped as never);
-      }
-      storeKnownAgents(state.agents);
     },
     testStartReceived(state, action) {
       const run = action.payload;
@@ -856,35 +539,6 @@ const chatSlice = createSlice({
         completedUnixMs: r.completed_unix_ms,
       }));
     },
-    agentLifecycleEventReceived(state, action) {
-      const payload = action.payload || {};
-      const agentPayload = payload.agent || payload.record || payload;
-      const agentId = agentPayload.agent_instance_id || agentPayload.agentInstanceId || payload.agent_instance_id || payload.agentInstanceId;
-      if (!agentId) return;
-      const mapped: any = mapAgent({ ...agentPayload, agent_instance_id: agentId });
-      const existingIndex = state.agents.findIndex((agent) => agent.id === agentId);
-      if (existingIndex >= 0) {
-        const existing: any = state.agents[existingIndex];
-        const mappedLabelLooksLikeId = !mapped.label || mapped.label === mapped.id;
-        state.agents[existingIndex] = {
-          ...existing,
-          ...mapped,
-          label: mappedLabelLooksLikeId ? (existing.label || mapped.label) : mapped.label,
-          projectId: mapped.projectId || existing.projectId || '',
-          projectName: mapped.projectName || existing.projectName || '',
-          templateId: mapped.templateId || existing.templateId || '',
-          agentScope: mapped.agentScope || existing.agentScope || 'durable',
-          agentRole: mapped.agentRole || existing.agentRole || '',
-          providerProfile: mapped.providerProfile || existing.providerProfile || '',
-          roleHint: mapped.roleHint || existing.roleHint || '',
-          modelTier: mapped.modelTier || existing.modelTier || 'normal',
-          known: true,
-        } as never;
-      } else {
-        state.agents.unshift({ ...mapped, known: true } as never);
-      }
-      storeKnownAgents(state.agents);
-    },
     appendMessage(state, action) {
       const { agentId, message } = action.payload;
       if (!state.chats[agentId]) {
@@ -900,81 +554,9 @@ const chatSlice = createSlice({
     receiveChatPage(state, action) {
       applyReceivedChatPage(state, action.payload);
     },
-    agentRuntimeEventReceived(state, action) {
-      const payload = action.payload || {};
-      const agentId = payload.agent_instance_id;
-      if (!agentId) return;
-      const existingIndex = state.agents.findIndex((agent) => agent.id === agentId);
-      if (existingIndex >= 0) {
-        const existing: any = state.agents[existingIndex];
-        const execState = payload.exec_state || '';
-        const activityStatus = payload.activity_status ?? existing.activityStatus ?? '';
-
-        let status = existing.status;
-        if (existing.startupStatus) {
-          status = existing.startupStatus;
-        } else if (existing.status !== 'offline' || payload.last_seen_unix_ms) {
-          if (activityStatus === 'active') {
-            status = 'connected';
-          } else if (activityStatus === 'idle') {
-            status = 'idle';
-          } else if (execState === 'running') {
-            status = 'connected';
-          } else if (execState === 'blocked') {
-            status = 'startup_blocked';
-          } else if (execState === 'idle') {
-            status = 'idle';
-          } else {
-            status = 'connected';
-          }
-        }
-
-        state.agents[existingIndex] = {
-          ...existing,
-          status,
-          tmuxPane: payload.tmux_pane ?? existing.tmuxPane,
-          pid: payload.pid ?? existing.pid,
-          execState,
-          execStateSinceUnixMs: payload.exec_state_since_unix_ms ?? existing.execStateSinceUnixMs,
-          blockedReason: payload.blocked_reason ?? existing.blockedReason,
-          activityStatus,
-          activityCheckedUnixMs: payload.activity_checked_unix_ms ?? existing.activityCheckedUnixMs,
-          activitySource: payload.activity_source ?? existing.activitySource,
-          runDir: payload.run_dir ?? existing.runDir,
-          lastSeenUnixMs: payload.last_seen_unix_ms ?? existing.lastSeenUnixMs,
-          lastSeen: payload.last_seen_unix_ms ? new Date(payload.last_seen_unix_ms).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : existing.lastSeen,
-        } as never;
-      }
-    },
   },
   extraReducers: (builder) => {
     builder
-      .addCase(fetchPreferences.fulfilled, (state, action) => {
-        state.preferences = action.payload;
-        const cache: Record<string, string> = {};
-        for (const p of action.payload) {
-          cache[p.key] = p.value;
-        }
-        state.userPreferences = cache;
-        if (cache['user_display_name']) {
-          state.session.userDisplayName = cache['user_display_name'];
-          setStoredValue('odin.userDisplayName', cache['user_display_name']);
-        }
-      })
-      .addCase(saveUserPreference.fulfilled, (state, action) => {
-        const pref = action.payload;
-        const idx = state.preferences.findIndex((p) => p.key === pref.key);
-        if (idx >= 0) {
-          state.preferences[idx] = pref;
-        } else {
-          state.preferences.push(pref);
-        }
-        state.userPreferences[pref.key] = pref.value;
-        if (pref.key === 'user_display_name') {
-          state.session.userDisplayName = pref.value;
-          setStoredValue('odin.userDisplayName', pref.value);
-        }
-      })
       .addCase(registerSession.pending, (state) => {
         state.session.status = 'connecting';
         state.session.error = '';
@@ -996,18 +578,13 @@ const chatSlice = createSlice({
         state.session.wsStatus = 'error';
         state.session.error = action.error.message || 'Failed to register user client';
       })
-      .addCase(refreshSettingsCatalog.fulfilled, (state: any, action) => {
-        state.settingsTemplates = action.payload.templates || [];
-        state.settingsProviders = action.payload.providers || [];
-      })
       .addCase(refreshConversationSummaries.fulfilled, (state: any, action) => {
         state.conversationSummaryById = action.payload || {};
       })
       .addCase(refreshAgents.fulfilled, (state, action) => {
-        state.agents = action.payload.agents || [];
-        state.agentIdentities = action.payload.identities || [];
-        if (!state.selectedAgentId || !state.agents.some((agent) => agent.id === state.selectedAgentId)) {
-          state.selectedAgentId = state.agents[0]?.id ?? '';
+        const agents = action.payload?.agents || [];
+        if (!state.selectedAgentId || !agents.some((agent: any) => agent.id === state.selectedAgentId)) {
+          state.selectedAgentId = agents[0]?.id ?? '';
         }
       })
       .addCase(refreshAgents.rejected, (state, action) => {
@@ -1136,13 +713,12 @@ const chatSlice = createSlice({
   },
 });
 
-export const { selectAgent, setView, setDaemonUrl, addDaemonProfile, renameDaemonProfile, removeDaemonProfile, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, upsertKnownAgent, agentLifecycleEventReceived, agentRuntimeEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage, patchChatMessageStatus, receiveChatPage, reorderAgentsLocally, markAgentReadLocally, openGuidePanel, closeGuidePanel, toggleGuidePanel } = chatSlice.actions;
+export const { selectAgent, setView, setDaemonUrl, addDaemonProfile, renameDaemonProfile, removeDaemonProfile, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage, patchChatMessageStatus, receiveChatPage, openGuidePanel, closeGuidePanel, toggleGuidePanel } = chatSlice.actions;
 
-export const markCoordinatorRead = createAsyncThunk('chat/markCoordinatorRead', async (agentInstanceId: string, { dispatch, getState }) => {
+export const markCoordinatorRead = createAsyncThunk('chat/markCoordinatorRead', async (agentInstanceId: string, { getState }) => {
   const state = getState() as any;
   const { session } = state.chat;
   if (!agentInstanceId || !session.clientToken || !session.clientInstanceId) return { agentInstanceId, ok: false };
-  dispatch(markAgentReadLocally(agentInstanceId));
   try {
     await daemonApi.markChatRead({
       daemonUrl: session.daemonUrl,

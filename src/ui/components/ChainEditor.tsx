@@ -3,8 +3,9 @@ import { useDispatch, useSelector } from 'react-redux';
 import { VimEditButton } from './VimSidebar';
 import AgentPicker from './AgentPicker';
 import { showToast } from '../store/toastSlice';
-import * as daemonApi from '../api/daemonApi';
 import { tasksApi } from '../api/endpoints/tasks';
+import { agentsApi } from '../api/endpoints/agents';
+import { workspaceApi } from '../api/endpoints/workspace';
 import { useListConversationSummariesQuery } from '../api/endpoints/chats';
 
 const NODE_W = 180;
@@ -40,11 +41,11 @@ type ChainEditorProps = {
   tasksById?: Record<string, TaskLike>;
   team?: any;
   agents?: any[];
+  identities?: any[];
   providers?: any[];
   initialTaskId?: string;
   onBack: () => void;
   onReturnToChain: () => void;
-  onRefresh?: () => void;
   onSelectTask?: (taskId: string) => void;
 };
 
@@ -170,10 +171,9 @@ function saveLayout(chainId: string, positions: Record<string, Point>) {
   try { window.localStorage.setItem(`${STORAGE_PREFIX}${chainId}`, JSON.stringify(positions)); } catch (_err) { /* ignore */ }
 }
 
-export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents = [], providers = [], initialTaskId = '', onBack, onReturnToChain, onRefresh, onSelectTask }: ChainEditorProps) {
+export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents = [], identities = [], providers = [], initialTaskId = '', onBack, onReturnToChain, onSelectTask }: ChainEditorProps) {
   const dispatch = useDispatch<any>();
   const session = useSelector((state: any) => state.chat?.session || {});
-  const agentIdentities = useSelector((state: any) => state.chat?.agentIdentities || []);
   const conversationSummaryById = useSelector((state: any) => state.chat?.conversationSummaryById || {});
   const conversationSummariesQuery = useListConversationSummariesQuery(undefined, { skip: !session.clientToken });
   const effectiveConversationSummaryById = conversationSummariesQuery.data || conversationSummaryById;
@@ -286,14 +286,13 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chain.chainId]);
 
-  const runMutation = async (label: string, fn: () => Promise<any>, successTitle: string, successMessage = '', refresh = false) => {
+  const runMutation = async (label: string, fn: () => Promise<any>, successTitle: string, successMessage = '') => {
     if (!auth.clientToken) throw new Error('Not connected to daemon');
     setBusyAction(label);
     setEditorError('');
     try {
       const result = await fn();
       dispatch(showToast({ kind: 'success', title: successTitle, message: successMessage }));
-      if (refresh) await Promise.resolve(onRefresh?.());
       return result;
     } catch (err: any) {
       const message = formatError(err);
@@ -426,7 +425,7 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
   const addTeamMember = async () => {
     const agentId = newMemberAgentId.trim();
     if (!agentId) return;
-    await runMutation('add-member', () => daemonApi.addTeamMember({ daemonUrl: auth.daemonUrl, clientToken: auth.clientToken, teamId: chain.teamId || chain.team_id || '', roleKey: newMemberRole || 'specialist', agentInstanceId: agentId }), 'Team member added', agentId, true);
+    await runMutation('add-member', () => dispatch(workspaceApi.endpoints.addTeamMember.initiate({ teamId: chain.teamId || chain.team_id || '', roleKey: newMemberRole || 'specialist', agentInstanceId: agentId })).unwrap(), 'Team member added', agentId);
     setNewMemberAgentId('');
   };
 
@@ -435,17 +434,17 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
     if (!agentId) return;
     const provider = runtimeProviderByAgent[agentId] || providerOptions[0] || 'pi';
     const tier = runtimeTierByAgent[agentId] || 'normal';
-    await runMutation(`start-${agentId}`, () => daemonApi.startAgent({ daemonUrl: auth.daemonUrl, agentInstanceId: agentId, provider, modelTier: tier, projectId: chain.projectId || chain.project_id || '', displayName: agentId, agentRole: member.role_key || member.roleKey || '' }), 'Agent start requested', `${agentId} · ${provider}/${tier}`, true);
+    await runMutation(`start-${agentId}`, () => dispatch(agentsApi.endpoints.startAgent.initiate({ agentInstanceId: agentId, provider, modelTier: tier, projectId: chain.projectId || chain.project_id || '', displayName: agentId, agentRole: member.role_key || member.roleKey || '' })).unwrap(), 'Agent start requested', `${agentId} · ${provider}/${tier}`);
   };
 
   const stopRosterAgent = async (member: any) => {
     const agentId = chainMemberAgentId(member);
     if (!agentId) return;
-    await runMutation(`stop-${agentId}`, () => daemonApi.stopAgent({ daemonUrl: auth.daemonUrl, agentInstanceId: agentId, timeInSec: 30 }), 'Agent stop requested', agentId, true);
+    await runMutation(`stop-${agentId}`, () => dispatch(agentsApi.endpoints.stopAgent.initiate({ agentInstanceId: agentId, timeInSec: 30 })).unwrap(), 'Agent stop requested', agentId);
   };
 
   const saveChainMetadata = async () => {
-    await runMutation('save-chain', () => daemonApi.updateTaskChain({ ...auth, chainId: chain.chainId, title: chainTitleDraft, description: chainDescriptionDraft, coordinatorAgentInstanceId: chainCoordinatorDraft, defaultReviewerAgentInstanceId: chainReviewerDraft }), 'Chain saved', chainTitleDraft || chain.chainId, true);
+    await runMutation('save-chain', () => dispatch(workspaceApi.endpoints.updateChain.initiate({ chainId: chain.chainId, title: chainTitleDraft, description: chainDescriptionDraft, coordinatorAgentInstanceId: chainCoordinatorDraft, defaultReviewerAgentInstanceId: chainReviewerDraft })).unwrap(), 'Chain saved', chainTitleDraft || chain.chainId);
   };
 
   const handleChainRolePick = async (agentInstanceId: string) => {
@@ -461,7 +460,7 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
 
   const setChainStatus = async (status: string) => {
     const summary = status === 'completed' ? (completeSummaryDraft.trim() || 'Completed from Task Chain Editor.') : undefined;
-    await runMutation(`chain-${status}`, () => daemonApi.updateTaskChainStatus({ ...auth, chainId: chain.chainId, status, finalSummary: summary }), status === 'completed' ? 'Chain completed' : 'Chain status updated', status, true);
+    await runMutation(`chain-${status}`, () => dispatch(workspaceApi.endpoints.updateChainStatus.initiate({ chainId: chain.chainId, status, finalSummary: summary })).unwrap(), status === 'completed' ? 'Chain completed' : 'Chain status updated', status);
   };
 
   const selectTask = (id: string) => {
@@ -526,7 +525,7 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
               agents={chainRolePicker === 'coordinator'
                 ? agents.filter((agent: any) => String(agent?.id || agent?.agent_instance_id || '') !== 'user_proxy')
                 : [{ id: 'user_proxy', label: 'User / operator', agentRole: 'user', templateId: 'user', providerProfile: 'heimdall', projectId: chainProjectId || '', connected: true, connectionState: 'connected' }, ...agents]}
-              identities={agentIdentities}
+              identities={identities}
               team={team}
               projects={chainProjectId ? [{ projectId: chainProjectId, name: chainProjectId }] : []}
               providers={providers}
@@ -544,7 +543,6 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
         <button data-debug-id="chain-editor-back-btn" onClick={onReturnToChain} className="rounded-full bg-white/5 px-4 py-2 text-sm hover:bg-white/10">← Chain</button>
         <div className="text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">Task Chain Editor</div>
         <div className="flex-1" />
-        <button data-debug-id="chain-editor-refresh-btn" onClick={onRefresh} className="rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-sm hover:bg-white/10">↻ Refresh</button>
         <button data-debug-id="chain-editor-home-btn" onClick={onBack} className="rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-sm hover:bg-white/10">Home</button>
       </div>
 

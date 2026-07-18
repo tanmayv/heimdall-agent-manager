@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Static regression checks for passive UI event API churn.
 
-Guards the high-priority performance fix: hover, typing, and passive sidebar
-scroll must not be wired to durable fetch/focus APIs.
+Guards the performance fix: hover, typing, passive scroll, and route churn must
+not be wired to broad durable fetch/focus APIs.
 """
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "src" / "ui" / "components" / "App.tsx"
 CHAIN_VIEW = ROOT / "src" / "ui" / "store" / "chainViewSlice.ts"
+WORKSPACE = ROOT / "src" / "ui" / "api" / "endpoints" / "workspace.ts"
 
 
 def require(condition: bool, message: str) -> None:
@@ -19,6 +20,7 @@ def require(condition: bool, message: str) -> None:
 def main() -> None:
     app = APP.read_text(encoding="utf-8")
     chain_view = CHAIN_VIEW.read_text(encoding="utf-8")
+    workspace = WORKSPACE.read_text(encoding="utf-8")
 
     # URL task-log ownership is now RTKQ-backed via useFetchTaskLogQuery, with the
     # route key still guarding rerender churn from local draft typing.
@@ -42,12 +44,17 @@ def main() -> None:
     require('data-debug-id="sidebar-conversations-show-more-btn"' in app and 'onClick={loadMoreConversations}' in app, "conversation Show More pagination must remain")
     require('data-debug-id="sidebar-agents-show-more-btn"' in app and 'onClick={loadMoreAgents}' in app, "agent Show More pagination must remain")
 
-    # Chain focus endpoint remains centralized and should only be reached through
-    # explicit chain open/route-change paths; WS handling now delegates to
-    # wsInvalidation instead of broad revalidation fan-out in App.
-    require("daemonApi.focusTaskChain" in chain_view, "focusTaskChain API should remain for explicit chain focus")
+    # Chain focus ownership moved behind workspace RTKQ endpoints/mutations and
+    # should only be reached through explicit route/open handlers.
+    require("return daemonApi.focusTaskChain({ ...auth(session), chainId });" in workspace, "workspaceApi.focusChain should own focusTaskChain")
+    require("useFocusChainMutation" in app, "App should own explicit chain focus through useFocusChainMutation")
     require("const routeChainKey" in app and "lastUrlChainFocusKeyRef.current !== routeChainKey" in app, "URL chain focus must be route-change guarded")
     require("lastUrlChainFocusKeyRef.current = `chain:${chainId}`;" in app, "explicit chain open should mark route focus handled")
+    require("focusChain({ chainId }).catch(() => undefined);" in app, "App should call focusChain mutation for explicit chain focus")
+    require("daemonApi.focusTaskChain" not in chain_view, "chainViewSlice should not directly own focusTaskChain anymore")
+
+    # WS handling stays delegated to wsInvalidation; App should not resurrect
+    # broad chain-view revalidation loops.
     require("import { handleUserWsEvent } from '../api/wsInvalidation';" in app, "App should delegate WS handling to wsInvalidation")
     require("dispatch(revalidateChainView(focused));" not in app and "dispatch(revalidateChainView(chainId));" not in app, "App should not broadly revalidate chain view from websocket handlers")
     require("PERIODIC_REVALIDATE_MS" not in app, "periodic chain revalidation should be removed")

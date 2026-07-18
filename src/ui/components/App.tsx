@@ -7,17 +7,12 @@ import { defaultWantsVcs, findScaffold, findTeamKind, kindOptionLabel, NONE_SCAF
 // TODO(rtkq-migration owner=task-19f69e242e4): App still has explicit component-level task/chat thunk dispatches for open/load-more flows; replace these with RTKQ hooks or endpoint initiate calls during cleanup.
 import {
   addDaemonProfile,
-  agentLifecycleEventReceived,
-  agentRuntimeEventReceived,
   appendMessage,
   GUIDE_AGENT_ID,
   chatEventReceived,
   closeGuidePanel,
   fetchGuideChat,
-  fetchPreferences,
   fetchSelectedChat,
-  refreshAgents,
-  refreshSettingsCatalog,
   registerSession,
   removeDaemonProfile,
   renameDaemonProfile,
@@ -25,14 +20,12 @@ import {
   sendMessageToSelectedAgent,
   toggleGuidePanel,
   updateSessionConfig,
-  upsertKnownAgent,
   userWsConnected,
   userWsConnecting,
   userWsDisconnected,
   userWsError,
 } from '../store/chatSlice';
-import { addCommentToSelectedTask, addParticipantToSelectedTask, assignSelectedTask, fetchTasksForChain, nudgeSelectedTask, refreshTaskBoard, removeParticipantFromSelectedTask, taskEventReceived, updateChainStateDirectly, updateSelectedTaskStatus, updateTaskStateDirectly, voteOnAttentionTask, voteOnSelectedTask } from '../store/taskSlice';
-import { clearProjectError, createProjectFromUi, refreshProjects } from '../store/projectSlice';
+import { addCommentToSelectedTask, addParticipantToSelectedTask, assignSelectedTask, fetchTasksForChain, nudgeSelectedTask, removeParticipantFromSelectedTask, updateSelectedTaskStatus, voteOnAttentionTask, voteOnSelectedTask } from '../store/taskSlice';
 import {
   closeNewChainModal,
   httpLoadCompleted,
@@ -45,20 +38,14 @@ import {
 } from '../store/homeSlice';
 import {
   closeAgentSideSheet,
-  focusChainView,
-  fetchWorkspaceForChain,
-  loadAgentSideSheet,
+  chainFocusStarted,
   openAgentSideSheet,
-  previewWorkspaceMerge,
-  revalidateChainView,
   sendCoordinatorMessage,
   toggleWorkspaceDiff,
-  fetchWorkspaceDiff,
   fetchChainCoordinatorChatPage,
   wsChainViewRefreshRequested,
 } from '../store/chainViewSlice';
-import { answerChatApproval, chatApprovalEventReceived, dismissChatApproval, refreshChatApprovals, tickChatApprovalExpiry, refreshMergeDecisions, executeMergeViaChain, MergeDecision } from '../store/attentionSlice';
-import { refreshMemory, decideMemoryProposal, fetchMemoryDetail, memoryEventReceived, auditStartedReceived, auditEndedReceived } from '../store/memorySlice';
+import type { MergeDecision } from '../api/attentionCatalog';
 import { dismissToast, showToast } from '../store/toastSlice';
 import Markdown from './Markdown';
 import ArtifactUploadButton, { appendArtifactLink, useArtifactUpload } from './ArtifactUpload';
@@ -70,8 +57,17 @@ import { VimSidebarProvider, VimEditButton } from './VimSidebar';
 import AgentPicker from './AgentPicker';
 import RuntimeRestartControls from './RuntimeRestartControls';
 import * as daemonApi from '../api/daemonApi';
-import { useFetchChainTasksQuery, useFetchTaskLogQuery, useLazyFetchTaskLogPageQuery } from '../api/endpoints/tasks';
+import { selectTaskCacheProjection } from '../api/taskCache';
+import { selectChainViewCacheProjection } from '../api/chainViewCache';
+import { useFetchChainTasksQuery, useFetchTaskLogQuery, useFetchTaskQuery, useFetchTaskCommentsQuery, useLazyFetchTaskLogPageQuery } from '../api/endpoints/tasks';
 import { chatEndpoints, useListConversationSummariesQuery } from '../api/endpoints/chats';
+import { upsertAgentInCaches, useFetchAgentQuery, useListAgentsQuery } from '../api/endpoints/agents';
+import { useAnswerChatApprovalMutation, useDismissChatApprovalMutation, useExecuteMergeViaChainMutation, useFetchAttentionQuery, useListChatApprovalsQuery } from '../api/endpoints/attention';
+import { useDecideMemoryProposalMutation, useListApplicableMemoryQuery, useListMemoryQuery, useProposeMemoryChangeMutation } from '../api/endpoints/memory';
+import { useFetchChainQuery, useFetchTeamQuery, useFetchWorkspaceQuery, useFocusChainMutation, useLazyFetchWorkspaceDiffQuery, useLazyPreviewWorkspaceMergeQuery, useListChainsQuery } from '../api/endpoints/workspace';
+import { useCreateProjectMutation, useListProjectsQuery } from '../api/endpoints/projects';
+import { useFetchSettingsCatalogQuery } from '../api/endpoints/settings';
+import { useListArtifactsQuery } from '../api/endpoints/artifacts';
 import { handleUserWsEvent } from '../api/wsInvalidation';
 
 type Chain = {
@@ -622,16 +618,30 @@ function attentionCount(tasksById: Record<string, any>, attention: any, pendingM
 
 export default function App() {
   const dispatch = useDispatch<any>();
-  const { agents, agentIdentities, session, daemonProfiles, selectedAgentId, chats, chatsCursor, chatsHasMore, guidePanelOpen, guideSending, fetchingChatsByAgentId, settingsTemplates, settingsProviders, conversationSummaryById } = useSelector((state: any) => state.chat);
+  const { session, daemonProfiles, selectedAgentId, chats, chatsCursor, chatsHasMore, guidePanelOpen, guideSending, fetchingChatsByAgentId, conversationSummaryById } = useSelector((state: any) => state.chat);
   const conversationSummariesQuery = useListConversationSummariesQuery(undefined, { skip: !session.clientToken });
   const effectiveConversationSummaryById = conversationSummariesQuery.data || conversationSummaryById;
-  const { projectsById, projectIds, mutating: projectMutating, error: projectError } = useSelector((state: any) => state.projects);
-  const { chainsById, tasksById, chainTaskIds, taskLogsByTaskId, taskLogCursorByTaskId, taskLogHasMoreByTaskId, taskLogLoadingByTaskId, taskLogTotalByTaskId, loading } = useSelector((state: any) => state.tasks);
+  const { selectedProjectId: selectedProjectIdPreference } = useSelector((state: any) => state.projects);
+  const projectsQuery = useListProjectsQuery({ scope: `${session.daemonUrl || ''}:${session.clientInstanceId || ''}:${session.clientToken || ''}` }, { skip: !session.connected || !session.clientToken });
+  const settingsCatalogQuery = useFetchSettingsCatalogQuery({ scope: `${session.daemonUrl || ''}:${session.clientInstanceId || ''}` }, { skip: !session.connected || !session.daemonUrl });
+  const [createProject, createProjectState] = useCreateProjectMutation();
+  const chainsQuery = useListChainsQuery(undefined, { skip: !session.clientToken });
+  const routeChainId = (() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      return params.get('chainId') || '';
+    } catch (_err) { return ''; }
+  })();
+  const selectedChainQuery = useFetchChainQuery({ chainId: routeChainId }, { skip: !session.clientToken || !routeChainId });
+  const cacheChainView = useSelector(selectChainViewCacheProjection);
+  const chainsById = useMemo(() => ({ ...cacheChainView.chainsById }), [cacheChainView.chainsById]);
+  const loading = chainsQuery.isFetching || selectedChainQuery.isFetching;
+  const { tasksById, chainTaskIds, taskLogsByTaskId, taskLogCursorByTaskId, taskLogHasMoreByTaskId, taskLogLoadingByTaskId, taskLogTotalByTaskId } = useSelector(selectTaskCacheProjection);
   const home = useSelector((state: any) => state.home);
-  const chainView = useSelector((state: any) => state.chainView);
+  const chainViewUi = useSelector((state: any) => state.chainView);
   const [urlParams] = useUrlParams();
   const sessionRef = useRef(session);
-  const chainViewRef = useRef(chainView);
+  const chainViewRef = useRef<any>(null);
   const chainsByIdRef = useRef(chainsById);
   const selectedAgentRef = useRef(selectedAgentId);
   const visibleChatAgentRef = useRef('');
@@ -643,7 +653,6 @@ export default function App() {
   const [selectedSidebarAgentId, setSelectedSidebarAgentId] = useState('');
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarAgentLaunchingId, setSidebarAgentLaunchingId] = useState('');
-  const [sidebarFetchedAgents, setSidebarFetchedAgents] = useState<any[]>([]);
   const [newConversationBusy, setNewConversationBusy] = useState(false);
   // Keep direct agent chat drafts at App scope so a transient AgentDetailPage
   // remount during refresh/revalidation cannot wipe a long in-progress message.
@@ -666,8 +675,21 @@ export default function App() {
       return next;
     });
   }, []);
+  const agentsQuery = useListAgentsQuery(undefined, {
+    skip: !session.daemonUrl,
+    pollingInterval: chainCreationProgress?.active || home.surface === 'agents' || urlParams.view === 'agent-identity' || guidePanelOpen || Boolean(selectedSidebarAgentId) ? 2000 : 0,
+  });
+  const agents = agentsQuery.data?.agents || [];
+  const agentIdentities = agentsQuery.data?.identities || [];
+  const refetchAgents = useCallback(() => agentsQuery.refetch().catch(() => undefined), [agentsQuery.refetch]);
+  const selectedAgentDetailQuery = useFetchAgentQuery(
+    { agentInstanceId: agentPageId || '' },
+    {
+      skip: !agentPageId,
+      pollingInterval: agentPageId ? 2000 : 0,
+    },
+  );
   useEffect(() => { sessionRef.current = session; }, [session]);
-  useEffect(() => { chainViewRef.current = chainView; }, [chainView]);
   useEffect(() => { chainsByIdRef.current = chainsById; }, [chainsById]);
   useEffect(() => { selectedAgentRef.current = selectedAgentId; }, [selectedAgentId]);
   useEffect(() => {
@@ -685,17 +707,70 @@ export default function App() {
   }, [agentPageId, home.selectedChainId, home.surface, urlParams.agentId, urlParams.chainId, urlParams.view]);
 
   const projects: Project[] = useMemo(() => {
-    const known = projectIds.map((id: string) => projectsById[id]).filter(Boolean);
+    const known = projectsQuery.data?.projects || [];
     if (known.length > 0) return known;
     return [{ projectId: 'default', name: 'Default project', description: 'Chains without an explicit project.' }];
-  }, [projectIds, projectsById]);
+  }, [projectsQuery.data?.projects]);
+  const projectsById = useMemo(() => {
+    const rows: Record<string, any> = {};
+    for (const project of projects) rows[project.projectId || (project as any).project_id] = project;
+    return rows;
+  }, [projects]);
+  const settingsTemplates = settingsCatalogQuery.data?.templates || [];
+  const settingsProviders = settingsCatalogQuery.data?.providers || [];
 
   const chains: Chain[] = useMemo(() => Object.values(chainsById || {}) as Chain[], [chainsById]);
-  const selectedProjectId = home.selectedProjectId || projects[0]?.projectId || 'default';
-  const selectedChain = home.selectedChainId ? chainsById[home.selectedChainId] : null;
+  const selectedProjectId = home.selectedProjectId || selectedProjectIdPreference || projects[0]?.projectId || 'default';
+  const selectedChain = home.selectedChainId ? (chainsById[home.selectedChainId] || selectedChainQuery.data?.chain || null) : null;
+  const selectedWorkspaceQuery = useFetchWorkspaceQuery(
+    { chainId: selectedChain?.chainId || '' },
+    { skip: !selectedChain?.chainId, pollingInterval: chainCreationProgress?.active ? 2000 : 0 },
+  );
+  const selectedTeamId = selectedChain?.teamId || selectedChain?.team_id || '';
+  const selectedTeamQuery = useFetchTeamQuery({ teamId: selectedTeamId }, { skip: !selectedTeamId });
+  const [focusChain] = useFocusChainMutation();
+  const [loadWorkspacePreview] = useLazyPreviewWorkspaceMergeQuery();
+  const [loadWorkspaceDiff] = useLazyFetchWorkspaceDiffQuery();
+  const chainView = useMemo(() => {
+    const chainId = selectedChain?.chainId || '';
+    const workspaceByChainId = { ...cacheChainView.workspaceByChainId };
+    const teamByChainId = { ...cacheChainView.teamByChainId };
+    if (chainId && selectedWorkspaceQuery.data?.workspace) workspaceByChainId[chainId] = selectedWorkspaceQuery.data.workspace;
+    if (chainId && selectedTeamQuery.data?.team) teamByChainId[chainId] = selectedTeamQuery.data.team;
+    return {
+      ...chainViewUi,
+      workspaceByChainId,
+      teamByChainId,
+      mergePreviewByChainId: cacheChainView.mergePreviewByChainId,
+      workspaceDiffByChainId: cacheChainView.workspaceDiffByChainId,
+      loading: selectedWorkspaceQuery.isFetching || selectedTeamQuery.isFetching || chainViewUi.loading,
+    };
+  }, [cacheChainView.mergePreviewByChainId, cacheChainView.teamByChainId, cacheChainView.workspaceByChainId, cacheChainView.workspaceDiffByChainId, chainViewUi, selectedChain?.chainId, selectedTeamQuery.data?.team, selectedTeamQuery.isFetching, selectedWorkspaceQuery.data?.workspace, selectedWorkspaceQuery.isFetching]);
+  useEffect(() => { chainViewRef.current = chainView; }, [chainView]);
   const selectedChainTasksQuery = useFetchChainTasksQuery(
     { chainId: selectedChain?.chainId || '' },
     { skip: !selectedChain?.chainId },
+  );
+  const creationProgressChainQuery = useFetchChainQuery(
+    { chainId: chainCreationProgress?.chainId || '' },
+    {
+      skip: !chainCreationProgress?.active || !chainCreationProgress?.chainId,
+      pollingInterval: chainCreationProgress?.active ? 2000 : 0,
+    },
+  );
+  const creationProgressWorkspaceQuery = useFetchWorkspaceQuery(
+    { chainId: chainCreationProgress?.chainId || '' },
+    {
+      skip: !chainCreationProgress?.active || !chainCreationProgress?.chainId,
+      pollingInterval: chainCreationProgress?.active ? 2000 : 0,
+    },
+  );
+  useFetchTeamQuery(
+    { teamId: chainCreationProgress?.teamId || '' },
+    {
+      skip: !chainCreationProgress?.active || !chainCreationProgress?.teamId,
+      pollingInterval: chainCreationProgress?.active ? 2000 : 0,
+    },
   );
   const creationProgressChainTasksQuery = useFetchChainTasksQuery(
     { chainId: chainCreationProgress?.chainId || '' },
@@ -800,8 +875,38 @@ export default function App() {
       markIfUnread(visibleAgentId, unread);
     }
   }, [agentPageId, chainsById, dispatch, effectiveConversationSummaryById, guidePanelOpen, guideUnread, home.selectedChainId, home.surface, selectedAgentId, session.clientToken, session.connected, unreadByAgentId, urlParams.agentId, urlParams.chainId, urlParams.view]);
-  const attention = useSelector((state: any) => state.attention);
-  const memory = useSelector((state: any) => state.memory);
+  const attentionUi = useSelector((state: any) => state.attention);
+  const chatApprovalsQuery = useListChatApprovalsQuery(undefined, {
+    skip: !session.clientToken,
+    pollingInterval: home.surface === 'attention' ? 15_000 : 0,
+  });
+  const attentionQuery = useFetchAttentionQuery(undefined, {
+    skip: !session.clientToken,
+    pollingInterval: home.surface === 'attention' ? 15_000 : 0,
+  });
+  const chatApprovals = chatApprovalsQuery.data?.approvals || [];
+  const mergeDecisions = attentionQuery.data?.mergeDecisions || [];
+  const federationPeerBlocks = attentionQuery.data?.federationPeerBlocks || [];
+  const attention = useMemo(() => ({
+    ...attentionUi,
+    chatApprovalsById: Object.fromEntries(chatApprovals.map((approval: any) => [approval.approvalId, approval])),
+    chatApprovalIds: chatApprovals.map((approval: any) => approval.approvalId),
+    mergeDecisionsById: Object.fromEntries(mergeDecisions.map((decision: any) => [decision.chainId, decision])),
+    mergeDecisionIds: mergeDecisions.map((decision: any) => decision.chainId),
+    federationPeerBlocksById: Object.fromEntries(federationPeerBlocks.map((block: any) => [block.key, block])),
+    federationPeerBlockIds: federationPeerBlocks.map((block: any) => block.key),
+    loading: chatApprovalsQuery.isFetching || attentionQuery.isFetching,
+    error: chatApprovalsQuery.error || attentionQuery.error ? 'Failed to load attention data' : attentionUi?.error || '',
+  }), [attentionUi, chatApprovals, chatApprovalsQuery.error, chatApprovalsQuery.isFetching, federationPeerBlocks, mergeDecisions, attentionQuery.error, attentionQuery.isFetching]);
+  const [answerChatApproval] = useAnswerChatApprovalMutation();
+  const [dismissChatApproval] = useDismissChatApprovalMutation();
+  const [executeMergeViaChain] = useExecuteMergeViaChainMutation();
+  const memoryUi = useSelector((state: any) => state.memory);
+  const memoryListQuery = useListMemoryQuery(undefined, { skip: !session.clientToken });
+  const memoryRecords = memoryListQuery.data?.records || [];
+  const memoryRecordsById = useMemo(() => Object.fromEntries(memoryRecords.map((record: any) => [record.memoryId, record])), [memoryRecords]);
+  const memory = useMemo(() => ({ ...memoryUi, recordsById: memoryRecordsById, recordIds: memoryRecords.map((record: any) => record.memoryId) }), [memoryRecords, memoryRecordsById, memoryUi]);
+  const [decideMemoryProposal] = useDecideMemoryProposalMutation();
   const toasts = useSelector((state: any) => state.toasts?.toasts || []);
   const currentPageInfo = useMemo(() => {
     const chainId = home.selectedChainId || urlParams.chainId || '';
@@ -870,7 +975,8 @@ export default function App() {
       lastUrlChainFocusKeyRef.current = routeChainKey;
       setAgentPageId('');
       if (home.selectedChainId !== urlParams.chainId) dispatch(selectChain(urlParams.chainId));
-      dispatch(focusChainView(urlParams.chainId));
+      dispatch(chainFocusStarted(urlParams.chainId));
+      focusChain({ chainId: urlParams.chainId }).catch(() => undefined);
       return;
     } else if (!routeChainKey) {
       lastUrlChainFocusKeyRef.current = '';
@@ -904,17 +1010,14 @@ export default function App() {
   }, [chainsById, chats, dispatch, fetchingChatsByAgentId, home.selectedChainId, session.clientToken, session.connected, urlParams.chainId, urlParams.view]);
 
   const loadHomeData = useCallback(async (periodic = false, reason = 'startup') => {
-    const result = await dispatch(refreshTaskBoard()).unwrap().catch(() => null);
+    const chainResult = await chainsQuery.refetch().catch(() => null);
     await Promise.all([
-      dispatch(refreshProjects()).catch(() => undefined),
-      dispatch(refreshAgents()).catch(() => undefined),
-      dispatch(fetchPreferences()).catch(() => undefined),
-      dispatch(refreshSettingsCatalog()).catch(() => undefined),
+      refetchAgents(),
     ]);
-    const chainIds = (result?.chains || []).map((chain: any) => chain.chainId).filter(Boolean);
+    const chainIds = ((chainResult as any)?.data?.chains || chains || []).map((chain: any) => chain.chainId).filter(Boolean);
     await Promise.all(chainIds.slice(0, 20).map((chainId: string) => dispatch(fetchTasksForChain(chainId)).catch(() => undefined)));
     dispatch(httpLoadCompleted({ at: Date.now(), periodic, reason }));
-  }, [dispatch]);
+  }, [chains, chainsQuery, dispatch, refetchAgents]);
 
   const connectSession = useCallback((attempt = 0) => {
     connectAttemptsRef.current = attempt;
@@ -939,7 +1042,6 @@ export default function App() {
   useEffect(() => {
     if (!guidePanelOpen || !session.connected) return undefined;
     dispatch(fetchGuideChat()).catch(() => undefined);
-    dispatch(refreshAgents()).catch(() => undefined);
   }, [dispatch, guidePanelOpen, session.connected]);
   useEffect(() => {
     if (!guidePanelOpen || !(window as any).odinApi?.getDebugInfo) return;
@@ -952,8 +1054,8 @@ export default function App() {
   const startGuideAgent = useCallback(async () => {
     const agent = guideAgent || { id: GUIDE_AGENT_ID, agentRole: 'guide', templateId: 'guide' };
     await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id || GUIDE_AGENT_ID, provider: agent.providerProfile || defaultConversationProvider(settingsProviders), templateId: agent.templateId || agent.agentRole || 'guide', projectId: agent.projectId || '', displayName: agent.label || 'Heimdall Guide', modelTier: agent.modelTier || 'smart', agentRole: agent.agentRole || agent.templateId || 'guide' });
-    await dispatch(refreshAgents()).unwrap().catch(() => undefined);
-  }, [dispatch, guideAgent, session?.daemonUrl, settingsProviders]);
+    await refetchAgents();
+  }, [guideAgent, refetchAgents, session?.daemonUrl, settingsProviders]);
   const guideContextLabel = useMemo(() => {
     if (currentPageInfo.taskId) return `Task ${currentPageInfo.taskId}`;
     if (currentPageInfo.chainId) return `Chain ${currentPageInfo.chainTitle || currentPageInfo.chainId}`;
@@ -1031,7 +1133,7 @@ export default function App() {
       socket.onopen = () => {
         dispatch(userWsConnected());
         dispatch(wsRefreshRequested('user_ws_connected'));
-        dispatch(refreshAgents());
+        refetchAgents();
         loadHomeData(false, 'user_ws_connected').catch(() => undefined);
       };
       socket.onmessage = (event) => {
@@ -1067,25 +1169,18 @@ export default function App() {
     lastUrlChainFocusKeyRef.current = `chain:${chainId}`;
     updateUrlParams({ chainId, view: 'chain', taskId: null, agentId: null, memoryId: null });
     dispatch(selectChain(chainId));
-    dispatch(focusChainView(chainId));
-  }, [dispatch]);
+    dispatch(chainFocusStarted(chainId));
+    focusChain({ chainId }).catch(() => undefined);
+  }, [dispatch, focusChain]);
 
   const openChainEditor = useCallback((chainId: string, taskId = '') => {
     setAgentPageId('');
     lastUrlChainFocusKeyRef.current = `chain-editor:${chainId}`;
     updateUrlParams({ chainId, view: 'chain-editor', taskId: taskId || null, agentId: null, memoryId: null });
     dispatch(selectChain(chainId));
-    dispatch(focusChainView(chainId));
-  }, [dispatch]);
-
-  useEffect(() => {
-    if (home.surface !== 'attention' || !session.connected) return undefined;
-    dispatch(refreshChatApprovals());
-    dispatch(refreshMergeDecisions());
-    dispatch(refreshMemory());
-    const expiry = window.setInterval(() => dispatch(tickChatApprovalExpiry()), 15_000);
-    return () => window.clearInterval(expiry);
-  }, [dispatch, home.surface, session.connected]);
+    dispatch(chainFocusStarted(chainId));
+    focusChain({ chainId }).catch(() => undefined);
+  }, [dispatch, focusChain]);
 
   const selectSurfaceWithUrl = useCallback((next: string) => {
     setAgentPageId('');
@@ -1134,16 +1229,6 @@ export default function App() {
     updateUrlParams({ view: 'agent-identity', agentId: durableId, chainId: null, taskId: null, memoryId: null });
   }, []);
 
-  const fetchSidebarAgentPage = useCallback(async ({ offset, limit }: { offset: number; limit: number }) => {
-    const page = await daemonApi.listKnownAgentsPage({ daemonUrl: session?.daemonUrl || '', offset, limit });
-    setSidebarFetchedAgents((current) => {
-      const byId = new Map<string, any>();
-      for (const agent of [...current, ...(page.agents || [])]) byId.set(agentInstanceId(agent), agent);
-      return Array.from(byId.values());
-    });
-    return page;
-  }, [session?.daemonUrl]);
-
   const startSidebarAgentInstance = useCallback(async (agentId: string) => {
     const durableId = String(agentId || '').trim();
     if (!durableId || sidebarAgentLaunchingId) return;
@@ -1161,7 +1246,7 @@ export default function App() {
         modelTier: identity.modelTier || 'normal',
         agentRole: identity.agentRole || identity.templateId || durableId,
       });
-      await dispatch(refreshAgents()).unwrap().catch(() => undefined);
+      await refetchAgents();
       const resolvedId = result?.agent_instance_id || result?.agentInstanceId || requestedId;
       setSelectedSidebarAgentId(durableId);
       openAgentPage(resolvedId);
@@ -1190,7 +1275,7 @@ export default function App() {
       const resolvedId = result?.agent_instance_id || result?.agentInstanceId || requestedId;
       setAgentPageId(resolvedId);
       updateUrlParams({ view: 'agent', agentId: resolvedId, chainId: null, taskId: null, memoryId: null, projectId: projectId || null });
-      await dispatch(refreshAgents()).unwrap().catch(() => undefined);
+      await refetchAgents();
       dispatch(fetchSelectedChat({ agentId: resolvedId })).catch(() => undefined);
       return resolvedId;
     } finally {
@@ -1226,7 +1311,7 @@ export default function App() {
       if (!sent) throw lastSendError || new Error('Timed out waiting for conversation agent');
       setAgentPageId(resolvedId);
       updateUrlParams({ view: 'agent', agentId: resolvedId, chainId: null, taskId: null, memoryId: null, projectId: projectId || null });
-      await dispatch(refreshAgents()).unwrap().catch(() => undefined);
+      await refetchAgents();
       dispatch(appendMessage({ agentId: resolvedId, message: { id: sendResult?.messageId || `local_${Date.now()}`, author: 'user', body, createdUnixMs: Date.now(), deliveredUnixMs: Date.now(), readUnixMs: 0 } }));
       return resolvedId;
     } finally {
@@ -1250,15 +1335,15 @@ export default function App() {
   }, [agents]);
   const closeNewProjectModal = useCallback(() => {
     setNewProjectModalOpen(false);
-    dispatch(clearProjectError());
-  }, [dispatch]);
+  }, []);
   const submitNewProject = useCallback(async (payload: { name: string; description?: string }) => {
-    const result = await dispatch(createProjectFromUi(payload)).unwrap();
-    if (result?.project_id) {
-      dispatch(selectProject(result.project_id));
+    const result = await createProject(payload).unwrap();
+    const projectId = result?.project_id || result?.project?.project_id || result?.project?.projectId || '';
+    if (projectId) {
+      dispatch(selectProject(projectId));
     }
     setNewProjectModalOpen(false);
-  }, [dispatch]);
+  }, [createProject, dispatch]);
   const sideSheetAgent = useMemo(() => {
     if (!chainView.sideSheetAgentId) return null;
     const live = agents.find((agent: any) => agent.id === chainView.sideSheetAgentId);
@@ -1277,19 +1362,12 @@ export default function App() {
       isUserProxy: Boolean(member.is_user_proxy),
     };
   }, [agents, chainView.sideSheetAgentId, chainView.teamByChainId, selectedChain]);
-  const sideSheetDetails = chainView.sideSheetByAgentId[chainView.sideSheetAgentId] || null;
+  const sideSheetTaskId = useMemo(() => {
+    const liveTaskId = sideSheetAgent?.currentTaskId || sideSheetAgent?.current_task_id || '';
+    if (liveTaskId) return liveTaskId;
+    return selectedChainTasks.find((task: any) => task?.assigneeAgentInstanceId === chainView.sideSheetAgentId)?.taskId || '';
+  }, [chainView.sideSheetAgentId, selectedChainTasks, sideSheetAgent]);
   const creationProgressState = useMemo(() => chainCreationProgress ? buildChainCreationProgress(chainCreationProgress, chainsById, chainTaskIds, tasksById, agents, chainView, creationProgressChainTasksQuery.data?.tasks || []) : null, [chainCreationProgress, chainsById, chainTaskIds, tasksById, agents, chainView, creationProgressChainTasksQuery.data?.tasks]);
-  // TODO(rtkq-migration owner=task-19f69e242e4): chain creation progress still polls refreshAgents() until the Agents domain moves to RTKQ-backed list/detail hooks. Keep this bounded to the active modal only.
-  useEffect(() => {
-    if (!chainCreationProgress?.active || !chainCreationProgress.chainId) return undefined;
-    const tick = () => {
-      dispatch(refreshAgents()).catch(() => undefined);
-      dispatch(revalidateChainView(chainCreationProgress.chainId)).catch(() => undefined);
-    };
-    tick();
-    const interval = window.setInterval(tick, 2000);
-    return () => window.clearInterval(interval);
-  }, [dispatch, chainCreationProgress?.active, chainCreationProgress?.chainId]);
   useEffect(() => {
     if (!chainCreationProgress?.active || !creationProgressState?.coordinatorReady || !chainCreationProgress.chainId) return;
     setChainCreationProgress((current: any) => current?.chainId === chainCreationProgress.chainId ? { ...current, completed: true } : current);
@@ -1313,9 +1391,8 @@ export default function App() {
             newConversationBusy={newConversationBusy}
             collapsed={sidebarCollapsed}
             onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
-            agents={sidebarFetchedAgents.length > 0 ? sidebarFetchedAgents : agents}
+            agents={agents}
             allAgents={agents}
-            onFetchAgentPage={fetchSidebarAgentPage}
             selectedSidebarAgentId={selectedSidebarAgentId}
             sidebarAgentLaunchingId={sidebarAgentLaunchingId}
             onSelectSidebarAgent={setSelectedSidebarAgentId}
@@ -1362,7 +1439,8 @@ export default function App() {
             {badgeCount > 0 ? <span data-debug-id="attention-bell-badge" className="absolute -right-1 -top-1 min-w-4 rounded-full bg-sky-400 px-1 text-center text-[10px] font-semibold leading-4 text-black">{badgeCount > 99 ? '99+' : badgeCount}</span> : null}
           </button>
           {agentPageId ? (() => {
-            const selectedPageAgent = (agents || []).find((agent: any) => agent.id === agentPageId) || { id: agentPageId, label: agentPageId, status: 'unknown' };
+            const listAgent = (agents || []).find((agent: any) => agent.id === agentPageId) || null;
+            const selectedPageAgent = selectedAgentDetailQuery.data?.agent || listAgent || { id: agentPageId, label: agentPageId, status: 'unknown' };
             const sharedAgentPageProps = {
               agent: selectedPageAgent,
               chats,
@@ -1379,7 +1457,7 @@ export default function App() {
               chatDraft: agentChatDraftsById[agentPageId] || '',
               onChatDraftChange: (value: string) => setAgentChatDraftsById((current) => ({ ...current, [agentPageId]: value })),
               onBack: navigateBackOrHome,
-              onRefreshAgents: () => dispatch(refreshAgents()).unwrap().catch(() => undefined),
+              onRefreshAgents: refetchAgents,
               onRefreshChat: (agentId: string) => dispatch(fetchSelectedChat({ agentId })).unwrap().catch(() => undefined),
               onSendAgentMessage: async (agentId: string, body: string, interrupt = false, runtime: any = {}) => {
                 const exactAgent = (agents || []).find((agent: any) => agentInstanceId(agent) === agentId) || selectedPageAgent;
@@ -1394,7 +1472,7 @@ export default function App() {
                     modelTier: runtime.modelTier || exactAgent?.modelTier || 'normal',
                     agentRole: exactAgent?.agentRole || exactAgent?.templateId || durableAgentId(exactAgent) || String(agentId).split('@')[0],
                   });
-                  await dispatch(refreshAgents()).unwrap().catch(() => undefined);
+                  await refetchAgents();
                 }
                 const tempId = `local_temp_chat_${Date.now()}_${Math.random().toString(36).slice(2)}`;
                 await dispatch(sendMessageToSelectedAgent({ agentId, body, tempId, interrupt })).unwrap();
@@ -1412,7 +1490,7 @@ export default function App() {
                 allAgents={agents}
                 onOpenIdentity={openAgentIdentityPage}
                 onOpenChain={(chainId: string) => { setAgentPageId(''); openChain(chainId); }}
-                onAgentDeleted={() => { setAgentPageId(''); dispatch(refreshAgents()); }}
+                onAgentDeleted={() => { setAgentPageId(''); refetchAgents(); }}
               />
             );
           })() : urlParams.view === 'agent-identity' ? (
@@ -1426,12 +1504,12 @@ export default function App() {
               providers={settingsProviders}
               session={session}
               onBack={navigateBackOrHome}
-              onRefreshAgents={() => dispatch(refreshAgents()).unwrap().catch(() => undefined)}
+              onRefreshAgents={refetchAgents}
               onNewInstance={async (identity: any) => {
                 const durableId = durableAgentId(identity);
                 const requestedId = `${durableId}@s-${(globalThis.crypto?.randomUUID?.().replace(/-/g, '').slice(0, 10) || Date.now().toString(16))}`;
                 const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, provider: identity.providerProfile || defaultConversationProvider(settingsProviders), templateId: identity.templateId || identity.agentRole || durableId, projectId: identity.projectId || '', displayName: '', modelTier: identity.modelTier || 'normal', agentRole: identity.agentRole || identity.templateId || durableId });
-                await dispatch(refreshAgents()).unwrap().catch(() => undefined);
+                await refetchAgents();
                 openAgentPage(result?.agent_instance_id || result?.agentInstanceId || requestedId);
               }}
             />
@@ -1473,7 +1551,7 @@ export default function App() {
               onOpenIdentity={openAgentIdentityPage}
               onOpenInstance={openAgentPage}
               onStartInstance={startSidebarAgentInstance}
-              onRefreshAgents={() => dispatch(refreshAgents()).unwrap().catch(() => undefined)}
+              onRefreshAgents={refetchAgents}
             />
           ) : home.surface === 'task-chains' ? (
             <TaskChainsSurface
@@ -1508,11 +1586,11 @@ export default function App() {
               tasksById={selectedTasksById}
               team={chainView.teamByChainId[selectedChain.chainId]}
               agents={agents}
+              identities={agentIdentities}
               providers={settingsProviders}
               initialTaskId={urlParams.taskId}
               onBack={() => { updateUrlParams({ chainId: null, taskId: null, agentId: null, view: 'home' }); dispatch(selectSurface('home')); }}
               onReturnToChain={() => updateUrlParams({ view: 'chain', chainId: selectedChain.chainId, taskId: urlParams.taskId || null })}
-              onRefresh={() => { void selectedChainTasksQuery.refetch(); dispatch(focusChainView(selectedChain.chainId)); }}
               onSelectTask={(taskId: string) => { updateUrlParams({ view: 'chain-editor', chainId: selectedChain.chainId, taskId }); }}
             />
           ) : home.surface === 'chain' && selectedChain ? (
@@ -1522,6 +1600,7 @@ export default function App() {
               tasksById={selectedTasksById}
               chainsById={chainsById}
               agents={agents}
+              agentIdentities={agentIdentities}
               chainView={chainView}
               taskLogsByTaskId={selectedTaskLogsByTaskId}
               taskLogCursorByTaskId={selectedTaskLogCursorByTaskId}
@@ -1536,10 +1615,10 @@ export default function App() {
                 await dispatch(sendCoordinatorMessage({ chainId: selectedChain.chainId, body, localId })).unwrap();
               }}
               onToggleDiff={() => dispatch(toggleWorkspaceDiff(selectedChain.chainId))}
-              onFetchDiff={(file: string) => dispatch(fetchWorkspaceDiff({ chainId: selectedChain.chainId, file }))}
-              onRescan={() => dispatch(fetchWorkspaceForChain(selectedChain.chainId))}
-              onPreviewMerge={() => dispatch(previewWorkspaceMerge(selectedChain.chainId))}
-              onOpenAgent={(agentId: string) => { dispatch(openAgentSideSheet(agentId)); dispatch(loadAgentSideSheet(agentId)); }}
+              onFetchDiff={(file: string) => loadWorkspaceDiff({ chainId: selectedChain.chainId, file })}
+              onRescan={() => selectedWorkspaceQuery.refetch()}
+              onPreviewMerge={() => loadWorkspacePreview({ chainId: selectedChain.chainId })}
+              onOpenAgent={(agentId: string) => { dispatch(openAgentSideSheet(agentId)); }}
               onOpenAgentChat={(agentId: string) => openAgentPage(agentId)}
               onOpenTask={(taskId: string) => { updateUrlParams({ view: 'chain', chainId: selectedChain.chainId, taskId }); }}
               onLoadTaskLogPage={(taskId: string, cursor = 0) => {
@@ -1548,6 +1627,7 @@ export default function App() {
               }}
               onLoadCoordinatorChatPage={(chainId: string, cursor = 0) => dispatch(fetchChainCoordinatorChatPage({ chainId, cursor })).unwrap().catch(() => undefined)}
               onOpenEditor={(taskId?: string) => openChainEditor(selectedChain.chainId, taskId || urlParams.taskId || '')}
+              onRefreshAgents={refetchAgents}
               onAddComment={async (task: any, body: string) => {
                 try {
                   await dispatch(addCommentToSelectedTask({ taskId: task.taskId, chainId: task.chainId, body })).unwrap();
@@ -1586,14 +1666,14 @@ export default function App() {
               }}
               onAssignTask={async (task: any, agentInstanceId: string, pickerResult?: any) => {
                 const updatedAgent = pickerResult?.agent || pickerResult?.result?.agent;
-                if (updatedAgent) dispatch(upsertKnownAgent(updatedAgent));
+                if (updatedAgent) upsertAgentInCaches(dispatch, updatedAgent);
                 await dispatch(assignSelectedTask({ taskId: task.taskId, chainId: task.chainId, agentInstanceId })).unwrap();
                 dispatch(showToast({ kind: 'success', title: 'Assignee updated', message: agentInstanceId }));
               }}
               onCloseTask={() => updateUrlParams({ taskId: null })}
               onSetReviewer={async (task: any, agentInstanceId: string, pickerResult?: any) => {
                 const updatedAgent = pickerResult?.agent || pickerResult?.result?.agent;
-                if (updatedAgent) dispatch(upsertKnownAgent(updatedAgent));
+                if (updatedAgent) upsertAgentInCaches(dispatch, updatedAgent);
                 const reviewers = taskReviewerIds(task);
                 for (const reviewerId of reviewers) {
                   await dispatch(removeParticipantFromSelectedTask({ taskId: task.taskId, chainId: task.chainId, agentInstanceId: reviewerId, role: 'lgtm_required' })).unwrap().catch(() => undefined);
@@ -1611,15 +1691,15 @@ export default function App() {
               memory={memory}
               pendingMemoryIds={pendingMemoryIds}
               onVoteTask={(task: any, approved: boolean, comment?: string) => dispatch(voteOnAttentionTask({ taskId: task.taskId, chainId: task.chainId, approved, comment: comment || undefined }))}
-              onAnswerApproval={(approvalId: string, reply: string) => dispatch(answerChatApproval({ approvalId, reply }))}
-              onDismissApproval={(approvalId: string, reason?: string, notify?: boolean) => dispatch(dismissChatApproval({ approvalId, reason, notify }))}
-              onDecideMemory={(proposalId: string, decision: 'approve' | 'reject') => dispatch(decideMemoryProposal({ proposalId, decision }))}
-              onOpenMerge={(chainId: string) => { openChain(chainId); dispatch(previewWorkspaceMerge(chainId)); }}
-              onMergeViaChain={(chainId: string, instructions: string) => dispatch(executeMergeViaChain({ chainId, instructions }))}
+              onAnswerApproval={(approvalId: string, reply: string) => answerChatApproval({ approvalId, reply }).unwrap()}
+              onDismissApproval={(approvalId: string, reason?: string, notify?: boolean) => dismissChatApproval({ approvalId, reason, notify }).unwrap()}
+              onDecideMemory={(proposalId: string, decision: 'approve' | 'reject') => decideMemoryProposal({ proposalId, decision })}
+              onOpenMerge={(chainId: string) => { openChain(chainId); loadWorkspacePreview({ chainId }); }}
+              onMergeViaChain={(chainId: string, instructions: string) => executeMergeViaChain({ chainId, instructions }).unwrap()}
               onRemoveBlockedReviewer={async (block: any) => {
                 await dispatch(removeParticipantFromSelectedTask({ taskId: block.taskId, chainId: block.chainId, agentInstanceId: block.proxyAgentInstanceId, role: block.reviewerRole || 'lgtm_required' })).unwrap();
                 dispatch(showToast({ kind: 'success', title: 'Reviewer gate removed', message: block.proxyAgentInstanceId || block.taskId }));
-                dispatch(refreshMergeDecisions());
+                attentionQuery.refetch().catch(() => undefined);
               }}
             />
           ) : (
@@ -1707,7 +1787,8 @@ export default function App() {
                 wantsVcs: Boolean(payload.wantsVcs),
                 startedAt: Date.now(),
               });
-              dispatch(focusChainView(chainId));
+              dispatch(chainFocusStarted(chainId));
+              focusChain({ chainId }).catch(() => undefined);
             }
           }}
         />
@@ -1721,8 +1802,8 @@ export default function App() {
       )}
       {newProjectModalOpen && (
         <NewProjectModal
-          creating={projectMutating}
-          error={projectError}
+          creating={createProjectState.isLoading}
+          error={createProjectState.error ? 'Failed to create project' : ''}
           onClose={closeNewProjectModal}
           onSubmit={submitNewProject}
         />
@@ -1751,7 +1832,7 @@ export default function App() {
       {chainView.sideSheetAgentId && (
         <AgentSideSheet
           agent={sideSheetAgent}
-          details={sideSheetDetails}
+          taskId={sideSheetTaskId}
           onClose={() => dispatch(closeAgentSideSheet())}
         />
       )}
@@ -1954,7 +2035,7 @@ function writeLaunchAgentDefaults(daemonUrl: string, defaults: any) {
 
 const SIDEBAR_PAGE_SIZE = 5;
 
-function SidebarConversationSection({ conversations = [], chats = {}, summaryById = {}, projectsById = {}, selectedAgentId = '', onOpenConversation, onNewConversation, newConversationBusy = false, compact = false, onFetchAgentPage }: any) {
+function SidebarConversationSection({ conversations = [], chats = {}, summaryById = {}, projectsById = {}, selectedAgentId = '', onOpenConversation, onNewConversation, newConversationBusy = false, compact = false }: any) {
   const [conversationLimit, setConversationLimit] = useState(SIDEBAR_PAGE_SIZE);
   const [conversationLoadingMore, setConversationLoadingMore] = useState(false);
   const sortedConversations = useMemo(() => [...(conversations || [])].sort((left: any, right: any) => conversationSortUnixMs(right, chats?.[right.id] || [], summaryById?.[right.id]) - conversationSortUnixMs(left, chats?.[left.id] || [], summaryById?.[left.id])), [conversations, chats, summaryById]);
@@ -1965,12 +2046,11 @@ function SidebarConversationSection({ conversations = [], chats = {}, summaryByI
     if (conversationLoadingMore || hiddenConversationCount <= 0) return;
     setConversationLoadingMore(true);
     try {
-      await onFetchAgentPage?.({ offset: visibleConversations.length, limit: SIDEBAR_PAGE_SIZE, kind: 'conversation' });
       setConversationLimit((current) => Math.min(sortedConversations.length, current + SIDEBAR_PAGE_SIZE));
     } finally {
       setConversationLoadingMore(false);
     }
-  }, [conversationLoadingMore, hiddenConversationCount, onFetchAgentPage, sortedConversations.length, visibleConversations.length]);
+  }, [conversationLoadingMore, hiddenConversationCount, sortedConversations.length]);
   const groups = useMemo(() => {
     const grouped: Record<string, { projectId: string; projectName: string; rows: any[] }> = {};
     for (const agent of visibleConversations || []) {
@@ -2061,7 +2141,7 @@ function SidebarConversationSection({ conversations = [], chats = {}, summaryByI
 }
 
 
-function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryById = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, collapsed = false, onToggleCollapsed, agents = [], allAgents = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onOpenAgentInstance, onStartAgentInstance, onFetchAgentPage, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onMemory, onAgents, onTaskChains, onProjects, onSettings }: any) {
+function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryById = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, collapsed = false, onToggleCollapsed, agents = [], allAgents = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onOpenAgentInstance, onStartAgentInstance, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onMemory, onAgents, onTaskChains, onProjects, onSettings }: any) {
   const chainUpdatedMs = (chain: any) => Number(chain?.updatedAtUnixMs || chain?.updated_at_unix_ms || chain?.updatedAt || chain?.updated_at || chain?.createdAtUnixMs || chain?.created_at_unix_ms || 0);
   const sortedChains = [...(chains || [])].sort((a: any, b: any) => chainUpdatedMs(b) - chainUpdatedMs(a));
   const activeChains = sortedChains.filter((chain: any) => !isChainCompleted(chain)).slice(0, 4);
@@ -2145,11 +2225,9 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryByI
           onNewConversation={null}
           newConversationBusy={newConversationBusy}
           compact
-          onFetchAgentPage={onFetchAgentPage}
         />
         <SidebarDurableAgentsSection
           groups={agentGroups}
-          onFetchAgentPage={onFetchAgentPage}
           selectedAgentId={selectedSidebarAgentId}
           launchingAgentId={sidebarAgentLaunchingId}
           onSelectAgent={onSelectSidebarAgent}
@@ -2164,7 +2242,7 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryByI
   );
 }
 
-function SidebarDurableAgentsSection({ groups = [], selectedAgentId = '', launchingAgentId = '', onSelectAgent, onOpenInstance, onStartAgent, onFetchAgentPage }: any) {
+function SidebarDurableAgentsSection({ groups = [], selectedAgentId = '', launchingAgentId = '', onSelectAgent, onOpenInstance, onStartAgent }: any) {
   const [agentLimit, setAgentLimit] = useState(SIDEBAR_PAGE_SIZE);
   const [agentsLoadingMore, setAgentsLoadingMore] = useState(false);
   useEffect(() => { setAgentLimit((current) => Math.min(Math.max(SIDEBAR_PAGE_SIZE, current), Math.max(SIDEBAR_PAGE_SIZE, (groups || []).length))); }, [groups?.length]);
@@ -2174,12 +2252,11 @@ function SidebarDurableAgentsSection({ groups = [], selectedAgentId = '', launch
     if (agentsLoadingMore || hiddenAgentCount <= 0) return;
     setAgentsLoadingMore(true);
     try {
-      await onFetchAgentPage?.({ offset: visibleGroups.length, limit: SIDEBAR_PAGE_SIZE, kind: 'durable-agent' });
       setAgentLimit((current) => Math.min((groups || []).length, current + SIDEBAR_PAGE_SIZE));
     } finally {
       setAgentsLoadingMore(false);
     }
-  }, [agentsLoadingMore, hiddenAgentCount, groups, onFetchAgentPage, visibleGroups.length]);
+  }, [agentsLoadingMore, hiddenAgentCount, groups]);
   return (
     <section data-debug-id="sidebar-durable-agents" className="mb-3 border-b border-[#171717] pb-3">
       <div className="flex items-center justify-between px-2 pb-1 pt-2 text-[10.5px] uppercase tracking-[0.18em] text-zinc-500">
@@ -2497,14 +2574,6 @@ function SidebarAgentsList({ agents = [], projects = [], session = {}, providers
     setLaunchTier(defaults.modelTier || 'normal');
     setSaveLaunchDefaults(false);
   }, [session?.daemonUrl]);
-
-  useEffect(() => {
-    if (!pickerOpen || !launchProgressId || launchReady || launchFailed) return undefined;
-    const tick = () => onRefreshAgents?.();
-    tick();
-    const interval = window.setInterval(tick, 2000);
-    return () => window.clearInterval(interval);
-  }, [pickerOpen, launchProgressId, launchReady, launchFailed, onRefreshAgents]);
 
   const launchNamedAgent = async () => {
     const name = launchName.trim();
@@ -2845,8 +2914,6 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
   const [editProvider, setEditProvider] = useState(agent?.providerProfile || '');
   const [editProject, setEditProject] = useState(agent?.projectId || '');
   const [editTier, setEditTier] = useState(agent?.modelTier || 'normal');
-  const [agentMemories, setAgentMemories] = useState<any[]>([]);
-  const [memoryLoading, setMemoryLoading] = useState(false);
   const [memoryError, setMemoryError] = useState('');
   const [memoryEditor, setMemoryEditor] = useState<any>(null);
   const [memorySaving, setMemorySaving] = useState(false);
@@ -2887,6 +2954,13 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
   const messages = useMemo(() => normalizeCoordinatorMessages((chats?.[agent?.id] || []).map((msg: any) => ({ ...msg, agentInstanceId: agent?.id }))), [chats, agent?.id]);
   const buckets = useMemo(() => agentTaskBuckets(agent?.id || '', tasksById || {}), [agent?.id, tasksById]);
   const agentMemoryId = String(agent?.agentId || agent?.agent_id || agent?.id || '').split('@')[0];
+  const agentMemoryQuery = useListApplicableMemoryQuery(
+    { targetAgentId: agentMemoryId, targetProjectId: agent?.projectId || '' },
+    { skip: !agentMemoryId || !session?.clientToken },
+  );
+  const agentMemories = agentMemoryQuery.data?.records || [];
+  const [proposeMemoryChange] = useProposeMemoryChangeMutation();
+  const [decideAgentMemoryProposal] = useDecideMemoryProposalMutation();
 
   useEffect(() => {
     if (agent?.id) onRefreshChat?.(agent.id);
@@ -2914,28 +2988,6 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
     if (agentStopDone) setStopProgress((current: any) => current?.agentId === agent?.id ? { ...current, completed: true, completedAt: Date.now() } : current);
   }, [stopProgress?.active, stopProgress?.agentId, stopProgress?.completed, agent?.id, agentStopDone]);
 
-  useEffect(() => {
-    if ((!startProgress?.active || startProgress.completed || startProgress.failed) && (!stopProgress?.active || stopProgress.completed || stopProgress.failed)) return undefined;
-    const interval = window.setInterval(() => onRefreshAgents?.(), 1000);
-    return () => window.clearInterval(interval);
-  }, [startProgress?.active, startProgress?.completed, startProgress?.failed, stopProgress?.active, stopProgress?.completed, stopProgress?.failed, onRefreshAgents]);
-
-  const refreshAgentMemory = useCallback(async () => {
-    if (!agentMemoryId || !session?.clientToken) return;
-    setMemoryLoading(true);
-    setMemoryError('');
-    try {
-      const data = await daemonApi.listApplicableMemory({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, targetAgentId: agentMemoryId, targetProjectId: agent?.projectId || '' });
-      setAgentMemories(data.records || []);
-    } catch (err: any) {
-      setMemoryError(err?.message || 'Unable to load memory');
-    } finally {
-      setMemoryLoading(false);
-    }
-  }, [agentMemoryId, agent?.projectId, session?.daemonUrl, session?.clientInstanceId, session?.clientToken]);
-
-  useEffect(() => { refreshAgentMemory(); }, [refreshAgentMemory]);
-
   const openMemoryEditor = (record?: any) => {
     setMemoryEditor(record ? { mode: 'edit', memoryId: record.memory_id || record.memoryId, expectedVersion: Number(record.version || 0), type: record.type || 'fact', title: record.title || '', body: record.body || '', evidence: record.evidence || '', metadataJson: record.metadata_json || record.metadataJson || '', targetAgentId: record.target_agent_id || record.targetAgentId || agentMemoryId, targetRole: record.target_role || record.targetRole || '', targetProjectId: record.target_project_id || record.targetProjectId || '' } : { mode: 'new', type: 'fact', title: '', body: '', evidence: '', metadataJson: '', targetAgentId: agentMemoryId, targetRole: '', targetProjectId: '' });
   };
@@ -2946,10 +2998,10 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
     setMemoryError('');
     try {
       const payload: any = { proposalAction: memoryEditor.mode === 'edit' ? 'edit' : 'new', memoryId: memoryEditor.memoryId, expectedVersion: memoryEditor.expectedVersion, type: memoryEditor.type || 'fact', title: memoryEditor.title || '', body: memoryEditor.body || '', evidence: memoryEditor.evidence || '', metadataJson: memoryEditor.metadataJson || '', targetAgentId: memoryEditor.targetAgentId || agentMemoryId, targetRole: memoryEditor.targetRole || '', targetProjectId: memoryEditor.targetProjectId || '' };
-      const proposal = await daemonApi.proposeMemory({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, ...payload });
-      if (proposal?.proposal_id || proposal?.proposalId) await daemonApi.decideMemory({ daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken, proposalId: proposal.proposal_id || proposal.proposalId, decision: 'approve', reason: 'Direct edit from agent memory editor.' });
+      const proposal = await proposeMemoryChange(payload).unwrap();
+      if (proposal?.proposal_id || proposal?.proposalId) await decideAgentMemoryProposal({ proposalId: proposal.proposal_id || proposal.proposalId, decision: 'approve', reason: 'Direct edit from agent memory editor.' }).unwrap();
       setMemoryEditor(null);
-      await refreshAgentMemory();
+      await agentMemoryQuery.refetch().catch(() => undefined);
     } catch (err: any) {
       setMemoryError(err?.message || 'Unable to save memory');
     } finally {
@@ -3172,13 +3224,13 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
       <section data-debug-id="agent-detail-memory" className="mt-6 rounded-3xl border border-white/10 bg-white/[0.035] p-5">
         <div className="mb-3 flex items-center justify-between gap-3">
           <div><h2 className="text-lg font-semibold text-zinc-100">Memory</h2><p className="mt-1 text-sm text-zinc-500">Applicable active memory for durable agent <span className="font-mono">{agentMemoryId || '—'}</span>.</p></div>
-          <div className="flex gap-2"><IconActionButton debugId="agent-detail-memory-refresh-btn" title="Refresh memory" icon="↻" onClick={refreshAgentMemory} disabled={memoryLoading} /><IconActionButton debugId="agent-detail-memory-add-btn" title="Add memory" icon="＋" onClick={() => openMemoryEditor()} tone="primary" /></div>
+          <div className="flex gap-2"><IconActionButton debugId="agent-detail-memory-refresh-btn" title="Refresh memory" icon="↻" onClick={() => agentMemoryQuery.refetch()} disabled={agentMemoryQuery.isFetching} /><IconActionButton debugId="agent-detail-memory-add-btn" title="Add memory" icon="＋" onClick={() => openMemoryEditor()} tone="primary" /></div>
         </div>
         {memoryError && <div data-debug-id="agent-detail-memory-error" className="mb-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{memoryError}</div>}
         <div className="space-y-2">
-          {memoryLoading && <div className="rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-zinc-500">Loading memory…</div>}
-          {!memoryLoading && agentMemories.length === 0 && <div className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No applicable memory items.</div>}
-          {!memoryLoading && agentMemories.map((record: any) => {
+          {agentMemoryQuery.isFetching && <div className="rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-zinc-500">Loading memory…</div>}
+          {!agentMemoryQuery.isFetching && agentMemories.length === 0 && <div className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No applicable memory items.</div>}
+          {!agentMemoryQuery.isFetching && agentMemories.map((record: any) => {
             const memoryId = record.memory_id || record.memoryId;
             return <div key={memoryId} data-debug-id={`agent-detail-memory-item-${memoryId}`} className="rounded-2xl border border-white/10 bg-black/20 p-3"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="truncate text-sm font-semibold text-zinc-100">{record.title || memoryId}</div><div className="mt-1 truncate text-xs text-zinc-500">{record.type || 'fact'} · v{record.version || 0} · {record.target || record.target_agent_id || 'global'}</div></div><IconActionButton debugId={`agent-detail-memory-edit-btn-${memoryId}`} title="Edit memory" icon="✎" onClick={() => openMemoryEditor(record)} /></div>{record.body && <div className="mt-2 line-clamp-3 whitespace-pre-wrap text-xs text-zinc-400">{record.body}</div>}</div>;
           })}
@@ -3977,11 +4029,7 @@ function MergeDecisionCard({ decision, chain, onMerge, onOpen, onOpenPreview }: 
 
 function AttentionSurface({ tasksById, chainsById, openChain, attention, memory, pendingMemoryIds, onVoteTask, onAnswerApproval, onDismissApproval, onDecideMemory, onOpenMerge, onMergeViaChain, onRemoveBlockedReviewer }: any) {
   const [filter, setFilter] = useState<'all' | 'chat' | 'tasks' | 'merge' | 'memory'>('all');
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 15_000);
-    return () => window.clearInterval(timer);
-  }, []);
+  const now = Date.now();
   const chatApprovals = (attention?.chatApprovalIds || [])
     .map((id: string) => attention.chatApprovalsById?.[id])
     .filter((approval: any) => approval && approval.state === 'open' && approval.expiresAtUnixMs > now && approval.kind !== 'multi_question');
@@ -4699,54 +4747,18 @@ function formatArtifactWhen(value: number) {
   return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
-function normalizeChatArtifacts(data: any): ChatArtifactRow[] {
-  const rows = Array.isArray(data?.artifacts) ? data.artifacts : [];
-  return rows.filter((row: any) => row?.artifact_id).map((row: any) => ({
-    artifact_id: String(row.artifact_id),
-    name: String(row.name || ''),
-    kind: String(row.kind || ''),
-    mime: String(row.mime || ''),
-    size_bytes: Number(row.size_bytes || 0),
-    created_unix_ms: Number(row.created_unix_ms || 0),
-    updated_unix_ms: Number(row.updated_unix_ms || 0),
-    origin_kind: String(row.origin_kind || ''),
-    origin_ref: String(row.origin_ref || ''),
-  }));
-}
-
 function ChatArtifactsSidePanel({ debugPrefix, daemonUrl = '', clientToken = '', projectId = '', originKind = 'chat', originRef = '', onUploaded, onClose }: any) {
-  const [artifacts, setArtifacts] = useState<ChatArtifactRow[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
   const [activeArtifactId, setActiveArtifactId] = useState('');
-
-  const refreshArtifacts = useCallback(async () => {
-    if (!projectId) {
-      setArtifacts([]);
-      setError('No project context for artifacts.');
-      setLoading(false);
-      return;
-    }
-    if (!daemonUrl || !clientToken) {
-      setArtifacts([]);
-      setError('Artifact listing is unavailable until connected.');
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    setError('');
-    try {
-      const data = await daemonApi.listArtifacts({ daemonUrl, clientToken, projectId, limit: 100 });
-      setArtifacts(normalizeChatArtifacts(data));
-    } catch (err: any) {
-      setArtifacts([]);
-      setError(String(err?.message || err || 'Failed to load artifacts.'));
-    } finally {
-      setLoading(false);
-    }
-  }, [daemonUrl, clientToken, projectId]);
-
-  useEffect(() => { refreshArtifacts(); }, [refreshArtifacts, originRef]);
+  const artifactsQuery = useListArtifactsQuery({ projectId, limit: 100 }, { skip: !projectId || !daemonUrl || !clientToken });
+  const artifacts = (artifactsQuery.data?.artifacts || []) as ChatArtifactRow[];
+  const loading = artifactsQuery.isFetching;
+  const error = !projectId
+    ? 'No project context for artifacts.'
+    : !daemonUrl || !clientToken
+      ? 'Artifact listing is unavailable until connected.'
+      : artifactsQuery.error
+        ? 'Failed to load artifacts.'
+        : '';
 
   return (
     <aside data-debug-id={`${debugPrefix}-artifacts-panel`} className="flex w-[300px] shrink-0 flex-col border-l border-white/10 bg-[#0d0d0d]">
@@ -4757,14 +4769,14 @@ function ChatArtifactsSidePanel({ debugPrefix, daemonUrl = '', clientToken = '',
         </div>
         <div className="flex shrink-0 items-center gap-1">
           <ArtifactUploadButton
-            onUploaded={(link) => { onUploaded?.(link); refreshArtifacts(); }}
+            onUploaded={(link) => { onUploaded?.(link); }}
             context={{ projectId, originKind, originRef }}
             disabled={!projectId || !daemonUrl || !clientToken}
             debugIdPrefix={`${debugPrefix}-artifacts-upload`}
             label="⇧"
             buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-[#141414] text-lg leading-none text-zinc-300 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-45"
           />
-          <button type="button" data-debug-id={`${debugPrefix}-artifacts-refresh-btn`} onClick={() => refreshArtifacts()} disabled={loading || !projectId} className="grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-[#141414] text-xs text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-45" title="Refresh artifacts" aria-label="Refresh artifacts">↻</button>
+          <button type="button" data-debug-id={`${debugPrefix}-artifacts-refresh-btn`} onClick={() => artifactsQuery.refetch()} disabled={loading || !projectId || !daemonUrl || !clientToken} className="grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-[#141414] text-xs text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-45" title="Refresh artifacts" aria-label="Refresh artifacts">↻</button>
           <button type="button" data-debug-id={`${debugPrefix}-artifacts-close-btn`} onClick={onClose} className="grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-[#141414] text-sm text-zinc-400 hover:text-zinc-100" title="Close artifacts" aria-label="Close artifacts">×</button>
         </div>
       </div>
@@ -5084,7 +5096,7 @@ function ChainProgressPanel({ chain, progress }: { chain: any; progress: ChainPr
   );
 }
 
-function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, initialTaskId = '', onBack, onSend, onToggleDiff, onFetchDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenAgentChat, onOpenChain, onOpenTask, onLoadTaskLogPage, onLoadCoordinatorChatPage, onOpenEditor, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer }: any) {
+function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentities = [], chainView, taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, initialTaskId = '', onBack, onSend, onToggleDiff, onFetchDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenAgentChat, onOpenChain, onOpenTask, onLoadTaskLogPage, onLoadCoordinatorChatPage, onOpenEditor, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onRefreshAgents }: any) {
   const dispatch = useDispatch<any>();
   const session = useSelector((state: any) => state.chat?.session || {});
   const chatState = useSelector((state: any) => state.chat || {});
@@ -5168,7 +5180,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
   const startCoordinator = async () => {
     if (!coordinatorAgentId) return;
     await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: coordinatorAgentId, provider: coordinatorAgent?.providerProfile || 'pi', templateId: coordinatorAgent?.templateId || coordinatorAgent?.agentRole || 'coordinator', projectId: projectId || coordinatorAgent?.projectId || '', displayName: coordinatorAgent?.label || coordinatorAgentId, modelTier: coordinatorAgent?.modelTier || 'normal', agentRole: coordinatorAgent?.agentRole || coordinatorAgent?.templateId || 'coordinator' });
-    await dispatch(refreshAgents()).unwrap().catch(() => undefined);
+    await onRefreshAgents?.();
   };
   const submit = async () => {
     const body = draft.trim();
@@ -5328,9 +5340,10 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
                 nudgeDraft={nudgeDraft}
                 projectId={projectId}
                 chainId={chain.chainId}
+                team={chainView.teamByChainId[chain.chainId]}
                 daemonUrl={session.daemonUrl}
                 clientToken={session.clientToken}
-                onRefreshAgents={() => dispatch(refreshAgents()).unwrap().catch(() => undefined)}
+                onRefreshAgents={onRefreshAgents}
                 onCommentDraft={setCommentDraft}
                 onNudgeDraft={setNudgeDraft}
                 onOpenTask={openTask}
@@ -5345,6 +5358,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
                 onSetReviewer={onSetReviewer}
                 onOpenAgentChat={onOpenAgentChat}
                 agents={agents}
+                agentIdentities={agentIdentities}
                 taskIndexMap={taskIndexMap}
               />
               {completedTasks.length > 0 && (
@@ -5364,9 +5378,10 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
                     nudgeDraft={nudgeDraft}
                     projectId={projectId}
                     chainId={chain.chainId}
+                    team={chainView.teamByChainId[chain.chainId]}
                     daemonUrl={session.daemonUrl}
                     clientToken={session.clientToken}
-                    onRefreshAgents={() => dispatch(refreshAgents()).unwrap().catch(() => undefined)}
+                    onRefreshAgents={onRefreshAgents}
                     onCommentDraft={setCommentDraft}
                     onNudgeDraft={setNudgeDraft}
                     onOpenTask={openTask}
@@ -5381,6 +5396,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, chainView, tas
                     onSetReviewer={onSetReviewer}
                     onOpenAgentChat={onOpenAgentChat}
                     agents={agents}
+                    agentIdentities={agentIdentities}
                     taskIndexMap={taskIndexMap}
                     completed
                   />
@@ -5527,18 +5543,17 @@ function TaskAgentChip({ role, agentId, agent, active, onClick, onChatClick }: a
   );
 }
 
-function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, expandedTaskId, commentDraft, nudgeDraft, projectId = '', chainId = '', daemonUrl = '', clientToken = '', onRefreshAgents, onCommentDraft, onNudgeDraft, onOpenTask, onLoadTaskLogPage, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onOpenAgentChat, agents = [], taskIndexMap = new Map(), completed = false }: any) {
+function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, expandedTaskId, commentDraft, nudgeDraft, projectId = '', chainId = '', team = null, daemonUrl = '', clientToken = '', onRefreshAgents, onCommentDraft, onNudgeDraft, onOpenTask, onLoadTaskLogPage, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onOpenAgentChat, agents = [], agentIdentities = [], taskIndexMap = new Map(), completed = false }: any) {
   const [commentsOpenByTaskId, setCommentsOpenByTaskId] = useState<Record<string, boolean>>({});
   const [busyAction, setBusyAction] = useState('');
   const [localError, setLocalError] = useState('');
   const [lastPasteTarget, setLastPasteTarget] = useState('');
   const [agentPicker, setAgentPicker] = useState<{ taskId: string; mode: 'assignee' | 'reviewer' } | null>(null);
   const session = useSelector((state: any) => state.chat?.session || {});
-  const agentIdentities = useSelector((state: any) => state.chat?.agentIdentities || []);
   const conversationSummaryById = useSelector((state: any) => state.chat?.conversationSummaryById || {});
   const conversationSummariesQuery = useListConversationSummariesQuery(undefined, { skip: !session.clientToken });
   const effectiveConversationSummaryById = conversationSummariesQuery.data || conversationSummaryById;
-  const chainTeam = useSelector((state: any) => state.chainView?.teamByChainId?.[chainId] || null);
+  const chainTeam = team?.team || team || null;
   const taskTextArtifactUpload = useArtifactUpload({ projectId, originRef: chainId || '', originKind: 'clipboard_chain_text' });
   const selectableAgents = useMemo(() => [{ id: 'user_proxy', label: 'User / operator', agentRole: 'user', templateId: 'user', providerProfile: 'heimdall', projectId: projectId || '', connected: true, connectionState: 'connected' }, ...(agents || [])], [agents, projectId]);
   const agentsById = useMemo(() => {
@@ -5757,7 +5772,15 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
   );
 }
 
-function AgentSideSheet({ agent, details, onClose }: any) {
+function AgentSideSheet({ agent, taskId = '', onClose }: any) {
+  const taskQuery = useFetchTaskQuery({ taskId }, { skip: !taskId });
+  const taskCommentsQuery = useFetchTaskCommentsQuery({ taskId }, { skip: !taskId });
+  const task = taskQuery.data?.task || null;
+  const recentComments = useMemo(() => {
+    const comments = taskCommentsQuery.data?.comments || [];
+    return comments.slice(-3).reverse();
+  }, [taskCommentsQuery.data?.comments]);
+
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/50">
       <aside className="h-full w-[28rem] border-l border-white/10 bg-[#0d0f14] p-5 shadow-2xl">
@@ -5774,9 +5797,10 @@ function AgentSideSheet({ agent, details, onClose }: any) {
           <InfoRow label="State" value={agent?.state || agent?.status || '—'} />
           <div data-debug-id="chain-agent-current-task" className="rounded-xl bg-white/[0.04] p-3">
             <div className="text-xs uppercase tracking-wider text-zinc-500">Current task</div>
-            <div className="mt-1 break-words text-zinc-300">{details?.task?.title || agent?.currentTaskId || details?.taskId || 'idle'}</div>
+            <div className="mt-1 break-words text-zinc-300">{task?.title || agent?.currentTaskId || taskId || 'idle'}</div>
           </div>
-          {details?.task && <InfoRow label="Task status" value={details.task.status || '—'} />}
+          {taskId && <InfoRow label="Task id" value={taskId} />}
+          {task && <InfoRow label="Task status" value={task.status || '—'} />}
           <InfoRow label="Project" value={agent?.projectName || agent?.projectId || '—'} />
           <InfoRow label="Run dir" value={agent?.runDir || '—'} />
           {agent?.blockedReason && <InfoRow label="Blocked" value={agent.blockedReason} tone="text-red-200" />}
@@ -5784,9 +5808,9 @@ function AgentSideSheet({ agent, details, onClose }: any) {
         <div data-debug-id="chain-agent-last-comments" className="mt-5 rounded-xl bg-white/[0.04] p-3">
           <div className="text-xs uppercase tracking-wider text-zinc-500">Last 3 task comments</div>
           <div className="mt-3 space-y-2">
-            {!details?.taskId ? <div className="text-sm text-zinc-500">No current task.</div> : (details?.comments || []).length === 0 ? <div className="text-sm text-zinc-500">No comments loaded for current task.</div> : details.comments.map((comment: any, index: number) => (
-              <div key={comment.comment_id} data-debug-id={`chain-agent-comment-${index}`} className="rounded-lg bg-black/20 p-2 text-sm text-zinc-300">
-                <div className="text-[10px] uppercase tracking-wider text-zinc-500">{comment.author_agent_instance_id || 'comment'} · {comment.resolved ? 'resolved' : 'open'}</div>
+            {!taskId ? <div className="text-sm text-zinc-500">No current task.</div> : taskCommentsQuery.isFetching && recentComments.length === 0 ? <div className="text-sm text-zinc-500">Loading task comments…</div> : recentComments.length === 0 ? <div className="text-sm text-zinc-500">No comments loaded for current task.</div> : recentComments.map((comment: any, index: number) => (
+              <div key={comment.commentId || comment.comment_id || `${taskId}-comment-${index}`} data-debug-id={`chain-agent-comment-${index}`} className="rounded-lg bg-black/20 p-2 text-sm text-zinc-300">
+                <div className="text-[10px] uppercase tracking-wider text-zinc-500">{comment.authorAgentInstanceId || comment.author_agent_instance_id || 'comment'} · {comment.resolved ? 'resolved' : 'open'}</div>
                 <div className="mt-1 line-clamp-4 whitespace-pre-wrap">{comment.body}</div>
               </div>
             ))}

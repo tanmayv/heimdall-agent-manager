@@ -1,4 +1,5 @@
 import * as daemonApi from '../daemonApi';
+import { upsertTaskLogEvent } from '../taskCache';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
 
 function normalizeTask(task: any) {
@@ -171,11 +172,9 @@ export const tasksApi = heimdallApi.injectEndpoints({
           const { data } = await queryFulfilled;
           dispatch(tasksApi.util.updateQueryData('fetchTaskLog', { taskId }, (draft: any) => {
             if (!draft) return;
-            const byId = new Map<string, any>();
-            for (const event of [...(draft.events || []), ...(data?.events || [])]) {
-              byId.set(event.eventId || `${event.kind}-${event.createdUnixMs}-${event.body}`, event);
+            for (const event of data?.events || []) {
+              upsertTaskLogEvent(draft.events || (draft.events = []), event);
             }
-            draft.events = Array.from(byId.values()).sort((left: any, right: any) => Number(left.createdUnixMs || 0) - Number(right.createdUnixMs || 0));
             draft.nextCursor = Number(data?.nextCursor || 0);
             draft.hasMore = Boolean(data?.hasMore);
             draft.total = Number(data?.total || 0);
@@ -339,6 +338,7 @@ export const tasksApi = heimdallApi.injectEndpoints({
 
 export const {
   useFetchChainTasksQuery,
+  useFetchTaskQuery,
   useFetchTaskCommentsQuery,
   useFetchTaskLogQuery,
   useLazyFetchTaskLogPageQuery,

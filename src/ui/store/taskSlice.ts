@@ -1,40 +1,9 @@
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
 import * as daemonApi from '../api/daemonApi';
+import { selectCachedTaskById } from '../api/taskCache';
 import { tasksApi } from '../api/endpoints/tasks';
 
 const TASK_LOG_RELOAD_DEDUPE_MS = 1500;
-
-function normalizeTask(task: any) {
-  return {
-    id: task.task_id,
-    taskId: task.task_id,
-    chainId: task.chain_id || '',
-    title: task.title || '',
-    description: task.description || '',
-    acceptanceCriteria: task.acceptance_criteria || '',
-    priority: task.priority || 'normal',
-    status: task.status || 'pending',
-    assigneeAgentInstanceId: task.assignee_agent_instance_id || '',
-    reviewerAgentInstanceId: task.reviewer_agent_instance_id || '',
-    coordinatorAgentInstanceId: task.coordinator_agent_instance_id || '',
-    dependsOn: task.depends_on || '',
-    createdBy: task.created_by || '',
-    createdAtUnixMs: Number(task.created_at_unix_ms || 0),
-    updatedAtUnixMs: Number(task.updated_at_unix_ms || 0),
-    notActionableReason: task.not_actionable_reason || '',
-    votes: (task.votes || []).map((v: any) => ({
-      reviewerAgentInstanceId: v.reviewer_agent_instance_id,
-      approved: Boolean(v.approved),
-      comment: v.comment || '',
-    })),
-    participants: (task.participants || []).map((p: any) => ({
-      agentInstanceId: p.agent_instance_id,
-      role: p.role,
-    })),
-    unresolvedCommentCount: Number(task.unresolved_comment_count || 0),
-    unresolvedComments: (task.unresolved_comments || []).map(normalizeEvent),
-  };
-}
 
 function normalizeChain(chain: any) {
   return {
@@ -59,29 +28,6 @@ function normalizeChain(chain: any) {
   };
 }
 
-function normalizeParticipant(participant: any) {
-  return {
-    taskId: participant.task_id || '',
-    chainId: participant.chain_id || '',
-    agentInstanceId: participant.agent_instance_id || '',
-    role: participant.role || '',
-  };
-}
-
-function normalizeEvent(event: any) {
-  return {
-    eventId: event.event_id || '',
-    kind: event.kind || '',
-    taskId: event.task_id || '',
-    chainId: event.chain_id || '',
-    status: event.status || '',
-    body: event.body || '',
-    authorAgentInstanceId: event.author_agent_instance_id || '',
-    createdUnixMs: Number(event.created_unix_ms || 0),
-    commentId: event.comment_id || '',
-  };
-}
-
 function getActiveTaskId(payload: any): string {
   if (payload?.taskId) return payload.taskId;
   const params = new URLSearchParams(window.location.search);
@@ -94,46 +40,12 @@ function getActiveChainId(payload: any): string {
   return params.get('chainId') || '';
 }
 
-// TODO(rtkq-migration owner=task-19f69e242e4): home/overview surfaces still use this thunk as a transitional board loader. RTK Query remains the recurring cache authority for migrated task detail/log reads and task mutations.
-export const refreshTaskBoard = createAsyncThunk(
-  'tasks/refreshTaskBoard',
-  async (payload: { createdAfter?: number; createdBefore?: number } | void, { getState }) => {
-    const state = getState() as any;
-    const { session } = state.chat;
-    const selectedChainId = getActiveChainId(payload);
-    if (!session.clientToken) return { chains: [], tasks: [], selectedChainId: '', includesSelectedChainTasks: false };
-
-    const args = (payload && typeof payload === 'object') ? payload : {};
-    const chainsData = await daemonApi.listTaskChains({
-      daemonUrl: session.daemonUrl,
-      clientToken: session.clientToken,
-      createdAfter: args.createdAfter,
-      createdBefore: args.createdBefore,
-    });
-
-    const chains = (chainsData.chains ?? []).map(normalizeChain);
-
-    let targetChainId = selectedChainId;
-    if (!targetChainId || !chains.some((c: any) => c.chainId === targetChainId)) {
-      targetChainId = chains[0]?.chainId || '';
-    }
-
-    return {
-      chains,
-      tasks: [],
-      selectedChainId: targetChainId,
-      includesSelectedChainTasks: false,
-    };
-  },
-  {
-    condition: (payload, { getState }) => {
-      const state = (getState() as any).tasks;
-      if (state.loading) {
-        return false;
-      }
-    }
-  }
-);
+function getSelectedTaskFromCache(state: any, payload: any) {
+  const activeTaskId = getActiveTaskId(payload);
+  const task = selectCachedTaskById(state, activeTaskId);
+  if (!task) throw new Error(`Task ${activeTaskId || '(unknown)'} is not loaded in the RTK Query cache`);
+  return task;
+}
 
 // TODO(rtkq-migration owner=task-19f69e242e4): component compatibility wrapper for unmigrated chain/task-list surfaces. Do not add follow-up refresh chaining around this thunk; prefer RTKQ hooks or endpoint initiate calls.
 export const fetchTasksForChain = createAsyncThunk(
@@ -147,11 +59,11 @@ export const fetchTasksForChain = createAsyncThunk(
   {
     condition: (chainId, { getState }) => {
       if (!chainId) return false;
-      return !Boolean((getState() as any).tasks?.tasksLoadingByChainId?.[chainId]);
+      const queryState = tasksApi.endpoints.fetchChainTasks.select({ chainId })(getState() as any);
+      return queryState?.status !== 'pending';
     },
   },
 );
-
 
 // TODO(rtkq-migration owner=task-19f69e242e4): compatibility wrapper for older task-log open/load-more callers. The authoritative recurring cache for live task logs is tasksApi.fetchTaskLog/fetchTaskLogPage.
 export const fetchSelectedTaskLog = createAsyncThunk(
@@ -176,7 +88,8 @@ export const fetchSelectedTaskLog = createAsyncThunk(
       const force = typeof payload === 'object' && Boolean(payload?.force);
       if (!selectedTaskId) return false;
       if (cursor > 0 || force) return true;
-      if (state.tasks?.taskLogLoadingByTaskId?.[selectedTaskId]) return false;
+      const queryState = tasksApi.endpoints.fetchTaskLog.select({ taskId: selectedTaskId })(state);
+      if (queryState?.status === 'pending') return false;
       const lastLoadedAt = Number(state.tasks?.taskLogLoadedAtByTaskId?.[selectedTaskId] || 0);
       return !lastLoadedAt || Date.now() - lastLoadedAt > TASK_LOG_RELOAD_DEDUPE_MS;
     },
@@ -191,13 +104,13 @@ function taskMutationAuth(session: any, agentToken: string) {
   };
 }
 
-export const createTaskFromBoard = createAsyncThunk('tasks/createTaskFromBoard', async (payload: any, { dispatch, getState }) => {
+export const createTaskFromBoard = createAsyncThunk('tasks/createTaskFromBoard', async (payload: any, { getState }) => {
   const { session } = (getState() as any).chat;
   const result = await daemonApi.createTask({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), ...payload });
   return result;
 });
 
-export const createChainFromBoard = createAsyncThunk('tasks/createChainFromBoard', async (payload: any, { dispatch, getState }) => {
+export const createChainFromBoard = createAsyncThunk('tasks/createChainFromBoard', async (payload: any, { getState }) => {
   const { session } = (getState() as any).chat;
   const result = await daemonApi.createTaskChain({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), ...payload });
   return result;
@@ -205,60 +118,44 @@ export const createChainFromBoard = createAsyncThunk('tasks/createChainFromBoard
 
 export const addCommentToSelectedTask = createAsyncThunk('tasks/addCommentToSelectedTask', async (payload: any, { dispatch, getState }) => {
   const state = getState() as any;
-  const { session } = state.chat;
-  const activeTaskId = getActiveTaskId(payload);
-  const task = state.tasks.tasksById[activeTaskId];
+  const task = getSelectedTaskFromCache(state, payload);
   return await (dispatch as any)(tasksApi.endpoints.addTaskComment.initiate({ taskId: task.taskId, chainId: task.chainId, body: payload.body, agentToken: payload.agentToken, resolveImmediately: payload.resolveImmediately })).unwrap();
 });
 
 export const resolveCommentOnSelectedTask = createAsyncThunk('tasks/resolveCommentOnSelectedTask', async (payload: any, { dispatch, getState }) => {
-  const state = getState() as any;
-  const activeTaskId = getActiveTaskId(payload);
-  const task = state.tasks.tasksById[activeTaskId];
+  const task = getSelectedTaskFromCache(getState() as any, payload);
   return await (dispatch as any)(tasksApi.endpoints.resolveTaskComment.initiate({ taskId: task.taskId, chainId: task.chainId, commentId: payload.commentId, agentToken: payload.agentToken })).unwrap();
 });
 
 export const updateSelectedTaskStatus = createAsyncThunk('tasks/updateSelectedTaskStatus', async (payload: any, { dispatch, getState }) => {
-  const state = getState() as any;
-  const activeTaskId = getActiveTaskId(payload);
-  const task = state.tasks.tasksById[activeTaskId];
+  const task = getSelectedTaskFromCache(getState() as any, payload);
   return await (dispatch as any)(tasksApi.endpoints.setTaskStatus.initiate({ taskId: task.taskId, chainId: task.chainId, status: payload.status, body: payload.body, agentToken: payload.agentToken })).unwrap();
 });
 
 export const updateSelectedTaskMetadata = createAsyncThunk('tasks/updateSelectedTaskMetadata', async (payload: any, { dispatch, getState }) => {
-  const state = getState() as any;
-  const activeTaskId = getActiveTaskId(payload);
-  const task = state.tasks.tasksById[activeTaskId];
+  const task = getSelectedTaskFromCache(getState() as any, payload);
   await (dispatch as any)(tasksApi.endpoints.updateTask.initiate({ taskId: task.taskId, chainId: task.chainId, title: payload.title, description: payload.description, acceptanceCriteria: payload.acceptanceCriteria, dependsOn: payload.dependsOn, agentToken: payload.agentToken })).unwrap();
-  const data = await (dispatch as any)(tasksApi.endpoints.fetchTask.initiate({ taskId: task.taskId })).unwrap();
+  const data = await (dispatch as any)(tasksApi.endpoints.fetchTask.initiate({ taskId: task.taskId }, { subscribe: false, forceRefetch: true })).unwrap();
   return data.task || null;
 });
 
 export const assignSelectedTask = createAsyncThunk('tasks/assignSelectedTask', async (payload: any, { dispatch, getState }) => {
-  const state = getState() as any;
-  const activeTaskId = getActiveTaskId(payload);
-  const task = state.tasks.tasksById[activeTaskId];
+  const task = getSelectedTaskFromCache(getState() as any, payload);
   return await (dispatch as any)(tasksApi.endpoints.assignTask.initiate({ taskId: task.taskId, chainId: task.chainId, agentInstanceId: payload.agentInstanceId, agentToken: payload.agentToken })).unwrap();
 });
 
 export const addParticipantToSelectedTask = createAsyncThunk('tasks/addParticipantToSelectedTask', async (payload: any, { dispatch, getState }) => {
-  const state = getState() as any;
-  const activeTaskId = getActiveTaskId(payload);
-  const task = state.tasks.tasksById[activeTaskId];
+  const task = getSelectedTaskFromCache(getState() as any, payload);
   return await (dispatch as any)(tasksApi.endpoints.addTaskParticipant.initiate({ taskId: task.taskId, chainId: task.chainId, agentInstanceId: payload.agentInstanceId, role: payload.role, agentToken: payload.agentToken })).unwrap();
 });
 
 export const removeParticipantFromSelectedTask = createAsyncThunk('tasks/removeParticipantFromSelectedTask', async (payload: any, { dispatch, getState }) => {
-  const state = getState() as any;
-  const activeTaskId = getActiveTaskId(payload);
-  const task = state.tasks.tasksById[activeTaskId];
+  const task = getSelectedTaskFromCache(getState() as any, payload);
   return await (dispatch as any)(tasksApi.endpoints.removeTaskParticipant.initiate({ taskId: task.taskId, chainId: task.chainId, agentInstanceId: payload.agentInstanceId, role: payload.role, agentToken: payload.agentToken })).unwrap();
 });
 
 export const voteOnSelectedTask = createAsyncThunk('tasks/voteOnSelectedTask', async (payload: any, { dispatch, getState }) => {
-  const state = getState() as any;
-  const activeTaskId = getActiveTaskId(payload);
-  const task = state.tasks.tasksById[activeTaskId];
+  const task = getSelectedTaskFromCache(getState() as any, payload);
   return await (dispatch as any)(tasksApi.endpoints.voteTask.initiate({ taskId: task.taskId, chainId: task.chainId, approved: payload.approved, comment: payload.comment || 'Voted from UI.', agentToken: payload.agentToken })).unwrap();
 });
 
@@ -273,20 +170,18 @@ export const voteOnAttentionTask = createAsyncThunk('tasks/voteOnAttentionTask',
 });
 
 export const nudgeSelectedTask = createAsyncThunk('tasks/nudgeSelectedTask', async (payload: any, { dispatch, getState }) => {
-  const state = getState() as any;
-  const activeTaskId = getActiveTaskId(payload);
-  const task = state.tasks.tasksById[activeTaskId];
+  const task = getSelectedTaskFromCache(getState() as any, payload);
   return await (dispatch as any)(tasksApi.endpoints.nudgeTask.initiate({ taskId: task.taskId, chainId: task.chainId, body: payload.body, interrupt: payload.interrupt, agentToken: payload.agentToken })).unwrap();
 });
 
-export const updateSelectedChainMetadata = createAsyncThunk('tasks/updateSelectedChainMetadata', async (payload: any, { dispatch, getState }) => {
+export const updateSelectedChainMetadata = createAsyncThunk('tasks/updateSelectedChainMetadata', async (payload: any, { getState }) => {
   const state = getState() as any;
   const { session } = state.chat;
   const chainId = getActiveChainId(payload);
   await daemonApi.updateTaskChain({ daemonUrl: session.daemonUrl, ...taskMutationAuth(session, payload.agentToken), chainId, title: payload.title, description: payload.description, coordinatorAgentInstanceId: payload.coordinatorAgentInstanceId, defaultReviewerAgentInstanceId: payload.defaultReviewerAgentInstanceId, finalSummary: payload.finalSummary });
 });
 
-export const updateSelectedChainStatus = createAsyncThunk('tasks/updateSelectedChainStatus', async (payload: any, { dispatch, getState }) => {
+export const updateSelectedChainStatus = createAsyncThunk('tasks/updateSelectedChainStatus', async (payload: any, { getState }) => {
   const state = getState() as any;
   const { session } = state.chat;
   const chainId = getActiveChainId(payload);
@@ -322,31 +217,13 @@ export const evaluateTaskChain = createAsyncThunk(
 );
 
 const initialState = {
-  chainsById: {},
-  tasksById: {},
-  chainTaskIds: {},
-  participantsByTaskId: {},
   expandedChainIds: {},
-  taskLogsByTaskId: {},
-  taskLogCursorByTaskId: {},
-  taskLogHasMoreByTaskId: {},
-  taskLogTotalByTaskId: {},
-  taskLogLoadingByTaskId: {},
   taskLogLoadedAtByTaskId: {},
-  tasksLoadingByChainId: {},
   loading: false,
   error: '',
   lastTaskEvent: null,
   unreviewedChains: [] as any[],
 };
-
-function sortTaskIds(taskIds: string[], tasksById: any) {
-  return taskIds.sort((left, right) => {
-    const leftTask = tasksById[left];
-    const rightTask = tasksById[right];
-    return (rightTask?.updatedAtUnixMs || 0) - (leftTask?.updatedAtUnixMs || 0);
-  });
-}
 
 const taskSlice = createSlice({
   name: 'tasks',
@@ -371,119 +248,17 @@ const taskSlice = createSlice({
         }
       }
     },
-    updateTaskStateDirectly(state: any, action) {
-      const task = action.payload;
-      if (!task) return;
-      const normalized = normalizeTask(task);
-      state.tasksById[normalized.taskId] = normalized;
-      
-      const chainId = normalized.chainId || 'standalone';
-      if (!state.chainTaskIds[chainId]) {
-        state.chainTaskIds[chainId] = [];
-      }
-      if (!state.chainTaskIds[chainId].includes(normalized.taskId)) {
-        state.chainTaskIds[chainId].push(normalized.taskId);
-      }
-      state.chainTaskIds[chainId] = sortTaskIds(state.chainTaskIds[chainId], state.tasksById);
-    },
-    updateChainStateDirectly(state: any, action) {
-      const chain = action.payload;
-      if (!chain) return;
-      const normalized = normalizeChain(chain);
-      state.chainsById[normalized.chainId] = normalized;
-    },
   },
   extraReducers: (builder) => {
     builder
-      .addCase(refreshTaskBoard.pending, (state: any) => {
-        state.loading = true;
-        state.error = '';
-      })
-      .addCase(refreshTaskBoard.fulfilled, (state: any, action) => {
-        state.loading = false;
-        state.error = '';
-        const chainsById: any = {};
-        const tasksById: any = { ...state.tasksById }; // Preserve existing tasks in memory
-        const chainTaskIds: any = { ...state.chainTaskIds }; // Preserve existing mappings
-
-        action.payload.chains.forEach((chain: any) => {
-          chainsById[chain.chainId] = chain;
-          if (!chainTaskIds[chain.chainId]) chainTaskIds[chain.chainId] = [];
-        });
-
-        const targetChainId = action.payload.selectedChainId;
-        if (targetChainId && action.payload.includesSelectedChainTasks) {
-          chainTaskIds[targetChainId] = [];
-          action.payload.tasks.forEach((task: any) => {
-            tasksById[task.taskId] = task;
-            chainTaskIds[targetChainId].push(task.taskId);
-          });
-          chainTaskIds[targetChainId] = sortTaskIds(chainTaskIds[targetChainId], tasksById);
-        }
-
-        state.chainsById = chainsById;
-        state.tasksById = tasksById;
-        state.chainTaskIds = chainTaskIds;
-      })
-      .addCase(refreshTaskBoard.rejected, (state: any, action) => {
-        state.loading = false;
-        state.error = action.error.message || 'Failed to load tasks';
-      })
-      .addCase(fetchTasksForChain.pending, (state: any, action) => {
-        if (action.meta.arg) state.tasksLoadingByChainId[action.meta.arg] = true;
-      })
-      .addCase(fetchTasksForChain.rejected, (state: any, action) => {
-        if (action.meta.arg) state.tasksLoadingByChainId[action.meta.arg] = false;
-      })
-      .addCase(fetchSelectedTaskLog.pending, (state: any, action) => {
-        const arg: any = action.meta.arg;
-        const taskId = typeof arg === 'string' ? arg : (arg?.taskId || getActiveTaskId(null));
-        if (taskId) state.taskLogLoadingByTaskId[taskId] = true;
-      })
       .addCase(fetchSelectedTaskLog.fulfilled, (state: any, action) => {
-        const { taskId, events, nextCursor, hasMore, total, isAppend } = action.payload;
-        if (taskId) {
-          state.taskLogLoadingByTaskId[taskId] = false;
-          if (isAppend) {
-            const byId = new Map<string, any>();
-            for (const event of [...(state.taskLogsByTaskId[taskId] || []), ...(events || [])]) {
-              byId.set(event.eventId || `${event.kind}-${event.createdUnixMs}-${event.body}`, event);
-            }
-            state.taskLogsByTaskId[taskId] = Array.from(byId.values()).sort((left: any, right: any) => Number(left.createdUnixMs || 0) - Number(right.createdUnixMs || 0));
-          } else {
-            state.taskLogsByTaskId[taskId] = events;
-          }
-          state.taskLogCursorByTaskId[taskId] = nextCursor;
-          state.taskLogHasMoreByTaskId[taskId] = hasMore || nextCursor > 0;
-          state.taskLogTotalByTaskId[taskId] = total;
-          if (!isAppend) state.taskLogLoadedAtByTaskId[taskId] = Date.now();
+        const { taskId, cursor, isAppend } = action.payload;
+        if (taskId && !isAppend && Number(cursor || 0) <= 0) {
+          state.taskLogLoadedAtByTaskId[taskId] = Date.now();
         }
       })
       .addCase(fetchSelectedTaskLog.rejected, (state: any, action) => {
-        const arg: any = action.meta.arg;
-        const taskId = typeof arg === 'string' ? arg : (arg?.taskId || getActiveTaskId(null));
-        if (taskId) state.taskLogLoadingByTaskId[taskId] = false;
         state.error = action.error.message || 'Failed to load task log';
-      })
-      .addCase(fetchTasksForChain.fulfilled, (state: any, action) => {
-        const { chainId, tasks } = action.payload;
-        if (!chainId) return;
-        state.tasksLoadingByChainId[chainId] = false;
-        
-        tasks.forEach((task: any) => {
-          state.tasksById[task.taskId] = task;
-        });
-        
-        state.chainTaskIds[chainId] = tasks.map((t: any) => t.taskId);
-        state.chainTaskIds[chainId] = sortTaskIds(state.chainTaskIds[chainId], state.tasksById);
-      })
-      .addCase(updateSelectedTaskMetadata.fulfilled, (state: any, action) => {
-        const task = action.payload;
-        if (!task) return;
-        state.tasksById[task.taskId] = task;
-        if (task.chainId && state.chainTaskIds[task.chainId]) {
-          state.chainTaskIds[task.chainId] = sortTaskIds(state.chainTaskIds[task.chainId], state.tasksById);
-        }
       })
       .addCase(fetchUnreviewedChains.fulfilled, (state: any, action) => {
         state.unreviewedChains = action.payload;
@@ -495,5 +270,5 @@ const taskSlice = createSlice({
   },
 });
 
-export const { toggleChainExpanded, taskEventReceived, updateTaskStateDirectly, updateChainStateDirectly } = taskSlice.actions;
+export const { toggleChainExpanded, taskEventReceived } = taskSlice.actions;
 export default taskSlice.reducer;

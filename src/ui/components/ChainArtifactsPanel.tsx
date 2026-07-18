@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useDispatch } from 'react-redux';
-import * as daemonApi from '../api/daemonApi';
 import { showToast } from '../store/toastSlice';
+import { useListArtifactsQuery } from '../api/endpoints/artifacts';
 import ArtifactViewer from './ArtifactViewer';
 import { useArtifactUpload } from './ArtifactUpload';
 
@@ -56,54 +56,18 @@ function humanArtifactName(row: ArtifactRow) {
   return String(row?.name || row?.artifact_id || 'Untitled artifact');
 }
 
-function normalizeArtifacts(data: any): ArtifactRow[] {
-  const rows = Array.isArray(data?.artifacts) ? data.artifacts : [];
-  return [...rows]
-    .filter((row: any) => row?.artifact_id)
-    .sort((a: any, b: any) => {
-      const left = Number(b?.updated_unix_ms || b?.created_unix_ms || 0);
-      const right = Number(a?.updated_unix_ms || a?.created_unix_ms || 0);
-      return left - right;
-    });
-}
-
 export default function ChainArtifactsPanel({ daemonUrl = '', clientToken = '', projectId = '', chainId = '' }: ChainArtifactsPanelProps) {
   const dispatch = useDispatch<any>();
-  const [artifacts, setArtifacts] = useState<ArtifactRow[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
   const [activeArtifactId, setActiveArtifactId] = useState('');
   const pasteUpload = useArtifactUpload({ projectId, originRef: chainId || '', originKind: 'clipboard_panel' });
-
-  const refreshArtifacts = useCallback(async () => {
-    if (!projectId) {
-      setArtifacts([]);
-      setError('');
-      setLoading(false);
-      return;
-    }
-    if (!daemonUrl || !clientToken) {
-      setArtifacts([]);
-      setError('Artifact listing is unavailable until the UI is connected to the daemon.');
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    setError('');
-    try {
-      const data = await daemonApi.listArtifacts({ daemonUrl, clientToken, projectId, limit: 100 });
-      setArtifacts(normalizeArtifacts(data));
-    } catch (err: any) {
-      setArtifacts([]);
-      setError(String(err?.message || err || 'Failed to load project artifacts.'));
-    } finally {
-      setLoading(false);
-    }
-  }, [daemonUrl, clientToken, projectId]);
-
-  useEffect(() => {
-    refreshArtifacts();
-  }, [refreshArtifacts, chainId]);
+  const artifactsQuery = useListArtifactsQuery({ projectId, limit: 100 }, { skip: !projectId || !daemonUrl || !clientToken });
+  const artifacts = (artifactsQuery.data?.artifacts || []) as ArtifactRow[];
+  const loading = artifactsQuery.isFetching;
+  const error = !daemonUrl || !clientToken
+    ? 'Artifact listing is unavailable until the UI is connected to the daemon.'
+    : artifactsQuery.error
+      ? 'Failed to load project artifacts.'
+      : '';
 
   const projectLabel = useMemo(() => projectId || 'No project', [projectId]);
 
@@ -122,9 +86,8 @@ export default function ChainArtifactsPanel({ daemonUrl = '', clientToken = '', 
     const result = await pasteUpload.uploadClipboardImage(event, { projectId, originKind: 'clipboard_panel', originRef: chainId || '' });
     if (result.link) {
       dispatch(showToast({ kind: 'success', title: 'Artifact created', message: result.link }));
-      refreshArtifacts();
     }
-  }, [pasteUpload, projectId, chainId, dispatch, refreshArtifacts]);
+  }, [pasteUpload, projectId, chainId, dispatch]);
 
   return (
     <>
@@ -144,8 +107,8 @@ export default function ChainArtifactsPanel({ daemonUrl = '', clientToken = '', 
           <button
             type="button"
             data-debug-id="chain-artifacts-refresh-btn"
-            disabled={loading || !projectId}
-            onClick={() => refreshArtifacts()}
+            disabled={loading || !projectId || !daemonUrl || !clientToken}
+            onClick={() => artifactsQuery.refetch()}
             className="rounded-xl bg-white/10 px-3 py-2 text-xs font-medium text-zinc-200 hover:bg-white/15 disabled:cursor-not-allowed disabled:bg-white/5 disabled:text-zinc-500"
           >
             {loading ? 'Refreshing…' : 'Refresh'}

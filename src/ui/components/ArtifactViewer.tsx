@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import * as daemonApi from '../api/daemonApi';
+import { useArtifactContentUrl, useFetchArtifactMetaQuery, useFetchArtifactTextContentQuery } from '../api/endpoints/artifacts';
 import {
   copyTextToClipboard,
   createArtifactAnnotation,
@@ -45,9 +45,6 @@ type ArtifactMeta = {
 
 type PreviewKind = 'markdown' | 'png' | 'unsupported';
 type CopyState = 'idle' | 'copied' | 'error';
-
-const metaCache = new Map<string, ArtifactMeta>();
-const textCache = new Map<string, string>();
 
 function formatBytes(value: number) {
   if (!Number.isFinite(value) || value <= 0) return '0 B';
@@ -422,8 +419,8 @@ function AnnotationListItem({ annotation, onRemove, onSaveComment }: AnnotationL
 }
 
 export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onClose }: ArtifactViewerProps) {
-  const [meta, setMeta] = useState<ArtifactMeta | null>(metaCache.get(artifactId) || null);
-  const [textContent, setTextContent] = useState<string>(textCache.get(artifactId) || '');
+  const metaQuery = useFetchArtifactMetaQuery({ artifactId }, { skip: !artifactId || !clientToken });
+  const meta = (metaQuery.data?.artifact || null) as ArtifactMeta | null;
   const [annotations, setAnnotations] = useState<ArtifactAnnotationRecord[]>(() => listArtifactAnnotations(artifactId));
   const [annotationMode, setAnnotationMode] = useState(false);
   const [annotationsOpen, setAnnotationsOpen] = useState(false);
@@ -434,12 +431,9 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
   const [pendingImageRegion, setPendingImageRegion] = useState<NormalizedRegion | null>(null);
   const [pendingImageNatural, setPendingImageNatural] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
   const [imageAnnotationComment, setImageAnnotationComment] = useState('');
-  const [loading, setLoading] = useState(!metaCache.has(artifactId));
-  const [loadingText, setLoadingText] = useState(false);
-  const [error, setError] = useState('');
   const [nestedArtifactId, setNestedArtifactId] = useState('');
 
-  const contentUrl = useMemo(() => daemonApi.artifactContentUrl({ daemonUrl, clientToken, artifactId }), [daemonUrl, clientToken, artifactId]);
+  const contentUrl = useArtifactContentUrl({ daemonUrl, clientToken, artifactId });
 
   useEffect(() => {
     setAnnotations(listArtifactAnnotations(artifactId));
@@ -452,37 +446,6 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
     setPendingImageRegion(null);
     setImageAnnotationComment('');
   }, [artifactId]);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function loadMeta() {
-      if (metaCache.has(artifactId)) {
-        setMeta(metaCache.get(artifactId) || null);
-        setLoading(false);
-        return;
-      }
-      setLoading(true);
-      setError('');
-      try {
-        const data = await daemonApi.fetchArtifactMeta({ daemonUrl, clientToken, artifactId });
-        if (cancelled) return;
-        const nextMeta = data?.artifact || null;
-        if (nextMeta) {
-          metaCache.set(artifactId, nextMeta);
-          setMeta(nextMeta);
-        } else {
-          setMeta(null);
-          setError('Artifact metadata is unavailable.');
-        }
-      } catch (err: any) {
-        if (!cancelled) setError(String(err?.message || err || 'Failed to load artifact metadata.'));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-    loadMeta();
-    return () => { cancelled = true; };
-  }, [artifactId, daemonUrl, clientToken]);
 
   const previewKind = useMemo(() => classifyPreview(meta), [meta]);
   const annotationSupported = previewKind === 'markdown' || previewKind === 'png';
@@ -499,31 +462,11 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
     setImageAnnotationComment('');
   }, [annotationMode, previewKind]);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function loadText() {
-      if (!meta || previewKind !== 'markdown') return;
-      if (textCache.has(artifactId)) {
-        setTextContent(textCache.get(artifactId) || '');
-        return;
-      }
-      setLoadingText(true);
-      try {
-        const response = await fetch(contentUrl);
-        if (!response.ok) throw new Error(`Failed to load artifact content (${response.status})`);
-        const text = await response.text();
-        if (cancelled) return;
-        textCache.set(artifactId, text);
-        setTextContent(text);
-      } catch (err: any) {
-        if (!cancelled) setError(String(err?.message || err || 'Failed to load artifact content.'));
-      } finally {
-        if (!cancelled) setLoadingText(false);
-      }
-    }
-    loadText();
-    return () => { cancelled = true; };
-  }, [artifactId, contentUrl, meta, previewKind]);
+  const textQuery = useFetchArtifactTextContentQuery({ artifactId }, { skip: !artifactId || !clientToken || previewKind !== 'markdown' });
+  const textContent = textQuery.data?.text || '';
+  const loading = metaQuery.isFetching;
+  const loadingText = textQuery.isFetching;
+  const error = metaQuery.error ? 'Failed to load artifact metadata.' : textQuery.error ? 'Failed to load artifact content.' : (!loading && !meta ? 'Artifact metadata is unavailable.' : '');
 
   const title = meta?.name || annotations[0]?.artifactName || artifactId;
 

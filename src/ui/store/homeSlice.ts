@@ -1,6 +1,6 @@
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
 import * as daemonApi from '../api/daemonApi';
-import { refreshTaskBoard } from './taskSlice';
+import { workspaceApi } from '../api/endpoints/workspace';
 
 function initialUrlState() {
   try {
@@ -65,7 +65,7 @@ export const submitNewChain = createAsyncThunk('home/submitNewChain', async (pay
       status: 'in_progress',
     });
   }
-  await (dispatch as any)(refreshTaskBoard()).catch(() => undefined);
+  await (dispatch as any)(workspaceApi.endpoints.listChains.initiate(undefined, { subscribe: false, forceRefetch: true })).catch(() => undefined);
   return { ...result, activation, chainId };
 });
 

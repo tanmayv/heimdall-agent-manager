@@ -59,22 +59,19 @@ def main() -> None:
     require("fetchTasksForChain(" not in vote_block, "attention task voting must not refetch chain tasks directly")
     require("refreshTaskBoard(" not in vote_block, "attention task voting must not refresh the task board directly")
 
-    # New-chain creation may refresh the board once, but should not immediately
-    # chain into a second task-list refresh thunk.
+    # New-chain creation should no longer bounce through legacy board refresh thunks.
     submit_block = block_after(home_slice, "export const submitNewChain = createAsyncThunk(") if "export const submitNewChain = createAsyncThunk(" in home_slice else block_after(home_slice, "export const submitNewChain = createAsyncThunk('home/submitNewChain'")
-    require("await (dispatch as any)(refreshTaskBoard()).catch(() => undefined);" in home_slice, "submitNewChain should keep a single board refresh for overview visibility")
-    require("fetchTasksForChain(" not in submit_block, "submitNewChain must not chain fetchTasksForChain after refreshTaskBoard")
+    require("workspaceApi.endpoints.listChains.initiate" in home_slice, "submitNewChain should refresh chain metadata through workspaceApi.listChains")
+    require("forceRefetch: true" in home_slice, "submitNewChain listChains refresh should force a fresh chain list")
+    require("refreshTaskBoard(" not in submit_block, "submitNewChain must not call legacy refreshTaskBoard")
+    require("fetchTasksForChain(" not in submit_block, "submitNewChain must not chain fetchTasksForChain")
 
-    # New-chain creation progress polling must not reintroduce broad board/task
-    # refresh fan-out; task polling should stay RTKQ-scoped.
-    creation_poll_block = block_after(app, "useEffect(() => {\n    if (!chainCreationProgress?.active || !chainCreationProgress.chainId) return undefined;")
-    require("dispatch(refreshTaskBoard())" not in creation_poll_block, "creation progress polling must not refresh the task board")
-    require("dispatch(fetchTasksForChain(" not in creation_poll_block, "creation progress polling must not refetch chain tasks via legacy thunk")
-    require("dispatch(revalidateChainView(chainCreationProgress.chainId))" in creation_poll_block, "creation progress polling should stay chain-scoped")
-    require("const creationProgressChainTasksQuery = useFetchChainTasksQuery(" in app, "creation progress should use scoped RTKQ task polling")
-    require("pollingInterval: chainCreationProgress?.active ? 2000 : 0" in app, "creation progress RTKQ task polling should be bounded to active modal state")
-    if "dispatch(refreshAgents()).catch(() => undefined);" in creation_poll_block:
-        require("TODO(rtkq-migration owner=task-19f69e242e4): chain creation progress still polls refreshAgents()" in app, "creation progress refreshAgents polling must carry an explicit bounded TODO owner")
+    # Chain-creation progress should rely on RTKQ polling instead of component-owned interval fan-out.
+    require("const creationProgressChainQuery = useFetchChainQuery(" in app, "creation progress should own chain metadata via RTKQ")
+    require("const creationProgressWorkspaceQuery = useFetchWorkspaceQuery(" in app, "creation progress should own workspace via RTKQ")
+    require("const creationProgressChainTasksQuery = useFetchChainTasksQuery(" in app, "creation progress should own tasks via RTKQ")
+    require("pollingInterval: chainCreationProgress?.active ? 2000 : 0" in app, "creation progress RTKQ polling should be bounded to active modal state")
+    require("dispatch(revalidateChainView(chainCreationProgress.chainId))" not in app, "creation progress must not call legacy revalidateChainView fan-out")
 
     # Follow-up domains and no-service-layer guidance must be documented.
     for snippet in [

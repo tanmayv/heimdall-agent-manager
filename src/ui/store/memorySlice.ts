@@ -1,88 +1,6 @@
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
 import * as daemonApi from '../api/daemonApi';
-
-function memoryTargetSummary(record: any) {
-  if (record.target) return String(record.target);
-  const targetTeamKind = String(record.target_team_kind || '').trim();
-  const targetRole = String(record.target_role || '').trim();
-  const targetProjectId = String(record.target_project_id || '').trim();
-  const parts = [] as string[];
-  if (targetTeamKind) parts.push(`team kind ${targetTeamKind}`);
-  if (targetRole) parts.push(`role ${targetRole}`);
-  if (targetProjectId) parts.push(`project ${targetProjectId}`);
-  return parts.length ? parts.join(' · ') : 'global';
-}
-
-function normalizeMemory(record: any) {
-  return {
-    id: record.memory_id || '',
-    memoryId: record.memory_id || '',
-    proposalId: record.proposal_id || '',
-    targetTeamKind: record.target_team_kind || '',
-    targetRole: record.target_role || '',
-    targetProjectId: record.target_project_id || '',
-    target: memoryTargetSummary(record),
-    type: record.type || 'fact',
-    title: record.title || '',
-    body: record.body || '',
-    status: record.status || 'pending',
-    reason: record.reason || '',
-    evidence: record.evidence || '',
-    metadataJson: record.metadata_json || '',
-    sourceTaskId: record.source_task_id || '',
-    version: Number(record.version || 0),
-    createdUnixMs: Number(record.created_unix_ms || 0),
-    updatedUnixMs: Number(record.updated_unix_ms || 0),
-  };
-}
-
-function normalizeHistory(event: any) {
-  return {
-    eventId: event.event_id || '',
-    memoryId: event.memory_id || '',
-    proposalId: event.proposal_id || '',
-    targetTeamKind: event.target_team_kind || '',
-    targetRole: event.target_role || '',
-    targetProjectId: event.target_project_id || '',
-    target: memoryTargetSummary(event),
-    type: event.type || 'fact',
-    title: event.title || '',
-    body: event.body || '',
-    status: event.status || '',
-    reason: event.reason || '',
-    evidence: event.evidence || '',
-    author: event.author || '',
-    sourceTaskId: event.source_task_id || '',
-    createdUnixMs: Number(event.created_unix_ms || 0),
-  };
-}
-
-function auth(state: any) {
-  const { session } = state.chat;
-  return { daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken };
-}
-
-function sortMemoryRecords(records: any[]) {
-  return [...records].sort((left, right) => (right.updatedUnixMs || right.createdUnixMs || 0) - (left.updatedUnixMs || left.createdUnixMs || 0));
-}
-
-function sortMemoryIds(recordsById: Record<string, any>) {
-  return sortMemoryRecords(Object.values(recordsById || {})).map((record: any) => record.memoryId);
-}
-
-function includesText(value: any, needle: string) {
-  return String(value || '').toLowerCase().includes(needle);
-}
-
-function includesListValue(values: any[], target: string) {
-  const normalizedTarget = String(target || '').trim().toLowerCase();
-  if (!normalizedTarget) return true;
-  return (values || []).some((value: any) => String(value || '').trim().toLowerCase() === normalizedTarget);
-}
-
-function hasTargeting(record: any) {
-  return Boolean(record.targetTeamKind || record.targetRole || record.targetProjectId);
-}
+import { matchesMemoryFilters } from '../api/memoryCatalog';
 
 const initialFilters = {
   targetTeamKind: '',
@@ -95,78 +13,7 @@ const initialFilters = {
   search: '',
 };
 
-export function matchesMemoryFilters(record: any, filters: any) {
-  const targetTeamKindFilter = String(filters?.targetTeamKind || '').trim().toLowerCase();
-  if (targetTeamKindFilter && String(record.targetTeamKind || '').trim().toLowerCase() !== targetTeamKindFilter) return false;
-
-  const targetRoleFilter = String(filters?.targetRole || '').trim().toLowerCase();
-  if (targetRoleFilter && String(record.targetRole || '').trim().toLowerCase() !== targetRoleFilter) return false;
-
-  const targetProjectIdFilter = String(filters?.targetProjectId || '').trim().toLowerCase();
-  if (targetProjectIdFilter && String(record.targetProjectId || '').trim().toLowerCase() !== targetProjectIdFilter) return false;
-
-  const typeFilter = String(filters?.type || '').trim().toLowerCase();
-  if (typeFilter && String(record.type || '').trim().toLowerCase() !== typeFilter) return false;
-
-  const statusFilter = String(filters?.status || '').trim().toLowerCase();
-  if (statusFilter && String(record.status || '').trim().toLowerCase() !== statusFilter) return false;
-
-  if (filters?.pendingActiveOnly && !['pending', 'active'].includes(String(record.status || '').trim().toLowerCase())) return false;
-
-  if (filters?.targeting === 'targeted' && !hasTargeting(record)) return false;
-  if (filters?.targeting === 'untargeted' && hasTargeting(record)) return false;
-
-  const search = String(filters?.search || '').trim().toLowerCase();
-  if (!search) return true;
-  return [
-    record.memoryId,
-    record.proposalId,
-    record.title,
-    record.body,
-    record.target,
-    record.targetTeamKind,
-    record.targetRole,
-    record.targetProjectId,
-    record.type,
-    record.status,
-    record.reason,
-    record.evidence,
-    record.metadataJson,
-    record.sourceTaskId,
-  ].some((value) => includesText(value, search));
-}
-
-export const refreshMemory = createAsyncThunk('memory/refreshMemory', async (_, { getState }) => {
-  const state = getState() as any;
-  const { session } = state.chat;
-  if (!session.clientToken) return { records: [] };
-  const data = await daemonApi.listMemory({ ...auth(state), includeAllStatuses: true });
-  return { records: (data.records ?? []).map(normalizeMemory) };
-});
-
-export const fetchMemoryDetail = createAsyncThunk('memory/fetchMemoryDetail', async (memoryId: string, { getState }) => {
-  const state = getState() as any;
-  if (!memoryId || !state.chat.session.clientToken) return { memoryId, record: null, history: [] };
-  const [detail, history] = await Promise.all([
-    daemonApi.showMemory({ ...auth(state), memoryId }),
-    daemonApi.memoryHistory({ ...auth(state), memoryId }),
-  ]);
-  return { memoryId, record: detail.record ? normalizeMemory(detail.record) : null, history: (history.events ?? []).map(normalizeHistory) };
-});
-
-export const proposeMemoryChange = createAsyncThunk('memory/proposeMemoryChange', async (payload: any, { dispatch, getState }) => {
-  const state = getState() as any;
-  const result = await daemonApi.proposeMemory({ ...auth(state), ...payload });
-  await (dispatch as any)(refreshMemory());
-  return result;
-});
-
-export const decideMemoryProposal = createAsyncThunk('memory/decideMemoryProposal', async (payload: any, { dispatch, getState }) => {
-  const state = getState() as any;
-  const result = await daemonApi.decideMemory({ ...auth(state), proposalId: payload.proposalId, decision: payload.decision, reason: payload.reason });
-  await (dispatch as any)(refreshMemory());
-  return result;
-});
+export { matchesMemoryFilters };
 
 export const triggerMemoryAudit = createAsyncThunk(
   'memory/triggerMemoryAudit',
@@ -189,12 +36,7 @@ export const triggerMemoryAudit = createAsyncThunk(
 );
 
 const initialState = {
-  recordsById: {} as Record<string, any>,
-  recordIds: [] as string[],
-  historyById: {} as Record<string, any[]>,
   filters: { ...initialFilters },
-  loading: false,
-  detailLoading: false,
   error: '',
   lastMemoryEvent: null as any,
   activeAudit: null as {
@@ -221,29 +63,6 @@ const memorySlice = createSlice({
     },
     memoryEventReceived(state: any, action) {
       state.lastMemoryEvent = action.payload;
-    },
-    applyMemoryEventRecord(state: any, action) {
-      const payload = action.payload || {};
-      const memoryId = String(payload.memory_id || '');
-      if (!memoryId) return;
-      const now = Date.now();
-      const existing = state.recordsById[memoryId] || {};
-      state.recordsById[memoryId] = {
-        ...existing,
-        id: memoryId,
-        memoryId,
-        proposalId: payload.proposal_id || existing.proposalId || '',
-        targetTeamKind: payload.target_team_kind || existing.targetTeamKind || '',
-        targetRole: payload.target_role || existing.targetRole || '',
-        targetProjectId: payload.target_project_id || existing.targetProjectId || '',
-        target: payload.target || existing.target || '',
-        type: payload.memory_type || existing.type || 'fact',
-        status: payload.status || existing.status || 'pending',
-        sourceTaskId: payload.source_task_id || existing.sourceTaskId || '',
-        updatedUnixMs: now,
-        createdUnixMs: existing.createdUnixMs || now,
-      };
-      state.recordIds = sortMemoryIds(state.recordsById);
     },
     auditStartedReceived(state: any, action) {
       state.activeAudit = {
@@ -283,39 +102,6 @@ const memorySlice = createSlice({
   },
   extraReducers: (builder) => {
     builder
-      .addCase(refreshMemory.pending, (state: any) => {
-        state.loading = true;
-        state.error = '';
-      })
-      .addCase(refreshMemory.fulfilled, (state: any, action) => {
-        state.loading = false;
-        const sortedRecords = sortMemoryRecords(action.payload.records || []);
-        const recordsById: any = {};
-        sortedRecords.forEach((record: any) => {
-          recordsById[record.memoryId] = record;
-        });
-        state.recordsById = recordsById;
-        state.recordIds = sortedRecords.map((record: any) => record.memoryId);
-      })
-      .addCase(refreshMemory.rejected, (state: any, action) => {
-        state.loading = false;
-        state.error = action.error.message || 'Failed to load memory';
-      })
-      .addCase(fetchMemoryDetail.pending, (state: any) => {
-        state.detailLoading = true;
-      })
-      .addCase(fetchMemoryDetail.fulfilled, (state: any, action) => {
-        state.detailLoading = false;
-        if (action.payload.record) {
-          state.recordsById[action.payload.memoryId] = action.payload.record;
-          state.recordIds = sortMemoryIds(state.recordsById);
-        }
-        state.historyById[action.payload.memoryId] = action.payload.history;
-      })
-      .addCase(fetchMemoryDetail.rejected, (state: any, action) => {
-        state.detailLoading = false;
-        state.error = action.error.message || 'Failed to load memory detail';
-      })
       .addCase(triggerMemoryAudit.pending, (state: any) => {
         state.auditLoading = true;
         state.error = '';
@@ -345,12 +131,6 @@ const memorySlice = createSlice({
 
 export const selectMemoryState = (state: any) => state.memory;
 export const selectMemoryFilters = (state: any) => selectMemoryState(state).filters || initialFilters;
-export const selectMemoryRecords = (state: any) => (selectMemoryState(state).recordIds || []).map((id: string) => selectMemoryState(state).recordsById?.[id]).filter(Boolean);
-export const selectFilteredMemoryRecords = (state: any) => selectMemoryRecords(state).filter((record: any) => matchesMemoryFilters(record, selectMemoryFilters(state)));
-export const selectFilteredMemoryIds = (state: any) => selectFilteredMemoryRecords(state).map((record: any) => record.memoryId);
-export const selectPendingMemoryRecords = (state: any) => selectMemoryRecords(state).filter((record: any) => record.status === 'pending');
-export const selectPendingMemoryCount = (state: any) => selectPendingMemoryRecords(state).length;
-export const selectPendingActiveMemoryRecords = (state: any) => selectMemoryRecords(state).filter((record: any) => ['pending', 'active'].includes(record.status));
 
-export const { setMemoryFilters, resetMemoryFilters, memoryEventReceived, applyMemoryEventRecord, auditStartedReceived, auditEndedReceived, clearActiveAudit } = memorySlice.actions;
+export const { setMemoryFilters, resetMemoryFilters, memoryEventReceived, auditStartedReceived, auditEndedReceived, clearActiveAudit } = memorySlice.actions;
 export default memorySlice.reducer;

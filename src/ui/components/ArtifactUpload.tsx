@@ -1,6 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import { useSelector } from 'react-redux';
-import * as daemonApi from '../api/daemonApi';
+import { useCreateArtifactMutation } from '../api/endpoints/artifacts';
 
 // Keep this helper aligned with the daemon artifact allowlist. Rich preview is
 // narrower than upload support; unsupported preview kinds still fall back to the
@@ -118,6 +118,7 @@ export function useArtifactUpload(context: ArtifactUploadContext = {}): UseArtif
   const session = useSelector((state: any) => state.chat?.session || {});
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
+  const [createArtifact] = useCreateArtifactMutation();
   const clearError = useCallback(() => setError(''), []);
 
   const uploadArtifact = useCallback(async ({ file, name, kind, mime, projectId, originKind, originRef }: UploadArtifactParams): Promise<string | null> => {
@@ -133,9 +134,7 @@ export function useArtifactUpload(context: ArtifactUploadContext = {}): UseArtif
     setUploading(true);
     try {
       const contentBase64 = await readFileAsBase64(file);
-      const res = await daemonApi.createArtifact({
-        daemonUrl: session.daemonUrl,
-        clientToken: session.clientToken,
+      const res = await createArtifact({
         name,
         kind,
         mime,
@@ -143,7 +142,7 @@ export function useArtifactUpload(context: ArtifactUploadContext = {}): UseArtif
         originKind: originKind || context.originKind || 'chat',
         originRef: originRef || context.originRef || '',
         contentBase64,
-      });
+      }).unwrap();
       const link = res?.link || (res?.artifact?.artifact_id ? `artifact://${res.artifact.artifact_id}` : '');
       if (!link) {
         setError('Upload failed: daemon did not return an artifact link.');
@@ -156,7 +155,7 @@ export function useArtifactUpload(context: ArtifactUploadContext = {}): UseArtif
     } finally {
       setUploading(false);
     }
-  }, [session?.daemonUrl, session?.clientToken, context.originKind, context.originRef]);
+  }, [session?.daemonUrl, session?.clientToken, context.originKind, context.originRef, createArtifact]);
 
   const uploadFile = useCallback(async (file: File | null | undefined): Promise<string | null> => {
     if (!file) return null;

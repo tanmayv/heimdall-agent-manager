@@ -1,12 +1,15 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import SessionConfig from './SessionConfig';
 import { TEAM_KIND_METADATA, paceLabel, taskCountLabel, wantsVcsLabel } from './teamKinds';
 // TODO(rtkq-migration owner=task-19f69e242e4): Settings direct-chat debug panel still opens chats via component-level thunk dispatch; replace with RTKQ hooks/initiate during cleanup.
-import { addDaemonProfile, fetchPreferences, fetchSelectedChat, refreshAgents, refreshSettingsCatalog, removeDaemonProfile, saveUserPreference, selectAgent, sendMessageToSelectedAgent } from '../store/chatSlice';
+import { addDaemonProfile, fetchSelectedChat, removeDaemonProfile, selectAgent, sendMessageToSelectedAgent } from '../store/chatSlice';
 import * as daemonApi from '../api/daemonApi';
-import { refreshMemory } from '../store/memorySlice';
-import { clearProjectError, deleteProjectFromUi, fetchProjectDetail, refreshProjects, selectProject, updateProjectFromUi } from '../store/projectSlice';
+import { agentsApi, useListAgentsQuery } from '../api/endpoints/agents';
+import { useListMemoryQuery } from '../api/endpoints/memory';
+import { useDeleteProjectMutation, useFetchProjectQuery, useListProjectsQuery, useUpdateProjectMutation } from '../api/endpoints/projects';
+import { useFetchPreferencesQuery, useFetchSettingsCatalogQuery, useSavePreferenceMutation } from '../api/endpoints/settings';
+import { selectProject } from '../store/projectSlice';
 import { VimEditButton } from './VimSidebar';
 import ChatHoverCopyButton from './ChatHoverCopyButton';
 
@@ -33,23 +36,29 @@ function normalizeTemplate(template: any) {
 
 export default function SettingsPage({ session, onReconnect, onBack }: any) {
   const dispatch = useDispatch<any>();
-  const { agents, preferences, session: reduxSession, settingsTemplates, settingsProviders, chats, sending, daemonProfiles = [] } = useSelector((state: any) => state.chat);
-  const { recordsById, recordIds, loading: memoryLoading } = useSelector((state: any) => state.memory);
-  const { projectsById, projectIds, selectedProjectId, detailLoading: projectDetailLoading, mutating: projectMutating, error: projectError } = useSelector((state: any) => state.projects);
+  const { session: reduxSession, chats, sending, daemonProfiles = [] } = useSelector((state: any) => state.chat);
+  const effectiveSession = reduxSession || session;
+  const memoryQuery = useListMemoryQuery(undefined, { skip: !effectiveSession?.clientToken });
+  const { selectedProjectId } = useSelector((state: any) => state.projects);
+  const projectsQuery = useListProjectsQuery({ scope: `${effectiveSession?.daemonUrl || ''}:${effectiveSession?.clientInstanceId || ''}:${effectiveSession?.clientToken || ''}` }, { skip: !effectiveSession?.connected || !effectiveSession?.clientToken });
+  const selectedProjectListId = selectedProjectId || projectsQuery.data?.projects?.[0]?.projectId || '';
+  const selectedProjectQuery = useFetchProjectQuery({ projectId: selectedProjectListId, scope: `${effectiveSession?.daemonUrl || ''}:${effectiveSession?.clientInstanceId || ''}:${effectiveSession?.clientToken || ''}` }, { skip: !effectiveSession?.connected || !effectiveSession?.clientToken || !selectedProjectListId });
+  const preferencesQuery = useFetchPreferencesQuery({ scope: `${effectiveSession?.daemonUrl || ''}:${effectiveSession?.clientInstanceId || ''}:${effectiveSession?.clientToken || ''}` }, { skip: !effectiveSession?.connected || !effectiveSession?.clientToken });
+  const settingsCatalogQuery = useFetchSettingsCatalogQuery({ scope: `${effectiveSession?.daemonUrl || ''}:${effectiveSession?.clientInstanceId || ''}` }, { skip: !effectiveSession?.connected || !effectiveSession?.daemonUrl });
+  const [savePreference] = useSavePreferenceMutation();
+  const [updateProject, updateProjectState] = useUpdateProjectMutation();
+  const [deleteProject, deleteProjectState] = useDeleteProjectMutation();
   const [selected, setSelected] = useState('daemon');
   const [directAgentId, setDirectAgentId] = useState('');
   const [directDraft, setDirectDraft] = useState('');
   const [debugInfo, setDebugInfo] = useState<{ enabled: boolean; port: number; pid: number } | null>(null);
 
-  const effectiveSession = reduxSession || session;
-
-  useEffect(() => {
-    if (!effectiveSession?.daemonUrl) return;
-    dispatch(refreshSettingsCatalog()).catch(() => undefined);
-    dispatch(fetchPreferences()).catch(() => undefined);
-    dispatch(refreshProjects()).catch(() => undefined);
-    dispatch(refreshMemory()).catch(() => undefined);
-  }, [dispatch, effectiveSession?.daemonUrl, effectiveSession?.clientToken]);
+  const agentsQuery = useListAgentsQuery(undefined, {
+    skip: !effectiveSession?.daemonUrl,
+    pollingInterval: selected === 'agents' || selected === 'direct-chat' || selected === 'daemon' ? 2000 : 0,
+  });
+  const agents = agentsQuery.data?.agents || [];
+  const refetchAgents = useCallback(() => agentsQuery.refetch().catch(() => undefined), [agentsQuery.refetch]);
 
   useEffect(() => {
     if ((window as any).odinApi?.getDebugInfo) (window as any).odinApi.getDebugInfo().then(setDebugInfo);
@@ -65,11 +74,12 @@ export default function SettingsPage({ session, onReconnect, onBack }: any) {
     dispatch(fetchSelectedChat({ agentId: directAgentId })).catch(() => undefined);
   }, [dispatch, directAgentId]);
 
-  const templates = useMemo(() => (settingsTemplates || []).map(normalizeTemplate).filter((item: any) => item.id), [settingsTemplates]);
-  const providers = useMemo(() => (settingsProviders || []).map((item: any) => typeof item === 'string' ? { name: item } : item).filter((item: any) => item?.name), [settingsProviders]);
-  const projects = useMemo(() => (projectIds || []).map((id: string) => projectsById[id]).filter(Boolean), [projectIds, projectsById]);
-  const selectedProject = selectedProjectId ? projectsById[selectedProjectId] : null;
-  const memoryRecords = useMemo(() => (recordIds || []).map((id: string) => recordsById[id]).filter(Boolean), [recordIds, recordsById]);
+  const templates = useMemo(() => (settingsCatalogQuery.data?.templates || []).map(normalizeTemplate).filter((item: any) => item.id), [settingsCatalogQuery.data?.templates]);
+  const providers = useMemo(() => (settingsCatalogQuery.data?.providers || []).map((item: any) => typeof item === 'string' ? { name: item } : item).filter((item: any) => item?.name), [settingsCatalogQuery.data?.providers]);
+  const preferences = preferencesQuery.data?.preferences || [];
+  const projects = projectsQuery.data?.projects || [];
+  const selectedProject = selectedProjectQuery.data?.project || projects.find((project: any) => project.projectId === selectedProjectListId) || null;
+  const memoryRecords = memoryQuery.data?.records || [];
   const directMessages = chats[directAgentId] || [];
 
   const settingsGroups = [
@@ -99,11 +109,11 @@ export default function SettingsPage({ session, onReconnect, onBack }: any) {
           <button data-debug-id="settings-close-btn" type="button" onClick={onBack} title="Close settings" className="absolute right-5 top-5 rounded-md border border-white/10 bg-[#141414] px-2 py-1 text-sm text-zinc-400 hover:text-zinc-100">✕</button>
           {selected === 'templates' && <TemplatesPanel templates={templates} />}
           {selected === 'kinds' && <TeamKindsPanel />}
-          {selected === 'providers' && <ProvidersPanel providers={providers} preferences={preferences || []} session={effectiveSession} daemonProfiles={daemonProfiles} onSaveDefault={async (key: string, value: string) => { await dispatch(saveUserPreference({ key, value })); dispatch(fetchPreferences()); }} />}
-          {selected === 'projects' && <ProjectsPanel projects={projects} selectedProjectId={selectedProjectId} selectedProject={selectedProject} loading={projectDetailLoading} mutating={projectMutating} error={projectError} onSelect={(projectId: string) => { dispatch(selectProject(projectId)); dispatch(fetchProjectDetail(projectId)); }} onSave={(payload: any) => dispatch(updateProjectFromUi(payload))} onDelete={async (projectId: string) => { await dispatch(deleteProjectFromUi({ projectId })); dispatch(clearProjectError()); }} />}
-          {selected === 'memory' && <MemoryPanel records={memoryRecords} loading={memoryLoading} />}
-          {selected === 'agents' && <AgentsPanel agents={agents} templates={templates} providers={providers} onCreateAgent={async (payload: any) => { await daemonApi.createAgent({ daemonUrl: effectiveSession.daemonUrl, displayName: payload.displayName, templateId: payload.templateId, providerProfile: payload.providerProfile, modelTier: payload.modelTier }); await dispatch(refreshAgents()); }} />}
-          {selected === 'direct-chat' && <DirectChatPanel agents={agents} agentId={directAgentId} setAgentId={setDirectAgentId} messages={directMessages} draft={directDraft} setDraft={setDirectDraft} sending={sending} onStart={async (agent: any) => { if (!agent?.id) return; await daemonApi.startAgent({ daemonUrl: effectiveSession?.daemonUrl || '', agentInstanceId: agent.id, provider: agent.providerProfile || settingsProviders?.[0]?.name || 'pi', templateId: agent.templateId || agent.agentRole || 'specialist', projectId: agent.projectId || '', displayName: agent.label || agent.id, modelTier: agent.modelTier || 'normal', agentRole: agent.agentRole || agent.templateId || '' }); await dispatch(refreshAgents()).unwrap().catch(() => undefined); }} onSend={() => { const body = directDraft.trim(); if (!body || !directAgentId) return; dispatch(sendMessageToSelectedAgent({ body, tempId: `settings_${Date.now()}` })); setDirectDraft(''); }} />}
+          {selected === 'providers' && <ProvidersPanel providers={providers} preferences={preferences || []} session={effectiveSession} daemonProfiles={daemonProfiles} onSaveDefault={async (key: string, value: string) => { await savePreference({ key, value }).unwrap(); }} />}
+          {selected === 'projects' && <ProjectsPanel projects={projects} selectedProjectId={selectedProjectListId} selectedProject={selectedProject} loading={projectsQuery.isFetching || selectedProjectQuery.isFetching} mutating={updateProjectState.isLoading || deleteProjectState.isLoading} error={(updateProjectState.error || deleteProjectState.error) ? 'Project mutation failed' : ''} onSelect={(projectId: string) => { dispatch(selectProject(projectId)); }} onSave={(payload: any) => updateProject(payload).unwrap()} onDelete={async (projectId: string) => { await deleteProject({ projectId }).unwrap(); if (selectedProjectListId === projectId) dispatch(selectProject('')); }} />}
+          {selected === 'memory' && <MemoryPanel records={memoryRecords} loading={memoryQuery.isFetching} />}
+          {selected === 'agents' && <AgentsPanel agents={agents} templates={templates} providers={providers} onCreateAgent={async (payload: any) => { await daemonApi.createAgent({ daemonUrl: effectiveSession.daemonUrl, displayName: payload.displayName, templateId: payload.templateId, providerProfile: payload.providerProfile, modelTier: payload.modelTier }); await refetchAgents(); }} />}
+          {selected === 'direct-chat' && <DirectChatPanel agents={agents} agentId={directAgentId} setAgentId={setDirectAgentId} messages={directMessages} draft={directDraft} setDraft={setDirectDraft} sending={sending} onStart={async (agent: any) => { if (!agent?.id) return; await dispatch(agentsApi.endpoints.startAgent.initiate({ agentInstanceId: agent.id, provider: agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || agent.agentRole || 'specialist', projectId: agent.projectId || '', displayName: agent.label || agent.id, modelTier: agent.modelTier || 'normal', agentRole: agent.agentRole || agent.templateId || '' })).unwrap(); }} onSend={() => { const body = directDraft.trim(); if (!body || !directAgentId) return; dispatch(sendMessageToSelectedAgent({ body, tempId: `settings_${Date.now()}` })); setDirectDraft(''); }} />}
           {selected === 'daemon' && <DaemonPanel session={effectiveSession} daemonProfiles={daemonProfiles} agents={agents} projects={projects} onReconnect={onReconnect} onAddProfile={(payload: any) => dispatch(addDaemonProfile(payload))} onRemoveProfile={(payload: any) => dispatch(removeDaemonProfile(payload))} debugInfo={debugInfo} setDebugInfo={setDebugInfo} />}
         </section>
       </div>
@@ -141,11 +151,23 @@ function ProvidersPanel({ providers, preferences, session, daemonProfiles = [], 
   const [provider, setProvider] = useState('');
   const [tier, setTier] = useState('normal');
   const [selectedDaemon, setSelectedDaemon] = useState(session?.daemonUrl || '');
+  const [defaultsDirty, setDefaultsDirty] = useState(false);
+  const hydratedDefaultsRef = useRef('');
+  const defaultProvider = preferenceValue(preferences, 'default_agent_provider_profile', providers[0]?.name || 'pi');
+  const defaultTier = preferenceValue(preferences, 'default_agent_model_tier', 'normal');
   useEffect(() => {
-    setProvider(preferenceValue(preferences, 'default_agent_provider_profile', providers[0]?.name || 'pi'));
-    setTier(preferenceValue(preferences, 'default_agent_model_tier', 'normal'));
-  }, [preferences, providers]);
-  useEffect(() => { setSelectedDaemon(session?.daemonUrl || ''); }, [session?.daemonUrl]);
+    hydratedDefaultsRef.current = '';
+    setDefaultsDirty(false);
+    setSelectedDaemon(session?.daemonUrl || '');
+  }, [session?.daemonUrl]);
+  useEffect(() => {
+    if (defaultsDirty) return;
+    const signature = `${session?.daemonUrl || ''}:${defaultProvider}:${defaultTier}:${providers.length}`;
+    if (hydratedDefaultsRef.current === signature) return;
+    hydratedDefaultsRef.current = signature;
+    setProvider(defaultProvider);
+    setTier(defaultTier);
+  }, [defaultProvider, defaultTier, defaultsDirty, providers.length, session?.daemonUrl]);
   const save = async (event: any) => {
     event.preventDefault();
     await onSaveDefault('default_agent_provider_profile', provider.trim() || 'pi');
@@ -178,7 +200,7 @@ function ProvidersPanel({ providers, preferences, session, daemonProfiles = [], 
             <div key={item.name} data-debug-id={`settings-provider-card-${item.name}`} className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
               <div className="min-w-0 flex-1"><div className="font-semibold text-zinc-100">{item.name}</div><div className="mt-1 text-sm text-zinc-500">{providerTierSummary(item)}</div></div>
               {isDefault && <span className="rounded-full bg-emerald-400/10 px-2.5 py-1 text-xs text-emerald-100">default</span>}
-              <button data-debug-id={`settings-provider-default-btn-${item.name}`} type="button" onClick={() => setProvider(item.name)} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-zinc-100 hover:bg-white/15">Set default</button>
+              <button data-debug-id={`settings-provider-default-btn-${item.name}`} type="button" onClick={() => { setDefaultsDirty(true); setProvider(item.name); }} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-zinc-100 hover:bg-white/15">Set default</button>
             </div>
           );
         })}
@@ -187,8 +209,8 @@ function ProvidersPanel({ providers, preferences, session, daemonProfiles = [], 
       <form onSubmit={save} className="mt-6 rounded-2xl border border-white/10 bg-white/[0.035] p-4">
         <div className="mb-3 text-xs uppercase tracking-[0.18em] text-zinc-500">Default agent ({activeLabel})</div>
         <div className="grid gap-3 md:grid-cols-2">
-          <label className="block text-sm text-zinc-300">Default provider<select data-debug-id="settings-default-agent-provider-select" value={provider} onChange={(event) => setProvider(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">{providers.length === 0 && <option value={provider || 'pi'}>{provider || 'pi'}</option>}{providers.map((item: any) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
-          <label className="block text-sm text-zinc-300">Default tier<select data-debug-id="settings-default-agent-tier-select" value={tier} onChange={(event) => setTier(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="normal">normal</option><option value="cheap">cheap</option><option value="smart">smart</option></select></label>
+          <label className="block text-sm text-zinc-300">Default provider<select data-debug-id="settings-default-agent-provider-select" value={provider} onChange={(event) => { setDefaultsDirty(true); setProvider(event.target.value); }} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">{providers.length === 0 && <option value={provider || 'pi'}>{provider || 'pi'}</option>}{providers.map((item: any) => <option key={item.name} value={item.name}>{item.name}</option>)}</select></label>
+          <label className="block text-sm text-zinc-300">Default tier<select data-debug-id="settings-default-agent-tier-select" value={tier} onChange={(event) => { setDefaultsDirty(true); setTier(event.target.value); }} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"><option value="normal">normal</option><option value="cheap">cheap</option><option value="smart">smart</option></select></label>
         </div>
         <div className="mt-4 flex justify-end"><button data-debug-id="settings-default-agent-save-btn" type="submit" className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300">Save</button></div>
       </form>

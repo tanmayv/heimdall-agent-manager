@@ -22,34 +22,51 @@ def main() -> None:
     require("import { handleUserWsEvent } from '../api/wsInvalidation';" in app, "App must import wsInvalidation handler")
     require("handleUserWsEvent(dispatch, payload, {" in app, "App websocket onmessage must delegate to wsInvalidation")
 
-    require("dispatch(refreshTaskBoard());" not in ws, "wsInvalidation must not broadly refresh the task board")
-    require("dispatch(fetchTasksForChain(chainId));" not in ws, "wsInvalidation must not broadly refetch chain task lists")
-    require("dispatch(revalidateChainView(" not in ws, "wsInvalidation must not call broad chain revalidation")
-    require("dispatch(refreshAgents());" not in ws, "wsInvalidation must not broadly refresh agents")
-    require("dispatch(refreshMemory());" not in ws, "wsInvalidation must not broadly refresh memory")
-    require("dispatch(refreshMergeDecisions());" not in ws, "wsInvalidation must not broadly refresh merge decisions")
-    require("dispatch(refreshChatApprovals());" not in ws, "wsInvalidation must not broadly refresh chat approvals")
-    require("dispatch(fetchSelectedChat(" not in ws, "wsInvalidation must not explicitly fetch direct chat")
-    require("dispatch(fetchGuideChat(" not in ws, "wsInvalidation must not explicitly fetch guide chat")
-    require("dispatch(fetchChainCoordinatorChatPage(" not in ws, "wsInvalidation must not explicitly fetch coordinator chat")
-    require("dispatch(fetchMemoryDetail(" not in ws, "wsInvalidation must not explicitly fetch memory detail")
-    require("dispatch(fetchWorkspaceForChain(" not in ws, "wsInvalidation must not explicitly fetch workspace")
-
-    require("upsertQueryData('fetchTask'" in ws, "task events with records should patch fetchTask cache")
-    require("updateQueryData('fetchChainTasks'" in ws, "task events with records should patch fetchChainTasks cache")
-    require("updateQueryData('fetchDirectChat'" in ws, "chat events with records should patch direct chat cache")
-    require("updateQueryData('fetchGuideChat'" in ws, "chat events with records should patch guide chat cache")
-    require("updateQueryData('fetchCoordinatorChat'" in ws, "chat events with records should patch coordinator chat cache")
-
+    # WS handling should never fall back to broad component/store refresh fan-out.
     for marker in [
-        "invalidateTags([{ type: 'Chat', id: agentId }])",
+        "dispatch(refreshTaskBoard());",
+        "dispatch(fetchTasksForChain(chainId));",
+        "dispatch(revalidateChainView(",
+        "dispatch(refreshAgents());",
+        "dispatch(refreshMemory());",
+        "dispatch(refreshMergeDecisions());",
+        "dispatch(refreshChatApprovals());",
+        "dispatch(fetchSelectedChat(",
+        "dispatch(fetchGuideChat(",
+        "dispatch(fetchChainCoordinatorChatPage(",
+        "dispatch(fetchMemoryDetail(",
+        "dispatch(fetchWorkspaceForChain(",
+    ]:
+        require(marker not in ws, f"wsInvalidation must not use broad refresh/fetch marker: {marker}")
+
+    # Record-carrying events should patch targeted caches/helpers in place.
+    for marker in [
+        "upsertQueryData('fetchTask'",
+        "updateQueryData('fetchChainTasks'",
+        "updateQueryData('fetchTaskLog'",
+        "updateQueryData('fetchDirectChat'",
+        "updateQueryData('fetchGuideChat'",
+        "upsertQueryData('fetchChain'",
+        "updateQueryData('listChains'",
+        "patchMemoryCachesFromWs(",
+        "patchChatApprovalCachesFromWs(",
+        "patchMergeDecisionCachesFromWs(",
+        "patchAgentCachesFromWs(",
+    ]:
+        require(marker in ws, f"missing targeted ws patch marker: {marker}")
+
+    # Id-only / compact events should invalidate only scoped RTKQ tags.
+    for marker in [
+        "invalidateTags([{ type: 'TaskLog', id: taskId }])",
+        "invalidateTags([{ type: 'TaskComments', id: taskId }])",
+        "{ type: 'Chain', id: chainId },",
+        "{ type: 'ChainList', id: 'ALL' },",
+        "{ type: 'ChainTasks', id: chainId },",
         "invalidateTags([{ type: 'GuideChat', id: GUIDE_AGENT_ID }])",
-        "invalidateTags([{ type: 'CoordinatorChat', id: coordinatorChainId }])",
-        "invalidateTags([{ type: 'Memory', id: memoryId }, { type: 'MemoryHistory', id: memoryId }])",
-        "invalidateTags([{ type: 'Workspace', id: chainId }])",
-        "invalidateTags([{ type: 'MergeDecisions', id: 'ALL' }, { type: 'Attention', id: 'ALL' }])",
-        "invalidateTags([{ type: 'ChatApprovals', id: 'ALL' }, { type: 'Attention', id: 'ALL' }])",
-        "invalidateTags([{ type: 'Agents', id: agentId }])",
+        "invalidateTags([{ type: 'Chat', id: agentId }])",
+        "invalidateTags([{ type: 'ConversationSummaries', id: 'ALL' }])",
+        "{ type: 'Workspace', id: chainId },",
+        "{ type: 'WorkspaceDiff', id: `${chainId}:` },",
     ]:
         require(marker in ws, f"missing targeted invalidation marker: {marker}")
 

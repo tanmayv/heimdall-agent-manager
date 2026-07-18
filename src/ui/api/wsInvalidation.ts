@@ -1,12 +1,17 @@
 import { heimdallApi } from './heimdallApi';
 import { tasksApi } from './endpoints/tasks';
+import { normalizeChain, workspaceApi } from './endpoints/workspace';
 import { chatEndpoints } from './endpoints/chats';
-import { chatApprovalEventReceived, mergeDecisionEventReceived } from '../store/attentionSlice';
-import { GUIDE_AGENT_ID, agentLifecycleEventReceived, agentRuntimeEventReceived, appendMessage, chatEventReceived, patchChatMessageStatus } from '../store/chatSlice';
+import { patchAgentCachesFromWs } from './endpoints/agents';
+import { patchChatApprovalCachesFromWs, patchMergeDecisionCachesFromWs } from './endpoints/attention';
+import { patchMemoryCachesFromWs } from './endpoints/memory';
+import { upsertTaskInList, upsertTaskLogEvent } from './taskCache';
+import { attentionEventReceived } from '../store/attentionSlice';
+import { GUIDE_AGENT_ID, appendMessage, chatEventReceived, patchChatMessageStatus } from '../store/chatSlice';
 import { wsChainViewRefreshRequested } from '../store/chainViewSlice';
 import { wsRefreshRequested } from '../store/homeSlice';
-import { applyMemoryEventRecord, auditEndedReceived, auditStartedReceived, memoryEventReceived } from '../store/memorySlice';
-import { taskEventReceived, updateChainStateDirectly, updateTaskStateDirectly } from '../store/taskSlice';
+import { auditEndedReceived, auditStartedReceived, memoryEventReceived } from '../store/memorySlice';
+import { taskEventReceived } from '../store/taskSlice';
 
 type WsCtx = {
   selectedAgentId?: string;
@@ -163,25 +168,36 @@ function applyChatMessageToCaches(dispatch: any, message: ChatMessage, rawMessag
 
 function handleTaskEvent(dispatch: any, payload: any) {
   dispatch(taskEventReceived(payload));
-  if (payload.task) dispatch(updateTaskStateDirectly(payload.task));
-  if (payload.chain) dispatch(updateChainStateDirectly(payload.chain));
+  if (payload.chain) {
+    const chain = normalizeChain(payload.chain);
+    if (chain.chainId) {
+      dispatch(workspaceApi.util.upsertQueryData('fetchChain', { chainId: chain.chainId }, { chain }));
+      dispatch(workspaceApi.util.updateQueryData('listChains', undefined, (draft: any) => {
+        const rows = draft?.chains || (draft.chains = []);
+        const index = rows.findIndex((item: any) => item.chainId === chain.chainId);
+        if (index >= 0) rows[index] = { ...rows[index], ...chain };
+        else rows.unshift(chain);
+      }));
+    }
+  }
 
   const taskId = String(payload.task_id || payload.task?.task_id || '');
   const chainId = String(payload.chain_id || payload.chain?.chain_id || payload.task?.chain_id || '');
   dispatch(wsRefreshRequested(`task_event:${chainId || taskId || 'unknown'}`));
 
-  if (payload.task && taskId) {
-    const normalizedTask = normalizeTask(payload.task);
-    dispatch(tasksApi.util.upsertQueryData('fetchTask', { taskId }, { task: normalizedTask }));
+  const patchTaskCaches = (normalizedTask: any) => {
+    if (!normalizedTask?.taskId) return;
+    dispatch(tasksApi.util.upsertQueryData('fetchTask', { taskId: normalizedTask.taskId }, { task: normalizedTask }));
     if (chainId) {
       dispatch(tasksApi.util.updateQueryData('fetchChainTasks', { chainId }, (draft: any) => {
         if (!draft) return;
-        const tasks = draft.tasks || (draft.tasks = []);
-        const index = tasks.findIndex((task: any) => task.taskId === taskId);
-        if (index >= 0) tasks[index] = { ...tasks[index], ...normalizedTask };
-        else tasks.unshift(normalizedTask);
+        upsertTaskInList(draft.tasks || (draft.tasks = []), normalizedTask);
       }));
     }
+  };
+
+  if (payload.task && taskId) {
+    patchTaskCaches(normalizeTask(payload.task));
   } else if (payload.fetch_required && taskId) {
     // Oversized task/chain records arrive as a compact fetch_required event.
     // In practice this is the common case (full task+chain JSON exceeds the WS
@@ -189,22 +205,7 @@ function handleTaskEvent(dispatch: any, payload: any) {
     // state. forceRefetch is required: without it RTK Query dedupes against the
     // stale cache entry and the status/comments never change in the UI.
     dispatch(tasksApi.endpoints.fetchTask.initiate({ taskId }, { subscribe: false, forceRefetch: true })).unwrap().then((data: any) => {
-      const normalizedTask = data?.task;
-      if (!normalizedTask) return;
-      // TODO(rtkq-task-state): collapse the legacy tasksById projection and RTK
-      // Query task caches behind one applyAuthoritativeTask helper. Until then,
-      // compact fetch_required task events must patch both or completed tasks can
-      // remain in legacy active lists until a full refresh.
-      dispatch(updateTaskStateDirectly(normalizedTask));
-      if (chainId) {
-        dispatch(tasksApi.util.updateQueryData('fetchChainTasks', { chainId }, (draft: any) => {
-          if (!draft) return;
-          const tasks = draft.tasks || (draft.tasks = []);
-          const index = tasks.findIndex((task: any) => task.taskId === taskId);
-          if (index >= 0) tasks[index] = { ...tasks[index], ...normalizedTask };
-          else tasks.unshift(normalizedTask);
-        }));
-      }
+      patchTaskCaches(data?.task);
     }).catch(() => undefined);
     // The compact fallback omits the chain payload and comment_id, so refetch the
     // authoritative task log (comments live here) for any open task-detail view.
@@ -214,6 +215,7 @@ function handleTaskEvent(dispatch: any, payload: any) {
   if (payload.chain_fetch_required && chainId) {
     dispatch(heimdallApi.util.invalidateTags([
       { type: 'Chain', id: chainId },
+      { type: 'ChainList', id: 'ALL' },
       { type: 'ChainTasks', id: chainId },
     ]));
   }
@@ -224,17 +226,13 @@ function handleTaskEvent(dispatch: any, payload: any) {
       dispatch(tasksApi.util.updateQueryData('fetchTaskLog', args, (draft: any) => {
         if (!draft) return;
         const events = draft.events || (draft.events = []);
-        const index = events.findIndex((event: any) => event.eventId === eventRecord.eventId);
-        if (index >= 0) events[index] = { ...events[index], ...eventRecord };
-        else {
-          events.push(eventRecord);
-          events.sort((left: any, right: any) => Number(left.createdUnixMs || 0) - Number(right.createdUnixMs || 0));
-          draft.total = Number(draft.total || 0) + 1;
-        }
+        const inserted = upsertTaskLogEvent(events, eventRecord);
+        if (inserted) draft.total = Number(draft.total || 0) + 1;
       }));
     };
     patchLog({ taskId });
     patchLog({ taskId, limit: 50 });
+    dispatch(heimdallApi.util.invalidateTags([{ type: 'TaskComments', id: taskId }]));
   }
 }
 
@@ -315,15 +313,7 @@ function handleChatEvent(dispatch: any, payload: any, ctx: WsCtx) {
 
 function handleMemoryEvent(dispatch: any, payload: any) {
   dispatch(memoryEventReceived(payload));
-  const memoryId = String(payload.memory_id || payload.record?.memory_id || payload.memory?.memory_id || '');
-  if (memoryId) {
-    dispatch(applyMemoryEventRecord(payload));
-    dispatch(heimdallApi.util.invalidateTags([{ type: 'Memory', id: memoryId }, { type: 'MemoryHistory', id: memoryId }]));
-  }
-  const change = String(payload.change || payload.event || '').toLowerCase();
-  if (change.includes('created') || change.includes('archived') || change.includes('deleted')) {
-    dispatch(heimdallApi.util.invalidateTags([{ type: 'Memory', id: 'ALL' }]));
-  }
+  patchMemoryCachesFromWs(dispatch, payload);
 }
 
 function handleMergeDecisionPending(dispatch: any, payload: any, ctx: WsCtx) {
@@ -332,28 +322,22 @@ function handleMergeDecisionPending(dispatch: any, payload: any, ctx: WsCtx) {
     dispatch(wsChainViewRefreshRequested(`merge_decision_pending:${chainId}`));
   }
   if (chainId) {
-    dispatch(heimdallApi.util.invalidateTags([{ type: 'Workspace', id: chainId }]));
+    dispatch(heimdallApi.util.invalidateTags([
+      { type: 'Workspace', id: chainId },
+      { type: 'WorkspaceDiff', id: `${chainId}:` },
+    ]));
   }
-  dispatch(mergeDecisionEventReceived(payload));
-  dispatch(heimdallApi.util.invalidateTags([{ type: 'MergeDecisions', id: 'ALL' }, { type: 'Attention', id: 'ALL' }]));
+  dispatch(attentionEventReceived());
+  patchMergeDecisionCachesFromWs(dispatch, payload);
 }
 
 function handleAgentEvent(dispatch: any, payload: any, ctx: WsCtx) {
-  if (payload?.type === 'agent_lifecycle_changed' || payload?.type === 'agent_update') {
-    dispatch(agentLifecycleEventReceived(payload));
-  }
-  if (payload?.type === 'agent_runtime_changed') {
-    dispatch(agentRuntimeEventReceived(payload));
-  }
   const agentId = String(payload.target_agent_instance_id || payload.agent_instance_id || payload.agent?.agent_instance_id || payload.record?.agent_instance_id || '');
+  patchAgentCachesFromWs(dispatch, payload);
   dispatch(wsRefreshRequested(`${payload.type}:${agentId}`));
   if (ctx.focusedChainId) {
     dispatch(wsChainViewRefreshRequested(`${payload.type}:${agentId}`));
   }
-  // Agent lifecycle/runtime/update events are targeted and contain enough fields
-  // for chatSlice reducers to patch the single agent row. Do not invalidate an
-  // Agents list tag here; that can turn frequent heartbeats/runtime events into
-  // full agents-list refetches once the Agents domain moves to RTKQ.
 }
 
 export function handleUserWsEvent(dispatch: any, payload: any, ctx: WsCtx = {}) {
@@ -365,8 +349,8 @@ export function handleUserWsEvent(dispatch: any, payload: any, ctx: WsCtx = {}) 
       handleChatEvent(dispatch, payload, ctx);
       return;
     case 'chat_approval':
-      if (payload?.approval) dispatch(chatApprovalEventReceived(payload));
-      dispatch(heimdallApi.util.invalidateTags([{ type: 'ChatApprovals', id: 'ALL' }, { type: 'Attention', id: 'ALL' }]));
+      dispatch(attentionEventReceived());
+      patchChatApprovalCachesFromWs(dispatch, payload);
       return;
     case 'memory_event':
       handleMemoryEvent(dispatch, payload);

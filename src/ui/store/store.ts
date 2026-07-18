@@ -2,6 +2,7 @@ import { configureStore } from '@reduxjs/toolkit';
 import { heimdallApi, setupHeimdallApiListeners } from '../api/heimdallApi';
 import '../api/endpoints/tasks';
 import '../api/endpoints/chats';
+import '../api/endpoints/agents';
 import chatReducer from './chatSlice';
 import taskReducer from './taskSlice';
 import memoryReducer from './memorySlice';
