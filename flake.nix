@@ -45,6 +45,8 @@
           mkdir -p $out/bin
           odin build ${srcDir} -collection:odin_test=src -out:$out/bin/${name}
           wrapProgram $out/bin/${name} --prefix PATH : ${pkgs.lib.makeBinPath runtimeInputs}
+          ${if name == "ham-wrapper" then "ln -s ham-wrapper $out/bin/bc-agent-wrapper" else ""}
+          ${if name == "ham-test-agent" then "ln -s ham-test-agent $out/bin/bc-test-agent" else ""}
           runHook postBuild
         '';
       };
@@ -135,7 +137,11 @@
         in
         {
           ham-daemon = mkOdinDaemonPackage pkgs odin;
-          ham-wrapper = mkOdinPackage pkgs odin "ham-wrapper" "src/wrapper";
+          # ham-wrapper shells out to tmux (agent windows) and git/jj (VCS
+          # workspaces). It must carry those on PATH because the daemon launches
+          # the wrapper detached with only the daemon's PATH, which does not
+          # include tmux. Without this the wrapper fails with tmux_launch_failed.
+          ham-wrapper = mkOdinPackageWithRuntime pkgs odin "ham-wrapper" "src/wrapper" [ pkgs.tmux pkgs.git pkgs.jujutsu ];
           ham-ctl = mkOdinCtlPackage pkgs odin;
           ham-test-agent = mkOdinPackage pkgs odin "ham-test-agent" "src/test_agent";
           ham-team-kinds-test = mkOdinPackage pkgs odin "ham-team-kinds-test" "tests";
