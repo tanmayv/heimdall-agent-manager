@@ -47,17 +47,29 @@ ensure_agent_window_unlocked :: proc(session, window, cwd: string, command: []st
 	}
 
 	if has_session(session) {
-		new_window_cmd := []string{"tmux", "new-window", "-t", session, "-n", window, shell_command}
+		// Capture the created pane id directly from new-window (-P -F) instead of
+		// relying on a follow-up list-windows name match. With automatic-rename on
+		// (or while the shell/agent process is still starting) the window name can
+		// briefly differ from the requested name, which made pane_for_window miss
+		// the freshly created window and spawn duplicate windows on retry. -P -F
+		// returns the authoritative pane id with no name-matching race.
+		new_window_cmd := []string{"tmux", "new-window", "-t", session, "-n", window, "-P", "-F", "#{pane_id}", shell_command}
 		tmux_launch_log("new_window_exec_begin", session, window, start_ms)
-		state, _, stderr, err := os.process_exec(os.Process_Desc{command = new_window_cmd}, context.allocator)
-		tmux_launch_log(fmt.tprintf("new_window_exec_done success=%t err=%t stderr_len=%d", state.success, err != nil, len(stderr)), session, window, start_ms)
-		if err != nil || !state.success {
-			if len(stderr) > 0 {
-				fmt.println("tmux new-window skipped", string(stderr))
-			}
+		state, stdout, stderr, err := os.process_exec(os.Process_Desc{command = new_window_cmd}, context.allocator)
+		created_pane := strings.trim_space(string(stdout))
+		tmux_launch_log(fmt.tprintf("new_window_exec_done success=%t err=%t pane=%s stderr_len=%d", state.success, err != nil, created_pane, len(stderr)), session, window, start_ms)
+		if err == nil && state.success && created_pane != "" {
+			tmux_launch_log(fmt.tprintf("pane_captured pane=%s", created_pane), session, window, start_ms)
+			return Launch_Result{session = session, window = window, pane_id = created_pane}, true
+		}
+		if len(stderr) > 0 {
+			fmt.println("tmux new-window skipped", string(stderr))
 		}
 	}
 
+	// Fallback: new-window did not report a pane id (e.g. it was skipped because
+	// the window already existed). Look it up by name, retrying briefly. We do
+	// NOT re-create the window here, to avoid spawning duplicate agent windows.
 	for tries := 0; tries < 5; tries += 1 {
 		pane_id := pane_for_window(session, window)
 		if pane_id != "" {
@@ -65,12 +77,6 @@ ensure_agent_window_unlocked :: proc(session, window, cwd: string, command: []st
 			return Launch_Result{session = session, window = window, pane_id = pane_id}, true
 		}
 		tmux_launch_log(fmt.tprintf("pane_not_found try=%d", tries), session, window, start_ms)
-		if tries == 0 && has_session(session) {
-			new_window_cmd := []string{"tmux", "new-window", "-t", session, "-n", window, shell_command}
-			tmux_launch_log("new_window_retry_exec_begin", session, window, start_ms)
-			_, _, _, _ = os.process_exec(os.Process_Desc{command = new_window_cmd}, context.allocator)
-			tmux_launch_log("new_window_retry_exec_done", session, window, start_ms)
-		}
 		time.sleep(150 * time.Millisecond)
 	}
 
@@ -250,21 +256,35 @@ create_throwaway_session :: proc(name: string) -> bool {
 }
 
 build_shell_command :: proc(cwd: string, command: []string) -> string {
-	builder := strings.builder_make()
-	strings.write_string(&builder, "cd ")
-	strings.write_string(&builder, shell_quote(cwd))
-	strings.write_string(&builder, " && ( ")
-
+	// Build the inner "cd <cwd> && ( <cmd> )" command, then run it through a
+	// LOGIN shell. The daemon (and thus the wrapper it spawns and the tmux pane)
+	// often has a minimal PATH that lacks the user's real tool locations
+	// (e.g. ~/.nix-profile/bin where `pi`/`agy` live, or /opt/homebrew/bin),
+	// which caused "pi: command not found" and the window closing immediately.
+	// A login shell sources ~/.zprofile / ~/.profile so the agent command
+	// resolves against the user's normal PATH.
+	inner := strings.builder_make()
+	strings.write_string(&inner, "cd ")
+	strings.write_string(&inner, shell_quote(cwd))
+	strings.write_string(&inner, " && ( ")
 	if len(command) == 0 {
-		strings.write_string(&builder, "pi")
+		strings.write_string(&inner, "pi")
 	} else {
 		for arg, i in command {
-			if i > 0 do strings.write_string(&builder, " ")
-			strings.write_string(&builder, shell_quote(arg))
+			if i > 0 do strings.write_string(&inner, " ")
+			strings.write_string(&inner, shell_quote(arg))
 		}
 	}
+	strings.write_string(&inner, " ); echo 'Agent exited. Press Enter to close...'; read")
 
-	strings.write_string(&builder, " ); echo 'Agent exited. Press Enter to close...'; read")
+	// Wrap in a login shell so the user's PATH (nix-profile/homebrew/etc.) is set.
+	builder := strings.builder_make()
+	strings.write_string(&builder, "exec ")
+	shell := os.get_env_alloc("SHELL", context.allocator)
+	if strings.trim_space(shell) == "" do shell = "/bin/zsh"
+	strings.write_string(&builder, shell_quote(shell))
+	strings.write_string(&builder, " -l -c ")
+	strings.write_string(&builder, shell_quote(strings.to_string(inner)))
 	return strings.to_string(builder)
 }
 
