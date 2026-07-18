@@ -14,7 +14,7 @@ const ARTIFACT_UPLOAD_SPECS = [
 ] as const;
 export const ARTIFACT_UPLOAD_ACCEPT = ARTIFACT_UPLOAD_SPECS.flatMap((spec) => [...spec.exts, spec.mime]).join(',');
 const SUPPORTED_FILE_ERROR = 'Unsupported file. Upload a supported artifact (.md, .png, .jpg, .jpeg, .csv, .html, or .htm).';
-const MAX_UPLOAD_BYTES = 5 * 1024 * 1024; // Mirror daemon size guardrail for a friendlier client-side error.
+const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // Mirror daemon size guardrail (ARTIFACT_DEFAULT_MAX_BYTES) for a friendlier client-side error.
 
 type ArtifactKindMime = { kind: string; mime: string };
 export type ClipboardUploadResult = { handled: boolean; link: string | null };
@@ -124,7 +124,7 @@ export function useArtifactUpload(context: ArtifactUploadContext = {}): UseArtif
   const uploadArtifact = useCallback(async ({ file, name, kind, mime, projectId, originKind, originRef }: UploadArtifactParams): Promise<string | null> => {
     if (!file) return null;
     if (file.size > MAX_UPLOAD_BYTES) {
-      setError('File is too large. Maximum upload size is 5 MB.');
+      setError(`File is too large. Maximum upload size is ${Math.round(MAX_UPLOAD_BYTES / (1024 * 1024))} MB.`);
       return null;
     }
     if (!session?.daemonUrl || !session?.clientToken) {
