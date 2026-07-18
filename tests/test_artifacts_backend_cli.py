@@ -96,6 +96,25 @@ def wait_for_daemon():
     raise RuntimeError("daemon did not become healthy")
 
 
+def start_daemon(daemon_bin: str, config_path: Path, log_path: Path):
+    log_handle = open(log_path, "a", encoding="utf-8")
+    proc = subprocess.Popen([daemon_bin, "--config", str(config_path)], stdout=log_handle, stderr=subprocess.STDOUT)
+    wait_for_daemon()
+    return proc, log_handle
+
+
+def stop_daemon(proc, log_handle):
+    if proc is not None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
+    if log_handle is not None:
+        log_handle.close()
+
+
 def run_json(cmd: list[str]) -> dict:
     proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
     output = proc.stdout.strip()
@@ -139,9 +158,8 @@ ham_ctl_bin = \"{ctl_bin}\"
 """,
             encoding="utf-8",
         )
-        daemon_log = open(daemon_log_path, "w", encoding="utf-8")
-        daemon_proc = subprocess.Popen([daemon_bin, "--config", str(config_path)], stdout=daemon_log, stderr=subprocess.STDOUT)
-        wait_for_daemon()
+        daemon_log_path.write_text("", encoding="utf-8")
+        daemon_proc, daemon_log = start_daemon(daemon_bin, config_path, daemon_log_path)
 
         _, agent_res = request_post("/register", {
             "agent_class": "artifacts-test-agent",
@@ -305,6 +323,174 @@ ham_ctl_bin = \"{ctl_bin}\"
         if status != 200 or metadata_only_content != replacement_bytes:
             raise AssertionError(f"metadata-only update did not preserve replacement bytes: status={status} bytes={metadata_only_content!r}")
 
+        status, versions_res = request_get_json(f"/artifacts/{urllib.parse.quote(artifact_id)}/versions", agent_token)
+        assert_ok(status, versions_res, "artifact versions list after initial updates")
+        versions = versions_res.get("versions", [])
+        version_numbers = [row.get("version_no") for row in versions]
+        if version_numbers[:3] != [3, 2, 1]:
+            raise AssertionError(f"unexpected retained version ordering after initial updates: {versions_res}")
+        versions_by_no = {row.get("version_no"): row for row in versions}
+        if versions_by_no.get(1, {}).get("project_id") != PROJECT_ID:
+            raise AssertionError(f"version 1 metadata missing original project_id: {versions_res}")
+        if versions_by_no.get(3, {}).get("project_id") != "artifacts-test-project-updated":
+            raise AssertionError(f"metadata-only version did not capture updated project_id: {versions_res}")
+
+        status, version1_bytes, _ = request_get_bytes(f"/artifacts/{urllib.parse.quote(artifact_id)}/content?version=1", agent_token)
+        if status != 200 or version1_bytes != markdown_bytes:
+            raise AssertionError(f"version 1 content mismatch: status={status} bytes={version1_bytes!r}")
+        status, version2_bytes, _ = request_get_bytes(f"/artifacts/{urllib.parse.quote(artifact_id)}/content?version=2", agent_token)
+        if status != 200 or version2_bytes != replacement_bytes:
+            raise AssertionError(f"version 2 content mismatch: status={status} bytes={version2_bytes!r}")
+        status, version3_bytes, _ = request_get_bytes(f"/artifacts/{urllib.parse.quote(artifact_id)}/content?version=3", agent_token)
+        if status != 200 or version3_bytes != replacement_bytes:
+            raise AssertionError(f"version 3 content mismatch: status={status} bytes={version3_bytes!r}")
+
+        cli_versions_res = run_json([
+            ctl_bin, "--config", str(config_path), "--daemon-url", DAEMON_URL,
+            "artifacts", "versions",
+            "--token", agent_token,
+            "--artifact-id", artifact_id,
+        ])
+        if not cli_versions_res.get("ok") or [row.get("version_no") for row in cli_versions_res.get("versions", [])][:3] != [3, 2, 1]:
+            raise AssertionError(f"CLI versions failed: {cli_versions_res}")
+
+        version_fetch_file = Path(temp_home) / "fetched-v1.md"
+        cli_fetch_res = run_json([
+            ctl_bin, "--config", str(config_path), "--daemon-url", DAEMON_URL,
+            "artifacts", "fetch",
+            "--token", agent_token,
+            "--artifact-id", artifact_id,
+            "--version", "1",
+            "--out", str(version_fetch_file),
+        ])
+        if not cli_fetch_res.get("ok") or version_fetch_file.read_bytes() != markdown_bytes:
+            raise AssertionError(f"CLI version fetch did not roundtrip bytes: {cli_fetch_res}")
+
+        cli_annotation_create = run_json([
+            ctl_bin, "--config", str(config_path), "--daemon-url", DAEMON_URL,
+            "artifacts", "annotate",
+            "--token", agent_token,
+            "--artifact-id", artifact_id,
+            "--version", "2",
+            "--context-type", "text",
+            "--context-json", json.dumps({"type": "text", "lineStart": 2, "lineEnd": 2, "selectedText": "replacement bytes after update"}),
+            "--comment", "annotation on version 2",
+        ])
+        if not cli_annotation_create.get("ok"):
+            raise AssertionError(f"CLI annotate failed: {cli_annotation_create}")
+        annotation = cli_annotation_create.get("annotation", {})
+        annotation_id = annotation.get("annotation_id")
+        if not annotation_id or annotation.get("version_no") != 2:
+            raise AssertionError(f"CLI annotation create missing id/version linkage: {cli_annotation_create}")
+
+        cli_annotations_res = run_json([
+            ctl_bin, "--config", str(config_path), "--daemon-url", DAEMON_URL,
+            "artifacts", "annotations",
+            "--token", agent_token,
+            "--artifact-id", artifact_id,
+            "--version", "2",
+        ])
+        annotations = cli_annotations_res.get("annotations", [])
+        if not cli_annotations_res.get("ok") or len(annotations) != 1 or annotations[0].get("annotation_id") != annotation_id:
+            raise AssertionError(f"CLI annotations list missing created annotation: {cli_annotations_res}")
+        if annotations[0].get("context_json", {}).get("type") != "text":
+            raise AssertionError(f"CLI annotation context_json did not roundtrip as JSON: {cli_annotations_res}")
+
+        cli_annotation_update = run_json([
+            ctl_bin, "--config", str(config_path), "--daemon-url", DAEMON_URL,
+            "artifacts", "annotation-update",
+            "--token", agent_token,
+            "--annotation-id", annotation_id,
+            "--comment", "annotation updated",
+        ])
+        if not cli_annotation_update.get("ok") or cli_annotation_update.get("annotation", {}).get("comment") != "annotation updated":
+            raise AssertionError(f"CLI annotation update failed: {cli_annotation_update}")
+
+        rollback_res = run_json([
+            ctl_bin, "--config", str(config_path), "--daemon-url", DAEMON_URL,
+            "artifacts", "rollback",
+            "--token", agent_token,
+            "--artifact-id", artifact_id,
+            "--version", "1",
+            "--change-reason", "restore original bytes",
+        ])
+        if not rollback_res.get("ok"):
+            raise AssertionError(f"CLI rollback failed: {rollback_res}")
+        rolled_back = rollback_res.get("artifact", {})
+        if rolled_back.get("current_version_no") != 4:
+            raise AssertionError(f"rollback did not append a new head version: {rollback_res}")
+        if rolled_back.get("project_id") != PROJECT_ID or rolled_back.get("description") != "cli artifact":
+            raise AssertionError(f"rollback head metadata did not match target version: {rollback_res}")
+        status, rollback_head_bytes, _ = request_get_bytes(f"/artifacts/{urllib.parse.quote(artifact_id)}/content", agent_token)
+        if status != 200 or rollback_head_bytes != markdown_bytes:
+            raise AssertionError(f"rollback head bytes mismatch: status={status} bytes={rollback_head_bytes!r}")
+
+        for idx in range(2):
+            status, extra_update = request_post("/artifacts/update", {
+                "artifact_id": artifact_id,
+                "name": "sample.md",
+                "description": f"retention update {idx}",
+                "project_id": f"artifacts-test-project-retention-{idx}",
+            }, agent_token)
+            assert_ok(status, extra_update, f"artifact retention update {idx}")
+
+        status, retained_versions_res = request_get_json(f"/artifacts/{urllib.parse.quote(artifact_id)}/versions", agent_token)
+        assert_ok(status, retained_versions_res, "artifact versions list after retention pruning")
+        retained_versions = retained_versions_res.get("versions", [])
+        retained_numbers = [row.get("version_no") for row in retained_versions]
+        if retained_numbers != [6, 5, 4, 3, 2]:
+            raise AssertionError(f"unexpected retained versions after pruning: {retained_versions_res}")
+        status, pruned_v1_bytes, _ = request_get_bytes(f"/artifacts/{urllib.parse.quote(artifact_id)}/content?version=1", agent_token)
+        if status != 404:
+            raise AssertionError(f"expected version 1 to be pruned after 6th version: status={status} body={pruned_v1_bytes!r}")
+
+        stop_daemon(daemon_proc, daemon_log)
+        daemon_proc = None
+        daemon_log = None
+        daemon_proc, daemon_log = start_daemon(daemon_bin, config_path, daemon_log_path)
+
+        _, agent_res = request_post("/register", {
+            "agent_class": "artifacts-test-agent",
+            "agent_instance_id": AGENT_ID,
+            "display_name": "Artifacts Test Agent",
+        })
+        restarted_agent_token = agent_res.get("agent_token") or agent_token
+        _, user_res = request_post("/user-client/register", {"user_id": USER_ID, "client_instance_id": CLIENT_ID})
+        restarted_user_token = user_res.get("client_token") or user_token
+
+        status, restarted_versions_res = request_get_json(f"/artifacts/{urllib.parse.quote(artifact_id)}/versions", restarted_agent_token)
+        assert_ok(status, restarted_versions_res, "artifact versions list after daemon restart")
+        restarted_numbers = [row.get("version_no") for row in restarted_versions_res.get("versions", [])]
+        if restarted_numbers != [6, 5, 4, 3, 2]:
+            raise AssertionError(f"retained versions changed across restart: {restarted_versions_res}")
+        status, restarted_head_bytes, _ = request_get_bytes(f"/artifacts/{urllib.parse.quote(artifact_id)}/content", restarted_agent_token)
+        if status != 200 or restarted_head_bytes != markdown_bytes:
+            raise AssertionError(f"head content did not survive restart: status={status} bytes={restarted_head_bytes!r}")
+        status, restarted_v2_bytes, _ = request_get_bytes(f"/artifacts/{urllib.parse.quote(artifact_id)}/content?version=2", restarted_agent_token)
+        if status != 200 or restarted_v2_bytes != replacement_bytes:
+            raise AssertionError(f"versioned content did not survive restart: status={status} bytes={restarted_v2_bytes!r}")
+        status, restarted_annotations_res = request_get_json(f"/artifacts/{urllib.parse.quote(artifact_id)}/annotations", restarted_agent_token)
+        assert_ok(status, restarted_annotations_res, "artifact annotations list after daemon restart")
+        restarted_annotations = restarted_annotations_res.get("annotations", [])
+        if len(restarted_annotations) != 1 or restarted_annotations[0].get("annotation_id") != annotation_id:
+            raise AssertionError(f"annotation rows did not survive restart: {restarted_annotations_res}")
+
+        cli_annotation_delete = run_json([
+            ctl_bin, "--config", str(config_path), "--daemon-url", DAEMON_URL,
+            "artifacts", "annotation-delete",
+            "--token", restarted_agent_token,
+            "--annotation-id", annotation_id,
+        ])
+        if not cli_annotation_delete.get("ok"):
+            raise AssertionError(f"CLI annotation delete failed: {cli_annotation_delete}")
+        status, deleted_annotations_res = request_get_json(f"/artifacts/{urllib.parse.quote(artifact_id)}/annotations", restarted_agent_token)
+        assert_ok(status, deleted_annotations_res, "artifact annotations list after delete")
+        if deleted_annotations_res.get("annotations"):
+            raise AssertionError(f"soft-deleted annotation should be hidden from list: {deleted_annotations_res}")
+
+        agent_token = restarted_agent_token
+        user_token = restarted_user_token
+
         # Inline task-comment artifact creation.
         status, comment_res = request_post("/tasks/comment", {
             "agent_token": agent_token,
@@ -356,15 +542,7 @@ ham_ctl_bin = \"{ctl_bin}\"
 
         print("PASS: artifacts backend/cli integration")
     finally:
-        if daemon_proc is not None:
-            daemon_proc.terminate()
-            try:
-                daemon_proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                daemon_proc.kill()
-                daemon_proc.wait(timeout=5)
-        if daemon_log is not None:
-            daemon_log.close()
+        stop_daemon(daemon_proc, daemon_log)
         shutil.rmtree(temp_home, ignore_errors=True)
 
 

@@ -3,6 +3,7 @@ package main
 import "core:strings"
 import "core:fmt"
 import "core:net"
+import contracts "odin_test:contracts"
 
 Route_Context :: struct {
 	method:   string,         // "GET", "POST", "PATCH", "DELETE", etc.
@@ -10,6 +11,7 @@ Route_Context :: struct {
 	query:    string,         // "limit=20&cursor=1782113855233"
 	segments: []string,       // ["tasks", "t-123", "comments"]
 	token:    string,         // Parsed Bearer/Query/Body token
+	bridge_source_daemon_id: string, // Set only for authenticated local bridge deliveries.
 }
 
 parse_route_context :: proc(request: string) -> Route_Context {
@@ -82,6 +84,13 @@ parse_route_context :: proc(request: string) -> Route_Context {
 		}
 	}
 
+	if strings.trim_space(server_config.daemon.bridge_token) != "" && ctx.token == server_config.daemon.bridge_token {
+		source_daemon := strings.trim_space(extract_header(request, contracts.BRIDGE_SOURCE_DAEMON_HEADER))
+		if source_daemon != "" {
+			ctx.bridge_source_daemon_id = strings.clone(source_daemon)
+		}
+	}
+
 	return ctx
 }
 
@@ -90,6 +99,7 @@ route_context_free :: proc(ctx: ^Route_Context) {
 	delete(ctx.path)
 	delete(ctx.query)
 	delete(ctx.token)
+	delete(ctx.bridge_source_daemon_id)
 	for seg in ctx.segments {
 		delete(seg)
 	}
@@ -181,6 +191,20 @@ handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_C
 		return true
 	}
 
+	// GET /artifacts/{artifact_id}/versions
+	if len(ctx.segments) == 3 && ctx.segments[0] == "artifacts" && ctx.segments[2] == "versions" && ctx.method == "GET" {
+		artifact_id := ctx.segments[1]
+		handle_get_artifact_versions(client, artifact_id, ctx)
+		return true
+	}
+
+	// GET /artifacts/{artifact_id}/annotations
+	if len(ctx.segments) == 3 && ctx.segments[0] == "artifacts" && ctx.segments[2] == "annotations" && ctx.method == "GET" {
+		artifact_id := ctx.segments[1]
+		handle_get_artifact_annotations(client, artifact_id, ctx)
+		return true
+	}
+
 	// POST /artifacts/update
 	if len(ctx.segments) == 2 && ctx.segments[0] == "artifacts" && ctx.segments[1] == "update" && ctx.method == "POST" {
 		handle_post_artifact_update(client, request_body(request), ctx)
@@ -190,6 +214,30 @@ handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_C
 	// POST /artifacts/delete
 	if len(ctx.segments) == 2 && ctx.segments[0] == "artifacts" && ctx.segments[1] == "delete" && ctx.method == "POST" {
 		handle_post_artifact_delete(client, request_body(request), ctx)
+		return true
+	}
+
+	// POST /artifacts/rollback
+	if len(ctx.segments) == 2 && ctx.segments[0] == "artifacts" && ctx.segments[1] == "rollback" && ctx.method == "POST" {
+		handle_post_artifact_rollback(client, request_body(request), ctx)
+		return true
+	}
+
+	// POST /artifacts/annotations/create
+	if len(ctx.segments) == 3 && ctx.segments[0] == "artifacts" && ctx.segments[1] == "annotations" && ctx.segments[2] == "create" && ctx.method == "POST" {
+		handle_post_artifact_annotation_create(client, request_body(request), ctx)
+		return true
+	}
+
+	// POST /artifacts/annotations/update
+	if len(ctx.segments) == 3 && ctx.segments[0] == "artifacts" && ctx.segments[1] == "annotations" && ctx.segments[2] == "update" && ctx.method == "POST" {
+		handle_post_artifact_annotation_update(client, request_body(request), ctx)
+		return true
+	}
+
+	// POST /artifacts/annotations/delete
+	if len(ctx.segments) == 3 && ctx.segments[0] == "artifacts" && ctx.segments[1] == "annotations" && ctx.segments[2] == "delete" && ctx.method == "POST" {
+		handle_post_artifact_annotation_delete(client, request_body(request), ctx)
 		return true
 	}
 
@@ -299,6 +347,12 @@ handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_C
 	// POST /federation/start (owner starts the real agent for a peer's remote_proxy)
 	if len(ctx.segments) == 2 && ctx.segments[0] == "federation" && ctx.segments[1] == "start" && ctx.method == "POST" {
 		handle_post_federation_start(client, request_body(request), ctx)
+		return true
+	}
+
+	// POST /federation/reachability (local bridge pushes secret-free WS reachability changes)
+	if len(ctx.segments) == 2 && ctx.segments[0] == "federation" && ctx.segments[1] == "reachability" && ctx.method == "POST" {
+		handle_post_federation_reachability(client, request_body(request), ctx)
 		return true
 	}
 

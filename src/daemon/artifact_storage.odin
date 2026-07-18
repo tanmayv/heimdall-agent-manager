@@ -29,8 +29,10 @@ artifact_storage_init :: proc(data_dir, configured_blob_dir: string) -> bool {
 		root = fmt.tprintf("%s/artifacts/blobs", data_dir)
 	}
 	if err := os.make_directory_all(root); err != nil {
-		fmt.printfln("artifact_storage_init: make_directory_all failed for %s", root)
-		return false
+		if !os.is_dir(root) {
+			fmt.printfln("artifact_storage_init: make_directory_all failed for %s", root)
+			return false
+		}
 	}
 	artifact_blob_root = strings.clone(root)
 	return true
@@ -59,7 +61,7 @@ artifact_generate_id :: proc() -> string {
 	return strings.to_string(builder)
 }
 
-artifact_blob_rel_path :: proc(artifact_id: string) -> string {
+artifact_blob_rel_path :: proc(artifact_id: string, version_no: i64) -> string {
 	suffix := artifact_id
 	if strings.has_prefix(suffix, contracts.ARTIFACT_ID_PREFIX) {
 		suffix = suffix[len(contracts.ARTIFACT_ID_PREFIX):]
@@ -68,7 +70,8 @@ artifact_blob_rel_path :: proc(artifact_id: string) -> string {
 	shard_b := "00"
 	if len(suffix) >= 2 do shard_a = suffix[:2]
 	if len(suffix) >= 4 do shard_b = suffix[2:4]
-	return fmt.tprintf("%s/%s/%s", shard_a, shard_b, artifact_id)
+	if version_no <= 0 do return fmt.tprintf("%s/%s/%s", shard_a, shard_b, artifact_id)
+	return fmt.tprintf("%s/%s/%s/v%d", shard_a, shard_b, artifact_id, version_no)
 }
 
 artifact_blob_abs_path :: proc(rel_path: string) -> string {
@@ -93,8 +96,8 @@ artifact_validate_payload :: proc(kind, mime, ext: string, data: []byte, max_byt
 	return Artifact_Validation_Result{kind = validated.kind, mime = validated.mime, ext = validated.ext, size_bytes = size_bytes, sha256 = artifact_sha256_hex(data), ok = true}
 }
 
-artifact_write_blob :: proc(artifact_id: string, data: []byte) -> (rel_path, sha256: string, size_bytes: i64, ok: bool) {
-	rel_path = artifact_blob_rel_path(artifact_id)
+artifact_write_blob :: proc(artifact_id: string, version_no: i64, data: []byte) -> (rel_path, sha256: string, size_bytes: i64, ok: bool) {
+	rel_path = artifact_blob_rel_path(artifact_id, version_no)
 	abs_path := artifact_blob_abs_path(rel_path)
 	blob_dir := parent_dir(abs_path)
 	if !os.is_dir(blob_dir) {
@@ -103,8 +106,6 @@ artifact_write_blob :: proc(artifact_id: string, data: []byte) -> (rel_path, sha
 			return "", "", 0, false
 		}
 	}
-	// os.write_entire_file is create-only on some platforms. Remove first so
-	// update can replace the existing blob bytes at the same sharded path.
 	_ = os.remove(abs_path)
 	if err := os.write_entire_file(abs_path, data); err != nil {
 		fmt.println("artifact_write_blob: write failed", "dir", blob_dir, "file", abs_path, "err", err)

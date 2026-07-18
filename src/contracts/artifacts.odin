@@ -5,7 +5,28 @@ import "core:strings"
 Artifact_ID :: distinct string
 
 Artifact_Metadata :: struct {
+	artifact_id:        Artifact_ID,
+	name:               string,
+	kind:               string,
+	mime:               string,
+	ext:                string,
+	size_bytes:         i64,
+	sha256:             string,
+	description:        string,
+	project_id:         string,
+	creator_type:       string,
+	creator_id:         string,
+	origin_kind:        string,
+	origin_ref:         string,
+	current_version_no: i64,
+	created_unix_ms:    i64,
+	updated_unix_ms:    i64,
+	deleted:            bool,
+}
+
+Artifact_Version :: struct {
 	artifact_id:      Artifact_ID,
+	version_no:       i64,
 	name:             string,
 	kind:             string,
 	mime:             string,
@@ -14,13 +35,27 @@ Artifact_Metadata :: struct {
 	sha256:           string,
 	description:      string,
 	project_id:       string,
-	creator_type:     string,
-	creator_id:       string,
 	origin_kind:      string,
 	origin_ref:       string,
+	author_type:      string,
+	author_id:        string,
+	change_reason:    string,
+	created_unix_ms:  i64,
+}
+
+Artifact_Annotation :: struct {
+	annotation_id:    string,
+	artifact_id:      Artifact_ID,
+	version_no:       i64,
+	author_type:      string,
+	author_id:        string,
+	context_type:     string,
+	context_json:     string,
+	comment:          string,
 	created_unix_ms:  i64,
 	updated_unix_ms:  i64,
 	deleted:          bool,
+	deleted_unix_ms:  i64,
 }
 
 Artifact_Type_Validation :: struct {
@@ -31,12 +66,23 @@ Artifact_Type_Validation :: struct {
 
 ARTIFACT_SCHEME :: "artifact://"
 ARTIFACT_ID_PREFIX :: "art_"
+ARTIFACT_MAX_VERSIONS :: 5
 
 ROUTE_ARTIFACTS_PREFIX :: "/artifacts"
 ROUTE_ARTIFACTS_CREATE :: "/artifacts/create"
 ROUTE_ARTIFACTS_UPDATE :: "/artifacts/update"
 ROUTE_ARTIFACTS_DELETE :: "/artifacts/delete"
+ROUTE_ARTIFACTS_ROLLBACK :: "/artifacts/rollback"
 ROUTE_ARTIFACTS_CONTENT_SUFFIX :: "/content"
+ROUTE_ARTIFACTS_VERSIONS_SUFFIX :: "/versions"
+ROUTE_ARTIFACTS_ANNOTATIONS_PREFIX :: "/artifacts/annotations"
+ROUTE_ARTIFACTS_ANNOTATIONS_SUFFIX :: "/annotations"
+ROUTE_ARTIFACTS_ANNOTATIONS_CREATE :: "/artifacts/annotations/create"
+ROUTE_ARTIFACTS_ANNOTATIONS_UPDATE :: "/artifacts/annotations/update"
+ROUTE_ARTIFACTS_ANNOTATIONS_DELETE :: "/artifacts/annotations/delete"
+
+ARTIFACT_ANNOTATION_CONTEXT_TEXT :: "text"
+ARTIFACT_ANNOTATION_CONTEXT_IMAGE :: "image"
 
 ARTIFACT_KIND_MARKDOWN :: "markdown"
 ARTIFACT_KIND_PNG      :: "png"

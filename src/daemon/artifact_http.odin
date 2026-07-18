@@ -6,7 +6,6 @@ import "core:net"
 import "core:strconv"
 import "core:strings"
 import contracts "odin_test:contracts"
-import http "odin_test:lib/http_client"
 
 Artifact_Create_Result :: struct {
 	rec:         Artifact_Record,
@@ -15,6 +14,69 @@ Artifact_Create_Result :: struct {
 	status_text: string,
 	error_kind:  string,
 	message:     string,
+}
+
+artifact_annotation_generate_id :: proc() -> string {
+	artifact_id := artifact_generate_id()
+	if strings.has_prefix(artifact_id, contracts.ARTIFACT_ID_PREFIX) {
+		return fmt.tprintf("ann_%s", artifact_id[len(contracts.ARTIFACT_ID_PREFIX):])
+	}
+	return fmt.tprintf("ann_%d", router_now_unix_ms())
+}
+
+artifact_identity_type :: proc(is_user: bool) -> string {
+	return "user" if is_user else "agent"
+}
+
+artifact_version_from_record :: proc(rec: Artifact_Record, author_type, author_id, change_reason: string, created_unix_ms: i64) -> Artifact_Version_Record {
+	return Artifact_Version_Record{
+		artifact_id = rec.artifact_id,
+		version_no = rec.current_version_no,
+		name = rec.name,
+		kind = rec.kind,
+		mime = rec.mime,
+		ext = rec.ext,
+		size_bytes = rec.size_bytes,
+		sha256 = rec.sha256,
+		rel_path = rec.rel_path,
+		description = rec.description,
+		project_id = rec.project_id,
+		origin_kind = rec.origin_kind,
+		origin_ref = rec.origin_ref,
+		author_type = author_type,
+		author_id = author_id,
+		change_reason = change_reason,
+		created_unix_ms = created_unix_ms,
+	}
+}
+
+artifact_apply_version_to_head :: proc(head: Artifact_Record, version: Artifact_Version_Record, updated_unix_ms: i64) -> Artifact_Record {
+	updated := head
+	updated.name = version.name
+	updated.kind = version.kind
+	updated.mime = version.mime
+	updated.ext = version.ext
+	updated.size_bytes = version.size_bytes
+	updated.sha256 = version.sha256
+	updated.rel_path = version.rel_path
+	updated.description = version.description
+	updated.project_id = version.project_id
+	updated.origin_kind = version.origin_kind
+	updated.origin_ref = version.origin_ref
+	updated.current_version_no = version.version_no
+	updated.updated_unix_ms = updated_unix_ms
+	return updated
+}
+
+artifact_prune_versions :: proc(artifact_id: string) {
+	for version in artifact_db_prune_versions(artifact_id, contracts.ARTIFACT_MAX_VERSIONS) {
+		_ = artifact_db_delete_version(version.artifact_id, version.version_no)
+		if version.rel_path != "" do _ = artifact_delete_blob(version.rel_path)
+	}
+}
+
+artifact_ensure_head_version_for_record :: proc(rec: Artifact_Record) -> (Artifact_Record, bool) {
+	return artifact_db_ensure_head_version(rec)
 }
 
 ARTIFACT_ORIGIN_FEDERATION_REMOTE :: "federation_remote"
@@ -74,8 +136,10 @@ federation_artifact_fetch_through :: proc(origin_daemon_id, route_peer_id, artif
 	}
 	rec, ok := peer_link_find(resolved_route_peer_id)
 	if !ok do return nil, false
-	path := fmt.tprintf("/federation/artifacts/%s?peer_token=%s&peer_daemon_id=%s", resolved_artifact_id, rec.peer_token, server_daemon_id)
-	resp, fetch_ok := http.get_with_timeout(rec.peer_url, path, FEDERATION_HTTP_TIMEOUT_MS)
+	path := fmt.tprintf("%s/%s", contracts.ROUTE_FEDERATION_ARTIFACTS_PREFIX, resolved_artifact_id)
+	dest_daemon_id := peer_link_destination_daemon_id(rec)
+	if dest_daemon_id == "" do return nil, false
+	resp, fetch_ok := bridge_request(dest_daemon_id, contracts.BRIDGE_HTTP_METHOD_GET, path, "", federation_idempotency_key("artifact_fetch", server_daemon_id, resolved_artifact_id), FEDERATION_HTTP_TIMEOUT_MS)
 	if !fetch_ok || resp.status != 200 {
 		rec.status = strings.clone(PEER_STATUS_UNREACHABLE)
 		rec.last_checked_unix_ms = router_now_unix_ms()
@@ -97,7 +161,7 @@ artifact_resolve_content :: proc(rec: Artifact_Record) -> (Artifact_Record, []by
 	if !fetch_ok do return rec, nil, false
 	if rec.sha256 != "" && artifact_sha256_hex(data) != rec.sha256 do return rec, nil, false
 	if rec.size_bytes > 0 && i64(len(data)) != rec.size_bytes do return rec, nil, false
-	rel_path, sha256, size_bytes, write_ok := artifact_write_blob(rec.artifact_id, data)
+	rel_path, sha256, size_bytes, write_ok := artifact_write_blob(rec.artifact_id, rec.current_version_no, data)
 	if !write_ok do return rec, nil, false
 	updated := rec
 	updated.rel_path = rel_path
@@ -140,6 +204,7 @@ artifact_federation_reference_upsert :: proc(route_peer_id, origin_daemon_id, re
 		origin_kind = ARTIFACT_ORIGIN_FEDERATION_REMOTE,
 		origin_ref = origin_ref,
 		description = description,
+		current_version_no = 1,
 		created_unix_ms = router_now_unix_ms(),
 		updated_unix_ms = router_now_unix_ms(),
 		deleted = false,
@@ -221,8 +286,52 @@ handle_get_artifact_content :: proc(client: net.TCP_Socket, artifact_id: string,
 		artifact_write_error(client, 410, "Gone", "gone", "artifact deleted")
 		return
 	}
+	ensured, ensure_ok := artifact_ensure_head_version_for_record(rec)
+	if !ensure_ok {
+		artifact_write_error(client, 500, "Internal Server Error", "db_write_failed", "failed to backfill artifact version metadata")
+		return
+	}
+	if version_str := strings.trim_space(query_param_value(ctx.query, "version")); version_str != "" {
+		version_no, parse_ok := strconv.parse_i64(version_str)
+		if !parse_ok || version_no <= 0 {
+			artifact_write_error(client, 400, "Bad Request", "invalid_request", "version query param must be a positive integer")
+			return
+		}
+		version, version_found := artifact_db_get_version(artifact_id, version_no)
+		if !version_found {
+			artifact_write_error(client, 404, "Not Found", "not_found", "artifact version not found")
+			return
+		}
+		data, read_ok := artifact_read_blob(version.rel_path)
+		if !read_ok {
+			artifact_write_error(client, 500, "Internal Server Error", "blob_read_failed", "artifact version blob missing or unreadable")
+			return
+		}
+		artifact_write_binary_content_response(client, Artifact_Record{
+			artifact_id = ensured.artifact_id,
+			name = version.name,
+			kind = version.kind,
+			mime = version.mime,
+			ext = version.ext,
+			size_bytes = version.size_bytes,
+			sha256 = version.sha256,
+			rel_path = version.rel_path,
+			creator_type = ensured.creator_type,
+			creator_id = ensured.creator_id,
+			project_id = ensured.project_id,
+			origin_kind = ensured.origin_kind,
+			origin_ref = ensured.origin_ref,
+			description = version.description,
+			current_version_no = version.version_no,
+			created_unix_ms = ensured.created_unix_ms,
+			updated_unix_ms = ensured.updated_unix_ms,
+			deleted = ensured.deleted,
+			deleted_unix_ms = ensured.deleted_unix_ms,
+		}, data)
+		return
+	}
 
-	resolved_rec, data, read_ok := artifact_resolve_content(rec)
+	resolved_rec, data, read_ok := artifact_resolve_content(ensured)
 	if !read_ok {
 		artifact_write_error(client, 500, "Internal Server Error", "blob_read_failed", "artifact blob missing or unreadable")
 		return
@@ -231,7 +340,7 @@ handle_get_artifact_content :: proc(client: net.TCP_Socket, artifact_id: string,
 }
 
 handle_get_federation_artifact_content :: proc(client: net.TCP_Socket, artifact_id: string, ctx: ^Route_Context) {
-	_, ok := federation_peer_id_for_request(query_param_value(ctx.query, "peer_token"), query_param_value(ctx.query, "peer_daemon_id"))
+	_, _, ok := federation_peer_id_for_context(ctx)
 	if !ok {
 		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"peer not configured or token mismatch"}`)
 		return
@@ -254,7 +363,7 @@ handle_get_federation_artifact_content :: proc(client: net.TCP_Socket, artifact_
 }
 
 handle_post_artifact_update :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
-	_, _, ok := artifact_authorize_identity(client, ctx)
+	author, is_user, ok := artifact_authorize_identity(client, ctx)
 	if !ok do return
 
 	artifact_id := extract_json_string(body, "artifact_id", "")
@@ -272,6 +381,12 @@ handle_post_artifact_update :: proc(client: net.TCP_Socket, body: string, ctx: ^
 		artifact_write_error(client, 410, "Gone", "gone", "artifact deleted")
 		return
 	}
+	ensured, ensure_ok := artifact_ensure_head_version_for_record(rec)
+	if !ensure_ok {
+		artifact_write_error(client, 500, "Internal Server Error", "db_write_failed", "failed to backfill artifact version metadata")
+		return
+	}
+	rec = ensured
 
 	name := rec.name
 	if json_has_key(body, "name") do name = artifact_sanitize_name(extract_json_string(body, "name", ""))
@@ -288,6 +403,7 @@ handle_post_artifact_update :: proc(client: net.TCP_Socket, body: string, ctx: ^
 	if json_has_key(body, "origin_kind") do origin_kind = extract_json_string(body, "origin_kind", "")
 	origin_ref := rec.origin_ref
 	if json_has_key(body, "origin_ref") do origin_ref = extract_json_string(body, "origin_ref", "")
+	change_reason := extract_json_string(body, "change_reason", "")
 
 	kind_hint := rec.kind
 	if json_has_key(body, "kind") do kind_hint = extract_json_string(body, "kind", "")
@@ -300,7 +416,19 @@ handle_post_artifact_update :: proc(client: net.TCP_Socket, body: string, ctx: ^
 		return
 	}
 
+	now := router_now_unix_ms()
+	next_version_no := rec.current_version_no + 1
+	updated := rec
+	updated.name = name
+	updated.description = description
+	updated.project_id = project_id
+	updated.origin_kind = origin_kind
+	updated.origin_ref = origin_ref
+	updated.current_version_no = next_version_no
+	updated.updated_unix_ms = now
+
 	replace_content := json_has_key(body, "content_base64")
+	wrote_new_blob := false
 	if replace_content {
 		data, decode_ok := artifact_decode_base64_payload(extract_json_string(body, "content_base64", ""), artifact_max_bytes_limit())
 		if !decode_ok {
@@ -312,37 +440,60 @@ handle_post_artifact_update :: proc(client: net.TCP_Socket, body: string, ctx: ^
 			artifact_write_validation_error(client, validated.message)
 			return
 		}
-		rel_path, sha256, size_bytes, write_ok := artifact_write_blob(rec.artifact_id, data)
+		rel_path, sha256, size_bytes, write_ok := artifact_write_blob(rec.artifact_id, next_version_no, data)
 		if !write_ok {
-			artifact_write_error(client, 500, "Internal Server Error", "blob_write_failed", "failed to overwrite artifact blob")
+			artifact_write_error(client, 500, "Internal Server Error", "blob_write_failed", "failed to write artifact version blob")
 			return
 		}
-		rec.kind = validated.kind
-		rec.mime = validated.mime
-		rec.ext = validated.ext
-		rec.rel_path = rel_path
-		rec.sha256 = sha256
-		rec.size_bytes = size_bytes
+		wrote_new_blob = true
+		updated.kind = validated.kind
+		updated.mime = validated.mime
+		updated.ext = validated.ext
+		updated.rel_path = rel_path
+		updated.sha256 = sha256
+		updated.size_bytes = size_bytes
 	} else {
 		if kind != rec.kind || mime != rec.mime {
 			artifact_write_error(client, 400, "Bad Request", "invalid_request", "artifact type changes require replacement content")
 			return
 		}
-		rec.ext = ext
+		data, read_ok := artifact_read_blob(rec.rel_path)
+		if !read_ok {
+			_, resolved_data, resolve_ok := artifact_resolve_content(rec)
+			if !resolve_ok {
+				artifact_write_error(client, 500, "Internal Server Error", "blob_read_failed", "failed to read current artifact bytes for metadata-only versioning")
+				return
+			}
+			data = resolved_data
+		}
+		rel_path, sha256, size_bytes, write_ok := artifact_write_blob(rec.artifact_id, next_version_no, data)
+		if !write_ok {
+			artifact_write_error(client, 500, "Internal Server Error", "blob_write_failed", "failed to write artifact version blob")
+			return
+		}
+		wrote_new_blob = true
+		updated.kind = rec.kind
+		updated.mime = rec.mime
+		updated.ext = ext
+		updated.rel_path = rel_path
+		updated.sha256 = sha256
+		updated.size_bytes = size_bytes
 	}
 
-	rec.name = name
-	rec.description = description
-	rec.project_id = project_id
-	rec.origin_kind = origin_kind
-	rec.origin_ref = origin_ref
-	rec.updated_unix_ms = router_now_unix_ms()
-	if !artifact_db_update(rec) {
+	version := artifact_version_from_record(updated, artifact_identity_type(is_user), author, change_reason, now)
+	if !artifact_db_insert_version(version) {
+		if wrote_new_blob do _ = artifact_delete_blob(updated.rel_path)
+		artifact_write_error(client, 500, "Internal Server Error", "db_write_failed", "failed to persist artifact version metadata")
+		return
+	}
+	if !artifact_db_update(updated) {
+		_ = artifact_db_delete_version(updated.artifact_id, updated.current_version_no)
+		if wrote_new_blob do _ = artifact_delete_blob(updated.rel_path)
 		artifact_write_error(client, 500, "Internal Server Error", "db_write_failed", "failed to update artifact metadata")
 		return
 	}
-
-	artifact_write_single_response(client, rec)
+	artifact_prune_versions(updated.artifact_id)
+	artifact_write_single_response(client, updated)
 }
 
 handle_post_artifact_delete :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
@@ -404,7 +555,7 @@ artifact_create_record :: proc(author: string, is_user: bool, name, kind_hint, m
 	}
 
 	artifact_id := artifact_generate_id()
-	rel_path, sha256, size_bytes, write_ok := artifact_write_blob(artifact_id, data)
+	rel_path, sha256, size_bytes, write_ok := artifact_write_blob(artifact_id, 1, data)
 	if !write_ok {
 		return Artifact_Create_Result{status = 500, status_text = "Internal Server Error", error_kind = "blob_write_failed", message = "failed to write artifact blob"}
 	}
@@ -425,6 +576,7 @@ artifact_create_record :: proc(author: string, is_user: bool, name, kind_hint, m
 		origin_kind = origin_kind,
 		origin_ref = origin_ref,
 		description = description,
+		current_version_no = 1,
 		created_unix_ms = now,
 		updated_unix_ms = now,
 		deleted = false,
@@ -433,6 +585,11 @@ artifact_create_record :: proc(author: string, is_user: bool, name, kind_hint, m
 	if !artifact_db_insert(rec) {
 		_ = artifact_delete_blob(rel_path)
 		return Artifact_Create_Result{status = 500, status_text = "Internal Server Error", error_kind = "db_write_failed", message = "failed to persist artifact metadata"}
+	}
+	if !artifact_db_insert_version(artifact_version_from_record(rec, rec.creator_type, rec.creator_id, "", now)) {
+		_ = artifact_db_mark_deleted(rec.artifact_id, router_now_unix_ms())
+		_ = artifact_delete_blob(rel_path)
+		return Artifact_Create_Result{status = 500, status_text = "Internal Server Error", error_kind = "db_write_failed", message = "failed to persist artifact version metadata"}
 	}
 
 	return Artifact_Create_Result{rec = rec, ok = true, status = 200, status_text = "OK"}
@@ -473,7 +630,12 @@ artifact_write_metadata_response :: proc(client: net.TCP_Socket, artifact_id: st
 		artifact_write_error(client, 410, "Gone", "gone", "artifact deleted")
 		return
 	}
-	artifact_write_single_response(client, rec)
+	ensured, ok := artifact_ensure_head_version_for_record(rec)
+	if !ok {
+		artifact_write_error(client, 500, "Internal Server Error", "db_write_failed", "failed to backfill artifact version metadata")
+		return
+	}
+	artifact_write_single_response(client, ensured)
 }
 
 artifact_write_single_response :: proc(client: net.TCP_Socket, rec: Artifact_Record) {
@@ -510,6 +672,7 @@ artifact_write_public_json :: proc(builder: ^strings.Builder, rec: Artifact_Reco
 	strings.write_string(builder, `","origin_ref":"`); json_write_string(builder, rec.origin_ref)
 	strings.write_string(builder, `","link":"`); json_write_string(builder, contracts.artifact_make_link(rec.artifact_id))
 	strings.write_string(builder, `","size_bytes":`); strings.write_string(builder, fmt.tprintf("%d", rec.size_bytes))
+	strings.write_string(builder, `,"current_version_no":`); strings.write_string(builder, fmt.tprintf("%d", rec.current_version_no))
 	strings.write_string(builder, `,"created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.created_unix_ms))
 	strings.write_string(builder, `,"updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.updated_unix_ms))
 	strings.write_string(builder, `,"deleted":`); strings.write_string(builder, "true" if rec.deleted else "false")
@@ -661,4 +824,275 @@ artifact_header_filename :: proc(name: string) -> string {
 	result := strings.to_string(builder)
 	if strings.trim_space(result) == "" do return "artifact"
 	return result
+}
+
+artifact_write_version_json :: proc(builder: ^strings.Builder, rec: Artifact_Version_Record) {
+	strings.write_string(builder, `{"artifact_id":"`); json_write_string(builder, rec.artifact_id)
+	strings.write_string(builder, `","version_no":`); strings.write_string(builder, fmt.tprintf("%d", rec.version_no))
+	strings.write_string(builder, `,"name":"`); json_write_string(builder, rec.name)
+	strings.write_string(builder, `","kind":"`); json_write_string(builder, rec.kind)
+	strings.write_string(builder, `","mime":"`); json_write_string(builder, rec.mime)
+	strings.write_string(builder, `","ext":"`); json_write_string(builder, rec.ext)
+	strings.write_string(builder, `","sha256":"`); json_write_string(builder, rec.sha256)
+	strings.write_string(builder, `","description":"`); json_write_string(builder, rec.description)
+	strings.write_string(builder, `","project_id":"`); json_write_string(builder, rec.project_id)
+	strings.write_string(builder, `","origin_kind":"`); json_write_string(builder, rec.origin_kind)
+	strings.write_string(builder, `","origin_ref":"`); json_write_string(builder, rec.origin_ref)
+	strings.write_string(builder, `","author_type":"`); json_write_string(builder, rec.author_type)
+	strings.write_string(builder, `","author_id":"`); json_write_string(builder, rec.author_id)
+	strings.write_string(builder, `","change_reason":"`); json_write_string(builder, rec.change_reason)
+	strings.write_string(builder, `","size_bytes":`); strings.write_string(builder, fmt.tprintf("%d", rec.size_bytes))
+	strings.write_string(builder, `,"created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.created_unix_ms))
+	strings.write_string(builder, `}`)
+}
+
+artifact_write_annotation_json :: proc(builder: ^strings.Builder, rec: Artifact_Annotation_Record) {
+	strings.write_string(builder, `{"annotation_id":"`); json_write_string(builder, rec.annotation_id)
+	strings.write_string(builder, `","artifact_id":"`); json_write_string(builder, rec.artifact_id)
+	strings.write_string(builder, `","version_no":`); strings.write_string(builder, fmt.tprintf("%d", rec.version_no))
+	strings.write_string(builder, `,"author_type":"`); json_write_string(builder, rec.author_type)
+	strings.write_string(builder, `","author_id":"`); json_write_string(builder, rec.author_id)
+	strings.write_string(builder, `","context_type":"`); json_write_string(builder, rec.context_type)
+	strings.write_string(builder, `","context_json":`); strings.write_string(builder, rec.context_json)
+	strings.write_string(builder, `,"comment":"`); json_write_string(builder, rec.comment)
+	strings.write_string(builder, `","created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.created_unix_ms))
+	strings.write_string(builder, `,"updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.updated_unix_ms))
+	strings.write_string(builder, `,"deleted":`); strings.write_string(builder, "true" if rec.deleted else "false")
+	strings.write_string(builder, `,"deleted_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.deleted_unix_ms))
+	strings.write_string(builder, `}`)
+}
+
+handle_get_artifact_versions :: proc(client: net.TCP_Socket, artifact_id: string, ctx: ^Route_Context) {
+	_, _, ok := artifact_authorize_identity(client, ctx)
+	if !ok do return
+	rec, found := artifact_db_get(artifact_id)
+	if !found {
+		artifact_write_error(client, 404, "Not Found", "not_found", "artifact not found")
+		return
+	}
+	if rec.deleted {
+		artifact_write_error(client, 410, "Gone", "gone", "artifact deleted")
+		return
+	}
+	if _, ensure_ok := artifact_ensure_head_version_for_record(rec); !ensure_ok {
+		artifact_write_error(client, 500, "Internal Server Error", "db_write_failed", "failed to backfill artifact version metadata")
+		return
+	}
+	versions := artifact_db_list_versions(artifact_id, contracts.ARTIFACT_MAX_VERSIONS)
+	builder := strings.builder_make()
+	strings.write_string(&builder, `{"ok":true,"versions":[`)
+	for version, idx in versions {
+		if idx > 0 do strings.write_string(&builder, `,`)
+		artifact_write_version_json(&builder, version)
+	}
+	strings.write_string(&builder, `]}`)
+	write_response(client, 200, "OK", strings.to_string(builder))
+}
+
+handle_post_artifact_rollback :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
+	author, is_user, ok := artifact_authorize_identity(client, ctx)
+	if !ok do return
+	artifact_id := extract_json_string(body, "artifact_id", "")
+	version_no := extract_json_i64(body, "version_no", 0)
+	if !contracts.artifact_id_valid(artifact_id) || version_no <= 0 {
+		artifact_write_error(client, 400, "Bad Request", "invalid_request", "artifact rollback requires artifact_id and positive version_no")
+		return
+	}
+	rec, found := artifact_db_get(artifact_id)
+	if !found {
+		artifact_write_error(client, 404, "Not Found", "not_found", "artifact not found")
+		return
+	}
+	if rec.deleted {
+		artifact_write_error(client, 410, "Gone", "gone", "artifact deleted")
+		return
+	}
+	ensured, ensure_ok := artifact_ensure_head_version_for_record(rec)
+	if !ensure_ok {
+		artifact_write_error(client, 500, "Internal Server Error", "db_write_failed", "failed to backfill artifact version metadata")
+		return
+	}
+	target, version_found := artifact_db_get_version(artifact_id, version_no)
+	if !version_found {
+		artifact_write_error(client, 404, "Not Found", "not_found", "artifact version not found")
+		return
+	}
+	data, read_ok := artifact_read_blob(target.rel_path)
+	if !read_ok {
+		artifact_write_error(client, 500, "Internal Server Error", "blob_read_failed", "artifact version blob missing or unreadable")
+		return
+	}
+	now := router_now_unix_ms()
+	next_version_no := ensured.current_version_no + 1
+	rel_path, sha256, size_bytes, write_ok := artifact_write_blob(artifact_id, next_version_no, data)
+	if !write_ok {
+		artifact_write_error(client, 500, "Internal Server Error", "blob_write_failed", "failed to write rollback artifact blob")
+		return
+	}
+	rollback_version := target
+	rollback_version.version_no = next_version_no
+	rollback_version.rel_path = rel_path
+	rollback_version.sha256 = sha256
+	rollback_version.size_bytes = size_bytes
+	rollback_version.change_reason = extract_json_string(body, "change_reason", "")
+	rollback_version.created_unix_ms = now
+	rollback_version.author_type = artifact_identity_type(is_user)
+	rollback_version.author_id = author
+	updated := artifact_apply_version_to_head(ensured, rollback_version, now)
+	if !artifact_db_insert_version(rollback_version) {
+		_ = artifact_delete_blob(rel_path)
+		artifact_write_error(client, 500, "Internal Server Error", "db_write_failed", "failed to persist rollback artifact version")
+		return
+	}
+	if !artifact_db_update(updated) {
+		_ = artifact_db_delete_version(updated.artifact_id, updated.current_version_no)
+		_ = artifact_delete_blob(rel_path)
+		artifact_write_error(client, 500, "Internal Server Error", "db_write_failed", "failed to update artifact head during rollback")
+		return
+	}
+	artifact_prune_versions(updated.artifact_id)
+	artifact_write_single_response(client, updated)
+}
+
+handle_get_artifact_annotations :: proc(client: net.TCP_Socket, artifact_id: string, ctx: ^Route_Context) {
+	_, _, ok := artifact_authorize_identity(client, ctx)
+	if !ok do return
+	rec, found := artifact_db_get(artifact_id)
+	if !found {
+		artifact_write_error(client, 404, "Not Found", "not_found", "artifact not found")
+		return
+	}
+	if rec.deleted {
+		artifact_write_error(client, 410, "Gone", "gone", "artifact deleted")
+		return
+	}
+	filter := Artifact_Annotation_List_Filter{artifact_id = artifact_id}
+	if version_str := strings.trim_space(query_param_value(ctx.query, "version")); version_str != "" {
+		version_no, parse_ok := strconv.parse_i64(version_str)
+		if !parse_ok || version_no <= 0 {
+			artifact_write_error(client, 400, "Bad Request", "invalid_request", "version query param must be a positive integer")
+			return
+		}
+		filter.version_no = version_no
+		filter.has_version_no = true
+	}
+	annotations := artifact_db_list_annotations(filter)
+	builder := strings.builder_make()
+	strings.write_string(&builder, `{"ok":true,"annotations":[`)
+	for annotation, idx in annotations {
+		if idx > 0 do strings.write_string(&builder, `,`)
+		artifact_write_annotation_json(&builder, annotation)
+	}
+	strings.write_string(&builder, `]}`)
+	write_response(client, 200, "OK", strings.to_string(builder))
+}
+
+handle_post_artifact_annotation_create :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
+	author, is_user, ok := artifact_authorize_identity(client, ctx)
+	if !ok do return
+	artifact_id := extract_json_string(body, "artifact_id", "")
+	if !contracts.artifact_id_valid(artifact_id) {
+		artifact_write_error(client, 400, "Bad Request", "invalid_request", "artifact annotation create requires a valid artifact_id")
+		return
+	}
+	rec, found := artifact_db_get(artifact_id)
+	if !found {
+		artifact_write_error(client, 404, "Not Found", "not_found", "artifact not found")
+		return
+	}
+	if rec.deleted {
+		artifact_write_error(client, 410, "Gone", "gone", "artifact deleted")
+		return
+	}
+	ensured, ensure_ok := artifact_ensure_head_version_for_record(rec)
+	if !ensure_ok {
+		artifact_write_error(client, 500, "Internal Server Error", "db_write_failed", "failed to backfill artifact version metadata")
+		return
+	}
+	version_no := extract_json_i64(body, "version_no", ensured.current_version_no)
+	if version_no <= 0 || !artifact_db_version_exists(artifact_id, version_no) {
+		artifact_write_error(client, 400, "Bad Request", "invalid_request", "artifact annotation requires a retained target version")
+		return
+	}
+	context_type := extract_json_string(body, "context_type", "")
+	context_json := strings.trim_space(extract_json_string(body, "context_json", ""))
+	if context_json == "" && json_has_key(body, "context_json") {
+		start := json_value_start(body, "context_json")
+		if start >= 0 {
+			context_json = strings.trim_space(body[start:])
+			if end := strings.index(context_json, ",\"comment\""); end > 0 do context_json = strings.trim_space(context_json[:end])
+		}
+	}
+	if context_type == "" || context_json == "" {
+		artifact_write_error(client, 400, "Bad Request", "invalid_request", "artifact annotation create requires context_type and context_json")
+		return
+	}
+	now := router_now_unix_ms()
+	annotation := Artifact_Annotation_Record{
+		annotation_id = artifact_annotation_generate_id(),
+		artifact_id = artifact_id,
+		version_no = version_no,
+		author_type = artifact_identity_type(is_user),
+		author_id = author,
+		context_type = context_type,
+		context_json = context_json,
+		comment = extract_json_string(body, "comment", ""),
+		created_unix_ms = now,
+		updated_unix_ms = now,
+		deleted = false,
+		deleted_unix_ms = 0,
+	}
+	if !artifact_db_insert_annotation(annotation) {
+		artifact_write_error(client, 500, "Internal Server Error", "db_write_failed", "failed to persist artifact annotation")
+		return
+	}
+	builder := strings.builder_make()
+	strings.write_string(&builder, `{"ok":true,"annotation":`)
+	artifact_write_annotation_json(&builder, annotation)
+	strings.write_string(&builder, `}`)
+	write_response(client, 200, "OK", strings.to_string(builder))
+}
+
+handle_post_artifact_annotation_update :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
+	_, _, ok := artifact_authorize_identity(client, ctx)
+	if !ok do return
+	annotation_id := extract_json_string(body, "annotation_id", "")
+	annotation, found := artifact_db_get_annotation(annotation_id)
+	if !found || annotation.deleted {
+		artifact_write_error(client, 404, "Not Found", "not_found", "artifact annotation not found")
+		return
+	}
+	updated_comment := extract_json_string(body, "comment", annotation.comment)
+	now := router_now_unix_ms()
+	if !artifact_db_update_annotation_comment(annotation_id, updated_comment, now) {
+		artifact_write_error(client, 500, "Internal Server Error", "db_write_failed", "failed to update artifact annotation")
+		return
+	}
+	annotation.comment = updated_comment
+	annotation.updated_unix_ms = now
+	builder := strings.builder_make()
+	strings.write_string(&builder, `{"ok":true,"annotation":`)
+	artifact_write_annotation_json(&builder, annotation)
+	strings.write_string(&builder, `}`)
+	write_response(client, 200, "OK", strings.to_string(builder))
+}
+
+handle_post_artifact_annotation_delete :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
+	_, _, ok := artifact_authorize_identity(client, ctx)
+	if !ok do return
+	annotation_id := extract_json_string(body, "annotation_id", "")
+	annotation, found := artifact_db_get_annotation(annotation_id)
+	if !found || annotation.deleted {
+		artifact_write_error(client, 404, "Not Found", "not_found", "artifact annotation not found")
+		return
+	}
+	now := router_now_unix_ms()
+	if !artifact_db_mark_annotation_deleted(annotation_id, now) {
+		artifact_write_error(client, 500, "Internal Server Error", "db_write_failed", "failed to delete artifact annotation")
+		return
+	}
+	builder := strings.builder_make()
+	strings.write_string(&builder, `{"ok":true,"annotation_id":"`); json_write_string(&builder, annotation_id)
+	strings.write_string(&builder, `","deleted":true}`)
+	write_response(client, 200, "OK", strings.to_string(builder))
 }

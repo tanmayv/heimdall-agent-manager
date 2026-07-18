@@ -12,11 +12,11 @@ import cfg_lib "odin_test:lib/config"
 import http "odin_test:lib/http_client"
 
 main :: proc() {
-	if has_flag(os.args, "--version") {
+	if len(os.args) == 2 && os.args[1] == "--version" {
 		fmt.println("ham-ctl", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
 		return
 	}
-	if has_flag(os.args, "--help") || has_flag(os.args, "-h") {
+	if len(os.args) == 2 && (os.args[1] == "--help" || os.args[1] == "-h") {
 		print_usage(cfg_lib.config_path_from_args(os.args), option_value(os.args, "--daemon-url", ""))
 		return
 	}
@@ -444,7 +444,7 @@ ctl_tasks :: proc(daemon_url, action: string, args: []string) {
 ctl_artifacts :: proc(daemon_url, action: string, args: []string) {
 	token := option_value(args, "--token", "")
 	if token == "" {
-		fmt.println("usage: ham-ctl artifacts <create|get|fetch|list|update|delete> --token <token> ...")
+		fmt.println("usage: ham-ctl artifacts <create|get|fetch|list|update|delete|versions|rollback|annotate|annotations|annotation-update|annotation-delete> --token <token> ...")
 		return
 	}
 
@@ -507,6 +507,9 @@ ctl_artifacts :: proc(daemon_url, action: string, args: []string) {
 			return
 		}
 		path := fmt.tprintf("%s/%s%s?token=%s", contracts.ROUTE_ARTIFACTS_PREFIX, artifact_id, contracts.ROUTE_ARTIFACTS_CONTENT_SUFFIX, token)
+		if version := option_value(args, "--version", ""); version != "" {
+			path = fmt.tprintf("%s&version=%s", path, version)
+		}
 		response, req_ok := http.get(daemon_url, path)
 		if !req_ok { fmt.println(`{"ok":false,"message":"artifacts fetch request failed"}`); return }
 		if response.status != 200 {
@@ -519,8 +522,11 @@ ctl_artifacts :: proc(daemon_url, action: string, args: []string) {
 		}
 		result := strings.builder_make()
 		strings.write_string(&result, `{"ok":true,"artifact_id":"`); json_write_string(&result, artifact_id)
-		strings.write_string(&result, `","out":"`); json_write_string(&result, out_path)
-		strings.write_string(&result, `","bytes":`); strings.write_string(&result, fmt.tprintf("%d", len(response.body)))
+		strings.write_string(&result, `","out":"`); json_write_string(&result, out_path); strings.write_string(&result, `"`)
+		if version := option_value(args, "--version", ""); version != "" {
+			strings.write_string(&result, `,"version":`); strings.write_string(&result, version)
+		}
+		strings.write_string(&result, `,"bytes":`); strings.write_string(&result, fmt.tprintf("%d", len(response.body)))
 		strings.write_string(&result, `}`)
 		fmt.println(strings.to_string(result))
 	case "list":
@@ -581,6 +587,9 @@ ctl_artifacts :: proc(daemon_url, action: string, args: []string) {
 		if origin_ref_set {
 			strings.write_string(&body, `","origin_ref":"`); json_write_string(&body, option_value(args, "--origin-ref", ""))
 		}
+		if change_reason := option_value(args, "--change-reason", ""); change_reason != "" {
+			strings.write_string(&body, `","change_reason":"`); json_write_string(&body, change_reason)
+		}
 		if file_path != "" {
 			data, err := os.read_entire_file(file_path, context.allocator)
 			if err != nil {
@@ -608,8 +617,105 @@ ctl_artifacts :: proc(daemon_url, action: string, args: []string) {
 		response, req_ok := http.post(daemon_url, contracts.ROUTE_ARTIFACTS_DELETE, strings.to_string(body))
 		if !req_ok { fmt.println(`{"ok":false,"message":"artifacts delete request failed"}`); return }
 		fmt.println(response.body)
+	case "versions":
+		artifact_id, ok := artifact_ctl_arg_id(args)
+		if !ok {
+			fmt.println(artifact_ctl_error_json("artifacts versions requires --artifact-id <art_...|artifact://art_...>"))
+			return
+		}
+		path := fmt.tprintf("%s/%s%s?token=%s", contracts.ROUTE_ARTIFACTS_PREFIX, artifact_id, contracts.ROUTE_ARTIFACTS_VERSIONS_SUFFIX, token)
+		response, req_ok := http.get(daemon_url, path)
+		if !req_ok { fmt.println(`{"ok":false,"message":"artifacts versions request failed"}`); return }
+		fmt.println(response.body)
+	case "rollback":
+		artifact_id, ok := artifact_ctl_arg_id(args)
+		if !ok {
+			fmt.println(artifact_ctl_error_json("artifacts rollback requires --artifact-id <art_...|artifact://art_...>"))
+			return
+		}
+		version := option_value(args, "--version", "")
+		if version == "" {
+			fmt.println(artifact_ctl_error_json("artifacts rollback requires --version <n>"))
+			return
+		}
+		body := strings.builder_make()
+		strings.write_string(&body, `{"agent_token":"`); json_write_string(&body, token)
+		strings.write_string(&body, `","artifact_id":"`); json_write_string(&body, artifact_id)
+		strings.write_string(&body, `","version_no":`); strings.write_string(&body, version)
+		if change_reason := option_value(args, "--change-reason", ""); change_reason != "" {
+			strings.write_string(&body, `,"change_reason":"`); json_write_string(&body, change_reason); strings.write_string(&body, `"`)
+		}
+		strings.write_string(&body, `}`)
+		response, req_ok := http.post(daemon_url, contracts.ROUTE_ARTIFACTS_ROLLBACK, strings.to_string(body))
+		if !req_ok { fmt.println(`{"ok":false,"message":"artifacts rollback request failed"}`); return }
+		fmt.println(response.body)
+	case "annotate":
+		artifact_id, ok := artifact_ctl_arg_id(args)
+		if !ok {
+			fmt.println(artifact_ctl_error_json("artifacts annotate requires --artifact-id <art_...|artifact://art_...>"))
+			return
+		}
+		context_type := option_value(args, "--context-type", "")
+		context_json := option_value(args, "--context-json", "")
+		if context_type == "" || context_json == "" {
+			fmt.println(artifact_ctl_error_json("artifacts annotate requires --context-type <text|image> and --context-json <json>"))
+			return
+		}
+		body := strings.builder_make()
+		strings.write_string(&body, `{"agent_token":"`); json_write_string(&body, token)
+		strings.write_string(&body, `","artifact_id":"`); json_write_string(&body, artifact_id)
+		if version := option_value(args, "--version", ""); version != "" {
+			strings.write_string(&body, `","version_no":`); strings.write_string(&body, version)
+		}
+		strings.write_string(&body, `,"context_type":"`); json_write_string(&body, context_type)
+		strings.write_string(&body, `","context_json":`); strings.write_string(&body, context_json)
+		strings.write_string(&body, `,"comment":"`); json_write_string(&body, option_value(args, "--comment", ""))
+		strings.write_string(&body, `"}`)
+		response, req_ok := http.post(daemon_url, contracts.ROUTE_ARTIFACTS_ANNOTATIONS_CREATE, strings.to_string(body))
+		if !req_ok { fmt.println(`{"ok":false,"message":"artifacts annotate request failed"}`); return }
+		fmt.println(response.body)
+	case "annotations":
+		artifact_id, ok := artifact_ctl_arg_id(args)
+		if !ok {
+			fmt.println(artifact_ctl_error_json("artifacts annotations requires --artifact-id <art_...|artifact://art_...>"))
+			return
+		}
+		path := fmt.tprintf("%s/%s%s?token=%s", contracts.ROUTE_ARTIFACTS_PREFIX, artifact_id, contracts.ROUTE_ARTIFACTS_ANNOTATIONS_SUFFIX, token)
+		if version := option_value(args, "--version", ""); version != "" {
+			path = fmt.tprintf("%s&version=%s", path, version)
+		}
+		response, req_ok := http.get(daemon_url, path)
+		if !req_ok { fmt.println(`{"ok":false,"message":"artifacts annotations request failed"}`); return }
+		fmt.println(response.body)
+	case "annotation-update":
+		annotation_id := option_value(args, "--annotation-id", "")
+		if annotation_id == "" {
+			fmt.println(artifact_ctl_error_json("artifacts annotation-update requires --annotation-id <id>"))
+			return
+		}
+		body := strings.builder_make()
+		strings.write_string(&body, `{"agent_token":"`); json_write_string(&body, token)
+		strings.write_string(&body, `","annotation_id":"`); json_write_string(&body, annotation_id)
+		strings.write_string(&body, `","comment":"`); json_write_string(&body, option_value(args, "--comment", ""))
+		strings.write_string(&body, `"}`)
+		response, req_ok := http.post(daemon_url, contracts.ROUTE_ARTIFACTS_ANNOTATIONS_UPDATE, strings.to_string(body))
+		if !req_ok { fmt.println(`{"ok":false,"message":"artifacts annotation-update request failed"}`); return }
+		fmt.println(response.body)
+	case "annotation-delete":
+		annotation_id := option_value(args, "--annotation-id", "")
+		if annotation_id == "" {
+			fmt.println(artifact_ctl_error_json("artifacts annotation-delete requires --annotation-id <id>"))
+			return
+		}
+		body := strings.builder_make()
+		strings.write_string(&body, `{"agent_token":"`); json_write_string(&body, token)
+		strings.write_string(&body, `","annotation_id":"`); json_write_string(&body, annotation_id)
+		strings.write_string(&body, `"}`)
+		response, req_ok := http.post(daemon_url, contracts.ROUTE_ARTIFACTS_ANNOTATIONS_DELETE, strings.to_string(body))
+		if !req_ok { fmt.println(`{"ok":false,"message":"artifacts annotation-delete request failed"}`); return }
+		fmt.println(response.body)
 	case:
-		fmt.println("usage: ham-ctl artifacts <create|get|fetch|list|update|delete> --token <token> ...")
+		fmt.println("usage: ham-ctl artifacts <create|get|fetch|list|update|delete|versions|rollback|annotate|annotations|annotation-update|annotation-delete> --token <token> ...")
 	}
 }
 
@@ -1181,7 +1287,7 @@ command_tokens :: proc(args: []string) -> [dynamic]string {
 	cmd := make([dynamic]string)
 	for i := 1; i < len(args); i += 1 {
 		arg := args[i]
-		if arg == cfg_lib.CONFIG_PATH_FLAG || arg == "--daemon-url" || arg == "--wrapper-bin" || arg == "--agent" || arg == "--token" || arg == "--to" || arg == "--body" || arg == "--limit" || arg == "--task-id" || arg == "--task" || arg == "--chain-id" || arg == "--chain" || arg == "--status" || arg == "--agent-instance-id" || arg == "--role" || arg == "--final-summary" || arg == "--summary" || arg == "--user-id" || arg == "--client-instance-id" || arg == "--message-id" || arg == "--result" || arg == "--comment" || arg == "--title" || arg == "--description" || arg == "--goal" || arg == "--priority" || arg == "--assignee-agent-instance-id" || arg == "--assignee" || arg == "--coordinator-agent-instance-id" || arg == "--coordinator" || arg == "--reviewer" || arg == "--comment-id" || arg == "--depends-on" || arg == "--subject-agent" || arg == "--subject-key" || arg == "--scope" || arg == "--type" || arg == "--memory-id" || arg == "--memory" || arg == "--proposal-id" || arg == "--decision" || arg == "--reason" || arg == "--evidence" || arg == "--source-task-id" || arg == "--source-task" || arg == "--expected-version" || arg == "--project-id" || arg == "--project" || arg == "--name" || arg == "--anchor-type" || arg == "--anchor-value" || arg == "--anchor-note" || arg == "--cursor" || arg == "--target-team-kind" || arg == "--target-role" || arg == "--target-project-id" || arg == "--team" || arg == "--team-id" || arg == "--project-ids" || arg == "--role-key" || arg == "--role-keys" || arg == "--task-chain-type" || arg == "--task-chain-types" || arg == "--template-key" || arg == "--template" || arg == "--file" || arg == "--out" || arg == "--artifact-id" || arg == "--artifact" || arg == "--kind" || arg == "--mime" || arg == "--creator-id" || arg == "--origin-kind" || arg == "--origin-ref" || arg == "--data" {
+		if arg == cfg_lib.CONFIG_PATH_FLAG || arg == "--daemon-url" || arg == "--wrapper-bin" || arg == "--agent" || arg == "--token" || arg == "--to" || arg == "--body" || arg == "--limit" || arg == "--task-id" || arg == "--task" || arg == "--chain-id" || arg == "--chain" || arg == "--status" || arg == "--agent-instance-id" || arg == "--role" || arg == "--final-summary" || arg == "--summary" || arg == "--user-id" || arg == "--client-instance-id" || arg == "--message-id" || arg == "--result" || arg == "--comment" || arg == "--title" || arg == "--description" || arg == "--goal" || arg == "--priority" || arg == "--assignee-agent-instance-id" || arg == "--assignee" || arg == "--coordinator-agent-instance-id" || arg == "--coordinator" || arg == "--reviewer" || arg == "--comment-id" || arg == "--depends-on" || arg == "--subject-agent" || arg == "--subject-key" || arg == "--scope" || arg == "--type" || arg == "--memory-id" || arg == "--memory" || arg == "--proposal-id" || arg == "--decision" || arg == "--reason" || arg == "--evidence" || arg == "--source-task-id" || arg == "--source-task" || arg == "--expected-version" || arg == "--project-id" || arg == "--project" || arg == "--name" || arg == "--anchor-type" || arg == "--anchor-value" || arg == "--anchor-note" || arg == "--cursor" || arg == "--target-team-kind" || arg == "--target-role" || arg == "--target-project-id" || arg == "--team" || arg == "--team-id" || arg == "--project-ids" || arg == "--role-key" || arg == "--role-keys" || arg == "--task-chain-type" || arg == "--task-chain-types" || arg == "--template-key" || arg == "--template" || arg == "--file" || arg == "--out" || arg == "--artifact-id" || arg == "--artifact" || arg == "--kind" || arg == "--mime" || arg == "--creator-id" || arg == "--origin-kind" || arg == "--origin-ref" || arg == "--data" || arg == "--version" || arg == "--change-reason" || arg == "--annotation-id" || arg == "--context-type" || arg == "--context-json" {
 			i += 1
 			continue
 		}
@@ -1385,9 +1491,15 @@ print_usage :: proc(config_path, daemon_url: string) {
 	fmt.println("  tasks nudge --token <token> --task-id <id> --body <text>")
 	fmt.println("  artifacts create --token <token> --file <path> [--name <name>] [--kind <kind>] [--project <id>] [--description <text>]")
 	fmt.println("  artifacts get --token <token> --artifact-id <art_...|artifact://art_...>")
-	fmt.println("  artifacts fetch --token <token> --artifact-id <art_...|artifact://art_...> --out <path>")
+	fmt.println("  artifacts fetch --token <token> --artifact-id <art_...|artifact://art_...> --out <path> [--version <n>]")
 	fmt.println("  artifacts list --token <token> [--project <id>] [--creator-id <id>] [--origin-ref <ref>] [--limit N] [--include-deleted]")
-	fmt.println("  artifacts update --token <token> --artifact-id <art_...|artifact://art_...> [--file <path>] [--name <name>] [--kind <kind>] [--description <text>] [--project <id>] [--origin-kind <kind>] [--origin-ref <ref>]")
+	fmt.println("  artifacts update --token <token> --artifact-id <art_...|artifact://art_...> [--file <path>] [--name <name>] [--kind <kind>] [--description <text>] [--project <id>] [--origin-kind <kind>] [--origin-ref <ref>] [--change-reason <text>]")
+	fmt.println("  artifacts versions --token <token> --artifact-id <art_...|artifact://art_...>")
+	fmt.println("  artifacts rollback --token <token> --artifact-id <art_...|artifact://art_...> --version <n> [--change-reason <text>]")
+	fmt.println("  artifacts annotate --token <token> --artifact-id <art_...|artifact://art_...> [--version <n>] --context-type <text|image> --context-json <json> [--comment <text>]")
+	fmt.println("  artifacts annotations --token <token> --artifact-id <art_...|artifact://art_...> [--version <n>]")
+	fmt.println("  artifacts annotation-update --token <token> --annotation-id <id> --comment <text>")
+	fmt.println("  artifacts annotation-delete --token <token> --annotation-id <id>")
 	fmt.println("  artifacts delete --token <token> --artifact-id <art_...|artifact://art_...>")
 	fmt.println("  chains create --token <token> [--project-id <id>] --kind <kind> [--title <title>] [--description|--goal <text>] [--scaffold <key> (legacy)] [--no-vcs] [--reviewer <agent>] [--coordinator <agent> advanced override]")
 	fmt.println("  chains show --token <token> --chain-id <id>")

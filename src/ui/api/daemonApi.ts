@@ -565,8 +565,17 @@ export async function fetchArtifactMeta({ daemonUrl, clientToken, artifactId }: 
   });
 }
 
-export function artifactContentUrl({ daemonUrl, clientToken, artifactId }: { daemonUrl: string; clientToken: string; artifactId: string }) {
-  return joinUrl(daemonUrl, `/artifacts/${encodeURIComponent(artifactId)}/content?token=${encodeURIComponent(clientToken)}`);
+export async function fetchArtifactVersions({ daemonUrl, clientToken, artifactId }: { daemonUrl: string; clientToken: string; artifactId: string }) {
+  return requestJson(joinUrl(daemonUrl, `/artifacts/${encodeURIComponent(artifactId)}/versions`), {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+  });
+}
+
+export function artifactContentUrl({ daemonUrl, clientToken, artifactId, version }: { daemonUrl: string; clientToken: string; artifactId: string; version?: number | null }) {
+  const params = new URLSearchParams({ token: clientToken });
+  if (version != null && Number.isFinite(version)) params.set('version', String(version));
+  return joinUrl(daemonUrl, `/artifacts/${encodeURIComponent(artifactId)}/content?${params.toString()}`);
 }
 
 export async function listArtifacts({ daemonUrl, clientToken, projectId = '', creatorId = '', originRef = '', includeDeleted = false, limit = 100 }: { daemonUrl: string; clientToken: string; projectId?: string; creatorId?: string; originRef?: string; includeDeleted?: boolean; limit?: number }) {
@@ -581,7 +590,7 @@ export async function listArtifacts({ daemonUrl, clientToken, projectId = '', cr
   });
 }
 
-export async function updateArtifact({ daemonUrl, clientToken, artifactId, name, kind, projectId, description, originKind, originRef, contentBase64 }: { daemonUrl: string; clientToken: string; artifactId: string; name?: string; kind?: string; projectId?: string; description?: string; originKind?: string; originRef?: string; contentBase64?: string }) {
+export async function updateArtifact({ daemonUrl, clientToken, artifactId, name, kind, projectId, description, originKind, originRef, contentBase64, changeReason }: { daemonUrl: string; clientToken: string; artifactId: string; name?: string; kind?: string; projectId?: string; description?: string; originKind?: string; originRef?: string; contentBase64?: string; changeReason?: string }) {
   const body: any = { artifact_id: artifactId };
   if (name !== undefined) body.name = name;
   if (kind !== undefined) body.kind = kind;
@@ -590,10 +599,64 @@ export async function updateArtifact({ daemonUrl, clientToken, artifactId, name,
   if (originKind !== undefined) body.origin_kind = originKind;
   if (originRef !== undefined) body.origin_ref = originRef;
   if (contentBase64 !== undefined) body.content_base64 = contentBase64;
+  if (changeReason !== undefined) body.change_reason = changeReason;
   return requestJson(joinUrl(daemonUrl, '/artifacts/update'), {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${clientToken}` },
     body,
+  });
+}
+
+export async function rollbackArtifact({ daemonUrl, clientToken, artifactId, versionNo, changeReason = '' }: { daemonUrl: string; clientToken: string; artifactId: string; versionNo: number; changeReason?: string }) {
+  return requestJson(joinUrl(daemonUrl, '/artifacts/rollback'), {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+    body: {
+      artifact_id: artifactId,
+      version_no: versionNo,
+      change_reason: changeReason,
+    },
+  });
+}
+
+export async function fetchArtifactAnnotations({ daemonUrl, clientToken, artifactId, versionNo }: { daemonUrl: string; clientToken: string; artifactId: string; versionNo?: number | null }) {
+  const params = new URLSearchParams();
+  if (versionNo != null && Number.isFinite(versionNo)) params.set('version', String(versionNo));
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  return requestJson(joinUrl(daemonUrl, `/artifacts/${encodeURIComponent(artifactId)}/annotations${suffix}`), {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+  });
+}
+
+export async function createArtifactAnnotation({ daemonUrl, clientToken, artifactId, versionNo, contextType, contextJson, comment }: { daemonUrl: string; clientToken: string; artifactId: string; versionNo?: number | null; contextType: string; contextJson: unknown; comment: string }) {
+  const body: any = {
+    artifact_id: artifactId,
+    context_type: contextType,
+    context_json: contextJson,
+    comment,
+  };
+  if (versionNo != null && Number.isFinite(versionNo)) body.version_no = versionNo;
+  return requestJson(joinUrl(daemonUrl, '/artifacts/annotations/create'), {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+    body,
+  });
+}
+
+export async function updateArtifactAnnotation({ daemonUrl, clientToken, annotationId, comment }: { daemonUrl: string; clientToken: string; annotationId: string; comment: string }) {
+  return requestJson(joinUrl(daemonUrl, '/artifacts/annotations/update'), {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+    body: { annotation_id: annotationId, comment },
+  });
+}
+
+export async function deleteArtifactAnnotation({ daemonUrl, clientToken, annotationId }: { daemonUrl: string; clientToken: string; annotationId: string }) {
+  return requestJson(joinUrl(daemonUrl, '/artifacts/annotations/delete'), {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+    body: { annotation_id: annotationId },
   });
 }
 

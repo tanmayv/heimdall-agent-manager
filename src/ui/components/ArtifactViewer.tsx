@@ -1,16 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useArtifactContentUrl, useFetchArtifactMetaQuery, useFetchArtifactTextContentQuery } from '../api/endpoints/artifacts';
 import {
+  useArtifactContentUrl,
+  useCreateArtifactAnnotationMutation,
+  useDeleteArtifactAnnotationMutation,
+  useFetchArtifactAnnotationsQuery,
+  useFetchArtifactMetaQuery,
+  useFetchArtifactTextContentQuery,
+  useFetchArtifactVersionsQuery,
+  useRollbackArtifactMutation,
+  useUpdateArtifactAnnotationMutation,
+} from '../api/endpoints/artifacts';
+import {
+  clearLegacyArtifactAnnotations,
   copyTextToClipboard,
-  createArtifactAnnotation,
   formatAllAnnotationsMarkdown,
   formatAnnotationMarkdown,
-  listArtifactAnnotations,
-  removeArtifactAnnotation,
-  saveArtifactAnnotation,
+  listLegacyArtifactAnnotations,
+  normalizeDaemonAnnotation,
   summarizeAnnotationContext,
   type ArtifactAnnotationRecord,
-  updateArtifactAnnotationComment,
 } from '../utils/artifactAnnotations';
 import MarkdownBody from './MarkdownBody';
 import type { MarkdownTextSelection } from './MarkdownBody';
@@ -37,10 +45,30 @@ type ArtifactMeta = {
   origin_kind: string;
   origin_ref: string;
   created_unix_ms: number;
+  current_version_no: number;
   updated_unix_ms: number;
   deleted: boolean;
   link: string;
   renderer?: string;
+};
+
+type ArtifactVersion = {
+  artifact_id: string;
+  version_no: number;
+  name: string;
+  kind: string;
+  mime: string;
+  ext: string;
+  size_bytes: number;
+  sha256: string;
+  description: string;
+  project_id: string;
+  origin_kind: string;
+  origin_ref: string;
+  author_type: string;
+  author_id: string;
+  change_reason: string;
+  created_unix_ms: number;
 };
 
 type PreviewKind = 'markdown' | 'png' | 'unsupported';
@@ -309,13 +337,18 @@ function RegionAnnotationLayer({ contentUrl, alt, annotationMode, annotations, o
   );
 }
 
+function annotationVersionLabel(annotationVersionNo: number, currentHeadVersionNo: number) {
+  return annotationVersionNo === currentHeadVersionNo ? `v${annotationVersionNo} • head` : `v${annotationVersionNo} • older version`;
+}
+
 type AnnotationListItemProps = {
   annotation: ArtifactAnnotationRecord;
+  currentHeadVersionNo: number;
   onRemove: (annotationId: string) => void;
   onSaveComment: (annotationId: string, comment: string) => void;
 };
 
-function AnnotationListItem({ annotation, onRemove, onSaveComment }: AnnotationListItemProps) {
+function AnnotationListItem({ annotation, currentHeadVersionNo, onRemove, onSaveComment }: AnnotationListItemProps) {
   const [copyState, setCopyState] = useState<CopyState>('idle');
   const [isEditing, setIsEditing] = useState(false);
   const [draftComment, setDraftComment] = useState(annotation.comment);
@@ -350,7 +383,10 @@ function AnnotationListItem({ annotation, onRemove, onSaveComment }: AnnotationL
       data-debug-id={`artifact-viewer-annotation-item-${annotation.annotationId}`}
       className="rounded-2xl border border-white/10 bg-black/20 p-3"
     >
-      <div className="text-xs font-medium uppercase tracking-wide text-zinc-500">{annotation.context.type === 'image' ? 'Image annotation' : 'Text annotation'}</div>
+      <div className="flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-zinc-500">
+        <span>{annotation.context.type === 'image' ? 'Image annotation' : 'Text annotation'}</span>
+        <span className="rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] text-zinc-300">{annotationVersionLabel(annotation.versionNo, currentHeadVersionNo)}</span>
+      </div>
       <div className="mt-1 text-sm text-zinc-300">{summarizeAnnotationContext(annotation)}</div>
       {isEditing ? (
         <div className="mt-3 space-y-2">
@@ -420,8 +456,19 @@ function AnnotationListItem({ annotation, onRemove, onSaveComment }: AnnotationL
 
 export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onClose }: ArtifactViewerProps) {
   const metaQuery = useFetchArtifactMetaQuery({ artifactId }, { skip: !artifactId || !clientToken });
+  const versionsQuery = useFetchArtifactVersionsQuery({ artifactId }, { skip: !artifactId || !clientToken });
+  const [createAnnotationMutation] = useCreateArtifactAnnotationMutation();
+  const [updateAnnotationMutation] = useUpdateArtifactAnnotationMutation();
+  const [deleteAnnotationMutation] = useDeleteArtifactAnnotationMutation();
+  const [rollbackArtifactMutation, rollbackState] = useRollbackArtifactMutation();
+
   const meta = (metaQuery.data?.artifact || null) as ArtifactMeta | null;
-  const [annotations, setAnnotations] = useState<ArtifactAnnotationRecord[]>(() => listArtifactAnnotations(artifactId));
+  const currentHeadVersionNo = Number(meta?.current_version_no || 0);
+  const versions = useMemo(() => {
+    const rows = Array.isArray(versionsQuery.data?.versions) ? versionsQuery.data.versions : [];
+    return rows as ArtifactVersion[];
+  }, [versionsQuery.data]);
+  const [selectedVersionNo, setSelectedVersionNo] = useState<number | null>(null);
   const [annotationMode, setAnnotationMode] = useState(false);
   const [annotationsOpen, setAnnotationsOpen] = useState(false);
   const [copyAllState, setCopyAllState] = useState<CopyState>('idle');
@@ -432,11 +479,14 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
   const [pendingImageNatural, setPendingImageNatural] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
   const [imageAnnotationComment, setImageAnnotationComment] = useState('');
   const [nestedArtifactId, setNestedArtifactId] = useState('');
-
-  const contentUrl = useArtifactContentUrl({ daemonUrl, clientToken, artifactId });
+  const [rollbackConfirmOpen, setRollbackConfirmOpen] = useState(false);
+  const [rollbackReason, setRollbackReason] = useState('');
+  const [actionMessage, setActionMessage] = useState('');
+  const [migrationMessage, setMigrationMessage] = useState('');
+  const migrationAttemptedRef = useRef<string>('');
 
   useEffect(() => {
-    setAnnotations(listArtifactAnnotations(artifactId));
+    setSelectedVersionNo(null);
     setAnnotationMode(false);
     setAnnotationsOpen(false);
     setCopyAllState('idle');
@@ -445,10 +495,77 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
     setTextAnnotationError('');
     setPendingImageRegion(null);
     setImageAnnotationComment('');
+    setRollbackConfirmOpen(false);
+    setRollbackReason('');
+    setActionMessage('');
+    setMigrationMessage('');
+    migrationAttemptedRef.current = '';
   }, [artifactId]);
 
-  const previewKind = useMemo(() => classifyPreview(meta), [meta]);
+  const selectedVersionRecord = useMemo(
+    () => versions.find((version) => Number(version.version_no) === Number(selectedVersionNo || currentHeadVersionNo)) || null,
+    [versions, selectedVersionNo, currentHeadVersionNo],
+  );
+
+  const selectedArtifactMeta = useMemo(() => {
+    if (!meta) return null;
+    if (!selectedVersionRecord || Number(selectedVersionRecord.version_no) === currentHeadVersionNo) return meta;
+    return {
+      ...meta,
+      name: selectedVersionRecord.name,
+      kind: selectedVersionRecord.kind,
+      mime: selectedVersionRecord.mime,
+      ext: selectedVersionRecord.ext,
+      size_bytes: selectedVersionRecord.size_bytes,
+      sha256: selectedVersionRecord.sha256,
+      description: selectedVersionRecord.description,
+      project_id: selectedVersionRecord.project_id,
+      origin_kind: selectedVersionRecord.origin_kind,
+      origin_ref: selectedVersionRecord.origin_ref,
+      current_version_no: selectedVersionRecord.version_no,
+    } as ArtifactMeta;
+  }, [meta, selectedVersionRecord, currentHeadVersionNo]);
+
+  const previewKind = useMemo(() => classifyPreview(selectedArtifactMeta), [selectedArtifactMeta]);
   const annotationSupported = previewKind === 'markdown' || previewKind === 'png';
+  const annotationScopeVersionNo = selectedVersionNo ?? (currentHeadVersionNo > 0 ? currentHeadVersionNo : null);
+  const annotationsQuery = useFetchArtifactAnnotationsQuery(
+    { artifactId, versionNo: annotationScopeVersionNo },
+    { skip: !artifactId || !clientToken || annotationScopeVersionNo == null },
+  );
+  const annotations = useMemo(() => {
+    const rows = Array.isArray(annotationsQuery.data?.annotations) ? annotationsQuery.data.annotations : [];
+    return rows
+      .map((row: any) => normalizeDaemonAnnotation(row, {
+        artifactId,
+        artifactName: selectedArtifactMeta?.name || meta?.name || artifactId,
+        artifactMime: selectedArtifactMeta?.mime || meta?.mime || '',
+        artifactKind: selectedArtifactMeta?.kind || meta?.kind || '',
+        artifactUri: meta?.link || `artifact://${artifactId}`,
+      }))
+      .filter((row: ArtifactAnnotationRecord | null): row is ArtifactAnnotationRecord => Boolean(row));
+  }, [annotationsQuery.data, artifactId, meta, selectedArtifactMeta]);
+
+  const contentUrl = useArtifactContentUrl({ daemonUrl, clientToken, artifactId, versionNo: selectedVersionNo });
+  const textQuery = useFetchArtifactTextContentQuery(
+    { artifactId, versionNo: selectedVersionNo },
+    { skip: !artifactId || !clientToken || previewKind !== 'markdown' },
+  );
+  const textContent = textQuery.data?.text || '';
+  const loading = metaQuery.isFetching || versionsQuery.isFetching;
+  const loadingText = textQuery.isFetching;
+  const error = metaQuery.error
+    ? 'Failed to load artifact metadata.'
+    : versionsQuery.error
+      ? 'Failed to load retained artifact versions.'
+      : textQuery.error
+        ? 'Failed to load artifact content.'
+        : (!loading && !meta ? 'Artifact metadata is unavailable.' : '');
+
+  const title = selectedArtifactMeta?.name || meta?.name || artifactId;
+  const versionSelectValue = selectedVersionNo == null ? 'HEAD' : String(selectedVersionNo);
+  const selectedVersionLabel = selectedVersionNo == null ? `Head v${currentHeadVersionNo || '?'}` : `v${selectedVersionNo}`;
+  const rollbackAllowed = selectedVersionNo != null && selectedVersionNo !== currentHeadVersionNo;
 
   useEffect(() => {
     if (previewKind === 'markdown' && annotationMode) return;
@@ -462,13 +579,34 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
     setImageAnnotationComment('');
   }, [annotationMode, previewKind]);
 
-  const textQuery = useFetchArtifactTextContentQuery({ artifactId }, { skip: !artifactId || !clientToken || previewKind !== 'markdown' });
-  const textContent = textQuery.data?.text || '';
-  const loading = metaQuery.isFetching;
-  const loadingText = textQuery.isFetching;
-  const error = metaQuery.error ? 'Failed to load artifact metadata.' : textQuery.error ? 'Failed to load artifact content.' : (!loading && !meta ? 'Artifact metadata is unavailable.' : '');
-
-  const title = meta?.name || annotations[0]?.artifactName || artifactId;
+  useEffect(() => {
+    if (!artifactId || !currentHeadVersionNo || !meta) return;
+    const migrationKey = `${artifactId}:${currentHeadVersionNo}`;
+    if (migrationAttemptedRef.current === migrationKey) return;
+    const legacyAnnotations = listLegacyArtifactAnnotations(artifactId);
+    if (!legacyAnnotations.length) {
+      migrationAttemptedRef.current = migrationKey;
+      return;
+    }
+    migrationAttemptedRef.current = migrationKey;
+    void (async () => {
+      try {
+        for (const annotation of legacyAnnotations) {
+          await createAnnotationMutation({
+            artifactId,
+            versionNo: currentHeadVersionNo,
+            contextType: annotation.context.type,
+            contextJson: annotation.context,
+            comment: annotation.comment,
+          }).unwrap();
+        }
+        clearLegacyArtifactAnnotations(artifactId);
+        setMigrationMessage('Imported local annotations to daemon.');
+      } catch {
+        setMigrationMessage('Some local annotations could not be imported yet.');
+      }
+    })();
+  }, [artifactId, currentHeadVersionNo, meta, createAnnotationMutation]);
 
   async function handleCopyAll() {
     if (!annotations.length) return;
@@ -482,12 +620,22 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
     }
   }
 
-  function handleRemoveAnnotation(annotationId: string) {
-    setAnnotations(removeArtifactAnnotation(artifactId, annotationId));
+  async function handleRemoveAnnotation(annotationId: string) {
+    if (!annotationScopeVersionNo) return;
+    try {
+      await deleteAnnotationMutation({ annotationId, artifactId, versionNo: annotationScopeVersionNo }).unwrap();
+    } catch {
+      setActionMessage('Failed to remove annotation.');
+    }
   }
 
-  function handleSaveComment(annotationId: string, comment: string) {
-    setAnnotations(updateArtifactAnnotationComment(artifactId, annotationId, comment));
+  async function handleSaveComment(annotationId: string, comment: string) {
+    if (!annotationScopeVersionNo) return;
+    try {
+      await updateAnnotationMutation({ annotationId, artifactId, versionNo: annotationScopeVersionNo, comment }).unwrap();
+    } catch {
+      setActionMessage('Failed to update annotation comment.');
+    }
   }
 
   function handleTextSelectionChange(selection: MarkdownTextSelection | null) {
@@ -496,8 +644,8 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
     setTextAnnotationError('');
   }
 
-  function handleAddTextAnnotation() {
-    if (!meta) return;
+  async function handleAddTextAnnotation() {
+    if (!selectedArtifactMeta || !annotationScopeVersionNo) return;
     if (!pendingTextSelection?.selectedText) {
       setTextAnnotationError('Select text in the Markdown preview before adding an annotation.');
       return;
@@ -507,28 +655,29 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
       setTextAnnotationError('Add a comment before saving this annotation.');
       return;
     }
-    const annotation = createArtifactAnnotation({
-      artifactId,
-      artifactUri: meta.link || `artifact://${artifactId}`,
-      artifactName: meta.name || artifactId,
-      artifactMime: meta.mime || 'text/markdown',
-      artifactKind: meta.kind || 'markdown',
-      comment,
-      context: {
-        type: 'text',
-        selectedText: pendingTextSelection.selectedText,
-        lineStart: pendingTextSelection.lineStart,
-        lineEnd: pendingTextSelection.lineEnd,
-        charStart: pendingTextSelection.charStart,
-        charEnd: pendingTextSelection.charEnd,
-      },
-    });
-    setAnnotations(saveArtifactAnnotation(annotation));
-    setAnnotationsOpen(true);
-    setNewAnnotationComment('');
-    setPendingTextSelection(null);
-    setTextAnnotationError('');
-    window.getSelection?.()?.removeAllRanges();
+    try {
+      await createAnnotationMutation({
+        artifactId,
+        versionNo: annotationScopeVersionNo,
+        contextType: 'text',
+        contextJson: {
+          type: 'text',
+          selectedText: pendingTextSelection.selectedText,
+          lineStart: pendingTextSelection.lineStart,
+          lineEnd: pendingTextSelection.lineEnd,
+          charStart: pendingTextSelection.charStart,
+          charEnd: pendingTextSelection.charEnd,
+        },
+        comment,
+      }).unwrap();
+      setAnnotationsOpen(true);
+      setNewAnnotationComment('');
+      setPendingTextSelection(null);
+      setTextAnnotationError('');
+      window.getSelection?.()?.removeAllRanges();
+    } catch {
+      setTextAnnotationError('Failed to save annotation.');
+    }
   }
 
   function handleCreateImageRegion(region: NormalizedRegion, naturalWidth: number, naturalHeight: number) {
@@ -538,37 +687,51 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
     setAnnotationsOpen(true);
   }
 
-  function handleAddImageAnnotation() {
-    if (!meta || !pendingImageRegion) return;
+  async function handleAddImageAnnotation() {
+    if (!selectedArtifactMeta || !pendingImageRegion || !annotationScopeVersionNo) return;
     const comment = imageAnnotationComment.trim();
     if (!comment) return;
     const { width, height } = pendingImageNatural;
     const hasNatural = width > 0 && height > 0;
-    const annotation = createArtifactAnnotation({
-      artifactId,
-      artifactUri: meta.link || `artifact://${artifactId}`,
-      artifactName: meta.name || artifactId,
-      artifactMime: meta.mime || 'image/png',
-      artifactKind: meta.kind || 'png',
-      comment,
-      context: {
-        type: 'image',
-        x: hasNatural ? Math.round((pendingImageRegion.xPercent / 100) * width) : 0,
-        y: hasNatural ? Math.round((pendingImageRegion.yPercent / 100) * height) : 0,
-        w: hasNatural ? Math.round((pendingImageRegion.wPercent / 100) * width) : 0,
-        h: hasNatural ? Math.round((pendingImageRegion.hPercent / 100) * height) : 0,
-        xPercent: pendingImageRegion.xPercent,
-        yPercent: pendingImageRegion.yPercent,
-        wPercent: pendingImageRegion.wPercent,
-        hPercent: pendingImageRegion.hPercent,
-        imageNaturalWidth: hasNatural ? width : undefined,
-        imageNaturalHeight: hasNatural ? height : undefined,
-      },
-    });
-    setAnnotations(saveArtifactAnnotation(annotation));
-    setAnnotationsOpen(true);
-    setPendingImageRegion(null);
-    setImageAnnotationComment('');
+    try {
+      await createAnnotationMutation({
+        artifactId,
+        versionNo: annotationScopeVersionNo,
+        contextType: 'image',
+        contextJson: {
+          type: 'image',
+          x: hasNatural ? Math.round((pendingImageRegion.xPercent / 100) * width) : 0,
+          y: hasNatural ? Math.round((pendingImageRegion.yPercent / 100) * height) : 0,
+          w: hasNatural ? Math.round((pendingImageRegion.wPercent / 100) * width) : 0,
+          h: hasNatural ? Math.round((pendingImageRegion.hPercent / 100) * height) : 0,
+          xPercent: pendingImageRegion.xPercent,
+          yPercent: pendingImageRegion.yPercent,
+          wPercent: pendingImageRegion.wPercent,
+          hPercent: pendingImageRegion.hPercent,
+          imageNaturalWidth: hasNatural ? width : undefined,
+          imageNaturalHeight: hasNatural ? height : undefined,
+        },
+        comment,
+      }).unwrap();
+      setAnnotationsOpen(true);
+      setPendingImageRegion(null);
+      setImageAnnotationComment('');
+    } catch {
+      setActionMessage('Failed to save image annotation.');
+    }
+  }
+
+  async function handleConfirmRollback() {
+    if (!selectedVersionNo) return;
+    try {
+      await rollbackArtifactMutation({ artifactId, versionNo: selectedVersionNo, changeReason: rollbackReason.trim() }).unwrap();
+      setSelectedVersionNo(null);
+      setRollbackConfirmOpen(false);
+      setRollbackReason('');
+      setActionMessage(`Rollback created a new head from v${selectedVersionNo}.`);
+    } catch {
+      setActionMessage(`Failed to roll back to v${selectedVersionNo}.`);
+    }
   }
 
   return (
@@ -580,13 +743,42 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
           <span className="truncate text-zinc-200">{title}</span>
         </div>
         <div className="flex flex-wrap items-start justify-between gap-4 border-b border-white/10 px-5 pb-4 pt-4">
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="truncate text-xl font-semibold tracking-[-0.01em] text-zinc-100">{title}</div>
             <div data-debug-id="artifact-viewer-meta-strip" className="mt-2 flex flex-wrap items-center gap-2 text-[11.5px] text-zinc-400">
-              <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-0.5 uppercase tracking-wide text-zinc-300">{meta?.kind || 'artifact'}</span>
-              {meta?.mime && <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-0.5">{meta.mime}</span>}
-              {meta?.size_bytes != null && <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-0.5">{formatBytes(Number(meta.size_bytes))}</span>}
+              <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-0.5 uppercase tracking-wide text-zinc-300">{selectedArtifactMeta?.kind || 'artifact'}</span>
+              {selectedArtifactMeta?.mime && <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-0.5">{selectedArtifactMeta.mime}</span>}
+              {selectedArtifactMeta?.size_bytes != null && <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-0.5">{formatBytes(Number(selectedArtifactMeta.size_bytes))}</span>}
               {(meta?.link || artifactId) && <span className="max-w-full truncate rounded-full border border-white/10 bg-black/20 px-2.5 py-0.5 font-mono">{meta?.link || `artifact://${artifactId}`}</span>}
+              {currentHeadVersionNo > 0 ? <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2.5 py-0.5 text-emerald-100">{selectedVersionLabel}</span> : null}
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <label className="text-xs uppercase tracking-wide text-zinc-500">Versions</label>
+              <select
+                data-debug-id="artifact-viewer-version-select"
+                value={versionSelectValue}
+                onChange={(event) => {
+                  const nextValue = event.target.value;
+                  setSelectedVersionNo(nextValue === 'HEAD' ? null : Number(nextValue));
+                  setRollbackConfirmOpen(false);
+                  setActionMessage('');
+                }}
+                className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400"
+              >
+                <option value="HEAD">Head v{currentHeadVersionNo || '?'}</option>
+                {versions.filter((version) => Number(version.version_no) !== currentHeadVersionNo).map((version) => (
+                  <option key={version.version_no} value={String(version.version_no)}>v{version.version_no}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                data-debug-id="artifact-viewer-rollback-btn"
+                disabled={!rollbackAllowed}
+                onClick={() => setRollbackConfirmOpen((current) => !current)}
+                className={`rounded-xl px-3 py-2 text-sm ${rollbackAllowed ? 'bg-amber-400/15 text-amber-100 hover:bg-amber-400/25' : 'cursor-not-allowed bg-white/5 text-zinc-500'}`}
+              >
+                Rollback…
+              </button>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -617,7 +809,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
             >
               {copyAllState === 'copied' ? 'Copied all' : copyAllState === 'error' ? 'Copy failed' : 'Copy all'}
             </button>
-            <a data-debug-id="artifact-viewer-download-btn" href={contentUrl} download={meta?.name || artifactId} className="rounded-xl bg-sky-400 px-3 py-2 text-sm font-semibold text-black hover:bg-sky-300">Download</a>
+            <a data-debug-id="artifact-viewer-download-btn" href={contentUrl} download={selectedArtifactMeta?.name || artifactId} className="rounded-xl bg-sky-400 px-3 py-2 text-sm font-semibold text-black hover:bg-sky-300">Download</a>
             <button type="button" data-debug-id="artifact-viewer-close-btn" onClick={onClose} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15">Close</button>
           </div>
         </div>
@@ -626,15 +818,51 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
             <div className="space-y-4">
               {loading && <div className="text-sm text-zinc-400">Loading artifact…</div>}
               {!loading && error && <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">{error}</div>}
+              {rollbackConfirmOpen && rollbackAllowed ? (
+                <div className="rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4 text-sm text-amber-100">
+                  <div className="font-semibold">Roll back artifact to v{selectedVersionNo}?</div>
+                  <div className="mt-1 text-amber-50">This creates a new head version using the content and metadata from v{selectedVersionNo}. History is preserved.</div>
+                  <textarea
+                    data-debug-id="artifact-viewer-rollback-reason-input"
+                    value={rollbackReason}
+                    onChange={(event) => setRollbackReason(event.target.value)}
+                    rows={2}
+                    placeholder="Reason (optional)"
+                    className="mt-3 w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-amber-300"
+                  />
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      data-debug-id="artifact-viewer-rollback-confirm-btn"
+                      onClick={handleConfirmRollback}
+                      disabled={rollbackState.isLoading}
+                      className="rounded-xl bg-amber-300 px-3 py-2 text-sm font-semibold text-black hover:bg-amber-200 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {rollbackState.isLoading ? 'Creating rollback…' : 'Create rollback version'}
+                    </button>
+                    <button
+                      type="button"
+                      data-debug-id="artifact-viewer-rollback-cancel-btn"
+                      onClick={() => setRollbackConfirmOpen(false)}
+                      className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+              {actionMessage ? <div className="rounded-xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm text-sky-100">{actionMessage}</div> : null}
+              {migrationMessage ? <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-zinc-300">{migrationMessage}</div> : null}
               {!loading && (
                 <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-zinc-300">
                   {supportedAnnotationHint(previewKind, annotationMode)}
+                  {annotationScopeVersionNo ? <span className="block mt-2 text-xs text-zinc-400">Showing annotations for {selectedVersionNo == null ? `head v${annotationScopeVersionNo}` : `retained version v${annotationScopeVersionNo}`}</span> : null}
                   {!annotationSupported ? ' Existing saved annotations can still be copied, edited, or removed below if present.' : ''}
                 </div>
               )}
-              {!loading && !error && meta && (
+              {!loading && !error && selectedArtifactMeta && (
                 <div className="space-y-4">
-                  {meta.description && <div className="text-sm text-zinc-300">{meta.description}</div>}
+                  {selectedArtifactMeta.description && <div className="text-sm text-zinc-300">{selectedArtifactMeta.description}</div>}
                   {previewKind === 'markdown' && annotationMode ? (
                     <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4">
                       <div className="text-xs font-medium uppercase tracking-wide text-emerald-200">Text annotation capture</div>
@@ -649,18 +877,9 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                         placeholder="What feedback should this selection capture?"
                         className="mt-3 w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-emerald-300"
                       />
-                      {textAnnotationError ? (
-                        <div className="mt-2 text-sm text-amber-100">{textAnnotationError}</div>
-                      ) : null}
+                      {textAnnotationError ? <div className="mt-2 text-sm text-amber-100">{textAnnotationError}</div> : null}
                       <div className="mt-3 flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          data-debug-id="artifact-viewer-add-annotation-btn"
-                          onClick={handleAddTextAnnotation}
-                          className="rounded-xl bg-emerald-300 px-3 py-2 text-sm font-semibold text-black hover:bg-emerald-200"
-                        >
-                          Add annotation
-                        </button>
+                        <button type="button" data-debug-id="artifact-viewer-add-annotation-btn" onClick={handleAddTextAnnotation} className="rounded-xl bg-emerald-300 px-3 py-2 text-sm font-semibold text-black hover:bg-emerald-200">Add annotation</button>
                         <button
                           type="button"
                           data-debug-id="artifact-viewer-clear-text-selection-btn"
@@ -683,9 +902,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                         <>
                           <div data-debug-id="artifact-viewer-png-region-summary" className="mt-2 text-sm text-zinc-100">
                             Region x={pendingImageRegion.xPercent.toFixed(1)}% y={pendingImageRegion.yPercent.toFixed(1)}% w={pendingImageRegion.wPercent.toFixed(1)}% h={pendingImageRegion.hPercent.toFixed(1)}%
-                            {pendingImageNatural.width > 0 && pendingImageNatural.height > 0
-                              ? ` · ${Math.round((pendingImageRegion.wPercent / 100) * pendingImageNatural.width)}×${Math.round((pendingImageRegion.hPercent / 100) * pendingImageNatural.height)} px`
-                              : ''}
+                            {pendingImageNatural.width > 0 && pendingImageNatural.height > 0 ? ` · ${Math.round((pendingImageRegion.wPercent / 100) * pendingImageNatural.width)}×${Math.round((pendingImageRegion.hPercent / 100) * pendingImageNatural.height)} px` : ''}
                           </div>
                           <textarea
                             data-debug-id="artifact-viewer-image-annotation-comment-input"
@@ -696,80 +913,38 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                             className="mt-3 w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-emerald-300"
                           />
                           <div className="mt-3 flex flex-wrap gap-2">
-                            <button
-                              type="button"
-                              data-debug-id="artifact-viewer-add-image-annotation-btn"
-                              disabled={!imageAnnotationComment.trim()}
-                              onClick={handleAddImageAnnotation}
-                              className={`rounded-xl px-3 py-2 text-sm font-semibold ${imageAnnotationComment.trim() ? 'bg-emerald-300 text-black hover:bg-emerald-200' : 'cursor-not-allowed bg-white/5 text-zinc-500'}`}
-                            >
-                              Add annotation
-                            </button>
-                            <button
-                              type="button"
-                              data-debug-id="artifact-viewer-clear-image-region-btn"
-                              onClick={() => { setPendingImageRegion(null); setImageAnnotationComment(''); }}
-                              className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15"
-                            >
-                              Clear region
-                            </button>
+                            <button type="button" data-debug-id="artifact-viewer-add-image-annotation-btn" disabled={!imageAnnotationComment.trim()} onClick={handleAddImageAnnotation} className={`rounded-xl px-3 py-2 text-sm font-semibold ${imageAnnotationComment.trim() ? 'bg-emerald-300 text-black hover:bg-emerald-200' : 'cursor-not-allowed bg-white/5 text-zinc-500'}`}>Add annotation</button>
+                            <button type="button" data-debug-id="artifact-viewer-clear-image-region-btn" onClick={() => { setPendingImageRegion(null); setImageAnnotationComment(''); }} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15">Clear region</button>
                           </div>
                         </>
                       ) : (
-                        <div data-debug-id="artifact-viewer-png-region-empty" className="mt-2 text-sm text-zinc-300">
-                          Drag on the image below to draw a bounding box, then add a comment for that region.
-                        </div>
+                        <div data-debug-id="artifact-viewer-png-region-empty" className="mt-2 text-sm text-zinc-300">Drag on the image below to draw a bounding box, then add a comment for that region.</div>
                       )}
                     </div>
                   ) : null}
                   {previewKind === 'png' ? (
-                    <RegionAnnotationLayer
-                      contentUrl={contentUrl}
-                      alt={meta.name || artifactId}
-                      annotationMode={annotationMode}
-                      annotations={annotations}
-                      onCreateRegion={handleCreateImageRegion}
-                    />
+                    <RegionAnnotationLayer contentUrl={contentUrl} alt={selectedArtifactMeta.name || artifactId} annotationMode={annotationMode} annotations={annotations} onCreateRegion={handleCreateImageRegion} />
                   ) : previewKind === 'markdown' ? (
-                    loadingText
-                      ? <div className="text-sm text-zinc-400">Loading preview…</div>
-                      : <MarkdownBody data-debug-id="artifact-viewer-markdown-preview" source={textContent} className="text-zinc-200" onArtifactClick={setNestedArtifactId} onTextSelectionChange={annotationMode ? handleTextSelectionChange : undefined} />
+                    loadingText ? <div className="text-sm text-zinc-400">Loading preview…</div> : <MarkdownBody data-debug-id="artifact-viewer-markdown-preview" source={textContent} className="text-zinc-200" onArtifactClick={setNestedArtifactId} onTextSelectionChange={annotationMode ? handleTextSelectionChange : undefined} />
                   ) : (
-                    <div data-debug-id="artifact-viewer-unsupported-preview" className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-zinc-400">
-                      Preview is not available for this artifact type{meta.kind ? ` (${meta.kind}${meta.mime ? `, ${meta.mime}` : ''})` : ''}. Use Download to open it externally.
-                    </div>
+                    <div data-debug-id="artifact-viewer-unsupported-preview" className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-zinc-400">Preview is not available for this artifact type{selectedArtifactMeta.kind ? ` (${selectedArtifactMeta.kind}${selectedArtifactMeta.mime ? `, ${selectedArtifactMeta.mime}` : ''})` : ''}. Use Download to open it externally.</div>
                   )}
                 </div>
               )}
             </div>
             {annotationsOpen ? (
               <aside className="space-y-3 xl:sticky xl:top-0 xl:self-start">
-                {!annotationSupported ? (
-                  <div data-debug-id="artifact-viewer-annotation-unavailable" className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-zinc-300">
-                    Annotation is unavailable for this artifact type. Annotations are available for Markdown/text and PNG artifacts only.
-                  </div>
-                ) : null}
-                {!annotations.length ? (
-                  <div data-debug-id="artifact-viewer-annotations-empty" className="rounded-2xl border border-dashed border-white/10 bg-black/20 px-4 py-5 text-sm text-zinc-400">
-                    No annotations saved for this artifact yet. Turn on Annotate and use the artifact preview to create one in the capture-specific flows.
-                  </div>
-                ) : null}
+                {!annotationSupported ? <div data-debug-id="artifact-viewer-annotation-unavailable" className="rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-zinc-300">Annotation is unavailable for this artifact type. Annotations are available for Markdown/text and PNG artifacts only.</div> : null}
+                {!annotations.length ? <div data-debug-id="artifact-viewer-annotations-empty" className="rounded-2xl border border-dashed border-white/10 bg-black/20 px-4 py-5 text-sm text-zinc-400">No annotations for this version yet.</div> : null}
                 {annotations.map((annotation) => (
-                  <AnnotationListItem
-                    key={annotation.annotationId}
-                    annotation={annotation}
-                    onRemove={handleRemoveAnnotation}
-                    onSaveComment={handleSaveComment}
-                  />
+                  <AnnotationListItem key={annotation.annotationId} annotation={annotation} currentHeadVersionNo={currentHeadVersionNo} onRemove={handleRemoveAnnotation} onSaveComment={handleSaveComment} />
                 ))}
               </aside>
             ) : null}
           </div>
         </div>
       </div>
-      {nestedArtifactId ? (
-        <ArtifactViewer artifactId={nestedArtifactId} daemonUrl={daemonUrl} clientToken={clientToken} onClose={() => setNestedArtifactId('')} />
-      ) : null}
+      {nestedArtifactId ? <ArtifactViewer artifactId={nestedArtifactId} daemonUrl={daemonUrl} clientToken={clientToken} onClose={() => setNestedArtifactId('')} /> : null}
     </div>
   );
 }

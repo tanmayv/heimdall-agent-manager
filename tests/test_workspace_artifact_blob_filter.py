@@ -19,7 +19,8 @@ def main() -> None:
     artifact_storage = ARTIFACT_STORAGE.read_text(encoding="utf-8")
 
     require('artifact_blob_rel_path :: proc' in artifact_storage, 'artifact blob sharding helper missing')
-    require('return fmt.tprintf("%s/%s/%s", shard_a, shard_b, artifact_id)' in artifact_storage, 'artifact blobs should remain two-level sharded')
+    require('return fmt.tprintf("%s/%s/%s", shard_a, shard_b, artifact_id)' in artifact_storage, 'artifact blobs should preserve the legacy two-level shard prefix for compatibility')
+    require('return fmt.tprintf("%s/%s/%s/v%d", shard_a, shard_b, artifact_id, version_no)' in artifact_storage, 'versioned artifact blobs should add a v{n} leaf under the sharded artifact path')
 
     require('git_is_probable_artifact_blob_path :: proc' in git_vcs, 'artifact blob path detector missing from git vcs layer')
     require('len(artifact_id) != 36 || !strings.has_prefix(artifact_id, "art_")' in git_vcs, 'artifact blob detector should validate art_ id shape')

@@ -37,6 +37,7 @@ export type ArtifactAnnotationRecord = {
   artifactName: string;
   artifactMime: string;
   artifactKind: string;
+  versionNo: number;
   createdAt: number;
   updatedAt: number;
   comment: string;
@@ -98,6 +99,7 @@ function normalizeAnnotation(value: unknown): ArtifactAnnotationRecord | null {
   const annotationId = typeof value.annotationId === 'string' && value.annotationId ? value.annotationId : createAnnotationId();
   const createdAt = typeof value.createdAt === 'number' ? value.createdAt : Date.now();
   const updatedAt = typeof value.updatedAt === 'number' ? value.updatedAt : createdAt;
+  const versionNo = typeof value.versionNo === 'number' && value.versionNo > 0 ? value.versionNo : 1;
   return {
     annotationId,
     artifactId,
@@ -105,6 +107,7 @@ function normalizeAnnotation(value: unknown): ArtifactAnnotationRecord | null {
     artifactName: typeof value.artifactName === 'string' ? value.artifactName : artifactId,
     artifactMime: typeof value.artifactMime === 'string' ? value.artifactMime : '',
     artifactKind: typeof value.artifactKind === 'string' ? value.artifactKind : '',
+    versionNo,
     createdAt,
     updatedAt,
     comment: typeof value.comment === 'string' ? value.comment : '',
@@ -168,49 +171,50 @@ export function createArtifactAnnotation(input: CreateArtifactAnnotationInput): 
   return annotation;
 }
 
-export function listArtifactAnnotations(artifactId: string): ArtifactAnnotationRecord[] {
+export function listLegacyArtifactAnnotations(artifactId: string): ArtifactAnnotationRecord[] {
   if (!artifactId) return [];
   const store = loadStore();
   return [...(store.byArtifactId[artifactId] || [])].sort((a, b) => a.createdAt - b.createdAt);
 }
 
-export function saveArtifactAnnotation(annotation: ArtifactAnnotationRecord): ArtifactAnnotationRecord[] {
-  if (!annotation.artifactId) return [];
+export function clearLegacyArtifactAnnotations(artifactId: string) {
+  if (!artifactId) return;
   const store = loadStore();
-  const current = store.byArtifactId[annotation.artifactId] || [];
-  const next = current.some((item) => item.annotationId === annotation.annotationId)
-    ? current.map((item) => (item.annotationId === annotation.annotationId ? { ...annotation, updatedAt: Date.now() } : item))
-    : [...current, annotation];
-  store.byArtifactId[annotation.artifactId] = next.sort((a, b) => a.createdAt - b.createdAt);
-  saveStore(store);
-  return store.byArtifactId[annotation.artifactId];
-}
-
-export function updateArtifactAnnotationComment(artifactId: string, annotationId: string, comment: string): ArtifactAnnotationRecord[] {
-  if (!artifactId || !annotationId) return listArtifactAnnotations(artifactId);
-  const store = loadStore();
-  const current = store.byArtifactId[artifactId] || [];
-  store.byArtifactId[artifactId] = current.map((annotation) => (
-    annotation.annotationId === annotationId
-      ? { ...annotation, comment, updatedAt: Date.now() }
-      : annotation
-  ));
-  saveStore(store);
-  return store.byArtifactId[artifactId] || [];
-}
-
-export function removeArtifactAnnotation(artifactId: string, annotationId: string): ArtifactAnnotationRecord[] {
-  if (!artifactId || !annotationId) return listArtifactAnnotations(artifactId);
-  const store = loadStore();
-  const current = store.byArtifactId[artifactId] || [];
-  const next = current.filter((annotation) => annotation.annotationId !== annotationId);
-  if (next.length > 0) {
-    store.byArtifactId[artifactId] = next;
-  } else {
-    delete store.byArtifactId[artifactId];
+  if (!store.byArtifactId[artifactId]) return;
+  delete store.byArtifactId[artifactId];
+  if (!Object.keys(store.byArtifactId).length) {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.removeItem(ARTIFACT_ANNOTATIONS_STORAGE_KEY);
+    }
+    return;
   }
   saveStore(store);
-  return next;
+}
+
+export function normalizeDaemonAnnotation(value: unknown, artifactMeta?: {
+  artifactId?: string;
+  artifactName?: string;
+  artifactMime?: string;
+  artifactKind?: string;
+  artifactUri?: string;
+}): ArtifactAnnotationRecord | null {
+  if (!isObject(value)) return null;
+  const artifactId = typeof value.artifact_id === 'string' ? value.artifact_id : artifactMeta?.artifactId || '';
+  if (!artifactId) return null;
+  const contextValue = value.context_json;
+  return normalizeAnnotation({
+    annotationId: typeof value.annotation_id === 'string' ? value.annotation_id : createAnnotationId(),
+    artifactId,
+    artifactUri: artifactMeta?.artifactUri || buildArtifactUri(artifactId),
+    artifactName: artifactMeta?.artifactName || (typeof value.artifact_name === 'string' ? value.artifact_name : artifactId),
+    artifactMime: artifactMeta?.artifactMime || (typeof value.artifact_mime === 'string' ? value.artifact_mime : ''),
+    artifactKind: artifactMeta?.artifactKind || (typeof value.artifact_kind === 'string' ? value.artifact_kind : ''),
+    versionNo: typeof value.version_no === 'number' ? value.version_no : 1,
+    createdAt: typeof value.created_unix_ms === 'number' ? value.created_unix_ms : Date.now(),
+    updatedAt: typeof value.updated_unix_ms === 'number' ? value.updated_unix_ms : (typeof value.created_unix_ms === 'number' ? value.created_unix_ms : Date.now()),
+    comment: typeof value.comment === 'string' ? value.comment : '',
+    context: normalizeContext(contextValue),
+  });
 }
 
 function formatNumber(value: number) {
@@ -232,9 +236,9 @@ function quoteSelection(value: string) {
 
 export function summarizeAnnotationContext(annotation: ArtifactAnnotationRecord) {
   if (annotation.context.type === 'image') {
-    return `Region x=${formatNumber(annotation.context.x)} y=${formatNumber(annotation.context.y)} w=${formatNumber(annotation.context.w)} h=${formatNumber(annotation.context.h)}`;
+    return `v${annotation.versionNo} · Region x=${formatNumber(annotation.context.x)} y=${formatNumber(annotation.context.y)} w=${formatNumber(annotation.context.w)} h=${formatNumber(annotation.context.h)}`;
   }
-  const parts: string[] = [];
+  const parts: string[] = [`v${annotation.versionNo}`];
   if (annotation.context.lineStart && annotation.context.lineEnd && annotation.context.lineStart !== annotation.context.lineEnd) {
     parts.push(`Lines ${annotation.context.lineStart}-${annotation.context.lineEnd}`);
   } else if (annotation.context.lineStart) {
@@ -243,7 +247,7 @@ export function summarizeAnnotationContext(annotation: ArtifactAnnotationRecord)
   if (annotation.context.selectedText) {
     parts.push(quoteSelection(annotation.context.selectedText));
   }
-  return parts.join(' · ') || 'Text selection';
+  return parts.join(' · ') || `v${annotation.versionNo} · Text selection`;
 }
 
 export function formatAnnotationMarkdown(annotation: ArtifactAnnotationRecord) {
@@ -252,6 +256,7 @@ export function formatAnnotationMarkdown(annotation: ArtifactAnnotationRecord) {
   const contextLines = [
     `- artifact: ${artifactUri}`,
     `- file: ${artifactName}`,
+    `- version: v${annotation.versionNo}`,
     `- type: ${annotation.artifactMime || annotation.artifactKind || 'artifact'}`,
   ];
 
