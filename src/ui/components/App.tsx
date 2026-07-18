@@ -68,7 +68,7 @@ import { useFetchChainQuery, useFetchTeamQuery, useFetchWorkspaceQuery, useFocus
 import { useCreateProjectMutation, useListProjectsQuery } from '../api/endpoints/projects';
 import { useFetchSettingsCatalogQuery } from '../api/endpoints/settings';
 import { useListArtifactsQuery } from '../api/endpoints/artifacts';
-import { handleUserWsEvent } from '../api/wsInvalidation';
+import { handleUserWsEvent, resyncAfterReconnect } from '../api/wsInvalidation';
 
 type Chain = {
   chainId: string;
@@ -666,6 +666,10 @@ export default function App() {
   const [daemonModalContext, setDaemonModalContext] = useState<{ url?: string; label?: string }>({});
   const connectAttemptsRef = useRef(0);
   const connectRetryTimerRef = useRef<number | undefined>(undefined);
+  // Tracks whether the user WebSocket has opened at least once, so we can tell a
+  // first connect (initial mounts already fetch their data) from a reconnect
+  // (we may have missed fire-and-forget WS events while disconnected).
+  const wsHasConnectedOnceRef = useRef(false);
   const firstRunPromptedRef = useRef(false);
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Record<string, boolean>>(() => {
     try {
@@ -1162,6 +1166,11 @@ export default function App() {
 
   useEffect(() => {
     if (!session.connected || !session.clientToken || !session.clientInstanceId) return undefined;
+    // New session/daemon (this effect re-keys on daemonUrl/clientInstanceId/
+    // clientToken): treat the first socket open as an initial connect, not a
+    // reconnect. Transient close->reopen within the same session keeps the ref
+    // set, so those are correctly resynced.
+    wsHasConnectedOnceRef.current = false;
     let socket: WebSocket | null = null;
     let reconnectTimer: number | undefined;
     let stopped = false;
@@ -1175,8 +1184,16 @@ export default function App() {
       socket.onopen = () => {
         dispatch(userWsConnected());
         dispatch(wsRefreshRequested('user_ws_connected'));
-        refetchAgents();
-        loadHomeData(false, 'user_ws_connected').catch(() => undefined);
+        if (wsHasConnectedOnceRef.current) {
+          // Reconnect: events emitted during the outage were lost, so invalidate
+          // the RTK Query cache. Only currently-subscribed queries refetch, so
+          // this resyncs exactly what the UI is showing without a blanket reload.
+          resyncAfterReconnect(dispatch);
+        } else {
+          // First open for this session: initial query mounts + connectSession's
+          // loadHomeData already populated the caches, so avoid a duplicate load.
+          wsHasConnectedOnceRef.current = true;
+        }
       };
       socket.onmessage = (event) => {
         let payload: any;
@@ -1204,7 +1221,7 @@ export default function App() {
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       socket?.close();
     };
-  }, [dispatch, loadHomeData, session.connected, session.clientInstanceId, session.clientToken, session.daemonUrl]);
+  }, [dispatch, session.connected, session.clientInstanceId, session.clientToken, session.daemonUrl]);
 
   const openChain = useCallback((chainId: string) => {
     setAgentPageId('');

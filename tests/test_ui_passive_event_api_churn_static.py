@@ -55,7 +55,7 @@ def main() -> None:
 
     # WS handling stays delegated to wsInvalidation; App should not resurrect
     # broad chain-view revalidation loops.
-    require("import { handleUserWsEvent } from '../api/wsInvalidation';" in app, "App should delegate WS handling to wsInvalidation")
+    require("handleUserWsEvent" in app and "from '../api/wsInvalidation'" in app, "App should delegate WS handling to wsInvalidation")
     require("dispatch(revalidateChainView(focused));" not in app and "dispatch(revalidateChainView(chainId));" not in app, "App should not broadly revalidate chain view from websocket handlers")
     require("PERIODIC_REVALIDATE_MS" not in app, "periodic chain revalidation should be removed")
 

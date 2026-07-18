@@ -1,4 +1,4 @@
-import { heimdallApi } from './heimdallApi';
+import { heimdallApi, HEIMDALL_TAG_TYPES } from './heimdallApi';
 import { tasksApi } from './endpoints/tasks';
 import { normalizeChain, workspaceApi } from './endpoints/workspace';
 import { chatEndpoints } from './endpoints/chats';
@@ -338,6 +338,17 @@ function handleAgentEvent(dispatch: any, payload: any, ctx: WsCtx) {
   if (ctx.focusedChainId) {
     dispatch(wsChainViewRefreshRequested(`${payload.type}:${agentId}`));
   }
+}
+
+// The user WebSocket is fire-and-forget fanout with no per-client replay: any
+// event emitted while we were disconnected is lost. After the socket re-opens we
+// therefore invalidate every RTK Query tag so the cache re-fetches whatever the
+// UI is currently showing. RTK Query only refetches entries that still have an
+// active subscriber, so this is scoped to mounted queries (not a blanket reload)
+// and dedupes concurrent invalidations. Call this ONLY on a genuine reconnect,
+// not the first connect (initial mounts already fetch their data).
+export function resyncAfterReconnect(dispatch: any) {
+  dispatch(heimdallApi.util.invalidateTags([...HEIMDALL_TAG_TYPES]));
 }
 
 export function handleUserWsEvent(dispatch: any, payload: any, ctx: WsCtx = {}) {

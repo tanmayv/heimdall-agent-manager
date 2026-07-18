@@ -19,7 +19,8 @@ def main() -> None:
     app = APP.read_text(encoding="utf-8")
     ws = WS.read_text(encoding="utf-8")
 
-    require("import { handleUserWsEvent } from '../api/wsInvalidation';" in app, "App must import wsInvalidation handler")
+    require("handleUserWsEvent" in app and "from '../api/wsInvalidation'" in app, "App must import wsInvalidation handler")
+    require("resyncAfterReconnect(dispatch)" in app, "App must resync RTK Query cache on WS reconnect")
     require("handleUserWsEvent(dispatch, payload, {" in app, "App websocket onmessage must delegate to wsInvalidation")
 
     # WS handling should never fall back to broad component/store refresh fan-out.
