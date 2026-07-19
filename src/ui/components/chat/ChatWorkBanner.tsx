@@ -1,9 +1,29 @@
+function agentRemoteInfo(agent: any): { peerId: string; remoteAgentInstanceId: string } | null {
+  const remote = agent?.remote;
+  if (remote) {
+    const peerId = String(remote.peerId || remote.peer_id || '');
+    const remoteAgentInstanceId = String(remote.remoteAgentInstanceId || remote.remote_agent_instance_id || '');
+    if (peerId || remoteAgentInstanceId) return { peerId, remoteAgentInstanceId };
+  }
+  const peerId = String(agent?.remotePeerId || agent?.remote_peer_id || '');
+  const remoteAgentInstanceId = String(agent?.remoteAgentInstanceId || agent?.remote_agent_instance_id || '');
+  if (peerId || remoteAgentInstanceId) return { peerId, remoteAgentInstanceId };
+  return null;
+}
+
+function isRemoteProxyAgent(agent: any): boolean {
+  const kind = String(agent?.agentKind || agent?.agent_kind || '').toLowerCase();
+  const remote = agentRemoteInfo(agent);
+  return kind === 'remote_proxy' && Boolean(remote?.peerId) && Boolean(remote?.remoteAgentInstanceId);
+}
+
 function agentHasLiveSession(agent: any): boolean {
   if (!agent) return false;
   const status = String(agent.status || '').toLowerCase();
   const state = String(agent.state || '').toLowerCase();
   const startup = String(agent.startupStatus || agent.startup_status || '').toLowerCase();
   const execState = String(agent.execState || agent.exec_state || '').toLowerCase();
+  if (isRemoteProxyAgent(agent)) return !['archived', 'missing', 'deleted'].includes(status) && !['archived', 'missing', 'deleted'].includes(state);
   if (['offline', 'stopped', 'disconnected', 'archived', 'missing'].includes(status) || ['offline', 'stopped', 'disconnected', 'archived', 'missing'].includes(state)) return false;
   if (agent.currentTaskId || agent.current_task_id) return true;
   if (['ready', 'start_success', 'connected'].includes(startup)) return true;
@@ -19,6 +39,7 @@ function agentWorkingBannerState(agent: any): 'working' | 'stopped' | '' {
   const status = String(agent.status || '').toLowerCase();
   const state = String(agent.state || '').toLowerCase();
   const startup = String(agent.startupStatus || agent.startup_status || '').toLowerCase();
+  if (isRemoteProxyAgent(agent)) return '';
   if (!live || startup === 'stopped' || status === 'offline' || status === 'stopped' || state === 'stopped') return 'stopped';
   if (activity === 'idle' || status === 'idle' || state === 'idle') return '';
   if (activity === 'active' || agent.currentTaskId || agent.current_task_id || status === 'active' || status === 'working' || state === 'working') return 'working';
