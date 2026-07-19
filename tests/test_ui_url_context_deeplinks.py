@@ -7,6 +7,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "src" / "ui" / "components" / "App.tsx"
 URL_PARAMS = ROOT / "src" / "ui" / "components" / "useUrlParams.ts"
+ROUTES = ROOT / "src" / "ui" / "components" / "workspace" / "routes.ts"
 DEBUG_SERVER = ROOT / "src" / "ui" / "electron" / "debugServer.cts"
 MESSAGE_BUBBLE = ROOT / "src" / "ui" / "components" / "MessageBubble.tsx"
 
@@ -20,6 +21,7 @@ def require(condition: bool, message: str) -> None:
 def main() -> None:
     app = APP.read_text(encoding="utf-8")
     params = URL_PARAMS.read_text(encoding="utf-8")
+    routes = ROUTES.read_text(encoding="utf-8")
     debug = DEBUG_SERVER.read_text(encoding="utf-8")
     bubble = MESSAGE_BUBBLE.read_text(encoding="utf-8")
 
@@ -38,8 +40,11 @@ def main() -> None:
     require("onOpenTask={(taskId: string) => { updateUrlParams({ view: 'chain', chainId: selectedChain.chainId, taskId });" in app, "opening a task should write taskId to URL")
     require("onCloseTask={() => updateUrlParams({ taskId: null })}" in app, "closing a task should clear taskId from URL")
 
-    require("view: 'agent', agentId" in app, "agent page URL should include agentId")
-    require("urlParams.view === 'agent' && urlParams.agentId" in app, "agent page should hydrate from URL")
+    require("function isAgentWorkspaceView(view: string): boolean" in app and "return view === 'agent' || view === 'conversation';" in app, "agent-like surfaces should normalize through shared workspace-view helper")
+    require("const openAgentPage = useCallback((agentId: string) => {" in app and "const view = isConversationAgent(selected) ? 'conversation' : 'agent';" in app and "updateUrlParams({ view, agentId, chainId: null, taskId: null, memoryId: null });" in app, "agent page URL should include agentId through shared openAgentPage routing")
+    require("if (isAgentWorkspaceView(urlParams.view) && urlParams.agentId && agentPageId !== urlParams.agentId) {" in app, "agent page should hydrate from URL through shared workspace-view guard")
+    require("return `/workspace/agents/${encodePathPart(route.agentInstanceId)}`;" in routes, "agent workspace path should be generated")
+    require("return `/workspace/conversations/${encodePathPart(route.agentInstanceId)}`;" in routes, "conversation workspace path should be generated")
     require("projectId" in app and "updateUrlParams({ chainId: null, taskId: null, view: 'home', memoryId: null, agentId: null, projectId })" in app, "project selection should be URL-addressable")
 
     require("Current UI context:" in app, "Guide context message should describe structured context")

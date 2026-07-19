@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Static contract checks for unified chat component reuse/debug prefixes."""
+"""Static contract checks for unified workspace chat reuse and debug wiring."""
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = (ROOT / 'src/ui/components/App.tsx').read_text(encoding='utf-8')
-COMPOSER = (ROOT / 'src/ui/components/chat/ChatComposer.tsx').read_text(encoding='utf-8')
-MESSAGE_LIST = (ROOT / 'src/ui/components/chat/ChatMessageList.tsx').read_text(encoding='utf-8')
-WORK_BANNER = (ROOT / 'src/ui/components/chat/ChatWorkBanner.tsx').read_text(encoding='utf-8')
+ADAPTERS = (ROOT / 'src/ui/components/workspace/adapters.ts').read_text(encoding='utf-8')
+GENERIC_PAGE = (ROOT / 'src/ui/components/workspace/GenericAgentWorkspacePage.tsx').read_text(encoding='utf-8')
+SHELL = (ROOT / 'src/ui/components/workspace/UnifiedWorkspaceShell.tsx').read_text(encoding='utf-8')
+INSPECTOR = (ROOT / 'src/ui/components/workspace/ContextInspector.tsx').read_text(encoding='utf-8')
+TYPES = (ROOT / 'src/ui/components/workspace/types.ts').read_text(encoding='utf-8')
+ROUTES = (ROOT / 'src/ui/components/workspace/routes.ts').read_text(encoding='utf-8')
 DEBUG_PREFIXES = (ROOT / 'src/ui/components/chat/debugPrefixes.ts').read_text(encoding='utf-8')
+AGENTS = (ROOT / 'AGENTS.md').read_text(encoding='utf-8')
 
 
 def require(text: str, snippet: str, label: str) -> None:
@@ -15,91 +19,147 @@ def require(text: str, snippet: str, label: str) -> None:
         raise AssertionError(f'missing {label}: {snippet}')
 
 
+def require_count(text: str, snippet: str, minimum: int, label: str) -> None:
+    actual = text.count(snippet)
+    if actual < minimum:
+        raise AssertionError(f'missing {label}: expected at least {minimum}x {snippet!r}, found {actual}')
+
+
 def main() -> None:
     for snippet in [
-        "import ChatHeader from './chat/ChatHeader';",
-        "import ChatComposer from './chat/ChatComposer';",
-        "import ChatWorkBanner from './chat/ChatWorkBanner';",
-        "import ChatMessageList from './chat/ChatMessageList';",
-        "import ChatSidebar from './chat/ChatSidebar';",
-        "import { agentDetailChatDebug, chainCoordinatorChatDebug, conversationChatDebug } from './chat/debugPrefixes';",
+        "import GenericAgentWorkspacePage from './workspace/GenericAgentWorkspacePage';",
+        "import UnifiedWorkspaceShell from './workspace/UnifiedWorkspaceShell';",
+        "import WorkspaceLeftSidebar from './workspace/WorkspaceLeftSidebar';",
+        "import WorkspaceMainRegion from './workspace/WorkspaceMainRegion';",
+        "import ContextInspector from './workspace/ContextInspector';",
+        "import { adaptChainCoordinatorWorkspaceContext, adaptConversationWorkspaceContext, adaptDirectAgentWorkspaceContext } from './workspace/adapters';",
     ]:
-        require(APP, snippet, 'shared chat imports')
+        require(APP, snippet, 'workspace shell imports')
+
+    require_count(APP, '<GenericAgentWorkspacePage', 3, 'shared generic agent page usage')
+    require_count(APP, '<UnifiedWorkspaceShell', 3, 'shared workspace shell usage')
+    for snippet in [
+        'workspaceInspectorTabsFor(detailWorkspaceContext',
+        'workspaceInspectorTabsFor(conversationWorkspaceContext',
+        'workspaceInspectorTabsFor(coordinatorWorkspaceContext',
+        'detailWorkspaceContext.genericAgent!',
+        'conversationWorkspaceContext.genericAgent!',
+        'coordinatorWorkspaceContext.genericAgent!',
+    ]:
+        require(APP, snippet, 'normalized workspace context consumption')
 
     for snippet in [
-        '<ChatHeader',
-        '<ChatMessageList',
-        '<ChatComposer',
-        '<ChatWorkBanner',
-        '<ChatSidebar debugId={agentDetailChatDebug.sidebar}',
-        '<ChatSidebar debugId={chainCoordinatorChatDebug.sidebar}',
+        "import ChatHeader from '../chat/ChatHeader';",
+        "import ChatMessageList from '../chat/ChatMessageList';",
+        "import ChatWorkBanner from '../chat/ChatWorkBanner';",
+        "import ChatComposer from '../chat/ChatComposer';",
+        '<ChatHeader {...context.header} />',
+        '<ChatMessageList {...context.chat} />',
+        '{context.workBanner ? <ChatWorkBanner {...context.workBanner} /> : null}',
+        '{context.composer ? <ChatComposer {...context.composer} /> : null}',
+        'data-debug-id="generic-agent-page"',
+        'data-debug-id="generic-agent-page-body"',
+        'data-debug-id="generic-agent-page-composer-region"',
     ]:
-        require(APP, snippet, 'shared component usage')
+        require(GENERIC_PAGE, snippet, 'generic page shared chat primitives')
 
     for snippet in [
-        "shellDebugId={agentDetailChatDebug.composer + '-composer-shell'}",
-        "shellDebugId={conversationChatDebug.composer + '-shell'}",
-        "shellDebugId={chainCoordinatorChatDebug.composer + '-composer-shell'}",
-        'debugPrefix={agentDetailChatDebug.messageList}',
-        'debugPrefix={conversationChatDebug.messageList}',
-        'debugPrefix={chainCoordinatorChatDebug.messageList}',
-        'debugPrefix={agentDetailChatDebug.workBanner}',
-        'debugPrefix={conversationChatDebug.workBanner}',
-        'debugPrefix={chainCoordinatorChatDebug.workBanner}',
+        'data-debug-id="workspace-shell"',
+        'data-inspector-collapsed={inspectorCollapsed ? \'true\' : \'false\'}',
     ]:
-        require(APP, snippet, 'per-surface debug wiring')
+        require(SHELL, snippet, 'workspace shell debug ids')
+
+    for snippet in [
+        'data-debug-id="workspace-inspector"',
+        'data-debug-id="workspace-inspector-toggle-btn"',
+        'data-debug-id="workspace-inspector-tabs"',
+        'workspace-inspector-tab-${tab.id}',
+        'workspace-inspector-panel-${activeTab.id}',
+        'data-debug-id="workspace-inspector-empty"',
+    ]:
+        require(INSPECTOR, snippet, 'inspector debug ids')
+
+    for snippet in [
+        "import { agentDetailChatDebug, chainCoordinatorChatDebug, conversationChatDebug } from '../chat/debugPrefixes';",
+        "surfaceKind: 'generic_agent'",
+        "routeKind: 'conversation'",
+        "routeKind: 'agent'",
+        "routeKind: 'chain_coordinator'",
+        'visibleInspectorTabs: visibleInspectorTabs(capabilities)',
+        'debug: debugPlan(conversationChatDebug)',
+        'debug: debugPlan(agentDetailChatDebug)',
+        'debug: debugPlan(chainCoordinatorChatDebug)',
+        'canShowTasks: false',
+        'canShowTasks: true',
+        'canShowChainAgents: true',
+        'canShowMemory: true',
+        'canShowRuntime: true',
+    ]:
+        require(ADAPTERS, snippet, 'workspace adapter normalization')
 
     for snippet in [
         "messageList: 'chain-coordinator'",
         "composer: 'chain-coordinator'",
-        "upload: 'chain-coordinator-artifact-upload'",
         "messageList: 'conversation-thread'",
         "composer: 'conversation-composer'",
-        "upload: 'conversation-attach'",
-        "runtime: 'conversation'",
         "messageList: 'agent-detail-chat'",
         "composer: 'agent-detail-chat'",
-        "upload: 'agent-detail-chat-artifact-upload'",
-        "sidebar: 'agent-detail-chat-sidebar'",
     ]:
-        require(DEBUG_PREFIXES, snippet, 'debug prefix contract')
+        require(DEBUG_PREFIXES, snippet, 'chat debug prefix registry')
 
     for snippet in [
-        'if (event.key !== \'Enter\' || event.shiftKey || !(event.metaKey || event.ctrlKey)) return;',
-        "keyboardHint = '⌘↵ to send'",
-        '<ArtifactUploadButton',
-        '<RuntimeRestartControls',
-        'data-debug-id={sendButtonDebugId}',
-        'data-debug-id={shellDebugId}',
-        'data-debug-id={inputDebugId}',
+        "shellDebugId: detailAgentContext.debug.composerPrefix + '-composer-shell'",
+        "shellDebugId: conversationAgentContext.debug.composerPrefix + '-shell'",
+        "shellDebugId: coordinatorAgentContext.debug.composerPrefix + '-composer-shell'",
+        'debugPrefix: detailAgentContext.debug.messageListPrefix',
+        'debugPrefix: conversationAgentContext.debug.messageListPrefix',
+        'debugPrefix: coordinatorAgentContext.debug.messageListPrefix',
+        'debugPrefix: detailAgentContext.debug.workBannerPrefix',
+        'debugPrefix: conversationAgentContext.debug.workBannerPrefix',
+        'debugPrefix: coordinatorAgentContext.debug.workBannerPrefix',
+        'runtimeControls: { debugPrefix: detailAgentContext.debug.runtimePrefix',
+        'runtimeControls: { debugPrefix: conversationAgentContext.debug.runtimePrefix',
+        'runtimeControls: { debugPrefix: coordinatorAgentContext.debug.runtimePrefix',
     ]:
-        require(COMPOSER, snippet, 'shared composer contract')
+        require(APP, snippet, 'per-surface debug wiring')
 
     for snippet in [
-        'data-debug-id={`${debugPrefix}-scroll`}',
-        'data-debug-id={`${debugPrefix}-load-older-messages-btn`}',
-        'data-debug-id={`${debugPrefix}-message-${message.messageId}-time`}',
-        'debugId={`${debugPrefix}-message-copy-btn-${message.messageId}`}',
-        'data-debug-id={`${debugPrefix}-message-${message.messageId}-status`}',
-        'data-debug-id={`${debugPrefix}-jump-latest-btn`}',
+        "export type WorkspaceRouteKind = 'workspace_home' | 'conversation' | 'agent' | 'chain_coordinator' | 'task' | 'project' | 'artifact';",
+        "export type WorkspaceSurfaceKind = 'workspace_home' | 'generic_agent' | 'task_detail' | 'project_overview' | 'artifact_viewer';",
+        'export type WorkspaceCapabilities = {',
+        'export type WorkspaceContext = {',
+        'genericAgent?: WorkspaceSelectedAgentContext;',
     ]:
-        require(MESSAGE_LIST, snippet, 'shared message list contract')
+        require(TYPES, snippet, 'workspace types')
 
     for snippet in [
-        'data-debug-id={`${debugPrefix}-status-banner`}',
-        'data-debug-id={`${debugPrefix}-status-start-btn`}',
-        "const taskLabel = mode === 'working' ? agentCurrentTaskLabel(agent, tasksById) : '';",
+        "return `/workspace/conversations/${encodePathPart(route.agentInstanceId)}`;",
+        "return `/workspace/agents/${encodePathPart(route.agentInstanceId)}`;",
+        "return `/workspace/chains/${encodePathPart(route.chainId)}/coordinator`;",
+        "return `/workspace/chains/${encodePathPart(route.chainId)}/tasks/${encodePathPart(route.taskId)}`;",
+        "if (parts[1] === 'conversations' && parts[2]) return { kind: 'conversation', agentInstanceId: parts[2] };",
+        "if (parts[1] === 'agents' && parts[2]) return { kind: 'agent', agentInstanceId: parts[2] };",
+        "if (parts[1] === 'chains' && parts[2] && parts[3] === 'coordinator') return { kind: 'chain_coordinator', chainId: parts[2] };",
+        "if (parts[1] === 'chains' && parts[2] && parts[3] === 'tasks' && parts[4]) return { kind: 'task', chainId: parts[2], taskId: parts[4] };",
     ]:
-        require(WORK_BANNER, snippet, 'shared work banner contract')
+        require(ROUTES, snippet, 'workspace routes')
 
-    for snippet in [
-        "runtimeControls={{ debugPrefix: chainCoordinatorChatDebug.runtime, providers, projects, provider: coordinatorProvider, modelTier: coordinatorTier, projectId, disabled: true, restarting: false, showProject: true, onRestart: async () => undefined }}",
-        "runtimeControls={{ debugPrefix: conversationChatDebug.runtime, providers, projects, provider: messageProvider, modelTier: messageTier, projectId: agent?.projectId || '', disabled: !agent?.id || sending, restarting: threadBusy === 'restart', showProject: true, onRestart: restartConversationRuntime }}",
-        "runtimeControls={{ debugPrefix: agentDetailChatDebug.runtime, providers, projects, provider: chatProvider, modelTier: chatTier, projectId: agent?.projectId || '', disabled: !agent?.id, restarting: Boolean(runtimeRestarting), showProject: true, onRestart: (next) => { void restartExactRuntime(next.provider, next.modelTier, 'runtime', next.projectId); } }}",
+    for debug_id in [
+        'workspace-shell',
+        'workspace-left-sidebar',
+        'workspace-main-region',
+        'workspace-top-bar',
+        'workspace-content-outlet',
+        'workspace-inspector',
+        'workspace-inspector-toggle-btn',
+        'workspace-inspector-tabs',
+        'generic-agent-page',
+        'chain-agent-open-btn-${agentId}',
+        'chain-agent-chat-btn-${agentId}',
     ]:
-        require(APP, snippet, 'project/provider/tier runtime controls')
+        require(AGENTS, debug_id, 'debug id registry')
 
-    print('PASS: unified chat surfaces share components and preserve debug-prefix contracts')
+    print('PASS: unified workspace chat surfaces share one generic page, one shell, and one debug-prefix contract')
 
 
 if __name__ == '__main__':

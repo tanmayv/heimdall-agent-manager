@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import SettingsPage from './SettingsPage';
 import MemoryManagementPage from './MemoryManagementPage';
@@ -60,7 +61,13 @@ import ChatComposer from './chat/ChatComposer';
 import ChatMessageList from './chat/ChatMessageList';
 import ChatSidebar from './chat/ChatSidebar';
 import ChatWorkBanner from './chat/ChatWorkBanner';
-import { agentDetailChatDebug, chainCoordinatorChatDebug, conversationChatDebug } from './chat/debugPrefixes';
+import ContextInspector from './workspace/ContextInspector';
+import GenericAgentWorkspacePage from './workspace/GenericAgentWorkspacePage';
+import UnifiedWorkspaceShell from './workspace/UnifiedWorkspaceShell';
+import WorkspaceLeftSidebar from './workspace/WorkspaceLeftSidebar';
+import WorkspaceMainRegion from './workspace/WorkspaceMainRegion';
+import { adaptChainCoordinatorWorkspaceContext, adaptConversationWorkspaceContext, adaptDirectAgentWorkspaceContext } from './workspace/adapters';
+import type { WorkspaceContext, WorkspaceInspectorTab } from './workspace/types';
 import * as daemonApi from '../api/daemonApi';
 import { selectTaskCacheProjection } from '../api/taskCache';
 import { selectChainViewCacheProjection } from '../api/chainViewCache';
@@ -178,6 +185,14 @@ function agentRuntimeDotTone(status: string): string {
   if (status === 'startup_failed') return 'bg-red-400 shadow-red-400/40';
   if (status === 'startup_unknown') return 'bg-violet-400 shadow-violet-400/40';
   return 'bg-zinc-500/70 shadow-zinc-500/20';
+}
+
+function isAgentWorkspaceView(view: string): boolean {
+  return view === 'agent' || view === 'conversation';
+}
+
+function workspaceInspectorTabsFor(context: WorkspaceContext, tabsById: Record<string, WorkspaceInspectorTab>): WorkspaceInspectorTab[] {
+  return context.visibleInspectorTabs.map((tabId) => tabsById[tabId]).filter(Boolean);
 }
 
 const COMPLETED_CHAIN_STATUSES = new Set(['completed', 'approved', 'archived', 'cancelled', 'abandoned']);
@@ -712,7 +727,7 @@ export default function App() {
   useEffect(() => { chainsByIdRef.current = chainsById; }, [chainsById]);
   useEffect(() => { selectedAgentRef.current = selectedAgentId; }, [selectedAgentId]);
   useEffect(() => {
-    if (urlParams.view === 'agent') {
+    if (isAgentWorkspaceView(urlParams.view)) {
       visibleChatAgentRef.current = agentPageId || urlParams.agentId || '';
       return;
     }
@@ -876,7 +891,7 @@ export default function App() {
     const visibleCoordinatorId = home.surface === 'chain'
       ? (chainsById?.[home.selectedChainId || urlParams.chainId || '']?.coordinatorAgentInstanceId || chainsById?.[home.selectedChainId || urlParams.chainId || '']?.coordinator_agent_instance_id || '')
       : '';
-    const visibleAgentId = urlParams.view === 'agent'
+    const visibleAgentId = isAgentWorkspaceView(urlParams.view)
       ? (agentPageId || urlParams.agentId || selectedAgentId || '')
       : visibleCoordinatorId;
     const markIfUnread = (agentInstanceId: string, unread: number) => {
@@ -941,7 +956,7 @@ export default function App() {
     const project: any = projectId ? projectsById?.[projectId] : null;
     return {
       url: typeof window !== 'undefined' ? window.location.href : '',
-      view: agentPageId ? 'agent' : home.surface,
+      view: agentPageId ? (isAgentWorkspaceView(urlParams.view) ? urlParams.view : 'agent') : home.surface,
       chainId,
       chainTitle: chain?.title || '',
       taskId,
@@ -953,7 +968,7 @@ export default function App() {
       projectId,
       projectName: project?.name || '',
     };
-  }, [agentPageId, agents, chainsById, home.selectedChainId, home.selectedProjectId, home.surface, memory?.recordsById, projectsById, selectedProjectId, tasksById, urlParams.agentId, urlParams.chainId, urlParams.memoryId, urlParams.projectId, urlParams.taskId]);
+  }, [agentPageId, agents, chainsById, home.selectedChainId, home.selectedProjectId, home.surface, memory?.recordsById, projectsById, selectedProjectId, tasksById, urlParams.agentId, urlParams.chainId, urlParams.memoryId, urlParams.projectId, urlParams.taskId, urlParams.view]);
   useEffect(() => {
     (window as any).__heimdallPageContext = currentPageInfo;
   }, [currentPageInfo]);
@@ -965,7 +980,7 @@ export default function App() {
   const badgeCount = attentionCount(tasksById || {}, attention, pendingMemoryIds, mergeReviewingChains);
 
   useEffect(() => {
-    if (urlParams.view !== 'agent' && agentPageId) {
+    if (!isAgentWorkspaceView(urlParams.view) && agentPageId) {
       setAgentPageId('');
     }
     if (urlParams.view === 'memory' && home.surface !== 'memory') {
@@ -984,7 +999,7 @@ export default function App() {
       dispatch(selectSurface(urlParams.view));
       return;
     }
-    if (urlParams.view === 'agent' && urlParams.agentId && agentPageId !== urlParams.agentId) {
+    if (isAgentWorkspaceView(urlParams.view) && urlParams.agentId && agentPageId !== urlParams.agentId) {
       setAgentPageId(urlParams.agentId);
       dispatch(fetchSelectedChat({ agentId: urlParams.agentId })).catch(() => undefined);
       return;
@@ -1282,10 +1297,12 @@ export default function App() {
   }, [dispatch]);
 
   const openAgentPage = useCallback((agentId: string) => {
+    const selected = (agents || []).find((agent: any) => agentInstanceId(agent) === agentId || agent.id === agentId);
+    const view = isConversationAgent(selected) ? 'conversation' : 'agent';
     setAgentPageId(agentId);
-    updateUrlParams({ view: 'agent', agentId, chainId: null, taskId: null, memoryId: null });
+    updateUrlParams({ view, agentId, chainId: null, taskId: null, memoryId: null });
     dispatch(fetchSelectedChat({ agentId })).catch(() => undefined);
-  }, [dispatch]);
+  }, [agents, dispatch]);
 
   const openAgentIdentityPage = useCallback((agentId: string) => {
     const durableId = String(agentId || '').split('@')[0];
@@ -1338,7 +1355,7 @@ export default function App() {
       const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, provider: effectiveProvider, templateId: 'conversation', projectId: projectId || '', displayName: '', modelTier: modelTier || 'smart', agentRole: 'conversation' });
       const resolvedId = result?.agent_instance_id || result?.agentInstanceId || requestedId;
       setAgentPageId(resolvedId);
-      updateUrlParams({ view: 'agent', agentId: resolvedId, chainId: null, taskId: null, memoryId: null, projectId: projectId || null });
+      updateUrlParams({ view: 'conversation', agentId: resolvedId, chainId: null, taskId: null, memoryId: null, projectId: projectId || null });
       await refetchAgents();
       dispatch(fetchSelectedChat({ agentId: resolvedId })).catch(() => undefined);
       return resolvedId;
@@ -1374,7 +1391,7 @@ export default function App() {
       }
       if (!sent) throw lastSendError || new Error('Timed out waiting for conversation agent');
       setAgentPageId(resolvedId);
-      updateUrlParams({ view: 'agent', agentId: resolvedId, chainId: null, taskId: null, memoryId: null, projectId: projectId || null });
+      updateUrlParams({ view: 'conversation', agentId: resolvedId, chainId: null, taskId: null, memoryId: null, projectId: projectId || null });
       await refetchAgents();
       dispatch(appendMessage({ agentId: resolvedId, message: { id: sendResult?.messageId || `local_${Date.now()}`, author: 'user', body, createdUnixMs: Date.now(), deliveredUnixMs: Date.now(), readUnixMs: 0 } }));
       return resolvedId;
@@ -1443,52 +1460,54 @@ export default function App() {
     <VimSidebarProvider>
       <div className="h-screen overflow-hidden bg-[#08090b] text-zinc-100">
       <div className="flex h-full">
-        <aside className={`${sidebarCollapsed ? 'w-0 border-r-0' : 'w-[320px] border-r'} shrink-0 border-white/10 bg-[#090909] transition-[width] duration-200`}>
-          <ConversationFocusedSidebar
-            conversations={conversationAgents}
-            chats={chats}
-            summaryById={effectiveConversationSummaryById}
-            projectsById={projectsById}
-            selectedAgentId={agentPageId}
-            onOpenConversation={openAgentPage}
-            onNewConversation={createNewConversation}
-            newConversationBusy={newConversationBusy}
-            collapsed={sidebarCollapsed}
-            onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
-            agents={agents}
-            allAgents={agents}
-            selectedSidebarAgentId={selectedSidebarAgentId}
-            sidebarAgentLaunchingId={sidebarAgentLaunchingId}
-            onSelectSidebarAgent={setSelectedSidebarAgentId}
-            onOpenAgentInstance={openAgentPage}
-            onStartAgentInstance={startSidebarAgentInstance}
-            chains={sidebarChains}
-            projects={projectsById}
-            selectedChainId={home.selectedChainId}
-            onOpenChain={openChain}
-            onNewChain={() => dispatch(openNewChainModal({}))}
-            onHome={() => selectSurfaceWithUrl('home')}
-            onMemory={() => selectSurfaceWithUrl('memory')}
-            onAgents={() => selectSurfaceWithUrl('agents')}
-            onTaskChains={() => selectSurfaceWithUrl('task-chains')}
-            onProjects={() => selectSurfaceWithUrl('projects')}
-            onSettings={() => selectSurfaceWithUrl('settings')}
-          />
-        </aside>
-        {selectedSidebarAgentId && !sidebarCollapsed ? (
-          <SidebarAgentInstancesPanel
-            agentId={selectedSidebarAgentId}
-            agents={agents}
-            chats={chats}
-            tasksById={tasksById}
-            chainsById={chainsById}
-            selectedAgentId={agentPageId}
-            launchingAgentId={sidebarAgentLaunchingId}
-            onOpenInstance={openAgentPage}
-            onStartInstance={startSidebarAgentInstance}
-            onClose={() => setSelectedSidebarAgentId('')}
-          />
-        ) : null}
+        <WorkspaceLeftSidebar className="min-h-0 shrink-0">
+          <aside className={`${sidebarCollapsed ? 'w-0 border-r-0' : 'w-[320px] border-r'} shrink-0 border-white/10 bg-[#090909] transition-[width] duration-200`}>
+            <ConversationFocusedSidebar
+              conversations={conversationAgents}
+              chats={chats}
+              summaryById={effectiveConversationSummaryById}
+              projectsById={projectsById}
+              selectedAgentId={agentPageId}
+              onOpenConversation={openAgentPage}
+              onNewConversation={createNewConversation}
+              newConversationBusy={newConversationBusy}
+              collapsed={sidebarCollapsed}
+              onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
+              agents={agents}
+              allAgents={agents}
+              selectedSidebarAgentId={selectedSidebarAgentId}
+              sidebarAgentLaunchingId={sidebarAgentLaunchingId}
+              onSelectSidebarAgent={setSelectedSidebarAgentId}
+              onOpenAgentInstance={openAgentPage}
+              onStartAgentInstance={startSidebarAgentInstance}
+              chains={sidebarChains}
+              projects={projectsById}
+              selectedChainId={home.selectedChainId}
+              onOpenChain={openChain}
+              onNewChain={() => dispatch(openNewChainModal({}))}
+              onHome={() => selectSurfaceWithUrl('home')}
+              onMemory={() => selectSurfaceWithUrl('memory')}
+              onAgents={() => selectSurfaceWithUrl('agents')}
+              onTaskChains={() => selectSurfaceWithUrl('task-chains')}
+              onProjects={() => selectSurfaceWithUrl('projects')}
+              onSettings={() => selectSurfaceWithUrl('settings')}
+            />
+          </aside>
+          {selectedSidebarAgentId && !sidebarCollapsed ? (
+            <SidebarAgentInstancesPanel
+              agentId={selectedSidebarAgentId}
+              agents={agents}
+              chats={chats}
+              tasksById={tasksById}
+              chainsById={chainsById}
+              selectedAgentId={agentPageId}
+              launchingAgentId={sidebarAgentLaunchingId}
+              onOpenInstance={openAgentPage}
+              onStartInstance={startSidebarAgentInstance}
+              onClose={() => setSelectedSidebarAgentId('')}
+            />
+          ) : null}
+        </WorkspaceLeftSidebar>
 
         <main className="relative min-w-0 flex-1 overflow-y-auto">
           <button
@@ -1542,7 +1561,7 @@ export default function App() {
                 await dispatch(sendMessageToSelectedAgent({ agentId, body, tempId, interrupt })).unwrap();
               },
             };
-            return isConversationAgent(selectedPageAgent) ? (
+            return (urlParams.view === 'conversation' || isConversationAgent(selectedPageAgent)) ? (
               <ConversationThreadPage
                 {...sharedAgentPageProps}
               />
@@ -2837,6 +2856,42 @@ function AgentTaskList({ title, emptyText, tasks, chainsById, agentId, completed
   );
 }
 
+function ContextInfoGrid({ items }: { items: Array<{ debugId: string; label: string; value: ReactNode }> }) {
+  return (
+    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-1">
+      {items.map((item) => (
+        <div key={item.debugId} data-debug-id={item.debugId} className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+          <div className="text-xs uppercase tracking-wide text-zinc-500">{item.label}</div>
+          <div className="mt-1 text-sm text-zinc-100">{item.value}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AgentMemoryInspectorContent({ agentMemoryId, agentMemories, agentMemoryQuery, memoryError, openMemoryEditor }: any) {
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-zinc-100">Memory</h3>
+          <p className="mt-1 text-xs text-zinc-500">Applicable active memory for durable agent <span className="font-mono">{agentMemoryId || '—'}</span>.</p>
+        </div>
+        <div className="flex gap-2"><IconActionButton debugId="agent-detail-memory-refresh-btn" title="Refresh memory" icon="↻" onClick={() => agentMemoryQuery.refetch()} disabled={agentMemoryQuery.isFetching} /><IconActionButton debugId="agent-detail-memory-add-btn" title="Add memory" icon="＋" onClick={() => openMemoryEditor()} tone="primary" /></div>
+      </div>
+      {memoryError ? <div data-debug-id="agent-detail-memory-error" className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{memoryError}</div> : null}
+      <div className="space-y-2">
+        {agentMemoryQuery.isFetching && <div className="rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-zinc-500">Loading memory…</div>}
+        {!agentMemoryQuery.isFetching && agentMemories.length === 0 && <div className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No applicable memory items.</div>}
+        {!agentMemoryQuery.isFetching && agentMemories.map((record: any) => {
+          const memoryId = record.memory_id || record.memoryId;
+          return <div key={memoryId} data-debug-id={`agent-detail-memory-item-${memoryId}`} className="rounded-2xl border border-white/10 bg-black/20 p-3"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="truncate text-sm font-semibold text-zinc-100">{record.title || memoryId}</div><div className="mt-1 truncate text-xs text-zinc-500">{record.type || 'fact'} · v{record.version || 0} · {record.target || record.target_agent_id || 'global'}</div></div><IconActionButton debugId={`agent-detail-memory-edit-btn-${memoryId}`} title="Edit memory" icon="✎" onClick={() => openMemoryEditor(record)} /></div>{record.body && <div className="mt-2 line-clamp-3 whitespace-pre-wrap text-xs text-zinc-400">{record.body}</div>}</div>;
+        })}
+      </div>
+    </div>
+  );
+}
+
 
 function AgentIdentityInstanceSummaryRow({ agent, context }: any) {
   const id = agentInstanceId(agent);
@@ -2979,6 +3034,74 @@ function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, c
   );
 }
 
+function ChainAgentsInspectorContent({ team, agents = [], coordinatorAgentId = '', onOpenAgent, onOpenAgentChat }: any) {
+  const members = team?.team?.members || team?.members || [];
+  const rows = useMemo(() => {
+    const mapped = (members || []).map((member: any) => {
+      const agentId = String(member?.agent_instance_id || member?.agentInstanceId || member?.route_to || `${member?.role_key || 'member'}-${member?.role_index || 0}`);
+      const live = (agents || []).find((agent: any) => String(agent?.id || agent?.agent_instance_id || '') === agentId) || null;
+      const status = live ? agentRuntimeStatus(live) : String(member?.lifecycle_status || 'offline');
+      return {
+        agentId,
+        label: live?.label || member?.route_to || member?.agent_instance_id || member?.agentInstanceId || agentId,
+        role: member?.role_key || 'member',
+        roleIndex: Number(member?.role_index || 0),
+        isUserProxy: Boolean(member?.is_user_proxy) || agentId === 'user_proxy',
+        statusLabel: live ? agentRuntimeStatusLabel(status) : String(member?.lifecycle_status || 'offline'),
+        statusTone: live ? agentRuntimeStatusTone(status) : 'border-zinc-600/40 bg-zinc-700/40 text-zinc-400',
+        live,
+      };
+    });
+    if (coordinatorAgentId && !mapped.some((row: any) => row.agentId === coordinatorAgentId)) {
+      const live = (agents || []).find((agent: any) => String(agent?.id || agent?.agent_instance_id || '') === coordinatorAgentId) || null;
+      const status = live ? agentRuntimeStatus(live) : 'offline';
+      mapped.unshift({
+        agentId: coordinatorAgentId,
+        label: live?.label || coordinatorAgentId,
+        role: 'coordinator',
+        roleIndex: 0,
+        isUserProxy: coordinatorAgentId === 'user_proxy',
+        statusLabel: live ? agentRuntimeStatusLabel(status) : 'offline',
+        statusTone: live ? agentRuntimeStatusTone(status) : 'border-zinc-600/40 bg-zinc-700/40 text-zinc-400',
+        live,
+      });
+    }
+    return mapped;
+  }, [agents, coordinatorAgentId, members]);
+
+  if (rows.length === 0) {
+    return <div data-debug-id="chain-agent-roster-empty" className="rounded-2xl border border-dashed border-white/10 bg-black/20 p-4 text-sm text-zinc-400">No chain agent roster is available for this context yet.</div>;
+  }
+
+  return (
+    <div data-debug-id="chain-agent-roster" className="space-y-3">
+      {rows.map((row: any) => {
+        const canChat = Boolean(row.agentId && !row.isUserProxy && onOpenAgentChat);
+        const roleLabel = row.role === 'coordinator' ? 'Coordinator' : `${row.role}${Number.isFinite(row.roleIndex) ? ` #${row.roleIndex + 1}` : ''}`;
+        return (
+          <div key={row.agentId} data-debug-id={`chain-agent-row-${row.agentId}`} className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="truncate text-sm font-semibold text-zinc-100">{row.label}</div>
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-zinc-500">
+                  <span>{roleLabel}</span>
+                  <span className="text-zinc-700">•</span>
+                  <code className="truncate">{row.agentId}</code>
+                </div>
+              </div>
+              <span data-debug-id={`chain-agent-status-${row.agentId}`} className={`shrink-0 rounded-full border px-2.5 py-1 text-[11px] ${row.statusTone}`}>{row.statusLabel}</span>
+            </div>
+            <div className="mt-3 flex gap-2">
+              <button data-debug-id={`chain-agent-open-btn-${row.agentId}`} type="button" onClick={() => onOpenAgent?.(row.agentId)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-300 hover:text-zinc-100">Details</button>
+              {canChat ? <button data-debug-id={`chain-agent-chat-btn-${row.agentId}`} type="button" onClick={() => onOpenAgentChat?.(row.agentId)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-300 hover:text-zinc-100">Chat</button> : null}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function AgentDetailPage({ agent, tasksById, chainsById, chats, session, projects = [], providers = [], allAgents = [], chatDraft = '', chatPagination = {}, onChatDraftChange, onBack, onOpenIdentity, onOpenChain, onRefreshChat, onSendAgentMessage, onRefreshAgents, onAgentDeleted }: any) {
   const draft = chatDraft;
   const setDraft = (next: any) => {
@@ -2999,7 +3122,8 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
   const [memoryError, setMemoryError] = useState('');
   const [memoryEditor, setMemoryEditor] = useState<any>(null);
   const [memorySaving, setMemorySaving] = useState(false);
-  const [artifactsOpen, setArtifactsOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [inspectorTab, setInspectorTab] = useState<'tasks' | 'task-chains' | 'artifacts' | 'project' | 'memory' | 'runtime'>('tasks');
   const [chatProvider, setChatProvider] = useState(agent?.providerProfile || defaultConversationProvider(providers));
   const [chatTier, setChatTier] = useState(agent?.modelTier || 'normal');
   const [runtimeRestarting, setRuntimeRestarting] = useState('');
@@ -3163,27 +3287,63 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
       setSending(false);
     }
   };
+  const detailWorkspaceContext = useMemo(() => adaptDirectAgentWorkspaceContext({
+    agent,
+    tasksById,
+    chainsById,
+    runtimeLabel: runtime.label,
+    live: agentLive,
+    provider: chatProvider,
+    modelTier: chatTier,
+  }), [agent, agentLive, chainsById, chatProvider, chatTier, runtime.label, tasksById]);
+  const detailAgentContext = detailWorkspaceContext.genericAgent!;
+  const detailInspectorTabs = workspaceInspectorTabsFor(detailWorkspaceContext, {
+    tasks: {
+      id: 'tasks',
+      label: 'Tasks',
+      content: <div className="space-y-4"><AgentTaskList title="Pending tasks" emptyText="No pending tasks assigned." tasks={buckets.pending} chainsById={chainsById} agentId={agent?.id || ''} onOpenChain={onOpenChain} /><AgentTaskList title="Completed tasks" emptyText="No completed tasks found." tasks={buckets.completed} chainsById={chainsById} agentId={agent?.id || ''} completed onOpenChain={onOpenChain} /></div>,
+      buttonDebugId: 'workspace-inspector-tab-tasks',
+      panelDebugId: 'workspace-inspector-panel-tasks',
+    },
+    'task-chains': {
+      id: 'task-chains',
+      label: 'Task chains',
+      content: <AgentChatSidebarContent agent={agent} tasksById={tasksById} chainsById={chainsById} onOpenChain={onOpenChain} />,
+      buttonDebugId: 'workspace-inspector-tab-task-chains',
+      panelDebugId: 'workspace-inspector-panel-task-chains',
+    },
+    artifacts: {
+      id: 'artifacts',
+      label: 'Artifacts',
+      content: <ChatArtifactsSidePanel embedded debugPrefix={detailAgentContext.debug.artifactsPrefix} daemonUrl={session?.daemonUrl || ''} clientToken={session?.clientToken || ''} projectId={agent?.projectId || ''} originKind="direct_agent_chat" originRef={agent?.id || ''} onUploaded={(link: string) => setDraft((prev) => appendArtifactLink(prev, link))} onClose={() => setInspectorOpen(false)} />,
+      buttonDebugId: 'workspace-inspector-tab-artifacts',
+      panelDebugId: 'workspace-inspector-panel-artifacts',
+    },
+    project: {
+      id: 'project',
+      label: 'Project',
+      content: <ContextInfoGrid items={[{ debugId: 'agent-detail-project', label: 'Project', value: agent?.projectName || agent?.projectId || '—' }, { debugId: 'agent-detail-role', label: 'Role', value: agent?.agentRole || agent?.roleHint || agent?.templateId || '—' }, { debugId: 'agent-detail-provider', label: 'Provider', value: agent?.providerProfile || '—' }]} />,
+      buttonDebugId: 'workspace-inspector-tab-project',
+      panelDebugId: 'workspace-inspector-panel-project',
+    },
+    memory: {
+      id: 'memory',
+      label: 'Memory',
+      content: <AgentMemoryInspectorContent agentMemoryId={agentMemoryId} agentMemories={agentMemories} agentMemoryQuery={agentMemoryQuery} memoryError={memoryError} openMemoryEditor={openMemoryEditor} />,
+      buttonDebugId: 'workspace-inspector-tab-memory',
+      panelDebugId: 'workspace-inspector-panel-memory',
+    },
+    runtime: {
+      id: 'runtime',
+      label: 'Runtime',
+      content: <ContextInfoGrid items={[{ debugId: 'agent-detail-runtime', label: 'Runtime', value: <span className="flex items-center gap-2"><span className={`h-2 w-2 rounded-full ${runtime.color}`} />{runtime.label}</span> }, { debugId: 'agent-detail-live-status', label: 'Live status', value: detailWorkspaceContext.statusLabel || runtime.label }]} />,
+      buttonDebugId: 'workspace-inspector-tab-runtime',
+      panelDebugId: 'workspace-inspector-panel-runtime',
+    },
+  });
 
   return (
-    <div data-debug-id="agent-detail-page" className="mx-auto max-w-6xl px-8 py-8">
-      <div className="mb-5 flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <IconActionButton debugId="agent-detail-back-btn" title="Back" icon="←" onClick={onBack} />
-          <div className="mt-3 text-xs uppercase tracking-[0.25em] text-zinc-500">Agent</div>
-          <h1 data-debug-id="agent-detail-title" className="mt-2 truncate text-3xl font-semibold text-zinc-100">{agent?.label || agent?.id}</h1>
-          <div className="mt-2 truncate font-mono text-xs text-zinc-500">{agent?.id}</div>
-        </div>
-        <div className="flex shrink-0 flex-col items-end gap-3">
-          <span data-debug-id="agent-detail-live-status" className={`rounded-full px-3 py-1 text-sm ${agentLive ? 'bg-emerald-400/15 text-emerald-200' : 'bg-zinc-500/15 text-zinc-300'}`}>{agentLive ? 'Live' : runtime.label}</span>
-          <div className="flex flex-wrap justify-end gap-2">
-            <button data-debug-id="agent-detail-all-instances-btn" onClick={() => onOpenIdentity?.(durableAgentId(agent))} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-zinc-100 hover:bg-white/15">All instances</button>
-            {!agentLive && <IconActionButton debugId="agent-detail-start-btn" title="Start agent" icon="▶" onClick={startAgent} disabled={!agent?.id || Boolean(agentBusy)} tone="success" />}
-            {agentLive && <IconActionButton debugId="agent-detail-stop-btn" title="Force stop agent" icon="■" onClick={stopAgent} disabled={Boolean(agentBusy)} tone="warn" />}
-            <IconActionButton debugId="agent-detail-edit-btn" title="Edit agent" icon="✎" onClick={() => setEditOpen(true)} disabled={!agent?.id || Boolean(agentBusy)} />
-            <IconActionButton debugId="agent-detail-delete-btn" title="Delete agent" icon="🗑" onClick={deleteAgent} disabled={!agent?.id || Boolean(agentBusy)} tone="danger" />
-          </div>
-        </div>
-      </div>
+    <div data-debug-id="agent-detail-page" className="flex h-full min-h-0 flex-col bg-[#090909] text-zinc-100">
       {agentError && <div data-debug-id="agent-detail-action-error" className="mb-4 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{agentError}</div>}
       {startProgress?.active && startProgress.agentId === agent?.id && (() => {
         const completedSteps = startSteps.filter((step) => step.done).length;
@@ -3226,112 +3386,70 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
         </div>
       )}
 
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <div data-debug-id="agent-detail-project" className="rounded-2xl border border-white/10 bg-white/[0.035] p-4"><div className="text-xs uppercase tracking-wide text-zinc-500">Project</div><div className="mt-1 truncate text-sm text-zinc-100">{agent?.projectName || agent?.projectId || '—'}</div></div>
-        <div data-debug-id="agent-detail-role" className="rounded-2xl border border-white/10 bg-white/[0.035] p-4"><div className="text-xs uppercase tracking-wide text-zinc-500">Role</div><div className="mt-1 truncate text-sm text-zinc-100">{agent?.agentRole || agent?.roleHint || agent?.templateId || '—'}</div></div>
-        <div data-debug-id="agent-detail-provider" className="rounded-2xl border border-white/10 bg-white/[0.035] p-4"><div className="text-xs uppercase tracking-wide text-zinc-500">Provider</div><div className="mt-1 truncate text-sm text-zinc-100">{agent?.providerProfile || '—'}</div></div>
-        <div data-debug-id="agent-detail-runtime" className="rounded-2xl border border-white/10 bg-white/[0.035] p-4"><div className="text-xs uppercase tracking-wide text-zinc-500">Runtime</div><div className="mt-1 flex items-center gap-2 text-sm text-zinc-100"><span className={`h-2 w-2 rounded-full ${runtime.color}`} />{runtime.label}</div></div>
-      </div>
-
-      <section data-debug-id="agent-detail-chat" className="mt-6 h-[62vh] max-h-[720px] min-h-[420px] overflow-hidden rounded-3xl border border-white/10 bg-[#090909]">
-        <div className="flex h-full min-h-0 overflow-hidden">
-          <div className="flex min-w-0 flex-1 flex-col overflow-hidden border-r border-[#262626]">
-            <ChatHeader
-              className="border-b border-[#262626] px-5 py-4"
-              title={<h2 className="text-lg font-semibold text-zinc-100">Chat</h2>}
-              subtitle={<p className="text-sm text-zinc-500">Direct agent messages. Attach artifacts or paste screenshots into the composer.</p>}
-              actions={<><button type="button" data-debug-id="agent-detail-chat-artifacts-toggle-btn" onClick={() => setArtifactsOpen((current) => !current)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1.5 text-[11.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">{artifactsOpen ? 'Hide artifacts' : 'Artifacts'}</button><button type="button" data-debug-id="agent-detail-refresh-chat-btn" onClick={() => agent?.id && onRefreshChat?.(agent.id)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1.5 text-[11.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">Refresh</button><button type="button" data-debug-id="agent-detail-nudge-btn" onClick={() => submit(true)} disabled={!agent?.id || sending || !draft.trim()} className="rounded-full border border-amber-400/25 bg-amber-400/10 px-3 py-1.5 text-[11.5px] text-amber-100 hover:bg-amber-400/20 disabled:cursor-not-allowed disabled:opacity-50">⚡ Nudge</button></>}
-            />
-            <div className="flex min-h-0 flex-1 overflow-hidden px-5 py-5">
-              <div className="flex min-w-0 flex-1 overflow-hidden rounded-[18px]">
-                <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-                  <ChatMessageList
-                    conversationKey={agent?.id || 'agent-detail'}
-                    messages={messages}
-                    onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))}
-                    debugPrefix={agentDetailChatDebug.messageList}
-                    emptyText="No direct messages loaded for this agent."
-                    hasMore={Boolean(chatPagination.hasMore)}
-                    loadingOlder={Boolean(chatPagination.loading)}
-                    onLoadOlder={chatPagination.onLoadOlder}
-                    formatTimestamp={formatChatTimestamp}
-                    getDeliveryStatus={deliveryStatusFor}
-                  />
-                </div>
-                {artifactsOpen ? (
-                  <ChatArtifactsSidePanel
-                    debugPrefix={agentDetailChatDebug.artifacts}
-                    daemonUrl={session?.daemonUrl || ''}
-                    clientToken={session?.clientToken || ''}
-                    projectId={agent?.projectId || ''}
-                    originKind="direct_agent_chat"
-                    originRef={agent?.id || ''}
-                    onUploaded={(link: string) => setDraft((prev) => appendArtifactLink(prev, link))}
-                    onClose={() => setArtifactsOpen(false)}
-                  />
-                ) : null}
-              </div>
-            </div>
-            <div className="px-5 pb-[18px] pt-3">
-              <ChatWorkBanner agent={agent} tasksById={tasksById} debugPrefix={agentDetailChatDebug.workBanner} onStart={startAgent} startDisabled={!agent?.id || Boolean(agentBusy)} />
-              <ChatComposer
-                shellDebugId={agentDetailChatDebug.composer + '-composer-shell'}
-                inputDebugId={agentDetailChatDebug.composer + '-input'}
-                sendButtonDebugId={agentDetailChatDebug.composer + '-send-btn'}
-                sendAriaLabel="Send direct agent message"
-                value={draft}
-                onValueChange={(value) => { setDraft(value); setSendError(''); }}
-                onSubmit={() => submit(false)}
-                onPaste={async (event) => {
-                  const result = await upload.uploadClipboardImage(event, { originRef: agent?.id || '' });
-                  if (result.link) {
-                    setSendError('');
-                    setDraft((prev) => appendArtifactLink(prev, result.link || ''));
-                  }
+      <section data-debug-id="agent-detail-chat" className="min-h-0 flex-1 overflow-hidden">
+        <UnifiedWorkspaceShell
+          className="flex-1"
+          mainRegion={(
+            <WorkspaceMainRegion className="min-w-0 flex min-h-0 flex-1 flex-col" contentClassName="min-h-0 flex-1">
+              <GenericAgentWorkspacePage
+                context={{
+                  header: {
+                    className: 'border-b border-[#262626] px-[18px] py-3 text-[12.5px] text-zinc-500',
+                    title: <h2 data-debug-id="agent-detail-title" className="truncate text-lg font-semibold text-zinc-100">{detailWorkspaceContext.title}</h2>,
+                    subtitle: <span className="truncate font-mono">{detailWorkspaceContext.subtitle}</span>,
+                    status: <span data-debug-id="agent-detail-live-status" className={`rounded-full px-3 py-1 text-sm ${agentLive ? 'bg-emerald-400/15 text-emerald-200' : 'bg-zinc-500/15 text-zinc-300'}`}>{detailWorkspaceContext.statusLabel || runtime.label}</span>,
+                    actions: <><button data-debug-id="agent-detail-back-btn" onClick={onBack} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">← Back</button><button data-debug-id="agent-detail-all-instances-btn" onClick={() => onOpenIdentity?.(durableAgentId(agent))} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400">All instances</button><button type="button" data-debug-id="agent-detail-chat-artifacts-toggle-btn" onClick={() => { setInspectorTab('artifacts'); setInspectorOpen(true); }} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">Artifacts</button><button type="button" data-debug-id="agent-detail-refresh-chat-btn" onClick={() => agent?.id && onRefreshChat?.(agent.id)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">Refresh</button><button type="button" data-debug-id="agent-detail-nudge-btn" onClick={() => submit(true)} disabled={!agent?.id || sending || !draft.trim()} className="rounded-full border border-amber-400/25 bg-amber-400/10 px-3 py-1 text-[11.5px] text-amber-100 hover:bg-amber-400/20 disabled:cursor-not-allowed disabled:opacity-50">⚡ Nudge</button>{!agentLive && <IconActionButton debugId="agent-detail-start-btn" title="Start agent" icon="▶" onClick={startAgent} disabled={!agent?.id || Boolean(agentBusy)} tone="success" />}{agentLive && <IconActionButton debugId="agent-detail-stop-btn" title="Force stop agent" icon="■" onClick={stopAgent} disabled={Boolean(agentBusy)} tone="warn" />}<IconActionButton debugId="agent-detail-edit-btn" title="Edit agent" icon="✎" onClick={() => setEditOpen(true)} disabled={!agent?.id || Boolean(agentBusy)} /><IconActionButton debugId="agent-detail-delete-btn" title="Delete agent" icon="🗑" onClick={deleteAgent} disabled={!agent?.id || Boolean(agentBusy)} tone="danger" /></>,
+                  },
+                  chat: {
+                    conversationKey: detailAgentContext.chat.conversationKey,
+                    messages,
+                    onReply: (reply) => setDraft((prev) => appendArtifactLink(prev, reply)),
+                    debugPrefix: detailAgentContext.debug.messageListPrefix,
+                    emptyText: detailAgentContext.chat.emptyText,
+                    hasMore: Boolean(chatPagination.hasMore),
+                    loadingOlder: Boolean(chatPagination.loading),
+                    onLoadOlder: chatPagination.onLoadOlder,
+                    formatTimestamp: formatChatTimestamp,
+                    getDeliveryStatus: deliveryStatusFor,
+                  },
+                  workBanner: { agent, tasksById, debugPrefix: detailAgentContext.debug.workBannerPrefix, onStart: startAgent, startDisabled: !agent?.id || Boolean(agentBusy) },
+                  composer: {
+                    shellDebugId: detailAgentContext.debug.composerPrefix + '-composer-shell',
+                    inputDebugId: detailAgentContext.debug.composerPrefix + '-input',
+                    sendButtonDebugId: detailAgentContext.debug.composerPrefix + '-send-btn',
+                    sendAriaLabel: 'Send direct agent message',
+                    value: draft,
+                    onValueChange: (value) => { setDraft(value); setSendError(''); },
+                    onSubmit: () => submit(false),
+                    onPaste: async (event) => {
+                      const result = await upload.uploadClipboardImage(event, { originRef: agent?.id || '' });
+                      if (result.link) {
+                        setSendError('');
+                        setDraft((prev) => appendArtifactLink(prev, result.link || ''));
+                      }
+                    },
+                    placeholder: 'Message or nudge this agent…',
+                    rows: 3,
+                    sendTitle: sending ? 'Sending…' : 'Send',
+                    sendDisabled: !agent?.id || sending || Boolean(runtimeRestarting) || !draft.trim(),
+                    sendError,
+                    sendErrorDebugId: 'agent-detail-chat-send-error',
+                    uploadErrorDebugId: 'agent-detail-chat-upload-error',
+                    upload: { onUploaded: (link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }, context: { projectId: agent?.projectId || '', originKind: 'direct_agent_chat', originRef: agent?.id || '' }, disabled: !agent?.id || sending || Boolean(runtimeRestarting), debugIdPrefix: detailAgentContext.debug.uploadPrefix, label: '⇧', buttonClassName: 'inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-lg text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40', error: upload.error },
+                    runtimeControls: { debugPrefix: detailAgentContext.debug.runtimePrefix, providers, projects, provider: chatProvider, modelTier: chatTier, projectId: agent?.projectId || '', disabled: !agent?.id, restarting: Boolean(runtimeRestarting), showProject: true, onRestart: (next) => { void restartExactRuntime(next.provider, next.modelTier, 'runtime', next.projectId); } },
+                    notices: [
+                      ...(runtimeRestartError ? [{ debugId: 'agent-detail-chat-runtime-restart-error', message: runtimeRestartError, tone: 'error' as const }] : []),
+                      ...(runtimeRestarting ? [{ debugId: 'agent-detail-chat-runtime-restart-status', message: `Restarting exact instance ${agent?.id} with selected ${runtimeRestarting}…`, tone: 'info' as const }] : []),
+                    ],
+                    footer: <><span>🗂 {agent?.projectName || agent?.projectId || 'No project'} · shares memories &amp; skills from the <code>{detailAgentContext.durableAgentId || 'agent'}</code> identity</span><span>⌘↵ to send</span></>,
+                    textareaClassName: 'min-h-[74px] w-full resize-none bg-transparent px-3 pt-3 text-[15px] leading-relaxed text-zinc-100 outline-none placeholder:text-zinc-600',
+                  },
                 }}
-                placeholder="Message or nudge this agent…"
-                rows={3}
-                sendTitle={sending ? 'Sending…' : 'Send'}
-                sendDisabled={!agent?.id || sending || Boolean(runtimeRestarting) || !draft.trim()}
-                sendError={sendError}
-                sendErrorDebugId="agent-detail-chat-send-error"
-                uploadErrorDebugId="agent-detail-chat-upload-error"
-                upload={{ onUploaded: (link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }, context: { projectId: agent?.projectId || '', originKind: 'direct_agent_chat', originRef: agent?.id || '' }, disabled: !agent?.id || sending || Boolean(runtimeRestarting), debugIdPrefix: agentDetailChatDebug.upload, label: '⇧', buttonClassName: 'inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-lg text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50', error: upload.error }}
-                runtimeControls={{ debugPrefix: agentDetailChatDebug.runtime, providers, projects, provider: chatProvider, modelTier: chatTier, projectId: agent?.projectId || '', disabled: !agent?.id, restarting: Boolean(runtimeRestarting), showProject: true, onRestart: (next) => { void restartExactRuntime(next.provider, next.modelTier, 'runtime', next.projectId); } }}
-                notices={[
-                  ...(runtimeRestartError ? [{ debugId: 'agent-detail-chat-runtime-restart-error', message: runtimeRestartError, tone: 'error' as const }] : []),
-                  ...(runtimeRestarting ? [{ debugId: 'agent-detail-chat-runtime-restart-status', message: `Restarting exact instance ${agent?.id} with selected ${runtimeRestarting}…`, tone: 'info' as const }] : []),
-                ]}
-                footer={<><span>🗂 {agent?.projectName || agent?.projectId || 'No project'} · shares memories &amp; skills from the <code>{durableAgentId(agent) || 'agent'}</code> identity</span><span>⌘↵ to send</span></>}
-                textareaClassName="min-h-[74px] w-full resize-none bg-transparent px-3 pt-3 text-[15px] leading-relaxed text-zinc-100 outline-none placeholder:text-zinc-600"
               />
-            </div>
-          </div>
-          <ChatSidebar debugId={agentDetailChatDebug.sidebar} className="min-h-0 w-[360px] overflow-y-auto bg-[#0f0f0f]">
-            <AgentChatSidebarContent agent={agent} tasksById={tasksById} chainsById={chainsById} onOpenChain={onOpenChain} />
-          </ChatSidebar>
-        </div>
-      </section>
-
-      <section data-debug-id="agent-detail-tasks" className="mt-6 grid gap-4 lg:grid-cols-2">
-        <AgentTaskList title="Pending tasks" emptyText="No pending tasks assigned." tasks={buckets.pending} chainsById={chainsById} agentId={agent?.id || ''} onOpenChain={onOpenChain} />
-        <AgentTaskList title="Completed tasks" emptyText="No completed tasks found." tasks={buckets.completed} chainsById={chainsById} agentId={agent?.id || ''} completed onOpenChain={onOpenChain} />
-      </section>
-
-      <section data-debug-id="agent-detail-memory" className="mt-6 rounded-3xl border border-white/10 bg-white/[0.035] p-5">
-        <div className="mb-3 flex items-center justify-between gap-3">
-          <div><h2 className="text-lg font-semibold text-zinc-100">Memory</h2><p className="mt-1 text-sm text-zinc-500">Applicable active memory for durable agent <span className="font-mono">{agentMemoryId || '—'}</span>.</p></div>
-          <div className="flex gap-2"><IconActionButton debugId="agent-detail-memory-refresh-btn" title="Refresh memory" icon="↻" onClick={() => agentMemoryQuery.refetch()} disabled={agentMemoryQuery.isFetching} /><IconActionButton debugId="agent-detail-memory-add-btn" title="Add memory" icon="＋" onClick={() => openMemoryEditor()} tone="primary" /></div>
-        </div>
-        {memoryError && <div data-debug-id="agent-detail-memory-error" className="mb-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{memoryError}</div>}
-        <div className="space-y-2">
-          {agentMemoryQuery.isFetching && <div className="rounded-xl border border-white/10 bg-black/20 p-4 text-sm text-zinc-500">Loading memory…</div>}
-          {!agentMemoryQuery.isFetching && agentMemories.length === 0 && <div className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No applicable memory items.</div>}
-          {!agentMemoryQuery.isFetching && agentMemories.map((record: any) => {
-            const memoryId = record.memory_id || record.memoryId;
-            return <div key={memoryId} data-debug-id={`agent-detail-memory-item-${memoryId}`} className="rounded-2xl border border-white/10 bg-black/20 p-3"><div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="truncate text-sm font-semibold text-zinc-100">{record.title || memoryId}</div><div className="mt-1 truncate text-xs text-zinc-500">{record.type || 'fact'} · v{record.version || 0} · {record.target || record.target_agent_id || 'global'}</div></div><IconActionButton debugId={`agent-detail-memory-edit-btn-${memoryId}`} title="Edit memory" icon="✎" onClick={() => openMemoryEditor(record)} /></div>{record.body && <div className="mt-2 line-clamp-3 whitespace-pre-wrap text-xs text-zinc-400">{record.body}</div>}</div>;
-          })}
-        </div>
+            </WorkspaceMainRegion>
+          )}
+          inspector={<ContextInspector title={detailWorkspaceContext.title} subtitle={detailWorkspaceContext.subtitle || 'agent'} tabs={detailInspectorTabs} activeTabId={inspectorTab} onTabChange={(tabId) => { setInspectorTab(tabId as any); setInspectorOpen(true); }} collapsed={!inspectorOpen} onToggleCollapsed={() => setInspectorOpen((open) => !open)} className={`${!inspectorOpen ? 'w-0 border-l-0 p-0' : 'w-[420px] border-l border-[#262626] p-4'} min-h-0 shrink-0 overflow-hidden bg-[#0d0d0d] transition-[width,padding] duration-200`} />}
+        />
       </section>
 
       {memoryEditor && (
@@ -3500,14 +3618,12 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
   const [locallyStopped, setLocallyStopped] = useState(false);
   const [messageTier, setMessageTier] = useState(agent?.modelTier || 'smart');
   const [messageProvider, setMessageProvider] = useState(agent?.providerProfile || defaultConversationProvider(providers));
-  const [artifactsOpen, setArtifactsOpen] = useState(false);
   const upload = useArtifactUpload({ projectId: agent?.projectId || '', originKind: 'conversation_chat', originRef: agent?.id || '' });
   const messages = useMemo(() => normalizeCoordinatorMessages((chats?.[agent?.id] || []).map((msg: any) => ({ ...msg, agentInstanceId: agent?.id }))), [chats, agent?.id]);
   const projectName = agent?.projectName || projects.find((project: any) => (project.projectId || project.project_id) === agent?.projectId)?.name || agent?.projectId || 'No project';
   const runtime = agentRuntimeDot(agent);
   const live = isAgentRunning(agent) && !locallyStopped;
   const title = conversationTitle(agent, chats?.[agent?.id] || [], conversationSummary);
-  const daemonLabel = daemonDisplayLabel(session?.daemonUrl || '');
 
   useEffect(() => {
     setMessageTier(agent?.modelTier || 'smart');
@@ -3580,116 +3696,108 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
     await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: next.provider || agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || 'conversation', projectId: next.projectId || '', projectIdSet: true, displayName: '', modelTier: next.modelTier || 'smart', agentRole: agent.agentRole || 'conversation' });
     setLocallyStopped(false);
   });
+  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [inspectorTab, setInspectorTab] = useState<'artifacts' | 'project' | 'runtime'>('artifacts');
+  const conversationWorkspaceContext = useMemo(() => adaptConversationWorkspaceContext({
+    agent,
+    title,
+    projectName,
+    live,
+    runtimeLabel: sendPhase === 'starting' ? 'Starting' : runtime.label,
+    provider: messageProvider,
+    modelTier: messageTier,
+  }), [agent, live, messageProvider, messageTier, projectName, runtime.label, sendPhase, title]);
+  const conversationAgentContext = conversationWorkspaceContext.genericAgent!;
+  const conversationInspectorTabs = workspaceInspectorTabsFor(conversationWorkspaceContext, {
+    artifacts: {
+      id: 'artifacts',
+      label: 'Artifacts',
+      content: <ChatArtifactsSidePanel embedded debugPrefix={conversationAgentContext.debug.artifactsPrefix} daemonUrl={session?.daemonUrl || ''} clientToken={session?.clientToken || ''} projectId={agent?.projectId || ''} originKind="conversation_chat" originRef={agent?.id || ''} onUploaded={(link: string) => setDraft((prev: string) => appendArtifactLink(prev, link))} onClose={() => setInspectorOpen(false)} />,
+      buttonDebugId: 'workspace-inspector-tab-artifacts',
+      panelDebugId: 'workspace-inspector-panel-artifacts',
+    },
+    project: {
+      id: 'project',
+      label: 'Project',
+      content: <ContextInfoGrid items={[{ debugId: 'conversation-thread-project-chip', label: 'Project', value: <span>🗂 {projectName}</span> }, { debugId: 'conversation-thread-instance-label', label: 'Instance', value: <code>{conversationWorkspaceContext.subtitle || 'conversation@s-…'}</code> }]} />,
+      buttonDebugId: 'workspace-inspector-tab-project',
+      panelDebugId: 'workspace-inspector-panel-project',
+    },
+    runtime: {
+      id: 'runtime',
+      label: 'Runtime',
+      content: <ContextInfoGrid items={[{ debugId: 'conversation-thread-status-chip', label: 'Status', value: sendPhase === 'starting' ? 'Starting' : live ? 'Active' : runtime.label }, { debugId: 'conversation-runtime-controls', label: 'Runtime settings', value: `${messageProvider || 'pi'} · ${messageTier} · ${agent?.projectId || 'no project'}` }]} />,
+      buttonDebugId: 'workspace-inspector-tab-runtime',
+      panelDebugId: 'workspace-inspector-panel-runtime',
+    },
+  });
 
   return (
-    <div data-debug-id="conversation-thread-page" className="flex min-h-full flex-col bg-[#090909] text-zinc-100">
-      <ChatHeader
-        className="border-b border-[#1f1f1f] bg-[#0b0b0b]/95 px-[18px] py-3 text-[12.5px] text-zinc-500"
-        title={(
-          <div data-debug-id="conversation-thread-breadcrumb" className="flex min-w-0 items-center gap-2 overflow-hidden">
-            <button data-debug-id="conversation-thread-back-btn" onClick={onBack} className="rounded-full border border-white/10 bg-[#111111] px-3 py-1.5 text-zinc-400 hover:border-white/20 hover:text-zinc-100">← Back</button>
-            <span className="hidden text-zinc-600 md:inline">{daemonLabel}</span>
-            <span className="hidden text-zinc-700 md:inline">/</span>
-            <span className="truncate text-zinc-400">{projectName}</span>
-            <span className="text-zinc-700">/</span>
-            <span className="truncate text-zinc-100">{title}</span>
-          </div>
+    <div data-debug-id="conversation-thread-page" className="flex h-full min-h-0 flex-col bg-[#090909] text-zinc-100">
+      <UnifiedWorkspaceShell
+        className="flex-1"
+        mainRegion={(
+          <WorkspaceMainRegion className="min-w-0 flex min-h-0 flex-1 flex-col" contentClassName="min-h-0 flex-1">
+            <GenericAgentWorkspacePage
+              context={{
+                header: {
+                  className: 'border-b border-[#262626] px-[18px] py-3 text-[12.5px] text-zinc-500',
+                  title: <span data-debug-id="conversation-thread-title" className="truncate text-zinc-100">{conversationWorkspaceContext.title}</span>,
+                  subtitle: <span data-debug-id="conversation-thread-instance-label" className="truncate font-mono">{conversationWorkspaceContext.subtitle}</span>,
+                  status: <span data-debug-id="conversation-thread-status-chip" className={`rounded-full border px-3 py-1 text-[11.5px] ${live ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200' : sendPhase === 'starting' ? 'border-sky-400/35 bg-sky-400/10 text-sky-200' : 'border-white/10 bg-[#141414] text-zinc-400'}`}>{conversationWorkspaceContext.statusLabel || runtime.label}</span>,
+                  actions: <><button data-debug-id="conversation-thread-back-btn" onClick={onBack} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">← Back</button><button data-debug-id="conversation-thread-artifacts-toggle-btn" onClick={() => { setInspectorTab('artifacts'); setInspectorOpen(true); }} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">Artifacts</button><button data-debug-id="conversation-thread-refresh-btn" onClick={() => agent?.id && onRefreshChat?.(agent.id)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">Refresh</button>{!live ? <button data-debug-id="conversation-thread-start-btn" onClick={startConversation} disabled={Boolean(threadBusy || sending)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50">Start</button> : <button data-debug-id="conversation-thread-stop-btn" onClick={stopConversation} disabled={Boolean(threadBusy || sending)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50">Close</button>}</>,
+                },
+                chat: {
+                  conversationKey: conversationAgentContext.chat.conversationKey,
+                  messages,
+                  debugPrefix: conversationAgentContext.debug.messageListPrefix,
+                  hasMore: Boolean(chatPagination.hasMore),
+                  loadingOlder: Boolean(chatPagination.loading),
+                  onLoadOlder: chatPagination.onLoadOlder,
+                  formatTimestamp: formatChatTimestamp,
+                  getDeliveryStatus: deliveryStatusFor,
+                  emptyState: <div data-debug-id="conversation-thread-empty-state" className="rounded-[22px] border border-dashed border-white/10 bg-[#111111]/70 p-7 text-sm text-zinc-500"><div className="text-base font-semibold text-zinc-200">This thread is ready.</div><p className="mt-2 max-w-[560px] leading-6">Send the first message to start the exact <code className="rounded bg-white/5 px-1 py-0.5 text-zinc-300">conversation</code> instance. If the agent is stopped, Heimdall will resume this same thread and keep the history attached to {agent?.id || 'conversation@s-…'}.</p></div>,
+                  renderMessageTop: ({ message, index, messages: allMessages }) => (!message.isUser && live && index === allMessages.length - 1 ? <span data-debug-id="conversation-thread-worked-status" className="mb-3 inline-flex items-center gap-1 rounded-full border border-[#262626] bg-[#141414] px-3 py-1 text-[12px] text-zinc-500">Worked for 36s ›</span> : null),
+                },
+                workBanner: {
+                  agent: locallyStopped ? { ...agent, status: 'stopped', startupStatus: 'stopped' } : agent,
+                  debugPrefix: conversationAgentContext.debug.workBannerPrefix,
+                  onStart: startConversation,
+                  startDisabled: Boolean(threadBusy || sending),
+                },
+                composer: {
+                  shellDebugId: conversationAgentContext.debug.composerPrefix + '-shell',
+                  inputDebugId: conversationAgentContext.debug.composerPrefix + '-input',
+                  sendButtonDebugId: conversationAgentContext.debug.composerPrefix + '-send-btn',
+                  sendAriaLabel: 'Send conversation message',
+                  value: draft,
+                  onValueChange: (value) => { setDraft(value); setSendError(''); },
+                  onSubmit: submit,
+                  onPaste: async (event) => {
+                    const result = await upload.uploadClipboardImage(event, { originRef: agent?.id || '' });
+                    if (result.link) {
+                      setSendError('');
+                      setDraft((prev: string) => appendArtifactLink(prev, result.link || ''));
+                    }
+                  },
+                  placeholder: 'Ask anything…',
+                  sendTitle: sending ? 'Sending…' : 'Send',
+                  sendDisabled: !agent?.id || sending || !draft.trim(),
+                  sendError,
+                  sendErrorDebugId: 'conversation-composer-send-error',
+                  uploadErrorDebugId: 'conversation-composer-upload-error',
+                  upload: { onUploaded: (link) => { setSendError(''); setDraft((prev: string) => appendArtifactLink(prev, link)); }, context: { projectId: agent?.projectId || '', originKind: 'conversation_chat', originRef: agent?.id || '' }, disabled: !agent?.id || sending, debugIdPrefix: conversationAgentContext.debug.uploadPrefix, label: '⇧', buttonClassName: 'inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-lg text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40', error: upload.error },
+                  runtimeControls: { debugPrefix: conversationAgentContext.debug.runtimePrefix, providers, projects, provider: messageProvider, modelTier: messageTier, projectId: agent?.projectId || '', disabled: !agent?.id || sending, restarting: threadBusy === 'restart', showProject: true, onRestart: restartConversationRuntime },
+                  notices: sendPhase === 'starting' ? [{ debugId: 'conversation-composer-starting-indicator', message: 'Starting this conversation agent before sending your message…' }] : [],
+                  footer: <><span>🗂 {projectName} · shares memories &amp; skills from the <code>conversation</code> identity</span><span>⌘↵ to send</span></>,
+                },
+              }}
+            />
+          </WorkspaceMainRegion>
         )}
-        status={<span data-debug-id="conversation-thread-status-chip" className={`rounded-full border px-3 py-1 text-[11.5px] ${live ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200' : sendPhase === 'starting' ? 'border-sky-400/35 bg-sky-400/10 text-sky-200' : 'border-white/10 bg-[#141414] text-zinc-400'}`}>{sendPhase === 'starting' ? 'Starting' : live ? 'Active' : runtime.label}</span>}
-        actions={(
-          <>
-            <span data-debug-id="conversation-thread-project-chip" className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400">🗂 {projectName}</span>
-            <button data-debug-id="conversation-thread-artifacts-toggle-btn" onClick={() => setArtifactsOpen((current) => !current)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">{artifactsOpen ? 'Hide artifacts' : 'Artifacts'}</button>
-            <button data-debug-id="conversation-thread-refresh-btn" onClick={() => agent?.id && onRefreshChat?.(agent.id)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">Refresh</button>
-            {!live ? <button data-debug-id="conversation-thread-start-btn" onClick={startConversation} disabled={Boolean(threadBusy || sending)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50">Start</button> : <button data-debug-id="conversation-thread-stop-btn" onClick={stopConversation} disabled={Boolean(threadBusy || sending)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50">Close</button>}
-          </>
-        )}
+        inspector={<ContextInspector title={conversationWorkspaceContext.title} subtitle={conversationWorkspaceContext.subtitle || 'conversation'} tabs={conversationInspectorTabs} activeTabId={inspectorTab} onTabChange={(tabId) => { setInspectorTab(tabId as any); setInspectorOpen(true); }} collapsed={!inspectorOpen} onToggleCollapsed={() => setInspectorOpen((open) => !open)} className={`${!inspectorOpen ? 'w-0 border-l-0 p-0' : 'w-[420px] border-l border-[#262626] p-4'} min-h-0 shrink-0 overflow-hidden bg-[#0d0d0d] transition-[width,padding] duration-200`} />}
       />
-
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        <div className="min-w-0 flex-1 overflow-y-auto">
-          <div className="mx-auto flex h-full max-w-[820px] flex-col px-5 pb-5 pt-[22px]">
-            <div data-debug-id="conversation-thread-summary-card" className="mb-5 rounded-[22px] border border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(56,189,248,0.10),rgba(17,17,17,0.90)_42%,rgba(10,10,10,0.96))] p-4 shadow-[0_18px_60px_rgba(0,0,0,0.26)]">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="text-[11.5px] uppercase tracking-[0.18em] text-zinc-600">Conversation thread</div>
-                  <h1 data-debug-id="conversation-thread-title" className="mt-1 truncate text-[22px] font-semibold tracking-[-0.03em] text-zinc-100">{title}</h1>
-                  <div data-debug-id="conversation-thread-instance-label" className="mt-2 truncate font-mono text-[12px] text-zinc-500">{agent?.id || 'conversation@s-…'}</div>
-                </div>
-                <div data-debug-id="conversation-thread-affordance-strip" className="flex flex-wrap items-center gap-2 text-[11.5px] text-zinc-400">
-                  <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1">exact resume</span>
-                  <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1">history preserved</span>
-                  <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1">{live ? 'agent live' : 'starts on send'}</span>
-                </div>
-              </div>
-            </div>
-            {threadError && <div data-debug-id="conversation-thread-action-error" className="mb-4 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{threadError}</div>}
-            <section data-debug-id="conversation-thread-transcript" className="flex min-h-0 flex-1 flex-col">
-              <ChatMessageList
-                conversationKey={agent?.id || 'conversation-thread'}
-                messages={messages}
-                debugPrefix={conversationChatDebug.messageList}
-                hasMore={Boolean(chatPagination.hasMore)}
-                loadingOlder={Boolean(chatPagination.loading)}
-                onLoadOlder={chatPagination.onLoadOlder}
-                formatTimestamp={formatChatTimestamp}
-                getDeliveryStatus={deliveryStatusFor}
-                emptyState={<div data-debug-id="conversation-thread-empty-state" className="rounded-[22px] border border-dashed border-white/10 bg-[#111111]/70 p-7 text-sm text-zinc-500"><div className="text-base font-semibold text-zinc-200">This thread is ready.</div><p className="mt-2 max-w-[560px] leading-6">Send the first message to start the exact <code className="rounded bg-white/5 px-1 py-0.5 text-zinc-300">conversation</code> instance. If the agent is stopped, Heimdall will resume this same thread and keep the history attached to {agent?.id || 'conversation@s-…'}.</p></div>}
-                renderMessageTop={({ message, index, messages: allMessages }) => (!message.isUser && live && index === allMessages.length - 1 ? <span data-debug-id="conversation-thread-worked-status" className="mb-3 inline-flex items-center gap-1 rounded-full border border-[#262626] bg-[#141414] px-3 py-1 text-[12px] text-zinc-500">Worked for 36s ›</span> : null)}
-                wrapperClassName="relative min-h-0 flex-1"
-                scrollClassName="chat-scrollbar h-full min-h-0 space-y-[22px] overflow-y-auto rounded-[18px] bg-transparent"
-              />
-            </section>
-          </div>
-        </div>
-        {artifactsOpen ? (
-          <ChatArtifactsSidePanel
-            debugPrefix={conversationChatDebug.artifacts}
-            daemonUrl={session?.daemonUrl || ''}
-            clientToken={session?.clientToken || ''}
-            projectId={agent?.projectId || ''}
-            originKind="conversation_chat"
-            originRef={agent?.id || ''}
-            onUploaded={(link: string) => setDraft((prev: string) => appendArtifactLink(prev, link))}
-            onClose={() => setArtifactsOpen(false)}
-          />
-        ) : null}
-      </div>
-
-      <div className="px-5 pb-[18px] pt-3">
-        <div className="mx-auto max-w-[820px]">
-          <ChatWorkBanner agent={locallyStopped ? { ...agent, status: 'stopped', startupStatus: 'stopped' } : agent} debugPrefix={conversationChatDebug.workBanner} onStart={startConversation} startDisabled={Boolean(threadBusy || sending)} />
-        </div>
-        <div className="mx-auto max-w-[820px]">
-          <ChatComposer
-            shellDebugId={conversationChatDebug.composer + '-shell'}
-            inputDebugId={conversationChatDebug.composer + '-input'}
-            sendButtonDebugId={conversationChatDebug.composer + '-send-btn'}
-            sendAriaLabel="Send conversation message"
-            value={draft}
-            onValueChange={(value) => { setDraft(value); setSendError(''); }}
-            onSubmit={submit}
-            onPaste={async (event) => {
-              const result = await upload.uploadClipboardImage(event, { originRef: agent?.id || '' });
-              if (result.link) {
-                setSendError('');
-                setDraft((prev: string) => appendArtifactLink(prev, result.link || ''));
-              }
-            }}
-            placeholder="Ask anything…"
-            sendTitle={sending ? 'Sending…' : 'Send'}
-            sendDisabled={!agent?.id || sending || !draft.trim()}
-            sendError={sendError}
-            sendErrorDebugId="conversation-composer-send-error"
-            uploadErrorDebugId="conversation-composer-upload-error"
-            upload={{ onUploaded: (link) => { setSendError(''); setDraft((prev: string) => appendArtifactLink(prev, link)); }, context: { projectId: agent?.projectId || '', originKind: 'conversation_chat', originRef: agent?.id || '' }, disabled: !agent?.id || sending, debugIdPrefix: conversationChatDebug.upload, label: '⇧', buttonClassName: 'inline-flex h-7 w-7 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-sm text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40', error: upload.error }}
-            runtimeControls={{ debugPrefix: conversationChatDebug.runtime, providers, projects, provider: messageProvider, modelTier: messageTier, projectId: agent?.projectId || '', disabled: !agent?.id || sending, restarting: threadBusy === 'restart', showProject: true, onRestart: restartConversationRuntime }}
-            notices={sendPhase === 'starting' ? [{ debugId: 'conversation-composer-starting-indicator', message: 'Starting this conversation agent before sending your message…' }] : []}
-            footer={<><span>🗂 {projectName} · shares memories &amp; skills from the <code>conversation</code> identity</span><span>⌘↵ to send</span></>}
-            shellClassName="rounded-[18px] border border-white/10 bg-[#141414] p-0 shadow-[0_18px_70px_rgba(0,0,0,0.30)] focus-within:border-white/35"
-          />
-        </div>
-      </div>
+      {threadError && <div data-debug-id="conversation-thread-action-error" className="mx-5 mb-4 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{threadError}</div>}
     </div>
   );
 }
@@ -4823,7 +4931,7 @@ function formatArtifactWhen(value: number) {
   return date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
-function ChatArtifactsSidePanel({ debugPrefix, daemonUrl = '', clientToken = '', projectId = '', originKind = 'chat', originRef = '', onUploaded, onClose }: any) {
+function ChatArtifactsSidePanel({ debugPrefix, daemonUrl = '', clientToken = '', projectId = '', originKind = 'chat', originRef = '', onUploaded, onClose, embedded = false }: any) {
   const [activeArtifactId, setActiveArtifactId] = useState('');
   const artifactsQuery = useListArtifactsQuery({ projectId, limit: 100 }, { skip: !projectId || !daemonUrl || !clientToken });
   const artifacts = (artifactsQuery.data?.artifacts || []) as ChatArtifactRow[];
@@ -4836,8 +4944,10 @@ function ChatArtifactsSidePanel({ debugPrefix, daemonUrl = '', clientToken = '',
         ? 'Failed to load artifacts.'
         : '';
 
+  const Container: any = embedded ? 'div' : 'aside';
+
   return (
-    <aside data-debug-id={`${debugPrefix}-artifacts-panel`} className="flex w-[300px] shrink-0 flex-col border-l border-white/10 bg-[#0d0d0d]">
+    <Container data-debug-id={`${debugPrefix}-artifacts-panel`} className={embedded ? 'flex h-full min-h-0 flex-col' : 'flex w-[300px] shrink-0 flex-col border-l border-white/10 bg-[#0d0d0d]'}>
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 px-3 py-3">
         <div className="min-w-0">
           <div className="text-sm font-semibold text-zinc-100">Artifacts</div>
@@ -4878,7 +4988,7 @@ function ChatArtifactsSidePanel({ debugPrefix, daemonUrl = '', clientToken = '',
         </div>
       )}
       {activeArtifactId && daemonUrl && clientToken ? <ArtifactViewer artifactId={activeArtifactId} daemonUrl={daemonUrl} clientToken={clientToken} onClose={() => setActiveArtifactId('')} /> : null}
-    </aside>
+    </Container>
   );
 }
 
@@ -5082,12 +5192,12 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
   const chatState = useSelector((state: any) => state.chat || {});
   const [draft, setDraft] = useState('');
   const [sendError, setSendError] = useState('');
+  const [usedActionCards, setUsedActionCards] = useState<Record<string, string>>({});
   const [coordinatorProvider, setCoordinatorProvider] = useState('');
   const [coordinatorTier, setCoordinatorTier] = useState('normal');
   const [selectedTaskId, setSelectedTaskId] = useState(initialTaskId || '');
   const [commentDraft, setCommentDraft] = useState('');
   const [nudgeDraft, setNudgeDraft] = useState('Please take a look at this task when you are available.');
-  const [descOpen, setDescOpen] = useState(false);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   useEffect(() => {
     if (!chain?.chainId) return;
@@ -5114,8 +5224,10 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
   const coordinatorCursor = Number(chatState?.chatsCursor?.[coordinatorAgentId] || 0);
   const coordinatorLoading = Boolean(chatState?.fetchingChatsByAgentId?.[coordinatorAgentId]);
   const messages = useMemo(() => normalizeCoordinatorMessages(coordinatorMessages), [coordinatorMessages]);
+  const persistedActionReplies = useMemo(() => deriveCoordinatorActionReplies(messages), [messages]);
   const projectId = chain.projectId || chain.project_id || '';
   const projectName = projects.find((project: any) => (project.projectId || project.project_id) === projectId)?.name || projectId || 'No project';
+  const chainTeam = chainView.teamByChainId[chain.chainId];
   const composerArtifactUpload = useArtifactUpload({ projectId, originRef: chain.chainId || '', originKind: 'clipboard_chat' });
   const coordinatorStatus = agentRuntimeStatus(coordinatorAgent);
   const coordinatorStatusLabel = agentRuntimeStatusLabel(coordinatorStatus);
@@ -5182,221 +5294,397 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
   };
   const [tasksPaneOpen, setTasksPaneOpen] = useState(true);
   const [rightSidebarTab, setRightSidebarTab] = useState<'diffs' | 'artifacts'>('diffs');
+  const [auxInspectorTab, setAuxInspectorTab] = useState<'chain-agents' | 'project' | 'runtime' | ''>('');
   useEffect(() => {
     if (tasksPaneOpen && selectedTaskId) refreshSelectedTaskLog();
   }, [tasksPaneOpen, selectedTaskId, refreshSelectedTaskLog]);
   const evidenceSidebarOpen = diffOpen;
   const toggleEvidenceSidebar = () => {
-    if (!evidenceSidebarOpen) setRightSidebarTab('diffs');
+    setAuxInspectorTab('');
+    setTasksPaneOpen(false);
+    if (!evidenceSidebarOpen) setRightSidebarTab(hasWorkspace ? 'diffs' : 'artifacts');
     onToggleDiff?.();
   };
-  const openEvidenceTab = (tab: 'diffs' | 'artifacts') => {
-    setRightSidebarTab(tab);
-    if (!evidenceSidebarOpen) onToggleDiff?.();
+  const toggleTasksInspector = () => {
+    if (tasksPaneOpen) {
+      setTasksPaneOpen(false);
+      return;
+    }
+    if (evidenceSidebarOpen) onToggleDiff?.();
+    setAuxInspectorTab('');
+    setTasksPaneOpen(true);
   };
-  const rightPaneOpen = evidenceSidebarOpen || tasksPaneOpen;
+  const rightPaneOpen = evidenceSidebarOpen || tasksPaneOpen || Boolean(auxInspectorTab);
+  const activeInspectorTab = tasksPaneOpen ? 'tasks' : (auxInspectorTab || (rightSidebarTab === 'diffs' ? 'vcs' : 'artifacts'));
+  const setActiveInspectorTab = (tabId: string) => {
+    if (tabId === 'tasks') {
+      if (evidenceSidebarOpen) onToggleDiff?.();
+      setAuxInspectorTab('');
+      setTasksPaneOpen(true);
+      return;
+    }
+    if (tabId === 'vcs' || tabId === 'artifacts') {
+      setAuxInspectorTab('');
+      setTasksPaneOpen(false);
+      setRightSidebarTab(tabId === 'artifacts' ? 'artifacts' : 'diffs');
+      if (!evidenceSidebarOpen) onToggleDiff?.();
+      return;
+    }
+    if (evidenceSidebarOpen) onToggleDiff?.();
+    setTasksPaneOpen(false);
+    setAuxInspectorTab(tabId as any);
+  };
+  const toggleInspectorCollapsed = () => {
+    if (tasksPaneOpen) {
+      setTasksPaneOpen(false);
+      return;
+    }
+    if (auxInspectorTab) {
+      setAuxInspectorTab('');
+      return;
+    }
+    if (evidenceSidebarOpen) {
+      onToggleDiff?.();
+      return;
+    }
+    setTasksPaneOpen(true);
+  };
+  const coordinatorWorkspaceContext = useMemo(() => adaptChainCoordinatorWorkspaceContext({
+    chain,
+    coordinatorAgent,
+    coordinatorAgentId,
+    taskIds: orderedTasks.map((task: any) => task.taskId).filter(Boolean),
+    projectName,
+    provider: coordinatorProvider,
+    modelTier: coordinatorTier,
+    hasWorkspace,
+    statusLabel: coordinatorStatusLabel,
+  }), [chain, coordinatorAgent, coordinatorAgentId, coordinatorProvider, coordinatorStatusLabel, coordinatorTier, hasWorkspace, orderedTasks, projectName]);
+  const coordinatorAgentContext = coordinatorWorkspaceContext.genericAgent!;
+  const inspectorTabs = workspaceInspectorTabsFor(coordinatorWorkspaceContext, {
+    tasks: {
+      id: 'tasks',
+      label: 'Tasks',
+      content: (
+        <ChainTasksInspectorContent
+          chain={chain}
+          chainProgress={chainProgress}
+          activeTasks={activeTasks}
+          completedTasks={completedTasks}
+          tasksById={tasksById}
+          taskLogsByTaskId={taskLogsByTaskId}
+          taskLogCursorByTaskId={taskLogCursorByTaskId}
+          taskLogHasMoreByTaskId={taskLogHasMoreByTaskId}
+          taskLogLoadingByTaskId={taskLogLoadingByTaskId}
+          taskLogTotalByTaskId={taskLogTotalByTaskId}
+          selectedTaskId={selectedTaskId}
+          commentDraft={commentDraft}
+          nudgeDraft={nudgeDraft}
+          projectId={projectId}
+          team={chainTeam}
+          daemonUrl={session.daemonUrl}
+          clientToken={session.clientToken}
+          onRefreshAgents={onRefreshAgents}
+          onCommentDraft={setCommentDraft}
+          onNudgeDraft={setNudgeDraft}
+          openTask={openTask}
+          onLoadTaskLogPage={onLoadTaskLogPage}
+          openTaskById={openTaskById}
+          closeTask={closeTask}
+          onAddComment={onAddComment}
+          onSetTaskStatus={onSetTaskStatus}
+          onVoteTask={onVoteTask}
+          onNudgeTask={onNudgeTask}
+          onAssignTask={onAssignTask}
+          onSetReviewer={onSetReviewer}
+          onOpenAgentChat={onOpenAgentChat}
+          agents={agents}
+          agentIdentities={agentIdentities}
+          taskIndexMap={taskIndexMap}
+        />
+      ),
+      buttonDebugId: 'workspace-inspector-tab-tasks',
+      panelDebugId: 'workspace-inspector-panel-tasks',
+    },
+    'chain-agents': {
+      id: 'chain-agents',
+      label: 'Chain agents',
+      content: <ChainAgentsInspectorContent team={chainTeam} agents={agents} coordinatorAgentId={coordinatorAgentId} onOpenAgent={onOpenAgent} onOpenAgentChat={onOpenAgentChat} />,
+      buttonDebugId: 'workspace-inspector-tab-chain-agents',
+      panelDebugId: 'workspace-inspector-panel-chain-agents',
+    },
+    project: {
+      id: 'project',
+      label: 'Project',
+      content: <ContextInfoGrid items={[{ debugId: 'chain-project-name', label: 'Project', value: <span>🗂 {projectName}</span> }, { debugId: 'chain-project-id', label: 'Project id', value: <code>{projectId || '—'}</code> }, { debugId: 'chain-team-id', label: 'Team', value: <code>{chain?.teamId || chain?.team_id || '—'}</code> }]} />,
+      buttonDebugId: 'workspace-inspector-tab-project',
+      panelDebugId: 'workspace-inspector-panel-project',
+    },
+    runtime: {
+      id: 'runtime',
+      label: 'Runtime',
+      content: <ContextInfoGrid items={[{ debugId: 'chain-runtime-status', label: 'Coordinator status', value: coordinatorWorkspaceContext.statusLabel || 'offline' }, { debugId: 'chain-runtime-instance', label: 'Coordinator instance', value: <code>{coordinatorAgentId || 'unassigned'}</code> }, { debugId: 'chain-runtime-provider', label: 'Runtime settings', value: `${coordinatorProvider || 'pi'} · ${coordinatorTier} · ${projectId || 'no project'}` }]} />,
+      buttonDebugId: 'workspace-inspector-tab-runtime',
+      panelDebugId: 'workspace-inspector-panel-runtime',
+    },
+    vcs: {
+      id: 'vcs',
+      label: 'VCS',
+      content: (
+        <GlobalRightSidebar
+          embedded
+          chain={chain}
+          projectId={projectId}
+          workspace={workspaceForDisplay}
+          hasWorkspace={hasWorkspace}
+          preview={preview}
+          diffOpen={evidenceSidebarOpen}
+          diffData={diffData}
+          activeTab="diffs"
+          daemonUrl={session.daemonUrl}
+          clientToken={session.clientToken}
+          onFetchDiff={onFetchDiff}
+          onToggleDiff={toggleEvidenceSidebar}
+          onRescan={onRescan}
+          onPreviewMerge={onPreviewMerge}
+        />
+      ),
+      buttonDebugId: 'workspace-inspector-tab-vcs',
+      panelDebugId: 'workspace-inspector-panel-vcs',
+    },
+    artifacts: {
+      id: 'artifacts',
+      label: 'Artifacts',
+      content: (
+        <GlobalRightSidebar
+          embedded
+          chain={chain}
+          projectId={projectId}
+          workspace={workspaceForDisplay}
+          hasWorkspace={hasWorkspace}
+          preview={preview}
+          diffOpen={evidenceSidebarOpen}
+          diffData={diffData}
+          activeTab="artifacts"
+          daemonUrl={session.daemonUrl}
+          clientToken={session.clientToken}
+          onFetchDiff={onFetchDiff}
+          onToggleDiff={toggleEvidenceSidebar}
+          onRescan={onRescan}
+          onPreviewMerge={onPreviewMerge}
+        />
+      ),
+      buttonDebugId: 'workspace-inspector-tab-artifacts',
+      panelDebugId: 'workspace-inspector-panel-artifacts',
+    },
+  });
   const coordinatorInitial = (coordinatorLabel || 'L').trim().slice(0, 1).toUpperCase() || 'L';
   return (
     <div data-debug-id="chain-view" className="flex h-full min-h-0 flex-col bg-[#090909] text-zinc-100">
-      <div className="flex h-[46px] items-center justify-between gap-3 border-b border-[#262626] px-[18px] text-[12.5px] text-zinc-500">
-        <div className="flex min-w-0 items-center gap-2 overflow-hidden">
-          <button data-debug-id="chain-back-btn" onClick={onBack} className="rounded-md px-2 py-1 text-zinc-400 hover:bg-[#141414] hover:text-zinc-100">← Back</button>
-          <span>/</span>
-          <span className="truncate text-zinc-100">{chain.title || chain.chainId}</span>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <button data-debug-id="global-right-sidebar-toggle-btn" onClick={toggleEvidenceSidebar} className={`rounded-full border px-3 py-1 text-[11.5px] ${evidenceSidebarOpen ? 'border-sky-400/35 bg-sky-400/10 text-sky-100' : 'border-white/10 bg-[#141414] text-zinc-400 hover:text-zinc-100'}`}>▣ Evidence</button>
-          <button data-debug-id="chain-open-editor-btn" onClick={() => onOpenEditor?.(selectedTaskId)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">✎ Editor</button>
-          <button data-debug-id="chain-tasks-toggle-btn" onClick={() => setTasksPaneOpen((current) => !current)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">▤ Tasks</button>
-        </div>
-      </div>
-
-      {chain.description && descOpen && (
-        <section data-debug-id="chain-description-panel" className="border-b border-[#262626] bg-[#0f0f0f] px-[18px] py-4">
-          <div data-debug-id="chain-description-content" className="prose prose-invert max-w-none text-sm text-zinc-300">
-            <Markdown source={chain.description} />
-          </div>
-        </section>
-      )}
-
-      <div data-debug-id="chain-split-view" data-tasks-open={tasksPaneOpen ? 'true' : 'false'} data-workspace-open={evidenceSidebarOpen ? 'true' : 'false'} data-right-sidebar-open={evidenceSidebarOpen ? 'true' : 'false'} className={`grid min-h-0 flex-1 ${rightPaneOpen ? 'grid-cols-[minmax(0,1fr)_460px]' : 'grid-cols-[minmax(0,1fr)_0px]'}`}>
-        <section data-debug-id="chain-coordinator-panel" className="flex min-h-0 min-w-0 flex-col border-r border-[#262626]">
-          <ChatHeader
-            className="border-b border-[#262626] px-[18px] py-3 text-[12.5px] text-zinc-500"
-            left={<span className="grid h-7 w-7 place-items-center rounded-full bg-sky-400/10 text-xs font-semibold text-sky-100">{coordinatorInitial}</span>}
-            title={<div><b className="text-zinc-100">Coordinator</b></div>}
-            subtitle={<span className="truncate">{coordinatorAgentId || 'unassigned'} · lead</span>}
-            status={<span data-debug-id="chain-coordinator-live-status" className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${agentRuntimeStatusTone(coordinatorStatus)}`} title={`${coordinatorLabel} · ${coordinatorStatusLabel}${coordinatorLastSeen ? ` · ${coordinatorLastSeen}` : ''}`}><span className={`h-1.5 w-1.5 rounded-full shadow ${agentRuntimeDotTone(coordinatorStatus)}`} />{coordinatorStatusLabel}</span>}
-          />
-          <div className="min-h-0 flex-1 overflow-hidden px-5 py-5">
-            <div className="mx-auto flex h-full max-w-[760px] flex-col">
-              <CoordinatorMessageList chainId={chain.chainId} messages={messages} onReply={(reply) => {
-                setSendError('');
-                void onSend(reply).catch((err: any) => setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`));
-              }} debugPrefix={chainCoordinatorChatDebug.messageList} hasMore={coordinatorHasMore} loadingOlder={coordinatorLoading} onLoadOlder={() => onLoadCoordinatorChatPage?.(chain.chainId, coordinatorCursor)} />
-            </div>
-          </div>
-          <div className="px-5 pb-[18px] pt-3">
-            <div className="mx-auto max-w-[760px]">
-              <ChatWorkBanner agent={coordinatorAgent || { id: coordinatorAgentId, label: coordinatorLabel, status: coordinatorAgentId ? 'offline' : 'unknown' }} tasksById={tasksById} debugPrefix={chainCoordinatorChatDebug.workBanner} onStart={startCoordinator} startDisabled={!coordinatorAgentId} />
-            </div>
-            <div className="mx-auto max-w-[760px]">
-              <ChatComposer
-                shellDebugId={chainCoordinatorChatDebug.composer + '-composer-shell'}
-                inputDebugId={chainCoordinatorChatDebug.composer + '-composer-input'}
-                sendButtonDebugId={chainCoordinatorChatDebug.composer + '-send-btn'}
-                sendAriaLabel="Send coordinator message"
-                value={draft}
-                onValueChange={(value) => { setDraft(value); setSendError(''); }}
-                onSubmit={submit}
-                onPaste={async (event) => {
-                  const result = await composerArtifactUpload.uploadClipboardImage(event, { projectId, originKind: 'clipboard_chat', originRef: chain.chainId || '' });
-                  if (result.link) {
-                    setSendError('');
-                    setDraft((current) => appendArtifactLink(current, result.link));
-                  }
-                }}
-                onKeyDown={(event) => {
-                  if (event.key !== 'Enter' || event.shiftKey || !(event.metaKey || event.ctrlKey)) return;
-                  event.preventDefault();
-                  void submit();
-                }}
-                inputRef={composerRef}
-                placeholder="Message the coordinator, @ an agent…"
-                autoFocus
-                sendDisabled={!draft.trim()}
-                sendError={sendError}
-                sendErrorDebugId="chain-coordinator-send-error"
-                uploadErrorDebugId="chain-coordinator-paste-error"
-                upload={{ onUploaded: (link) => { setSendError(''); setDraft((current) => appendArtifactLink(current, link)); }, debugIdPrefix: chainCoordinatorChatDebug.upload, context: { projectId, originRef: chain.chainId || '' }, buttonClassName: 'inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-lg text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40', label: '⇧', error: composerArtifactUpload.error }}
-                runtimeControls={{ debugPrefix: chainCoordinatorChatDebug.runtime, providers, projects, provider: coordinatorProvider, modelTier: coordinatorTier, projectId, disabled: true, restarting: false, showProject: true, onRestart: async () => undefined }}
-                leftAdornment={<span className="rounded-md border border-white/10 bg-[#1c1c1c] px-2 py-1.5 text-xs text-zinc-500">@ mention agent</span>}
-                footer={<><span>🗂 {projectName} · shares memories &amp; skills from the <code>coordinator</code> identity</span><span>⌘↵ to send</span></>}
-              />
-            </div>
-          </div>
-        </section>
-
-        {rightPaneOpen && (
-          evidenceSidebarOpen ? (
-            <GlobalRightSidebar
-              chain={chain}
-              projectId={projectId}
-              workspace={workspaceForDisplay}
-              hasWorkspace={hasWorkspace}
-              preview={preview}
-              diffOpen={evidenceSidebarOpen}
-              diffData={diffData}
-              activeTab={rightSidebarTab}
-              daemonUrl={session.daemonUrl}
-              clientToken={session.clientToken}
-              onTabChange={openEvidenceTab}
-              onClose={toggleEvidenceSidebar}
-              onFetchDiff={onFetchDiff}
-              onToggleDiff={toggleEvidenceSidebar}
-              onRescan={onRescan}
-              onPreviewMerge={onPreviewMerge}
+      <div data-debug-id="chain-split-view" data-tasks-open={tasksPaneOpen ? 'true' : 'false'} data-workspace-open={evidenceSidebarOpen ? 'true' : 'false'} data-right-sidebar-open={rightPaneOpen ? 'true' : 'false'} className="min-h-0 flex-1">
+        <UnifiedWorkspaceShell
+          inspectorCollapsed={!rightPaneOpen}
+          className="h-full min-h-0"
+          mainRegion={(
+            <WorkspaceMainRegion className="min-w-0 flex min-h-0 flex-1 flex-col" contentClassName="min-h-0 flex-1">
+              <section data-debug-id="chain-coordinator-panel" className="flex h-full min-h-0 min-w-0 flex-col">
+                <GenericAgentWorkspacePage
+                  context={{
+                    header: {
+                      className: 'border-b border-[#262626] px-[18px] py-3 text-[12.5px] text-zinc-500',
+                      left: <span className="grid h-7 w-7 place-items-center rounded-full bg-sky-400/10 text-xs font-semibold text-sky-100">{coordinatorInitial}</span>,
+                      title: <div><b className="text-zinc-100">{coordinatorWorkspaceContext.title}</b></div>,
+                      subtitle: <span className="truncate">{coordinatorWorkspaceContext.subtitle || 'unassigned'} · lead</span>,
+                      status: <span data-debug-id="chain-coordinator-live-status" className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${agentRuntimeStatusTone(coordinatorStatus)}`} title={`${coordinatorLabel} · ${coordinatorStatusLabel}${coordinatorLastSeen ? ` · ${coordinatorLastSeen}` : ''}`}><span className={`h-1.5 w-1.5 rounded-full shadow ${agentRuntimeDotTone(coordinatorStatus)}`} />{coordinatorStatusLabel}</span>,
+                      actions: <><button data-debug-id="chain-back-btn" onClick={onBack} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">← Back</button><button data-debug-id="global-right-sidebar-toggle-btn" onClick={toggleEvidenceSidebar} className={`rounded-full border px-3 py-1 text-[11.5px] ${evidenceSidebarOpen && !tasksPaneOpen ? 'border-sky-400/35 bg-sky-400/10 text-sky-100' : 'border-white/10 bg-[#141414] text-zinc-400 hover:text-zinc-100'}`}>▣ Evidence</button><button data-debug-id="chain-open-editor-btn" onClick={() => onOpenEditor?.(selectedTaskId)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">✎ Editor</button><button data-debug-id="chain-tasks-toggle-btn" onClick={toggleTasksInspector} className={`rounded-full border px-3 py-1 text-[11.5px] ${tasksPaneOpen ? 'border-sky-400/35 bg-sky-400/10 text-sky-100' : 'border-white/10 bg-[#141414] text-zinc-400 hover:text-zinc-100'}`}>▤ Tasks</button></>,
+                    },
+                    chat: {
+                      conversationKey: coordinatorAgentContext.chat.conversationKey,
+                      messages,
+                      debugPrefix: coordinatorAgentContext.debug.messageListPrefix,
+                      hasMore: coordinatorHasMore,
+                      loadingOlder: coordinatorLoading,
+                      onLoadOlder: () => onLoadCoordinatorChatPage?.(chain.chainId, coordinatorCursor),
+                      onReply: (reply) => {
+                        setSendError('');
+                        void onSend(reply).catch((err: any) => setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`));
+                      },
+                      renderMessageBody: ({ message, onReply }) => {
+                        if (message.isUser) return <UserActionReplyBubble body={message.body} />;
+                        const action = parseCoordinatorActionPayload(message.body);
+                        if (!action) return <Markdown source={message.body} compact copyAll={false} />;
+                        return (
+                          <CoordinatorActionCard
+                            action={action}
+                            messageId={message.messageId}
+                            debugPrefix={coordinatorAgentContext.debug.messageListPrefix}
+                            usedReply={usedActionCards[message.messageId] || persistedActionReplies[message.messageId] || ''}
+                            onUse={(nextReply) => {
+                              setUsedActionCards((prev) => ({ ...prev, [message.messageId]: nextReply }));
+                              onReply(nextReply);
+                            }}
+                          />
+                        );
+                      },
+                    },
+                    workBanner: {
+                      agent: coordinatorAgent || { id: coordinatorAgentId, label: coordinatorLabel, status: coordinatorAgentId ? 'offline' : 'unknown' },
+                      tasksById,
+                      debugPrefix: coordinatorAgentContext.debug.workBannerPrefix,
+                      onStart: startCoordinator,
+                      startDisabled: !coordinatorAgentId,
+                    },
+                    composer: {
+                      shellDebugId: coordinatorAgentContext.debug.composerPrefix + '-composer-shell',
+                      inputDebugId: coordinatorAgentContext.debug.composerPrefix + '-composer-input',
+                      sendButtonDebugId: coordinatorAgentContext.debug.composerPrefix + '-send-btn',
+                      sendAriaLabel: 'Send coordinator message',
+                      value: draft,
+                      onValueChange: (value) => { setDraft(value); setSendError(''); },
+                      onSubmit: submit,
+                      onPaste: async (event) => {
+                        const result = await composerArtifactUpload.uploadClipboardImage(event, { projectId, originKind: 'clipboard_chat', originRef: chain.chainId || '' });
+                        if (result.link) {
+                          setSendError('');
+                          setDraft((current) => appendArtifactLink(current, result.link));
+                        }
+                      },
+                      onKeyDown: (event) => {
+                        if (event.key !== 'Enter' || event.shiftKey || !(event.metaKey || event.ctrlKey)) return;
+                        event.preventDefault();
+                        void submit();
+                      },
+                      inputRef: composerRef,
+                      placeholder: 'Message the coordinator, @ an agent…',
+                      autoFocus: true,
+                      sendDisabled: !draft.trim(),
+                      sendError,
+                      sendErrorDebugId: 'chain-coordinator-send-error',
+                      uploadErrorDebugId: 'chain-coordinator-paste-error',
+                      upload: { onUploaded: (link) => { setSendError(''); setDraft((current) => appendArtifactLink(current, link)); }, debugIdPrefix: coordinatorAgentContext.debug.uploadPrefix, context: { projectId, originRef: chain.chainId || '' }, buttonClassName: 'inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-lg text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40', label: '⇧', error: composerArtifactUpload.error },
+                      runtimeControls: { debugPrefix: coordinatorAgentContext.debug.runtimePrefix, providers, projects, provider: coordinatorProvider, modelTier: coordinatorTier, projectId, disabled: true, restarting: false, showProject: true, onRestart: async () => undefined },
+                      leftAdornment: <span className="rounded-md border border-white/10 bg-[#1c1c1c] px-2 py-1.5 text-xs text-zinc-500">@ mention agent</span>,
+                      footer: <><span>🗂 {projectName} · shares memories &amp; skills from the <code>coordinator</code> identity</span><span>⌘↵ to send</span></>,
+                    },
+                  }}
+                />
+              </section>
+            </WorkspaceMainRegion>
+          )}
+          inspector={(
+            <ContextInspector
+              title={coordinatorWorkspaceContext.title}
+              subtitle={coordinatorWorkspaceContext.subtitle || 'Context inspector'}
+              tabs={inspectorTabs}
+              activeTabId={activeInspectorTab}
+              onTabChange={setActiveInspectorTab}
+              collapsed={!rightPaneOpen}
+              onToggleCollapsed={toggleInspectorCollapsed}
+              className={`${!rightPaneOpen ? 'w-0 border-l-0 p-0' : 'w-[420px] border-l border-[#262626] p-4'} min-h-0 shrink-0 overflow-hidden bg-[#0d0d0d] transition-[width,padding] duration-200`}
             />
-          ) : (
-          <ChatSidebar debugId={chainCoordinatorChatDebug.sidebar} className="min-h-0 overflow-y-auto border-l border-[#262626] bg-[#0f0f0f] outline-none focus-visible:ring-1 focus-visible:ring-sky-400/40">
-            <div className="px-[18px] py-4">
-              <ChainProgressPanel chain={chain} progress={chainProgress} />
-              <div className="mt-5 flex items-start justify-between gap-3">
-                <div>
-                  <h2 className="text-[14px] font-semibold text-zinc-100">Task chain plan</h2>
-                  <p className="mt-1 text-[11.5px] text-zinc-500">Dependency-ordered. Click a task to expand.</p>
-                </div>
-                <span data-debug-id="chain-task-count" className="rounded-full border border-white/10 bg-[#141414] px-2.5 py-1 text-[11px] text-zinc-400">{activeTasks.length} · {completedTasks.length}</span>
-              </div>
-              <TaskTodoList
-                title="Active"
-                emptyText="No active tasks."
-                tasks={activeTasks}
-                tasksById={tasksById}
-                taskLogsByTaskId={taskLogsByTaskId}
-                taskLogCursorByTaskId={taskLogCursorByTaskId}
-                taskLogHasMoreByTaskId={taskLogHasMoreByTaskId}
-                taskLogLoadingByTaskId={taskLogLoadingByTaskId}
-                taskLogTotalByTaskId={taskLogTotalByTaskId}
-                expandedTaskId={selectedTaskId}
-                commentDraft={commentDraft}
-                nudgeDraft={nudgeDraft}
-                projectId={projectId}
-                chainId={chain.chainId}
-                team={chainView.teamByChainId[chain.chainId]}
-                daemonUrl={session.daemonUrl}
-                clientToken={session.clientToken}
-                onRefreshAgents={onRefreshAgents}
-                onCommentDraft={setCommentDraft}
-                onNudgeDraft={setNudgeDraft}
-                onOpenTask={openTask}
-                onLoadTaskLogPage={onLoadTaskLogPage}
-                onOpenTaskById={openTaskById}
-                onCloseTask={closeTask}
-                onAddComment={onAddComment}
-                onSetTaskStatus={onSetTaskStatus}
-                onVoteTask={onVoteTask}
-                onNudgeTask={onNudgeTask}
-                onAssignTask={onAssignTask}
-                onSetReviewer={onSetReviewer}
-                onOpenAgentChat={onOpenAgentChat}
-                agents={agents}
-                agentIdentities={agentIdentities}
-                taskIndexMap={taskIndexMap}
-              />
-              {completedTasks.length > 0 && (
-                <div data-debug-id="chain-completed-task-section" className="mt-5 border-t border-white/10 pt-4">
-                  <TaskTodoList
-                    title="Completed"
-                    emptyText="No completed tasks."
-                    tasks={completedTasks}
-                    tasksById={tasksById}
-                    taskLogsByTaskId={taskLogsByTaskId}
-                    taskLogCursorByTaskId={taskLogCursorByTaskId}
-                    taskLogHasMoreByTaskId={taskLogHasMoreByTaskId}
-                    taskLogLoadingByTaskId={taskLogLoadingByTaskId}
-                    taskLogTotalByTaskId={taskLogTotalByTaskId}
-                    expandedTaskId={selectedTaskId}
-                    commentDraft={commentDraft}
-                    nudgeDraft={nudgeDraft}
-                    projectId={projectId}
-                    chainId={chain.chainId}
-                    team={chainView.teamByChainId[chain.chainId]}
-                    daemonUrl={session.daemonUrl}
-                    clientToken={session.clientToken}
-                    onRefreshAgents={onRefreshAgents}
-                    onCommentDraft={setCommentDraft}
-                    onNudgeDraft={setNudgeDraft}
-                    onOpenTask={openTask}
-                    onLoadTaskLogPage={onLoadTaskLogPage}
-                    onOpenTaskById={openTaskById}
-                    onCloseTask={closeTask}
-                    onAddComment={onAddComment}
-                    onSetTaskStatus={onSetTaskStatus}
-                    onVoteTask={onVoteTask}
-                    onNudgeTask={onNudgeTask}
-                    onAssignTask={onAssignTask}
-                    onSetReviewer={onSetReviewer}
-                    onOpenAgentChat={onOpenAgentChat}
-                    agents={agents}
-                    agentIdentities={agentIdentities}
-                    taskIndexMap={taskIndexMap}
-                    completed
-                  />
-                </div>
-              )}
-            </div>
-          </ChatSidebar>
-          )
-        )}
+          )}
+        />
       </div>
 
     </div>
   );
 }
 
-function GlobalRightSidebar({ chain, projectId = '', workspace, hasWorkspace = false, preview, diffOpen = false, diffData = {}, activeTab = 'diffs', daemonUrl = '', clientToken = '', onTabChange, onClose, onFetchDiff, onToggleDiff, onRescan, onPreviewMerge }: any) {
+function ChainTasksInspectorContent({ chain, chainProgress, activeTasks, completedTasks, tasksById, taskLogsByTaskId, taskLogCursorByTaskId, taskLogHasMoreByTaskId, taskLogLoadingByTaskId, taskLogTotalByTaskId, selectedTaskId, commentDraft, nudgeDraft, projectId, team, daemonUrl, clientToken, onRefreshAgents, onCommentDraft, onNudgeDraft, openTask, onLoadTaskLogPage, openTaskById, closeTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onOpenAgentChat, agents, agentIdentities, taskIndexMap }: any) {
+  return (
+    <div data-debug-id="chain-task-surface" className="px-[18px] py-4">
+      <ChainProgressPanel chain={chain} progress={chainProgress} />
+      <div className="mt-5 flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-[14px] font-semibold text-zinc-100">Task chain plan</h2>
+          <p className="mt-1 text-[11.5px] text-zinc-500">Dependency-ordered. Click a task to expand.</p>
+        </div>
+        <span data-debug-id="chain-task-count" className="rounded-full border border-white/10 bg-[#141414] px-2.5 py-1 text-[11px] text-zinc-400">{activeTasks.length} · {completedTasks.length}</span>
+      </div>
+      <TaskTodoList
+        title="Active"
+        emptyText="No active tasks."
+        tasks={activeTasks}
+        tasksById={tasksById}
+        taskLogsByTaskId={taskLogsByTaskId}
+        taskLogCursorByTaskId={taskLogCursorByTaskId}
+        taskLogHasMoreByTaskId={taskLogHasMoreByTaskId}
+        taskLogLoadingByTaskId={taskLogLoadingByTaskId}
+        taskLogTotalByTaskId={taskLogTotalByTaskId}
+        expandedTaskId={selectedTaskId}
+        commentDraft={commentDraft}
+        nudgeDraft={nudgeDraft}
+        projectId={projectId}
+        chainId={chain.chainId}
+        team={team}
+        daemonUrl={daemonUrl}
+        clientToken={clientToken}
+        onRefreshAgents={onRefreshAgents}
+        onCommentDraft={onCommentDraft}
+        onNudgeDraft={onNudgeDraft}
+        onOpenTask={openTask}
+        onLoadTaskLogPage={onLoadTaskLogPage}
+        onOpenTaskById={openTaskById}
+        onCloseTask={closeTask}
+        onAddComment={onAddComment}
+        onSetTaskStatus={onSetTaskStatus}
+        onVoteTask={onVoteTask}
+        onNudgeTask={onNudgeTask}
+        onAssignTask={onAssignTask}
+        onSetReviewer={onSetReviewer}
+        onOpenAgentChat={onOpenAgentChat}
+        agents={agents}
+        agentIdentities={agentIdentities}
+        taskIndexMap={taskIndexMap}
+      />
+      {completedTasks.length > 0 && (
+        <div data-debug-id="chain-completed-task-section" className="mt-5 border-t border-white/10 pt-4">
+          <TaskTodoList
+            title="Completed"
+            emptyText="No completed tasks."
+            tasks={completedTasks}
+            tasksById={tasksById}
+            taskLogsByTaskId={taskLogsByTaskId}
+            taskLogCursorByTaskId={taskLogCursorByTaskId}
+            taskLogHasMoreByTaskId={taskLogHasMoreByTaskId}
+            taskLogLoadingByTaskId={taskLogLoadingByTaskId}
+            taskLogTotalByTaskId={taskLogTotalByTaskId}
+            expandedTaskId={selectedTaskId}
+            commentDraft={commentDraft}
+            nudgeDraft={nudgeDraft}
+            projectId={projectId}
+            chainId={chain.chainId}
+            team={team}
+            daemonUrl={daemonUrl}
+            clientToken={clientToken}
+            onRefreshAgents={onRefreshAgents}
+            onCommentDraft={onCommentDraft}
+            onNudgeDraft={onNudgeDraft}
+            onOpenTask={openTask}
+            onLoadTaskLogPage={onLoadTaskLogPage}
+            onOpenTaskById={openTaskById}
+            onCloseTask={closeTask}
+            onAddComment={onAddComment}
+            onSetTaskStatus={onSetTaskStatus}
+            onVoteTask={onVoteTask}
+            onNudgeTask={onNudgeTask}
+            onAssignTask={onAssignTask}
+            onSetReviewer={onSetReviewer}
+            onOpenAgentChat={onOpenAgentChat}
+            agents={agents}
+            agentIdentities={agentIdentities}
+            taskIndexMap={taskIndexMap}
+            completed
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GlobalRightSidebar({ chain, projectId = '', workspace, hasWorkspace = false, preview, diffOpen = false, diffData = {}, activeTab = 'diffs', daemonUrl = '', clientToken = '', onTabChange, onClose, onFetchDiff, onToggleDiff, onRescan, onPreviewMerge, embedded = false }: any) {
   const chainId = chain?.chainId || chain?.chain_id || '';
+  const Container: any = embedded ? 'div' : 'aside';
   const tabButton = (tab: 'diffs' | 'artifacts', label: string) => (
     <button
       type="button"
@@ -5409,19 +5697,23 @@ function GlobalRightSidebar({ chain, projectId = '', workspace, hasWorkspace = f
     </button>
   );
   return (
-    <aside data-debug-id="global-right-sidebar" className="min-h-0 overflow-y-auto border-l border-[#262626] bg-[#0d0d0d] p-4">
-      <div className="mb-4 flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="text-[10.5px] font-semibold uppercase tracking-[0.2em] text-zinc-500">Evidence</div>
-          <h2 className="mt-1 truncate text-[15px] font-semibold text-zinc-100">{chain?.title || chainId || 'This context'}</h2>
-          <p className="mt-0.5 truncate text-[11.5px] text-zinc-500">Workspace diffs &amp; project artifacts</p>
-        </div>
-        <button type="button" data-debug-id="global-right-sidebar-close-btn" onClick={onClose} className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-white/10 bg-[#141414] text-sm text-zinc-400 hover:text-zinc-100" title="Close evidence sidebar" aria-label="Close evidence sidebar">×</button>
-      </div>
-      <div data-debug-id="global-right-sidebar-tabs" className="mb-4 flex gap-1 rounded-xl border border-white/[0.06] bg-black/30 p-1">
-        {tabButton('diffs', 'Diffs')}
-        {tabButton('artifacts', 'Artifacts')}
-      </div>
+    <Container data-debug-id="global-right-sidebar" className={embedded ? 'min-h-0 h-full overflow-y-auto' : 'min-h-0 overflow-y-auto border-l border-[#262626] bg-[#0d0d0d] p-4'}>
+      {!embedded ? (
+        <>
+          <div className="mb-4 flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-[10.5px] font-semibold uppercase tracking-[0.2em] text-zinc-500">Evidence</div>
+              <h2 className="mt-1 truncate text-[15px] font-semibold text-zinc-100">{chain?.title || chainId || 'This context'}</h2>
+              <p className="mt-0.5 truncate text-[11.5px] text-zinc-500">Workspace diffs &amp; project artifacts</p>
+            </div>
+            <button type="button" data-debug-id="global-right-sidebar-close-btn" onClick={onClose} className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-white/10 bg-[#141414] text-sm text-zinc-400 hover:text-zinc-100" title="Close evidence sidebar" aria-label="Close evidence sidebar">×</button>
+          </div>
+          <div data-debug-id="global-right-sidebar-tabs" className="mb-4 flex gap-1 rounded-xl border border-white/[0.06] bg-black/30 p-1">
+            {tabButton('diffs', 'Diffs')}
+            {tabButton('artifacts', 'Artifacts')}
+          </div>
+        </>
+      ) : null}
       {activeTab === 'diffs' ? (
         <section data-debug-id="global-right-sidebar-diff-list" className="space-y-3">
           {!hasWorkspace ? (
@@ -5450,7 +5742,7 @@ function GlobalRightSidebar({ chain, projectId = '', workspace, hasWorkspace = f
           <ChainArtifactsPanel daemonUrl={daemonUrl} clientToken={clientToken} projectId={projectId} chainId={chainId} />
         </section>
       )}
-    </aside>
+    </Container>
   );
 }
 

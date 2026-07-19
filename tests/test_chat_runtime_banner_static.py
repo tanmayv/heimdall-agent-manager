@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 APP = (ROOT / "src" / "ui" / "components" / "App.tsx").read_text(encoding="utf-8")
 WORK_BANNER = (ROOT / "src" / "ui" / "components" / "chat" / "ChatWorkBanner.tsx").read_text(encoding="utf-8")
 SETTINGS = (ROOT / "src" / "ui" / "components" / "SettingsPage.tsx").read_text(encoding="utf-8")
+ADAPTERS = (ROOT / "src" / "ui" / "components" / "workspace" / "adapters.ts").read_text(encoding="utf-8")
 AGENTS = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 
 
@@ -29,11 +30,19 @@ def main() -> None:
         require(WORK_BANNER, snippet, "shared work banner")
 
     for snippet in [
-        'debugPrefix={agentDetailChatDebug.workBanner}',
-        "<ChatWorkBanner agent={locallyStopped ? { ...agent, status: 'stopped'",
+        'debug: debugPlan(conversationChatDebug)',
+        'debug: debugPlan(agentDetailChatDebug)',
+        'debug: debugPlan(chainCoordinatorChatDebug)',
+    ]:
+        require(ADAPTERS, snippet, "workspace banner debug planning")
+
+    for snippet in [
+        'workBanner: { agent, tasksById, debugPrefix: detailAgentContext.debug.workBannerPrefix',
+        "workBanner: {\n                  agent: locallyStopped ? { ...agent, status: 'stopped', startupStatus: 'stopped' } : agent,",
+        'debugPrefix: conversationAgentContext.debug.workBannerPrefix,',
+        'debugPrefix: coordinatorAgentContext.debug.workBannerPrefix,',
         "<ChatRuntimeBanner agent={selectedAgent} debugPrefix=\"home-running-agent-chat\"",
         "<ChatRuntimeBanner agent={agent || { id: GUIDE_AGENT_ID",
-        "<ChatWorkBanner agent={coordinatorAgent || { id: coordinatorAgentId",
     ]:
         require(APP, snippet, "banner placement")
 

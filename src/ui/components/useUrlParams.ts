@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { parseWorkspaceRoute, buildWorkspacePath, urlStateToWorkspaceRoute, workspaceRouteToUrlState } from './workspace/routes';
 
 export interface UrlParams {
   view: string;
@@ -9,7 +10,10 @@ export interface UrlParams {
   projectId: string;
 }
 
-export function getUrlParams(): UrlParams {
+const INITIAL_APP_PATHNAME = typeof window !== 'undefined' ? window.location.pathname : '/';
+const HEIMDALL_ROUTE_DEPTH_STATE_KEY = '__heimdallRouteDepth';
+
+function readSearchParams() {
   const params = new URLSearchParams(window.location.search);
   return {
     view: params.get('view') || 'chat',
@@ -21,7 +25,21 @@ export function getUrlParams(): UrlParams {
   };
 }
 
-const HEIMDALL_ROUTE_DEPTH_STATE_KEY = '__heimdallRouteDepth';
+function urlParamsFromWorkspacePath(): UrlParams | null {
+  const route = parseWorkspaceRoute(window.location.pathname);
+  if (!route) return null;
+  const query = readSearchParams();
+  return {
+    ...query,
+    ...workspaceRouteToUrlState(route),
+    memoryId: query.memoryId || '',
+    projectId: query.projectId || (route.kind === 'project' ? route.projectId : ''),
+  };
+}
+
+export function getUrlParams(): UrlParams {
+  return urlParamsFromWorkspacePath() || readSearchParams();
+}
 
 function routeDepth(): number {
   const raw = Number((window.history.state || {})[HEIMDALL_ROUTE_DEPTH_STATE_KEY] || 0);
@@ -34,6 +52,20 @@ function ensureRouteState() {
   window.history.replaceState({ ...state, [HEIMDALL_ROUTE_DEPTH_STATE_KEY]: 0 }, '', `${window.location.pathname}${window.location.search}`);
 }
 
+function buildUrl(nextState: UrlParams): string {
+  const workspaceRoute = urlStateToWorkspaceRoute(nextState);
+  const pathname = workspaceRoute ? buildWorkspacePath(workspaceRoute) : INITIAL_APP_PATHNAME;
+  const params = new URLSearchParams();
+  if (!workspaceRoute && nextState.view) params.set('view', nextState.view);
+  if (!workspaceRoute && nextState.agentId) params.set('agentId', nextState.agentId);
+  if (!workspaceRoute && nextState.chainId) params.set('chainId', nextState.chainId);
+  if (!workspaceRoute && nextState.taskId) params.set('taskId', nextState.taskId);
+  if (nextState.memoryId) params.set('memoryId', nextState.memoryId);
+  if (nextState.projectId) params.set('projectId', nextState.projectId);
+  const search = params.toString() ? `?${params.toString()}` : '';
+  return `${pathname}${search}`;
+}
+
 export function canNavigateBackInApp(): boolean {
   ensureRouteState();
   return routeDepth() > 0;
@@ -41,16 +73,19 @@ export function canNavigateBackInApp(): boolean {
 
 export function updateUrlParams(updates: Partial<Record<keyof UrlParams, string | null>>) {
   ensureRouteState();
-  const params = new URLSearchParams(window.location.search);
+  const current = getUrlParams();
+  const nextState: UrlParams = {
+    view: current.view || 'chat',
+    agentId: current.agentId || '',
+    taskId: current.taskId || '',
+    chainId: current.chainId || '',
+    memoryId: current.memoryId || '',
+    projectId: current.projectId || '',
+  };
   Object.entries(updates).forEach(([key, val]) => {
-    if (val === null || val === '') {
-      params.delete(key);
-    } else {
-      params.set(key, val);
-    }
+    (nextState as any)[key] = val || '';
   });
-  const search = params.toString() ? `?${params.toString()}` : '';
-  const url = `${window.location.pathname}${search}`;
+  const url = buildUrl(nextState);
   window.history.pushState({ ...(window.history.state || {}), [HEIMDALL_ROUTE_DEPTH_STATE_KEY]: routeDepth() + 1 }, '', url);
   window.dispatchEvent(new Event('popstate'));
 }

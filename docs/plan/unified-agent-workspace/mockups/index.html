@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Unified Agent Workspace mockup</title>
+  <style>
+    :root {
+      --bg: #070707;
+      --panel: #0d0d0e;
+      --panel-2: #121214;
+      --panel-3: #171719;
+      --line: rgba(255,255,255,.09);
+      --line-strong: rgba(255,255,255,.14);
+      --text: #f4f4f5;
+      --muted: #a1a1aa;
+      --faint: #63636f;
+      --sky: #7dd3fc;
+      --green: #86efac;
+      --amber: #fde68a;
+      --red: #fca5a5;
+      --purple: #c4b5fd;
+      --shadow: 0 22px 80px rgba(0,0,0,.42);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; background: radial-gradient(circle at top left, rgba(14,165,233,.12), transparent 30%), var(--bg); color: var(--text); }
+    button, select, textarea, input { font: inherit; }
+    a { color: inherit; text-decoration: none; }
+    .workspace { height: 100vh; display: grid; grid-template-columns: 294px minmax(0,1fr) 392px; overflow: hidden; }
+    .workspace.inspector-collapsed { grid-template-columns: 294px minmax(0,1fr) 52px; }
+    .left { min-width: 0; border-right: 1px solid var(--line); background: linear-gradient(180deg, #09090a, #050505); display: flex; flex-direction: column; }
+    .brand { padding: 18px 16px 14px; border-bottom: 1px solid var(--line); }
+    .brand-row { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+    .logo { display:flex; align-items:center; gap:10px; font-weight:700; letter-spacing:-.03em; }
+    .logo-mark { display:grid; place-items:center; width:34px; height:34px; border-radius:13px; background:linear-gradient(135deg, rgba(56,189,248,.22), rgba(196,181,253,.15)); border:1px solid var(--line); }
+    .mini-btn, .pill-btn, .icon-btn { border:1px solid var(--line); background:#131315; color:var(--muted); cursor:pointer; }
+    .mini-btn:hover, .pill-btn:hover, .icon-btn:hover { color:var(--text); border-color:var(--line-strong); background:#1a1a1d; }
+    .mini-btn { border-radius:11px; padding:7px 9px; font-size:12px; }
+    .pill-btn { border-radius:999px; padding:7px 11px; font-size:12px; white-space:nowrap; }
+    .icon-btn { border-radius:12px; width:34px; height:34px; display:grid; place-items:center; }
+    .search { margin-top:14px; position:relative; }
+    .search input { width:100%; height:38px; border-radius:14px; border:1px solid var(--line); background:#101012; color:var(--text); outline:none; padding:0 12px 0 34px; font-size:13px; }
+    .search span { position:absolute; left:12px; top:9px; color:var(--faint); font-size:13px; }
+    .left-scroll { min-height:0; overflow:auto; padding:14px 12px 18px; }
+    .section-title { margin:16px 6px 8px; display:flex; justify-content:space-between; align-items:center; color:var(--faint); text-transform:uppercase; letter-spacing:.16em; font-size:10px; }
+    .nav-card { width:100%; text-align:left; border:1px solid transparent; background:transparent; color:var(--muted); border-radius:16px; padding:10px; display:flex; gap:10px; cursor:pointer; }
+    .nav-card:hover { background:#101012; color:var(--text); }
+    .nav-card.active { background:linear-gradient(135deg, rgba(56,189,248,.11), rgba(255,255,255,.035)); border-color:rgba(125,211,252,.25); color:var(--text); }
+    .avatar { width:34px; height:34px; border-radius:13px; display:grid; place-items:center; flex:0 0 auto; background:#1b1b1f; border:1px solid var(--line); color:#d4d4d8; font-weight:700; font-size:12px; }
+    .avatar.green { background:rgba(34,197,94,.12); color:var(--green); }
+    .avatar.sky { background:rgba(56,189,248,.12); color:var(--sky); }
+    .avatar.purple { background:rgba(139,92,246,.14); color:var(--purple); }
+    .nav-main { min-width:0; flex:1; }
+    .nav-title { font-size:13px; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .nav-sub { margin-top:3px; font-size:11px; color:var(--faint); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .dot { width:7px; height:7px; border-radius:999px; flex:0 0 auto; margin-top:7px; background:var(--faint); box-shadow:0 0 0 3px rgba(255,255,255,.03); }
+    .dot.active { background:var(--green); box-shadow:0 0 0 3px rgba(34,197,94,.12); }
+    .dot.working { background:var(--sky); box-shadow:0 0 0 3px rgba(56,189,248,.12); animation:pulse 1.4s infinite; }
+    .dot.stopped { background:#71717a; }
+    @keyframes pulse { 50% { opacity:.45; transform:scale(.84); } }
+
+    .main { min-width:0; display:flex; flex-direction:column; background:var(--bg); }
+    .topbar { height:62px; border-bottom:1px solid var(--line); background:rgba(9,9,10,.84); backdrop-filter:blur(18px); display:flex; align-items:center; justify-content:space-between; padding:0 18px; gap:16px; }
+    .crumb { min-width:0; display:flex; align-items:center; gap:9px; color:var(--faint); font-size:12px; }
+    .crumb strong { color:var(--text); font-size:13px; }
+    .slash { color:#3f3f46; }
+    .top-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
+    .state-chip { display:inline-flex; align-items:center; gap:7px; border:1px solid var(--line); background:#121214; border-radius:999px; padding:7px 10px; font-size:12px; color:var(--muted); }
+    .state-chip .dot { margin:0; }
+    .main-content { min-height:0; flex:1; display:flex; justify-content:center; overflow:hidden; }
+    .chat-panel { width:min(100%, 900px); min-height:0; display:flex; flex-direction:column; padding:22px 22px 18px; }
+    .chat-header { border:1px solid var(--line); border-radius:24px 24px 18px 18px; background:linear-gradient(135deg, rgba(255,255,255,.045), rgba(255,255,255,.018)); padding:16px; box-shadow:var(--shadow); }
+    .chat-header-row { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }
+    .context-title { display:flex; min-width:0; gap:13px; align-items:flex-start; }
+    .context-title h1 { margin:0; font-size:19px; line-height:1.15; letter-spacing:-.04em; }
+    .context-title p { margin:5px 0 0; color:var(--muted); font-size:13px; line-height:1.35; }
+    .cap-row { display:flex; gap:7px; flex-wrap:wrap; margin-top:14px; }
+    .cap { border:1px solid var(--line); border-radius:999px; background:rgba(0,0,0,.16); padding:5px 9px; color:var(--muted); font-size:11px; }
+    .message-list { min-height:0; flex:1; margin-top:14px; overflow:auto; padding:18px; border-radius:20px; border:1px solid var(--line); background:#09090a; }
+    .msg { display:flex; margin:0 0 22px; }
+    .msg.user { justify-content:flex-end; }
+    .bubble { max-width:76%; }
+    .msg:not(.user) .bubble { max-width:88%; }
+    .meta { display:flex; gap:8px; color:var(--faint); font-size:10px; text-transform:uppercase; letter-spacing:.08em; margin-bottom:6px; }
+    .body { color:#e4e4e7; font-size:14px; line-height:1.55; }
+    .user .body { border:1px solid var(--line); background:#1b1b1e; border-radius:16px; padding:10px 13px; color:var(--text); }
+    .system-note { margin-bottom:14px; display:flex; align-items:center; gap:9px; border:1px solid var(--line); background:#101012; border-radius:14px; padding:9px 11px; color:var(--muted); font-size:12px; }
+    .composer-wrap { padding-top:12px; }
+    .work-banner { margin:0 auto 10px; border:1px solid var(--line); background:#101012; border-radius:16px; padding:9px 12px; display:flex; align-items:center; gap:10px; color:var(--muted); font-size:12px; }
+    .composer { border:1px solid var(--line); border-radius:19px; background:#141416; overflow:hidden; box-shadow:0 16px 60px rgba(0,0,0,.34); }
+    .composer textarea { width:100%; min-height:76px; resize:none; border:0; outline:0; background:transparent; color:var(--text); padding:14px 15px; font-size:15px; line-height:1.45; }
+    .composer-controls { border-top:1px solid rgba(255,255,255,.055); display:flex; justify-content:space-between; gap:12px; align-items:center; padding:10px; flex-wrap:wrap; }
+    .runtime-controls { display:flex; gap:7px; flex-wrap:wrap; align-items:center; }
+    select { height:32px; border-radius:10px; border:1px solid var(--line); background:#101012; color:var(--muted); padding:0 9px; outline:0; font-size:12px; }
+    .send { width:38px; height:32px; border-radius:999px; border:1px solid var(--line); background:#e4e4e7; color:#09090a; cursor:pointer; font-weight:800; }
+    .mode { display:flex; border:1px solid var(--line); border-radius:999px; overflow:hidden; }
+    .mode button { border:0; border-right:1px solid var(--line); background:#101012; color:var(--muted); padding:7px 9px; font-size:11px; cursor:pointer; }
+    .mode button:last-child { border-right:0; }
+    .mode button.active { color:#061015; background:var(--sky); }
+
+    .inspector { min-width:0; border-left:1px solid var(--line); background:#0a0a0b; display:flex; flex-direction:column; }
+    .inspector-head { height:62px; display:flex; align-items:center; justify-content:space-between; gap:10px; border-bottom:1px solid var(--line); padding:0 12px 0 16px; }
+    .workspace.inspector-collapsed .inspector-head { justify-content:center; padding:0; }
+    .inspector-title { min-width:0; }
+    .inspector-title b { display:block; font-size:13px; }
+    .inspector-title span { display:block; color:var(--faint); font-size:11px; margin-top:2px; }
+    .workspace.inspector-collapsed .inspector-title, .workspace.inspector-collapsed .tabs, .workspace.inspector-collapsed .tab-panel { display:none; }
+    .tabs { display:flex; gap:6px; padding:10px; overflow:auto; border-bottom:1px solid var(--line); }
+    .tab { border:1px solid var(--line); background:#111113; color:var(--muted); border-radius:999px; padding:7px 10px; font-size:11px; cursor:pointer; white-space:nowrap; }
+    .tab.active { color:var(--text); border-color:rgba(125,211,252,.32); background:rgba(56,189,248,.12); }
+    .tab-panel { min-height:0; overflow:auto; padding:16px; }
+    .info-card { border:1px solid var(--line); border-radius:18px; background:#111113; padding:14px; margin-bottom:12px; }
+    .info-card h3 { margin:0 0 8px; font-size:13px; }
+    .info-card p { margin:0; color:var(--muted); font-size:12px; line-height:1.5; }
+    .kv { display:grid; gap:8px; }
+    .kv-row { display:flex; justify-content:space-between; gap:12px; color:var(--muted); font-size:12px; }
+    .kv-row b { color:#e4e4e7; font-weight:600; text-align:right; }
+    .task { border:1px solid var(--line); border-radius:15px; padding:11px; background:#151517; margin-bottom:9px; }
+    .task-title { display:flex; gap:8px; align-items:center; font-size:12px; font-weight:650; }
+    .status { border:1px solid var(--line); border-radius:999px; padding:3px 7px; font-size:10px; color:var(--muted); margin-left:auto; white-space:nowrap; }
+    .status.review { color:var(--sky); background:rgba(56,189,248,.08); }
+    .status.blocked { color:var(--amber); background:rgba(245,158,11,.08); }
+    .status.done { color:var(--green); background:rgba(34,197,94,.08); }
+    .task p { margin:7px 0 0; color:var(--faint); font-size:11px; line-height:1.4; }
+    .collapsed-rail { display:none; padding-top:12px; align-items:center; gap:8px; flex-direction:column; }
+    .workspace.inspector-collapsed .collapsed-rail { display:flex; }
+    .rail-dot { width:34px; height:34px; border:1px solid var(--line); border-radius:12px; display:grid; place-items:center; color:var(--muted); background:#111113; font-size:13px; }
+    .hidden { display:none !important; }
+    @media (max-width: 1120px) {
+      .workspace { grid-template-columns: 250px minmax(0,1fr) 330px; }
+      .workspace.inspector-collapsed { grid-template-columns: 250px minmax(0,1fr) 52px; }
+      .chat-panel { padding-left:14px; padding-right:14px; }
+    }
+  </style>
+</head>
+<body>
+  <div id="workspace" class="workspace">
+    <aside class="left">
+      <div class="brand">
+        <div class="brand-row">
+          <div class="logo"><span class="logo-mark">⌘</span><span>Heimdall Workspace</span></div>
+          <button class="mini-btn" title="Settings">⚙</button>
+        </div>
+        <div class="search"><span>⌕</span><input value="" placeholder="Search agents, chains, projects" /></div>
+      </div>
+      <div class="left-scroll">
+        <div class="section-title"><span>Quick actions</span><span>＋</span></div>
+        <button class="nav-card" onclick="setContext('conversation')"><span class="avatar sky">＋</span><span class="nav-main"><span class="nav-title">New conversation</span><span class="nav-sub">Creates conversation@s-… then opens same shell</span></span></button>
+        <button class="nav-card" onclick="setContext('agent')"><span class="avatar green">▶</span><span class="nav-main"><span class="nav-title">Run agent</span><span class="nav-sub">Pick identity, provider, project</span></span></button>
+
+        <div class="section-title"><span>Open contexts</span><span id="context-count">3</span></div>
+        <button id="nav-conversation" class="nav-card" onclick="setContext('conversation')"><span class="avatar sky">C</span><span class="nav-main"><span class="nav-title">conversation@s-demo</span><span class="nav-sub">General product question · default project</span></span><span class="dot active"></span></button>
+        <button id="nav-agent" class="nav-card" onclick="setContext('agent')"><span class="avatar green">A</span><span class="nav-main"><span class="nav-title">coder@s-demo</span><span class="nav-sub">Direct agent · implementing CHAT-5</span></span><span class="dot working"></span></button>
+        <button id="nav-coordinator" class="nav-card" onclick="setContext('coordinator')"><span class="avatar purple">L</span><span class="nav-main"><span class="nav-title">chain-demo coordinator</span><span class="nav-sub">Unify chat workspace · lead</span></span><span class="dot working"></span></button>
+
+        <div class="section-title"><span>Projects</span><span>2</span></div>
+        <button class="nav-card"><span class="avatar">H</span><span class="nav-main"><span class="nav-title">heimdall-agent-manager</span><span class="nav-sub">Active chain, 8 artifacts, VCS workspace</span></span></button>
+        <button class="nav-card"><span class="avatar">D</span><span class="nav-main"><span class="nav-title">default</span><span class="nav-sub">Scratch conversations</span></span></button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="topbar">
+        <div class="crumb"><span>Workspace</span><span class="slash">/</span><span id="crumb-kind">Conversation</span><span class="slash">/</span><strong id="crumb-title">conversation@s-demo</strong></div>
+        <div class="top-actions">
+          <span class="state-chip"><span id="top-dot" class="dot active"></span><span id="top-state">Active</span></span>
+          <button class="pill-btn">Refresh</button>
+          <button id="start-stop" class="pill-btn">Stop</button>
+          <button class="pill-btn" onclick="toggleInspector()">Inspector</button>
+        </div>
+      </div>
+
+      <div class="main-content">
+        <section class="chat-panel">
+          <header class="chat-header">
+            <div class="chat-header-row">
+              <div class="context-title">
+                <span id="hero-avatar" class="avatar sky">C</span>
+                <div>
+                  <h1 id="hero-title">conversation@s-demo</h1>
+                  <p id="hero-subtitle">Same chat shell for conversation, agent, and coordinator contexts.</p>
+                </div>
+              </div>
+              <div class="top-actions">
+                <button class="pill-btn">Open artifacts</button>
+                <button class="pill-btn">Copy context</button>
+              </div>
+            </div>
+            <div id="cap-row" class="cap-row"></div>
+          </header>
+
+          <div id="message-list" class="message-list"></div>
+
+          <div class="composer-wrap">
+            <div id="work-banner" class="work-banner"><span class="dot working"></span><span id="work-banner-text">Agent is working · Task: Normalize workspace shell</span></div>
+            <div class="composer">
+              <textarea id="composer-placeholder">Ask anything…</textarea>
+              <div class="composer-controls">
+                <div class="runtime-controls">
+                  <button class="icon-btn" title="Attach artifact">⇧</button>
+                  <select><option>Provider: pi</option><option>Provider: claude</option><option>Provider: jetski</option></select>
+                  <select><option>Tier: smart</option><option>Tier: normal</option><option>Tier: cheap</option></select>
+                  <select><option>Project: heimdall-agent-manager</option><option>Project: default</option></select>
+                  <button class="pill-btn">Runtime applied</button>
+                </div>
+                <div class="runtime-controls">
+                  <div class="mode"><button class="active">Send</button><button>Nudge</button><button>Interrupt</button></div>
+                  <button class="send" title="Send">→</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <aside class="inspector">
+      <div class="inspector-head">
+        <div class="inspector-title"><b>Context inspector</b><span id="inspector-subtitle">Related information for selected context</span></div>
+        <button class="icon-btn" onclick="toggleInspector()">⇥</button>
+      </div>
+      <div id="tabs" class="tabs"></div>
+      <div id="tab-panel" class="tab-panel"></div>
+      <div class="collapsed-rail"><div class="rail-dot">☰</div><div class="rail-dot">✓</div><div class="rail-dot">🗂</div><div class="rail-dot">⚙</div></div>
+    </aside>
+  </div>
+
+  <script>
+    const contexts = {
+      conversation: {
+        hash: '#/workspace/conversations/conversation@s-demo',
+        kind: 'Conversation', title: 'conversation@s-demo', avatar: 'C', avatarClass: 'sky', state: 'Active', dot: 'active', startStop: 'Stop',
+        subtitle: 'A plain conversation instance. Same controls as agent/coordinator; only irrelevant inspector tabs are hidden.',
+        caps: ['chat', 'artifacts', 'runtime', 'project', 'memory'],
+        placeholder: 'Ask anything…',
+        banner: 'conversation@s-demo is active · history preserved on exact resume',
+        messages: [
+          ['Heimdall', 'Context loaded from conversation@s-demo. This is the same center chat used by every agent-like context.'],
+          ['You', 'Can you explain the task-chain validation results?'],
+          ['Heimdall', 'Yes. I can answer here, and the inspector keeps project, artifact, memory, and runtime information in stable tabs.']
+        ],
+        tabs: ['runtime','project','artifacts','memory']
+      },
+      agent: {
+        hash: '#/workspace/agents/coder@s-demo',
+        kind: 'Agent', title: 'coder@s-demo', avatar: 'A', avatarClass: 'green', state: 'Working', dot: 'working', startStop: 'Stop',
+        subtitle: 'Direct agent chat. Same visual shell; task, chain, provider, project, and memory details move to inspector tabs.',
+        caps: ['chat', 'nudge', 'interrupt', 'tasks', 'chains', 'artifacts', 'runtime', 'project', 'memory'],
+        placeholder: 'Message, nudge, or interrupt this agent…',
+        banner: 'coder@s-demo is working · Task: Build shared workspace components',
+        messages: [
+          ['coder@s-demo', 'I am refactoring the chat pages into a context-driven workspace shell.'],
+          ['You', 'Keep controls identical across direct agent and conversation views.'],
+          ['coder@s-demo', 'Acknowledged. Agent-specific metadata is in inspector tabs instead of unique page cards.']
+        ],
+        tabs: ['tasks','chains','runtime','project','artifacts','memory']
+      },
+      coordinator: {
+        hash: '#/workspace/chains/chain-demo/coordinator',
+        kind: 'Chain coordinator', title: 'chain-demo · coordinator', avatar: 'L', avatarClass: 'purple', state: 'Working', dot: 'working', startStop: 'Stop',
+        subtitle: 'Coordinator chat is no longer a special page. Chain management moves to the same collapsible inspector tab system.',
+        caps: ['chat', 'nudge', 'tasks', 'chain agents', 'artifacts', 'vcs', 'runtime', 'project', 'memory'],
+        placeholder: 'Message the coordinator, @ an agent…',
+        banner: 'coordinator@s-demo is working · Task chain: Unified Agent Workspace',
+        messages: [
+          ['coordinator@s-demo', 'The chain has 6 tasks, 2 agents, a VCS workspace, and final artifacts. All are available in inspector tabs.'],
+          ['You', 'The coordinator page should look exactly like the other chat pages.'],
+          ['coordinator@s-demo', 'Yes. The only difference is context tabs: tasks, agents, artifacts, VCS, project, memory.']
+        ],
+        tabs: ['tasks','agents','artifacts','vcs','project','memory','runtime']
+      },
+      task: {
+        hash: '#/workspace/chains/chain-demo/tasks/task-demo',
+        kind: 'Task', title: 'task-demo · Validate unified shell', avatar: 'T', avatarClass: '', state: 'Review ready', dot: 'active', startStop: 'Open chat',
+        subtitle: 'Example non-chat center content still uses the same outer shell and inspector.',
+        caps: ['task detail', 'comments', 'artifacts', 'chain', 'agents'],
+        placeholder: 'Add task comment or ask assigned agent…',
+        banner: 'Task is review-ready · assigned to tester@s-demo',
+        messages: [
+          ['Task detail', 'Acceptance criteria: all chat contexts use the same shell and controls.'],
+          ['Reviewer', 'Need visual confirmation that only inspector tabs differ by context.'],
+          ['tester@s-demo', 'Attached screenshot evidence and static debug-id checks.']
+        ],
+        tabs: ['tasks','agents','artifacts','vcs','project']
+      }
+    };
+    const tabLabels = { tasks:'Tasks', chains:'Task chains', agents:'Agents', artifacts:'Artifacts', vcs:'VCS', project:'Project', memory:'Memory', runtime:'Runtime' };
+    let current = 'conversation';
+    let currentTab = 'runtime';
+
+    function setContext(name, replaceHash=false) {
+      if (!contexts[name]) name = 'conversation';
+      current = name;
+      const ctx = contexts[name];
+      if (!replaceHash) location.hash = ctx.hash;
+      document.querySelectorAll('.nav-card').forEach(el => el.classList.remove('active'));
+      const nav = document.getElementById('nav-' + (name === 'task' ? 'coordinator' : name));
+      if (nav) nav.classList.add('active');
+      document.getElementById('crumb-kind').textContent = ctx.kind;
+      document.getElementById('crumb-title').textContent = ctx.title;
+      document.getElementById('hero-title').textContent = ctx.title;
+      document.getElementById('hero-subtitle').textContent = ctx.subtitle;
+      document.getElementById('hero-avatar').textContent = ctx.avatar;
+      document.getElementById('hero-avatar').className = 'avatar ' + ctx.avatarClass;
+      document.getElementById('top-state').textContent = ctx.state;
+      document.getElementById('top-dot').className = 'dot ' + ctx.dot;
+      document.getElementById('start-stop').textContent = ctx.startStop;
+      document.getElementById('composer-placeholder').value = ctx.placeholder;
+      document.getElementById('work-banner-text').textContent = ctx.banner;
+      document.getElementById('inspector-subtitle').textContent = ctx.title;
+      document.getElementById('cap-row').innerHTML = ctx.caps.map(c => `<span class="cap">${c}</span>`).join('');
+      document.getElementById('message-list').innerHTML = '<div class="system-note"><span class="dot active"></span><span>Same chat controls and layout. Context changes only data and inspector tabs.</span></div>' + ctx.messages.map((m, i) => {
+        const isUser = m[0] === 'You';
+        return `<div class="msg ${isUser ? 'user' : ''}"><div class="bubble"><div class="meta"><span>${m[0]}</span><span>${i+1}m ago</span></div><div class="body">${m[1]}</div></div></div>`;
+      }).join('');
+      currentTab = ctx.tabs.includes(currentTab) ? currentTab : ctx.tabs[0];
+      renderTabs();
+    }
+
+    function renderTabs() {
+      const ctx = contexts[current];
+      document.getElementById('tabs').innerHTML = ctx.tabs.map(tab => `<button class="tab ${tab === currentTab ? 'active' : ''}" onclick="setTab('${tab}')">${tabLabels[tab] || tab}</button>`).join('');
+      document.getElementById('tab-panel').innerHTML = renderTabPanel(currentTab, ctx);
+    }
+    function setTab(tab) { currentTab = tab; renderTabs(); }
+
+    function renderTabPanel(tab, ctx) {
+      if (tab === 'tasks') return `
+        <div class="info-card"><h3>Task summary</h3><p>Same Tasks tab used for agent, coordinator, and task contexts. Query scope changes from selected context.</p></div>
+        <div class="task"><div class="task-title">1. Validate shell parity <span class="status review">review ready</span></div><p>All chat contexts share the same top bar, composer, runtime controls, and inspector tabs.</p></div>
+        <div class="task"><div class="task-title">2. Remove duplicate cards <span class="status">in progress</span></div><p>Move page-specific project/runtime/task cards into this inspector.</p></div>
+        <div class="task"><div class="task-title">3. Screenshot review <span class="status blocked">needs user</span></div><p>Visual approval that contexts cannot be distinguished by layout.</p></div>`;
+      if (tab === 'chains') return `
+        <div class="info-card"><h3>Participating task chains</h3><p>Chains involving ${ctx.title}. Same tab can show coordinator chains or direct-agent participation.</p></div>
+        <div class="task"><div class="task-title">Unified Agent Workspace <span class="status">active</span></div><p>6 tasks · 2 reviewers · VCS workspace enabled.</p></div>`;
+      if (tab === 'agents') return `
+        <div class="info-card"><h3>Agents in this context</h3><p>Visible for chain/team contexts. Hidden for plain conversations unless collaborators exist.</p></div>
+        <div class="task"><div class="task-title">coordinator@s-demo <span class="status done">lead</span></div><p>Owns user communication and final chain summary.</p></div>
+        <div class="task"><div class="task-title">coder@s-demo <span class="status">implementer</span></div><p>Assigned implementation tasks.</p></div>
+        <div class="task"><div class="task-title">tester@s-demo <span class="status review">validator</span></div><p>Owns screenshot and build validation.</p></div>`;
+      if (tab === 'artifacts') return `
+        <div class="info-card"><h3>Artifacts</h3><p>One canonical artifact browser for chat, chain, task, and project artifacts.</p></div>
+        <div class="task"><div class="task-title">after-agent-workspace.png <span class="status done">png</span></div><p>Validation screenshot.</p></div>
+        <div class="task"><div class="task-title">workspace-validation-report.md <span class="status done">markdown</span></div><p>Final review artifact.</p></div>`;
+      if (tab === 'vcs') return `
+        <div class="info-card"><h3>VCS workspace</h3><p>Shown when the selected chain/project has a workspace. Hidden for contexts with no VCS data.</p></div>
+        <div class="kv"><div class="kv-row"><span>Branch</span><b>workspace/unified-agent-shell</b></div><div class="kv-row"><span>Status</span><b>3 files changed</b></div><div class="kv-row"><span>Base</span><b>origin/develop</b></div></div>`;
+      if (tab === 'project') return `
+        <div class="info-card"><h3>Project</h3><p>Project information appears here instead of repeating in page cards, breadcrumbs, and composer footer.</p></div>
+        <div class="kv"><div class="kv-row"><span>Name</span><b>heimdall-agent-manager</b></div><div class="kv-row"><span>Daemon</span><b>cloudtop</b></div><div class="kv-row"><span>Default provider</span><b>pi</b></div></div>`;
+      if (tab === 'memory') return `
+        <div class="info-card"><h3>Applicable memory</h3><p>Memory scoped to selected durable agent/team/project. Same panel for coordinator, agent, and conversation identities.</p></div>
+        <div class="task"><div class="task-title">UI debug IDs are mandatory <span class="status done">active</span></div><p>Every interactive UI element must include data-debug-id.</p></div>
+        <div class="task"><div class="task-title">Use task chains for non-trivial work <span class="status done">active</span></div><p>Keep evidence in task comments and artifacts.</p></div>`;
+      return `
+        <div class="info-card"><h3>Runtime</h3><p>Canonical provider/tier/project/runtime details. The composer also has quick runtime selectors in the same place for every chat context.</p></div>
+        <div class="kv"><div class="kv-row"><span>Agent instance</span><b>${ctx.title}</b></div><div class="kv-row"><span>Provider</span><b>pi</b></div><div class="kv-row"><span>Tier</span><b>smart</b></div><div class="kv-row"><span>Project</span><b>heimdall-agent-manager</b></div><div class="kv-row"><span>Status</span><b>${ctx.state}</b></div></div>`;
+    }
+
+    function toggleInspector() { document.getElementById('workspace').classList.toggle('inspector-collapsed'); }
+    function routeFromHash() {
+      const h = location.hash || '';
+      if (h.includes('/workspace/agents/')) return 'agent';
+      if (h.includes('/workspace/chains/') && h.includes('/tasks/')) return 'task';
+      if (h.includes('/workspace/chains/') && h.includes('/coordinator')) return 'coordinator';
+      return 'conversation';
+    }
+    window.addEventListener('hashchange', () => setContext(routeFromHash(), true));
+    setContext(routeFromHash(), true);
+  </script>
+</body>
+</html>
