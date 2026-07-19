@@ -32,8 +32,6 @@ memory_append_event :: proc(event: contracts.Memory_Event) -> contracts.Memory_A
 	case .Memory_Proposed:
 		rec.proposal_id = strings.clone(ev.proposal_id)
 		rec.target_agent_id = strings.clone(ev.target_agent_id)
-		rec.target_team_kind = strings.clone(ev.target_team_kind)
-		rec.target_role = strings.clone(ev.target_role)
 		rec.target_project_id = strings.clone(ev.target_project_id)
 		rec.type = ev.type
 		rec.title = strings.clone(ev.title)
@@ -92,8 +90,6 @@ memory_notify_event :: proc(event: contracts.Memory_Event) -> bool {
 
 memory_notification_json :: proc(event: contracts.Memory_Event, rec: contracts.Memory_Record, found: bool) -> string {
 	target_agent_id := event.target_agent_id
-	target_team_kind := event.target_team_kind
-	target_role := event.target_role
 	target_project_id := event.target_project_id
 	type_text := memory_type_string_service(event.type)
 	status := memory_status_string_service(event.status)
@@ -101,23 +97,19 @@ memory_notification_json :: proc(event: contracts.Memory_Event, rec: contracts.M
 	metadata_json := event.metadata_json
 	if found {
 		if target_agent_id == "" do target_agent_id = rec.target_agent_id
-		if target_team_kind == "" do target_team_kind = rec.target_team_kind
-		if target_role == "" do target_role = rec.target_role
 		if target_project_id == "" do target_project_id = rec.target_project_id
 		type_text = memory_type_string_service(rec.type)
 		status = memory_status_string_service(rec.status)
 		if source_task == "" do source_task = rec.source_task_id
 		if metadata_json == "" do metadata_json = rec.metadata_json
 	}
-	target := memory_target_string(target_agent_id, target_team_kind, target_role, target_project_id)
+	target := memory_target_string(target_agent_id, target_project_id)
 	defer delete(target)
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"type":"memory_event","event":"`); json_write_string(&builder, fmt.tprintf("%v", event.kind))
 	strings.write_string(&builder, `","memory_id":"`); json_write_string(&builder, event.memory_id)
 	strings.write_string(&builder, `","proposal_id":"`); json_write_string(&builder, event.proposal_id)
 	strings.write_string(&builder, `","target_agent_id":"`); json_write_string(&builder, target_agent_id)
-	strings.write_string(&builder, `","target_team_kind":"`); json_write_string(&builder, target_team_kind)
-	strings.write_string(&builder, `","target_role":"`); json_write_string(&builder, target_role)
 	strings.write_string(&builder, `","target_project_id":"`); json_write_string(&builder, target_project_id)
 	strings.write_string(&builder, `","target":"`); json_write_string(&builder, target)
 	strings.write_string(&builder, `","memory_type":"`); json_write_string(&builder, type_text)

@@ -2,6 +2,7 @@ import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
 import * as daemonApi from '../api/daemonApi';
 import { selectCachedTaskById } from '../api/taskCache';
 import { tasksApi } from '../api/endpoints/tasks';
+import { getRouteSearch } from '../utils/appLocation';
 
 const TASK_LOG_RELOAD_DEDUPE_MS = 1500;
 
@@ -16,7 +17,6 @@ function normalizeChain(chain: any) {
     vcsWorkspaceId: chain.vcs_workspace_id || chain.vcsWorkspaceId || '',
     diffBaseSha: chain.diff_base_sha || chain.diffBaseSha || '',
     repoDiffSupported: Boolean(chain.repo_diff_supported || chain.repoDiffSupported),
-    teamId: chain.team_id || chain.teamId || '',
     coordinatorAgentInstanceId: chain.coordinator_agent_instance_id || '',
     defaultReviewerAgentInstanceId: chain.default_reviewer_agent_instance_id || '',
     finalSummary: chain.final_summary || '',
@@ -30,13 +30,13 @@ function normalizeChain(chain: any) {
 
 function getActiveTaskId(payload: any): string {
   if (payload?.taskId) return payload.taskId;
-  const params = new URLSearchParams(window.location.search);
+  const params = new URLSearchParams(getRouteSearch());
   return params.get('taskId') || '';
 }
 
 function getActiveChainId(payload: any): string {
   if (payload?.chainId) return payload.chainId;
-  const params = new URLSearchParams(window.location.search);
+  const params = new URLSearchParams(getRouteSearch());
   return params.get('chainId') || '';
 }
 

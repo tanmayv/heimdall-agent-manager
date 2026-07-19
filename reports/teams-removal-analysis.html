@@ -1,0 +1,842 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Teams: Usage Analysis and Removal Proposal</title>
+<style>
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #0f172a; color: #e2e8f0; font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+.wrap { max-width: 900px; margin: 0 auto; padding: 48px 28px 96px; }
+h1 { font-size: 30px; line-height: 1.25; margin: 0 0 8px; color: #f8fafc; letter-spacing: -0.02em; }
+h2 { font-size: 22px; margin: 44px 0 14px; padding-top: 18px; border-top: 1px solid #1e293b; color: #f1f5f9; letter-spacing: -0.01em; }
+h3 { font-size: 18px; margin: 28px 0 10px; color: #e2e8f0; }
+h4 { font-size: 15px; margin: 22px 0 8px; color: #cbd5e1; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+p { margin: 12px 0; }
+a { color: #7dd3fc; }
+strong { color: #f8fafc; }
+em { color: #cbd5e1; }
+ul, ol { padding-left: 24px; }
+li { margin: 6px 0; }
+hr { border: none; border-top: 1px solid #1e293b; margin: 36px 0; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13.5px; background: #1e293b; color: #fbbf24; padding: 1.5px 6px; border-radius: 5px; }
+pre { background: #0b1220; border: 1px solid #1e293b; border-radius: 10px; padding: 16px 18px; overflow-x: auto; }
+pre code { background: none; color: #d1d5db; padding: 0; font-size: 13px; line-height: 1.55; }
+table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 14.5px; display: block; overflow-x: auto; }
+th, td { border: 1px solid #1e293b; padding: 9px 12px; text-align: left; vertical-align: top; }
+th { background: #1e293b; color: #f1f5f9; font-weight: 600; }
+tr:nth-child(even) td { background: #131c30; }
+blockquote { border-left: 3px solid #334155; margin: 14px 0; padding: 4px 16px; color: #cbd5e1; }
+</style>
+</head>
+<body><div class="wrap">
+<h1>Teams: Usage Analysis and Removal Proposal</h1>
+<p><strong>Date:</strong> 2026-07-19
+<strong>Author:</strong> engineering analysis
+<strong>Goal:</strong> Document exactly how the <code>team</code> concept is used today, show that
+<code>agent_instance_id</code> + task roles already carry the collaboration model, and propose
+removing teams so Heimdall ships with a small set of <strong>default durable agent ids</strong>:
+<code>conversation</code>, <code>guide</code>, <code>coordinator</code>, <code>worker</code> (default assignee), <code>reviewer</code>
+(default reviewer).</p>
+<hr>
+<h2>1. TL;DR</h2>
+<ul>
+<li>A <strong>team</strong> today is a <strong>per-chain roster object</strong> (<code>Team_Record</code> + <code>Team_Member_Record</code>)
+plus a <strong>template of roles/scaffolds</strong> (<code>Team_Kind_Def</code>). It exists mostly to answer one
+question: <em>&quot;for role X on this chain, which <code>agent_instance_id</code> should I use?&quot;</em></li>
+<li>That question is already answerable <strong>without</strong> a team: a task carries its own
+<code>assignee_agent_instance_id</code>, <code>reviewer_agent_instance_id</code>, <code>coordinator_agent_instance_id</code>,
+and <code>participants[]</code>. The chain carries <code>coordinator_agent_instance_id</code> and
+<code>default_reviewer_agent_instance_id</code>. <strong>Collaboration is keyed on <code>agent_instance_id</code>, not
+on team membership.</strong></li>
+<li>Teams add a <strong>second, redundant identity/roster store</strong> (<code>teams/teams.db</code>) that must be
+provisioned, kept in sync, migrated, archived, and surfaced in UI/CLI — for information the
+daemon can derive from tasks + a few default agent ids.</li>
+<li><strong>Recommendation:</strong> delete the durable team store and the <code>team_id</code> field; keep a tiny,
+code-only notion of <strong>role → default agent id</strong> and <strong>chain kind → scaffold</strong> (no per-chain
+roster rows). Ship 5 default durable <code>agent_id</code>s. This removes ~1,200+ LOC of daemon code,
+one SQLite DB, a migration path, and a whole HTTP/CLI/UI surface.</li>
+</ul>
+<hr>
+<h2>2. What a &quot;team&quot; is, concretely</h2>
+<p>Two distinct things share the word &quot;team&quot;:</p>
+<h3>2.1 The durable per-chain roster (the part to delete)</h3>
+<p>Defined in <code>src/daemon/team_db_service.odin</code>, stored in <code>teams/teams.db</code>:</p>
+<pre><code class="language-odin">Team_Record        { team_id, project_id, kind, status, chain_id, created/updated }
+Team_Member_Record { team_member_id, team_id, role_key, role_index,
+                     agent_instance_id, agent_record_id, is_user_proxy, route_to }
+</code></pre>
+<ul>
+<li>One <code>Team_Record</code> is created <strong>per chain</strong> (<code>team_service_create_for_chain</code>), 1:1 with the
+chain (<code>chain.team_id</code>).</li>
+<li>Its <code>members[]</code> are just <code>(role_key, role_index) → agent_instance_id</code> rows. Creating a team
+<strong>provisions a concrete agent instance for every role slot</strong> of the chain&#39;s kind
+(coordinator/coder/tester/reviewer for <code>coding</code>).</li>
+<li><code>status</code> (<code>latent | warming | active | archived</code>) is a lifecycle mirror of the chain.</li>
+</ul>
+<h3>2.2 The code-only role/scaffold template (keep, slimmed)</h3>
+<p>Defined in <code>src/daemon/team_kinds.odin</code> as compile-time constants:</p>
+<pre><code class="language-odin">Team_Kind_Def { key, roles[], memory_templates[], scaffolds[], wants_vcs, ... }
+// key ∈ { coding, research, solo }
+</code></pre>
+<ul>
+<li><code>roles[]</code> = which role slots a kind has (coding → coordinator, coder, tester, reviewer).</li>
+<li><code>scaffolds[]</code> = the canned task graph (<code>plan → contracts → implement → test → summary</code>),
+each scaffold task naming a <code>role_key</code> + <code>reviewer_role</code>.</li>
+<li><code>memory_templates[]</code> = which bootstrap memories that kind&#39;s agents get.</li>
+</ul>
+<p>This is <strong>static config</strong>, not per-chain state. It does not need a database or a <code>Team_Record</code>.
+Its only real coupling to teams is that scaffold assignment maps <code>role_key → team member</code>.</p>
+<hr>
+<h2>3. Where teams are used (call-site inventory)</h2>
+<p>Daemon reference counts (<code>team_id | Team_Record | team_service | Team_Member | team_kind</code>):</p>
+<table>
+<thead>
+<tr>
+<th>File</th>
+<th align="right">Refs</th>
+<th>What it does with teams</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>team_db_service.odin</code></td>
+<td align="right">101</td>
+<td>The <code>teams.db</code> store itself (delete).</td>
+</tr>
+<tr>
+<td><code>task_service.odin</code></td>
+<td align="right">91</td>
+<td>Chain create → <code>team_service_create_for_chain</code>; scaffold assignee resolution via <code>team_db_list_members</code> → <code>role_key</code> → <code>agent_instance_id</code>.</td>
+</tr>
+<tr>
+<td><code>team_service.odin</code></td>
+<td align="right">70</td>
+<td>Roster provisioning, member routing, role→template defaults (delete/slim).</td>
+</tr>
+<tr>
+<td><code>task_nudge_scheduler.odin</code></td>
+<td align="right">51</td>
+<td><strong>Boot leases keyed on <code>chain.team_id</code></strong> to throttle concurrent agent launches; reconcile logs.</td>
+</tr>
+<tr>
+<td><code>team_http.odin</code></td>
+<td align="right">43</td>
+<td><code>GET /teams</code>, <code>/teams/{id}</code>, <code>POST /teams/add-member</code> (delete).</td>
+</tr>
+<tr>
+<td><code>teams_v1_migration.odin</code></td>
+<td align="right">40</td>
+<td>One-shot legacy migration (delete after transition).</td>
+</tr>
+<tr>
+<td><code>memory_service.odin</code></td>
+<td align="right">35</td>
+<td><code>target_team_kind</code> memory targeting dimension (keep as <code>kind</code>, decouple from team store).</td>
+</tr>
+<tr>
+<td><code>task_db_service.odin</code></td>
+<td align="right">15</td>
+<td><code>task_chains.team_id</code> column + backfill.</td>
+</tr>
+<tr>
+<td><code>memory_db_service.odin</code></td>
+<td align="right">12</td>
+<td><code>target_team_kind</code> column/index.</td>
+</tr>
+<tr>
+<td><code>task_projection.odin</code>, <code>task_queries.odin</code>, <code>json.odin</code>, <code>merge_lifecycle.odin</code>, <code>task_store.odin</code>, <code>agents_start.odin</code>, <code>vcs_http.odin</code></td>
+<td align="right">2–9 each</td>
+<td>Carry/emit <code>team_id</code> in chain JSON, VCS labels, projections.</td>
+</tr>
+</tbody></table>
+<p>UI/CLI:</p>
+<ul>
+<li>UI: <code>App.tsx</code> (Chain agents panel — <strong>already migrated off teams</strong> to task-derived roster in a
+prior change), <code>ChainEditor.tsx</code>, <code>SettingsPage.tsx</code>, memory slices (kind selector).</li>
+<li>CLI: <code>ham-ctl teams list|show|show-members|add-member</code>.</li>
+<li>Docs: <code>docs/teams-v1/*</code> (15 files).</li>
+</ul>
+<p><strong>Rough removable surface:</strong> <code>team_db_service.odin</code> (304) + <code>team_service.odin</code> (224) +
+<code>team_http.odin</code> (238) + <code>teams_v1_migration.odin</code> (277) ≈ <strong>1,043 LOC</strong> deleted outright,
+plus <code>team_kinds.odin</code> (181) slimmed to role/scaffold constants, plus the <code>teams.db</code> file,
+the <code>/teams</code> routes, the <code>ham-ctl teams</code> family, and <code>docs/teams-v1</code>.</p>
+<hr>
+<h2>4. Why teams are redundant</h2>
+<h3>4.1 Collaboration is already keyed on <code>agent_instance_id</code></h3>
+<p>A task is self-describing:</p>
+<pre><code>Task_State {
+  assignee_agent_instance_id
+  coordinator_agent_instance_id
+  reviewer_agent_instance_id
+  participants[] : { agent_instance_id, role ∈ assignee|coordinator|lgtm_required|lgtm_optional|subscriber }
+}
+Task_Chain_State {
+  coordinator_agent_instance_id
+  default_reviewer_agent_instance_id
+}
+</code></pre>
+<p>Everything the system needs to route work, votes, notifications, and nudges is <strong>on the task
+and the chain</strong>, keyed by <code>agent_instance_id</code>. Nothing in the runtime routing consults the team
+roster after assignment:</p>
+<ul>
+<li>Review gating counts <code>lgtm_required</code> <strong>participants</strong>, not team members.</li>
+<li>Notifications route by task status → assignee/coordinator/reviewer <strong>ids</strong>.</li>
+<li>The UI &quot;Chain agents&quot; panel was just changed to derive its roster from <strong>task assignees/
+reviewers/participants</strong> (teams no longer needed there, and it fixed a real bug where the
+team-sourced roster showed only the coordinator).</li>
+</ul>
+<h3>4.2 The team only mattered at two moments</h3>
+<ol>
+<li><strong>Chain creation / scaffold expansion:</strong> map each scaffold task&#39;s <code>role_key</code> (e.g. <code>coder</code>)
+to a concrete <code>agent_instance_id</code>. This is a <strong>provisioning</strong> step, not durable state — it
+can be done from <code>role → default agent id</code> without persisting a roster.</li>
+<li><strong>Boot-lease throttling</strong> (<code>task_nudge_scheduler.odin</code>): the autoscaler groups launches by
+<code>chain.team_id</code> to avoid stampeding all of a chain&#39;s agents at once. Since team is 1:1 with
+chain, <strong><code>chain_id</code> is an identical grouping key</strong> — the lease can key on <code>chain_id</code>.</li>
+</ol>
+<p>Neither requires a durable <code>teams.db</code>.</p>
+<h3>4.3 <code>target_team_kind</code> is a taxonomy, not a team</h3>
+<p>Memory targeting uses <code>target_team_kind</code> (<code>coding</code>/<code>research</code>/<code>solo</code>) to scope bootstrap
+memories. That is a <strong>kind/taxonomy label</strong>, already independent of any <code>Team_Record</code>. Rename
+the dimension to <code>target_kind</code> (or keep the column, drop the word &quot;team&quot;) — no roster needed.</p>
+<hr>
+<h2>5. Target model (after removal)</h2>
+<h3>5.1 Default durable agent ids shipped with Heimdall</h3>
+<p>Seed these <code>Agent_Id_Record</code>s on first boot (they already have matching templates:
+<code>guide</code>, <code>lead</code>, <code>coder</code>, <code>reviewer</code>):</p>
+<table>
+<thead>
+<tr>
+<th><code>agent_id</code></th>
+<th>template</th>
+<th>default tier</th>
+<th>Default use (this is the <em>default map value</em>, not an intrinsic role)</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>conversation</code></td>
+<td><code>conversation</code>*</td>
+<td>normal</td>
+<td>Default free-form chat/ask agent (Home &quot;Ask&quot;).</td>
+</tr>
+<tr>
+<td><code>guide</code></td>
+<td><code>guide</code></td>
+<td>smart</td>
+<td>Product guide / UI copilot (already exists).</td>
+</tr>
+<tr>
+<td><code>coordinator</code></td>
+<td><code>lead</code></td>
+<td>smart</td>
+<td>Default chain coordinator.</td>
+</tr>
+<tr>
+<td><code>worker</code></td>
+<td><code>coder</code>**</td>
+<td>normal</td>
+<td>Default task <strong>assignee</strong>.</td>
+</tr>
+<tr>
+<td><code>reviewer</code></td>
+<td><code>reviewer</code></td>
+<td>smart</td>
+<td>Default task <strong>reviewer</strong>.</td>
+</tr>
+</tbody></table>
+<p>* A small <code>conversation</code> template may need seeding (persona = general assistant).
+** <code>worker</code> can alias the existing <code>coder</code> template, or a new generic <code>worker</code> template.</p>
+<p>No <code>role_hint</code>/<code>agent_role</code> column: the &quot;default use&quot; is only which slot this id is the
+<strong>configured default</strong> for (§5.2) — the agent itself carries no fixed role. Each is an ordinary
+durable identity (<code>src/daemon/agent_id_store.odin</code>), overridable in config, spawning concrete
+<code>agent_instance_id</code>s per chain/run exactly as today (<code>worker@s-…</code>, <code>reviewer@s-…</code>), and freely
+usable in any other slot when a task assigns it there.</p>
+<h3>5.2 Role → default agent id (code-only)</h3>
+<p>Replace <code>Team_Role_Slot</code>/roster provisioning with a static map used <strong>only at chain/scaffold
+creation</strong>:</p>
+<pre><code>role_key   → default agent_id
+&quot;coordinator&quot; → &quot;coordinator&quot;
+&quot;assignee&quot;/&quot;coder&quot;/&quot;worker&quot;/&quot;tester&quot;/&quot;researcher&quot; → &quot;worker&quot;
+&quot;reviewer&quot;    → &quot;reviewer&quot;
+</code></pre>
+<p>Scaffold expansion resolves <code>role_key → default agent_id → new/selected agent_instance_id</code>
+and writes it straight onto the task&#39;s <code>assignee/reviewer</code> fields. No <code>Team_Member_Record</code>.</p>
+<h3>5.3 Chain kind → scaffold (code-only, kept)</h3>
+<p>Keep <code>Team_Kind_Def</code> but rename to <code>Chain_Kind_Def</code> and strip the roster/team coupling: it
+becomes <code>{ key, scaffolds[], memory_kinds[], wants_vcs }</code>. <code>coding|research|solo</code> stay as
+scaffolds; they no longer allocate a team.</p>
+<h3>5.4 Boot lease re-key</h3>
+<p><code>task_nudge_scheduler.odin</code>: change <code>Team_Boot_Lease.team_id</code> → <code>chain_id</code>, and
+<code>task_autoscaler_lease_index(chain.team_id)</code> → <code>(chain.chain_id)</code>. Behavior is identical
+(team was 1:1 with chain).</p>
+<hr>
+<h2>6. Data-structure/type reductions</h2>
+<p>Removed types &amp; stores:</p>
+<ul>
+<li><code>Team_Record</code>, <code>Team_Member_Record</code>, <code>Team_With_Members</code>, <code>Team_DB</code> — <strong>deleted</strong>.</li>
+<li><code>teams/teams.db</code> file and its schema/migrations — <strong>deleted</strong>.</li>
+<li><code>task_chains.team_id</code> column, <code>Task_Chain_State.team_id</code>, all <code>team_id</code> JSON fields — <strong>deleted</strong>.</li>
+<li><code>/teams</code>, <code>/teams/{id}</code>, <code>/teams/add-member</code> routes — <strong>deleted</strong>.</li>
+<li><code>ham-ctl teams</code> command family — <strong>deleted</strong>.</li>
+<li><code>teams_v1_migration.odin</code> — <strong>deleted</strong> (after a final one-way data migration; see §7).</li>
+</ul>
+<p>Kept, slimmed, renamed:</p>
+<ul>
+<li><code>Team_Kind_Def</code> → <code>Chain_Kind_Def</code> (code constants; no DB).</li>
+<li><code>Team_Role_Slot</code> → <code>Chain_Role_Slot</code> used only for scaffold/default-assignee resolution.</li>
+<li><code>target_team_kind</code> → <code>target_kind</code> (memory taxonomy; column can keep its name to avoid a
+memory-DB migration, only the wire/label changes).</li>
+</ul>
+<p>Net: <strong>one fewer durable store, one fewer 1:1 join object, ~1,000+ LOC removed</strong>, and the
+&quot;who&#39;s on this chain&quot; answer comes from the single source of truth (tasks).</p>
+<hr>
+<h2>7. Migration / rollout plan</h2>
+<p>Because team is 1:1 with chain and only referenced for role→agent resolution, migration is
+mechanical:</p>
+<ol>
+<li><strong>Backfill tasks (one-way):</strong> for every existing chain, ensure each task&#39;s
+<code>assignee/reviewer/coordinator</code> ids are populated (they already are for active chains). For
+any scaffold task that only had a team-member pointer, resolve it once from the current
+roster and write the id onto the task. After this, no reads need <code>teams.db</code>.</li>
+<li><strong>Drop <code>team_id</code> reads:</strong> replace <code>chain.team_id</code> groupings with <code>chain.chain_id</code>
+(boot lease, logs, VCS labels).</li>
+<li><strong>Seed default agent ids:</strong> add the 5 durable identities in the first-boot seeding path
+(next to template seeding in <code>agent_template_db_service.odin</code> / an <code>agent_id</code> seeder).</li>
+<li><strong>Delete stores/routes/CLI/docs:</strong> remove <code>teams.db</code>, <code>/teams*</code>, <code>ham-ctl teams</code>,
+<code>docs/teams-v1</code> (fold anything still relevant into <code>AGENTS.md</code>).</li>
+<li><strong>Rename kind taxonomy:</strong> <code>team_kind</code> → <code>kind</code> at the API boundary; keep DB column names to
+avoid touching <code>memory.db</code>.</li>
+</ol>
+<p>Ship behind a phase flag if desired, but the end state deletes the flag too.</p>
+<h3>Risks / call-outs</h3>
+<ul>
+<li><strong>VCS labels / logs</strong> embedding <code>team_id</code> — cosmetic; switch to <code>chain_id</code>.</li>
+<li><strong><code>is_user_proxy</code> / <code>route_to</code></strong> (solo kind&#39;s synthetic reviewer) — preserve by making the
+<code>solo</code> scaffold set <code>reviewer = user_proxy</code> directly on the task (already supported:
+<code>default_reviewer_agent_instance_id = &quot;user_proxy&quot;</code>).</li>
+<li><strong><code>add-member</code> &quot;add agent to chain&quot;</strong> UX — replace with &quot;add participant to task&quot; (already
+exists via <code>/tasks/participant</code>) or a chain-level default-agents editor.</li>
+<li><strong>Memory targeting</strong> must keep a <code>kind</code> dimension so bootstrap memories still scope by
+coding/research/solo.</li>
+</ul>
+<hr>
+<h2>8. Agent property audit: keep vs. remove</h2>
+<p>Beyond teams, the agent data model carries several descriptive properties. Since the goal is
+&quot;fewer redundant data types, keep things simple as long as core functionality works,&quot; each is
+audited below for whether it earns its place. Core functionality = launch an agent, route
+tasks/reviews/notifications by <code>agent_instance_id</code>, bootstrap it with the right persona, and
+scope memory.</p>
+<h3>8.1 Durable identity (<code>Agent_Id_Record</code>) and instance (<code>Agent_Instance_Record</code>)</h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Where</th>
+<th>Function today</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>agent_id</code></td>
+<td>id + instance (prefix)</td>
+<td>Durable identity shared across runs (<code>worker</code>, <code>reviewer</code>). The whole &quot;default agent ids&quot; goal rests on this.</td>
+<td><strong>KEEP (core).</strong></td>
+</tr>
+<tr>
+<td><code>agent_instance_id</code></td>
+<td>instance</td>
+<td>The collaboration key: tasks/votes/notifications route on it.</td>
+<td><strong>KEEP (core, the source of truth).</strong></td>
+</tr>
+<tr>
+<td><code>template_id</code></td>
+<td>id + instance</td>
+<td>Selects persona/instructions for bootstrap. Distinct personas (guide vs coder vs reviewer) genuinely change agent behavior.</td>
+<td><strong>KEEP (core).</strong></td>
+</tr>
+<tr>
+<td><code>display_name</code></td>
+<td>id + instance</td>
+<td>Human label in UI/CLI. Cheap, purely presentational.</td>
+<td><strong>KEEP.</strong></td>
+</tr>
+<tr>
+<td><code>provider_profile</code></td>
+<td>id (default) + instance</td>
+<td>Which model backend to launch (<code>pi</code>, <code>claude</code>). Required to spawn.</td>
+<td><strong>KEEP (core).</strong></td>
+</tr>
+<tr>
+<td><code>model_tier</code></td>
+<td>id (default) + instance</td>
+<td>cheap/normal/smart model selection. Required to spawn.</td>
+<td><strong>KEEP (core).</strong></td>
+</tr>
+<tr>
+<td><code>project_id</code> / <code>default_project_id</code></td>
+<td>both</td>
+<td>Optional project binding / bootstrap context. Loose hint.</td>
+<td><strong>KEEP</strong>, but keep it optional (see the invalid-project fix).</td>
+</tr>
+<tr>
+<td><code>run_dir</code></td>
+<td>instance (runtime)</td>
+<td>Where the wrapper launched. Runtime bookkeeping.</td>
+<td><strong>KEEP</strong> (runtime), not identity.</td>
+</tr>
+<tr>
+<td><code>state</code> / <code>identity_state</code></td>
+<td>both</td>
+<td>provisioned/running/archived lifecycle.</td>
+<td><strong>KEEP (core).</strong></td>
+</tr>
+<tr>
+<td><code>agent_kind</code> (<code>local</code> | <code>remote_proxy</code>)</td>
+<td>instance</td>
+<td>Distinguishes a real local agent from a federation proxy pointer. Drives &quot;don&#39;t launch a wrapper&quot; + federation forwarding. Load-bearing.</td>
+<td><strong>KEEP (core for federation).</strong></td>
+</tr>
+<tr>
+<td><code>remote_peer_id</code> / <code>remote_origin_daemon_id</code> / <code>remote_agent_instance_id</code></td>
+<td>instance</td>
+<td>Federation proxy target. Only meaningful when <code>agent_kind = remote_proxy</code>.</td>
+<td><strong>KEEP (federation).</strong></td>
+</tr>
+<tr>
+<td><code>current_task_id</code> / <code>current_task_since</code> / <code>last_needed_at_unix_ms</code> / <code>order</code></td>
+<td>instance</td>
+<td>Autoscaler/UI hints (what it&#39;s doing, ordering).</td>
+<td><strong>KEEP</strong> (cheap runtime projection).</td>
+</tr>
+<tr>
+<td><code>default_project_explicit</code></td>
+<td>id</td>
+<td>Guards backfill from clobbering an explicitly-cleared default project.</td>
+<td><strong>KEEP</strong> (correctness flag, small).</td>
+</tr>
+</tbody></table>
+<h3>8.2 <code>role_hint</code> vs <code>agent_role</code> — why two? (answer: we don&#39;t need two)</h3>
+<p><strong>They are the same value stored twice.</strong> The code makes this explicit:</p>
+<pre><code class="language-odin">// agent_store.odin
+agent_role_from_template :: proc(template_id) -&gt; string {
+    role := agent_template_records[tidx].role_hint   // &lt;-- agent_role IS the template&#39;s role_hint
+    if role != &quot;&quot; do return role
+    if template_id == &quot;lead&quot; do return &quot;coordinator&quot; // &lt;-- plus a hardcoded fixup
+    return template_id
+}
+// agent_id_store.odin / agent_store.odin, every upsert:
+agent_role = (agent_role != &quot;&quot; ? agent_role : agent_role_from_template(template_id))
+</code></pre>
+<ul>
+<li><code>role_hint</code> lives <strong>once</strong> on the <code>Agent_Template_Record</code> (the template row).</li>
+<li><code>agent_role</code> is then <strong>copied onto the durable <code>agent_id</code> AND onto every
+<code>agent_instance</code> record AND cached on the runtime <code>Agent_Record</code></strong> — i.e. the same string
+is duplicated into 3 more places and must be kept in sync on every event/clone/JSON emit.</li>
+</ul>
+<p>That duplication buys nothing: no code path reads <code>agent_role</code> and <code>role_hint</code> as <em>different</em>
+facts. The only functional branch on <code>agent_role</code> anywhere is
+<code>if rec.agent_role == &quot;conversation&quot;</code> (federation), which is already equivalent to
+<code>template_id == &quot;conversation&quot;</code>.</p>
+<p><strong>Verdict: remove BOTH as agent properties. Role is contextual, not intrinsic.</strong></p>
+<p>The deeper point: <strong>an agent has no fixed role — it plays whatever role the task gives it.</strong>
+The same <code>worker@s-…</code> (or a customer&#39;s custom agent) can be the <em>assignee</em> on task A, a
+<em>reviewer</em> on task B, and a <em>subscriber</em> on task C. Baking a single <code>agent_role</code>/<code>role_hint</code>
+onto the identity contradicts that: it pretends &quot;this agent IS a reviewer,&quot; which is only ever
+true <em>relative to a task</em>. The authority already exists and is per-task:
+<code>task.participants[].role ∈ {assignee, coordinator, lgtm_required, lgtm_optional, subscriber}</code>.</p>
+<p>Evidence that neither field is load-bearing:</p>
+<ul>
+<li><strong>No behavior branches on them</strong> except <code>agent_role == &quot;conversation&quot;</code> (federation), which is
+identical to <code>template_id == &quot;conversation&quot;</code>.</li>
+<li><strong>The UI treats them as interchangeable display text:</strong> <code>AgentPicker</code> resolves a label via
+<code>templateId || agentRole || roleHint || agentId</code> — they are one &quot;what kind of agent&quot; string,
+not three facts. Grouping/labels can use <code>template_id</code> (or its <code>display_name</code>) directly.</li>
+<li>Review-gating, notification routing, and the chain roster already read the <strong>task&#39;s</strong> role,
+not the agent&#39;s (that was the Chain-agents panel fix).</li>
+</ul>
+<p><strong>So:</strong></p>
+<ul>
+<li>Delete the stored <code>agent_role</code> from <code>Agent_Id_Record</code>, <code>Agent_Instance_Record</code>, and the
+runtime <code>Agent_Record</code>.</li>
+<li>Delete <code>role_hint</code> from <code>Agent_Template_Record</code> and <code>agent_role_from_template()</code> (including
+its hardcoded <code>&quot;lead&quot; → &quot;coordinator&quot;</code> fixup).</li>
+<li>Anywhere a human-facing &quot;kind&quot; label is wanted, use the template&#39;s <code>display_name</code>/<code>template_id</code>
+— which a custom agent defines itself.</li>
+<li>Replace <code>agent_role == &quot;conversation&quot;</code> with a <code>template_id</code>/durable-id check.</li>
+</ul>
+<p>Result: <strong>zero intrinsic role fields.</strong> &quot;Who is the reviewer&quot; is answered only by the task,
+which is the whole point — any agent, including a customer&#39;s, can be dropped into any slot
+without the daemon believing it has a fixed role.</p>
+<h4><code>agent_scope</code> (<code>durable</code> | <code>generated_chain</code> | <code>system</code>)</h4>
+<ul>
+<li><strong>What it does:</strong> was meant to separate &quot;durable identities&quot; from &quot;throwaway per-chain
+instances&quot; (for cleanup/idle-shutdown). The idle-shutdown sweep that consumed it is
+<strong>already disabled</strong> (<code>task_autoscaler_tick</code> phase-1 note). Today it mainly gates whether an
+instance may seed a durable default project, and is otherwise carried/normalized.</li>
+<li><strong>Argument for removal:</strong> with teams gone, every agent is just a durable <code>agent_id</code> plus its
+concrete <code>agent_instance_id</code>s; the &quot;generated_chain&quot; class largely disappears (those
+instances were the team-provisioned role slots). Its main live consumer (idle shutdown) is
+dead code slated for deletion.</li>
+<li><strong>Verdict: REMOVE (phase 2), or collapse to a boolean.</strong> Fold the one remaining rule
+(&quot;only durable identities seed a durable default project&quot;) into an explicit
+<code>is_durable_identity</code> check, or drop it since default-project seeding is already guarded by
+<code>default_project_explicit</code>. This deletes a 3-valued field that must be inferred, normalized,
+and stored on both the identity and instance.</li>
+</ul>
+<h3>8.3 Memory targeting descriptors</h3>
+<table>
+<thead>
+<tr>
+<th>Property</th>
+<th>Function</th>
+<th>Verdict</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>target_agent_id</code></td>
+<td>Scope a memory to one durable identity.</td>
+<td><strong>KEEP (core).</strong></td>
+</tr>
+<tr>
+<td><code>target_project_id</code></td>
+<td>Scope to a project.</td>
+<td><strong>KEEP (core).</strong></td>
+</tr>
+<tr>
+<td><code>target_role</code></td>
+<td>Scope bootstrap memory to a role (e.g. all reviewers).</td>
+<td><strong>REPLACE with <code>target_template_id</code></strong> (or <code>target_agent_id</code>). &quot;role&quot; here is really &quot;which kind of agent&quot; — which the template already identifies. Drop the free-standing role dimension.</td>
+</tr>
+<tr>
+<td><code>target_team_kind</code></td>
+<td>Scope to a chain kind (<code>coding</code>/<code>research</code>/<code>solo</code>). Not a team roster — a taxonomy.</td>
+<td><strong>KEEP as <code>target_kind</code></strong> (rename; drop the word &quot;team&quot;). Keep the DB column name to avoid a memory-DB migration.</td>
+</tr>
+</tbody></table>
+<h3>8.4 Summary of property changes</h3>
+<ul>
+<li><strong>Keep (core):</strong> <code>agent_id</code>, <code>agent_instance_id</code>, <code>template_id</code>, <code>display_name</code>,
+<code>provider_profile</code>, <code>model_tier</code>, <code>project_id</code>, <code>state</code>, <code>agent_kind</code> + <code>remote_*</code>, runtime
+task/needed/order fields, memory <code>target_agent_id</code>/<code>target_project_id</code>.</li>
+<li><strong>Rename only:</strong> <code>target_team_kind</code> → <code>target_kind</code> (chain taxonomy, no roster).</li>
+<li><strong>Remove entirely:</strong><ul>
+<li><code>agent_role</code> (stored on <code>Agent_Id_Record</code>, <code>Agent_Instance_Record</code>, runtime <code>Agent_Record</code>)
+— role is a per-task fact, not an identity fact.</li>
+<li><code>role_hint</code> (on <code>Agent_Template_Record</code>) and <code>agent_role_from_template()</code> — the only reason
+<code>agent_role</code> existed.</li>
+<li><code>agent_scope</code> (dead idle-shutdown consumer; the one live rule folds into
+<code>default_project_explicit</code>).</li>
+<li>memory <code>target_role</code> → fold into <code>target_template_id</code>/<code>target_agent_id</code>.</li>
+<li>everything in §2.1 (the team roster).</li>
+</ul>
+</li>
+</ul>
+<p>Guiding principle: <strong>the task is the authority on who does what; the identity carries only
+what&#39;s needed to launch and bootstrap an agent.</strong> Any field that merely <em>restates</em> a role the
+task already owns — <code>agent_role</code>, <code>role_hint</code>, <code>target_role</code> — is redundant and goes.</p>
+<h3>8.5 No hardcoding: custom agents must be first-class</h3>
+<p>The target model must let a customer register an arbitrary agent (their own template + durable
+<code>agent_id</code>) and use it for any slot. Today several <strong>hardcoded string checks</strong> would make that
+awkward or broken — these are the real blockers, and they must go regardless of the team work:</p>
+<table>
+<thead>
+<tr>
+<th>Hardcoded assumption</th>
+<th>Location</th>
+<th>Why it breaks custom agents</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>template_id == &quot;lead&quot;</code> → role <code>coordinator</code></td>
+<td><code>agent_store.odin</code></td>
+<td>A custom coordinator template (<code>acme_lead</code>) is not recognized as coordinating.</td>
+<td>Remove; coordinator-ness comes from the task/chain <code>coordinator_agent_instance_id</code>, not the template name.</td>
+</tr>
+<tr>
+<td><code>agent_id_ref == &quot;coordinator&quot;</code> → force <code>template = &quot;lead&quot;</code></td>
+<td><code>agents_start.odin</code></td>
+<td>Ties the <code>coordinator</code> id to one specific template.</td>
+<td>Resolve template from the <code>agent_id</code>&#39;s own record, not a hardcoded pair.</td>
+</tr>
+<tr>
+<td>scaffold <code>role_key → agent_template_id</code> map (<code>coordinator→lead, coder→coder, reviewer→reviewer, tester→tester</code>)</td>
+<td><code>team_kinds.odin</code></td>
+<td>Custom agents can&#39;t be the default for a scaffold slot.</td>
+<td>Replace with configurable <strong>role → default <code>agent_id</code></strong> (§5.2), operator-overridable.</td>
+</tr>
+<tr>
+<td><code>template_id == &quot;guide&quot;</code> / <code>memory_auditor</code> / <code>memory_reviewer</code> singleton handling</td>
+<td><code>agent_store.odin</code>, <code>agents_start.odin</code>, <code>guide_service.odin</code></td>
+<td>Special system agents identified by literal template name.</td>
+<td>Keep as an explicit, small <strong>allowlist of system agent ids</strong> in config — not scattered <code>== &quot;guide&quot;</code> checks.</td>
+</tr>
+<tr>
+<td><code>agent_role == &quot;conversation&quot;</code></td>
+<td><code>federation_peers.odin</code></td>
+<td>A custom chat agent with a different template isn&#39;t recognized.</td>
+<td>Check the durable <code>conversation</code> id / a <code>is_conversation</code> template flag.</td>
+</tr>
+<tr>
+<td><code>derive_agent_class()</code> parses the id prefix for &quot;class&quot;</td>
+<td><code>registry.odin</code></td>
+<td>Assumes <code>class@suffix</code> naming encodes behavior.</td>
+<td>Fine as a <em>display</em> fallback; never use it to decide behavior.</td>
+</tr>
+</tbody></table>
+<p><strong>Principle for custom agents:</strong> behavior is decided by (a) the <strong>task</strong> (who is
+assignee/reviewer/coordinator here) and (b) an explicit, <strong>operator-configurable</strong> &quot;default
+agent for role X&quot; map — never by matching a built-in template or id string. The five shipped
+defaults (<code>conversation</code>, <code>guide</code>, <code>coordinator</code>, <code>worker</code>, <code>reviewer</code>) are just the initial
+values of that map and of the durable-id set; every one must be replaceable by a customer
+agent id in config without a code change. System singletons (guide, memory auditor/reviewer)
+live in a named config allowlist, so even they are swappable rather than hardcoded.</p>
+<hr>
+<h2>8.6 Bootstrap: replace per-role persona/instructions with core skills + on-demand memory</h2>
+<p>This is the biggest simplification, and it removes the <em>last</em> reason <code>template</code>/<code>role</code> needs to
+carry behavior. Today bootstrap injects <strong>role-specific instructions</strong> into every agent&#39;s
+<code>AGENTS.md</code>:</p>
+<ul>
+<li>The daemon ships <strong>~13 hardcoded prompt files</strong> — <code>coder_persona.md</code> + <code>coder_instructions.md</code>,
+<code>reviewer_*</code>, <code>planner_*</code>, <code>tester_*</code>, <code>lead_*</code>, <code>researcher_*</code>, <code>specialist_*</code>,
+<code>coordinator_instructions.md</code>, etc. (<code>src/prompts/</code>).</li>
+<li>Each agent <strong>template</strong> stores a <code>persona</code> + <code>instructions</code> (loaded from those files).</li>
+<li>The wrapper&#39;s <code>build_agents_md()</code> picks which to inject <strong>by role/template</strong>: shared
+<code># Agent Operating Rules</code> for everyone, then <code># Coordinator Instructions</code> iff
+<code>role_key == &quot;coordinator&quot;</code>, then the template&#39;s <code># Role Persona</code> / <code># Role Instructions</code>.</li>
+</ul>
+<p>So the whole &quot;role&quot; apparatus (<code>role_key</code>, <code>is_coordinator</code>, per-template persona/instructions)
+survives mostly to decide <strong>which instruction blob to paste</strong>. That is exactly what the memory/
+skills system already does better.</p>
+<h3>What already exists (reuse, don&#39;t rebuild)</h3>
+<ul>
+<li><strong><code>type: skill</code> memories</strong> are already rendered to on-demand <code>SKILL.md</code> files
+(<code>write_skills()</code> → <code>.agents/skills/&lt;slug&gt;/SKILL.md</code>) with provider-native frontmatter, so an
+agent <strong>reads a skill only when the task needs it</strong> (Claude/codex skill discovery).</li>
+<li><strong><code>type: template</code> memories</strong> are already injected as durable guidance.</li>
+<li><strong><code>/memory/applicable</code></strong> already filters by <code>target_agent_id</code>, <code>target_project_id</code>, and a
+taxonomy dim — the exact targeting needed to say &quot;all agents get these core skills.&quot;</li>
+</ul>
+<h3>Proposed model</h3>
+<ol>
+<li><strong>Core skills shipped with Heimdall, applied to every agent.</strong> Convert the role instruction
+files into a small set of <strong>seeded, active memories</strong> (<code>type: skill</code>/<code>template</code>) with <strong>no
+target</strong> (= applies to all): e.g. <code>task-workflow</code>, <code>review-and-evidence</code>, <code>coordinator- playbook</code>, <code>git-hygiene</code>, <code>contracts-first</code>, <code>testing-discipline</code>. Every agent boots with the
+shared <strong>Agent Operating Rules</strong> inline (kept small) plus these core skills available on disk
+to read on demand.</li>
+<li><strong>Role instructions become skills, not identity.</strong> <code>reviewer_instructions.md</code> → a
+<code>review-and-evidence</code> skill; <code>coordinator_instructions.md</code> → a <code>coordinator-playbook</code> skill;
+etc. They are <strong>available to any agent</strong> and <strong>read when the task calls for it</strong> (&quot;you are the
+reviewer on this task → read the review skill&quot;), instead of being pasted because the identity
+is tagged <code>reviewer</code>. This is precisely the user&#39;s point: <em>an agent plays any role based on
+context</em>, so the instructions for a role live in a skill the agent opens when it takes that
+role — not in its identity.</li>
+<li><strong>Persona shrinks to (optional) one line or disappears.</strong> With behavior in shared skills, a
+template&#39;s <code>persona</code>/<code>instructions</code> become optional flavor. A custom agent can ship with an
+empty template and still be fully functional off the core skills.</li>
+<li><strong>Customization = propose a memory, not fork a template.</strong> Users tailor behavior by
+proposing/approving memories (<code>type: skill|template</code>, optionally <code>target_agent_id</code> or
+<code>target_project_id</code>) through the existing approval pipeline — no code, no new template row,
+no per-role prompt file. Project- or agent-specific tweaks target that scope; universal ones
+target nothing.</li>
+</ol>
+<h3>What this lets us delete/collapse</h3>
+<ul>
+<li>The per-template <code>persona</code>/<code>instructions</code> <strong>as the behavior source</strong> (keep an optional short
+persona at most). The 13 <code>*_persona.md</code> / <code>*_instructions.md</code> files collapse into a handful of
+seeded core-skill memories.</li>
+<li><code>role_key</code>/<code>is_coordinator</code> branching in <code>build_agents_md()</code> — bootstrap becomes: shared rules<ul>
+<li>core skills + task/chain/project/workspace context + applicable memories. <strong>No role fork.</strong></li>
+</ul>
+</li>
+<li>The coupling &quot;template ⇒ which instructions&quot; — removed, because instructions are skills any
+agent can read.</li>
+</ul>
+<h3>Guardrails</h3>
+<ul>
+<li>Keep the <strong>shared Agent Operating Rules</strong> inline in <code>AGENTS.md</code> (small, always-on) so an agent
+knows <em>how to discover and read skills</em> and <em>how to use the task CLI</em> before it needs any
+specific skill.</li>
+<li>Core skills are <strong>seeded as normal approved memories</strong> on first boot (idempotent), so they are
+visible, versioned, and editable through the same memory UI/CLI — not a second hidden config.</li>
+<li>Coordinator&#39;s user-contact rules must stay reliably available; ship them as a core skill that
+the bootstrap explicitly points the current coordinator at (by task/chain role, not identity).</li>
+</ul>
+<p><strong>Net:</strong> behavior lives in the <strong>memory/skills system</strong> (one customization surface, on-demand,
+versioned, per-scope), identities carry only launch/bootstrap essentials, and &quot;role&quot; exists
+only on the task. This is the maximal simplification: teams gone, intrinsic roles gone,
+per-role prompt files gone — all replaced by core skills any agent reads by need.</p>
+<hr>
+<h2>8.7 How do we still do a &quot;coding&quot; or &quot;research&quot; chain? (the scaffold question)</h2>
+<p>A fair objection: today <code>--kind coding</code> allocates a team <strong>and</strong> expands a canned task graph
+(<code>plan → contracts → implement → test → summary</code>, each task pre-assigned to a role). If teams
+and <code>team_kind</code> are gone, how does a user still get a <em>typed</em> chain quickly?</p>
+<p>Key realization: <strong>the scaffold was never the team.</strong> A scaffold is just a script that emits
+<code>tasks create --depends-on …</code> + <code>tasks participant --role lgtm_required …</code>, mapping each
+<code>role_key</code> to an agent. Removing teams removes the <em>roster</em>, not the <em>task graph</em>. There are
+three ways to produce a typed chain, in increasing automation — all built on the same primitive
+(<code>agent_instance_id</code> on tasks):</p>
+<h3>Option A — Manual (always available, zero magic)</h3>
+<p>The coordinator (or user) creates the chain and its tasks directly, choosing agent ids:</p>
+<pre><code class="language-bash">ham-ctl task-chains create --kind coding --title &quot;Fix X&quot;        # kind = taxonomy label only
+ham-ctl tasks create --chain-id &lt;c&gt; --title &quot;Plan&quot;      --assignee coordinator@…
+ham-ctl tasks create --chain-id &lt;c&gt; --title &quot;Implement&quot; --assignee worker@… \
+        --depends-on &lt;plan&gt; ;  ham-ctl tasks participant --task-id &lt;impl&gt; --role lgtm_required --agent-instance-id reviewer@…
+ham-ctl tasks create --chain-id &lt;c&gt; --title &quot;Test&quot;      --assignee worker@… --depends-on &lt;impl&gt;
+</code></pre>
+<p>This already works today. <code>--kind</code> stays as a <strong>label</strong> (drives which core memories/skills
+apply and whether VCS is wanted) but allocates <strong>no team</strong>. A custom agent id drops straight
+into <code>--assignee</code>.</p>
+<h3>Option B — Scaffold as a skill/template the coordinator runs (recommended default)</h3>
+<p>Instead of the daemon hardcoding <code>coding_feature_tasks[]</code>, ship the scaffold as a <strong>core skill</strong>
+(§8.6): <code>scaffold-coding-feature</code>, <code>scaffold-research</code>, etc. When a chain is created with
+<code>kind=coding</code>, the coordinator is pointed at that skill and <strong>executes it</strong> — it is literally a
+numbered recipe of <code>tasks create</code>/<code>participant</code> commands with the role→default-agent mapping
+inlined. Benefits:</p>
+<ul>
+<li><strong>No hardcoded task graph in daemon code.</strong> The recipe lives in the memory system, versioned
+and editable through the memory UI/CLI like any other skill.</li>
+<li><strong>Fully customizable per user/project.</strong> A user proposes an edited <code>scaffold-coding-feature</code>
+memory (or a new <code>scaffold-mobile-release</code>) scoped to their project; no code change, no new
+<code>team_kind</code>.</li>
+<li><strong>Custom agents just work:</strong> the recipe resolves <code>role → default agent id</code> from the
+operator-configurable map (§5.2), so <code>worker</code>/<code>reviewer</code> can be any agent id.</li>
+</ul>
+<h3>Option C — Thin daemon scaffold helper (optional, keeps one-click UX)</h3>
+<p>If we want the current &quot;pick coding, get 5 tasks&quot; one-click UX without the coordinator doing it,
+keep a <strong>small, data-driven scaffold table in code</strong> (<code>Chain_Kind_Def.scaffolds</code>, already exists)
+but strip its team coupling: each scaffold task is <code>{ title, role_key, reviewer_role, depends_on }</code>, and expansion resolves <code>role_key → default agent id</code> from the config map and
+writes the id onto the task. This is §5.2/§5.3 — same output as today, minus <code>teams.db</code>.</p>
+<h3>Decision: <strong>Option B — scaffolds are skills.</strong></h3>
+<p>We are going with Option B. The daemon does <strong>not</strong> hardcode <code>coding_feature_tasks[]</code> or any
+task graph. Each scaffold is a <strong>core skill (seeded memory)</strong> that the coordinator executes
+when a chain of that kind is created. Option A&#39;s primitives (<code>tasks create</code> / <code>participant</code>)
+remain the substrate; Option C&#39;s in-code table is <strong>not</strong> built. <code>kind</code> stays a taxonomy label
+that (a) selects which scaffold skill the coordinator runs and (b) selects applicable core
+memories + VCS default — never a team, never an intrinsic agent role.</p>
+<hr>
+<h2>8.8 Implementation plan for Option B (scaffolds as skills)</h2>
+<p><strong>Goal:</strong> typed chains stay one action, but the &quot;type&quot; is a skill the coordinator runs, not a
+hardcoded team/task graph.</p>
+<h3>8.8.1 Author the scaffold skills (seeded core memories)</h3>
+<ul>
+<li>Convert each existing scaffold into a <code>type: skill</code> memory, seeded active on first boot
+(idempotent), e.g.:<ul>
+<li><code>scaffold-coding-feature</code> (plan → contracts → implement → test → summary)</li>
+<li><code>scaffold-coding-bugfix</code> (reproduce → fix → test → summary)</li>
+<li><code>scaffold-research</code> (investigate → synthesize → summary)</li>
+<li><code>scaffold-solo</code> (single-assignee + <code>user_proxy</code> reviewer)</li>
+</ul>
+</li>
+<li>Each skill body is a <strong>numbered recipe</strong> the coordinator can execute verbatim, with the
+role→default-agent mapping written as <code>ham-ctl</code> calls. Reuse the existing per-task guidance
+text (<code>scaffold-coding-plan</code>, <code>…-contracts</code>, etc.) as the task <strong>descriptions</strong> inside the
+recipe. Example (abbreviated):<pre><code class="language-markdown"># scaffold-coding-feature
+Run these in order for a feature chain. Resolve {coordinator}/{worker}/{reviewer} from the
+chain&#39;s default-agent map (ham-ctl agents defaults).
+1. tasks create --chain-id {chain} --title &quot;Plan: {title}&quot;      --assignee {coordinator}
+2. tasks create --chain-id {chain} --title &quot;Contracts: {title}&quot; --assignee {worker} --depends-on {plan}
+   tasks participant --task-id {contracts} --role lgtm_required --agent-instance-id {reviewer}
+3. tasks create --chain-id {chain} --title &quot;Implement: {title}&quot; --assignee {worker} --depends-on {contracts}
+   tasks participant --task-id {implement} --role lgtm_required --agent-instance-id {reviewer}
+4. tasks create --chain-id {chain} --title &quot;Test: {title}&quot;      --assignee {worker} --depends-on {implement}
+   tasks participant --task-id {test} --role lgtm_required --agent-instance-id {reviewer}
+5. tasks create --chain-id {chain} --title &quot;Summary: {title}&quot;    --assignee {coordinator} --depends-on {test}
+</code></pre>
+</li>
+<li>These live in the memory store: <strong>versioned, visible, editable</strong> through the memory UI/CLI.</li>
+</ul>
+<h3>8.8.2 Chain create becomes roster-free</h3>
+<ul>
+<li><code>POST /task-chains/create</code> keeps <code>kind</code>, <code>title</code>, <code>description</code>, <code>wants_vcs</code>, and an optional
+<code>coordinator_agent_instance_id</code>; it <strong>stops</strong> calling <code>team_service_create_for_chain</code> and
+<strong>stops</strong> expanding <code>Team_Kind_Def.scaffolds</code> in code.</li>
+<li>It creates the chain + a <strong>coordinator discovery/kickoff task</strong> (already exists) whose
+description says: <em>&quot;This is a <code>coding</code> chain. Read and execute the <code>scaffold-coding-feature</code>
+skill to lay out the tasks, or create tasks manually.&quot;</em></li>
+<li>The coordinator (already auto-booted for a chain) reads the skill on disk (it is delivered as
+a <code>SKILL.md</code> because it is an applicable <code>type: skill</code> memory) and runs it. Result: identical
+5-task chain, produced by the coordinator, no <code>teams.db</code>.</li>
+</ul>
+<h3>8.8.3 Role → default agent resolution</h3>
+<ul>
+<li>Add a small <strong>operator-configurable map</strong> <code>role → default agent_id</code>
+(<code>coordinator→coordinator</code>, <code>assignee/worker/coder/tester→worker</code>, <code>reviewer→reviewer</code>),
+surfaced via <code>ham-ctl agents defaults</code> and the daemon config. The scaffold recipe resolves
+its <code>{coordinator}/{worker}/{reviewer}</code> placeholders from this map, so custom agent ids slot
+in without editing the skill.</li>
+<li><code>solo</code> maps <code>reviewer → user_proxy</code> (preserves the synthetic-reviewer behavior on the task
+directly).</li>
+</ul>
+<h3>8.8.4 Customization story (the payoff)</h3>
+<ul>
+<li>A user tailors a scaffold by <strong>proposing an edited/added skill memory</strong> (e.g.
+<code>scaffold-mobile-release</code>, or a project-scoped override of <code>scaffold-coding-feature</code> via
+<code>target_project_id</code>) through the normal approval pipeline. <strong>No code change, no new
+<code>team_kind</code>, no template fork.</strong></li>
+<li>Because scaffolds are just skills, adding a whole new work type = adding a memory. <code>kind</code> on a
+chain becomes free-form-ish (a label that maps to &quot;which scaffold skill to suggest&quot;).</li>
+</ul>
+<h3>8.8.5 What gets deleted as a result</h3>
+<ul>
+<li><code>Team_Kind_Def.scaffolds</code>, <code>Team_Chain_Scaffold</code>, <code>Team_Chain_Scaffold_Task</code>, and the
+in-daemon expansion (<code>task_service_create_chain_scaffold</code>, <code>task_service_scaffold_*</code>).</li>
+<li>The <code>scaffold-*</code> <code>description_key</code> → prompt-file plumbing (the text moves into the skill
+bodies).</li>
+<li>Everything in §2.1 (the team roster) and the intrinsic role fields (§8.2/§8.5).</li>
+</ul>
+<h3>8.8.6 Guardrails</h3>
+<ul>
+<li>Keep the <strong>discovery/kickoff task</strong> so a chain always has a visible next action even if the
+coordinator hasn&#39;t run the scaffold yet.</li>
+<li>Seed scaffold skills idempotently and mark them <code>heimdall_managed</code> so upgrades can refresh the
+shipped defaults without clobbering user edits (user overrides target a scope and win).</li>
+<li>The coordinator&#39;s operating rules (a core skill, §8.6) must instruct it to <strong>run the
+applicable scaffold skill on chain kickoff</strong> so typed chains still feel one-click.</li>
+</ul>
+<hr>
+<h2>9. Recommendation</h2>
+<p><strong>Remove teams as a durable concept, and remove all intrinsic &quot;role&quot; fields from agents.</strong>
+Keep only:</p>
+<ol>
+<li>Five seeded default durable agent ids: <code>conversation</code>, <code>guide</code>, <code>coordinator</code>, <code>worker</code>,
+<code>reviewer</code> — all overridable in config.</li>
+<li>An <strong>operator-configurable <code>role → default agent id</code></strong> map (no per-chain roster rows).</li>
+<li>A <code>kind</code> taxonomy label on chains/memory that selects <strong>which scaffold skill to run</strong> and
+which core memories/VCS default apply (no roster).</li>
+<li><strong>Scaffolds as skills (Option B):</strong> typed chains (coding/research/solo) are produced by the
+coordinator running a seeded, editable <code>scaffold-*</code> skill — not a hardcoded in-daemon task
+graph. See §8.7–§8.8.</li>
+</ol>
+<p>And delete:</p>
+<ul>
+<li>The team store (<code>teams.db</code>, <code>Team_Record</code>/<code>Team_Member_Record</code>, <code>/teams*</code>, <code>ham-ctl teams</code>).</li>
+<li>The in-daemon scaffold graph (<code>Team_Kind_Def.scaffolds</code>, <code>Team_Chain_Scaffold*</code>,
+<code>task_service_create_chain_scaffold</code>) — moved into <code>scaffold-*</code> skill memories.</li>
+<li><code>agent_role</code>, <code>role_hint</code>, <code>agent_role_from_template()</code>, and memory <code>target_role</code> — role is
+a <strong>per-task</strong> fact, so no agent/template/identity carries a fixed role.</li>
+<li><code>agent_scope</code> (dead consumer).</li>
+<li>The hardcoded template/id special-cases in §8.5, so <strong>custom agents are drop-in</strong> for any
+slot.</li>
+<li>The per-role prompt files and template <code>persona</code>/<code>instructions</code> <strong>as the behavior source</strong>
+(§8.6): replace with a small set of <strong>core skills shipped as seeded memories</strong>, applied to
+all agents and read <strong>on demand</strong> by whichever agent takes that role on a task.</li>
+</ul>
+<p>Three invariants make the whole thing coherent:</p>
+<ul>
+<li><strong>The task decides roles.</strong> &quot;Who is the reviewer&quot; = the task&#39;s <code>lgtm_required</code> participant,
+never an agent property. An agent can be assignee here and reviewer there.</li>
+<li><strong>Behavior never keys on a built-in name.</strong> Defaults and system singletons live in config as
+agent ids, so a customer swaps any of them without a code change.</li>
+<li><strong>Customization lives in the memory/skills system.</strong> Core skills ship as approved memories;
+users tailor behavior by proposing memories (optionally scoped to an agent/project), not by
+forking templates or editing prompt files. One versioned, on-demand customization surface.</li>
+</ul>
+<p>This deletes a redundant store, a 1:1 join object, three duplicated role fields, ~13 per-role
+prompt files, an HTTP/CLI/UI/doc surface, and a pile of hardcoded string checks — matching the
+goal: fewer data types, no hardcoding, and any agent (built-in or custom) usable in any role by
+context, customized entirely through memory.</p>
+
+</div></body>
+</html>

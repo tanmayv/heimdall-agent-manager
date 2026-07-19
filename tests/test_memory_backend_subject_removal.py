@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Backend regression coverage for simplified memory targeting.
+"""Backend regression coverage for agent/project-only memory targeting.
 
 Covers:
-- public list/show/history/applicable JSON exposes only target_team_kind/target_role/target_project_id
+- public list/show/history/applicable JSON exposes target_agent_id/target_project_id
 - null/empty targets act as wildcards
 - populated targets use strict AND semantics
-- expertise dedup uses canonical target triple + title
+- expertise dedup uses canonical target pair + title
 """
 
 import json
@@ -21,12 +21,11 @@ HOST = "127.0.0.1"
 PORT = 49423
 URL = f"http://{HOST}:{PORT}"
 USER_ID = "operator@local"
-AGENT_ID = "memory-target-coder@default"
+AGENT_INSTANCE_ID = "memory-target-coder@default"
+TARGET_AGENT_ID = "memory-target-coder"
+OTHER_AGENT_ID = "memory-target-reviewer"
 PROJECT_ID = "memory-target-project"
 OTHER_PROJECT_ID = "memory-target-project-2"
-TEAM_KIND = "coding"
-ROLE = "coder"
-OTHER_ROLE = "reviewer"
 
 
 def bin_path(repo: Path, binary: str) -> str:
@@ -41,11 +40,7 @@ def bin_path(repo: Path, binary: str) -> str:
         path = repo / base / "bin" / binary
         if path.exists():
             return str(path)
-    package = {
-        "ham-daemon": "ham-daemon",
-        "ham-wrapper": "ham-wrapper",
-        "ham-ctl": "ham-ctl",
-    }[binary]
+    package = {"ham-daemon": "ham-daemon", "ham-wrapper": "ham-wrapper", "ham-ctl": "ham-ctl"}[binary]
     build = subprocess.run(["nix", "build", f".#${package}".replace("$", ""), "--no-link", "--print-out-paths"], cwd=repo, capture_output=True, text=True, check=True)
     out_path = build.stdout.strip().splitlines()[-1]
     return str(Path(out_path) / "bin" / binary)
@@ -192,32 +187,28 @@ def main() -> None:
         agent_token = post(
             "/register",
             {
-                "agent_class": "memory-target-coder",
-                "agent_instance_id": AGENT_ID,
+                "agent_class": TARGET_AGENT_ID,
+                "agent_instance_id": AGENT_INSTANCE_ID,
                 "display_name": "Memory Target Coder",
             },
         )["agent_token"]
-        agent_create = post(
-            "/agents/create",
+        other_register = post(
+            "/register",
             {
-                "agent_instance_id": AGENT_ID,
-                "display_name": "Memory Target Coder",
-                "provider_profile": "pi",
-                "template_id": "coder",
-                "model_tier": "normal",
-                "project_id": PROJECT_ID,
+                "agent_class": OTHER_AGENT_ID,
+                "agent_instance_id": f"{OTHER_AGENT_ID}@default",
+                "display_name": "Memory Target Reviewer",
             },
         )
-        if not agent_create.get("ok"):
-            raise AssertionError(f"agents/create failed: {agent_create}")
+        if not other_register.get("agent_token"):
+            raise AssertionError(f"other agent registration failed: {other_register}")
 
         created = []
         for kwargs in [
             dict(type="fact", title="Global memory", body="Applies everywhere."),
-            dict(target_role=ROLE, type="fact", title="Coder only", body="Applies only to coder role."),
+            dict(target_agent_id=TARGET_AGENT_ID, type="fact", title="Agent only", body="Applies only to one durable agent."),
             dict(target_project_id=PROJECT_ID, type="fact", title="Project only", body="Applies only to project."),
-            dict(target_project_id=PROJECT_ID, target_role=ROLE, type="fact", title="Project and role", body="Requires both project and role."),
-            dict(target_team_kind=TEAM_KIND, type="fact", title="Team kind only", body="Applies only to coding teams."),
+            dict(target_project_id=PROJECT_ID, target_agent_id=TARGET_AGENT_ID, type="fact", title="Project and agent", body="Requires both project and durable agent."),
         ]:
             res = propose(agent_token, **kwargs)
             approve(agent_token, res["proposal_id"])
@@ -231,52 +222,45 @@ def main() -> None:
         assert_no_legacy_fields(listed, "list")
 
         rec = show_res["record"]
-        if sorted(rec.keys()) and {"target_team_kind", "target_role", "target_project_id"} - set(rec.keys()):
-            raise AssertionError(f"show payload missing target triple: {rec}")
+        if sorted(rec.keys()) and {"target_agent_id", "target_project_id"} - set(rec.keys()):
+            raise AssertionError(f"show payload missing target pair: {rec}")
 
-        exact_match = applicable(agent_token, target_team_kind=TEAM_KIND, target_role=ROLE, target_project_id=PROJECT_ID)
+        exact_match = applicable(agent_token, target_agent_id=TARGET_AGENT_ID, target_project_id=PROJECT_ID)
         exact_titles = titles(exact_match["records"])
-        expected = {"Global memory", "Coder only", "Project only", "Project and role", "Team kind only"}
+        expected = {"Global memory", "Agent only", "Project only", "Project and agent"}
         if exact_titles != expected:
             raise AssertionError(f"exact applicability mismatch: {exact_titles} != {expected}")
 
-        wrong_role = applicable(agent_token, target_team_kind=TEAM_KIND, target_role=OTHER_ROLE, target_project_id=PROJECT_ID)
-        wrong_role_titles = titles(wrong_role["records"])
-        if "Coder only" in wrong_role_titles or "Project and role" in wrong_role_titles:
-            raise AssertionError(f"role mismatch should exclude role-targeted memories: {wrong_role_titles}")
+        wrong_agent = applicable(agent_token, target_agent_id=OTHER_AGENT_ID, target_project_id=PROJECT_ID)
+        wrong_agent_titles = titles(wrong_agent["records"])
+        if "Agent only" in wrong_agent_titles or "Project and agent" in wrong_agent_titles:
+            raise AssertionError(f"agent mismatch should exclude agent-targeted memories: {wrong_agent_titles}")
 
-        wrong_project = applicable(agent_token, target_team_kind=TEAM_KIND, target_role=ROLE, target_project_id=OTHER_PROJECT_ID)
+        wrong_project = applicable(agent_token, target_agent_id=TARGET_AGENT_ID, target_project_id=OTHER_PROJECT_ID)
         wrong_project_titles = titles(wrong_project["records"])
-        if "Project only" in wrong_project_titles or "Project and role" in wrong_project_titles:
+        if "Project only" in wrong_project_titles or "Project and agent" in wrong_project_titles:
             raise AssertionError(f"project mismatch should exclude project-targeted memories: {wrong_project_titles}")
 
-        wrong_team = applicable(agent_token, target_team_kind="research", target_role=ROLE, target_project_id=PROJECT_ID)
-        wrong_team_titles = titles(wrong_team["records"])
-        if "Team kind only" in wrong_team_titles:
-            raise AssertionError(f"team-kind mismatch should exclude team-kind-targeted memory: {wrong_team_titles}")
+        implicit_agent = applicable(agent_token)
+        implicit_agent_titles = titles(implicit_agent["records"])
+        if implicit_agent_titles != {"Global memory", "Agent only"}:
+            raise AssertionError(f"implicit requester context should match global plus requester-agent memories: {implicit_agent_titles}")
 
-        wildcard = applicable(agent_token)
-        wildcard_titles = titles(wildcard["records"])
-        if wildcard_titles != {"Global memory"}:
-            raise AssertionError(f"wildcard request should only match fully global memories: {wildcard_titles}")
-
-        # Expertise dedup remains keyed by canonical target triple + title.
-        exp1 = propose(agent_token, target_project_id=PROJECT_ID, target_role=ROLE, type="expertise", title="Targeted expertise", body="first")
+        exp1 = propose(agent_token, target_project_id=PROJECT_ID, target_agent_id=TARGET_AGENT_ID, type="expertise", title="Targeted expertise", body="first")
         approve(agent_token, exp1["proposal_id"])
-        exp2 = propose(agent_token, target_project_id=PROJECT_ID, target_role=ROLE, type="expertise", title="Targeted expertise", body="second")
+        exp2 = propose(agent_token, target_project_id=PROJECT_ID, target_agent_id=TARGET_AGENT_ID, type="expertise", title="Targeted expertise", body="second")
         approve(agent_token, exp2["proposal_id"])
         all_records = memory_list(agent_token, include_all_statuses=True, status="all")
         statuses = status_by_id(all_records["records"])
         if statuses[exp1["memory_id"]] != "archived" or statuses[exp2["memory_id"]] != "active":
-            raise AssertionError(f"expertise dedup should archive prior matching target triple: {statuses}")
+            raise AssertionError(f"expertise dedup should archive prior matching target pair: {statuses}")
 
         print(json.dumps({
             "ok": True,
             "exact_titles": sorted(exact_titles),
-            "wrong_role_titles": sorted(wrong_role_titles),
+            "wrong_agent_titles": sorted(wrong_agent_titles),
             "wrong_project_titles": sorted(wrong_project_titles),
-            "wrong_team_titles": sorted(wrong_team_titles),
-            "wildcard_titles": sorted(wildcard_titles),
+            "implicit_agent_titles": sorted(implicit_agent_titles),
             "daemon_log": log_path,
         }, indent=2))
     finally:

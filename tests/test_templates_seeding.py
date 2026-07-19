@@ -39,7 +39,6 @@ EXPECTED_TEMPLATES = {
         "template_id": "researcher",
         "display_name": "Researcher",
         "description": "Use this template for evidence-driven investigation, RCA, and synthesis agents that answer questions without owning production code changes.",
-        "role_hint": "researcher",
         "suggested_model_tier": "smart",
         "default_provider_profile": ""
     },
@@ -59,7 +58,6 @@ EXPECTED_TEMPLATES = {
         "template_id": "specialist",
         "display_name": "Specialist",
         "description": "Use this template for specialist service agents that act as domain experts, answering requester queries via task comments.",
-        "role_hint": "specialist",
         "suggested_model_tier": "normal",
         "persona": "The Specialist is a domain-specific expert designed to act as a query service. They accept standalone or chain tasks containing query descriptions, process them, and output results using task comments, notifying the requester who reviewer-approves the task.",
         "instructions": "1. Receive Query: Accept a query task where the requester is the reviewer.\n2. Process Request: Execute the query, research, or compilation task.\n3. Reply: Document findings and results in task comments.\n4. Complete: Run `ham-ctl tasks done --token <your_token> --task-id <task_id> --comment \"<summary and evidence>\"` to move the task to `review_ready` and notify the requester for LGTM validation.\n5. Cooperation:\n   * Requester: Receives queries and returns comments.",

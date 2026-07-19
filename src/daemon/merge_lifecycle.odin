@@ -4,9 +4,9 @@ import "core:net"
 import "core:strings"
 import vcs "odin_test:lib/vcs"
 
-// Task 16 — merge lifecycle on chain completion.
-// Implements docs/teams-v1/03-lifecycle.md §3.4 (non-VCS: archive team immediately)
-// and §3.5 (VCS: surface Merge_Decision_Pending attention item; archive after decision).
+// Merge lifecycle on chain completion.
+// Non-VCS chain completion needs no team cleanup. VCS chain completion surfaces
+// Merge_Decision_Pending attention from the workspace status.
 //
 // Storage is lazy: the merge-pending state lives on the existing
 // `vcs_workspaces.status` column (`merge_pending`), so no new chain column/event
@@ -15,18 +15,13 @@ import vcs "odin_test:lib/vcs"
 MERGE_PENDING_STATUS :: "merge_pending"
 
 // Called from the Chain_Completed path in task_service_chain_status_command.
-// Non-VCS chain → archive team now. VCS chain → mark workspace merge_pending and
-// notify operator@local via the durable user fanout.
+// Non-VCS chain → no-op. VCS chain → mark workspace merge_pending and notify
+// operator@local via the durable user fanout.
 merge_lifecycle_on_chain_completed :: proc(chain_id, author: string) {
-	team_id := merge_lifecycle_team_id(chain_id)
 	rec, has_ws := vcs_db_workspace_for_chain(chain_id)
-	if !has_ws {
-		// §3.4 non-VCS: archive team immediately.
-		if team_id != "" do _ = team_service_archive(team_id, "chain_completed_no_vcs")
-		return
-	}
-	// §3.5 VCS: do NOT archive yet. Compute a merge preview so the operator sees
-	// conflicts/commands up front, then surface a merge decision.
+	if !has_ws do return
+	// Compute a merge preview so the operator sees conflicts/commands up front,
+	// then surface a merge decision.
 	backend := vcs.vcs_backend_for(vcs_handle_from_record(rec).kind)
 	preview, _, _ := backend.merge_preview(vcs_handle_from_record(rec), rec.base_ref)
 	_ = vcs_db_update_status(chain_id, MERGE_PENDING_STATUS)
@@ -34,18 +29,9 @@ merge_lifecycle_on_chain_completed :: proc(chain_id, author: string) {
 }
 
 // Finalize the decision after operator action (merge succeeded, keep, or abandon).
-// Archives the team; the workspace status is set by the caller (merged/archived/kept).
+// The workspace status is set by the caller (merged/archived/kept).
 merge_lifecycle_finalize_decision :: proc(chain_id: string) {
-	team_id := merge_lifecycle_team_id(chain_id)
-	if team_id != "" do _ = team_service_archive(team_id, "merge_decision_recorded")
-}
-
-merge_lifecycle_team_id :: proc(chain_id: string) -> string {
-	if chain, ok := store_get_chain(chain_id); ok {
-		if tid := task_chain_effective_team_id(chain); tid != "" do return tid
-	}
-	if team, ok := team_db_get_team_by_chain_id(team_service_db, chain_id); ok do return team.team_id
-	return ""
+	_ = chain_id
 }
 
 merge_decision_pending_json :: proc(chain_id: string, rec: Vcs_Workspace_Record, preview: vcs.Vcs_Merge_Preview) -> string {

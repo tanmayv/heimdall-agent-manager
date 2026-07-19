@@ -76,6 +76,11 @@ main :: proc() {
 		return
 	}
 
+	if len(cmd) >= 2 && cmd[0] == "agents" && cmd[1] == "defaults" {
+		ctl_agents_defaults(daemon_url, cmd[2:], os.args)
+		return
+	}
+
 	if cmd[0] == "start" || cmd[0] == "run" || (len(cmd) >= 2 && cmd[0] == "agents" && (cmd[1] == "start" || cmd[1] == "run")) {
 		idx := 1
 		if cmd[0] == "agents" do idx = 2
@@ -129,10 +134,6 @@ main :: proc() {
 		return
 	}
 
-	if len(cmd) >= 2 && cmd[0] == "teams" {
-		ctl_teams(daemon_url, cmd[1], os.args)
-		return
-	}
 
 	if len(cmd) >= 2 && cmd[0] == "workspace" {
 		ctl_workspace(daemon_url, cmd[1], os.args)
@@ -237,6 +238,32 @@ ctl_agents_update :: proc(daemon_url: string, args: []string) {
 	body := fmt.tprintf("{%s}", strings.join(fields[:], ","))
 	response, ok := http.post(daemon_url, "/agents/update", body)
 	if !ok { fmt.println(`{"ok":false,"message":"update request failed"}`); return }
+	fmt.println(response.body)
+}
+
+ctl_agents_defaults :: proc(daemon_url: string, cmd: []string, args: []string) {
+	token := option_value(args, "--token", "")
+	if token == "" { fmt.println("usage: ham-ctl agents defaults --token <token> [--use <role>] | ham-ctl agents defaults set --token <token> --use <role> --agent-id <agent_id>"); return }
+	if len(cmd) > 0 && cmd[0] == "set" {
+		default_use := option_value(args, "--use", option_value(args, "--role", ""))
+		agent_id := option_value(args, "--agent-id", option_value(args, "--agent", ""))
+		if default_use == "" || agent_id == "" { fmt.println("usage: ham-ctl agents defaults set --token <token> --use <role> --agent-id <agent_id>"); return }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("agent_token", token))
+		append(&fields, json_kv("use", default_use))
+		append(&fields, json_kv("agent_id", agent_id))
+		body := fmt.tprintf("{%s}", strings.join(fields[:], ","))
+		response, ok := http.post(daemon_url, "/agents/defaults", body)
+		if !ok { fmt.println(`{"ok":false,"message":"agent defaults set request failed"}`); return }
+		fmt.println(response.body)
+		return
+	}
+	path := fmt.tprintf("/agents/defaults?agent_token=%s", token)
+	if default_use := option_value(args, "--use", option_value(args, "--role", "")); default_use != "" {
+		path = fmt.tprintf("%s&use=%s", path, default_use)
+	}
+	response, ok := http.get(daemon_url, path)
+	if !ok { fmt.println(`{"ok":false,"message":"agent defaults request failed"}`); return }
 	fmt.println(response.body)
 }
 
@@ -760,17 +787,19 @@ ctl_task_chains :: proc(daemon_url, action: string, args: []string) {
 	body := strings.builder_make()
 	strings.write_string(&body, `{"agent_token":"`); json_write_string(&body, token); strings.write_string(&body, `"`)
 	if action == "create" {
+		if has_flag_or_equals(args, "--kind") || has_flag_or_equals(args, "--scaffold") || has_flag_or_equals(args, "--no-scaffold") {
+			fmt.println(`{"ok":false,"message":"chain create no longer accepts kind/scaffold; use goal plus scaffold skills"}`)
+			return
+		}
 		path = "/task-chains/create"
 		strings.write_string(&body, `,"chain_id":"`); json_write_string(&body, option_value(args, "--chain-id", option_value(args, "--chain", ""))); strings.write_string(&body, `"`)
 		strings.write_string(&body, `,"project_id":"`); json_write_string(&body, option_value(args, "--project-id", option_value(args, "--project", ""))); strings.write_string(&body, `"`)
-		strings.write_string(&body, `,"kind":"`); json_write_string(&body, option_value(args, "--kind", "")); strings.write_string(&body, `"`)
 		strings.write_string(&body, `,"title":"`); json_write_string(&body, option_value(args, "--title", "")); strings.write_string(&body, `"`)
 		strings.write_string(&body, `,"description":"`); json_write_string(&body, option_value(args, "--description", option_value(args, "--goal", ""))); strings.write_string(&body, `"`)
 		strings.write_string(&body, `,"status":"`); json_write_string(&body, option_value(args, "--status", "in_progress")); strings.write_string(&body, `"`)
 		strings.write_string(&body, `,"coordinator_agent_instance_id":"`); json_write_string(&body, option_value(args, "--coordinator-agent-instance-id", option_value(args, "--coordinator", ""))); strings.write_string(&body, `"`)
 		strings.write_string(&body, `,"default_reviewer_agent_instance_id":"`); json_write_string(&body, option_value(args, "--reviewer", "")); strings.write_string(&body, `"`)
-		strings.write_string(&body, `,"scaffold":"`); json_write_string(&body, option_value(args, "--scaffold", "")); strings.write_string(&body, `"`)
-		if has_flag(args, "--no-scaffold") { strings.write_string(&body, `,"no_scaffold":true`) }
+		if has_flag(args, "--vcs") { strings.write_string(&body, `,"wants_vcs":true`) }
 		if has_flag(args, "--no-vcs") { strings.write_string(&body, `,"wants_vcs":false`) }
 	} else if action == "activate" {
 		path = "/task-chains/activate"
@@ -873,13 +902,31 @@ ctl_projects :: proc(daemon_url, action: string, args: []string) {
 	fmt.println(response.body)
 }
 
-MEMORY_DEPRECATED_SUBJECT_MESSAGE :: "deprecated memory target fields are not accepted; use target_team_kind, target_role, and target_project_id"
+MEMORY_DEPRECATED_SUBJECT_MESSAGE :: "deprecated memory target fields are not accepted; use target_agent_id and target_project_id"
+
+memory_ctl_legacy_role_target_flag :: proc() -> string {
+	return fmt.tprintf("--target-%s", "role")
+}
+
+memory_ctl_legacy_removed_target_flag :: proc() -> string {
+	return fmt.tprintf("--target-%s-%s", "team", "kind")
+}
+
+memory_ctl_has_removed_target_flag :: proc(args: []string, flag: string) -> bool {
+	for arg in args {
+		if arg == flag do return true
+		if strings.has_prefix(arg, fmt.tprintf("%s=", flag)) do return true
+	}
+	return false
+}
 
 memory_ctl_deprecated_subject_args :: proc(args: []string) -> string {
 	deprecated_flags := []string{"--subject-key", "--subject-agent", "--agent", "--agent-instance-id", "--scope", "--team", "--team-id", "--project", "--project-id", "--project-ids", "--role-key", "--role-keys", "--task-chain-type", "--task-chain-types", "--template-key", "--template"}
 	for flag in deprecated_flags {
 		if has_flag(args, flag) do return MEMORY_DEPRECATED_SUBJECT_MESSAGE
 	}
+	if memory_ctl_has_removed_target_flag(args, memory_ctl_legacy_role_target_flag()) do return MEMORY_DEPRECATED_SUBJECT_MESSAGE
+	if memory_ctl_has_removed_target_flag(args, memory_ctl_legacy_removed_target_flag()) do return MEMORY_DEPRECATED_SUBJECT_MESSAGE
 	return ""
 }
 
@@ -945,8 +992,7 @@ memory_ctl_has_deprecated_subject_flag :: proc(args: []string) -> bool {
 }
 
 memory_ctl_add_filter_fields :: proc(body: ^strings.Builder, args: []string) {
-	if target_team_kind := option_value(args, "--target-team-kind", ""); target_team_kind != "" { strings.write_string(body, `,"target_team_kind":"`); json_write_string(body, target_team_kind); strings.write_string(body, `"`) }
-	if target_role := option_value(args, "--target-role", ""); target_role != "" { strings.write_string(body, `,"target_role":"`); json_write_string(body, target_role); strings.write_string(body, `"`) }
+	if target_agent_id := option_value(args, "--target-agent-id", ""); target_agent_id != "" { strings.write_string(body, `,"target_agent_id":"`); json_write_string(body, target_agent_id); strings.write_string(body, `"`) }
 	if target_project_id := option_value(args, "--target-project-id", ""); target_project_id != "" { strings.write_string(body, `,"target_project_id":"`); json_write_string(body, target_project_id); strings.write_string(body, `"`) }
 	if typ := option_value(args, "--type", ""); typ != "" { strings.write_string(body, `,"type":"`); json_write_string(body, typ); strings.write_string(body, `"`) }
 	if status := option_value(args, "--status", ""); status != "" { strings.write_string(body, `,"status":"`); json_write_string(body, status); strings.write_string(body, `"`) }
@@ -975,92 +1021,6 @@ ctl_chains :: proc(daemon_url, action: string, args: []string) {
 		return
 	}
 }
-
-ctl_teams :: proc(daemon_url, action: string, args: []string) {
-	if action == "start" {
-		fmt.println("usage: teams start is not supported; create or focus a chain instead")
-		return
-	}
-	if action == "add-member" {
-		team_id := option_value(args, "--team", option_value(args, "--team-id", ""))
-		role := option_value(args, "--role", option_value(args, "--role-key", ""))
-		agent_instance_id := option_value(args, "--agent-instance-id", option_value(args, "--agent", ""))
-		token := option_value(args, "--token", "")
-		if team_id == "" || role == "" || agent_instance_id == "" || token == "" { fmt.println("usage: ham-ctl teams add-member --token <token> --team <team_id> --role <role> --agent-instance-id <agent>"); return }
-		body := strings.builder_make()
-		strings.write_string(&body, `{"agent_token":"`); json_write_string(&body, token)
-		strings.write_string(&body, `","team_id":"`); json_write_string(&body, team_id)
-		strings.write_string(&body, `","role_key":"`); json_write_string(&body, role)
-		strings.write_string(&body, `","agent_instance_id":"`); json_write_string(&body, agent_instance_id)
-		strings.write_string(&body, `"}`)
-		response, ok := http.post(daemon_url, "/teams/add-member", strings.to_string(body))
-		if !ok { fmt.println(`{"ok":false,"message":"teams add-member request failed"}`); return }
-		fmt.println(response.body)
-		return
-	}
-	path := ""
-	switch action {
-	case "list":
-		path = "/teams"
-		query := ""
-		if project_id := option_value(args, "--project-id", option_value(args, "--project", "")); project_id != "" do query = fmt.tprintf("project_id=%s", project_id)
-		if status := option_value(args, "--status", ""); status != "" {
-			if query != "" do query = fmt.tprintf("%s&", query)
-			query = fmt.tprintf("%sstatus=%s", query, status)
-		}
-		if query != "" do path = fmt.tprintf("%s?%s", path, query)
-	case "show", "show-members":
-		team_id := option_value(args, "--team", option_value(args, "--team-id", ""))
-		if team_id == "" { fmt.println("usage: ham-ctl teams show|show-members --team <team_id> [--json]"); return }
-		path = fmt.tprintf("/teams/%s", team_id)
-		if action == "show-members" do path = fmt.tprintf("%s/members", path)
-	case:
-		fmt.println("usage: ham-ctl teams <list|show|show-members|add-member> [--json]")
-		return
-	}
-	response, ok := http.get(daemon_url, path)
-	if !ok { fmt.println(`{"ok":false,"message":"teams request failed"}`); return }
-	if has_flag(args, "--json") { fmt.println(response.body); return }
-	ctl_print_teams_human(action, response.body)
-}
-
-ctl_print_teams_human :: proc(action, body: string) {
-	if action == "list" {
-		printed := false
-		for object, ok, next := next_json_object_with_key(body, "team_id", 0); ok; object, ok, next = next_json_object_with_key(body, "team_id", next) {
-			fmt.println("team", extract_json_string(object, "team_id", ""), extract_json_string(object, "kind", ""), extract_json_string(object, "status", ""), "chain", extract_json_string(object, "chain_id", ""))
-			printed = true
-		}
-		if !printed do fmt.println("teams none")
-		return
-	}
-	if action == "show" {
-		fmt.println("team", extract_json_string(body, "team_id", "none"), extract_json_string(body, "kind", ""), extract_json_string(body, "status", ""), "chain", extract_json_string(body, "chain_id", ""))
-		return
-	}
-	printed := false
-	for object, ok, next := next_json_object_with_key(body, "role_key", 0); ok; object, ok, next = next_json_object_with_key(body, "role_key", next) {
-		fmt.println("member", extract_json_string(object, "role_key", ""), "index", extract_json_string(object, "role_index", "0"), "agent", extract_json_string(object, "agent_record_id", "null"), "status", extract_json_string(object, "lifecycle_status", ""))
-		printed = true
-	}
-	if !printed do fmt.println("members none")
-}
-
-next_json_object_with_key :: proc(body, key: string, offset: int) -> (string, bool, int) {
-	if offset >= len(body) do return "", false, len(body)
-	pattern := fmt.tprintf(`"%s":`, key)
-	key_rel := strings.index(body[offset:], pattern)
-	if key_rel < 0 do return "", false, len(body)
-	key_idx := offset + key_rel
-	start := key_idx
-	for start > 0 && body[start] != '{' do start -= 1
-	if body[start] != '{' do return "", false, len(body)
-	end_rel := strings.index(body[key_idx:], "}")
-	if end_rel < 0 do return "", false, len(body)
-	end := key_idx + end_rel + 1
-	return body[start:end], true, end
-}
-
 
 ctl_users :: proc(daemon_url, action: string, args: []string) {
 	body := strings.builder_make()
@@ -1287,7 +1247,7 @@ command_tokens :: proc(args: []string) -> [dynamic]string {
 	cmd := make([dynamic]string)
 	for i := 1; i < len(args); i += 1 {
 		arg := args[i]
-		if arg == cfg_lib.CONFIG_PATH_FLAG || arg == "--daemon-url" || arg == "--wrapper-bin" || arg == "--agent" || arg == "--token" || arg == "--to" || arg == "--body" || arg == "--limit" || arg == "--task-id" || arg == "--task" || arg == "--chain-id" || arg == "--chain" || arg == "--status" || arg == "--agent-instance-id" || arg == "--role" || arg == "--final-summary" || arg == "--summary" || arg == "--user-id" || arg == "--client-instance-id" || arg == "--message-id" || arg == "--result" || arg == "--comment" || arg == "--title" || arg == "--description" || arg == "--goal" || arg == "--priority" || arg == "--assignee-agent-instance-id" || arg == "--assignee" || arg == "--coordinator-agent-instance-id" || arg == "--coordinator" || arg == "--reviewer" || arg == "--comment-id" || arg == "--depends-on" || arg == "--subject-agent" || arg == "--subject-key" || arg == "--scope" || arg == "--type" || arg == "--memory-id" || arg == "--memory" || arg == "--proposal-id" || arg == "--decision" || arg == "--reason" || arg == "--evidence" || arg == "--source-task-id" || arg == "--source-task" || arg == "--expected-version" || arg == "--project-id" || arg == "--project" || arg == "--name" || arg == "--anchor-type" || arg == "--anchor-value" || arg == "--anchor-note" || arg == "--cursor" || arg == "--target-team-kind" || arg == "--target-role" || arg == "--target-project-id" || arg == "--team" || arg == "--team-id" || arg == "--project-ids" || arg == "--role-key" || arg == "--role-keys" || arg == "--task-chain-type" || arg == "--task-chain-types" || arg == "--template-key" || arg == "--template" || arg == "--file" || arg == "--out" || arg == "--artifact-id" || arg == "--artifact" || arg == "--kind" || arg == "--mime" || arg == "--creator-id" || arg == "--origin-kind" || arg == "--origin-ref" || arg == "--data" || arg == "--version" || arg == "--change-reason" || arg == "--annotation-id" || arg == "--context-type" || arg == "--context-json" {
+		if arg == cfg_lib.CONFIG_PATH_FLAG || arg == "--daemon-url" || arg == "--wrapper-bin" || arg == "--agent" || arg == "--agent-id" || arg == "--token" || arg == "--to" || arg == "--body" || arg == "--limit" || arg == "--task-id" || arg == "--task" || arg == "--chain-id" || arg == "--chain" || arg == "--status" || arg == "--agent-instance-id" || arg == "--role" || arg == "--use" || arg == "--final-summary" || arg == "--summary" || arg == "--user-id" || arg == "--client-instance-id" || arg == "--message-id" || arg == "--result" || arg == "--comment" || arg == "--title" || arg == "--description" || arg == "--goal" || arg == "--priority" || arg == "--assignee-agent-instance-id" || arg == "--assignee" || arg == "--coordinator-agent-instance-id" || arg == "--coordinator" || arg == "--reviewer" || arg == "--comment-id" || arg == "--depends-on" || arg == "--subject-agent" || arg == "--subject-key" || arg == "--scope" || arg == "--type" || arg == "--memory-id" || arg == "--memory" || arg == "--proposal-id" || arg == "--decision" || arg == "--reason" || arg == "--evidence" || arg == "--source-task-id" || arg == "--source-task" || arg == "--expected-version" || arg == "--project-id" || arg == "--project" || arg == "--name" || arg == "--anchor-type" || arg == "--anchor-value" || arg == "--anchor-note" || arg == "--cursor" || arg == "--target-project-id" || arg == memory_ctl_legacy_role_target_flag() || arg == memory_ctl_legacy_removed_target_flag() || arg == "--team" || arg == "--team-id" || arg == "--project-ids" || arg == "--role-key" || arg == "--role-keys" || arg == "--task-chain-type" || arg == "--task-chain-types" || arg == "--template-key" || arg == "--template" || arg == "--file" || arg == "--out" || arg == "--artifact-id" || arg == "--artifact" || arg == "--kind" || arg == "--mime" || arg == "--creator-id" || arg == "--origin-kind" || arg == "--origin-ref" || arg == "--data" || arg == "--version" || arg == "--change-reason" || arg == "--annotation-id" || arg == "--context-type" || arg == "--context-json" {
 			i += 1
 			continue
 		}
@@ -1315,7 +1275,13 @@ has_flag :: proc(args: []string, name: string) -> bool {
 	return false
 }
 
-
+has_flag_or_equals :: proc(args: []string, name: string) -> bool {
+	for arg in args {
+		if arg == name do return true
+		if strings.has_prefix(arg, fmt.tprintf("%s=", name)) do return true
+	}
+	return false
+}
 
 normalize_daemon_url :: proc(value: string) -> string {
 	if strings.has_prefix(value, "http://") do return value
@@ -1466,6 +1432,7 @@ print_usage :: proc(config_path, daemon_url: string) {
 	fmt.println("  agents run <agent_id|agent_instance_id> [--agent-id <agent_id>] [--agent pi|claude]  (aliases: agents start, run, start)")
 	fmt.println("  agents create --name <agent_instance_id> [--provider pi|claude] [--tier cheap|normal|smart] [--display-name <name>] [--template <id>] [--project <id>]")
 	fmt.println("  agents update --id <agent_instance_id> [--tier cheap|normal|smart] [--display-name <name>] [--provider <profile>]")
+	fmt.println("  agents defaults --token <token> [--use <role>] ; agents defaults set --token <token> --use <role> --agent-id <agent_id>")
 	fmt.println("  send --token <token> --to <agent_instance_id> --body <text>")
 	fmt.println("  send --token <token> --to <agent_instance_id> --stdin")
 	fmt.println("  inbox --token <token> [--limit N] [--include-read] [--json]")
@@ -1501,10 +1468,10 @@ print_usage :: proc(config_path, daemon_url: string) {
 	fmt.println("  artifacts annotation-update --token <token> --annotation-id <id> --comment <text>")
 	fmt.println("  artifacts annotation-delete --token <token> --annotation-id <id>")
 	fmt.println("  artifacts delete --token <token> --artifact-id <art_...|artifact://art_...>")
-	fmt.println("  chains create --token <token> [--project-id <id>] --kind <kind> [--title <title>] [--description|--goal <text>] [--scaffold <key> (legacy)] [--no-vcs] [--reviewer <agent>] [--coordinator <agent> advanced override]")
+	fmt.println("  chains create --token <token> [--project-id <id>] [--title <title>] [--description|--goal <text>] [--vcs|--no-vcs] [--reviewer <agent>] [--coordinator <agent> advanced override]")
 	fmt.println("  chains show --token <token> --chain-id <id>")
 	fmt.println("  chains focus --chain <chain_id> [--json]")
-	fmt.println("  task-chains create --token <token> [--project-id <id>] --kind <kind> [--title <title>] [--description|--goal <text>] [--scaffold <key> (legacy)] [--no-vcs] [--reviewer <agent>] [--coordinator <agent> advanced override]")
+	fmt.println("  task-chains create --token <token> [--project-id <id>] [--title <title>] [--description|--goal <text>] [--vcs|--no-vcs] [--reviewer <agent>] [--coordinator <agent> advanced override]")
 	fmt.println("  task-chains activate --token <token> --chain-id <id>    (planning → in_progress, tasks begin auto-promoting)")
 	fmt.println("  task-chains update --token <token> --chain-id <id> [--title <text>] [--description <text>] [--coordinator <agent>] [--reviewer <agent>]")
 	fmt.println("  task-chains status --token <token> --chain-id <id> --status <status> [--final-summary <text>]")
@@ -1515,12 +1482,12 @@ print_usage :: proc(config_path, daemon_url: string) {
 	fmt.println("  projects update --token <token> --project-id <id> [--name <name>] [--description <text>] [--anchor-type <type> --anchor-value <val> [--anchor-note <note>]]")
 	fmt.println("  projects list --token <token>")
 	fmt.println("  projects show --token <token> --project-id <id>")
-	fmt.println("  memory propose new --token <token> [--target-team-kind <kind>] [--target-role <role>] [--target-project-id <project>] --type <type> --title <title> --body <body> [--reason <text>] [--evidence <text>] [--source-task-id <id>]   (deprecated legacy target flags are rejected)")
-	fmt.println("  memory propose edit --token <token> --memory-id <id> --expected-version <version> [--target-team-kind <kind>] [--target-role <role>] [--target-project-id <project>] --title <title> --body <body> [--reason <text>] [--evidence <text>]")
+	fmt.println("  memory propose new --token <token> [--target-agent-id <agent>] [--target-project-id <project>] --type <type> --title <title> --body <body> [--reason <text>] [--evidence <text>] [--source-task-id <id>]   (deprecated legacy target flags are rejected)")
+	fmt.println("  memory propose edit --token <token> --memory-id <id> --expected-version <version> [--target-agent-id <agent>] [--target-project-id <project>] --title <title> --body <body> [--reason <text>] [--evidence <text>]")
 	fmt.println("  memory propose archive --token <token> --memory-id <id> --expected-version <version> [--reason <text>] [--evidence <text>]")
 	fmt.println("  memory propose rollback --token <token> --memory-id <id> --expected-version <version> [--reason <text>] [--evidence <text>]")
 	fmt.println("  memory decide --token <token> --proposal-id <id> --decision approve|reject [--reason <text>]")
-	fmt.println("  memory list --token <token> [--target-team-kind <kind>] [--target-role <role>] [--target-project-id <project>] [--type <type>] [--status <status>] [--all]")
+	fmt.println("  memory list --token <token> [--target-agent-id <agent>] [--target-project-id <project>] [--type <type>] [--status <status>] [--all]")
 	fmt.println("  memory show --token <token> --memory-id <id>")
 	fmt.println("  memory history --token <token> --memory-id <id>")
 	fmt.println("  users register --user-id <user> --client-instance-id <client> [--token <client_token>]")

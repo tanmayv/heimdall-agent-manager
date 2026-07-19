@@ -39,7 +39,6 @@ checks = [
         'const requestedId = createConversationInstanceId();',
         'agentInstanceId: requestedId',
         "templateId: 'conversation'",
-        "agentRole: 'conversation'",
         'setNewConversationBusy(true);',
     ])),
     ('conversation threads route to dedicated page instead of agent detail page', all(snippet in APP for snippet in [
@@ -59,7 +58,6 @@ checks = [
         'const requestedId = createConversationInstanceId();',
         'await daemonApi.createAgent({ daemonUrl: session?.daemonUrl || \'\', agentInstanceId: requestedId',
         "templateId: 'conversation'",
-        "agentRole: 'conversation'",
         'chatEndpoints.endpoints.sendAgentMessage.initiate({ agentInstanceId: resolvedId, body, tempId, interrupt: false })',
         'dispatch(appendMessage({ agentId: resolvedId, message:',
         "includes('unknown agent')",

@@ -93,10 +93,10 @@ workspace_record_chain_workspace_id :: proc(chain_id, workspace_id: string) {
 }
 
 workspace_discover_chain_workspace :: proc(chain: Task_Chain_State) -> (Vcs_Workspace_Record, bool) {
-	if chain.project_id == "" || chain.team_id == "" do return Vcs_Workspace_Record{}, false
+	if chain.project_id == "" do return Vcs_Workspace_Record{}, false
 	path, setup_base_ref, _ := workspace_setup_path_and_base_ref(chain.chain_id)
 	if strings.trim_space(path) == "" {
-		path = task_service_scaffold_vcs_workspace_path(chain.project_id, chain.chain_id, chain.team_id, chain.title)
+		path = task_service_vcs_workspace_path(chain.project_id, chain.chain_id, chain.title)
 	}
 	path = strings.trim_space(path)
 	if !workspace_path_allowed_for_project(chain.project_id, path) do return Vcs_Workspace_Record{}, false
@@ -257,8 +257,6 @@ handle_workspace_merge_for_chain :: proc(client: net.TCP_Socket, body, chain_id:
 		
 		create_cmd := Task_Chain_Create_Command{
 			project_id = rec.project_id,
-			kind = "coding",
-			scaffold = "chore",
 			title = merge_chain_title,
 			description = instructions,
 			wants_vcs = true,

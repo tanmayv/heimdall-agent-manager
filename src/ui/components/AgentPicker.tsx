@@ -7,12 +7,11 @@ export type AgentPickerProps = {
   clientToken?: string;
   agents: any[];
   identities?: any[];
-  team?: any;
   projects: any[];
   templates?: any[];
   providers?: any[];
   value?: string;
-  roleHint?: string;
+  preferredTemplateId?: string;
   defaultProjectId?: string;
   conversationSummaryById?: Record<string, any>;
   remotePeersEnabled?: boolean;
@@ -63,7 +62,7 @@ function agentLabel(agent: any): string {
 }
 
 function agentTemplate(agent: any): string {
-  return String(agent?.templateId || agent?.template_id || agent?.agentRole || agent?.agent_role || agent?.roleHint || agent?.role_hint || durableAgentId(agent));
+  return String(agent?.templateId || agent?.template_id || durableAgentId(agent));
 }
 
 function providerName(provider: any): string {
@@ -109,28 +108,6 @@ function isRemoteProxyAgent(agent: any): boolean {
   return agentKind(agent) === 'remote_proxy' && Boolean(agentRemote(agent)?.peerId) && Boolean(agentRemote(agent)?.remoteAgentInstanceId);
 }
 
-function roleMatches(value: any, roleHint: string) {
-  if (!roleHint) return true;
-  const hint = roleHint.toLowerCase();
-  const remote = agentRemote(value);
-  const haystack = [
-    agentInstanceId(value),
-    durableAgentId(value),
-    agentLabel(value),
-    agentTemplate(value),
-    value?.agentRole || value?.agent_role || value?.roleHint || value?.role_hint || '',
-    value?.template_id || value?.templateId || '',
-    value?.display_name || value?.displayName || '',
-    value?.providerProfile || value?.provider_profile || '',
-    remote?.originDaemonId || '',
-    remote?.remoteAgentInstanceId || '',
-  ].join(' ').toLowerCase();
-  if (hint === 'coder' || hint === 'assignee') return haystack.includes('coder') || haystack.includes('code') || haystack.includes('implement');
-  if (hint === 'reviewer') return haystack.includes('review') || haystack.includes('verify') || haystack.includes('test');
-  if (hint === 'coordinator') return haystack.includes('coord') || haystack.includes('lead');
-  return haystack.includes(hint);
-}
-
 function statusLabel(agent: any): string {
   return isRunning(agent) ? 'LIVE' : (agentInstanceId(agent) === 'user_proxy' ? 'USER' : 'OFFLINE');
 }
@@ -146,7 +123,6 @@ function searchMatches(item: any, query: string) {
     agentId(item),
     agentLabel(item),
     agentTemplate(item),
-    item?.agentRole || item?.agent_role || '',
     item?.providerProfile || item?.provider_profile || '',
     item?.projectId || item?.project_id || '',
     statusLabel(item),
@@ -172,15 +148,6 @@ function peerStatus(peer: any): string {
 function conversationTitleFor(agent: any, conversationSummaryById: Record<string, any>) {
   const summary = conversationSummaryById?.[agentInstanceId(agent)] || null;
   return String(summary?.title || '').trim();
-}
-
-function teamMemberIds(team: any): Set<string> {
-  const members = team?.team?.members || team?.members || [];
-  return new Set((members || []).map((member: any) => String(member?.agent_instance_id || member?.agentInstanceId || member?.route_to || '')).filter(Boolean));
-}
-
-function identityRole(identity: any): string {
-  return String(identity?.agent_role || identity?.agentRole || identity?.role_hint || identity?.roleHint || identity?.template_id || identity?.templateId || identity?.agent_id || identity?.agentId || '');
 }
 
 function identityTemplate(identity: any): string {
@@ -224,9 +191,8 @@ function buildIdentityRow(identity: any): PickerRow {
   const tier = String(identity?.default_model_tier || identity?.defaultModelTier || 'normal') || 'normal';
   const title = identityLabel(identity);
   const template = identityTemplate(identity);
-  const role = identityRole(identity);
   const subtitle = `agent_id: ${id}`;
-  const chips = [role, template && template !== id ? template : '', 'new dormant instance'].filter(Boolean);
+  const chips = [template && template !== id ? template : '', 'new dormant instance'].filter(Boolean);
   return {
     kind: 'identity',
     key: `identity:${id}`,
@@ -239,7 +205,7 @@ function buildIdentityRow(identity: any): PickerRow {
     running: false,
     identity,
     chips,
-    searchText: [title, id, template, role, provider, tier, chips.join(' ')].join(' ').toLowerCase(),
+    searchText: [title, id, template, provider, tier, chips.join(' ')].join(' ').toLowerCase(),
     sortText: `${title} ${id}`.toLowerCase(),
   };
 }
@@ -250,12 +216,11 @@ export default function AgentPicker({
   clientToken = '',
   agents,
   identities = [],
-  team,
   projects,
   templates = [],
   providers = [],
   value = '',
-  roleHint = '',
+  preferredTemplateId = '',
   defaultProjectId = '',
   conversationSummaryById = {},
   remotePeersEnabled = false,
@@ -268,7 +233,7 @@ export default function AgentPicker({
   const [busyKey, setBusyKey] = useState('');
   const [error, setError] = useState('');
   const [prefsByKey, setPrefsByKey] = useState<Record<string, { provider: string; tier: string }>>({});
-  const fallbackTemplate = String(templates[0]?.template_id || templates[0]?.templateId || roleHint || 'agent');
+  const fallbackTemplate = String(preferredTemplateId || templates[0]?.template_id || templates[0]?.templateId || 'agent');
   const providerOptions = useMemo(() => {
     const vals = providers.map(providerName).filter(Boolean);
     return vals.length ? vals : ['pi'];
@@ -281,22 +246,21 @@ export default function AgentPicker({
   const tierOptions = ['cheap', 'normal', 'smart'];
   const instanceRows = useMemo(() => {
     return (agents || [])
-      .filter((agent) => agentInstanceId(agent) && roleMatches(agent, roleHint))
+      .filter((agent) => agentInstanceId(agent))
       .map((agent) => buildInstanceRow(agent, conversationSummaryById))
       .sort((left, right) => left.sortText.localeCompare(right.sortText));
-  }, [agents, conversationSummaryById, roleHint]);
+  }, [agents, conversationSummaryById]);
   const identityRows = useMemo(() => {
     if (!selectionOnly) return [] as PickerRow[];
     return (identities || [])
       .filter((identity) => {
         const id = String(identity?.agent_id || identity?.agentId || '');
         if (!id || id === 'user_proxy') return false;
-        return roleMatches(identity, roleHint);
+        return true;
       })
       .map(buildIdentityRow)
       .sort((left, right) => left.sortText.localeCompare(right.sortText));
-  }, [identities, roleHint, selectionOnly]);
-  const teamIds = useMemo(() => teamMemberIds(team), [team]);
+  }, [identities, selectionOnly]);
 
   useEffect(() => {
     const next: Record<string, { provider: string; tier: string }> = {};
@@ -312,26 +276,15 @@ export default function AgentPicker({
     const matchingIdentities = identityRows.filter((row) => searchMatches(row, query));
     if (!selectionOnly) {
       return {
-        teamRows: [] as PickerRow[],
         liveOtherRows: matchingInstances,
         identityRows: [] as PickerRow[],
-        offlineOtherRows: [] as PickerRow[],
       };
     }
-    if (teamIds.size > 0) {
-      const teamRows = matchingInstances.filter((row) => teamIds.has(row.id));
-      const nonTeamRows = matchingInstances.filter((row) => !teamIds.has(row.id));
-      const liveOtherRows = nonTeamRows.filter((row) => row.running);
-      const offlineOtherRows = nonTeamRows.filter((row) => !row.running);
-      return { teamRows, liveOtherRows, identityRows: matchingIdentities, offlineOtherRows };
-    }
     return {
-      teamRows: [] as PickerRow[],
       liveOtherRows: matchingInstances,
       identityRows: matchingIdentities,
-      offlineOtherRows: [] as PickerRow[],
     };
-  }, [identityRows, instanceRows, query, selectionOnly, teamIds]);
+  }, [identityRows, instanceRows, query, selectionOnly]);
 
   const allInstanceRows = useMemo(() => instanceRows.filter((row) => searchMatches(row, query)), [instanceRows, query]);
   const selectedId = value || '';
@@ -431,7 +384,6 @@ export default function AgentPicker({
           templateId: identityTemplate(identity) || fallbackTemplate,
           projectId: defaultProjectId || String(identity?.default_project_id || identity?.defaultProjectId || ''),
           modelTier: pref.tier,
-          agentRole: identityRole(identity) || roleHint || identityTemplate(identity) || row.id,
           start: false,
         });
         const createdId = String(result?.agent_instance_id || result?.agentInstanceId || result?.agent?.agent_instance_id || result?.agent?.agentInstanceId || '');
@@ -466,7 +418,7 @@ export default function AgentPicker({
     setBusyKey(`run:${trimmed}`);
     setError('');
     try {
-      const result = await daemonApi.startAgent({ daemonUrl, agentInstanceId: trimmed, provider, templateId, projectId, modelTier, agentRole: templateId });
+      const result = await daemonApi.startAgent({ daemonUrl, agentInstanceId: trimmed, provider, templateId, projectId, modelTier});
       await refresh();
       await onSelected(trimmed, result);
     } catch (err: any) {
@@ -482,8 +434,8 @@ export default function AgentPicker({
     setBusyKey(`create-run:${trimmed}`);
     setError('');
     try {
-      await daemonApi.createAgent({ daemonUrl, agentInstanceId: trimmed, displayName: displayName.trim() || trimmed, providerProfile: provider, templateId, projectId, modelTier, agentRole: templateId });
-      const result = await daemonApi.startAgent({ daemonUrl, agentInstanceId: trimmed, provider, templateId, projectId, displayName: displayName.trim() || trimmed, modelTier, agentRole: templateId });
+      await daemonApi.createAgent({ daemonUrl, agentInstanceId: trimmed, displayName: displayName.trim() || trimmed, providerProfile: provider, templateId, projectId, modelTier});
+      const result = await daemonApi.startAgent({ daemonUrl, agentInstanceId: trimmed, provider, templateId, projectId, displayName: displayName.trim() || trimmed, modelTier});
       await refresh();
       await onSelected(trimmed, result);
     } catch (err: any) {
@@ -512,7 +464,6 @@ export default function AgentPicker({
         templateId: String(remoteAgent?.template_id || remoteAgent?.templateId || ''),
         providerProfile: String(remoteAgent?.provider_profile || remoteAgent?.providerProfile || ''),
         modelTier: String(remoteAgent?.model_tier || remoteAgent?.modelTier || 'normal'),
-        agentRole: String(remoteAgent?.agent_role || remoteAgent?.agentRole || ''),
       });
       const localProxyId = String(result?.agent?.agent_instance_id || result?.agent?.agentInstanceId || '');
       if (!localProxyId) throw new Error('Daemon did not return a local proxy id');
@@ -548,17 +499,16 @@ export default function AgentPicker({
           origin_daemon_id: agentRemote(agent)?.originDaemonId || '',
           display_name: agentLabel(agent),
           template_id: agentTemplate(agent),
-          agent_role: agent?.agentRole || agent?.agent_role || '',
           provider_profile: agent?.providerProfile || agent?.provider_profile || '',
           model_tier: agent?.modelTier || agent?.model_tier || 'normal',
           identity_state: agent?.state || 'provisioned',
           __rowKind: 'proxy',
         }))
         .filter((item: any) => !liveRows.some((live: any) => remoteAgentId(live) === remoteAgentId(item)));
-      const rows = [...liveRows, ...proxyRows].filter((item: any) => remoteAgentId(item) && roleMatches(item, roleHint) && searchMatches(item, query));
+      const rows = [...liveRows, ...proxyRows].filter((item: any) => remoteAgentId(item) && searchMatches(item, query));
       return { peer, rows };
     });
-  }, [remotePeersEnabled, remotePeers, remoteProxyAgents, roleHint, query]);
+  }, [remotePeersEnabled, remotePeers, remoteProxyAgents, query]);
 
   function renderRow(row: PickerRow) {
     const pref = prefsByKey[row.key] || { provider: row.provider || providerOptions[0] || 'pi', tier: row.tier || 'normal' };
@@ -629,7 +579,6 @@ export default function AgentPicker({
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="font-medium text-zinc-100">Agent picker</div>
-          {roleHint ? <div className="text-xs text-zinc-500">Filter: {roleHint}</div> : null}
         </div>
         {selectedLabel ? <div className="max-w-[240px] truncate rounded-full bg-white/5 px-2 py-1 text-xs text-zinc-400">Selected <b className="text-zinc-200">{selectedLabel}</b></div> : null}
       </div>
@@ -649,27 +598,13 @@ export default function AgentPicker({
 
       <div data-debug-id={`${debugId}-results`} className="mt-3 max-h-[420px] space-y-2 overflow-y-auto pr-1">
         {tab === 'suggested' ? (
-          teamIds.size > 0 ? (
-            <>
-              {suggestedRows.teamRows.length > 0 ? <div className="px-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Team instances</div> : null}
-              {suggestedRows.teamRows.map(renderRow)}
-              {suggestedRows.liveOtherRows.length > 0 ? <div className="px-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Live instances</div> : null}
-              {suggestedRows.liveOtherRows.map(renderRow)}
-              {suggestedRows.identityRows.length > 0 ? <div className="px-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Durable agent IDs</div> : null}
-              {suggestedRows.identityRows.map(renderRow)}
-              {suggestedRows.offlineOtherRows.length > 0 ? <div className="px-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Offline instances</div> : null}
-              {suggestedRows.offlineOtherRows.map(renderRow)}
-              {suggestedRows.teamRows.length === 0 && suggestedRows.liveOtherRows.length === 0 && suggestedRows.identityRows.length === 0 && suggestedRows.offlineOtherRows.length === 0 ? <div data-debug-id={`${debugId}-no-matching-agents`} className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No matching agents.</div> : null}
-            </>
-          ) : (
-            <>
-              {suggestedRows.identityRows.length > 0 ? <div className="px-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Durable agent IDs</div> : null}
-              {suggestedRows.identityRows.map(renderRow)}
-              {suggestedRows.liveOtherRows.length > 0 ? <div className="px-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">All instances</div> : null}
-              {suggestedRows.liveOtherRows.map(renderRow)}
-              {suggestedRows.identityRows.length === 0 && suggestedRows.liveOtherRows.length === 0 ? <div data-debug-id={`${debugId}-no-matching-agents`} className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No matching agents.</div> : null}
-            </>
-          )
+          <>
+            {suggestedRows.identityRows.length > 0 ? <div className="px-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Durable agent IDs</div> : null}
+            {suggestedRows.identityRows.map(renderRow)}
+            {suggestedRows.liveOtherRows.length > 0 ? <div className="px-1 pt-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">All instances</div> : null}
+            {suggestedRows.liveOtherRows.map(renderRow)}
+            {suggestedRows.identityRows.length === 0 && suggestedRows.liveOtherRows.length === 0 ? <div data-debug-id={`${debugId}-no-matching-agents`} className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No matching agents.</div> : null}
+          </>
         ) : (
           <>
             {allInstanceRows.map(renderRow)}
@@ -725,7 +660,6 @@ export default function AgentPicker({
                         </div>
                         <div className="mt-3 flex min-w-0 flex-wrap gap-1.5 text-[10px] text-zinc-400">
                           <span className="max-w-full truncate rounded-full bg-teal-400/10 px-2 py-0.5 text-teal-100">remote</span>
-                          {(remoteAgent.agent_role || remoteAgent.agentRole) && <span className="max-w-full truncate rounded-full bg-white/[0.05] px-2 py-0.5">{remoteAgent.agent_role || remoteAgent.agentRole}</span>}
                           {offline && <span className="max-w-full truncate rounded-full bg-white/[0.05] px-2 py-0.5">peer offline</span>}
                         </div>
                       </div>

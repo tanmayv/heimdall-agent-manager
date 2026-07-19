@@ -70,8 +70,7 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
   const [submitError, setSubmitError] = useState('');
   const [reviewState, setReviewState] = useState<Record<string, { reason: string; loading?: boolean; error?: string }>>({});
   const [form, setForm] = useState({
-    targetTeamKind: '',
-    targetRole: '',
+    targetAgentId: '',
     targetProjectId: '',
     type: 'fact',
     title: '',
@@ -96,8 +95,7 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
   useEffect(() => {
     if (formMode === 'new') {
       setForm({
-        targetTeamKind: '',
-        targetRole: '',
+        targetAgentId: '',
         targetProjectId: '',
         type: 'fact',
         title: '',
@@ -111,8 +109,7 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
     }
     if (!selectedRecord) return;
     setForm({
-      targetTeamKind: selectedRecord.targetTeamKind || '',
-      targetRole: selectedRecord.targetRole || '',
+      targetAgentId: selectedRecord.targetAgentId || '',
       targetProjectId: selectedRecord.targetProjectId || '',
       type: selectedRecord.type || 'fact',
       title: selectedRecord.title || '',
@@ -140,8 +137,7 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
       if (formMode === 'new') {
         const result = await proposeMemoryChange({
           proposalAction: 'new',
-          targetTeamKind: form.targetTeamKind,
-          targetRole: form.targetRole,
+          targetAgentId: form.targetAgentId,
           targetProjectId: form.targetProjectId,
           type: form.type,
           title: form.title,
@@ -161,8 +157,7 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
             proposalAction: 'edit',
             memoryId: selectedRecord.memoryId,
             expectedVersion: selectedRecord.version,
-            targetTeamKind: form.targetTeamKind,
-            targetRole: form.targetRole,
+            targetAgentId: form.targetAgentId,
             targetProjectId: form.targetProjectId,
             type: form.type,
             title: form.title,
@@ -273,13 +268,12 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-lg font-semibold text-zinc-100">Filters and search</div>
-                <div className="mt-1 text-sm text-zinc-500">Filter by team kind, role, project target, lifecycle status, and free text.</div>
+                <div className="mt-1 text-sm text-zinc-500">Filter by agent target, project target, lifecycle status, memory type, and free text.</div>
               </div>
               <button data-debug-id="memory-filters-reset-btn" onClick={() => dispatch(resetMemoryFilters())} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Reset</button>
             </div>
             <div data-debug-id="memory-filters" className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              <FilterInput debugId="memory-filter-team-kind-input" label="Team kind target" value={filters.targetTeamKind || ''} onChange={(value) => handleFilterChange({ targetTeamKind: value })} placeholder="coding" />
-              <FilterInput debugId="memory-filter-role-input" label="Role target" value={filters.targetRole || ''} onChange={(value) => handleFilterChange({ targetRole: value })} placeholder="coder" />
+              <FilterInput debugId="memory-filter-agent-input" label="Agent target" value={filters.targetAgentId || ''} onChange={(value) => handleFilterChange({ targetAgentId: value })} placeholder="worker" />
               <FilterInput debugId="memory-filter-project-input" label="Project target" value={filters.targetProjectId || ''} onChange={(value) => handleFilterChange({ targetProjectId: value })} placeholder="heimdall-agent-manager" />
               <FilterInput debugId="memory-filter-search-input" label="Free text" value={filters.search || ''} onChange={(value) => handleFilterChange({ search: value })} placeholder="title, body, evidence, metadata…" />
               <FilterSelect debugId="memory-filter-type-select" label="Type" value={filters.type || ''} onChange={(value) => handleFilterChange({ type: value })} options={typeOptions} />
@@ -322,8 +316,7 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
                         </div>
                         <div className="mt-2 grid gap-1 text-xs text-zinc-400 md:grid-cols-2 xl:grid-cols-3">
                           <div><span className="text-zinc-500">Target:</span> {record.target || 'global'}</div>
-                          <div><span className="text-zinc-500">Team kind:</span> {record.targetTeamKind || '—'}</div>
-                          <div><span className="text-zinc-500">Role:</span> {record.targetRole || '—'}</div>
+                          <div><span className="text-zinc-500">Agent:</span> {record.targetAgentId || '—'}</div>
                           <div><span className="text-zinc-500">Project:</span> {record.targetProjectId || '—'}</div>
                           <div><span className="text-zinc-500">Version:</span> {record.version ?? 0}</div>
                         </div>
@@ -360,8 +353,7 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
                   <DetailStat label="Type" value={selectedRecord.type || '—'} />
                   <DetailStat label="Status" value={selectedRecord.status || '—'} />
                   <DetailStat label="Target" value={selectedRecord.target || 'global'} />
-                  <DetailStat label="Team kind" value={selectedRecord.targetTeamKind || '—'} />
-                  <DetailStat label="Role" value={selectedRecord.targetRole || '—'} />
+                  <DetailStat label="Agent" value={selectedRecord.targetAgentId || '—'} />
                   <DetailStat label="Project" value={selectedRecord.targetProjectId || '—'} />
                   <DetailStat label="Version" value={String(selectedRecord.version || 0)} />
                   <DetailStat label="Updated" value={formatUnix(selectedRecord.updatedUnixMs || selectedRecord.createdUnixMs)} />
@@ -400,8 +392,7 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
                         <div className="mt-2 text-xs text-zinc-400">Proposal: {event.proposalId || '—'} · Author: {event.author || '—'}</div>
                         <div className="mt-2 grid gap-1 text-xs text-zinc-500">
                           <div>Target: {event.target || 'global'}</div>
-                          <div>Team kind: {event.targetTeamKind || '—'}</div>
-                          <div>Role: {event.targetRole || '—'}</div>
+                          <div>Agent: {event.targetAgentId || '—'}</div>
                           <div>Project: {event.targetProjectId || '—'}</div>
                         </div>
                         {(event.reason || event.evidence) && (
@@ -449,8 +440,7 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
                   </div>
 
                   <div className="grid gap-3 md:grid-cols-2">
-                    <FilterInput debugId="memory-form-team-kind-input" label="target_team_kind" value={form.targetTeamKind} onChange={(value) => setForm((current) => ({ ...current, targetTeamKind: value }))} placeholder="coding" />
-                    <FilterInput debugId="memory-form-role-input" label="target_role" value={form.targetRole} onChange={(value) => setForm((current) => ({ ...current, targetRole: value }))} placeholder="coder" />
+                    <FilterInput debugId="memory-form-agent-input" label="target_agent_id" value={form.targetAgentId} onChange={(value) => setForm((current) => ({ ...current, targetAgentId: value }))} placeholder="worker" />
                     <FilterInput debugId="memory-form-project-input" label="target_project_id" value={form.targetProjectId} onChange={(value) => setForm((current) => ({ ...current, targetProjectId: value }))} placeholder="heimdall-agent-manager" />
                     <FilterInput debugId="memory-form-source-task-input" label="source_task_id" value={form.sourceTaskId} onChange={(value) => setForm((current) => ({ ...current, sourceTaskId: value }))} placeholder="task-..." />
                   </div>
@@ -501,7 +491,7 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
                           <Badge>v{record.version || 0}</Badge>
                         </div>
                         <div className="mt-2 text-xs text-zinc-400">Proposal {record.proposalId || '—'} · Target {record.target || 'global'}</div>
-                        <div className="mt-1 text-xs text-zinc-500">Team kind {record.targetTeamKind || '—'} · role {record.targetRole || '—'} · project {record.targetProjectId || '—'}</div>
+                        <div className="mt-1 text-xs text-zinc-500">Agent {record.targetAgentId || '—'} · project {record.targetProjectId || '—'}</div>
                       </div>
                       <button data-debug-id={`memory-pending-open-${record.memoryId}`} onClick={() => onSelectMemory(record.memoryId)} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Inspect</button>
                     </div>

@@ -4,7 +4,6 @@ import { VimEditButton } from './VimSidebar';
 import AgentPicker from './AgentPicker';
 import { showToast } from '../store/toastSlice';
 import { tasksApi } from '../api/endpoints/tasks';
-import { agentsApi } from '../api/endpoints/agents';
 import { workspaceApi } from '../api/endpoints/workspace';
 import { useListConversationSummariesQuery } from '../api/endpoints/chats';
 
@@ -39,7 +38,6 @@ type ChainEditorProps = {
   chain: any;
   tasks: TaskLike[];
   tasksById?: Record<string, TaskLike>;
-  team?: any;
   agents?: any[];
   identities?: any[];
   providers?: any[];
@@ -99,16 +97,6 @@ function dotTone(status = ''): string {
   if (status === 'planning') return 'bg-violet-300';
   return 'bg-zinc-400';
 }
-function chainMemberAgentId(member: any): string { return member.agent_instance_id || member.agentInstanceId || member.route_to || ''; }
-function runtimeStatus(agent: any): string { return agent?.status || agent?.startupStatus || agent?.connectionState || (agent?.connected ? 'connected' : 'offline'); }
-function runtimeTone(status: string): string {
-  if (status === 'connected' || status === 'running' || status === 'active') return 'text-emerald-200 border-emerald-400/30 bg-emerald-400/10';
-  if (status === 'starting' || status === 'launching') return 'text-sky-100 border-sky-400/30 bg-sky-400/10';
-  if (status === 'stopping') return 'text-amber-100 border-amber-400/30 bg-amber-400/10';
-  return 'text-zinc-400 border-white/10 bg-white/[0.04]';
-}
-function providerValue(provider: any): string { return provider?.id || provider?.profile || provider?.provider_profile || provider?.name || String(provider || ''); }
-function providerLabel(provider: any): string { return provider?.label || provider?.display_name || providerValue(provider); }
 function formatError(err: any): string { return String(err?.message || err || 'Request failed'); }
 
 function buildEdges(tasks: TaskLike[], ids: Set<string>) {
@@ -171,7 +159,7 @@ function saveLayout(chainId: string, positions: Record<string, Point>) {
   try { window.localStorage.setItem(`${STORAGE_PREFIX}${chainId}`, JSON.stringify(positions)); } catch (_err) { /* ignore */ }
 }
 
-export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents = [], identities = [], providers = [], initialTaskId = '', onBack, onReturnToChain, onSelectTask }: ChainEditorProps) {
+export default function ChainEditor({ chain, tasks, tasksById = {}, agents = [], identities = [], providers = [], initialTaskId = '', onBack, onReturnToChain, onSelectTask }: ChainEditorProps) {
   const dispatch = useDispatch<any>();
   const session = useSelector((state: any) => state.chat?.session || {});
   const conversationSummaryById = useSelector((state: any) => state.chat?.conversationSummaryById || {});
@@ -191,10 +179,6 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
   const [newTaskTitle, setNewTaskTitle] = useState('');
   const [newParticipantAgentId, setNewParticipantAgentId] = useState('');
   const [newParticipantRole, setNewParticipantRole] = useState('lgtm_required');
-  const [newMemberRole, setNewMemberRole] = useState('specialist');
-  const [newMemberAgentId, setNewMemberAgentId] = useState('');
-  const [runtimeProviderByAgent, setRuntimeProviderByAgent] = useState<Record<string, string>>({});
-  const [runtimeTierByAgent, setRuntimeTierByAgent] = useState<Record<string, string>>({});
   const [chainTitleDraft, setChainTitleDraft] = useState('');
   const [chainDescriptionDraft, setChainDescriptionDraft] = useState('');
   const [chainCoordinatorDraft, setChainCoordinatorDraft] = useState('');
@@ -240,25 +224,11 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
     if (primaryReviewer && !rows.some((p) => p.agentInstanceId === primaryReviewer && p.role === 'lgtm_required')) rows.unshift({ agentInstanceId: primaryReviewer, role: 'lgtm_required' });
     return rows;
   }, [selectedTask]);
-  const members = team?.members || [];
   const chainProjectId = chain.projectId || chain.project_id || '';
   const agentOptions = useMemo(() => Array.from(new Set([
-    ...members.map(chainMemberAgentId),
     ...agents.map((agent: any) => agent.id || agent.agentInstanceId || agent.agent_instance_id || ''),
     ...orderedTasks.flatMap((task) => [taskAssignee(task), taskReviewer(task)]),
-  ].filter(Boolean))).sort(), [members, agents, orderedTasks]);
-  const agentById = useMemo(() => {
-    const map: Record<string, any> = {};
-    agents.forEach((agent: any) => {
-      const id = agent.id || agent.agentInstanceId || agent.agent_instance_id || '';
-      if (id) map[id] = agent;
-    });
-    return map;
-  }, [agents]);
-  const providerOptions = useMemo(() => {
-    const vals = providers.map(providerValue).filter(Boolean);
-    return vals.length ? vals : ['pi'];
-  }, [providers]);
+  ].filter(Boolean))).sort(), [agents, orderedTasks]);
 
   useEffect(() => {
     if (!selectedTask) {
@@ -422,27 +392,6 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
     setSelectedTaskId(next ? taskId(next) : '');
   };
 
-  const addTeamMember = async () => {
-    const agentId = newMemberAgentId.trim();
-    if (!agentId) return;
-    await runMutation('add-member', () => dispatch(workspaceApi.endpoints.addTeamMember.initiate({ teamId: chain.teamId || chain.team_id || '', roleKey: newMemberRole || 'specialist', agentInstanceId: agentId })).unwrap(), 'Team member added', agentId);
-    setNewMemberAgentId('');
-  };
-
-  const startRosterAgent = async (member: any) => {
-    const agentId = chainMemberAgentId(member);
-    if (!agentId) return;
-    const provider = runtimeProviderByAgent[agentId] || providerOptions[0] || 'pi';
-    const tier = runtimeTierByAgent[agentId] || 'normal';
-    await runMutation(`start-${agentId}`, () => dispatch(agentsApi.endpoints.startAgent.initiate({ agentInstanceId: agentId, provider, modelTier: tier, projectId: chain.projectId || chain.project_id || '', displayName: agentId, agentRole: member.role_key || member.roleKey || '' })).unwrap(), 'Agent start requested', `${agentId} · ${provider}/${tier}`);
-  };
-
-  const stopRosterAgent = async (member: any) => {
-    const agentId = chainMemberAgentId(member);
-    if (!agentId) return;
-    await runMutation(`stop-${agentId}`, () => dispatch(agentsApi.endpoints.stopAgent.initiate({ agentInstanceId: agentId, timeInSec: 30 })).unwrap(), 'Agent stop requested', agentId);
-  };
-
   const saveChainMetadata = async () => {
     await runMutation('save-chain', () => dispatch(workspaceApi.endpoints.updateChain.initiate({ chainId: chain.chainId, title: chainTitleDraft, description: chainDescriptionDraft, coordinatorAgentInstanceId: chainCoordinatorDraft, defaultReviewerAgentInstanceId: chainReviewerDraft })).unwrap(), 'Chain saved', chainTitleDraft || chain.chainId);
   };
@@ -524,12 +473,11 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
               daemonUrl={auth.daemonUrl}
               agents={chainRolePicker === 'coordinator'
                 ? agents.filter((agent: any) => String(agent?.id || agent?.agent_instance_id || '') !== 'user_proxy')
-                : [{ id: 'user_proxy', label: 'User / operator', agentRole: 'user', templateId: 'user', providerProfile: 'heimdall', projectId: chainProjectId || '', connected: true, connectionState: 'connected' }, ...agents]}
+                : [{ id: 'user_proxy', label: 'User / operator', templateId: 'user', providerProfile: 'heimdall', projectId: chainProjectId || '', connected: true, connectionState: 'connected' }, ...agents]}
               identities={identities}
-              team={team}
               projects={chainProjectId ? [{ projectId: chainProjectId, name: chainProjectId }] : []}
               providers={providers}
-              roleHint={chainRolePicker === 'reviewer' ? '' : 'coordinator'}
+              preferredTemplateId={chainRolePicker === 'reviewer' ? '' : 'coordinator'}
               defaultProjectId={chainProjectId}
               conversationSummaryById={effectiveConversationSummaryById}
               value={chainRolePicker === 'coordinator' ? chainCoordinatorDraft : chainReviewerDraft}
@@ -742,53 +690,10 @@ export default function ChainEditor({ chain, tasks, tasksById = {}, team, agents
         </div>
 
         <aside className="space-y-5">
-          <section data-debug-id="chain-editor-roster-panel" className="rounded-3xl border border-white/10 bg-white/[0.035] p-5">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h2 className="font-semibold">Roster</h2>
-                <p className="mt-1 text-xs text-zinc-500">Runtime provider/tier are next-start overrides only.</p>
-              </div>
-              <span className="rounded-full bg-white/[0.04] px-2 py-1 text-xs text-zinc-500">{members.length}</span>
-            </div>
-            <div className="mt-4 space-y-3">
-              {members.map((member: any) => {
-                const agentId = chainMemberAgentId(member);
-                const agent = agentById[agentId];
-                const status = runtimeStatus(agent);
-                const provider = runtimeProviderByAgent[agentId] || providerOptions[0] || 'pi';
-                const tier = runtimeTierByAgent[agentId] || 'normal';
-                return <div key={member.team_member_id || `${member.role_key}-${agentId}`} data-debug-id={`chain-editor-roster-member-${agentId}`} className="rounded-2xl border border-white/10 bg-black/20 p-3">
-                  <div className="flex items-center gap-3">
-                    <span className="grid h-8 w-8 place-items-center rounded-full bg-slate-800 text-xs text-slate-200">{initials(agentId)}</span>
-                    <div className="min-w-0 flex-1"><div className="truncate text-sm font-semibold">{shortId(agentId || member.role_key || 'agent')}</div><div className="text-xs text-zinc-500">{member.role_key || 'role'} · {member.lifecycle_status || 'unknown'}</div></div>
-                    <span className={`rounded-full border px-2 py-1 text-[10px] ${runtimeTone(status)}`}>{status}</span>
-                  </div>
-                  <div className="mt-3 grid grid-cols-2 gap-2">
-                    <select data-debug-id={`chain-editor-roster-provider-${agentId}`} value={provider} onChange={(event) => setRuntimeProviderByAgent((prev) => ({ ...prev, [agentId]: event.target.value }))} className="rounded-xl border border-white/10 bg-black/30 px-2 py-2 text-xs text-zinc-100 outline-none focus:border-sky-400">
-                      {providerOptions.map((value) => <option key={value} value={value}>{providerLabel(providers.find((p: any) => providerValue(p) === value) || value)}</option>)}
-                    </select>
-                    <select data-debug-id={`chain-editor-roster-tier-${agentId}`} value={tier} onChange={(event) => setRuntimeTierByAgent((prev) => ({ ...prev, [agentId]: event.target.value }))} className="rounded-xl border border-white/10 bg-black/30 px-2 py-2 text-xs text-zinc-100 outline-none focus:border-sky-400">
-                      {['cheap','normal','smart'].map((value) => <option key={value} value={value}>{value}</option>)}
-                    </select>
-                  </div>
-                  <div className="mt-3 flex gap-2">
-                    <button data-debug-id={`chain-editor-roster-start-${agentId}`} disabled={Boolean(busyAction)} onClick={() => { void startRosterAgent(member); }} className="flex-1 rounded-xl bg-emerald-400/90 px-3 py-2 text-xs font-semibold text-black hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50">Start</button>
-                    <button data-debug-id={`chain-editor-roster-stop-${agentId}`} disabled={Boolean(busyAction)} onClick={() => { void stopRosterAgent(member); }} className="flex-1 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50">Stop</button>
-                  </div>
-                </div>;
-              })}
-              {!members.length && <div className="rounded-2xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No team roster loaded yet.</div>}
-            </div>
-            <div className="mt-4 rounded-2xl border border-dashed border-white/10 bg-black/10 p-3">
-              <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">Add agent to chain</div>
-              <div className="grid gap-2">
-                <input data-debug-id="chain-editor-roster-add-agent-input" value={newMemberAgentId} onChange={(event) => setNewMemberAgentId(event.target.value)} placeholder="agent@instance" className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400" />
-                <select data-debug-id="chain-editor-roster-add-role-select" value={newMemberRole} onChange={(event) => setNewMemberRole(event.target.value)} className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400">
-                  {['specialist','coder','reviewer','tester','coordinator'].map((role) => <option key={role} value={role}>{role}</option>)}
-                </select>
-                <button data-debug-id="chain-editor-roster-add-btn" disabled={!newMemberAgentId.trim() || Boolean(busyAction)} onClick={() => { void addTeamMember(); }} className="rounded-xl border border-sky-400/30 bg-sky-400/10 px-3 py-2 text-sm font-semibold text-sky-100 hover:bg-sky-400/20 disabled:cursor-not-allowed disabled:opacity-50">+ Add member</button>
-              </div>
-            </div>
+          <section data-debug-id="chain-editor-participants-panel" className="rounded-3xl border border-white/10 bg-white/[0.035] p-5">
+            <h2 className="font-semibold">Participants, not rosters</h2>
+            <p className="mt-1 text-xs text-zinc-500">Assign agents on tasks as assignee, coordinator, required reviewer, optional reviewer, or subscriber. There is no chain roster or add-member flow.</p>
+            <div className="mt-4 rounded-2xl border border-dashed border-white/10 bg-black/10 p-4 text-sm text-zinc-400">Use the selected task panel to add participants or update assignee/reviewer gates.</div>
           </section>
 
           <section data-debug-id="chain-editor-chain-controls-panel" className="rounded-3xl border border-white/10 bg-white/[0.035] p-5">

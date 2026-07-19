@@ -86,6 +86,14 @@ daemon_url = "{URL}"
     try:
         wait_for_health()
 
+        # Projects must exist before an agent can be bound to them.
+        status, reg = request_json("POST", "/user-client/register", {"user_id": "operator@local", "client_instance_id": "ui-projoverride", "client_token": ""})
+        require(status == 200 and reg.get("client_token"), reg)
+        user_token = reg["client_token"]
+        for pid in ("proj-a", "proj-b"):
+            status, pres = request_json("POST", "/projects/create", {"agent_token": user_token, "project_id": pid, "name": pid})
+            require(status == 200 and pres.get("ok"), pres)
+
         status, created = request_json("POST", "/agents/create", {
             "agent_instance_id": instance,
             "template_id": "coder",

@@ -4,7 +4,6 @@ import { useDispatch, useSelector } from 'react-redux';
 import SettingsPage from './SettingsPage';
 import MemoryManagementPage from './MemoryManagementPage';
 import ChainEditor from './ChainEditor';
-import { defaultWantsVcs, findScaffold, findTeamKind, kindOptionLabel, NONE_SCAFFOLD_META, paceLabel, scaffoldOptionLabel, taskCountLabel } from './teamKinds';
 // TODO(rtkq-migration owner=task-19f69e242e4): App still has explicit component-level task/chat thunk dispatches for open/load-more flows; replace these with RTKQ hooks or endpoint initiate calls during cleanup.
 import {
   addDaemonProfile,
@@ -54,6 +53,7 @@ import ChainArtifactsPanel from './ChainArtifactsPanel';
 import ArtifactViewer from './ArtifactViewer';
 import ChatHoverCopyButton from './ChatHoverCopyButton';
 import { navigateBackOr, updateUrlParams, useUrlParams } from './useUrlParams';
+import { getRouteSearch } from '../utils/appLocation';
 import { VimSidebarProvider, VimEditButton } from './VimSidebar';
 import AgentPicker from './AgentPicker';
 import ChatHeader from './chat/ChatHeader';
@@ -76,7 +76,7 @@ import { chatEndpoints, useListConversationSummariesQuery } from '../api/endpoin
 import { upsertAgentInCaches, useFetchAgentQuery, useListAgentsQuery } from '../api/endpoints/agents';
 import { useAnswerChatApprovalMutation, useDismissChatApprovalMutation, useExecuteMergeViaChainMutation, useFetchAttentionQuery, useListChatApprovalsQuery } from '../api/endpoints/attention';
 import { useDecideMemoryProposalMutation, useListApplicableMemoryQuery, useListMemoryQuery, useProposeMemoryChangeMutation } from '../api/endpoints/memory';
-import { useFetchChainQuery, useFetchTeamQuery, useFetchWorkspaceQuery, useFocusChainMutation, useLazyFetchWorkspaceDiffQuery, useLazyPreviewWorkspaceMergeQuery, useListChainsQuery } from '../api/endpoints/workspace';
+import { useFetchChainQuery, useFetchWorkspaceQuery, useFocusChainMutation, useLazyFetchWorkspaceDiffQuery, useLazyPreviewWorkspaceMergeQuery, useListChainsQuery } from '../api/endpoints/workspace';
 import { useCreateProjectMutation, useListProjectsQuery } from '../api/endpoints/projects';
 import { useFetchSettingsCatalogQuery } from '../api/endpoints/settings';
 import { useListArtifactsQuery } from '../api/endpoints/artifacts';
@@ -88,7 +88,6 @@ type Chain = {
   status: string;
   projectId?: string;
   coordinatorAgentInstanceId?: string;
-  teamId?: string;
 };
 
 type Project = {
@@ -98,45 +97,6 @@ type Project = {
 };
 
 const EMPTY: any[] = [];
-const NEW_CHAIN_KIND_SCAFFOLD_DEFAULT_KEY = 'heimdall.newChain.kindScaffoldDefault';
-
-type NewChainKindScaffoldDefault = {
-  kind: string;
-  scaffold: string;
-};
-
-let newChainKindScaffoldDefaultMemory: NewChainKindScaffoldDefault = { kind: 'coding', scaffold: 'none' };
-
-function normalizeNewChainKindScaffoldDefault(candidate: any): NewChainKindScaffoldDefault {
-  const kindDef = findTeamKind(typeof candidate?.kind === 'string' ? candidate.kind : 'coding');
-  const scaffold = typeof candidate?.scaffold === 'string' && (candidate.scaffold === 'none' || kindDef.scaffolds.some((item) => item.key === candidate.scaffold))
-    ? candidate.scaffold
-    : 'none';
-  return { kind: kindDef.key, scaffold };
-}
-
-function loadNewChainKindScaffoldDefault(): NewChainKindScaffoldDefault {
-  try {
-    const raw = window.localStorage.getItem(NEW_CHAIN_KIND_SCAFFOLD_DEFAULT_KEY);
-    if (raw) {
-      const normalized = normalizeNewChainKindScaffoldDefault(JSON.parse(raw));
-      newChainKindScaffoldDefaultMemory = normalized;
-      return normalized;
-    }
-  } catch (_err) { /* ignore */ }
-  return normalizeNewChainKindScaffoldDefault(newChainKindScaffoldDefaultMemory);
-}
-
-function persistNewChainKindScaffoldDefault(candidate: any): NewChainKindScaffoldDefault {
-  const normalized = normalizeNewChainKindScaffoldDefault(candidate);
-  newChainKindScaffoldDefaultMemory = normalized;
-  try { window.localStorage.setItem(NEW_CHAIN_KIND_SCAFFOLD_DEFAULT_KEY, JSON.stringify(normalized)); } catch (_err) { /* ignore */ }
-  return normalized;
-}
-
-function newChainKindScaffoldSelectionsMatch(left: NewChainKindScaffoldDefault, right: NewChainKindScaffoldDefault) {
-  return left.kind === right.kind && left.scaffold === right.scaffold;
-}
 
 function statusTone(status: string) {
   if (status === 'completed' || status === 'approved') return 'bg-emerald-500/15 text-emerald-200 border-emerald-500/30';
@@ -359,7 +319,7 @@ function durableAgentId(agent: any): string {
 function isConversationAgent(agent: any): boolean {
   const durable = durableAgentId(agent).toLowerCase();
   const templateId = String(agent?.templateId || agent?.template_id || '').toLowerCase();
-  const role = String(agent?.agentRole || agent?.agent_role || agent?.roleHint || agent?.role_hint || '').toLowerCase();
+  const role = String(agent?.templateId || agent?.template_id || durableAgentId(agent) || '').toLowerCase();
   return durable === 'conversation' || templateId === 'conversation' || role === 'conversation';
 }
 
@@ -373,7 +333,7 @@ function isGuideAgent(agent: any): boolean {
   const id = agentInstanceId(agent).toLowerCase();
   const durable = durableAgentId(agent).toLowerCase();
   const templateId = String(agent?.templateId || agent?.template_id || '').toLowerCase();
-  const role = String(agent?.agentRole || agent?.agent_role || agent?.roleHint || agent?.role_hint || '').toLowerCase();
+  const role = String(agent?.templateId || agent?.template_id || durableAgentId(agent) || '').toLowerCase();
   return id === GUIDE_AGENT_ID || id.startsWith('guide@') || durable === 'guide' || templateId === 'guide' || role === 'guide';
 }
 
@@ -426,7 +386,7 @@ function agentInstanceId(agent: any): string {
 }
 
 function agentTemplateLabel(agent: any): string {
-  return String(agent?.templateId || agent?.template_id || agent?.agentRole || agent?.agent_role || agent?.roleHint || agent?.role_hint || durableAgentId(agent) || 'agent');
+  return String(agent?.templateId || agent?.template_id || durableAgentId(agent) || 'agent');
 }
 
 function agentUpdatedUnixMs(agent: any): number {
@@ -648,7 +608,7 @@ export default function App() {
   const chainsQuery = useListChainsQuery(undefined, { skip: !session.clientToken });
   const routeChainId = (() => {
     try {
-      const params = new URLSearchParams(window.location.search);
+      const params = new URLSearchParams(getRouteSearch());
       return params.get('chainId') || '';
     } catch (_err) { return ''; }
   })();
@@ -762,26 +722,21 @@ export default function App() {
     { chainId: selectedChain?.chainId || '' },
     { skip: !selectedChain?.chainId, pollingInterval: chainCreationProgress?.active ? 2000 : 0 },
   );
-  const selectedTeamId = selectedChain?.teamId || selectedChain?.team_id || '';
-  const selectedTeamQuery = useFetchTeamQuery({ teamId: selectedTeamId }, { skip: !selectedTeamId });
   const [focusChain] = useFocusChainMutation();
   const [loadWorkspacePreview] = useLazyPreviewWorkspaceMergeQuery();
   const [loadWorkspaceDiff] = useLazyFetchWorkspaceDiffQuery();
   const chainView = useMemo(() => {
     const chainId = selectedChain?.chainId || '';
     const workspaceByChainId = { ...cacheChainView.workspaceByChainId };
-    const teamByChainId = { ...cacheChainView.teamByChainId };
     if (chainId && selectedWorkspaceQuery.data?.workspace) workspaceByChainId[chainId] = selectedWorkspaceQuery.data.workspace;
-    if (chainId && selectedTeamQuery.data?.team) teamByChainId[chainId] = selectedTeamQuery.data.team;
     return {
       ...chainViewUi,
       workspaceByChainId,
-      teamByChainId,
       mergePreviewByChainId: cacheChainView.mergePreviewByChainId,
       workspaceDiffByChainId: cacheChainView.workspaceDiffByChainId,
-      loading: selectedWorkspaceQuery.isFetching || selectedTeamQuery.isFetching || chainViewUi.loading,
+      loading: selectedWorkspaceQuery.isFetching || chainViewUi.loading,
     };
-  }, [cacheChainView.mergePreviewByChainId, cacheChainView.teamByChainId, cacheChainView.workspaceByChainId, cacheChainView.workspaceDiffByChainId, chainViewUi, selectedChain?.chainId, selectedTeamQuery.data?.team, selectedTeamQuery.isFetching, selectedWorkspaceQuery.data?.workspace, selectedWorkspaceQuery.isFetching]);
+  }, [cacheChainView.mergePreviewByChainId, cacheChainView.workspaceByChainId, cacheChainView.workspaceDiffByChainId, chainViewUi, selectedChain?.chainId, selectedWorkspaceQuery.data?.workspace, selectedWorkspaceQuery.isFetching]);
   useEffect(() => { chainViewRef.current = chainView; }, [chainView]);
   const selectedChainTasksQuery = useFetchChainTasksQuery(
     { chainId: selectedChain?.chainId || '' },
@@ -798,13 +753,6 @@ export default function App() {
     { chainId: chainCreationProgress?.chainId || '' },
     {
       skip: !chainCreationProgress?.active || !chainCreationProgress?.chainId,
-      pollingInterval: chainCreationProgress?.active ? 2000 : 0,
-    },
-  );
-  useFetchTeamQuery(
-    { teamId: chainCreationProgress?.teamId || '' },
-    {
-      skip: !chainCreationProgress?.active || !chainCreationProgress?.teamId,
       pollingInterval: chainCreationProgress?.active ? 2000 : 0,
     },
   );
@@ -1118,8 +1066,8 @@ export default function App() {
     await dispatch(sendGuideMessage({ body, tempId })).unwrap();
   }, [dispatch]);
   const startGuideAgent = useCallback(async () => {
-    const agent = guideAgent || { id: GUIDE_AGENT_ID, agentRole: 'guide', templateId: 'guide' };
-    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id || GUIDE_AGENT_ID, provider: agent.providerProfile || defaultConversationProvider(settingsProviders), templateId: agent.templateId || agent.agentRole || 'guide', projectId: agent.projectId || '', displayName: agent.label || 'Heimdall Guide', modelTier: agent.modelTier || 'smart', agentRole: agent.agentRole || agent.templateId || 'guide' });
+    const agent = guideAgent || { id: GUIDE_AGENT_ID, templateId: 'guide' };
+    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id || GUIDE_AGENT_ID, provider: agent.providerProfile || defaultConversationProvider(settingsProviders), templateId: agent.templateId || 'guide', projectId: agent.projectId || '', displayName: agent.label || 'Heimdall Guide', modelTier: agent.modelTier || 'smart'});
     await refetchAgents();
   }, [guideAgent, refetchAgents, session?.daemonUrl, settingsProviders]);
   const guideContextLabel = useMemo(() => {
@@ -1321,11 +1269,10 @@ export default function App() {
         daemonUrl: session?.daemonUrl || '',
         agentInstanceId: requestedId,
         provider: identity.providerProfile || defaultConversationProvider(settingsProviders),
-        templateId: identity.templateId || identity.agentRole || durableId,
+        templateId: identity.templateId || durableId,
         projectId: identity.projectId || '',
         displayName: '',
         modelTier: identity.modelTier || 'normal',
-        agentRole: identity.agentRole || identity.templateId || durableId,
       });
       await refetchAgents();
       const resolvedId = result?.agent_instance_id || result?.agentInstanceId || requestedId;
@@ -1348,11 +1295,11 @@ export default function App() {
     try {
       const requestedId = createConversationInstanceId();
       const effectiveProvider = provider || defaultConversationProvider(settingsProviders);
-      await daemonApi.createAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, displayName: '', providerProfile: effectiveProvider, templateId: 'conversation', projectId: projectId || '', modelTier: modelTier || 'smart', agentRole: 'conversation' }).catch((err: any) => {
+      await daemonApi.createAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, displayName: '', providerProfile: effectiveProvider, templateId: 'conversation', projectId: projectId || '', modelTier: modelTier || 'smart'}).catch((err: any) => {
         const message = String(err?.message || err || '').toLowerCase();
         if (!message.includes('already') && !message.includes('exists')) throw err;
       });
-      const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, provider: effectiveProvider, templateId: 'conversation', projectId: projectId || '', displayName: '', modelTier: modelTier || 'smart', agentRole: 'conversation' });
+      const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, provider: effectiveProvider, templateId: 'conversation', projectId: projectId || '', displayName: '', modelTier: modelTier || 'smart'});
       const resolvedId = result?.agent_instance_id || result?.agentInstanceId || requestedId;
       setAgentPageId(resolvedId);
       updateUrlParams({ view: 'conversation', agentId: resolvedId, chainId: null, taskId: null, memoryId: null, projectId: projectId || null });
@@ -1369,11 +1316,11 @@ export default function App() {
     try {
       const requestedId = createConversationInstanceId();
       const effectiveProvider = provider || defaultConversationProvider(settingsProviders);
-      await daemonApi.createAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, displayName: '', providerProfile: effectiveProvider, templateId: 'conversation', projectId: projectId || '', modelTier: modelTier || 'smart', agentRole: 'conversation' }).catch((err: any) => {
+      await daemonApi.createAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, displayName: '', providerProfile: effectiveProvider, templateId: 'conversation', projectId: projectId || '', modelTier: modelTier || 'smart'}).catch((err: any) => {
         const message = String(err?.message || err || '').toLowerCase();
         if (!message.includes('already') && !message.includes('exists')) throw err;
       });
-      const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, provider: effectiveProvider, templateId: 'conversation', projectId: projectId || '', displayName: '', modelTier: modelTier || 'smart', agentRole: 'conversation' });
+      const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, provider: effectiveProvider, templateId: 'conversation', projectId: projectId || '', displayName: '', modelTier: modelTier || 'smart'});
       const resolvedId = result?.agent_instance_id || result?.agentInstanceId || requestedId;
       let sent = false;
       let sendResult: any = null;
@@ -1429,20 +1376,8 @@ export default function App() {
     if (!chainView.sideSheetAgentId) return null;
     const live = agents.find((agent: any) => agent.id === chainView.sideSheetAgentId);
     if (live) return live;
-    const team = selectedChain ? chainView.teamByChainId[selectedChain.chainId] : null;
-    const member = (team?.members || []).find((item: any) => (item.agent_instance_id || item.agentInstanceId || item.route_to || `${item.role_key}-${item.role_index}`) === chainView.sideSheetAgentId);
-    if (!member) return { id: chainView.sideSheetAgentId, label: chainView.sideSheetAgentId, status: 'missing' };
-    const memberId = member.agent_instance_id || member.agentInstanceId || member.route_to || chainView.sideSheetAgentId;
-    return {
-      id: memberId,
-      label: member.route_to || member.agent_instance_id || member.agentInstanceId || memberId,
-      status: member.lifecycle_status || 'missing',
-      state: member.lifecycle_status || 'missing',
-      roleKey: member.role_key,
-      roleIndex: member.role_index,
-      isUserProxy: Boolean(member.is_user_proxy),
-    };
-  }, [agents, chainView.sideSheetAgentId, chainView.teamByChainId, selectedChain]);
+    return { id: chainView.sideSheetAgentId, label: chainView.sideSheetAgentId, status: 'missing' };
+  }, [agents, chainView.sideSheetAgentId]);
   const sideSheetTaskId = useMemo(() => {
     const liveTaskId = sideSheetAgent?.currentTaskId || sideSheetAgent?.current_task_id || '';
     if (liveTaskId) return liveTaskId;
@@ -1549,11 +1484,10 @@ export default function App() {
                     daemonUrl: session?.daemonUrl || '',
                     agentInstanceId: agentId,
                     provider: runtime.provider || exactAgent?.providerProfile || defaultConversationProvider(settingsProviders),
-                    templateId: exactAgent?.templateId || exactAgent?.agentRole || durableAgentId(exactAgent) || String(agentId).split('@')[0],
+                    templateId: exactAgent?.templateId || durableAgentId(exactAgent) || String(agentId).split('@')[0],
                     projectId: exactAgent?.projectId || '',
                     displayName: exactAgent?.label || agentId,
                     modelTier: runtime.modelTier || exactAgent?.modelTier || 'normal',
-                    agentRole: exactAgent?.agentRole || exactAgent?.templateId || durableAgentId(exactAgent) || String(agentId).split('@')[0],
                   });
                   await refetchAgents();
                 }
@@ -1591,7 +1525,7 @@ export default function App() {
               onNewInstance={async (identity: any) => {
                 const durableId = durableAgentId(identity);
                 const requestedId = `${durableId}@s-${(globalThis.crypto?.randomUUID?.().replace(/-/g, '').slice(0, 10) || Date.now().toString(16))}`;
-                const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, provider: identity.providerProfile || defaultConversationProvider(settingsProviders), templateId: identity.templateId || identity.agentRole || durableId, projectId: identity.projectId || '', displayName: '', modelTier: identity.modelTier || 'normal', agentRole: identity.agentRole || identity.templateId || durableId });
+                const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, provider: identity.providerProfile || defaultConversationProvider(settingsProviders), templateId: identity.templateId || durableId, projectId: identity.projectId || '', displayName: '', modelTier: identity.modelTier || 'normal'});
                 await refetchAgents();
                 openAgentPage(result?.agent_instance_id || result?.agentInstanceId || requestedId);
               }}
@@ -1667,7 +1601,6 @@ export default function App() {
               chain={selectedChain}
               tasks={selectedChainTasks}
               tasksById={selectedTasksById}
-              team={chainView.teamByChainId[selectedChain.chainId]}
               agents={agents}
               identities={agentIdentities}
               providers={settingsProviders}
@@ -1863,7 +1796,6 @@ export default function App() {
               setChainCreationProgress({
                 active: true,
                 chainId,
-                teamId: result?.team_id || result?.teamId || '',
                 coordinatorAgentInstanceId: result?.coordinator_agent_instance_id || result?.coordinatorAgentInstanceId || payload.coordinatorAgentInstanceId || '',
                 workspaceSetupTaskId: result?.workspace_setup_task_id || result?.workspaceSetupTaskId || '',
                 discoveryTaskId: result?.discovery_task_id || result?.discoveryTaskId || '',
@@ -1958,7 +1890,6 @@ function ToastStack({ toasts, onDismiss }: { toasts: any[]; onDismiss: (id: stri
 function buildChainCreationProgress(progress: any, chainsById: Record<string, any>, chainTaskIds: Record<string, string[]>, tasksById: Record<string, any>, agents: any[], chainView: any, polledTasks: any[] = []) {
   const chainId = progress.chainId || '';
   const chain = chainsById?.[chainId] || null;
-  const team = chainView.teamByChainId?.[chainId]?.team || chainView.teamByChainId?.[chainId] || null;
   const taskIds = chainTaskIds?.[chainId] || [];
   const fallbackTasks = taskIds.map((id: string) => tasksById?.[id]).filter(Boolean);
   const tasks = polledTasks.length > 0 ? polledTasks : fallbackTasks;
@@ -1975,14 +1906,13 @@ function buildChainCreationProgress(progress: any, chainsById: Record<string, an
   const workspaceReady = !progress.wantsVcs || Boolean(workspaceSetupTask || progress.workspaceId || chain?.vcsWorkspaceId || chain?.vcs_workspace_id || chainView.workspaceByChainId?.[chainId]);
   const steps = [
     { key: 'chain', label: 'Task chain created', done: Boolean(chainId), detail: chainId || 'waiting for chain id' },
-    { key: 'team', label: 'Team allocated', done: Boolean(progress.teamId || chain?.teamId || chain?.team_id || team?.team_id), detail: progress.teamId || chain?.teamId || chain?.team_id || team?.team_id || 'waiting for team' },
     { key: 'workspace', label: progress.wantsVcs ? 'Workspace setup task created' : 'Workspace skipped', done: workspaceReady, detail: progress.wantsVcs ? (workspaceSetupTask?.taskId || progress.workspaceSetupTaskId || 'creating setup task') : 'VCS not requested' },
     { key: 'task', label: 'Coordinator discovery task created', done: Boolean(discoveryTask), detail: discoveryTask?.taskId || progress.discoveryTaskId || 'waiting for task' },
     { key: 'boot', label: 'Coordinator start requested', done: Boolean(progress.coordinatorBootRequested || coordinator), detail: progress.coordinatorBootRequested ? `${coordinatorId || 'coordinator'} launch requested by chain create` : (coordinatorId || 'waiting for coordinator') },
     { key: 'running', label: 'Coordinator running / start-success', done: coordinatorReady, detail: coordinator ? `${coordinator.label || coordinator.id} · ${reason || status || (connected ? 'connected' : 'starting')}` : (timedOut ? 'not ready after 20s' : 'starting') },
     { key: 'claimed', label: 'Initial task claimed', done: Boolean(discoveryTask?.status === 'in_progress' || coordinator?.currentTaskId === discoveryTask?.taskId), detail: discoveryTask?.status || 'optional after startup' },
   ];
-  return { ...progress, chain, team, tasks, workspaceSetupTask, discoveryTask, coordinator, coordinatorId, coordinatorReady, elapsedMs, timedOut, steps };
+  return { ...progress, chain, tasks, workspaceSetupTask, discoveryTask, coordinator, coordinatorId, coordinatorReady, elapsedMs, timedOut, steps };
 }
 
 function ChainCreationProgressModal({ progress, onOpen, onCancel }: any) {
@@ -2039,7 +1969,7 @@ function taskGeneratedAgentChainId(agent: any): string {
 
 function isTaskGeneratedAgent(agent: any): boolean {
   if (!agent?.id && !agent?.agent_instance_id) return false;
-  return String(agent.agentScope || agent.agent_scope || '') === 'generated_chain' || Boolean(taskGeneratedAgentChainId(agent));
+  return Boolean(taskGeneratedAgentChainId(agent));
 }
 
 export function agentHasLiveSession(agent: any): boolean {
@@ -2484,7 +2414,7 @@ function AgentsManagementSurface({ agents = [], chats = {}, tasksById = {}, chai
                 const status = agentStatusIndicator(representative, group.running ? `${group.running} live instance${group.running === 1 ? '' : 's'}` : 'No live instances; open the main sidebar for runtime navigation');
                 const projectId = representative.projectId || representative.project_id || '';
                 const project = (projects || []).find((item: any) => (item.projectId || item.project_id) === projectId);
-                const template = representative.templateId || representative.template_id || representative.agentRole || representative.agent_role || 'agent';
+                const template = representative.templateId || representative.template_id || 'agent';
                 const provider = representative.providerProfile || representative.provider_profile || 'default';
                 const tier = representative.modelTier || representative.model_tier || 'normal';
                 return (
@@ -2636,10 +2566,10 @@ function SidebarAgentsList({ agents = [], projects = [], session = {}, providers
       const projectId = effectiveLaunchProject;
       const modelTier = effectiveLaunchTier;
       if (saveLaunchDefaults) writeLaunchAgentDefaults(session?.daemonUrl || '', { role, provider, projectId, modelTier });
-      await daemonApi.createAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: launchAgentId, displayName: name, providerProfile: provider, templateId: role, projectId, modelTier, agentRole: role });
+      await daemonApi.createAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: launchAgentId, displayName: name, providerProfile: provider, templateId: role, projectId, modelTier});
       setLaunchProgressId(launchAgentId);
       setLaunchStartedAt(Date.now());
-      const startResult = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: launchAgentId, provider, templateId: role, projectId, displayName: name, modelTier, agentRole: role });
+      const startResult = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: launchAgentId, provider, templateId: role, projectId, displayName: name, modelTier});
       const resolvedInstanceId = startResult?.agent_instance_id || startResult?.agentInstanceId || '';
       if (resolvedInstanceId) setLaunchProgressId(resolvedInstanceId);
       await onRefreshAgents?.();
@@ -3014,7 +2944,7 @@ function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, c
               </div>
             </div>
             <div className="mt-5 grid gap-x-6 gap-y-4 md:grid-cols-2">
-              <div data-debug-id="agent-identity-template"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Template</div><div className="mt-1 text-sm text-zinc-200">{agentTemplateLabel(identity)} — role {identity?.agentRole || identity?.agent_role || 'agent'}</div></div>
+              <div data-debug-id="agent-identity-template"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Template</div><div className="mt-1 text-sm text-zinc-200">{agentTemplateLabel(identity)}</div></div>
               <div data-debug-id="agent-identity-default-project"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Default project</div><div className="mt-1 text-sm text-zinc-200">{projectName}</div></div>
               <div data-debug-id="agent-identity-provider-tier"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Provider / tier</div><div className="mt-1 text-sm text-zinc-200">{providerName} · {tier}</div></div>
               <div data-debug-id="agent-identity-memory-summary"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Shared memories</div><div className="mt-1 text-sm text-zinc-200">{memoryCount ? `${memoryCount} active` : 'load via Memory page'} <span className="text-zinc-500">(target_agent_id = {durableId || '—'})</span></div></div>
@@ -3034,50 +2964,72 @@ function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, c
   );
 }
 
-function ChainAgentsInspectorContent({ team, agents = [], coordinatorAgentId = '', onOpenAgent, onOpenAgentChat }: any) {
-  const members = team?.team?.members || team?.members || [];
+// Chain agents are derived from the chain's TASKS (assignees, reviewers,
+// participants) plus the coordinator. This reflects who is
+// actually doing work on the chain: an agent shows up here because it is assigned
+// to, reviewing, or participating in a task, grouped by the strongest role it holds.
+function ChainAgentsInspectorContent({ tasks = [], coordinatorAgentId = '', defaultReviewerAgentId = '', agents = [], onOpenAgent, onOpenAgentChat }: any) {
   const rows = useMemo(() => {
-    const mapped = (members || []).map((member: any) => {
-      const agentId = String(member?.agent_instance_id || member?.agentInstanceId || member?.route_to || `${member?.role_key || 'member'}-${member?.role_index || 0}`);
-      const live = (agents || []).find((agent: any) => String(agent?.id || agent?.agent_instance_id || '') === agentId) || null;
-      const status = live ? agentRuntimeStatus(live) : String(member?.lifecycle_status || 'offline');
+    // roleRank: higher wins when an agent holds multiple roles across tasks.
+    const ROLE_META: Record<string, { label: string; rank: number }> = {
+      coordinator: { label: 'Coordinator', rank: 5 },
+      assignee: { label: 'Assignee', rank: 4 },
+      lgtm_required: { label: 'Reviewer', rank: 3 },
+      lgtm_optional: { label: 'Reviewer (optional)', rank: 2 },
+      subscriber: { label: 'Participant', rank: 1 },
+    };
+    const byAgent = new Map<string, { agentId: string; role: string; taskCount: number }>();
+    const note = (agentId: string, role: string) => {
+      const id = String(agentId || '').trim();
+      if (!id || id === 'user_proxy' || id === 'operator@local') return;
+      const existing = byAgent.get(id);
+      const rank = ROLE_META[role]?.rank || 0;
+      if (!existing) {
+        byAgent.set(id, { agentId: id, role, taskCount: 1 });
+      } else {
+        existing.taskCount += 1;
+        if (rank > (ROLE_META[existing.role]?.rank || 0)) existing.role = role;
+      }
+    };
+    if (coordinatorAgentId) note(coordinatorAgentId, 'coordinator');
+    if (defaultReviewerAgentId) note(defaultReviewerAgentId, 'lgtm_required');
+    for (const task of tasks || []) {
+      if (task?.assigneeAgentInstanceId) note(task.assigneeAgentInstanceId, 'assignee');
+      if (task?.coordinatorAgentInstanceId) note(task.coordinatorAgentInstanceId, 'coordinator');
+      if (task?.reviewerAgentInstanceId) note(task.reviewerAgentInstanceId, 'lgtm_required');
+      for (const p of task?.participants || []) {
+        if (p?.agentInstanceId) note(p.agentInstanceId, String(p.role || 'subscriber'));
+      }
+    }
+    const mapped = Array.from(byAgent.values()).map((entry) => {
+      const live = (agents || []).find((agent: any) => String(agent?.id || agent?.agent_instance_id || '') === entry.agentId) || null;
+      const status = live ? agentRuntimeStatus(live) : 'offline';
       return {
-        agentId,
-        label: live?.label || member?.route_to || member?.agent_instance_id || member?.agentInstanceId || agentId,
-        role: member?.role_key || 'member',
-        roleIndex: Number(member?.role_index || 0),
-        isUserProxy: Boolean(member?.is_user_proxy) || agentId === 'user_proxy',
-        statusLabel: live ? agentRuntimeStatusLabel(status) : String(member?.lifecycle_status || 'offline'),
+        agentId: entry.agentId,
+        label: live?.label || entry.agentId,
+        role: entry.role,
+        roleLabel: ROLE_META[entry.role]?.label || 'Participant',
+        roleRank: ROLE_META[entry.role]?.rank || 0,
+        taskCount: entry.taskCount,
+        isUserProxy: entry.agentId === 'user_proxy',
+        statusLabel: live ? agentRuntimeStatusLabel(status) : 'offline',
         statusTone: live ? agentRuntimeStatusTone(status) : 'border-zinc-600/40 bg-zinc-700/40 text-zinc-400',
         live,
       };
     });
-    if (coordinatorAgentId && !mapped.some((row: any) => row.agentId === coordinatorAgentId)) {
-      const live = (agents || []).find((agent: any) => String(agent?.id || agent?.agent_instance_id || '') === coordinatorAgentId) || null;
-      const status = live ? agentRuntimeStatus(live) : 'offline';
-      mapped.unshift({
-        agentId: coordinatorAgentId,
-        label: live?.label || coordinatorAgentId,
-        role: 'coordinator',
-        roleIndex: 0,
-        isUserProxy: coordinatorAgentId === 'user_proxy',
-        statusLabel: live ? agentRuntimeStatusLabel(status) : 'offline',
-        statusTone: live ? agentRuntimeStatusTone(status) : 'border-zinc-600/40 bg-zinc-700/40 text-zinc-400',
-        live,
-      });
-    }
+    mapped.sort((a, b) => (b.roleRank - a.roleRank) || a.agentId.localeCompare(b.agentId));
     return mapped;
-  }, [agents, coordinatorAgentId, members]);
+  }, [agents, coordinatorAgentId, defaultReviewerAgentId, tasks]);
 
   if (rows.length === 0) {
-    return <div data-debug-id="chain-agent-roster-empty" className="rounded-2xl border border-dashed border-white/10 bg-black/20 p-4 text-sm text-zinc-400">No chain agent roster is available for this context yet.</div>;
+    return <div data-debug-id="chain-agent-roster-empty" className="rounded-2xl border border-dashed border-white/10 bg-black/20 p-4 text-sm text-zinc-400">No chain agents yet. Agents appear here once they are assigned to, reviewing, or participating in a task.</div>;
   }
 
   return (
     <div data-debug-id="chain-agent-roster" className="space-y-3">
       {rows.map((row: any) => {
         const canChat = Boolean(row.agentId && !row.isUserProxy && onOpenAgentChat);
-        const roleLabel = row.role === 'coordinator' ? 'Coordinator' : `${row.role}${Number.isFinite(row.roleIndex) ? ` #${row.roleIndex + 1}` : ''}`;
+        const roleLabel = `${row.roleLabel}${row.taskCount > 1 ? ` · ${row.taskCount} tasks` : ''}`;
         return (
           <div key={row.agentId} data-debug-id={`chain-agent-row-${row.agentId}`} className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
             <div className="flex items-start justify-between gap-3">
@@ -3195,7 +3147,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
   }, [stopProgress?.active, stopProgress?.agentId, stopProgress?.completed, agent?.id, agentStopDone]);
 
   const openMemoryEditor = (record?: any) => {
-    setMemoryEditor(record ? { mode: 'edit', memoryId: record.memory_id || record.memoryId, expectedVersion: Number(record.version || 0), type: record.type || 'fact', title: record.title || '', body: record.body || '', evidence: record.evidence || '', metadataJson: record.metadata_json || record.metadataJson || '', targetAgentId: record.target_agent_id || record.targetAgentId || agentMemoryId, targetRole: record.target_role || record.targetRole || '', targetProjectId: record.target_project_id || record.targetProjectId || '' } : { mode: 'new', type: 'fact', title: '', body: '', evidence: '', metadataJson: '', targetAgentId: agentMemoryId, targetRole: '', targetProjectId: '' });
+    setMemoryEditor(record ? { mode: 'edit', memoryId: record.memory_id || record.memoryId, expectedVersion: Number(record.version || 0), type: record.type || 'fact', title: record.title || '', body: record.body || '', evidence: record.evidence || '', metadataJson: record.metadata_json || record.metadataJson || '', targetAgentId: record.target_agent_id || record.targetAgentId || agentMemoryId, targetProjectId: record.target_project_id || record.targetProjectId || '' } : { mode: 'new', type: 'fact', title: '', body: '', evidence: '', metadataJson: '', targetAgentId: agentMemoryId, targetProjectId: '' });
   };
 
   const saveMemoryEditor = async () => {
@@ -3203,7 +3155,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
     setMemorySaving(true);
     setMemoryError('');
     try {
-      const payload: any = { proposalAction: memoryEditor.mode === 'edit' ? 'edit' : 'new', memoryId: memoryEditor.memoryId, expectedVersion: memoryEditor.expectedVersion, type: memoryEditor.type || 'fact', title: memoryEditor.title || '', body: memoryEditor.body || '', evidence: memoryEditor.evidence || '', metadataJson: memoryEditor.metadataJson || '', targetAgentId: memoryEditor.targetAgentId || agentMemoryId, targetRole: memoryEditor.targetRole || '', targetProjectId: memoryEditor.targetProjectId || '' };
+      const payload: any = { proposalAction: memoryEditor.mode === 'edit' ? 'edit' : 'new', memoryId: memoryEditor.memoryId, expectedVersion: memoryEditor.expectedVersion, type: memoryEditor.type || 'fact', title: memoryEditor.title || '', body: memoryEditor.body || '', evidence: memoryEditor.evidence || '', metadataJson: memoryEditor.metadataJson || '', targetAgentId: memoryEditor.targetAgentId || agentMemoryId, targetProjectId: memoryEditor.targetProjectId || '' };
       const proposal = await proposeMemoryChange(payload).unwrap();
       if (proposal?.proposal_id || proposal?.proposalId) await decideAgentMemoryProposal({ proposalId: proposal.proposal_id || proposal.proposalId, decision: 'approve', reason: 'Direct edit from agent memory editor.' }).unwrap();
       setMemoryEditor(null);
@@ -3233,7 +3185,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
 
   const startAgent = () => runAgentAction('start', async () => {
     setStartProgress({ active: true, agentId: agent.id, requestedAt: Date.now(), completed: false });
-    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: chatProvider || agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || agent.agentRole || 'specialist', projectId: agent.projectId || '', displayName: agent.label || agent.id, modelTier: chatTier || agent.modelTier || 'normal', agentRole: agent.agentRole || agent.templateId || '' });
+    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: chatProvider || agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || 'specialist', projectId: agent.projectId || '', displayName: agent.label || agent.id, modelTier: chatTier || agent.modelTier || 'normal'});
   });
   const stopAgent = () => runAgentAction('stop', async () => {
     setStopProgress({ active: true, agentId: agent.id, requestedAt: Date.now(), completed: false });
@@ -3263,7 +3215,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
       // are runtime-only; project overrides only this concrete instance record and
       // never mutates the durable identity default. project_id_set applies the
       // selected project verbatim (including clearing to none).
-      await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: nextProvider || agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || agent.agentRole || durableAgentId(agent), projectId: nextProjectId !== undefined ? nextProjectId : (agent.projectId || ''), projectIdSet: nextProjectId !== undefined, displayName: agent.label || agent.id, modelTier: nextTier || agent.modelTier || 'normal', agentRole: agent.agentRole || agent.templateId || durableAgentId(agent) });
+      await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: nextProvider || agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || durableAgentId(agent), projectId: nextProjectId !== undefined ? nextProjectId : (agent.projectId || ''), projectIdSet: nextProjectId !== undefined, displayName: agent.label || agent.id, modelTier: nextTier || agent.modelTier || 'normal'});
       await onRefreshAgents?.();
     } catch (err: any) {
       setRuntimeRestartError(String(err?.message || err || 'Unable to restart exact agent instance.'));
@@ -3322,7 +3274,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
     project: {
       id: 'project',
       label: 'Project',
-      content: <ContextInfoGrid items={[{ debugId: 'agent-detail-project', label: 'Project', value: agent?.projectName || agent?.projectId || '—' }, { debugId: 'agent-detail-role', label: 'Role', value: agent?.agentRole || agent?.roleHint || agent?.templateId || '—' }, { debugId: 'agent-detail-provider', label: 'Provider', value: agent?.providerProfile || '—' }]} />,
+      content: <ContextInfoGrid items={[{ debugId: 'agent-detail-project', label: 'Project', value: agent?.projectName || agent?.projectId || '—' }, { debugId: 'agent-detail-template', label: 'Template', value: agent?.templateId || '—' }, { debugId: 'agent-detail-provider', label: 'Provider', value: agent?.providerProfile || '—' }]} />,
       buttonDebugId: 'workspace-inspector-tab-project',
       panelDebugId: 'workspace-inspector-panel-project',
     },
@@ -3646,7 +3598,7 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
     setSendPhase(shouldRestartForSend ? 'starting' : 'sending');
     try {
       if (shouldRestartForSend) {
-        await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: messageProvider || agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || 'conversation', projectId: agent.projectId || '', displayName: '', modelTier: messageTier || agent.modelTier || 'smart', agentRole: agent.agentRole || 'conversation' });
+        await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: messageProvider || agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || 'conversation', projectId: agent.projectId || '', displayName: '', modelTier: messageTier || agent.modelTier || 'smart'});
         setLocallyStopped(false);
         await onRefreshAgents?.();
         setSendPhase('sending');
@@ -3678,7 +3630,7 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
   };
 
   const startConversation = () => runThreadAction('start', async () => {
-    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: messageProvider || agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || 'conversation', projectId: agent.projectId || '', displayName: '', modelTier: messageTier || agent.modelTier || 'smart', agentRole: agent.agentRole || 'conversation' });
+    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: messageProvider || agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || 'conversation', projectId: agent.projectId || '', displayName: '', modelTier: messageTier || agent.modelTier || 'smart'});
     setLocallyStopped(false);
   });
   const stopConversation = () => runThreadAction('stop', async () => {
@@ -3693,7 +3645,7 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
     setMessageProvider(next.provider);
     setMessageTier(next.modelTier);
     if (agentHasLiveSession(agent)) await daemonApi.stopAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, timeInSec: 1 }).catch(() => undefined);
-    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: next.provider || agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || 'conversation', projectId: next.projectId || '', projectIdSet: true, displayName: '', modelTier: next.modelTier || 'smart', agentRole: agent.agentRole || 'conversation' });
+    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: next.provider || agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || 'conversation', projectId: next.projectId || '', projectIdSet: true, displayName: '', modelTier: next.modelTier || 'smart'});
     setLocallyStopped(false);
   });
   const [inspectorOpen, setInspectorOpen] = useState(true);
@@ -3944,7 +3896,7 @@ function HomePage({ groups, activeProject, loading, chainTaskIds, tasksById, hom
             <div>
               <div className="text-xs uppercase tracking-[0.25em] text-zinc-500">Task chains</div>
               <h2 className="mt-2 text-3xl font-semibold tracking-[-0.04em] text-zinc-100">Recent work by project</h2>
-              <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-500">Open existing team workflows or create another chain for the active project.</p>
+              <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-500">Open existing task-chain workflows or create another chain for the active project.</p>
             </div>
             <button data-debug-id="home-new-chain-btn" onClick={() => newChain(projectId)} className="rounded-2xl bg-sky-400 px-5 py-3 font-semibold text-black hover:bg-sky-300">+ New chain</button>
           </div>
@@ -4031,7 +3983,7 @@ function HomeRunningAgentsPanel({ agents, projects, session, chats, templates, p
   const ensureSelectedAgentRunning = async (agentId: string) => {
     const agent = (agents || []).find((item: any) => item.id === agentId);
     if (!agent || isAgentRunning(agent)) return;
-    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: agent.providerProfile || 'pi', templateId: agent.templateId || agent.agentRole || 'coder', projectId: agent.projectId || '', modelTier: agent.modelTier || 'normal', agentRole: agent.agentRole || agent.templateId || '' });
+    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id, provider: agent.providerProfile || 'pi', templateId: agent.templateId || 'coder', projectId: agent.projectId || '', modelTier: agent.modelTier || 'normal'});
     await onRefreshAgents?.();
   };
 
@@ -4062,7 +4014,7 @@ function HomeRunningAgentsPanel({ agents, projects, session, chats, templates, p
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold">Agents</h2>
-          <p className="mt-1 text-sm text-zinc-500">Reusable/system agents only. Chain-generated team agents are hidden. Selecting or messaging an offline agent starts it.</p>
+          <p className="mt-1 text-sm text-zinc-500">Reusable/system agents only. Selecting or messaging an offline agent starts it.</p>
         </div>
         <button data-debug-id="home-running-agents-refresh-btn" onClick={() => onRefreshAgents?.()} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Refresh</button>
       </div>
@@ -4091,7 +4043,7 @@ function HomeRunningAgentsPanel({ agents, projects, session, chats, templates, p
                     <div className="min-w-0 truncate font-medium text-zinc-100">{agent.label || agent.id}</div>
                     <span className={`h-2 w-2 shrink-0 rounded-full ${runtime.color}`} />
                   </div>
-                  <div className="mt-1 truncate text-xs text-zinc-500">{agent.id} · {agent.agentRole || agent.templateId || 'agent'} · {runtime.label}</div>
+                  <div className="mt-1 truncate text-xs text-zinc-500">{agent.id} · {agent.templateId || 'agent'} · {runtime.label}</div>
                   <div className="mt-1 truncate text-xs text-zinc-600">Task: {agent.currentTaskId || 'idle'} · Project: {agent.projectId || '—'}</div>
                 </button>
               );
@@ -5080,7 +5032,7 @@ function GuideSidePanel({ agent, messages, loading, sending, debugInfo, currentP
           messages={messages}
           onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))}
           debugPrefix="guide-chat"
-          emptyText="No guide chat yet. Ask Heimdall Guide about daemon, UI, tasks, teams, agents, or troubleshooting."
+          emptyText="No guide chat yet. Ask Heimdall Guide about daemon, UI, tasks, agents, or troubleshooting."
           hasMore={hasMore}
           loadingOlder={loadingOlder}
           onLoadOlder={onLoadOlder}
@@ -5227,7 +5179,6 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
   const persistedActionReplies = useMemo(() => deriveCoordinatorActionReplies(messages), [messages]);
   const projectId = chain.projectId || chain.project_id || '';
   const projectName = projects.find((project: any) => (project.projectId || project.project_id) === projectId)?.name || projectId || 'No project';
-  const chainTeam = chainView.teamByChainId[chain.chainId];
   const composerArtifactUpload = useArtifactUpload({ projectId, originRef: chain.chainId || '', originKind: 'clipboard_chat' });
   const coordinatorStatus = agentRuntimeStatus(coordinatorAgent);
   const coordinatorStatusLabel = agentRuntimeStatusLabel(coordinatorStatus);
@@ -5278,7 +5229,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
   const hasWorkspace = Boolean(chain.vcsWorkspaceId || workspaceForDisplay?.workspace_id || workspaceForDisplay?.repo_diff_supported || workspaceForDisplay?.repoDiffSupported || chainRepoDiffSupported);
   const startCoordinator = async () => {
     if (!coordinatorAgentId) return;
-    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: coordinatorAgentId, provider: coordinatorProvider || coordinatorAgent?.providerProfile || providers?.[0]?.name || 'pi', templateId: coordinatorAgent?.templateId || coordinatorAgent?.agentRole || 'coordinator', projectId: projectId || coordinatorAgent?.projectId || '', displayName: coordinatorAgent?.label || coordinatorAgentId, modelTier: coordinatorTier || coordinatorAgent?.modelTier || 'normal', agentRole: coordinatorAgent?.agentRole || coordinatorAgent?.templateId || 'coordinator' });
+    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: coordinatorAgentId, provider: coordinatorProvider || coordinatorAgent?.providerProfile || providers?.[0]?.name || 'pi', templateId: coordinatorAgent?.templateId || 'coordinator', projectId: projectId || coordinatorAgent?.projectId || '', displayName: coordinatorAgent?.label || coordinatorAgentId, modelTier: coordinatorTier || coordinatorAgent?.modelTier || 'normal'});
     await onRefreshAgents?.();
   };
   const submit = async () => {
@@ -5381,7 +5332,6 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
           commentDraft={commentDraft}
           nudgeDraft={nudgeDraft}
           projectId={projectId}
-          team={chainTeam}
           daemonUrl={session.daemonUrl}
           clientToken={session.clientToken}
           onRefreshAgents={onRefreshAgents}
@@ -5409,14 +5359,14 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
     'chain-agents': {
       id: 'chain-agents',
       label: 'Chain agents',
-      content: <ChainAgentsInspectorContent team={chainTeam} agents={agents} coordinatorAgentId={coordinatorAgentId} onOpenAgent={onOpenAgent} onOpenAgentChat={onOpenAgentChat} />,
+      content: <ChainAgentsInspectorContent tasks={orderedTasks} agents={agents} coordinatorAgentId={coordinatorAgentId} defaultReviewerAgentId={chain?.defaultReviewerAgentInstanceId || chain?.default_reviewer_agent_instance_id || ''} onOpenAgent={onOpenAgent} onOpenAgentChat={onOpenAgentChat} />,
       buttonDebugId: 'workspace-inspector-tab-chain-agents',
       panelDebugId: 'workspace-inspector-panel-chain-agents',
     },
     project: {
       id: 'project',
       label: 'Project',
-      content: <ContextInfoGrid items={[{ debugId: 'chain-project-name', label: 'Project', value: <span>🗂 {projectName}</span> }, { debugId: 'chain-project-id', label: 'Project id', value: <code>{projectId || '—'}</code> }, { debugId: 'chain-team-id', label: 'Team', value: <code>{chain?.teamId || chain?.team_id || '—'}</code> }]} />,
+      content: <ContextInfoGrid items={[{ debugId: 'chain-project-name', label: 'Project', value: <span>🗂 {projectName}</span> }, { debugId: 'chain-project-id', label: 'Project id', value: <code>{projectId || '—'}</code> }]} />,
       buttonDebugId: 'workspace-inspector-tab-project',
       panelDebugId: 'workspace-inspector-panel-project',
     },
@@ -5590,7 +5540,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
   );
 }
 
-function ChainTasksInspectorContent({ chain, chainProgress, activeTasks, completedTasks, tasksById, taskLogsByTaskId, taskLogCursorByTaskId, taskLogHasMoreByTaskId, taskLogLoadingByTaskId, taskLogTotalByTaskId, selectedTaskId, commentDraft, nudgeDraft, projectId, team, daemonUrl, clientToken, onRefreshAgents, onCommentDraft, onNudgeDraft, openTask, onLoadTaskLogPage, openTaskById, closeTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onOpenAgentChat, agents, agentIdentities, taskIndexMap }: any) {
+function ChainTasksInspectorContent({ chain, chainProgress, activeTasks, completedTasks, tasksById, taskLogsByTaskId, taskLogCursorByTaskId, taskLogHasMoreByTaskId, taskLogLoadingByTaskId, taskLogTotalByTaskId, selectedTaskId, commentDraft, nudgeDraft, projectId, daemonUrl, clientToken, onRefreshAgents, onCommentDraft, onNudgeDraft, openTask, onLoadTaskLogPage, openTaskById, closeTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onOpenAgentChat, agents, agentIdentities, taskIndexMap }: any) {
   return (
     <div data-debug-id="chain-task-surface" className="px-[18px] py-4">
       <ChainProgressPanel chain={chain} progress={chainProgress} />
@@ -5616,7 +5566,6 @@ function ChainTasksInspectorContent({ chain, chainProgress, activeTasks, complet
         nudgeDraft={nudgeDraft}
         projectId={projectId}
         chainId={chain.chainId}
-        team={team}
         daemonUrl={daemonUrl}
         clientToken={clientToken}
         onRefreshAgents={onRefreshAgents}
@@ -5654,7 +5603,6 @@ function ChainTasksInspectorContent({ chain, chainProgress, activeTasks, complet
             nudgeDraft={nudgeDraft}
             projectId={projectId}
             chainId={chain.chainId}
-            team={team}
             daemonUrl={daemonUrl}
             clientToken={clientToken}
             onRefreshAgents={onRefreshAgents}
@@ -5818,7 +5766,7 @@ function TaskAgentChip({ role, agentId, agent, active, onClick, onChatClick }: a
   );
 }
 
-function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, expandedTaskId, commentDraft, nudgeDraft, projectId = '', chainId = '', team = null, daemonUrl = '', clientToken = '', onRefreshAgents, onCommentDraft, onNudgeDraft, onOpenTask, onLoadTaskLogPage, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onOpenAgentChat, agents = [], agentIdentities = [], taskIndexMap = new Map(), completed = false }: any) {
+function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, expandedTaskId, commentDraft, nudgeDraft, projectId = '', chainId = '', daemonUrl = '', clientToken = '', onRefreshAgents, onCommentDraft, onNudgeDraft, onOpenTask, onLoadTaskLogPage, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onOpenAgentChat, agents = [], agentIdentities = [], taskIndexMap = new Map(), completed = false }: any) {
   const [commentsOpenByTaskId, setCommentsOpenByTaskId] = useState<Record<string, boolean>>({});
   const [busyAction, setBusyAction] = useState('');
   const [localError, setLocalError] = useState('');
@@ -5828,9 +5776,8 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
   const conversationSummaryById = useSelector((state: any) => state.chat?.conversationSummaryById || {});
   const conversationSummariesQuery = useListConversationSummariesQuery(undefined, { skip: !session.clientToken });
   const effectiveConversationSummaryById = conversationSummariesQuery.data || conversationSummaryById;
-  const chainTeam = team?.team || team || null;
   const taskTextArtifactUpload = useArtifactUpload({ projectId, originRef: chainId || '', originKind: 'clipboard_chain_text' });
-  const selectableAgents = useMemo(() => [{ id: 'user_proxy', label: 'User / operator', agentRole: 'user', templateId: 'user', providerProfile: 'heimdall', projectId: projectId || '', connected: true, connectionState: 'connected' }, ...(agents || [])], [agents, projectId]);
+  const selectableAgents = useMemo(() => [{ id: 'user_proxy', label: 'User / operator', templateId: 'user', providerProfile: 'heimdall', projectId: projectId || '', connected: true, connectionState: 'connected' }, ...(agents || [])], [agents, projectId]);
   const agentsById = useMemo(() => {
     const map = new Map<string, any>();
     selectableAgents.forEach((agent: any) => { if (agent?.id) map.set(String(agent.id), agent); });
@@ -5874,9 +5821,8 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
               remotePeersEnabled
               agents={selectableAgents}
               identities={agentIdentities}
-              team={chainTeam}
               projects={projectId ? [{ projectId, name: projectId }] : []}
-              roleHint={agentPicker.mode === 'reviewer' ? 'reviewer' : ''}
+              preferredTemplateId={agentPicker.mode === 'reviewer' ? 'reviewer' : ''}
               defaultProjectId={projectId || ''}
               conversationSummaryById={effectiveConversationSummaryById}
               value={agentPicker.mode === 'assignee' ? (pickerTask.assigneeAgentInstanceId || '') : (taskReviewerIds(pickerTask)[0] || '')}
@@ -6061,8 +6007,8 @@ function AgentSideSheet({ agent, taskId = '', onClose }: any) {
       <aside className="h-full w-[28rem] border-l border-white/10 bg-[#0d0f14] p-5 shadow-2xl">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Team member</div>
-            <h2 className="mt-2 text-2xl font-semibold">{agent?.label || agent?.id || 'Unknown member'}</h2>
+            <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Chain agent</div>
+            <h2 className="mt-2 text-2xl font-semibold">{agent?.label || agent?.id || 'Unknown agent'}</h2>
           </div>
           <button data-debug-id="chain-agent-side-sheet-close-btn" onClick={onClose} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Close</button>
         </div>
@@ -6230,7 +6176,7 @@ function defaultCoordinator(agents: any[], projectId: string) {
   const pool = agents.filter((agent: any) => agent.id && (!projectId || !agent.projectId || agent.projectId === projectId));
   const ranked = [...pool].sort((left: any, right: any) => {
     const score = (agent: any) => {
-      const text = `${agent.id} ${agent.label} ${agent.roleHint} ${agent.providerProfile}`.toLowerCase();
+      const text = `${agent.id} ${agent.label} ${agent.templateId} ${agent.providerProfile}`.toLowerCase();
       if (text.includes('principal') || text.includes('coordinator') || text.includes('lead')) return 0;
       if (agent.projectId === projectId) return 1;
       return 2;
@@ -6348,161 +6294,92 @@ function NewChainModal({ projectId, projects, agents, creating, error, onClose, 
   const [selectedProjectId, setSelectedProjectId] = useState(projectId || projects[0]?.projectId || '');
   const [title, setTitle] = useState('');
   const [goal, setGoal] = useState('');
-  const [savedKindScaffoldDefault, setSavedKindScaffoldDefault] = useState(() => loadNewChainKindScaffoldDefault());
-  const [kind, setKind] = useState(() => savedKindScaffoldDefault.kind);
-  const kindDef = findTeamKind(kind);
-  const [scaffold, setScaffold] = useState(() => savedKindScaffoldDefault.scaffold);
   const selectedProject = projects.find((project: any) => project.projectId === selectedProjectId) || null;
   const selectedProjectSupportsVcs = projectSupportsVcs(selectedProject);
-  const [wantsVcs, setWantsVcs] = useState(defaultWantsVcs(kindDef, selectedProjectSupportsVcs));
-  const selectedScaffold = scaffold === 'none' ? NONE_SCAFFOLD_META : findScaffold(kindDef, scaffold);
-  const savedKindDef = findTeamKind(savedKindScaffoldDefault.kind);
-  const savedScaffoldDefault = savedKindScaffoldDefault.scaffold === 'none' ? NONE_SCAFFOLD_META : findScaffold(savedKindDef, savedKindScaffoldDefault.scaffold);
-  const selectionDiffersFromDefault = !newChainKindScaffoldSelectionsMatch({ kind, scaffold }, savedKindScaffoldDefault);
-  const [setSelectionAsDefault, setSetSelectionAsDefault] = useState(false);
+  const [wantsVcs, setWantsVcs] = useState(selectedProjectSupportsVcs);
   const [coordinatorAgentInstanceId, setCoordinatorAgentInstanceId] = useState('');
   const coordinatorAgents = useMemo(() => (agents || []).filter((agent: any) => agent?.id && String(agent.state || '').toLowerCase() !== 'archived'), [agents]);
 
   useEffect(() => {
-    setWantsVcs(defaultWantsVcs(findTeamKind(kind), selectedProjectSupportsVcs));
-  }, [kind, selectedProjectSupportsVcs]);
-
-  useEffect(() => {
-    if (!selectionDiffersFromDefault) setSetSelectionAsDefault(false);
-  }, [selectionDiffersFromDefault]);
-
-  const handleKindChange = (nextKindKey: string) => {
-    const nextKind = findTeamKind(nextKindKey);
-    const currentScaffoldValidForNextKind = scaffold === 'none' || nextKind.scaffolds.some((item) => item.key === scaffold);
-    const nextSelection = normalizeNewChainKindScaffoldDefault({
-      kind: nextKind.key,
-      scaffold: currentScaffoldValidForNextKind ? scaffold : savedKindScaffoldDefault.scaffold,
-    });
-    setKind(nextSelection.kind);
-    setScaffold(nextSelection.scaffold);
-    setWantsVcs(defaultWantsVcs(nextKind, selectedProjectSupportsVcs));
-  };
+    setWantsVcs(selectedProjectSupportsVcs);
+  }, [selectedProjectSupportsVcs]);
 
   const submit = (event: any) => {
     event.preventDefault();
     const cleanTitle = title.trim();
     if (!cleanTitle || creating) return;
-    if (selectionDiffersFromDefault && setSelectionAsDefault) {
-      const nextDefault = persistNewChainKindScaffoldDefault({ kind, scaffold });
-      setSavedKindScaffoldDefault(nextDefault);
-      setSetSelectionAsDefault(false);
-    }
     onSubmit({
       projectId: selectedProjectId,
       title: cleanTitle,
       goal: goal.trim(),
-      kind,
-      scaffold,
       wantsVcs: wantsVcs && selectedProjectSupportsVcs,
       coordinatorAgentInstanceId,
     });
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 sm:p-6 overflow-hidden">
-      <form onSubmit={submit} className="flex flex-col max-h-[88vh] w-full max-w-2xl overflow-hidden rounded-3xl border border-white/10 bg-[#11141a] shadow-2xl">
+    <div className="fixed inset-0 z-50 flex items-center justify-center overflow-hidden bg-black/70 p-4 sm:p-6">
+      <form onSubmit={submit} className="flex max-h-[88vh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-white/10 bg-[#11141a] shadow-2xl">
         <div className="shrink-0 border-b border-white/10 px-6 py-5">
-          <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Create chain</div>
-          <h2 className="mt-1 text-2xl font-semibold">+ New chain</h2>
-          <p className="mt-1 text-sm text-zinc-400">Create a chain. By default this creates only a coordinator task to update the chain from the user requirement; optional scaffolds add draft tasks after coordinator validation.</p>
+          <div className="text-xs uppercase tracking-[0.2em] text-zinc-500">Create task chain</div>
+          <h2 className="mt-1 text-2xl font-semibold">+ New goal-driven chain</h2>
+          <p className="mt-1 text-sm text-zinc-400">The daemon no longer asks for chain kind, scaffold, or roster. The chain starts with a coordinator planning task that uses editable skills to create downstream work.</p>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
-          <div className="grid gap-4 md:grid-cols-2">
-            <label className="text-sm text-zinc-300">
-              Project
-              <select data-debug-id="new-chain-project-select" value={selectedProjectId} onChange={(event) => setSelectedProjectId(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
-                {projects.map((project: any) => <option key={project.projectId} value={project.projectId}>{project.name || project.projectId}</option>)}
-              </select>
-            </label>
-            <label className="text-sm text-zinc-300">
-              Kind
-              <select data-debug-id="new-chain-kind-select" value={kind} onChange={(event) => handleKindChange(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
-                {[findTeamKind('coding'), findTeamKind('research'), findTeamKind('solo')].map((item) => <option key={item.key} value={item.key}>{kindOptionLabel(item)}</option>)}
-              </select>
-            </label>
-          </div>
-          <div data-debug-id="new-chain-kind-description" className="rounded-xl bg-white/[0.04] p-3 text-xs text-zinc-400">
-            <div><span className="font-semibold text-zinc-300">{kindDef.label} team:</span> {kindDef.description}</div>
-            <div className="mt-1 text-zinc-500">{paceLabel(kindDef.pace)} pace · {taskCountLabel(kindDef.expectedTaskCount)} default · {kindDef.collaboratingAgentCount} collaborating agents</div>
-          </div>
-
+        <div className="flex-1 space-y-4 overflow-y-auto px-6 py-5">
           <label className="block text-sm text-zinc-300">
             Title
             <input data-debug-id="new-chain-title-input" value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Short action-oriented chain title" className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" autoFocus />
           </label>
 
-          {scaffold !== 'none' && (
-            <label className="block text-sm text-zinc-300">
-              <div className="flex items-center justify-between mb-1">
-                <span>Goal</span>
-                <VimEditButton
-                  debugId="new-chain-goal-vim-edit-btn"
-                  title="Task Chain Goal"
-                  value={goal}
-                  onApply={(val) => setGoal(val)}
-                  lang="markdown"
-                />
-              </div>
-              <textarea data-debug-id="new-chain-goal-textarea" value={goal} onChange={(event) => setGoal(event.target.value)} placeholder="What should this chain accomplish?" rows={4} className="mt-1 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
-            </label>
-          )}
-
-          <div className="grid gap-4 md:grid-cols-2">
-            <div>
-              <label className="text-sm text-zinc-300">
-                Optional task scaffold
-                <select data-debug-id="new-chain-scaffold-select" value={scaffold} onChange={(event) => setScaffold(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
-                  <option value="none">{scaffoldOptionLabel(NONE_SCAFFOLD_META)}</option>
-                  {kindDef.scaffolds.map((item) => <option key={item.key} value={item.key}>{scaffoldOptionLabel(item)}</option>)}
-                </select>
-              </label>
-              <div className="mt-1 text-xs text-zinc-500">Non-none scaffolds create draft tasks that depend on coordinator validation.</div>
-              <div className="mt-2 rounded-lg bg-white/[0.04] p-3 text-xs text-zinc-400">
-                <div className="font-semibold text-zinc-300">{selectedScaffold.label}</div>
-                <div className="mt-1">{selectedScaffold.description}</div>
-                <div className="mt-1 text-zinc-500">{paceLabel(selectedScaffold.pace)} pace · {taskCountLabel(selectedScaffold.expectedTaskCount)} · {selectedScaffold.collaboratingAgentCount} agents</div>
-              </div>
-              <div data-debug-id="new-chain-default-status" className="mt-3 rounded-lg bg-white/[0.04] p-3 text-xs text-zinc-500">
-                Default selection: <span className="text-zinc-300">{savedKindDef.label}</span> / <span className="text-zinc-300">{savedScaffoldDefault.label}</span>
-              </div>
-              {selectionDiffersFromDefault && (
-                <label className="mt-3 flex items-center gap-3 rounded-xl border border-sky-400/20 bg-sky-400/10 px-3 py-3 text-sm text-zinc-200">
-                  <input data-debug-id="new-chain-set-default-checkbox" type="checkbox" checked={setSelectionAsDefault} onChange={(event) => setSetSelectionAsDefault(event.target.checked)} className="h-4 w-4" />
-                  Set this kind/scaffold as the default for future new chains
-                </label>
-              )}
+          <label className="block text-sm text-zinc-300">
+            <div className="mb-1 flex items-center justify-between">
+              <span>Goal</span>
+              <VimEditButton debugId="new-chain-goal-vim-edit-btn" title="Task Chain Goal" value={goal} onApply={(val) => setGoal(val)} lang="markdown" />
             </div>
-            <label className="flex items-center gap-3 rounded-xl border border-white/10 bg-black/20 px-3 py-3 text-sm text-zinc-300">
-              <input data-debug-id="new-chain-vcs-checkbox" type="checkbox" checked={wantsVcs && selectedProjectSupportsVcs} disabled={!selectedProjectSupportsVcs} onChange={(event) => setWantsVcs(event.target.checked)} className="h-4 w-4" />
-              Use VCS workspace if project supports it
+            <textarea data-debug-id="new-chain-goal-textarea" value={goal} onChange={(event) => setGoal(event.target.value)} placeholder="Describe the desired outcome. The coordinator will use coordinator-playbook and scaffold recipe skills to plan the chain." rows={5} className="mt-1 w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" />
+          </label>
+
+          <label className="block text-sm text-zinc-300">
+            Project
+            <select data-debug-id="new-chain-project-select" value={selectedProjectId} onChange={(event) => setSelectedProjectId(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
+              {projects.map((project: any) => <option key={project.projectId} value={project.projectId}>{project.name || project.projectId}</option>)}
+            </select>
+          </label>
+
+          <div className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+            <label className="flex items-start gap-3 text-sm text-zinc-300">
+              <input data-debug-id="new-chain-wants-vcs-checkbox" type="checkbox" checked={wantsVcs && selectedProjectSupportsVcs} disabled={!selectedProjectSupportsVcs} onChange={(event) => setWantsVcs(event.target.checked)} className="mt-0.5 h-4 w-4" />
+              <span>
+                <span className="font-semibold text-zinc-100">Request VCS workspace setup task</span>
+                <span className="mt-1 block text-xs text-zinc-500">Creates an explicit “Prepare chain workspace” task when the selected project has VCS anchors. VCS is no longer implied by a chain kind.</span>
+              </span>
             </label>
-          </div>
-          <div data-debug-id="new-chain-project-vcs-status" className="rounded-xl bg-white/[0.04] p-3 text-xs text-zinc-500">
-            Project VCS: {selectedProjectSupportsVcs ? `enabled via ${projectAnchorValue(selectedProject, 'vcs_kind', 'auto')} repo ${projectAnchorValue(selectedProject, 'directory')}` : 'disabled — add directory/vcs_kind anchors in project settings'}
+            <div data-debug-id="new-chain-project-vcs-status" className="mt-3 rounded-xl bg-black/20 p-3 text-xs text-zinc-500">
+              Project VCS: {selectedProjectSupportsVcs ? `enabled via ${projectAnchorValue(selectedProject, 'vcs_kind', 'auto')} repo ${projectAnchorValue(selectedProject, 'directory')}` : 'disabled — add directory/vcs_kind anchors in project settings'}
+            </div>
           </div>
 
           <label className="block text-sm text-zinc-300">
             Coordinator
             <select data-debug-id="new-chain-coordinator-select" value={coordinatorAgentInstanceId} onChange={(event) => setCoordinatorAgentInstanceId(event.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
-              <option value="">Generate coordinator for this chain</option>
+              <option value="">Use configured default coordinator</option>
               {coordinatorAgents.map((agent: any) => <option key={agent.id} value={agent.id}>{agent.label || agent.id}{agent.agentId && agent.agentId !== agent.id ? ` · ${agent.agentId}` : ''}{agent.projectId ? ` · home ${agent.projectId}` : ''}</option>)}
             </select>
             <div data-debug-id="new-chain-coordinator-preview" className="mt-2 rounded-xl bg-white/[0.04] p-3 text-xs text-zinc-500">
-              {coordinatorAgentInstanceId ? `Coordinator: reuse ${coordinatorAgentInstanceId}` : 'Coordinator: generated on create as coordinator@project-chain'}
+              {coordinatorAgentInstanceId ? `Coordinator: reuse ${coordinatorAgentInstanceId}` : 'Coordinator: resolved from the default-agent map'}
             </div>
           </label>
+
+          <div data-debug-id="new-chain-skill-note" className="rounded-2xl border border-sky-400/20 bg-sky-400/10 p-4 text-sm text-sky-100">
+            Scaffold recipes are editable skills (`scaffold-coding-feature`, `scaffold-coding-bugfix`, `scaffold-research`, `scaffold-solo`) selected by the coordinator from the goal.
+          </div>
           {error && <div className="rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-200">{error}</div>}
         </div>
 
-        <div className="shrink-0 border-t border-white/10 bg-[#11141a] px-6 py-4 flex justify-end gap-2">
+        <div className="flex shrink-0 justify-end gap-2 border-t border-white/10 bg-[#11141a] px-6 py-4">
           <button data-debug-id="new-chain-cancel-btn" type="button" onClick={onClose} disabled={creating} className="rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15 disabled:opacity-50">Cancel</button>
-          <button data-debug-id="new-chain-submit-btn" type="submit" disabled={creating || !title.trim()} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:opacity-50">{creating ? 'Creating…' : 'Create chain'}</button>
+          <button data-debug-id="new-chain-create-btn" type="submit" disabled={creating || !title.trim()} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:opacity-50">{creating ? 'Creating…' : 'Create chain'}</button>
         </div>
       </form>
     </div>

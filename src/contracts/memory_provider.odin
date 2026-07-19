@@ -39,8 +39,6 @@ Memory_Event :: struct {
 	// the durable agent_id (all its project-instances), and is the most specific
 	// targeting dimension.
 	target_agent_id: string,
-	target_team_kind: string,
-	target_role: string,
 	target_project_id: string,
 	type: Memory_Type,
 	title: string,
@@ -59,8 +57,6 @@ Memory_Record :: struct {
 	memory_id: string,
 	proposal_id: string,
 	target_agent_id: string,
-	target_team_kind: string,
-	target_role: string,
 	target_project_id: string,
 	type: Memory_Type,
 	title: string,
@@ -92,8 +88,6 @@ Memory_Replay_Response :: struct {
 
 Memory_List_Request :: struct {
 	target_agent_id: string,
-	target_team_kind: string,
-	target_role: string,
 	target_project_id: string,
 	type: Memory_Type,
 	status: Memory_Status,

@@ -27,19 +27,6 @@ identity_is_agent :: proc(agent_instance_id: string) -> bool {
 	return agent_instance_id != "" && agent_record_index_by_instance(agent_instance_id) >= 0
 }
 
-// Returns the first non-archived agent_instance_id whose template role_hint matches.
-agents_first_by_role_hint :: proc(role_hint, project_id: string) -> string {
-	for i in 0..<agent_instance_record_count {
-		rec := agent_instance_records[i]
-		if rec.archived_at_unix_ms != 0 do continue
-		if project_id != "" && rec.project_id != project_id do continue
-		tidx := agent_template_index(rec.template_id)
-		if tidx < 0 do continue
-		if agent_template_records[tidx].role_hint == role_hint do return rec.agent_instance_id
-	}
-	return ""
-}
-
 // --- Status predicates ---
 
 task_status_allowed :: proc(status: string) -> bool {
@@ -116,34 +103,9 @@ task_chain_default_reviewer_agent_instance_id :: proc(chain_id: string) -> strin
 	return chain.default_reviewer_agent_instance_id
 }
 
-task_team_id_for_state :: proc(state: Task_State) -> string {
-	if state.chain_id == "" do return ""
-	chain, found := store_get_chain(state.chain_id)
-	if found && chain.team_id != "" do return chain.team_id
-	team, ok := team_db_get_team_by_chain_id(team_service_db, state.chain_id)
-	if !ok do return ""
-	return team.team_id
-}
-
-task_reviewer_matches_user_proxy_member :: proc(reviewer: string, member: Team_Member_Record) -> bool {
-	if reviewer == "" || !member.is_user_proxy do return false
-	if member.role_key != "" && reviewer == member.role_key do return true
-	if member.route_to != "" && reviewer == member.route_to do return true
-	if member.agent_instance_id != "" && reviewer == member.agent_instance_id do return true
-	if member.agent_record_id != "" && reviewer == member.agent_record_id do return true
-	return false
-}
-
 task_reviewer_is_user_review :: proc(state: Task_State, reviewer: string) -> bool {
-	if reviewer == "" do return false
-	if reviewer == "user_proxy" do return true
-	team_id := task_team_id_for_state(state)
-	if team_id == "" do return false
-	members := team_db_list_members(team_service_db, team_id)
-	for member in members {
-		if task_reviewer_matches_user_proxy_member(reviewer, member) do return true
-	}
-	return false
+	_ = state
+	return reviewer == "user_proxy" || reviewer == HUMAN_RECIPIENT_ID
 }
 
 task_required_reviewer_agent_instance_id :: proc(state: Task_State) -> string {

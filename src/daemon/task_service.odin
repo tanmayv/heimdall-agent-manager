@@ -160,62 +160,36 @@ task_service_create_task :: proc(cmd: Task_Create_Command) -> Task_Service_Resul
 }
 
 task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Service_Result {
-	if cmd.kind == "" {
-		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"chain create requires kind"}`}
-	}
-	kind := team_kind_get(cmd.kind)
-	if kind == nil {
-		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"unknown team kind"}`}
+	// A chain binds its coordinator to this project; reject a non-existent one so
+	// we never generate a coordinator pinned to a project that will fail wrapper
+	// project validation on every launch.
+	if strings.trim_space(cmd.project_id) != "" && !project_exists(cmd.project_id) {
+		return Task_Service_Result{ok = false, status_code = 400, message = task_service_error_json(fmt.tprintf("project '%s' does not exist; create it first or use a valid project_id", cmd.project_id))}
 	}
 	chain_title := cmd.title
-	if chain_title == "" do chain_title = task_service_default_chain_title(kind)
+	if chain_title == "" do chain_title = "New task chain"
 	chain_id := cmd.chain_id
 	if chain_id == "" do chain_id = task_generate_chain_id()
-	team_coordinator_override := ""
-	if cmd.coordinator_agent_instance_id != "" {
-		if idx := agent_record_index_by_instance(cmd.coordinator_agent_instance_id); idx >= 0 && agent_instance_records[idx].archived_at_unix_ms == 0 {
-			team_coordinator_override = cmd.coordinator_agent_instance_id
-		}
-	}
-	team_id := team_service_create_for_chain(cmd.project_id, chain_id, cmd.kind, "", team_coordinator_override)
-	if team_id == "" {
-		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"team allocation failed"}`}
-	}
-	coordinator_agent_instance_id := ""
-	if cmd.coordinator_agent_instance_id != "" {
-		resolved, resolve_ok, resolve_msg := task_service_resolve_agent_reference_for_new_chain(chain_id, team_id, cmd.project_id, cmd.coordinator_agent_instance_id, "coordinator", cmd.author_agent_instance_id)
-		if !resolve_ok {
-			_ = team_service_archive(team_id, "coordinator_resolve_failed")
-			return Task_Service_Result{ok = false, status_code = 400, message = task_service_error_json(resolve_msg)}
-		}
-		if resolved == "user_proxy" || resolved == HUMAN_RECIPIENT_ID {
-			_ = team_service_archive(team_id, "invalid_coordinator")
-			return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"coordinator cannot be user_proxy"}`}
-		}
-		coordinator_agent_instance_id = resolved
-	} else {
-		coordinator_agent_instance_id = task_service_chain_member_for_role(team_id, "coordinator")
-	}
-	if coordinator_agent_instance_id == "" {
-		_ = team_service_archive(team_id, "coordinator_missing")
-		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"coordinator allocation failed"}`}
+	coordinator_ref := cmd.coordinator_agent_instance_id
+	if coordinator_ref == "" do coordinator_ref = agent_default_id_for_use("coordinator")
+	if coordinator_ref == "" do coordinator_ref = "coordinator"
+	coordinator_agent_instance_id, coordinator_ok, coordinator_msg := task_service_resolve_agent_reference_for_new_chain(chain_id, cmd.project_id, coordinator_ref, "coordinator", cmd.author_agent_instance_id)
+	if !coordinator_ok do return Task_Service_Result{ok = false, status_code = 400, message = task_service_error_json(coordinator_msg)}
+	if coordinator_agent_instance_id == "user_proxy" || coordinator_agent_instance_id == HUMAN_RECIPIENT_ID {
+		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"coordinator cannot be user_proxy"}`}
 	}
 	default_reviewer_agent_instance_id, default_reviewer_normalized := task_normalize_user_reviewer(cmd.default_reviewer_agent_instance_id)
+	if default_reviewer_agent_instance_id == "" {
+		default_reviewer_agent_instance_id = agent_default_id_for_use("reviewer")
+	}
 	if default_reviewer_agent_instance_id != "" && default_reviewer_agent_instance_id != "user_proxy" && default_reviewer_agent_instance_id != HUMAN_RECIPIENT_ID {
-		resolved, resolve_ok, resolve_msg := task_service_resolve_agent_reference_for_new_chain(chain_id, team_id, cmd.project_id, default_reviewer_agent_instance_id, "lgtm_required", cmd.author_agent_instance_id)
-		if !resolve_ok {
-			_ = team_service_archive(team_id, "default_reviewer_resolve_failed")
-			return Task_Service_Result{ok = false, status_code = 400, message = task_service_error_json(resolve_msg)}
-		}
+		resolved, resolve_ok, resolve_msg := task_service_resolve_agent_reference_for_new_chain(chain_id, cmd.project_id, default_reviewer_agent_instance_id, "lgtm_required", cmd.author_agent_instance_id)
+		if !resolve_ok do return Task_Service_Result{ok = false, status_code = 400, message = task_service_error_json(resolve_msg)}
 		default_reviewer_agent_instance_id = resolved
 	}
-	if default_reviewer_agent_instance_id != "" && default_reviewer_agent_instance_id == coordinator_agent_instance_id {
-		_ = team_service_archive(team_id, "invalid_default_reviewer")
+	if default_reviewer_agent_instance_id == coordinator_agent_instance_id {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"default reviewer cannot equal coordinator"}`}
 	}
-	// Do not create Git/JJ workspaces synchronously during chain creation.
-	// Worktree creation can require user approval and may fail on local refs; for
-	// VCS-backed chains we create an explicit coordinator task before discovery.
 	workspace_id := ""
 	status := cmd.status
 	if status == "" do status = "in_progress"
@@ -223,7 +197,6 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 		kind                          = .Chain_Created,
 		chain_id                      = chain_id,
 		project_id                    = cmd.project_id,
-		team_id                       = team_id,
 		vcs_workspace_id              = workspace_id,
 		title                         = chain_title,
 		description                   = cmd.description,
@@ -233,48 +206,28 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 		author_agent_instance_id      = cmd.author_agent_instance_id,
 	}
 	if !task_store_append_event(event) {
-		_ = team_service_archive(team_id, "chain_create_failed")
 		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append chain create failed"}`}
 	}
 	_ = task_chain_maybe_record_diff_base_sha(chain_id, "chain_created")
 	task_notify_event(event)
-	// Request coordinator runtime immediately after the chain exists, before
-	// workspace/discovery/scaffold task creation. Later task/status transitions
-	// still reconcile idempotently, but this makes boot independent of those
-	// follow-up events and gives the UI an immediate launch request to observe.
 	coordinator_boot_requested := task_runtime_reconcile_chain_coordinator(chain_id, "chain_created", "high")
+	coordinator_kickoff_task_id := task_service_create_coordinator_kickoff_task(chain_id, chain_title, cmd.description, coordinator_agent_instance_id, cmd.author_agent_instance_id, cmd.wants_vcs)
+	if coordinator_kickoff_task_id == "" {
+		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append coordinator kickoff task failed"}`}
+	}
 	workspace_setup_task_id := ""
 	if cmd.wants_vcs {
-		workspace_setup_task_id = task_service_create_workspace_setup_task(chain_id, cmd.project_id, team_id, chain_title, coordinator_agent_instance_id, cmd.author_agent_instance_id)
+		workspace_setup_task_id = task_service_create_workspace_setup_task(chain_id, cmd.project_id, chain_title, coordinator_agent_instance_id, default_reviewer_agent_instance_id, cmd.author_agent_instance_id, coordinator_kickoff_task_id)
 		if workspace_setup_task_id == "" {
-			_ = team_service_archive(team_id, "workspace_setup_task_create_failed")
 			return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append workspace setup task failed"}`}
-		}
-	}
-	scaffold_selected := cmd.scaffold != "" && cmd.scaffold != "none" && !cmd.no_scaffold
-	discovery_task_id := task_service_create_coordinator_discovery_task(chain_id, chain_title, cmd.description, kind, coordinator_agent_instance_id, cmd.author_agent_instance_id, workspace_setup_task_id, scaffold_selected)
-	if discovery_task_id == "" {
-		_ = team_service_archive(team_id, "discovery_task_create_failed")
-		return Task_Service_Result{ok = false, status_code = 500, message = `{"ok":false,"message":"append coordinator discovery task failed"}`}
-	}
-	if scaffold_selected {
-		legacy_cmd := cmd
-		legacy_cmd.chain_id = chain_id
-		legacy_cmd.title = chain_title
-		legacy_cmd.coordinator_agent_instance_id = coordinator_agent_instance_id
-		legacy_cmd.default_reviewer_agent_instance_id = default_reviewer_agent_instance_id
-		if ok, msg := task_service_create_chain_scaffold(chain_id, team_id, legacy_cmd, kind, discovery_task_id); !ok {
-			if workspace_id != "" do task_service_cleanup_workspace(chain_id)
-			_ = team_service_archive(team_id, "scaffold_create_failed")
-			return Task_Service_Result{ok = false, status_code = 500, message = task_service_error_json(msg)}
 		}
 	}
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"chain_id":"`); json_write_string(&b, chain_id)
-	strings.write_string(&b, `","team_id":"`); json_write_string(&b, team_id)
 	strings.write_string(&b, `","vcs_workspace_id":"`); json_write_string(&b, workspace_id)
 	strings.write_string(&b, `","workspace_setup_task_id":"`); json_write_string(&b, workspace_setup_task_id)
-	strings.write_string(&b, `","discovery_task_id":"`); json_write_string(&b, discovery_task_id)
+	strings.write_string(&b, `","coordinator_kickoff_task_id":"`); json_write_string(&b, coordinator_kickoff_task_id)
+	strings.write_string(&b, `","discovery_task_id":"`); json_write_string(&b, coordinator_kickoff_task_id)
 	strings.write_string(&b, `","coordinator_agent_instance_id":"`); json_write_string(&b, coordinator_agent_instance_id)
 	strings.write_string(&b, `","coordinator_boot_requested":`); strings.write_string(&b, "true" if coordinator_boot_requested else "false")
 	strings.write_string(&b, `,"status":"`); json_write_string(&b, status); strings.write_string(&b, `"`)
@@ -283,33 +236,9 @@ task_service_create_chain :: proc(cmd: Task_Chain_Create_Command) -> Task_Servic
 	return Task_Service_Result{ok = true, status_code = 200, message = strings.to_string(b)}
 }
 
-task_service_default_chain_title :: proc(kind: ^Team_Kind_Def) -> string {
-	if kind == nil do return "New task chain"
-	if kind.display_name != "" do return fmt.tprintf("New %s chain", kind.display_name)
-	if kind.key != "" do return fmt.tprintf("New %s chain", kind.key)
-	return "New task chain"
-}
-
-task_service_chain_member_for_role :: proc(team_id, role_key: string) -> string {
-	members := team_db_list_members(team_service_db, team_id)
-	for member in members {
-		if member.role_key != role_key do continue
-		if member.is_user_proxy do return "user_proxy"
-		if routed, ok := team_service_ensure_member_route(member); ok && routed != "" do return routed
-		if member.route_to != "" do return member.route_to
-		if member.agent_instance_id != "" do return member.agent_instance_id
-		return team_service_member_agent_instance_id("", "", team_id, member.role_key, member.role_index)
-	}
-	return ""
-}
-
-task_service_create_workspace_setup_task :: proc(chain_id, project_id, team_id, chain_title, coordinator_agent_instance_id, author: string) -> string {
+task_service_create_workspace_setup_task :: proc(chain_id, project_id, chain_title, coordinator_agent_instance_id, reviewer_agent_instance_id, author, depends_on: string) -> string {
 	task_id := task_generate_id()
-	description := task_service_workspace_setup_description(project_id, team_id, chain_id, chain_title)
-	members := team_db_list_members(team_service_db, team_id)
-	defer delete(members)
-	reviewer := task_service_pick_non_user_reviewer(team_id, project_id, chain_id, coordinator_agent_instance_id, members, []string{"reviewer"})
-	if reviewer == "" do reviewer = task_service_pick_non_user_reviewer(team_id, project_id, chain_id, coordinator_agent_instance_id, members, []string{})
+	description := task_service_workspace_setup_description(project_id, chain_id, chain_title)
 	event := Task_Event{
 		kind                       = .Task_Created,
 		task_id                    = task_id,
@@ -317,9 +246,10 @@ task_service_create_workspace_setup_task :: proc(chain_id, project_id, team_id, 
 		title                      = "Prepare chain workspace",
 		description                = description,
 		priority                   = "normal",
-		status                     = "ready",
+		status                     = "planning" if depends_on != "" else "ready",
 		assignee_agent_instance_id = coordinator_agent_instance_id,
-		reviewer_agent_instance_id  = reviewer,
+		reviewer_agent_instance_id  = reviewer_agent_instance_id,
+		depends_on                 = depends_on,
 		created_by                 = author,
 		author_agent_instance_id   = author,
 	}
@@ -328,7 +258,7 @@ task_service_create_workspace_setup_task :: proc(chain_id, project_id, team_id, 
 	return task_id
 }
 
-task_service_workspace_setup_description :: proc(project_id, team_id, chain_id, chain_title: string) -> string {
+task_service_workspace_setup_description :: proc(project_id, chain_id, chain_title: string) -> string {
 	repo := ""
 	base_ref := task_service_project_base_ref(project_id)
 	worktree_root := fmt.tprintf("/tmp/heimdall-worktrees/%s", project_id)
@@ -341,10 +271,10 @@ task_service_workspace_setup_description :: proc(project_id, team_id, chain_id, 
 		vcs_kind = project_anchor_value(project, "vcs_kind", vcs_kind)
 	}
 	slug := task_chain_slug(chain_title, chain_id)
-	path := fmt.tprintf("%s/team/%s/%s", strings.trim_right(worktree_root, "/"), team_id, slug)
-	branch := vcs_git_safe_branch_name(fmt.tprintf("team-%s-%s", team_id, slug))
+	path := fmt.tprintf("%s/chain/%s/%s", strings.trim_right(worktree_root, "/"), chain_id, slug)
+	branch := vcs_git_safe_branch_name(fmt.tprintf("chain-%s-%s", chain_id, slug))
 	b := strings.builder_make()
-	strings.write_string(&b, "Prepare the VCS workspace for this chain before doing discovery/planning.\n\n")
+	strings.write_string(&b, "Prepare the VCS workspace for this chain. Use the `vcs-workspace-setup` skill and do not treat this as a daemon-selected chain kind.\n\n")
 	strings.write_string(&b, "## Required approval\n")
 	strings.write_string(&b, "Do not run any VCS command until you have asked the user in chain chat and received explicit approval. Show the exact command(s) you plan to run.\n\n")
 	strings.write_string(&b, "## Expected workspace\n")
@@ -357,13 +287,59 @@ task_service_workspace_setup_description :: proc(project_id, team_id, chain_id, 
 	strings.write_string(&b, "First ask the user to approve these commands. After approval, prefer a detached worktree first so chain creation does not depend on branch ref creation:\n\n")
 	strings.write_string(&b, "```bash\n")
 	strings.write_string(&b, fmt.tprintf("mkdir -p %s\n", shell_quote(vcs.vcs_workspace_parent(path))))
-	strings.write_string(&b, fmt.tprintf("git -C %s fetch --quiet origin %s || true\n", shell_quote(repo), shell_quote(base_ref)))
-	strings.write_string(&b, fmt.tprintf("git -C %s worktree add --detach %s %s\n", shell_quote(repo), shell_quote(path), shell_quote(base_ref)))
-	strings.write_string(&b, fmt.tprintf("git -C %s switch -c %s\n", shell_quote(path), shell_quote(branch)))
+	if repo != "" {
+		strings.write_string(&b, fmt.tprintf("git -C %s fetch --quiet origin %s || true\n", shell_quote(repo), shell_quote(base_ref)))
+		strings.write_string(&b, fmt.tprintf("git -C %s worktree add --detach %s %s\n", shell_quote(repo), shell_quote(path), shell_quote(base_ref)))
+		strings.write_string(&b, fmt.tprintf("git -C %s switch -c %s\n", shell_quote(path), shell_quote(branch)))
+	} else {
+		strings.write_string(&b, "# Configure a project directory before running git worktree commands.\n")
+	}
 	strings.write_string(&b, "```\n\n")
 	strings.write_string(&b, "If branch creation fails, keep the detached worktree and report the failure in a task comment instead of blocking chain creation.\n\n")
 	strings.write_string(&b, "## Completion evidence\n")
-	strings.write_string(&b, "Comment with the approved commands, actual workspace path, branch/detached state, base ref, and `git -C <path> status --short --branch` output. Then mark this task done. The discovery task is intentionally blocked on this task.\n")
+	strings.write_string(&b, "Comment with the approved commands, actual workspace path, branch/detached state, base ref, and `git -C <path> status --short --branch` output. Then mark this task done. Downstream implementation tasks should depend on this task when they need the workspace.\n")
+	return strings.to_string(b)
+}
+
+task_service_create_coordinator_kickoff_task :: proc(chain_id, chain_title, chain_description, coordinator_agent_instance_id, author: string, wants_vcs: bool) -> string {
+	task_id := task_generate_id()
+	description := task_service_coordinator_kickoff_description(chain_title, chain_description, wants_vcs)
+	event := Task_Event{
+		kind                       = .Task_Created,
+		task_id                    = task_id,
+		chain_id                   = chain_id,
+		title                      = "Plan task chain from goal",
+		description                = description,
+		priority                   = "normal",
+		status                     = "ready",
+		assignee_agent_instance_id = coordinator_agent_instance_id,
+		created_by                 = author,
+		author_agent_instance_id   = author,
+	}
+	if !task_store_append_event(event) do return ""
+	task_notify_event(event)
+	return task_id
+}
+
+task_service_coordinator_kickoff_description :: proc(chain_title, chain_description: string, wants_vcs: bool) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "Initial coordinator kickoff task for a goal-driven task chain. There is no daemon-selected chain kind, no generated team roster, and no built-in scaffold expansion.\n\n")
+	strings.write_string(&b, "## Goal context\n")
+	strings.write_string(&b, "- Current chain title: "); strings.write_string(&b, chain_title); strings.write_string(&b, "\n")
+	if chain_description != "" {
+		strings.write_string(&b, "- Initial goal/description: "); strings.write_string(&b, chain_description); strings.write_string(&b, "\n")
+	} else {
+		strings.write_string(&b, "- Initial goal/description: not provided yet.\n")
+	}
+	if wants_vcs {
+		strings.write_string(&b, "- VCS requested: a separate `Prepare chain workspace` task has been scheduled. Use the `vcs-workspace-setup` skill and make implementation tasks depend on that setup task when needed.\n")
+	}
+	strings.write_string(&b, "\n## Instructions\n")
+	strings.write_string(&b, "1. Read applicable skills, especially `coordinator-playbook` and the scaffold recipe skills (`scaffold-coding-feature`, `scaffold-coding-bugfix`, `scaffold-research`, `scaffold-solo`).\n")
+	strings.write_string(&b, "2. Select the recipe that best fits the goal; do not rely on a chain `kind` field or a generated roster.\n")
+	strings.write_string(&b, "3. Clarify the user goal through chain chat if the title/goal is missing or vague, then update the chain title/description.\n")
+	strings.write_string(&b, "4. Create downstream tasks with dependencies, assignees, and reviewers using task/participant roles plus configured default-agent ids.\n")
+	strings.write_string(&b, "5. Ensure review gates and evidence expectations are explicit on each downstream task. Mark this kickoff task done once the downstream task chain is ready to execute.\n")
 	return strings.to_string(b)
 }
 
@@ -376,203 +352,14 @@ vcs_git_safe_branch_name :: proc(name: string) -> string {
 	return strings.clone(fmt.tprintf("heimdall-%s", clean))
 }
 
-task_service_create_coordinator_discovery_task :: proc(chain_id, chain_title, chain_description: string, kind: ^Team_Kind_Def, coordinator_agent_instance_id, author: string, depends_on: string = "", scaffold_selected: bool = false) -> string {
-	task_id := task_generate_id()
-	kind_name := "team"
-	if kind != nil && kind.display_name != "" do kind_name = kind.display_name
-	description := task_service_coordinator_discovery_description(chain_title, chain_description, kind_name, scaffold_selected)
-	event := Task_Event{
-		kind                       = .Task_Created,
-		task_id                    = task_id,
-		chain_id                   = chain_id,
-		title                      = "Validate task chain scaffold" if scaffold_selected else "Update task chain from user requirement",
-		description                = description,
-		priority                   = "normal",
-		status                     = "ready" if depends_on == "" else "planning",
-		assignee_agent_instance_id = coordinator_agent_instance_id,
-		depends_on                 = depends_on,
-		created_by                 = author,
-		author_agent_instance_id   = author,
+task_service_vcs_workspace_path :: proc(project_id, chain_id, chain_title: string) -> string {
+	worktree_root := fmt.tprintf("/tmp/heimdall-worktrees/%s", project_id)
+	if pidx := project_index(project_id); pidx >= 0 {
+		project := project_records[pidx]
+		worktree_root = project_anchor_value(project, "worktree_root", worktree_root)
 	}
-	if !task_store_append_event(event) do return ""
-	task_notify_event(event)
-	return task_id
-}
-
-task_service_coordinator_discovery_description :: proc(chain_title, chain_description, kind_name: string, scaffold_selected: bool = false) -> string {
-	b := strings.builder_make()
-	if scaffold_selected {
-		strings.write_string(&b, "Coordinator validation task for a newly created scaffolded task chain.\n\n")
-	} else {
-		strings.write_string(&b, "Initial coordinator task for a newly created task chain.\n\n")
-	}
-	strings.write_string(&b, "## Context\n")
-	strings.write_string(&b, "- Team kind: "); strings.write_string(&b, kind_name); strings.write_string(&b, "\n")
-	strings.write_string(&b, "- Current chain title: "); strings.write_string(&b, chain_title); strings.write_string(&b, "\n")
-	if chain_description != "" {
-		strings.write_string(&b, "- Initial goal/description: "); strings.write_string(&b, chain_description); strings.write_string(&b, "\n")
-	} else {
-		strings.write_string(&b, "- Initial goal/description: not provided yet.\n")
-	}
-	strings.write_string(&b, "\n## Instructions\n")
-	strings.write_string(&b, "1. Contact the user in chain chat and explain the selected team kind and roles.\n")
-	strings.write_string(&b, "2. Clarify the user's goal with concise questions if title/goal are missing or vague.\n")
-	strings.write_string(&b, "3. Rename/update the chain title and description once the requirement is clear.\n")
-	if scaffold_selected {
-		strings.write_string(&b, "4. Validate the generated scaffold tasks before any scaffold work starts; edit/create/cancel tasks so the chain matches the user's requirement.\n")
-		strings.write_string(&b, "5. Mark this validation task done only when the scaffold is safe to execute. All scaffold tasks depend on this task.\n")
-		strings.write_string(&b, "6. Keep free-form user contact routed through the coordinator.\n")
-	} else {
-		strings.write_string(&b, "4. Create downstream tasks/dependencies or apply an appropriate task-bundle template only after understanding the user's requirement.\n")
-		strings.write_string(&b, "5. Keep free-form user contact routed through the coordinator.\n")
-	}
-	return strings.to_string(b)
-}
-
-Task_Scaffold_Build_Task :: struct {
-	key: string,
-	task_id: string,
-	title: string,
-	description: string,
-	assignee_agent_instance_id: string,
-	reviewer_agent_instance_ids: []string,
-	depends_on: string,
-}
-
-Task_Scaffold_Role_Counter :: struct {
-	role_key: string,
-	next: int,
-}
-
-task_service_create_chain_scaffold :: proc(chain_id, team_id: string, cmd: Task_Chain_Create_Command, kind: ^Team_Kind_Def, validation_task_id: string = "") -> (bool, string) {
-	if kind == nil do return false, "unknown team kind"
-	scaffold_idx := 0
-	if cmd.scaffold != "" {
-		scaffold_idx = -1
-		for i in 0..<len(kind.scaffolds) {
-			if kind.scaffolds[i].key == cmd.scaffold {
-				scaffold_idx = i
-				break
-			}
-		}
-		if scaffold_idx < 0 do return false, fmt.tprintf("unknown scaffold %s for kind %s", cmd.scaffold, kind.key)
-	}
-	if len(kind.scaffolds) == 0 do return true, "ok"
-	scaffold := kind.scaffolds[scaffold_idx]
-	members := team_db_list_members(team_service_db, team_id)
-	defer delete(members)
-	role_counters := [dynamic]Task_Scaffold_Role_Counter{}
-	defer delete(role_counters)
-	task_id_base := router_now_unix_ms()
-	built := [dynamic]Task_Scaffold_Build_Task{}
-	defer delete(built)
-	for i in 0..<len(scaffold.tasks) {
-		def := scaffold.tasks[i]
-		assignee, ok := task_service_scaffold_pick_assignee(team_id, kind.key, cmd, members, &role_counters, def.role_key)
-		if !ok do return false, fmt.tprintf("missing assignee for scaffold role %s", def.role_key)
-		reviewers := task_service_scaffold_reviewers(team_id, kind.key, cmd, members, def.reviewer_role)
-		if def.reviewer_role != "" && len(reviewers) == 0 do return false, fmt.tprintf("missing reviewer for scaffold role %s", def.reviewer_role)
-		append(&built, Task_Scaffold_Build_Task{
-			key = strings.clone(def.key),
-			task_id = task_service_next_scaffold_task_id(task_id_base, built[:]),
-			title = task_service_scaffold_interpolate(def.title_template, cmd.title, cmd.project_id, kind.display_name),
-			description = task_service_scaffold_description(def.description_key, def.key, cmd.title, kind.display_name),
-			assignee_agent_instance_id = assignee,
-			reviewer_agent_instance_ids = reviewers,
-		})
-	}
-	for i in 0..<len(scaffold.tasks) {
-		deps := strings.builder_make()
-		first := true
-		if validation_task_id != "" {
-			strings.write_string(&deps, validation_task_id)
-			first = false
-		}
-		for dep_key in scaffold.tasks[i].depends_on {
-			dep_id := ""
-			for j in 0..<len(built) {
-				if built[j].key == dep_key {
-					dep_id = built[j].task_id
-					break
-				}
-			}
-			if dep_id == "" do return false, fmt.tprintf("unknown scaffold dependency %s", dep_key)
-			if !first do strings.write_string(&deps, ",")
-			first = false
-			strings.write_string(&deps, dep_id)
-		}
-		built[i].depends_on = strings.clone(strings.to_string(deps))
-	}
-	if cmd.wants_vcs && task_service_project_supports_vcs(cmd.project_id) {
-		base_ref := task_service_project_base_ref(cmd.project_id)
-		reviewer := task_service_pick_non_user_reviewer(team_id, cmd.project_id, cmd.chain_id, cmd.coordinator_agent_instance_id, members, []string{"reviewer"})
-		if reviewer == "" do reviewer = task_service_pick_non_user_reviewer(team_id, cmd.project_id, cmd.chain_id, cmd.coordinator_agent_instance_id, members, []string{})
-		if reviewer == "" do return false, "missing non-user reviewer for VCS finalize scaffold task"
-		append(&built, Task_Scaffold_Build_Task{
-			key = "vcs_finalize",
-			task_id = task_service_next_scaffold_task_id(task_id_base, built[:]),
-			title = fmt.tprintf("Merge and push finalized changes to %s", base_ref),
-			description = task_service_scaffold_vcs_finalize_description(cmd.title, cmd.project_id, base_ref, team_id, chain_id),
-			assignee_agent_instance_id = cmd.coordinator_agent_instance_id,
-			reviewer_agent_instance_ids = []string{reviewer},
-			depends_on = task_service_scaffold_terminal_task_depends_on(built[:]),
-		})
-	}
-	for i in 0..<len(built) {
-		reviewer := ""
-		if len(built[i].reviewer_agent_instance_ids) > 0 do reviewer = built[i].reviewer_agent_instance_ids[0]
-		event := Task_Event{
-			kind = .Task_Created,
-			task_id = built[i].task_id,
-			chain_id = chain_id,
-			title = built[i].title,
-			description = built[i].description,
-			priority = "normal",
-			status = "planning",
-			assignee_agent_instance_id = built[i].assignee_agent_instance_id,
-			reviewer_agent_instance_id = reviewer,
-			depends_on = built[i].depends_on,
-			created_by = cmd.author_agent_instance_id,
-			author_agent_instance_id = cmd.author_agent_instance_id,
-		}
-		if !task_store_append_event(event) do return false, "append scaffold task create failed"
-		task_notify_event(event)
-		for j in 1..<len(built[i].reviewer_agent_instance_ids) {
-			p_event := Task_Event{
-				kind = .Task_Participant_Added,
-				task_id = built[i].task_id,
-				chain_id = chain_id,
-				agent_instance_id = built[i].reviewer_agent_instance_ids[j],
-				role = "lgtm_required",
-				author_agent_instance_id = cmd.author_agent_instance_id,
-			}
-			if !task_store_append_event(p_event) do return false, "append scaffold reviewer failed"
-			task_notify_event(p_event)
-		}
-	}
-	return true, "ok"
-}
-
-task_service_scaffold_terminal_task_depends_on :: proc(tasks: []Task_Scaffold_Build_Task) -> string {
-	deps := strings.builder_make()
-	first := true
-	for i in 0..<len(tasks) {
-		task_id := tasks[i].task_id
-		if task_service_scaffold_task_has_dependents(task_id, tasks) do continue
-		if !first do strings.write_string(&deps, ",")
-		first = false
-		strings.write_string(&deps, task_id)
-	}
-	return strings.to_string(deps)
-}
-
-task_service_scaffold_task_has_dependents :: proc(task_id: string, tasks: []Task_Scaffold_Build_Task) -> bool {
-	for i in 0..<len(tasks) {
-		for dep in strings.split(tasks[i].depends_on, ",") {
-			if strings.trim_space(dep) == task_id do return true
-		}
-	}
-	return false
+	slug := task_chain_slug(chain_title, chain_id)
+	return fmt.tprintf("%s/chain/%s/%s", strings.trim_right(worktree_root, "/"), chain_id, slug)
 }
 
 task_service_project_supports_vcs :: proc(project_id: string) -> bool {
@@ -595,154 +382,6 @@ task_service_project_base_ref :: proc(project_id: string, default_base_ref: stri
 	return strings.clone(default_base_ref)
 }
 
-task_service_pick_non_user_reviewer :: proc(team_id, project_id, chain_id, assignee: string, members: []Team_Member_Record, preferred_roles: []string) -> string {
-	for role_key in preferred_roles {
-		for member in members {
-			if member.role_key != role_key do continue
-			if member.is_user_proxy do continue
-			agent_id := task_service_member_agent_id(team_id, project_id, chain_id, member)
-			if agent_id == "" || agent_id == assignee || task_runtime_agent_target(agent_id) == "" do continue
-			return agent_id
-		}
-	}
-	for member in members {
-		if member.is_user_proxy do continue
-		agent_id := task_service_member_agent_id(team_id, project_id, chain_id, member)
-		if agent_id == "" || agent_id == assignee || task_runtime_agent_target(agent_id) == "" do continue
-		return agent_id
-	}
-	return ""
-}
-
-task_service_member_agent_id :: proc(team_id, project_id, chain_id: string, member: Team_Member_Record) -> string {
-	if member.is_user_proxy do return "user_proxy"
-	if routed, ok := team_service_ensure_member_route(member); ok && routed != "" do return routed
-	if member.route_to != "" do return member.route_to
-	if member.agent_instance_id != "" do return member.agent_instance_id
-	return team_service_member_agent_instance_id(project_id, chain_id, team_id, member.role_key, member.role_index)
-}
-
-task_service_scaffold_vcs_finalize_description :: proc(chain_title, project_id, base_ref, team_id, chain_id: string) -> string {
-	workspace := task_service_scaffold_vcs_workspace_path(project_id, chain_id, team_id, chain_title)
-	b := strings.builder_make()
-	strings.write_string(&b, "Finalize this VCS chain by merging approved work into the base branch and pushing it.\n\n")
-	strings.write_string(&b, "## Required action\n")
-	strings.write_string(&b, "1. Confirm all implementation and validation/review tasks are completed and approved.\n")
-	strings.write_string(&b, "2. Merge the approved work into the configured base ref (`")
-	strings.write_string(&b, base_ref)
-	strings.write_string(&b, "`) for this project.\n")
-	strings.write_string(&b, "3. Push the merged result to origin for `")
-	strings.write_string(&b, base_ref)
-	strings.write_string(&b, "` using a command such as:\n\n")
-	strings.write_string(&b, "```bash\n")
-	strings.write_string(&b, "git -C ")
-	strings.write_string(&b, shell_quote(workspace))
-	strings.write_string(&b, " fetch origin\n")
-	strings.write_string(&b, "git -C ")
-	strings.write_string(&b, shell_quote(workspace))
-	strings.write_string(&b, " merge --ff-only origin/")
-	strings.write_string(&b, shell_quote(base_ref))
-	strings.write_string(&b, "\n")
-	strings.write_string(&b, "git -C ")
-	strings.write_string(&b, shell_quote(workspace))
-	strings.write_string(&b, " status --short --branch\n")
-	strings.write_string(&b, "git -C ")
-	strings.write_string(&b, shell_quote(workspace))
-	strings.write_string(&b, " push origin HEAD:")
-	strings.write_string(&b, shell_quote(base_ref))
-	strings.write_string(&b, "\n```")
-	strings.write_string(&b, "\n\n")
-	strings.write_string(&b, "## Workspace cleanup\n")
-	strings.write_string(&b, "After successful merge/push, clean up the temporary worktree path used for this chain.\n")
-	strings.write_string(&b, "Record cleanup command(s) and any errors in a task comment before marking this task done.\n")
-	strings.write_string(&b, "If cleanup fails, include the failure details and add a follow-up cleanup task; do not mark this as fully complete without explaining cleanup blockers.\n")
-	return strings.to_string(b)
-}
-
-task_service_scaffold_vcs_workspace_path :: proc(project_id, chain_id, team_id, chain_title: string) -> string {
-	worktree_root := fmt.tprintf("/tmp/heimdall-worktrees/%s", project_id)
-	if idx := project_index(project_id); idx >= 0 {
-		worktree_root = project_anchor_value(project_records[idx], "worktree_root", worktree_root)
-	}
-	slug := task_chain_slug(chain_title, chain_id)
-	return fmt.tprintf("%s/team/%s/%s", strings.trim_right(worktree_root, "/"), team_id, slug)
-}
-
-task_service_next_scaffold_task_id :: proc(base: i64, built: []Task_Scaffold_Build_Task) -> string {
-	for i in 0..<1000 {
-		candidate := fmt.tprintf("task-%x", base + i64(i))
-		duplicate := false
-		for j in 0..<len(built) {
-			if built[j].task_id == candidate {
-				duplicate = true
-				break
-			}
-		}
-		if duplicate do continue
-		if !store_task_exists(candidate) do return candidate
-	}
-	return task_generate_id()
-}
-
-task_service_scaffold_pick_assignee :: proc(team_id, kind_key: string, cmd: Task_Chain_Create_Command, members: []Team_Member_Record, counters: ^[dynamic]Task_Scaffold_Role_Counter, role_key: string) -> (string, bool) {
-	matches := [dynamic]Team_Member_Record{}
-	defer delete(matches)
-	for member in members {
-		if member.role_key == role_key do append(&matches, member)
-	}
-	if len(matches) == 0 do return "", false
-	counter_idx := -1
-	for i in 0..<len(counters^) {
-		if counters^[i].role_key == role_key {
-			counter_idx = i
-			break
-		}
-	}
-	if counter_idx < 0 {
-		append(counters, Task_Scaffold_Role_Counter{role_key = strings.clone(role_key)})
-		counter_idx = len(counters^) - 1
-	}
-	pick := counters^[counter_idx].next % len(matches)
-	counters^[counter_idx].next += 1
-	return task_service_scaffold_member_agent_instance_id(team_id, kind_key, cmd, matches[pick]), true
-}
-
-task_service_scaffold_reviewers :: proc(team_id, kind_key: string, cmd: Task_Chain_Create_Command, members: []Team_Member_Record, role_key: string) -> []string {
-	out := [dynamic]string{}
-	for member in members {
-		if member.role_key != role_key do continue
-		agent_instance_id := task_service_scaffold_member_agent_instance_id(team_id, kind_key, cmd, member)
-		duplicate := false
-		for existing in out {
-			if existing == agent_instance_id {
-				duplicate = true
-				break
-			}
-		}
-		if !duplicate do append(&out, agent_instance_id)
-	}
-	return out[:]
-}
-
-task_service_scaffold_member_agent_instance_id :: proc(team_id, kind_key: string, cmd: Task_Chain_Create_Command, member: Team_Member_Record) -> string {
-	if member.is_user_proxy do return "user_proxy"
-	if routed, ok := team_service_ensure_member_route(member); ok && routed != "" do return routed
-	if member.route_to != "" do return member.route_to
-	if member.agent_instance_id != "" do return member.agent_instance_id
-	return team_service_member_agent_instance_id(cmd.project_id, cmd.chain_id, team_id, member.role_key, member.role_index)
-}
-
-task_service_scaffold_interpolate :: proc(template, chain_title, project_name, team_kind: string) -> string {
-	out, _ := strings.replace_all(template, "{chain_title}", chain_title)
-	out, _ = strings.replace_all(out, "{project_name}", project_name)
-	out, _ = strings.replace_all(out, "{team_kind}", team_kind)
-	return out
-}
-
-task_service_scaffold_description :: proc(description_key, task_key, chain_title, team_kind: string) -> string {
-	return fmt.tprintf("Auto-generated scaffold task.\n\n- scaffold: `%s`\n- task: `%s`\n- chain: `%s`\n- team kind: `%s`", description_key, task_key, chain_title, team_kind)
-}
-
 task_service_cleanup_workspace :: proc(chain_id: string) {
 	if rec, ok := vcs_db_workspace_for_chain(chain_id); ok {
 		backend := vcs.vcs_backend_for(vcs_handle_from_record(rec).kind)
@@ -757,7 +396,7 @@ task_service_error_json :: proc(message: string) -> string {
 	return strings.to_string(b)
 }
 
-task_service_maybe_provision_workspace :: proc(project_id, chain_id, team_id, title: string) -> (Vcs_Workspace_Record, bool, string) {
+task_service_maybe_provision_workspace :: proc(project_id, chain_id, title: string) -> (Vcs_Workspace_Record, bool, string) {
 	project_idx := project_index(project_id)
 	if project_idx < 0 do return Vcs_Workspace_Record{}, false, "no vcs"
 	project := project_records[project_idx]
@@ -784,7 +423,7 @@ task_service_maybe_provision_workspace :: proc(project_id, chain_id, team_id, ti
 	base_ref := project_anchor_value(project, "base_ref", detected.base_ref)
 	if base_ref == "" do base_ref = detected.base_ref
 	root := project_anchor_value(project, "worktree_root", fmt.tprintf("/tmp/heimdall-worktrees/%s", project_id))
-	name := fmt.tprintf("team/%s/%s", team_id, task_chain_slug(title, chain_id))
+	name := fmt.tprintf("chain/%s/%s", chain_id, task_chain_slug(title, chain_id))
 	handle, ok, msg := backend.workspace_add(detected.repo_root, name, base_ref, root)
 	if !ok do return Vcs_Workspace_Record{}, false, msg
 	now := router_now_unix_ms()
@@ -950,17 +589,24 @@ task_service_resolve_agent_reference_for_chain :: proc(chain_id, project_id, age
 		if agent_instance_records[idx].archived_at_unix_ms != 0 do return "", false, "agent is archived"
 		return agent_ref, true, "ok"
 	}
-	// Team role-slot labels are roster metadata; resolve them to the concrete
-	// instance persisted in route_to (or provision one if the row predates route_to).
-	if resolved, ok := task_service_resolve_team_slot_reference(chain_id, agent_ref); ok {
-		return resolved, true, "ok"
+	resolved_ref := task_service_default_agent_ref(agent_ref)
+	if resolved_ref == "user_proxy" || resolved_ref == HUMAN_RECIPIENT_ID do return resolved_ref, true, "ok"
+	if idx := agent_record_index_by_instance(resolved_ref); idx >= 0 {
+		if agent_instance_records[idx].archived_at_unix_ms != 0 do return "", false, "agent is archived"
+		return resolved_ref, true, "ok"
 	}
 	// Unknown @-qualified refs look like exact instances/legacy aliases and should
 	// not be reinterpreted as durable agent ids. Likewise, an unknown indexed name
 	// such as coder-1 is a role-slot typo, not a new durable agent_id.
-	if strings.index_byte(agent_ref, '@') >= 0 do return "", false, "agent instance is unknown"
-	if task_service_agent_ref_looks_indexed_slot(agent_ref) do return "", false, "role slot is unknown for this chain"
-	return task_service_create_concrete_instance_for_agent_id(agent_ref, chain_id, project_id, participant_role, author)
+	if strings.index_byte(resolved_ref, '@') >= 0 do return "", false, "agent instance is unknown"
+	if task_service_agent_ref_looks_indexed_slot(resolved_ref) do return "", false, "role slot is unknown for this chain"
+	return task_service_create_concrete_instance_for_agent_id(resolved_ref, chain_id, project_id, participant_role, author)
+}
+
+task_service_default_agent_ref :: proc(agent_ref: string) -> string {
+	if agent_ref == "" || strings.index_byte(agent_ref, '@') >= 0 || agent_ref == "user_proxy" || agent_ref == HUMAN_RECIPIENT_ID do return agent_ref
+	if mapped := agent_default_id_for_use(agent_ref); mapped != "" do return mapped
+	return agent_ref
 }
 
 task_service_agent_ref_looks_indexed_slot :: proc(agent_ref: string) -> bool {
@@ -972,45 +618,22 @@ task_service_agent_ref_looks_indexed_slot :: proc(agent_ref: string) -> bool {
 	return true
 }
 
-task_service_resolve_agent_reference_for_new_chain :: proc(chain_id, team_id, project_id, agent_ref, participant_role, author: string) -> (string, bool, string) {
+task_service_resolve_agent_reference_for_new_chain :: proc(chain_id, project_id, agent_ref, participant_role, author: string) -> (string, bool, string) {
 	if agent_ref == "" do return "", false, "agent reference is required"
 	if agent_ref == "user_proxy" || agent_ref == HUMAN_RECIPIENT_ID do return agent_ref, true, "ok"
 	if idx := agent_record_index_by_instance(agent_ref); idx >= 0 {
 		if agent_instance_records[idx].archived_at_unix_ms != 0 do return "", false, "agent is archived"
 		return agent_ref, true, "ok"
 	}
-	if resolved, ok := task_service_resolve_team_slot_reference_for_team(team_id, agent_ref); ok {
-		return resolved, true, "ok"
+	resolved_ref := task_service_default_agent_ref(agent_ref)
+	if resolved_ref == "user_proxy" || resolved_ref == HUMAN_RECIPIENT_ID do return resolved_ref, true, "ok"
+	if idx := agent_record_index_by_instance(resolved_ref); idx >= 0 {
+		if agent_instance_records[idx].archived_at_unix_ms != 0 do return "", false, "agent is archived"
+		return resolved_ref, true, "ok"
 	}
-	if strings.index_byte(agent_ref, '@') >= 0 do return "", false, "agent instance is unknown"
-	if task_service_agent_ref_looks_indexed_slot(agent_ref) do return "", false, "role slot is unknown for this chain"
-	return task_service_create_concrete_instance_for_agent_id(agent_ref, chain_id, project_id, participant_role, author)
-}
-
-task_service_resolve_team_slot_reference :: proc(chain_id, agent_ref: string) -> (string, bool) {
-	if chain_id == "" || agent_ref == "" do return "", false
-	chain, chain_found := store_get_chain(chain_id)
-	if !chain_found || chain.team_id == "" do return "", false
-	return task_service_resolve_team_slot_reference_for_team(chain.team_id, agent_ref)
-}
-
-task_service_resolve_team_slot_reference_for_team :: proc(team_id, agent_ref: string) -> (string, bool) {
-	if team_id == "" || agent_ref == "" do return "", false
-	members := team_db_list_members(team_service_db, team_id)
-	defer delete(members)
-	for member in members {
-		if !task_service_member_slot_ref_matches(agent_ref, member) do continue
-		if member.is_user_proxy do return "user_proxy", true
-		return team_service_ensure_member_route(member)
-	}
-	return "", false
-}
-
-task_service_member_slot_ref_matches :: proc(agent_ref: string, member: Team_Member_Record) -> bool {
-	if agent_ref == member.team_member_id do return true
-	if member.agent_instance_id != "" && agent_ref == member.agent_instance_id do return true
-	if agent_ref == team_service_member_slot_label(member.role_key, member.role_index) do return true
-	return false
+	if strings.index_byte(resolved_ref, '@') >= 0 do return "", false, "agent instance is unknown"
+	if task_service_agent_ref_looks_indexed_slot(resolved_ref) do return "", false, "role slot is unknown for this chain"
+	return task_service_create_concrete_instance_for_agent_id(resolved_ref, chain_id, project_id, participant_role, author)
 }
 
 task_service_create_concrete_instance_for_agent_id :: proc(agent_id_ref, chain_id, project_id, participant_role, author: string) -> (string, bool, string) {
@@ -1018,7 +641,6 @@ task_service_create_concrete_instance_for_agent_id :: proc(agent_id_ref, chain_i
 	if durable_agent_id == "" || durable_agent_id == "unnamed" || durable_agent_id != agent_id_ref do return "", false, "invalid agent_id"
 	resolved_project_id := project_id
 	template_id := agent_id_template_id(durable_agent_id)
-	if durable_agent_id == "coordinator" && template_id == "coordinator" do template_id = "lead"
 	provider_profile := agent_resolve_provider_profile("")
 	model_tier := agent_resolve_model_tier("")
 	if idx := agent_id_index(durable_agent_id); idx >= 0 {
@@ -1029,7 +651,7 @@ task_service_create_concrete_instance_for_agent_id :: proc(agent_id_ref, chain_i
 		if rec.default_model_tier != "" do model_tier = rec.default_model_tier
 		if resolved_project_id == "" && rec.default_project_id != "" do resolved_project_id = rec.default_project_id
 	} else {
-		_ = agent_id_upsert(durable_agent_id, durable_agent_id, template_id, provider_profile, model_tier, "", author, agent_role_from_template(template_id))
+		_ = agent_id_upsert(durable_agent_id, durable_agent_id, template_id, provider_profile, model_tier, "", author)
 	}
 	if resolved_project_id == "" {
 		if chain, found := store_get_chain(chain_id); found do resolved_project_id = chain.project_id
@@ -1038,7 +660,7 @@ task_service_create_concrete_instance_for_agent_id :: proc(agent_id_ref, chain_i
 	if !valid_agent_instance_id(instance_id) do return "", false, "failed to generate agent instance id"
 	display_name := durable_agent_id
 	if participant_role != "" && participant_role != "assignee" do display_name = fmt.tprintf("%s %s", durable_agent_id, participant_role)
-	_, _, upsert_ok := agent_record_upsert(instance_id, display_name, template_id, provider_profile, resolved_project_id, "", model_tier, AGENT_IDENTITY_STATE_PROVISIONED, AGENT_SCOPE_DURABLE, agent_role_from_template(template_id))
+	_, _, upsert_ok := agent_record_upsert(instance_id, display_name, template_id, provider_profile, resolved_project_id, "", model_tier, AGENT_IDENTITY_STATE_PROVISIONED)
 	if !upsert_ok do return "", false, "failed to persist resolved agent instance"
 	return instance_id, true, "ok"
 }
@@ -1188,20 +810,11 @@ task_service_participant_command :: proc(cmd: Task_Participant_Command) -> Task_
 }
 
 task_agent_instance_has_chain_role :: proc(chain_id, agent_instance_id, role_key: string) -> bool {
-	if chain_id == "" || agent_instance_id == "" || role_key == "" do return false
-	chain, chain_found := store_get_chain(chain_id)
-	if !chain_found do return false
-	if chain.team_id == "" do return false
-	members := team_db_list_members(team_service_db, chain.team_id)
-	for member in members {
-		if member.role_key != role_key do continue
-		if member.agent_instance_id != "" && member.agent_instance_id == agent_instance_id do return true
-		if member.route_to != "" && member.route_to == agent_instance_id do return true
-	}
+	_ = chain_id; _ = agent_instance_id; _ = role_key
 	return false
 }
 
-// teams-v2 Phase 3: assignment is no longer gated by chain team membership.
+// Assignment is not gated by legacy chain membership stores.
 // Any existing, non-archived agent instance (or an allowed user-proxy reviewer)
 // may be assigned/reviewed on any chain; involvement is recorded via an
 // association record instead of requiring pre-existing membership.
@@ -1240,17 +853,7 @@ task_agent_instance_allowed_for_chain :: proc(chain_id, agent_instance_id: strin
 	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 {
 		return agent_instance_records[idx].archived_at_unix_ms == 0
 	}
-	// Fall back to legacy team membership so pre-teams-v2 route_to aliases still
-	// resolve even when no standalone agent record exists.
-	if chain_found && chain.team_id != "" {
-		members := team_db_list_members(team_service_db, chain.team_id)
-		defer delete(members)
-		for member in members {
-			if task_reviewer_matches_user_proxy_member(agent_instance_id, member) do return true
-			if member.agent_instance_id != "" && member.agent_instance_id == agent_instance_id do return true
-			if member.route_to != "" && member.route_to == agent_instance_id do return true
-		}
-	}
+	_ = chain_found
 	return false
 }
 
@@ -1642,67 +1245,30 @@ task_service_review_vote :: proc(cmd: Task_Review_Vote_Command) -> Task_Service_
 
 task_user_proxy_reviewer_for :: proc(state: Task_State, user_id: string) -> (string, bool) {
 	if user_id == "" do return "", false
-	if user_id == HUMAN_RECIPIENT_ID {
-		parts := store_participants_of(state.task_id)
-		defer delete(parts)
-		for p in parts {
-			if p.agent_instance_id == "user_proxy" && (p.role == "lgtm_required" || p.role == "lgtm_optional") {
-				return "user_proxy", true
-			}
-		}
-	}
-	chain, chain_found := store_get_chain(state.chain_id)
-	if !chain_found do return "", false
-	team_id := chain.team_id
-	if team_id == "" {
-		team, ok := team_db_get_team_by_chain_id(team_service_db, state.chain_id)
-		if !ok do return "", false
-		team_id = team.team_id
-	}
-	members := team_db_list_members(team_service_db, team_id)
+	if user_id != HUMAN_RECIPIENT_ID && user_id != "user_proxy" do return "", false
+	default_rev := task_reviewer_agent_instance_id(state)
+	if default_rev == "user_proxy" do return "user_proxy", true
 	parts := store_participants_of(state.task_id)
 	defer delete(parts)
-	for member in members {
-		if !member.is_user_proxy do continue
-		if member.route_to != user_id do continue
-		default_rev := task_reviewer_agent_instance_id(state)
-		if default_rev != "" && task_reviewer_matches_user_proxy_member(default_rev, member) {
-			return default_rev, true
-		}
-		for p in parts {
-			if p.role != "lgtm_required" && p.role != "lgtm_optional" do continue
-			if p.agent_instance_id == member.role_key || p.agent_instance_id == member.route_to || (member.agent_record_id != "" && p.agent_instance_id == member.agent_record_id) {
-				return p.agent_instance_id, true
-			}
-		}
+	for p in parts {
+		if p.agent_instance_id == "user_proxy" && (p.role == "lgtm_required" || p.role == "lgtm_optional") do return "user_proxy", true
 	}
 	return "", false
 }
 
 task_notify_user_proxy_review_requests :: proc(task_id, chain_id: string) {
 	state, found := store_get_task_in_chain(task_id, chain_id)
-	if !found do return
+	if !found || !task_requires_user_review(state) do return
 	chain, chain_found := store_get_chain(state.chain_id)
 	if !chain_found do return
-	team_id := chain.team_id
-	if team_id == "" {
-		team, ok := team_db_get_team_by_chain_id(team_service_db, state.chain_id)
-		if !ok do return
-		team_id = team.team_id
-	}
-	if !task_requires_user_review(state) do return
-	members := team_db_list_members(team_service_db, team_id)
-	for member in members {
-		if !member.is_user_proxy || member.route_to == "" do continue
-		sender := chain.coordinator_agent_instance_id
-		if sender == "" do sender = "user_proxy"
-		body := task_user_proxy_review_card_json(state)
-		message_id, ok := chat_store_append_message_with_chain(member.route_to, sender, "agent_to_user", body, true, state.chain_id)
-		if ok {
-			chat_event_fanout(member.route_to, sender, message_id, "agent_to_user", state.chain_id)
-			if det := chat_approval_detect_payload(body); det.matched {
-				_, _ = chat_approval_service_record(det, message_id, state.chain_id, member.route_to, sender)
-			}
+	sender := chain.coordinator_agent_instance_id
+	if sender == "" do sender = "user_proxy"
+	body := task_user_proxy_review_card_json(state)
+	message_id, ok := chat_store_append_message_with_chain(HUMAN_RECIPIENT_ID, sender, "agent_to_user", body, true, state.chain_id)
+	if ok {
+		chat_event_fanout(HUMAN_RECIPIENT_ID, sender, message_id, "agent_to_user", state.chain_id)
+		if det := chat_approval_detect_payload(body); det.matched {
+			_, _ = chat_approval_service_record(det, message_id, state.chain_id, HUMAN_RECIPIENT_ID, sender)
 		}
 	}
 }
@@ -2069,8 +1635,7 @@ task_service_chain_status_command :: proc(cmd: Task_Chain_Status_Command) -> Tas
 		task_recompute_promotions(cmd.author_agent_instance_id)
 	}
 
-	// Task 16: on completion, archive team immediately for non-VCS chains or
-	// surface a merge decision for VCS chains (docs/teams-v1/03-lifecycle.md §3.4/§3.5).
+	// On completion, surface a merge decision for VCS chains when needed.
 	if cmd.status == "completed" {
 		merge_lifecycle_on_chain_completed(cmd.chain_id, cmd.author_agent_instance_id)
 	}

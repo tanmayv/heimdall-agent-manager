@@ -6,23 +6,20 @@ ROOT = Path(__file__).resolve().parents[1]
 REQUIRED = {
     "src/wrapper/main.odin": [
         'extract_json_string(text, "target", "")',
-        '"target_team_kind":"',
-        '"target_role":"',
+        '"target_agent_id":"',
         '"target_project_id":"',
         '/memory/applicable',
-        '--target-team-kind <kind> --target-role <role> --target-project-id <project_id>',
+        '--target-agent-id <agent_id> --target-project-id <project_id>',
     ],
     "src/ctl/main.odin": [
-        '--target-team-kind <kind>',
-        '--target-role <role>',
+        '--target-agent-id <agent>',
         '--target-project-id <project>',
-        'memory list --token <token> [--target-team-kind <kind>] [--target-role <role>] [--target-project-id <project>]',
+        'memory list --token <token> [--target-agent-id <agent>] [--target-project-id <project>]',
     ],
     "src/daemon/memory_service.odin": [
-        'target_team_kind',
-        'target_role',
+        'target_agent_id',
         'target_project_id',
-        'memory_record_applies :: proc(rec: contracts.Memory_Record, target_team_kind, target_role, target_project_id: string) -> bool',
+        'memory_record_applies :: proc(rec: contracts.Memory_Record, target_agent_id, target_project_id: string) -> bool',
     ],
 }
 

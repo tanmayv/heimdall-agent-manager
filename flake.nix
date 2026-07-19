@@ -145,9 +145,6 @@
           ham-wrapper = mkOdinPackageWithRuntime pkgs odin "ham-wrapper" "src/wrapper" [ pkgs.tmux pkgs.git pkgs.jujutsu ];
           ham-ctl = mkOdinCtlPackage pkgs odin;
           ham-test-agent = mkOdinPackage pkgs odin "ham-test-agent" "src/test_agent";
-          ham-team-kinds-test = mkOdinPackage pkgs odin "ham-team-kinds-test" "tests";
-          ham-team-db-service-test = mkOdinPackageWithRuntime pkgs odin "ham-team-db-service-test" "tests/team_db_service_test" [ pkgs.sqlite ];
-          ham-team-service-test = mkOdinPackageWithRuntime pkgs odin "ham-team-service-test" "tests/team_service_test" [ pkgs.sqlite ];
           ham-task-store-repository-test = mkOdinPackageWithRuntime pkgs odin "ham-task-store-repository-test" "tests/task_store_repository_test" [ pkgs.sqlite ];
           ham-vcs-backend-test = mkOdinPackageWithRuntime pkgs odin "ham-vcs-backend-test" "tests/vcs_backend_test" [ pkgs.git pkgs.jujutsu ];
           heimdall = mkOdinUiPackage pkgs;

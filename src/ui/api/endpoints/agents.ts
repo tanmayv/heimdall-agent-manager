@@ -67,10 +67,10 @@ export const agentsApi = heimdallApi.injectEndpoints({
         }
       },
     }),
-    startAgent: build.mutation<any, { agentInstanceId: string; provider: string; templateId?: string; projectId?: string; projectIdSet?: boolean; alias?: string; displayName?: string; modelTier?: string; agentRole?: string }>({
-      queryFn: withSessionQuery(async ({ agentInstanceId, provider, templateId, projectId, projectIdSet, alias, displayName, modelTier, agentRole }, { session }) => {
+    startAgent: build.mutation<any, { agentInstanceId: string; provider: string; templateId?: string; projectId?: string; projectIdSet?: boolean; alias?: string; displayName?: string; modelTier?: string }>({
+      queryFn: withSessionQuery(async ({ agentInstanceId, provider, templateId, projectId, projectIdSet, alias, displayName, modelTier }, { session }) => {
         if (!session?.daemonUrl || !agentInstanceId) return { ok: false, message: 'Missing agent' };
-        return daemonApi.startAgent({ daemonUrl: session.daemonUrl, agentInstanceId, provider, templateId, projectId, projectIdSet, alias, displayName, modelTier, agentRole });
+        return daemonApi.startAgent({ daemonUrl: session.daemonUrl, agentInstanceId, provider, templateId, projectId, projectIdSet, alias, displayName, modelTier });
       }),
       invalidatesTags: (_result, _error, { agentInstanceId }) => [
         { type: 'Agents' as const, id: 'LIST' },

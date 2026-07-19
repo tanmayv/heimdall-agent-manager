@@ -728,8 +728,8 @@ federation_advertised_agents_json :: proc() -> string {
 	for i in 0..<agent_instance_record_count {
 		rec := agent_instance_records[i]
 		if rec.archived_at_unix_ms != 0 do continue
-		if agent_scope_normalize(rec.agent_scope) != AGENT_SCOPE_DURABLE do continue
-		if rec.agent_role == "conversation" do continue
+		if !agent_instance_may_seed_default_project(rec.agent_instance_id, rec.template_id) do continue
+		if agent_id_matches_default_use(rec.agent_id, "conversation") do continue
 		if !federation_agent_is_advertised(rec.agent_instance_id) do continue
 		if wrote > 0 do strings.write_string(&b, `,`)
 		strings.write_string(&b, `{"agent_instance_id":"`); json_write_string(&b, rec.agent_instance_id)
@@ -737,7 +737,6 @@ federation_advertised_agents_json :: proc() -> string {
 		strings.write_string(&b, `","native_id":"`); json_write_string(&b, rec.agent_instance_id)
 		strings.write_string(&b, `","display_name":"`); json_write_string(&b, rec.display_name)
 		strings.write_string(&b, `","template_id":"`); json_write_string(&b, rec.template_id)
-		strings.write_string(&b, `","agent_role":"`); json_write_string(&b, rec.agent_role)
 		strings.write_string(&b, `","provider_profile":"`); json_write_string(&b, rec.provider_profile)
 		strings.write_string(&b, `","model_tier":"`); json_write_string(&b, normalize_model_tier(rec.model_tier))
 		strings.write_string(&b, `","identity_state":"`); json_write_string(&b, agent_record_identity_state(rec))
@@ -758,7 +757,7 @@ handle_get_federation_agents :: proc(client: net.TCP_Socket, ctx: ^Route_Context
 	write_response(client, 200, "OK", federation_advertised_agents_json())
 }
 
-federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_instance_id, display_name, template_id, provider_profile, model_tier, agent_role: string) -> (Agent_Instance_Record, bool, string) {
+federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_instance_id, display_name, template_id, provider_profile, model_tier: string) -> (Agent_Instance_Record, bool, string) {
 	resolved_peer_id, bridge_daemon_id, _, found := federation_direct_peer_lookup(peer_id, origin_daemon_id)
 	if !found || strings.trim_space(resolved_peer_id) == "" {
 		return Agent_Instance_Record{}, false, "peer not found"
@@ -770,7 +769,7 @@ federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_ins
 	if resolved_origin_daemon_id != "" {
 		if existing, ok := agent_remote_proxy_find_absolute(resolved_origin_daemon_id, remote_id); ok {
 			if strings.trim_space(existing.remote_origin_daemon_id) == "" {
-				_, _, backfill_ok := agent_record_upsert(existing.agent_instance_id, existing.display_name, existing.template_id, existing.provider_profile, existing.project_id, existing.run_dir, existing.model_tier, existing.state, existing.agent_scope, existing.agent_role, false, existing.agent_kind, existing.remote_peer_id, resolved_origin_daemon_id, existing.remote_agent_instance_id)
+				_, _, backfill_ok := agent_record_upsert(existing.agent_instance_id, existing.display_name, existing.template_id, existing.provider_profile, existing.project_id, existing.run_dir, existing.model_tier, existing.state, false, existing.agent_kind, existing.remote_peer_id, resolved_origin_daemon_id, existing.remote_agent_instance_id)
 				if backfill_ok {
 					if idx := agent_record_index(existing.agent_record_id); idx >= 0 do return agent_instance_records[idx], true, ""
 				}
@@ -780,7 +779,7 @@ federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_ins
 	}
 	if existing, ok := agent_remote_proxy_find(resolved_peer_id, remote_id); ok {
 		if resolved_origin_daemon_id != "" && strings.trim_space(existing.remote_origin_daemon_id) == "" {
-			_, _, backfill_ok := agent_record_upsert(existing.agent_instance_id, existing.display_name, existing.template_id, existing.provider_profile, existing.project_id, existing.run_dir, existing.model_tier, existing.state, existing.agent_scope, existing.agent_role, false, existing.agent_kind, existing.remote_peer_id, resolved_origin_daemon_id, existing.remote_agent_instance_id)
+			_, _, backfill_ok := agent_record_upsert(existing.agent_instance_id, existing.display_name, existing.template_id, existing.provider_profile, existing.project_id, existing.run_dir, existing.model_tier, existing.state, false, existing.agent_kind, existing.remote_peer_id, resolved_origin_daemon_id, existing.remote_agent_instance_id)
 			if backfill_ok {
 				if idx := agent_record_index(existing.agent_record_id); idx >= 0 do return agent_instance_records[idx], true, ""
 			}
@@ -791,13 +790,11 @@ federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_ins
 	if local_display_name == "" do local_display_name = remote_id
 	local_template_id := strings.trim_space(template_id)
 	if local_template_id == "" do local_template_id = derive_agent_class(remote_id)
-	local_role := strings.trim_space(agent_role)
-	if local_role == "" do local_role = agent_role_from_template(local_template_id)
 	local_provider := strings.trim_space(provider_profile)
 	if local_provider == "" do local_provider = agent_resolve_provider_profile("")
 	local_tier := normalize_model_tier(model_tier)
 	local_id := agent_generated_instance_id(fmt.tprintf("%s-%s", remote_id, resolved_peer_id))
-	rec_id, _, ok := agent_record_upsert(local_id, local_display_name, local_template_id, local_provider, "", "", local_tier, AGENT_IDENTITY_STATE_PROVISIONED, AGENT_SCOPE_DURABLE, local_role, false, AGENT_KIND_REMOTE_PROXY, resolved_peer_id, resolved_origin_daemon_id, remote_id)
+	rec_id, _, ok := agent_record_upsert(local_id, local_display_name, local_template_id, local_provider, "", "", local_tier, AGENT_IDENTITY_STATE_PROVISIONED, false, AGENT_KIND_REMOTE_PROXY, resolved_peer_id, resolved_origin_daemon_id, remote_id)
 	if !ok || rec_id == "" {
 		return Agent_Instance_Record{}, false, "failed to persist remote proxy"
 	}
@@ -837,7 +834,6 @@ handle_post_federation_proxy_bind :: proc(client: net.TCP_Socket, body: string, 
 		extract_json_string(body, "template_id", ""),
 		extract_json_string(body, "provider_profile", ""),
 		extract_json_string(body, "model_tier", "normal"),
-		extract_json_string(body, "agent_role", extract_json_string(body, "role", "")),
 	)
 	if !bind_ok {
 		b := strings.builder_make()

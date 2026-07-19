@@ -31,7 +31,6 @@ Agent_Id_Record :: struct {
 	agent_id: string,
 	display_name: string,
 	template_id: string,
-	agent_role: string,
 	default_provider_profile: string,
 	default_model_tier: string,
 	default_project_id: string,
@@ -53,7 +52,6 @@ Agent_Id_Event :: struct {
 	agent_id: string,
 	display_name: string,
 	template_id: string,
-	agent_role: string,
 	default_provider_profile: string,
 	default_model_tier: string,
 	default_project_id: string,
@@ -77,6 +75,78 @@ agent_id_store_init :: proc(store_dir: string) {
 	agent_id_store_sequence = 0
 	agent_id_events_path = strings.clone(fmt.tprintf("%s/id-events.jsonl", store_dir))
 	agent_id_store_replay()
+}
+
+agent_id_seed_default_identities :: proc() {
+	agent_id_seed_default_identity("conversation", "Conversation", "conversation", "normal")
+	agent_id_seed_default_identity("guide", "Heimdall Guide", "guide", "smart")
+	agent_id_seed_default_identity("coordinator", "Coordinator", "lead", "smart")
+	agent_id_seed_default_identity("worker", "Worker", "worker", "normal")
+	agent_id_seed_default_identity("reviewer", "Reviewer", "reviewer", "smart")
+}
+
+agent_id_seed_default_identity :: proc(agent_id, display_name, template_id, model_tier: string) {
+	if agent_id == "" || agent_id_exists(agent_id) do return
+	provider_profile := agent_resolve_provider_profile("")
+	if provider_profile == "" do provider_profile = "pi"
+	_ = agent_id_upsert(agent_id, display_name, template_id, provider_profile, model_tier, "", "seed")
+}
+
+agent_default_pref_user_id :: proc() -> string {
+	if server_config.daemon.user_id != "" do return server_config.daemon.user_id
+	return "operator@local"
+}
+
+agent_default_pref_key :: proc(default_use: string) -> string {
+	return fmt.tprintf("default_agent_id_%s", strings.to_lower(safe_agent_id_part(strings.trim_space(default_use))))
+}
+
+agent_default_id_configured :: proc(default_use: string) -> string {
+	use_key := strings.to_lower(strings.trim_space(default_use))
+	if use_key == "" do return ""
+	for entry in server_config.daemon.default_agent_ids {
+		if entry.use == use_key && entry.agent_id != "" do return strings.clone(entry.agent_id)
+	}
+	switch use_key {
+	case "conversation": return strings.clone("conversation")
+	case "guide":        return strings.clone("guide")
+	case "coordinator":  return strings.clone("coordinator")
+	case "reviewer":     return strings.clone("reviewer")
+	case "worker", "assignee", "coder", "tester", "researcher", "specialist":
+		return strings.clone("worker")
+	}
+	return strings.clone("")
+}
+
+agent_default_id_for_use :: proc(default_use: string) -> string {
+	use_key := strings.to_lower(strings.trim_space(default_use))
+	if use_key == "" do return ""
+	pref_key := agent_default_pref_key(use_key)
+	if user_pref_db.db != nil {
+		if pref, found := user_pref_db_get(agent_default_pref_user_id(), pref_key); found {
+			return strings.clone(pref.value)
+		}
+	}
+	return agent_default_id_configured(use_key)
+}
+
+agent_id_matches_default_use :: proc(agent_id, default_use: string) -> bool {
+	resolved := agent_default_id_for_use(default_use)
+	defer delete(resolved)
+	return resolved != "" && strings.trim_space(agent_id) == resolved
+}
+
+agent_system_id_configured :: proc(agent_id_or_instance: string) -> bool {
+	value := strings.trim_space(agent_id_or_instance)
+	if value == "" do return false
+	durable := agent_id_from_instance_id(value)
+	defer delete(durable)
+	for configured in server_config.daemon.system_agent_ids {
+		candidate := strings.trim_space(configured)
+		if candidate == "" do continue
+		if candidate == value || candidate == durable do return true
+	}
+	return false
 }
 
 agent_id_store_replay :: proc() {
@@ -170,9 +240,6 @@ agent_id_apply_event :: proc(event: Agent_Id_Event) -> bool {
 	}
 	rec.display_name = strings.clone(event.display_name)
 	rec.template_id = strings.clone(event.template_id)
-	role := event.agent_role
-	if role == "" do role = agent_role_from_template(event.template_id)
-	rec.agent_role = strings.clone(agent_role_normalize(role))
 	rec.default_provider_profile = strings.clone(event.default_provider_profile)
 	tier := event.default_model_tier
 	if tier != "" do tier = normalize_model_tier(tier)
@@ -194,7 +261,7 @@ agent_id_apply_event :: proc(event: Agent_Id_Event) -> bool {
 // Called from instance event replay so every pre-existing instance gets a
 // durable identity. Does not overwrite an already-present record's fields
 // (identity defaults are authoritative once created); only fills blanks.
-agent_id_ensure_backfill :: proc(agent_id, display_name, template_id, provider_profile, model_tier, default_project_id: string, created_unix_ms: i64, agent_role: string = "") {
+agent_id_ensure_backfill :: proc(agent_id, display_name, template_id, provider_profile, model_tier, default_project_id: string, created_unix_ms: i64) {
 	if agent_id == "" do return
 	if agent_instance_id_is_reserved(agent_id) do return
 	idx := agent_id_index(agent_id)
@@ -204,7 +271,6 @@ agent_id_ensure_backfill :: proc(agent_id, display_name, template_id, provider_p
 		changed := false
 		if rec.display_name == "" && display_name != "" { rec.display_name = strings.clone(display_name); changed = true }
 		if rec.template_id == "" && template_id != "" { rec.template_id = strings.clone(template_id); changed = true }
-		if rec.agent_role == "" { rec.agent_role = strings.clone(agent_role_normalize(agent_role if agent_role != "" else agent_role_from_template(template_id))); changed = true }
 		if rec.default_provider_profile == "" && provider_profile != "" { rec.default_provider_profile = strings.clone(provider_profile); changed = true }
 		if rec.default_model_tier == "" && model_tier != "" { rec.default_model_tier = strings.clone(normalize_model_tier(model_tier)); changed = true }
 		// Only backfill a blank default project when it was never explicitly set/cleared.
@@ -221,7 +287,6 @@ agent_id_ensure_backfill :: proc(agent_id, display_name, template_id, provider_p
 		agent_id = agent_id,
 		display_name = dn,
 		template_id = template_id,
-		agent_role = agent_role_normalize(agent_role if agent_role != "" else agent_role_from_template(template_id)),
 		default_provider_profile = provider_profile,
 		default_model_tier = model_tier,
 		default_project_id = default_project_id,
@@ -232,7 +297,7 @@ agent_id_ensure_backfill :: proc(agent_id, display_name, template_id, provider_p
 }
 
 // Explicit create/update from the API (Create Agent button).
-agent_id_upsert :: proc(agent_id, display_name, template_id, default_provider_profile, default_model_tier, default_project_id, author: string, agent_role: string = "") -> bool {
+agent_id_upsert :: proc(agent_id, display_name, template_id, default_provider_profile, default_model_tier, default_project_id, author: string) -> bool {
 	if agent_id == "" do return false
 	tier := default_model_tier; if tier != "" do tier = normalize_model_tier(tier)
 	return agent_id_append_event(Agent_Id_Event{
@@ -240,7 +305,6 @@ agent_id_upsert :: proc(agent_id, display_name, template_id, default_provider_pr
 		agent_id = agent_id,
 		display_name = display_name,
 		template_id = template_id,
-		agent_role = agent_role_normalize(agent_role if agent_role != "" else agent_role_from_template(template_id)),
 		default_provider_profile = default_provider_profile,
 		default_model_tier = tier,
 		default_project_id = default_project_id,
@@ -255,7 +319,6 @@ agent_id_record_to_event :: proc(rec: Agent_Id_Record, author: string) -> Agent_
 		agent_id = rec.agent_id,
 		display_name = rec.display_name,
 		template_id = rec.template_id,
-		agent_role = rec.agent_role,
 		default_provider_profile = rec.default_provider_profile,
 		default_model_tier = rec.default_model_tier,
 		default_project_id = rec.default_project_id,
@@ -282,7 +345,6 @@ agent_id_update_defaults :: proc(agent_id, display_name, default_provider_profil
 		agent_id = agent_id,
 		display_name = display_name if display_name != "" else rec.display_name,
 		template_id = rec.template_id,
-		agent_role = rec.agent_role,
 		default_provider_profile = default_provider_profile,
 		default_model_tier = tier,
 		default_project_id = default_project_id,
@@ -299,7 +361,6 @@ agent_id_event_clone :: proc(e: Agent_Id_Event) -> Agent_Id_Event {
 	out.agent_id = strings.clone(e.agent_id)
 	out.display_name = strings.clone(e.display_name)
 	out.template_id = strings.clone(e.template_id)
-	out.agent_role = strings.clone(e.agent_role)
 	out.default_provider_profile = strings.clone(e.default_provider_profile)
 	out.default_model_tier = strings.clone(e.default_model_tier)
 	out.default_project_id = strings.clone(e.default_project_id)
@@ -315,7 +376,6 @@ agent_id_event_json :: proc(event: Agent_Id_Event) -> string {
 	strings.write_string(&b, `","agent_id":"`); json_write_string(&b, event.agent_id)
 	strings.write_string(&b, `","display_name":"`); json_write_string(&b, event.display_name)
 	strings.write_string(&b, `","template_id":"`); json_write_string(&b, event.template_id)
-	strings.write_string(&b, `","agent_role":"`); json_write_string(&b, agent_role_normalize(event.agent_role))
 	strings.write_string(&b, `","default_provider_profile":"`); json_write_string(&b, event.default_provider_profile)
 	strings.write_string(&b, `","default_model_tier":"`); json_write_string(&b, event.default_model_tier)
 	strings.write_string(&b, `","default_project_id":"`); json_write_string(&b, event.default_project_id)
@@ -394,7 +454,6 @@ agent_id_event_from_json :: proc(line: string) -> (Agent_Id_Event, bool) {
 		agent_id = extract_json_string(line, "agent_id", ""),
 		display_name = extract_json_string(line, "display_name", ""),
 		template_id = extract_json_string(line, "template_id", ""),
-		agent_role = extract_json_string(line, "agent_role", ""),
 		default_provider_profile = extract_json_string(line, "default_provider_profile", ""),
 		default_model_tier = extract_json_string(line, "default_model_tier", ""),
 		default_project_id = extract_json_string(line, "default_project_id", ""),

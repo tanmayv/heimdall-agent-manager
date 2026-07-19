@@ -12,7 +12,6 @@ export function normalizeChain(chain: any) {
     vcsWorkspaceId: chain.vcs_workspace_id || chain.vcsWorkspaceId || '',
     diffBaseSha: chain.diff_base_sha || chain.diffBaseSha || '',
     repoDiffSupported: Boolean(chain.repo_diff_supported || chain.repoDiffSupported),
-    teamId: chain.team_id || chain.teamId || '',
     coordinatorAgentInstanceId: chain.coordinator_agent_instance_id || chain.coordinatorAgentInstanceId || '',
     defaultReviewerAgentInstanceId: chain.default_reviewer_agent_instance_id || chain.defaultReviewerAgentInstanceId || '',
     finalSummary: chain.final_summary || chain.finalSummary || '',
@@ -81,21 +80,6 @@ export const workspaceApi = heimdallApi.injectEndpoints({
         { type: 'ChainList' as const, id: 'ALL' },
       ],
     }),
-    fetchTeam: build.query<any, { teamId: string }>({
-      queryFn: withSessionQuery(async ({ teamId }, { session }) => {
-        if (!session?.daemonUrl || !teamId) return { teamId, team: null };
-        const data = await daemonApi.fetchTeam({ daemonUrl: session.daemonUrl, teamId });
-        return { teamId, team: data?.team || data || null };
-      }),
-      providesTags: (_result, _error, { teamId }) => [{ type: 'Team' as const, id: teamId }],
-    }),
-    addTeamMember: build.mutation<any, { teamId: string; roleKey: string; agentInstanceId: string }>({
-      queryFn: withSessionQuery(async ({ teamId, roleKey, agentInstanceId }, { session }) => {
-        if (!session?.clientToken || !teamId || !agentInstanceId) return { ok: false, message: 'Missing team member' };
-        return daemonApi.addTeamMember({ ...auth(session), teamId, roleKey, agentInstanceId });
-      }),
-      invalidatesTags: (_result, _error, { teamId }) => [{ type: 'Team' as const, id: teamId }],
-    }),
     fetchWorkspace: build.query<any, { chainId: string }>({
       queryFn: withSessionQuery(async ({ chainId }, { session }) => {
         if (!session?.clientToken || !chainId) return { chainId, workspace: null };
@@ -129,8 +113,6 @@ export const {
   useFocusChainMutation,
   useUpdateChainMutation,
   useUpdateChainStatusMutation,
-  useFetchTeamQuery,
-  useAddTeamMemberMutation,
   useFetchWorkspaceQuery,
   usePreviewWorkspaceMergeQuery,
   useLazyPreviewWorkspaceMergeQuery,

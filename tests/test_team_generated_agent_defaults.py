@@ -18,7 +18,7 @@ checks = [
     ('preferences expose default provider/tier', '"default_agent_provider_profile"' in prefs and '"default_agent_model_tier"' in prefs),
     ('runtime resolves provider/tier from preferences', 'memory_auditor_resolve_pref("", "default_agent_provider_profile")' in runtime and 'memory_auditor_resolve_pref("", "default_agent_model_tier")' in runtime),
     ('built-in team providers inherit global default', 'default_provider = "pi"' not in team_kinds),
-    ('coordinator generated name is clear', 'return fmt.tprintf("coordinator@%s", scope)' in team_service),
+    ('generated team slots resolve through default-agent map', 'agent_default_id_for_use(role_key)' in team_service and 'agent_id_template_id(durable_agent_id)' in team_service),
     ('generated names include project directory basename when available', 'team_service_path_basename(dir)' in team_service),
     ('new chain UI delegates coordinator generation to backend', 'Coordinator: generated on create as coordinator@project-chain' in app and 'disabled={creating || !title.trim()}' in app),
     ('settings exposes generated agent defaults', 'settings-default-agent-provider-select' in settings and 'settings-default-agent-tier-select' in settings),

@@ -133,11 +133,6 @@ main :: proc() {
 	conversation_id := extract_json_string(register_response.body, "conversation_id", "")
 	ws_url := extract_json_string(register_response.body, "ws_url", "")
 	agent_token := extract_json_string(register_response.body, "agent_token", "")
-	template_persona := extract_json_string(register_response.body, "template_persona", "")
-	template_instructions := extract_json_string(register_response.body, "template_instructions", "")
-	team_id := extract_json_string(register_response.body, "team_id", "")
-	role_key := extract_json_string(register_response.body, "role_key", "")
-	role_index := extract_json_int(register_response.body, "role_index", 0)
 	prefs_obj := extract_json_object(register_response.body, "preferences")
 	defer if prefs_obj != "" do delete(prefs_obj)
 	apply_preferences_json(prefs_obj)
@@ -154,6 +149,12 @@ main :: proc() {
 		if !validate_project_exists(cfg.daemon_url, agent_token, effective_project_id) {
 			fmt.println("invalid project_id", effective_project_id)
 			fmt.println("wrapper startup aborted before tmux launch; create the project first or remove --project-id / wrapper.project")
+			// Surface a concrete, actionable failure instead of leaving the agent
+			// stuck at startup_unknown. Without this the daemon only sees the
+			// spawn succeed and the agent never reaches ready, so the UI shows
+			// "startup unknown" with no explanation and every reconcile silently
+			// re-aborts here.
+			report_startup_status(cfg.daemon_url, registered_instance_id, "startup_failed", "invalid_project", fmt.tprintf("Configured project_id '%s' does not exist; fix the agent's project binding or create the project.", effective_project_id), selected_agent, cwd, "")
 			return
 		}
 		wrapper_launch_log("project_validate_done", registered_instance_id, launch_start_ms)
@@ -166,7 +167,7 @@ main :: proc() {
 
 	if !is_test_token(agent_token) {
 		wrapper_launch_log("bootstrap_files_begin", registered_instance_id, launch_start_ms)
-		generate_bootstrap_files(cwd, loaded.path, cfg, agent_cmd, selected_agent, registered_instance_id, display_name, cfg.daemon_url, agent_token, current_task_id, template_persona, template_instructions, team_id, role_key, role_index)
+		generate_bootstrap_files(cwd, loaded.path, cfg, agent_cmd, selected_agent, registered_instance_id, display_name, cfg.daemon_url, agent_token, current_task_id, loaded.config.guide_agent.agent_instance_id)
 		wrapper_launch_log("bootstrap_files_done", registered_instance_id, launch_start_ms)
 	}
 
@@ -633,6 +634,9 @@ heartbeat_loop :: proc(daemon_url, agent_class, agent_instance_id, display_name,
 			} else if strings.index(text, `"type":"message_event"`) >= 0 {
 				fmt.println("message event", text)
 				handle_message_event(text, tmux_pane)
+			} else if strings.index(text, `"type":"task_event_batch"`) >= 0 {
+				fmt.println("task event batch", text)
+				handle_task_event_batch(text, tmux_pane, agent_instance_id)
 			} else if strings.index(text, `"type":"task_event"`) >= 0 {
 				fmt.println("task event", text)
 				handle_task_event(text, tmux_pane, agent_instance_id)
@@ -711,6 +715,58 @@ handle_task_event :: proc(text, tmux_pane, agent_instance_id: string) {
 		fmt.println("notified agent pane", line)
 	} else {
 		fmt.println("failed to notify agent pane", line)
+	}
+}
+
+// handle_task_event_batch renders a coalesced backlog (delivered as one
+// task_event_batch on reconnect) into a SINGLE combined pane injection instead of
+// one line per event, so a late-joining agent is not bombarded. Self-authored
+// child events are skipped, matching handle_task_event.
+handle_task_event_batch :: proc(text, tmux_pane, agent_instance_id: string) {
+	arr_start := strings.index(text, `"events":[`)
+	if arr_start < 0 do return
+	scan := arr_start + len(`"events":[`)
+	lines := make([dynamic]string)
+	defer {
+		for l in lines do delete(l)
+		delete(lines)
+	}
+	any_interrupt := false
+	for {
+		obj_rel := strings.index(text[scan:], `{"type":"task_event"`)
+		if obj_rel < 0 do break
+		start := scan + obj_rel
+		end := json_object_end(text, start)
+		if end <= start do break
+		object := text[start:end]
+		scan = end
+
+		task_id := extract_json_string(object, "task_id", "unknown")
+		status := extract_json_string(object, "status", "updated")
+		changed_by := extract_json_string(object, "changed_by", "unknown")
+		body := extract_json_string(object, "body", "")
+		if changed_by == agent_instance_id do continue
+		template_str := active_live_prefs.msg_task_updated if body != "" else active_live_prefs.msg_task_updated_empty
+		entry := template_live_message(template_str, 0, "", task_id, status, changed_by, body, "", "", "", "", "", "", 0)
+		append(&lines, entry)
+		if extract_json_string(object, "event", "") == "Task_Nudged" {
+			if extract_json_bool(object, "interrupt", false) || extract_json_bool(object, "send_escape_prefix", false) do any_interrupt = true
+		}
+	}
+	if len(lines) == 0 do return
+
+	header := fmt.tprintf("You have %d task updates while you were away:", len(lines))
+	combined := strings.builder_make()
+	strings.write_string(&combined, header)
+	for l, i in lines {
+		strings.write_string(&combined, fmt.tprintf("\n  %d. ", i + 1))
+		strings.write_string(&combined, l)
+	}
+	message := strings.to_string(combined)
+	if tmux.send_line_with_escape(tmux_pane, message, any_interrupt) {
+		fmt.println("notified agent pane (batch)", len(lines), "events")
+	} else {
+		fmt.println("failed to notify agent pane (batch)")
 	}
 }
 
@@ -1148,15 +1204,14 @@ Memory_Record :: struct {
 	is_configured_template: bool,
 }
 
-fetch_all_active_memories :: proc(daemon_url, agent_token, team_kind, project_id, role_key: string, memory_templates: []string) -> [dynamic]Memory_Record {
+fetch_all_active_memories :: proc(daemon_url, agent_token, agent_id, project_id: string, memory_templates: []string) -> [dynamic]Memory_Record {
 	result := make([dynamic]Memory_Record)
 	if agent_token == "" do return result
 
 	req := strings.builder_make()
 	strings.write_string(&req, `{"agent_token":"`); json_write_string(&req, agent_token); strings.write_string(&req, `"`)
-	if team_kind != "" { strings.write_string(&req, `,"target_team_kind":"`); json_write_string(&req, team_kind); strings.write_string(&req, `"`) }
+	if agent_id != "" { strings.write_string(&req, `,"target_agent_id":"`); json_write_string(&req, agent_id); strings.write_string(&req, `"`) }
 	if project_id != "" { strings.write_string(&req, `,"target_project_id":"`); json_write_string(&req, project_id); strings.write_string(&req, `"`) }
-	if role_key != "" { strings.write_string(&req, `,"target_role":"`); json_write_string(&req, role_key); strings.write_string(&req, `"`) }
 	strings.write_string(&req, `}`)
 	resp, ok := http.post(daemon_url, "/memory/applicable", strings.to_string(req))
 	if ok && resp.status == 200 {
@@ -1190,16 +1245,17 @@ parse_into_memory_records :: proc(body: string, memory_templates: []string, resu
 	}
 }
 
-generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Command_Config, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, current_task_id, template_persona, template_instructions, team_id, role_key: string, role_index: int) {
+generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_Config, agent_cmd: cfg_lib.Agent_Command_Config, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, current_task_id, guide_agent_instance_id: string) {
 	profile := bootstrap_profile(agent_cmd, selected_agent)
 	memory_templates := agent_cmd.memory_templates
 	if len(memory_templates) == 0 do memory_templates = cfg.memory_templates
 	project_id := agent_cmd.project
 	if project_id == "" do project_id = cfg.project
 	project_context := project_bootstrap_context(daemon_url, agent_token, cfg, agent_cmd)
-	team_context, chain_id, team_kind := team_bootstrap_context(daemon_url, team_id)
-	chain_context, workspace_context := task_chain_bootstrap_context(daemon_url, agent_token, chain_id)
-	memories := fetch_all_active_memories(daemon_url, agent_token, team_kind, project_id, role_key, memory_templates)
+	chain_context, workspace_context := task_chain_bootstrap_context(daemon_url, agent_token, "")
+	memory_agent_id := agent_instance_id
+	if at := strings.index_byte(memory_agent_id, '@'); at >= 0 do memory_agent_id = memory_agent_id[:at]
+	memories := fetch_all_active_memories(daemon_url, agent_token, memory_agent_id, project_id, memory_templates)
 
 	written := make([dynamic]string)
 
@@ -1212,7 +1268,7 @@ generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_
 		}
 		path := join_path(cwd, name)
 		if can_write_managed_file(path) {
-			text := build_agents_md(name, profile, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path, memories[:], project_context, chain_context, team_context, workspace_context, has_reference_memories(memories[:]), current_task_id, template_persona, template_instructions, team_id, role_key, role_index)
+			text := build_agents_md(name, profile, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path, memories[:], project_context, chain_context, workspace_context, has_reference_memories(memories[:]), current_task_id, guide_agent_instance_id)
 			write_managed_file(path, text)
 			append(&written, name)
 		}
@@ -1247,7 +1303,7 @@ generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_
 	// Guide-only product handbook. This is intentionally a concrete file in the
 	// guide run directory so the singleton guide can read stable Heimdall-specific
 	// operating guidance without giving that context to ordinary project agents.
-	if agent_instance_id == "guide@heimdall" {
+	if guide_agent_instance_id != "" && agent_instance_id == guide_agent_instance_id {
 		name := "guide-agent.md"
 		path := join_path(cwd, name)
 		if can_write_managed_file(path) {
@@ -1258,35 +1314,6 @@ generate_bootstrap_files :: proc(cwd, config_path: string, cfg: cfg_lib.Wrapper_
 
 	cleanup_removed_bootstrap_files(cwd, written[:])
 	write_manifest(cwd, written[:])
-}
-
-team_bootstrap_context :: proc(daemon_url, team_id: string) -> (string, string, string) {
-	if team_id == "" do return "", "", ""
-	response, ok := http.get(daemon_url, fmt.tprintf("/teams/%s", team_id))
-	if !ok || response.status != 200 do return "", "", ""
-	chain_id := extract_json_string(response.body, "chain_id", "")
-	team_kind := extract_json_string(response.body, "kind", "")
-	b := strings.builder_make()
-	strings.write_string(&b, "- team_id: "); strings.write_string(&b, extract_json_string(response.body, "team_id", team_id)); strings.write_string(&b, "\n")
-	strings.write_string(&b, "- kind: "); strings.write_string(&b, team_kind); strings.write_string(&b, "\n")
-	strings.write_string(&b, "- status: "); strings.write_string(&b, extract_json_string(response.body, "status", "")); strings.write_string(&b, "\n")
-	strings.write_string(&b, "- Roster:\n")
-	idx := 0
-	for {
-		start_rel := strings.index(response.body[idx:], `{"team_id":"`)
-		if start_rel < 0 do break
-		start := idx + start_rel
-		end := json_object_end(response.body, start)
-		if end <= start do break
-		object := response.body[start:end]
-		if extract_json_string(object, "role_key", "") != "" {
-			strings.write_string(&b, "  - "); strings.write_string(&b, extract_json_string(object, "role_key", ""))
-			strings.write_string(&b, "["); strings.write_string(&b, fmt.tprintf("%d", extract_json_int(object, "role_index", 0))); strings.write_string(&b, "] ")
-			strings.write_string(&b, extract_json_string(object, "lifecycle_status", "idle")); strings.write_string(&b, "\n")
-		}
-		idx = end
-	}
-	return strings.to_string(b), chain_id, team_kind
 }
 
 task_chain_bootstrap_context :: proc(daemon_url, agent_token, chain_id: string) -> (string, string) {
@@ -1349,22 +1376,19 @@ content_section_enabled :: proc(sections: []string, section: string) -> bool {
 	return false
 }
 
-build_agents_md :: proc(name, profile: string, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path: string, memories: []Memory_Record, project_context, chain_context, team_context, workspace_context: string, has_memory_md: bool, current_task_id, template_persona, template_instructions, team_id, role_key: string, role_index: int) -> string {
+build_agents_md :: proc(name, profile: string, selected_agent, agent_instance_id, display_name, daemon_url, agent_token, config_path: string, memories: []Memory_Record, project_context, chain_context, workspace_context: string, has_memory_md: bool, current_task_id, guide_agent_instance_id: string) -> string {
 	b := strings.builder_make()
-	is_team_member := team_id != "" || role_key != ""
-	is_coordinator := !is_team_member || role_key == "coordinator"
 	strings.write_string(&b, active_live_prefs.bootstrap_header); strings.write_string(&b, "\n")
 	strings.write_string(&b, bootstrap_title(name, profile)); strings.write_string(&b, "\n\n")
 
 	strings.write_string(&b, "# You\n")
 	strings.write_string(&b, "- display_name: "); strings.write_string(&b, display_name); strings.write_string(&b, "\n")
 	strings.write_string(&b, "- agent_instance_id: "); strings.write_string(&b, agent_instance_id); strings.write_string(&b, "\n")
-	if role_key != "" { strings.write_string(&b, "- role_key: "); strings.write_string(&b, role_key); strings.write_string(&b, "\n") }
-	strings.write_string(&b, "- role_index: "); strings.write_string(&b, fmt.tprintf("%d", role_index)); strings.write_string(&b, "\n")
+
 	strings.write_string(&b, "- provider/profile: "); strings.write_string(&b, selected_agent); strings.write_string(&b, " / "); strings.write_string(&b, profile); strings.write_string(&b, "\n")
 	strings.write_string(&b, "- agent_token: "); strings.write_string(&b, agent_token); strings.write_string(&b, "\n")
 	strings.write_string(&b, "- start-success: `"); strings.write_string(&b, effective_ctl_bin()); strings.write_string(&b, " --daemon-url "); strings.write_string(&b, daemon_url); strings.write_string(&b, " --token "); strings.write_string(&b, agent_token); strings.write_string(&b, " start-success`\n")
-	if agent_instance_id == "guide@heimdall" {
+	if guide_agent_instance_id != "" && agent_instance_id == guide_agent_instance_id {
 		strings.write_string(&b, "- guide handbook: read `guide-agent.md` after start-success; it is the guide-only Heimdall product/runbook context.\n")
 	}
 	strings.write_string(&b, "\n")
@@ -1389,16 +1413,8 @@ build_agents_md :: proc(name, profile: string, selected_agent, agent_instance_id
 	}
 	strings.write_string(&b, "\n")
 
-	strings.write_string(&b, "# Team\n")
-	if team_context != "" { strings.write_string(&b, team_context) } else if team_id != "" { strings.write_string(&b, "- team_id: "); strings.write_string(&b, team_id); strings.write_string(&b, "\n") }
-	if is_coordinator {
-		strings.write_string(&b, "- You are the coordinator for free-form user contact: summarize/forward team needs to the operator when needed.\n")
-		strings.write_string(&b, "- Use chain-scoped user replies (`chat send-to-user --chain-id <chain_id>`) when the reply belongs to a task chain, so it appears in coordinator chat and direct chat.\n")
-		strings.write_string(&b, "- Team members route user-facing decisions through you; consolidate, resolve locally when possible, and ask the user only when necessary.\n")
-	} else {
-		strings.write_string(&b, "- Coordinator owns user-facing decisions; route free-form user communication through the coordinator.\n")
-		strings.write_string(&b, "- Do not use direct `chat send-to-user` for normal user contact. Use task comments or coordinator-directed chat instead; chain-context sends are redirected to the coordinator, not the user.\n")
-	}
+	strings.write_string(&b, "# Collaboration Context\n")
+	strings.write_string(&b, "- Task/participant state defines current responsibilities. Inspect the current task and applicable skills before deciding how to collaborate or route user-facing questions.\n")
 	strings.write_string(&b, "- Structured Needs attention prompts remain allowed for product-modeled approvals/actions such as user_proxy review and merge decisions.\n")
 	strings.write_string(&b, "- Agents shut down after 30 minutes idle unless task, mention, or nudge keeps them alive.\n\n")
 
@@ -1408,26 +1424,6 @@ build_agents_md :: proc(name, profile: string, selected_agent, agent_instance_id
 	strings.write_string(&b, strings.trim_space(#load("../prompts/bootstrap_profile_guidance.md", string)))
 	strings.write_string(&b, "\n\n")
 
-	if is_coordinator {
-		strings.write_string(&b, "# Coordinator Instructions\n")
-		strings.write_string(&b, strings.trim_space(#load("../prompts/coordinator_instructions.md", string)))
-		strings.write_string(&b, "\n\n")
-	}
-
-	// Role persona + instructions come from the agent template stored in the
-	// daemon DB (planner/coder/reviewer/tester/specialist/etc.). Emitting them
-	// here makes them visible inside AGENTS.md alongside the shared rules and
-	// keeps the whole agent context reproducible from the run directory.
-	if tp := strings.trim_space(template_persona); tp != "" {
-		strings.write_string(&b, "# Role Persona\n")
-		strings.write_string(&b, tp)
-		strings.write_string(&b, "\n\n")
-	}
-	if ti := strings.trim_space(template_instructions); ti != "" {
-		strings.write_string(&b, "# Role Instructions\n")
-		strings.write_string(&b, ti)
-		strings.write_string(&b, "\n\n")
-	}
 
 	if workspace_context != "" {
 		strings.write_string(&b, "# Workspace\n")
@@ -1444,13 +1440,9 @@ build_agents_md :: proc(name, profile: string, selected_agent, agent_instance_id
 
 	strings.write_string(&b, "# Tools\n")
 	strings.write_string(&b, "- `ham-ctl tasks next|show|comment|done --token <token>` for task work.\n")
-	if is_coordinator {
-		strings.write_string(&b, "- `ham-ctl chat send-to-user --token <token> --user-id operator@local --chain-id <chain_id> --body <text>` for coordinator-owned chain replies.\n")
-	} else {
-		strings.write_string(&b, "- For user-facing questions, comment/nudge the coordinator; the coordinator owns free-form user replies.\n")
-	}
+	strings.write_string(&b, "- Use task participants/current task state to decide whether to implement, review, coordinate, or subscribe; applicable skills contain playbooks for those responsibilities.\n")
 	strings.write_string(&b, "- Structured Needs attention approval/action prompts are allowed when the product models them durably.\n")
-	strings.write_string(&b, "- `ham-ctl teams show --team <team_id>` and `ham-ctl chains focus --chain <chain_id>` for team context.\n")
+	strings.write_string(&b, "- `ham-ctl task-chains show --chain-id <chain_id>` for chain context.\n")
 	strings.write_string(&b, "- Full workflow guide: `ham-ctl help work-guide`.\n")
 	return strings.to_string(b)
 }
@@ -2083,7 +2075,7 @@ memory_cli_guidance :: proc(agent_token: string) -> string {
 	strings.write_string(&builder, "Examples: ")
 	write_ctl(&builder, bin, " memory propose new --token ")
 	strings.write_string(&builder, agent_token)
-	strings.write_string(&builder, " --target-team-kind <kind> --target-role <role> --target-project-id <project_id> --type fact|habit|episode|expertise|skill|template --title <title> --body <body> --reason <why> --evidence <task-or-source>; ")
+	strings.write_string(&builder, " --target-agent-id <agent_id> --target-project-id <project_id> --type fact|habit|episode|expertise|skill|template --title <title> --body <body> --reason <why> --evidence <task-or-source>; ")
 	write_ctl(&builder, bin, " memory propose edit --token ")
 	strings.write_string(&builder, agent_token)
 	strings.write_string(&builder, " --memory-id <id> --expected-version <n> --title <title> --body <body> --reason <why> --evidence <source>; ")

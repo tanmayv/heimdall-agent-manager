@@ -436,10 +436,12 @@ def main() -> None:
     for marker in ["setArtifacts(", "refreshArtifacts(", "daemonApi.listArtifacts(", "daemonApi.fetchArtifactMeta(", "daemonApi.createArtifact("]:
         require(marker not in app and marker not in chain_artifacts and marker not in artifact_viewer and marker not in artifact_upload and marker not in markdown_body, f"Artifact components should not keep component-owned fetched artifact mirrors or bypass RTKQ via {marker}")
     chain_editor = read(ROOT / "src/ui/components/ChainEditor.tsx")
-    require("onRefresh" not in chain_editor, "ChainEditor should not own manual refresh fan-out; RTKQ mutation invalidation should refresh chain/team metadata")
+    require("onRefresh" not in chain_editor, "ChainEditor should not own manual refresh fan-out; RTKQ mutation invalidation should refresh chain/task metadata")
     require("workspaceApi.endpoints.updateChain.initiate" in chain_editor, "ChainEditor chain metadata saves should use RTKQ mutation invalidation")
     require("workspaceApi.endpoints.updateChainStatus.initiate" in chain_editor, "ChainEditor chain status saves should use RTKQ mutation invalidation")
-    require("workspaceApi.endpoints.addTeamMember.initiate" in chain_editor, "ChainEditor team mutations should use RTKQ mutation invalidation")
+    require("tasksApi.endpoints.addTaskParticipant.initiate" in chain_editor, "ChainEditor participant mutations should use RTKQ mutation invalidation")
+    require("tasksApi.endpoints.removeTaskParticipant.initiate" in chain_editor, "ChainEditor participant removals should use RTKQ mutation invalidation")
+    require("addTeamMember" not in chain_editor, "ChainEditor must not use removed team add-member mutations")
     for marker in ["daemonApi.updateTaskChain(", "daemonApi.updateTaskChainStatus(", "daemonApi.addTeamMember("]:
         require(marker not in chain_editor, f"ChainEditor should not bypass RTKQ mutation invalidation via {marker}")
     memory_endpoint = read(API_ENDPOINTS_DIR / "memory.ts")

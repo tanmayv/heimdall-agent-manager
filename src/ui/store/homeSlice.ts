@@ -1,10 +1,11 @@
 import { createAsyncThunk, createSlice } from '@reduxjs/toolkit';
 import * as daemonApi from '../api/daemonApi';
 import { workspaceApi } from '../api/endpoints/workspace';
+import { getRouteSearch } from '../utils/appLocation';
 
 function initialUrlState() {
   try {
-    const params = new URLSearchParams(window.location.search);
+    const params = new URLSearchParams(getRouteSearch());
     const chainId = params.get('chainId') || '';
     const view = params.get('view') || '';
     if (view === 'memory') return { surface: 'memory', chainId };
@@ -47,10 +48,7 @@ export const submitNewChain = createAsyncThunk('home/submitNewChain', async (pay
     clientToken: session.clientToken,
     project_id: payload.projectId || '',
     title: payload.title || '',
-    description: payload.scaffold && payload.scaffold !== 'none' ? (payload.goal || '') : '',
-    kind: payload.kind || 'coding',
-    scaffold: payload.scaffold === 'none' ? '' : (payload.scaffold || ''),
-    no_scaffold: payload.scaffold === 'none',
+    description: payload.goal || payload.description || '',
     wants_vcs: Boolean(payload.wantsVcs),
     coordinator_agent_instance_id: payload.coordinatorAgentInstanceId || '',
   });

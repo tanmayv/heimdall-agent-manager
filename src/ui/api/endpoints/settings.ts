@@ -28,6 +28,21 @@ export const settingsApi = heimdallApi.injectEndpoints({
         { type: 'Preferences' as const, id: key },
       ],
     }),
+    fetchAgentDefaults: build.query<any, { scope?: string } | void>({
+      queryFn: withSessionQuery(async (_arg, { session }) => {
+        if (!session?.clientToken || !session?.daemonUrl) return { defaults: [] };
+        const data = await daemonApi.fetchAgentDefaults(auth(session));
+        const defaults = data?.defaults || data?.records || [];
+        return { defaults };
+      }),
+      providesTags: [{ type: 'Preferences' as const, id: 'AGENT_DEFAULTS' }],
+    }),
+    saveAgentDefault: build.mutation<any, { use: string; agentId: string }>({
+      queryFn: withSessionQuery(async ({ use, agentId }, { session }) => {
+        return daemonApi.setAgentDefault({ ...auth(session), use, agentId });
+      }),
+      invalidatesTags: [{ type: 'Preferences' as const, id: 'AGENT_DEFAULTS' }, { type: 'Agents' as const, id: 'LIST' }],
+    }),
     fetchSettingsCatalog: build.query<any, { scope?: string } | void>({
       queryFn: withSessionQuery(async (_arg, { session }) => {
         if (!session?.daemonUrl) return { templates: [], providers: [] };
@@ -45,5 +60,7 @@ export const settingsApi = heimdallApi.injectEndpoints({
 export const {
   useFetchPreferencesQuery,
   useSavePreferenceMutation,
+  useFetchAgentDefaultsQuery,
+  useSaveAgentDefaultMutation,
   useFetchSettingsCatalogQuery,
 } = settingsApi;

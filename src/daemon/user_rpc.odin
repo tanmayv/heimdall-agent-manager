@@ -146,9 +146,13 @@ handle_user_rpc_task_create :: proc(client: net.TCP_Socket, body, user_id: strin
 }
 
 handle_user_rpc_task_chain_create :: proc(client: net.TCP_Socket, body, user_id: string) {
+	if json_has_key(body, "kind") || json_has_key(body, "scaffold") || json_has_key(body, "no_scaffold") {
+		write_response(client, 400, "Bad Request", `{"ok":false,"message":"chain create no longer accepts kind/scaffold; use goal plus scaffold skills"}`)
+		return
+	}
 	description := extract_json_string(body, "description", "")
 	if description == "" do description = extract_json_string(body, "goal", "")
-	result := task_service_create_chain(Task_Chain_Create_Command{chain_id = extract_json_string(body, "chain_id", ""), project_id = extract_json_string(body, "project_id", ""), kind = extract_json_string(body, "kind", ""), title = extract_json_string(body, "title", ""), description = description, scaffold = extract_json_string(body, "scaffold", ""), no_scaffold = extract_json_bool(body, "no_scaffold", false), coordinator_agent_instance_id = extract_json_string(body, "coordinator_agent_instance_id", ""), default_reviewer_agent_instance_id = extract_json_string(body, "default_reviewer_agent_instance_id", ""), wants_vcs = extract_json_bool(body, "wants_vcs", true), author_agent_instance_id = user_id})
+	result := task_service_create_chain(Task_Chain_Create_Command{chain_id = extract_json_string(body, "chain_id", ""), project_id = extract_json_string(body, "project_id", ""), title = extract_json_string(body, "title", ""), description = description, coordinator_agent_instance_id = extract_json_string(body, "coordinator_agent_instance_id", ""), default_reviewer_agent_instance_id = extract_json_string(body, "default_reviewer_agent_instance_id", ""), wants_vcs = extract_json_bool(body, "wants_vcs", false), author_agent_instance_id = user_id})
 	write_task_service_response(client, result)
 }
 
@@ -386,7 +390,7 @@ chat_list_build_rows :: proc(user_id: string) -> [dynamic]Chat_List_Row {
 		if rec.agent_instance_id == "" do continue
 		if seen[rec.agent_instance_id] do continue
 		durable := agent_id_from_instance_id(rec.agent_instance_id)
-		is_conversation := durable == "conversation" || rec.template_id == "conversation" || rec.agent_role == "conversation"
+		is_conversation := agent_id_matches_default_use(durable, "conversation")
 		if !is_conversation { delete(durable); continue }
 		row := Chat_List_Row{}
 		row.agent_instance_id = strings.clone(rec.agent_instance_id)

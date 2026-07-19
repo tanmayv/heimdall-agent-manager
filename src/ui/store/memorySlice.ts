@@ -3,8 +3,7 @@ import * as daemonApi from '../api/daemonApi';
 import { matchesMemoryFilters } from '../api/memoryCatalog';
 
 const initialFilters = {
-  targetTeamKind: '',
-  targetRole: '',
+  targetAgentId: '',
   targetProjectId: '',
   type: '',
   status: '',

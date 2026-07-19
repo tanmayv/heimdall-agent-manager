@@ -519,7 +519,7 @@ hex_write_byte :: proc(builder: ^strings.Builder, b: byte) {
 }
 
 // teams-v2: identity is decoupled from project. Role/class is NOT derived by
-// splitting on '@' anymore; role comes from the agent's template role_hint.
+// splitting on '@' anymore; durable agent id is the authority for identity.
 // This helper is retained only as a last-resort fallback label when no template
 // is known (e.g. reserved identities). It returns the whole id, minus any
 // cosmetic '@'-suffix used by reserved ids like operator@local.

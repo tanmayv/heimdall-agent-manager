@@ -106,6 +106,12 @@ def main():
         proc, log_file = start_daemon(daemon_bin, config_path, log_path)
         wait_for_health()
 
+        # Project must exist before an agent can be bound to it.
+        status, reg = request_json("POST", "/user-client/register", {"user_id": "operator@local", "client_instance_id": "ui-defproj", "client_token": ""})
+        require(status == 200 and reg.get("client_token"), reg)
+        status, pres = request_json("POST", "/projects/create", {"agent_token": reg["client_token"], "project_id": "proj-a", "name": "proj-a"})
+        require(status == 200 and pres.get("ok"), pres)
+
         # 1. Create durable coder with default project proj-a.
         status, created = request_json("POST", "/agents/create", {
             "agent_instance_id": "coder",

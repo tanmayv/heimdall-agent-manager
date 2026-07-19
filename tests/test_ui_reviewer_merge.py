@@ -48,26 +48,12 @@ def main():
     try:
         chain = request_post("/task-chains/create", {
             "agent_token": agent_token,
-            "kind": "coding",
             "wants_vcs": False,
-            "no_scaffold": True,
             "title": "Merge Test Chain",
+            "goal": "Verify required/optional task participants partition correctly.",
             "coordinator_agent_instance_id": "test-coder-merge-agent@default"
         })
         chain_id = chain["chain_id"]
-        team_id = chain["team_id"]
-
-        for agent_instance_id in [
-            "required-reviewer@default",
-            "optional-reviewer@default",
-            "subscriber-agent@default",
-        ]:
-            request_post("/teams/add-member", {
-                "agent_token": agent_token,
-                "team_id": team_id,
-                "role_key": "specialist",
-                "agent_instance_id": agent_instance_id,
-            })
 
         print("[*] Creating Task A...")
         task_id_a = request_post("/tasks/create", {

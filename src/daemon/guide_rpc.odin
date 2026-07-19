@@ -11,7 +11,7 @@ guide_rpc_try_handle :: proc(client: net.TCP_Socket, action, body, from_agent_in
 	if !strings.has_prefix(action, "guide_") do return false
 	if !guide_agent_is_singleton(from_agent_instance_id) {
 		fmt.printfln("GUIDE_RPC ts_unix_ms=%d stage=rejected action=%s from=%s reason=not_guide", router_now_unix_ms(), action, from_agent_instance_id)
-		write_response(client, 403, "Forbidden", `{"ok":false,"message":"guide RPC actions are restricted to guide@heimdall"}`)
+		write_response(client, 403, "Forbidden", `{"ok":false,"message":"guide RPC actions are restricted to the configured guide agent"}`)
 		return true
 	}
 	fmt.printfln("GUIDE_RPC ts_unix_ms=%d stage=handle action=%s from=%s", router_now_unix_ms(), action, from_agent_instance_id)

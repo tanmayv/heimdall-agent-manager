@@ -16,15 +16,46 @@ notification_outbox_payload_event_id :: proc(recipient_agent_instance_id, payloa
 	return fmt.tprintf("notif_%d_%d", router_now_unix_ms(), notification_outbox_seq)
 }
 
+// notification_outbox_dedupe_key derives the coalescing key for a task_event
+// payload. Undelivered notifications that share a key for the same recipient are
+// superseded on insert, so an agent that was offline for a long time is not woken
+// with a backlog of stale intermediate task pings -- only the latest state per
+// (task, event-category) survives. An empty key disables coalescing (each row is
+// kept distinct), which is the correct default for non-task payloads.
+notification_outbox_dedupe_key :: proc(payload: string) -> string {
+	type_field := extract_json_string(payload, "type", "")
+	if type_field != "task_event" do return ""
+	task_id := extract_json_string(payload, "task_id", "")
+	if task_id == "" do return ""
+	// Collapse all status/assignment/nudge pings for a task into one live row.
+	// The newest payload always carries the current status and body, so a single
+	// coalesced notification is sufficient to bring the agent up to date.
+	return strings.concatenate({"task:", task_id})
+}
+
 notification_outbox_insert_pending :: proc(recipient_agent_instance_id, payload: string) -> string {
 	if recipient_agent_instance_id == "" || payload == "" do return ""
 	if !task_db_ready do return ""
 	event_id := notification_outbox_payload_event_id(recipient_agent_instance_id, payload)
+	dedupe_key := notification_outbox_dedupe_key(payload)
+	// Supersede any prior UNDELIVERED notification for the same recipient+key so
+	// the queue holds at most one live entry per task. Delivered rows are left
+	// alone (retention/cleanup handles them).
+	if dedupe_key != "" {
+		supersede_stmt: sqlite3_stmt = nil
+		supersede_query := `DELETE FROM task_notification_outbox WHERE recipient_agent_instance_id = ? AND dedupe_key = ? AND delivered_unix_ms = 0`
+		if sqlite3_prepare_v2(task_db.db, cstring(raw_data(supersede_query)), -1, &supersede_stmt, nil) == SQLITE_OK {
+			task_db_bind_text(supersede_stmt, 1, recipient_agent_instance_id)
+			task_db_bind_text(supersede_stmt, 2, dedupe_key)
+			_ = sqlite3_step(supersede_stmt)
+			sqlite3_finalize(supersede_stmt)
+		}
+	}
 	stmt: sqlite3_stmt = nil
 	query := `INSERT OR IGNORE INTO task_notification_outbox (
 		recipient_agent_instance_id, event_id, payload, created_unix_ms,
-		delivered_unix_ms, attempts, last_attempt_unix_ms
-	) VALUES (?, ?, ?, ?, 0, 0, 0)`
+		delivered_unix_ms, attempts, last_attempt_unix_ms, dedupe_key
+	) VALUES (?, ?, ?, ?, 0, 0, 0, ?)`
 	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
 	if rc != SQLITE_OK {
 		fmt.println("notification_outbox_insert_pending: prepare failed:", rc)
@@ -36,6 +67,7 @@ notification_outbox_insert_pending :: proc(recipient_agent_instance_id, payload:
 	task_db_bind_text(stmt, 2, event_id)
 	task_db_bind_text(stmt, 3, payload)
 	sqlite3_bind_int64(stmt, 4, router_now_unix_ms())
+	task_db_bind_text(stmt, 5, dedupe_key)
 
 	rc = sqlite3_step(stmt)
 	if rc != SQLITE_DONE {
@@ -164,9 +196,27 @@ notification_outbox_replay_pending :: proc(recipient_agent_instance_id: string) 
 		append(&payloads, strings.clone_from_cstring(sqlite3_column_text(stmt, 1)))
 	}
 
+	_, _, is_remote := agent_remote_proxy_lookup(recipient_agent_instance_id)
+
+	// Local agents: coalesce the whole pending backlog into ONE task_event_batch
+	// message so an agent coming online after downtime gets a single combined
+	// wake-up instead of N separate pane injections. Remote proxies keep the
+	// per-event forward path (each event needs its own idempotency key/ACK).
+	if !is_remote && len(event_ids) > 1 {
+		batch := notification_outbox_build_batch_json(payloads[:])
+		if registry_send_ws_text_or_remote(recipient_agent_instance_id, batch) {
+			for i in 0..<len(event_ids) {
+				_ = notification_outbox_mark_attempt(recipient_agent_instance_id, event_ids[i], true)
+			}
+			return len(event_ids)
+		}
+		// Batch send failed (e.g. socket vanished mid-flush); fall through to the
+		// per-event path which records attempts and stops at the first failure.
+	}
+
 	delivered := 0
 	for i in 0..<len(event_ids) {
-		if _, _, remote := agent_remote_proxy_lookup(recipient_agent_instance_id); remote {
+		if is_remote {
 			accepted := registry_send_ws_text_or_remote_transport_accepted(recipient_agent_instance_id, payloads[i])
 			// Remote bridge acceptance is a transport attempt only; delivery_ack marks delivered.
 			_ = notification_outbox_mark_attempt(recipient_agent_instance_id, event_ids[i], false)
@@ -179,4 +229,30 @@ notification_outbox_replay_pending :: proc(recipient_agent_instance_id: string) 
 		delivered += 1
 	}
 	return delivered
+}
+
+// notification_outbox_build_batch_json wraps N task_event payloads into a single
+// task_event_batch envelope. The batch is interrupt=true iff any child event is,
+// so a queued nudge still breaks through on reconnect. Wrappers that predate the
+// batch type simply ignore an unknown type; the events array carries the raw
+// child payloads verbatim for forward/backward compatibility.
+notification_outbox_build_batch_json :: proc(payloads: []string) -> string {
+	b := strings.builder_make()
+	any_interrupt := false
+	for p in payloads {
+		if extract_json_bool(p, "interrupt", false) { any_interrupt = true; break }
+	}
+	strings.write_string(&b, `{"type":"task_event_batch","count":`)
+	strings.write_string(&b, fmt.tprintf("%d", len(payloads)))
+	strings.write_string(&b, `,"interrupt":`)
+	strings.write_string(&b, "true" if any_interrupt else "false")
+	strings.write_string(&b, `,"send_escape_prefix":`)
+	strings.write_string(&b, "true" if any_interrupt else "false")
+	strings.write_string(&b, `,"events":[`)
+	for p, i in payloads {
+		if i > 0 do strings.write_string(&b, ",")
+		strings.write_string(&b, p)
+	}
+	strings.write_string(&b, `]}`)
+	return strings.to_string(b)
 }

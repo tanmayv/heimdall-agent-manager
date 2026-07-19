@@ -54,6 +54,11 @@ Bridge_Config :: struct {
 	peers: [dynamic]Peer_Config,
 }
 
+Role_Default_Agent_Config :: struct {
+	use: string,
+	agent_id: string,
+}
+
 Daemon_Config :: struct {
 	bind_host: string,
 	advertise_host: string,
@@ -75,9 +80,11 @@ Daemon_Config :: struct {
 	nudge_restart_grace_seconds: int,
 	nudge_send_escape_prefix: bool,
 	startup_stale_after_seconds: int,
-	team_idle_shutdown_seconds: int, // TODO(phase 2): remove; idle auto-close disabled in phase 1
+	agent_idle_shutdown_seconds: int, // TODO: remove; idle auto-close disabled
 	default_agent_provider_profile: string,
 	default_agent_model_tier: string,
+	default_agent_ids: [dynamic]Role_Default_Agent_Config,
+	system_agent_ids: []string,
 	wrapper_bin: string,
 	artifact_max_bytes: int,
 	artifact_blob_dir: string,
@@ -435,12 +442,17 @@ parse_daemon_key :: proc(key, value: string, cfg: ^Daemon_Config) {
 		cfg.nudge_send_escape_prefix = parse_bool(value)
 	case "startup_stale_after_seconds":
 		if n, ok := strconv.parse_int(value); ok do cfg.startup_stale_after_seconds = int(n)
+	case "agent_idle_shutdown_seconds":
+		if n, ok := strconv.parse_int(value); ok do cfg.agent_idle_shutdown_seconds = int(n)
 	case "team_idle_shutdown_seconds":
-		if n, ok := strconv.parse_int(value); ok do cfg.team_idle_shutdown_seconds = int(n)
+		fmt.println("WARN deprecated config key ignored: daemon.team_idle_shutdown_seconds; use agent_idle_shutdown_seconds")
+		if n, ok := strconv.parse_int(value); ok do cfg.agent_idle_shutdown_seconds = int(n)
 	case "default_agent_provider_profile":
 		cfg.default_agent_provider_profile = parse_string(value)
 	case "default_agent_model_tier":
 		cfg.default_agent_model_tier = parse_string(value)
+	case "system_agent_ids":
+		cfg.system_agent_ids = parse_string_array(value)
 	case "wrapper_bin":
 		cfg.wrapper_bin = parse_string(value)
 	case "artifact_max_bytes":
@@ -456,7 +468,23 @@ parse_daemon_key :: proc(key, value: string, cfg: ^Daemon_Config) {
 	case "federation_advertised_agent_instance_ids":
 		cfg.federation_advertised_agent_instance_ids = parse_string_array(value)
 	case:
+		if strings.has_prefix(key, "default_agent_id_") {
+			default_use := strings.trim_space(key[len("default_agent_id_"):])
+			if default_use != "" do daemon_default_agent_id_set(cfg, default_use, parse_string(value))
+		}
 	}
+}
+
+daemon_default_agent_id_set :: proc(cfg: ^Daemon_Config, default_use, agent_id: string) {
+	use_key := strings.to_lower(strings.trim_space(default_use))
+	if use_key == "" do return
+	for existing, idx in cfg.default_agent_ids {
+		if existing.use == use_key {
+			cfg.default_agent_ids[idx].agent_id = parse_string(agent_id)
+			return
+		}
+	}
+	append(&cfg.default_agent_ids, Role_Default_Agent_Config{use = strings.clone(use_key), agent_id = strings.clone(strings.trim_space(agent_id))})
 }
 
 ensure_peer :: proc(cfg: ^Bridge_Config) -> int {
@@ -778,9 +806,24 @@ default_config :: proc() -> Config {
 	cfg.daemon.nudge_restart_grace_seconds = 60
 	cfg.daemon.nudge_send_escape_prefix = false
 	cfg.daemon.startup_stale_after_seconds = 120
-	cfg.daemon.team_idle_shutdown_seconds = 1800
+	cfg.daemon.agent_idle_shutdown_seconds = 1800
 	cfg.daemon.default_agent_provider_profile = "pi"
 	cfg.daemon.default_agent_model_tier = "normal"
+	cfg.daemon.default_agent_ids = make([dynamic]Role_Default_Agent_Config)
+	daemon_default_agent_id_set(&cfg.daemon, "conversation", "conversation")
+	daemon_default_agent_id_set(&cfg.daemon, "guide", "guide")
+	daemon_default_agent_id_set(&cfg.daemon, "coordinator", "coordinator")
+	daemon_default_agent_id_set(&cfg.daemon, "worker", "worker")
+	daemon_default_agent_id_set(&cfg.daemon, "assignee", "worker")
+	daemon_default_agent_id_set(&cfg.daemon, "coder", "worker")
+	daemon_default_agent_id_set(&cfg.daemon, "tester", "worker")
+	daemon_default_agent_id_set(&cfg.daemon, "researcher", "worker")
+	daemon_default_agent_id_set(&cfg.daemon, "specialist", "worker")
+	daemon_default_agent_id_set(&cfg.daemon, "reviewer", "reviewer")
+	cfg.daemon.system_agent_ids = make([]string, 3)
+	cfg.daemon.system_agent_ids[0] = "guide"
+	cfg.daemon.system_agent_ids[1] = "memory-auditor"
+	cfg.daemon.system_agent_ids[2] = "memory-reviewer"
 	cfg.daemon.artifact_max_bytes = 10 * 1024 * 1024
 	cfg.daemon.artifact_blob_dir = ""
 	cfg.daemon.bridge_url = ""

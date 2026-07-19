@@ -10,7 +10,7 @@ GUIDE_MD = (ROOT / 'src/prompts/guide-agent.md').read_text()
 checks = [
     ('agent rpc delegates guide actions', 'guide_rpc_try_handle(client, action, body, from_agent_instance_id)' in AGENT_RPC),
     ('guide rpc actions are prefix-gated', 'strings.has_prefix(action, "guide_")' in GUIDE_RPC),
-    ('guide rpc restricted to guide singleton', '!guide_agent_is_singleton(from_agent_instance_id)' in GUIDE_RPC and 'guide RPC actions are restricted to guide@heimdall' in GUIDE_RPC),
+    ('guide rpc restricted to configured guide singleton', '!guide_agent_is_singleton(from_agent_instance_id)' in GUIDE_RPC and 'restricted to the configured guide agent' in GUIDE_RPC),
     ('guide status action exists', 'action == "guide_status"' in GUIDE_RPC and 'guide_rpc_status_json' in GUIDE_RPC),
     ('guide summary action exists', 'action == "guide_state_summary"' in GUIDE_RPC and 'guide_rpc_state_summary_json' in GUIDE_RPC),
     ('guide list/show chains exist', 'action == "guide_list_chains"' in GUIDE_RPC and 'action == "guide_show_chain"' in GUIDE_RPC),

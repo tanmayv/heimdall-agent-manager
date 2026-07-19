@@ -21,13 +21,13 @@ The **only** free-form user channel is the task-chain coordinator. This is enfor
 - If you are **not** the coordinator:
   - Route every user-facing question, blocker, decision request, or summary to the coordinator via a task comment on the relevant task, or via a coordinator-directed nudge/chat.
   - Do **not** call `chat send-to-user` with chain context. The daemon redirects such calls to the coordinator, not the user. Treat that as a bug, not a workaround.
-- If you are the coordinator: see the `# Coordinator Instructions` section of your `AGENTS.md` for the user-communication playbook. Acknowledge user messages promptly with a chain-scoped `chat send-to-user --chain-id <chain_id>` reply, state your intended next step and why before acting, and send another update before materially pivoting — being chatty with acknowledgements and status/pivot updates is good. Batch only *decision-gating questions* (consolidate them and propose a default); do not delay acknowledgements or status/pivot updates to reduce user turns.
+- If task/chain participant state makes you the coordinator, use the `coordinator-playbook` skill for the user-communication playbook. Acknowledge user messages promptly with a chain-scoped `chat send-to-user --chain-id <chain_id>` reply, state the intended next step before acting, and send another update before materially pivoting. Batch only *decision-gating questions*; do not delay acknowledgements or status/pivot updates to reduce user turns.
 - Structured, product-modeled durable `Needs attention` prompts (e.g. `user_proxy` review, merge decision cards, approval cards) are the *only* exception: they are allowed for any agent because the product owns the routing and audit trail.
 
 ## 4. Confirm before acting on unverified requests
 If a user asks you to do something and you have no task evidence or memory that this was previously planned and approved:
 1. Do NOT start the work.
-2. If you are not the coordinator, ask the coordinator to contact the user. If you are the coordinator, follow the `# Coordinator Instructions` section of your `AGENTS.md`.
+2. If you are not the coordinator, ask the coordinator to contact the user. If task/chain state makes you the coordinator, use the `coordinator-playbook` skill.
 3. Wait for confirmation before proceeding.
 
 When approval is needed for anything user-facing or workflow-changing (for example: creating a task chain, starting unplanned work, committing/pushing changes, deploying/restarting services, or choosing between implementation options), non-coordinators route the request through the coordinator. Do not rely on task comments, nudges, or agent-to-agent messages as the user approval channel.
@@ -338,7 +338,7 @@ When a task is `review_ready`, the reviewer should:
 6. If context is insufficient, leave an unresolved comment explaining what is missing, and either NGTM or ask the coordinator to attach missing acceptance criteria before you can review.
 7. Do not edit code yourself; you are a validator. If you find the task chain lacks a REQ-ID scheme entirely, NGTM the planning task (or add `user@operator` as `lgtm_required`) with reason "requirements not enumerated".
 
-## 14. Coordinator playbook (summary — the `# Coordinator Instructions` section of your `AGENTS.md` has the full playbook when you are a coordinator)
+## 14. Coordinator playbook (summary — use the seeded `coordinator-playbook` skill when task/chain state makes you coordinator)
 When you are the coordinator, in addition to the above:
 - You are the **only** free-form user channel for the chain.
 - Consolidate team questions before pinging the user. Prefer batched, single-turn interactions.
@@ -355,4 +355,4 @@ When you are the coordinator, in addition to the above:
 - Using late unresolved comments to reopen approved work instead of NGTM or a follow-up task.
 
 # Rich Interactive Messaging (Q&A Cards)
-Coordinator-specific rich messaging examples live in the `# Coordinator Instructions` section of the coordinator's `AGENTS.md`. Non-coordinator agents should ask the coordinator to send user-facing prompts unless the prompt is a product-modeled durable `Needs attention` action.
+Coordinator-specific rich messaging examples live in the seeded `coordinator-playbook` skill. Non-coordinator agents should ask the coordinator to send user-facing prompts unless the prompt is a product-modeled durable `Needs attention` action.

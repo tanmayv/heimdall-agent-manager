@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { parseWorkspaceRoute, buildWorkspacePath, urlStateToWorkspaceRoute, workspaceRouteToUrlState } from './workspace/routes';
+import { getRoutePathname, getRouteSearch, buildRouteHash } from '../utils/appLocation';
 
 export interface UrlParams {
   view: string;
@@ -10,11 +11,11 @@ export interface UrlParams {
   projectId: string;
 }
 
-const INITIAL_APP_PATHNAME = typeof window !== 'undefined' ? window.location.pathname : '/';
+const INITIAL_APP_PATHNAME = typeof window !== 'undefined' ? getRoutePathname() : '/';
 const HEIMDALL_ROUTE_DEPTH_STATE_KEY = '__heimdallRouteDepth';
 
 function readSearchParams() {
-  const params = new URLSearchParams(window.location.search);
+  const params = new URLSearchParams(getRouteSearch());
   return {
     view: params.get('view') || 'chat',
     agentId: params.get('agentId') || '',
@@ -26,7 +27,7 @@ function readSearchParams() {
 }
 
 function urlParamsFromWorkspacePath(): UrlParams | null {
-  const route = parseWorkspaceRoute(window.location.pathname);
+  const route = parseWorkspaceRoute(getRoutePathname());
   if (!route) return null;
   const query = readSearchParams();
   return {
@@ -49,7 +50,7 @@ function routeDepth(): number {
 function ensureRouteState() {
   const state = window.history.state || {};
   if (Object.prototype.hasOwnProperty.call(state, HEIMDALL_ROUTE_DEPTH_STATE_KEY)) return;
-  window.history.replaceState({ ...state, [HEIMDALL_ROUTE_DEPTH_STATE_KEY]: 0 }, '', `${window.location.pathname}${window.location.search}`);
+  window.history.replaceState({ ...state, [HEIMDALL_ROUTE_DEPTH_STATE_KEY]: 0 }, '', buildRouteHash(getRoutePathname(), getRouteSearch()));
 }
 
 function buildUrl(nextState: UrlParams): string {
@@ -63,7 +64,9 @@ function buildUrl(nextState: UrlParams): string {
   if (nextState.memoryId) params.set('memoryId', nextState.memoryId);
   if (nextState.projectId) params.set('projectId', nextState.projectId);
   const search = params.toString() ? `?${params.toString()}` : '';
-  return `${pathname}${search}`;
+  // Route lives in the URL hash so an Electron file:// refresh reloads index.html
+  // and re-derives the route (see utils/appLocation.ts).
+  return buildRouteHash(pathname, search);
 }
 
 export function canNavigateBackInApp(): boolean {
@@ -88,6 +91,8 @@ export function updateUrlParams(updates: Partial<Record<keyof UrlParams, string 
   const url = buildUrl(nextState);
   window.history.pushState({ ...(window.history.state || {}), [HEIMDALL_ROUTE_DEPTH_STATE_KEY]: routeDepth() + 1 }, '', url);
   window.dispatchEvent(new Event('popstate'));
+  // A hash change from pushState does not itself emit hashchange; the popstate
+  // dispatch above drives our listener. Nothing else required here.
 }
 
 export function navigateBackOr(updates: Partial<Record<keyof UrlParams, string | null>>): boolean {
@@ -107,7 +112,13 @@ export function useUrlParams() {
       setParams(getUrlParams());
     };
     window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
+    // Hash-based routing: browser back/forward and manual hash edits emit
+    // `hashchange` (not always `popstate`), so listen to both.
+    window.addEventListener('hashchange', handlePopState);
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+      window.removeEventListener('hashchange', handlePopState);
+    };
   }, []);
 
   const setUrlParams = useCallback((updates: Partial<Record<keyof UrlParams, string | null>>) => {

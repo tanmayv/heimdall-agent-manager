@@ -134,7 +134,6 @@ export type FederationAgentRecord = {
   agent_instance_id: string;
   display_name: string;
   template_id: string;
-  agent_role: string;
   provider_profile: string;
   model_tier: string;
   identity_state: string;
@@ -215,7 +214,7 @@ export async function listPeerAdvertisedAgents({ daemonUrl, clientToken, peerId 
   };
 }
 
-export async function bindRemoteProxy({ daemonUrl, clientToken, peerId, originDaemonId = '', remoteAgentInstanceId, displayName = '', templateId = '', providerProfile = '', modelTier = 'normal', agentRole = '' }: { daemonUrl: string; clientToken: string; peerId: string; originDaemonId?: string; remoteAgentInstanceId: string; displayName?: string; templateId?: string; providerProfile?: string; modelTier?: string; agentRole?: string }) {
+export async function bindRemoteProxy({ daemonUrl, clientToken, peerId, originDaemonId = '', remoteAgentInstanceId, displayName = '', templateId = '', providerProfile = '', modelTier = 'normal' }: { daemonUrl: string; clientToken: string; peerId: string; originDaemonId?: string; remoteAgentInstanceId: string; displayName?: string; templateId?: string; providerProfile?: string; modelTier?: string }) {
   return requestJson(joinUrl(daemonUrl, '/federation/proxies/bind'), {
     method: 'POST',
     headers: { Authorization: `Bearer ${clientToken}` },
@@ -227,7 +226,6 @@ export async function bindRemoteProxy({ daemonUrl, clientToken, peerId, originDa
       template_id: templateId,
       provider_profile: providerProfile,
       model_tier: modelTier,
-      agent_role: agentRole,
     },
   });
 }
@@ -246,20 +244,14 @@ export async function listKnownAgentsPage({ daemonUrl, projectId = '', limit = 2
   };
 }
 
-export async function fetchTeam({ daemonUrl, teamId }: { daemonUrl: string; teamId: string }) {
-  if (!teamId) return null;
-  return requestJson(joinUrl(daemonUrl, `/teams/${encodeURIComponent(teamId)}`));
+export async function fetchAgentDefaults({ daemonUrl, clientToken }: { daemonUrl: string; clientToken: string }) {
+  return requestJson(joinUrl(daemonUrl, `/agents/defaults?agent_token=${encodeURIComponent(clientToken)}`));
 }
 
-// addTeamMember adds a generated agent to an existing chain team (Task Chain
-// Editor "add agent to chain"). Reuses POST /teams/add-member, which returns the
-// full roster row (team_member_id, role_key, role_index, agent_record_id,
-// agent_instance_id, is_user_proxy, route_to, lifecycle_status). Auth follows the
-// same pattern as focusTaskChain: the user client token is accepted as agent_token.
-export async function addTeamMember({ daemonUrl, clientToken, teamId, roleKey, agentInstanceId }: { daemonUrl: string; clientToken: string; teamId: string; roleKey: string; agentInstanceId: string }) {
-  return requestJson(joinUrl(daemonUrl, '/teams/add-member'), {
+export async function setAgentDefault({ daemonUrl, clientToken, use, agentId }: { daemonUrl: string; clientToken: string; use: string; agentId: string }) {
+  return requestJson(joinUrl(daemonUrl, '/agents/defaults'), {
     method: 'POST',
-    body: { agent_token: clientToken, team_id: teamId, role_key: roleKey, agent_instance_id: agentInstanceId },
+    body: { agent_token: clientToken, use, agent_id: agentId },
   });
 }
 
@@ -268,7 +260,7 @@ export async function listAgentProviders({ daemonUrl }: { daemonUrl: string }) {
   return data.providers ?? [];
 }
 
-export async function startAgent({ daemonUrl, agentInstanceId = '', provider, templateId, projectId, projectIdSet, alias, displayName, modelTier, agentRole }: { daemonUrl: string; agentInstanceId?: string; provider: string; templateId?: string; projectId?: string; projectIdSet?: boolean; alias?: string; displayName?: string; modelTier?: string; agentRole?: string }) {
+export async function startAgent({ daemonUrl, agentInstanceId = '', provider, templateId, projectId, projectIdSet, alias, displayName, modelTier }: { daemonUrl: string; agentInstanceId?: string; provider: string; templateId?: string; projectId?: string; projectIdSet?: boolean; alias?: string; displayName?: string; modelTier?: string }) {
   const body: any = {
     agent: provider || '',
     provider_profile: provider || '',
@@ -277,7 +269,6 @@ export async function startAgent({ daemonUrl, agentInstanceId = '', provider, te
     alias: alias || displayName || '',
     display_name: displayName || alias || '',
     model_tier: modelTier || 'normal',
-    agent_role: agentRole || '',
   };
   if (agentInstanceId) body.agent_instance_id = agentInstanceId;
   // Explicit runtime restart project override (incl. clearing to none) so the
@@ -297,7 +288,7 @@ export async function showAgent({ daemonUrl, agentRecordId, agentInstanceId }: {
   });
 }
 
-export async function createAgent({ daemonUrl, agentId, agentInstanceId, displayName, providerProfile, templateId, projectId, modelTier, agentRole, start }: { daemonUrl: string; agentId?: string; agentInstanceId?: string; displayName?: string; providerProfile?: string; templateId?: string; projectId?: string; modelTier?: string; agentRole?: string; start?: boolean }) {
+export async function createAgent({ daemonUrl, agentId, agentInstanceId, displayName, providerProfile, templateId, projectId, modelTier, start }: { daemonUrl: string; agentId?: string; agentInstanceId?: string; displayName?: string; providerProfile?: string; templateId?: string; projectId?: string; modelTier?: string; start?: boolean }) {
   return requestJson(joinUrl(daemonUrl, '/agents/create'), {
     method: 'POST',
     body: {
@@ -308,7 +299,6 @@ export async function createAgent({ daemonUrl, agentId, agentInstanceId, display
       template_id: templateId || '',
       project_id: projectId || '',
       model_tier: modelTier || 'normal',
-      agent_role: agentRole || '',
       start: Boolean(start),
     },
   });
@@ -790,15 +780,13 @@ function normalizeMemoryMutationBody(body: Record<string, any>) {
   if (normalized.memory_id == null && normalized.memoryId != null) normalized.memory_id = normalized.memoryId;
   if (normalized.expected_version == null && normalized.expectedVersion != null) normalized.expected_version = normalized.expectedVersion;
   if (normalized.target_agent_id == null && normalized.targetAgentId != null) normalized.target_agent_id = normalizeMemoryTargetValue(normalized.targetAgentId);
-  if (normalized.target_team_kind == null && normalized.targetTeamKind != null) normalized.target_team_kind = normalizeMemoryTargetValue(normalized.targetTeamKind);
-  if (normalized.target_role == null && normalized.targetRole != null) normalized.target_role = normalizeMemoryTargetValue(normalized.targetRole);
   if (normalized.target_project_id == null && normalized.targetProjectId != null) normalized.target_project_id = normalizeMemoryTargetValue(normalized.targetProjectId);
   if (normalized.source_task_id == null && normalized.sourceTaskId != null) normalized.source_task_id = normalized.sourceTaskId;
   if (normalized.metadata_json == null && normalized.metadataJson != null) normalized.metadata_json = normalized.metadataJson;
   return normalized;
 }
 
-export async function listMemory({ daemonUrl, clientInstanceId, clientToken, type, status, targetTeamKind, targetRole, targetProjectId, includeAllStatuses = true }: UserRpcRequest & { type?: string; status?: string; targetTeamKind?: string; targetRole?: string; targetProjectId?: string; includeAllStatuses?: boolean }) {
+export async function listMemory({ daemonUrl, clientInstanceId, clientToken, type, status, targetProjectId, includeAllStatuses = true }: UserRpcRequest & { type?: string; status?: string; targetProjectId?: string; includeAllStatuses?: boolean }) {
   return userRpcRequest({
     daemonUrl,
     clientInstanceId,
@@ -807,16 +795,14 @@ export async function listMemory({ daemonUrl, clientInstanceId, clientToken, typ
     body: {
       type: type || '',
       status: status || '',
-      target_team_kind: normalizeMemoryTargetValue(targetTeamKind),
-      target_role: normalizeMemoryTargetValue(targetRole),
       target_project_id: normalizeMemoryTargetValue(targetProjectId),
       include_all_statuses: includeAllStatuses,
     }
   });
 }
 
-export async function listApplicableMemory({ daemonUrl, clientInstanceId, clientToken, targetAgentId, targetTeamKind, targetRole, targetProjectId }: UserRpcRequest & { targetAgentId?: string; targetTeamKind?: string; targetRole?: string; targetProjectId?: string }) {
-  return requestJson(joinUrl(daemonUrl, '/memory/applicable'), { method: 'POST', body: { client_instance_id: clientInstanceId, client_token: clientToken, target_agent_id: normalizeMemoryTargetValue(targetAgentId), target_team_kind: normalizeMemoryTargetValue(targetTeamKind), target_role: normalizeMemoryTargetValue(targetRole), target_project_id: normalizeMemoryTargetValue(targetProjectId) } });
+export async function listApplicableMemory({ daemonUrl, clientInstanceId, clientToken, targetAgentId, targetProjectId }: UserRpcRequest & { targetAgentId?: string; targetProjectId?: string }) {
+  return requestJson(joinUrl(daemonUrl, '/memory/applicable'), { method: 'POST', body: { client_instance_id: clientInstanceId, client_token: clientToken, target_agent_id: normalizeMemoryTargetValue(targetAgentId), target_project_id: normalizeMemoryTargetValue(targetProjectId) } });
 }
 
 export async function showMemory({ daemonUrl, clientInstanceId, clientToken, memoryId }: UserRpcRequest & { memoryId: string }) {

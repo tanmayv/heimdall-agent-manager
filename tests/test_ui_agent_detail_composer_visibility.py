@@ -159,7 +159,7 @@ daemon_url = "{URL}"
             "provider_profile": "pi",
             "template_id": "specialist",
             "model_tier": "normal",
-            "agent_role": "specialist",
+            "template_id": "specialist",
         })
         if not create_agent.get("ok", True):
             raise AssertionError(f"agent create failed: {create_agent}")

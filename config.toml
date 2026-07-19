@@ -9,9 +9,25 @@ wrapper_bin = "./result-wrapper/bin/ham-wrapper"
 # Unique daemon identity, required for federation. Peers match incoming requests
 # on both the shared token AND this daemon_id (learned via /daemon/info).
 daemon_id = "cloudtop"
-# Default provider/tier for generated team agents. Settings can override these via preferences.
+# Default provider/tier for generated agents. Settings can override these via preferences.
 default_agent_provider_profile = "pi"
 default_agent_model_tier = "normal"
+# Role/default-use -> durable default agent id map. Coordinators/skills use these
+# defaults when assigning task participants; task participant state remains the
+# authority for actual roles.
+default_agent_id_conversation = "conversation"
+default_agent_id_guide = "guide"
+default_agent_id_coordinator = "coordinator"
+default_agent_id_worker = "worker"
+default_agent_id_assignee = "worker"
+default_agent_id_coder = "worker"
+default_agent_id_tester = "worker"
+default_agent_id_researcher = "worker"
+default_agent_id_specialist = "worker"
+default_agent_id_reviewer = "reviewer"
+# Agent ids with singleton/system lifecycle behavior. Operators may replace these
+# ids with custom durable/system agents without changing code.
+system_agent_ids = ["guide", "memory-auditor", "memory-reviewer"]
 
 # Federation peer: the home Mac daemon (daemon_id = "home-mac"), reached back over
 # the SSH reverse tunnel. Connect from the Mac with:

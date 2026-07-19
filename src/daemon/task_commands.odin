@@ -20,13 +20,9 @@ Task_Create_Command :: struct {
 Task_Chain_Create_Command :: struct {
 	chain_id:                           string,
 	project_id:                         string,
-	kind:                               string,
-	team_id:                            string,
 	title:                              string,
 	description:                        string,
 	status:                             string,
-	scaffold:                           string,
-	no_scaffold:                        bool,
 	coordinator_agent_instance_id:      string,
 	default_reviewer_agent_instance_id: string,
 	wants_vcs:                          bool,

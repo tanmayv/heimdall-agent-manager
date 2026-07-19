@@ -1,0 +1,1 @@
+Follow the assigned task description and participant role exactly. Use task comments for progress and evidence, run relevant checks before handoff, and route user-facing questions through the chain coordinator. Do not infer authority from your template; task/participant state defines the role for each piece of work.

@@ -165,7 +165,6 @@ handle_post_task_chain_audit :: proc(client: net.TCP_Socket, body: string, ctx: 
 	create_chain_res := task_service_create_chain(Task_Chain_Create_Command{
 		chain_id                      = strings.clone(audit_chain_id),
 		project_id                    = strings.clone(system_project_id),
-		kind                          = "coding",
 		title                         = strings.clone(chain_title),
 		description                   = strings.clone(PROMPT_AUDIT_CHAIN_DESC),
 		coordinator_agent_instance_id = strings.clone(auditor_agent_id),
@@ -313,8 +312,20 @@ memory_auditor_start_agent :: proc(agent_instance_id, template_id, provider_prof
 	config_path := server_config_path
 	log_path := wrapper_log_path(agent_instance_id)
 	display_name := agent_instance_id
+	resolved_template := template_id
+	resolved_provider := provider_profile
+	resolved_tier := model_tier
+	durable_agent_id := agent_id_from_instance_id(agent_instance_id)
+	if idx := agent_id_index(durable_agent_id); idx >= 0 {
+		rec := agent_id_records[idx]
+		if rec.display_name != "" do display_name = rec.display_name
+		if rec.template_id != "" do resolved_template = rec.template_id
+		if rec.default_provider_profile != "" do resolved_provider = rec.default_provider_profile
+		if rec.default_model_tier != "" do resolved_tier = rec.default_model_tier
+	}
+	delete(durable_agent_id)
 
-	agent_record_id, final_tier, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, provider_profile, project_id, "", model_tier)
+	agent_record_id, final_tier, upsert_ok := agent_record_upsert(agent_instance_id, display_name, resolved_template, resolved_provider, project_id, "", resolved_tier)
 	if !upsert_ok {
 		fmt.println("memory_auditor_start_agent: agent_record_upsert failed")
 		return false
@@ -327,14 +338,14 @@ memory_auditor_start_agent :: proc(agent_instance_id, template_id, provider_prof
 	}
 	registry_add_pending_agent_token(agent_instance_id, agent_token)
 	
-	ok := launch_wrapper_detached(agent_instance_id, provider_profile, config_path, log_path, agent_token, display_name, final_tier, project_id, "memory_auditor", "", "", "")
+	ok := launch_wrapper_detached(agent_instance_id, resolved_provider, config_path, log_path, agent_token, display_name, final_tier, project_id, "memory_auditor")
 	if !ok {
 		agent_runtime_tracker_launch_failed(agent_instance_id, agent_token, "memory_auditor")
 		fmt.println("memory_auditor_start_agent: launch_wrapper_detached failed")
 		return false
 	}
 	
-	fmt.printfln("memory_auditor_start_agent: successfully spawned %s (%s)", agent_instance_id, template_id)
+	fmt.printfln("memory_auditor_start_agent: successfully spawned %s (%s)", agent_instance_id, resolved_template)
 	return true
 }
 

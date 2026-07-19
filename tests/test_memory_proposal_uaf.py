@@ -109,21 +109,11 @@ def main() -> None:
         if status != 200 or not project_res.get("ok"):
             raise SystemExit(f"[-] Project creation failed: {project_res}")
 
-        status, create_res = request_post("/agents/create", {
-            "agent_instance_id": AGENT_ID,
-            "display_name": "Test Memory",
-            "provider_profile": "pi",
-            "template_id": "coder",
-            "model_tier": "normal",
-            "project_id": PROJECT_ID,
-        })
-        if status != 200 or not create_res.get("ok"):
-            raise SystemExit(f"[-] Agent record creation failed: {create_res}")
+        # /register backfills the durable target agent id used by memory targeting.
 
         status, prop_res = request_post("/memory/propose/new", {
             "agent_token": token,
-            "target_team_kind": "coding",
-            "target_role": "coder",
+            "target_agent_id": "test-mem-agent",
             "target_project_id": PROJECT_ID,
             "type": "fact",
             "title": "Initial Title",
@@ -189,8 +179,8 @@ def main() -> None:
                 raise SystemExit(f"[-] Legacy fields still exposed in public memory JSON: {payload}")
 
         record = show_res.get("record", {})
-        if record.get("target_team_kind") != "coding" or record.get("target_role") != "coder" or record.get("target_project_id") != PROJECT_ID:
-            raise SystemExit(f"[-] Simplified target triple missing from record: {record}")
+        if record.get("target_agent_id") != "test-mem-agent" or record.get("target_project_id") != PROJECT_ID:
+            raise SystemExit(f"[-] Simplified target pair missing from record: {record}")
         if record.get("status") != "archived":
             raise SystemExit(f"[-] Expected archived status after archive approval: {record}")
 

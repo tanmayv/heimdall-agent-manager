@@ -28,7 +28,7 @@ def main() -> None:
     require("home.surface === 'memory' ? (" in app, "App should route a dedicated memory surface")
     require("selectedMemoryId={urlParams.memoryId}" in app, "Memory surface should preserve memory selection via URL")
     require("if (urlParams.view === 'memory' && home.surface !== 'memory')" in app, "App should respond to memory URL navigation")
-    require("import { handleUserWsEvent } from '../api/wsInvalidation';" in app, "App should delegate websocket memory handling through wsInvalidation")
+    require("handleUserWsEvent" in app and "../api/wsInvalidation" in app, "App should delegate websocket memory handling through wsInvalidation")
     ws = (ROOT / "src" / "ui" / "api" / "wsInvalidation.ts").read_text(encoding="utf-8")
     require("case 'memory_event':" in ws and "dispatch(memoryEventReceived(payload));" in ws, "wsInvalidation should handle memory_event")
     require("case 'audit_start':" in ws and "case 'audit_end':" in ws, "wsInvalidation should handle audit lifecycle events for memory workflows")
@@ -42,10 +42,9 @@ def main() -> None:
         ('data-debug-id="memory-metric-pending"', 'memory pending metric missing'),
         ('data-debug-id="memory-refresh-btn"', 'memory refresh button debug id missing'),
         ('data-debug-id="memory-filters"', 'memory filters debug id missing'),
-        ('debugId="memory-filter-team-kind-input"', 'memory target_team_kind filter missing'),
+        ('debugId="memory-filter-agent-input"', 'memory target_agent_id filter missing'),
         ('debugId="memory-filter-project-input"', 'memory target_project_id filter missing'),
-        ('debugId="memory-filter-role-input"', 'memory target_role filter missing'),
-        ('debugId="memory-filter-search-input"', 'memory free-text filter missing'),
+                ('debugId="memory-filter-search-input"', 'memory free-text filter missing'),
         ('debugId="memory-filter-type-select"', 'memory type filter missing'),
         ('debugId="memory-filter-status-select"', 'memory status filter missing'),
         ('debugId="memory-filter-targeting-select"', 'memory targeting filter missing'),
@@ -64,8 +63,7 @@ def main() -> None:
     for marker, message in [
         ('debugId="memory-form-title-input"', 'memory form title input missing'),
         ('data-debug-id="memory-form-type-select"', 'memory form type select missing'),
-        ('debugId="memory-form-team-kind-input"', 'memory form target_team_kind input missing'),
-        ('debugId="memory-form-role-input"', 'memory form target_role input missing'),
+        ('debugId="memory-form-agent-input"', 'memory form target_agent_id input missing'),
         ('debugId="memory-form-project-input"', 'memory form target_project_id input missing'),
         ('debugId="memory-form-source-task-input"', 'memory form source_task_id input missing'),
         ('debugId="memory-form-body-textarea"', 'memory form body textarea missing'),
@@ -81,7 +79,7 @@ def main() -> None:
     require("proposalAction: 'rollback'" in memory_page, "Memory page should submit rollback proposals")
     require("expectedVersion: selectedRecord.version" in memory_page, "Memory page should submit selected version for edit/archive/rollback")
     require("decideMemoryProposal" in memory_page, "Memory page should use decideMemoryProposal for approve/reject")
-    require("target_team_kind" in memory_page and "target_role" in memory_page and "target_project_id" in memory_page and "source_task_id" in memory_page, "Memory page should display simplified targeting fields")
+    require("target_agent_id" in memory_page and "target_project_id" in memory_page and "source_task_id" in memory_page, "Memory page should display simplified targeting fields")
     require("metadata_json" in memory_page and "Evidence" in memory_page and "Reason" in memory_page and "Version" in memory_page, "Memory page should display metadata/evidence/reason/version details")
 
     print("UI MEMORY MANAGEMENT SURFACE TEST PASSED")

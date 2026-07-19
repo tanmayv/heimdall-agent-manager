@@ -178,7 +178,7 @@ def main():
             'remote_agent_instance_id': 'reviewer@s-b',
             'display_name': 'Remote Reviewer',
             'template_id': 'reviewer',
-            'agent_role': 'reviewer',
+            'template_id': 'reviewer',
         }, headers={'Authorization': f'Bearer {operator_a}'})
         proxy_id = bind['agent']['agent_instance_id']
         chain_id = request(base_a, '/task-chains/create', 'POST', {'agent_token': operator_a, 'title': 'Large artifact chain', 'description': 'x', 'status': 'in_progress', 'kind': 'coding'})['chain_id']

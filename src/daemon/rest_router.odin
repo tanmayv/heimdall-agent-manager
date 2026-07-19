@@ -153,6 +153,18 @@ rest_authorize_user :: proc(client: net.TCP_Socket, ctx: ^Route_Context) -> (str
 handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_Context) -> bool {
 	if len(ctx.segments) == 0 do return false
 
+	// GET /agents/defaults
+	if len(ctx.segments) == 2 && ctx.segments[0] == "agents" && ctx.segments[1] == "defaults" && ctx.method == "GET" {
+		handle_agents_defaults_get(client, ctx)
+		return true
+	}
+
+	// POST /agents/defaults
+	if len(ctx.segments) == 2 && ctx.segments[0] == "agents" && ctx.segments[1] == "defaults" && ctx.method == "POST" {
+		handle_agents_defaults_set(client, request_body(request), ctx)
+		return true
+	}
+
 	// GET /preferences
 	if len(ctx.segments) == 1 && ctx.segments[0] == "preferences" && ctx.method == "GET" {
 		handle_get_preferences(client, ctx)

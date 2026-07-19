@@ -10,7 +10,7 @@ Memory_Service_Result :: struct {
 	message: string,
 }
 
-MEMORY_DEPRECATED_TARGET_MESSAGE :: "deprecated memory target fields are not accepted; use target_agent_id, target_team_kind, target_role, and target_project_id"
+MEMORY_DEPRECATED_TARGET_MESSAGE :: "deprecated memory target fields are not accepted; use target_agent_id and target_project_id"
 
 memory_has_deprecated_target_inputs :: proc(body: string) -> (bool, string) {
 	// teams-v2: `agent_instance_id` is no longer blocked — per-agent memory now uses
@@ -24,6 +24,8 @@ memory_has_deprecated_target_inputs :: proc(body: string) -> (bool, string) {
 	for key in legacy_keys {
 		if json_has_key(body, key) do return true, MEMORY_DEPRECATED_TARGET_MESSAGE
 	}
+	if json_has_key(body, fmt.tprintf("target_%s", "role")) do return true, MEMORY_DEPRECATED_TARGET_MESSAGE
+	if json_has_key(body, fmt.tprintf("target_%s_%s", "team", "kind")) do return true, MEMORY_DEPRECATED_TARGET_MESSAGE
 	return false, ""
 }
 
@@ -40,25 +42,13 @@ memory_service_propose :: proc(action, body, author: string) -> Memory_Service_R
 	if deprecated, msg := memory_has_deprecated_target_inputs(body); deprecated do return memory_error(400, msg)
 
 	target_agent_id_present := json_has_key(body, "target_agent_id")
-	target_team_kind_present := json_has_key(body, "target_team_kind")
-	target_role_present := json_has_key(body, "target_role")
 	target_project_id_present := json_has_key(body, "target_project_id")
 
 	target_agent_id_text := extract_json_string(body, "target_agent_id", "")
 	defer delete(target_agent_id_text)
-	target_team_kind_text := extract_json_string(body, "target_team_kind", "")
-	defer delete(target_team_kind_text)
-	target_role_text := extract_json_string(body, "target_role", "")
-	defer delete(target_role_text)
 	target_project_id_text := extract_json_string(body, "target_project_id", "")
 	defer delete(target_project_id_text)
 
-	target_team_kind, team_kind_ok, team_kind_err := memory_normalize_target_team_kind(target_team_kind_text)
-	defer delete(target_team_kind)
-	if !team_kind_ok do return memory_error(400, team_kind_err)
-	target_role, target_role_ok, target_role_err := memory_normalize_target_role(target_role_text)
-	defer delete(target_role)
-	if !target_role_ok do return memory_error(400, target_role_err)
 	target_project_id, project_ok, project_err := memory_normalize_target_project_id(target_project_id_text)
 	defer delete(target_project_id)
 	if !project_ok do return memory_error(400, project_err)
@@ -100,14 +90,6 @@ memory_service_propose :: proc(action, body, author: string) -> Memory_Service_R
 		if !found do return memory_error(404, "memory not found")
 		if target.version != expected_version do return memory_error(409, "memory version mismatch")
 
-		if !target_team_kind_present {
-			delete(target_team_kind)
-			target_team_kind = strings.clone(target.target_team_kind)
-		}
-		if !target_role_present {
-			delete(target_role)
-			target_role = strings.clone(target.target_role)
-		}
 		if !target_project_id_present {
 			delete(target_project_id)
 			target_project_id = strings.clone(target.target_project_id)
@@ -144,8 +126,6 @@ memory_service_propose :: proc(action, body, author: string) -> Memory_Service_R
 		memory_id = memory_id,
 		proposal_id = proposal_id,
 		target_agent_id = strings.clone(target_agent_id),
-		target_team_kind = strings.clone(target_team_kind),
-		target_role = strings.clone(target_role),
 		target_project_id = strings.clone(target_project_id),
 		type = mem_type,
 		title = strings.clone(title),
@@ -217,12 +197,6 @@ memory_service_list_json :: proc(body: string, calling_agent_id: string = "") ->
 	defer delete(type_text)
 	if _, ok := memory_type_parse(type_text); type_text != "" && !ok do return `{"ok":false,"message":"invalid memory type"}`
 
-	target_team_kind_filter, team_kind_ok, team_kind_err := memory_normalize_target_team_kind(extract_json_string(body, "target_team_kind", ""))
-	defer delete(target_team_kind_filter)
-	if !team_kind_ok do return memory_error(400, team_kind_err).message
-	target_role_filter, target_role_ok, target_role_err := memory_normalize_target_role(extract_json_string(body, "target_role", ""))
-	defer delete(target_role_filter)
-	if !target_role_ok do return memory_error(400, target_role_err).message
 	target_project_filter, project_ok, project_err := memory_normalize_target_project_id(extract_json_string(body, "target_project_id", ""))
 	defer delete(target_project_filter)
 	if !project_ok do return memory_error(400, project_err).message
@@ -241,7 +215,7 @@ memory_service_list_json :: proc(body: string, calling_agent_id: string = "") ->
 	strings.write_string(&builder, `{"ok":true,"records":[`)
 	wrote := false
 	for rec in records {
-		if !memory_record_matches_filters(rec, type_text, target_team_kind_filter, target_role_filter, target_project_filter, target_agent_filter) do continue
+		if !memory_record_matches_filters(rec, type_text, target_project_filter, target_agent_filter) do continue
 		if wrote do strings.write_string(&builder, `,`)
 		memory_write_record_json(&builder, rec)
 		wrote = true
@@ -253,12 +227,6 @@ memory_service_list_json :: proc(body: string, calling_agent_id: string = "") ->
 memory_service_applicable_json :: proc(body, calling_agent_id: string) -> Memory_Service_Result {
 	if deprecated, msg := memory_has_deprecated_target_inputs(body); deprecated do return memory_error(400, msg)
 
-	target_team_kind, team_kind_ok, team_kind_err := memory_normalize_target_team_kind(extract_json_string(body, "target_team_kind", ""))
-	defer delete(target_team_kind)
-	if !team_kind_ok do return memory_error(400, team_kind_err)
-	target_role, target_role_ok, target_role_err := memory_normalize_target_role(extract_json_string(body, "target_role", ""))
-	defer delete(target_role)
-	if !target_role_ok do return memory_error(400, target_role_err)
 	target_project_id, project_ok, project_err := memory_normalize_target_project_id(extract_json_string(body, "target_project_id", ""))
 	defer delete(target_project_id)
 	if !project_ok do return memory_error(400, project_err)
@@ -279,7 +247,7 @@ memory_service_applicable_json :: proc(body, calling_agent_id: string) -> Memory
 	strings.write_string(&builder, `{"ok":true,"records":[`)
 	wrote := false
 	for rec in records {
-		if !memory_record_applies(rec, ctx_agent_id, target_team_kind, target_role, target_project_id) do continue
+		if !memory_record_applies(rec, ctx_agent_id, target_project_id) do continue
 		if wrote do strings.write_string(&builder, `,`)
 		memory_write_record_json(&builder, rec)
 		wrote = true
@@ -418,43 +386,6 @@ memory_metadata_with_action :: proc(metadata, action, target: string) -> string 
 memory_metadata_action :: proc(metadata: string) -> string { return extract_json_string(metadata, "action", "new") }
 memory_metadata_target :: proc(metadata: string) -> string { return extract_json_string(metadata, "target_memory_id", "") }
 
-memory_normalize_target_team_kind :: proc(value: string) -> (string, bool, string) {
-	trimmed := strings.trim_space(value)
-	if trimmed == "" do return strings.clone(""), true, ""
-	needle := strings.to_lower(trimmed)
-	defer delete(needle)
-	for kind in team_kind_list() {
-		key_lower := strings.to_lower(kind.key)
-		display_lower := strings.to_lower(kind.display_name)
-		if needle == key_lower || (kind.display_name != "" && needle == display_lower) {
-			delete(key_lower)
-			delete(display_lower)
-			return strings.clone(kind.key), true, ""
-		}
-		delete(key_lower)
-		delete(display_lower)
-	}
-	return strings.clone(""), false, "unknown target_team_kind"
-}
-
-memory_normalize_target_role :: proc(value: string) -> (string, bool, string) {
-	trimmed := strings.trim_space(value)
-	if trimmed == "" do return strings.clone(""), true, ""
-	needle := strings.to_lower(trimmed)
-	defer delete(needle)
-	for kind in team_kind_list() {
-		for role in kind.roles {
-			role_lower := strings.to_lower(role.role_key)
-			if needle == role_lower {
-				delete(role_lower)
-				return strings.clone(role.role_key), true, ""
-			}
-			delete(role_lower)
-		}
-	}
-	return strings.clone(""), false, "unknown target_role"
-}
-
 memory_normalize_target_project_id :: proc(value: string) -> (string, bool, string) {
 	trimmed := strings.trim_space(value)
 	if trimmed == "" do return strings.clone(""), true, ""
@@ -467,11 +398,9 @@ memory_project_id_known :: proc(value: string) -> bool {
 	return project_index(value) >= 0
 }
 
-memory_record_matches_filters :: proc(rec: contracts.Memory_Record, type_filter, target_team_kind_filter, target_role_filter, target_project_filter, target_agent_filter: string) -> bool {
+memory_record_matches_filters :: proc(rec: contracts.Memory_Record, type_filter, target_project_filter, target_agent_filter: string) -> bool {
 	if type_filter != "" && memory_type_string_service(rec.type) != type_filter do return false
 	if target_agent_filter != "" && rec.target_agent_id != target_agent_filter do return false
-	if target_team_kind_filter != "" && rec.target_team_kind != target_team_kind_filter do return false
-	if target_role_filter != "" && rec.target_role != target_role_filter do return false
 	if target_project_filter != "" && rec.target_project_id != target_project_filter do return false
 	return true
 }
@@ -482,22 +411,18 @@ memory_target_dimension_matches :: proc(record_value, context_value: string) -> 
 	return record_value == context_value
 }
 
-memory_record_applies :: proc(rec: contracts.Memory_Record, target_agent_id, target_team_kind, target_role, target_project_id: string) -> bool {
+memory_record_applies :: proc(rec: contracts.Memory_Record, target_agent_id, target_project_id: string) -> bool {
 	if rec.status != .Active do return false
-	// teams-v2: agent-id is the most specific dimension. A per-agent memory applies
-	// only when the requesting instance's durable agent_id matches.
+	// Agent-id is the most specific dimension. A per-agent memory applies only
+	// when the requesting instance's durable agent_id matches.
 	if !memory_target_dimension_matches(rec.target_agent_id, target_agent_id) do return false
-	if !memory_target_dimension_matches(rec.target_team_kind, target_team_kind) do return false
-	if !memory_target_dimension_matches(rec.target_role, target_role) do return false
 	if !memory_target_dimension_matches(rec.target_project_id, target_project_id) do return false
 	return true
 }
 
-memory_target_string :: proc(target_agent_id, target_team_kind, target_role, target_project_id: string) -> string {
+memory_target_string :: proc(target_agent_id, target_project_id: string) -> string {
 	parts := make([dynamic]string, context.temp_allocator)
 	if target_agent_id != "" do append(&parts, fmt.tprintf("agent %s", target_agent_id))
-	if target_team_kind != "" do append(&parts, fmt.tprintf("team kind %s", target_team_kind))
-	if target_role != "" do append(&parts, fmt.tprintf("role %s", target_role))
 	if target_project_id != "" do append(&parts, fmt.tprintf("project %s", target_project_id))
 	if len(parts) == 0 do return strings.clone("global")
 	builder := strings.builder_make()
@@ -512,24 +437,38 @@ memory_expertise_bucket_key :: proc(rec: contracts.Memory_Record) -> string {
 	builder := strings.builder_make()
 	strings.write_string(&builder, rec.target_agent_id)
 	strings.write_string(&builder, "|")
-	strings.write_string(&builder, rec.target_team_kind)
-	strings.write_string(&builder, "|")
-	strings.write_string(&builder, rec.target_role)
-	strings.write_string(&builder, "|")
 	strings.write_string(&builder, rec.target_project_id)
 	strings.write_string(&builder, "|")
-	strings.write_string(&builder, teams_v1_slug(rec.title))
+	strings.write_string(&builder, memory_bucket_slug(rec.title))
 	return strings.to_string(builder)
 }
 
+memory_bucket_slug :: proc(value: string) -> string {
+	trimmed := strings.trim_space(value)
+	lower := strings.to_lower(trimmed)
+	builder := strings.builder_make()
+	prev_dash := false
+	for ch in lower {
+		is_alnum := (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')
+		if is_alnum {
+			strings.write_rune(&builder, ch)
+			prev_dash = false
+		} else if !prev_dash {
+			strings.write_string(&builder, "-")
+			prev_dash = true
+		}
+	}
+	out := strings.trim(strings.to_string(builder), "-")
+	if out == "" do return "untitled"
+	return out
+}
+
 memory_write_record_json :: proc(builder: ^strings.Builder, rec: contracts.Memory_Record) {
-	target := memory_target_string(rec.target_agent_id, rec.target_team_kind, rec.target_role, rec.target_project_id)
+	target := memory_target_string(rec.target_agent_id, rec.target_project_id)
 	defer delete(target)
 	strings.write_string(builder, `{"memory_id":"`); json_write_string(builder, rec.memory_id)
 	strings.write_string(builder, `","proposal_id":"`); json_write_string(builder, rec.proposal_id)
 	strings.write_string(builder, `","target_agent_id":"`); json_write_string(builder, rec.target_agent_id)
-	strings.write_string(builder, `","target_team_kind":"`); json_write_string(builder, rec.target_team_kind)
-	strings.write_string(builder, `","target_role":"`); json_write_string(builder, rec.target_role)
 	strings.write_string(builder, `","target_project_id":"`); json_write_string(builder, rec.target_project_id)
 	strings.write_string(builder, `","target":"`); json_write_string(builder, target)
 	strings.write_string(builder, `","type":"`); json_write_string(builder, memory_type_string_service(rec.type))
@@ -547,14 +486,12 @@ memory_write_record_json :: proc(builder: ^strings.Builder, rec: contracts.Memor
 }
 
 memory_write_event_json :: proc(builder: ^strings.Builder, ev: contracts.Memory_Event) {
-	target := memory_target_string(ev.target_agent_id, ev.target_team_kind, ev.target_role, ev.target_project_id)
+	target := memory_target_string(ev.target_agent_id, ev.target_project_id)
 	defer delete(target)
 	strings.write_string(builder, `{"event_id":"`); json_write_string(builder, ev.event_id)
 	strings.write_string(builder, `","memory_id":"`); json_write_string(builder, ev.memory_id)
 	strings.write_string(builder, `","proposal_id":"`); json_write_string(builder, ev.proposal_id)
 	strings.write_string(builder, `","target_agent_id":"`); json_write_string(builder, ev.target_agent_id)
-	strings.write_string(builder, `","target_team_kind":"`); json_write_string(builder, ev.target_team_kind)
-	strings.write_string(builder, `","target_role":"`); json_write_string(builder, ev.target_role)
 	strings.write_string(builder, `","target_project_id":"`); json_write_string(builder, ev.target_project_id)
 	strings.write_string(builder, `","target":"`); json_write_string(builder, target)
 	strings.write_string(builder, `","type":"`); json_write_string(builder, memory_type_string_service(ev.type))

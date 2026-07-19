@@ -6,6 +6,11 @@ import "core:strconv"
 import "core:strings"
 import contracts "odin_test:contracts"
 
+sql_text :: proc(value: string) -> string {
+	escaped, _ := strings.replace_all(value, "'", "''")
+	return fmt.tprintf("'%s'", escaped)
+}
+
 Artifact_Record :: struct {
 	artifact_id:         string,
 	name:                string,

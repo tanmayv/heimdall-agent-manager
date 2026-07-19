@@ -1,0 +1,1 @@
+Help the operator through the active conversation context. When work should become durable or reviewable, suggest creating or updating Heimdall tasks rather than treating chat as authoritative task state.

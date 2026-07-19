@@ -1,34 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import SessionConfig from './SessionConfig';
-import { TEAM_KIND_METADATA, paceLabel, taskCountLabel, wantsVcsLabel } from './teamKinds';
 // TODO(rtkq-migration owner=task-19f69e242e4): Settings direct-chat debug panel still opens chats via component-level thunk dispatch; replace with RTKQ hooks/initiate during cleanup.
 import { addDaemonProfile, fetchSelectedChat, removeDaemonProfile, selectAgent, sendMessageToSelectedAgent } from '../store/chatSlice';
 import * as daemonApi from '../api/daemonApi';
 import { agentsApi, useListAgentsQuery } from '../api/endpoints/agents';
 import { useListMemoryQuery } from '../api/endpoints/memory';
 import { useDeleteProjectMutation, useFetchProjectQuery, useListProjectsQuery, useUpdateProjectMutation } from '../api/endpoints/projects';
-import { useFetchPreferencesQuery, useFetchSettingsCatalogQuery, useSavePreferenceMutation } from '../api/endpoints/settings';
+import { useFetchAgentDefaultsQuery, useFetchPreferencesQuery, useFetchSettingsCatalogQuery, useSaveAgentDefaultMutation, useSavePreferenceMutation } from '../api/endpoints/settings';
 import { selectProject } from '../store/projectSlice';
 import { VimEditButton } from './VimSidebar';
 import ChatHoverCopyButton from './ChatHoverCopyButton';
 
-const SETTINGS_ITEMS = [
-  { key: 'templates', label: 'Agent templates' },
-  { key: 'kinds', label: 'Team kinds' },
-  { key: 'providers', label: 'Providers & model tiers' },
-  { key: 'projects', label: 'Projects' },
-  { key: 'memory', label: 'Memory browser' },
-  { key: 'agents', label: 'Agents (raw registry)' },
-  { key: 'direct-chat', label: 'Direct agent chat (debug)' },
-  { key: 'daemon', label: 'Daemon connection' },
-];
+const DEFAULT_AGENT_USES = ['conversation', 'guide', 'coordinator', 'worker', 'assignee', 'coder', 'tester', 'researcher', 'specialist', 'reviewer'];
 
 function normalizeTemplate(template: any) {
   return {
     id: template.template_id || template.templateId || template.id || '',
     name: template.display_name || template.displayName || template.name || template.template_id || '',
-    role: template.role_hint || template.roleHint || '',
     provider: template.default_provider_profile || template.defaultProviderProfile || '',
     tier: template.suggested_model_tier || template.suggestedModelTier || '',
   };
@@ -44,8 +33,10 @@ export default function SettingsPage({ session, onReconnect, onBack }: any) {
   const selectedProjectListId = selectedProjectId || projectsQuery.data?.projects?.[0]?.projectId || '';
   const selectedProjectQuery = useFetchProjectQuery({ projectId: selectedProjectListId, scope: `${effectiveSession?.daemonUrl || ''}:${effectiveSession?.clientInstanceId || ''}:${effectiveSession?.clientToken || ''}` }, { skip: !effectiveSession?.connected || !effectiveSession?.clientToken || !selectedProjectListId });
   const preferencesQuery = useFetchPreferencesQuery({ scope: `${effectiveSession?.daemonUrl || ''}:${effectiveSession?.clientInstanceId || ''}:${effectiveSession?.clientToken || ''}` }, { skip: !effectiveSession?.connected || !effectiveSession?.clientToken });
+  const agentDefaultsQuery = useFetchAgentDefaultsQuery({ scope: `${effectiveSession?.daemonUrl || ''}:${effectiveSession?.clientInstanceId || ''}:${effectiveSession?.clientToken || ''}` }, { skip: !effectiveSession?.connected || !effectiveSession?.clientToken });
   const settingsCatalogQuery = useFetchSettingsCatalogQuery({ scope: `${effectiveSession?.daemonUrl || ''}:${effectiveSession?.clientInstanceId || ''}` }, { skip: !effectiveSession?.connected || !effectiveSession?.daemonUrl });
   const [savePreference] = useSavePreferenceMutation();
+  const [saveAgentDefault] = useSaveAgentDefaultMutation();
   const [updateProject, updateProjectState] = useUpdateProjectMutation();
   const [deleteProject, deleteProjectState] = useDeleteProjectMutation();
   const [selected, setSelected] = useState('daemon');
@@ -83,7 +74,7 @@ export default function SettingsPage({ session, onReconnect, onBack }: any) {
   const directMessages = chats[directAgentId] || [];
 
   const settingsGroups = [
-    { title: 'General', items: [{ key: 'templates', label: 'Defaults' }, { key: 'kinds', label: 'Team kinds' }] },
+    { title: 'General', items: [{ key: 'defaults', label: 'Default agents' }, { key: 'templates', label: 'Templates' }] },
     { title: 'Connections', items: [{ key: 'daemon', label: 'Daemons' }, { key: 'providers', label: 'Providers' }] },
     { title: 'Workspace', items: [{ key: 'agents', label: 'Agents & templates' }, { key: 'projects', label: 'Projects' }, { key: 'memory', label: 'Memory browser' }, { key: 'direct-chat', label: 'Direct chat' }] },
   ];
@@ -107,13 +98,13 @@ export default function SettingsPage({ session, onReconnect, onBack }: any) {
 
         <section data-debug-id="settings-body" className="relative min-w-0 overflow-y-auto p-6">
           <button data-debug-id="settings-close-btn" type="button" onClick={onBack} title="Close settings" className="absolute right-5 top-5 rounded-md border border-white/10 bg-[#141414] px-2 py-1 text-sm text-zinc-400 hover:text-zinc-100">✕</button>
+          {selected === 'defaults' && <DefaultAgentsPanel defaults={agentDefaultsQuery.data?.defaults || []} identities={agentsQuery.data?.identities || []} agents={agents} loading={agentDefaultsQuery.isFetching} onRefresh={() => agentDefaultsQuery.refetch()} onSave={async (use: string, agentId: string) => { await saveAgentDefault({ use, agentId }).unwrap(); }} />}
           {selected === 'templates' && <TemplatesPanel templates={templates} />}
-          {selected === 'kinds' && <TeamKindsPanel />}
           {selected === 'providers' && <ProvidersPanel providers={providers} preferences={preferences || []} session={effectiveSession} daemonProfiles={daemonProfiles} onSaveDefault={async (key: string, value: string) => { await savePreference({ key, value }).unwrap(); }} />}
           {selected === 'projects' && <ProjectsPanel projects={projects} selectedProjectId={selectedProjectListId} selectedProject={selectedProject} loading={projectsQuery.isFetching || selectedProjectQuery.isFetching} mutating={updateProjectState.isLoading || deleteProjectState.isLoading} error={(updateProjectState.error || deleteProjectState.error) ? 'Project mutation failed' : ''} onSelect={(projectId: string) => { dispatch(selectProject(projectId)); }} onSave={(payload: any) => updateProject(payload).unwrap()} onDelete={async (projectId: string) => { await deleteProject({ projectId }).unwrap(); if (selectedProjectListId === projectId) dispatch(selectProject('')); }} />}
           {selected === 'memory' && <MemoryPanel records={memoryRecords} loading={memoryQuery.isFetching} />}
           {selected === 'agents' && <AgentsPanel agents={agents} templates={templates} providers={providers} onCreateAgent={async (payload: any) => { await daemonApi.createAgent({ daemonUrl: effectiveSession.daemonUrl, displayName: payload.displayName, templateId: payload.templateId, providerProfile: payload.providerProfile, modelTier: payload.modelTier }); await refetchAgents(); }} />}
-          {selected === 'direct-chat' && <DirectChatPanel agents={agents} agentId={directAgentId} setAgentId={setDirectAgentId} messages={directMessages} draft={directDraft} setDraft={setDirectDraft} sending={sending} onStart={async (agent: any) => { if (!agent?.id) return; await dispatch(agentsApi.endpoints.startAgent.initiate({ agentInstanceId: agent.id, provider: agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || agent.agentRole || 'specialist', projectId: agent.projectId || '', displayName: agent.label || agent.id, modelTier: agent.modelTier || 'normal', agentRole: agent.agentRole || agent.templateId || '' })).unwrap(); }} onSend={() => { const body = directDraft.trim(); if (!body || !directAgentId) return; dispatch(sendMessageToSelectedAgent({ body, tempId: `settings_${Date.now()}` })); setDirectDraft(''); }} />}
+          {selected === 'direct-chat' && <DirectChatPanel agents={agents} agentId={directAgentId} setAgentId={setDirectAgentId} messages={directMessages} draft={directDraft} setDraft={setDirectDraft} sending={sending} onStart={async (agent: any) => { if (!agent?.id) return; await dispatch(agentsApi.endpoints.startAgent.initiate({ agentInstanceId: agent.id, provider: agent.providerProfile || providers?.[0]?.name || 'pi', templateId: agent.templateId || 'specialist', projectId: agent.projectId || '', displayName: agent.label || agent.id, modelTier: agent.modelTier || 'normal'})).unwrap(); }} onSend={() => { const body = directDraft.trim(); if (!body || !directAgentId) return; dispatch(sendMessageToSelectedAgent({ body, tempId: `settings_${Date.now()}` })); setDirectDraft(''); }} />}
           {selected === 'daemon' && <DaemonPanel session={effectiveSession} daemonProfiles={daemonProfiles} agents={agents} projects={projects} onReconnect={onReconnect} onAddProfile={(payload: any) => dispatch(addDaemonProfile(payload))} onRemoveProfile={(payload: any) => dispatch(removeDaemonProfile(payload))} debugInfo={debugInfo} setDebugInfo={setDebugInfo} />}
         </section>
       </div>
@@ -126,11 +117,78 @@ function Panel({ title, subtitle, children }: any) {
 }
 
 function TemplatesPanel({ templates }: any) {
-  return <Panel title="Agent templates" subtitle="Template registry moved from the legacy Agents tab. Read-only list for this UI pass."><div className="grid gap-3">{templates.length === 0 ? <Empty text="No templates loaded." /> : templates.map((template: any) => <Card key={template.id}><div className="font-semibold">{template.name || template.id}</div><div className="mt-1 text-sm text-zinc-500">{template.id} · role {template.role || '—'} · provider {template.provider || '—'} · tier {template.tier || '—'}</div></Card>)}</div></Panel>;
+  return <Panel title="Agent templates" subtitle="Template registry. Read-only list for this UI pass."><div className="grid gap-3">{templates.length === 0 ? <Empty text="No templates loaded." /> : templates.map((template: any) => <Card key={template.id}><div className="font-semibold">{template.name || template.id}</div><div className="mt-1 text-sm text-zinc-500">{template.id} · provider {template.provider || '—'} · tier {template.tier || '—'}</div></Card>)}</div></Panel>;
 }
 
-function TeamKindsPanel() {
-  return <Panel title="Team kinds" subtitle="Closed-set daemon team kinds. Read-only."><div className="grid gap-3 md:grid-cols-2">{TEAM_KIND_METADATA.map((kind) => <Card key={kind.key}><div className="flex items-center justify-between"><div className="font-semibold">{kind.label}</div><span className="rounded-full bg-white/10 px-2 py-0.5 text-xs text-zinc-400">{kind.key}</span></div><div className="mt-2 text-sm text-zinc-500">{kind.description}</div><div className="mt-3 flex flex-wrap gap-1 text-xs">{[`${paceLabel(kind.pace)} pace`, taskCountLabel(kind.expectedTaskCount), `${kind.collaboratingAgentCount} agents`, `VCS: ${wantsVcsLabel(kind.wantsVcsMode)}`].map((badge) => <span key={badge} className="rounded-full bg-white/10 px-2 py-0.5 text-zinc-300">{badge}</span>)}</div><div className="mt-3 flex flex-wrap gap-1">{kind.scaffolds.map((scaffold) => <span key={scaffold.key} className="rounded-full bg-sky-400/10 px-2 py-0.5 text-xs text-sky-200">{scaffold.label} · {paceLabel(scaffold.pace)} · {scaffold.expectedTaskCount} tasks</span>)}</div></Card>)}</div></Panel>;
+function DefaultAgentsPanel({ defaults, identities = [], agents = [], loading, onRefresh, onSave }: any) {
+  const defaultsByUse = useMemo(() => {
+    const map: Record<string, string> = {};
+    (defaults || []).forEach((row: any) => { if (row?.use) map[String(row.use)] = String(row.agent_id || row.agentId || ''); });
+    return map;
+  }, [defaults]);
+  const options = useMemo(() => {
+    const ids = new Set<string>();
+    (identities || []).forEach((identity: any) => { const id = String(identity?.agent_id || identity?.agentId || ''); if (id && id !== 'user_proxy') ids.add(id); });
+    (agents || []).forEach((agent: any) => {
+      const durable = String(agent?.agentId || agent?.agent_id || '').trim();
+      if (durable && durable !== 'user_proxy') ids.add(durable);
+      const id = String(agent?.id || agent?.agentInstanceId || agent?.agent_instance_id || '');
+      if (id && !id.includes('@') && id !== 'user_proxy') ids.add(id);
+    });
+    DEFAULT_AGENT_USES.forEach((use) => { if (defaultsByUse[use]) ids.add(defaultsByUse[use]); });
+    return Array.from(ids).sort();
+  }, [agents, defaultsByUse, identities]);
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [savingUse, setSavingUse] = useState('');
+  const [message, setMessage] = useState('');
+  useEffect(() => {
+    const next: Record<string, string> = {};
+    DEFAULT_AGENT_USES.forEach((use) => { next[use] = defaultsByUse[use] || ''; });
+    setDraft(next);
+  }, [defaultsByUse]);
+  const saveAll = async () => {
+    setMessage('');
+    for (const use of DEFAULT_AGENT_USES) {
+      const agentId = String(draft[use] || '').trim();
+      if (!agentId || agentId === defaultsByUse[use]) continue;
+      setSavingUse(use);
+      await onSave(use, agentId);
+    }
+    setSavingUse('');
+    setMessage('Default-agent map saved.');
+  };
+  return (
+    <Panel title="Default agents" subtitle="Role/default-use → durable default agent id. Coordinators and skills use these suggestions when assigning task participants; task participants remain the authority for actual roles.">
+      <section data-debug-id="settings-default-agents-panel" className="rounded-2xl border border-white/10 bg-white/[0.035] p-4">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div className="text-xs uppercase tracking-[0.18em] text-zinc-500">Default-agent map</div>
+          <button data-debug-id="settings-default-agents-refresh-btn" type="button" onClick={onRefresh} className="rounded-xl bg-white/10 px-3 py-2 text-xs text-zinc-100 hover:bg-white/15">{loading ? 'Refreshing…' : 'Refresh'}</button>
+        </div>
+        <div className="space-y-2">
+          {DEFAULT_AGENT_USES.map((use) => {
+            const value = draft[use] || '';
+            const status = ['conversation', 'guide', 'coordinator', 'worker', 'reviewer'].includes(use) ? 'seeded' : 'alias';
+            return (
+              <div key={use} data-debug-id={`settings-default-agent-use-${use}-row`} className="grid gap-2 rounded-2xl border border-white/10 bg-black/20 p-3 md:grid-cols-[150px_minmax(0,1fr)_80px] md:items-center">
+                <div className="font-mono text-sm text-zinc-200">{use}</div>
+                <label className="sr-only" htmlFor={`default-agent-${use}`}>Default agent for {use}</label>
+                <select id={`default-agent-${use}`} data-debug-id={`settings-default-agent-use-${use}-picker-btn`} value={value} onChange={(event) => setDraft((current) => ({ ...current, [use]: event.target.value }))} className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400">
+                  {!value && <option value="">Choose durable agent id</option>}
+                  {value && !options.includes(value) && <option value={value}>{value}</option>}
+                  {options.map((id) => <option key={id} value={id}>{id}</option>)}
+                </select>
+                <div data-debug-id={`settings-default-agent-use-${use}-value`} className="text-xs text-zinc-500">{status}</div>
+              </div>
+            );
+          })}
+        </div>
+        {message && <div data-debug-id="settings-default-agents-save-message" className="mt-3 rounded-xl border border-emerald-400/20 bg-emerald-400/10 px-3 py-2 text-sm text-emerald-100">{message}</div>}
+        <div className="mt-4 flex justify-end">
+          <button data-debug-id="settings-default-agents-save-btn" type="button" disabled={Boolean(savingUse)} onClick={() => { void saveAll(); }} className="rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:opacity-50">{savingUse ? `Saving ${savingUse}…` : 'Save changes'}</button>
+        </div>
+      </section>
+    </Panel>
+  );
 }
 
 function preferenceValue(preferences: any[], key: string, fallback = '') {

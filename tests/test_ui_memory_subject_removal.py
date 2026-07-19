@@ -6,13 +6,11 @@ ROOT = Path(__file__).resolve().parents[1]
 UI_FILES = {
     "src/ui/api/daemonApi.ts": [
         "action: 'memory_list'",
-        "target_team_kind",
-        "target_role",
+        "target_agent_id",
         "target_project_id",
     ],
     "src/ui/store/memorySlice.ts": [
-        "targetTeamKind",
-        "targetRole",
+        "targetAgentId",
         "targetProjectId",
         "targeting: 'all'",
     ],
@@ -26,11 +24,9 @@ UI_FILES = {
         "Target: <span className=\"text-[#aaa]\">{entity.target || 'global'}</span>",
     ],
     "src/ui/components/MemoryManagementPage.tsx": [
-        "Team kind target",
-        "Role target",
+        "Agent target",
         "Project target",
-        "target_team_kind",
-        "target_role",
+        "target_agent_id",
         "target_project_id",
     ],
 }
@@ -71,7 +67,7 @@ def main() -> None:
     if missing or forbidden_hits:
         raise SystemExit("\n".join(missing + forbidden_hits))
 
-    print("ok: UI uses simplified memory target triple only")
+    print("ok: UI uses simplified memory target pair only")
 
 
 if __name__ == "__main__":

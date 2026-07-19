@@ -27,7 +27,7 @@ export const memoryApi = heimdallApi.injectEndpoints({
         ...((result?.records || []).map((record: any) => ({ type: 'Memory' as const, id: memoryTagId(record) })).filter((tag: any) => Boolean(tag.id))),
       ],
     }),
-    listApplicableMemory: build.query<any, { targetAgentId?: string; targetTeamKind?: string; targetRole?: string; targetProjectId?: string }>({
+    listApplicableMemory: build.query<any, { targetAgentId?: string; targetProjectId?: string }>({
       queryFn: withSessionQuery(async (arg, { session }) => {
         if (!session?.clientToken) return { records: [] };
         const data = await daemonApi.listApplicableMemory({ ...auth(session), ...arg });

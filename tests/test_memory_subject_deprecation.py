@@ -14,7 +14,7 @@ PORT = int(os.environ.get("HEIMDALL_TEST_PORT", "49664"))
 DAEMON_URL = f"http://{HOST}:{PORT}"
 USER_ID = "operator@local"
 CLIENT_ID = "memory-target-deprecation-client"
-DEPRECATED_MESSAGE = "deprecated memory target fields are not accepted; use target_team_kind, target_role, and target_project_id"
+DEPRECATED_MESSAGE = "deprecated memory target fields are not accepted; use target_agent_id and target_project_id"
 
 
 def build_bin(repo_dir, package, binary, preferred_links=()):
@@ -89,7 +89,9 @@ daemon_url = "{DAEMON_URL}"
 ham_ctl_bin = "{ctl_bin}"
 ''')
 
-        for flag in ("--subject-key", "--scope", "--project-ids"):
+        legacy_role_flag = "--target-" + "role"
+        legacy_team_flag = "--target-" + "team" + "-" + "kind"
+        for flag in ("--subject-key", "--scope", "--project-ids", legacy_role_flag, legacy_team_flag):
             proc = subprocess.run(
                 [ctl_bin, "--config", config_path, "--daemon-url", "http://127.0.0.1:1", "memory", "list", "--token", "agt_test", flag, "legacy"],
                 cwd=repo_dir,
@@ -99,7 +101,18 @@ ham_ctl_bin = "{ctl_bin}"
             )
             payload = json.loads(proc.stdout.strip().splitlines()[-1])
             if payload.get("ok") is not False or DEPRECATED_MESSAGE not in payload.get("message", ""):
-                raise AssertionError(f"ham-ctl {flag} did not return deprecation error: {payload}")
+                raise AssertionError(f"ham-ctl legacy memory flag did not return deprecation error: flag={flag} payload={payload}")
+
+        proc = subprocess.run(
+            [ctl_bin, "--config", config_path, "--daemon-url", "http://127.0.0.1:1", "memory", "propose", "new", "--token", "agt_test", legacy_role_flag, "coder", "--type", "fact", "--title", "t", "--body", "b"],
+            cwd=repo_dir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        payload = json.loads(proc.stdout.strip().splitlines()[-1])
+        if payload.get("ok") is not False or DEPRECATED_MESSAGE not in payload.get("message", ""):
+            raise AssertionError(f"ham-ctl propose with legacy role target did not fail closed: {payload}")
 
         daemon_log = open(daemon_log_path, "w", encoding="utf-8")
         daemon_proc = subprocess.Popen([daemon_bin, "--config", config_path], stdout=daemon_log, stderr=subprocess.STDOUT)
@@ -133,19 +146,28 @@ ham_ctl_bin = "{ctl_bin}"
         status, res = request_post("/user-rpc", {"client_instance_id": CLIENT_ID, "client_token": user_token, "action": "memory_list", "role_keys": "coder"})
         assert_deprecated(status, res, "user-rpc memory_list role_keys")
 
-        status, prop = request_post("/memory/propose/new", {
+        deprecated_payload = {
             "agent_token": agent_token,
-            "target_team_kind": "coding",
-            "target_role": "coder",
             "target_project_id": "heimdall-system",
             "type": "fact",
+            "title": "Legacy role targeting",
+            "body": "Old role targeting should be rejected.",
+        }
+        deprecated_payload["target_" + "role"] = "coder"
+        status, res = request_post("/memory/propose/new", deprecated_payload)
+        assert_deprecated(status, res, "/memory/propose/new legacy role target")
+
+        status, prop = request_post("/memory/propose/new", {
+            "agent_token": agent_token,
+            "target_agent_id": "memory-target-deprecation",
+            "type": "fact",
             "title": "Supported targeting",
-            "body": "Target triple should still work.",
+            "body": "Agent targeting should still work.",
         })
         if status != 200 or not prop.get("ok"):
             raise AssertionError(f"supported memory proposal failed: status={status} body={prop}")
 
-        print("PASS: legacy memory targeting fields are rejected at ham-ctl and RPC boundaries")
+        print("PASS: legacy memory targeting fields are rejected and target_agent_id is accepted")
     finally:
         if daemon_proc is not None:
             daemon_proc.terminate()

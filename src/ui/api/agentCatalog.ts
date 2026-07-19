@@ -74,8 +74,6 @@ export function mapAgent(agent: any) {
     projectId: agent.project_id || agent.projectId || '',
     projectName: agent.project_name || agent.projectName || '',
     templateId: agent.template_id || agent.templateId || '',
-    agentScope: agent.agent_scope || agent.agentScope || 'durable',
-    agentRole: agent.agent_role || agent.agentRole || agent.role_hint || agent.roleHint || '',
     agentKind: agent.agent_kind || agent.agentKind || 'local',
     remote: agent.remote ? {
       peerId: agent.remote.peer_id || agent.remote.peerId || '',
@@ -89,7 +87,6 @@ export function mapAgent(agent: any) {
     providerProfile: agent.provider_profile || agent.providerProfile || agent.agent_class || '',
     connected: Boolean(agent.connected),
     connectionState: agent.connection_state || agent.connectionState || '',
-    roleHint: agent.role_hint || agent.roleHint || agent.agent_role || agent.agentRole || '',
     modelTier: agent.model_tier || agent.modelTier || 'normal',
     known: agent.known ?? true,
     execState,
@@ -236,10 +233,7 @@ export function applyAgentLifecycleEvent(agents: any[], payload: any) {
       projectId: mapped.projectId || existing.projectId || '',
       projectName: mapped.projectName || existing.projectName || '',
       templateId: mapped.templateId || existing.templateId || '',
-      agentScope: mapped.agentScope || existing.agentScope || 'durable',
-      agentRole: mapped.agentRole || existing.agentRole || '',
       providerProfile: mapped.providerProfile || existing.providerProfile || '',
-      roleHint: mapped.roleHint || existing.roleHint || '',
       modelTier: mapped.modelTier || existing.modelTier || 'normal',
       known: true,
     };

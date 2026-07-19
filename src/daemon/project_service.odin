@@ -64,6 +64,15 @@ project_write_record_json :: proc(b: ^strings.Builder, p: Project_Record) {
 	strings.write_string(b, `]}`)
 }
 
+// project_exists reports whether a project record with this id is present. An
+// empty project_id is treated as "no project" (valid: agents may be unbound), so
+// callers that want to forbid empty must check that separately.
+project_exists :: proc(project_id: string) -> bool {
+	trimmed := strings.trim_space(project_id)
+	if trimmed == "" do return true
+	return project_index(trimmed) >= 0
+}
+
 project_anchor_type_allowed :: proc(t: string) -> bool {
 	switch t {
 	case "directory", "git_repo", "base_ref", "vcs_kind", "worktree_root", "docs", "scratch": return true

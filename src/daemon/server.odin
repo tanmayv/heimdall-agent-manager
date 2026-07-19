@@ -85,8 +85,6 @@ run_server :: proc(cfg: cfg_lib.Config, config_path: string) -> bool {
 	agent_store_init(server_data_dir); time_step("agent_store_init", &step)
 	peer_link_store_init(server_data_dir); time_step("peer_link_store_init", &step)
 	chat_store_init(server_data_dir); time_step("chat_store_init", &step)
-	_ = team_service_init(server_data_dir); time_step("team_service_init", &step)
-	teams_v1_migration_maybe_run(server_data_dir); time_step("teams_v1_migration_maybe_run", &step)
 	if !vcs_db_init(server_data_dir) { fmt.println("WARNING: vcs_db_init failed, workspaces will not persist") }
 	time_step("vcs_db_init", &step)
 	if !artifact_db_init(server_data_dir) {
@@ -155,6 +153,26 @@ daemon_info_json :: proc() -> string {
 	strings.write_string(&builder, fmt.tprintf("%d", contracts.PROTOCOL_VERSION))
 	strings.write_string(&builder, `}`)
 	return strings.to_string(builder)
+}
+
+http_method_target :: proc(request: string) -> (string, string) {
+	line_end := strings.index(request, "\r\n")
+	if line_end < 0 do return "", ""
+	line := request[:line_end]
+	parts := strings.split(line, " ")
+	defer delete(parts)
+	if len(parts) < 2 do return "", ""
+	return parts[0], parts[1]
+}
+
+path_without_query :: proc(target: string) -> string {
+	if idx := strings.index_byte(target, '?'); idx >= 0 do return target[:idx]
+	return target
+}
+
+query_value :: proc(target, name: string) -> string {
+	if idx := strings.index_byte(target, '?'); idx >= 0 do return query_param_value(target[idx + 1:], name)
+	return ""
 }
 
 socket_set_close_on_exec :: proc(socket: net.TCP_Socket) -> bool {
@@ -315,6 +333,12 @@ handle_client :: proc(client: net.TCP_Socket) {
 
 	if strings.has_prefix(request, "POST /agents/update ") {
 		handle_agent_instance_update(client, request_body(request))
+		return
+	}
+
+	// Durable identity edit (agent_id defaults), no concrete instance required.
+	if strings.has_prefix(request, "POST /agent-ids/update ") {
+		handle_agent_id_update(client, request_body(request))
 		return
 	}
 
@@ -621,7 +645,6 @@ handle_client :: proc(client: net.TCP_Socket) {
 		return
 	}
 
-	if handle_teams_request(client, request) do return
 	if handle_workspace_request(client, request) do return
 
 	write_response(client, 404, "Not Found", `{"ok":false,"message":"not found"}`)

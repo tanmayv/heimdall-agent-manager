@@ -1,11 +1,9 @@
 export function memoryTargetSummary(record: any) {
   if (record.target) return String(record.target);
-  const targetTeamKind = String(record.target_team_kind || record.targetTeamKind || '').trim();
-  const targetRole = String(record.target_role || record.targetRole || '').trim();
+  const targetAgentId = String(record.target_agent_id || record.targetAgentId || '').trim();
   const targetProjectId = String(record.target_project_id || record.targetProjectId || '').trim();
   const parts = [] as string[];
-  if (targetTeamKind) parts.push(`team kind ${targetTeamKind}`);
-  if (targetRole) parts.push(`role ${targetRole}`);
+  if (targetAgentId) parts.push(`agent ${targetAgentId}`);
   if (targetProjectId) parts.push(`project ${targetProjectId}`);
   return parts.length ? parts.join(' · ') : 'global';
 }
@@ -15,8 +13,7 @@ export function normalizeMemory(record: any) {
     id: record.memory_id || record.memoryId || '',
     memoryId: record.memory_id || record.memoryId || '',
     proposalId: record.proposal_id || record.proposalId || '',
-    targetTeamKind: record.target_team_kind || record.targetTeamKind || '',
-    targetRole: record.target_role || record.targetRole || '',
+    targetAgentId: record.target_agent_id || record.targetAgentId || '',
     targetProjectId: record.target_project_id || record.targetProjectId || '',
     target: memoryTargetSummary(record),
     type: record.type || record.memory_type || 'fact',
@@ -38,8 +35,7 @@ export function normalizeHistory(event: any) {
     eventId: event.event_id || event.eventId || '',
     memoryId: event.memory_id || event.memoryId || '',
     proposalId: event.proposal_id || event.proposalId || '',
-    targetTeamKind: event.target_team_kind || event.targetTeamKind || '',
-    targetRole: event.target_role || event.targetRole || '',
+    targetAgentId: event.target_agent_id || event.targetAgentId || '',
     targetProjectId: event.target_project_id || event.targetProjectId || '',
     target: memoryTargetSummary(event),
     type: event.type || event.memory_type || 'fact',
@@ -63,15 +59,12 @@ function includesText(value: any, needle: string) {
 }
 
 function hasTargeting(record: any) {
-  return Boolean(record.targetTeamKind || record.targetRole || record.targetProjectId);
+  return Boolean(record.targetAgentId || record.targetProjectId);
 }
 
 export function matchesMemoryFilters(record: any, filters: any) {
-  const targetTeamKindFilter = String(filters?.targetTeamKind || '').trim().toLowerCase();
-  if (targetTeamKindFilter && String(record.targetTeamKind || '').trim().toLowerCase() !== targetTeamKindFilter) return false;
-
-  const targetRoleFilter = String(filters?.targetRole || '').trim().toLowerCase();
-  if (targetRoleFilter && String(record.targetRole || '').trim().toLowerCase() !== targetRoleFilter) return false;
+  const targetAgentIdFilter = String(filters?.targetAgentId || '').trim().toLowerCase();
+  if (targetAgentIdFilter && String(record.targetAgentId || '').trim().toLowerCase() !== targetAgentIdFilter) return false;
 
   const targetProjectIdFilter = String(filters?.targetProjectId || '').trim().toLowerCase();
   if (targetProjectIdFilter && String(record.targetProjectId || '').trim().toLowerCase() !== targetProjectIdFilter) return false;
@@ -95,8 +88,7 @@ export function matchesMemoryFilters(record: any, filters: any) {
     record.title,
     record.body,
     record.target,
-    record.targetTeamKind,
-    record.targetRole,
+    record.targetAgentId,
     record.targetProjectId,
     record.type,
     record.status,

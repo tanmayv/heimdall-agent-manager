@@ -10,9 +10,105 @@ valid_model_tier :: proc(tier: string) -> bool {
 	return tier == "cheap" || tier == "normal" || tier == "smart"
 }
 
+// agents_invalid_project_json is the shared 400 body used whenever an agent
+// create/update/associate/start attempts to bind to a project id that does not
+// exist. Keeping the message uniform makes the failure obvious in ctl/UI.
+agents_invalid_project_json :: proc(project_id: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":false,"message":"project '`)
+	json_write_string(&b, project_id)
+	strings.write_string(&b, `' does not exist; create it first or use a valid project_id"}`)
+	return strings.to_string(b)
+}
+
 normalize_model_tier :: proc(tier: string) -> string {
 	if tier == "" do return "normal"
 	return tier
+}
+
+agent_defaults_write_default :: proc(builder: ^strings.Builder, wrote: ^int, default_use, fallback_agent_id: string, custom_prefs: map[string]User_Preference) {
+	if default_use == "" do return
+	pref_key := agent_default_pref_key(default_use)
+	agent_id := fallback_agent_id
+	source := "config"
+	is_custom := false
+	if pref, found := custom_prefs[pref_key]; found {
+		agent_id = pref.value
+		source = "preference"
+		is_custom = true
+	}
+	if wrote^ > 0 do strings.write_string(builder, `,`)
+	strings.write_string(builder, `{"use":"`); json_write_string(builder, default_use)
+	strings.write_string(builder, `","agent_id":"`); json_write_string(builder, agent_id)
+	strings.write_string(builder, `","source":"`); json_write_string(builder, source)
+	strings.write_string(builder, `","is_custom":`); strings.write_string(builder, "true" if is_custom else "false")
+	strings.write_string(builder, `}`)
+	wrote^ += 1
+}
+
+handle_agents_defaults_get :: proc(client: net.TCP_Socket, ctx: ^Route_Context) {
+	_, auth_ok := rest_authorize(client, ctx)
+	if !auth_ok do return
+	requested_use := strings.to_lower(strings.trim_space(query_param_value(ctx.query, "use")))
+	custom_prefs, db_ok := user_pref_db_load_all(agent_default_pref_user_id())
+	if !db_ok {
+		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to load default-agent preferences"}`)
+		return
+	}
+	defer {
+		for key, value in custom_prefs {
+			delete(custom_prefs[key].value)
+			_ = value
+		}
+		delete(custom_prefs)
+	}
+	builder := strings.builder_make()
+	strings.write_string(&builder, `{"ok":true,"defaults":[`)
+	wrote := 0
+	if requested_use != "" {
+		agent_defaults_write_default(&builder, &wrote, requested_use, agent_default_id_configured(requested_use), custom_prefs)
+	} else {
+		for entry in server_config.daemon.default_agent_ids {
+			agent_defaults_write_default(&builder, &wrote, entry.use, entry.agent_id, custom_prefs)
+		}
+		for key, pref in custom_prefs {
+			if !strings.has_prefix(key, "default_agent_id_") do continue
+			default_use := key[len("default_agent_id_"):]
+			already := false
+			for entry in server_config.daemon.default_agent_ids {
+				if entry.use == default_use { already = true; break }
+			}
+			if already do continue
+			agent_defaults_write_default(&builder, &wrote, default_use, pref.value, custom_prefs)
+		}
+	}
+	strings.write_string(&builder, `]}`)
+	write_response(client, 200, "OK", strings.to_string(builder))
+}
+
+handle_agents_defaults_set :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
+	_, auth_ok := rest_authorize(client, ctx)
+	if !auth_ok do return
+	default_use := strings.to_lower(strings.trim_space(extract_json_string(body, "use", extract_json_string(body, "role", ""))))
+	agent_id := strings.trim_space(extract_json_string(body, "agent_id", extract_json_string(body, "default_agent_id", "")))
+	if default_use == "" || safe_agent_id_part(default_use) != default_use {
+		write_response(client, 400, "Bad Request", `{"ok":false,"message":"valid use required"}`)
+		return
+	}
+	if agent_id == "" || (agent_id != USER_PROXY_AGENT_INSTANCE_ID && agent_id != HUMAN_RECIPIENT_ID && safe_agent_id_part(agent_id) != agent_id) {
+		write_response(client, 400, "Bad Request", `{"ok":false,"message":"valid durable agent_id required"}`)
+		return
+	}
+	pref_key := agent_default_pref_key(default_use)
+	if !user_pref_db_set(agent_default_pref_user_id(), pref_key, agent_id, false) {
+		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to save default-agent mapping"}`)
+		return
+	}
+	builder := strings.builder_make()
+	strings.write_string(&builder, `{"ok":true,"default":{"use":"`); json_write_string(&builder, default_use)
+	strings.write_string(&builder, `","agent_id":"`); json_write_string(&builder, agent_id)
+	strings.write_string(&builder, `","source":"preference","is_custom":true}}`)
+	write_response(client, 200, "OK", strings.to_string(builder))
 }
 
 handle_agents_providers :: proc(client: net.TCP_Socket) {
@@ -67,7 +163,7 @@ handle_agents_templates :: proc(client: net.TCP_Socket) {
 		wrote += 1
 	}
 	if wrote == 0 {
-		strings.write_string(&builder, `{"template_id":"coder","display_name":"Coder","role_hint":"assignee","default_provider_profile":"pi","memory_templates":[]},{"template_id":"reviewer","display_name":"Reviewer","role_hint":"reviewer","default_provider_profile":"pi","memory_templates":[]},{"template_id":"coordinator","display_name":"Coordinator","role_hint":"coordinator","default_provider_profile":"pi","memory_templates":[]}`)
+		strings.write_string(&builder, `{"template_id":"conversation","display_name":"Conversation","default_provider_profile":"pi","memory_templates":[]},{"template_id":"worker","display_name":"Worker","default_provider_profile":"pi","memory_templates":[]},{"template_id":"reviewer","display_name":"Reviewer","default_provider_profile":"pi","memory_templates":[]},{"template_id":"coordinator","display_name":"Coordinator","default_provider_profile":"pi","memory_templates":[]}`)
 	}
 	strings.write_string(&builder, `]}`)
 	write_response(client, 200, "OK", strings.to_string(builder))
@@ -75,7 +171,6 @@ handle_agents_templates :: proc(client: net.TCP_Socket) {
 
 handle_agents_list :: proc(client: net.TCP_Socket, request: string) {
 	project_id := query_param(request, "project_id")
-	role_hint := query_param(request, "role_hint")
 	limit_str := query_param(request, "limit")
 	offset_str := query_param(request, "offset")
 	include_identities := query_param(request, "include_identities") == "true"
@@ -96,11 +191,6 @@ handle_agents_list :: proc(client: net.TCP_Socket, request: string) {
 		rec := agent_instance_records[i]
 		if rec.archived_at_unix_ms != 0 do continue
 		if project_id != "" && rec.project_id != project_id do continue
-		if role_hint != "" {
-			tidx := agent_template_index(rec.template_id)
-			if tidx < 0 do continue
-			if agent_template_records[tidx].role_hint != role_hint do continue
-		}
 		if matched < offset { matched += 1; continue }
 		if limit > 0 && wrote >= limit { matched += 1; continue }
 		if wrote > 0 do strings.write_string(&builder, `,`)
@@ -109,7 +199,7 @@ handle_agents_list :: proc(client: net.TCP_Socket, request: string) {
 		matched += 1
 	}
 	// Preserve existing live-registry visibility for callers that used /clients only.
-	if project_id == "" && role_hint == "" {
+	if project_id == "" {
 		for i in 0..<agent_count {
 			ag := agents[i]
 			if is_test_token(ag.agent_token) do continue
@@ -123,8 +213,6 @@ handle_agents_list :: proc(client: net.TCP_Socket, request: string) {
 			live_pp := ag.provider_profile; if live_pp == "" do live_pp = ag.agent_class
 			live_template := derive_agent_class(ag.agent_instance_id)
 			strings.write_string(&builder, `","template_id":"`); json_write_string(&builder, live_template)
-			strings.write_string(&builder, `","agent_scope":"`); json_write_string(&builder, agent_scope_infer(ag.agent_instance_id, live_template))
-			strings.write_string(&builder, `","agent_role":"`); json_write_string(&builder, agent_role_from_template(live_template))
 			strings.write_string(&builder, `","provider_profile":"`); json_write_string(&builder, live_pp)
 			strings.write_string(&builder, `","project_id":"","project_name":"","run_dir":"`); json_write_string(&builder, ag.run_dir)
 			strings.write_string(&builder, `","conversation_id":"`); json_write_string(&builder, ag.conversation_id)
@@ -159,7 +247,7 @@ handle_agents_list :: proc(client: net.TCP_Socket, request: string) {
 			if rec.agent_instance_id == "" do continue
 			resolved_agent_id := rec.agent_id
 			if resolved_agent_id == "" do resolved_agent_id = agent_id_from_instance_id(rec.agent_instance_id)
-			agent_id_ensure_backfill(resolved_agent_id, rec.display_name, rec.template_id, rec.provider_profile, rec.model_tier, rec.project_id, rec.created_unix_ms, rec.agent_role)
+			agent_id_ensure_backfill(resolved_agent_id, rec.display_name, rec.template_id, rec.provider_profile, rec.model_tier, rec.project_id, rec.created_unix_ms)
 		}
 		strings.write_string(&builder, `,"identities":[`)
 		identity_wrote := 0
@@ -167,11 +255,6 @@ handle_agents_list :: proc(client: net.TCP_Socket, request: string) {
 			rec := agent_id_records[i]
 			if rec.archived_at_unix_ms != 0 do continue
 			if agent_instance_id_is_reserved(rec.agent_id) do continue
-			if role_hint != "" {
-				tidx := agent_template_index(rec.template_id)
-				if tidx < 0 do continue
-				if agent_template_records[tidx].role_hint != role_hint do continue
-			}
 			if identity_wrote > 0 do strings.write_string(&builder, `,`)
 			agent_id_record_json(&builder, rec)
 			identity_wrote += 1
@@ -187,13 +270,14 @@ handle_agents_associate :: proc(client: net.TCP_Socket, body: string) {
 	agent_instance_id := extract_json_string(body, "agent_instance_id", "")
 	project_id := extract_json_string(body, "project_id", "")
 	if project_id == "" { write_response(client, 400, "Bad Request", `{"ok":false,"message":"project_id required"}`); return }
+	if !project_exists(project_id) { write_response(client, 400, "Bad Request", agents_invalid_project_json(project_id)); return }
 	idx := agent_record_index(agent_record_id)
 	if idx < 0 && agent_instance_id != "" do idx = agent_record_index_by_instance(agent_instance_id)
 	if idx < 0 { write_response(client, 404, "Not Found", `{"ok":false,"message":"agent not found"}`); return }
 	rec := agent_instance_records[idx]
 	rec.project_id = strings.clone(project_id)
 	assoc_tier := normalize_model_tier(rec.model_tier)
-	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = rec.provider_profile, project_id = rec.project_id, run_dir = rec.run_dir, model_tier = assoc_tier, agent_scope = rec.agent_scope, agent_role = rec.agent_role, agent_kind = rec.agent_kind, remote_peer_id = rec.remote_peer_id, remote_origin_daemon_id = rec.remote_origin_daemon_id, remote_agent_instance_id = rec.remote_agent_instance_id, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent association"}`); return }
+	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = rec.provider_profile, project_id = rec.project_id, run_dir = rec.run_dir, model_tier = assoc_tier, agent_kind = rec.agent_kind, remote_peer_id = rec.remote_peer_id, remote_origin_daemon_id = rec.remote_origin_daemon_id, remote_agent_instance_id = rec.remote_agent_instance_id, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent association"}`); return }
 	write_agent_ok_response(client, "associated", agent_instance_records[agent_record_index(rec.agent_record_id)])
 }
 
@@ -206,7 +290,7 @@ handle_agents_disassociate :: proc(client: net.TCP_Socket, body: string) {
 	rec := agent_instance_records[idx]
 	rec.project_id = ""
 	disassoc_tier := normalize_model_tier(rec.model_tier)
-	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = rec.provider_profile, project_id = "", run_dir = rec.run_dir, model_tier = disassoc_tier, agent_scope = rec.agent_scope, agent_role = rec.agent_role, agent_kind = rec.agent_kind, remote_peer_id = rec.remote_peer_id, remote_origin_daemon_id = rec.remote_origin_daemon_id, remote_agent_instance_id = rec.remote_agent_instance_id, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent disassociation"}`); return }
+	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = rec.provider_profile, project_id = "", run_dir = rec.run_dir, model_tier = disassoc_tier, agent_kind = rec.agent_kind, remote_peer_id = rec.remote_peer_id, remote_origin_daemon_id = rec.remote_origin_daemon_id, remote_agent_instance_id = rec.remote_agent_instance_id, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent disassociation"}`); return }
 	write_agent_ok_response(client, "disassociated", agent_instance_records[agent_record_index(rec.agent_record_id)])
 }
 
@@ -216,21 +300,21 @@ handle_agents_disassociate :: proc(client: net.TCP_Socket, body: string) {
 agent_record_upsert :: proc(
 	agent_instance_id, display_label, template_id, provider_profile, project_id, run_dir_override, model_tier: string,
 	identity_state: string = "",
-	agent_scope: string = "",
-	agent_role: string = "",
 	project_id_set: bool = false,
 	agent_kind: string = "",
 	remote_peer_id: string = "",
 	remote_origin_daemon_id: string = "",
 	remote_agent_instance_id: string = "",
 ) -> (agent_record_id: string, final_tier: string, ok: bool) {
-	if template_id == "guide" && !guide_agent_is_singleton(agent_instance_id) {
-		fmt.printfln("GUIDE_LAUNCH ts_unix_ms=%d stage=record_upsert_rejected target=%s template=%s reason=guide_template_reserved", router_now_unix_ms(), agent_instance_id, template_id)
-		return "", "", false
-	}
-	if guide_agent_is_singleton(agent_instance_id) && template_id != "" && template_id != "guide" {
-		fmt.printfln("GUIDE_LAUNCH ts_unix_ms=%d stage=record_upsert_rejected target=%s template=%s reason=guide_singleton_reserved", router_now_unix_ms(), agent_instance_id, template_id)
-		return "", "", false
+	if guide_agent_is_singleton(agent_instance_id) && template_id != "" {
+		expected_template := guide_agent_template_id()
+		durable_for_guide := agent_id_from_instance_id(agent_instance_id)
+		if idx := agent_id_index(durable_for_guide); idx >= 0 && agent_id_records[idx].template_id != "" do expected_template = agent_id_records[idx].template_id
+		delete(durable_for_guide)
+		if template_id != expected_template {
+			fmt.printfln("GUIDE_LAUNCH ts_unix_ms=%d stage=record_upsert_rejected target=%s template=%s reason=guide_singleton_template_mismatch", router_now_unix_ms(), agent_instance_id, template_id)
+			return "", "", false
+		}
 	}
 	rec_id := agent_new_record_id()
 	run_dir := run_dir_override
@@ -238,8 +322,6 @@ agent_record_upsert :: proc(
 	pp := provider_profile
 	resolved_project_id := project_id
 	state := identity_state
-	scope := agent_scope
-	role := agent_role
 	kind := agent_kind
 	remote_peer := remote_peer_id
 	remote_origin := remote_origin_daemon_id
@@ -249,8 +331,6 @@ agent_record_upsert :: proc(
 		if run_dir == "" do run_dir = agent_instance_records[idx].run_dir
 		if pp == "" do pp = agent_instance_records[idx].provider_profile
 		if state == "" do state = agent_instance_records[idx].state
-		if scope == "" do scope = agent_instance_records[idx].agent_scope
-		if role == "" do role = agent_instance_records[idx].agent_role
 		if kind == "" do kind = agent_instance_records[idx].agent_kind
 		if remote_peer == "" do remote_peer = agent_instance_records[idx].remote_peer_id
 		if remote_origin == "" do remote_origin = agent_instance_records[idx].remote_origin_daemon_id
@@ -265,8 +345,6 @@ agent_record_upsert :: proc(
 		resolved_project_id = agent_id_default_project_id(agent_id_from_instance_id(agent_instance_id))
 	}
 	if state == "" do state = AGENT_IDENTITY_STATE_PROVISIONED
-	if scope == "" do scope = agent_scope_infer(agent_instance_id, template_id)
-	if role == "" do role = agent_role_from_template(template_id)
 	kind = agent_kind_normalize(kind)
 	if kind == AGENT_KIND_REMOTE_PROXY {
 		if strings.trim_space(remote_peer) == "" || strings.trim_space(remote_agent) == "" do return "", "", false
@@ -283,8 +361,6 @@ agent_record_upsert :: proc(
 		project_id = resolved_project_id,
 		run_dir = run_dir,
 		model_tier = tier,
-		agent_scope = agent_scope_normalize(scope),
-		agent_role = agent_role_normalize(role),
 		agent_kind = kind,
 		remote_peer_id = strings.trim_space(remote_peer),
 		remote_origin_daemon_id = strings.trim_space(remote_origin),
@@ -303,9 +379,15 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 	// "none") sets project_id_set so an empty value applies verbatim instead of
 	// preserving the stored instance project.
 	project_id_set := extract_json_bool(body, "project_id_set", false)
+	// Reject binding a launch to a non-existent project up front. Without this the
+	// wrapper spawns, fails project validation, and the agent silently sticks at
+	// startup_unknown on every reconcile.
+	if strings.trim_space(project_id) != "" && !project_exists(project_id) {
+		write_response(client, 400, "Bad Request", agents_invalid_project_json(project_id))
+		return
+	}
 	provider_profile := extract_json_string(body, "provider_profile", extract_json_string(body, "agent", ""))
 	display_name := extract_json_string(body, "display_name", extract_json_string(body, "alias", ""))
-	agent_role := extract_json_string(body, "agent_role", extract_json_string(body, "role", ""))
 	agent_instance_id := extract_json_string(body, "agent_instance_id", "")
 	agent_id_ref := extract_json_string(body, "agent_id", "")
 	config_path := extract_json_string(body, "config_path", server_config_path)
@@ -328,7 +410,6 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 		if display_name == "" do display_name = agent_id_ref
 		if template_id == "" {
 			template_id = agent_id_template_id(agent_id_ref)
-			if agent_id_ref == "coordinator" && template_id == "coordinator" do template_id = "lead"
 		}
 	} else if agent_instance_id == "" {
 		id_base := display_name if display_name != "" else template_id
@@ -363,7 +444,6 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 	launch_model_tier := agent_resolve_model_tier(request_tier)
 
 	log_path := wrapper_log_path(agent_instance_id)
-	manual_scope := agent_scope_infer(agent_instance_id, template_id)
 	// /agents/start accepts provider/tier as launch overrides only. Never persist
 	// explicit request provider/tier from a start call. Existing durable identities
 	// keep their stored provider/tier; first-start records get operator/config
@@ -378,7 +458,7 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 		if identity.default_provider_profile != "" do persisted_provider_profile = identity.default_provider_profile
 		if identity.default_model_tier != "" do persisted_model_tier = identity.default_model_tier
 	}
-	agent_record_id, _, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, persisted_provider_profile, project_id, "", persisted_model_tier, "", manual_scope, agent_role, project_id_set)
+	agent_record_id, _, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, persisted_provider_profile, project_id, "", persisted_model_tier, "", project_id_set)
 	if !upsert_ok {
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`)
 		return
@@ -408,7 +488,7 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 		return
 	}
 	registry_add_pending_agent_token(agent_instance_id, agent_token)
-	ok := launch_wrapper_detached(agent_instance_id, provider_profile, config_path, log_path, agent_token, display_name, final_tier, resolved_project_id, "manual_agent_start", "", "", "")
+	ok := launch_wrapper_detached(agent_instance_id, provider_profile, config_path, log_path, agent_token, display_name, final_tier, resolved_project_id, "manual_agent_start")
 	if !ok {
 		agent_runtime_tracker_launch_failed(agent_instance_id, agent_token, "manual_agent_start")
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to start wrapper"}`)
@@ -448,8 +528,6 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 	strings.write_string(builder, `","agent_id":"`); json_write_string(builder, agent_id_value)
 	strings.write_string(builder, `","display_name":"`); json_write_string(builder, rec.display_name)
 	strings.write_string(builder, `","template_id":"`); json_write_string(builder, rec.template_id)
-	strings.write_string(builder, `","agent_scope":"`); json_write_string(builder, agent_scope_normalize(rec.agent_scope))
-	strings.write_string(builder, `","agent_role":"`); json_write_string(builder, agent_role_normalize(rec.agent_role))
 	strings.write_string(builder, `","agent_kind":"`); json_write_string(builder, agent_kind_normalize(rec.agent_kind))
 	strings.write_string(builder, `","provider_profile":"`); json_write_string(builder, rec.provider_profile)
 	strings.write_string(builder, `","project_id":"`); json_write_string(builder, rec.project_id)
@@ -508,7 +586,6 @@ agent_id_record_json :: proc(builder: ^strings.Builder, rec: Agent_Id_Record) {
 	strings.write_string(builder, `{"kind":"identity","agent_id":"`); json_write_string(builder, rec.agent_id)
 	strings.write_string(builder, `","display_name":"`); json_write_string(builder, rec.display_name if rec.display_name != "" else rec.agent_id)
 	strings.write_string(builder, `","template_id":"`); json_write_string(builder, rec.template_id)
-	strings.write_string(builder, `","agent_role":"`); json_write_string(builder, agent_role_normalize(rec.agent_role))
 	strings.write_string(builder, `","default_provider_profile":"`); json_write_string(builder, rec.default_provider_profile)
 	strings.write_string(builder, `","default_model_tier":"`); json_write_string(builder, normalize_model_tier(rec.default_model_tier if rec.default_model_tier != "" else "normal"))
 	strings.write_string(builder, `","default_project_id":"`); json_write_string(builder, rec.default_project_id)
@@ -536,9 +613,9 @@ query_param :: proc(request, name: string) -> string {
 	return query[start:start + end]
 }
 
-launch_wrapper_detached :: proc(agent_instance_id, selected_agent, config_path, log_path, agent_token, display_name, model_tier, project_id: string, launch_source: string = "", chain_id: string = "", team_id: string = "", task_id: string = "") -> bool {
+launch_wrapper_detached :: proc(agent_instance_id, selected_agent, config_path, log_path, agent_token, display_name, model_tier, project_id: string, launch_source: string = "", chain_id: string = "", task_id: string = "") -> bool {
 	spawn_start_ms := router_now_unix_ms()
-	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=wrapper_spawn_build_begin source=%s chain=%s team=%s task=%s target=%s provider=%s tier=%s project=%s log=%s", spawn_start_ms, launch_source, chain_id, team_id, task_id, agent_instance_id, selected_agent, model_tier, project_id, log_path)
+	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=wrapper_spawn_build_begin source=%s chain=%s task=%s target=%s provider=%s tier=%s project=%s log=%s", spawn_start_ms, launch_source, chain_id, task_id, agent_instance_id, selected_agent, model_tier, project_id, log_path)
 	_ = os.make_directory_all(parent_dir(log_path))
 	wrapper_bin := default_wrapper_bin()
 
@@ -577,14 +654,14 @@ launch_wrapper_detached :: proc(agent_instance_id, selected_agent, config_path, 
 	strings.write_string(&builder, " 2>&1 < /dev/null &")
 
 	cmd := strings.to_string(builder)
-	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=wrapper_process_start_begin source=%s chain=%s team=%s task=%s target=%s wrapper_bin=%s", router_now_unix_ms(), router_now_unix_ms() - spawn_start_ms, launch_source, chain_id, team_id, task_id, agent_instance_id, wrapper_bin)
+	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=wrapper_process_start_begin source=%s chain=%s task=%s target=%s wrapper_bin=%s", router_now_unix_ms(), router_now_unix_ms() - spawn_start_ms, launch_source, chain_id, task_id, agent_instance_id, wrapper_bin)
 	process, err := os.process_start(os.Process_Desc{command = []string{"sh", "-c", cmd}})
 	if err != nil {
-		fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=wrapper_process_start_failed source=%s chain=%s team=%s task=%s target=%s", router_now_unix_ms(), router_now_unix_ms() - spawn_start_ms, launch_source, chain_id, team_id, task_id, agent_instance_id)
+		fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=wrapper_process_start_failed source=%s chain=%s task=%s target=%s", router_now_unix_ms(), router_now_unix_ms() - spawn_start_ms, launch_source, chain_id, task_id, agent_instance_id)
 		fmt.println("wrapper launch failed")
 		return false
 	}
-	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=wrapper_process_start_done source=%s chain=%s team=%s task=%s target=%s shell_pid=%v", router_now_unix_ms(), router_now_unix_ms() - spawn_start_ms, launch_source, chain_id, team_id, task_id, agent_instance_id, process.handle)
+	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=wrapper_process_start_done source=%s chain=%s task=%s target=%s shell_pid=%v", router_now_unix_ms(), router_now_unix_ms() - spawn_start_ms, launch_source, chain_id, task_id, agent_instance_id, process.handle)
 	_ = process
 	return true
 }
@@ -659,7 +736,6 @@ handle_agent_template_create_update :: proc(client: net.TCP_Socket, body: string
 	ev.description = extract_json_string(body, "description", "")
 	ev.persona = extract_json_string(body, "persona", "")
 	ev.instructions = extract_json_string(body, "instructions", "")
-	ev.role_hint = extract_json_string(body, "role_hint", "")
 	ev.parent_template_id = extract_json_string(body, "parent_template_id", "")
 	ev.default_provider_profile = extract_json_string(body, "default_provider_profile", extract_json_string(body, "provider_profile", ""))
 	ev.bootstrap_defaults = extract_json_string(body, "bootstrap_defaults", "")
@@ -707,13 +783,14 @@ handle_agent_instance_update :: proc(client: net.TCP_Socket, body: string) {
 	template_id := extract_json_string(body, "template_id", rec.template_id)
 	provider_profile := extract_json_string(body, "provider_profile", rec.provider_profile)
 	project_id := extract_json_string(body, "project_id", rec.project_id)
+	if strings.trim_space(project_id) != "" && !project_exists(project_id) { write_response(client, 400, "Bad Request", agents_invalid_project_json(project_id)); return }
 	run_dir := extract_json_string(body, "run_dir", rec.run_dir)
 	model_tier := normalize_model_tier(rec.model_tier)
 	if req_tier := extract_json_string(body, "model_tier", ""); req_tier != "" {
 		if !valid_model_tier(req_tier) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid model_tier; expected cheap, normal, or smart"}`); return }
 		model_tier = normalize_model_tier(req_tier)
 	}
-	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = display_name, template_id = template_id, provider_profile = provider_profile, project_id = project_id, run_dir = run_dir, model_tier = model_tier, agent_scope = rec.agent_scope, agent_role = rec.agent_role, agent_kind = rec.agent_kind, remote_peer_id = rec.remote_peer_id, remote_origin_daemon_id = rec.remote_origin_daemon_id, remote_agent_instance_id = rec.remote_agent_instance_id, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`); return }
+	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = display_name, template_id = template_id, provider_profile = provider_profile, project_id = project_id, run_dir = run_dir, model_tier = model_tier, agent_kind = rec.agent_kind, remote_peer_id = rec.remote_peer_id, remote_origin_daemon_id = rec.remote_origin_daemon_id, remote_agent_instance_id = rec.remote_agent_instance_id, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`); return }
 	// Agents tab identity edits update the durable agent_id defaults (provider /
 	// tier / default project) that seed every future concrete instance. The flag
 	// keeps ordinary per-instance updates from mutating shared identity defaults.
@@ -724,6 +801,42 @@ handle_agent_instance_update :: proc(client: net.TCP_Socket, body: string) {
 	write_agent_ok_response(client, "updated", agent_instance_records[agent_record_index(rec.agent_record_id)])
 }
 
+// handle_agent_id_update edits a DURABLE agent identity (agent_id) directly,
+// without needing a concrete running instance. This is the identity-level edit:
+// it changes the shared defaults (display name, provider, tier, default project)
+// that seed every FUTURE instance of this agent_id. It does NOT touch existing
+// instance records — per-instance overrides live on the instance and are changed
+// via /agents/update. Separation of concerns:
+//   /agent-ids/update  -> durable identity defaults (this handler)
+//   /agents/update      -> one concrete agent_instance's own settings
+handle_agent_id_update :: proc(client: net.TCP_Socket, body: string) {
+	agent_id := strings.trim_space(extract_json_string(body, "agent_id", ""))
+	if agent_id == "" { write_response(client, 400, "Bad Request", `{"ok":false,"message":"agent_id required"}`); return }
+	idx := agent_id_index(agent_id)
+	if idx < 0 || agent_id_records[idx].archived_at_unix_ms != 0 { write_response(client, 404, "Not Found", `{"ok":false,"message":"agent_id not found"}`); return }
+	rec := agent_id_records[idx]
+	display_name := extract_json_string(body, "display_name", rec.display_name)
+	provider_profile := extract_json_string(body, "provider_profile", rec.default_provider_profile)
+	model_tier := normalize_model_tier(rec.default_model_tier)
+	if req_tier := extract_json_string(body, "model_tier", extract_json_string(body, "default_model_tier", "")); req_tier != "" {
+		if !valid_model_tier(req_tier) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid model_tier; expected cheap, normal, or smart"}`); return }
+		model_tier = normalize_model_tier(req_tier)
+	}
+	// default_project: applied verbatim (empty clears) so this endpoint can both
+	// set and unset a durable default project. Reject a non-existent, non-empty id.
+	project_id := extract_json_string(body, "default_project_id", extract_json_string(body, "project_id", rec.default_project_id))
+	if strings.trim_space(project_id) != "" && !project_exists(project_id) { write_response(client, 400, "Bad Request", agents_invalid_project_json(project_id)); return }
+	if !agent_id_update_defaults(agent_id, display_name, provider_profile, model_tier, project_id, "api") {
+		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to update agent identity"}`)
+		return
+	}
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"message":"updated","identity":`)
+	if new_idx := agent_id_index(agent_id); new_idx >= 0 { agent_id_record_json(&b, agent_id_records[new_idx]) } else { strings.write_string(&b, `null`) }
+	strings.write_string(&b, `}`)
+	write_response(client, 200, "OK", strings.to_string(b))
+}
+
 handle_agent_instance_create :: proc(client: net.TCP_Socket, body: string) {
 	agent_instance_id := extract_json_string(body, "agent_instance_id", "")
 	agent_id_ref := extract_json_string(body, "agent_id", "")
@@ -732,7 +845,6 @@ handle_agent_instance_create :: proc(client: net.TCP_Socket, body: string) {
 	template_id := extract_json_string(body, "template_id", "")
 	project_id := extract_json_string(body, "project_id", "")
 	model_tier := extract_json_string(body, "model_tier", "")
-	agent_role := extract_json_string(body, "agent_role", extract_json_string(body, "role", ""))
 
 	created_from_agent_id := false
 	if agent_id_ref != "" && agent_instance_id == "" {
@@ -758,10 +870,10 @@ handle_agent_instance_create :: proc(client: net.TCP_Socket, body: string) {
 			if provider_profile == "" do provider_profile = identity.default_provider_profile
 			if model_tier == "" do model_tier = identity.default_model_tier
 			if project_id == "" do project_id = identity.default_project_id
-			if agent_role == "" do agent_role = identity.agent_role
 		}
 	}
 
+	if strings.trim_space(project_id) != "" && !project_exists(project_id) { write_response(client, 400, "Bad Request", agents_invalid_project_json(project_id)); return }
 	if model_tier == "" do model_tier = "normal"
 	if !valid_model_tier(model_tier) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid model_tier; expected cheap, normal, or smart"}`); return }
 	model_tier = normalize_model_tier(model_tier)
@@ -771,7 +883,6 @@ handle_agent_instance_create :: proc(client: net.TCP_Socket, body: string) {
 	}
 	if display_name == "" do display_name = agent_id_ref if agent_id_ref != "" else agent_instance_id
 	if template_id == "" do template_id = agent_id_template_id(agent_id_ref) if agent_id_ref != "" else derive_agent_class(agent_instance_id)
-	if agent_role == "" do agent_role = agent_role_from_template(template_id)
 	// teams-v2: reserved identities (operator@local, user_proxy) are not creatable.
 	if agent_instance_id_is_reserved(agent_instance_id) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"reserved agent_instance_id cannot be created"}`); return }
 	if !valid_agent_instance_id(agent_instance_id) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid agent_instance_id"}`); return }
@@ -780,9 +891,9 @@ handle_agent_instance_create :: proc(client: net.TCP_Socket, body: string) {
 	// a new instance from an existing durable agent_id must not rewrite that
 	// identity's defaults with a one-off picker provider/tier override.
 	if !created_from_agent_id || !agent_id_exists(resolved_agent_id) {
-		agent_id_upsert(resolved_agent_id, display_name, template_id, provider_profile, model_tier, project_id, "api", agent_role)
+		agent_id_upsert(resolved_agent_id, display_name, template_id, provider_profile, model_tier, project_id, "api")
 	}
-	agent_record_id, _, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, provider_profile, project_id, "", model_tier, AGENT_IDENTITY_STATE_PROVISIONED, AGENT_SCOPE_DURABLE, agent_role)
+	agent_record_id, _, upsert_ok := agent_record_upsert(agent_instance_id, display_name, template_id, provider_profile, project_id, "", model_tier, AGENT_IDENTITY_STATE_PROVISIONED)
 	if !upsert_ok { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`); return }
 	rec := agent_instance_records[agent_record_index(agent_record_id)]
 	b := strings.builder_make()
@@ -810,7 +921,6 @@ agent_template_record_json :: proc(builder: ^strings.Builder, rec: Agent_Templat
 	strings.write_string(builder, `","description":"`); json_write_string(builder, rec.description)
 	strings.write_string(builder, `","persona":"`); json_write_string(builder, rec.persona)
 	strings.write_string(builder, `","instructions":"`); json_write_string(builder, rec.instructions)
-	strings.write_string(builder, `","role_hint":"`); json_write_string(builder, rec.role_hint)
 	strings.write_string(builder, `","parent_template_id":"`); json_write_string(builder, rec.parent_template_id)
 	strings.write_string(builder, `","default_provider_profile":"`); json_write_string(builder, rec.default_provider_profile)
 	strings.write_string(builder, `","bootstrap_defaults":"`); json_write_string(builder, rec.bootstrap_defaults)
@@ -914,8 +1024,6 @@ handle_agent_reorder :: proc(client: net.TCP_Socket, body: string) {
 			project_id = rec.project_id,
 			run_dir = rec.run_dir,
 			model_tier = rec.model_tier,
-			agent_scope = rec.agent_scope,
-			agent_role = rec.agent_role,
 			agent_kind = rec.agent_kind,
 			remote_peer_id = rec.remote_peer_id,
 			remote_origin_daemon_id = rec.remote_origin_daemon_id,
