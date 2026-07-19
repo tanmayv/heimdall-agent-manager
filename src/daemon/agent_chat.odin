@@ -5,6 +5,9 @@ import "core:strings"
 
 agent_chat_send_to_user :: proc(agent_instance_id, user_id, body: string, chain_id: string = "") -> (string, bool) {
 	if !valid_user_id(user_id) || body == "" do return "", false
+	if message_id, routed, ok := federation_user_chat_reply_to_origin(agent_instance_id, user_id, body, chain_id); routed {
+		return message_id, ok
+	}
 	message_id, ok := chat_append_agent_to_user_with_chain(user_id, agent_instance_id, body, chain_id)
 	if !ok || message_id == "" do return "", false
 	return message_id, true

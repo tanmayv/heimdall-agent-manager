@@ -19,6 +19,8 @@ FEDERATION_ENVELOPE_READ_RECEIPT :: "read_receipt"
 FEDERATION_ENVELOPE_TASK_COMMENT :: "comment"
 FEDERATION_ENVELOPE_TASK_VOTE :: "vote"
 FEDERATION_ENVELOPE_TASK_STATUS :: "status"
+FEDERATION_ENVELOPE_USER_CHAT_MESSAGE :: "user_chat_message"
+FEDERATION_ENVELOPE_USER_CHAT_REPLY :: "user_chat_reply"
 FEDERATION_ENVELOPE_DELIVERY_ACK :: "delivery_ack"
 FEDERATION_REPLAY_LIMIT :: 100
 FEDERATION_REPLAY_BACKOFF_MIN_MS :: i64(10 * 1000)
@@ -211,6 +213,97 @@ federation_forward_start :: proc(peer_id, remote_agent_instance_id, provider_pro
 		return false, 503, `{"ok":false,"message":"peer unreachable"}`
 	}
 	return resp.status == 200, resp.status, strings.clone(resp.body)
+}
+
+
+federation_user_chat_synthetic_user_id :: proc(origin_daemon_id, proxy_agent_instance_id, origin_user_id: string) -> string {
+	return fmt.tprintf("fed.%s.%s.%s", strings.trim_space(origin_daemon_id), strings.trim_space(proxy_agent_instance_id), strings.trim_space(origin_user_id))
+}
+
+federation_user_chat_parse_synthetic_user_id :: proc(user_id: string) -> (origin_daemon_id, proxy_agent_instance_id, origin_user_id: string, ok: bool) {
+	trimmed := strings.trim_space(user_id)
+	if !strings.has_prefix(trimmed, "fed.") do return "", "", "", false
+	rest := trimmed[len("fed."):]
+	first_dot := strings.index_byte(rest, '.')
+	if first_dot <= 0 do return "", "", "", false
+	origin := rest[:first_dot]
+	rest2 := rest[first_dot + 1:]
+	second_dot := strings.index_byte(rest2, '.')
+	if second_dot <= 0 do return "", "", "", false
+	proxy := rest2[:second_dot]
+	origin_user := rest2[second_dot + 1:]
+	if origin == "" || proxy == "" || origin_user == "" do return "", "", "", false
+	return strings.clone(origin), strings.clone(proxy), strings.clone(origin_user), true
+}
+
+federation_user_chat_message_json :: proc(idempotency_key, origin_message_id, origin_user_id, synthetic_user_id, target_agent_instance_id, proxy_agent_instance_id, body: string, interrupt: bool, created_unix_ms: i64) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"kind":"`); json_write_string(&b, FEDERATION_ENVELOPE_USER_CHAT_MESSAGE)
+	strings.write_string(&b, `","idempotency_key":"`); json_write_string(&b, idempotency_key)
+	strings.write_string(&b, `","origin_message_id":"`); json_write_string(&b, origin_message_id)
+	strings.write_string(&b, `","origin_daemon_id":"`); json_write_string(&b, server_daemon_id)
+	strings.write_string(&b, `","origin_user_id":"`); json_write_string(&b, origin_user_id)
+	strings.write_string(&b, `","synthetic_user_id":"`); json_write_string(&b, synthetic_user_id)
+	strings.write_string(&b, `","target_agent_instance_id":"`); json_write_string(&b, target_agent_instance_id)
+	strings.write_string(&b, `","proxy_agent_instance_id":"`); json_write_string(&b, proxy_agent_instance_id)
+	strings.write_string(&b, `","body":"`); json_write_string(&b, body)
+	strings.write_string(&b, `","interrupt":`); strings.write_string(&b, interrupt ? "true" : "false")
+	strings.write_string(&b, `,"created_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", created_unix_ms))
+	strings.write_string(&b, `}`)
+	return strings.to_string(b)
+}
+
+federation_user_chat_reply_json :: proc(idempotency_key, message_id, origin_user_id, proxy_agent_instance_id, from_agent_instance_id, body, chain_id: string, created_unix_ms: i64) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"kind":"`); json_write_string(&b, FEDERATION_ENVELOPE_USER_CHAT_REPLY)
+	strings.write_string(&b, `","idempotency_key":"`); json_write_string(&b, idempotency_key)
+	strings.write_string(&b, `","message_id":"`); json_write_string(&b, message_id)
+	strings.write_string(&b, `","origin_user_id":"`); json_write_string(&b, origin_user_id)
+	strings.write_string(&b, `","proxy_agent_instance_id":"`); json_write_string(&b, proxy_agent_instance_id)
+	strings.write_string(&b, `","from_agent_instance_id":"`); json_write_string(&b, from_agent_instance_id)
+	strings.write_string(&b, `","body":"`); json_write_string(&b, body)
+	strings.write_string(&b, `","chain_id":"`); json_write_string(&b, chain_id)
+	strings.write_string(&b, `","created_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", created_unix_ms))
+	strings.write_string(&b, `}`)
+	return strings.to_string(b)
+}
+
+federation_user_chat_send_to_remote_proxy :: proc(user_id, proxy_agent_instance_id, body: string, interrupt: bool) -> (message_id: string, fanout_count: int, ok: bool, status_code: int, message: string) {
+	peer_id, origin_daemon_id, remote_agent_instance_id, mapped := agent_remote_proxy_identity_lookup(proxy_agent_instance_id)
+	if !mapped do return "", 0, false, 404, "unknown remote proxy"
+	if origin_daemon_id == "" {
+		_, resolved_daemon_id, _, found := federation_direct_peer_lookup(peer_id, "")
+		if found do origin_daemon_id = resolved_daemon_id
+	}
+	if origin_daemon_id == "" do origin_daemon_id = peer_id
+	stored: bool
+	message_id, stored = chat_store_append_message(user_id, proxy_agent_instance_id, "user_to_agent", body, interrupt)
+	if !stored || message_id == "" do return "", 0, false, 500, "append chat failed"
+	fanout_count = chat_event_fanout(user_id, proxy_agent_instance_id, message_id, "user_to_agent")
+	created_unix_ms := chat_message_created(message_id)
+	if created_unix_ms == 0 do created_unix_ms = router_now_unix_ms()
+	idempotency_key := federation_idempotency_key("user_chat", server_daemon_id, message_id)
+	synthetic_user_id := federation_user_chat_synthetic_user_id(server_daemon_id, proxy_agent_instance_id, user_id)
+	payload := federation_user_chat_message_json(idempotency_key, message_id, user_id, synthetic_user_id, remote_agent_instance_id, proxy_agent_instance_id, body, interrupt, created_unix_ms)
+	_ = federation_delivery_outbox_insert_pending(peer_id, FEDERATION_ROUTE_INBOX, idempotency_key, payload)
+	accepted := bridge_send(origin_daemon_id, FEDERATION_ROUTE_INBOX, payload, idempotency_key)
+	_ = federation_delivery_outbox_mark_attempt(peer_id, FEDERATION_ROUTE_INBOX, idempotency_key, accepted)
+	if accepted do _ = chat_mark_delivered_and_fanout(user_id, proxy_agent_instance_id, message_id, "user_to_agent")
+	return message_id, fanout_count, true, 200, "ok"
+}
+
+federation_user_chat_reply_to_origin :: proc(agent_instance_id, user_id, body, chain_id: string) -> (message_id: string, routed: bool, ok: bool) {
+	origin_daemon_id, proxy_agent_instance_id, origin_user_id, parsed := federation_user_chat_parse_synthetic_user_id(user_id)
+	if !parsed do return "", false, false
+	stored: bool
+	message_id, stored = chat_store_append_message_with_chain(user_id, agent_instance_id, "agent_to_user", body, false, chain_id)
+	if !stored || message_id == "" do return "", true, false
+	created_unix_ms := chat_message_created(message_id)
+	if created_unix_ms == 0 do created_unix_ms = router_now_unix_ms()
+	idempotency_key := federation_idempotency_key("user_chat_reply", server_daemon_id, message_id)
+	payload := federation_user_chat_reply_json(idempotency_key, message_id, origin_user_id, proxy_agent_instance_id, agent_instance_id, body, chain_id, created_unix_ms)
+	accepted := bridge_send(origin_daemon_id, FEDERATION_ROUTE_CALLBACK, payload, idempotency_key)
+	return message_id, true, accepted
 }
 
 federation_delivery_outbox_insert_pending :: proc(peer_id, route_kind, idempotency_key, payload: string) -> bool {
@@ -1424,6 +1517,35 @@ handle_post_federation_inbox :: proc(client: net.TCP_Socket, body: string, ctx: 
 		})
 		_ = notified
 		write_response(client, 200, "OK", `{"ok":true,"accepted":true}`)
+	case FEDERATION_ENVELOPE_USER_CHAT_MESSAGE:
+		origin_user_id := extract_json_string(body, "origin_user_id", "")
+		synthetic_user_id := extract_json_string(body, "synthetic_user_id", "")
+		target_agent_instance_id := extract_json_string(body, "target_agent_instance_id", "")
+		message_body := extract_json_string(body, "body", "")
+		interrupt := extract_json_bool(body, "interrupt", false)
+		if origin_user_id == "" || target_agent_instance_id == "" || message_body == "" {
+			write_response(client, 400, "Bad Request", `{"ok":false,"message":"user chat target/body required"}`)
+			return
+		}
+		if synthetic_user_id == "" do synthetic_user_id = federation_user_chat_synthetic_user_id(peer_daemon_id, extract_json_string(body, "proxy_agent_instance_id", ""), origin_user_id)
+		if !valid_user_id(synthetic_user_id) || !valid_agent_instance_id(target_agent_instance_id) || agent_record_index_by_instance(target_agent_instance_id) < 0 {
+			write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid federated user chat target"}`)
+			return
+		}
+		message_id, stored := chat_store_append_message(synthetic_user_id, target_agent_instance_id, "user_to_agent", message_body, interrupt)
+		if !stored || message_id == "" {
+			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to append federated user chat"}`)
+			return
+		}
+		chat_event_fanout(synthetic_user_id, target_agent_instance_id, message_id, "user_to_agent")
+		if agent_chat_notify_user_message(target_agent_instance_id, synthetic_user_id, message_id) {
+			_ = chat_mark_delivered_and_fanout(synthetic_user_id, target_agent_instance_id, message_id, "user_to_agent")
+		}
+		if !federation_delivery_dedupe_record_completed(scope, idempotency_key) {
+			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to record user chat dedupe"}`)
+			return
+		}
+		write_response(client, 200, "OK", `{"ok":true,"accepted":true}`)
 	case:
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"unsupported federation inbox kind"}`)
 	}
@@ -1606,6 +1728,32 @@ handle_post_federation_callback :: proc(client: net.TCP_Socket, body: string, ct
 		})
 		if !federation_delivery_dedupe_record_completed(scope, idempotency_key) {
 			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to record callback dedupe"}`)
+			return
+		}
+		write_response(client, 200, "OK", `{"ok":true,"accepted":true}`)
+	case FEDERATION_ENVELOPE_USER_CHAT_REPLY:
+		origin_user_id := extract_json_string(body, "origin_user_id", "")
+		from_agent_instance_id := extract_json_string(body, "from_agent_instance_id", "")
+		message_body := extract_json_string(body, "body", "")
+		chain_id := extract_json_string(body, "chain_id", "")
+		callback_message_id := extract_json_string(body, "message_id", "")
+		if origin_user_id == "" || from_agent_instance_id == "" || message_body == "" || callback_message_id == "" || from_agent_instance_id != remote_agent_instance_id {
+			write_response(client, 403, "Forbidden", `{"ok":false,"message":"unauthorized remote user chat callback"}`)
+			return
+		}
+		scope := federation_delivery_dedupe_scope(FEDERATION_DEDUPE_SCOPE_CALLBACK, peer_id, kind)
+		if federation_delivery_dedupe_completed(scope, idempotency_key) {
+			write_response(client, 200, "OK", `{"ok":true,"deduped":true}`)
+			return
+		}
+		local_message_id, stored := chat_store_append_message_with_chain(origin_user_id, proxy_agent_instance_id, "agent_to_user", message_body, false, chain_id)
+		if !stored || local_message_id == "" {
+			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to append remote user chat reply"}`)
+			return
+		}
+		chat_event_fanout(origin_user_id, proxy_agent_instance_id, local_message_id, "agent_to_user", chain_id)
+		if !federation_delivery_dedupe_record_completed(scope, idempotency_key) {
+			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to record user chat callback dedupe"}`)
 			return
 		}
 		write_response(client, 200, "OK", `{"ok":true,"accepted":true}`)

@@ -74,7 +74,21 @@ handle_user_rpc_send_to_agent :: proc(client: net.TCP_Socket, body, user_id: str
 		write_task_service_response(client, proxy_result)
 		return
 	}
-	if !valid_agent_instance_id(agent_instance_id) || !registry_agent_exists(agent_instance_id) {
+	if !valid_agent_instance_id(agent_instance_id) {
+		fmt.printf("WARNING: send_to_agent failed: agent '%s' is invalid (requested by user '%s')\n", agent_instance_id, user_id)
+		write_response(client, 404, "Not Found", `{"ok":false,"message":"unknown agent"}`)
+		return
+	}
+	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 && agent_record_is_remote_proxy(agent_instance_records[idx]) {
+		message_id, fanout_count, routed, status_code, route_message := federation_user_chat_send_to_remote_proxy(user_id, agent_instance_id, message_body, is_interrupt)
+		if !routed {
+			write_response(client, status_code, federation_status_text(status_code), fmt.tprintf(`{"ok":false,"message":"%s"}`, route_message))
+			return
+		}
+		write_response(client, 200, "OK", chat_send_response_json(message_id, fanout_count))
+		return
+	}
+	if !registry_agent_exists(agent_instance_id) {
 		fmt.printf("WARNING: send_to_agent failed: agent '%s' is unknown or unregistered (requested by user '%s')\n", agent_instance_id, user_id)
 		write_response(client, 404, "Not Found", `{"ok":false,"message":"unknown agent"}`)
 		return
