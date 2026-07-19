@@ -17,10 +17,12 @@ def require(condition: bool, message: str):
 
 require("Peer_Config :: struct" in CONFIG, "config must define Peer_Config")
 require("federation_advertised_agent_instance_ids: []string" in CONFIG, "config must define explicit advertised-agent allowlist")
-require("if line == \"[[peer]]\"" in CONFIG, "config parser must recognize [[peer]] sections")
-require("parse_peer_key(current_peer_index, key, value, &cfg.daemon)" in CONFIG, "config parser must dispatch peer keys")
+require('if line == "[[peer]]"' in CONFIG, "config parser must still recognize [[peer]] sections for bridge config")
+require("parse_peer_key(current_peer_index, key, value, &cfg.bridge)" in CONFIG, "config parser must dispatch peer keys into cfg.bridge")
+require("parse_peer_key(current_peer_index, key, value, &cfg.daemon)" not in CONFIG, "static test must not require daemon-owned [[peer]] parsing")
 require('case "federation_advertised_agent_instance_ids":' in CONFIG, "config parser must parse advertised-agent allowlist")
-require("peer_link_store_init(server_data_dir, cfg.daemon.peers[:])" in SERVER, "server startup must hydrate peer links")
+require("peer_link_store_init(server_data_dir);" in SERVER, "server startup must initialize peer link store without daemon peer config injection")
+require("peer_link_store_init(server_data_dir, cfg.daemon.peers[:])" not in SERVER, "server must not hydrate peer links from cfg.daemon.peers in bridge v2")
 
 for snippet in [
     'ctx.segments[0] == "federation" && ctx.segments[1] == "agents"',
@@ -28,11 +30,12 @@ for snippet in [
     'ctx.segments[2] == "link"',
     'ctx.segments[2] == "reconnect"',
     'ctx.segments[2] == "remove"',
+    'ctx.segments[1] == "reachability"',
     'ctx.segments[3] == "agents"',
 ]:
     require(snippet in ROUTER, f"missing federation route snippet: {snippet}")
 
-match = re.search(r"federation_peer_record_json :: proc\(builder: \^strings\.Builder, rec: Peer_Link_Record\) \{(.*?)\n\}", FED, re.S)
+match = re.search(r"federation_peer_record_json :: proc\(builder: \^strings\.Builder, rec: Reachable_Daemon_Record\) \{(.*?)\n\}", FED, re.S)
 require(match is not None, "federation_peer_record_json function missing")
 require("peer_token" not in match.group(1), "peer list JSON must redact peer_token")
 require("federation_agent_is_advertised :: proc" in FED, "federation must gate results behind explicit advertisement allowlist")
@@ -41,9 +44,11 @@ require('peer_token := query_param_value(ctx.query, "peer_token")' in FED, "fede
 require('peer_daemon_id := query_param_value(ctx.query, "peer_daemon_id")' in FED, "federation agents endpoint must read caller daemon id from query")
 require("peer_link_validate_request(peer_token, peer_daemon_id)" in FED, "federation agents endpoint must validate configured peer + token")
 require('peer not configured or token mismatch' in FED, "federation endpoint must reject unknown peers")
-require('/federation/agents?peer_token=%s&peer_daemon_id=%s' in FED, "peer agent fetches must include caller daemon id")
 require("rest_authorize_user(client, ctx)" in FED, "peer management endpoints must require user/operator auth")
 require("federation_advertised_agents_json()" in FED, "federation agents endpoint must serve advertised agents")
 require('"origin_daemon_id":"' in FED and '"native_id":"' in FED, "advertised agents JSON must expose absolute origin/native identity")
+require('peer link endpoint moved to ham-bridge config' in FED, "legacy link endpoint must clearly point callers to ham-bridge config")
+require('peer reconnect moved to ham-bridge websocket dialer' in FED, "legacy reconnect endpoint must clearly point callers to ham-bridge dialer")
+require('peer removal moved to ham-bridge config' in FED, "legacy remove endpoint must clearly point callers to ham-bridge config")
 
 print("federation_peer_backend_static: ok")

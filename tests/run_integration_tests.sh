@@ -68,6 +68,8 @@ echo "[*] Running tasks smoke test..."
 export HEIMDALL_HOME="$TEMP_HOME"
 export HAM_CTL_BIN="$REPO_DIR/result-ctl/bin/ham-ctl"
 export DAEMON_URL="http://127.0.0.1:49325"
+export HEIMDALL_DAEMON_BIN="$REPO_DIR/result-daemon/bin/ham-daemon"
+export HEIMDALL_BRIDGE_BIN="$REPO_DIR/result-bridge/bin/ham-bridge"
 
 # Run tests/test_tasks.sh
 if ! bash "$SCRIPT_DIR/test_tasks.sh" > "$TEMP_HOME/test_tasks.log" 2>&1; then
@@ -228,6 +230,24 @@ echo "[*] Running wrapper run directory timestamp suffix integration test..."
 if ! python3 "$SCRIPT_DIR/test_wrapper_timestamp_run_dir.py" > "$TEMP_HOME/test_wrapper_timestamp_run_dir.log" 2>&1; then
   echo "[-] Error: test_wrapper_timestamp_run_dir.py failed! Full test logs:"
   cat "$TEMP_HOME/test_wrapper_timestamp_run_dir.log" || true
+  echo "[-] Daemon logs:"
+  cat "$TEMP_HOME/daemon.log" || true
+  exit 1
+fi
+
+echo "[*] Running bridge federation two-homes integration test..."
+if ! python3 "$SCRIPT_DIR/test_bridge_federation_two_homes_e2e.py" > "$TEMP_HOME/test_bridge_federation_two_homes_e2e.log" 2>&1; then
+  echo "[-] Error: test_bridge_federation_two_homes_e2e.py failed! Full test logs:"
+  cat "$TEMP_HOME/test_bridge_federation_two_homes_e2e.log" || true
+  echo "[-] Daemon logs:"
+  cat "$TEMP_HOME/daemon.log" || true
+  exit 1
+fi
+
+echo "[*] Running bridge federation disconnect/recovery integration test..."
+if ! python3 "$SCRIPT_DIR/test_bridge_federation_disconnect_recovery_e2e.py" > "$TEMP_HOME/test_bridge_federation_disconnect_recovery_e2e.log" 2>&1; then
+  echo "[-] Error: test_bridge_federation_disconnect_recovery_e2e.py failed! Full test logs:"
+  cat "$TEMP_HOME/test_bridge_federation_disconnect_recovery_e2e.log" || true
   echo "[-] Daemon logs:"
   cat "$TEMP_HOME/daemon.log" || true
   exit 1

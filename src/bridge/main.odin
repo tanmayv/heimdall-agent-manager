@@ -255,6 +255,17 @@ bridge_peer_ws_url :: proc(endpoint: string) -> string {
 	return strings.clone(trimmed)
 }
 
+bridge_should_dial_peer :: proc(peer_name: string) -> bool {
+	self_daemon_id := strings.trim_space(bridge_config.daemon_id)
+	peer_daemon_id := strings.trim_space(peer_name)
+	if self_daemon_id == "" || peer_daemon_id == "" do return true
+	// CLI-only peers do not carry a stable remote daemon id, so keep legacy
+	// behavior and allow the local bridge to dial them.
+	if strings.has_prefix(peer_daemon_id, "cli-peer-") do return true
+	if self_daemon_id == peer_daemon_id do return false
+	return strings.compare(self_daemon_id, peer_daemon_id) < 0
+}
+
 run_bridge_server :: proc(cfg: Bridge_Config) -> bool {
 	address := net.IP4_Loopback
 	if cfg.bind_host != "127.0.0.1" {
@@ -658,6 +669,15 @@ bridge_reachability_update_json :: proc() -> string {
 	return bridge_reachable_json_with_change(true)
 }
 
+bridge_peer_state_refresh_last_seen_for_linked_locked :: proc() {
+	now := bridge_now_unix_ms()
+	for i in 0..<len(bridge_peer_states) {
+		if bridge_peer_states[i].status != .Linked do continue
+		if bridge_peer_states[i].last_seen_unix_ms >= now do now = bridge_peer_states[i].last_seen_unix_ms + 1
+		bridge_peer_states[i].last_seen_unix_ms = now
+	}
+}
+
 bridge_reachable_json_with_change :: proc(include_changed: bool) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"contract_version":`)
@@ -665,7 +685,9 @@ bridge_reachable_json_with_change :: proc(include_changed: bool) -> string {
 	strings.write_string(&b, `,"self_daemon_id":"`); json_write_string(&b, bridge_config.daemon_id)
 	strings.write_string(&b, `","reachable":[`)
 	sync.mutex_lock(&bridge_state_mutex)
-	for state, i in bridge_peer_states {
+	bridge_peer_state_refresh_last_seen_for_linked_locked()
+	for i in 0..<len(bridge_peer_states) {
+		state := bridge_peer_states[i]
 		if i > 0 do strings.write_string(&b, `,`)
 		strings.write_string(&b, `{"daemon_id":"`); json_write_string(&b, string(state.daemon_id))
 		strings.write_string(&b, `","reach":"direct","next_hop_daemon_id":"`); json_write_string(&b, string(state.daemon_id))
@@ -1119,6 +1141,11 @@ bridge_dialer_worker :: proc() {
 	for {
 		for peer in bridge_config.peers {
 			peer_name := strings.trim_space(peer.name)
+			if !bridge_should_dial_peer(peer_name) {
+				bridge_peer_state_set(peer_name, .Unreachable, "deterministic_acceptor")
+				fmt.println("bridge ws dial skipped deterministic_acceptor", peer_name, "self", bridge_config.daemon_id)
+				continue
+			}
 			peer_url := bridge_peer_ws_url(peer.endpoint)
 			peer_token := strings.trim_space(peer.token)
 			if peer_token == "" do peer_token = strings.trim_space(bridge_config.peer_auth_token)

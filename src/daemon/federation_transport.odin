@@ -21,6 +21,9 @@ FEDERATION_ENVELOPE_TASK_VOTE :: "vote"
 FEDERATION_ENVELOPE_TASK_STATUS :: "status"
 FEDERATION_ENVELOPE_DELIVERY_ACK :: "delivery_ack"
 FEDERATION_REPLAY_LIMIT :: 100
+FEDERATION_REPLAY_BACKOFF_MIN_MS :: i64(10 * 1000)
+FEDERATION_REPLAY_BACKOFF_MAX_MS :: i64(5 * 60 * 1000)
+FEDERATION_REPLAY_STUCK_ATTEMPTS :: 6
 
 Federation_Remote_Message_Record :: struct {
 	record_key: string,
@@ -266,11 +269,37 @@ federation_delivery_outbox_pending_exists :: proc(peer_id, route_kind, idempoten
 	return sqlite3_step(stmt) == SQLITE_ROW
 }
 
+federation_delivery_outbox_retry_backoff_ms :: proc(attempts: int) -> i64 {
+	if attempts <= 0 do return 0
+	backoff_ms := FEDERATION_REPLAY_BACKOFF_MIN_MS
+	for _ in 1..<attempts {
+		if backoff_ms >= FEDERATION_REPLAY_BACKOFF_MAX_MS do return FEDERATION_REPLAY_BACKOFF_MAX_MS
+		backoff_ms *= 2
+		if backoff_ms > FEDERATION_REPLAY_BACKOFF_MAX_MS do backoff_ms = FEDERATION_REPLAY_BACKOFF_MAX_MS
+	}
+	return backoff_ms
+}
+
+federation_delivery_outbox_retry_eligible :: proc(attempts: int, last_attempt_unix_ms, now_unix_ms: i64) -> bool {
+	if attempts <= 0 || last_attempt_unix_ms <= 0 do return true
+	return now_unix_ms - last_attempt_unix_ms >= federation_delivery_outbox_retry_backoff_ms(attempts)
+}
+
+federation_delivery_outbox_log_stuck :: proc(peer_id, route_kind, idempotency_key: string, attempts: int, created_unix_ms, last_attempt_unix_ms, now_unix_ms, backoff_ms: i64) {
+	age_ms := now_unix_ms - created_unix_ms
+	fmt.printfln("FEDERATION_OUTBOX_STUCK ts_unix_ms=%d peer_id=%s route_kind=%s idempotency_key=%s attempts=%d age_ms=%d last_attempt_unix_ms=%d backoff_ms=%d", now_unix_ms, peer_id, route_kind, idempotency_key, attempts, age_ms, last_attempt_unix_ms, backoff_ms)
+}
+
 federation_delivery_outbox_replay_peer :: proc(peer_id: string) -> int {
 	if peer_id == "" || !task_db_ready do return 0
+	_, dest_daemon_id, status, ok := federation_direct_peer_lookup_cached(peer_id, "")
+	if !ok || status != PEER_STATUS_LINKED || dest_daemon_id == "" do return 0
 	route_kinds := make([dynamic]string)
 	idempotency_keys := make([dynamic]string)
 	payloads := make([dynamic]string)
+	created_unix_ms := make([dynamic]i64)
+	attempts := make([dynamic]int)
+	last_attempt_unix_ms := make([dynamic]i64)
 	defer {
 		for v in route_kinds do delete(v)
 		for v in idempotency_keys do delete(v)
@@ -278,9 +307,12 @@ federation_delivery_outbox_replay_peer :: proc(peer_id: string) -> int {
 		delete(route_kinds)
 		delete(idempotency_keys)
 		delete(payloads)
+		delete(created_unix_ms)
+		delete(attempts)
+		delete(last_attempt_unix_ms)
 	}
 	stmt: sqlite3_stmt = nil
-	query := `SELECT route_kind, idempotency_key, payload
+	query := `SELECT route_kind, idempotency_key, payload, created_unix_ms, attempts, last_attempt_unix_ms
 		FROM federation_delivery_outbox
 		WHERE peer_id = ? AND delivered_unix_ms = 0
 		ORDER BY created_unix_ms ASC, idempotency_key ASC
@@ -294,16 +326,58 @@ federation_delivery_outbox_replay_peer :: proc(peer_id: string) -> int {
 		append(&route_kinds, strings.clone_from_cstring(sqlite3_column_text(stmt, 0)))
 		append(&idempotency_keys, strings.clone_from_cstring(sqlite3_column_text(stmt, 1)))
 		append(&payloads, strings.clone_from_cstring(sqlite3_column_text(stmt, 2)))
+		append(&created_unix_ms, sqlite3_column_int64(stmt, 3))
+		append(&attempts, int(sqlite3_column_int64(stmt, 4)))
+		append(&last_attempt_unix_ms, sqlite3_column_int64(stmt, 5))
 	}
 	accepted_count := 0
 	for i in 0..<len(route_kinds) {
-		accepted := federation_forward_transport_accepted(peer_id, route_kinds[i], payloads[i], idempotency_keys[i])
+		now := router_now_unix_ms()
+		if !federation_delivery_outbox_retry_eligible(attempts[i], last_attempt_unix_ms[i], now) do continue
+		accepted := bridge_send(dest_daemon_id, route_kinds[i], payloads[i], idempotency_keys[i])
 		// Bridge accepted/queued is not durable delivery; delivery_ack marks delivered.
 		_ = federation_delivery_outbox_mark_attempt(peer_id, route_kinds[i], idempotency_keys[i], false)
-		if !accepted do break
+		if !accepted {
+			next_attempts := attempts[i] + 1
+			if next_attempts >= FEDERATION_REPLAY_STUCK_ATTEMPTS {
+				federation_delivery_outbox_log_stuck(peer_id, route_kinds[i], idempotency_keys[i], next_attempts, created_unix_ms[i], now, now, federation_delivery_outbox_retry_backoff_ms(next_attempts))
+				continue
+			}
+			break
+		}
 		accepted_count += 1
 	}
 	return accepted_count
+}
+
+// federation_delivery_outbox_replay_all_pending drains every peer that still has an
+// undelivered outbox entry, regardless of the daemon's live reachability projection.
+// federation_forward_transport_accepted is itself a no-op for peers that are not
+// currently linked, so this is a cheap, self-limiting safety net that guarantees
+// eventual consistency even when a callback was queued during a transient link bounce
+// and no unreachable->linked transition fires afterwards.
+federation_delivery_outbox_replay_all_pending :: proc() -> int {
+	if !task_db_ready do return 0
+	peer_ids := make([dynamic]string)
+	defer {
+		for v in peer_ids do delete(v)
+		delete(peer_ids)
+	}
+	stmt: sqlite3_stmt = nil
+	query := `SELECT DISTINCT peer_id FROM federation_delivery_outbox WHERE delivered_unix_ms = 0`
+	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK do return 0
+	for sqlite3_step(stmt) == SQLITE_ROW {
+		append(&peer_ids, strings.clone_from_cstring(sqlite3_column_text(stmt, 0)))
+	}
+	sqlite3_finalize(stmt)
+	accepted := 0
+	for pid in peer_ids {
+		if pid == "" do continue
+		accepted += federation_delivery_outbox_replay_peer(pid)
+		_ = peer_link_replay_remote_notifications(pid)
+	}
+	return accepted
 }
 
 federation_delivery_dedupe_scope :: proc(scope_kind, peer_id, kind: string) -> string {

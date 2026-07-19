@@ -51,6 +51,7 @@ peer_link_store_sequence: i64
 peer_link_store_dir: string
 peer_link_events_path: string
 peer_link_poll_started: bool
+peer_link_poll_sleep_duration: time.Duration
 
 Reachable_Daemon_Record :: struct {
 	daemon_id: string,
@@ -89,13 +90,35 @@ peer_link_store_init :: proc(data_dir: string) {
 peer_link_poll_start :: proc() {
 	if peer_link_poll_started do return
 	peer_link_poll_started = true
+	peer_link_poll_sleep_duration = peer_link_poll_interval()
 	thread.run(peer_link_poll_worker)
+}
+
+FEDERATION_POLL_INTERVAL_DEFAULT_SECONDS :: 10
+FEDERATION_POLL_INTERVAL_MIN_SECONDS :: 5
+FEDERATION_POLL_INTERVAL_MAX_SECONDS :: 300
+
+peer_link_poll_interval :: proc() -> time.Duration {
+	interval_seconds := server_config.daemon.federation_poll_interval_seconds
+	if interval_seconds <= 0 {
+		fmt.printfln("FEDERATION_POLL_INTERVAL_INVALID ts_unix_ms=%d configured_seconds=%d effective_seconds=%d", router_now_unix_ms(), interval_seconds, FEDERATION_POLL_INTERVAL_DEFAULT_SECONDS)
+		interval_seconds = FEDERATION_POLL_INTERVAL_DEFAULT_SECONDS
+	}
+	if interval_seconds < FEDERATION_POLL_INTERVAL_MIN_SECONDS {
+		fmt.printfln("FEDERATION_POLL_INTERVAL_CLAMP ts_unix_ms=%d configured_seconds=%d effective_seconds=%d", router_now_unix_ms(), interval_seconds, FEDERATION_POLL_INTERVAL_MIN_SECONDS)
+		interval_seconds = FEDERATION_POLL_INTERVAL_MIN_SECONDS
+	}
+	if interval_seconds > FEDERATION_POLL_INTERVAL_MAX_SECONDS {
+		fmt.printfln("FEDERATION_POLL_INTERVAL_CLAMP ts_unix_ms=%d configured_seconds=%d effective_seconds=%d", router_now_unix_ms(), interval_seconds, FEDERATION_POLL_INTERVAL_MAX_SECONDS)
+		interval_seconds = FEDERATION_POLL_INTERVAL_MAX_SECONDS
+	}
+	return time.Duration(interval_seconds) * time.Second
 }
 
 peer_link_poll_worker :: proc() {
 	for {
 		peer_link_probe_all()
-		time.sleep(30 * time.Second)
+		time.sleep(peer_link_poll_sleep_duration)
 	}
 }
 
@@ -105,6 +128,17 @@ peer_link_probe_all :: proc() {
 		if peer_link_records[i].removed_at_unix_ms != 0 do continue
 		peer_link_probe(peer_link_records[i].peer_id)
 	}
+	// Periodic safety-net replay for durable federation outboxes.
+	//
+	// Transition-driven replay (reachable_daemon_apply_entry_locked) only fires on an
+	// unreachable->linked flip or a last_seen change. In bridge mode the daemon's
+	// peer_link_records are empty (peers live in bridge config), and the bridge only
+	// advances last_seen on session connect/disconnect -- so a callback that landed in
+	// the outbox undelivered while the link was briefly bounced (e.g. the startup
+	// dual-dial race) would otherwise sit forever while the link stays continuously
+	// linked. Draining pending entries for every currently-linked daemon each poll gives
+	// true eventual consistency without depending on a status edge.
+	_ = federation_delivery_outbox_replay_all_pending()
 }
 
 peer_link_append_event :: proc(event: Peer_Link_Event) -> bool {
@@ -355,11 +389,10 @@ reachable_daemon_hydrate_from_bridge :: proc() -> bool {
 	return true
 }
 
-federation_direct_peer_lookup :: proc(peer_id, origin_daemon_id: string) -> (resolved_peer_id: string, daemon_id: string, status: string, found: bool) {
+federation_direct_peer_lookup_cached :: proc(peer_id, origin_daemon_id: string) -> (resolved_peer_id: string, daemon_id: string, status: string, found: bool) {
 	trimmed_peer_id := strings.trim_space(peer_id)
 	trimmed_origin := strings.trim_space(origin_daemon_id)
 	if bridge_client_enabled() {
-		_ = reachable_daemon_hydrate_from_bridge()
 		sync.mutex_lock(&reachable_daemon_mutex)
 		// Origin daemon id is the scoped authority when supplied. If both peer_id
 		// and origin are supplied, require them to identify the same projected direct
@@ -411,6 +444,13 @@ federation_direct_peer_lookup :: proc(peer_id, origin_daemon_id: string) -> (res
 		}
 	}
 	return "", "", "", false
+}
+
+federation_direct_peer_lookup :: proc(peer_id, origin_daemon_id: string) -> (resolved_peer_id: string, daemon_id: string, status: string, found: bool) {
+	if bridge_client_enabled() {
+		_ = reachable_daemon_hydrate_from_bridge()
+	}
+	return federation_direct_peer_lookup_cached(peer_id, origin_daemon_id)
 }
 
 federation_reachability_emit_event :: proc(changed_ids_json: string, changed_count: int) {

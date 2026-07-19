@@ -83,6 +83,7 @@ Daemon_Config :: struct {
 	artifact_blob_dir: string,
 	bridge_url: string,
 	bridge_token: string,
+	federation_poll_interval_seconds: int,
 	federation_advertised_agent_instance_ids: []string,
 }
 
@@ -450,6 +451,8 @@ parse_daemon_key :: proc(key, value: string, cfg: ^Daemon_Config) {
 		cfg.bridge_url = parse_string(value)
 	case "bridge_token":
 		cfg.bridge_token = parse_string(value)
+	case "federation_poll_interval_seconds":
+		if n, ok := strconv.parse_int(value); ok do cfg.federation_poll_interval_seconds = int(n)
 	case "federation_advertised_agent_instance_ids":
 		cfg.federation_advertised_agent_instance_ids = parse_string_array(value)
 	case:
@@ -782,6 +785,7 @@ default_config :: proc() -> Config {
 	cfg.daemon.artifact_blob_dir = ""
 	cfg.daemon.bridge_url = ""
 	cfg.daemon.bridge_token = ""
+	cfg.daemon.federation_poll_interval_seconds = 10
 	cfg.daemon.federation_advertised_agent_instance_ids = nil
 	cfg.bridge.peers = make([dynamic]Peer_Config)
 

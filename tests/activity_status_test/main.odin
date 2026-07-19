@@ -74,10 +74,10 @@ name = "studio-mini"
 endpoint = "http://studio-mini.local:49322/"
 token = "peer-secret"
 `, &cfg)
-	check(len(cfg.daemon.peers) == 1, "expected one parsed peer")
-	check(cfg.daemon.peers[0].name == "studio-mini", "peer name did not parse")
-	check(cfg.daemon.peers[0].endpoint == "http://studio-mini.local:49322/", "peer endpoint did not parse")
-	check(cfg.daemon.peers[0].token == "peer-secret", "peer token did not parse")
+	check(len(cfg.bridge.peers) == 1, "expected one parsed peer")
+	check(cfg.bridge.peers[0].name == "studio-mini", "peer name did not parse")
+	check(cfg.bridge.peers[0].endpoint == "http://studio-mini.local:49322/", "peer endpoint did not parse")
+	check(cfg.bridge.peers[0].token == "peer-secret", "peer token did not parse")
 	check(len(cfg.daemon.federation_advertised_agent_instance_ids) == 2, "expected advertised agent allowlist to parse")
 	check(cfg.daemon.federation_advertised_agent_instance_ids[0] == "reviewer@s-1", "first advertised agent id did not parse")
 	check(cfg.daemon.federation_advertised_agent_instance_ids[1] == "coder@s-2", "second advertised agent id did not parse")
