@@ -286,6 +286,8 @@ let
     { bind_host = d.bindHost; port = d.port; data_dir = d.dataDir;
       wrapper_bin = "${wrapperPkg}/bin/ham-wrapper"; }
     // lib.optionalAttrs (d.daemonId != null) { daemon_id = d.daemonId; }
+    // lib.optionalAttrs (d.bridgeUrl != null) { bridge_url = d.bridgeUrl; }
+    // lib.optionalAttrs (d.bridgeToken != null) { bridge_token = d.bridgeToken; }
     // lib.optionalAttrs (d.defaultAgentProviderProfile != null) { default_agent_provider_profile = d.defaultAgentProviderProfile; }
     // lib.optionalAttrs (d.defaultAgentModelTier != null) { default_agent_model_tier = d.defaultAgentModelTier; }
     // lib.optionalAttrs (d.startupStaleAfterSeconds != null)           { startup_stale_after_seconds          = d.startupStaleAfterSeconds; }
@@ -430,6 +432,18 @@ in
           a standalone daemon (falls back to the built-in "local-daemon"); set a
           distinct value on every daemon that participates in a peer mesh.
         '';
+      };
+      bridgeUrl = lib.mkOption {
+        type        = lib.types.nullOr lib.types.str;
+        default     = null;
+        example     = "http://127.0.0.1:49324";
+        description = "Local ham-bridge loopback URL emitted as `[daemon].bridge_url`. Null = bridge disabled.";
+      };
+      bridgeToken = lib.mkOption {
+        type        = lib.types.nullOr lib.types.str;
+        default     = null;
+        example     = "br_loopback_secret";
+        description = "Local ham-bridge loopback bearer token emitted as `[daemon].bridge_token`.";
       };
       defaultAgentProviderProfile = lib.mkOption {
         type        = lib.types.nullOr lib.types.str;
