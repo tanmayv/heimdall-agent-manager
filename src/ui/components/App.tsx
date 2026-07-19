@@ -55,7 +55,12 @@ import ChatHoverCopyButton from './ChatHoverCopyButton';
 import { navigateBackOr, updateUrlParams, useUrlParams } from './useUrlParams';
 import { VimSidebarProvider, VimEditButton } from './VimSidebar';
 import AgentPicker from './AgentPicker';
-import RuntimeRestartControls from './RuntimeRestartControls';
+import ChatHeader from './chat/ChatHeader';
+import ChatComposer from './chat/ChatComposer';
+import ChatMessageList from './chat/ChatMessageList';
+import ChatSidebar from './chat/ChatSidebar';
+import ChatWorkBanner from './chat/ChatWorkBanner';
+import { agentDetailChatDebug, chainCoordinatorChatDebug, conversationChatDebug } from './chat/debugPrefixes';
 import * as daemonApi from '../api/daemonApi';
 import { selectTaskCacheProjection } from '../api/taskCache';
 import { selectChainViewCacheProjection } from '../api/chainViewCache';
@@ -1661,6 +1666,8 @@ export default function App() {
               agents={agents}
               agentIdentities={agentIdentities}
               chainView={chainView}
+              projects={projects}
+              providers={settingsProviders}
               taskLogsByTaskId={selectedTaskLogsByTaskId}
               taskLogCursorByTaskId={selectedTaskLogCursorByTaskId}
               taskLogHasMoreByTaskId={selectedTaskLogHasMoreByTaskId}
@@ -2035,43 +2042,8 @@ export function agentHasLiveSession(agent: any): boolean {
   return false;
 }
 
-function agentWorkingBannerState(agent: any): 'working' | 'stopped' | '' {
-  if (!agent?.id && !agent?.agent_instance_id && !agent?.agentInstanceId) return '';
-  const live = agentHasLiveSession(agent);
-  const activity = String(agent.activityStatus || agent.activity_status || '').toLowerCase();
-  const status = String(agent.status || '').toLowerCase();
-  const state = String(agent.state || '').toLowerCase();
-  const startup = String(agent.startupStatus || agent.startup_status || '').toLowerCase();
-  if (!live || startup === 'stopped' || status === 'offline' || status === 'stopped' || state === 'stopped') return 'stopped';
-  if (activity === 'idle' || status === 'idle' || state === 'idle') return '';
-  if (activity === 'active' || agent.currentTaskId || agent.current_task_id || status === 'active' || status === 'working' || state === 'working') return 'working';
-  return '';
-}
-
-function agentCurrentTaskLabel(agent: any, tasksById: Record<string, any> = {}): string {
-  const taskId = String(agent?.currentTaskId || agent?.current_task_id || '');
-  if (!taskId) return '';
-  const task = tasksById?.[taskId];
-  return task?.title ? `Task: ${task.title}` : `Task: ${taskId}`;
-}
-
 function ChatRuntimeBanner({ agent, tasksById = {}, debugPrefix, onStart, startDisabled = false }: { agent: any; tasksById?: Record<string, any>; debugPrefix: string; onStart?: () => void; startDisabled?: boolean }) {
-  const mode = agentWorkingBannerState(agent);
-  if (!mode) return null;
-  const label = agent?.label || agent?.displayName || agent?.id || 'Agent';
-  const taskLabel = mode === 'working' ? agentCurrentTaskLabel(agent, tasksById) : '';
-  return (
-    <div data-debug-id={`${debugPrefix}-status-banner`} className="mb-2 flex items-center gap-2 rounded-[14px] border border-white/10 bg-[#101010] px-3 py-2 text-[12px] text-zinc-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.035)]">
-      <span className={`h-2 w-2 shrink-0 rounded-full ${mode === 'working' ? 'animate-pulse bg-zinc-300' : 'bg-zinc-600'}`} />
-      <div className="min-w-0 flex-1">
-        <div className="truncate font-medium text-zinc-200">{label} is {mode}</div>
-        {taskLabel ? <div className="mt-0.5 truncate text-[11px] text-zinc-500">{taskLabel}</div> : null}
-      </div>
-      {mode === 'stopped' && onStart ? (
-        <button data-debug-id={`${debugPrefix}-status-start-btn`} type="button" onClick={onStart} disabled={startDisabled} className="rounded-full border border-white/15 bg-zinc-200 px-2.5 py-1 text-[11px] font-semibold text-zinc-950 hover:bg-white disabled:cursor-not-allowed disabled:opacity-50">Start</button>
-      ) : null}
-    </div>
-  );
+  return <ChatWorkBanner agent={agent} tasksById={tasksById} debugPrefix={debugPrefix} onStart={onStart} startDisabled={startDisabled} />;
 }
 
 const LAUNCH_AGENT_DEFAULTS_KEY = 'heimdall.ui.launchAgentDefaultsByDaemon';
@@ -2765,6 +2737,57 @@ function agentTaskRelation(agentId: string, task: any) {
   return 'Participant';
 }
 
+function AgentChatSidebarContent({ agent, tasksById, chainsById, onOpenChain }: any) {
+  const currentTaskId = String(agent?.currentTaskId || agent?.current_task_id || '');
+  const currentTask = currentTaskId ? tasksById?.[currentTaskId] : null;
+  const buckets = agentTaskBuckets(agent?.id || '', tasksById || {});
+  const chainId = currentTask?.chainId || buckets.pending[0]?.chainId || buckets.completed[0]?.chainId || '';
+  const chain = chainId ? chainsById?.[chainId] : null;
+  const chainTasks = useMemo(() => dependencyOrderedTasks(Object.values(tasksById || {}).filter((task: any) => task?.chainId === chainId), tasksById || {}), [chainId, tasksById]);
+  const progress = useMemo(() => buildChainProgress(chainId, { [chainId]: chainTasks.map((task: any) => task.taskId).filter(Boolean) }, tasksById || {}), [chainId, chainTasks, tasksById]);
+  const activeTasks = chainTasks.filter((task: any) => !isCompletedTask(task));
+  const completedTasks = chainTasks.filter((task: any) => isCompletedTask(task));
+
+  if (!chainId || !chain) {
+    return <div data-debug-id="agent-detail-chat-chain-empty" className="px-[18px] py-4 text-sm text-zinc-500">No active task chain is associated with this agent yet.</div>;
+  }
+
+  return (
+    <div className="px-[18px] py-4">
+      <ChainProgressPanel chain={chain} progress={progress} />
+      <div data-debug-id="agent-detail-chat-chain-summary" className="mt-5 flex items-start justify-between gap-3">
+        <div>
+          <h2 className="text-[14px] font-semibold text-zinc-100">Task chain plan</h2>
+          <p className="mt-1 text-[11.5px] text-zinc-500">Dependency ordered for {chain.title || chainId}.</p>
+        </div>
+        <button data-debug-id="agent-detail-chat-chain-open-btn" onClick={() => onOpenChain?.(chainId)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-300 hover:text-zinc-100">Open chain</button>
+      </div>
+      <div data-debug-id="agent-detail-chat-sidebar-tasks" className="mt-4 space-y-2">
+        {activeTasks.map((task: any, index: number) => {
+          const current = currentTaskId === task.taskId;
+          const perceived = perceivedTaskStatus(task, tasksById || {});
+          return (
+            <div key={task.taskId} data-debug-id={`agent-detail-chat-sidebar-task-${task.taskId}`} className={`rounded-2xl border px-4 py-3 ${current ? 'border-sky-400/30 bg-sky-400/[0.06]' : 'border-white/8 bg-white/[0.04]'}`}>
+              <div className="flex items-center gap-2 text-sm">
+                <span className="w-7 shrink-0 font-mono text-xs text-zinc-600">{index + 1}.</span>
+                <div className="min-w-0 flex-1 truncate font-medium text-zinc-100">{task.title || task.taskId}</div>
+                <span className={`shrink-0 rounded-full border px-2 py-0.5 text-[11px] ${perceived.tone}`}>{perceived.label}</span>
+              </div>
+              <div className="mt-2 ml-7 text-[11px] text-zinc-500">{task.assigneeAgentInstanceId || 'unassigned'}{current ? ' · current' : ''}</div>
+            </div>
+          );
+        })}
+        {completedTasks.length > 0 ? <div className="pt-2 text-[10px] uppercase tracking-[0.18em] text-zinc-600">Completed</div> : null}
+        {completedTasks.slice(0, 5).map((task: any) => (
+          <div key={`done-${task.taskId}`} data-debug-id={`agent-detail-chat-sidebar-task-${task.taskId}`} className="rounded-2xl border border-white/5 bg-white/[0.025] px-4 py-3 opacity-70">
+            <div className="truncate text-sm text-zinc-400 line-through decoration-zinc-600">{task.title || task.taskId}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function AgentTaskCard({ task, chainsById, agentId, index, completed, onOpenChain }: any) {
   const chain = chainsById?.[task.chainId] || {};
   const perceived = perceivedTaskStatus(task, {});
@@ -3210,68 +3233,83 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
         <div data-debug-id="agent-detail-runtime" className="rounded-2xl border border-white/10 bg-white/[0.035] p-4"><div className="text-xs uppercase tracking-wide text-zinc-500">Runtime</div><div className="mt-1 flex items-center gap-2 text-sm text-zinc-100"><span className={`h-2 w-2 rounded-full ${runtime.color}`} />{runtime.label}</div></div>
       </div>
 
-      <section data-debug-id="agent-detail-chat" className="mt-6 flex h-[62vh] max-h-[720px] min-h-[420px] flex-col overflow-hidden rounded-3xl border border-white/10 bg-[#090909] p-5">
-        <div className="mb-3 flex shrink-0 items-center justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-semibold text-zinc-100">Chat</h2>
-            <p className="mt-1 text-sm text-zinc-500">Direct agent messages. Attach artifacts or paste screenshots into the composer.</p>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <button type="button" data-debug-id="agent-detail-chat-artifacts-toggle-btn" onClick={() => setArtifactsOpen((current) => !current)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1.5 text-[11.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">{artifactsOpen ? 'Hide artifacts' : 'Artifacts'}</button>
-            <button type="button" data-debug-id="agent-detail-refresh-chat-btn" onClick={() => agent?.id && onRefreshChat?.(agent.id)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1.5 text-[11.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">Refresh</button>
-            <button type="button" data-debug-id="agent-detail-nudge-btn" onClick={() => submit(true)} disabled={!agent?.id || sending || !draft.trim()} className="rounded-full border border-amber-400/25 bg-amber-400/10 px-3 py-1.5 text-[11.5px] text-amber-100 hover:bg-amber-400/20 disabled:cursor-not-allowed disabled:opacity-50">⚡ Nudge</button>
-          </div>
-        </div>
-        <div className="flex min-h-0 flex-1 overflow-hidden rounded-[18px]">
-          <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-            <CoordinatorMessageList chainId={agent?.id || 'agent-detail'} messages={messages} onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))} debugPrefix="agent-detail-chat" emptyText="No direct messages loaded for this agent." hasMore={Boolean(chatPagination.hasMore)} loadingOlder={Boolean(chatPagination.loading)} onLoadOlder={chatPagination.onLoadOlder} />
-          </div>
-          {artifactsOpen ? (
-            <ChatArtifactsSidePanel
-              debugPrefix="agent-detail-chat"
-              daemonUrl={session?.daemonUrl || ''}
-              clientToken={session?.clientToken || ''}
-              projectId={agent?.projectId || ''}
-              originKind="direct_agent_chat"
-              originRef={agent?.id || ''}
-              onUploaded={(link: string) => setDraft((prev) => appendArtifactLink(prev, link))}
-              onClose={() => setArtifactsOpen(false)}
+      <section data-debug-id="agent-detail-chat" className="mt-6 h-[62vh] max-h-[720px] min-h-[420px] overflow-hidden rounded-3xl border border-white/10 bg-[#090909]">
+        <div className="flex h-full min-h-0 overflow-hidden">
+          <div className="flex min-w-0 flex-1 flex-col overflow-hidden border-r border-[#262626]">
+            <ChatHeader
+              className="border-b border-[#262626] px-5 py-4"
+              title={<h2 className="text-lg font-semibold text-zinc-100">Chat</h2>}
+              subtitle={<p className="text-sm text-zinc-500">Direct agent messages. Attach artifacts or paste screenshots into the composer.</p>}
+              actions={<><button type="button" data-debug-id="agent-detail-chat-artifacts-toggle-btn" onClick={() => setArtifactsOpen((current) => !current)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1.5 text-[11.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">{artifactsOpen ? 'Hide artifacts' : 'Artifacts'}</button><button type="button" data-debug-id="agent-detail-refresh-chat-btn" onClick={() => agent?.id && onRefreshChat?.(agent.id)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1.5 text-[11.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">Refresh</button><button type="button" data-debug-id="agent-detail-nudge-btn" onClick={() => submit(true)} disabled={!agent?.id || sending || !draft.trim()} className="rounded-full border border-amber-400/25 bg-amber-400/10 px-3 py-1.5 text-[11.5px] text-amber-100 hover:bg-amber-400/20 disabled:cursor-not-allowed disabled:opacity-50">⚡ Nudge</button></>}
             />
-          ) : null}
-        </div>
-        <ChatRuntimeBanner agent={agent} tasksById={tasksById} debugPrefix="agent-detail-chat" onStart={startAgent} startDisabled={!agent?.id || Boolean(agentBusy)} />
-        <div data-debug-id="agent-detail-chat-composer-shell" className="mt-3 shrink-0 rounded-[15px] border border-white/10 bg-[#141414] p-0 focus-within:border-white/35">
-          <textarea
-            data-debug-id="agent-detail-chat-input"
-            value={draft}
-            onChange={(event) => { setDraft(event.target.value); setSendError(''); }}
-            onKeyDown={(event) => {
-              if (event.key !== 'Enter' || event.shiftKey) return;
-              event.preventDefault();
-              void submit(false);
-            }}
-            onPaste={async (event) => {
-              const result = await upload.uploadClipboardImage(event, { originRef: agent?.id || '' });
-              if (result.link) {
-                setSendError('');
-                setDraft((prev) => appendArtifactLink(prev, result.link || ''));
-              }
-            }}
-            placeholder="Message or nudge this agent…"
-            rows={3}
-            className="min-h-[74px] w-full resize-none bg-transparent px-3 pt-3 text-[15px] leading-relaxed text-zinc-100 outline-none placeholder:text-zinc-600"
-          />
-          {sendError && <div data-debug-id="agent-detail-chat-send-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{sendError}</div>}
-          {upload.error && <div data-debug-id="agent-detail-chat-upload-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
-          {runtimeRestartError && <div data-debug-id="agent-detail-chat-runtime-restart-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{runtimeRestartError}</div>}
-          {runtimeRestarting && <div data-debug-id="agent-detail-chat-runtime-restart-status" className="mx-3 mb-2 rounded-xl border border-sky-400/30 bg-sky-400/10 px-3 py-2 text-xs text-sky-100">Restarting exact instance {agent?.id} with selected {runtimeRestarting}…</div>}
-          <div className="flex flex-wrap items-center justify-between gap-2 px-2 pb-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }} context={{ projectId: agent?.projectId || '', originKind: 'direct_agent_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending || Boolean(runtimeRestarting)} debugIdPrefix="agent-detail-chat-artifact-upload" label="⇧" buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-lg text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50" />
-              <RuntimeRestartControls debugPrefix="agent-detail-chat" providers={providers} projects={projects} provider={chatProvider} modelTier={chatTier} projectId={agent?.projectId || ''} disabled={!agent?.id} restarting={Boolean(runtimeRestarting)} showProject onRestart={(next) => { void restartExactRuntime(next.provider, next.modelTier, 'runtime', next.projectId); }} />
+            <div className="flex min-h-0 flex-1 overflow-hidden px-5 py-5">
+              <div className="flex min-w-0 flex-1 overflow-hidden rounded-[18px]">
+                <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+                  <ChatMessageList
+                    conversationKey={agent?.id || 'agent-detail'}
+                    messages={messages}
+                    onReply={(reply) => setDraft((prev) => appendArtifactLink(prev, reply))}
+                    debugPrefix={agentDetailChatDebug.messageList}
+                    emptyText="No direct messages loaded for this agent."
+                    hasMore={Boolean(chatPagination.hasMore)}
+                    loadingOlder={Boolean(chatPagination.loading)}
+                    onLoadOlder={chatPagination.onLoadOlder}
+                    formatTimestamp={formatChatTimestamp}
+                    getDeliveryStatus={deliveryStatusFor}
+                  />
+                </div>
+                {artifactsOpen ? (
+                  <ChatArtifactsSidePanel
+                    debugPrefix={agentDetailChatDebug.artifacts}
+                    daemonUrl={session?.daemonUrl || ''}
+                    clientToken={session?.clientToken || ''}
+                    projectId={agent?.projectId || ''}
+                    originKind="direct_agent_chat"
+                    originRef={agent?.id || ''}
+                    onUploaded={(link: string) => setDraft((prev) => appendArtifactLink(prev, link))}
+                    onClose={() => setArtifactsOpen(false)}
+                  />
+                ) : null}
+              </div>
             </div>
-            <div className="flex items-center gap-2"><span className="hidden text-[11px] text-zinc-600 sm:inline">Enter to send · Shift+Enter for newline</span><button data-debug-id="agent-detail-chat-send-btn" aria-label="Send direct agent message" title={sending ? 'Sending…' : 'Send'} onClick={() => { void submit(false); }} disabled={!agent?.id || sending || Boolean(runtimeRestarting) || !draft.trim()} className="inline-flex h-8 items-center justify-center rounded-full border border-white/10 px-3 text-sm text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">→</button></div>
+            <div className="px-5 pb-[18px] pt-3">
+              <ChatWorkBanner agent={agent} tasksById={tasksById} debugPrefix={agentDetailChatDebug.workBanner} onStart={startAgent} startDisabled={!agent?.id || Boolean(agentBusy)} />
+              <ChatComposer
+                shellDebugId={agentDetailChatDebug.composer + '-composer-shell'}
+                inputDebugId={agentDetailChatDebug.composer + '-input'}
+                sendButtonDebugId={agentDetailChatDebug.composer + '-send-btn'}
+                sendAriaLabel="Send direct agent message"
+                value={draft}
+                onValueChange={(value) => { setDraft(value); setSendError(''); }}
+                onSubmit={() => submit(false)}
+                onPaste={async (event) => {
+                  const result = await upload.uploadClipboardImage(event, { originRef: agent?.id || '' });
+                  if (result.link) {
+                    setSendError('');
+                    setDraft((prev) => appendArtifactLink(prev, result.link || ''));
+                  }
+                }}
+                placeholder="Message or nudge this agent…"
+                rows={3}
+                sendTitle={sending ? 'Sending…' : 'Send'}
+                sendDisabled={!agent?.id || sending || Boolean(runtimeRestarting) || !draft.trim()}
+                sendError={sendError}
+                sendErrorDebugId="agent-detail-chat-send-error"
+                uploadErrorDebugId="agent-detail-chat-upload-error"
+                upload={{ onUploaded: (link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }, context: { projectId: agent?.projectId || '', originKind: 'direct_agent_chat', originRef: agent?.id || '' }, disabled: !agent?.id || sending || Boolean(runtimeRestarting), debugIdPrefix: agentDetailChatDebug.upload, label: '⇧', buttonClassName: 'inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 text-lg text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50', error: upload.error }}
+                runtimeControls={{ debugPrefix: agentDetailChatDebug.runtime, providers, projects, provider: chatProvider, modelTier: chatTier, projectId: agent?.projectId || '', disabled: !agent?.id, restarting: Boolean(runtimeRestarting), showProject: true, onRestart: (next) => { void restartExactRuntime(next.provider, next.modelTier, 'runtime', next.projectId); } }}
+                notices={[
+                  ...(runtimeRestartError ? [{ debugId: 'agent-detail-chat-runtime-restart-error', message: runtimeRestartError, tone: 'error' as const }] : []),
+                  ...(runtimeRestarting ? [{ debugId: 'agent-detail-chat-runtime-restart-status', message: `Restarting exact instance ${agent?.id} with selected ${runtimeRestarting}…`, tone: 'info' as const }] : []),
+                ]}
+                footer={<><span>🗂 {agent?.projectName || agent?.projectId || 'No project'} · shares memories &amp; skills from the <code>{durableAgentId(agent) || 'agent'}</code> identity</span><span>⌘↵ to send</span></>}
+                textareaClassName="min-h-[74px] w-full resize-none bg-transparent px-3 pt-3 text-[15px] leading-relaxed text-zinc-100 outline-none placeholder:text-zinc-600"
+              />
+            </div>
           </div>
+          <ChatSidebar debugId={agentDetailChatDebug.sidebar} className="min-h-0 w-[360px] overflow-y-auto bg-[#0f0f0f]">
+            <AgentChatSidebarContent agent={agent} tasksById={tasksById} chainsById={chainsById} onOpenChain={onOpenChain} />
+          </ChatSidebar>
         </div>
       </section>
 
@@ -3545,27 +3583,32 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
 
   return (
     <div data-debug-id="conversation-thread-page" className="flex min-h-full flex-col bg-[#090909] text-zinc-100">
-      <div className="flex h-[52px] items-center justify-between gap-3 border-b border-[#1f1f1f] bg-[#0b0b0b]/95 px-[18px] text-[12.5px] text-zinc-500">
-        <div data-debug-id="conversation-thread-breadcrumb" className="flex min-w-0 items-center gap-2 overflow-hidden">
-          <button data-debug-id="conversation-thread-back-btn" onClick={onBack} className="rounded-full border border-white/10 bg-[#111111] px-3 py-1.5 text-zinc-400 hover:border-white/20 hover:text-zinc-100">← Back</button>
-          <span className="hidden text-zinc-600 md:inline">{daemonLabel}</span>
-          <span className="hidden text-zinc-700 md:inline">/</span>
-          <span className="truncate text-zinc-400">{projectName}</span>
-          <span className="text-zinc-700">/</span>
-          <span className="truncate text-zinc-100">{title}</span>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <span data-debug-id="conversation-thread-project-chip" className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400">🗂 {projectName}</span>
-          <span data-debug-id="conversation-thread-status-chip" className={`rounded-full border px-3 py-1 text-[11.5px] ${live ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200' : sendPhase === 'starting' ? 'border-sky-400/35 bg-sky-400/10 text-sky-200' : 'border-white/10 bg-[#141414] text-zinc-400'}`}>{sendPhase === 'starting' ? 'Starting' : live ? 'Active' : runtime.label}</span>
-          <button data-debug-id="conversation-thread-artifacts-toggle-btn" onClick={() => setArtifactsOpen((current) => !current)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">{artifactsOpen ? 'Hide artifacts' : 'Artifacts'}</button>
-          <button data-debug-id="conversation-thread-refresh-btn" onClick={() => agent?.id && onRefreshChat?.(agent.id)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">Refresh</button>
-          {!live ? <button data-debug-id="conversation-thread-start-btn" onClick={startConversation} disabled={Boolean(threadBusy || sending)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50">Start</button> : <button data-debug-id="conversation-thread-stop-btn" onClick={stopConversation} disabled={Boolean(threadBusy || sending)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50">Close</button>}
-        </div>
-      </div>
+      <ChatHeader
+        className="border-b border-[#1f1f1f] bg-[#0b0b0b]/95 px-[18px] py-3 text-[12.5px] text-zinc-500"
+        title={(
+          <div data-debug-id="conversation-thread-breadcrumb" className="flex min-w-0 items-center gap-2 overflow-hidden">
+            <button data-debug-id="conversation-thread-back-btn" onClick={onBack} className="rounded-full border border-white/10 bg-[#111111] px-3 py-1.5 text-zinc-400 hover:border-white/20 hover:text-zinc-100">← Back</button>
+            <span className="hidden text-zinc-600 md:inline">{daemonLabel}</span>
+            <span className="hidden text-zinc-700 md:inline">/</span>
+            <span className="truncate text-zinc-400">{projectName}</span>
+            <span className="text-zinc-700">/</span>
+            <span className="truncate text-zinc-100">{title}</span>
+          </div>
+        )}
+        status={<span data-debug-id="conversation-thread-status-chip" className={`rounded-full border px-3 py-1 text-[11.5px] ${live ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200' : sendPhase === 'starting' ? 'border-sky-400/35 bg-sky-400/10 text-sky-200' : 'border-white/10 bg-[#141414] text-zinc-400'}`}>{sendPhase === 'starting' ? 'Starting' : live ? 'Active' : runtime.label}</span>}
+        actions={(
+          <>
+            <span data-debug-id="conversation-thread-project-chip" className="inline-flex items-center gap-1 rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400">🗂 {projectName}</span>
+            <button data-debug-id="conversation-thread-artifacts-toggle-btn" onClick={() => setArtifactsOpen((current) => !current)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">{artifactsOpen ? 'Hide artifacts' : 'Artifacts'}</button>
+            <button data-debug-id="conversation-thread-refresh-btn" onClick={() => agent?.id && onRefreshChat?.(agent.id)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">Refresh</button>
+            {!live ? <button data-debug-id="conversation-thread-start-btn" onClick={startConversation} disabled={Boolean(threadBusy || sending)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50">Start</button> : <button data-debug-id="conversation-thread-stop-btn" onClick={stopConversation} disabled={Boolean(threadBusy || sending)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50">Close</button>}
+          </>
+        )}
+      />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        <div className="chat-scrollbar min-w-0 flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-[820px] px-5 pb-5 pt-[22px]">
+        <div className="min-w-0 flex-1 overflow-y-auto">
+          <div className="mx-auto flex h-full max-w-[820px] flex-col px-5 pb-5 pt-[22px]">
             <div data-debug-id="conversation-thread-summary-card" className="mb-5 rounded-[22px] border border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(56,189,248,0.10),rgba(17,17,17,0.90)_42%,rgba(10,10,10,0.96))] p-4 shadow-[0_18px_60px_rgba(0,0,0,0.26)]">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -3581,42 +3624,27 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
               </div>
             </div>
             {threadError && <div data-debug-id="conversation-thread-action-error" className="mb-4 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{threadError}</div>}
-
-            <section data-debug-id="conversation-thread-transcript" className="flex flex-col">
-              {chatPagination.hasMore ? (
-                <div className="mb-4 flex justify-center">
-                  <button data-debug-id="conversation-thread-load-older-messages-btn" type="button" onClick={chatPagination.onLoadOlder} disabled={Boolean(chatPagination.loading)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">
-                    {chatPagination.loading ? 'Loading older messages…' : 'Load older messages'}
-                  </button>
-                </div>
-              ) : null}
-              <div className="space-y-[22px]">
-              {messages.length === 0 ? <div data-debug-id="conversation-thread-empty-state" className="rounded-[22px] border border-dashed border-white/10 bg-[#111111]/70 p-7 text-sm text-zinc-500">
-                <div className="text-base font-semibold text-zinc-200">This thread is ready.</div>
-                <p className="mt-2 max-w-[560px] leading-6">Send the first message to start the exact <code className="rounded bg-white/5 px-1 py-0.5 text-zinc-300">conversation</code> instance. If the agent is stopped, Heimdall will resume this same thread and keep the history attached to {agent?.id || 'conversation@s-…'}.</p>
-              </div> : messages.map((msg, index) => {
-                const assistantMessage = !msg.isUser;
-                return (
-                  <div key={msg.key} data-debug-id={`conversation-thread-message-${msg.messageId}`} className={`msg group flex ${msg.isUser ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`flex ${msg.isUser ? 'max-w-[74%] items-end' : 'w-full items-start'} flex-col`}>
-                      {assistantMessage && live && index === messages.length - 1 && <span data-debug-id="conversation-thread-worked-status" className="mb-3 inline-flex items-center gap-1 rounded-full border border-[#262626] bg-[#141414] px-3 py-1 text-[12px] text-zinc-500">Worked for 36s ›</span>}
-                      <div className={`${msg.isUser ? 'rounded-[15px] border border-[#262626] bg-[#1c1c1c] px-[14px] py-[10px] text-zinc-100' : 'max-w-full text-zinc-200'}`}>
-                        <Markdown source={msg.body} compact copyAll={false} />
-                      </div>
-                      <div data-debug-id={`conversation-thread-message-actions-${msg.messageId}`} className={`mt-1 flex items-center gap-[10px] text-[13px] text-zinc-500 ${msg.isUser ? 'self-end' : 'self-start'}`}>
-                        <ChatHoverCopyButton debugId={`conversation-thread-message-copy-btn-${msg.messageId}`} text={msg.body} />
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-              </div>
+            <section data-debug-id="conversation-thread-transcript" className="flex min-h-0 flex-1 flex-col">
+              <ChatMessageList
+                conversationKey={agent?.id || 'conversation-thread'}
+                messages={messages}
+                debugPrefix={conversationChatDebug.messageList}
+                hasMore={Boolean(chatPagination.hasMore)}
+                loadingOlder={Boolean(chatPagination.loading)}
+                onLoadOlder={chatPagination.onLoadOlder}
+                formatTimestamp={formatChatTimestamp}
+                getDeliveryStatus={deliveryStatusFor}
+                emptyState={<div data-debug-id="conversation-thread-empty-state" className="rounded-[22px] border border-dashed border-white/10 bg-[#111111]/70 p-7 text-sm text-zinc-500"><div className="text-base font-semibold text-zinc-200">This thread is ready.</div><p className="mt-2 max-w-[560px] leading-6">Send the first message to start the exact <code className="rounded bg-white/5 px-1 py-0.5 text-zinc-300">conversation</code> instance. If the agent is stopped, Heimdall will resume this same thread and keep the history attached to {agent?.id || 'conversation@s-…'}.</p></div>}
+                renderMessageTop={({ message, index, messages: allMessages }) => (!message.isUser && live && index === allMessages.length - 1 ? <span data-debug-id="conversation-thread-worked-status" className="mb-3 inline-flex items-center gap-1 rounded-full border border-[#262626] bg-[#141414] px-3 py-1 text-[12px] text-zinc-500">Worked for 36s ›</span> : null)}
+                wrapperClassName="relative min-h-0 flex-1"
+                scrollClassName="chat-scrollbar h-full min-h-0 space-y-[22px] overflow-y-auto rounded-[18px] bg-transparent"
+              />
             </section>
           </div>
         </div>
         {artifactsOpen ? (
           <ChatArtifactsSidePanel
-            debugPrefix="conversation-thread"
+            debugPrefix={conversationChatDebug.artifacts}
             daemonUrl={session?.daemonUrl || ''}
             clientToken={session?.clientToken || ''}
             projectId={agent?.projectId || ''}
@@ -3630,18 +3658,17 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
 
       <div className="px-5 pb-[18px] pt-3">
         <div className="mx-auto max-w-[820px]">
-          <ChatRuntimeBanner agent={locallyStopped ? { ...agent, status: 'stopped', startupStatus: 'stopped' } : agent} debugPrefix="conversation-composer" onStart={startConversation} startDisabled={Boolean(threadBusy || sending)} />
+          <ChatWorkBanner agent={locallyStopped ? { ...agent, status: 'stopped', startupStatus: 'stopped' } : agent} debugPrefix={conversationChatDebug.workBanner} onStart={startConversation} startDisabled={Boolean(threadBusy || sending)} />
         </div>
-        <div data-debug-id="conversation-composer-shell" className="mx-auto max-w-[820px] rounded-[18px] border border-white/10 bg-[#141414] p-0 shadow-[0_18px_70px_rgba(0,0,0,0.30)] focus-within:border-white/35">
-          <textarea
-            data-debug-id="conversation-composer-input"
+        <div className="mx-auto max-w-[820px]">
+          <ChatComposer
+            shellDebugId={conversationChatDebug.composer + '-shell'}
+            inputDebugId={conversationChatDebug.composer + '-input'}
+            sendButtonDebugId={conversationChatDebug.composer + '-send-btn'}
+            sendAriaLabel="Send conversation message"
             value={draft}
-            onChange={(event) => { setDraft(event.target.value); setSendError(''); }}
-            onKeyDown={(event) => {
-              if (event.key !== 'Enter' || event.shiftKey) return;
-              event.preventDefault();
-              void submit();
-            }}
+            onValueChange={(value) => { setDraft(value); setSendError(''); }}
+            onSubmit={submit}
             onPaste={async (event) => {
               const result = await upload.uploadClipboardImage(event, { originRef: agent?.id || '' });
               if (result.link) {
@@ -3650,27 +3677,17 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
               }
             }}
             placeholder="Ask anything…"
-            rows={3}
-            className="w-full resize-none bg-transparent px-4 py-3 text-sm text-zinc-100 outline-none placeholder:text-zinc-500"
+            sendTitle={sending ? 'Sending…' : 'Send'}
+            sendDisabled={!agent?.id || sending || !draft.trim()}
+            sendError={sendError}
+            sendErrorDebugId="conversation-composer-send-error"
+            uploadErrorDebugId="conversation-composer-upload-error"
+            upload={{ onUploaded: (link) => { setSendError(''); setDraft((prev: string) => appendArtifactLink(prev, link)); }, context: { projectId: agent?.projectId || '', originKind: 'conversation_chat', originRef: agent?.id || '' }, disabled: !agent?.id || sending, debugIdPrefix: conversationChatDebug.upload, label: '⇧', buttonClassName: 'inline-flex h-7 w-7 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-sm text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40', error: upload.error }}
+            runtimeControls={{ debugPrefix: conversationChatDebug.runtime, providers, projects, provider: messageProvider, modelTier: messageTier, projectId: agent?.projectId || '', disabled: !agent?.id || sending, restarting: threadBusy === 'restart', showProject: true, onRestart: restartConversationRuntime }}
+            notices={sendPhase === 'starting' ? [{ debugId: 'conversation-composer-starting-indicator', message: 'Starting this conversation agent before sending your message…' }] : []}
+            footer={<><span>🗂 {projectName} · shares memories &amp; skills from the <code>conversation</code> identity</span><span>⌘↵ to send</span></>}
+            shellClassName="rounded-[18px] border border-white/10 bg-[#141414] p-0 shadow-[0_18px_70px_rgba(0,0,0,0.30)] focus-within:border-white/35"
           />
-          {sendError && <div data-debug-id="conversation-composer-send-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{sendError}</div>}
-          {upload.error && <div data-debug-id="conversation-composer-upload-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{upload.error}</div>}
-          {sendPhase === 'starting' && (
-            <div data-debug-id="conversation-composer-starting-indicator" className="mx-3 mb-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs text-zinc-300">
-              Starting this conversation agent before sending your message…
-            </div>
-          )}
-          <div className="flex items-center justify-between gap-3 px-3 py-2">
-            <div className="flex items-center gap-2">
-              <ArtifactUploadButton onUploaded={(link) => { setSendError(''); setDraft((prev: string) => appendArtifactLink(prev, link)); }} context={{ projectId: agent?.projectId || '', originKind: 'conversation_chat', originRef: agent?.id || '' }} disabled={!agent?.id || sending} debugIdPrefix="conversation-attach" label="⇧" buttonClassName="inline-flex h-7 w-7 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-sm text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40" />
-              <RuntimeRestartControls debugPrefix="conversation" providers={providers} projects={projects} provider={messageProvider} modelTier={messageTier} projectId={agent?.projectId || ''} disabled={!agent?.id || sending} restarting={threadBusy === 'restart'} showProject onRestart={restartConversationRuntime} />
-            </div>
-            <button data-debug-id="conversation-composer-send-btn" aria-label="Send conversation message" title={sending ? 'Sending…' : 'Send'} onClick={() => { void submit(); }} disabled={!agent?.id || sending || !draft.trim()} className="inline-flex h-8 items-center justify-center rounded-full border border-white/10 px-3 text-sm text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">→</button>
-          </div>
-          <div className="flex items-center justify-between border-t border-white/5 px-3 py-2 text-[11.5px] text-zinc-500">
-            <span>🗂 {projectName} · shares memories &amp; skills from the <code>conversation</code> identity</span>
-            <span>⌘↵ to send</span>
-          </div>
         </div>
       </div>
     </div>
@@ -4866,135 +4883,39 @@ function ChatArtifactsSidePanel({ debugPrefix, daemonUrl = '', clientToken = '',
 }
 
 function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'chain-coordinator', emptyText = 'No coordinator chat loaded for this chain.', hasMore = false, loadingOlder = false, onLoadOlder }: { chainId: string; messages: CoordinatorMessage[]; onReply: (reply: string) => void; debugPrefix?: string; emptyText?: string; hasMore?: boolean; loadingOlder?: boolean; onLoadOlder?: () => void }) {
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  const stickyRef = useRef(true);
-  const lastCountRef = useRef(0);
-  const lastChainRef = useRef(chainId);
-  const didInitialScrollRef = useRef(false);
-  const [showJump, setShowJump] = useState(false);
   const [usedActionCards, setUsedActionCards] = useState<Record<string, string>>({});
   const persistedActionReplies = useMemo(() => deriveCoordinatorActionReplies(messages), [messages]);
 
-  const scrollToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
-    const node = scrollRef.current;
-    if (!node) return;
-    node.scrollTo({ top: node.scrollHeight, behavior });
-    stickyRef.current = true;
-    setShowJump(false);
-  }, []);
-
-  useLayoutEffect(() => {
-    if (lastChainRef.current !== chainId) {
-      lastChainRef.current = chainId;
-      lastCountRef.current = 0;
-      stickyRef.current = true;
-      didInitialScrollRef.current = false;
-      setShowJump(false);
-    }
-
-    const count = messages.length;
-    if (count === 0) { lastCountRef.current = 0; return; }
-
-    if (!didInitialScrollRef.current) {
-      didInitialScrollRef.current = true;
-      lastCountRef.current = count;
-      scrollToBottom('auto');
-      return;
-    }
-
-    if (count !== lastCountRef.current) {
-      const grew = count > lastCountRef.current;
-      lastCountRef.current = count;
-      if (grew && stickyRef.current) {
-        requestAnimationFrame(() => scrollToBottom('smooth'));
-      }
-    }
-  }, [chainId, messages.length, scrollToBottom]);
-
-  const onScroll = useCallback(() => {
-    const node = scrollRef.current;
-    if (!node) return;
-    const distance = node.scrollHeight - node.scrollTop - node.clientHeight;
-    const nearBottom = distance < 48;
-    stickyRef.current = nearBottom;
-    setShowJump(!nearBottom && messages.length > 0);
-  }, [messages.length]);
-
   return (
-    <div className="relative min-h-0 flex-1 overflow-hidden">
-      <div
-        ref={scrollRef}
-        data-debug-id={`${debugPrefix}-scroll`}
-        onScroll={onScroll}
-        className="chat-scrollbar h-full min-h-0 space-y-[22px] overflow-y-auto rounded-[18px] bg-[#090909] p-5"
-      >
-        {hasMore ? (
-          <div className="flex justify-center">
-            <button data-debug-id={`${debugPrefix}-load-older-messages-btn`} type="button" onClick={onLoadOlder} disabled={loadingOlder || !onLoadOlder} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1.5 text-xs text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">
-              {loadingOlder ? 'Loading older messages…' : 'Load older messages'}
-            </button>
-          </div>
-        ) : null}
-        {messages.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-white/10 p-6 text-sm text-zinc-500">{emptyText}</div>
-        ) : messages.map((msg) => {
-          const timestamp = formatChatTimestamp(msg.createdUnixMs);
-          const delivery = deliveryStatusFor(msg);
-          return (
-            <div
-              key={msg.key}
-              data-debug-id={`${debugPrefix}-message-${msg.messageId}`}
-              className={`msg group flex ${msg.isUser ? 'justify-end' : 'justify-start'}`}
-            >
-              <div className={`flex ${msg.isUser ? 'max-w-[74%] items-end' : 'w-full items-start'} flex-col text-sm`}>
-                <div className="mb-1 flex max-w-full items-center gap-2 text-[10px] uppercase tracking-wider text-zinc-600">
-                  <span className="truncate">{msg.authorLabel}</span>
-                  {timestamp.label && (
-                    <time data-debug-id={`${debugPrefix}-message-${msg.messageId}-time`} dateTime={timestamp.iso} title={timestamp.iso} className="shrink-0">{timestamp.label}</time>
-                  )}
-                </div>
-                <div className={`${msg.isUser ? 'rounded-[15px] border border-[#262626] bg-[#1c1c1c] px-[14px] py-[10px] text-zinc-100' : 'max-w-full text-zinc-200'}`}>
-                  {(() => {
-                    if (msg.isUser) return <UserActionReplyBubble body={msg.body} />;
-                    const action = parseCoordinatorActionPayload(msg.body);
-                    if (!action) return <Markdown source={msg.body} compact copyAll={false} />;
-                    return (
-                      <CoordinatorActionCard
-                        action={action}
-                        messageId={msg.messageId}
-                        debugPrefix={debugPrefix}
-                        usedReply={usedActionCards[msg.messageId] || persistedActionReplies[msg.messageId] || ''}
-                        onUse={(reply) => {
-                          setUsedActionCards((prev) => ({ ...prev, [msg.messageId]: reply }));
-                          onReply(reply);
-                        }}
-                      />
-                    );
-                  })()}
-                </div>
-                <div data-debug-id={`${debugPrefix}-message-actions-${msg.messageId}`} className={`mt-1 flex items-center gap-[10px] text-[13px] text-zinc-500 ${msg.isUser ? 'self-end' : 'self-start'}`}>
-                  <ChatHoverCopyButton debugId={`${debugPrefix}-message-copy-btn-${msg.messageId}`} text={msg.body} />
-                </div>
-                {msg.isUser && delivery.glyph && (
-                  <div
-                    data-debug-id={`${debugPrefix}-message-${msg.messageId}-status`}
-                    title={delivery.label}
-                    className={`mt-1 text-right text-[10px] ${delivery.tone}`}
-                  >{delivery.glyph} {delivery.label}</div>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-      {showJump && (
-        <button
-          data-debug-id={`${debugPrefix}-jump-latest-btn`}
-          onClick={() => scrollToBottom('smooth')}
-          className="absolute bottom-3 right-3 rounded-full border border-white/10 bg-black/70 px-3 py-1 text-[11px] text-zinc-100 shadow-lg hover:bg-black"
-        >Jump to latest ↓</button>
-      )}
-    </div>
+    <ChatMessageList
+      conversationKey={chainId}
+      messages={messages}
+      onReply={onReply}
+      debugPrefix={debugPrefix}
+      emptyText={emptyText}
+      hasMore={hasMore}
+      loadingOlder={loadingOlder}
+      onLoadOlder={onLoadOlder}
+      formatTimestamp={formatChatTimestamp}
+      getDeliveryStatus={deliveryStatusFor}
+      renderMessageBody={({ message, onReply: reply }) => {
+        if (message.isUser) return <UserActionReplyBubble body={message.body} />;
+        const action = parseCoordinatorActionPayload(message.body);
+        if (!action) return <Markdown source={message.body} compact copyAll={false} />;
+        return (
+          <CoordinatorActionCard
+            action={action}
+            messageId={message.messageId}
+            debugPrefix={debugPrefix}
+            usedReply={usedActionCards[message.messageId] || persistedActionReplies[message.messageId] || ''}
+            onUse={(nextReply) => {
+              setUsedActionCards((prev) => ({ ...prev, [message.messageId]: nextReply }));
+              reply(nextReply);
+            }}
+          />
+        );
+      }}
+    />
   );
 }
 
@@ -5155,12 +5076,14 @@ function ChainProgressPanel({ chain, progress }: { chain: any; progress: ChainPr
   );
 }
 
-function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentities = [], chainView, taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, initialTaskId = '', onBack, onSend, onToggleDiff, onFetchDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenAgentChat, onOpenChain, onOpenTask, onLoadTaskLogPage, onLoadCoordinatorChatPage, onOpenEditor, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onRefreshAgents }: any) {
+function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentities = [], chainView, projects = [], providers = [], taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, initialTaskId = '', onBack, onSend, onToggleDiff, onFetchDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenAgentChat, onOpenChain, onOpenTask, onLoadTaskLogPage, onLoadCoordinatorChatPage, onOpenEditor, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onRefreshAgents }: any) {
   const dispatch = useDispatch<any>();
   const session = useSelector((state: any) => state.chat?.session || {});
   const chatState = useSelector((state: any) => state.chat || {});
   const [draft, setDraft] = useState('');
   const [sendError, setSendError] = useState('');
+  const [coordinatorProvider, setCoordinatorProvider] = useState('');
+  const [coordinatorTier, setCoordinatorTier] = useState('normal');
   const [selectedTaskId, setSelectedTaskId] = useState(initialTaskId || '');
   const [commentDraft, setCommentDraft] = useState('');
   const [nudgeDraft, setNudgeDraft] = useState('Please take a look at this task when you are available.');
@@ -5192,11 +5115,16 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
   const coordinatorLoading = Boolean(chatState?.fetchingChatsByAgentId?.[coordinatorAgentId]);
   const messages = useMemo(() => normalizeCoordinatorMessages(coordinatorMessages), [coordinatorMessages]);
   const projectId = chain.projectId || chain.project_id || '';
+  const projectName = projects.find((project: any) => (project.projectId || project.project_id) === projectId)?.name || projectId || 'No project';
   const composerArtifactUpload = useArtifactUpload({ projectId, originRef: chain.chainId || '', originKind: 'clipboard_chat' });
   const coordinatorStatus = agentRuntimeStatus(coordinatorAgent);
   const coordinatorStatusLabel = agentRuntimeStatusLabel(coordinatorStatus);
   const coordinatorLabel = coordinatorAgent?.label || coordinatorAgentId || 'Coordinator';
   const coordinatorLastSeen = coordinatorAgent?.lastSeen && coordinatorAgent.lastSeen !== '—' ? `Last seen ${coordinatorAgent.lastSeen}` : '';
+  useEffect(() => {
+    setCoordinatorProvider(coordinatorAgent?.providerProfile || providers?.[0]?.name || 'pi');
+    setCoordinatorTier(coordinatorAgent?.modelTier || 'normal');
+  }, [coordinatorAgent?.id, coordinatorAgent?.providerProfile, coordinatorAgent?.modelTier, providers]);
   const orderedTasks = useMemo(() => dependencyOrderedTasks(tasks, tasksById || {}), [tasks, tasksById]);
   const chainProgress = useMemo(() => buildChainProgress(chain.chainId, { [chain.chainId]: tasks.map((task: any) => task.taskId).filter(Boolean) }, tasksById || {}), [chain.chainId, tasks, tasksById]);
   const activeTasks = orderedTasks.filter((task: any) => !isCompletedTask(task));
@@ -5238,7 +5166,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
   const hasWorkspace = Boolean(chain.vcsWorkspaceId || workspaceForDisplay?.workspace_id || workspaceForDisplay?.repo_diff_supported || workspaceForDisplay?.repoDiffSupported || chainRepoDiffSupported);
   const startCoordinator = async () => {
     if (!coordinatorAgentId) return;
-    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: coordinatorAgentId, provider: coordinatorAgent?.providerProfile || 'pi', templateId: coordinatorAgent?.templateId || coordinatorAgent?.agentRole || 'coordinator', projectId: projectId || coordinatorAgent?.projectId || '', displayName: coordinatorAgent?.label || coordinatorAgentId, modelTier: coordinatorAgent?.modelTier || 'normal', agentRole: coordinatorAgent?.agentRole || coordinatorAgent?.templateId || 'coordinator' });
+    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: coordinatorAgentId, provider: coordinatorProvider || coordinatorAgent?.providerProfile || providers?.[0]?.name || 'pi', templateId: coordinatorAgent?.templateId || coordinatorAgent?.agentRole || 'coordinator', projectId: projectId || coordinatorAgent?.projectId || '', displayName: coordinatorAgent?.label || coordinatorAgentId, modelTier: coordinatorTier || coordinatorAgent?.modelTier || 'normal', agentRole: coordinatorAgent?.agentRole || coordinatorAgent?.templateId || 'coordinator' });
     await onRefreshAgents?.();
   };
   const submit = async () => {
@@ -5293,34 +5221,34 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
 
       <div data-debug-id="chain-split-view" data-tasks-open={tasksPaneOpen ? 'true' : 'false'} data-workspace-open={evidenceSidebarOpen ? 'true' : 'false'} data-right-sidebar-open={evidenceSidebarOpen ? 'true' : 'false'} className={`grid min-h-0 flex-1 ${rightPaneOpen ? 'grid-cols-[minmax(0,1fr)_460px]' : 'grid-cols-[minmax(0,1fr)_0px]'}`}>
         <section data-debug-id="chain-coordinator-panel" className="flex min-h-0 min-w-0 flex-col border-r border-[#262626]">
-          <div className="flex items-center gap-2 border-b border-[#262626] px-[18px] py-3 text-[12.5px] text-zinc-500">
-            <span className="grid h-7 w-7 place-items-center rounded-full bg-sky-400/10 text-xs font-semibold text-sky-100">{coordinatorInitial}</span>
-            <b className="text-zinc-100">Coordinator</b>
-            <span className="truncate">{coordinatorAgentId || 'unassigned'} · lead</span>
-            <div className="flex-1" />
-            <span data-debug-id="chain-coordinator-live-status" className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${agentRuntimeStatusTone(coordinatorStatus)}`} title={`${coordinatorLabel} · ${coordinatorStatusLabel}${coordinatorLastSeen ? ` · ${coordinatorLastSeen}` : ''}`}>
-              <span className={`h-1.5 w-1.5 rounded-full shadow ${agentRuntimeDotTone(coordinatorStatus)}`} />
-              {coordinatorStatusLabel}
-            </span>
-          </div>
+          <ChatHeader
+            className="border-b border-[#262626] px-[18px] py-3 text-[12.5px] text-zinc-500"
+            left={<span className="grid h-7 w-7 place-items-center rounded-full bg-sky-400/10 text-xs font-semibold text-sky-100">{coordinatorInitial}</span>}
+            title={<div><b className="text-zinc-100">Coordinator</b></div>}
+            subtitle={<span className="truncate">{coordinatorAgentId || 'unassigned'} · lead</span>}
+            status={<span data-debug-id="chain-coordinator-live-status" className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] ${agentRuntimeStatusTone(coordinatorStatus)}`} title={`${coordinatorLabel} · ${coordinatorStatusLabel}${coordinatorLastSeen ? ` · ${coordinatorLastSeen}` : ''}`}><span className={`h-1.5 w-1.5 rounded-full shadow ${agentRuntimeDotTone(coordinatorStatus)}`} />{coordinatorStatusLabel}</span>}
+          />
           <div className="min-h-0 flex-1 overflow-hidden px-5 py-5">
             <div className="mx-auto flex h-full max-w-[760px] flex-col">
               <CoordinatorMessageList chainId={chain.chainId} messages={messages} onReply={(reply) => {
                 setSendError('');
                 void onSend(reply).catch((err: any) => setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`));
-              }} hasMore={coordinatorHasMore} loadingOlder={coordinatorLoading} onLoadOlder={() => onLoadCoordinatorChatPage?.(chain.chainId, coordinatorCursor)} />
+              }} debugPrefix={chainCoordinatorChatDebug.messageList} hasMore={coordinatorHasMore} loadingOlder={coordinatorLoading} onLoadOlder={() => onLoadCoordinatorChatPage?.(chain.chainId, coordinatorCursor)} />
             </div>
           </div>
           <div className="px-5 pb-[18px] pt-3">
             <div className="mx-auto max-w-[760px]">
-              <ChatRuntimeBanner agent={coordinatorAgent || { id: coordinatorAgentId, label: coordinatorLabel, status: coordinatorAgentId ? 'offline' : 'unknown' }} tasksById={tasksById} debugPrefix="chain-coordinator" onStart={startCoordinator} startDisabled={!coordinatorAgentId} />
+              <ChatWorkBanner agent={coordinatorAgent || { id: coordinatorAgentId, label: coordinatorLabel, status: coordinatorAgentId ? 'offline' : 'unknown' }} tasksById={tasksById} debugPrefix={chainCoordinatorChatDebug.workBanner} onStart={startCoordinator} startDisabled={!coordinatorAgentId} />
             </div>
-            <div data-debug-id="chain-coordinator-composer-shell" className="mx-auto max-w-[760px] rounded-[15px] border border-white/10 bg-[#141414] p-0 focus-within:border-white/35">
-              <textarea
-                data-debug-id="chain-coordinator-composer-input"
-                ref={composerRef}
+            <div className="mx-auto max-w-[760px]">
+              <ChatComposer
+                shellDebugId={chainCoordinatorChatDebug.composer + '-composer-shell'}
+                inputDebugId={chainCoordinatorChatDebug.composer + '-composer-input'}
+                sendButtonDebugId={chainCoordinatorChatDebug.composer + '-send-btn'}
+                sendAriaLabel="Send coordinator message"
                 value={draft}
-                onChange={(event) => { setDraft(event.target.value); setSendError(''); }}
+                onValueChange={(value) => { setDraft(value); setSendError(''); }}
+                onSubmit={submit}
                 onPaste={async (event) => {
                   const result = await composerArtifactUpload.uploadClipboardImage(event, { projectId, originKind: 'clipboard_chat', originRef: chain.chainId || '' });
                   if (result.link) {
@@ -5328,27 +5256,23 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
                     setDraft((current) => appendArtifactLink(current, result.link));
                   }
                 }}
-                onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void submit(); } }}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter' || event.shiftKey || !(event.metaKey || event.ctrlKey)) return;
+                  event.preventDefault();
+                  void submit();
+                }}
+                inputRef={composerRef}
                 placeholder="Message the coordinator, @ an agent…"
                 autoFocus
-                rows={3}
-                className="w-full resize-none bg-transparent px-4 py-3 text-sm outline-none placeholder:text-zinc-500"
+                sendDisabled={!draft.trim()}
+                sendError={sendError}
+                sendErrorDebugId="chain-coordinator-send-error"
+                uploadErrorDebugId="chain-coordinator-paste-error"
+                upload={{ onUploaded: (link) => { setSendError(''); setDraft((current) => appendArtifactLink(current, link)); }, debugIdPrefix: chainCoordinatorChatDebug.upload, context: { projectId, originRef: chain.chainId || '' }, buttonClassName: 'inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-lg text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40', label: '⇧', error: composerArtifactUpload.error }}
+                runtimeControls={{ debugPrefix: chainCoordinatorChatDebug.runtime, providers, projects, provider: coordinatorProvider, modelTier: coordinatorTier, projectId, disabled: true, restarting: false, showProject: true, onRestart: async () => undefined }}
+                leftAdornment={<span className="rounded-md border border-white/10 bg-[#1c1c1c] px-2 py-1.5 text-xs text-zinc-500">@ mention agent</span>}
+                footer={<><span>🗂 {projectName} · shares memories &amp; skills from the <code>coordinator</code> identity</span><span>⌘↵ to send</span></>}
               />
-              <div className="flex items-center justify-between gap-2 px-3 py-2">
-                <div className="flex items-center gap-2">
-                  <ArtifactUploadButton
-                    onUploaded={(link) => { setSendError(''); setDraft((current) => appendArtifactLink(current, link)); }}
-                    debugIdPrefix="chain-coordinator-artifact-upload"
-                    context={{ projectId: projectId, originRef: chain.chainId || '' }}
-                    buttonClassName="inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-lg text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40"
-                    label="⇧"
-                  />
-                  <span className="rounded-md border border-white/10 bg-[#1c1c1c] px-2 py-1.5 text-xs text-zinc-500">@ mention agent</span>
-                </div>
-                <button data-debug-id="chain-coordinator-send-btn" aria-label="Send coordinator message" title="Send" onClick={() => { void submit(); }} disabled={!draft.trim()} className="inline-flex h-8 items-center justify-center rounded-full border border-white/10 px-3 text-sm text-zinc-500 hover:bg-[#1c1c1c] hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-50">→</button>
-              </div>
-              {sendError ? <div data-debug-id="chain-coordinator-send-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{sendError}</div> : null}
-              {composerArtifactUpload.error ? <div data-debug-id="chain-coordinator-paste-error" className="mx-3 mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{composerArtifactUpload.error}</div> : null}
             </div>
           </div>
         </section>
@@ -5374,7 +5298,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
               onPreviewMerge={onPreviewMerge}
             />
           ) : (
-          <aside data-debug-id="chain-task-surface" tabIndex={0} className="min-h-0 overflow-y-auto border-l border-[#262626] bg-[#0f0f0f] outline-none focus-visible:ring-1 focus-visible:ring-sky-400/40">
+          <ChatSidebar debugId={chainCoordinatorChatDebug.sidebar} className="min-h-0 overflow-y-auto border-l border-[#262626] bg-[#0f0f0f] outline-none focus-visible:ring-1 focus-visible:ring-sky-400/40">
             <div className="px-[18px] py-4">
               <ChainProgressPanel chain={chain} progress={chainProgress} />
               <div className="mt-5 flex items-start justify-between gap-3">
@@ -5462,7 +5386,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
                 </div>
               )}
             </div>
-          </aside>
+          </ChatSidebar>
           )
         )}
       </div>

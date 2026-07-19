@@ -4,6 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = (ROOT / "src" / "ui" / "components" / "App.tsx").read_text(encoding="utf-8")
+WORK_BANNER = (ROOT / "src" / "ui" / "components" / "chat" / "ChatWorkBanner.tsx").read_text(encoding="utf-8")
 SETTINGS = (ROOT / "src" / "ui" / "components" / "SettingsPage.tsx").read_text(encoding="utf-8")
 AGENTS = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
 
@@ -14,8 +15,9 @@ def require(text: str, snippet: str, label: str) -> None:
 
 
 def main() -> None:
+    require(APP, "function ChatRuntimeBanner", "App runtime banner wrapper")
+
     for snippet in [
-        "function ChatRuntimeBanner",
         "function agentWorkingBannerState",
         "function agentCurrentTaskLabel",
         "activity === 'active'",
@@ -23,20 +25,15 @@ def main() -> None:
         "{label} is {mode}",
         "Task: ${task.title}",
         "${debugPrefix}-status-start-btn",
-        "debugPrefix=\"agent-detail-chat\"",
-        "debugPrefix=\"conversation-composer\"",
-        "debugPrefix=\"home-running-agent-chat\"",
-        "debugPrefix=\"guide-chat\"",
-        "debugPrefix=\"chain-coordinator\"",
     ]:
-        require(APP, snippet, "App runtime banner")
+        require(WORK_BANNER, snippet, "shared work banner")
 
     for snippet in [
-        "<ChatRuntimeBanner agent={agent} tasksById={tasksById} debugPrefix=\"agent-detail-chat\"",
-        "<ChatRuntimeBanner agent={locallyStopped ? { ...agent, status: 'stopped'",
+        'debugPrefix={agentDetailChatDebug.workBanner}',
+        "<ChatWorkBanner agent={locallyStopped ? { ...agent, status: 'stopped'",
         "<ChatRuntimeBanner agent={selectedAgent} debugPrefix=\"home-running-agent-chat\"",
         "<ChatRuntimeBanner agent={agent || { id: GUIDE_AGENT_ID",
-        "<ChatRuntimeBanner agent={coordinatorAgent || { id: coordinatorAgentId",
+        "<ChatWorkBanner agent={coordinatorAgent || { id: coordinatorAgentId",
     ]:
         require(APP, snippet, "banner placement")
 
