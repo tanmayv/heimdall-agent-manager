@@ -22,6 +22,7 @@ FEDERATION_ENVELOPE_TASK_STATUS :: "status"
 FEDERATION_ENVELOPE_USER_CHAT_MESSAGE :: "user_chat_message"
 FEDERATION_ENVELOPE_USER_CHAT_REPLY :: "user_chat_reply"
 FEDERATION_ENVELOPE_DELIVERY_ACK :: "delivery_ack"
+FEDERATION_ENVELOPE_AGENT_STATUS :: "agent_status"
 FEDERATION_REPLAY_LIMIT :: 100
 FEDERATION_REPLAY_BACKOFF_MIN_MS :: i64(10 * 1000)
 FEDERATION_REPLAY_BACKOFF_MAX_MS :: i64(5 * 60 * 1000)
@@ -185,7 +186,7 @@ federation_forward :: proc(peer_id, route_kind, payload, idempotency_key: string
 // local remote_proxy stands in for. Returns (ok, status_code, response_body).
 // Synchronous request/response (not the delivery outbox) so the operator/UI gets
 // immediate feedback on whether the remote start succeeded.
-federation_forward_start :: proc(peer_id, remote_agent_instance_id, provider_profile, model_tier: string) -> (bool, int, string) {
+federation_forward_start :: proc(peer_id, remote_agent_instance_id, provider_profile, model_tier: string, proxy_agent_instance_id: string = "") -> (bool, int, string) {
 	_, dest_daemon_id, status, ok := federation_direct_peer_lookup(peer_id, "")
 	if !ok do return false, 404, `{"ok":false,"message":"peer not found"}`
 	if status != PEER_STATUS_LINKED {
@@ -202,6 +203,12 @@ federation_forward_start :: proc(peer_id, remote_agent_instance_id, provider_pro
 		strings.write_string(&b, `","model_tier":"`)
 		json_write_string(&b, model_tier)
 	}
+	// Carry the caller's proxy id so the origin can register this peer as a
+	// status subscriber for the real agent (Part B reverse subscriber index).
+	if proxy_agent_instance_id != "" {
+		strings.write_string(&b, `","proxy_agent_instance_id":"`)
+		json_write_string(&b, proxy_agent_instance_id)
+	}
 	strings.write_string(&b, `"}`)
 	payload := strings.to_string(b)
 	path := contracts.ROUTE_FEDERATION_START
@@ -209,6 +216,38 @@ federation_forward_start :: proc(peer_id, remote_agent_instance_id, provider_pro
 		return false, 503, `{"ok":false,"message":"peer unreachable"}`
 	}
 	resp, forward_ok := bridge_request(dest_daemon_id, contracts.BRIDGE_HTTP_METHOD_POST, path, payload, federation_idempotency_key("start", server_daemon_id, remote_agent_instance_id), FEDERATION_HTTP_TIMEOUT_MS)
+	if !forward_ok {
+		return false, 503, `{"ok":false,"message":"peer unreachable"}`
+	}
+	return resp.status == 200, resp.status, strings.clone(resp.body)
+}
+
+// federation_forward_stop asks the owning peer to stop the real agent that a
+// local remote_proxy stands in for. Mirrors federation_forward_start: synchronous
+// request/response over the bridge so the operator/UI gets immediate feedback on
+// whether the remote stop succeeded. Returns (ok, status_code, response_body).
+federation_forward_stop :: proc(peer_id, remote_agent_instance_id: string, time_in_sec: int, proxy_agent_instance_id: string = "") -> (bool, int, string) {
+	_, dest_daemon_id, status, ok := federation_direct_peer_lookup(peer_id, "")
+	if !ok do return false, 404, `{"ok":false,"message":"peer not found"}`
+	if status != PEER_STATUS_LINKED {
+		return false, 503, `{"ok":false,"message":"peer unreachable"}`
+	}
+	if dest_daemon_id == "" {
+		return false, 503, `{"ok":false,"message":"peer unreachable"}`
+	}
+	b := strings.builder_make()
+	strings.write_string(&b, `{"agent_instance_id":"`)
+	json_write_string(&b, remote_agent_instance_id)
+	strings.write_string(&b, `","time_in_sec":`)
+	strings.write_string(&b, fmt.tprintf("%d", time_in_sec))
+	if proxy_agent_instance_id != "" {
+		strings.write_string(&b, `,"proxy_agent_instance_id":"`)
+		json_write_string(&b, proxy_agent_instance_id)
+		strings.write_string(&b, `"`)
+	}
+	strings.write_string(&b, `}`)
+	payload := strings.to_string(b)
+	resp, forward_ok := bridge_request(dest_daemon_id, contracts.BRIDGE_HTTP_METHOD_POST, contracts.ROUTE_FEDERATION_STOP, payload, federation_idempotency_key("stop", server_daemon_id, remote_agent_instance_id), FEDERATION_HTTP_TIMEOUT_MS)
 	if !forward_ok {
 		return false, 503, `{"ok":false,"message":"peer unreachable"}`
 	}
@@ -1576,7 +1615,7 @@ handle_get_federation_message :: proc(client: net.TCP_Socket, message_id: string
 // target must be a genuine local agent (not itself a remote_proxy), preventing a
 // peer from asking us to relay a start onward.
 handle_post_federation_start :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
-	_, _, ok := federation_peer_id_for_context(ctx)
+	peer_id, _, ok := federation_peer_id_for_context(ctx)
 	if !ok {
 		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"peer not configured or token mismatch"}`)
 		return
@@ -1595,9 +1634,54 @@ handle_post_federation_start :: proc(client: net.TCP_Socket, body: string, ctx: 
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"target is itself a remote proxy; refusing to relay start"}`)
 		return
 	}
+	// Register the requesting peer's proxy as a status subscriber for this real
+	// agent so future status transitions are pushed back over the callback path.
+	if proxy_agent_instance_id := extract_json_string(body, "proxy_agent_instance_id", ""); proxy_agent_instance_id != "" {
+		agent_status_subscriber_register(peer_id, proxy_agent_instance_id, agent_instance_id)
+	}
 	// Delegate to the normal local start path. It writes the /agents/start
 	// response straight back to the requesting peer.
 	handle_agents_start(client, body)
+	// Push a current-status snapshot so the peer syncs immediately post-start.
+	_ = federation_propagate_agent_status(agent_instance_id, "federation_start")
+}
+
+// handle_post_federation_stop stops a REAL local agent on request from a peer
+// that holds a remote_proxy pointing at it. Authenticated by the peer link. The
+// target must be a genuine local agent (not itself a remote_proxy), preventing a
+// peer from asking us to relay a stop onward. Mirrors handle_post_federation_start.
+handle_post_federation_stop :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
+	peer_id, _, ok := federation_peer_id_for_context(ctx)
+	if !ok {
+		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"peer not configured or token mismatch"}`)
+		return
+	}
+	agent_instance_id := extract_json_string(body, "agent_instance_id", "")
+	if agent_instance_id == "" {
+		write_response(client, 400, "Bad Request", `{"ok":false,"message":"agent_instance_id required"}`)
+		return
+	}
+	idx := agent_record_index_by_instance(agent_instance_id)
+	if idx < 0 {
+		write_response(client, 404, "Not Found", `{"ok":false,"message":"target agent not found on owner daemon"}`)
+		return
+	}
+	if agent_record_is_remote_proxy(agent_instance_records[idx]) {
+		write_response(client, 400, "Bad Request", `{"ok":false,"message":"target is itself a remote proxy; refusing to relay stop"}`)
+		return
+	}
+	if proxy_agent_instance_id := extract_json_string(body, "proxy_agent_instance_id", ""); proxy_agent_instance_id != "" {
+		agent_status_subscriber_register(peer_id, proxy_agent_instance_id, agent_instance_id)
+	}
+	time_in_sec := extract_json_int(body, "time_in_sec", 0)
+	if time_in_sec <= 0 do time_in_sec = 30
+	// Delegate to the core local stop path and write its result back to the peer.
+	stop_ok, status, msg := agents_stop_request(agent_instance_id, time_in_sec)
+	if !stop_ok {
+		write_response(client, status, federation_status_text(status), msg)
+		return
+	}
+	write_response(client, 200, "OK", msg)
 }
 
 handle_post_federation_callback :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
@@ -1642,6 +1726,25 @@ handle_post_federation_callback :: proc(client: net.TCP_Socket, body: string, ct
 		return
 	}
 	switch kind {
+	case FEDERATION_ENVELOPE_AGENT_STATUS:
+		// Origin pushed a status transition for the real agent behind this proxy.
+		// Authorization already confirmed proxy_agent_instance_id -> peer_id above.
+		status_value := extract_json_string(body, "status", "")
+		if status_value == "" {
+			write_response(client, 400, "Bad Request", `{"ok":false,"message":"agent_status status required"}`)
+			return
+		}
+		connection_state := extract_json_string(body, "connection_state", "")
+		current_task_id := extract_json_string(body, "current_task_id", "")
+		updated_unix_ms := i64(extract_json_int(body, "updated_unix_ms", int(router_now_unix_ms())))
+		changed, apply_ok := remote_proxy_status_apply(proxy_agent_instance_id, status_value, connection_state, current_task_id, updated_unix_ms)
+		if !apply_ok {
+			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to apply remote status"}`)
+			return
+		}
+		// Emit local UI events only on a genuine transition, never per callback.
+		if changed do agent_proxy_status_emit(proxy_agent_instance_id, "remote_status")
+		write_response(client, 200, "OK", `{"ok":true,"accepted":true}`)
 	case FEDERATION_ENVELOPE_INBOX_MESSAGE:
 		origin_message_id := extract_json_string(body, "origin_message_id", "")
 		from_agent_instance_id := extract_json_string(body, "from_agent_instance_id", "")

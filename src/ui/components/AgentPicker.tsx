@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import * as daemonApi from '../api/daemonApi';
+import { agentRemoteInfo as agentRemote, isRemoteProxyAgent } from '../api/agentRemote';
 
 export type AgentPickerProps = {
   debugId: string;
@@ -87,25 +88,6 @@ function isRunning(agent: any): boolean {
 
 function agentKind(agent: any): string {
   return String(agent?.agentKind || agent?.agent_kind || 'local');
-}
-
-function agentRemote(agent: any): { peerId: string; originDaemonId: string; remoteAgentInstanceId: string } | null {
-  const remote = agent?.remote;
-  if (remote) {
-    const peerId = String(remote.peerId || remote.peer_id || '');
-    const originDaemonId = String(remote.originDaemonId || remote.origin_daemon_id || '');
-    const remoteAgentInstanceId = String(remote.remoteAgentInstanceId || remote.remote_agent_instance_id || '');
-    if (peerId || originDaemonId || remoteAgentInstanceId) return { peerId, originDaemonId, remoteAgentInstanceId };
-  }
-  const peerId = String(agent?.remote_peer_id || agent?.remotePeerId || '');
-  const originDaemonId = String(agent?.remote_origin_daemon_id || agent?.remoteOriginDaemonId || agent?.origin_daemon_id || agent?.originDaemonId || '');
-  const remoteAgentInstanceId = String(agent?.remote_agent_instance_id || agent?.remoteAgentInstanceId || '');
-  if (peerId || originDaemonId || remoteAgentInstanceId) return { peerId, originDaemonId, remoteAgentInstanceId };
-  return null;
-}
-
-function isRemoteProxyAgent(agent: any): boolean {
-  return agentKind(agent) === 'remote_proxy' && Boolean(agentRemote(agent)?.peerId) && Boolean(agentRemote(agent)?.remoteAgentInstanceId);
 }
 
 function statusLabel(agent: any): string {

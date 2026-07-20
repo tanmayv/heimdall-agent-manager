@@ -426,7 +426,7 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 		// not launch a local wrapper. Forward the start over the peer link and
 		// return the owner's response verbatim.
 		proxy := agent_instance_records[idx]
-		start_ok, status_code, resp_body := federation_forward_start(proxy.remote_peer_id, proxy.remote_agent_instance_id, provider_profile, extract_json_string(body, "model_tier", ""))
+		start_ok, status_code, resp_body := federation_forward_start(proxy.remote_peer_id, proxy.remote_agent_instance_id, provider_profile, extract_json_string(body, "model_tier", ""), proxy.agent_instance_id)
 		status_text := "OK" if start_ok else ("Service Unavailable" if status_code == 503 else "Bad Gateway")
 		if status_code == 404 do status_text = "Not Found"
 		write_response(client, status_code, status_text, resp_body)
@@ -553,7 +553,20 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 		strings.write_string(builder, `,"remote":{"peer_id":"`); json_write_string(builder, rec.remote_peer_id)
 		strings.write_string(builder, `","origin_daemon_id":"`); json_write_string(builder, resolved_origin_daemon_id)
 		strings.write_string(builder, `","remote_agent_instance_id":"`); json_write_string(builder, rec.remote_agent_instance_id)
-		strings.write_string(builder, `"}`)
+		// Real liveness propagated from the origin (Part B). Peer-link reachability
+		// overrides last-known status: a proxy to an unreachable peer reads offline.
+		peer_reachable := federation_peer_reachable(rec.remote_peer_id)
+		remote_status, _ := remote_proxy_status_get(rec.agent_instance_id)
+		effective_status := remote_status.status
+		if !peer_reachable do effective_status = FEDERATION_AGENT_STATUS_OFFLINE
+		remote_live := peer_reachable && federation_agent_status_is_live(remote_status.status)
+		strings.write_string(builder, `","status":"`); json_write_string(builder, effective_status)
+		strings.write_string(builder, `","connection_state":"`); json_write_string(builder, "connected" if remote_live else "offline")
+		strings.write_string(builder, `","connected":`); strings.write_string(builder, "true" if remote_live else "false")
+		strings.write_string(builder, `,"current_task_id":"`); json_write_string(builder, remote_status.current_task_id)
+		strings.write_string(builder, `","last_seen_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", remote_status.last_seen_unix_ms))
+		strings.write_string(builder, `,"peer_reachable":`); strings.write_string(builder, "true" if peer_reachable else "false")
+		strings.write_string(builder, `}`)
 	}
 	strings.write_string(builder, `,"conversation_id":"`); json_write_string(builder, conversation_id_for_instance(rec.agent_instance_id))
 	if live_idx := registry_find_agent(rec.agent_instance_id); live_idx >= 0 {

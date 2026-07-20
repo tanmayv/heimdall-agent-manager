@@ -69,6 +69,8 @@ import WorkspaceMainRegion from './workspace/WorkspaceMainRegion';
 import { adaptChainCoordinatorWorkspaceContext, adaptConversationWorkspaceContext, adaptDirectAgentWorkspaceContext } from './workspace/adapters';
 import type { WorkspaceContext, WorkspaceInspectorTab } from './workspace/types';
 import * as daemonApi from '../api/daemonApi';
+import { agentRemoteInfo, isRemoteProxyAgent, remoteAgentStatus, remoteAgentIsLive, remoteProxyContext } from '../api/agentRemote';
+import { agentHasLiveSession } from '../api/agentLiveness';
 import { selectTaskCacheProjection } from '../api/taskCache';
 import { selectChainViewCacheProjection } from '../api/chainViewCache';
 import { useFetchChainTasksQuery, useFetchTaskLogQuery, useFetchTaskQuery, useFetchTaskCommentsQuery, useLazyFetchTaskLogPageQuery } from '../api/endpoints/tasks';
@@ -337,33 +339,6 @@ function isGuideAgent(agent: any): boolean {
   return id === GUIDE_AGENT_ID || id.startsWith('guide@') || durable === 'guide' || templateId === 'guide' || role === 'guide';
 }
 
-function agentRemoteInfo(agent: any): { peerId: string; originDaemonId: string; remoteAgentInstanceId: string } | null {
-  const remote = agent?.remote;
-  if (remote) {
-    const peerId = String(remote.peerId || remote.peer_id || '');
-    const originDaemonId = String(remote.originDaemonId || remote.origin_daemon_id || '');
-    const remoteAgentInstanceId = String(remote.remoteAgentInstanceId || remote.remote_agent_instance_id || '');
-    if (peerId || originDaemonId || remoteAgentInstanceId) return { peerId, originDaemonId, remoteAgentInstanceId };
-  }
-  const peerId = String(agent?.remotePeerId || agent?.remote_peer_id || '');
-  const originDaemonId = String(agent?.remoteOriginDaemonId || agent?.remote_origin_daemon_id || '');
-  const remoteAgentInstanceId = String(agent?.remoteAgentInstanceId || agent?.remote_agent_instance_id || '');
-  if (peerId || originDaemonId || remoteAgentInstanceId) return { peerId, originDaemonId, remoteAgentInstanceId };
-  return null;
-}
-
-function isRemoteProxyAgent(agent: any): boolean {
-  const kind = String(agent?.agentKind || agent?.agent_kind || '').toLowerCase();
-  const remote = agentRemoteInfo(agent);
-  return kind === 'remote_proxy' && Boolean(remote?.peerId) && Boolean(remote?.remoteAgentInstanceId);
-}
-
-function remoteProxyContext(agent: any): string {
-  const remote = agentRemoteInfo(agent);
-  if (!remote) return 'Remote agent proxy';
-  return `Remote · ${remote.remoteAgentInstanceId || 'agent'} via ${remote.originDaemonId || remote.peerId}`;
-}
-
 function createConversationInstanceId(): string {
   const token = globalThis.crypto?.randomUUID?.().replace(/-/g, '').slice(0, 10) || `${Date.now().toString(16)}${Math.random().toString(16).slice(2, 8)}`;
   return `conversation@s-${token}`;
@@ -487,7 +462,21 @@ function agentStatusIndicator(agent: any, context = ''): { key: string; label: s
     return { key: 'working', label: 'Working', color: 'bg-sky-400', title: context || taskId || 'Agent is working', compact: '', pulse: 'animate-pulse' };
   }
   if (isRemoteProxyAgent(agent)) {
-    return { key: 'remote', label: 'Remote', color: 'bg-teal-400', title: context || remoteProxyContext(agent), compact: 'remote', pulse: '' };
+    const remoteStatus = remoteAgentStatus(agent);
+    const remoteTitle = context || remoteProxyContext(agent);
+    if (remoteStatus === 'working') {
+      return { key: 'working', label: 'Working', color: 'bg-sky-400', title: remoteTitle, compact: 'remote', pulse: 'animate-pulse' };
+    }
+    if (remoteStatus === 'starting') {
+      return { key: 'remote-starting', label: 'Starting', color: 'bg-amber-400', title: remoteTitle, compact: 'remote', pulse: 'animate-pulse' };
+    }
+    if (remoteStatus === 'idle' || remoteAgentIsLive(agent)) {
+      return { key: 'remote-idle', label: 'Idle', color: 'bg-teal-400', title: remoteTitle, compact: 'remote', pulse: '' };
+    }
+    if (remoteStatus === 'blocked') {
+      return { key: 'remote-blocked', label: 'Blocked', color: 'bg-rose-400', title: remoteTitle, compact: 'remote', pulse: '' };
+    }
+    return { key: 'remote-offline', label: remoteStatus === 'stopping' ? 'Stopping' : 'Offline', color: 'bg-zinc-600', title: remoteTitle, compact: 'remote', pulse: '' };
   }
   if (agentHasLiveSession(agent)) {
     return { key: 'idle', label: 'Idle', color: 'bg-emerald-400', title: context || 'Connected and idle', compact: '', pulse: '' };
@@ -2003,25 +1992,7 @@ function isTaskGeneratedAgent(agent: any): boolean {
   return Boolean(taskGeneratedAgentChainId(agent));
 }
 
-export function agentHasLiveSession(agent: any): boolean {
-  if (!agent) return false;
-  const connection = String(agent.connectionState || agent.connection_state || '').toLowerCase();
-  const startup = String(agent.startupStatus || agent.startup_status || '').toLowerCase();
-  const status = String(agent.status || '').toLowerCase();
-  const state = String(agent.state || '').toLowerCase();
-  const execState = String(agent.execState || agent.exec_state || '').toLowerCase();
-  const connected = Boolean(agent.connected) || connection === 'connected';
-  if (connected) return true;
-  if (isRemoteProxyAgent(agent)) return !['archived', 'missing', 'deleted'].includes(status) && !['archived', 'missing', 'deleted'].includes(state);
-  if (startup === 'stopped' || startup === 'stopping') return false;
-  if (connection === 'offline' || connection === 'disconnected') return false;
-  if (['offline', 'stopped', 'disconnected', 'archived', 'missing'].includes(status) || ['offline', 'stopped', 'disconnected', 'archived', 'missing'].includes(state)) return false;
-  if (agent.currentTaskId || agent.current_task_id) return true;
-  if (['ready', 'start_success', 'connected'].includes(startup)) return true;
-  if (['ready', 'live', 'connected', 'idle', 'working', 'active'].includes(status) || ['ready', 'live', 'connected', 'idle', 'working'].includes(state)) return true;
-  if (execState === 'running') return true;
-  return false;
-}
+export { agentHasLiveSession };
 
 function ChatRuntimeBanner({ agent, tasksById = {}, debugPrefix, onStart, startDisabled = false }: { agent: any; tasksById?: Record<string, any>; debugPrefix: string; onStart?: () => void; startDisabled?: boolean }) {
   return <ChatWorkBanner agent={agent} tasksById={tasksById} debugPrefix={debugPrefix} onStart={onStart} startDisabled={startDisabled} />;

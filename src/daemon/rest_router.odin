@@ -362,6 +362,12 @@ handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_C
 		return true
 	}
 
+	// POST /federation/stop (owner stops the real agent for a peer's remote_proxy)
+	if len(ctx.segments) == 2 && ctx.segments[0] == "federation" && ctx.segments[1] == "stop" && ctx.method == "POST" {
+		handle_post_federation_stop(client, request_body(request), ctx)
+		return true
+	}
+
 	// POST /federation/reachability (local bridge pushes secret-free WS reachability changes)
 	if len(ctx.segments) == 2 && ctx.segments[0] == "federation" && ctx.segments[1] == "reachability" && ctx.method == "POST" {
 		handle_post_federation_reachability(client, request_body(request), ctx)

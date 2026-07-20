@@ -35,6 +35,16 @@ handle_agents_stop :: proc(client: net.TCP_Socket, body: string, request: string
 }
 
 agents_stop_request :: proc(agent_instance_id: string, time_in_sec: int) -> (bool, int, string) {
+	// Stopping a remote_proxy must stop the REAL agent on the owning peer, not hit
+	// the local registry (proxies never register locally). Forward the stop over
+	// the peer link and return its result verbatim. Mirrors the proxy-detection
+	// branch in handle_agents_start (agents_start.odin).
+	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 && agent_record_is_remote_proxy(agent_instance_records[idx]) {
+		if peer_id, remote_id, ok := agent_remote_proxy_lookup(agent_instance_id); ok {
+			return federation_forward_stop(peer_id, remote_id, time_in_sec, agent_instance_id)
+		}
+		return false, 404, `{"ok":false,"message":"unknown remote proxy"}`
+	}
 	return agent_runtime_tracker_request_stop(agent_instance_id, time_in_sec, "api_stop_request")
 }
 

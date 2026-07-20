@@ -254,6 +254,7 @@ agent_runtime_tracker_request_stop :: proc(agent_instance_id: string, time_in_se
 	agents[idx].stop_requested_unix_ms = router_now_unix_ms()
 	registry_update_startup(agent_instance_id, "stopping", "stop_requested", "Stop event sent to agent", "", "", "")
 	agent_lifecycle_emit(agent_instance_id, "stopping", "stop_requested")
+	_ = federation_propagate_agent_status(agent_instance_id, "stop_requested")
 
 	sync.mutex_lock(&agent_runtime_tracker_mutex)
 	if rec_idx := agent_runtime_tracker_index_or_add_locked(agent_instance_id); rec_idx >= 0 {
@@ -272,6 +273,7 @@ agent_runtime_tracker_observe_stop_done :: proc(agent_instance_id, reason: strin
 	registry_clear_ws(agent_instance_id)
 	agent_runtime_tracker_observe_disconnected(agent_instance_id, "stop_done")
 	agent_lifecycle_emit(agent_instance_id, "offline", "stop_done")
+	_ = federation_propagate_agent_status(agent_instance_id, "stop_done")
 }
 
 agent_runtime_tracker_observe_register :: proc(agent_instance_id, agent_token: string) {
@@ -298,6 +300,9 @@ agent_runtime_tracker_observe_register :: proc(agent_instance_id, agent_token: s
 	}
 	rec.last_observed_unix_ms = now
 	fmt.printfln("AGENT_TRACKER ts_unix_ms=%d event=register_observed agent=%s state=%v", now, agent_instance_id, rec.state)
+	// Propagation reads only the registry/instance projections (no tracker mutex),
+	// so it is safe to call while the tracker mutex is held by the defer above.
+	_ = federation_propagate_agent_status(agent_instance_id, "register")
 }
 
 agent_runtime_tracker_observe_ws_connected :: proc(agent_instance_id: string, socket: net.TCP_Socket) -> bool {
@@ -313,6 +318,7 @@ agent_runtime_tracker_observe_ws_connected :: proc(agent_instance_id: string, so
 	}
 	sync.mutex_unlock(&agent_runtime_tracker_mutex)
 	agent_lifecycle_emit(agent_instance_id, "connected", "websocket_connected")
+	_ = federation_propagate_agent_status(agent_instance_id, "websocket_connected")
 	return true
 }
 
@@ -352,6 +358,7 @@ agent_runtime_tracker_apply_startup_report :: proc(agent_instance_id, status, re
 	if status == "starting" || status == "ready" do _ = agent_runtime_tracker_clear_stop_request(agent_instance_id, "startup_report")
 	agent_runtime_tracker_observe_ready_or_heartbeat(agent_instance_id, "startup_report")
 	agent_lifecycle_emit(agent_instance_id, status, "startup_report")
+	_ = federation_propagate_agent_status(agent_instance_id, "startup_report")
 	return true
 }
 
@@ -361,8 +368,15 @@ agent_runtime_tracker_apply_heartbeat_snapshot :: proc(snap: Heartbeat_Snapshot)
 	agent_runtime_tracker_observe_ready_or_heartbeat(snap.agent_instance_id, "heartbeat")
 	if !was_live || lifecycle_changed {
 		agent_lifecycle_emit(snap.agent_instance_id, "connected", "heartbeat")
+		// Edge-triggered ONLY: piggyback on the same lifecycle edge the local UI
+		// uses. federation_propagate_agent_status self-suppresses when the derived
+		// status is unchanged, so unchanged heartbeats never reach a peer (B0).
+		_ = federation_propagate_agent_status(snap.agent_instance_id, "heartbeat")
 	}
-	if runtime_changed do agent_runtime_emit(snap.agent_instance_id, "heartbeat")
+	if runtime_changed {
+		agent_runtime_emit(snap.agent_instance_id, "heartbeat")
+		_ = federation_propagate_agent_status(snap.agent_instance_id, "heartbeat")
+	}
 	return
 }
 
@@ -388,6 +402,7 @@ agent_runtime_tracker_observe_start_success :: proc(agent_instance_id: string) -
 	}
 	sync.mutex_unlock(&agent_runtime_tracker_mutex)
 	agent_lifecycle_emit(agent_instance_id, "connected", "start_success")
+	_ = federation_propagate_agent_status(agent_instance_id, "start_success")
 	fmt.printfln("AGENT_TRACKER ts_unix_ms=%d event=start_success agent=%s observed=%v", now, agent_instance_id, observed)
 	return true
 }
@@ -396,6 +411,7 @@ agent_runtime_tracker_observe_ws_disconnected :: proc(agent_instance_id: string,
 	if !registry_clear_ws_if_socket(agent_instance_id, socket) do return false
 	agent_runtime_tracker_observe_disconnected(agent_instance_id, reason)
 	agent_lifecycle_emit(agent_instance_id, "disconnected", reason)
+	_ = federation_propagate_agent_status(agent_instance_id, reason)
 	return true
 }
 
@@ -423,6 +439,7 @@ agent_runtime_tracker_apply_startup_timeout :: proc(agent_instance_id: string, t
 	agent.startup_updated_unix_ms = timed_out_unix_ms
 	if !agent.has_ws do agent.connected = false
 	agent_lifecycle_emit(agent_instance_id, "startup_failed", "startup_stale")
+	_ = federation_propagate_agent_status(agent_instance_id, "startup_stale")
 	fmt.printfln("AGENT_TRACKER ts_unix_ms=%d event=startup_timeout agent=%s", timed_out_unix_ms, agent_instance_id)
 	return true
 }
@@ -442,6 +459,7 @@ agent_runtime_tracker_apply_heartbeat_timeout :: proc(agent_instance_id: string)
 	agent.exec_state = "offline"
 	agent_runtime_tracker_observe_disconnected(agent_instance_id, "heartbeat_timeout")
 	agent_lifecycle_emit(agent_instance_id, "disconnected", "heartbeat_timeout")
+	_ = federation_propagate_agent_status(agent_instance_id, "heartbeat_timeout")
 	return true
 }
 

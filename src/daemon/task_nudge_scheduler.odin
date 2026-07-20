@@ -230,8 +230,63 @@ task_autoscaler_ensure_chain_coordinator :: proc(chain_id, reason, priority: str
 	return task_autoscaler_ensure_agent(chain, coordinator, "", boot_priority, router_now_unix_ms(), reason)
 }
 
+// Coalescing window for remote start-forwards so periodic reconcile ticks don't
+// spam the owning peer while a remote agent is already booting.
+Remote_Wake_Record :: struct {
+	proxy_agent_instance_id: string,
+	last_forward_unix_ms:    i64,
+}
+remote_wake_records: [dynamic]Remote_Wake_Record
+REMOTE_WAKE_COALESCE_MS :: i64(30_000)
+
+task_autoscaler_remote_wake_should_forward :: proc(proxy_agent_instance_id: string, now: i64) -> bool {
+	for &r in remote_wake_records {
+		if r.proxy_agent_instance_id == proxy_agent_instance_id {
+			if now - r.last_forward_unix_ms < REMOTE_WAKE_COALESCE_MS do return false
+			r.last_forward_unix_ms = now
+			return true
+		}
+	}
+	append(&remote_wake_records, Remote_Wake_Record{proxy_agent_instance_id = strings.clone(proxy_agent_instance_id), last_forward_unix_ms = now})
+	return true
+}
+
+// task_autoscaler_ensure_remote_agent wakes the REAL agent behind a remote proxy
+// on its owning peer. Applies to assignee, coordinator, and reviewer targets
+// alike (all route through task_autoscaler_ensure_agent). Returns true when the
+// remote agent is already live or a start was forwarded successfully; false when
+// it could not be forwarded (peer unreachable / coalesced). Either way the
+// durable task notification outbox still carries the event and replays on peer
+// reconnect, so an unreachable-peer target is never silently dropped.
+task_autoscaler_ensure_remote_agent :: proc(proxy_agent_instance_id, provider_profile, model_tier, reason: string, now: i64) -> bool {
+	peer_id, remote_agent_instance_id, ok := agent_remote_proxy_lookup(proxy_agent_instance_id)
+	if !ok || peer_id == "" || remote_agent_instance_id == "" do return false
+	if !federation_peer_reachable(peer_id) {
+		fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=remote_wake_skip source=%s target=%s skip_reason=peer_unreachable peer=%s", now, reason, proxy_agent_instance_id, peer_id)
+		return false
+	}
+	// Already live on the origin (Part B status propagation): nothing to do.
+	if remote, found := remote_proxy_status_get(proxy_agent_instance_id); found && federation_agent_status_is_live(remote.status) {
+		return true
+	}
+	if !task_autoscaler_remote_wake_should_forward(proxy_agent_instance_id, now) {
+		fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=remote_wake_skip source=%s target=%s skip_reason=coalesced peer=%s", now, reason, proxy_agent_instance_id, peer_id)
+		return false
+	}
+	start_ok, status_code, _ := federation_forward_start(peer_id, remote_agent_instance_id, provider_profile, model_tier, proxy_agent_instance_id)
+	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=remote_wake_forward source=%s target=%s peer=%s remote=%s ok=%t status=%d", router_now_unix_ms(), reason, proxy_agent_instance_id, peer_id, remote_agent_instance_id, start_ok, status_code)
+	return start_ok
+}
+
 task_autoscaler_ensure_agent :: proc(chain: Task_Chain_State, agent_instance_id, task_id, priority: string, now: i64, reason: string = "") -> bool {
 	if agent_instance_id == "" do return false
+	// Remote-proxy targets (assignee/coordinator/reviewer alike) can't be launched
+	// locally; wake the real agent on the owning peer instead. Short-circuits
+	// before the local lease/tracker/launch machinery, which is local-only.
+	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 && agent_record_is_remote_proxy(agent_instance_records[idx]) {
+		rec := agent_instance_records[idx]
+		return task_autoscaler_ensure_remote_agent(agent_instance_id, rec.provider_profile, rec.model_tier, reason, now)
+	}
 	boot_priority := priority
 	if boot_priority == "" do boot_priority = "normal"
 	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=ensure_agent_requested source=%s chain=%s task=%s target=%s priority=%s", now, reason, chain.chain_id, task_id, agent_instance_id, boot_priority)

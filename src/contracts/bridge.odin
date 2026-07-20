@@ -26,6 +26,7 @@ ROUTE_BRIDGE_WS :: "/bridge-ws"
 ROUTE_FEDERATION_INBOX :: "/federation/inbox"
 ROUTE_FEDERATION_CALLBACK :: "/federation/callback"
 ROUTE_FEDERATION_START :: "/federation/start"
+ROUTE_FEDERATION_STOP :: "/federation/stop"
 ROUTE_FEDERATION_REACHABILITY :: "/federation/reachability"
 ROUTE_FEDERATION_PEERS :: "/federation/peers"
 ROUTE_FEDERATION_ARTIFACTS_PREFIX :: "/federation/artifacts"
@@ -82,6 +83,7 @@ bridge_daemon_route_supported :: proc(method, route: string) -> bool {
 	case ROUTE_FEDERATION_INBOX,
 	     ROUTE_FEDERATION_CALLBACK,
 	     ROUTE_FEDERATION_START,
+	     ROUTE_FEDERATION_STOP,
 	     ROUTE_FEDERATION_REACHABILITY:
 		return method == BRIDGE_HTTP_METHOD_POST
 	case ROUTE_FEDERATION_PEERS:

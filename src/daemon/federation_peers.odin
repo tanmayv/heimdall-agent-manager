@@ -353,6 +353,9 @@ reachable_daemon_apply_body :: proc(body: string, emit_event: bool) -> int {
 	for i in 0..<replay_count {
 		_ = federation_delivery_outbox_replay_peer(replay_peer_ids[i])
 		_ = peer_link_replay_remote_notifications(replay_peer_ids[i])
+		// On peer link (re)connect, push one current-status snapshot per proxy
+		// subscriber so the peer re-syncs after any missed transitions (B1).
+		_ = federation_agent_status_resync_peer(replay_peer_ids[i])
 	}
 	if emit_event && changed_count > 0 do federation_reachability_emit_event(strings.to_string(changed_ids), changed_count)
 	return changed_count
