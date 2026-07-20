@@ -134,6 +134,10 @@ main :: proc() {
 	conversation_id := extract_json_string(register_response.body, "conversation_id", "")
 	ws_url := extract_json_string(register_response.body, "ws_url", "")
 	agent_token := extract_json_string(register_response.body, "agent_token", "")
+	unread_count := extract_json_int(register_response.body, "unread_messages_count", 0)
+	if current_task_id == "" {
+		current_task_id = extract_json_string(register_response.body, "assigned_task_id", "")
+	}
 	prefs_obj := extract_json_object(register_response.body, "preferences")
 	defer if prefs_obj != "" do delete(prefs_obj)
 	apply_preferences_json(prefs_obj)
@@ -177,7 +181,7 @@ main :: proc() {
 	if stop_message == "" do stop_message = "Agent stop requested. You have {time} seconds to complete your current work and checkpoint before shutdown."
 
 	wrapper_launch_log("build_cmd_begin", agent_instance_id, launch_start_ms)
-	command := build_agent_command(cfg, selected_agent, cfg.daemon_url, registered_instance_id, display_name, conversation_id, agent_token, current_task_id, new_message, model_tier)
+	command := build_agent_command(cfg, selected_agent, cfg.daemon_url, registered_instance_id, display_name, conversation_id, agent_token, current_task_id, new_message, model_tier, unread_count)
 	wrapper_launch_log("build_cmd_done", agent_instance_id, launch_start_ms)
 	wrapper_launch_log("tmux_ensure_begin", registered_instance_id, launch_start_ms)
 	launch, launch_ok := tmux.ensure_agent_window(cfg.tmux_session, window_name, cwd, command)
@@ -197,7 +201,7 @@ main :: proc() {
 	report_startup_status(cfg.daemon_url, registered_instance_id, "starting", "launch", "Agent process launched in tmux", selected_agent, cwd, launch.pane_id)
 	fmt.printfln("WRAPPER_LAUNCH ts_unix_ms=%d elapsed_ms=%d stage=startup_report_starting_done agent=%s report_ms=%d", wrapper_now_unix_ms(), wrapper_now_unix_ms() - launch_start_ms, registered_instance_id, wrapper_now_unix_ms() - startup_report_begin)
 	wrapper_launch_log("starter_prompt_begin", registered_instance_id, launch_start_ms)
-	deliver_tmux_starter_prompt(agent_cmd, cfg.daemon_url, registered_instance_id, display_name, conversation_id, agent_token, current_task_id, new_message, launch.pane_id)
+	deliver_tmux_starter_prompt(agent_cmd, cfg.daemon_url, registered_instance_id, display_name, conversation_id, agent_token, current_task_id, new_message, launch.pane_id, unread_count)
 	wrapper_launch_log("starter_prompt_done", registered_instance_id, launch_start_ms)
 	wrapper_launch_log("startup_probe_begin", registered_instance_id, launch_start_ms)
 	result := startup_probe_agent(agent_cmd.startup_detection, launch.pane_id)
@@ -1996,7 +2000,7 @@ starter_prompt_template_for_agent :: proc(agent_cmd: cfg_lib.Agent_Command_Confi
 	return active_live_prefs.starter_prompt
 }
 
-render_starter_prompt_for_agent :: proc(agent_cmd: cfg_lib.Agent_Command_Config, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id, new_message: string) -> string {
+render_starter_prompt_for_agent :: proc(agent_cmd: cfg_lib.Agent_Command_Config, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id, new_message: string, unread_count: int) -> string {
 	template := starter_prompt_template_for_agent(agent_cmd, agent_token)
 	if template == "" do return ""
 	if current_task_id != "" {
@@ -2013,12 +2017,20 @@ render_starter_prompt_for_agent :: proc(agent_cmd: cfg_lib.Agent_Command_Config,
 			"\"",
 		})
 	}
+	if unread_count > 0 {
+		template = strings.concatenate({
+			strings.trim_space(template),
+			"\n\nYou have ",
+			fmt.tprintf("%d", unread_count),
+			" unread message(s). Read your inbox with `{ctl_bin} inbox --token {token}` or check your chat history to see the full context and reply.",
+		})
+	}
 	return template_string(template, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id)
 }
 
-deliver_tmux_starter_prompt :: proc(agent_cmd: cfg_lib.Agent_Command_Config, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id, new_message, pane_id: string) {
+deliver_tmux_starter_prompt :: proc(agent_cmd: cfg_lib.Agent_Command_Config, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id, new_message, pane_id: string, unread_count: int) {
 	if prompt_delivery_for_agent(agent_cmd) != "tmux" do return
-	prompt := render_starter_prompt_for_agent(agent_cmd, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id, new_message)
+	prompt := render_starter_prompt_for_agent(agent_cmd, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id, new_message, unread_count)
 	if prompt == "" do return
 	delay_ms := prompt_tmux_delay_for_agent(agent_cmd)
 	if delay_ms > 0 do time.sleep(time.Duration(delay_ms) * time.Millisecond)
@@ -2030,7 +2042,7 @@ deliver_tmux_starter_prompt :: proc(agent_cmd: cfg_lib.Agent_Command_Config, dae
 	}
 }
 
-build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id, new_message, model_tier: string) -> []string {
+build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id, new_message, model_tier: string, unread_count: int) -> []string {
 	agent_command_name := selected_agent
 	if agent_command_name == "" do agent_command_name = command_name_for_agent(cfg.command, cfg.agent_name)
 	for agent_cmd in cfg.agent_commands {
@@ -2062,7 +2074,7 @@ build_agent_command :: proc(cfg: cfg_lib.Wrapper_Config, selected_agent, daemon_
 			}
 			if inject_prompt_via_flags {
 				append_templated_args(&result, agent_cmd.prompt_flags, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id)
-				prompt := render_starter_prompt_for_agent(agent_cmd, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id, new_message)
+				prompt := render_starter_prompt_for_agent(agent_cmd, daemon_url, agent_instance_id, display_name, conversation_id, agent_token, current_task_id, new_message, unread_count)
 				if prompt != "" do append(&result, prompt)
 			}
 			return result[:]

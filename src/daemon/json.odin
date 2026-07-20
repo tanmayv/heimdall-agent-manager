@@ -129,7 +129,7 @@ extract_json_bool :: proc(body, key: string, fallback: bool) -> bool {
 	return fallback
 }
 
-register_response_json :: proc(record: Agent_Record, template_persona, template_instructions, prefs_json: string) -> string {
+register_response_json :: proc(record: Agent_Record, template_persona, template_instructions, prefs_json: string, unread_messages_count: int, assigned_task_id: string) -> string {
 	builder := strings.builder_make()
 	ws_host := server_bind_host
 	if server_config.daemon.advertise_host != "" do ws_host = server_config.daemon.advertise_host
@@ -165,6 +165,13 @@ register_response_json :: proc(record: Agent_Record, template_persona, template_
 	if prefs_json != "" {
 		strings.write_string(&builder, ",\"preferences\":")
 		strings.write_string(&builder, prefs_json)
+	}
+	strings.write_string(&builder, ",\"unread_messages_count\":")
+	strings.write_string(&builder, fmt.tprintf("%d", unread_messages_count))
+	if assigned_task_id != "" {
+		strings.write_string(&builder, ",\"assigned_task_id\":\"")
+		json_write_string(&builder, assigned_task_id)
+		strings.write_string(&builder, "\"")
 	}
 	strings.write_string(&builder, "}")
 	return strings.to_string(builder)
