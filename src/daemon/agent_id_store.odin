@@ -531,3 +531,12 @@ agent_id_event_from_json :: proc(line: string) -> (Agent_Id_Event, bool) {
 	}
 	return ev, ev.agent_id != ""
 }
+
+agent_id_archive :: proc(agent_id, author: string) -> bool {
+	if agent_id == "" || !agent_id_exists(agent_id) do return false
+	return agent_id_append_event(Agent_Id_Event{
+		kind = .Agent_Id_Archived,
+		agent_id = agent_id,
+		author = author,
+	})
+}

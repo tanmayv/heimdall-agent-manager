@@ -345,6 +345,10 @@ handle_client :: proc(client: net.TCP_Socket) {
 		handle_agent_id_update(client, request_body(request))
 		return
 	}
+	if strings.has_prefix(request, "POST /agent-ids/delete ") || strings.has_prefix(request, "POST /agent-ids/archive ") {
+		handle_agent_id_delete(client, request_body(request))
+		return
+	}
 
 	if strings.has_prefix(request, "POST /agents/archive ") || strings.has_prefix(request, "POST /agents/delete ") || strings.has_prefix(request, "POST /agents/remove ") {
 		handle_agent_instance_archive(client, request_body(request))

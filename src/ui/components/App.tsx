@@ -2376,73 +2376,32 @@ function SidebarAgentInstancesPanel({ agentId = '', agents = [], chats = {}, tas
 
 function AgentsManagementSurface({ agents = [], chats = {}, tasksById = {}, chainsById = {}, projects = [], session = {}, providers = [], onBack, onOpenIdentity, onOpenInstance, onStartInstance, onRefreshAgents }: any) {
   const groups = durableAgentGroups(agents);
-  const [remotePeers, setRemotePeers] = useState<any[]>([]);
-  const [remotePeerId, setRemotePeerId] = useState('');
-  const [remoteAgentId, setRemoteAgentId] = useState('');
-  const [remoteLocalAgentId, setRemoteLocalAgentId] = useState('');
-  const [remoteDisplayName, setRemoteDisplayName] = useState('');
-  const [remoteTemplateId, setRemoteTemplateId] = useState('');
-  const [remoteCreateBusy, setRemoteCreateBusy] = useState(false);
-  const [remoteCreateMessage, setRemoteCreateMessage] = useState('');
-  useEffect(() => {
-    let cancelled = false;
-    async function loadPeers() {
-      if (!session?.daemonUrl || !session?.clientToken) { setRemotePeers([]); return; }
+
+  const handleDelete = async (agentId: string) => {
+    if (!session?.daemonUrl || !session?.clientToken) return;
+    if (confirm(`Are you sure you want to delete/archive agent-id ${agentId}?`)) {
       try {
-        const peers = await daemonApi.listFederationPeers({ daemonUrl: session.daemonUrl, clientToken: session.clientToken });
-        if (cancelled) return;
-        const linked = (peers || []).filter((peer: any) => String(peer?.status || '').toLowerCase() === 'linked');
-        setRemotePeers(linked);
-        setRemotePeerId((prev) => prev || String(linked?.[0]?.peer_id || ''));
-      } catch {
-        if (!cancelled) setRemotePeers([]);
+        await daemonApi.deleteAgentId({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, agentId });
+        await onRefreshAgents?.();
+      } catch (err: any) {
+        alert(err?.message || 'Failed to delete agent-id');
       }
     }
-    loadPeers().catch(() => undefined);
-    return () => { cancelled = true; };
-  }, [session?.daemonUrl, session?.clientToken]);
-  const createRemoteAgentId = async () => {
-    const rid = remoteAgentId.trim();
-    if (!rid || !remotePeerId || remoteCreateBusy) return;
-    setRemoteCreateBusy(true);
-    setRemoteCreateMessage('');
-    try {
-      const result = await daemonApi.bindRemoteProxy({
-        daemonUrl: session?.daemonUrl || '',
-        clientToken: session?.clientToken || '',
-        peerId: remotePeerId,
-        remoteAgentId: rid,
-        localAgentId: remoteLocalAgentId.trim(),
-        displayName: remoteDisplayName.trim() || rid,
-        templateId: remoteTemplateId.trim() || rid,
-        createRemoteAgentId: true,
-        startInstance: false,
-      });
-      await onRefreshAgents?.();
-      const localId = String(result?.identity?.agent_id || result?.identity?.agentId || remoteLocalAgentId.trim() || `${rid}-${remotePeerId}`);
-      setRemoteCreateMessage(`Created remote agent id mapping ${localId}`);
-      if (localId) onOpenIdentity?.(localId);
-    } catch (err: any) {
-      setRemoteCreateMessage(err?.message || 'Unable to create remote agent id');
-    } finally {
-      setRemoteCreateBusy(false);
-    }
   };
+
   return (
-    <div data-debug-id="agents-management-surface" className="mx-auto max-w-6xl px-8 py-8">
+    <div data-debug-id="agents-management-surface" className="mx-auto max-w-5xl px-8 py-8">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <div className="text-xs uppercase tracking-[0.22em] text-zinc-500">Agents</div>
-          <h1 className="mt-1 text-2xl font-semibold text-zinc-100">Durable agent identities</h1>
-          <p className="mt-1 text-sm text-zinc-500">Use this tab to list, create, and edit agents. Primary live-instance navigation lives in the main sidebar.</p>
+          <h1 className="text-2xl font-semibold text-zinc-100">Agents</h1>
+          <p className="mt-1 text-sm text-zinc-500">Manage your durable agent identities.</p>
         </div>
         <button type="button" data-debug-id="agents-management-back-btn" onClick={onBack} className="rounded-xl border border-white/10 px-3 py-2 text-sm text-zinc-300 hover:bg-[#171717]">Back</button>
       </div>
-      <div className="grid gap-4 lg:grid-cols-[360px_minmax(0,1fr)]">
-        <div data-debug-id="agents-management-create-card" className="h-fit rounded-2xl border border-[#262626] bg-[#101010] p-5">
-          <div className="text-xs uppercase tracking-[0.18em] text-zinc-500">New identity</div>
-          <div className="mt-1 text-base font-semibold text-zinc-100">Create agent identity</div>
-          <p className="mt-2 text-xs leading-relaxed text-zinc-500">Define a durable agent identity (name, role, provider, tier, project) and start its first concrete instance. Live instances are listed under Agent identities and navigable from the main sidebar.</p>
+
+      <div className="mb-8 grid gap-4 md:grid-cols-2">
+        <div className="rounded-2xl border border-[#262626] bg-[#101010] p-5">
+          <h2 className="text-base font-semibold text-zinc-100">Create local agent-id</h2>
           <div className="mt-4">
             <SidebarAgentsList
               agents={agents}
@@ -2454,79 +2413,64 @@ function AgentsManagementSurface({ agents = [], chats = {}, tasksById = {}, chai
               showAgentList={false}
               launchButtonLabel="Create Agent Identity"
               launchButtonDebugId="agents-management-create-identity-btn"
-              launchModalTitle="Create agent identity"
-              launchModalSubtitle="Define a durable agent identity and start its first concrete instance."
             />
           </div>
-          <div data-debug-id="agents-management-create-hint" className="mt-3 rounded-xl border border-white/5 bg-white/[0.03] px-3 py-2 text-[11px] leading-relaxed text-zinc-500">Tip: durable ids are simple role names like <span className="font-mono text-zinc-300">coder</span> or <span className="font-mono text-zinc-300">reviewer</span>. Each launch mints a fresh concrete instance such as <span className="font-mono text-zinc-300">coder@s-…</span>.</div>
-          <div data-debug-id="agents-management-remote-create-card" className="mt-4 rounded-2xl border border-teal-400/20 bg-teal-400/[0.035] p-3">
-            <div className="text-xs uppercase tracking-[0.18em] text-teal-200/70">Remote agents</div>
-            <p className="mt-1 text-xs leading-relaxed text-zinc-500">Bind a remote daemon agent as a local proxy. It will appear in this tab, the sidebar, and direct chat.</p>
-            <div className="mt-3 grid gap-2">
-              <select data-debug-id="agents-management-remote-peer-select" value={remotePeerId} onChange={(event) => setRemotePeerId(event.target.value)} className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs text-zinc-100 outline-none focus:border-teal-300">
-                <option value="">Select linked peer</option>
-                {remotePeers.map((peer: any) => <option key={peer.peer_id || peer.daemon_id} value={peer.peer_id}>{peer.peer_id || peer.daemon_id}</option>)}
-              </select>
-              <input data-debug-id="agents-management-remote-agent-id-input" value={remoteAgentId} onChange={(event) => setRemoteAgentId(event.target.value)} placeholder="remote agent_id, e.g. researcher" className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs text-zinc-100 outline-none focus:border-teal-300" />
-              <input data-debug-id="agents-management-remote-local-agent-id-input" value={remoteLocalAgentId} onChange={(event) => setRemoteLocalAgentId(event.target.value)} placeholder="local agent_id override (optional)" className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs text-zinc-100 outline-none focus:border-teal-300" />
-              <input data-debug-id="agents-management-remote-display-name-input" value={remoteDisplayName} onChange={(event) => setRemoteDisplayName(event.target.value)} placeholder="display name (optional)" className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs text-zinc-100 outline-none focus:border-teal-300" />
-              <input data-debug-id="agents-management-remote-template-input" value={remoteTemplateId} onChange={(event) => setRemoteTemplateId(event.target.value)} placeholder="template id (optional)" className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs text-zinc-100 outline-none focus:border-teal-300" />
-              <button type="button" data-debug-id="agents-management-remote-create-agent-id-btn" onClick={() => { void createRemoteAgentId(); }} disabled={!remotePeerId || !remoteAgentId.trim() || remoteCreateBusy} className="rounded-xl bg-teal-300 px-3 py-2 text-xs font-semibold text-black hover:bg-teal-200 disabled:cursor-not-allowed disabled:opacity-50">{remoteCreateBusy ? 'Creating…' : 'Create remote agent ID'}</button>
-              {remoteCreateMessage ? <div data-debug-id="agents-management-remote-create-message" className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs text-zinc-400">{remoteCreateMessage}</div> : null}
-            </div>
-            <div className="mt-3">
-              <AgentPicker
-                debugId="agents-management-remote-agent-picker"
-                daemonUrl={session?.daemonUrl || ''}
-                clientToken={session?.clientToken || ''}
-                agents={agents}
-                projects={projects}
-                templates={[]}
-                providers={providers}
-                remotePeersEnabled
-                selectionOnly
-                onRefreshAgents={onRefreshAgents}
-                onSelected={async (agentId: string) => {
-                  await onRefreshAgents?.();
-                  onOpenInstance?.(agentId);
-                }}
-              />
-            </div>
+        </div>
+        <div className="rounded-2xl border border-teal-400/20 bg-teal-400/[0.035] p-5">
+          <h2 className="text-base font-semibold text-teal-100">Create remote proxy</h2>
+          <div className="mt-4">
+            <AgentPicker
+              debugId="agents-management-remote-agent-picker"
+              daemonUrl={session?.daemonUrl || ''}
+              clientToken={session?.clientToken || ''}
+              agents={agents}
+              projects={projects}
+              templates={[]}
+              providers={providers}
+              remotePeersEnabled
+              selectionOnly
+              onRefreshAgents={onRefreshAgents}
+              onSelected={async (agentId: string) => {
+                await onRefreshAgents?.();
+                onOpenIdentity?.(agentId);
+              }}
+            />
           </div>
         </div>
-        <div data-debug-id="agents-management-list" className="rounded-2xl border border-[#262626] bg-[#101010] p-4">
-          <div className="mb-3 flex items-center justify-between"><div className="text-sm font-medium text-zinc-200">Agent identities</div><div className="text-xs text-zinc-600">{groups.length} durable</div></div>
-          {groups.length === 0 ? <div className="rounded-xl border border-dashed border-[#2a2a2a] p-6 text-sm text-zinc-500">No agents yet.</div> : groups.map((group: any) => (
-            <div key={group.agentId} data-debug-id={`agents-management-agent-${group.agentId}`} className="mb-3 rounded-xl border border-[#262626] bg-[#0b0b0b] p-3">
-              {(() => {
-                const representative = group.instances.find((instance: any) => agentHasLiveSession(instance)) || group.instances[0] || {};
-                const status = agentStatusIndicator(representative, group.running ? `${group.running} live instance${group.running === 1 ? '' : 's'}` : 'No live instances; open the main sidebar for runtime navigation');
-                const projectId = representative.projectId || representative.project_id || '';
-                const project = (projects || []).find((item: any) => (item.projectId || item.project_id) === projectId);
-                const template = representative.templateId || representative.template_id || 'agent';
-                const provider = representative.providerProfile || representative.provider_profile || 'default';
-                const tier = representative.modelTier || representative.model_tier || 'normal';
-                return (
-                  <>
-                    <div className="flex items-center justify-between gap-3">
-                      <div className="min-w-0"><div className="truncate text-sm font-medium text-zinc-100">{group.agentId}</div><div data-debug-id={`agents-management-counts-${group.agentId}`} className="mt-1 text-xs text-zinc-600">{group.instances.length} concrete · {group.running} live · {template}</div></div>
-                      <div className="flex shrink-0 items-center gap-2">
-                        <span data-debug-id={`agents-management-status-${group.agentId}`} aria-label={status.label} title={status.title} className="inline-flex items-center gap-1 rounded-full border border-white/10 px-2 py-1 text-[11px] text-zinc-400"><span className={`h-2 w-2 rounded-full ${status.color} ${status.pulse}`} />{status.compact}</span>
-                        <button type="button" data-debug-id={`agents-management-edit-btn-${group.agentId}`} onClick={() => onOpenIdentity?.(group.agentId)} className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-zinc-300 hover:bg-[#171717]">Edit</button>
-                        <button type="button" data-debug-id={`agents-management-new-instance-btn-${group.agentId}`} onClick={() => onStartInstance?.(group.agentId)} className="rounded-lg bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-white">+ Instance</button>
-                      </div>
+      </div>
+
+      <div className="rounded-2xl border border-[#262626] bg-[#101010] overflow-hidden">
+        <table className="w-full text-left text-sm text-zinc-300">
+          <thead className="bg-[#151515] text-xs uppercase text-zinc-500">
+            <tr>
+              <th className="px-4 py-3 font-medium">Agent ID</th>
+              <th className="px-4 py-3 font-medium">Template</th>
+              <th className="px-4 py-3 font-medium">Instances</th>
+              <th className="px-4 py-3 font-medium text-right">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-[#262626]">
+            {groups.length === 0 ? (
+              <tr><td colSpan={4} className="p-4 text-center text-zinc-500">No agent identities found.</td></tr>
+            ) : groups.map((group: any) => {
+              const representative = group.instances[0] || {};
+              const template = representative.templateId || representative.template_id || 'agent';
+              return (
+                <tr key={group.agentId} className="hover:bg-white/[0.02]">
+                  <td className="px-4 py-3 font-medium text-zinc-100">{group.agentId}</td>
+                  <td className="px-4 py-3">{template}</td>
+                  <td className="px-4 py-3">{group.instances.length}</td>
+                  <td className="px-4 py-3 text-right">
+                    <div className="flex justify-end gap-2">
+                      <button type="button" onClick={() => onStartInstance?.(group.agentId)} className="rounded border border-white/10 px-3 py-1.5 text-xs font-medium hover:bg-[#171717]">Launch</button>
+                      <button type="button" onClick={() => handleDelete(group.agentId)} className="rounded border border-red-900/50 bg-red-900/20 px-3 py-1.5 text-xs text-red-400 hover:bg-red-900/40">Delete</button>
                     </div>
-                    <div data-debug-id={`agents-management-summary-${group.agentId}`} className="mt-3 grid gap-2 text-xs text-zinc-500 md:grid-cols-3">
-                      <div className="rounded-lg border border-white/10 px-2 py-1.5">Provider / tier · <span className="text-zinc-300">{provider} · {tier}</span></div>
-                      <div className="rounded-lg border border-white/10 px-2 py-1.5">Project · <span className="text-zinc-300">{project?.name || projectId || 'none'}</span></div>
-                      <div className="rounded-lg border border-white/10 px-2 py-1.5">Edit defaults · <span className="text-zinc-300">provider · tier · project</span></div>
-                    </div>
-                  </>
-                );
-              })()}
-            </div>
-          ))}
-        </div>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
     </div>
   );

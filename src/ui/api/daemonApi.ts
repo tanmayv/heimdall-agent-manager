@@ -664,6 +664,14 @@ export async function deleteArtifact({ daemonUrl, clientToken, artifactId }: { d
   });
 }
 
+export async function deleteAgentId({ daemonUrl, clientToken, agentId }: { daemonUrl: string; clientToken: string; agentId: string }) {
+  return requestJson(joinUrl(daemonUrl, '/agent-ids/delete'), {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+    body: JSON.stringify({ agent_id: agentId }),
+  });
+}
+
 export async function listTasks({ daemonUrl, clientToken, chainId = '', createdAfter = 0, createdBefore = 0, limit = 50, offset = 0 }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId?: string; createdAfter?: number; createdBefore?: number; limit?: number; offset?: number }) {
   let path = `/tasks?limit=${limit}&offset=${offset}`;
   if (chainId) path += `&chain_id=${encodeURIComponent(chainId)}`;

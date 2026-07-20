@@ -990,6 +990,20 @@ handle_agent_id_update :: proc(client: net.TCP_Socket, body: string) {
 	write_response(client, 200, "OK", strings.to_string(b))
 }
 
+handle_agent_id_delete :: proc(client: net.TCP_Socket, body: string) {
+	agent_id := strings.trim_space(extract_json_string(body, "agent_id", ""))
+	if agent_id == "" { write_response(client, 400, "Bad Request", `{"ok":false,"message":"agent_id required"}`); return }
+	idx := agent_id_index(agent_id)
+	if idx < 0 || agent_id_records[idx].archived_at_unix_ms != 0 { write_response(client, 404, "Not Found", `{"ok":false,"message":"agent_id not found"}`); return }
+	
+	if !agent_id_archive(agent_id, "api") {
+		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to archive agent identity"}`)
+		return
+	}
+	
+	write_response(client, 200, "OK", `{"ok":true,"message":"archived"}`)
+}
+
 handle_agent_instance_create :: proc(client: net.TCP_Socket, body: string) {
 	agent_instance_id := extract_json_string(body, "agent_instance_id", "")
 	agent_id_ref := extract_json_string(body, "agent_id", "")
