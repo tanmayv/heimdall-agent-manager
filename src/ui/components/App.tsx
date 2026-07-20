@@ -410,8 +410,15 @@ function agentInstanceContext(agent: any, chats: Record<string, any[]> = {}, tas
 }
 
 
-function durableAgentGroups(agents: any[] = []): Array<{ agentId: string; label: string; instances: any[]; running: number; updatedUnixMs: number; identity: any }> {
+function durableAgentGroups(agents: any[] = [], identities: any[] = []): Array<{ agentId: string; label: string; instances: any[]; running: number; updatedUnixMs: number; identity: any }> {
   const byId = new Map<string, any>();
+  for (const identity of identities || []) {
+    const agentId = identity.id || identity.agent_id || identity.agentId;
+    if (!agentId || agentId === 'user_proxy' || agentId === 'operator@local') continue;
+    const updatedUnixMs = Number(identity.updated_unix_ms || identity.created_unix_ms || identity.updatedAtUnixMs || identity.createdAtUnixMs || 0);
+    byId.set(agentId, { agentId, label: agentId, instances: [], running: 0, updatedUnixMs, identity });
+  }
+
   for (const agent of agents || []) {
     if (!agent || isConversationAgent(agent) || isGuideAgent(agent)) continue;
     const agentId = durableAgentId(agent);
@@ -1287,6 +1294,7 @@ export default function App() {
       const requestedId = `${durableId}@s-${createAgentSessionToken()}`;
       const result = await daemonApi.startAgent({
         daemonUrl: session?.daemonUrl || '',
+        agentId: durableId,
         agentInstanceId: requestedId,
         provider: identity.providerProfile || defaultConversationProvider(settingsProviders),
         templateId: identity.templateId || durableId,
@@ -1430,6 +1438,7 @@ export default function App() {
               onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
               agents={agents}
               allAgents={agents}
+              agentIdentities={agentIdentities}
               selectedSidebarAgentId={selectedSidebarAgentId}
               sidebarAgentLaunchingId={sidebarAgentLaunchingId}
               onSelectSidebarAgent={setSelectedSidebarAgentId}
@@ -1545,7 +1554,7 @@ export default function App() {
               onNewInstance={async (identity: any) => {
                 const durableId = durableAgentId(identity);
                 const requestedId = `${durableId}@s-${(globalThis.crypto?.randomUUID?.().replace(/-/g, '').slice(0, 10) || Date.now().toString(16))}`;
-                const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, provider: identity.providerProfile || defaultConversationProvider(settingsProviders), templateId: identity.templateId || durableId, projectId: identity.projectId || '', displayName: '', modelTier: identity.modelTier || 'normal'});
+                const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentId: durableId, agentInstanceId: requestedId, provider: identity.providerProfile || defaultConversationProvider(settingsProviders), templateId: identity.templateId || durableId, projectId: identity.projectId || '', displayName: '', modelTier: identity.modelTier || 'normal'});
                 await refetchAgents();
                 openAgentPage(result?.agent_instance_id || result?.agentInstanceId || requestedId);
               }}
@@ -1578,6 +1587,7 @@ export default function App() {
           ) : home.surface === 'agents' ? (
             <AgentsManagementSurface
               agents={agents}
+              agentIdentities={agentIdentities}
               chats={chats}
               tasksById={tasksById}
               chainsById={chainsById}
@@ -2124,11 +2134,11 @@ function SidebarConversationSection({ conversations = [], chats = {}, summaryByI
 }
 
 
-function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryById = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, collapsed = false, onToggleCollapsed, agents = [], allAgents = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onOpenAgentInstance, onStartAgentInstance, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onMemory, onAgents, onTaskChains, onProjects, onSettings }: any) {
+function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryById = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, collapsed = false, onToggleCollapsed, agents = [], allAgents = [], agentIdentities = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onOpenAgentInstance, onStartAgentInstance, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onMemory, onAgents, onTaskChains, onProjects, onSettings }: any) {
   const chainUpdatedMs = (chain: any) => Number(chain?.updatedAtUnixMs || chain?.updated_at_unix_ms || chain?.updatedAt || chain?.updated_at || chain?.createdAtUnixMs || chain?.created_at_unix_ms || 0);
   const sortedChains = [...(chains || [])].sort((a: any, b: any) => chainUpdatedMs(b) - chainUpdatedMs(a));
   const activeChains = sortedChains.filter((chain: any) => !isChainCompleted(chain)).slice(0, 4);
-  const agentGroups = durableAgentGroups(agents);
+  const agentGroups = durableAgentGroups(agents, agentIdentities);
   const [collapsedMenuOpen, setCollapsedMenuOpen] = useState(false);
   if (collapsed) {
     const collapsedItems = [
@@ -2374,8 +2384,8 @@ function SidebarAgentInstancesPanel({ agentId = '', agents = [], chats = {}, tas
   );
 }
 
-function AgentsManagementSurface({ agents = [], chats = {}, tasksById = {}, chainsById = {}, projects = [], session = {}, providers = [], onBack, onOpenIdentity, onOpenInstance, onStartInstance, onRefreshAgents }: any) {
-  const groups = durableAgentGroups(agents);
+function AgentsManagementSurface({ agents = [], agentIdentities = [], chats = {}, tasksById = {}, chainsById = {}, projects = [], session = {}, providers = [], onBack, onOpenIdentity, onOpenInstance, onStartInstance, onRefreshAgents }: any) {
+  const groups = durableAgentGroups(agents, agentIdentities);
 
   const handleDelete = async (agentId: string) => {
     if (!session?.daemonUrl || !session?.clientToken) return;

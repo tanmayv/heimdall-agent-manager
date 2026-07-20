@@ -264,7 +264,7 @@ export async function listAgentProviders({ daemonUrl }: { daemonUrl: string }) {
   return data.providers ?? [];
 }
 
-export async function startAgent({ daemonUrl, agentInstanceId = '', provider, templateId, projectId, projectIdSet, alias, displayName, modelTier }: { daemonUrl: string; agentInstanceId?: string; provider?: string; templateId?: string; projectId?: string; projectIdSet?: boolean; alias?: string; displayName?: string; modelTier?: string }) {
+export async function startAgent({ daemonUrl, agentId, agentInstanceId = '', provider, templateId, projectId, projectIdSet, alias, displayName, modelTier }: { daemonUrl: string; agentId?: string; agentInstanceId?: string; provider?: string; templateId?: string; projectId?: string; projectIdSet?: boolean; alias?: string; displayName?: string; modelTier?: string }) {
   const body: any = {
     template_id: templateId || '',
     project_id: projectId || '',
@@ -277,6 +277,7 @@ export async function startAgent({ daemonUrl, agentInstanceId = '', provider, te
   }
   if (modelTier !== undefined) body.model_tier = modelTier || '';
   if (agentInstanceId) body.agent_instance_id = agentInstanceId;
+  if (agentId) body.agent_id = agentId;
   // Explicit runtime restart project override (incl. clearing to none) so the
   // backend applies an empty project verbatim instead of preserving the stored one.
   if (projectIdSet) body.project_id_set = true;
