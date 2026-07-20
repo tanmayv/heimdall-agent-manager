@@ -1968,8 +1968,20 @@ handle_post_federation_callback :: proc(client: net.TCP_Socket, body: string, ct
 		status_value := extract_json_string(body, "status", "")
 		status_body := extract_json_string(body, "body", "")
 		force := extract_json_bool(body, "force", false)
-		if target_origin_daemon_id == "" || target_origin_daemon_id != server_daemon_id || task_id == "" || status_value == "" || status_body == "" || from_agent_instance_id != remote_agent_instance_id || !federation_remote_task_authorized(peer_id, proxy_agent_instance_id, task_id, "status") {
-			write_response(client, 403, "Forbidden", `{"ok":false,"message":"unauthorized remote callback"}`)
+		if target_origin_daemon_id == "" || target_origin_daemon_id != server_daemon_id {
+			write_response(client, 403, "Forbidden", `{"ok":false,"message":"unauthorized remote callback","reason":"origin_mismatch"}`)
+			return
+		}
+		if task_id == "" || status_value == "" || status_body == "" {
+			write_response(client, 400, "Bad Request", `{"ok":false,"message":"task status callback requires task_id, status, and non-empty body","reason":"missing_status_fields"}`)
+			return
+		}
+		if from_agent_instance_id != remote_agent_instance_id {
+			write_response(client, 403, "Forbidden", `{"ok":false,"message":"unauthorized remote callback","reason":"remote_agent_mismatch"}`)
+			return
+		}
+		if !federation_remote_task_authorized(peer_id, proxy_agent_instance_id, task_id, "status") {
+			write_response(client, 403, "Forbidden", `{"ok":false,"message":"unauthorized remote callback","reason":"task_status_not_authorized"}`)
 			return
 		}
 		scope := federation_delivery_dedupe_scope(FEDERATION_DEDUPE_SCOPE_CALLBACK, peer_id, fmt.tprintf("%s:%s:%s", kind, task_id, status_value))

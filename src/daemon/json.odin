@@ -31,14 +31,21 @@ extract_json_string :: proc(body, key, fallback: string) -> string {
 
 json_value_start :: proc(body, key: string) -> int {
 	pattern := fmt.tprintf("\"%s\"", key)
-	idx := strings.index(body, pattern)
-	if idx < 0 do return -1
-	pos := idx + len(pattern)
-	for pos < len(body) && (body[pos] == ' ' || body[pos] == '\t' || body[pos] == '\n' || body[pos] == '\r') do pos += 1
-	if pos >= len(body) || body[pos] != ':' do return -1
-	pos += 1
-	for pos < len(body) && (body[pos] == ' ' || body[pos] == '\t' || body[pos] == '\n' || body[pos] == '\r') do pos += 1
-	return pos
+	search_start := 0
+	for search_start < len(body) {
+		idx_rel := strings.index(body[search_start:], pattern)
+		if idx_rel < 0 do return -1
+		idx := search_start + idx_rel
+		pos := idx + len(pattern)
+		for pos < len(body) && (body[pos] == ' ' || body[pos] == '\t' || body[pos] == '\n' || body[pos] == '\r') do pos += 1
+		if pos < len(body) && body[pos] == ':' {
+			pos += 1
+			for pos < len(body) && (body[pos] == ' ' || body[pos] == '\t' || body[pos] == '\n' || body[pos] == '\r') do pos += 1
+			return pos
+		}
+		search_start = idx + len(pattern)
+	}
+	return -1
 }
 
 json_unescape :: proc(value: string) -> string {
