@@ -36,11 +36,12 @@ type QueryError = {
   error: string;
 };
 
-function queryError(error: any): QueryError {
+function queryError(error: any): QueryError & { message: string } {
   return {
     status: 'CUSTOM_ERROR',
     error: String(error?.message || error || 'Request failed'),
-  };
+    message: String(error?.message || error || 'Request failed'),
+  } as any;
 }
 
 export function withSessionQuery<Arg, Result>(
