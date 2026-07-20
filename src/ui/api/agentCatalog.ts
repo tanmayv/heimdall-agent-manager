@@ -85,6 +85,7 @@ export function mapAgent(agent: any) {
       currentTaskId: agent.remote.current_task_id || agent.remote.currentTaskId || '',
       providerProfile: agent.remote.provider_profile || agent.remote.providerProfile || '',
       modelTier: agent.remote.model_tier || agent.remote.modelTier || '',
+      projectId: agent.remote.project_id || agent.remote.projectId || '',
       lastSeenUnixMs: Number(agent.remote.last_seen_unix_ms ?? agent.remote.lastSeenUnixMs ?? 0),
       peerReachable: (agent.remote.peer_reachable ?? agent.remote.peerReachable) === undefined ? undefined : Boolean(agent.remote.peer_reachable ?? agent.remote.peerReachable),
     } : ((agent.remote_peer_id || agent.remotePeerId || agent.remote_agent_instance_id || agent.remoteAgentInstanceId || agent.remote_origin_daemon_id || agent.remoteOriginDaemonId) ? {

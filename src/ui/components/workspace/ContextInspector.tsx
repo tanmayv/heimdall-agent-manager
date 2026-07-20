@@ -31,7 +31,23 @@ export default function ContextInspector({
       data-collapsed={collapsed ? 'true' : 'false'}
       className={className || `${collapsed ? 'w-0 border-l-0 p-0' : 'w-[420px] border-l border-[#262626] p-4'} min-h-0 shrink-0 overflow-hidden bg-[#0d0d0d] transition-[width,padding] duration-200`}
     >
-      {!collapsed ? (
+      {collapsed ? (
+        onToggleCollapsed ? (
+          <div className="flex h-full flex-col items-center gap-3 py-3">
+            <button
+              type="button"
+              data-debug-id="workspace-inspector-expand-btn"
+              onClick={onToggleCollapsed}
+              className="grid h-8 w-8 place-items-center rounded-full border border-white/10 bg-[#141414] text-sm text-zinc-400 hover:text-zinc-100"
+              aria-label="Expand context inspector"
+              title="Expand context inspector"
+            >
+              ‹
+            </button>
+            <span className="text-[10px] font-semibold uppercase tracking-[0.2em] text-zinc-600 [writing-mode:vertical-rl]">Inspector</span>
+          </div>
+        ) : null
+      ) : (
         <div className="flex h-full min-h-0 flex-col">
           <div className="mb-4 flex items-start justify-between gap-3">
             <div className="min-w-0">
@@ -83,7 +99,7 @@ export default function ContextInspector({
             )}
           </div>
         </div>
-      ) : null}
+      )}
     </aside>
   );
 }

@@ -3470,7 +3470,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
               />
             </WorkspaceMainRegion>
           )}
-          inspector={<ContextInspector title={detailWorkspaceContext.title} subtitle={detailWorkspaceContext.subtitle || 'agent'} tabs={detailInspectorTabs} activeTabId={inspectorTab} onTabChange={(tabId) => { setInspectorTab(tabId as any); setInspectorOpen(true); }} collapsed={!inspectorOpen} onToggleCollapsed={() => setInspectorOpen((open) => !open)} className={`${!inspectorOpen ? 'w-0 border-l-0 p-0' : 'w-[420px] border-l border-[#262626] p-4'} min-h-0 shrink-0 overflow-hidden bg-[#0d0d0d] transition-[width,padding] duration-200`} />}
+          inspector={<ContextInspector title={detailWorkspaceContext.title} subtitle={detailWorkspaceContext.subtitle || 'agent'} tabs={detailInspectorTabs} activeTabId={inspectorTab} onTabChange={(tabId) => { setInspectorTab(tabId as any); setInspectorOpen(true); }} collapsed={!inspectorOpen} onToggleCollapsed={() => setInspectorOpen((open) => !open)} className={`${!inspectorOpen ? 'w-[52px] border-l border-[#262626] p-0' : 'w-[420px] border-l border-[#262626] p-4'} min-h-0 shrink-0 overflow-hidden bg-[#0d0d0d] transition-[width,padding] duration-200`} />}
         />
       </section>
 
@@ -3817,7 +3817,7 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
             />
           </WorkspaceMainRegion>
         )}
-        inspector={<ContextInspector title={conversationWorkspaceContext.title} subtitle={conversationWorkspaceContext.subtitle || 'conversation'} tabs={conversationInspectorTabs} activeTabId={inspectorTab} onTabChange={(tabId) => { setInspectorTab(tabId as any); setInspectorOpen(true); }} collapsed={!inspectorOpen} onToggleCollapsed={() => setInspectorOpen((open) => !open)} className={`${!inspectorOpen ? 'w-0 border-l-0 p-0' : 'w-[420px] border-l border-[#262626] p-4'} min-h-0 shrink-0 overflow-hidden bg-[#0d0d0d] transition-[width,padding] duration-200`} />}
+        inspector={<ContextInspector title={conversationWorkspaceContext.title} subtitle={conversationWorkspaceContext.subtitle || 'conversation'} tabs={conversationInspectorTabs} activeTabId={inspectorTab} onTabChange={(tabId) => { setInspectorTab(tabId as any); setInspectorOpen(true); }} collapsed={!inspectorOpen} onToggleCollapsed={() => setInspectorOpen((open) => !open)} className={`${!inspectorOpen ? 'w-[52px] border-l border-[#262626] p-0' : 'w-[420px] border-l border-[#262626] p-4'} min-h-0 shrink-0 overflow-hidden bg-[#0d0d0d] transition-[width,padding] duration-200`} />}
       />
       {threadError && <div data-debug-id="conversation-thread-action-error" className="mx-5 mb-4 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{threadError}</div>}
     </div>

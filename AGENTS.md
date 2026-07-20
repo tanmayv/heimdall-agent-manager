@@ -443,7 +443,7 @@ All of the following element types must have `data-debug-id`:
 | `UnifiedWorkspaceShell` | `workspace-shell` |
 | `WorkspaceLeftSidebar` | `workspace-left-sidebar` |
 | `WorkspaceMainRegion` | `workspace-main-region`, `workspace-top-bar`, `workspace-content-outlet` |
-| `ContextInspector` | `workspace-inspector`, `workspace-inspector-toggle-btn`, `workspace-inspector-tabs`, `workspace-inspector-tab-${tabId}`, `workspace-inspector-panel-${tabId}`, `workspace-inspector-empty` |
+| `ContextInspector` | `workspace-inspector`, `workspace-inspector-toggle-btn`, `workspace-inspector-expand-btn`, `workspace-inspector-tabs`, `workspace-inspector-tab-${tabId}`, `workspace-inspector-panel-${tabId}`, `workspace-inspector-empty` |
 | `GenericAgentWorkspacePage` | `generic-agent-page`, `generic-agent-page-body`, `generic-agent-page-composer-region` |
 | `RuntimeRestartControls` | `${debugPrefix}-runtime-controls`, `${debugPrefix}-provider-select`, `${debugPrefix}-tier-select`, `${debugPrefix}-project-select`, `${debugPrefix}-restart-btn`, `${debugPrefix}-runtime-pending-hint` (debugPrefix is `chain-coordinator`, `conversation`, and `agent-detail-chat` for the wired composers) |
 | `ChatComposer` | `<shellDebugId>`, `<inputDebugId>`, `<sendButtonDebugId>`, `<sendErrorDebugId>`, `<uploadErrorDebugId>`, plus upload ids from `<debugIdPrefix>-btn` and `<debugIdPrefix>-input` |

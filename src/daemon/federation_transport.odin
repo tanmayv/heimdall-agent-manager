@@ -1756,8 +1756,9 @@ handle_post_federation_callback :: proc(client: net.TCP_Socket, body: string, ct
 		current_task_id := extract_json_string(body, "current_task_id", "")
 		provider_profile := extract_json_string(body, "provider_profile", "")
 		model_tier := extract_json_string(body, "model_tier", "")
+		project_id := extract_json_string(body, "project_id", "")
 		updated_unix_ms := i64(extract_json_int(body, "updated_unix_ms", int(router_now_unix_ms())))
-		changed, apply_ok := remote_proxy_status_apply(proxy_agent_instance_id, status_value, connection_state, current_task_id, provider_profile, model_tier, updated_unix_ms)
+		changed, apply_ok := remote_proxy_status_apply(proxy_agent_instance_id, status_value, connection_state, current_task_id, provider_profile, model_tier, project_id, updated_unix_ms)
 		if !apply_ok {
 			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to apply remote status"}`)
 			return

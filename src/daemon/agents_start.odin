@@ -615,10 +615,14 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 	if agent_kind == AGENT_KIND_REMOTE_PROXY do provider_profile_json = remote_status_for_json.provider_profile
 	strings.write_string(builder, `","agent_kind":"`); json_write_string(builder, agent_kind)
 	strings.write_string(builder, `","provider_profile":"`); json_write_string(builder, provider_profile_json)
-	strings.write_string(builder, `","project_id":"`); json_write_string(builder, rec.project_id)
+	// For remote proxies the durable local record has no project binding; surface
+	// the project propagated from the origin (mirrors provider/tier handling).
+	project_id_json := rec.project_id
+	if agent_kind == AGENT_KIND_REMOTE_PROXY && remote_status_for_json.project_id != "" do project_id_json = remote_status_for_json.project_id
+	strings.write_string(builder, `","project_id":"`); json_write_string(builder, project_id_json)
 	project_name := ""
-	if rec.project_id != "" {
-		if pidx := project_index(rec.project_id); pidx >= 0 do project_name = project_records[pidx].name
+	if project_id_json != "" {
+		if pidx := project_index(project_id_json); pidx >= 0 do project_name = project_records[pidx].name
 	}
 	strings.write_string(builder, `","project_name":"`); json_write_string(builder, project_name)
 	strings.write_string(builder, `","run_dir":"`); json_write_string(builder, rec.run_dir)
@@ -654,6 +658,7 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 		strings.write_string(builder, `,"current_task_id":"`); json_write_string(builder, remote_status.current_task_id)
 		strings.write_string(builder, `","provider_profile":"`); json_write_string(builder, remote_status.provider_profile)
 		strings.write_string(builder, `","model_tier":"`); json_write_string(builder, remote_status.model_tier)
+		strings.write_string(builder, `","project_id":"`); json_write_string(builder, remote_status.project_id)
 		strings.write_string(builder, `","last_seen_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", remote_status.last_seen_unix_ms))
 		strings.write_string(builder, `,"peer_reachable":`); strings.write_string(builder, "true" if remote_peer_reachable_for_json else "false")
 		strings.write_string(builder, `}`)

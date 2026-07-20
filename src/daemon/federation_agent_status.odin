@@ -163,23 +163,27 @@ agent_status_subscriber_register :: proc(peer_id, proxy_agent_instance_id, local
 	})
 }
 
-federation_agent_runtime_provider_tier :: proc(local_agent_instance_id: string) -> (provider_profile, model_tier: string) {
+federation_agent_runtime_provider_tier :: proc(local_agent_instance_id: string) -> (provider_profile, model_tier, project_id: string) {
 	if idx := registry_find_agent(local_agent_instance_id); idx >= 0 {
 		agent := agents[idx]
 		provider_profile = strings.clone(agent.provider_profile)
 		model_tier = strings.clone(agent.provider_tier)
+		if rec_idx := agent_record_index_by_instance(local_agent_instance_id); rec_idx >= 0 {
+			project_id = strings.clone(agent_instance_records[rec_idx].project_id)
+		}
 		return
 	}
 	if rec_idx := agent_record_index_by_instance(local_agent_instance_id); rec_idx >= 0 {
 		rec := agent_instance_records[rec_idx]
 		provider_profile = strings.clone(rec.provider_profile)
 		model_tier = strings.clone(rec.model_tier)
+		project_id = strings.clone(rec.project_id)
 		return
 	}
-	return "", ""
+	return "", "", ""
 }
 
-federation_agent_status_callback_json :: proc(idempotency_key, proxy_agent_instance_id, status, connection_state, current_task_id, provider_profile, model_tier, reason: string, updated_unix_ms: i64) -> string {
+federation_agent_status_callback_json :: proc(idempotency_key, proxy_agent_instance_id, status, connection_state, current_task_id, provider_profile, model_tier, project_id, reason: string, updated_unix_ms: i64) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, `{"kind":"`); json_write_string(&b, FEDERATION_ENVELOPE_AGENT_STATUS)
 	strings.write_string(&b, `","idempotency_key":"`); json_write_string(&b, idempotency_key)
@@ -190,6 +194,7 @@ federation_agent_status_callback_json :: proc(idempotency_key, proxy_agent_insta
 	strings.write_string(&b, `","current_task_id":"`); json_write_string(&b, current_task_id)
 	strings.write_string(&b, `","provider_profile":"`); json_write_string(&b, provider_profile)
 	strings.write_string(&b, `","model_tier":"`); json_write_string(&b, model_tier)
+	strings.write_string(&b, `","project_id":"`); json_write_string(&b, project_id)
 	strings.write_string(&b, `","reason":"`); json_write_string(&b, reason)
 	strings.write_string(&b, `","updated_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", updated_unix_ms))
 	strings.write_string(&b, `}`)
@@ -209,8 +214,8 @@ federation_propagate_agent_status :: proc(local_agent_instance_id, reason: strin
 		return 0
 	}
 	status, connection_state, current_task_id, updated_unix_ms := federation_derive_agent_status(local_agent_instance_id)
-	provider_profile, model_tier := federation_agent_runtime_provider_tier(local_agent_instance_id)
-	defer { if provider_profile != "" do delete(provider_profile); if model_tier != "" do delete(model_tier) }
+	provider_profile, model_tier, project_id := federation_agent_runtime_provider_tier(local_agent_instance_id)
+	defer { if provider_profile != "" do delete(provider_profile); if model_tier != "" do delete(model_tier); if project_id != "" do delete(project_id) }
 
 	// Snapshot the matching subscribers under lock; send outside the lock.
 	Pending :: struct { peer_id, proxy_agent_instance_id: string }
@@ -233,7 +238,7 @@ federation_propagate_agent_status :: proc(local_agent_instance_id, reason: strin
 	enqueued := 0
 	for p in pendings {
 		idempotency_key := federation_idempotency_key("agent_status", server_daemon_id, fmt.tprintf("%s:%s:%d", p.proxy_agent_instance_id, status, updated_unix_ms))
-		payload := federation_agent_status_callback_json(idempotency_key, p.proxy_agent_instance_id, status, connection_state, current_task_id, provider_profile, model_tier, reason, updated_unix_ms)
+		payload := federation_agent_status_callback_json(idempotency_key, p.proxy_agent_instance_id, status, connection_state, current_task_id, provider_profile, model_tier, project_id, reason, updated_unix_ms)
 		_ = federation_delivery_outbox_insert_pending(p.peer_id, FEDERATION_ROUTE_CALLBACK, idempotency_key, payload)
 		sent := federation_forward(p.peer_id, FEDERATION_ROUTE_CALLBACK, payload, idempotency_key)
 		_ = federation_delivery_outbox_mark_attempt(p.peer_id, FEDERATION_ROUTE_CALLBACK, idempotency_key, sent)
@@ -279,6 +284,7 @@ Remote_Proxy_Status :: struct {
 	current_task_id: string,
 	provider_profile: string,
 	model_tier: string,
+	project_id: string,
 	last_seen_unix_ms: i64,
 	updated_unix_ms: i64,
 }
@@ -299,6 +305,7 @@ remote_proxy_status_get :: proc(proxy_agent_instance_id: string) -> (Remote_Prox
 				current_task_id = strings.clone(rec.current_task_id),
 				provider_profile = strings.clone(rec.provider_profile),
 				model_tier = strings.clone(rec.model_tier),
+				project_id = strings.clone(rec.project_id),
 				last_seen_unix_ms = rec.last_seen_unix_ms,
 				updated_unix_ms = rec.updated_unix_ms,
 			}, true
@@ -311,7 +318,7 @@ remote_proxy_status_get :: proc(proxy_agent_instance_id: string) -> (Remote_Prox
 // updates using updated_unix_ms. Returns (changed, ok): changed is true only when
 // the stored status value actually transitions (so callers emit local UI events
 // only on transition, never per callback).
-remote_proxy_status_apply :: proc(proxy_agent_instance_id, status, connection_state, current_task_id, provider_profile, model_tier: string, updated_unix_ms: i64) -> (changed: bool, ok: bool) {
+remote_proxy_status_apply :: proc(proxy_agent_instance_id, status, connection_state, current_task_id, provider_profile, model_tier, project_id: string, updated_unix_ms: i64) -> (changed: bool, ok: bool) {
 	if proxy_agent_instance_id == "" || status == "" do return false, false
 	sync.mutex_lock(&remote_proxy_status_mutex)
 	defer sync.mutex_unlock(&remote_proxy_status_mutex)
@@ -329,11 +336,13 @@ remote_proxy_status_apply :: proc(proxy_agent_instance_id, status, connection_st
 		if rec.current_task_id != "" do delete(rec.current_task_id)
 		if rec.provider_profile != "" do delete(rec.provider_profile)
 		if rec.model_tier != "" do delete(rec.model_tier)
+		if rec.project_id != "" do delete(rec.project_id)
 		rec.status = strings.clone(status)
 		rec.connection_state = strings.clone(connection_state)
 		rec.current_task_id = strings.clone(current_task_id)
 		rec.provider_profile = strings.clone(provider_profile)
 		rec.model_tier = strings.clone(model_tier)
+		rec.project_id = strings.clone(project_id)
 		rec.last_seen_unix_ms = updated_unix_ms
 		rec.updated_unix_ms = updated_unix_ms
 		return status_changed, true
@@ -345,6 +354,7 @@ remote_proxy_status_apply :: proc(proxy_agent_instance_id, status, connection_st
 		current_task_id = strings.clone(current_task_id),
 		provider_profile = strings.clone(provider_profile),
 		model_tier = strings.clone(model_tier),
+		project_id = strings.clone(project_id),
 		last_seen_unix_ms = updated_unix_ms,
 		updated_unix_ms = updated_unix_ms,
 	})
@@ -375,9 +385,12 @@ agent_proxy_status_emit :: proc(proxy_agent_instance_id, reason: string) {
 	peer_reachable := federation_peer_reachable(rec.remote_peer_id)
 	live := federation_agent_status_is_live(status) && peer_reachable
 	connection_state := "connected" if live else "offline"
+	// Prefer the project propagated from the origin; the local proxy record has
+	// no project binding of its own (mirrors provider/tier handling).
+	effective_project_id := remote.project_id if remote.project_id != "" else rec.project_id
 	project_name := ""
-	if rec.project_id != "" {
-		if pj := project_index(rec.project_id); pj >= 0 do project_name = project_records[pj].name
+	if effective_project_id != "" {
+		if pj := project_index(effective_project_id); pj >= 0 do project_name = project_records[pj].name
 	}
 	// Build the proxy-specific remote block, then serialize the common event shape
 	// through the shared writer so the wire format cannot drift from the live path.
@@ -392,6 +405,7 @@ agent_proxy_status_emit :: proc(proxy_agent_instance_id, reason: string) {
 	strings.write_string(&rb, `,"current_task_id":"`); json_write_string(&rb, remote.current_task_id)
 	strings.write_string(&rb, `","provider_profile":"`); json_write_string(&rb, remote.provider_profile)
 	strings.write_string(&rb, `","model_tier":"`); json_write_string(&rb, remote.model_tier)
+	strings.write_string(&rb, `","project_id":"`); json_write_string(&rb, effective_project_id)
 	strings.write_string(&rb, `","last_seen_unix_ms":`); strings.write_string(&rb, fmt.tprintf("%d", remote.last_seen_unix_ms))
 	strings.write_string(&rb, `,"peer_reachable":`); strings.write_string(&rb, "true" if peer_reachable else "false")
 	strings.write_string(&rb, `}`)
@@ -406,7 +420,7 @@ agent_proxy_status_emit :: proc(proxy_agent_instance_id, reason: string) {
 		last_seen_unix_ms = remote.last_seen_unix_ms,
 		startup_status = status,
 		activity_status = "active" if status == FEDERATION_AGENT_STATUS_WORKING else "idle",
-		project_id = rec.project_id,
+		project_id = effective_project_id,
 		provider_profile = remote.provider_profile,
 		project_name = project_name,
 		model_tier = remote.model_tier,
