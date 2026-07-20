@@ -768,13 +768,33 @@ federation_advertised_agents_json :: proc() -> string {
 }
 
 handle_get_federation_agents :: proc(client: net.TCP_Socket, ctx: ^Route_Context) {
-	peer_token := query_param_value(ctx.query, "peer_token")
-	peer_daemon_id := query_param_value(ctx.query, "peer_daemon_id")
-	if !peer_link_validate_request(peer_token, peer_daemon_id) {
+	if _, _, ok := federation_peer_id_for_context(ctx); !ok {
 		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"peer not configured or token mismatch"}`)
 		return
 	}
 	write_response(client, 200, "OK", federation_advertised_agents_json())
+}
+
+federation_remote_agent_id_create :: proc(bridge_daemon_id, remote_agent_id, display_name, template_id, provider_profile, model_tier: string) -> (ok: bool, message: string) {
+	remote_agent_id_trimmed := strings.trim_space(remote_agent_id)
+	if remote_agent_id_trimmed == "" do return false, "remote_agent_id required"
+	if strings.trim_space(bridge_daemon_id) == "" do return false, "peer unreachable"
+	b := strings.builder_make()
+	strings.write_string(&b, `{"agent_id":"`); json_write_string(&b, remote_agent_id_trimmed)
+	strings.write_string(&b, `","display_name":"`); json_write_string(&b, strings.trim_space(display_name) if strings.trim_space(display_name) != "" else remote_agent_id_trimmed)
+	strings.write_string(&b, `","template_id":"`); json_write_string(&b, strings.trim_space(template_id) if strings.trim_space(template_id) != "" else remote_agent_id_trimmed)
+	if strings.trim_space(provider_profile) != "" { strings.write_string(&b, `","provider_profile":"`); json_write_string(&b, strings.trim_space(provider_profile)) }
+	if strings.trim_space(model_tier) != "" { strings.write_string(&b, `","model_tier":"`); json_write_string(&b, strings.trim_space(model_tier)) }
+	strings.write_string(&b, `"}`)
+	payload := strings.to_string(b)
+	resp, forward_ok := bridge_request(bridge_daemon_id, contracts.BRIDGE_HTTP_METHOD_POST, "/agent-ids/create", payload, federation_idempotency_key("create_agent_id", server_daemon_id, remote_agent_id_trimmed), FEDERATION_HTTP_TIMEOUT_MS)
+	if !forward_ok do return false, "peer unreachable"
+	if resp.status != 200 {
+		msg := extract_json_string(resp.body, "message", "remote agent_id create failed")
+		if msg == "" do msg = "remote agent_id create failed"
+		return false, msg
+	}
+	return true, ""
 }
 
 federation_remote_agent_id_start_concrete :: proc(bridge_daemon_id, remote_agent_id, display_name, template_id: string) -> (remote_agent_instance_id: string, ok: bool, message: string) {
@@ -803,12 +823,19 @@ federation_remote_agent_id_start_concrete :: proc(bridge_daemon_id, remote_agent
 	return strings.clone(concrete_id), true, ""
 }
 
-federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_instance_id, remote_agent_id, display_name, template_id, provider_profile, model_tier: string) -> (Agent_Instance_Record, bool, string) {
+federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_instance_id, remote_agent_id, local_agent_id, display_name, template_id, provider_profile, model_tier: string, create_remote_agent_id: bool = false) -> (Agent_Instance_Record, bool, string) {
 	resolved_peer_id, bridge_daemon_id, status, found := federation_direct_peer_lookup(peer_id, origin_daemon_id)
 	if !found || strings.trim_space(resolved_peer_id) == "" {
 		return Agent_Instance_Record{}, false, "peer not found"
 	}
+	remote_durable_id := strings.trim_space(remote_agent_id)
 	remote_id := strings.trim_space(remote_agent_instance_id)
+	local_durable_id := strings.trim_space(local_agent_id)
+	if local_durable_id == "" && remote_durable_id != "" do local_durable_id = safe_agent_id_part(fmt.tprintf("%s-%s", remote_durable_id, resolved_peer_id))
+	if create_remote_agent_id && remote_durable_id != "" {
+		create_ok, create_msg := federation_remote_agent_id_create(bridge_daemon_id, remote_durable_id, display_name, template_id, provider_profile, model_tier)
+		if !create_ok do return Agent_Instance_Record{}, false, create_msg
+	}
 	started_from_agent_id := false
 	if remote_id == "" {
 		if status != PEER_STATUS_LINKED do return Agent_Instance_Record{}, false, "peer unreachable"
@@ -820,6 +847,14 @@ federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_ins
 	if remote_id == "" do return Agent_Instance_Record{}, false, "remote_agent_instance_id required"
 	resolved_origin_daemon_id := strings.trim_space(origin_daemon_id)
 	if resolved_origin_daemon_id == "" do resolved_origin_daemon_id = strings.trim_space(bridge_daemon_id)
+	if local_durable_id != "" {
+		remote_identity_id := remote_durable_id
+		if remote_identity_id == "" do remote_identity_id = agent_id_from_instance_id(remote_id)
+		if safe_agent_id_part(local_durable_id) != local_durable_id do return Agent_Instance_Record{}, false, "invalid local_agent_id"
+		if !agent_id_upsert_remote_proxy(local_durable_id, display_name if display_name != "" else local_durable_id, template_id, resolved_peer_id, resolved_origin_daemon_id, remote_identity_id, "api") {
+			return Agent_Instance_Record{}, false, "failed to persist remote agent_id"
+		}
+	}
 	if resolved_origin_daemon_id != "" {
 		if existing, ok := agent_remote_proxy_find_absolute(resolved_origin_daemon_id, remote_id); ok {
 			needs_update := strings.trim_space(existing.remote_origin_daemon_id) == "" || existing.provider_profile != "" || existing.model_tier != ""
@@ -859,7 +894,12 @@ federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_ins
 	// Do not persist local provider/model defaults on remote proxies. The remote
 	// daemon owns runtime provider selection; explicit start overrides are forwarded
 	// request-time only and validated on the remote daemon.
-	local_id := agent_generated_instance_id(fmt.tprintf("%s-%s", remote_id, resolved_peer_id))
+	local_id := ""
+	if local_durable_id != "" {
+		local_id = agent_instance_id_new(local_durable_id)
+	} else {
+		local_id = agent_generated_instance_id(fmt.tprintf("%s-%s", remote_id, resolved_peer_id))
+	}
 	rec_id, _, ok := agent_record_upsert(local_id, local_display_name, local_template_id, "", "", "", "", AGENT_IDENTITY_STATE_PROVISIONED, false, AGENT_KIND_REMOTE_PROXY, resolved_peer_id, resolved_origin_daemon_id, remote_id)
 	if !ok || rec_id == "" {
 		return Agent_Instance_Record{}, false, "failed to persist remote proxy"
@@ -894,15 +934,39 @@ handle_post_federation_reachability :: proc(client: net.TCP_Socket, body: string
 handle_post_federation_proxy_bind :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
 	_, ok := rest_authorize_user(client, ctx)
 	if !ok do return
+	start_instance := extract_json_bool(body, "start_instance", true)
+	if !start_instance && strings.trim_space(extract_json_string(body, "remote_agent_instance_id", "")) == "" {
+		peer_id := peer_id_normalize(extract_json_string(body, "peer_id", ""))
+		origin_daemon_id := extract_json_string(body, "origin_daemon_id", "")
+		resolved_peer_id, bridge_daemon_id, status, found := federation_direct_peer_lookup(peer_id, origin_daemon_id)
+		if !found || resolved_peer_id == "" { write_response(client, 404, "Not Found", `{"ok":false,"message":"peer not found"}`); return }
+		remote_agent_id := strings.trim_space(extract_json_string(body, "remote_agent_id", ""))
+		if remote_agent_id == "" { write_response(client, 400, "Bad Request", `{"ok":false,"message":"remote_agent_id required"}`); return }
+		should_create_remote := extract_json_bool(body, "create_remote_agent_id", false)
+		if should_create_remote && (status != PEER_STATUS_LINKED || bridge_daemon_id == "") { write_response(client, 503, "Service Unavailable", `{"ok":false,"message":"peer unreachable"}`); return }
+		if should_create_remote {
+			create_ok, create_msg := federation_remote_agent_id_create(bridge_daemon_id, remote_agent_id, extract_json_string(body, "display_name", ""), extract_json_string(body, "template_id", ""), extract_json_string(body, "provider_profile", ""), extract_json_string(body, "model_tier", "normal"))
+			if !create_ok { b := strings.builder_make(); strings.write_string(&b, `{"ok":false,"message":"`); json_write_string(&b, create_msg); strings.write_string(&b, `"}`); write_response(client, 502, "Bad Gateway", strings.to_string(b)); return }
+		}
+		resolved_origin_daemon_id := strings.trim_space(origin_daemon_id); if resolved_origin_daemon_id == "" do resolved_origin_daemon_id = strings.trim_space(bridge_daemon_id)
+		local_agent_id := strings.trim_space(extract_json_string(body, "local_agent_id", "")); if local_agent_id == "" do local_agent_id = safe_agent_id_part(fmt.tprintf("%s-%s", remote_agent_id, resolved_peer_id))
+		if safe_agent_id_part(local_agent_id) != local_agent_id { write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid local_agent_id"}`); return }
+		if !agent_id_upsert_remote_proxy(local_agent_id, extract_json_string(body, "display_name", local_agent_id), extract_json_string(body, "template_id", remote_agent_id), resolved_peer_id, resolved_origin_daemon_id, remote_agent_id, "api") { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist remote agent_id"}`); return }
+		b := strings.builder_make(); strings.write_string(&b, `{"ok":true,"message":"remote agent_id bound","identity":`)
+		if idx := agent_id_index(local_agent_id); idx >= 0 { agent_id_record_json(&b, agent_id_records[idx]) } else { strings.write_string(&b, `null`) }
+		strings.write_string(&b, `}`); write_response(client, 200, "OK", strings.to_string(b)); return
+	}
 	rec, bind_ok, message := federation_remote_proxy_bind(
 		peer_id_normalize(extract_json_string(body, "peer_id", "")),
 		extract_json_string(body, "origin_daemon_id", ""),
 		extract_json_string(body, "remote_agent_instance_id", ""),
 		extract_json_string(body, "remote_agent_id", ""),
+		extract_json_string(body, "local_agent_id", ""),
 		extract_json_string(body, "display_name", ""),
 		extract_json_string(body, "template_id", ""),
 		extract_json_string(body, "provider_profile", ""),
 		extract_json_string(body, "model_tier", "normal"),
+		extract_json_bool(body, "create_remote_agent_id", false),
 	)
 	if !bind_ok {
 		b := strings.builder_make()
@@ -939,6 +1003,20 @@ handle_post_federation_peer_remove :: proc(client: net.TCP_Socket, body: string,
 handle_get_federation_peer_agents :: proc(client: net.TCP_Socket, peer_id: string, ctx: ^Route_Context) {
 	_, ok := rest_authorize_user(client, ctx)
 	if !ok do return
-	_ = peer_id
-	write_response(client, 410, "Gone", `{"ok":false,"message":"peer agent discovery moved to ham-bridge"}`)
+	resolved_peer_id, dest_daemon_id, status, found := federation_direct_peer_lookup(peer_id_normalize(peer_id), "")
+	_ = resolved_peer_id
+	if !found || dest_daemon_id == "" {
+		write_response(client, 404, "Not Found", `{"ok":false,"message":"peer not found"}`)
+		return
+	}
+	if status != PEER_STATUS_LINKED {
+		write_response(client, 503, "Service Unavailable", `{"ok":false,"message":"peer unreachable"}`)
+		return
+	}
+	resp, fetch_ok := bridge_request(dest_daemon_id, contracts.BRIDGE_HTTP_METHOD_GET, "/federation/agents", "", federation_idempotency_key("peer_agents", server_daemon_id, peer_id), FEDERATION_HTTP_TIMEOUT_MS)
+	if !fetch_ok {
+		write_response(client, 503, "Service Unavailable", `{"ok":false,"message":"peer unreachable"}`)
+		return
+	}
+	write_response(client, resp.status, federation_status_text(resp.status), resp.body)
 }

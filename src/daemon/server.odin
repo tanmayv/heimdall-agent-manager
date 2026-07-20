@@ -336,7 +336,11 @@ handle_client :: proc(client: net.TCP_Socket) {
 		return
 	}
 
-	// Durable identity edit (agent_id defaults), no concrete instance required.
+	// Durable identity create/edit (agent_id defaults), no concrete instance required.
+	if strings.has_prefix(request, "POST /agent-ids/create ") {
+		handle_agent_id_create(client, request_body(request))
+		return
+	}
 	if strings.has_prefix(request, "POST /agent-ids/update ") {
 		handle_agent_id_update(client, request_body(request))
 		return

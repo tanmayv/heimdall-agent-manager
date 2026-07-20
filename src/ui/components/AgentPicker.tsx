@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import * as daemonApi from '../api/daemonApi';
-import { agentRemoteInfo as agentRemote, isRemoteProxyAgent } from '../api/agentRemote';
+import { agentRemoteInfo as agentRemote, isRemoteProxyAgent, remoteAgentIsLive } from '../api/agentRemote';
 
 export type AgentPickerProps = {
   debugId: string;
@@ -79,6 +79,7 @@ function connectionState(agent: any): string {
 }
 
 function isRunning(agent: any): boolean {
+  if (isRemoteProxyAgent(agent)) return remoteAgentIsLive(agent);
   const startup = String(agent?.startupStatus || agent?.startup_status || '').toLowerCase();
   const state = String(agent?.state || agent?.status || '').toLowerCase();
   if (startup === 'stopped' || startup === 'stopping' || startup === 'startup_blocked') return false;
@@ -452,7 +453,7 @@ export default function AgentPicker({
         peerId,
         originDaemonId: String(remoteAgent?.origin_daemon_id || remoteAgent?.originDaemonId || ''),
         remoteAgentInstanceId: remoteInstanceId,
-        remoteAgentId: remoteInstanceId ? '' : remoteDurableId,
+        remoteAgentId: remoteDurableId || (remoteInstanceId ? String(remoteInstanceId).split('@')[0] : ''),
         displayName: String(remoteAgent?.display_name || remoteAgent?.displayName || ''),
         templateId: String(remoteAgent?.template_id || remoteAgent?.templateId || ''),
         providerProfile: String(remoteAgent?.provider_profile || remoteAgent?.providerProfile || ''),

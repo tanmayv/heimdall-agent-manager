@@ -2376,6 +2376,58 @@ function SidebarAgentInstancesPanel({ agentId = '', agents = [], chats = {}, tas
 
 function AgentsManagementSurface({ agents = [], chats = {}, tasksById = {}, chainsById = {}, projects = [], session = {}, providers = [], onBack, onOpenIdentity, onOpenInstance, onStartInstance, onRefreshAgents }: any) {
   const groups = durableAgentGroups(agents);
+  const [remotePeers, setRemotePeers] = useState<any[]>([]);
+  const [remotePeerId, setRemotePeerId] = useState('');
+  const [remoteAgentId, setRemoteAgentId] = useState('');
+  const [remoteLocalAgentId, setRemoteLocalAgentId] = useState('');
+  const [remoteDisplayName, setRemoteDisplayName] = useState('');
+  const [remoteTemplateId, setRemoteTemplateId] = useState('');
+  const [remoteCreateBusy, setRemoteCreateBusy] = useState(false);
+  const [remoteCreateMessage, setRemoteCreateMessage] = useState('');
+  useEffect(() => {
+    let cancelled = false;
+    async function loadPeers() {
+      if (!session?.daemonUrl || !session?.clientToken) { setRemotePeers([]); return; }
+      try {
+        const peers = await daemonApi.listFederationPeers({ daemonUrl: session.daemonUrl, clientToken: session.clientToken });
+        if (cancelled) return;
+        const linked = (peers || []).filter((peer: any) => String(peer?.status || '').toLowerCase() === 'linked');
+        setRemotePeers(linked);
+        setRemotePeerId((prev) => prev || String(linked?.[0]?.peer_id || ''));
+      } catch {
+        if (!cancelled) setRemotePeers([]);
+      }
+    }
+    loadPeers().catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [session?.daemonUrl, session?.clientToken]);
+  const createRemoteAgentId = async () => {
+    const rid = remoteAgentId.trim();
+    if (!rid || !remotePeerId || remoteCreateBusy) return;
+    setRemoteCreateBusy(true);
+    setRemoteCreateMessage('');
+    try {
+      const result = await daemonApi.bindRemoteProxy({
+        daemonUrl: session?.daemonUrl || '',
+        clientToken: session?.clientToken || '',
+        peerId: remotePeerId,
+        remoteAgentId: rid,
+        localAgentId: remoteLocalAgentId.trim(),
+        displayName: remoteDisplayName.trim() || rid,
+        templateId: remoteTemplateId.trim() || rid,
+        createRemoteAgentId: true,
+        startInstance: false,
+      });
+      await onRefreshAgents?.();
+      const localId = String(result?.identity?.agent_id || result?.identity?.agentId || remoteLocalAgentId.trim() || `${rid}-${remotePeerId}`);
+      setRemoteCreateMessage(`Created remote agent id mapping ${localId}`);
+      if (localId) onOpenIdentity?.(localId);
+    } catch (err: any) {
+      setRemoteCreateMessage(err?.message || 'Unable to create remote agent id');
+    } finally {
+      setRemoteCreateBusy(false);
+    }
+  };
   return (
     <div data-debug-id="agents-management-surface" className="mx-auto max-w-6xl px-8 py-8">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
@@ -2407,6 +2459,40 @@ function AgentsManagementSurface({ agents = [], chats = {}, tasksById = {}, chai
             />
           </div>
           <div data-debug-id="agents-management-create-hint" className="mt-3 rounded-xl border border-white/5 bg-white/[0.03] px-3 py-2 text-[11px] leading-relaxed text-zinc-500">Tip: durable ids are simple role names like <span className="font-mono text-zinc-300">coder</span> or <span className="font-mono text-zinc-300">reviewer</span>. Each launch mints a fresh concrete instance such as <span className="font-mono text-zinc-300">coder@s-…</span>.</div>
+          <div data-debug-id="agents-management-remote-create-card" className="mt-4 rounded-2xl border border-teal-400/20 bg-teal-400/[0.035] p-3">
+            <div className="text-xs uppercase tracking-[0.18em] text-teal-200/70">Remote agents</div>
+            <p className="mt-1 text-xs leading-relaxed text-zinc-500">Bind a remote daemon agent as a local proxy. It will appear in this tab, the sidebar, and direct chat.</p>
+            <div className="mt-3 grid gap-2">
+              <select data-debug-id="agents-management-remote-peer-select" value={remotePeerId} onChange={(event) => setRemotePeerId(event.target.value)} className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs text-zinc-100 outline-none focus:border-teal-300">
+                <option value="">Select linked peer</option>
+                {remotePeers.map((peer: any) => <option key={peer.peer_id || peer.daemon_id} value={peer.peer_id}>{peer.peer_id || peer.daemon_id}</option>)}
+              </select>
+              <input data-debug-id="agents-management-remote-agent-id-input" value={remoteAgentId} onChange={(event) => setRemoteAgentId(event.target.value)} placeholder="remote agent_id, e.g. researcher" className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs text-zinc-100 outline-none focus:border-teal-300" />
+              <input data-debug-id="agents-management-remote-local-agent-id-input" value={remoteLocalAgentId} onChange={(event) => setRemoteLocalAgentId(event.target.value)} placeholder="local agent_id override (optional)" className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs text-zinc-100 outline-none focus:border-teal-300" />
+              <input data-debug-id="agents-management-remote-display-name-input" value={remoteDisplayName} onChange={(event) => setRemoteDisplayName(event.target.value)} placeholder="display name (optional)" className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs text-zinc-100 outline-none focus:border-teal-300" />
+              <input data-debug-id="agents-management-remote-template-input" value={remoteTemplateId} onChange={(event) => setRemoteTemplateId(event.target.value)} placeholder="template id (optional)" className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs text-zinc-100 outline-none focus:border-teal-300" />
+              <button type="button" data-debug-id="agents-management-remote-create-agent-id-btn" onClick={() => { void createRemoteAgentId(); }} disabled={!remotePeerId || !remoteAgentId.trim() || remoteCreateBusy} className="rounded-xl bg-teal-300 px-3 py-2 text-xs font-semibold text-black hover:bg-teal-200 disabled:cursor-not-allowed disabled:opacity-50">{remoteCreateBusy ? 'Creating…' : 'Create remote agent ID'}</button>
+              {remoteCreateMessage ? <div data-debug-id="agents-management-remote-create-message" className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-xs text-zinc-400">{remoteCreateMessage}</div> : null}
+            </div>
+            <div className="mt-3">
+              <AgentPicker
+                debugId="agents-management-remote-agent-picker"
+                daemonUrl={session?.daemonUrl || ''}
+                clientToken={session?.clientToken || ''}
+                agents={agents}
+                projects={projects}
+                templates={[]}
+                providers={providers}
+                remotePeersEnabled
+                selectionOnly
+                onRefreshAgents={onRefreshAgents}
+                onSelected={async (agentId: string) => {
+                  await onRefreshAgents?.();
+                  onOpenInstance?.(agentId);
+                }}
+              />
+            </div>
+          </div>
         </div>
         <div data-debug-id="agents-management-list" className="rounded-2xl border border-[#262626] bg-[#101010] p-4">
           <div className="mb-3 flex items-center justify-between"><div className="text-sm font-medium text-zinc-200">Agent identities</div><div className="text-xs text-zinc-600">{groups.length} durable</div></div>

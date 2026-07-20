@@ -214,7 +214,7 @@ export async function listPeerAdvertisedAgents({ daemonUrl, clientToken, peerId 
   };
 }
 
-export async function bindRemoteProxy({ daemonUrl, clientToken, peerId, originDaemonId = '', remoteAgentInstanceId = '', remoteAgentId = '', displayName = '', templateId = '', providerProfile = '', modelTier = 'normal' }: { daemonUrl: string; clientToken: string; peerId: string; originDaemonId?: string; remoteAgentInstanceId?: string; remoteAgentId?: string; displayName?: string; templateId?: string; providerProfile?: string; modelTier?: string }) {
+export async function bindRemoteProxy({ daemonUrl, clientToken, peerId, originDaemonId = '', remoteAgentInstanceId = '', remoteAgentId = '', localAgentId = '', displayName = '', templateId = '', providerProfile = '', modelTier = 'normal', createRemoteAgentId = false, startInstance = true }: { daemonUrl: string; clientToken: string; peerId: string; originDaemonId?: string; remoteAgentInstanceId?: string; remoteAgentId?: string; localAgentId?: string; displayName?: string; templateId?: string; providerProfile?: string; modelTier?: string; createRemoteAgentId?: boolean; startInstance?: boolean }) {
   return requestJson(joinUrl(daemonUrl, '/federation/proxies/bind'), {
     method: 'POST',
     headers: { Authorization: `Bearer ${clientToken}` },
@@ -223,6 +223,9 @@ export async function bindRemoteProxy({ daemonUrl, clientToken, peerId, originDa
       origin_daemon_id: originDaemonId,
       remote_agent_instance_id: remoteAgentInstanceId,
       remote_agent_id: remoteAgentId,
+      local_agent_id: localAgentId,
+      create_remote_agent_id: Boolean(createRemoteAgentId),
+      start_instance: Boolean(startInstance),
       display_name: displayName,
       template_id: templateId,
       provider_profile: providerProfile,
@@ -261,16 +264,18 @@ export async function listAgentProviders({ daemonUrl }: { daemonUrl: string }) {
   return data.providers ?? [];
 }
 
-export async function startAgent({ daemonUrl, agentInstanceId = '', provider, templateId, projectId, projectIdSet, alias, displayName, modelTier }: { daemonUrl: string; agentInstanceId?: string; provider: string; templateId?: string; projectId?: string; projectIdSet?: boolean; alias?: string; displayName?: string; modelTier?: string }) {
+export async function startAgent({ daemonUrl, agentInstanceId = '', provider, templateId, projectId, projectIdSet, alias, displayName, modelTier }: { daemonUrl: string; agentInstanceId?: string; provider?: string; templateId?: string; projectId?: string; projectIdSet?: boolean; alias?: string; displayName?: string; modelTier?: string }) {
   const body: any = {
-    agent: provider || '',
-    provider_profile: provider || '',
     template_id: templateId || '',
     project_id: projectId || '',
     alias: alias || displayName || '',
     display_name: displayName || alias || '',
-    model_tier: modelTier || 'normal',
   };
+  if (provider !== undefined) {
+    body.agent = provider || '';
+    body.provider_profile = provider || '';
+  }
+  if (modelTier !== undefined) body.model_tier = modelTier || '';
   if (agentInstanceId) body.agent_instance_id = agentInstanceId;
   // Explicit runtime restart project override (incl. clearing to none) so the
   // backend applies an empty project verbatim instead of preserving the stored one.

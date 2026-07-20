@@ -448,6 +448,43 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 		write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid agent_instance_id"}`)
 		return
 	}
+	if agent_id_ref != "" {
+		if aid_idx := agent_id_index(agent_id_ref); aid_idx >= 0 && agent_id_record_is_remote_proxy(agent_id_records[aid_idx]) {
+			remote_identity := agent_id_records[aid_idx]
+			_, dest_daemon_id, peer_status, peer_found := federation_direct_peer_lookup(remote_identity.remote_peer_id, remote_identity.remote_origin_daemon_id)
+			if !peer_found || peer_status != PEER_STATUS_LINKED || dest_daemon_id == "" {
+				write_response(client, 503, "Service Unavailable", `{"ok":false,"message":"peer unreachable"}`)
+				return
+			}
+			remote_instance_id, remote_start_ok, remote_start_msg := federation_remote_agent_id_start_concrete(dest_daemon_id, remote_identity.remote_agent_id, display_name, remote_identity.template_id)
+			if !remote_start_ok {
+				b := strings.builder_make(); strings.write_string(&b, `{"ok":false,"message":"`); json_write_string(&b, remote_start_msg); strings.write_string(&b, `"}`)
+				write_response(client, 502, "Bad Gateway", strings.to_string(b))
+				return
+			}
+			local_template_id := remote_identity.template_id
+			if local_template_id == "" do local_template_id = template_id
+			rec_id, _, upsert_ok := agent_record_upsert(agent_instance_id, display_name, local_template_id, "", "", "", "", AGENT_IDENTITY_STATE_PROVISIONED, false, AGENT_KIND_REMOTE_PROXY, remote_identity.remote_peer_id, remote_identity.remote_origin_daemon_id, remote_instance_id)
+			if !upsert_ok || rec_id == "" {
+				write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist remote proxy instance"}`)
+				return
+			}
+			_, _, _ = federation_forward_start(remote_identity.remote_peer_id, remote_instance_id, "", "", agent_instance_id)
+			idx := agent_record_index(rec_id)
+			if idx < 0 {
+				write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"remote proxy instance not found after save"}`)
+				return
+			}
+			b := strings.builder_make()
+			strings.write_string(&b, `{"ok":true,"mode":"remote_detached","message":"started","agent_record_id":"`); json_write_string(&b, rec_id)
+			strings.write_string(&b, `","agent_instance_id":"`); json_write_string(&b, agent_instance_id)
+			strings.write_string(&b, `","remote_agent_instance_id":"`); json_write_string(&b, remote_instance_id)
+			strings.write_string(&b, `","agent":`); agent_instance_record_json(&b, agent_instance_records[idx])
+			strings.write_string(&b, `}`)
+			write_response(client, 200, "OK", strings.to_string(b))
+			return
+		}
+	}
 	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 && agent_record_is_remote_proxy(agent_instance_records[idx]) {
 		// Starting a remote_proxy must start the REAL agent on the owning peer,
 		// not launch a local wrapper. Forward only explicit runtime overrides from
@@ -669,7 +706,16 @@ agent_id_record_json :: proc(builder: ^strings.Builder, rec: Agent_Id_Record) {
 	strings.write_string(builder, `","default_provider_profile":"`); json_write_string(builder, rec.default_provider_profile)
 	strings.write_string(builder, `","default_model_tier":"`); json_write_string(builder, normalize_model_tier(rec.default_model_tier if rec.default_model_tier != "" else "normal"))
 	strings.write_string(builder, `","default_project_id":"`); json_write_string(builder, rec.default_project_id)
-	strings.write_string(builder, `","state":"`); json_write_string(builder, rec.state if rec.state != "" else AGENT_ID_STATE_ACTIVE)
+	agent_kind := agent_kind_normalize(rec.agent_kind)
+	if agent_kind == "" do agent_kind = "local"
+	strings.write_string(builder, `","agent_kind":"`); json_write_string(builder, agent_kind); strings.write_string(builder, `"`)
+	if agent_kind == AGENT_KIND_REMOTE_PROXY {
+		strings.write_string(builder, `,"remote":{"peer_id":"`); json_write_string(builder, rec.remote_peer_id)
+		strings.write_string(builder, `","origin_daemon_id":"`); json_write_string(builder, rec.remote_origin_daemon_id)
+		strings.write_string(builder, `","remote_agent_id":"`); json_write_string(builder, rec.remote_agent_id)
+		strings.write_string(builder, `"}`)
+	}
+	strings.write_string(builder, `,"state":"`); json_write_string(builder, rec.state if rec.state != "" else AGENT_ID_STATE_ACTIVE)
 	strings.write_string(builder, `","created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.created_unix_ms))
 	strings.write_string(builder, `,"updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.updated_unix_ms))
 	strings.write_string(builder, `}`)
@@ -870,6 +916,10 @@ handle_agent_instance_update :: proc(client: net.TCP_Socket, body: string) {
 		if !valid_model_tier(req_tier) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid model_tier; expected cheap, normal, or smart"}`); return }
 		model_tier = normalize_model_tier(req_tier)
 	}
+	if agent_record_is_remote_proxy(rec) {
+		provider_profile = ""
+		model_tier = ""
+	}
 	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = display_name, template_id = template_id, provider_profile = provider_profile, project_id = project_id, run_dir = run_dir, model_tier = model_tier, agent_kind = rec.agent_kind, remote_peer_id = rec.remote_peer_id, remote_origin_daemon_id = rec.remote_origin_daemon_id, remote_agent_instance_id = rec.remote_agent_instance_id, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent instance"}`); return }
 	// Agents tab identity edits update the durable agent_id defaults (provider /
 	// tier / default project) that seed every future concrete instance. The flag
@@ -879,6 +929,29 @@ handle_agent_instance_update :: proc(client: net.TCP_Socket, body: string) {
 		_ = agent_id_update_defaults(resolved_agent_id, display_name, provider_profile, model_tier, project_id, "api")
 	}
 	write_agent_ok_response(client, "updated", agent_instance_records[agent_record_index(rec.agent_record_id)])
+}
+
+handle_agent_id_create :: proc(client: net.TCP_Socket, body: string) {
+	agent_id := strings.trim_space(extract_json_string(body, "agent_id", ""))
+	if agent_id == "" { write_response(client, 400, "Bad Request", `{"ok":false,"message":"agent_id required"}`); return }
+	if safe_agent_id_part(agent_id) != agent_id { write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid agent_id"}`); return }
+	if agent_instance_id_is_reserved(agent_id) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"reserved agent_id cannot be created"}`); return }
+	display_name := extract_json_string(body, "display_name", agent_id)
+	template_id := extract_json_string(body, "template_id", agent_id)
+	provider_profile := extract_json_string(body, "provider_profile", extract_json_string(body, "agent", ""))
+	model_tier := extract_json_string(body, "model_tier", "normal")
+	if !valid_model_tier(model_tier) { write_response(client, 400, "Bad Request", `{"ok":false,"message":"invalid model_tier; expected cheap, normal, or smart"}`); return }
+	project_id := extract_json_string(body, "default_project_id", extract_json_string(body, "project_id", ""))
+	if strings.trim_space(project_id) != "" && !project_exists(project_id) { write_response(client, 400, "Bad Request", agents_invalid_project_json(project_id)); return }
+	if !agent_id_upsert(agent_id, display_name, template_id, provider_profile, normalize_model_tier(model_tier), project_id, "api") {
+		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to create agent identity"}`)
+		return
+	}
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"message":"created","identity":`)
+	if idx := agent_id_index(agent_id); idx >= 0 { agent_id_record_json(&b, agent_id_records[idx]) } else { strings.write_string(&b, `null`) }
+	strings.write_string(&b, `}`)
+	write_response(client, 200, "OK", strings.to_string(b))
 }
 
 // handle_agent_id_update edits a DURABLE agent identity (agent_id) directly,

@@ -38,6 +38,10 @@ Agent_Id_Record :: struct {
 	// authoritative upsert (default_project_set=true). Backfill from older instance
 	// events must not rehydrate/override an explicitly cleared default project.
 	default_project_explicit: bool,
+	agent_kind: string,
+	remote_peer_id: string,
+	remote_origin_daemon_id: string,
+	remote_agent_id: string,
 	state: string,
 	created_unix_ms: i64,
 	updated_unix_ms: i64,
@@ -59,6 +63,10 @@ Agent_Id_Event :: struct {
 	// the default project). When false, an empty default_project_id preserves the
 	// existing value so unrelated upserts do not wipe the durable default.
 	default_project_set: bool,
+	agent_kind: string,
+	remote_peer_id: string,
+	remote_origin_daemon_id: string,
+	remote_agent_id: string,
 	state: string,
 	author: string,
 	created_unix_ms: i64,
@@ -168,6 +176,15 @@ agent_id_index :: proc(agent_id: string) -> int {
 
 agent_id_exists :: proc(agent_id: string) -> bool { return agent_id_index(agent_id) >= 0 }
 
+agent_id_record_is_remote_proxy :: proc(rec: Agent_Id_Record) -> bool {
+	return agent_kind_normalize(rec.agent_kind) == AGENT_KIND_REMOTE_PROXY && strings.trim_space(rec.remote_peer_id) != "" && strings.trim_space(rec.remote_agent_id) != ""
+}
+
+agent_id_is_remote_proxy :: proc(agent_id: string) -> bool {
+	if idx := agent_id_index(agent_id); idx >= 0 do return agent_id_record_is_remote_proxy(agent_id_records[idx])
+	return false
+}
+
 agent_id_is_active :: proc(agent_id: string) -> bool {
 	idx := agent_id_index(agent_id)
 	return idx >= 0 && agent_id_records[idx].archived_at_unix_ms == 0
@@ -246,6 +263,18 @@ agent_id_apply_event :: proc(event: Agent_Id_Event) -> bool {
 	rec.default_model_tier = strings.clone(tier)
 	if event.default_project_set || event.default_project_id != "" || rec.default_project_id == "" do rec.default_project_id = strings.clone(event.default_project_id)
 	if event.default_project_set do rec.default_project_explicit = true
+	kind := agent_kind_normalize(event.agent_kind)
+	if kind == "" do kind = "local"
+	rec.agent_kind = strings.clone(kind)
+	if kind == AGENT_KIND_REMOTE_PROXY {
+		rec.remote_peer_id = strings.clone(strings.trim_space(event.remote_peer_id))
+		rec.remote_origin_daemon_id = strings.clone(strings.trim_space(event.remote_origin_daemon_id))
+		rec.remote_agent_id = strings.clone(strings.trim_space(event.remote_agent_id))
+	} else {
+		rec.remote_peer_id = ""
+		rec.remote_origin_daemon_id = ""
+		rec.remote_agent_id = ""
+	}
 	state := event.state
 	if state == "" do state = rec.state
 	if state == "" do state = AGENT_ID_STATE_ACTIVE
@@ -308,6 +337,27 @@ agent_id_upsert :: proc(agent_id, display_name, template_id, default_provider_pr
 		default_provider_profile = default_provider_profile,
 		default_model_tier = tier,
 		default_project_id = default_project_id,
+		agent_kind = "local",
+		state = AGENT_ID_STATE_ACTIVE,
+		author = author,
+	})
+}
+
+agent_id_upsert_remote_proxy :: proc(local_agent_id, display_name, template_id, remote_peer_id, remote_origin_daemon_id, remote_agent_id, author: string) -> bool {
+	if local_agent_id == "" || remote_peer_id == "" || remote_agent_id == "" do return false
+	return agent_id_append_event(Agent_Id_Event{
+		kind = .Agent_Id_Upserted,
+		agent_id = local_agent_id,
+		display_name = display_name if display_name != "" else local_agent_id,
+		template_id = template_id,
+		default_provider_profile = "",
+		default_model_tier = "",
+		default_project_id = "",
+		default_project_set = true,
+		agent_kind = AGENT_KIND_REMOTE_PROXY,
+		remote_peer_id = strings.trim_space(remote_peer_id),
+		remote_origin_daemon_id = strings.trim_space(remote_origin_daemon_id),
+		remote_agent_id = strings.trim_space(remote_agent_id),
 		state = AGENT_ID_STATE_ACTIVE,
 		author = author,
 	})
@@ -323,6 +373,10 @@ agent_id_record_to_event :: proc(rec: Agent_Id_Record, author: string) -> Agent_
 		default_model_tier = rec.default_model_tier,
 		default_project_id = rec.default_project_id,
 		default_project_set = rec.default_project_explicit,
+		agent_kind = rec.agent_kind,
+		remote_peer_id = rec.remote_peer_id,
+		remote_origin_daemon_id = rec.remote_origin_daemon_id,
+		remote_agent_id = rec.remote_agent_id,
 		state = rec.state,
 		author = author,
 		order = rec.order,
@@ -364,6 +418,10 @@ agent_id_event_clone :: proc(e: Agent_Id_Event) -> Agent_Id_Event {
 	out.default_provider_profile = strings.clone(e.default_provider_profile)
 	out.default_model_tier = strings.clone(e.default_model_tier)
 	out.default_project_id = strings.clone(e.default_project_id)
+	out.agent_kind = strings.clone(e.agent_kind)
+	out.remote_peer_id = strings.clone(e.remote_peer_id)
+	out.remote_origin_daemon_id = strings.clone(e.remote_origin_daemon_id)
+	out.remote_agent_id = strings.clone(e.remote_agent_id)
 	out.state = strings.clone(e.state)
 	out.author = strings.clone(e.author)
 	return out
@@ -380,7 +438,11 @@ agent_id_event_json :: proc(event: Agent_Id_Event) -> string {
 	strings.write_string(&b, `","default_model_tier":"`); json_write_string(&b, event.default_model_tier)
 	strings.write_string(&b, `","default_project_id":"`); json_write_string(&b, event.default_project_id)
 	strings.write_string(&b, `","default_project_set":`); strings.write_string(&b, "true" if event.default_project_set else "false")
-	strings.write_string(&b, `,"state":"`); json_write_string(&b, event.state)
+	strings.write_string(&b, `,"agent_kind":"`); json_write_string(&b, agent_kind_normalize(event.agent_kind))
+	strings.write_string(&b, `","remote_peer_id":"`); json_write_string(&b, event.remote_peer_id)
+	strings.write_string(&b, `","remote_origin_daemon_id":"`); json_write_string(&b, event.remote_origin_daemon_id)
+	strings.write_string(&b, `","remote_agent_id":"`); json_write_string(&b, event.remote_agent_id)
+	strings.write_string(&b, `","state":"`); json_write_string(&b, event.state)
 	strings.write_string(&b, `","author":"`); json_write_string(&b, event.author)
 	strings.write_string(&b, `","order":`); strings.write_string(&b, fmt.tprintf("%d", event.order))
 	strings.write_string(&b, `,"created_unix_ms":`); strings.write_string(&b, fmt.tprintf("%d", event.created_unix_ms))
@@ -458,6 +520,10 @@ agent_id_event_from_json :: proc(line: string) -> (Agent_Id_Event, bool) {
 		default_model_tier = extract_json_string(line, "default_model_tier", ""),
 		default_project_id = extract_json_string(line, "default_project_id", ""),
 		default_project_set = extract_json_bool(line, "default_project_set", false),
+		agent_kind = extract_json_string(line, "agent_kind", ""),
+		remote_peer_id = extract_json_string(line, "remote_peer_id", ""),
+		remote_origin_daemon_id = extract_json_string(line, "remote_origin_daemon_id", ""),
+		remote_agent_id = extract_json_string(line, "remote_agent_id", ""),
 		state = extract_json_string(line, "state", ""),
 		author = extract_json_string(line, "author", ""),
 		order = extract_json_int(line, "order", 0),
