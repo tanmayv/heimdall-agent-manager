@@ -57,6 +57,7 @@ import { getRouteSearch } from '../utils/appLocation';
 import { VimSidebarProvider, VimEditButton } from './VimSidebar';
 import AgentPicker from './AgentPicker';
 import AgentPickerV2 from './AgentPickerV2';
+import NewLocalProxyAgentWizard from './NewLocalProxyAgentWizard';
 import ChatHeader from './chat/ChatHeader';
 import ChatComposer from './chat/ChatComposer';
 import ChatMessageList from './chat/ChatMessageList';
@@ -1595,6 +1596,7 @@ export default function App() {
               projects={projects}
               session={session}
               providers={settingsProviders}
+              templates={settingsTemplates}
               onBack={navigateBackOrHome}
               onOpenIdentity={openAgentIdentityPage}
               onOpenInstance={openAgentPage}
@@ -2401,8 +2403,9 @@ function SidebarAgentInstancesPanel({ agentId = '', agents = [], chats = {}, tas
   );
 }
 
-function AgentsManagementSurface({ agents = [], agentIdentities = [], chats = {}, tasksById = {}, chainsById = {}, projects = [], session = {}, providers = [], onBack, onOpenIdentity, onOpenInstance, onStartInstance, onRefreshAgents }: any) {
+function AgentsManagementSurface({ agents = [], agentIdentities = [], chats = {}, tasksById = {}, chainsById = {}, projects = [], session = {}, providers = [], templates = [], onBack, onOpenIdentity, onOpenInstance, onStartInstance, onRefreshAgents }: any) {
   const groups = durableAgentGroups(agents, agentIdentities);
+  const [proxyWizardOpen, setProxyWizardOpen] = useState(false);
 
   const handleDelete = async (agentId: string) => {
     if (!session?.daemonUrl || !session?.clientToken) return;
@@ -2444,27 +2447,34 @@ function AgentsManagementSurface({ agents = [], agentIdentities = [], chats = {}
           </div>
         </div>
         <div className="rounded-2xl border border-teal-400/20 bg-teal-400/[0.035] p-5">
-          <h2 className="text-base font-semibold text-teal-100">Create remote proxy</h2>
+          <h2 className="text-base font-semibold text-teal-100">Create local proxy agent-id</h2>
+          <p className="mt-1 text-sm text-zinc-500">Attach a durable local proxy identity to an agent-id on a linked remote daemon — existing or newly created.</p>
           <div className="mt-4">
-            <AgentPicker
-              debugId="agents-management-remote-agent-picker"
-              daemonUrl={session?.daemonUrl || ''}
-              clientToken={session?.clientToken || ''}
-              agents={agents}
-              projects={projects}
-              templates={[]}
-              providers={providers}
-              remotePeersEnabled
-              selectionOnly
-              onRefreshAgents={onRefreshAgents}
-              onSelected={async (agentId: string) => {
-                await onRefreshAgents?.();
-                onOpenIdentity?.(agentId);
-              }}
-            />
+            <button
+              type="button"
+              data-debug-id="agents-management-new-proxy-btn"
+              onClick={() => setProxyWizardOpen(true)}
+              className="w-full rounded-xl border border-teal-400/30 bg-teal-400/10 px-4 py-3 text-sm font-semibold text-teal-100 transition hover:border-teal-400/50 hover:bg-teal-400/15"
+            >
+              + New local proxy agent-id
+            </button>
           </div>
         </div>
       </div>
+
+      {proxyWizardOpen ? (
+        <NewLocalProxyAgentWizard
+          daemonUrl={session?.daemonUrl || ''}
+          clientToken={session?.clientToken || ''}
+          templates={templates}
+          providers={providers}
+          onClose={() => setProxyWizardOpen(false)}
+          onCreated={async (localAgentId: string) => {
+            await onRefreshAgents?.();
+            onOpenIdentity?.(localAgentId);
+          }}
+        />
+      ) : null}
 
       <div className="rounded-2xl border border-[#262626] bg-[#101010] overflow-hidden">
         <table className="w-full text-left text-sm text-zinc-300">
@@ -5198,6 +5208,36 @@ function ChainProgressPanel({ chain, progress }: { chain: any; progress: ChainPr
   );
 }
 
+function ChainDescriptionPanel({ chain }: { chain: any }) {
+  const description = String(chain?.description || chain?.goal || '').trim();
+  const [expanded, setExpanded] = useState(false);
+  if (!description) return null;
+  // Collapse long descriptions by default; short ones can stay inline.
+  const isLong = description.length > 220 || description.includes('\n');
+  return (
+    <section data-debug-id="chain-description-panel" className="mt-3 overflow-hidden rounded-[13px] border border-white/10 bg-[#111]">
+      <button
+        type="button"
+        data-debug-id="chain-description-toggle-btn"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        className="flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left transition hover:bg-white/[0.03]"
+      >
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Chain description</span>
+          {!expanded && isLong ? <span className="min-w-0 truncate text-[12px] text-zinc-500">{description.replace(/\s+/g, ' ').slice(0, 90)}…</span> : null}
+        </span>
+        <span className="shrink-0 text-zinc-500">{expanded ? '⌃' : '›'}</span>
+      </button>
+      {expanded || !isLong ? (
+        <div data-debug-id="chain-description-body" className="border-t border-white/10 px-4 py-3">
+          <Markdown source={description} className="text-sm text-zinc-300" />
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentities = [], chainView, projects = [], providers = [], taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, initialTaskId = '', onBack, onSend, onToggleDiff, onFetchDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenAgentChat, onOpenChain, onOpenTask, onLoadTaskLogPage, onLoadCoordinatorChatPage, onOpenEditor, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onSetReviewers, onRefreshAgents }: any) {
   const dispatch = useDispatch<any>();
   const session = useSelector((state: any) => state.chat?.session || {});
@@ -5605,6 +5645,7 @@ function ChainTasksInspectorContent({ chain, chainProgress, activeTasks, complet
   return (
     <div data-debug-id="chain-task-surface" className="px-[18px] py-4">
       <ChainProgressPanel chain={chain} progress={chainProgress} />
+      <ChainDescriptionPanel chain={chain} />
       <div className="mt-5 flex items-start justify-between gap-3">
         <div>
           <h2 className="text-[14px] font-semibold text-zinc-100">Task chain plan</h2>
@@ -5942,7 +5983,11 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
                   </button>
                   <div data-debug-id={`chain-task-row-${task.taskId}-agents`} className="mt-2 ml-8 flex min-w-0 flex-wrap items-center gap-2">
                     <TaskAgentChip role="Assignee" agentId={assigneeId} agent={assigneeAgent} active={assigneeWorking} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'assignee' })} onChatClick={onOpenAgentChat} />
-                    <TaskAgentChip role="Reviewer" agentId={reviewerId} agent={reviewerAgent} active={reviewerWorking} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'reviewer' })} onChatClick={onOpenAgentChat} />
+                    {reviewerIds.length === 0 ? (
+                      <TaskAgentChip role="Reviewer" agentId="" agent={null} active={false} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'reviewer' })} onChatClick={onOpenAgentChat} />
+                    ) : reviewerIds.map((rid: string) => (
+                      <TaskAgentChip key={rid} role="Reviewer" agentId={rid} agent={agentsById.get(String(rid))} active={reviewerWorking} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'reviewer' })} onChatClick={onOpenAgentChat} />
+                    ))}
                   </div>
                 </div>
                 {actionNeeded && (
@@ -5956,7 +6001,7 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
                     <span className={`rounded-full border px-2 py-1 ${statusTone(task.status)}`}>{task.status}</span>
                     <span className="rounded-full bg-black/20 px-2 py-1 font-mono text-zinc-400">ID: {task.taskId}</span>
                     <button data-debug-id={`task-detail-assignee-picker-btn-${task.taskId}`} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'assignee' })} className="rounded-full bg-black/20 px-2 py-1 text-zinc-300 hover:bg-white/10">Assignee {task.assigneeAgentInstanceId || '—'}</button>
-                    <button data-debug-id={`task-detail-reviewer-picker-btn-${task.taskId}`} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'reviewer' })} className="rounded-full bg-black/20 px-2 py-1 text-zinc-300 hover:bg-white/10">Reviewer {reviewerId || task.reviewerAgentInstanceId || '—'}</button>
+                    <button data-debug-id={`task-detail-reviewer-picker-btn-${task.taskId}`} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'reviewer' })} className="rounded-full bg-black/20 px-2 py-1 text-zinc-300 hover:bg-white/10">{reviewerIds.length > 1 ? `Reviewers ${reviewerIds.join(', ')}` : `Reviewer ${reviewerIds[0] || task.reviewerAgentInstanceId || '—'}`}</button>
                   </div>
                   <div data-debug-id={`task-detail-description-${task.taskId}`} className="mt-3 rounded-xl bg-black/20 p-3">
                     {task.description ? <Markdown source={task.description} className="text-sm text-zinc-300" /> : <div className="text-sm text-zinc-500">No description.</div>}
