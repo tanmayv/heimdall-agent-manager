@@ -56,6 +56,7 @@ import { navigateBackOr, updateUrlParams, useUrlParams } from './useUrlParams';
 import { getRouteSearch } from '../utils/appLocation';
 import { VimSidebarProvider, VimEditButton } from './VimSidebar';
 import AgentPicker from './AgentPicker';
+import AgentPickerV2 from './AgentPickerV2';
 import ChatHeader from './chat/ChatHeader';
 import ChatComposer from './chat/ChatComposer';
 import ChatMessageList from './chat/ChatMessageList';
@@ -1729,6 +1730,19 @@ export default function App() {
                 await dispatch(addParticipantToSelectedTask({ taskId: task.taskId, chainId: task.chainId, agentInstanceId, role: 'lgtm_required' })).unwrap();
                 dispatch(showToast({ kind: 'success', title: 'Reviewer updated', message: agentInstanceId }));
               }}
+              onSetReviewers={async (task: any, agentInstanceIds: string[]) => {
+                const current = new Set(taskReviewerIds(task));
+                const next = new Set((agentInstanceIds || []).filter(Boolean));
+                const toAdd = [...next].filter((id) => !current.has(id));
+                const toRemove = [...current].filter((id) => !next.has(id));
+                for (const id of toRemove) {
+                  await dispatch(removeParticipantFromSelectedTask({ taskId: task.taskId, chainId: task.chainId, agentInstanceId: id, role: 'lgtm_required' })).unwrap().catch(() => undefined);
+                }
+                for (const id of toAdd) {
+                  await dispatch(addParticipantToSelectedTask({ taskId: task.taskId, chainId: task.chainId, agentInstanceId: id, role: 'lgtm_required' })).unwrap();
+                }
+                dispatch(showToast({ kind: 'success', title: 'Reviewers updated', message: `${next.size} reviewer(s)` }));
+              }}
             />
           ) : home.surface === 'attention' ? (
             <AttentionSurface
@@ -2138,7 +2152,10 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryByI
   const chainUpdatedMs = (chain: any) => Number(chain?.updatedAtUnixMs || chain?.updated_at_unix_ms || chain?.updatedAt || chain?.updated_at || chain?.createdAtUnixMs || chain?.created_at_unix_ms || 0);
   const sortedChains = [...(chains || [])].sort((a: any, b: any) => chainUpdatedMs(b) - chainUpdatedMs(a));
   const activeChains = sortedChains.filter((chain: any) => !isChainCompleted(chain)).slice(0, 4);
-  const agentGroups = durableAgentGroups(agents, agentIdentities);
+  // Sidebar Agents section only surfaces durable agent-ids that currently have
+  // at least one live instance. Management/history for dormant agents lives on
+  // the Agents surface.
+  const agentGroups = durableAgentGroups(agents, agentIdentities).filter((group: any) => group.running > 0);
   const [collapsedMenuOpen, setCollapsedMenuOpen] = useState(false);
   if (collapsed) {
     const collapsedItems = [
@@ -2254,11 +2271,11 @@ function SidebarDurableAgentsSection({ groups = [], selectedAgentId = '', launch
     <section data-debug-id="sidebar-durable-agents" className="mb-3 border-b border-[#171717] pb-3">
       <div className="flex items-center justify-between px-2 pb-1 pt-2 text-[10.5px] uppercase tracking-[0.18em] text-zinc-500">
         <span>Agents</span>
-        <span className="text-[10px] normal-case tracking-normal text-zinc-700">{visibleGroups.length}/{(groups || []).length} durable</span>
+        <span className="text-[10px] normal-case tracking-normal text-zinc-700">{visibleGroups.length}/{(groups || []).length} live</span>
       </div>
       <div data-debug-id="sidebar-agents-paged-list" className="max-h-[248px] overflow-y-auto pr-1">
         {groups.length === 0 ? (
-          <div className="px-2 py-2 text-xs text-zinc-600">No durable agents yet</div>
+          <div className="px-2 py-2 text-xs text-zinc-600">No live agents</div>
         ) : visibleGroups.map((group: any) => {
           const liveInstances = (group.instances || []).filter((instance: any) => agentHasLiveSession(instance)).sort((a: any, b: any) => agentUpdatedUnixMs(b) - agentUpdatedUnixMs(a));
           const live = liveInstances.length;
@@ -5181,7 +5198,7 @@ function ChainProgressPanel({ chain, progress }: { chain: any; progress: ChainPr
   );
 }
 
-function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentities = [], chainView, projects = [], providers = [], taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, initialTaskId = '', onBack, onSend, onToggleDiff, onFetchDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenAgentChat, onOpenChain, onOpenTask, onLoadTaskLogPage, onLoadCoordinatorChatPage, onOpenEditor, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onRefreshAgents }: any) {
+function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentities = [], chainView, projects = [], providers = [], taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, initialTaskId = '', onBack, onSend, onToggleDiff, onFetchDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenAgentChat, onOpenChain, onOpenTask, onLoadTaskLogPage, onLoadCoordinatorChatPage, onOpenEditor, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onSetReviewers, onRefreshAgents }: any) {
   const dispatch = useDispatch<any>();
   const session = useSelector((state: any) => state.chat?.session || {});
   const chatState = useSelector((state: any) => state.chat || {});
@@ -5390,6 +5407,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
           onNudgeTask={onNudgeTask}
           onAssignTask={onAssignTask}
           onSetReviewer={onSetReviewer}
+          onSetReviewers={onSetReviewers}
           onOpenAgentChat={onOpenAgentChat}
           agents={agents}
           agentIdentities={agentIdentities}
@@ -5583,7 +5601,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
   );
 }
 
-function ChainTasksInspectorContent({ chain, chainProgress, activeTasks, completedTasks, tasksById, taskLogsByTaskId, taskLogCursorByTaskId, taskLogHasMoreByTaskId, taskLogLoadingByTaskId, taskLogTotalByTaskId, selectedTaskId, commentDraft, nudgeDraft, projectId, daemonUrl, clientToken, onRefreshAgents, onCommentDraft, onNudgeDraft, openTask, onLoadTaskLogPage, openTaskById, closeTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onOpenAgentChat, agents, agentIdentities, taskIndexMap }: any) {
+function ChainTasksInspectorContent({ chain, chainProgress, activeTasks, completedTasks, tasksById, taskLogsByTaskId, taskLogCursorByTaskId, taskLogHasMoreByTaskId, taskLogLoadingByTaskId, taskLogTotalByTaskId, selectedTaskId, commentDraft, nudgeDraft, projectId, daemonUrl, clientToken, onRefreshAgents, onCommentDraft, onNudgeDraft, openTask, onLoadTaskLogPage, openTaskById, closeTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onSetReviewers, onOpenAgentChat, agents, agentIdentities, taskIndexMap }: any) {
   return (
     <div data-debug-id="chain-task-surface" className="px-[18px] py-4">
       <ChainProgressPanel chain={chain} progress={chainProgress} />
@@ -5624,6 +5642,7 @@ function ChainTasksInspectorContent({ chain, chainProgress, activeTasks, complet
         onNudgeTask={onNudgeTask}
         onAssignTask={onAssignTask}
         onSetReviewer={onSetReviewer}
+        onSetReviewers={onSetReviewers}
         onOpenAgentChat={onOpenAgentChat}
         agents={agents}
         agentIdentities={agentIdentities}
@@ -5661,6 +5680,7 @@ function ChainTasksInspectorContent({ chain, chainProgress, activeTasks, complet
             onNudgeTask={onNudgeTask}
             onAssignTask={onAssignTask}
             onSetReviewer={onSetReviewer}
+            onSetReviewers={onSetReviewers}
             onOpenAgentChat={onOpenAgentChat}
             agents={agents}
             agentIdentities={agentIdentities}
@@ -5809,7 +5829,7 @@ function TaskAgentChip({ role, agentId, agent, active, onClick, onChatClick }: a
   );
 }
 
-function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, expandedTaskId, commentDraft, nudgeDraft, projectId = '', chainId = '', daemonUrl = '', clientToken = '', onRefreshAgents, onCommentDraft, onNudgeDraft, onOpenTask, onLoadTaskLogPage, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onOpenAgentChat, agents = [], agentIdentities = [], taskIndexMap = new Map(), completed = false }: any) {
+function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, expandedTaskId, commentDraft, nudgeDraft, projectId = '', chainId = '', daemonUrl = '', clientToken = '', onRefreshAgents, onCommentDraft, onNudgeDraft, onOpenTask, onLoadTaskLogPage, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onSetReviewers, onOpenAgentChat, agents = [], agentIdentities = [], taskIndexMap = new Map(), completed = false }: any) {
   const [commentsOpenByTaskId, setCommentsOpenByTaskId] = useState<Record<string, boolean>>({});
   const [busyAction, setBusyAction] = useState('');
   const [localError, setLocalError] = useState('');
@@ -5838,12 +5858,12 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
     }
   };
   const pickerTask = agentPicker ? tasksById?.[agentPicker.taskId] : null;
-  const applyAgentPick = async (agentInstanceId: string, result?: any) => {
-    if (!agentPicker || !pickerTask) return;
-    if (agentPicker.mode === 'assignee') await onAssignTask?.(pickerTask, agentInstanceId, result);
-    else await onSetReviewer?.(pickerTask, agentInstanceId, result);
-    setAgentPicker(null);
-  };
+  const pickerDefaults = useMemo(() => {
+    if (!agentPicker || !pickerTask) return [] as string[];
+    return agentPicker.mode === 'assignee'
+      ? (pickerTask.assigneeAgentInstanceId ? [String(pickerTask.assigneeAgentInstanceId)] : [])
+      : taskReviewerIds(pickerTask);
+  }, [agentPicker, pickerTask]);
 
   return (
     <div data-debug-id={`chain-task-list-${completed ? 'completed' : 'active'}`} className="mt-4">
@@ -5855,23 +5875,29 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
                 <h2 className="text-lg font-semibold text-zinc-100">Set task {agentPicker.mode}</h2>
                 <p className="mt-1 truncate text-sm text-zinc-500">{pickerTask.title || pickerTask.taskId}</p>
               </div>
-              <button data-debug-id="task-agent-picker-close-btn" onClick={() => setAgentPicker(null)} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 transition hover:bg-white/15">Close</button>
             </div>
-            <AgentPicker
+            <AgentPickerV2
+              key={`${agentPicker.mode}:${agentPicker.taskId}`}
               debugId={`task-${agentPicker.mode}-agent-picker`}
-              daemonUrl={session.daemonUrl || daemonUrl || ''}
-              clientToken={session.clientToken || clientToken || ''}
-              remotePeersEnabled
-              agents={selectableAgents}
-              identities={agentIdentities}
-              projects={projectId ? [{ projectId, name: projectId }] : []}
-              preferredTemplateId={agentPicker.mode === 'reviewer' ? 'reviewer' : ''}
-              defaultProjectId={projectId || ''}
-              conversationSummaryById={effectiveConversationSummaryById}
-              value={agentPicker.mode === 'assignee' ? (pickerTask.assigneeAgentInstanceId || '') : (taskReviewerIds(pickerTask)[0] || '')}
-              selectionOnly
-              onRefreshAgents={onRefreshAgents}
-              onSelected={(agentInstanceId, result) => applyAgentPick(agentInstanceId, result)}
+              title={`Set task ${agentPicker.mode}`}
+              entityTypes={['agent_instance_id']}
+              projectId={projectId || ''}
+              includeUserProxy
+              multiple={agentPicker.mode === 'reviewer'}
+              defaultSelected={pickerDefaults}
+              onClose={() => setAgentPicker(null)}
+              onCancel={() => setAgentPicker(null)}
+              onChange={async (selected) => {
+                if (agentPicker.mode === 'assignee') {
+                  const pick = selected[0];
+                  if (pick) await onAssignTask?.(pickerTask, pick.id);
+                  setAgentPicker(null);
+                }
+              }}
+              onConfirm={async (selected) => {
+                await onSetReviewers?.(pickerTask, selected.map((s) => s.id));
+                setAgentPicker(null);
+              }}
             />
           </div>
         </div>
