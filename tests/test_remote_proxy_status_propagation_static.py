@@ -69,8 +69,12 @@ require('if !peer_reachable do effective_status = FEDERATION_AGENT_STATUS_OFFLIN
 require('"peer_reachable":' in AGENTS, "remote JSON must expose peer_reachable")
 require('"status":"' in AGENTS and '"current_task_id":"' in AGENTS, "remote JSON must expose status + current_task_id")
 
-# B1 reconnect snapshot wired on link reconnect.
+# B1 reconnect snapshot wired on true link reconnect only. A bridge /reachable
+# poll updates last_seen_unix_ms frequently; that must not reset last_sent_status
+# or every normal heartbeat/lifecycle edge can become a status callback.
 require('federation_agent_status_resync_peer(replay_peer_ids[i])' in PEERS, "reconnect must push one status snapshot per subscriber")
+require('status == PEER_STATUS_LINKED && old_status != PEER_STATUS_LINKED' in PEERS, "status resync must be edge-triggered only on unreachable->linked")
+require('old_last_seen_unix_ms' not in PEERS, "last_seen ticks must not trigger status resync/replay")
 require('federation_delivery_outbox_drop_pending_agent_status :: proc' in FED, "replay must drop stale queued agent_status rows")
 require("idempotency_key LIKE 'agent_status:%'" in FED, "stale agent_status outbox cleanup must target status callbacks")
 

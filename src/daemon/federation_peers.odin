@@ -277,7 +277,6 @@ reachable_daemon_apply_entry_locked :: proc(entry: string, changed_ids: ^strings
 	rec := &reachable_daemon_records[idx]
 	old_status := rec.status
 	if old_status == "" do old_status = PEER_STATUS_UNREACHABLE
-	old_last_seen_unix_ms := rec.last_seen_unix_ms
 	new_last_seen_unix_ms := i64(extract_json_int(entry, "last_seen_unix_ms", 0))
 	rec.reach = strings.clone(extract_json_string(entry, "reach", contracts.DAEMON_FEDERATION_PEER_KIND_DIRECT))
 	rec.next_hop_daemon_id = strings.clone(extract_json_string(entry, "next_hop_daemon_id", daemon_id))
@@ -290,7 +289,7 @@ reachable_daemon_apply_entry_locked :: proc(entry: string, changed_ids: ^strings
 		strings.write_string(changed_ids, `"`); json_write_string(changed_ids, daemon_id); strings.write_string(changed_ids, `"`)
 		changed_count^ += 1
 	}
-	if status == PEER_STATUS_LINKED && (old_status != PEER_STATUS_LINKED || old_last_seen_unix_ms != new_last_seen_unix_ms) {
+	if status == PEER_STATUS_LINKED && old_status != PEER_STATUS_LINKED {
 		peer_id := rec.peer_id
 		if peer_id == "" do peer_id = daemon_id
 		if rec_ptr, found := peer_link_find_by_daemon_id(daemon_id); found do peer_id = rec_ptr.peer_id
