@@ -1066,6 +1066,9 @@ task_service_status_command :: proc(cmd: Task_Status_Command) -> Task_Service_Re
 	if !ok {
 		return Task_Service_Result{ok = false, status_code = 400, message = `{"ok":false,"message":"invalid task status"}`}
 	}
+	if !cmd.force && (state.status == .Approved || state.status == .Cancelled) && status_val != state.status {
+		return Task_Service_Result{ok = false, status_code = 409, message = `{"ok":false,"message":"terminal task status cannot be changed without force","error":"terminal_status"}`}
+	}
 	if cmd.force {
 		// A coordinator/operator force bypasses gating (dependencies, assignee
 		// slot, unresolved comments, reviewer LGTM votes) for ANY valid status
