@@ -71,6 +71,8 @@ require('"status":"' in AGENTS and '"current_task_id":"' in AGENTS, "remote JSON
 
 # B1 reconnect snapshot wired on link reconnect.
 require('federation_agent_status_resync_peer(replay_peer_ids[i])' in PEERS, "reconnect must push one status snapshot per subscriber")
+require('federation_delivery_outbox_drop_pending_agent_status :: proc' in FED, "replay must drop stale queued agent_status rows")
+require("idempotency_key LIKE 'agent_status:%'" in FED, "stale agent_status outbox cleanup must target status callbacks")
 
 # UI consumes real status.
 require('status: agent.remote.status' in CATALOG, "agentCatalog must map remote.status")

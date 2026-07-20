@@ -422,10 +422,28 @@ federation_delivery_outbox_log_stuck :: proc(peer_id, route_kind, idempotency_ke
 	fmt.printfln("FEDERATION_OUTBOX_STUCK ts_unix_ms=%d peer_id=%s route_kind=%s idempotency_key=%s attempts=%d age_ms=%d last_attempt_unix_ms=%d backoff_ms=%d", now_unix_ms, peer_id, route_kind, idempotency_key, attempts, age_ms, last_attempt_unix_ms, backoff_ms)
 }
 
+federation_delivery_outbox_drop_pending_agent_status :: proc(peer_id: string) -> bool {
+	if peer_id == "" || !task_db_ready do return false
+	stmt: sqlite3_stmt = nil
+	query := `DELETE FROM federation_delivery_outbox
+		WHERE peer_id = ? AND route_kind = ? AND delivered_unix_ms = 0 AND idempotency_key LIKE 'agent_status:%'`
+	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
+	if rc != SQLITE_OK do return false
+	defer sqlite3_finalize(stmt)
+	task_db_bind_text(stmt, 1, peer_id)
+	task_db_bind_text(stmt, 2, FEDERATION_ROUTE_CALLBACK)
+	return sqlite3_step(stmt) == SQLITE_DONE
+}
+
 federation_delivery_outbox_replay_peer :: proc(peer_id: string) -> int {
 	if peer_id == "" || !task_db_ready do return 0
 	_, dest_daemon_id, status, ok := federation_direct_peer_lookup_cached(peer_id, "")
 	if !ok || status != PEER_STATUS_LINKED || dest_daemon_id == "" do return 0
+	// Agent status is a lossy/coalesced projection, not business state. Drop stale
+	// pending status rows before replay so a previous bug cannot drain thousands of
+	// old idle/working transitions on reconnect; federation_agent_status_resync_peer
+	// sends one fresh current snapshot after reachability replay.
+	_ = federation_delivery_outbox_drop_pending_agent_status(peer_id)
 	route_kinds := make([dynamic]string)
 	idempotency_keys := make([dynamic]string)
 	payloads := make([dynamic]string)
