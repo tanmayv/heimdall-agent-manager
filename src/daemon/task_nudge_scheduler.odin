@@ -258,7 +258,7 @@ task_autoscaler_remote_wake_should_forward :: proc(proxy_agent_instance_id: stri
 // it could not be forwarded (peer unreachable / coalesced). Either way the
 // durable task notification outbox still carries the event and replays on peer
 // reconnect, so an unreachable-peer target is never silently dropped.
-task_autoscaler_ensure_remote_agent :: proc(proxy_agent_instance_id, provider_profile, model_tier, reason: string, now: i64) -> bool {
+task_autoscaler_ensure_remote_agent :: proc(proxy_agent_instance_id, reason: string, now: i64) -> bool {
 	peer_id, remote_agent_instance_id, ok := agent_remote_proxy_lookup(proxy_agent_instance_id)
 	if !ok || peer_id == "" || remote_agent_instance_id == "" do return false
 	if !federation_peer_reachable(peer_id) {
@@ -273,7 +273,10 @@ task_autoscaler_ensure_remote_agent :: proc(proxy_agent_instance_id, provider_pr
 		fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=remote_wake_skip source=%s target=%s skip_reason=coalesced peer=%s", now, reason, proxy_agent_instance_id, peer_id)
 		return false
 	}
-	start_ok, status_code, _ := federation_forward_start(peer_id, remote_agent_instance_id, provider_profile, model_tier, proxy_agent_instance_id)
+	// Do not forward local proxy provider/tier defaults. The remote daemon owns
+	// provider/model selection for its real instance; explicit UI starts may still
+	// pass overrides through /agents/start, where the remote daemon validates them.
+	start_ok, status_code, _ := federation_forward_start(peer_id, remote_agent_instance_id, "", "", proxy_agent_instance_id)
 	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=remote_wake_forward source=%s target=%s peer=%s remote=%s ok=%t status=%d", router_now_unix_ms(), reason, proxy_agent_instance_id, peer_id, remote_agent_instance_id, start_ok, status_code)
 	return start_ok
 }
@@ -284,8 +287,7 @@ task_autoscaler_ensure_agent :: proc(chain: Task_Chain_State, agent_instance_id,
 	// locally; wake the real agent on the owning peer instead. Short-circuits
 	// before the local lease/tracker/launch machinery, which is local-only.
 	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 && agent_record_is_remote_proxy(agent_instance_records[idx]) {
-		rec := agent_instance_records[idx]
-		return task_autoscaler_ensure_remote_agent(agent_instance_id, rec.provider_profile, rec.model_tier, reason, now)
+		return task_autoscaler_ensure_remote_agent(agent_instance_id, reason, now)
 	}
 	boot_priority := priority
 	if boot_priority == "" do boot_priority = "normal"

@@ -145,9 +145,10 @@ agent_store_apply_event :: proc(event: Agent_Instance_Event) -> bool {
 	rec.provider_profile = strings.clone(event.provider_profile)
 	rec.project_id = strings.clone(event.project_id)
 	rec.run_dir = strings.clone(event.run_dir)
-	tier := normalize_model_tier(event.model_tier)
-	rec.model_tier = strings.clone(tier)
 	kind := agent_kind_normalize(event.agent_kind)
+	tier := event.model_tier
+	if kind != AGENT_KIND_REMOTE_PROXY do tier = normalize_model_tier(event.model_tier)
+	rec.model_tier = strings.clone(tier)
 	rec.agent_kind = strings.clone(kind)
 	if kind == AGENT_KIND_REMOTE_PROXY {
 		rec.remote_peer_id = strings.clone(strings.trim_space(event.remote_peer_id))

@@ -16,6 +16,8 @@ export interface AgentRemoteInfo {
   connectionState?: string;
   connected?: boolean;
   currentTaskId?: string;
+  providerProfile?: string;
+  modelTier?: string;
   lastSeenUnixMs?: number;
   peerReachable?: boolean;
 }
@@ -41,6 +43,8 @@ export function agentRemoteInfo(agent: any): AgentRemoteInfo | null {
     const status = String(remote.status || '');
     const connectionState = String(remote.connectionState || remote.connection_state || '');
     const currentTaskId = String(remote.currentTaskId || remote.current_task_id || '');
+    const providerProfile = String(remote.providerProfile || remote.provider_profile || '');
+    const modelTier = String(remote.modelTier || remote.model_tier || '');
     const lastSeenUnixMs = Number(remote.lastSeenUnixMs ?? remote.last_seen_unix_ms ?? 0);
     const connectedRaw = remote.connected;
     const peerReachableRaw = remote.peerReachable ?? remote.peer_reachable;
@@ -53,6 +57,8 @@ export function agentRemoteInfo(agent: any): AgentRemoteInfo | null {
         connectionState,
         connected: connectedRaw === undefined ? undefined : Boolean(connectedRaw),
         currentTaskId,
+        providerProfile,
+        modelTier,
         lastSeenUnixMs,
         peerReachable: peerReachableRaw === undefined ? undefined : Boolean(peerReachableRaw),
       };

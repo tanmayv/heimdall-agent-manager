@@ -83,6 +83,8 @@ export function mapAgent(agent: any) {
       connectionState: agent.remote.connection_state || agent.remote.connectionState || '',
       connected: agent.remote.connected === undefined ? undefined : Boolean(agent.remote.connected),
       currentTaskId: agent.remote.current_task_id || agent.remote.currentTaskId || '',
+      providerProfile: agent.remote.provider_profile || agent.remote.providerProfile || '',
+      modelTier: agent.remote.model_tier || agent.remote.modelTier || '',
       lastSeenUnixMs: Number(agent.remote.last_seen_unix_ms ?? agent.remote.lastSeenUnixMs ?? 0),
       peerReachable: (agent.remote.peer_reachable ?? agent.remote.peerReachable) === undefined ? undefined : Boolean(agent.remote.peer_reachable ?? agent.remote.peerReachable),
     } : ((agent.remote_peer_id || agent.remotePeerId || agent.remote_agent_instance_id || agent.remoteAgentInstanceId || agent.remote_origin_daemon_id || agent.remoteOriginDaemonId) ? {
@@ -93,7 +95,7 @@ export function mapAgent(agent: any) {
     providerProfile: agent.provider_profile || agent.providerProfile || agent.agent_class || '',
     connected: Boolean(agent.connected),
     connectionState: agent.connection_state || agent.connectionState || '',
-    modelTier: agent.model_tier || agent.modelTier || 'normal',
+    modelTier: (String(agent.agent_kind || agent.agentKind || '').toLowerCase() === 'remote_proxy') ? (agent.model_tier || agent.modelTier || '') : (agent.model_tier || agent.modelTier || 'normal'),
     known: agent.known ?? true,
     execState,
     execStateSinceUnixMs,

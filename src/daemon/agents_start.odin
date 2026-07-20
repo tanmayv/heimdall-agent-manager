@@ -26,6 +26,24 @@ normalize_model_tier :: proc(tier: string) -> string {
 	return tier
 }
 
+agent_provider_profile_supported :: proc(profile: string) -> bool {
+	clean := strings.trim_space(profile)
+	if clean == "" do return true
+	if server_config.wrapper.default_agent == clean do return true
+	for cmd in server_config.wrapper.agent_commands {
+		if cmd.name == clean do return true
+	}
+	return false
+}
+
+agents_invalid_provider_profile_json :: proc(profile: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":false,"message":"invalid provider_profile: provider '`)
+	json_write_string(&b, profile)
+	strings.write_string(&b, `' is not supported on this daemon"}`)
+	return strings.to_string(b)
+}
+
 agent_defaults_write_default :: proc(builder: ^strings.Builder, wrote: ^int, default_use, fallback_agent_id: string, custom_prefs: map[string]User_Preference) {
 	if default_use == "" do return
 	pref_key := agent_default_pref_key(default_use)
@@ -277,7 +295,9 @@ handle_agents_associate :: proc(client: net.TCP_Socket, body: string) {
 	rec := agent_instance_records[idx]
 	rec.project_id = strings.clone(project_id)
 	assoc_tier := normalize_model_tier(rec.model_tier)
-	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = rec.provider_profile, project_id = rec.project_id, run_dir = rec.run_dir, model_tier = assoc_tier, agent_kind = rec.agent_kind, remote_peer_id = rec.remote_peer_id, remote_origin_daemon_id = rec.remote_origin_daemon_id, remote_agent_instance_id = rec.remote_agent_instance_id, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent association"}`); return }
+	assoc_provider := rec.provider_profile
+	if agent_record_is_remote_proxy(rec) { assoc_tier = ""; assoc_provider = "" }
+	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = assoc_provider, project_id = rec.project_id, run_dir = rec.run_dir, model_tier = assoc_tier, agent_kind = rec.agent_kind, remote_peer_id = rec.remote_peer_id, remote_origin_daemon_id = rec.remote_origin_daemon_id, remote_agent_instance_id = rec.remote_agent_instance_id, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent association"}`); return }
 	write_agent_ok_response(client, "associated", agent_instance_records[agent_record_index(rec.agent_record_id)])
 }
 
@@ -290,7 +310,9 @@ handle_agents_disassociate :: proc(client: net.TCP_Socket, body: string) {
 	rec := agent_instance_records[idx]
 	rec.project_id = ""
 	disassoc_tier := normalize_model_tier(rec.model_tier)
-	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = rec.provider_profile, project_id = "", run_dir = rec.run_dir, model_tier = disassoc_tier, agent_kind = rec.agent_kind, remote_peer_id = rec.remote_peer_id, remote_origin_daemon_id = rec.remote_origin_daemon_id, remote_agent_instance_id = rec.remote_agent_instance_id, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent disassociation"}`); return }
+	disassoc_provider := rec.provider_profile
+	if agent_record_is_remote_proxy(rec) { disassoc_tier = ""; disassoc_provider = "" }
+	if !agent_store_append_event(Agent_Instance_Event{kind = .Agent_Instance_Upserted, agent_record_id = rec.agent_record_id, agent_instance_id = rec.agent_instance_id, display_name = rec.display_name, template_id = rec.template_id, provider_profile = disassoc_provider, project_id = "", run_dir = rec.run_dir, model_tier = disassoc_tier, agent_kind = rec.agent_kind, remote_peer_id = rec.remote_peer_id, remote_origin_daemon_id = rec.remote_origin_daemon_id, remote_agent_instance_id = rec.remote_agent_instance_id, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist agent disassociation"}`); return }
 	write_agent_ok_response(client, "disassociated", agent_instance_records[agent_record_index(rec.agent_record_id)])
 }
 
@@ -348,6 +370,11 @@ agent_record_upsert :: proc(
 	kind = agent_kind_normalize(kind)
 	if kind == AGENT_KIND_REMOTE_PROXY {
 		if strings.trim_space(remote_peer) == "" || strings.trim_space(remote_agent) == "" do return "", "", false
+		// Remote proxies never launch local wrappers. Do not persist local
+		// provider/tier defaults on the proxy record; runtime provider/tier is owned
+		// by the remote daemon and returned from propagated remote runtime status.
+		pp = ""
+		tier = ""
 		run_dir = ""
 		resolved_project_id = ""
 	}
@@ -423,13 +450,16 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 	}
 	if idx := agent_record_index_by_instance(agent_instance_id); idx >= 0 && agent_record_is_remote_proxy(agent_instance_records[idx]) {
 		// Starting a remote_proxy must start the REAL agent on the owning peer,
-		// not launch a local wrapper. Forward the start over the peer link and
-		// return the owner's response verbatim.
+		// not launch a local wrapper. Forward only explicit runtime overrides from
+		// this request; local proxy records intentionally do not persist provider/tier.
 		proxy := agent_instance_records[idx]
 		start_ok, status_code, resp_body := federation_forward_start(proxy.remote_peer_id, proxy.remote_agent_instance_id, provider_profile, extract_json_string(body, "model_tier", ""), proxy.agent_instance_id)
-		status_text := "OK" if start_ok else ("Service Unavailable" if status_code == 503 else "Bad Gateway")
-		if status_code == 404 do status_text = "Not Found"
-		write_response(client, status_code, status_text, resp_body)
+		_ = start_ok
+		write_response(client, status_code, federation_status_text(status_code), resp_body)
+		return
+	}
+	if provider_profile != "" && !agent_provider_profile_supported(provider_profile) {
+		write_response(client, 400, "Bad Request", agents_invalid_provider_profile_json(provider_profile))
 		return
 	}
 
@@ -528,8 +558,15 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 	strings.write_string(builder, `","agent_id":"`); json_write_string(builder, agent_id_value)
 	strings.write_string(builder, `","display_name":"`); json_write_string(builder, rec.display_name)
 	strings.write_string(builder, `","template_id":"`); json_write_string(builder, rec.template_id)
-	strings.write_string(builder, `","agent_kind":"`); json_write_string(builder, agent_kind_normalize(rec.agent_kind))
-	strings.write_string(builder, `","provider_profile":"`); json_write_string(builder, rec.provider_profile)
+	agent_kind := agent_kind_normalize(rec.agent_kind)
+	remote_status_for_json := Remote_Proxy_Status{}
+	if agent_kind == AGENT_KIND_REMOTE_PROXY {
+		remote_status_for_json, _ = remote_proxy_status_get(rec.agent_instance_id)
+	}
+	provider_profile_json := rec.provider_profile
+	if agent_kind == AGENT_KIND_REMOTE_PROXY do provider_profile_json = remote_status_for_json.provider_profile
+	strings.write_string(builder, `","agent_kind":"`); json_write_string(builder, agent_kind)
+	strings.write_string(builder, `","provider_profile":"`); json_write_string(builder, provider_profile_json)
 	strings.write_string(builder, `","project_id":"`); json_write_string(builder, rec.project_id)
 	project_name := ""
 	if rec.project_id != "" {
@@ -538,6 +575,9 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 	strings.write_string(builder, `","project_name":"`); json_write_string(builder, project_name)
 	strings.write_string(builder, `","run_dir":"`); json_write_string(builder, rec.run_dir)
 	model_tier := normalize_model_tier(rec.model_tier)
+	if agent_kind == AGENT_KIND_REMOTE_PROXY {
+		model_tier = remote_status_for_json.model_tier
+	}
 	strings.write_string(builder, `","model_tier":"`); json_write_string(builder, model_tier)
 	strings.write_string(builder, `","created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.created_unix_ms))
 	strings.write_string(builder, `,"updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.updated_unix_ms))
@@ -548,15 +588,15 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 	strings.write_string(builder, `,"last_needed_at_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.last_needed_at_unix_ms))
 	strings.write_string(builder, `,"state":"`); json_write_string(builder, agent_store_agent_state(rec)); strings.write_string(builder, `"`)
 	strings.write_string(builder, `,"order":`); strings.write_string(builder, fmt.tprintf("%d", rec.order))
-	if agent_record_is_remote_proxy(rec) {
+	if agent_kind == AGENT_KIND_REMOTE_PROXY {
 		resolved_origin_daemon_id, _ := agent_remote_proxy_origin_daemon_id(rec)
 		strings.write_string(builder, `,"remote":{"peer_id":"`); json_write_string(builder, rec.remote_peer_id)
 		strings.write_string(builder, `","origin_daemon_id":"`); json_write_string(builder, resolved_origin_daemon_id)
 		strings.write_string(builder, `","remote_agent_instance_id":"`); json_write_string(builder, rec.remote_agent_instance_id)
-		// Real liveness propagated from the origin (Part B). Peer-link reachability
-		// overrides last-known status: a proxy to an unreachable peer reads offline.
+		// Real liveness/runtime metadata propagated from the origin (Part B). Peer-link
+		// reachability overrides last-known status: a proxy to an unreachable peer reads offline.
 		peer_reachable := federation_peer_reachable(rec.remote_peer_id)
-		remote_status, _ := remote_proxy_status_get(rec.agent_instance_id)
+		remote_status := remote_status_for_json
 		effective_status := remote_status.status
 		if !peer_reachable do effective_status = FEDERATION_AGENT_STATUS_OFFLINE
 		remote_live := peer_reachable && federation_agent_status_is_live(remote_status.status)
@@ -564,6 +604,8 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 		strings.write_string(builder, `","connection_state":"`); json_write_string(builder, "connected" if remote_live else "offline")
 		strings.write_string(builder, `","connected":`); strings.write_string(builder, "true" if remote_live else "false")
 		strings.write_string(builder, `,"current_task_id":"`); json_write_string(builder, remote_status.current_task_id)
+		strings.write_string(builder, `","provider_profile":"`); json_write_string(builder, remote_status.provider_profile)
+		strings.write_string(builder, `","model_tier":"`); json_write_string(builder, remote_status.model_tier)
 		strings.write_string(builder, `","last_seen_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", remote_status.last_seen_unix_ms))
 		strings.write_string(builder, `,"peer_reachable":`); strings.write_string(builder, "true" if peer_reachable else "false")
 		strings.write_string(builder, `}`)

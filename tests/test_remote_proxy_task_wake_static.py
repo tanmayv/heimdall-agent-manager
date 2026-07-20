@@ -20,9 +20,11 @@ ea_head = NUDGE[ea_idx:ea_idx + 700]
 require('agent_record_is_remote_proxy(agent_instance_records[idx])' in ea_head, "ensure_agent must detect remote-proxy targets before local launch machinery")
 require('task_autoscaler_ensure_remote_agent(' in ea_head, "ensure_agent must delegate remote targets to the wake path")
 
-# Remote wake forwards a start to the owning peer for ALL roles.
+# Remote wake forwards a start to the owning peer for ALL roles. It must not
+# forward local proxy provider/tier defaults; the remote daemon owns runtime
+# provider/model selection unless the user explicitly starts with overrides.
 require('task_autoscaler_ensure_remote_agent :: proc' in NUDGE, "missing remote wake entry point")
-require('federation_forward_start(peer_id, remote_agent_instance_id, provider_profile, model_tier, proxy_agent_instance_id)' in NUDGE, "remote wake must forward start to owning peer")
+require('federation_forward_start(peer_id, remote_agent_instance_id, "", "", proxy_agent_instance_id)' in NUDGE, "remote wake must forward start without local provider/tier overrides")
 
 # Unreachable peer: do not forward; durable outbox already carries the event.
 require('if !federation_peer_reachable(peer_id)' in NUDGE, "remote wake must skip forwarding when peer unreachable")

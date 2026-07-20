@@ -771,8 +771,9 @@ federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_ins
 	if resolved_origin_daemon_id == "" do resolved_origin_daemon_id = strings.trim_space(bridge_daemon_id)
 	if resolved_origin_daemon_id != "" {
 		if existing, ok := agent_remote_proxy_find_absolute(resolved_origin_daemon_id, remote_id); ok {
-			if strings.trim_space(existing.remote_origin_daemon_id) == "" {
-				_, _, backfill_ok := agent_record_upsert(existing.agent_instance_id, existing.display_name, existing.template_id, existing.provider_profile, existing.project_id, existing.run_dir, existing.model_tier, existing.state, false, existing.agent_kind, existing.remote_peer_id, resolved_origin_daemon_id, existing.remote_agent_instance_id)
+			needs_update := strings.trim_space(existing.remote_origin_daemon_id) == "" || existing.provider_profile != "" || existing.model_tier != ""
+			if needs_update {
+				_, _, backfill_ok := agent_record_upsert(existing.agent_instance_id, existing.display_name, existing.template_id, "", existing.project_id, existing.run_dir, "", existing.state, false, existing.agent_kind, existing.remote_peer_id, resolved_origin_daemon_id, existing.remote_agent_instance_id)
 				if backfill_ok {
 					if idx := agent_record_index(existing.agent_record_id); idx >= 0 do return agent_instance_records[idx], true, ""
 				}
@@ -781,8 +782,9 @@ federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_ins
 		}
 	}
 	if existing, ok := agent_remote_proxy_find(resolved_peer_id, remote_id); ok {
-		if resolved_origin_daemon_id != "" && strings.trim_space(existing.remote_origin_daemon_id) == "" {
-			_, _, backfill_ok := agent_record_upsert(existing.agent_instance_id, existing.display_name, existing.template_id, existing.provider_profile, existing.project_id, existing.run_dir, existing.model_tier, existing.state, false, existing.agent_kind, existing.remote_peer_id, resolved_origin_daemon_id, existing.remote_agent_instance_id)
+		needs_update := (resolved_origin_daemon_id != "" && strings.trim_space(existing.remote_origin_daemon_id) == "") || existing.provider_profile != "" || existing.model_tier != ""
+		if needs_update {
+			_, _, backfill_ok := agent_record_upsert(existing.agent_instance_id, existing.display_name, existing.template_id, "", existing.project_id, existing.run_dir, "", existing.state, false, existing.agent_kind, existing.remote_peer_id, resolved_origin_daemon_id, existing.remote_agent_instance_id)
 			if backfill_ok {
 				if idx := agent_record_index(existing.agent_record_id); idx >= 0 do return agent_instance_records[idx], true, ""
 			}
@@ -793,11 +795,11 @@ federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_ins
 	if local_display_name == "" do local_display_name = remote_id
 	local_template_id := strings.trim_space(template_id)
 	if local_template_id == "" do local_template_id = derive_agent_class(remote_id)
-	local_provider := strings.trim_space(provider_profile)
-	if local_provider == "" do local_provider = agent_resolve_provider_profile("")
-	local_tier := normalize_model_tier(model_tier)
+	// Do not persist local provider/model defaults on remote proxies. The remote
+	// daemon owns runtime provider selection; explicit start overrides are forwarded
+	// request-time only and validated on the remote daemon.
 	local_id := agent_generated_instance_id(fmt.tprintf("%s-%s", remote_id, resolved_peer_id))
-	rec_id, _, ok := agent_record_upsert(local_id, local_display_name, local_template_id, local_provider, "", "", local_tier, AGENT_IDENTITY_STATE_PROVISIONED, false, AGENT_KIND_REMOTE_PROXY, resolved_peer_id, resolved_origin_daemon_id, remote_id)
+	rec_id, _, ok := agent_record_upsert(local_id, local_display_name, local_template_id, "", "", "", "", AGENT_IDENTITY_STATE_PROVISIONED, false, AGENT_KIND_REMOTE_PROXY, resolved_peer_id, resolved_origin_daemon_id, remote_id)
 	if !ok || rec_id == "" {
 		return Agent_Instance_Record{}, false, "failed to persist remote proxy"
 	}
