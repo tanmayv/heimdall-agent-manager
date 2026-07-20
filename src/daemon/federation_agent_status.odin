@@ -221,10 +221,11 @@ federation_propagate_agent_status :: proc(local_agent_instance_id, reason: strin
 	}
 	sync.mutex_lock(&agent_status_subscriber_mutex)
 	agent_status_subscriber_prune_locked()
-	for &sub in agent_status_subscribers {
+	for i in 0..<len(agent_status_subscribers) {
+		sub := &agent_status_subscribers[i]
 		if sub.local_agent_instance_id != local_agent_instance_id do continue
 		if sub.last_sent_status == status do continue
-		agent_status_subscriber_set_last_sent_locked(&sub, status, updated_unix_ms)
+		agent_status_subscriber_set_last_sent_locked(sub, status, updated_unix_ms)
 		append(&pendings, Pending{peer_id = strings.clone(sub.peer_id), proxy_agent_instance_id = strings.clone(sub.proxy_agent_instance_id)})
 	}
 	sync.mutex_unlock(&agent_status_subscriber_mutex)
@@ -251,7 +252,8 @@ federation_agent_status_resync_peer :: proc(peer_id: string) -> int {
 	defer { for v in locals do delete(v); delete(locals) }
 	sync.mutex_lock(&agent_status_subscriber_mutex)
 	agent_status_subscriber_prune_locked()
-	for &sub in agent_status_subscribers {
+	for i in 0..<len(agent_status_subscribers) {
+		sub := &agent_status_subscribers[i]
 		if sub.peer_id != peer_id do continue
 		if sub.last_sent_status != "" { delete(sub.last_sent_status); sub.last_sent_status = "" }
 		already := false
@@ -313,7 +315,8 @@ remote_proxy_status_apply :: proc(proxy_agent_instance_id, status, connection_st
 	if proxy_agent_instance_id == "" || status == "" do return false, false
 	sync.mutex_lock(&remote_proxy_status_mutex)
 	defer sync.mutex_unlock(&remote_proxy_status_mutex)
-	for &rec in remote_proxy_status_records {
+	for i in 0..<len(remote_proxy_status_records) {
+		rec := &remote_proxy_status_records[i]
 		if rec.proxy_agent_instance_id != proxy_agent_instance_id do continue
 		// Drop stale/out-of-order.
 		if updated_unix_ms != 0 && rec.updated_unix_ms != 0 && updated_unix_ms < rec.updated_unix_ms {

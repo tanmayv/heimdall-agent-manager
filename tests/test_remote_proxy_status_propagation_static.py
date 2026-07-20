@@ -23,8 +23,11 @@ require('federation_derive_agent_status :: proc' in STATUS, "missing derived sta
 require('federation_propagate_agent_status :: proc' in STATUS, "missing propagation entry point")
 require('federation_agent_status_resync_peer :: proc' in STATUS, "missing reconnect snapshot resync")
 
-# B0: transition-only. Propagation must self-suppress on unchanged status.
+# B0: transition-only. Propagation must self-suppress on unchanged status and
+# mutate the backing subscriber array by index (not a loop copy), otherwise
+# last_sent_status never sticks and every heartbeat edge becomes a firehose.
 require('if sub.last_sent_status == status do continue' in STATUS, "propagation must skip unchanged status (no heartbeat firehose)")
+require('for i in 0..<len(agent_status_subscribers)' in STATUS and 'sub := &agent_status_subscribers[i]' in STATUS, "subscriber status updates must mutate backing array by index")
 
 # Edge-triggered wiring: only inside existing lifecycle/runtime edges, never per raw heartbeat.
 require('federation_propagate_agent_status(snap.agent_instance_id, "heartbeat")' in TRACKER, "propagation must piggyback on heartbeat edges")

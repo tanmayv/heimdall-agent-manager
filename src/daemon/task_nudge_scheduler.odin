@@ -240,7 +240,8 @@ remote_wake_records: [dynamic]Remote_Wake_Record
 REMOTE_WAKE_COALESCE_MS :: i64(30_000)
 
 task_autoscaler_remote_wake_should_forward :: proc(proxy_agent_instance_id: string, now: i64) -> bool {
-	for &r in remote_wake_records {
+	for i in 0..<len(remote_wake_records) {
+		r := &remote_wake_records[i]
 		if r.proxy_agent_instance_id == proxy_agent_instance_id {
 			if now - r.last_forward_unix_ms < REMOTE_WAKE_COALESCE_MS do return false
 			r.last_forward_unix_ms = now
