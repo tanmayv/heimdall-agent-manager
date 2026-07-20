@@ -1348,7 +1348,7 @@ export default function App() {
         const message = String(err?.message || err || '').toLowerCase();
         if (!message.includes('already') && !message.includes('exists')) throw err;
       });
-      const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, provider: effectiveProvider, templateId: 'conversation', projectId: projectId || '', displayName: '', modelTier: modelTier || 'smart'});
+      const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, provider: effectiveProvider, templateId: 'conversation', projectId: projectId || '', displayName: '', modelTier: modelTier || 'smart', newMessage: body});
       const resolvedId = result?.agent_instance_id || result?.agentInstanceId || requestedId;
       let sent = false;
       let sendResult: any = null;

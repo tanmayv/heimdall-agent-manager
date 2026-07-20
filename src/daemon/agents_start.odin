@@ -417,6 +417,7 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 	display_name := extract_json_string(body, "display_name", extract_json_string(body, "alias", ""))
 	agent_instance_id := extract_json_string(body, "agent_instance_id", "")
 	agent_id_ref := extract_json_string(body, "agent_id", "")
+	new_message := extract_json_string(body, "new_message", "")
 	config_path := extract_json_string(body, "config_path", server_config_path)
 	// Starting by durable agent_id creates a fresh concrete instance. Supplying an
 	// existing concrete/legacy agent_instance_id resumes that exact instance.
@@ -555,7 +556,7 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 		return
 	}
 	registry_add_pending_agent_token(agent_instance_id, agent_token)
-	ok := launch_wrapper_detached(agent_instance_id, provider_profile, config_path, log_path, agent_token, display_name, final_tier, resolved_project_id, "manual_agent_start")
+	ok := launch_wrapper_detached(agent_instance_id, provider_profile, config_path, log_path, agent_token, display_name, final_tier, resolved_project_id, "manual_agent_start", "", "", new_message)
 	if !ok {
 		agent_runtime_tracker_launch_failed(agent_instance_id, agent_token, "manual_agent_start")
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to start wrapper"}`)
@@ -739,7 +740,7 @@ query_param :: proc(request, name: string) -> string {
 	return query[start:start + end]
 }
 
-launch_wrapper_detached :: proc(agent_instance_id, selected_agent, config_path, log_path, agent_token, display_name, model_tier, project_id: string, launch_source: string = "", chain_id: string = "", task_id: string = "") -> bool {
+launch_wrapper_detached :: proc(agent_instance_id, selected_agent, config_path, log_path, agent_token, display_name, model_tier, project_id: string, launch_source: string = "", chain_id: string = "", task_id: string = "", new_message: string = "") -> bool {
 	spawn_start_ms := router_now_unix_ms()
 	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=wrapper_spawn_build_begin source=%s chain=%s task=%s target=%s provider=%s tier=%s project=%s log=%s", spawn_start_ms, launch_source, chain_id, task_id, agent_instance_id, selected_agent, model_tier, project_id, log_path)
 	_ = os.make_directory_all(parent_dir(log_path))
@@ -772,6 +773,10 @@ launch_wrapper_detached :: proc(agent_instance_id, selected_agent, config_path, 
 	if task_id != "" {
 		strings.write_string(&builder, " --current-task-id ")
 		strings.write_string(&builder, shell_quote(task_id))
+	}
+	if new_message != "" {
+		strings.write_string(&builder, " --new-message ")
+		strings.write_string(&builder, shell_quote(new_message))
 	}
 	strings.write_string(&builder, " ")
 	strings.write_string(&builder, shell_quote(agent_instance_id))
