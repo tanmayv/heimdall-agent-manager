@@ -116,7 +116,15 @@ function searchMatches(item: any, query: string) {
 }
 
 function remoteAgentId(agent: any): string {
+  return String(agent?.agent_instance_id || agent?.agentInstanceId || agent?.remoteAgentInstanceId || agent?.agent_id || agent?.agentId || '');
+}
+
+function remoteAgentInstanceId(agent: any): string {
   return String(agent?.agent_instance_id || agent?.agentInstanceId || agent?.remoteAgentInstanceId || '');
+}
+
+function remoteDurableAgentId(agent: any): string {
+  return String(agent?.agent_id || agent?.agentId || '');
 }
 
 function remoteAgentLabel(agent: any): string {
@@ -430,6 +438,8 @@ export default function AgentPicker({
   async function selectRemoteAgent(peer: any, remoteAgent: any) {
     if (!clientToken || peerStatus(peer) !== 'linked' || busyKey) return;
     const remoteId = remoteAgentId(remoteAgent).trim();
+    const remoteInstanceId = remoteAgentInstanceId(remoteAgent).trim();
+    const remoteDurableId = remoteDurableAgentId(remoteAgent).trim();
     if (!remoteId) return;
     const peerId = String(peer?.peer_id || '').trim();
     if (!peerId) return;
@@ -441,7 +451,8 @@ export default function AgentPicker({
         clientToken,
         peerId,
         originDaemonId: String(remoteAgent?.origin_daemon_id || remoteAgent?.originDaemonId || ''),
-        remoteAgentInstanceId: remoteId,
+        remoteAgentInstanceId: remoteInstanceId,
+        remoteAgentId: remoteInstanceId ? '' : remoteDurableId,
         displayName: String(remoteAgent?.display_name || remoteAgent?.displayName || ''),
         templateId: String(remoteAgent?.template_id || remoteAgent?.templateId || ''),
         providerProfile: String(remoteAgent?.provider_profile || remoteAgent?.providerProfile || ''),

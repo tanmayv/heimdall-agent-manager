@@ -214,7 +214,7 @@ export async function listPeerAdvertisedAgents({ daemonUrl, clientToken, peerId 
   };
 }
 
-export async function bindRemoteProxy({ daemonUrl, clientToken, peerId, originDaemonId = '', remoteAgentInstanceId, displayName = '', templateId = '', providerProfile = '', modelTier = 'normal' }: { daemonUrl: string; clientToken: string; peerId: string; originDaemonId?: string; remoteAgentInstanceId: string; displayName?: string; templateId?: string; providerProfile?: string; modelTier?: string }) {
+export async function bindRemoteProxy({ daemonUrl, clientToken, peerId, originDaemonId = '', remoteAgentInstanceId = '', remoteAgentId = '', displayName = '', templateId = '', providerProfile = '', modelTier = 'normal' }: { daemonUrl: string; clientToken: string; peerId: string; originDaemonId?: string; remoteAgentInstanceId?: string; remoteAgentId?: string; displayName?: string; templateId?: string; providerProfile?: string; modelTier?: string }) {
   return requestJson(joinUrl(daemonUrl, '/federation/proxies/bind'), {
     method: 'POST',
     headers: { Authorization: `Bearer ${clientToken}` },
@@ -222,6 +222,7 @@ export async function bindRemoteProxy({ daemonUrl, clientToken, peerId, originDa
       peer_id: peerId,
       origin_daemon_id: originDaemonId,
       remote_agent_instance_id: remoteAgentInstanceId,
+      remote_agent_id: remoteAgentId,
       display_name: displayName,
       template_id: templateId,
       provider_profile: providerProfile,

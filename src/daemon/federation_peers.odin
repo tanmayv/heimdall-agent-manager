@@ -727,6 +727,23 @@ federation_advertised_agents_json :: proc() -> string {
 	json_write_string(&b, contracts.APP_VERSION)
 	strings.write_string(&b, `","agents":[`)
 	wrote := 0
+	for i in 0..<agent_id_record_count {
+		id_rec := agent_id_records[i]
+		if id_rec.archived_at_unix_ms != 0 do continue
+		if agent_id_matches_default_use(id_rec.agent_id, "conversation") do continue
+		if !federation_agent_is_advertised(id_rec.agent_id) do continue
+		if wrote > 0 do strings.write_string(&b, `,`)
+		strings.write_string(&b, `{"kind":"identity","agent_id":"`); json_write_string(&b, id_rec.agent_id)
+		strings.write_string(&b, `","origin_daemon_id":"`); json_write_string(&b, server_daemon_id)
+		strings.write_string(&b, `","native_id":"`); json_write_string(&b, id_rec.agent_id)
+		strings.write_string(&b, `","display_name":"`); json_write_string(&b, id_rec.display_name if id_rec.display_name != "" else id_rec.agent_id)
+		strings.write_string(&b, `","template_id":"`); json_write_string(&b, id_rec.template_id)
+		strings.write_string(&b, `","provider_profile":"`); json_write_string(&b, id_rec.default_provider_profile)
+		strings.write_string(&b, `","model_tier":"`); json_write_string(&b, normalize_model_tier(id_rec.default_model_tier if id_rec.default_model_tier != "" else "normal"))
+		strings.write_string(&b, `","identity_state":"`); json_write_string(&b, id_rec.state if id_rec.state != "" else AGENT_ID_STATE_ACTIVE)
+		strings.write_string(&b, `"}`)
+		wrote += 1
+	}
 	for i in 0..<agent_instance_record_count {
 		rec := agent_instance_records[i]
 		if rec.archived_at_unix_ms != 0 do continue
@@ -734,7 +751,8 @@ federation_advertised_agents_json :: proc() -> string {
 		if agent_id_matches_default_use(rec.agent_id, "conversation") do continue
 		if !federation_agent_is_advertised(rec.agent_instance_id) do continue
 		if wrote > 0 do strings.write_string(&b, `,`)
-		strings.write_string(&b, `{"agent_instance_id":"`); json_write_string(&b, rec.agent_instance_id)
+		strings.write_string(&b, `{"kind":"instance","agent_instance_id":"`); json_write_string(&b, rec.agent_instance_id)
+		strings.write_string(&b, `","agent_id":"`); json_write_string(&b, rec.agent_id)
 		strings.write_string(&b, `","origin_daemon_id":"`); json_write_string(&b, server_daemon_id)
 		strings.write_string(&b, `","native_id":"`); json_write_string(&b, rec.agent_instance_id)
 		strings.write_string(&b, `","display_name":"`); json_write_string(&b, rec.display_name)
@@ -759,12 +777,46 @@ handle_get_federation_agents :: proc(client: net.TCP_Socket, ctx: ^Route_Context
 	write_response(client, 200, "OK", federation_advertised_agents_json())
 }
 
-federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_instance_id, display_name, template_id, provider_profile, model_tier: string) -> (Agent_Instance_Record, bool, string) {
-	resolved_peer_id, bridge_daemon_id, _, found := federation_direct_peer_lookup(peer_id, origin_daemon_id)
+federation_remote_agent_id_start_concrete :: proc(bridge_daemon_id, remote_agent_id, display_name, template_id: string) -> (remote_agent_instance_id: string, ok: bool, message: string) {
+	remote_agent_id_trimmed := strings.trim_space(remote_agent_id)
+	if remote_agent_id_trimmed == "" do return "", false, "remote_agent_id required"
+	if strings.trim_space(bridge_daemon_id) == "" do return "", false, "peer unreachable"
+	b := strings.builder_make()
+	strings.write_string(&b, `{"agent_id":"`); json_write_string(&b, remote_agent_id_trimmed)
+	if strings.trim_space(display_name) != "" {
+		strings.write_string(&b, `","display_name":"`); json_write_string(&b, strings.trim_space(display_name))
+	}
+	if strings.trim_space(template_id) != "" {
+		strings.write_string(&b, `","template_id":"`); json_write_string(&b, strings.trim_space(template_id))
+	}
+	strings.write_string(&b, `"}`)
+	payload := strings.to_string(b)
+	resp, forward_ok := bridge_request(bridge_daemon_id, contracts.BRIDGE_HTTP_METHOD_POST, contracts.ROUTE_AGENTS_START, payload, federation_idempotency_key("start_agent_id", server_daemon_id, remote_agent_id_trimmed), FEDERATION_HTTP_TIMEOUT_MS)
+	if !forward_ok do return "", false, "peer unreachable"
+	if resp.status != 200 {
+		msg := extract_json_string(resp.body, "message", "remote start failed")
+		if msg == "" do msg = "remote start failed"
+		return "", false, msg
+	}
+	concrete_id := strings.trim_space(extract_json_string(resp.body, "agent_instance_id", ""))
+	if concrete_id == "" do return "", false, "remote start did not return agent_instance_id"
+	return strings.clone(concrete_id), true, ""
+}
+
+federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_instance_id, remote_agent_id, display_name, template_id, provider_profile, model_tier: string) -> (Agent_Instance_Record, bool, string) {
+	resolved_peer_id, bridge_daemon_id, status, found := federation_direct_peer_lookup(peer_id, origin_daemon_id)
 	if !found || strings.trim_space(resolved_peer_id) == "" {
 		return Agent_Instance_Record{}, false, "peer not found"
 	}
 	remote_id := strings.trim_space(remote_agent_instance_id)
+	started_from_agent_id := false
+	if remote_id == "" {
+		if status != PEER_STATUS_LINKED do return Agent_Instance_Record{}, false, "peer unreachable"
+		started_remote_id, start_ok, start_message := federation_remote_agent_id_start_concrete(bridge_daemon_id, remote_agent_id, display_name, template_id)
+		if !start_ok do return Agent_Instance_Record{}, false, start_message
+		remote_id = started_remote_id
+		started_from_agent_id = true
+	}
 	if remote_id == "" do return Agent_Instance_Record{}, false, "remote_agent_instance_id required"
 	resolved_origin_daemon_id := strings.trim_space(origin_daemon_id)
 	if resolved_origin_daemon_id == "" do resolved_origin_daemon_id = strings.trim_space(bridge_daemon_id)
@@ -774,9 +826,14 @@ federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_ins
 			if needs_update {
 				_, _, backfill_ok := agent_record_upsert(existing.agent_instance_id, existing.display_name, existing.template_id, "", existing.project_id, existing.run_dir, "", existing.state, false, existing.agent_kind, existing.remote_peer_id, resolved_origin_daemon_id, existing.remote_agent_instance_id)
 				if backfill_ok {
-					if idx := agent_record_index(existing.agent_record_id); idx >= 0 do return agent_instance_records[idx], true, ""
+					if idx := agent_record_index(existing.agent_record_id); idx >= 0 {
+						updated := agent_instance_records[idx]
+						if started_from_agent_id do _, _, _ = federation_forward_start(updated.remote_peer_id, updated.remote_agent_instance_id, "", "", updated.agent_instance_id)
+						return updated, true, ""
+					}
 				}
 			}
+			if started_from_agent_id do _, _, _ = federation_forward_start(existing.remote_peer_id, existing.remote_agent_instance_id, "", "", existing.agent_instance_id)
 			return existing, true, ""
 		}
 	}
@@ -785,9 +842,14 @@ federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_ins
 		if needs_update {
 			_, _, backfill_ok := agent_record_upsert(existing.agent_instance_id, existing.display_name, existing.template_id, "", existing.project_id, existing.run_dir, "", existing.state, false, existing.agent_kind, existing.remote_peer_id, resolved_origin_daemon_id, existing.remote_agent_instance_id)
 			if backfill_ok {
-				if idx := agent_record_index(existing.agent_record_id); idx >= 0 do return agent_instance_records[idx], true, ""
+				if idx := agent_record_index(existing.agent_record_id); idx >= 0 {
+					updated := agent_instance_records[idx]
+					if started_from_agent_id do _, _, _ = federation_forward_start(updated.remote_peer_id, updated.remote_agent_instance_id, "", "", updated.agent_instance_id)
+					return updated, true, ""
+				}
 			}
 		}
+		if started_from_agent_id do _, _, _ = federation_forward_start(existing.remote_peer_id, existing.remote_agent_instance_id, "", "", existing.agent_instance_id)
 		return existing, true, ""
 	}
 	local_display_name := strings.trim_space(display_name)
@@ -804,7 +866,9 @@ federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_ins
 	}
 	idx := agent_record_index(rec_id)
 	if idx < 0 do return Agent_Instance_Record{}, false, "remote proxy not found after save"
-	return agent_instance_records[idx], true, ""
+	rec := agent_instance_records[idx]
+	if started_from_agent_id do _, _, _ = federation_forward_start(rec.remote_peer_id, rec.remote_agent_instance_id, "", "", rec.agent_instance_id)
+	return rec, true, ""
 }
 
 handle_get_federation_peers :: proc(client: net.TCP_Socket, ctx: ^Route_Context) {
@@ -834,6 +898,7 @@ handle_post_federation_proxy_bind :: proc(client: net.TCP_Socket, body: string, 
 		peer_id_normalize(extract_json_string(body, "peer_id", "")),
 		extract_json_string(body, "origin_daemon_id", ""),
 		extract_json_string(body, "remote_agent_instance_id", ""),
+		extract_json_string(body, "remote_agent_id", ""),
 		extract_json_string(body, "display_name", ""),
 		extract_json_string(body, "template_id", ""),
 		extract_json_string(body, "provider_profile", ""),

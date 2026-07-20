@@ -65,7 +65,8 @@ require('agent_lifecycle_changed_write(&builder, Agent_Lifecycle_Event_Fields{' 
 
 # B3: JSON exposure + peer-unreachable override.
 require('federation_peer_reachable :: proc' in STATUS, "missing peer reachability helper")
-require('if !peer_reachable do effective_status = FEDERATION_AGENT_STATUS_OFFLINE' in AGENTS, "unreachable peer must override to offline")
+require('if !remote_peer_reachable_for_json do remote_effective_status_for_json = FEDERATION_AGENT_STATUS_OFFLINE' in AGENTS, "unreachable peer must override to offline")
+require('remote_live_for_json = remote_peer_reachable_for_json && federation_agent_status_is_live' in AGENTS, "remote top-level liveness must derive from peer reachability + remote status")
 require('"peer_reachable":' in AGENTS, "remote JSON must expose peer_reachable")
 require('"status":"' in AGENTS and '"current_task_id":"' in AGENTS, "remote JSON must expose status + current_task_id")
 

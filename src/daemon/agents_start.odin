@@ -563,6 +563,16 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 	if agent_kind == AGENT_KIND_REMOTE_PROXY {
 		remote_status_for_json, _ = remote_proxy_status_get(rec.agent_instance_id)
 	}
+	remote_peer_reachable_for_json := false
+	remote_effective_status_for_json := remote_status_for_json.status
+	remote_live_for_json := false
+	remote_connection_state_for_json := "offline"
+	if agent_kind == AGENT_KIND_REMOTE_PROXY {
+		remote_peer_reachable_for_json = federation_peer_reachable(rec.remote_peer_id)
+		if !remote_peer_reachable_for_json do remote_effective_status_for_json = FEDERATION_AGENT_STATUS_OFFLINE
+		remote_live_for_json = remote_peer_reachable_for_json && federation_agent_status_is_live(remote_status_for_json.status)
+		remote_connection_state_for_json = "connected" if remote_live_for_json else "offline"
+	}
 	provider_profile_json := rec.provider_profile
 	if agent_kind == AGENT_KIND_REMOTE_PROXY do provider_profile_json = remote_status_for_json.provider_profile
 	strings.write_string(builder, `","agent_kind":"`); json_write_string(builder, agent_kind)
@@ -583,10 +593,14 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 	strings.write_string(builder, `,"updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.updated_unix_ms))
 	strings.write_string(builder, `,"archived_at_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.archived_at_unix_ms))
 	strings.write_string(builder, `,"identity_state":"`); json_write_string(builder, agent_record_identity_state(rec)); strings.write_string(builder, `"`)
-	strings.write_string(builder, `,"current_task_id":"`); json_write_string(builder, rec.current_task_id)
+	current_task_id_json := rec.current_task_id
+	if agent_kind == AGENT_KIND_REMOTE_PROXY do current_task_id_json = remote_status_for_json.current_task_id
+	strings.write_string(builder, `,"current_task_id":"`); json_write_string(builder, current_task_id_json)
 	strings.write_string(builder, `","current_task_since":`); strings.write_string(builder, fmt.tprintf("%d", rec.current_task_since))
 	strings.write_string(builder, `,"last_needed_at_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.last_needed_at_unix_ms))
-	strings.write_string(builder, `,"state":"`); json_write_string(builder, agent_store_agent_state(rec)); strings.write_string(builder, `"`)
+	state_json := agent_store_agent_state(rec)
+	if agent_kind == AGENT_KIND_REMOTE_PROXY && remote_effective_status_for_json != "" do state_json = remote_effective_status_for_json
+	strings.write_string(builder, `,"state":"`); json_write_string(builder, state_json); strings.write_string(builder, `"`)
 	strings.write_string(builder, `,"order":`); strings.write_string(builder, fmt.tprintf("%d", rec.order))
 	if agent_kind == AGENT_KIND_REMOTE_PROXY {
 		resolved_origin_daemon_id, _ := agent_remote_proxy_origin_daemon_id(rec)
@@ -595,19 +609,15 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 		strings.write_string(builder, `","remote_agent_instance_id":"`); json_write_string(builder, rec.remote_agent_instance_id)
 		// Real liveness/runtime metadata propagated from the origin (Part B). Peer-link
 		// reachability overrides last-known status: a proxy to an unreachable peer reads offline.
-		peer_reachable := federation_peer_reachable(rec.remote_peer_id)
 		remote_status := remote_status_for_json
-		effective_status := remote_status.status
-		if !peer_reachable do effective_status = FEDERATION_AGENT_STATUS_OFFLINE
-		remote_live := peer_reachable && federation_agent_status_is_live(remote_status.status)
-		strings.write_string(builder, `","status":"`); json_write_string(builder, effective_status)
-		strings.write_string(builder, `","connection_state":"`); json_write_string(builder, "connected" if remote_live else "offline")
-		strings.write_string(builder, `","connected":`); strings.write_string(builder, "true" if remote_live else "false")
+		strings.write_string(builder, `","status":"`); json_write_string(builder, remote_effective_status_for_json)
+		strings.write_string(builder, `","connection_state":"`); json_write_string(builder, remote_connection_state_for_json)
+		strings.write_string(builder, `","connected":`); strings.write_string(builder, "true" if remote_live_for_json else "false")
 		strings.write_string(builder, `,"current_task_id":"`); json_write_string(builder, remote_status.current_task_id)
 		strings.write_string(builder, `","provider_profile":"`); json_write_string(builder, remote_status.provider_profile)
 		strings.write_string(builder, `","model_tier":"`); json_write_string(builder, remote_status.model_tier)
 		strings.write_string(builder, `","last_seen_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", remote_status.last_seen_unix_ms))
-		strings.write_string(builder, `,"peer_reachable":`); strings.write_string(builder, "true" if peer_reachable else "false")
+		strings.write_string(builder, `,"peer_reachable":`); strings.write_string(builder, "true" if remote_peer_reachable_for_json else "false")
 		strings.write_string(builder, `}`)
 	}
 	strings.write_string(builder, `,"conversation_id":"`); json_write_string(builder, conversation_id_for_instance(rec.agent_instance_id))
@@ -627,6 +637,21 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 		strings.write_string(builder, `,"exec_state":"`); json_write_string(builder, agent.exec_state)
 		strings.write_string(builder, `","exec_state_since_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", agent.exec_state_since_unix_ms))
 		strings.write_string(builder, `,"blocked_reason":"`); json_write_string(builder, agent.blocked_reason); strings.write_string(builder, `"`)
+	} else if agent_kind == AGENT_KIND_REMOTE_PROXY {
+		activity_status_json := "unknown"
+		if remote_live_for_json do activity_status_json = "active" if remote_effective_status_for_json == FEDERATION_AGENT_STATUS_WORKING else "idle"
+		startup_status_json := ""
+		if remote_effective_status_for_json == FEDERATION_AGENT_STATUS_STARTING || remote_effective_status_for_json == FEDERATION_AGENT_STATUS_STOPPING || remote_effective_status_for_json == FEDERATION_AGENT_STATUS_STOPPED || remote_effective_status_for_json == FEDERATION_AGENT_STATUS_BLOCKED || remote_effective_status_for_json == FEDERATION_AGENT_STATUS_FAILED do startup_status_json = remote_effective_status_for_json
+		strings.write_string(builder, `","tmux_pane":"","connected":`); strings.write_string(builder, "true" if remote_live_for_json else "false")
+		strings.write_string(builder, `,"connection_state":"`); json_write_string(builder, remote_connection_state_for_json)
+		strings.write_string(builder, `","last_seen_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", remote_status_for_json.last_seen_unix_ms))
+		strings.write_string(builder, `,"startup_status":"`); json_write_string(builder, startup_status_json)
+		strings.write_string(builder, `","startup_reason_code":"","safe_diagnostic":"","startup_updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", remote_status_for_json.updated_unix_ms))
+		strings.write_string(builder, `,"activity_status":"`); json_write_string(builder, activity_status_json)
+		strings.write_string(builder, `","activity_source":"remote_status","activity_checked_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", remote_status_for_json.last_seen_unix_ms))
+		strings.write_string(builder, `,"exec_state":"`); json_write_string(builder, "running" if remote_effective_status_for_json == FEDERATION_AGENT_STATUS_WORKING else "idle")
+		strings.write_string(builder, `","exec_state_since_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", remote_status_for_json.updated_unix_ms))
+		strings.write_string(builder, `,"blocked_reason":""`)
 	} else {
 		strings.write_string(builder, `","tmux_pane":"","connected":false,"connection_state":"offline","activity_status":"unknown","activity_source":"","activity_checked_unix_ms":0,"exec_state":"","exec_state_since_unix_ms":0,"blocked_reason":""`)
 	}
