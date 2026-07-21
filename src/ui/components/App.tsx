@@ -2492,15 +2492,22 @@ function AgentsManagementSurface({ agents = [], agentIdentities = [], chats = {}
             ) : groups.map((group: any) => {
               const representative = group.instances[0] || {};
               const template = representative.templateId || representative.template_id || 'agent';
+              const liveCount = (group.instances || []).filter((instance: any) => agentHasLiveSession(instance)).length;
               return (
-                <tr key={group.agentId} className="hover:bg-white/[0.02]">
-                  <td className="px-4 py-3 font-medium text-zinc-100">{group.agentId}</td>
-                  <td className="px-4 py-3">{template}</td>
-                  <td className="px-4 py-3">{group.instances.length}</td>
+                <tr key={group.agentId} data-debug-id={`agents-management-agent-${group.agentId}`} onClick={() => onOpenIdentity?.(group.agentId)} className="cursor-pointer transition hover:bg-white/[0.03]">
+                  <td className="px-4 py-3">
+                    <button type="button" data-debug-id={`agents-management-open-btn-${group.agentId}`} onClick={(event) => { event.stopPropagation(); onOpenIdentity?.(group.agentId); }} className="flex items-center gap-2 text-left font-medium text-zinc-100 hover:text-sky-200">
+                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${liveCount > 0 ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
+                      <span className="truncate">{group.agentId}</span>
+                    </button>
+                  </td>
+                  <td className="px-4 py-3 text-zinc-400">{template}</td>
+                  <td className="px-4 py-3 text-zinc-400">{group.instances.length}{liveCount > 0 ? <span className="ml-1 text-emerald-300">· {liveCount} live</span> : null}</td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex justify-end gap-2">
-                      <button type="button" onClick={() => onStartInstance?.(group.agentId)} className="rounded border border-white/10 px-3 py-1.5 text-xs font-medium hover:bg-[#171717]">Launch</button>
-                      <button type="button" onClick={() => handleDelete(group.agentId)} className="rounded border border-red-900/50 bg-red-900/20 px-3 py-1.5 text-xs text-red-400 hover:bg-red-900/40">Delete</button>
+                      <button type="button" data-debug-id={`agents-management-manage-btn-${group.agentId}`} onClick={(event) => { event.stopPropagation(); onOpenIdentity?.(group.agentId); }} className="rounded border border-white/10 px-3 py-1.5 text-xs font-medium hover:bg-[#171717]">Manage</button>
+                      <button type="button" data-debug-id={`agents-management-launch-btn-${group.agentId}`} onClick={(event) => { event.stopPropagation(); onStartInstance?.(group.agentId); }} className="rounded border border-white/10 px-3 py-1.5 text-xs font-medium hover:bg-[#171717]">Launch</button>
+                      <button type="button" data-debug-id={`agents-management-delete-btn-${group.agentId}`} onClick={(event) => { event.stopPropagation(); handleDelete(group.agentId); }} className="rounded border border-red-900/50 bg-red-900/20 px-3 py-1.5 text-xs text-red-400 hover:bg-red-900/40">Delete</button>
                     </div>
                   </td>
                 </tr>
