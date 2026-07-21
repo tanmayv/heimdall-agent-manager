@@ -297,7 +297,7 @@ export async function listAgentProviders({ daemonUrl }: { daemonUrl: string }) {
   return data.providers ?? [];
 }
 
-export async function startAgent({ daemonUrl, agentId, agentInstanceId = '', provider, templateId, projectId, projectIdSet, alias, displayName, modelTier, newMessage }: { daemonUrl: string; agentId?: string; agentInstanceId?: string; provider?: string; templateId?: string; projectId?: string; projectIdSet?: boolean; alias?: string; displayName?: string; modelTier?: string; newMessage?: string }) {
+export async function startAgent({ daemonUrl, agentId, agentInstanceId = '', provider, templateId, projectId, projectIdSet, alias, displayName, modelTier }: { daemonUrl: string; agentId?: string; agentInstanceId?: string; provider?: string; templateId?: string; projectId?: string; projectIdSet?: boolean; alias?: string; displayName?: string; modelTier?: string }) {
   const body: any = {
     template_id: templateId || '',
     project_id: projectId || '',
@@ -306,7 +306,6 @@ export async function startAgent({ daemonUrl, agentId, agentInstanceId = '', pro
     agent_instance_id: agentInstanceId || '',
     model_tier: modelTier || '',
     agent_id: agentId || '',
-    new_message: newMessage || ''
   };
   if (provider !== undefined) {
     body.agent = provider || '';
