@@ -895,6 +895,15 @@ handle_agent_template_show :: proc(client: net.TCP_Socket, body: string) {
 handle_agent_template_archive :: proc(client: net.TCP_Socket, body: string) {
 	template_id := extract_json_string(body, "template_id", "")
 	if agent_template_index(template_id) < 0 { write_response(client, 404, "Not Found", `{"ok":false,"message":"template not found"}`); return }
+	
+	for i in 0..<agent_id_record_count {
+		rec := agent_id_records[i]
+		if rec.archived_at_unix_ms == 0 && rec.template_id == template_id {
+			write_response(client, 400, "Bad Request", `{"ok":false,"message":"Cannot archive template because it is still in use by one or more durable agent identities."}`)
+			return
+		}
+	}
+	
 	if !agent_template_append_event(Agent_Template_Event{kind = .Agent_Template_Archived, template_id = template_id, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to archive agent template"}`); return }
 	write_response(client, 200, "OK", `{"ok":true,"message":"archived"}`)
 }
@@ -936,7 +945,7 @@ handle_agent_instance_update :: proc(client: net.TCP_Socket, body: string) {
 	// keeps ordinary per-instance updates from mutating shared identity defaults.
 	if extract_json_bool(body, "update_agent_id_defaults", false) {
 		resolved_agent_id := agent_id_from_instance_id(rec.agent_instance_id)
-		_ = agent_id_update_defaults(resolved_agent_id, display_name, provider_profile, model_tier, project_id, "api")
+		_ = agent_id_update_defaults(resolved_agent_id, display_name, template_id, provider_profile, model_tier, project_id, "api")
 	}
 	write_agent_ok_response(client, "updated", agent_instance_records[agent_record_index(rec.agent_record_id)])
 }
@@ -988,8 +997,9 @@ handle_agent_id_update :: proc(client: net.TCP_Socket, body: string) {
 	// default_project: applied verbatim (empty clears) so this endpoint can both
 	// set and unset a durable default project. Reject a non-existent, non-empty id.
 	project_id := extract_json_string(body, "default_project_id", extract_json_string(body, "project_id", rec.default_project_id))
+	template_id := extract_json_string(body, "template_id", rec.template_id)
 	if strings.trim_space(project_id) != "" && !project_exists(project_id) { write_response(client, 400, "Bad Request", agents_invalid_project_json(project_id)); return }
-	if !agent_id_update_defaults(agent_id, display_name, provider_profile, model_tier, project_id, "api") {
+	if !agent_id_update_defaults(agent_id, display_name, template_id, provider_profile, model_tier, project_id, "api") {
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to update agent identity"}`)
 		return
 	}

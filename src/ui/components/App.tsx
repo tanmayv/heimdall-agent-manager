@@ -4,6 +4,7 @@ import { useDispatch, useSelector } from 'react-redux';
 import SettingsPage from './SettingsPage';
 import MemoryManagementPage from './MemoryManagementPage';
 import ChainEditor from './ChainEditor';
+import { TemplatesPage } from './TemplatesPage';
 // TODO(rtkq-migration owner=task-19f69e242e4): App still has explicit component-level task/chat thunk dispatches for open/load-more flows; replace these with RTKQ hooks or endpoint initiate calls during cleanup.
 import {
   addDaemonProfile,
@@ -1626,6 +1627,8 @@ export default function App() {
             />
           ) : home.surface === 'settings' ? (
             <SettingsPage session={session} onBack={navigateBackOrHome} onReconnect={(config: any) => { dispatch(updateSessionConfig(config)); window.setTimeout(connectSession, 0); }} />
+          ) : home.surface === 'templates' ? (
+            <TemplatesPage session={session} onBack={navigateBackOrHome} templates={settingsTemplates} providers={settingsProviders} onRefetchTemplates={() => settingsCatalogQuery.refetch()} />
           ) : home.surface === 'memory' ? (
             <MemoryManagementPage
               selectedMemoryId={urlParams.memoryId}
@@ -2169,6 +2172,7 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryByI
       { id: 'agents', icon: '◎', label: 'Agents', onClick: onAgents },
       { id: 'task-chains', icon: '☷', label: 'Task chains', onClick: onTaskChains },
       { id: 'projects', icon: '▣', label: 'Projects', onClick: onProjects },
+      { id: 'templates', icon: '⧉', label: 'Templates', onClick: onTemplates },
       { id: 'settings', icon: '⚙', label: 'Settings', onClick: onSettings },
     ];
     return (
@@ -2203,6 +2207,7 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryByI
         <button data-debug-id="nav-agents-btn" onClick={onAgents} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">◎</span> Agents</button>
         <button data-debug-id="nav-task-chains-btn" onClick={onTaskChains} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">☷</span> Task chains</button>
         <button data-debug-id="nav-projects-btn" onClick={onProjects} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">▣</span> Projects</button>
+        <button data-debug-id="nav-templates-btn" onClick={onTemplates} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">⧉</span> Templates</button>
         <button data-debug-id="nav-settings-btn" onClick={onSettings} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">⚙</span> Settings</button>
       </nav>
       <div className="min-h-0 flex-1 overflow-y-auto px-2">
