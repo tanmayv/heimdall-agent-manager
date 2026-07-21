@@ -35,18 +35,20 @@ function auth(session: any) {
 
 export const workspaceApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
-    listChains: build.query<any, { createdAfter?: number; createdBefore?: number; limit?: number; offset?: number } | void>({
+    listChains: build.query<any, { createdAfter?: number; createdBefore?: number; limit?: number; offset?: number; status?: string } | void>({
       queryFn: withSessionQuery(async (arg, { session }) => {
         if (!session?.clientToken) return { chains: [], totalCount: 0, hasMore: false, offset: 0 };
         const args = (arg && typeof arg === 'object') ? arg : {};
-        const limit = args.limit ?? 20;
+        const limit = args.limit ?? 10000;
         const offset = args.offset ?? 0;
+        const status = args.status;
         const data = await daemonApi.listTaskChains({
           ...auth(session),
           createdAfter: args.createdAfter,
           createdBefore: args.createdBefore,
           limit,
           offset,
+          status,
         });
         const chains = (data.chains || []).map(normalizeChain);
         const totalCount = data.total_count || 0;
@@ -58,7 +60,7 @@ export const workspaceApi = heimdallApi.injectEndpoints({
         ...((result?.chains || []).map((chain: any) => ({ type: 'Chain' as const, id: chain.chainId })).filter((tag: any) => Boolean(tag.id))),
       ],
     }),
-    fetchChainsPage: build.query<any, { createdAfter?: number; createdBefore?: number; limit: number; offset: number }>({
+    fetchChainsPage: build.query<any, { createdAfter?: number; createdBefore?: number; limit: number; offset: number; status?: string }>({
       queryFn: withSessionQuery(async (arg, { session }) => {
         if (!session?.clientToken) return { chains: [], totalCount: 0, hasMore: false, offset: 0 };
         const data = await daemonApi.listTaskChains({
@@ -67,6 +69,7 @@ export const workspaceApi = heimdallApi.injectEndpoints({
           createdBefore: arg.createdBefore,
           limit: arg.limit,
           offset: arg.offset,
+          status: arg.status,
         });
         const chains = (data.chains || []).map(normalizeChain);
         const totalCount = data.total_count || 0;
@@ -79,6 +82,7 @@ export const workspaceApi = heimdallApi.injectEndpoints({
           const baseArgs = {} as any;
           if (arg.createdAfter !== undefined) baseArgs.createdAfter = arg.createdAfter;
           if (arg.createdBefore !== undefined) baseArgs.createdBefore = arg.createdBefore;
+          if (arg.status !== undefined) baseArgs.status = arg.status;
           dispatch(
             workspaceApi.util.updateQueryData('listChains', baseArgs, (draft: any) => {
               if (!draft) return;

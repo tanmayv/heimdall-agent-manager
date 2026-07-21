@@ -163,7 +163,7 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
       queryFn: withSessionQuery(async (arg, { session }) => {
         if (!session?.clientToken) return { summaries: {}, nextCursor: '', hasMore: false };
         const args = (arg && typeof arg === 'object') ? arg : {};
-        const limit = args.limit ?? 20;
+        const limit = args.limit ?? 10000;
         const cursor = args.cursor ?? '';
         const data = await daemonApi.listConversations({
           daemonUrl: session.daemonUrl,

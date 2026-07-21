@@ -81,6 +81,10 @@ function joinUrl(baseUrl: string, path: string) {
   return `${baseUrl.replace(/\/$/, '')}${path}`;
 }
 
+function sanitizeProjectId(projectId?: string): string {
+  return projectId === 'default' ? '' : (projectId || '');
+}
+
 export async function registerUserClient({ daemonUrl, userId, clientInstanceId, clientToken }: SessionRequest) {
   return requestJson(joinUrl(daemonUrl, '/user-client/register'), {
     method: 'POST',
@@ -151,6 +155,7 @@ export async function listKnownAgentsCatalog({
   includeConversations = false,
   limit,
   offset,
+  running,
 }: {
   daemonUrl: string;
   projectId?: string;
@@ -158,13 +163,16 @@ export async function listKnownAgentsCatalog({
   includeConversations?: boolean;
   limit?: number;
   offset?: number;
+  running?: boolean;
 }) {
   const params = new URLSearchParams();
-  if (projectId) params.set('project_id', projectId);
+  const sanitizedProjectId = sanitizeProjectId(projectId);
+  if (sanitizedProjectId) params.set('project_id', sanitizedProjectId);
   if (includeIdentities) params.set('include_identities', 'true');
   if (includeConversations) params.set('include_conversations', 'true');
   if (limit !== undefined) params.set('limit', String(limit));
   if (offset !== undefined) params.set('offset', String(offset));
+  if (running) params.set('running', 'true');
   const query = params.toString();
   const path = query ? `/agents?${query}` : '/agents';
   const data = await requestJson(joinUrl(daemonUrl, path));
@@ -300,7 +308,7 @@ export async function listAgentProviders({ daemonUrl }: { daemonUrl: string }) {
 export async function startAgent({ daemonUrl, agentId, agentInstanceId = '', provider, templateId, projectId, projectIdSet, alias, displayName, modelTier }: { daemonUrl: string; agentId?: string; agentInstanceId?: string; provider?: string; templateId?: string; projectId?: string; projectIdSet?: boolean; alias?: string; displayName?: string; modelTier?: string }) {
   const body: any = {
     template_id: templateId || '',
-    project_id: projectId || '',
+    project_id: sanitizeProjectId(projectId),
     alias: alias || displayName || '',
     display_name: displayName || alias || '',
     agent_instance_id: agentInstanceId || '',
@@ -340,7 +348,7 @@ export async function createAgent({ daemonUrl, agentId, agentInstanceId, display
       display_name: displayName || '',
       provider_profile: providerProfile || '',
       template_id: templateId || '',
-      project_id: projectId || '',
+      project_id: sanitizeProjectId(projectId),
       model_tier: modelTier || 'normal',
       start: Boolean(start),
     },
@@ -352,7 +360,7 @@ export async function updateAgent({ daemonUrl, agentRecordId, agentInstanceId, d
   if (displayName !== undefined) body.display_name = displayName;
   if (templateId !== undefined) body.template_id = templateId;
   if (providerProfile !== undefined) body.provider_profile = providerProfile;
-  if (projectId !== undefined) body.project_id = projectId;
+  if (projectId !== undefined) body.project_id = sanitizeProjectId(projectId);
   if (runDir !== undefined) body.run_dir = runDir;
   if (modelTier !== undefined) body.model_tier = modelTier;
   if (updateAgentIdDefaults) body.update_agent_id_defaults = true;
@@ -381,7 +389,7 @@ export async function stopAgent({ daemonUrl, agentInstanceId, timeInSec }: { dae
 export async function associateAgentWithProject({ daemonUrl, agentRecordId, agentInstanceId, projectId }: { daemonUrl: string; agentRecordId?: string; agentInstanceId?: string; projectId: string }) {
   return requestJson(joinUrl(daemonUrl, '/agents/associate'), {
     method: 'POST',
-    body: { agent_record_id: agentRecordId || '', agent_instance_id: agentInstanceId || '', project_id: projectId },
+    body: { agent_record_id: agentRecordId || '', agent_instance_id: agentInstanceId || '', project_id: sanitizeProjectId(projectId) },
   });
 }
 
@@ -461,10 +469,11 @@ export async function markChatRead({ daemonUrl, clientInstanceId, clientToken, a
   });
 }
 
-export async function listTaskChains({ daemonUrl, clientToken, createdAfter, createdBefore, limit = 20, offset = 0 }: Omit<UserRpcRequest, 'clientInstanceId'> & { createdAfter?: number; createdBefore?: number; limit?: number; offset?: number }) {
+export async function listTaskChains({ daemonUrl, clientToken, createdAfter, createdBefore, limit = 20, offset = 0, status }: Omit<UserRpcRequest, 'clientInstanceId'> & { createdAfter?: number; createdBefore?: number; limit?: number; offset?: number; status?: string }) {
   let path = `/task-chains?limit=${limit}&offset=${offset}`;
   if (createdAfter && createdAfter > 0) path += `&created_after=${createdAfter}`;
   if (createdBefore && createdBefore > 0) path += `&created_before=${createdBefore}`;
+  if (status) path += `&status=${encodeURIComponent(status)}`;
   return requestJson(joinUrl(daemonUrl, path), {
     method: 'GET',
     headers: { 'Authorization': `Bearer ${clientToken}` }
@@ -593,7 +602,7 @@ export async function createArtifact({ daemonUrl, clientToken, name, kind = '', 
   const body: any = {
     name,
     kind,
-    project_id: projectId,
+    project_id: sanitizeProjectId(projectId),
     description,
     content_base64: contentBase64,
   };
@@ -629,7 +638,8 @@ export function artifactContentUrl({ daemonUrl, clientToken, artifactId, version
 
 export async function listArtifacts({ daemonUrl, clientToken, projectId = '', creatorId = '', originRef = '', includeDeleted = false, limit = 100, offset = 0 }: { daemonUrl: string; clientToken: string; projectId?: string; creatorId?: string; originRef?: string; includeDeleted?: boolean; limit?: number; offset?: number }) {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-  if (projectId) params.set('project_id', projectId);
+  const sanitizedProjectId = sanitizeProjectId(projectId);
+  if (sanitizedProjectId) params.set('project_id', sanitizedProjectId);
   if (creatorId) params.set('creator_id', creatorId);
   if (originRef) params.set('origin_ref', originRef);
   if (includeDeleted) params.set('include_deleted', 'true');
@@ -643,7 +653,7 @@ export async function updateArtifact({ daemonUrl, clientToken, artifactId, name,
   const body: any = { artifact_id: artifactId };
   if (name !== undefined) body.name = name;
   if (kind !== undefined) body.kind = kind;
-  if (projectId !== undefined) body.project_id = projectId;
+  if (projectId !== undefined) body.project_id = sanitizeProjectId(projectId);
   if (description !== undefined) body.description = description;
   if (originKind !== undefined) body.origin_kind = originKind;
   if (originRef !== undefined) body.origin_ref = originRef;

@@ -192,6 +192,7 @@ handle_agents_list :: proc(client: net.TCP_Socket, request: string) {
 	limit_str := query_param(request, "limit")
 	offset_str := query_param(request, "offset")
 	include_identities := query_param(request, "include_identities") == "true"
+	running_filter := query_param(request, "running") == "true"
 	_ = query_param(request, "include_conversations") // concrete conversation instances are already part of /agents
 	limit := 0
 	offset := 0
@@ -209,6 +210,15 @@ handle_agents_list :: proc(client: net.TCP_Socket, request: string) {
 		rec := agent_instance_records[i]
 		if rec.archived_at_unix_ms != 0 do continue
 		if project_id != "" && rec.project_id != project_id do continue
+		is_live := false
+		agent_kind := agent_kind_normalize(rec.agent_kind)
+		if agent_kind == AGENT_KIND_REMOTE_PROXY {
+			remote_status, _ := remote_proxy_status_get(rec.agent_instance_id)
+			is_live = federation_peer_reachable(rec.remote_peer_id) && federation_agent_status_is_live(remote_status.status)
+		} else {
+			is_live = registry_find_agent(rec.agent_instance_id) >= 0
+		}
+		if running_filter && !is_live do continue
 		if matched < offset { matched += 1; continue }
 		if limit > 0 && wrote >= limit { matched += 1; continue }
 		if wrote > 0 do strings.write_string(&builder, `,`)

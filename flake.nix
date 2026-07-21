@@ -536,6 +536,31 @@
             fi
           ''}/bin/heimdall-browser";
         };
+        ham-ui-server = {
+          type = "app";
+          program = "${pkgs.writeShellScriptBin "ham-ui-server" ''
+            #!/usr/bin/env bash
+            PORT="5173"
+
+            while [[ "$#" -gt 0 ]]; do
+                case $1 in
+                    --port) PORT="$2"; shift 2 ;;
+                    *) echo "Unknown parameter passed: $1"; exit 1 ;;
+                esac
+            done
+
+            echo "[ham-ui-server] Starting Vite production server on port $PORT..."
+            if [ ! -d "node_modules" ]; then
+              echo "[ham-ui-server] node_modules not found. Copying from Nix store..."
+              cp -r "${self.packages.${system}.heimdall-node-modules}/node_modules" node_modules
+              chmod -R u+w node_modules
+            fi
+
+            echo "[ham-ui-server] Building UI..."
+            ${pkgs.nodejs}/bin/npm run build
+            exec ${pkgs.nodejs}/bin/npx vite preview --host 127.0.0.1 --port "$PORT"
+          ''}/bin/ham-ui-server";
+        };
         default = self.apps.${system}.daemon;
       });
 

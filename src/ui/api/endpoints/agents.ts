@@ -8,7 +8,7 @@ function agentTagId(agent: any, fallback = '') {
 
 export const agentsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
-    listAgents: build.query<any, { limit?: number; offset?: number; projectId?: string } | void>({
+    listAgents: build.query<any, { limit?: number; offset?: number; projectId?: string; running?: boolean } | void>({
       queryFn: withSessionQuery(async (arg, { session }) => {
         const localKnown = loadKnownAgents();
         if (!session?.daemonUrl) {
@@ -18,9 +18,10 @@ export const agentsApi = heimdallApi.injectEndpoints({
         }
 
         const args = (arg && typeof arg === 'object') ? arg : {};
-        const limit = args.limit ?? 20;
+        const limit = args.limit ?? 10000;
         const offset = args.offset ?? 0;
         const projectId = args.projectId ?? '';
+        const running = args.running;
         const isPaged = args.limit !== undefined || args.offset !== undefined;
 
         let daemonAgents: any[] = [];
@@ -36,6 +37,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
             includeConversations: true,
             limit,
             offset,
+            running,
           });
           daemonAgents = catalog.agents || [];
           daemonIdentities = catalog.identities || [];
@@ -56,7 +58,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
         ...((result?.agents || []).map((agent: any) => ({ type: 'Agents' as const, id: agentTagId(agent) })).filter((tag: any) => Boolean(tag.id))),
       ],
     }),
-    fetchAgentsPage: build.query<any, { limit: number; offset: number; projectId?: string }>({
+    fetchAgentsPage: build.query<any, { limit: number; offset: number; projectId?: string; running?: boolean }>({
       queryFn: withSessionQuery(async (arg, { session }) => {
         const localKnown = loadKnownAgents();
         if (!session?.daemonUrl) {
@@ -70,6 +72,7 @@ export const agentsApi = heimdallApi.injectEndpoints({
           includeConversations: true,
           limit: arg.limit,
           offset: arg.offset,
+          running: arg.running,
         });
         const daemonAgents = data.agents || [];
         const daemonIdentities = data.identities || [];
@@ -85,9 +88,12 @@ export const agentsApi = heimdallApi.injectEndpoints({
       async onQueryStarted(arg, { dispatch, queryFulfilled }) {
         try {
           const { data } = await queryFulfilled;
-          const baseArgs = arg.projectId ? { projectId: arg.projectId } : undefined;
+          const baseArgs: any = {};
+          if (arg.projectId) baseArgs.projectId = arg.projectId;
+          if (arg.running !== undefined) baseArgs.running = arg.running;
+          const cacheKeyArgs = Object.keys(baseArgs).length > 0 ? baseArgs : undefined;
           dispatch(
-            agentsApi.util.updateQueryData('listAgents', baseArgs as any, (draft: any) => {
+            agentsApi.util.updateQueryData('listAgents', cacheKeyArgs as any, (draft: any) => {
               if (!draft) return;
               const existingIds = new Set(draft.agents.map((a: any) => a.id));
               for (const agent of data.agents) {
@@ -217,6 +223,30 @@ export function patchAgentCachesFromWs(dispatch: any, payload: any) {
 
   const agentId = String(payload?.target_agent_instance_id || payload?.agent_instance_id || payload?.agent?.agent_instance_id || payload?.record?.agent_instance_id || '');
   if (!agentId) return;
+
+  const reason = String(payload?.reason || '');
+  if (reason === 'heartbeat') {
+    const lastSeenUnixMs = Number(payload?.last_seen_unix_ms || 0);
+    if (lastSeenUnixMs) {
+      const formatted = new Date(lastSeenUnixMs).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      dispatch(agentsApi.util.updateQueryData('listAgents', undefined, (draft: any) => {
+        const rows = draft?.agents || (draft.agents = []);
+        const idx = rows.findIndex((r: any) => r.id === agentId);
+        if (idx >= 0) {
+          rows[idx].lastSeenUnixMs = lastSeenUnixMs;
+          rows[idx].lastSeen = formatted;
+        }
+      }));
+      dispatch(agentsApi.util.updateQueryData('fetchAgent', { agentInstanceId: agentId }, (draft: any) => {
+        if (draft?.agent) {
+          draft.agent.lastSeenUnixMs = lastSeenUnixMs;
+          draft.agent.lastSeen = formatted;
+        }
+      }));
+    }
+    return;
+  }
+
   dispatch(heimdallApi.util.invalidateTags([{ type: 'Agents', id: 'LIST' }, { type: 'Agents', id: agentId }]));
 }
 

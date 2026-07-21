@@ -565,7 +565,7 @@ export default function AgentPicker({
     );
   }
 
-  const projectOptions = projects || [];
+  const projectOptions = (projects || []).filter((p: any) => (p.projectId || p.project_id) !== 'default');
   const templateOptions = templates.length ? templates : [{ template_id: fallbackTemplate, display_name: fallbackTemplate }];
 
   return (

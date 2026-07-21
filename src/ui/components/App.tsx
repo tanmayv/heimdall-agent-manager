@@ -713,7 +713,7 @@ export default function App() {
   }, []);
   const agentsQuery = useListAgentsQuery(undefined, {
     skip: !session.daemonUrl,
-    pollingInterval: chainCreationProgress?.active || home.surface === 'agents' || urlParams.view === 'agent-identity' || guidePanelOpen || Boolean(selectedSidebarAgentId) ? 2000 : 0,
+    pollingInterval: chainCreationProgress?.active || home.surface === 'agents' || urlParams.view === 'agent-identity' || guidePanelOpen || Boolean(selectedSidebarAgentId) ? 10000 : 0,
   });
   const [triggerFetchAgentsPage, fetchAgentsPageResult] = useLazyFetchAgentsPageQuery();
   const agents = agentsQuery.data?.agents || [];
@@ -728,7 +728,7 @@ export default function App() {
     { agentInstanceId: agentPageId || '' },
     {
       skip: !agentPageId,
-      pollingInterval: agentPageId ? 2000 : 0,
+      pollingInterval: agentPageId ? 10000 : 0,
     },
   );
   useEffect(() => { sessionRef.current = session; }, [session]);
@@ -1499,6 +1499,8 @@ export default function App() {
               onTaskChains={() => selectSurfaceWithUrl('task-chains')}
               onProjects={() => selectSurfaceWithUrl('projects')}
               onSettings={() => selectSurfaceWithUrl('settings')}
+              onAttention={() => selectSurfaceWithUrl('attention')}
+              attentionBadgeCount={badgeCount}
               hasMoreNetwork={hasMoreConversations}
               onLoadMoreNetwork={handleLoadMoreConversations}
               hasMoreAgents={Boolean(agentsQuery.data?.hasMore)}
@@ -1523,17 +1525,6 @@ export default function App() {
         </WorkspaceLeftSidebar>
 
         <main className="relative min-w-0 flex-1 overflow-y-auto">
-          <button
-            type="button"
-            data-debug-id="attention-bell-btn"
-            onClick={() => selectSurfaceWithUrl('attention')}
-            title={badgeCount > 0 ? `${badgeCount} item${badgeCount === 1 ? '' : 's'} need attention` : 'Attention'}
-            aria-label={badgeCount > 0 ? `${badgeCount} item${badgeCount === 1 ? '' : 's'} need attention` : 'Attention'}
-            className="fixed right-4 top-3 z-40 grid h-9 w-9 place-items-center rounded-xl border border-white/10 bg-[#141414]/95 text-zinc-300 shadow-xl shadow-black/30 backdrop-blur transition hover:bg-[#1c1c1c] hover:text-zinc-100"
-          >
-            <span aria-hidden="true" className="text-[16px] leading-none">◷</span>
-            {badgeCount > 0 ? <span data-debug-id="attention-bell-badge" className="absolute -right-1 -top-1 min-w-4 rounded-full bg-sky-400 px-1 text-center text-[10px] font-semibold leading-4 text-black">{badgeCount > 99 ? '99+' : badgeCount}</span> : null}
-          </button>
           {agentPageId ? (() => {
             const listAgent = (agents || []).find((agent: any) => agent.id === agentPageId) || null;
             const selectedPageAgent = selectedAgentDetailQuery.data?.agent || listAgent || { id: agentPageId, label: agentPageId, status: 'unknown' };
@@ -2216,7 +2207,7 @@ function SidebarConversationSection({ conversations = [], chats = {}, summaryByI
 }
 
 
-function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryById = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, collapsed = false, onToggleCollapsed, agents = [], allAgents = [], agentIdentities = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onOpenAgentInstance, onStartAgentInstance, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onMemory, onAgents, onTaskChains, onProjects, onSettings, hasMoreNetwork = false, onLoadMoreNetwork, hasMoreAgents = false, loadingMoreAgents = false, onLoadMoreAgents }: any) {
+function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryById = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, collapsed = false, onToggleCollapsed, agents = [], allAgents = [], agentIdentities = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onOpenAgentInstance, onStartAgentInstance, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onMemory, onAgents, onTaskChains, onProjects, onSettings, onAttention, attentionBadgeCount = 0, hasMoreNetwork = false, onLoadMoreNetwork, hasMoreAgents = false, loadingMoreAgents = false, onLoadMoreAgents }: any) {
   const chainUpdatedMs = (chain: any) => Number(chain?.updatedAtUnixMs || chain?.updated_at_unix_ms || chain?.updatedAt || chain?.updated_at || chain?.createdAtUnixMs || chain?.created_at_unix_ms || 0);
   const sortedChains = [...(chains || [])].sort((a: any, b: any) => chainUpdatedMs(b) - chainUpdatedMs(a));
   const activeChains = sortedChains.filter((chain: any) => !isChainCompleted(chain)).slice(0, 4);
@@ -2228,6 +2219,7 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryByI
   if (collapsed) {
     const collapsedItems = [
       { id: 'home', icon: '⌂', label: 'Home', onClick: onHome },
+      { id: 'attention', icon: '◷', label: 'Needs attention', onClick: onAttention },
       { id: 'memory', icon: '✦', label: 'Memory', onClick: onMemory },
       { id: 'agents', icon: '◎', label: 'Agents', onClick: onAgents },
       { id: 'task-chains', icon: '☷', label: 'Task chains', onClick: onTaskChains },
@@ -2250,7 +2242,20 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryByI
     <div data-debug-id="conversation-focused-sidebar" data-sidebar-collapsed="false" className="flex h-full flex-col bg-[#090909] text-zinc-100">
       <div className="flex items-center justify-between px-4 pb-2 pt-3">
         <div className="text-sm font-semibold tracking-[0.02em]">Heimdall</div>
-        <button type="button" data-debug-id="conversation-sidebar-collapse-btn" onClick={onToggleCollapsed} title="Collapse sidebar" aria-label="Collapse sidebar" className="grid h-8 w-8 place-items-center rounded-lg border border-white/10 text-zinc-500 hover:bg-[#141414] hover:text-zinc-100">☰</button>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            data-debug-id="attention-bell-btn"
+            onClick={onAttention}
+            title={attentionBadgeCount > 0 ? `${attentionBadgeCount} item${attentionBadgeCount === 1 ? '' : 's'} need attention` : 'Attention'}
+            aria-label={attentionBadgeCount > 0 ? `${attentionBadgeCount} item${attentionBadgeCount === 1 ? '' : 's'} need attention` : 'Attention'}
+            className="relative grid h-8 w-8 place-items-center rounded-lg border border-white/10 text-zinc-500 transition hover:bg-[#141414] hover:text-zinc-100"
+          >
+            <span aria-hidden="true" className="text-[15px] leading-none">◷</span>
+            {attentionBadgeCount > 0 ? <span data-debug-id="attention-bell-badge" className="absolute -right-1 -top-1 min-w-4 rounded-full bg-sky-400 px-1 text-center text-[10px] font-semibold leading-4 text-black">{attentionBadgeCount > 99 ? '99+' : attentionBadgeCount}</span> : null}
+          </button>
+          <button type="button" data-debug-id="conversation-sidebar-collapse-btn" onClick={onToggleCollapsed} title="Collapse sidebar" aria-label="Collapse sidebar" className="grid h-8 w-8 place-items-center rounded-lg border border-white/10 text-zinc-500 hover:bg-[#141414] hover:text-zinc-100">☰</button>
+        </div>
       </div>
       <button
         type="button" data-debug-id="sidebar-new-conversation-btn"
@@ -3817,24 +3822,28 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
 
 function NewConversationPage({ session, projects = [], providers = [], identities = [], defaultProjectId = '', busy = false, onBack, onFirstMessage, onOpenChain, onPickAgent, onPlanWork }: any) {
   const [draft, setDraft] = useState('');
-  const [projectId, setProjectId] = useState(defaultProjectId || projects?.[0]?.projectId || projects?.[0]?.project_id || '');
+  const [projectId, setProjectId] = useState(() => {
+    const initial = defaultProjectId || projects?.[0]?.projectId || projects?.[0]?.project_id || '';
+    return initial === 'default' ? '' : initial;
+  });
   const [provider, setProvider] = useState(defaultConversationProvider(providers, identities));
   const [tier, setTier] = useState('smart');
   const [error, setError] = useState('');
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const providerOptions = providers?.length ? providers : [{ name: 'pi' }];
-  const selectedProject = (projects || []).find((project: any) => (project.projectId || project.project_id) === projectId) || projects?.[0] || null;
+  const selectedProject = projectId ? ((projects || []).find((project: any) => (project.projectId || project.project_id) === projectId) || null) : null;
   const projectName = selectedProject?.name || projectId || 'No project';
   const daemonLabel = daemonDisplayLabel(session?.daemonUrl || '');
-
+ 
   useEffect(() => {
-    setProjectId(defaultProjectId || projects?.[0]?.projectId || projects?.[0]?.project_id || '');
+    const nextVal = defaultProjectId || projects?.[0]?.projectId || projects?.[0]?.project_id || '';
+    setProjectId(nextVal === 'default' ? '' : nextVal);
   }, [defaultProjectId, projects]);
-
+ 
   useEffect(() => {
     setProvider(defaultConversationProvider(providers, identities));
   }, [providers, identities]);
-
+ 
   const submit = async () => {
     const body = draft.trim();
     if (!body || busy) return;
@@ -3846,14 +3855,14 @@ function NewConversationPage({ session, projects = [], providers = [], identitie
       setError(`Unable to start the conversation. ${String(err?.message || err || 'Try again.')}`);
     }
   };
-
+ 
   const optionCards = [
     { id: 'ask', title: 'Ask a question', detail: 'One-off help using shared memory & skills.', action: () => inputRef.current?.focus() },
     { id: 'open-chain', title: 'Open a task chain →', detail: 'Escalate to a multi-agent chain with review.', action: () => onOpenChain?.() },
     { id: 'pick-agent', title: 'Pick another agent', detail: 'Run a coder / reviewer / planner identity.', action: () => onPickAgent?.() },
     { id: 'plan-work', title: 'Plan work', detail: 'Draft tasks in the chain editor.', action: () => onPlanWork?.() },
   ];
-
+ 
   return (
     <div data-debug-id="new-conversation-page" className="flex min-h-full flex-col bg-[#090909] text-zinc-100">
       <div className="flex h-[52px] items-center justify-between gap-3 border-b border-[#1f1f1f] bg-[#0b0b0b]/95 px-[18px] text-[12.5px] text-zinc-500">
@@ -3866,11 +3875,11 @@ function NewConversationPage({ session, projects = [], providers = [], identitie
         <label className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-[#141414] px-3 py-1.5 text-[11.5px] text-zinc-400 shadow-[0_10px_30px_rgba(0,0,0,0.18)]">
           <span>🗂</span>
           <select data-debug-id="new-convo-project-select" value={projectId} onChange={(event) => { setProjectId(event.target.value); setError(''); }} className="bg-transparent text-zinc-300 outline-none">
-            {(projects || []).map((project: any) => {
+            <option value="">No project</option>
+            {(projects || []).filter((project: any) => (project.projectId || project.project_id) !== 'default').map((project: any) => {
               const id = project.projectId || project.project_id || '';
-              return <option key={id || 'project'} value={id}>{project.name || id || 'No project'}</option>;
+              return <option key={id} value={id}>{project.name || id}</option>;
             })}
-            {(!projects || projects.length === 0) && <option value="">No project</option>}
           </select>
         </label>
       </div>
