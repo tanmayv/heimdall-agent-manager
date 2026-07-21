@@ -2,7 +2,7 @@ import urllib.request
 import json
 import sys
 
-DAEMON_URL = "http://127.0.0.1:49325"
+DAEMON_URL = "http://127.0.0.1:49328"
 
 
 def request_post(path, data):
@@ -82,9 +82,7 @@ def main():
         chain = request_post("/task-chains/create", {
             "agent_token": agent_token,
             "project_id": project_id,
-            "kind": "coding",
             "wants_vcs": False,
-            "no_scaffold": True,
             "title": "Orch Chain",
             "description": "test",
             "coordinator_agent_instance_id": "test-orch-agent@default"
@@ -158,9 +156,7 @@ def main():
         chain2 = request_post("/task-chains/create", {
             "agent_token": agent_token,
             "project_id": project_id,
-            "kind": "coding",
             "wants_vcs": False,
-            "no_scaffold": True,
             "title": "Orch Chain 2",
             "description": "test 2",
             "coordinator_agent_instance_id": "test-orch-agent@default"

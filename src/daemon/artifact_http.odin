@@ -254,16 +254,24 @@ handle_get_artifacts :: proc(client: net.TCP_Socket, ctx: ^Route_Context) {
 	if limit_str := query_param_value(ctx.query, "limit"); limit_str != "" {
 		if parsed, parse_ok := strconv.parse_int(limit_str); parse_ok do limit = int(parsed)
 	}
+	offset := 0
+	if offset_str := query_param_value(ctx.query, "offset"); offset_str != "" {
+		if parsed, parse_ok := strconv.parse_int(offset_str); parse_ok do offset = int(parsed)
+	}
 	include_deleted := false
 	if include_deleted_str := query_param_value(ctx.query, "include_deleted"); include_deleted_str == "true" || include_deleted_str == "1" do include_deleted = true
 
-	recs := artifact_db_list(Artifact_List_Filter{
+	recs, total := artifact_db_list(Artifact_List_Filter{
 		project_id = query_param_value(ctx.query, "project_id"),
 		creator_id = query_param_value(ctx.query, "creator_id"),
 		origin_ref = query_param_value(ctx.query, "origin_ref"),
 		include_deleted = include_deleted,
 		limit = limit,
+		offset = offset,
 	})
+
+	has_more := limit > 0 && total > offset + len(recs)
+	next_offset := offset + len(recs)
 
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"ok":true,"artifacts":[`)
@@ -271,7 +279,17 @@ handle_get_artifacts :: proc(client: net.TCP_Socket, ctx: ^Route_Context) {
 		if idx > 0 do strings.write_string(&builder, `,`)
 		artifact_write_public_json(&builder, rec)
 	}
-	strings.write_string(&builder, `]}`)
+	strings.write_string(&builder, `],"total":`)
+	strings.write_string(&builder, fmt.tprintf("%d", total))
+	strings.write_string(&builder, `,"limit":`)
+	strings.write_string(&builder, fmt.tprintf("%d", limit))
+	strings.write_string(&builder, `,"offset":`)
+	strings.write_string(&builder, fmt.tprintf("%d", offset))
+	strings.write_string(&builder, `,"next_offset":`)
+	strings.write_string(&builder, fmt.tprintf("%d", next_offset))
+	strings.write_string(&builder, `,"has_more":`)
+	strings.write_string(&builder, "true" if has_more else "false")
+	strings.write_string(&builder, `}`)
 	write_response(client, 200, "OK", strings.to_string(builder))
 }
 

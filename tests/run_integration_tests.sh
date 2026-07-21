@@ -10,20 +10,22 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 TEMP_HOME=$(mktemp -d)
 echo "[*] Created temporary HEIMDALL_HOME: $TEMP_HOME"
 
-# 2. Write a temporary config.toml pointing to port 49325 and temp data dir
+# 2. Write a temporary config.toml pointing to port 49328 and temp data dir
 cat <<EOF > "$TEMP_HOME/config.toml"
 [daemon]
 bind_host = "127.0.0.1"
-port = 49325
+port = 49328
 data_dir = "$TEMP_HOME/data"
 wrapper_bin = "$REPO_DIR/result-wrapper/bin/ham-wrapper"
+default_agent_id_reviewer = "user_proxy"
+
 
 [ctl]
-daemon_url = "http://127.0.0.1:49325"
+daemon_url = "http://127.0.0.1:49328"
 ham_ctl_bin = "$REPO_DIR/result-ctl/bin/ham-ctl"
 
 [wrapper]
-daemon_url = "http://127.0.0.1:49325"
+daemon_url = "http://127.0.0.1:49328"
 credentials_path = "$TEMP_HOME/data/wrapper-credentials.json"
 agent_name = "pi"
 display_name = "{instance}"
@@ -35,7 +37,7 @@ agent_run_dir = "$TEMP_HOME/data/agent-runs"
 EOF
 
 # 3. Start the daemon in the background
-echo "[*] Starting ham-daemon on port 49325..."
+echo "[*] Starting ham-daemon on port 49328..."
 "$REPO_DIR/result-daemon/bin/ham-daemon" --config "$TEMP_HOME/config.toml" > "$TEMP_HOME/daemon.log" 2>&1 &
 DAEMON_PID=$!
 
@@ -51,7 +53,7 @@ trap cleanup EXIT
 # 4. Wait for daemon to be healthy
 echo "[*] Waiting for daemon to start..."
 for i in {1..10}; do
-  if curl -sf http://127.0.0.1:49325/health >/dev/null; then
+  if curl -sf http://127.0.0.1:49328/health >/dev/null; then
     echo "[*] Daemon is healthy!"
     break
   fi
@@ -67,7 +69,7 @@ done
 echo "[*] Running tasks smoke test..."
 export HEIMDALL_HOME="$TEMP_HOME"
 export HAM_CTL_BIN="$REPO_DIR/result-ctl/bin/ham-ctl"
-export DAEMON_URL="http://127.0.0.1:49325"
+export DAEMON_URL="http://127.0.0.1:49328"
 export HEIMDALL_DAEMON_BIN="$REPO_DIR/result-daemon/bin/ham-daemon"
 export HEIMDALL_BRIDGE_BIN="$REPO_DIR/result-bridge/bin/ham-bridge"
 

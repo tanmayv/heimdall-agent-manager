@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { useDispatch } from 'react-redux';
 import { showToast } from '../store/toastSlice';
-import { useListArtifactsQuery } from '../api/endpoints/artifacts';
+import { useListArtifactsQuery, useLazyFetchArtifactsPageQuery } from '../api/endpoints/artifacts';
 import ArtifactViewer from './ArtifactViewer';
 import { useArtifactUpload } from './ArtifactUpload';
 
@@ -60,9 +60,15 @@ export default function ChainArtifactsPanel({ daemonUrl = '', clientToken = '', 
   const dispatch = useDispatch<any>();
   const [activeArtifactId, setActiveArtifactId] = useState('');
   const pasteUpload = useArtifactUpload({ projectId, originRef: chainId || '', originKind: 'clipboard_panel' });
-  const artifactsQuery = useListArtifactsQuery({ projectId, limit: 100 }, { skip: !projectId || !daemonUrl || !clientToken });
+  const [triggerFetchArtifactsPage, fetchArtifactsPageResult] = useLazyFetchArtifactsPageQuery();
+  const artifactsQuery = useListArtifactsQuery({ projectId, limit: 20 }, { skip: !projectId || !daemonUrl || !clientToken });
   const artifacts = (artifactsQuery.data?.artifacts || []) as ArtifactRow[];
-  const loading = artifactsQuery.isFetching;
+  const loading = artifactsQuery.isFetching || fetchArtifactsPageResult.isFetching;
+  const handleLoadMore = () => {
+    if (artifactsQuery.isFetching || fetchArtifactsPageResult.isFetching) return;
+    const nextOffset = artifacts.length;
+    triggerFetchArtifactsPage({ projectId, limit: 20, offset: nextOffset });
+  };
   const error = !daemonUrl || !clientToken
     ? 'Artifact listing is unavailable until the UI is connected to the daemon.'
     : artifactsQuery.error
@@ -197,6 +203,19 @@ export default function ChainArtifactsPanel({ daemonUrl = '', clientToken = '', 
                 );
               })}
             </div>
+            {artifactsQuery.data?.has_more && (
+              <div className="mt-4 flex justify-center pb-2">
+                <button
+                  type="button"
+                  data-debug-id="chain-artifacts-load-more-btn"
+                  onClick={handleLoadMore}
+                  disabled={fetchArtifactsPageResult.isFetching}
+                  className="rounded-xl border border-white/10 px-4 py-2 text-xs text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 disabled:opacity-50"
+                >
+                  {fetchArtifactsPageResult.isFetching ? 'Loading…' : 'Show more artifacts'}
+                </button>
+              </div>
+            )}
           </div>
         )}
       </section>

@@ -22,13 +22,11 @@ type WsCtx = {
 };
 
 function normalizeTask(task: any) {
-  return {
+  const result: any = {
     id: task.task_id,
     taskId: task.task_id,
     chainId: task.chain_id || '',
     title: task.title || '',
-    description: task.description || '',
-    acceptanceCriteria: task.acceptance_criteria || '',
     priority: task.priority || 'normal',
     status: task.status || 'pending',
     assigneeAgentInstanceId: task.assignee_agent_instance_id || '',
@@ -49,8 +47,15 @@ function normalizeTask(task: any) {
       role: participant.role,
     })),
     unresolvedCommentCount: Number(task.unresolved_comment_count || 0),
-    unresolvedComments: [],
+    commentIds: task.comment_ids || [],
   };
+  if (task.description !== undefined) {
+    result.description = task.description;
+  }
+  if (task.acceptance_criteria !== undefined) {
+    result.acceptanceCriteria = task.acceptance_criteria;
+  }
+  return result;
 }
 
 function normalizeTaskLogEvent(event: any) {
@@ -125,18 +130,19 @@ function upsertChatMessage(messages: ChatMessage[], next: ChatMessage) {
   messages.sort((left, right) => Number(left.createdUnixMs || 0) - Number(right.createdUnixMs || 0));
 }
 
-function patchConversationSummary(draft: Record<string, any> | undefined, agentInstanceId: string, payload: any) {
+function patchConversationSummary(draft: any, agentInstanceId: string, payload: any) {
   if (!draft || !agentInstanceId) return;
+  const summaries = draft.summaries || draft;
   const message = payload?.message || {};
   const createdUnixMs = Number(message.created_unix_ms ?? message.createdUnixMs ?? Date.now());
-  const existing = draft[agentInstanceId] || { agentInstanceId, agentId: '', projectId: '', title: '' };
-  draft[agentInstanceId] = {
+  const existing = summaries[agentInstanceId] || { agentInstanceId, agentId: '', projectId: '', title: '' };
+  summaries[agentInstanceId] = {
     ...existing,
     lastMessageUnixMs: Math.max(Number(existing.lastMessageUnixMs || 0), createdUnixMs),
     unreadCount: Number(payload?.unread_count ?? existing.unreadCount ?? 0),
   };
   if (!existing.title && String(message.body || '').trim()) {
-    draft[agentInstanceId].title = String(message.body || '').trim().slice(0, 80);
+    summaries[agentInstanceId].title = String(message.body || '').trim().slice(0, 80);
   }
 }
 
@@ -278,7 +284,10 @@ function handleChatEvent(dispatch: any, payload: any, ctx: WsCtx) {
       if (agentId === GUIDE_AGENT_ID) dispatch(chatEndpoints.util.updateQueryData('fetchGuideChat', guideChatArgs(), patchCache));
       else dispatch(chatEndpoints.util.updateQueryData('fetchDirectChat', directChatArgs(agentId), patchCache));
       dispatch(chatEndpoints.util.updateQueryData('listConversationSummaries', undefined, (draft: any) => {
-        if (draft?.[agentId] && payload.unread_count !== undefined) draft[agentId].unreadCount = Number(payload.unread_count || 0);
+        const summaries = draft?.summaries || draft;
+        if (summaries?.[agentId] && payload.unread_count !== undefined) {
+          summaries[agentId].unreadCount = Number(payload.unread_count || 0);
+        }
       }));
       if (statusPatch.messageId && !statusPatch.deliveredUnixMs && !statusPatch.readUnixMs && !statusPatch.deliveryFailedUnixMs) {
         dispatch(chatEndpoints.endpoints.fetchChatMessage.initiate({ messageId: statusPatch.messageId }, { subscribe: false, forceRefetch: true })).unwrap().catch(() => undefined);

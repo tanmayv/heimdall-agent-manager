@@ -2,7 +2,7 @@ import urllib.request
 import json
 import sys
 
-DAEMON_URL = "http://127.0.0.1:49325"
+DAEMON_URL = "http://127.0.0.1:49328"
 
 def request_post(path, data):
     req = urllib.request.Request(
@@ -57,7 +57,6 @@ def main():
             "project_id": project_id,
             "title": "Resolve Chain",
             "description": "test",
-            "kind": "coding",
             "coordinator_agent_instance_id": "test-resolve-agent@default"
         })
         chain_id = chain.get("chain_id")
@@ -102,12 +101,12 @@ def main():
     # 6. Verify comment is unresolved
     print("[*] Verifying comment is unresolved...")
     try:
-        show_res = request_post("/tasks/show", {
+        comments_res = request_post("/tasks/comments", {
             "agent_token": agent_token,
-            "task_id": task_id
+            "task_id": task_id,
+            "unresolved_only": True
         })
-        task = show_res.get("task")
-        unresolved = task.get("unresolved_comments", [])
+        unresolved = comments_res.get("comments", [])
         if not any(c.get("comment_id") == comment_id for c in unresolved):
             print("[-] Comment not found in unresolved list:", unresolved)
             sys.exit(1)
@@ -136,12 +135,12 @@ def main():
     # 8. Verify comment is no longer unresolved
     print("[*] Verifying comment is resolved...")
     try:
-        show_res = request_post("/tasks/show", {
+        comments_res = request_post("/tasks/comments", {
             "agent_token": agent_token,
-            "task_id": task_id
+            "task_id": task_id,
+            "unresolved_only": True
         })
-        task = show_res.get("task")
-        unresolved = task.get("unresolved_comments", [])
+        unresolved = comments_res.get("comments", [])
         if any(c.get("comment_id") == comment_id for c in unresolved):
             print("[-] Comment still present in unresolved list after resolution:", unresolved)
             sys.exit(1)

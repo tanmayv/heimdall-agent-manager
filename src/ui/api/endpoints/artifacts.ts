@@ -7,6 +7,7 @@ type ArtifactListArgs = {
   originRef?: string;
   includeDeleted?: boolean;
   limit?: number;
+  offset?: number;
 };
 
 type ArtifactCreateArgs = {
@@ -96,9 +97,9 @@ function artifactContentUrl(session: any, artifactId: string, versionNo?: number
 export const artifactsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     listArtifacts: build.query<any, ArtifactListArgs>({
-      queryFn: withSessionQuery(async ({ projectId = '', creatorId = '', originRef = '', includeDeleted = false, limit = 100 }, { session }) => {
+      queryFn: withSessionQuery(async ({ projectId = '', creatorId = '', originRef = '', includeDeleted = false, limit = 20, offset = 0 }, { session }) => {
         if (!session?.clientToken) return { artifacts: [] };
-        const data = await daemonApi.listArtifacts({ ...auth(session), projectId, creatorId, originRef, includeDeleted, limit });
+        const data = await daemonApi.listArtifacts({ ...auth(session), projectId, creatorId, originRef, includeDeleted, limit, offset });
         return { ...data, artifacts: normalizeArtifacts(data) };
       }),
       providesTags: (result, _error, { projectId = '', originRef = '' }) => [
@@ -106,6 +107,36 @@ export const artifactsApi = heimdallApi.injectEndpoints({
         ...(originRef ? [{ type: 'Artifact' as const, id: originListTag(originRef) }] : []),
         ...((result?.artifacts || []).map((artifact: any) => ({ type: 'Artifact' as const, id: artifactIdOf(artifact) })).filter((tag: any) => Boolean(tag.id))),
       ],
+    }),
+    fetchArtifactsPage: build.query<any, ArtifactListArgs & { offset: number }>({
+      queryFn: withSessionQuery(async ({ projectId = '', creatorId = '', originRef = '', includeDeleted = false, limit = 20, offset }, { session }) => {
+        if (!session?.clientToken) return { artifacts: [] };
+        const data = await daemonApi.listArtifacts({ ...auth(session), projectId, creatorId, originRef, includeDeleted, limit, offset });
+        return { ...data, artifacts: normalizeArtifacts(data) };
+      }),
+      async onQueryStarted(arg, { dispatch, queryFulfilled }) {
+        try {
+          const { data } = await queryFulfilled;
+          const { projectId, creatorId, originRef, includeDeleted, limit = 20 } = arg;
+          const cacheKeyArgs = { projectId, creatorId, originRef, includeDeleted, limit };
+          dispatch(
+            artifactsApi.util.updateQueryData('listArtifacts', cacheKeyArgs, (draft) => {
+              if (!draft) return;
+              draft.has_more = data.has_more;
+              draft.next_offset = data.next_offset;
+              draft.total = data.total;
+              
+              const existingIds = new Set(draft.artifacts.map((a: any) => a.artifact_id || a.artifactId));
+              for (const art of data.artifacts) {
+                const id = art.artifact_id || art.artifactId;
+                if (!existingIds.has(id)) {
+                  draft.artifacts.push(art);
+                }
+              }
+            })
+          );
+        } catch {}
+      }
     }),
     fetchArtifactMeta: build.query<any, { artifactId: string }>({
       queryFn: withSessionQuery(async ({ artifactId }, { session }) => {
@@ -232,6 +263,7 @@ export function useArtifactContentUrl({ daemonUrl, clientToken, artifactId, vers
 
 export const {
   useListArtifactsQuery,
+  useLazyFetchArtifactsPageQuery,
   useFetchArtifactMetaQuery,
   useFetchArtifactVersionsQuery,
   useFetchArtifactTextContentQuery,

@@ -11,7 +11,7 @@ import urllib.request
 from pathlib import Path
 
 HOST = "127.0.0.1"
-PORT = 49325
+PORT = 49328
 DAEMON_URL = f"http://{HOST}:{PORT}"
 USER_ID = "operator@local"
 AGENT_ID = "test-mem-agent@default"

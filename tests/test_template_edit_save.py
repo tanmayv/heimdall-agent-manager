@@ -2,7 +2,7 @@ import urllib.request
 import json
 import sys
 
-DAEMON_URL = "http://127.0.0.1:49325"
+DAEMON_URL = "http://127.0.0.1:49328"
 
 def request_post(path, data, token=None):
     headers = {"Content-Type": "application/json"}

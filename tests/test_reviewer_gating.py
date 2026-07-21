@@ -3,7 +3,7 @@ import urllib.error
 import json
 import sys
 
-DAEMON_URL = "http://127.0.0.1:49325"
+DAEMON_URL = "http://127.0.0.1:49328"
 
 def request_post(path, data):
     req = urllib.request.Request(
@@ -70,10 +70,8 @@ def main():
         chain = request_post("/task-chains/create", {
             "agent_token": coder_token,
             "project_id": project_id,
-            "kind": "coding",
             "status": "planning",
             "wants_vcs": False,
-            "no_scaffold": True,
             "title": "Gating Chain",
             "description": "test gating",
             "coordinator_agent_instance_id": "coder-agent@default"

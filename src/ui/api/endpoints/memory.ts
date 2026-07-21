@@ -146,6 +146,7 @@ export const {
   useListMemoryQuery,
   useListApplicableMemoryQuery,
   useFetchMemoryQuery,
+  useLazyFetchMemoryQuery,
   useFetchMemoryHistoryQuery,
   useProposeMemoryChangeMutation,
   useDecideMemoryProposalMutation,

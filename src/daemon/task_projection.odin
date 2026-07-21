@@ -373,3 +373,23 @@ task_write_chain_json :: proc(builder: ^strings.Builder, chain: Task_Chain_State
 	strings.write_string(builder, `","last_audit_at_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", chain.last_audit_at_unix_ms))
 	strings.write_string(builder, `}`)
 }
+
+task_write_chain_json_slim :: proc(builder: ^strings.Builder, chain: Task_Chain_State) {
+	strings.write_string(builder, `{"chain_id":"`);      json_write_string(builder, chain.chain_id)
+	strings.write_string(builder, `","project_id":"`);   json_write_string(builder, chain.project_id)
+	strings.write_string(builder, `","vcs_workspace_id":"`); json_write_string(builder, chain.vcs_workspace_id)
+	strings.write_string(builder, `","diff_base_sha":"`); json_write_string(builder, chain.diff_base_sha)
+	strings.write_string(builder, `","repo_diff_supported":`); strings.write_string(builder, "true" if task_chain_repo_diff_supported(chain.chain_id) else "false")
+	strings.write_string(builder, `,"title":"`);        json_write_string(builder, chain.title)
+	strings.write_string(builder, `","status":"`);       json_write_string(builder, chain.status)
+	strings.write_string(builder, `","coordinator_agent_instance_id":"`); json_write_string(builder, chain.coordinator_agent_instance_id)
+	strings.write_string(builder, `","default_reviewer_agent_instance_id":"`); json_write_string(builder, chain.default_reviewer_agent_instance_id)
+	strings.write_string(builder, `","created_at_unix_ms":`);   strings.write_string(builder, fmt.tprintf("%d", chain.created_at_unix_ms))
+	strings.write_string(builder, `,"completed_at_unix_ms":`);  strings.write_string(builder, fmt.tprintf("%d", chain.completed_at_unix_ms))
+	strings.write_string(builder, `,"archive_pending":`); strings.write_string(builder, "true" if chain.archive_pending else "false")
+	strings.write_string(builder, `,"archived":`);        strings.write_string(builder, "true" if chain.archived else "false")
+	strings.write_string(builder, `,"evaluation":"`);     json_write_string(builder, chain.evaluation)
+	strings.write_string(builder, `","last_audit_at_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", chain.last_audit_at_unix_ms))
+	strings.write_string(builder, `}`)
+}
+

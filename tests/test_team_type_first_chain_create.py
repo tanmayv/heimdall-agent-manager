@@ -23,11 +23,14 @@ def bin_path(repo_dir, preferred, fallback, binary):
     return os.path.join(repo_dir, fallback, "bin", binary)
 
 
-def request_post(path, data, expect_error=False):
+def request_post(path, data, expect_error=False, headers=None):
+    h = {"Content-Type": "application/json"}
+    if headers:
+        h.update(headers)
     req = urllib.request.Request(
         f"{DAEMON_URL}{path}",
         data=json.dumps(data).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=h,
         method="POST",
     )
     try:
@@ -37,6 +40,23 @@ def request_post(path, data, expect_error=False):
         body = exc.read().decode("utf-8")
         if expect_error:
             return exc.code, json.loads(body)
+        raise AssertionError(f"HTTP {exc.code}: {body}") from exc
+
+
+def request_get(path, headers=None):
+    h = {}
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(
+        f"{DAEMON_URL}{path}",
+        headers=h,
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as res:
+            return res.status, json.loads(res.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8")
         raise AssertionError(f"HTTP {exc.code}: {body}") from exc
 
 
@@ -52,15 +72,18 @@ def wait_for_daemon():
     raise RuntimeError("daemon did not become healthy")
 
 
-def chain_tasks(state, chain_id):
-    return [task for task in state.get("tasks", []) if task.get("chain_id") == chain_id]
+def get_chain_tasks(client_token, chain_id):
+    status, res = request_get(f"/tasks?chain_id={chain_id}", headers={"Authorization": f"Bearer {client_token}"})
+    if status != 200:
+        raise AssertionError(f"failed to get tasks: {status} {res}")
+    return res.get("tasks")
 
 
-def chain_by_id(state, chain_id):
-    for chain in state.get("chains", []):
-        if chain.get("chain_id") == chain_id:
-            return chain
-    raise AssertionError(f"chain not found in state: {chain_id}")
+def get_chain_by_id(client_token, chain_id):
+    status, res = request_get(f"/task-chains/{chain_id}", headers={"Authorization": f"Bearer {client_token}"})
+    if status != 200:
+        raise AssertionError(f"failed to get chain: {status} {res}")
+    return res.get("chain")
 
 
 def user_rpc(client_token, action, **kwargs):
@@ -111,6 +134,16 @@ ham_ctl_bin = "{ctl_bin}"
         if not user_token:
             raise AssertionError(f"user registration failed: {user_res}")
 
+        # Register coordinator agent
+        status, agent_res = request_post("/register", {
+            "protocol_version": 1,
+            "agent_class": "coordinator",
+            "agent_instance_id": "coordinator@local",
+            "display_name": "Test Coordinator",
+        })
+        if status != 200:
+            raise AssertionError(f"failed to register coordinator: {status} {agent_res}")
+
         project_res = user_rpc(
             user_token,
             "project_create",
@@ -125,7 +158,9 @@ ham_ctl_bin = "{ctl_bin}"
             user_token,
             "task_chain_create",
             project_id=project_id,
-            kind="coding",
+            title="Team first chain",
+            description="Verify team type first chain creation",
+            coordinator_agent_instance_id="coordinator@local",
             wants_vcs=False,
         )
         chain_id = default_chain.get("chain_id")
@@ -136,16 +171,15 @@ ham_ctl_bin = "{ctl_bin}"
         if default_chain.get("status") != "in_progress":
             raise AssertionError(f"new chain must be active/in_progress by default: {default_chain}")
 
-        state = user_rpc(user_token, "list_tasks")
-        chain = chain_by_id(state, chain_id)
+        chain = get_chain_by_id(user_token, chain_id)
         if chain.get("status") != "in_progress":
             raise AssertionError(f"projected chain status should be in_progress: {chain}")
-        if chain.get("title") in ("", None):
-            raise AssertionError(f"title should default to a placeholder: {chain}")
+        if chain.get("title") != "Team first chain":
+            raise AssertionError(f"title mismatch: {chain}")
         if chain.get("coordinator_agent_instance_id") != coordinator_id:
             raise AssertionError(f"response/projected coordinator mismatch: response={default_chain} chain={chain}")
 
-        tasks = chain_tasks(state, chain_id)
+        tasks = get_chain_tasks(user_token, chain_id)
         if len(tasks) != 1:
             raise AssertionError(f"default create should create exactly one discovery task, got {len(tasks)}: {tasks}")
         discovery = tasks[0]
@@ -158,13 +192,20 @@ ham_ctl_bin = "{ctl_bin}"
         review_participants = [p for p in discovery.get("participants", []) if p.get("role") == "lgtm_required"]
         if review_participants:
             raise AssertionError(f"discovery task should not introduce a required review participant by default: {discovery}")
+        
+        # Note: description is lazy loaded, so we must fetch the task details to assert description!
+        status, task_detail_res = request_get(f"/tasks/{discovery_task_id}", headers={"Authorization": f"Bearer {user_token}"})
+        if status != 200:
+             raise AssertionError(f"failed to get task details: {status} {task_detail_res}")
+        discovery_detail = task_detail_res.get("task", {})
         assert_contains_all(
-            discovery.get("description", ""),
+            discovery_detail.get("description", ""),
             [
-                "Contact the user in chain chat",
-                "explain the selected team kind and roles",
-                "Rename/update the chain title and description",
-                "Create downstream tasks/dependencies or apply an appropriate task-bundle template",
+                "Initial coordinator kickoff task for a goal-driven task chain",
+                "Read applicable skills, especially `coordinator-playbook`",
+                "Clarify the user goal through chain chat",
+                "Create downstream tasks with dependencies",
+                "Mark this kickoff task done once the downstream task chain is ready to execute",
             ],
         )
 
@@ -177,28 +218,9 @@ ham_ctl_bin = "{ctl_bin}"
         )
         if not update_res.get("ok"):
             raise AssertionError(f"chain update failed: {update_res}")
-        updated_state = user_rpc(user_token, "list_tasks")
-        updated_chain = chain_by_id(updated_state, chain_id)
+        updated_chain = get_chain_by_id(user_token, chain_id)
         if updated_chain.get("title") != "Clarified chain title" or updated_chain.get("description") != "Clarified chain goal":
             raise AssertionError(f"coordinator/user should be able to update title/description: {updated_chain}")
-
-        legacy_chain = user_rpc(
-            user_token,
-            "task_chain_create",
-            project_id=project_id,
-            kind="coding",
-            title="Legacy explicit scaffold",
-            scaffold="feature",
-            wants_vcs=False,
-        )
-        legacy_chain_id = legacy_chain.get("chain_id")
-        if not legacy_chain_id:
-            raise AssertionError(f"legacy scaffold chain create failed: {legacy_chain}")
-        legacy_state = user_rpc(user_token, "list_tasks")
-        legacy_tasks = chain_tasks(legacy_state, legacy_chain_id)
-        legacy_titles = [task.get("title", "") for task in legacy_tasks]
-        if len(legacy_tasks) <= 1 or not any(title.startswith("Plan:") for title in legacy_titles):
-            raise AssertionError(f"explicit legacy scaffold should still append scaffold tasks: {legacy_titles}")
 
         print(json.dumps({
             "ok": True,
@@ -210,9 +232,6 @@ ham_ctl_bin = "{ctl_bin}"
             "discovery_status": discovery.get("status"),
             "default_task_count": len(tasks),
             "updated_title": updated_chain.get("title"),
-            "legacy_chain_id": legacy_chain_id,
-            "legacy_task_count": len(legacy_tasks),
-            "legacy_titles": legacy_titles,
         }, indent=2))
     finally:
         if daemon_proc is not None:

@@ -177,7 +177,7 @@ handle_agents_templates :: proc(client: net.TCP_Socket) {
 		rec := agent_template_records[i]
 		if rec.archived_at_unix_ms != 0 do continue
 		if wrote > 0 do strings.write_string(&builder, `,`)
-		agent_template_record_json(&builder, rec)
+		agent_template_record_json_slim(&builder, rec)
 		wrote += 1
 	}
 	if wrote == 0 {
@@ -1119,6 +1119,23 @@ agent_template_record_json :: proc(builder: ^strings.Builder, rec: Agent_Templat
 	for i in 0..<rec.memory_template_count { if i > 0 do strings.write_string(builder, `,`); strings.write_string(builder, `"`); json_write_string(builder, rec.memory_templates[i]); strings.write_string(builder, `"`) }
 	strings.write_string(builder, `]}`)
 }
+
+agent_template_record_json_slim :: proc(builder: ^strings.Builder, rec: Agent_Template_Record) {
+	strings.write_string(builder, `{"template_id":"`); json_write_string(builder, rec.template_id)
+	strings.write_string(builder, `","display_name":"`); json_write_string(builder, rec.display_name)
+	strings.write_string(builder, `","description":"`); json_write_string(builder, rec.description)
+	strings.write_string(builder, `","parent_template_id":"`); json_write_string(builder, rec.parent_template_id)
+	strings.write_string(builder, `","default_provider_profile":"`); json_write_string(builder, rec.default_provider_profile)
+	strings.write_string(builder, `","bootstrap_defaults":"`); json_write_string(builder, rec.bootstrap_defaults)
+	strings.write_string(builder, `","suggested_model_tier":"`); json_write_string(builder, rec.suggested_model_tier)
+	strings.write_string(builder, `","created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.created_unix_ms))
+	strings.write_string(builder, `,"updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.updated_unix_ms))
+	strings.write_string(builder, `,"archived_at_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.archived_at_unix_ms))
+	strings.write_string(builder, `,"memory_templates":[`)
+	for i in 0..<rec.memory_template_count { if i > 0 do strings.write_string(builder, `,`); strings.write_string(builder, `"`); json_write_string(builder, rec.memory_templates[i]); strings.write_string(builder, `"`) }
+	strings.write_string(builder, `]}`)
+}
+
 
 handle_agents_test_connectivity :: proc(client: net.TCP_Socket, body: string) {
 	b := strings.builder_make()

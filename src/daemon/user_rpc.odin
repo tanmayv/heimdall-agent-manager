@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:net"
 import "core:slice"
 import "core:strings"
+import "core:strconv"
 
 handle_user_rpc :: proc(client: net.TCP_Socket, body: string) {
 	action := extract_json_string(body, "action", "")
@@ -16,7 +17,7 @@ handle_user_rpc :: proc(client: net.TCP_Socket, body: string) {
 	}
 	switch action {
 	case "fetch_chat": handle_user_rpc_fetch_chat(client, body, user_id)
-	case "list_chats": handle_user_rpc_list_chats(client, user_id)
+	case "list_chats": handle_user_rpc_list_chats(client, body, user_id)
 	case "send_to_agent": handle_user_rpc_send_to_agent(client, body, user_id)
 	case "mark_read": handle_user_rpc_mark_read(client, body, user_id)
 	case "list_tasks": handle_user_rpc_list_tasks(client)
@@ -121,12 +122,14 @@ handle_user_rpc_fetch_chat :: proc(client: net.TCP_Socket, body, user_id: string
 	write_response(client, 200, "OK", chat_fetch_json(user_id, agent_instance_id, unread_only, "", limit, cursor))
 }
 
-handle_user_rpc_list_chats :: proc(client: net.TCP_Socket, user_id: string) {
-	write_response(client, 200, "OK", chat_list_json(user_id))
+handle_user_rpc_list_chats :: proc(client: net.TCP_Socket, body, user_id: string) {
+	limit := extract_json_int(body, "limit", 20)
+	cursor := extract_json_string(body, "cursor", "")
+	write_response(client, 200, "OK", chat_list_json_paginated(user_id, limit, cursor))
 }
 
 handle_user_rpc_list_tasks :: proc(client: net.TCP_Socket) {
-	write_response(client, 200, "OK", task_store_state_json())
+	write_response(client, 410, "Gone", `{"ok":false,"message":"list_tasks RPC is deprecated; use per-chain REST endpoints instead"}`)
 }
 
 handle_user_rpc_task_log :: proc(client: net.TCP_Socket, body: string) {
@@ -371,11 +374,14 @@ chat_list_build_rows :: proc(user_id: string) -> [dynamic]Chat_List_Row {
 	defer message_db_free_chat_list_summaries(summaries)
 	for summary in summaries {
 		agent_id := summary.agent_instance_id
+		idx := agent_record_index_by_instance(agent_id)
+		if idx >= 0 && agent_instance_records[idx].archived_at_unix_ms != 0 do continue
+
 		row := Chat_List_Row{}
 		row.agent_instance_id = strings.clone(agent_id)
 		row.agent_id = agent_id_from_instance_id(agent_id)
 		row.title = chat_list_derive_title(agent_id, summary.first_user_body)
-		if idx := agent_record_index_by_instance(agent_id); idx >= 0 do row.project_id = strings.clone(agent_instance_records[idx].project_id)
+		if idx >= 0 do row.project_id = strings.clone(agent_instance_records[idx].project_id)
 		else do row.project_id = strings.clone("")
 		row.last_message_unix_ms = summary.last_message_unix_ms
 		row.unread_count = chat_unread_count(user_id, agent_id)
@@ -414,18 +420,22 @@ chat_list_build_rows :: proc(user_id: string) -> [dynamic]Chat_List_Row {
 	return rows
 }
 
+chat_write_row_json :: proc(builder: ^strings.Builder, row: Chat_List_Row) {
+	strings.write_string(builder, `{"agent_instance_id":"`); json_write_string(builder, row.agent_instance_id)
+	strings.write_string(builder, `","agent_id":"`); json_write_string(builder, row.agent_id)
+	strings.write_string(builder, `","project_id":"`); json_write_string(builder, row.project_id)
+	strings.write_string(builder, `","title":"`); json_write_string(builder, row.title)
+	strings.write_string(builder, `","last_message_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", row.last_message_unix_ms))
+	strings.write_string(builder, `,"unread_count":`); strings.write_string(builder, fmt.tprintf("%d", row.unread_count))
+	strings.write_string(builder, `}`)
+}
+
 chat_list_write_rows :: proc(builder: ^strings.Builder, rows: [dynamic]Chat_List_Row) {
 	first := true
 	for row in rows {
 		if !first do strings.write_string(builder, `,`)
 		first = false
-		strings.write_string(builder, `{"agent_instance_id":"`); json_write_string(builder, row.agent_instance_id)
-		strings.write_string(builder, `","agent_id":"`); json_write_string(builder, row.agent_id)
-		strings.write_string(builder, `","project_id":"`); json_write_string(builder, row.project_id)
-		strings.write_string(builder, `","title":"`); json_write_string(builder, row.title)
-		strings.write_string(builder, `","last_message_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", row.last_message_unix_ms))
-		strings.write_string(builder, `,"unread_count":`); strings.write_string(builder, fmt.tprintf("%d", row.unread_count))
-		strings.write_string(builder, `}`)
+		chat_write_row_json(builder, row)
 	}
 }
 
@@ -439,6 +449,59 @@ chat_list_json :: proc(user_id: string) -> string {
 	defer chat_list_free_rows(rows)
 	chat_list_write_rows(&builder, rows)
 	strings.write_string(&builder, `]}`)
+	return strings.to_string(builder)
+}
+
+chat_list_json_paginated :: proc(user_id: string, limit: int, cursor_str: string) -> string {
+	builder := strings.builder_make()
+	strings.write_string(&builder, `{"ok":true,"chats":[`)
+	rows := chat_list_build_rows(user_id)
+	defer chat_list_free_rows(rows)
+
+	cursor_ts := i64(0)
+	cursor_id := ""
+	if cursor_str != "" {
+		parts := strings.split(cursor_str, "_")
+		defer delete(parts)
+		if len(parts) == 2 {
+			cursor_ts = strconv.parse_i64(parts[0]) or_else 0
+			cursor_id = parts[1]
+		} else if len(parts) == 1 {
+			cursor_ts = strconv.parse_i64(parts[0]) or_else 0
+		}
+	}
+
+	wrote := 0
+	next_cursor := ""
+	has_more := false
+
+	for row in rows {
+		if cursor_ts > 0 {
+			if row.last_message_unix_ms > cursor_ts do continue
+			if row.last_message_unix_ms == cursor_ts && row.agent_instance_id <= cursor_id do continue
+		}
+
+		if limit > 0 && wrote >= limit {
+			has_more = true
+			break
+		}
+
+		if wrote > 0 do strings.write_string(&builder, `,`)
+		chat_write_row_json(&builder, row)
+		wrote += 1
+
+		if limit > 0 {
+			next_cursor = fmt.tprintf("%d_%s", row.last_message_unix_ms, row.agent_instance_id)
+		}
+	}
+
+	strings.write_string(&builder, `],"next_cursor":"`)
+	if wrote > 0 {
+		strings.write_string(&builder, next_cursor)
+	}
+	strings.write_string(&builder, `","has_more":`)
+	strings.write_string(&builder, "true" if has_more else "false")
+	strings.write_string(&builder, `}`)
 	return strings.to_string(builder)
 }
 

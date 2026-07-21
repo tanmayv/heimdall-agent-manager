@@ -426,7 +426,7 @@ handle_task_archive_retry :: proc(client: net.TCP_Socket, body: string) {
 }
 
 handle_task_list :: proc(client: net.TCP_Socket) {
-	write_response(client, 200, "OK", task_store_state_json())
+	write_response(client, 410, "Gone", `{"ok":false,"message":"GET /tasks without auth is deprecated; use REST endpoint with Bearer token"}`)
 }
 
 handle_task_list_authed :: proc(client: net.TCP_Socket, body: string) {
@@ -440,7 +440,23 @@ handle_task_list_authed :: proc(client: net.TCP_Socket, body: string) {
 		write_response(client, 200, "OK", federation_remote_tasks_state_json(author))
 		return
 	}
-	write_response(client, 200, "OK", task_store_state_json())
+
+	chain_id := extract_json_string(body, "chain_id", "")
+	created_after := extract_json_i64(body, "created_after", 0)
+	created_before := extract_json_i64(body, "created_before", 0)
+	updated_after := extract_json_i64(body, "updated_after", 0)
+	updated_before := extract_json_i64(body, "updated_before", 0)
+	limit := extract_json_int(body, "limit", 100) // Default to 100 to bound it
+	offset := extract_json_int(body, "offset", 0)
+
+	b := strings.builder_make()
+	strings.write_string(&b, `{"tasks":[`)
+	matched_count := write_tasks_list_json(&b, chain_id, created_after, created_before, updated_after, updated_before, limit, offset)
+	strings.write_string(&b, `],"total_count":`)
+	strings.write_string(&b, fmt.tprintf("%d", matched_count))
+	strings.write_string(&b, `}`)
+	
+	write_response(client, 200, "OK", strings.to_string(b))
 }
 
 handle_task_next :: proc(client: net.TCP_Socket, body: string) {
@@ -459,7 +475,7 @@ handle_task_next :: proc(client: net.TCP_Socket, body: string) {
 	_ = agent_store_set_current_task(author, state.task_id)
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"task":`)
-	task_write_state_json(&b, state)
+	task_write_state_json(&b, state, true)
 	strings.write_string(&b, `}`)
 	write_response(client, 200, "OK", strings.to_string(b))
 }
@@ -480,7 +496,7 @@ handle_task_show :: proc(client: net.TCP_Socket, body: string) {
 	if state, found := store_get_task(task_id); found {
 		b := strings.builder_make()
 		strings.write_string(&b, `{"ok":true,"task":`)
-		task_write_state_json(&b, state)
+		task_write_state_json(&b, state, true)
 		strings.write_string(&b, `}`)
 		write_response(client, 200, "OK", strings.to_string(b))
 		return
@@ -556,37 +572,6 @@ write_task_service_response :: proc(client: net.TCP_Socket, result: Task_Service
 	if result.status_code == 409 do status_text = "Conflict"
 	if result.status_code == 500 do status_text = "Internal Server Error"
 	write_response(client, result.status_code, status_text, result.message)
-}
-
-task_store_state_json :: proc() -> string {
-	b := strings.builder_make()
-	strings.write_string(&b, `{"ok":true,"task_count":`)
-	strings.write_string(&b, fmt.tprintf("%d", store_task_count()))
-	strings.write_string(&b, `,"chain_count":`)
-	strings.write_string(&b, fmt.tprintf("%d", store_chain_count()))
-	strings.write_string(&b, `,"event_count":`)
-	strings.write_string(&b, fmt.tprintf("%d", store_event_count()))
-	strings.write_string(&b, `,"tasks":[`)
-	for state, i in store_all_tasks() {
-		if i > 0 do strings.write_string(&b, `,`)
-		task_write_state_json(&b, state)
-	}
-	strings.write_string(&b, `],"participants":[`)
-	for p, i in store_all_participants() {
-		if i > 0 do strings.write_string(&b, `,`)
-		strings.write_string(&b, `{"task_id":"`);           json_write_string(&b, p.task_id)
-		strings.write_string(&b, `","chain_id":"`);         json_write_string(&b, p.chain_id)
-		strings.write_string(&b, `","agent_instance_id":"`); json_write_string(&b, p.agent_instance_id)
-		strings.write_string(&b, `","role":"`);              json_write_string(&b, p.role)
-		strings.write_string(&b, `"}`)
-	}
-	strings.write_string(&b, `],"chains":[`)
-	for chain, i in store_all_chains() {
-		if i > 0 do strings.write_string(&b, `,`)
-		task_write_chain_json(&b, chain)
-	}
-	strings.write_string(&b, `]}`)
-	return strings.to_string(b)
 }
 
 // task_claim_next_for_agent finds the best ready task for an agent and returns it.

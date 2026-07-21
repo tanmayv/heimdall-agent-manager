@@ -8,40 +8,109 @@ function agentTagId(agent: any, fallback = '') {
 
 export const agentsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
-    listAgents: build.query<any, void>({
-      queryFn: withSessionQuery(async (_arg, { session }) => {
+    listAgents: build.query<any, { limit?: number; offset?: number; projectId?: string } | void>({
+      queryFn: withSessionQuery(async (arg, { session }) => {
         const localKnown = loadKnownAgents();
         if (!session?.daemonUrl) {
-          const agents = mergeKnownAndLiveAgents(localKnown, [], false);
+          const agents = mergeKnownAndLiveAgents(localKnown, [], false, false);
           storeKnownAgents(agents);
-          return { agents, identities: [] };
+          return { agents, identities: [], totalCount: 0, hasMore: false, offset: 0 };
         }
+
+        const args = (arg && typeof arg === 'object') ? arg : {};
+        const limit = args.limit ?? 20;
+        const offset = args.offset ?? 0;
+        const projectId = args.projectId ?? '';
+        const isPaged = args.limit !== undefined || args.offset !== undefined;
 
         let daemonAgents: any[] = [];
         let daemonIdentities: any[] = [];
         let daemonReachable = false;
+        let totalCount = 0;
+        let hasMore = false;
         try {
           const catalog = await daemonApi.listKnownAgentsCatalog({
             daemonUrl: session.daemonUrl,
+            projectId,
             includeIdentities: true,
             includeConversations: true,
+            limit,
+            offset,
           });
           daemonAgents = catalog.agents || [];
           daemonIdentities = catalog.identities || [];
           daemonReachable = true;
+          totalCount = catalog.total || 0;
+          hasMore = catalog.hasMore || false;
         } catch {
           daemonAgents = [];
           daemonIdentities = [];
         }
 
-        const agents = mergeKnownAndLiveAgents(localKnown, daemonAgents, daemonReachable);
+        const agents = mergeKnownAndLiveAgents(localKnown, daemonAgents, daemonReachable, isPaged);
         storeKnownAgents(agents);
-        return { agents, identities: daemonIdentities };
+        return { agents, identities: daemonIdentities, totalCount, hasMore, offset };
       }),
-      providesTags: (result) => [
-        { type: 'Agents' as const, id: 'LIST' },
+      providesTags: (result, _error, arg) => [
+        { type: 'Agents' as const, id: JSON.stringify(arg || {}) },
         ...((result?.agents || []).map((agent: any) => ({ type: 'Agents' as const, id: agentTagId(agent) })).filter((tag: any) => Boolean(tag.id))),
       ],
+    }),
+    fetchAgentsPage: build.query<any, { limit: number; offset: number; projectId?: string }>({
+      queryFn: withSessionQuery(async (arg, { session }) => {
+        const localKnown = loadKnownAgents();
+        if (!session?.daemonUrl) {
+          const agents = mergeKnownAndLiveAgents(localKnown, [], false, false);
+          return { agents, identities: [], totalCount: 0, hasMore: false, offset: arg.offset };
+        }
+        const data = await daemonApi.listKnownAgentsCatalog({
+          daemonUrl: session.daemonUrl,
+          projectId: arg.projectId,
+          includeIdentities: true,
+          includeConversations: true,
+          limit: arg.limit,
+          offset: arg.offset,
+        });
+        const daemonAgents = data.agents || [];
+        const daemonIdentities = data.identities || [];
+        const agents = mergeKnownAndLiveAgents(localKnown, daemonAgents, true, true);
+        return {
+          agents,
+          identities: daemonIdentities,
+          totalCount: data.total || 0,
+          hasMore: data.hasMore || false,
+          offset: arg.offset,
+        };
+      }),
+      async onQueryStarted(arg, { dispatch, queryFulfilled }) {
+        try {
+          const { data } = await queryFulfilled;
+          const baseArgs = arg.projectId ? { projectId: arg.projectId } : undefined;
+          dispatch(
+            agentsApi.util.updateQueryData('listAgents', baseArgs as any, (draft: any) => {
+              if (!draft) return;
+              const existingIds = new Set(draft.agents.map((a: any) => a.id));
+              for (const agent of data.agents) {
+                if (!existingIds.has(agent.id)) {
+                  draft.agents.push(agent);
+                }
+              }
+              const existingIdentities = new Set(draft.identities.map((id: any) => id.agent_id || id.agentId));
+              for (const identity of data.identities) {
+                const id = identity.agent_id || identity.agentId;
+                if (!existingIdentities.has(id)) {
+                  draft.identities.push(identity);
+                }
+              }
+              draft.totalCount = data.totalCount;
+              draft.hasMore = data.hasMore;
+              draft.offset = data.offset;
+            })
+          );
+        } catch (_error) {
+          // noop
+        }
+      },
     }),
     fetchAgent: build.query<any, { agentInstanceId?: string; agentRecordId?: string }>({
       queryFn: withSessionQuery(async ({ agentInstanceId = '', agentRecordId = '' }, { session }) => {
@@ -151,4 +220,4 @@ export function patchAgentCachesFromWs(dispatch: any, payload: any) {
   dispatch(heimdallApi.util.invalidateTags([{ type: 'Agents', id: 'LIST' }, { type: 'Agents', id: agentId }]));
 }
 
-export const { useListAgentsQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useFetchPeerAgentTemplateQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation } = agentsApi;
+export const { useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useFetchPeerAgentTemplateQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation } = agentsApi;

@@ -165,7 +165,7 @@ def create_project(user_client: dict, project_id: str) -> None:
 
 
 def titles(records: list[dict]) -> set[str]:
-    return {str(record.get("title", "")) for record in records}
+    return {str(record.get("title", "")) for record in records if record.get("type") == "fact"}
 
 
 def status_by_id(records: list[dict]) -> dict[str, str]:

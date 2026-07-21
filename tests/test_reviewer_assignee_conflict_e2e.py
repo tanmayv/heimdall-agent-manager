@@ -3,7 +3,7 @@ import urllib.error
 import json
 import sys
 
-DAEMON_URL = "http://127.0.0.1:49325"
+DAEMON_URL = "http://127.0.0.1:49328"
 
 def request_post(path, data):
     req = urllib.request.Request(
@@ -65,9 +65,7 @@ def main():
     # 3. Create a chain
     chain_res = request_post("/task-chains/create", {
         "agent_token": agent_token,
-        "kind": "coding",
         "status": "planning",
-        "no_scaffold": True,
         "title": "Conflict Test Chain",
         "coordinator_agent_instance_id": "coordinator-agent@default"
     })
@@ -162,8 +160,6 @@ def main():
     print("[*] Test 5: Reject task creation if assignee is default reviewer")
     chain_res5 = request_post("/task-chains/create", {
         "agent_token": agent_token,
-        "kind": "coding",
-        "no_scaffold": True,
         "title": "Chain with default reviewer self-review",
         "coordinator_agent_instance_id": "coordinator-agent@default",
         "default_reviewer_agent_instance_id": "agent-a@default"
@@ -198,9 +194,7 @@ def main():
 
     chain_res6 = request_post("/task-chains/create", {
         "agent_token": agent_token,
-        "kind": "coding",
         "status": "planning",
-        "no_scaffold": True,
         "title": "Chain for voting test",
         "coordinator_agent_instance_id": "coordinator-agent@default",
         "default_reviewer_agent_instance_id": "default-reviewer@default"

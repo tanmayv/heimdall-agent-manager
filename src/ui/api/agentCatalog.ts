@@ -166,7 +166,7 @@ function sortAgentsInPlace(agents: any[]) {
   });
 }
 
-export function mergeKnownAndLiveAgents(localKnownAgents: any[], daemonAgents: any[], daemonReachable = false) {
+export function mergeKnownAndLiveAgents(localKnownAgents: any[], daemonAgents: any[], daemonReachable = false, isPaged = false) {
   const byId: Record<string, any> = {};
   const defaultRuntimeAliases: Record<string, string> = {};
   const putAgent = (agent: any) => {
@@ -193,7 +193,7 @@ export function mergeKnownAndLiveAgents(localKnownAgents: any[], daemonAgents: a
   }
   for (const agent of localKnownAgents.map((item) => mapAgent(metadataOnlyAgent(item)))) {
     if (!agent.id) continue;
-    if (daemonReachable && !daemonIds.has(agent.id)) continue;
+    if (daemonReachable && !isPaged && !daemonIds.has(agent.id)) continue;
     putAgent({ ...agent, status: 'offline', startupStatus: '', known: true });
   }
   for (const rawDaemonAgent of daemonAgents) {

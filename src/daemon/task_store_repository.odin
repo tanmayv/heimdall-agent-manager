@@ -316,3 +316,13 @@ store_clear_votes_for_task :: proc(task_id: string) -> bool {
 	task_store_clear_task_votes(task_id)
 	return true
 }
+
+store_comment_by_id :: proc(task_id, comment_id: string) -> (Task_Comment_State, bool) {
+	for i in 0..<task_comment_count {
+		c := task_comments[i]
+		if c.task_id == task_id && c.comment_id == comment_id {
+			return c, true
+		}
+	}
+	return {}, false
+}

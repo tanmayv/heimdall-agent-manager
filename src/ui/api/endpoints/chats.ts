@@ -129,17 +129,18 @@ function mergeOlderMessages(existing: ChatMessage[], older: ChatMessage[]) {
   return Array.from(byId.values()).sort((left, right) => Number(left.createdUnixMs || 0) - Number(right.createdUnixMs || 0));
 }
 
-function patchConversationSummary(draft: Record<string, any> | undefined, agentInstanceId: string, body: string) {
+function patchConversationSummary(draft: any, agentInstanceId: string, body: string) {
   if (!draft) return;
+  const summaries = draft.summaries || draft;
   const now = Date.now();
-  const existing = draft[agentInstanceId] || { agentInstanceId, agentId: '', projectId: '', title: '' };
-  draft[agentInstanceId] = {
+  const existing = summaries[agentInstanceId] || { agentInstanceId, agentId: '', projectId: '', title: '' };
+  summaries[agentInstanceId] = {
     ...existing,
     lastMessageUnixMs: now,
     unreadCount: 0,
   };
   if (!existing.title && body.trim()) {
-    draft[agentInstanceId].title = body.trim().slice(0, 80);
+    summaries[agentInstanceId].title = body.trim().slice(0, 80);
   }
 }
 
@@ -158,17 +159,64 @@ function guideChatArgs() {
 
 export const chatEndpoints = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
-    listConversationSummaries: build.query<Record<string, any>, void>({
-      queryFn: withSessionQuery(async (_arg, { session }) => {
-        if (!session?.clientToken) return {};
+    listConversationSummaries: build.query<any, { limit?: number; cursor?: string } | void>({
+      queryFn: withSessionQuery(async (arg, { session }) => {
+        if (!session?.clientToken) return { summaries: {}, nextCursor: '', hasMore: false };
+        const args = (arg && typeof arg === 'object') ? arg : {};
+        const limit = args.limit ?? 20;
+        const cursor = args.cursor ?? '';
         const data = await daemonApi.listConversations({
           daemonUrl: session.daemonUrl,
           clientInstanceId: session.clientInstanceId,
           clientToken: session.clientToken,
+          limit,
+          cursor,
         });
-        return normalizeConversationSummaries(data);
+        const summaries = normalizeConversationSummaries(data);
+        return {
+          summaries,
+          nextCursor: data.next_cursor || '',
+          hasMore: Boolean(data.has_more),
+        };
       }),
-      providesTags: [{ type: 'ConversationSummaries', id: 'ALL' }],
+      providesTags: (result, _error, arg) => [
+        { type: 'ConversationSummaries' as const, id: JSON.stringify(arg || {}) },
+        ...Object.keys(result?.summaries || {}).map((id) => ({ type: 'Chat' as const, id })),
+      ],
+    }),
+    fetchConversationSummariesPage: build.query<any, { limit: number; cursor: string }>({
+      queryFn: withSessionQuery(async ({ limit, cursor }, { session }) => {
+        if (!session?.clientToken) return { summaries: {}, nextCursor: '', hasMore: false };
+        const data = await daemonApi.listConversations({
+          daemonUrl: session.daemonUrl,
+          clientInstanceId: session.clientInstanceId,
+          clientToken: session.clientToken,
+          limit,
+          cursor,
+        });
+        const summaries = normalizeConversationSummaries(data);
+        return {
+          summaries,
+          nextCursor: data.next_cursor || '',
+          hasMore: Boolean(data.has_more),
+        };
+      }),
+      async onQueryStarted(arg, { dispatch, queryFulfilled }) {
+        try {
+          const { data } = await queryFulfilled;
+          const baseArgs = undefined;
+          dispatch(
+            chatEndpoints.util.updateQueryData('listConversationSummaries', baseArgs, (draft: any) => {
+              if (!draft) return;
+              draft.summaries = { ...(draft.summaries || {}), ...data.summaries };
+              draft.nextCursor = data.nextCursor;
+              draft.hasMore = data.hasMore;
+            })
+          );
+        } catch (_error) {
+          // noop
+        }
+      },
     }),
     fetchDirectChat: build.query<any, { agentInstanceId: string; limit?: number }>({
       queryFn: withSessionQuery(async ({ agentInstanceId, limit = 50 }, { session, state }) => {
@@ -203,7 +251,8 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
             markedRead: true,
           });
           dispatch(chatEndpoints.util.updateQueryData('listConversationSummaries', undefined, (draft: any) => {
-            if (draft?.[agentInstanceId]) draft[agentInstanceId].unreadCount = 0;
+            const summaries = draft?.summaries || draft;
+            if (summaries?.[agentInstanceId]) summaries[agentInstanceId].unreadCount = 0;
           }));
         } catch (_error) {
           // noop
@@ -274,7 +323,8 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
             markedRead: true,
           });
           dispatch(chatEndpoints.util.updateQueryData('listConversationSummaries', undefined, (draft: any) => {
-            if (draft?.[GUIDE_AGENT_ID]) draft[GUIDE_AGENT_ID].unreadCount = 0;
+            const summaries = draft?.summaries || draft;
+            if (summaries?.[GUIDE_AGENT_ID]) summaries[GUIDE_AGENT_ID].unreadCount = 0;
           }));
         } catch (_error) {
           // noop
@@ -370,7 +420,8 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
         try {
           await queryFulfilled;
           dispatch(chatEndpoints.util.updateQueryData('listConversationSummaries', undefined, (draft: any) => {
-            if (draft?.[agentInstanceId]) draft[agentInstanceId].unreadCount = 0;
+            const summaries = draft?.summaries || draft;
+            if (summaries?.[agentInstanceId]) summaries[agentInstanceId].unreadCount = 0;
           }));
         } catch (_error) {
           // noop
@@ -457,6 +508,8 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
 
 export const {
   useListConversationSummariesQuery,
+  useFetchConversationSummariesPageQuery,
+  useLazyFetchConversationSummariesPageQuery,
   useFetchDirectChatQuery,
   useLazyFetchDirectChatPageQuery,
   useFetchGuideChatQuery,

@@ -1393,7 +1393,7 @@ handle_get_federation_task :: proc(client: net.TCP_Socket, task_id: string, ctx:
 		return
 	}
 	task_builder := strings.builder_make()
-	task_write_state_json(&task_builder, state)
+	task_write_state_json(&task_builder, state, true)
 	task_json := strings.to_string(task_builder)
 	annotated_task_json := federation_json_object_append_string(task_json, "origin_daemon_id", server_daemon_id)
 	delete(task_json)

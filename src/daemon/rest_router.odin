@@ -326,6 +326,14 @@ handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_C
 		return true
 	}
 
+	// GET /tasks/{task_id}/comments/{comment_id}
+	if len(ctx.segments) == 4 && ctx.segments[0] == "tasks" && ctx.segments[2] == "comments" && ctx.method == "GET" {
+		task_id := ctx.segments[1]
+		comment_id := ctx.segments[3]
+		handle_get_task_comment(client, task_id, comment_id, ctx)
+		return true
+	}
+
 	// GET /federation/agents?peer_token=...
 	if len(ctx.segments) == 2 && ctx.segments[0] == "federation" && ctx.segments[1] == "agents" && ctx.method == "GET" {
 		handle_get_federation_agents(client, ctx)

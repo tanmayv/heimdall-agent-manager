@@ -7,7 +7,7 @@ import * as daemonApi from '../api/daemonApi';
 import { agentsApi, useListAgentsQuery } from '../api/endpoints/agents';
 import { useListMemoryQuery } from '../api/endpoints/memory';
 import { useDeleteProjectMutation, useFetchProjectQuery, useListProjectsQuery, useUpdateProjectMutation } from '../api/endpoints/projects';
-import { useFetchAgentDefaultsQuery, useFetchPreferencesQuery, useFetchSettingsCatalogQuery, useSaveAgentDefaultMutation, useSavePreferenceMutation } from '../api/endpoints/settings';
+import { useFetchAgentDefaultsQuery, useFetchPreferencesQuery, useFetchSettingsCatalogQuery, useSaveAgentDefaultMutation, useSavePreferenceMutation, useLazyFetchAgentTemplateQuery } from '../api/endpoints/settings';
 import { selectProject } from '../store/projectSlice';
 import { VimEditButton } from './VimSidebar';
 import ChatHoverCopyButton from './ChatHoverCopyButton';
@@ -117,6 +117,7 @@ function Panel({ title, subtitle, children }: any) {
 }
 
 function TemplatesPanel({ templates = [], session, providers = [], onRefetchTemplates }: any) {
+  const [triggerFetchTemplate, fetchTemplateResult] = useLazyFetchAgentTemplateQuery();
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -143,17 +144,27 @@ function TemplatesPanel({ templates = [], session, providers = [], onRefetchTemp
     setIsEdit(false);
   }
 
-  function openEdit(template: any) {
-    setTemplateId(template.template_id || template.templateId || template.id || '');
+  async function openEdit(template: any) {
+    const id = template.template_id || template.templateId || template.id || '';
+    setTemplateId(id);
     setDisplayName(template.display_name || template.displayName || template.name || '');
     setDescription(template.description || '');
-    setPersona(template.persona || '');
-    setInstructions(template.instructions || '');
+    setPersona('');
+    setInstructions('');
     setDefaultProviderProfile(template.default_provider_profile || template.defaultProviderProfile || template.provider || '');
     setSuggestedModelTier(template.suggested_model_tier || template.suggestedModelTier || template.tier || 'normal');
     setError('');
     setIsEdit(true);
     setOpen(true);
+    try {
+      const fullTemplate = await triggerFetchTemplate({ templateId: id }).unwrap();
+      if (fullTemplate?.template) {
+        setPersona(fullTemplate.template.persona || '');
+        setInstructions(fullTemplate.template.instructions || '');
+      }
+    } catch (err: any) {
+      setError('Failed to fetch template details: ' + (err.message || err));
+    }
   }
 
   async function submit(e: React.FormEvent) {
@@ -336,9 +347,10 @@ function TemplatesPanel({ templates = [], session, providers = [], onRefetchTemp
                   value={persona}
                   data-debug-id="template-persona-input"
                   onChange={(e) => setPersona(e.target.value)}
-                  placeholder="e.g. You are a senior frontend developer..."
+                  placeholder={fetchTemplateResult.isFetching ? "Loading persona..." : "e.g. You are a senior frontend developer..."}
+                  disabled={fetchTemplateResult.isFetching}
                   rows={3}
-                  className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400"
+                  className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400 disabled:opacity-50"
                 />
               </label>
 
@@ -348,9 +360,10 @@ function TemplatesPanel({ templates = [], session, providers = [], onRefetchTemp
                   value={instructions}
                   data-debug-id="template-instructions-input"
                   onChange={(e) => setInstructions(e.target.value)}
-                  placeholder="System instructions and rules..."
+                  placeholder={fetchTemplateResult.isFetching ? "Loading instructions..." : "System instructions and rules..."}
+                  disabled={fetchTemplateResult.isFetching}
                   rows={4}
-                  className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm font-mono text-zinc-300 outline-none focus:border-sky-400"
+                  className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm font-mono text-zinc-300 outline-none focus:border-sky-400 disabled:opacity-50"
                 />
               </label>
               

@@ -73,6 +73,7 @@ Artifact_List_Filter :: struct {
 	origin_ref:       string,
 	include_deleted:  bool,
 	limit:            int,
+	offset:           int,
 }
 
 Artifact_Annotation_List_Filter :: struct {
@@ -328,13 +329,20 @@ artifact_db_find_origin :: proc(origin_kind, origin_ref: string) -> (Artifact_Re
 	return artifact_record_from_json(strings.trim_space(out))
 }
 
-artifact_db_list :: proc(filter: Artifact_List_Filter) -> []Artifact_Record {
+artifact_db_list :: proc(filter: Artifact_List_Filter) -> ([]Artifact_Record, int) {
 	clauses := strings.builder_make()
 	strings.write_string(&clauses, " WHERE 1=1")
 	if filter.project_id != "" do strings.write_string(&clauses, fmt.tprintf(" AND project_id=%s", sql_text(filter.project_id)))
 	if filter.creator_id != "" do strings.write_string(&clauses, fmt.tprintf(" AND creator_id=%s", sql_text(filter.creator_id)))
 	if filter.origin_ref != "" do strings.write_string(&clauses, fmt.tprintf(" AND origin_ref=%s", sql_text(filter.origin_ref)))
 	if !filter.include_deleted do strings.write_string(&clauses, " AND deleted=0")
+	
+	total := 0
+	count_query := fmt.tprintf("SELECT COUNT(*) FROM artifacts%s;", strings.to_string(clauses))
+	if count_out, count_ok := artifact_db_query(count_query); count_ok {
+		if val, parse_ok := strconv.parse_int(strings.trim_space(count_out)); parse_ok do total = val
+	}
+
 	limit := filter.limit
 	if limit <= 0 do limit = 100
 	query := fmt.tprintf(`SELECT json_object(
@@ -357,9 +365,9 @@ artifact_db_list :: proc(filter: Artifact_List_Filter) -> []Artifact_Record {
 		'updated_unix_ms', updated_unix_ms,
 		'deleted', deleted,
 		'deleted_unix_ms', deleted_unix_ms
-	) FROM artifacts%s ORDER BY created_unix_ms DESC LIMIT %d;`, strings.to_string(clauses), limit)
+	) FROM artifacts%s ORDER BY created_unix_ms DESC LIMIT %d OFFSET %d;`, strings.to_string(clauses), limit, filter.offset)
 	out, ok := artifact_db_query(query)
-	if !ok do return nil
+	if !ok do return nil, total
 	recs := make([dynamic]Artifact_Record)
 	for line in strings.split(strings.trim_space(out), "\n") {
 		trimmed := strings.trim_space(line)
@@ -368,7 +376,7 @@ artifact_db_list :: proc(filter: Artifact_List_Filter) -> []Artifact_Record {
 		if !rec_ok do continue
 		append(&recs, rec)
 	}
-	return recs[:]
+	return recs[:], total
 }
 
 artifact_db_insert_version :: proc(rec: Artifact_Version_Record) -> bool {

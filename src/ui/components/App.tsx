@@ -73,17 +73,17 @@ import type { WorkspaceContext, WorkspaceInspectorTab } from './workspace/types'
 import * as daemonApi from '../api/daemonApi';
 import { agentRemoteInfo, isRemoteProxyAgent, remoteAgentStatus, remoteAgentIsLive, remoteProxyContext } from '../api/agentRemote';
 import { agentHasLiveSession } from '../api/agentLiveness';
-import { selectTaskCacheProjection } from '../api/taskCache';
+import { selectTaskCacheProjection, mergeTaskRecord } from '../api/taskCache';
 import { selectChainViewCacheProjection } from '../api/chainViewCache';
 import { useFetchChainTasksQuery, useFetchTaskLogQuery, useFetchTaskQuery, useFetchTaskCommentsQuery, useLazyFetchTaskLogPageQuery } from '../api/endpoints/tasks';
-import { chatEndpoints, useListConversationSummariesQuery } from '../api/endpoints/chats';
-import { upsertAgentInCaches, useFetchAgentQuery, useFetchPeerAgentTemplateQuery, useListAgentsQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation } from '../api/endpoints/agents';
+import { chatEndpoints, useListConversationSummariesQuery, useLazyFetchConversationSummariesPageQuery } from '../api/endpoints/chats';
+import { upsertAgentInCaches, useFetchAgentQuery, useFetchPeerAgentTemplateQuery, useListAgentsQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation, useLazyFetchAgentsPageQuery } from '../api/endpoints/agents';
 import { useAnswerChatApprovalMutation, useDismissChatApprovalMutation, useExecuteMergeViaChainMutation, useFetchAttentionQuery, useListChatApprovalsQuery } from '../api/endpoints/attention';
-import { useDecideMemoryProposalMutation, useListApplicableMemoryQuery, useListMemoryQuery, useProposeMemoryChangeMutation } from '../api/endpoints/memory';
-import { useFetchChainQuery, useFetchWorkspaceQuery, useFocusChainMutation, useLazyFetchWorkspaceDiffQuery, useLazyPreviewWorkspaceMergeQuery, useListChainsQuery } from '../api/endpoints/workspace';
+import { useDecideMemoryProposalMutation, useListApplicableMemoryQuery, useListMemoryQuery, useProposeMemoryChangeMutation, useLazyFetchMemoryQuery } from '../api/endpoints/memory';
+import { useFetchChainQuery, useFetchWorkspaceQuery, useFocusChainMutation, useLazyFetchWorkspaceDiffQuery, useLazyPreviewWorkspaceMergeQuery, useListChainsQuery, useLazyFetchChainsPageQuery } from '../api/endpoints/workspace';
 import { useCreateProjectMutation, useListProjectsQuery } from '../api/endpoints/projects';
-import { useFetchSettingsCatalogQuery } from '../api/endpoints/settings';
-import { useListArtifactsQuery } from '../api/endpoints/artifacts';
+import { useFetchSettingsCatalogQuery, useFetchAgentTemplateQuery } from '../api/endpoints/settings';
+import { useListArtifactsQuery, useLazyFetchArtifactsPageQuery } from '../api/endpoints/artifacts';
 import { handleUserWsEvent, resyncAfterReconnect } from '../api/wsInvalidation';
 
 type Chain = {
@@ -631,17 +631,28 @@ export default function App() {
   const dispatch = useDispatch<any>();
   const { session, daemonProfiles, selectedAgentId, chats, chatsCursor, chatsHasMore, guidePanelOpen, guideSending, fetchingChatsByAgentId, conversationSummaryById } = useSelector((state: any) => state.chat);
   const conversationSummariesQuery = useListConversationSummariesQuery(undefined, { skip: !session.clientToken, refetchOnMountOrArgChange: true });
+  const [triggerFetchConversationsPage, fetchConversationsPageResult] = useLazyFetchConversationSummariesPageQuery();
   // Merge (not replace) the query result over the redux cache so titles never
   // blank out during a refetch when query.data is momentarily undefined.
   const effectiveConversationSummaryById = useMemo(
-    () => ({ ...(conversationSummaryById || {}), ...(conversationSummariesQuery.data || {}) }),
+    () => ({ ...(conversationSummaryById || {}), ...(conversationSummariesQuery.data?.summaries || {}) }),
     [conversationSummaryById, conversationSummariesQuery.data],
   );
+
+  const hasMoreConversations = Boolean(conversationSummariesQuery.data?.hasMore);
+  const handleLoadMoreConversations = useCallback(async () => {
+    if (conversationSummariesQuery.isFetching || fetchConversationsPageResult.isFetching) return;
+    const cursor = conversationSummariesQuery.data?.nextCursor || '';
+    if (cursor) {
+      await triggerFetchConversationsPage({ limit: 20, cursor }).unwrap();
+    }
+  }, [conversationSummariesQuery.data, conversationSummariesQuery.isFetching, fetchConversationsPageResult.isFetching, triggerFetchConversationsPage]);
   const { selectedProjectId: selectedProjectIdPreference } = useSelector((state: any) => state.projects);
   const projectsQuery = useListProjectsQuery({ scope: `${session.daemonUrl || ''}:${session.clientInstanceId || ''}:${session.clientToken || ''}` }, { skip: !session.connected || !session.clientToken });
   const settingsCatalogQuery = useFetchSettingsCatalogQuery({ scope: `${session.daemonUrl || ''}:${session.clientInstanceId || ''}` }, { skip: !session.connected || !session.daemonUrl });
   const [createProject, createProjectState] = useCreateProjectMutation();
-  const chainsQuery = useListChainsQuery(undefined, { skip: !session.clientToken });
+  const chainsQuery = useListChainsQuery({}, { skip: !session.clientToken });
+  const [triggerFetchChainsPage, fetchChainsPageResult] = useLazyFetchChainsPageQuery();
   const routeChainId = (() => {
     try {
       const params = new URLSearchParams(getRouteSearch());
@@ -704,6 +715,7 @@ export default function App() {
     skip: !session.daemonUrl,
     pollingInterval: chainCreationProgress?.active || home.surface === 'agents' || urlParams.view === 'agent-identity' || guidePanelOpen || Boolean(selectedSidebarAgentId) ? 2000 : 0,
   });
+  const [triggerFetchAgentsPage, fetchAgentsPageResult] = useLazyFetchAgentsPageQuery();
   const agents = agentsQuery.data?.agents || [];
   const agentIdentities = agentsQuery.data?.identities || [];
   useEffect(() => { agentsRefetchRef.current = agentsQuery.refetch; }, [agentsQuery.refetch]);
@@ -752,6 +764,16 @@ export default function App() {
   const chains: Chain[] = useMemo(() => Object.values(chainsById || {}) as Chain[], [chainsById]);
   useEffect(() => { chainsRef.current = chains; }, [chains]);
   useEffect(() => { chainsRefetchRef.current = chainsQuery.refetch; }, [chainsQuery.refetch]);
+  const handleLoadMoreChains = useCallback(() => {
+    if (chainsQuery.isFetching || fetchChainsPageResult.isFetching) return;
+    const nextOffset = chainsQuery.data?.chains?.length || 0;
+    triggerFetchChainsPage({ limit: 20, offset: nextOffset });
+  }, [chainsQuery.data, chainsQuery.isFetching, fetchChainsPageResult.isFetching, triggerFetchChainsPage]);
+  const handleLoadMoreAgents = useCallback(() => {
+    if (agentsQuery.isFetching || fetchAgentsPageResult.isFetching) return;
+    const nextOffset = agentsQuery.data?.agents?.length || 0;
+    triggerFetchAgentsPage({ limit: 20, offset: nextOffset });
+  }, [agentsQuery.data, agentsQuery.isFetching, fetchAgentsPageResult.isFetching, triggerFetchAgentsPage]);
   const selectedProjectId = home.selectedProjectId || selectedProjectIdPreference || projects[0]?.projectId || 'default';
   const selectedChain = home.selectedChainId ? (chainsById[home.selectedChainId] || selectedChainQuery.data?.chain || null) : null;
   const selectedWorkspaceQuery = useFetchWorkspaceQuery(
@@ -775,7 +797,7 @@ export default function App() {
   }, [cacheChainView.mergePreviewByChainId, cacheChainView.workspaceByChainId, cacheChainView.workspaceDiffByChainId, chainViewUi, selectedChain?.chainId, selectedWorkspaceQuery.data?.workspace, selectedWorkspaceQuery.isFetching]);
   useEffect(() => { chainViewRef.current = chainView; }, [chainView]);
   const selectedChainTasksQuery = useFetchChainTasksQuery(
-    { chainId: selectedChain?.chainId || '' },
+    { chainId: selectedChain?.chainId || '', limit: 100 },
     { skip: !selectedChain?.chainId },
   );
   const creationProgressChainQuery = useFetchChainQuery(
@@ -793,7 +815,7 @@ export default function App() {
     },
   );
   const creationProgressChainTasksQuery = useFetchChainTasksQuery(
-    { chainId: chainCreationProgress?.chainId || '' },
+    { chainId: chainCreationProgress?.chainId || '', limit: 100 },
     {
       skip: !chainCreationProgress?.active || !chainCreationProgress?.chainId,
       pollingInterval: chainCreationProgress?.active ? 2000 : 0,
@@ -804,13 +826,17 @@ export default function App() {
     { taskId: selectedTaskIdForQuery },
     { skip: !selectedTaskIdForQuery },
   );
+  const selectedTaskQuery = useFetchTaskQuery(
+    { taskId: selectedTaskIdForQuery },
+    { skip: !selectedTaskIdForQuery || !session.clientToken },
+  );
   const [loadTaskLogPage] = useLazyFetchTaskLogPageQuery();
   const selectedChainTasks = selectedChainTasksQuery.data?.tasks || ((selectedChain?.chainId ? (chainTaskIds[selectedChain.chainId] || []).map((id: string) => tasksById[id]).filter(Boolean) : []) as any[]);
   const selectedTasksById = useMemo(() => {
     if (!selectedChain?.chainId) return tasksById;
     const next = { ...tasksById } as Record<string, any>;
     for (const task of selectedChainTasks) {
-      if (task?.taskId) next[task.taskId] = task;
+      if (task?.taskId) next[task.taskId] = mergeTaskRecord(next[task.taskId], task);
     }
     return next;
   }, [selectedChain?.chainId, selectedChainTasks, tasksById]);
@@ -1473,6 +1499,11 @@ export default function App() {
               onTaskChains={() => selectSurfaceWithUrl('task-chains')}
               onProjects={() => selectSurfaceWithUrl('projects')}
               onSettings={() => selectSurfaceWithUrl('settings')}
+              hasMoreNetwork={hasMoreConversations}
+              onLoadMoreNetwork={handleLoadMoreConversations}
+              hasMoreAgents={Boolean(agentsQuery.data?.hasMore)}
+              loadingMoreAgents={fetchAgentsPageResult.isFetching}
+              onLoadMoreAgents={handleLoadMoreAgents}
             />
           </aside>
           {selectedSidebarAgentId && !sidebarCollapsed ? (
@@ -1622,6 +1653,9 @@ export default function App() {
               onOpenInstance={openAgentPage}
               onStartInstance={startSidebarAgentInstance}
               onRefreshAgents={refetchAgents}
+              hasMore={Boolean(agentsQuery.data?.hasMore)}
+              loadingMore={fetchAgentsPageResult.isFetching}
+              onLoadMore={handleLoadMoreAgents}
             />
           ) : home.surface === 'task-chains' ? (
             <TaskChainsSurface
@@ -1631,6 +1665,9 @@ export default function App() {
               onBack={navigateBackOrHome}
               onOpenChain={openChain}
               onNewChain={() => dispatch(openNewChainModal({ projectId: selectedProjectId }))}
+              hasMore={Boolean(chainsQuery.data?.hasMore)}
+              loadingMore={fetchChainsPageResult.isFetching}
+              onLoadMore={handleLoadMoreChains}
             />
           ) : home.surface === 'projects' ? (
             <ProjectsSurface
@@ -2064,7 +2101,7 @@ function writeLaunchAgentDefaults(daemonUrl: string, defaults: any) {
 
 const SIDEBAR_PAGE_SIZE = 5;
 
-function SidebarConversationSection({ conversations = [], chats = {}, summaryById = {}, projectsById = {}, selectedAgentId = '', onOpenConversation, onNewConversation, newConversationBusy = false, compact = false }: any) {
+function SidebarConversationSection({ conversations = [], chats = {}, summaryById = {}, projectsById = {}, selectedAgentId = '', onOpenConversation, onNewConversation, newConversationBusy = false, compact = false, hasMoreNetwork = false, onLoadMoreNetwork }: any) {
   const [conversationLimit, setConversationLimit] = useState(SIDEBAR_PAGE_SIZE);
   const [conversationLoadingMore, setConversationLoadingMore] = useState(false);
   const sortedConversations = useMemo(() => [...(conversations || [])].sort((left: any, right: any) => conversationSortUnixMs(right, chats?.[right.id] || [], summaryById?.[right.id]) - conversationSortUnixMs(left, chats?.[left.id] || [], summaryById?.[left.id])), [conversations, chats, summaryById]);
@@ -2072,14 +2109,19 @@ function SidebarConversationSection({ conversations = [], chats = {}, summaryByI
   const visibleConversations = sortedConversations.slice(0, conversationLimit);
   const hiddenConversationCount = Math.max(0, sortedConversations.length - visibleConversations.length);
   const loadMoreConversations = useCallback(async () => {
-    if (conversationLoadingMore || hiddenConversationCount <= 0) return;
-    setConversationLoadingMore(true);
-    try {
+    if (conversationLoadingMore) return;
+    if (hiddenConversationCount > 0) {
       setConversationLimit((current) => Math.min(sortedConversations.length, current + SIDEBAR_PAGE_SIZE));
-    } finally {
-      setConversationLoadingMore(false);
+    } else if (hasMoreNetwork && onLoadMoreNetwork) {
+      setConversationLoadingMore(true);
+      try {
+        await onLoadMoreNetwork();
+        setConversationLimit((current) => current + SIDEBAR_PAGE_SIZE);
+      } finally {
+        setConversationLoadingMore(false);
+      }
     }
-  }, [conversationLoadingMore, hiddenConversationCount, sortedConversations.length]);
+  }, [conversationLoadingMore, hiddenConversationCount, sortedConversations.length, hasMoreNetwork, onLoadMoreNetwork]);
   const groups = useMemo(() => {
     const grouped: Record<string, { projectId: string; projectName: string; rows: any[] }> = {};
     for (const agent of visibleConversations || []) {
@@ -2154,7 +2196,7 @@ function SidebarConversationSection({ conversations = [], chats = {}, summaryByI
         )}
         {conversationLoadingMore ? <div data-debug-id="sidebar-conversations-loading" className="px-2 py-2 text-xs text-zinc-500">Loading more conversations…</div> : null}
       </div>
-      {hiddenConversationCount > 0 ? (
+      {(hiddenConversationCount > 0 || hasMoreNetwork) ? (
         <button
           type="button"
           data-debug-id="sidebar-conversations-show-more-btn"
@@ -2162,7 +2204,11 @@ function SidebarConversationSection({ conversations = [], chats = {}, summaryByI
           disabled={conversationLoadingMore}
           className="mt-2 w-full rounded-lg border border-white/10 px-2 py-1.5 text-xs text-zinc-400 transition hover:bg-[#141414] hover:text-zinc-100 disabled:cursor-wait disabled:opacity-60"
         >
-          {conversationLoadingMore ? 'Loading…' : `Show ${Math.min(SIDEBAR_PAGE_SIZE, hiddenConversationCount)} more conversations`}
+          {conversationLoadingMore ? 'Loading…' : (
+            hiddenConversationCount > 0 
+              ? `Show ${Math.min(SIDEBAR_PAGE_SIZE, hiddenConversationCount)} more conversations`
+              : 'Show more from server'
+          )}
         </button>
       ) : null}
     </div>
@@ -2170,7 +2216,7 @@ function SidebarConversationSection({ conversations = [], chats = {}, summaryByI
 }
 
 
-function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryById = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, collapsed = false, onToggleCollapsed, agents = [], allAgents = [], agentIdentities = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onOpenAgentInstance, onStartAgentInstance, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onMemory, onAgents, onTaskChains, onProjects, onSettings }: any) {
+function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryById = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, collapsed = false, onToggleCollapsed, agents = [], allAgents = [], agentIdentities = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onOpenAgentInstance, onStartAgentInstance, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onMemory, onAgents, onTaskChains, onProjects, onSettings, hasMoreNetwork = false, onLoadMoreNetwork, hasMoreAgents = false, loadingMoreAgents = false, onLoadMoreAgents }: any) {
   const chainUpdatedMs = (chain: any) => Number(chain?.updatedAtUnixMs || chain?.updated_at_unix_ms || chain?.updatedAt || chain?.updated_at || chain?.createdAtUnixMs || chain?.created_at_unix_ms || 0);
   const sortedChains = [...(chains || [])].sort((a: any, b: any) => chainUpdatedMs(b) - chainUpdatedMs(a));
   const activeChains = sortedChains.filter((chain: any) => !isChainCompleted(chain)).slice(0, 4);
@@ -2257,6 +2303,8 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryByI
           onNewConversation={null}
           newConversationBusy={newConversationBusy}
           compact
+          hasMoreNetwork={hasMoreNetwork}
+          onLoadMoreNetwork={onLoadMoreNetwork}
         />
         <SidebarDurableAgentsSection
           groups={agentGroups}
@@ -2265,6 +2313,9 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryByI
           onSelectAgent={onSelectSidebarAgent}
           onOpenInstance={onOpenAgentInstance}
           onStartAgent={onStartAgentInstance}
+          hasMore={hasMoreAgents}
+          loadingMore={loadingMoreAgents}
+          onLoadMore={onLoadMoreAgents}
         />
       </div>
       <div className="border-t border-[#262626] px-3 py-3 text-[11px] text-zinc-700">
@@ -2274,21 +2325,25 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryByI
   );
 }
 
-function SidebarDurableAgentsSection({ groups = [], selectedAgentId = '', launchingAgentId = '', onSelectAgent, onOpenInstance, onStartAgent }: any) {
+function SidebarDurableAgentsSection({ groups = [], selectedAgentId = '', launchingAgentId = '', onSelectAgent, onOpenInstance, onStartAgent, hasMore = false, loadingMore = false, onLoadMore }: any) {
   const [agentLimit, setAgentLimit] = useState(SIDEBAR_PAGE_SIZE);
   const [agentsLoadingMore, setAgentsLoadingMore] = useState(false);
   useEffect(() => { setAgentLimit((current) => Math.min(Math.max(SIDEBAR_PAGE_SIZE, current), Math.max(SIDEBAR_PAGE_SIZE, (groups || []).length))); }, [groups?.length]);
   const visibleGroups = (groups || []).slice(0, agentLimit);
   const hiddenAgentCount = Math.max(0, (groups || []).length - visibleGroups.length);
   const loadMoreAgents = useCallback(async () => {
-    if (agentsLoadingMore || hiddenAgentCount <= 0) return;
-    setAgentsLoadingMore(true);
-    try {
+    if (agentsLoadingMore || loadingMore) return;
+    if (hiddenAgentCount > 0) {
       setAgentLimit((current) => Math.min((groups || []).length, current + SIDEBAR_PAGE_SIZE));
-    } finally {
-      setAgentsLoadingMore(false);
+    } else if (hasMore && onLoadMore) {
+      setAgentsLoadingMore(true);
+      try {
+        await onLoadMore();
+      } finally {
+        setAgentsLoadingMore(false);
+      }
     }
-  }, [agentsLoadingMore, hiddenAgentCount, groups]);
+  }, [agentsLoadingMore, loadingMore, hiddenAgentCount, groups, hasMore, onLoadMore]);
   return (
     <section data-debug-id="sidebar-durable-agents" className="mb-3 border-b border-[#171717] pb-3">
       <div className="flex items-center justify-between px-2 pb-1 pt-2 text-[10.5px] uppercase tracking-[0.18em] text-zinc-500">
@@ -2354,15 +2409,15 @@ function SidebarDurableAgentsSection({ groups = [], selectedAgentId = '', launch
         })}
         {agentsLoadingMore ? <div data-debug-id="sidebar-agents-loading" className="px-2 py-2 text-xs text-zinc-500">Loading more agents…</div> : null}
       </div>
-      {hiddenAgentCount > 0 ? (
+      {hiddenAgentCount > 0 || hasMore ? (
         <button
           type="button"
           data-debug-id="sidebar-agents-show-more-btn"
           onClick={loadMoreAgents}
-          disabled={agentsLoadingMore}
+          disabled={agentsLoadingMore || loadingMore}
           className="mt-2 w-full rounded-lg border border-white/10 px-2 py-1.5 text-xs text-zinc-400 transition hover:bg-[#141414] hover:text-zinc-100 disabled:cursor-wait disabled:opacity-60"
         >
-          {agentsLoadingMore ? 'Loading…' : `Show ${Math.min(SIDEBAR_PAGE_SIZE, hiddenAgentCount)} more agents`}
+          {agentsLoadingMore || loadingMore ? 'Loading…' : hiddenAgentCount > 0 ? `Show ${Math.min(SIDEBAR_PAGE_SIZE, hiddenAgentCount)} more agents` : 'Show more agents'}
         </button>
       ) : null}
     </section>
@@ -2423,7 +2478,7 @@ function SidebarAgentInstancesPanel({ agentId = '', agents = [], chats = {}, tas
   );
 }
 
-function AgentsManagementSurface({ agents = [], agentIdentities = [], chats = {}, tasksById = {}, chainsById = {}, projects = [], session = {}, providers = [], templates = [], onBack, onOpenIdentity, onOpenInstance, onStartInstance, onRefreshAgents }: any) {
+function AgentsManagementSurface({ agents = [], agentIdentities = [], chats = {}, tasksById = {}, chainsById = {}, projects = [], session = {}, providers = [], templates = [], onBack, onOpenIdentity, onOpenInstance, onStartInstance, onRefreshAgents, hasMore = false, loadingMore = false, onLoadMore }: any) {
   const groups = durableAgentGroups(agents, agentIdentities);
   const [proxyWizardOpen, setProxyWizardOpen] = useState(false);
 
@@ -2536,11 +2591,24 @@ function AgentsManagementSurface({ agents = [], agentIdentities = [], chats = {}
           </tbody>
         </table>
       </div>
+      {hasMore && (
+        <div className="mt-6 flex justify-center">
+          <button
+            type="button"
+            data-debug-id="agents-load-more-btn"
+            onClick={onLoadMore}
+            disabled={loadingMore}
+            className="rounded-xl border border-white/10 px-4 py-2 text-sm font-semibold text-zinc-300 hover:bg-[#171717] disabled:opacity-50"
+          >
+            {loadingMore ? 'Loading...' : 'Show more'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
-function TaskChainsSurface({ chains = [], projectsById = {}, selectedChainId = '', onBack, onOpenChain, onNewChain }: any) {
+function TaskChainsSurface({ chains = [], projectsById = {}, selectedChainId = '', onBack, onOpenChain, onNewChain, hasMore = false, loadingMore = false, onLoadMore }: any) {
   const chainUpdatedMs = (chain: any) => Number(chain?.updatedAtUnixMs || chain?.updated_at_unix_ms || chain?.createdAtUnixMs || chain?.created_at_unix_ms || 0);
   const sorted = [...(chains || [])].sort((a: any, b: any) => chainUpdatedMs(b) - chainUpdatedMs(a));
   const active = sorted.filter((chain: any) => !isChainCompleted(chain));
@@ -2559,7 +2627,20 @@ function TaskChainsSurface({ chains = [], projectsById = {}, selectedChainId = '
     <div data-debug-id="task-chains-surface" className="mx-auto max-w-5xl px-8 py-8">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3"><div><div className="text-xs uppercase tracking-[0.22em] text-zinc-500">Task chains</div><h1 className="mt-1 text-2xl font-semibold text-zinc-100">All task chains</h1><p className="mt-1 text-sm text-zinc-500">Completed chains live here instead of the sidebar.</p></div><div className="flex gap-2"><button type="button" data-debug-id="task-chains-back-btn" onClick={onBack} className="rounded-xl border border-white/10 px-3 py-2 text-sm text-zinc-300 hover:bg-[#171717]">Back</button><button type="button" data-debug-id="task-chains-new-btn" onClick={() => onNewChain?.()} className="rounded-xl bg-zinc-100 px-3 py-2 text-sm font-medium text-zinc-950 hover:bg-white">+ New task chain</button></div></div>
       <section data-debug-id="task-chains-active-list" className="mb-6"><div className="mb-2 text-xs uppercase tracking-[0.18em] text-zinc-500">Active</div><div className="grid gap-2">{active.length ? active.map((chain: any) => renderChain(chain, false)) : <div className="rounded-xl border border-dashed border-[#2a2a2a] p-4 text-sm text-zinc-500">No active chains.</div>}</div></section>
-      <section data-debug-id="task-chains-completed-list"><div className="mb-2 text-xs uppercase tracking-[0.18em] text-zinc-500">Completed</div><div className="grid gap-2">{completed.length ? completed.map((chain: any) => renderChain(chain, true)) : <div className="rounded-xl border border-dashed border-[#2a2a2a] p-4 text-sm text-zinc-500">No completed chains yet.</div>}</div></section>
+      <section data-debug-id="task-chains-completed-list" className="mb-6"><div className="mb-2 text-xs uppercase tracking-[0.18em] text-zinc-500">Completed</div><div className="grid gap-2">{completed.length ? completed.map((chain: any) => renderChain(chain, true)) : <div className="rounded-xl border border-dashed border-[#2a2a2a] p-4 text-sm text-zinc-500">No completed chains yet.</div>}</div></section>
+      {hasMore && (
+        <div className="mt-6 flex justify-center">
+          <button
+            type="button"
+            data-debug-id="task-chains-load-more-btn"
+            onClick={onLoadMore}
+            disabled={loadingMore}
+            className="rounded-xl border border-white/10 px-4 py-2 text-sm font-medium text-zinc-300 hover:bg-[#171717] disabled:opacity-50"
+          >
+            {loadingMore ? 'Loading...' : 'Show more'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -2979,16 +3060,23 @@ function AgentIdentityPage({ agentId, agents = [], agentIdentities = [], chats =
   const providerName = identity?.providerProfile || identity?.provider_profile || providers?.[0]?.name || 'default';
   const tier = identity?.modelTier || identity?.model_tier || 'normal';
   const templateId = String(identity?.templateId || identity?.template_id || identityRecord?.template_id || durableId || '');
-  const localTemplateRecord = useMemo(() => (templates || []).find((t: any) => String(t.template_id || t.templateId) === templateId) || null, [templates, templateId]);
+  const [templateOpen, setTemplateOpen] = useState(false);
+
+  // Fetch local template detail on-demand when expanded.
+  const localTemplateQuery = useFetchAgentTemplateQuery(
+    { templateId },
+    { skip: isRemoteProxy || !templateId || !session?.clientToken || !templateOpen }
+  );
+  const localTemplateRecord = localTemplateQuery.data?.template || null;
+
   // For remote proxies the template content lives on the origin daemon: fetch it
-  // over the cached federation pass-through instead of the local template list.
+  // over the cached federation pass-through on-demand.
   const remoteTemplateQuery = useFetchPeerAgentTemplateQuery(
     { peerId: remoteMapping?.peerId || '', remoteAgentId: remoteMapping?.remoteAgentId || '' },
-    { skip: !isRemoteProxy || !remoteMapping?.peerId || !remoteMapping?.remoteAgentId || !session?.clientToken },
+    { skip: !isRemoteProxy || !remoteMapping?.peerId || !remoteMapping?.remoteAgentId || !session?.clientToken || !templateOpen },
   );
   const remoteTemplateRecord = remoteTemplateQuery.data?.template || null;
   const templateRecord = isRemoteProxy ? remoteTemplateRecord : localTemplateRecord;
-  const [templateOpen, setTemplateOpen] = useState(false);
   const memoryQuery = useListApplicableMemoryQuery(
     { targetAgentId: durableId, targetProjectId: projectId || '' },
     { skip: !durableId || !session?.clientToken },
@@ -3342,6 +3430,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
   const [memoryError, setMemoryError] = useState('');
   const [memoryEditor, setMemoryEditor] = useState<any>(null);
   const [memorySaving, setMemorySaving] = useState(false);
+  const [triggerFetchMemory] = useLazyFetchMemoryQuery();
   const [inspectorOpen, setInspectorOpen] = useState(true);
   const [inspectorTab, setInspectorTab] = useState<'tasks' | 'task-chains' | 'artifacts' | 'project' | 'memory' | 'runtime'>('tasks');
   const [chatProvider, setChatProvider] = useState(agent?.providerProfile || defaultConversationProvider(providers));
@@ -3414,8 +3503,40 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
     if (agentStopDone) setStopProgress((current: any) => current?.agentId === agent?.id ? { ...current, completed: true, completedAt: Date.now() } : current);
   }, [stopProgress?.active, stopProgress?.agentId, stopProgress?.completed, agent?.id, agentStopDone]);
 
-  const openMemoryEditor = (record?: any) => {
-    setMemoryEditor(record ? { mode: 'edit', memoryId: record.memory_id || record.memoryId, expectedVersion: Number(record.version || 0), type: record.type || 'fact', title: record.title || '', body: record.body || '', evidence: record.evidence || '', metadataJson: record.metadata_json || record.metadataJson || '', targetAgentId: record.target_agent_id || record.targetAgentId || agentMemoryId, targetProjectId: record.target_project_id || record.targetProjectId || '' } : { mode: 'new', type: 'fact', title: '', body: '', evidence: '', metadataJson: '', targetAgentId: agentMemoryId, targetProjectId: '' });
+  const openMemoryEditor = async (record?: any) => {
+    if (record) {
+      const memoryId = record.memory_id || record.memoryId;
+      setMemoryEditor({
+        mode: 'edit',
+        memoryId,
+        loading: true,
+        type: record.type || 'fact',
+        title: record.title || '',
+        body: '',
+        evidence: '',
+        metadataJson: '',
+        expectedVersion: Number(record.version || 0),
+        targetAgentId: record.target_agent_id || record.targetAgentId || agentMemoryId,
+        targetProjectId: record.target_project_id || record.targetProjectId || ''
+      });
+      try {
+        const res = await triggerFetchMemory({ memoryId }).unwrap();
+        if (res?.record) {
+          setMemoryEditor((prev: any) => prev && prev.memoryId === memoryId ? {
+            ...prev,
+            loading: false,
+            body: res.record.body || '',
+            evidence: res.record.evidence || '',
+            metadataJson: res.record.metadata_json || res.record.metadataJson || '',
+          } : prev);
+        }
+      } catch (err) {
+        console.error("Failed to fetch memory details", err);
+        setMemoryEditor((prev: any) => prev && prev.memoryId === memoryId ? { ...prev, loading: false } : prev);
+      }
+    } else {
+      setMemoryEditor({ mode: 'new', type: 'fact', title: '', body: '', evidence: '', metadataJson: '', targetAgentId: agentMemoryId, targetProjectId: '' });
+    }
   };
 
   const saveMemoryEditor = async () => {
@@ -3676,10 +3797,16 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
         <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 py-10 backdrop-blur-sm" onMouseDown={() => setMemoryEditor(null)}>
           <div data-debug-id="agent-memory-editor" className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-3xl border border-white/10 bg-[#101217] p-5 shadow-2xl shadow-black/50" onMouseDown={(event) => event.stopPropagation()}>
             <div className="mb-4 flex items-center justify-between gap-3"><h2 className="text-lg font-semibold text-zinc-100">{memoryEditor.mode === 'edit' ? 'Edit memory' : 'Add memory'}</h2><IconActionButton debugId="agent-memory-editor-close-btn" title="Close" icon="×" onClick={() => setMemoryEditor(null)} /></div>
-            <div className="grid gap-3 md:grid-cols-3"><label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Type<select data-debug-id="agent-memory-editor-type-select" value={memoryEditor.type} onChange={(event) => setMemoryEditor({ ...memoryEditor, type: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400">{['fact', 'habit', 'episode', 'expertise', 'skill', 'template'].map((type) => <option key={type} value={type}>{type}</option>)}</select></label><label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500 md:col-span-2">Title<input data-debug-id="agent-memory-editor-title-input" value={memoryEditor.title} onChange={(event) => setMemoryEditor({ ...memoryEditor, title: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400" /></label></div>
-            <label className="mt-3 block text-xs font-semibold uppercase tracking-wide text-zinc-500"><div className="mb-2 flex items-center justify-between gap-3"><span>Body</span><VimEditButton debugId="agent-memory-editor-body-vim-edit-btn" title={memoryEditor.mode === 'edit' ? 'Edit Memory Body' : 'New Memory Body'} value={memoryEditor.body} onApply={(value) => setMemoryEditor({ ...memoryEditor, body: value })} lang="markdown" /></div><textarea data-debug-id="agent-memory-editor-body-textarea" value={memoryEditor.body} onChange={(event) => setMemoryEditor({ ...memoryEditor, body: event.target.value })} rows={12} className="w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 font-mono text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400" placeholder="Memory body" /></label>
-            <label className="mt-3 block text-xs font-semibold uppercase tracking-wide text-zinc-500">Evidence<input data-debug-id="agent-memory-editor-evidence-input" value={memoryEditor.evidence} onChange={(event) => setMemoryEditor({ ...memoryEditor, evidence: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400" /></label>
-            <div className="mt-5 flex justify-end gap-2"><IconActionButton debugId="agent-memory-editor-cancel-btn" title="Cancel" icon="×" onClick={() => setMemoryEditor(null)} /><IconActionButton debugId="agent-memory-editor-save-btn" title="Save memory" icon="✓" onClick={saveMemoryEditor} disabled={memorySaving || !memoryEditor.title?.trim() || !memoryEditor.body?.trim()} tone="primary" /></div>
+            {memoryEditor.loading ? (
+              <div className="py-20 text-center text-sm text-zinc-500">Loading memory details…</div>
+            ) : (
+              <>
+                <div className="grid gap-3 md:grid-cols-3"><label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Type<select data-debug-id="agent-memory-editor-type-select" value={memoryEditor.type} onChange={(event) => setMemoryEditor({ ...memoryEditor, type: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400">{['fact', 'habit', 'episode', 'expertise', 'skill', 'template'].map((type) => <option key={type} value={type}>{type}</option>)}</select></label><label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500 md:col-span-2">Title<input data-debug-id="agent-memory-editor-title-input" value={memoryEditor.title} onChange={(event) => setMemoryEditor({ ...memoryEditor, title: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400" /></label></div>
+                <label className="mt-3 block text-xs font-semibold uppercase tracking-wide text-zinc-500"><div className="mb-2 flex items-center justify-between gap-3"><span>Body</span><VimEditButton debugId="agent-memory-editor-body-vim-edit-btn" title={memoryEditor.mode === 'edit' ? 'Edit Memory Body' : 'New Memory Body'} value={memoryEditor.body} onApply={(value) => setMemoryEditor({ ...memoryEditor, body: value })} lang="markdown" /></div><textarea data-debug-id="agent-memory-editor-body-textarea" value={memoryEditor.body} onChange={(event) => setMemoryEditor({ ...memoryEditor, body: event.target.value })} rows={12} className="w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 font-mono text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400" placeholder="Memory body" /></label>
+                <label className="mt-3 block text-xs font-semibold uppercase tracking-wide text-zinc-500">Evidence<input data-debug-id="agent-memory-editor-evidence-input" value={memoryEditor.evidence} onChange={(event) => setMemoryEditor({ ...memoryEditor, evidence: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400" /></label>
+              </>
+            )}
+            <div className="mt-5 flex justify-end gap-2"><IconActionButton debugId="agent-memory-editor-cancel-btn" title="Cancel" icon="×" onClick={() => setMemoryEditor(null)} /><IconActionButton debugId="agent-memory-editor-save-btn" title="Save memory" icon="✓" onClick={saveMemoryEditor} disabled={memorySaving || memoryEditor.loading || !memoryEditor.title?.trim() || !memoryEditor.body?.trim()} tone="primary" /></div>
           </div>
         </div>
       )}
@@ -5153,9 +5280,15 @@ function formatArtifactWhen(value: number) {
 
 function ChatArtifactsSidePanel({ debugPrefix, daemonUrl = '', clientToken = '', projectId = '', originKind = 'chat', originRef = '', onUploaded, onClose, embedded = false }: any) {
   const [activeArtifactId, setActiveArtifactId] = useState('');
-  const artifactsQuery = useListArtifactsQuery({ projectId, limit: 100 }, { skip: !projectId || !daemonUrl || !clientToken });
+  const [triggerFetchArtifactsPage, fetchArtifactsPageResult] = useLazyFetchArtifactsPageQuery();
+  const artifactsQuery = useListArtifactsQuery({ projectId, limit: 20 }, { skip: !projectId || !daemonUrl || !clientToken });
   const artifacts = (artifactsQuery.data?.artifacts || []) as ChatArtifactRow[];
-  const loading = artifactsQuery.isFetching;
+  const loading = artifactsQuery.isFetching || fetchArtifactsPageResult.isFetching;
+  const handleLoadMore = () => {
+    if (artifactsQuery.isFetching || fetchArtifactsPageResult.isFetching) return;
+    const nextOffset = artifacts.length;
+    triggerFetchArtifactsPage({ projectId, limit: 20, offset: nextOffset });
+  };
   const error = !projectId
     ? 'No project context for artifacts.'
     : !daemonUrl || !clientToken
@@ -5205,6 +5338,19 @@ function ChatArtifactsSidePanel({ debugPrefix, daemonUrl = '', clientToken = '',
               </button>
             );
           })}
+          {artifactsQuery.data?.has_more && (
+            <div className="pt-2 flex justify-center pb-1">
+              <button
+                type="button"
+                data-debug-id={`${debugPrefix}-artifacts-load-more-btn`}
+                onClick={handleLoadMore}
+                disabled={fetchArtifactsPageResult.isFetching}
+                className="w-full rounded-xl border border-white/10 py-2 text-xs text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 disabled:opacity-50"
+              >
+                {fetchArtifactsPageResult.isFetching ? 'Loading…' : 'Show more'}
+              </button>
+            </div>
+          )}
         </div>
       )}
       {activeArtifactId && daemonUrl && clientToken ? <ArtifactViewer artifactId={activeArtifactId} daemonUrl={daemonUrl} clientToken={clientToken} onClose={() => setActiveArtifactId('')} /> : null}
@@ -6078,7 +6224,7 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
   const conversationSummaryById = useSelector((state: any) => state.chat?.conversationSummaryById || {});
   const conversationSummariesQuery = useListConversationSummariesQuery(undefined, { skip: !session.clientToken, refetchOnMountOrArgChange: true });
   const effectiveConversationSummaryById = useMemo(
-    () => ({ ...(conversationSummaryById || {}), ...(conversationSummariesQuery.data || {}) }),
+    () => ({ ...(conversationSummaryById || {}), ...(conversationSummariesQuery.data?.summaries || {}) }),
     [conversationSummaryById, conversationSummariesQuery.data],
   );
   const taskTextArtifactUpload = useArtifactUpload({ projectId, originRef: chainId || '', originKind: 'clipboard_chain_text' });
@@ -6147,7 +6293,8 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
       <div className="mb-2 flex items-center justify-between text-xs uppercase tracking-wide text-zinc-500"><span>{title}</span><span>{tasks.length}</span></div>
       {localError && <div data-debug-id="task-list-action-error" className="mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{localError}</div>}
       <div className="space-y-2">
-        {tasks.length === 0 ? <div className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">{emptyText}</div> : tasks.map((task: any, index: number) => {
+        {tasks.length === 0 ? <div className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">{emptyText}</div> : tasks.map((taskFromList: any, index: number) => {
+          const task = tasksById?.[taskFromList.taskId] || taskFromList;
           const expanded = expandedTaskId === task.taskId;
           const perceived = perceivedTaskStatus(task, tasksById || {});
           const commentsOpen = Boolean(commentsOpenByTaskId[task.taskId]);
@@ -6310,7 +6457,7 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
 
 function AgentSideSheet({ agent, taskId = '', onClose }: any) {
   const taskQuery = useFetchTaskQuery({ taskId }, { skip: !taskId });
-  const taskCommentsQuery = useFetchTaskCommentsQuery({ taskId }, { skip: !taskId });
+  const taskCommentsQuery = useFetchTaskCommentsQuery({ taskId, limit: 100 }, { skip: !taskId });
   const task = taskQuery.data?.task || null;
   const recentComments = useMemo(() => {
     const comments = taskCommentsQuery.data?.comments || [];

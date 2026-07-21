@@ -139,9 +139,7 @@ echo "=== T1: chain planning guard ==="
 
 CHAIN1=$(ctl task-chains create --token "$TOKEN" \
   --project-id "$PROJ_ID" \
-  --kind "coding" \
   --status "planning" \
-  --no-scaffold \
   --no-vcs \
   --title "Smoke Chain $RUN_ID" \
   --description "Goal: verify task lifecycle
@@ -228,8 +226,8 @@ CMT_ID=$(field "$CMT" "comment_id")
 
 SHOW_CMT=$(ctl tasks show --token "$TOKEN" --task-id "$TASK_ID")
 assert_field "T3 tasks show has unresolved_comment_count=1" "$SHOW_CMT" "unresolved_comment_count" "1"
-assert_has "T3 tasks show has unresolved_comments list with cmt_id" "$SHOW_CMT" "\"comment_id\":\"$CMT_ID\""
-assert_has "T3 tasks show has unresolved_comments list with body" "$SHOW_CMT" "starting implementation"
+assert_has "T3 tasks show has comment_ids containing cmt_id" "$SHOW_CMT" "\"$CMT_ID\""
+
 
 TRY_DONE=$(ctl tasks done --token "$TOKEN" --task-id "$TASK_ID" --chain-id "$CHAIN_ID" --comment "done")
 assert_not_ok "T3 transition to done blocked by unresolved comments" "$TRY_DONE"
@@ -238,6 +236,8 @@ assert_has "T3 error mentions unresolved comments" "$TRY_DONE" "has 1 unresolved
 UNRESOLVED=$(ctl tasks comments --token "$TOKEN" --task-id "$TASK_ID" --unresolved)
 assert_ok  "T3 fetch unresolved ok"            "$UNRESOLVED"
 assert_has "T3 one unresolved comment present" "$UNRESOLVED" "\"comment_id\":\"$CMT_ID\""
+assert_has "T3 unresolved comment has body" "$UNRESOLVED" "starting implementation"
+
 assert_not_has "T3 comment not yet resolved"   "$UNRESOLVED" '"resolved":true'
 
 RESOLVE=$(ctl tasks comment-resolve --token "$TOKEN" \
@@ -326,9 +326,7 @@ echo "=== T6: ngtm vote → back to in_progress ==="
 
 CHAIN2=$(ctl task-chains create --token "$TOKEN" \
   --project-id "$PROJ_ID" \
-  --kind "coding" \
   --status "planning" \
-  --no-scaffold \
   --no-vcs \
   --title "ngtm Chain $RUN_ID" \
   --description "Goal: test ngtm rejection path" \
@@ -402,9 +400,7 @@ echo "=== T8: multi-active chains + assignee-slot scheduling ==="
 
 CHAIN3=$(ctl task-chains create --token "$TOKEN" \
   --project-id "$PROJ_ID" \
-  --kind "coding" \
   --status "planning" \
-  --no-scaffold \
   --no-vcs \
   --title "Parallel Chain $RUN_ID" \
   --description "Goal: verify same-project multi-active scheduling" \
@@ -461,9 +457,7 @@ P2=$(field "$PROJ2" "project_id")
 
 CHAIN4=$(ctl task-chains create --token "$TOKEN" \
   --project-id "$P2" \
-  --kind "coding" \
   --status "planning" \
-  --no-scaffold \
   --no-vcs \
   --title "Deps Chain $RUN_ID" \
   --description "Goal: verify dependency ordering" \
@@ -592,9 +586,10 @@ CTRL_COMMENT=$(printf "Comment with escape \x1b character")
 ADD_CTRL_CMT=$(ctl tasks comment --token "$TOKEN" --task-id "$T2" --chain-id "$C2" --body "$CTRL_COMMENT")
 assert_ok "T13 add control character comment" "$ADD_CTRL_CMT"
 
-SHOW_CTRL_TASK=$(ctl tasks show --token "$TOKEN" --task-id "$T2")
-assert_ok "T13 show task with control character" "$SHOW_CTRL_TASK"
-assert_has "T13 has escaped escape code in JSON string" "$SHOW_CTRL_TASK" '\u001b'
+SHOW_CTRL_COMMENTS=$(ctl tasks comments --token "$TOKEN" --task-id "$T2")
+assert_ok "T13 show comments with control character" "$SHOW_CTRL_COMMENTS"
+assert_has "T13 has escaped escape code in JSON string" "$SHOW_CTRL_COMMENTS" '\u001b'
+
 
 echo ""
 # ─────────────────────────────────────────────────────────────────────────────

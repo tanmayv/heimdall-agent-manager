@@ -5,9 +5,9 @@ import sys
 import socket
 import time
 
-DAEMON_URL = "http://127.0.0.1:49325"
+DAEMON_URL = "http://127.0.0.1:49328"
 HOST = "127.0.0.1"
-PORT = 49325
+PORT = 49328
 
 def request_post(path, data):
     req = urllib.request.Request(
@@ -130,9 +130,7 @@ def main():
     chain_res = request_post("/task-chains/create", {
         "agent_token": agent_token,
         "project_id": project_id,
-        "kind": "coding",
         "status": "planning",
-        "no_scaffold": True,
         "title": "Queue Test Chain",
         "description": "test queueing",
         "coordinator_agent_instance_id": "coordinator-agent@default"

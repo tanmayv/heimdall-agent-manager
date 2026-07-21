@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useSelector } from 'react-redux';
-import { useListAgentsQuery } from '../api/endpoints/agents';
+import { useListAgentsQuery, useLazyFetchAgentsPageQuery } from '../api/endpoints/agents';
 import {
   AgentEntityType,
   AgentSelection,
@@ -99,7 +99,13 @@ export default function AgentPickerV2({
   const session = useSelector((state: any) => state.chat?.session || {});
   const conversationSummaryById = useSelector((state: any) => state.chat?.conversationSummaryById || {});
   const agentsQuery = useListAgentsQuery(undefined, { skip: !session?.daemonUrl });
+  const [triggerFetchAgentsPage, fetchAgentsPageResult] = useLazyFetchAgentsPageQuery();
   const agents: any[] = agentsQuery.data?.agents || [];
+  const handleLoadMore = () => {
+    if (agentsQuery.isFetching || fetchAgentsPageResult.isFetching) return;
+    const nextOffset = agents.length;
+    triggerFetchAgentsPage({ limit: 20, offset: nextOffset });
+  };
   const identities: any[] = agentsQuery.data?.identities || [];
 
   const wantId = entityTypes.includes('agent_id');
@@ -389,6 +395,19 @@ export default function AgentPickerV2({
                 <div className="space-y-2">{grouped.instRows.map(renderRow)}</div>
               </div>
             ) : null}
+            {wantInstance && agentsQuery.data?.hasMore && (
+              <div className="pt-2 flex justify-center">
+                <button
+                  type="button"
+                  data-debug-id={`${debugId}-load-more-btn`}
+                  onClick={handleLoadMore}
+                  disabled={fetchAgentsPageResult.isFetching}
+                  className="rounded-lg border border-white/10 px-3 py-1.5 text-xs text-zinc-400 hover:bg-[#141414] hover:text-zinc-100 disabled:opacity-50"
+                >
+                  {fetchAgentsPageResult.isFetching ? 'Loading…' : 'Show more instances'}
+                </button>
+              </div>
+            )}
           </>
         )}
       </div>

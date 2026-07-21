@@ -149,22 +149,32 @@ export async function listKnownAgentsCatalog({
   projectId = '',
   includeIdentities = false,
   includeConversations = false,
+  limit,
+  offset,
 }: {
   daemonUrl: string;
   projectId?: string;
   includeIdentities?: boolean;
   includeConversations?: boolean;
+  limit?: number;
+  offset?: number;
 }) {
   const params = new URLSearchParams();
   if (projectId) params.set('project_id', projectId);
   if (includeIdentities) params.set('include_identities', 'true');
   if (includeConversations) params.set('include_conversations', 'true');
+  if (limit !== undefined) params.set('limit', String(limit));
+  if (offset !== undefined) params.set('offset', String(offset));
   const query = params.toString();
   const path = query ? `/agents?${query}` : '/agents';
   const data = await requestJson(joinUrl(daemonUrl, path));
   return {
     agents: data.agents ?? data.records ?? [],
     identities: data.identities ?? [],
+    total: Number(data.total || 0),
+    limit: Number(data.limit || 0),
+    offset: Number(data.offset || 0),
+    hasMore: Boolean(data.has_more || data.hasMore),
   };
 }
 
@@ -260,16 +270,14 @@ export async function remapRemoteProxy({ daemonUrl, clientToken, localAgentId, r
 }
 
 export async function listKnownAgentsPage({ daemonUrl, projectId = '', limit = 20, offset = 0 }: { daemonUrl: string; projectId?: string; limit?: number; offset?: number }) {
-  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-  if (projectId) params.set('project_id', projectId);
-  const data = await requestJson(joinUrl(daemonUrl, `/agents?${params.toString()}`));
+  const data = await listKnownAgentsCatalog({ daemonUrl, projectId, limit, offset });
   return {
-    agents: data.agents ?? data.records ?? [],
-    limit: Number(data.limit || limit),
-    offset: Number(data.offset || offset),
-    nextOffset: Number(data.next_offset || data.nextOffset || (offset + ((data.agents ?? data.records ?? []).length))),
-    hasMore: Boolean(data.has_more || data.hasMore),
-    total: Number(data.total || 0),
+    agents: data.agents,
+    limit: data.limit,
+    offset: data.offset,
+    nextOffset: data.offset + data.agents.length,
+    hasMore: data.hasMore,
+    total: data.total,
   };
 }
 
@@ -388,8 +396,14 @@ export async function disassociateAgentFromProject({ daemonUrl, agentRecordId, a
 // Daemon-authoritative conversation list for the sidebar: rows are returned
 // most-recent-first with persisted titles and last_message_unix_ms. Used only
 // on explicit triggers (open/create/send/refresh) — never passive events.
-export async function listConversations({ daemonUrl, clientInstanceId, clientToken }: UserRpcRequest) {
-  const data = await userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action: 'list_chats' });
+export async function listConversations({ daemonUrl, clientInstanceId, clientToken, limit, cursor }: UserRpcRequest & { limit?: number; cursor?: string }) {
+  const data = await userRpcRequest({
+    daemonUrl,
+    clientInstanceId,
+    clientToken,
+    action: 'list_chats',
+    body: { limit, cursor }
+  });
   return { ...data, chats: data.chats ?? [] };
 }
 
@@ -448,7 +462,7 @@ export async function markChatRead({ daemonUrl, clientInstanceId, clientToken, a
   });
 }
 
-export async function listTaskChains({ daemonUrl, clientToken, createdAfter, createdBefore, limit = 1000, offset = 0 }: Omit<UserRpcRequest, 'clientInstanceId'> & { createdAfter?: number; createdBefore?: number; limit?: number; offset?: number }) {
+export async function listTaskChains({ daemonUrl, clientToken, createdAfter, createdBefore, limit = 20, offset = 0 }: Omit<UserRpcRequest, 'clientInstanceId'> & { createdAfter?: number; createdBefore?: number; limit?: number; offset?: number }) {
   let path = `/task-chains?limit=${limit}&offset=${offset}`;
   if (createdAfter && createdAfter > 0) path += `&created_after=${createdAfter}`;
   if (createdBefore && createdBefore > 0) path += `&created_before=${createdBefore}`;
@@ -542,8 +556,9 @@ export async function fetchWorkspaceDiff({ daemonUrl, clientToken, chainId, file
   return requestJson(joinUrl(daemonUrl, path));
 }
 
-export async function listChainTasks({ daemonUrl, clientToken, chainId }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId: string }) {
-  const path = `/task-chains/${encodeURIComponent(chainId)}/tasks`;
+export async function listChainTasks({ daemonUrl, clientToken, chainId, limit = 20, offset = 0 }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId: string; limit?: number; offset?: number }) {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const path = `/task-chains/${encodeURIComponent(chainId)}/tasks?${params.toString()}`;
   return requestJson(joinUrl(daemonUrl, path), {
     method: 'GET',
     headers: { 'Authorization': `Bearer ${clientToken}` }
@@ -558,8 +573,17 @@ export async function fetchTask({ daemonUrl, clientToken, taskId }: Omit<UserRpc
   });
 }
 
-export async function fetchTaskComments({ daemonUrl, clientToken, taskId, unresolved = false }: Omit<UserRpcRequest, 'clientInstanceId'> & { taskId: string; unresolved?: boolean }) {
-  const path = `/tasks/${encodeURIComponent(taskId)}/comments?unresolved=${unresolved}`;
+export async function fetchTaskComments({ daemonUrl, clientToken, taskId, unresolved = false, limit = 20, offset = 0 }: Omit<UserRpcRequest, 'clientInstanceId'> & { taskId: string; unresolved?: boolean; limit?: number; offset?: number }) {
+  const params = new URLSearchParams({ unresolved: String(unresolved), limit: String(limit), offset: String(offset) });
+  const path = `/tasks/${encodeURIComponent(taskId)}/comments?${params.toString()}`;
+  return requestJson(joinUrl(daemonUrl, path), {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${clientToken}` }
+  });
+}
+
+export async function fetchTaskComment({ daemonUrl, clientToken, taskId, commentId }: Omit<UserRpcRequest, 'clientInstanceId'> & { taskId: string; commentId: string }) {
+  const path = `/tasks/${encodeURIComponent(taskId)}/comments/${encodeURIComponent(commentId)}`;
   return requestJson(joinUrl(daemonUrl, path), {
     method: 'GET',
     headers: { 'Authorization': `Bearer ${clientToken}` }
@@ -604,8 +628,8 @@ export function artifactContentUrl({ daemonUrl, clientToken, artifactId, version
   return joinUrl(daemonUrl, `/artifacts/${encodeURIComponent(artifactId)}/content?${params.toString()}`);
 }
 
-export async function listArtifacts({ daemonUrl, clientToken, projectId = '', creatorId = '', originRef = '', includeDeleted = false, limit = 100 }: { daemonUrl: string; clientToken: string; projectId?: string; creatorId?: string; originRef?: string; includeDeleted?: boolean; limit?: number }) {
-  const params = new URLSearchParams({ limit: String(limit) });
+export async function listArtifacts({ daemonUrl, clientToken, projectId = '', creatorId = '', originRef = '', includeDeleted = false, limit = 100, offset = 0 }: { daemonUrl: string; clientToken: string; projectId?: string; creatorId?: string; originRef?: string; includeDeleted?: boolean; limit?: number; offset?: number }) {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (projectId) params.set('project_id', projectId);
   if (creatorId) params.set('creator_id', creatorId);
   if (originRef) params.set('origin_ref', originRef);

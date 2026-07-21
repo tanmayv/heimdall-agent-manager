@@ -2,7 +2,7 @@ import urllib.request
 import json
 import sys
 
-DAEMON_URL = "http://127.0.0.1:49325"
+DAEMON_URL = "http://127.0.0.1:49328"
 
 
 def request_post(path, data):
@@ -64,9 +64,7 @@ def main():
 
         chain_id = request_post("/task-chains/create", {
             "agent_token": agent_token,
-            "kind": "solo",
             "wants_vcs": False,
-            "no_scaffold": True,
             "title": "Badge Test Chain",
             "coordinator_agent_instance_id": "test-coder-badge-agent@default"
         })["chain_id"]

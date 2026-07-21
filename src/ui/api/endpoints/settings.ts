@@ -43,6 +43,14 @@ export const settingsApi = heimdallApi.injectEndpoints({
       }),
       invalidatesTags: [{ type: 'Preferences' as const, id: 'AGENT_DEFAULTS' }, { type: 'Agents' as const, id: 'LIST' }],
     }),
+    fetchAgentTemplate: build.query<any, { templateId: string }>({
+      queryFn: withSessionQuery(async ({ templateId }, { session }) => {
+        if (!session?.daemonUrl || !templateId) return { template: null };
+        const data = await daemonApi.showAgentTemplate({ daemonUrl: session.daemonUrl, templateId });
+        return { template: data?.template || null };
+      }),
+      providesTags: (_result, _error, { templateId }) => [{ type: 'AgentTemplate' as const, id: templateId }],
+    }),
     fetchSettingsCatalog: build.query<any, { scope?: string } | void>({
       queryFn: withSessionQuery(async (_arg, { session }) => {
         if (!session?.daemonUrl) return { templates: [], providers: [] };
@@ -63,4 +71,6 @@ export const {
   useFetchAgentDefaultsQuery,
   useSaveAgentDefaultMutation,
   useFetchSettingsCatalogQuery,
+  useFetchAgentTemplateQuery,
+  useLazyFetchAgentTemplateQuery,
 } = settingsApi;

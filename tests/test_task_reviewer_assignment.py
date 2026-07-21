@@ -2,7 +2,7 @@ import urllib.request
 import json
 import sys
 
-DAEMON_URL = "http://127.0.0.1:49325"
+DAEMON_URL = "http://127.0.0.1:49328"
 
 
 def request_post(path, data):
@@ -56,9 +56,7 @@ def main():
     try:
         chain_res1 = request_post("/task-chains/create", {
             "agent_token": agent_token,
-            "kind": "coding",
             "wants_vcs": False,
-            "no_scaffold": True,
             "title": "Chain with no default reviewer",
             "coordinator_agent_instance_id": "test-coder-reviewer-agent@default"
         })
@@ -79,9 +77,7 @@ def main():
     try:
         chain_res2 = request_post("/task-chains/create", {
             "agent_token": agent_token,
-            "kind": "coding",
             "wants_vcs": False,
-            "no_scaffold": True,
             "title": "Chain with default reviewer",
             "coordinator_agent_instance_id": "test-coder-reviewer-agent@default",
             "default_reviewer_agent_instance_id": "default-reviewer@default"
@@ -101,12 +97,6 @@ def main():
 
     print("[*] Test 3: Specific reviewer assignment & removal")
     try:
-        request_post("/teams/add-member", {
-            "agent_token": agent_token,
-            "team_id": chain_res2["team_id"],
-            "role_key": "specialist",
-            "agent_instance_id": "specific-reviewer@default"
-        })
 
         task_id3 = request_post("/tasks/create", {
             "agent_token": agent_token,

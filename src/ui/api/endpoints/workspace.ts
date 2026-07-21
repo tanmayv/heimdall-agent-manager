@@ -2,11 +2,10 @@ import * as daemonApi from '../daemonApi';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
 
 export function normalizeChain(chain: any) {
-  return {
+  const result: any = {
     id: chain.chain_id || chain.chainId || chain.id || '',
     chainId: chain.chain_id || chain.chainId || chain.id || '',
     title: chain.title || '',
-    description: chain.description || '',
     status: chain.status || 'active',
     projectId: chain.project_id || chain.projectId || '',
     vcsWorkspaceId: chain.vcs_workspace_id || chain.vcsWorkspaceId || '',
@@ -14,13 +13,20 @@ export function normalizeChain(chain: any) {
     repoDiffSupported: Boolean(chain.repo_diff_supported || chain.repoDiffSupported),
     coordinatorAgentInstanceId: chain.coordinator_agent_instance_id || chain.coordinatorAgentInstanceId || '',
     defaultReviewerAgentInstanceId: chain.default_reviewer_agent_instance_id || chain.defaultReviewerAgentInstanceId || '',
-    finalSummary: chain.final_summary || chain.finalSummary || '',
     createdAtUnixMs: Number(chain.created_at_unix_ms || chain.createdAtUnixMs || 0),
     completedAtUnixMs: Number(chain.completed_at_unix_ms || chain.completedAtUnixMs || 0),
     archivePending: Boolean(chain.archive_pending || chain.archivePending),
     archived: Boolean(chain.archived),
     evaluation: chain.evaluation || 'unreviewed',
   };
+  if (chain.description !== undefined) {
+    result.description = chain.description;
+  }
+  const summary = chain.final_summary !== undefined ? chain.final_summary : chain.finalSummary;
+  if (summary !== undefined) {
+    result.finalSummary = summary;
+  }
+  return result;
 }
 
 function auth(session: any) {
@@ -29,21 +35,68 @@ function auth(session: any) {
 
 export const workspaceApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
-    listChains: build.query<any, { createdAfter?: number; createdBefore?: number } | void>({
+    listChains: build.query<any, { createdAfter?: number; createdBefore?: number; limit?: number; offset?: number } | void>({
       queryFn: withSessionQuery(async (arg, { session }) => {
-        if (!session?.clientToken) return { chains: [] };
+        if (!session?.clientToken) return { chains: [], totalCount: 0, hasMore: false, offset: 0 };
         const args = (arg && typeof arg === 'object') ? arg : {};
+        const limit = args.limit ?? 20;
+        const offset = args.offset ?? 0;
         const data = await daemonApi.listTaskChains({
           ...auth(session),
           createdAfter: args.createdAfter,
           createdBefore: args.createdBefore,
+          limit,
+          offset,
         });
-        return { chains: (data.chains || []).map(normalizeChain) };
+        const chains = (data.chains || []).map(normalizeChain);
+        const totalCount = data.total_count || 0;
+        const hasMore = offset + chains.length < totalCount;
+        return { chains, totalCount, hasMore, offset };
       }),
-      providesTags: (result) => [
-        { type: 'ChainList' as const, id: 'ALL' },
+      providesTags: (result, _error, arg) => [
+        { type: 'ChainList' as const, id: JSON.stringify(arg || {}) },
         ...((result?.chains || []).map((chain: any) => ({ type: 'Chain' as const, id: chain.chainId })).filter((tag: any) => Boolean(tag.id))),
       ],
+    }),
+    fetchChainsPage: build.query<any, { createdAfter?: number; createdBefore?: number; limit: number; offset: number }>({
+      queryFn: withSessionQuery(async (arg, { session }) => {
+        if (!session?.clientToken) return { chains: [], totalCount: 0, hasMore: false, offset: 0 };
+        const data = await daemonApi.listTaskChains({
+          ...auth(session),
+          createdAfter: arg.createdAfter,
+          createdBefore: arg.createdBefore,
+          limit: arg.limit,
+          offset: arg.offset,
+        });
+        const chains = (data.chains || []).map(normalizeChain);
+        const totalCount = data.total_count || 0;
+        const hasMore = arg.offset + chains.length < totalCount;
+        return { chains, totalCount, hasMore, offset: arg.offset };
+      }),
+      async onQueryStarted(arg, { dispatch, queryFulfilled }) {
+        try {
+          const { data } = await queryFulfilled;
+          const baseArgs = {} as any;
+          if (arg.createdAfter !== undefined) baseArgs.createdAfter = arg.createdAfter;
+          if (arg.createdBefore !== undefined) baseArgs.createdBefore = arg.createdBefore;
+          dispatch(
+            workspaceApi.util.updateQueryData('listChains', baseArgs, (draft: any) => {
+              if (!draft) return;
+              const existingIds = new Set(draft.chains.map((c: any) => c.chainId));
+              for (const chain of data.chains) {
+                if (!existingIds.has(chain.chainId)) {
+                  draft.chains.push(chain);
+                }
+              }
+              draft.totalCount = data.totalCount;
+              draft.hasMore = data.hasMore;
+              draft.offset = data.offset;
+            })
+          );
+        } catch (_error) {
+          // noop
+        }
+      },
     }),
     fetchChain: build.query<any, { chainId: string }>({
       queryFn: withSessionQuery(async ({ chainId }, { session }) => {
@@ -109,6 +162,8 @@ export const workspaceApi = heimdallApi.injectEndpoints({
 
 export const {
   useListChainsQuery,
+  useFetchChainsPageQuery,
+  useLazyFetchChainsPageQuery,
   useFetchChainQuery,
   useFocusChainMutation,
   useUpdateChainMutation,

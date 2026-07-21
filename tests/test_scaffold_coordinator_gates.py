@@ -25,11 +25,14 @@ def bin_path(repo_dir, preferred, fallback, binary):
     return os.path.join(repo_dir, fallback, "bin", binary)
 
 
-def request_post(path, data, expect_error=False):
+def request_post(path, data, expect_error=False, headers=None):
+    h = {"Content-Type": "application/json"}
+    if headers:
+        h.update(headers)
     req = urllib.request.Request(
         f"{DAEMON_URL}{path}",
         data=json.dumps(data).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=h,
         method="POST",
     )
     try:
@@ -39,6 +42,23 @@ def request_post(path, data, expect_error=False):
         body = exc.read().decode("utf-8")
         if expect_error:
             return exc.code, json.loads(body)
+        raise AssertionError(f"HTTP {exc.code}: {body}") from exc
+
+
+def request_get(path, headers=None):
+    h = {}
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(
+        f"{DAEMON_URL}{path}",
+        headers=h,
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as res:
+            return res.status, json.loads(res.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8")
         raise AssertionError(f"HTTP {exc.code}: {body}") from exc
 
 
@@ -68,10 +88,6 @@ def wait_for_daemon():
             pass
         time.sleep(0.25)
     raise RuntimeError("daemon did not become healthy")
-
-
-def chain_tasks(state, chain_id):
-    return [task for task in state.get("tasks", []) if task.get("chain_id") == chain_id]
 
 
 def required_reviewers(task):
@@ -137,8 +153,6 @@ ham_ctl_bin = "{ctl_bin}"
             "client_instance_id": CLIENT_ID,
             "client_token": user_token,
             "project_id": project_id,
-            "kind": "coding",
-            "scaffold": "feature",
             "title": "Coordinator force regression",
             "description": "Plan keeps reviewer gate; coordinator can explicitly force.",
             "coordinator_agent_instance_id": COORDINATOR_ID,
@@ -148,13 +162,67 @@ ham_ctl_bin = "{ctl_bin}"
         if not chain_id:
             raise AssertionError(f"task_chain_create failed: {chain_res}")
 
-        _, state = request_post("/user-rpc", {"action": "list_tasks", "client_instance_id": CLIENT_ID, "client_token": user_token})
-        tasks = chain_tasks(state, chain_id)
-        by_title = {task.get("title", "").split(":", 1)[0].lower(): task for task in tasks}
+        # Manually create plan and implement tasks
+        _, plan_res = request_post("/user-rpc", {
+            "action": "task_create",
+            "client_instance_id": CLIENT_ID,
+            "client_token": user_token,
+            "chain_id": chain_id,
+            "project_id": project_id,
+            "title": "plan",
+            "description": "Plan task",
+            "assignee_agent_instance_id": COORDINATOR_ID,
+            "status": "in_progress",
+        })
+        plan_id = plan_res.get("task_id")
+        if not plan_id:
+             raise AssertionError(f"failed to create plan task: {plan_res}")
+        
+        request_post("/user-rpc", {
+            "action": "task_participant",
+            "client_instance_id": CLIENT_ID,
+            "client_token": user_token,
+            "task_id": plan_id,
+            "chain_id": chain_id,
+            "agent_instance_id": NON_COORDINATOR_ID,
+            "role": "lgtm_required",
+        })
+
+        _, impl_res = request_post("/user-rpc", {
+            "action": "task_create",
+            "client_instance_id": CLIENT_ID,
+            "client_token": user_token,
+            "chain_id": chain_id,
+            "project_id": project_id,
+            "title": "implement",
+            "description": "Implement task",
+            "assignee_agent_instance_id": NON_COORDINATOR_ID,
+            "depends_on": plan_id,
+            "status": "queued",
+        })
+        impl_id = impl_res.get("task_id")
+        if not impl_id:
+             raise AssertionError(f"failed to create implement task: {impl_res}")
+
+        request_post("/user-rpc", {
+            "action": "task_participant",
+            "client_instance_id": CLIENT_ID,
+            "client_token": user_token,
+            "task_id": impl_id,
+            "chain_id": chain_id,
+            "agent_instance_id": COORDINATOR_ID,
+            "role": "lgtm_required",
+        })
+
+        status, tasks_res = request_get(f"/tasks?chain_id={chain_id}", headers={"Authorization": f"Bearer {user_token}"})
+        if status != 200:
+             raise AssertionError(f"failed to get tasks: {status} {tasks_res}")
+        tasks = tasks_res.get("tasks", [])
+        by_title = {task.get("title", "").lower(): task for task in tasks}
         plan = by_title.get("plan")
         implement = by_title.get("implement")
         if not plan or not implement:
-            raise AssertionError(f"expected plan and implement scaffold tasks, got: {tasks}")
+            raise AssertionError(f"expected plan and implement tasks, got: {tasks}")
         plan_reviewers = required_reviewers(plan)
         if not plan_reviewers:
             raise AssertionError(f"Plan must retain an explicit required reviewer gate: {plan}")
@@ -196,8 +264,10 @@ ham_ctl_bin = "{ctl_bin}"
         if not forced.get("ok") or forced.get("status") != "approved":
             raise AssertionError(f"coordinator force done failed: {forced}")
 
-        _, state_after = request_post("/user-rpc", {"action": "list_tasks", "client_instance_id": CLIENT_ID, "client_token": user_token})
-        tasks_after = {task.get("task_id"): task for task in chain_tasks(state_after, chain_id)}
+        status, tasks_after_res = request_get(f"/tasks?chain_id={chain_id}", headers={"Authorization": f"Bearer {user_token}"})
+        if status != 200:
+             raise AssertionError(f"failed to get tasks after: {status} {tasks_after_res}")
+        tasks_after = {task.get("task_id"): task for task in tasks_after_res.get("tasks", [])}
         plan_after = tasks_after[plan["task_id"]]
         implement_after = tasks_after[implement["task_id"]]
         if plan_after.get("status") != "approved":
