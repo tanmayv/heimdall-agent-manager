@@ -129,12 +129,19 @@ bridge_send :: proc(dest_daemon_id, route_kind, payload, idempotency_key: string
 bridge_request :: proc(dest_daemon_id, method, path, body, idempotency_key: string, timeout_ms: int) -> (http.Response, bool) {
 	if !bridge_client_enabled() do return http.Response{}, false
 	if !bridge_client_contract_routes_covered() do return http.Response{}, false
+
+	actual_path := path
+	if rec, found := peer_link_find_by_daemon_id(dest_daemon_id); found {
+		sep := "?" if strings.index_byte(path, '?') < 0 else "&"
+		actual_path = fmt.tprintf("%s%speer_token=%s&peer_daemon_id=%s", path, sep, rec.peer_token, server_daemon_id)
+	}
+
 	b := strings.builder_make()
 	strings.write_string(&b, `{"contract_version":`); strings.write_string(&b, fmt.tprintf("%d", contracts.BRIDGE_LOOPBACK_CONTRACT_VERSION))
 	strings.write_string(&b, `,"src_daemon_id":"`); json_write_string(&b, server_daemon_id)
 	strings.write_string(&b, `","dest_daemon_id":"`); json_write_string(&b, dest_daemon_id)
 	strings.write_string(&b, `","method":"`); json_write_string(&b, method)
-	strings.write_string(&b, `","path":"`); json_write_string(&b, path)
+	strings.write_string(&b, `","path":"`); json_write_string(&b, actual_path)
 	strings.write_string(&b, `","idempotency_key":"`); json_write_string(&b, idempotency_key)
 	strings.write_string(&b, `","body":"`); json_write_string(&b, body)
 	strings.write_string(&b, `","timeout_ms":`); strings.write_string(&b, fmt.tprintf("%d", timeout_ms))
@@ -220,6 +227,72 @@ federation_forward_start :: proc(peer_id, remote_agent_instance_id, provider_pro
 		return false, 503, `{"ok":false,"message":"peer unreachable"}`
 	}
 	return resp.status == 200, resp.status, strings.clone(resp.body)
+}
+
+// federation_forward_subscribe registers this daemon's remote_proxy as a status
+// subscriber on the owning peer and asks it to push one current-status snapshot
+// back, without starting or stopping the real agent. This is the bind-time
+// handshake that makes proxies for already-running remote agents report their
+// live status immediately instead of sitting at an empty status until the next
+// origin-side transition happens to be pushed. Best-effort: returns ok=false on
+// unreachable peers so callers can ignore the result during passive binds.
+federation_forward_subscribe :: proc(peer_id, remote_agent_instance_id, proxy_agent_instance_id: string) -> (bool, int, string) {
+	if peer_id == "" || remote_agent_instance_id == "" || proxy_agent_instance_id == "" {
+		return false, 400, `{"ok":false,"message":"peer_id, remote_agent_instance_id and proxy_agent_instance_id required"}`
+	}
+	_, dest_daemon_id, status, ok := federation_direct_peer_lookup(peer_id, "")
+	if !ok do return false, 404, `{"ok":false,"message":"peer not found"}`
+	if status != PEER_STATUS_LINKED {
+		return false, 503, `{"ok":false,"message":"peer unreachable"}`
+	}
+	if dest_daemon_id == "" {
+		return false, 503, `{"ok":false,"message":"peer unreachable"}`
+	}
+	b := strings.builder_make()
+	strings.write_string(&b, `{"agent_instance_id":"`)
+	json_write_string(&b, remote_agent_instance_id)
+	strings.write_string(&b, `","proxy_agent_instance_id":"`)
+	json_write_string(&b, proxy_agent_instance_id)
+	strings.write_string(&b, `"}`)
+	payload := strings.to_string(b)
+	resp, forward_ok := bridge_request(dest_daemon_id, contracts.BRIDGE_HTTP_METHOD_POST, contracts.ROUTE_FEDERATION_SUBSCRIBE, payload, federation_idempotency_key("subscribe", server_daemon_id, proxy_agent_instance_id), FEDERATION_HTTP_TIMEOUT_MS)
+	if !forward_ok {
+		return false, 503, `{"ok":false,"message":"peer unreachable"}`
+	}
+	return resp.status == 200, resp.status, strings.clone(resp.body)
+}
+
+// federation_resubscribe_proxies_for_peer re-issues the subscribe handshake for
+// every local remote_proxy whose owning peer is `peer_id`. Called on peer link
+// (re)connect so that if the ORIGIN daemon restarted (wiping its in-memory
+// subscriber index) each proxy re-registers and pulls a fresh status snapshot.
+// Best-effort and idempotent on the origin. Returns the number of subscribes
+// attempted. Snapshots the target ids first so the send loop does not hold any
+// implicit store invariants across bridge I/O.
+federation_resubscribe_proxies_for_peer :: proc(peer_id: string) -> int {
+	if peer_id == "" do return 0
+	Target :: struct { remote_agent_instance_id, proxy_agent_instance_id: string }
+	targets := make([dynamic]Target)
+	defer {
+		for t in targets { delete(t.remote_agent_instance_id); delete(t.proxy_agent_instance_id) }
+		delete(targets)
+	}
+	for i in 0..<agent_instance_record_count {
+		rec := agent_instance_records[i]
+		if !agent_record_is_remote_proxy(rec) do continue
+		if rec.remote_peer_id != peer_id do continue
+		if rec.remote_agent_instance_id == "" || rec.agent_instance_id == "" do continue
+		append(&targets, Target{
+			remote_agent_instance_id = strings.clone(rec.remote_agent_instance_id),
+			proxy_agent_instance_id = strings.clone(rec.agent_instance_id),
+		})
+	}
+	attempted := 0
+	for t in targets {
+		_, _, _ = federation_forward_subscribe(peer_id, t.remote_agent_instance_id, t.proxy_agent_instance_id)
+		attempted += 1
+	}
+	return attempted
 }
 
 // federation_forward_stop asks the owning peer to stop the real agent that a
@@ -1700,6 +1773,47 @@ handle_post_federation_stop :: proc(client: net.TCP_Socket, body: string, ctx: ^
 		return
 	}
 	write_response(client, 200, "OK", msg)
+}
+
+// handle_post_federation_subscribe registers the requesting peer's remote_proxy
+// as a status subscriber for a REAL local agent and immediately pushes one
+// current-status snapshot, WITHOUT starting or stopping it. This is the bind-time
+// handshake for proxies attached to already-running remote agents: without it the
+// proxy never becomes a subscriber and never receives an initial status, so it
+// renders offline until the next unrelated transition happens to be pushed.
+// Authenticated by the peer link; the target must be a genuine local agent (not
+// itself a remote_proxy) so a peer cannot ask us to relay a subscribe onward.
+handle_post_federation_subscribe :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
+	peer_id, _, ok := federation_peer_id_for_context(ctx)
+	if !ok {
+		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"peer not configured or token mismatch"}`)
+		return
+	}
+	agent_instance_id := extract_json_string(body, "agent_instance_id", "")
+	if agent_instance_id == "" {
+		write_response(client, 400, "Bad Request", `{"ok":false,"message":"agent_instance_id required"}`)
+		return
+	}
+	proxy_agent_instance_id := extract_json_string(body, "proxy_agent_instance_id", "")
+	if proxy_agent_instance_id == "" {
+		write_response(client, 400, "Bad Request", `{"ok":false,"message":"proxy_agent_instance_id required"}`)
+		return
+	}
+	idx := agent_record_index_by_instance(agent_instance_id)
+	if idx < 0 {
+		write_response(client, 404, "Not Found", `{"ok":false,"message":"target agent not found on owner daemon"}`)
+		return
+	}
+	if agent_record_is_remote_proxy(agent_instance_records[idx]) {
+		write_response(client, 400, "Bad Request", `{"ok":false,"message":"target is itself a remote proxy; refusing to relay subscribe"}`)
+		return
+	}
+	agent_status_subscriber_register(peer_id, proxy_agent_instance_id, agent_instance_id)
+	// Force a one-shot snapshot: reset this subscriber's last-sent status so the
+	// propagate call below emits the current status even though nothing changed.
+	federation_agent_status_reset_last_sent(peer_id, proxy_agent_instance_id, agent_instance_id)
+	_ = federation_propagate_agent_status(agent_instance_id, "federation_subscribe")
+	write_response(client, 200, "OK", `{"ok":true,"accepted":true}`)
 }
 
 handle_post_federation_callback :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {

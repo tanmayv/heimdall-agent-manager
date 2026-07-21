@@ -163,6 +163,23 @@ agent_status_subscriber_register :: proc(peer_id, proxy_agent_instance_id, local
 	})
 }
 
+// federation_agent_status_reset_last_sent clears the last-sent status for one
+// specific (peer, proxy, local) subscriber so the next propagate emits a snapshot
+// even when the derived status is unchanged. Used by the bind-time subscribe
+// handshake to force a one-shot current-status push. No-op if no match.
+federation_agent_status_reset_last_sent :: proc(peer_id, proxy_agent_instance_id, local_agent_instance_id: string) {
+	if peer_id == "" || proxy_agent_instance_id == "" || local_agent_instance_id == "" do return
+	sync.mutex_lock(&agent_status_subscriber_mutex)
+	defer sync.mutex_unlock(&agent_status_subscriber_mutex)
+	for &sub in agent_status_subscribers {
+		if sub.peer_id == peer_id && sub.proxy_agent_instance_id == proxy_agent_instance_id && sub.local_agent_instance_id == local_agent_instance_id {
+			if sub.last_sent_status != "" { delete(sub.last_sent_status); sub.last_sent_status = "" }
+			sub.last_sent_unix_ms = 0
+			return
+		}
+	}
+}
+
 federation_agent_runtime_provider_tier :: proc(local_agent_instance_id: string) -> (provider_profile, model_tier, project_id: string) {
 	if idx := registry_find_agent(local_agent_instance_id); idx >= 0 {
 		agent := agents[idx]

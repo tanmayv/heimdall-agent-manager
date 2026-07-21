@@ -355,6 +355,11 @@ reachable_daemon_apply_body :: proc(body: string, emit_event: bool) -> int {
 		// On peer link (re)connect, push one current-status snapshot per proxy
 		// subscriber so the peer re-syncs after any missed transitions (B1).
 		_ = federation_agent_status_resync_peer(replay_peer_ids[i])
+		// Also re-subscribe from the proxy side: if the ORIGIN daemon restarted it
+		// lost its in-memory subscriber index, so a resync alone has nothing to
+		// send. Re-issuing subscribe re-registers each local proxy and pulls a
+		// fresh snapshot so already-running remote agents report live again.
+		_ = federation_resubscribe_proxies_for_peer(replay_peer_ids[i])
 	}
 	if emit_event && changed_count > 0 do federation_reachability_emit_event(strings.to_string(changed_ids), changed_count)
 	return changed_count
@@ -920,11 +925,13 @@ federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_ins
 					if idx := agent_record_index(existing.agent_record_id); idx >= 0 {
 						updated := agent_instance_records[idx]
 						if started_from_agent_id do _, _, _ = federation_forward_start(updated.remote_peer_id, updated.remote_agent_instance_id, "", "", updated.agent_instance_id)
+						else do _, _, _ = federation_forward_subscribe(updated.remote_peer_id, updated.remote_agent_instance_id, updated.agent_instance_id)
 						return updated, true, ""
 					}
 				}
 			}
 			if started_from_agent_id do _, _, _ = federation_forward_start(existing.remote_peer_id, existing.remote_agent_instance_id, "", "", existing.agent_instance_id)
+			else do _, _, _ = federation_forward_subscribe(existing.remote_peer_id, existing.remote_agent_instance_id, existing.agent_instance_id)
 			return existing, true, ""
 		}
 	}
@@ -936,11 +943,13 @@ federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_ins
 				if idx := agent_record_index(existing.agent_record_id); idx >= 0 {
 					updated := agent_instance_records[idx]
 					if started_from_agent_id do _, _, _ = federation_forward_start(updated.remote_peer_id, updated.remote_agent_instance_id, "", "", updated.agent_instance_id)
+					else do _, _, _ = federation_forward_subscribe(updated.remote_peer_id, updated.remote_agent_instance_id, updated.agent_instance_id)
 					return updated, true, ""
 				}
 			}
 		}
 		if started_from_agent_id do _, _, _ = federation_forward_start(existing.remote_peer_id, existing.remote_agent_instance_id, "", "", existing.agent_instance_id)
+		else do _, _, _ = federation_forward_subscribe(existing.remote_peer_id, existing.remote_agent_instance_id, existing.agent_instance_id)
 		return existing, true, ""
 	}
 	local_display_name := strings.trim_space(display_name)
@@ -964,6 +973,7 @@ federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_ins
 	if idx < 0 do return Agent_Instance_Record{}, false, "remote proxy not found after save"
 	rec := agent_instance_records[idx]
 	if started_from_agent_id do _, _, _ = federation_forward_start(rec.remote_peer_id, rec.remote_agent_instance_id, "", "", rec.agent_instance_id)
+	else do _, _, _ = federation_forward_subscribe(rec.remote_peer_id, rec.remote_agent_instance_id, rec.agent_instance_id)
 	return rec, true, ""
 }
 
