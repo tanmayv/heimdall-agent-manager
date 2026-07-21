@@ -346,7 +346,9 @@ function createConversationInstanceId(): string {
   return `conversation@s-${token}`;
 }
 
-function defaultConversationProvider(providers: any[] = []): string {
+function defaultConversationProvider(providers: any[] = [], identities: any[] = []): string {
+  const convoIdentity = (identities || []).find((i: any) => String(i?.id || i?.agentId || i?.agent_id) === 'conversation');
+  if (convoIdentity?.providerProfile) return convoIdentity.providerProfile;
   return (providers || []).find((provider: any) => String(provider?.name || provider?.id || '').toLowerCase() === 'pi')?.name || providers?.[0]?.name || providers?.[0]?.id || 'pi';
 }
 
@@ -628,8 +630,13 @@ function attentionCount(tasksById: Record<string, any>, attention: any, pendingM
 export default function App() {
   const dispatch = useDispatch<any>();
   const { session, daemonProfiles, selectedAgentId, chats, chatsCursor, chatsHasMore, guidePanelOpen, guideSending, fetchingChatsByAgentId, conversationSummaryById } = useSelector((state: any) => state.chat);
-  const conversationSummariesQuery = useListConversationSummariesQuery(undefined, { skip: !session.clientToken });
-  const effectiveConversationSummaryById = conversationSummariesQuery.data || conversationSummaryById;
+  const conversationSummariesQuery = useListConversationSummariesQuery(undefined, { skip: !session.clientToken, refetchOnMountOrArgChange: true });
+  // Merge (not replace) the query result over the redux cache so titles never
+  // blank out during a refetch when query.data is momentarily undefined.
+  const effectiveConversationSummaryById = useMemo(
+    () => ({ ...(conversationSummaryById || {}), ...(conversationSummariesQuery.data || {}) }),
+    [conversationSummaryById, conversationSummariesQuery.data],
+  );
   const { selectedProjectId: selectedProjectIdPreference } = useSelector((state: any) => state.projects);
   const projectsQuery = useListProjectsQuery({ scope: `${session.daemonUrl || ''}:${session.clientInstanceId || ''}:${session.clientToken || ''}` }, { skip: !session.connected || !session.clientToken });
   const settingsCatalogQuery = useFetchSettingsCatalogQuery({ scope: `${session.daemonUrl || ''}:${session.clientInstanceId || ''}` }, { skip: !session.connected || !session.daemonUrl });
@@ -1096,7 +1103,7 @@ export default function App() {
   }, [dispatch]);
   const startGuideAgent = useCallback(async () => {
     const agent = guideAgent || { id: GUIDE_AGENT_ID, templateId: 'guide' };
-    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id || GUIDE_AGENT_ID, provider: agent.providerProfile || defaultConversationProvider(settingsProviders), templateId: agent.templateId || 'guide', projectId: agent.projectId || '', displayName: agent.label || 'Heimdall Guide', modelTier: agent.modelTier || 'smart'});
+    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id || GUIDE_AGENT_ID, provider: agent.providerProfile || defaultConversationProvider(settingsProviders, agentIdentities), templateId: agent.templateId || 'guide', projectId: agent.projectId || '', displayName: agent.label || 'Heimdall Guide', modelTier: agent.modelTier || 'smart'});
     await refetchAgents();
   }, [guideAgent, refetchAgents, session?.daemonUrl, settingsProviders]);
   const guideContextLabel = useMemo(() => {
@@ -1298,7 +1305,7 @@ export default function App() {
         daemonUrl: session?.daemonUrl || '',
         agentId: durableId,
         agentInstanceId: requestedId,
-        provider: identity.providerProfile || defaultConversationProvider(settingsProviders),
+        provider: identity.providerProfile || defaultConversationProvider(settingsProviders, agentIdentities),
         templateId: identity.templateId || durableId,
         projectId: identity.projectId || '',
         displayName: '',
@@ -1324,7 +1331,7 @@ export default function App() {
     setNewConversationBusy(true);
     try {
       const requestedId = createConversationInstanceId();
-      const effectiveProvider = provider || defaultConversationProvider(settingsProviders);
+      const effectiveProvider = provider || defaultConversationProvider(settingsProviders, agentIdentities);
       await daemonApi.createAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, displayName: '', providerProfile: effectiveProvider, templateId: 'conversation', projectId: projectId || '', modelTier: modelTier || 'smart'}).catch((err: any) => {
         const message = String(err?.message || err || '').toLowerCase();
         if (!message.includes('already') && !message.includes('exists')) throw err;
@@ -1345,7 +1352,7 @@ export default function App() {
     setNewConversationBusy(true);
     try {
       const requestedId = createConversationInstanceId();
-      const effectiveProvider = provider || defaultConversationProvider(settingsProviders);
+      const effectiveProvider = provider || defaultConversationProvider(settingsProviders, agentIdentities);
       await daemonApi.createAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, displayName: '', providerProfile: effectiveProvider, templateId: 'conversation', projectId: projectId || '', modelTier: modelTier || 'smart'}).catch((err: any) => {
         const message = String(err?.message || err || '').toLowerCase();
         if (!message.includes('already') && !message.includes('exists')) throw err;
@@ -1387,10 +1394,19 @@ export default function App() {
   const activeProject = projectsById[selectedProjectId] || projects[0];
   const shownGroups = chainGroups;
   const conversationAgents = useMemo(() => {
+    // A conversation is worth listing when it has a durable title, is currently
+    // running, or is the one the user just opened/clicked (so a brand-new empty
+    // thread stays visible while it is active). Empty, stopped, title-less
+    // threads are hidden to keep the list meaningful.
+    const worthShowing = (agent: any) => {
+      const id = agentInstanceId(agent);
+      const hasTitle = Boolean(String(effectiveConversationSummaryById?.[id]?.title || '').trim());
+      return hasTitle || agentHasLiveSession(agent) || id === agentPageId;
+    };
     const concrete = (agents || []).filter((agent: any) => isConcreteConversationThread(agent));
-    if (concrete.length > 0) return concrete;
-    return (agents || []).filter((agent: any) => isConversationAgent(agent));
-  }, [agents]);
+    const pool = concrete.length > 0 ? concrete : (agents || []).filter((agent: any) => isConversationAgent(agent));
+    return pool.filter(worthShowing);
+  }, [agents, effectiveConversationSummaryById, agentPageId]);
   const closeNewProjectModal = useCallback(() => {
     setNewProjectModalOpen(false);
   }, []);
@@ -1514,7 +1530,7 @@ export default function App() {
                   await daemonApi.startAgent({
                     daemonUrl: session?.daemonUrl || '',
                     agentInstanceId: agentId,
-                    provider: runtime.provider || exactAgent?.providerProfile || defaultConversationProvider(settingsProviders),
+                    provider: runtime.provider || exactAgent?.providerProfile || defaultConversationProvider(settingsProviders, agentIdentities),
                     templateId: exactAgent?.templateId || durableAgentId(exactAgent) || String(agentId).split('@')[0],
                     projectId: exactAgent?.projectId || '',
                     displayName: exactAgent?.label || agentId,
@@ -1559,7 +1575,7 @@ export default function App() {
               onNewInstance={async (identity: any) => {
                 const durableId = durableAgentId(identity);
                 const requestedId = `${durableId}@s-${(globalThis.crypto?.randomUUID?.().replace(/-/g, '').slice(0, 10) || Date.now().toString(16))}`;
-                const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentId: durableId, agentInstanceId: requestedId, provider: identity.providerProfile || defaultConversationProvider(settingsProviders), templateId: identity.templateId || durableId, projectId: identity.projectId || '', displayName: '', modelTier: identity.modelTier || 'normal'});
+                const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentId: durableId, agentInstanceId: requestedId, provider: identity.providerProfile || defaultConversationProvider(settingsProviders, agentIdentities), templateId: identity.templateId || durableId, projectId: identity.projectId || '', displayName: '', modelTier: identity.modelTier || 'normal'});
                 await refetchAgents();
                 openAgentPage(result?.agent_instance_id || result?.agentInstanceId || requestedId);
               }}
@@ -1569,6 +1585,7 @@ export default function App() {
               session={session}
               projects={projects}
               providers={settingsProviders}
+              identities={agentIdentities}
               defaultProjectId={urlParams.projectId || selectedProjectId}
               busy={newConversationBusy}
               onBack={navigateBackOrHome}
@@ -1785,7 +1802,7 @@ export default function App() {
               onCreateAgent={() => selectSurfaceWithUrl('agents')}
               onCreateConversation={() => startEmptyConversation({ projectId: activeProject?.projectId || selectedProjectId || '' })}
               onCreateProject={() => setNewProjectModalOpen(true)}
-              onPromptConversation={(body: string) => startFirstMessageConversation({ body, projectId: activeProject?.projectId || selectedProjectId || '', provider: defaultConversationProvider(settingsProviders), modelTier: 'smart' })}
+              onPromptConversation={(body: string) => startFirstMessageConversation({ body, projectId: activeProject?.projectId || selectedProjectId || '', provider: defaultConversationProvider(settingsProviders, agentIdentities), modelTier: 'smart' })}
               conversationBusy={newConversationBusy}
             />
           )}
@@ -3671,10 +3688,10 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
 }
 
 
-function NewConversationPage({ session, projects = [], providers = [], defaultProjectId = '', busy = false, onBack, onFirstMessage, onOpenChain, onPickAgent, onPlanWork }: any) {
+function NewConversationPage({ session, projects = [], providers = [], identities = [], defaultProjectId = '', busy = false, onBack, onFirstMessage, onOpenChain, onPickAgent, onPlanWork }: any) {
   const [draft, setDraft] = useState('');
   const [projectId, setProjectId] = useState(defaultProjectId || projects?.[0]?.projectId || projects?.[0]?.project_id || '');
-  const [provider, setProvider] = useState(defaultConversationProvider(providers));
+  const [provider, setProvider] = useState(defaultConversationProvider(providers, identities));
   const [tier, setTier] = useState('smart');
   const [error, setError] = useState('');
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -3688,8 +3705,8 @@ function NewConversationPage({ session, projects = [], providers = [], defaultPr
   }, [defaultProjectId, projects]);
 
   useEffect(() => {
-    setProvider(defaultConversationProvider(providers));
-  }, [providers]);
+    setProvider(defaultConversationProvider(providers, identities));
+  }, [providers, identities]);
 
   const submit = async () => {
     const body = draft.trim();
@@ -6059,8 +6076,11 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
   const [agentPicker, setAgentPicker] = useState<{ taskId: string; mode: 'assignee' | 'reviewer' } | null>(null);
   const session = useSelector((state: any) => state.chat?.session || {});
   const conversationSummaryById = useSelector((state: any) => state.chat?.conversationSummaryById || {});
-  const conversationSummariesQuery = useListConversationSummariesQuery(undefined, { skip: !session.clientToken });
-  const effectiveConversationSummaryById = conversationSummariesQuery.data || conversationSummaryById;
+  const conversationSummariesQuery = useListConversationSummariesQuery(undefined, { skip: !session.clientToken, refetchOnMountOrArgChange: true });
+  const effectiveConversationSummaryById = useMemo(
+    () => ({ ...(conversationSummaryById || {}), ...(conversationSummariesQuery.data || {}) }),
+    [conversationSummaryById, conversationSummariesQuery.data],
+  );
   const taskTextArtifactUpload = useArtifactUpload({ projectId, originRef: chainId || '', originKind: 'clipboard_chain_text' });
   const selectableAgents = useMemo(() => [{ id: 'user_proxy', label: 'User / operator', templateId: 'user', providerProfile: 'heimdall', projectId: projectId || '', connected: true, connectionState: 'connected' }, ...(agents || [])], [agents, projectId]);
   const agentsById = useMemo(() => {
