@@ -87,6 +87,33 @@ export const agentsApi = heimdallApi.injectEndpoints({
         { type: 'Agents' as const, id: agentInstanceId },
       ],
     }),
+    // Remote role content for a local-proxy agent-id. Cached aggressively
+    // (keepUnusedDataFor long) since remote templates change rarely; keyed by
+    // peer + remote agent-id so it is fetched once per mapping.
+    fetchPeerAgentTemplate: build.query<any, { peerId: string; remoteAgentId: string }>({
+      queryFn: withSessionQuery(async ({ peerId, remoteAgentId }, { session }) => {
+        if (!session?.daemonUrl || !session?.clientToken || !peerId || !remoteAgentId) return { template: null, agentId: remoteAgentId };
+        return daemonApi.fetchPeerAgentTemplate({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, peerId, remoteAgentId });
+      }),
+      keepUnusedDataFor: 600,
+      providesTags: (_result, _error, { peerId, remoteAgentId }) => [{ type: 'AgentTemplate' as const, id: `remote:${peerId}:${remoteAgentId}` }],
+    }),
+    // Advertised remote agent-ids for a peer, used to pick a new remap target.
+    listPeerAdvertisedAgents: build.query<any, { peerId: string }>({
+      queryFn: withSessionQuery(async ({ peerId }, { session }) => {
+        if (!session?.daemonUrl || !session?.clientToken || !peerId) return { daemonId: '', agents: [] };
+        return daemonApi.listPeerAdvertisedAgents({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, peerId });
+      }),
+      keepUnusedDataFor: 120,
+      providesTags: (_result, _error, { peerId }) => [{ type: 'Agents' as const, id: `peer-advertised:${peerId}` }],
+    }),
+    remapRemoteProxy: build.mutation<any, { localAgentId: string; remoteAgentId: string; peerId?: string; originDaemonId?: string; displayName?: string; templateId?: string }>({
+      queryFn: withSessionQuery(async (arg, { session }) => {
+        if (!session?.daemonUrl || !session?.clientToken) return { ok: false, message: 'No session' };
+        return daemonApi.remapRemoteProxy({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, ...arg });
+      }),
+      invalidatesTags: () => [{ type: 'Agents' as const, id: 'LIST' }],
+    }),
   }),
 });
 
@@ -124,4 +151,4 @@ export function patchAgentCachesFromWs(dispatch: any, payload: any) {
   dispatch(heimdallApi.util.invalidateTags([{ type: 'Agents', id: 'LIST' }, { type: 'Agents', id: agentId }]));
 }
 
-export const { useListAgentsQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation } = agentsApi;
+export const { useListAgentsQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useFetchPeerAgentTemplateQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation } = agentsApi;

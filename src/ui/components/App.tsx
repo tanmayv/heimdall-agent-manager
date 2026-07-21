@@ -77,7 +77,7 @@ import { selectTaskCacheProjection } from '../api/taskCache';
 import { selectChainViewCacheProjection } from '../api/chainViewCache';
 import { useFetchChainTasksQuery, useFetchTaskLogQuery, useFetchTaskQuery, useFetchTaskCommentsQuery, useLazyFetchTaskLogPageQuery } from '../api/endpoints/tasks';
 import { chatEndpoints, useListConversationSummariesQuery } from '../api/endpoints/chats';
-import { upsertAgentInCaches, useFetchAgentQuery, useListAgentsQuery } from '../api/endpoints/agents';
+import { upsertAgentInCaches, useFetchAgentQuery, useFetchPeerAgentTemplateQuery, useListAgentsQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation } from '../api/endpoints/agents';
 import { useAnswerChatApprovalMutation, useDismissChatApprovalMutation, useExecuteMergeViaChainMutation, useFetchAttentionQuery, useListChatApprovalsQuery } from '../api/endpoints/attention';
 import { useDecideMemoryProposalMutation, useListApplicableMemoryQuery, useListMemoryQuery, useProposeMemoryChangeMutation } from '../api/endpoints/memory';
 import { useFetchChainQuery, useFetchWorkspaceQuery, useFocusChainMutation, useLazyFetchWorkspaceDiffQuery, useLazyPreviewWorkspaceMergeQuery, useListChainsQuery } from '../api/endpoints/workspace';
@@ -1545,13 +1545,16 @@ export default function App() {
             <AgentIdentityPage
               agentId={urlParams.agentId || ''}
               agents={agents}
+              agentIdentities={agentIdentities}
               chats={chats}
               tasksById={tasksById}
               chainsById={chainsById}
               projects={projects}
               providers={settingsProviders}
+              templates={settingsTemplates}
               session={session}
               onBack={navigateBackOrHome}
+              onOpenMemory={(memoryId: string) => updateUrlParams({ view: 'memory', memoryId })}
               onRefreshAgents={refetchAgents}
               onNewInstance={async (identity: any) => {
                 const durableId = durableAgentId(identity);
@@ -2925,12 +2928,26 @@ function AgentIdentityInstanceSummaryGroup({ title, group, instances, chats, tas
   );
 }
 
-function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, chainsById = {}, projects = [], providers = [], session = {}, onBack, onNewInstance, onRefreshAgents }: any) {
+function AgentIdentityPage({ agentId, agents = [], agentIdentities = [], chats = {}, tasksById = {}, chainsById = {}, projects = [], providers = [], templates = [], session = {}, onBack, onNewInstance, onOpenMemory, onRefreshAgents }: any) {
   const durableId = String(agentId || '').split('@')[0];
   const instances = useMemo(() => (agents || [])
     .filter((agent: any) => durableAgentId(agent) === durableId || (!durableId && agentInstanceId(agent)))
     .sort((a: any, b: any) => agentUpdatedUnixMs(b) - agentUpdatedUnixMs(a)), [agents, durableId]);
-  const identity = instances[0] || { id: durableId, agentId: durableId, agent_id: durableId };
+  // Durable identity record (from /agents identities) carries remote-proxy
+  // mapping for dormant proxies with no live instance.
+  const identityRecord = useMemo(() => (agentIdentities || []).find((rec: any) => String(rec?.agent_id || rec?.agentId || '') === durableId) || null, [agentIdentities, durableId]);
+  const remoteMapping = useMemo(() => {
+    const src = identityRecord?.remote || null;
+    const kind = String(identityRecord?.agent_kind || identityRecord?.agentKind || (src ? 'remote_proxy' : 'local')).toLowerCase();
+    if (kind !== 'remote_proxy' || !src) return null;
+    return {
+      peerId: String(src.peer_id || src.peerId || ''),
+      originDaemonId: String(src.origin_daemon_id || src.originDaemonId || ''),
+      remoteAgentId: String(src.remote_agent_id || src.remoteAgentId || ''),
+    };
+  }, [identityRecord]);
+  const isRemoteProxy = Boolean(remoteMapping);
+  const identity = instances[0] || identityRecord || { id: durableId, agentId: durableId, agent_id: durableId };
   const running = instances.filter((agent: any) => agentHasLiveSession(agent));
   const stopped = instances.filter((agent: any) => {
     if (agentHasLiveSession(agent)) return false;
@@ -2944,12 +2961,57 @@ function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, c
   const projectName = project?.name || identity?.projectName || identity?.project_name || projectId || 'No project';
   const providerName = identity?.providerProfile || identity?.provider_profile || providers?.[0]?.name || 'default';
   const tier = identity?.modelTier || identity?.model_tier || 'normal';
-  const memoryCount = 0;
+  const templateId = String(identity?.templateId || identity?.template_id || identityRecord?.template_id || durableId || '');
+  const localTemplateRecord = useMemo(() => (templates || []).find((t: any) => String(t.template_id || t.templateId) === templateId) || null, [templates, templateId]);
+  // For remote proxies the template content lives on the origin daemon: fetch it
+  // over the cached federation pass-through instead of the local template list.
+  const remoteTemplateQuery = useFetchPeerAgentTemplateQuery(
+    { peerId: remoteMapping?.peerId || '', remoteAgentId: remoteMapping?.remoteAgentId || '' },
+    { skip: !isRemoteProxy || !remoteMapping?.peerId || !remoteMapping?.remoteAgentId || !session?.clientToken },
+  );
+  const remoteTemplateRecord = remoteTemplateQuery.data?.template || null;
+  const templateRecord = isRemoteProxy ? remoteTemplateRecord : localTemplateRecord;
+  const [templateOpen, setTemplateOpen] = useState(false);
+  const memoryQuery = useListApplicableMemoryQuery(
+    { targetAgentId: durableId, targetProjectId: projectId || '' },
+    { skip: !durableId || !session?.clientToken },
+  );
+  const agentMemories = memoryQuery.data?.records || [];
+  const memoryCount = agentMemories.length;
+
+  // Remote-proxy remapping: pick a different advertised remote agent-id on the peer.
+  const advertisedQuery = useListPeerAdvertisedAgentsQuery(
+    { peerId: remoteMapping?.peerId || '' },
+    { skip: !isRemoteProxy || !remoteMapping?.peerId || !session?.clientToken },
+  );
+  const advertisedAgents = advertisedQuery.data?.agents || [];
+  const [remapOpen, setRemapOpen] = useState(false);
+  const [remapTarget, setRemapTarget] = useState('');
+  const [remapError, setRemapError] = useState('');
+  const [remapping, setRemapping] = useState(false);
+  const [remapRemoteProxy] = useRemapRemoteProxyMutation();
+  useEffect(() => { setRemapTarget(remoteMapping?.remoteAgentId || ''); setRemapError(''); }, [remoteMapping?.remoteAgentId, remapOpen]);
+  const applyRemap = async () => {
+    if (!remoteMapping || !remapTarget.trim() || remapping) return;
+    setRemapping(true);
+    setRemapError('');
+    try {
+      await remapRemoteProxy({ localAgentId: durableId, remoteAgentId: remapTarget.trim(), peerId: remoteMapping.peerId, originDaemonId: remoteMapping.originDaemonId }).unwrap();
+      setRemapOpen(false);
+      await onRefreshAgents?.();
+    } catch (err: any) {
+      setRemapError(String(err?.message || err || 'Unable to remap remote agent-id.'));
+    } finally {
+      setRemapping(false);
+    }
+  };
+
   const [editOpen, setEditOpen] = useState(false);
   const [editName, setEditName] = useState(identity?.label || identity?.displayName || identity?.display_name || durableId || '');
   const [editProvider, setEditProvider] = useState(identity?.providerProfile || identity?.provider_profile || providers?.[0]?.name || 'pi');
   const [editProject, setEditProject] = useState(projectId || '');
   const [editTier, setEditTier] = useState(tier || 'normal');
+  const [editTemplate, setEditTemplate] = useState(templateId || '');
   const [editError, setEditError] = useState('');
   const [editSaving, setEditSaving] = useState(false);
 
@@ -2958,15 +3020,16 @@ function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, c
     setEditProvider(identity?.providerProfile || identity?.provider_profile || providers?.[0]?.name || 'pi');
     setEditProject(projectId || '');
     setEditTier(tier || 'normal');
+    setEditTemplate(templateId || '');
     setEditError('');
-  }, [identity?.id, identity?.label, identity?.displayName, identity?.display_name, identity?.providerProfile, identity?.provider_profile, projectId, tier, durableId, providers]);
+  }, [identity?.id, identity?.label, identity?.displayName, identity?.display_name, identity?.providerProfile, identity?.provider_profile, projectId, tier, templateId, durableId, providers]);
 
   const saveIdentityDefaults = async () => {
     if (!identity || editSaving) return;
     setEditSaving(true);
     setEditError('');
     try {
-      await daemonApi.updateAgent({ daemonUrl: session?.daemonUrl || '', agentRecordId: identity.agentRecordId || identity.agent_record_id || '', agentInstanceId: agentInstanceId(identity) || durableId, displayName: editName.trim() || durableId, providerProfile: editProvider, projectId: editProject, modelTier: editTier, updateAgentIdDefaults: true });
+      await daemonApi.updateAgent({ daemonUrl: session?.daemonUrl || '', agentRecordId: identity.agentRecordId || identity.agent_record_id || '', agentInstanceId: agentInstanceId(identity) || durableId, displayName: editName.trim() || durableId, templateId: editTemplate, providerProfile: editProvider, projectId: editProject, modelTier: editTier, updateAgentIdDefaults: true });
       setEditOpen(false);
       await onRefreshAgents?.();
     } catch (err: any) {
@@ -3000,6 +3063,11 @@ function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, c
               <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Default provider<select data-debug-id="agent-identity-edit-provider-select" value={editProvider} onChange={(event) => setEditProvider(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400">{(providers?.length ? providers : [{ name: 'pi' }]).map((provider: any) => <option key={provider.name} value={provider.name}>{provider.name}</option>)}</select></label>
               <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Default project<select data-debug-id="agent-identity-edit-project-select" value={editProject} onChange={(event) => setEditProject(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400"><option value="">No project</option>{(projects || []).map((project: any) => <option key={project.projectId || project.project_id} value={project.projectId || project.project_id}>{project.name || project.projectId || project.project_id}</option>)}</select></label>
               <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Default tier<select data-debug-id="agent-identity-edit-tier-select" value={editTier} onChange={(event) => setEditTier(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400"><option value="normal">normal</option><option value="smart">smart</option><option value="cheap">cheap</option></select></label>
+              {isRemoteProxy ? (
+                <div className="md:col-span-2 rounded-xl border border-teal-400/20 bg-teal-400/[0.05] px-3 py-2 text-[11px] normal-case tracking-normal text-teal-200/90">Template is owned by the origin daemon for remote proxies. Use “Change remote mapping” to point at a different remote agent-id/role.</div>
+              ) : (
+                <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500 md:col-span-2">Template (role)<select data-debug-id="agent-identity-edit-template-select" value={editTemplate} onChange={(event) => setEditTemplate(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400">{(templates?.length ? templates : [{ template_id: editTemplate || 'agent', display_name: editTemplate || 'agent' }]).map((t: any) => { const id = t.template_id || t.templateId; return <option key={id} value={id}>{(t.display_name || t.displayName || id)} ({id})</option>; })}{editTemplate && !(templates || []).some((t: any) => (t.template_id || t.templateId) === editTemplate) ? <option value={editTemplate}>{editTemplate}</option> : null}</select><span className="mt-1 block normal-case tracking-normal text-[11px] text-zinc-500">Changes the persona/instructions injected into new instances at launch.</span></label>
+              )}
             </div>
             {editError && <div data-debug-id="agent-identity-edit-error" className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{editError}</div>}
             <div className="mt-5 flex justify-end gap-2"><IconActionButton debugId="agent-identity-edit-cancel-btn" title="Cancel" icon="×" onClick={() => setEditOpen(false)} /><IconActionButton debugId="agent-identity-edit-save-btn" title="Save defaults" icon="✓" onClick={saveIdentityDefaults} disabled={editSaving || !editName.trim()} tone="primary" /></div>
@@ -3021,12 +3089,118 @@ function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, c
               </div>
             </div>
             <div className="mt-5 grid gap-x-6 gap-y-4 md:grid-cols-2">
-              <div data-debug-id="agent-identity-template"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Template</div><div className="mt-1 text-sm text-zinc-200">{agentTemplateLabel(identity)}</div></div>
+              <div data-debug-id="agent-identity-template"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Template</div><div className="mt-1 text-sm text-zinc-200">{templateRecord ? `${templateRecord.display_name || templateRecord.displayName || templateId}` : agentTemplateLabel(identity)} <span className="text-zinc-500">({templateId || '—'})</span></div></div>
               <div data-debug-id="agent-identity-default-project"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Default project</div><div className="mt-1 text-sm text-zinc-200">{projectName}</div></div>
               <div data-debug-id="agent-identity-provider-tier"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Provider / tier</div><div className="mt-1 text-sm text-zinc-200">{providerName} · {tier}</div></div>
-              <div data-debug-id="agent-identity-memory-summary"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Shared memories</div><div className="mt-1 text-sm text-zinc-200">{memoryCount ? `${memoryCount} active` : 'load via Memory page'} <span className="text-zinc-500">(target_agent_id = {durableId || '—'})</span></div></div>
+              <div data-debug-id="agent-identity-memory-summary"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Associated memories</div><div className="mt-1 text-sm text-zinc-200">{memoryQuery.isLoading ? 'loading…' : (memoryCount ? `${memoryCount} active` : 'none active')} <span className="text-zinc-500">(agent_id = {durableId || '—'})</span></div></div>
             </div>
             <p className="mt-5 border-t border-white/[0.06] pt-4 text-[12.5px] text-zinc-500">Every instance below inherits these defaults. Concrete instance navigation stays in the main and secondary sidebars; rows below are read-only summaries.</p>
+          </section>
+
+          {/* Remote-proxy mapping — this local agent-id forwards to an agent-id on a peer daemon. */}
+          {isRemoteProxy && remoteMapping ? (
+            <section data-debug-id="agent-identity-remote-panel" className="mt-6 rounded-[16px] border border-teal-400/25 bg-teal-400/[0.04] p-5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[11px] uppercase tracking-wide text-teal-200/80">Remote proxy mapping</div>
+                  <div className="mt-1 text-sm text-zinc-200">This local agent-id forwards to a remote agent on a peer daemon. Template, provider and tier are owned by the origin.</div>
+                </div>
+                <span className="shrink-0 rounded-full bg-teal-400/15 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-teal-100">remote</span>
+              </div>
+              <div className="mt-4 grid gap-x-6 gap-y-4 md:grid-cols-3">
+                <div data-debug-id="agent-identity-remote-agent-id"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Remote agent-id</div><div className="mt-1 truncate font-mono text-sm text-zinc-100">{remoteMapping.remoteAgentId || '—'}</div></div>
+                <div data-debug-id="agent-identity-remote-peer"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Peer</div><div className="mt-1 truncate text-sm text-zinc-200">{remoteMapping.peerId || '—'}</div></div>
+                <div data-debug-id="agent-identity-remote-daemon"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Origin daemon</div><div className="mt-1 truncate text-sm text-zinc-200">{remoteMapping.originDaemonId || '—'}</div></div>
+              </div>
+              <div className="mt-4 flex items-center gap-2">
+                <button type="button" data-debug-id="agent-identity-remote-remap-btn" onClick={() => setRemapOpen((v) => !v)} className="rounded-full border border-teal-400/30 bg-teal-400/10 px-3 py-1 text-xs font-medium text-teal-100 hover:bg-teal-400/20">Change remote mapping →</button>
+                {advertisedQuery.isFetching ? <span className="text-[11px] text-zinc-500">loading advertised agents…</span> : null}
+              </div>
+              {remapOpen ? (
+                <div data-debug-id="agent-identity-remote-remap-panel" className="mt-3 rounded-xl border border-white/10 bg-black/25 p-3">
+                  <label className="block text-[11px] uppercase tracking-wide text-zinc-500">Map to remote agent-id on <span className="text-zinc-300">{remoteMapping.peerId}</span></label>
+                  {advertisedAgents.length ? (
+                    <select data-debug-id="agent-identity-remote-remap-select" value={remapTarget} onChange={(e) => setRemapTarget(e.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400">
+                      {!advertisedAgents.some((a: any) => String(a.agent_id || a.agentId || '') === remapTarget) && remapTarget ? <option value={remapTarget}>{remapTarget} (current)</option> : null}
+                      {advertisedAgents.map((a: any) => { const rid = String(a.agent_id || a.agentId || a.agent_instance_id || ''); return <option key={rid} value={rid}>{(a.display_name || a.displayName || rid)} · {rid}</option>; })}
+                    </select>
+                  ) : (
+                    <input data-debug-id="agent-identity-remote-remap-input" value={remapTarget} onChange={(e) => setRemapTarget(e.target.value)} placeholder="remote-agent-id" className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400" />
+                  )}
+                  {remapError ? <div className="mt-2 rounded-lg border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{remapError}</div> : null}
+                  <div className="mt-3 flex justify-end gap-2">
+                    <button type="button" data-debug-id="agent-identity-remote-remap-cancel-btn" onClick={() => setRemapOpen(false)} className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:bg-white/[0.07]">Cancel</button>
+                    <button type="button" data-debug-id="agent-identity-remote-remap-save-btn" onClick={applyRemap} disabled={remapping || !remapTarget.trim() || remapTarget.trim() === remoteMapping.remoteAgentId} className="rounded-lg bg-teal-400 px-4 py-1.5 text-xs font-semibold text-[#04201a] hover:bg-teal-300 disabled:cursor-not-allowed disabled:opacity-40">{remapping ? 'Saving…' : 'Save mapping'}</button>
+                  </div>
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+
+          {/* Template content viewer — the persona + instructions injected into new instances at launch. */}
+          <section data-debug-id="agent-identity-template-panel" className="mt-6 overflow-hidden rounded-[16px] border border-white/10 bg-[#111]">
+            <button type="button" data-debug-id="agent-identity-template-toggle-btn" onClick={() => setTemplateOpen((v) => !v)} aria-expanded={templateOpen} className="flex w-full items-center justify-between gap-3 px-5 py-3 text-left transition hover:bg-white/[0.03]">
+              <div className="min-w-0">
+                <div className="text-[11px] uppercase tracking-wide text-zinc-500">Template · role behavior</div>
+                <div className="mt-0.5 truncate text-sm font-medium text-zinc-100">{templateRecord?.display_name || templateRecord?.displayName || templateId || 'agent'} <span className="text-zinc-500">({templateId || '—'})</span></div>
+              </div>
+              <span className="shrink-0 text-zinc-500">{templateOpen ? '⌃' : '›'}</span>
+            </button>
+            {templateOpen ? (
+              <div data-debug-id="agent-identity-template-content" className="space-y-4 border-t border-white/10 px-5 py-4">
+                {isRemoteProxy ? <p className="text-[11px] text-teal-200/80">Role content fetched from origin daemon <span className="font-mono">{remoteMapping?.originDaemonId || remoteMapping?.peerId}</span> (cached).</p> : null}
+                {templateRecord?.description ? <p className="text-[13px] text-zinc-400">{templateRecord.description}</p> : null}
+                {isRemoteProxy && remoteTemplateQuery.isLoading ? (
+                  <div className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">Loading remote role content…</div>
+                ) : isRemoteProxy && remoteTemplateQuery.isError ? (
+                  <div className="rounded-xl border border-amber-400/25 bg-amber-400/[0.05] p-4 text-sm text-amber-200">Unable to load remote template (peer may be unreachable).</div>
+                ) : templateRecord ? (
+                  <>
+                    <div>
+                      <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Persona</div>
+                      <div data-debug-id="agent-identity-template-persona" className="rounded-xl bg-black/25 p-3"><Markdown source={String(templateRecord.persona || '_No persona set._')} className="text-[13px] text-zinc-300" /></div>
+                    </div>
+                    <div>
+                      <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Instructions</div>
+                      <div data-debug-id="agent-identity-template-instructions" className="rounded-xl bg-black/25 p-3"><Markdown source={String(templateRecord.instructions || '_No instructions set._')} className="text-[13px] text-zinc-300" /></div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">Template “{templateId}” details not loaded. It may be a built-in default without stored persona/instructions.</div>
+                )}
+              </div>
+            ) : null}
+          </section>
+
+          {/* Associated memories for this agent-id within its project scope. */}
+          <section data-debug-id="agent-identity-memory-panel" className="mt-6 rounded-[16px] border border-white/10 bg-[#111] p-5">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[11px] uppercase tracking-wide text-zinc-500">Associated memories</div>
+                <div className="mt-0.5 text-[12px] text-zinc-500">Active memories applicable to <code className="text-zinc-300">{durableId || '—'}</code>{projectId ? <> in <code className="text-zinc-300">{projectName}</code></> : ' (all projects)'}</div>
+              </div>
+              <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-xs text-zinc-300">{memoryCount}</span>
+            </div>
+            {memoryQuery.isLoading ? (
+              <div className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">Loading memories…</div>
+            ) : agentMemories.length === 0 ? (
+              <div data-debug-id="agent-identity-memory-empty" className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No active memories associated with this agent-id.</div>
+            ) : (
+              <div className="space-y-2">
+                {agentMemories.map((mem: any) => {
+                  const mid = String(mem.memoryId || mem.memory_id || mem.id || '');
+                  return (
+                    <button key={mid} type="button" data-debug-id={`agent-identity-memory-item-${mid}`} onClick={() => onOpenMemory?.(mid)} className="flex w-full items-start justify-between gap-3 rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-left transition hover:border-white/20 hover:bg-white/[0.04]">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium text-zinc-100">{mem.title || mem.summary || mid}</div>
+                        {mem.body || mem.summary ? <div className="mt-0.5 line-clamp-2 text-[12px] text-zinc-500">{mem.body || mem.summary}</div> : null}
+                      </div>
+                      <span className="shrink-0 rounded-full bg-white/[0.05] px-2 py-0.5 text-[10px] uppercase tracking-wide text-zinc-400">{mem.type || mem.memoryType || 'memory'}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </section>
 
           <div data-debug-id="agent-identity-instance-summary-list" className="mt-7">

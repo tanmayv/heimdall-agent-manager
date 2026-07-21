@@ -234,6 +234,31 @@ export async function bindRemoteProxy({ daemonUrl, clientToken, peerId, originDa
   });
 }
 
+// Fetch the template (persona/instructions/role defaults) for a peer-advertised
+// remote agent-id, via the proxy-side pass-through route. Used to display a
+// local-proxy agent-id's remote role content.
+export async function fetchPeerAgentTemplate({ daemonUrl, clientToken, peerId, remoteAgentId }: { daemonUrl: string; clientToken: string; peerId: string; remoteAgentId: string }) {
+  const data = await requestJson(joinUrl(daemonUrl, `/federation/peers/${encodeURIComponent(peerId)}/agents/${encodeURIComponent(remoteAgentId)}/template`), {
+    headers: { Authorization: `Bearer ${clientToken}` },
+  });
+  return { agentId: String(data.agent_id || data.agentId || remoteAgentId), template: data.template ?? null };
+}
+
+// Change which remote agent-id (and optionally which peer) a local proxy
+// agent-id maps to. The local id and history stay stable.
+export async function remapRemoteProxy({ daemonUrl, clientToken, localAgentId, remoteAgentId, peerId = '', originDaemonId = '', displayName, templateId }: { daemonUrl: string; clientToken: string; localAgentId: string; remoteAgentId: string; peerId?: string; originDaemonId?: string; displayName?: string; templateId?: string }) {
+  const body: any = { local_agent_id: localAgentId, remote_agent_id: remoteAgentId };
+  if (peerId) body.peer_id = peerId;
+  if (originDaemonId) body.origin_daemon_id = originDaemonId;
+  if (displayName !== undefined) body.display_name = displayName;
+  if (templateId !== undefined) body.template_id = templateId;
+  return requestJson(joinUrl(daemonUrl, '/federation/proxies/remap'), {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${clientToken}` },
+    body,
+  });
+}
+
 export async function listKnownAgentsPage({ daemonUrl, projectId = '', limit = 20, offset = 0 }: { daemonUrl: string; projectId?: string; limit?: number; offset?: number }) {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (projectId) params.set('project_id', projectId);
