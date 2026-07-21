@@ -1396,7 +1396,7 @@ export default function App() {
           sent = true;
         } catch (err: any) {
           lastSendError = err;
-          if (!String(err?.message || err || '').toLowerCase().includes('unknown agent')) throw err;
+          if (!String(err?.data?.message || err?.message || JSON.stringify(err) || '').toLowerCase().includes('unknown agent')) throw err;
         }
       }
       if (!sent) throw lastSendError || new Error('Timed out waiting for conversation agent');
@@ -2147,7 +2147,7 @@ function SidebarConversationSection({ conversations = [], chats = {}, summaryByI
     <div className="mb-3" data-debug-id="sidebar-conversations">
       {onNewConversation && (
         <button
-          data-debug-id="sidebar-new-conversation-btn"
+          type="button" data-debug-id="sidebar-new-conversation-btn"
           onClick={() => onNewConversation?.()}
           disabled={newConversationBusy}
           className="mx-1 mb-3 flex w-[calc(100%-0.5rem)] items-center gap-2 rounded-xl border border-white/10 bg-[#141414] px-3 py-2 text-[12px] font-medium text-zinc-100 transition hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
@@ -2253,7 +2253,7 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryByI
         <button type="button" data-debug-id="conversation-sidebar-collapse-btn" onClick={onToggleCollapsed} title="Collapse sidebar" aria-label="Collapse sidebar" className="grid h-8 w-8 place-items-center rounded-lg border border-white/10 text-zinc-500 hover:bg-[#141414] hover:text-zinc-100">☰</button>
       </div>
       <button
-        data-debug-id="sidebar-new-conversation-btn"
+        type="button" data-debug-id="sidebar-new-conversation-btn"
         onClick={() => onNewConversation?.()}
         disabled={newConversationBusy}
         className="mx-3 mb-2 flex items-center gap-2 rounded-[10px] border border-[#262626] bg-[#141414] px-3 py-2 text-[13px] font-medium text-zinc-100 transition hover:border-sky-500 disabled:cursor-not-allowed disabled:opacity-50"

@@ -11,7 +11,7 @@ export interface UrlParams {
   projectId: string;
 }
 
-const INITIAL_APP_PATHNAME = typeof window !== 'undefined' ? getRoutePathname() : '/';
+
 const HEIMDALL_ROUTE_DEPTH_STATE_KEY = '__heimdallRouteDepth';
 
 function readSearchParams() {
@@ -55,7 +55,7 @@ function ensureRouteState() {
 
 function buildUrl(nextState: UrlParams): string {
   const workspaceRoute = urlStateToWorkspaceRoute(nextState);
-  const pathname = workspaceRoute ? buildWorkspacePath(workspaceRoute) : INITIAL_APP_PATHNAME;
+  const pathname = workspaceRoute ? buildWorkspacePath(workspaceRoute) : '/';
   const params = new URLSearchParams();
   if (!workspaceRoute && nextState.view) params.set('view', nextState.view);
   if (!workspaceRoute && nextState.agentId) params.set('agentId', nextState.agentId);
