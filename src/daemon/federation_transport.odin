@@ -19,6 +19,11 @@ FEDERATION_ENVELOPE_READ_RECEIPT :: "read_receipt"
 FEDERATION_ENVELOPE_TASK_COMMENT :: "comment"
 FEDERATION_ENVELOPE_TASK_VOTE :: "vote"
 FEDERATION_ENVELOPE_TASK_STATUS :: "status"
+// Coordinator-authored administrative writes forwarded from an actor daemon (B)
+// to the chain's owner daemon (A) when a local chain has a remote coordinator.
+FEDERATION_ENVELOPE_TASK_CREATE :: "task_create"
+FEDERATION_ENVELOPE_CHAIN_UPDATE :: "chain_update"
+FEDERATION_ENVELOPE_TASK_ASSIGN :: "task_assign"
 FEDERATION_ENVELOPE_USER_CHAT_MESSAGE :: "user_chat_message"
 FEDERATION_ENVELOPE_USER_CHAT_REPLY :: "user_chat_reply"
 FEDERATION_ENVELOPE_DELIVERY_ACK :: "delivery_ack"
@@ -1208,6 +1213,20 @@ federation_remote_chain_authorized :: proc(peer_id, proxy_agent_instance_id, cha
 	return false
 }
 
+// federation_remote_chain_coordinator_authorized gates coordinator-only
+// administrative writes (task create, chain update, assign) forwarded from a
+// peer. The proxy must map to the requesting peer AND currently be the chain's
+// coordinator on this owner daemon. This is stricter than
+// federation_remote_chain_authorized (any chain role): only the coordinator may
+// author chain administration remotely.
+federation_remote_chain_coordinator_authorized :: proc(peer_id, proxy_agent_instance_id, chain_id: string) -> bool {
+	mapped_peer_id, remote_agent_instance_id, mapped := agent_remote_proxy_lookup(proxy_agent_instance_id)
+	if !mapped || mapped_peer_id != peer_id || remote_agent_instance_id == "" do return false
+	chain, found := store_get_chain(chain_id)
+	if !found do return false
+	return chain.coordinator_agent_instance_id == proxy_agent_instance_id
+}
+
 federation_json_value_extract :: proc(body, key: string) -> (string, bool) {
 	pattern := fmt.tprintf("\"%s\":", key)
 	idx := strings.index(body, pattern)
@@ -1353,12 +1372,18 @@ federation_remote_task_next_json :: proc(local_agent_instance_id: string) -> (st
 	return `{"ok":true,"task":null}`, true
 }
 
-federation_task_callback_pending_json :: proc(kind, task_id: string) -> string {
+federation_task_callback_pending_json :: proc(kind, ref_id: string) -> string {
+	// ref_id is the task_id for task-scoped callbacks and the chain_id for
+	// chain-scoped ones (task_create / chain_update). Emit it under both keys so
+	// task-scoped clients keep the historical task_id field while chain-scoped
+	// callers can read ref_id without misreading a chain id as a task id.
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":true,"queued":true,"kind":"`)
 		json_write_string(&b, kind)
 	strings.write_string(&b, `","task_id":"`)
-		json_write_string(&b, task_id)
+		json_write_string(&b, ref_id)
+	strings.write_string(&b, `","ref_id":"`)
+		json_write_string(&b, ref_id)
 	strings.write_string(&b, `"}`)
 	return strings.to_string(b)
 }
@@ -1446,6 +1471,70 @@ federation_task_status_callback_json :: proc(work: Federation_Remote_Work_Record
 	strings.write_string(&b, `","force":`)
 	strings.write_string(&b, "true" if force else "false")
 	strings.write_string(&b, `}`)
+	return strings.to_string(b)
+}
+
+// federation_task_create_callback_json forwards a coordinator-authored task
+// create from the actor daemon (B) to the chain owner daemon (A). Chain-scoped:
+// keyed by chain_id + coordinator proxy, since there is no pre-existing task id.
+// The optional string fields carry the same knobs as a local /tasks create.
+federation_task_create_callback_json :: proc(work: Federation_Remote_Work_Record, from_agent_instance_id, title, description, acceptance_criteria, priority, status, assignee_ref, reviewer_ref, depends_on, idempotency_key: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"kind":"`); strings.write_string(&b, FEDERATION_ENVELOPE_TASK_CREATE)
+	strings.write_string(&b, `","idempotency_key":"`); json_write_string(&b, idempotency_key)
+	strings.write_string(&b, `","origin_daemon_id":"`); json_write_string(&b, work.origin_daemon_id)
+	strings.write_string(&b, `","actor_origin_daemon_id":"`); json_write_string(&b, server_daemon_id)
+	strings.write_string(&b, `","chain_id":"`); json_write_string(&b, work.chain_id)
+	strings.write_string(&b, `","proxy_agent_instance_id":"`); json_write_string(&b, work.proxy_agent_instance_id)
+	strings.write_string(&b, `","from_agent_instance_id":"`); json_write_string(&b, from_agent_instance_id)
+	strings.write_string(&b, `","title":"`); json_write_string(&b, title)
+	strings.write_string(&b, `","description":"`); json_write_string(&b, description)
+	strings.write_string(&b, `","acceptance_criteria":"`); json_write_string(&b, acceptance_criteria)
+	strings.write_string(&b, `","priority":"`); json_write_string(&b, priority)
+	strings.write_string(&b, `","status":"`); json_write_string(&b, status)
+	strings.write_string(&b, `","assignee_agent_instance_id":"`); json_write_string(&b, assignee_ref)
+	strings.write_string(&b, `","reviewer_agent_instance_id":"`); json_write_string(&b, reviewer_ref)
+	strings.write_string(&b, `","depends_on":"`); json_write_string(&b, depends_on)
+	strings.write_string(&b, `"}`)
+	return strings.to_string(b)
+}
+
+// federation_chain_update_callback_json forwards a coordinator-authored chain
+// metadata update (title/description/final_summary) from actor daemon (B) to the
+// owner daemon (A). Coordinator/reviewer reassignment is intentionally NOT
+// forwarded: those bind runtime identity on the owner and must be operated
+// locally on A to avoid a remote coordinator retargeting its own chain.
+federation_chain_update_callback_json :: proc(work: Federation_Remote_Work_Record, from_agent_instance_id, title, description, final_summary, idempotency_key: string, title_present, description_present, final_summary_present: bool) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"kind":"`); strings.write_string(&b, FEDERATION_ENVELOPE_CHAIN_UPDATE)
+	strings.write_string(&b, `","idempotency_key":"`); json_write_string(&b, idempotency_key)
+	strings.write_string(&b, `","origin_daemon_id":"`); json_write_string(&b, work.origin_daemon_id)
+	strings.write_string(&b, `","actor_origin_daemon_id":"`); json_write_string(&b, server_daemon_id)
+	strings.write_string(&b, `","chain_id":"`); json_write_string(&b, work.chain_id)
+	strings.write_string(&b, `","proxy_agent_instance_id":"`); json_write_string(&b, work.proxy_agent_instance_id)
+	strings.write_string(&b, `","from_agent_instance_id":"`); json_write_string(&b, from_agent_instance_id)
+	if title_present { strings.write_string(&b, `","title":"`); json_write_string(&b, title) }
+	if description_present { strings.write_string(&b, `","description":"`); json_write_string(&b, description) }
+	if final_summary_present { strings.write_string(&b, `","final_summary":"`); json_write_string(&b, final_summary) }
+	strings.write_string(&b, `"}`)
+	return strings.to_string(b)
+}
+
+// federation_task_assign_callback_json forwards a coordinator-authored task
+// assignment from actor daemon (B) to the owner daemon (A). Task-scoped: the
+// coordinator must already know the task_id (from a chain tasks read).
+federation_task_assign_callback_json :: proc(work: Federation_Remote_Work_Record, from_agent_instance_id, task_id, assignee_ref, idempotency_key: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"kind":"`); strings.write_string(&b, FEDERATION_ENVELOPE_TASK_ASSIGN)
+	strings.write_string(&b, `","idempotency_key":"`); json_write_string(&b, idempotency_key)
+	strings.write_string(&b, `","origin_daemon_id":"`); json_write_string(&b, work.origin_daemon_id)
+	strings.write_string(&b, `","actor_origin_daemon_id":"`); json_write_string(&b, server_daemon_id)
+	strings.write_string(&b, `","chain_id":"`); json_write_string(&b, work.chain_id)
+	strings.write_string(&b, `","task_id":"`); json_write_string(&b, task_id)
+	strings.write_string(&b, `","proxy_agent_instance_id":"`); json_write_string(&b, work.proxy_agent_instance_id)
+	strings.write_string(&b, `","from_agent_instance_id":"`); json_write_string(&b, from_agent_instance_id)
+	strings.write_string(&b, `","agent_instance_id":"`); json_write_string(&b, assignee_ref)
+	strings.write_string(&b, `"}`)
 	return strings.to_string(b)
 }
 
@@ -2105,6 +2194,107 @@ handle_post_federation_callback :: proc(client: net.TCP_Socket, body: string, ct
 			return
 		}
 		result := task_service_status_command(Task_Status_Command{task_id = task_id, chain_id = chain_id, status = status_value, body = status_body, force = force, author_agent_instance_id = proxy_agent_instance_id})
+		if !result.ok {
+			write_response(client, result.status_code, federation_status_text(result.status_code), result.message)
+			return
+		}
+		if !federation_delivery_dedupe_record_completed(scope, idempotency_key) {
+			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to record callback dedupe"}`)
+			return
+		}
+		write_response(client, result.status_code, federation_status_text(result.status_code), result.message)
+	case FEDERATION_ENVELOPE_TASK_CREATE:
+		// Coordinator on peer B creates a task in an A-owned chain. Chain-scoped
+		// authorization: the proxy must be A's current chain coordinator.
+		target_origin_daemon_id := extract_json_string(body, "origin_daemon_id", "")
+		chain_id := extract_json_string(body, "chain_id", "")
+		from_agent_instance_id := extract_json_string(body, "from_agent_instance_id", "")
+		title := extract_json_string(body, "title", "")
+		if target_origin_daemon_id == "" || target_origin_daemon_id != server_daemon_id || chain_id == "" || title == "" || from_agent_instance_id != remote_agent_instance_id || !federation_remote_chain_coordinator_authorized(peer_id, proxy_agent_instance_id, chain_id) {
+			write_response(client, 403, "Forbidden", `{"ok":false,"message":"unauthorized remote callback","reason":"task_create_not_authorized"}`)
+			return
+		}
+		scope := federation_delivery_dedupe_scope(FEDERATION_DEDUPE_SCOPE_CALLBACK, peer_id, fmt.tprintf("%s:%s", kind, chain_id))
+		if federation_delivery_dedupe_completed(scope, idempotency_key) {
+			write_response(client, 200, "OK", `{"ok":true,"deduped":true}`)
+			return
+		}
+		result := task_service_create_task(Task_Create_Command{
+			chain_id                   = chain_id,
+			title                      = title,
+			description                = extract_json_string(body, "description", ""),
+			acceptance_criteria        = extract_json_string(body, "acceptance_criteria", ""),
+			priority                   = extract_json_string(body, "priority", ""),
+			status                     = extract_json_string(body, "status", ""),
+			assignee_agent_instance_id = extract_json_string(body, "assignee_agent_instance_id", ""),
+			reviewer_agent_instance_id = extract_json_string(body, "reviewer_agent_instance_id", ""),
+			depends_on                 = extract_json_string(body, "depends_on", ""),
+			created_by                 = proxy_agent_instance_id,
+			author_agent_instance_id   = proxy_agent_instance_id,
+		})
+		if !result.ok {
+			write_response(client, result.status_code, federation_status_text(result.status_code), result.message)
+			return
+		}
+		if !federation_delivery_dedupe_record_completed(scope, idempotency_key) {
+			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to record callback dedupe"}`)
+			return
+		}
+		write_response(client, result.status_code, federation_status_text(result.status_code), result.message)
+	case FEDERATION_ENVELOPE_CHAIN_UPDATE:
+		// Coordinator on peer B updates A-owned chain metadata. Coordinator/reviewer
+		// reassignment is intentionally not accepted over federation.
+		target_origin_daemon_id := extract_json_string(body, "origin_daemon_id", "")
+		chain_id := extract_json_string(body, "chain_id", "")
+		from_agent_instance_id := extract_json_string(body, "from_agent_instance_id", "")
+		if target_origin_daemon_id == "" || target_origin_daemon_id != server_daemon_id || chain_id == "" || from_agent_instance_id != remote_agent_instance_id || !federation_remote_chain_coordinator_authorized(peer_id, proxy_agent_instance_id, chain_id) {
+			write_response(client, 403, "Forbidden", `{"ok":false,"message":"unauthorized remote callback","reason":"chain_update_not_authorized"}`)
+			return
+		}
+		scope := federation_delivery_dedupe_scope(FEDERATION_DEDUPE_SCOPE_CALLBACK, peer_id, fmt.tprintf("%s:%s", kind, chain_id))
+		if federation_delivery_dedupe_completed(scope, idempotency_key) {
+			write_response(client, 200, "OK", `{"ok":true,"deduped":true}`)
+			return
+		}
+		result := task_service_update_chain(Task_Chain_Update_Command{
+			chain_id                 = chain_id,
+			title                    = extract_json_string(body, "title", ""),
+			description              = extract_json_string(body, "description", ""),
+			final_summary            = extract_json_string(body, "final_summary", ""),
+			author_agent_instance_id = proxy_agent_instance_id,
+		})
+		if !result.ok {
+			write_response(client, result.status_code, federation_status_text(result.status_code), result.message)
+			return
+		}
+		if !federation_delivery_dedupe_record_completed(scope, idempotency_key) {
+			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to record callback dedupe"}`)
+			return
+		}
+		write_response(client, result.status_code, federation_status_text(result.status_code), result.message)
+	case FEDERATION_ENVELOPE_TASK_ASSIGN:
+		// Coordinator on peer B assigns an A-owned task within its chain.
+		target_origin_daemon_id := extract_json_string(body, "origin_daemon_id", "")
+		chain_id := extract_json_string(body, "chain_id", "")
+		task_id := extract_json_string(body, "task_id", "")
+		assignee_ref := extract_json_string(body, "agent_instance_id", "")
+		from_agent_instance_id := extract_json_string(body, "from_agent_instance_id", "")
+		if target_origin_daemon_id == "" || target_origin_daemon_id != server_daemon_id || chain_id == "" || task_id == "" || assignee_ref == "" || from_agent_instance_id != remote_agent_instance_id || !federation_remote_chain_coordinator_authorized(peer_id, proxy_agent_instance_id, chain_id) {
+			write_response(client, 403, "Forbidden", `{"ok":false,"message":"unauthorized remote callback","reason":"task_assign_not_authorized"}`)
+			return
+		}
+		// The assigned task must belong to the coordinator's chain, or a
+		// coordinator could retarget arbitrary tasks by id.
+		if state, task_found := store_get_task(task_id); !task_found || state.chain_id != chain_id {
+			write_response(client, 403, "Forbidden", `{"ok":false,"message":"unauthorized remote callback","reason":"task_not_in_chain"}`)
+			return
+		}
+		scope := federation_delivery_dedupe_scope(FEDERATION_DEDUPE_SCOPE_CALLBACK, peer_id, fmt.tprintf("%s:%s:%s", kind, task_id, assignee_ref))
+		if federation_delivery_dedupe_completed(scope, idempotency_key) {
+			write_response(client, 200, "OK", `{"ok":true,"deduped":true}`)
+			return
+		}
+		result := task_service_assign(task_id, chain_id, assignee_ref, proxy_agent_instance_id)
 		if !result.ok {
 			write_response(client, result.status_code, federation_status_text(result.status_code), result.message)
 			return

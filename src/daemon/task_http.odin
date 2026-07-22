@@ -21,6 +21,24 @@ write_remote_task_callback_response :: proc(client: net.TCP_Socket, work: Federa
 	write_response(client, 503, "Service Unavailable", `{"ok":false,"message":"failed to queue remote callback"}`)
 }
 
+// write_remote_chain_callback_response queues a chain-scoped coordinator write
+// (task create / chain update) to the owning peer. Mirrors the task-scoped
+// variant: durable callback outbox first, opportunistic bridge send, response
+// stays 202 pending until the owner's delivery_ack lands.
+write_remote_chain_callback_response :: proc(client: net.TCP_Socket, work: Federation_Remote_Work_Record, payload, idempotency_key, kind, chain_id: string) {
+	_ = federation_delivery_outbox_insert_pending(work.owner_peer_id, FEDERATION_ROUTE_CALLBACK, idempotency_key, payload)
+	_, dest_daemon_id, peer_status, found := federation_direct_peer_lookup(work.owner_peer_id, work.origin_daemon_id)
+	if found && peer_status == PEER_STATUS_LINKED {
+		_ = dest_daemon_id != "" && bridge_send(dest_daemon_id, FEDERATION_ROUTE_CALLBACK, payload, idempotency_key)
+	}
+	_ = federation_delivery_outbox_mark_attempt(work.owner_peer_id, FEDERATION_ROUTE_CALLBACK, idempotency_key, false)
+	if federation_delivery_outbox_pending_exists(work.owner_peer_id, FEDERATION_ROUTE_CALLBACK, idempotency_key) {
+		write_response(client, 202, "Accepted", federation_task_callback_pending_json(kind, chain_id))
+		return
+	}
+	write_response(client, 503, "Service Unavailable", `{"ok":false,"message":"failed to queue remote callback"}`)
+}
+
 write_remote_task_identity_ambiguous_response :: proc(client: net.TCP_Socket, task_id: string) {
 	b := strings.builder_make()
 	strings.write_string(&b, `{"ok":false,"message":"ambiguous remote task identity; include origin_daemon_id with task_id","task_id":"`)
@@ -40,9 +58,36 @@ write_remote_chain_identity_ambiguous_response :: proc(client: net.TCP_Socket, c
 handle_task_create :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
+	chain_id := extract_json_string(body, "chain_id", "")
+	// A remote coordinator (this daemon holds the proxy) creating a task in a
+	// peer-owned chain forwards the create to the owner daemon. Only chain-bound
+	// creates federate; standalone/root creates stay local.
+	remote_origin_daemon_id := extract_json_string(body, "origin_daemon_id", "")
+	if chain_id != "" && !extract_json_bool(body, "standalone", false) {
+		if remote_work, remote, ambiguous := federation_remote_work_resolve_chain(chain_id, remote_origin_daemon_id, author); ambiguous {
+			write_remote_chain_identity_ambiguous_response(client, chain_id)
+			return
+		} else if remote {
+			idempotency_key := fmt.tprintf("task-create:%s:%s:%d", chain_id, author, router_now_unix_ms())
+			payload := federation_task_create_callback_json(
+				remote_work, author,
+				extract_json_string(body, "title", ""),
+				extract_json_string(body, "description", ""),
+				extract_json_string(body, "acceptance_criteria", ""),
+				extract_json_string(body, "priority", ""),
+				extract_json_string(body, "status", ""),
+				extract_json_string(body, "assignee_agent_instance_id", ""),
+				extract_json_string(body, "reviewer_agent_instance_id", ""),
+				extract_json_string(body, "depends_on", ""),
+				idempotency_key,
+			)
+			write_remote_chain_callback_response(client, remote_work, payload, idempotency_key, FEDERATION_ENVELOPE_TASK_CREATE, chain_id)
+			return
+		}
+	}
 	result := task_service_create_task(Task_Create_Command{
 		task_id                       = extract_json_string(body, "task_id", ""),
-		chain_id                      = extract_json_string(body, "chain_id", ""),
+		chain_id                      = chain_id,
 		project_id                    = extract_json_string(body, "project_id", ""),
 		standalone                    = extract_json_bool(body, "standalone", false),
 		title                         = extract_json_string(body, "title", ""),
@@ -196,7 +241,26 @@ handle_task_comments :: proc(client: net.TCP_Socket, body: string) {
 handle_task_assign :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
-	result := task_service_assign(extract_json_string(body, "task_id", ""), extract_json_string(body, "chain_id", ""), extract_json_string(body, "agent_instance_id", ""), author)
+	task_id := extract_json_string(body, "task_id", "")
+	chain_id := extract_json_string(body, "chain_id", "")
+	assignee_ref := extract_json_string(body, "agent_instance_id", "")
+	// A remote coordinator assigning a peer-owned task forwards the assignment to
+	// the owner. Task-scoped remote-work resolution (the coordinator knows the
+	// task from a chain tasks read).
+	remote_origin_daemon_id := extract_json_string(body, "origin_daemon_id", "")
+	if task_id != "" {
+		if remote_work, remote, ambiguous := federation_remote_work_resolve_task(task_id, remote_origin_daemon_id, author); ambiguous {
+			write_remote_task_identity_ambiguous_response(client, task_id)
+			return
+		} else if remote {
+			if chain_id == "" do chain_id = remote_work.chain_id
+			idempotency_key := fmt.tprintf("task-assign:%s:%s:%d", task_id, author, router_now_unix_ms())
+			payload := federation_task_assign_callback_json(remote_work, author, task_id, assignee_ref, idempotency_key)
+			write_remote_task_callback_response(client, remote_work, payload, idempotency_key, FEDERATION_ENVELOPE_TASK_ASSIGN, task_id)
+			return
+		}
+	}
+	result := task_service_assign(task_id, chain_id, assignee_ref, author)
 	write_task_service_response(client, result)
 }
 
@@ -382,8 +446,38 @@ handle_task_nudge :: proc(client: net.TCP_Socket, body: string) {
 handle_task_chain_update :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
+	chain_id := extract_json_string(body, "chain_id", "")
+	// A remote coordinator updating a peer-owned chain forwards title/description/
+	// final_summary to the owner. Coordinator/reviewer reassignment is not
+	// forwarded (owner-local runtime binding); reject it explicitly for a remote
+	// chain rather than silently dropping it.
+	remote_origin_daemon_id := extract_json_string(body, "origin_daemon_id", "")
+	if chain_id != "" {
+		if remote_work, remote, ambiguous := federation_remote_work_resolve_chain(chain_id, remote_origin_daemon_id, author); ambiguous {
+			write_remote_chain_identity_ambiguous_response(client, chain_id)
+			return
+		} else if remote {
+			if json_has_key(body, "coordinator_agent_instance_id") || json_has_key(body, "default_reviewer_agent_instance_id") {
+				write_response(client, 400, "Bad Request", `{"ok":false,"message":"coordinator/reviewer reassignment must be performed on the chain's owner daemon, not over federation"}`)
+				return
+			}
+			idempotency_key := fmt.tprintf("chain-update:%s:%s:%d", chain_id, author, router_now_unix_ms())
+			payload := federation_chain_update_callback_json(
+				remote_work, author,
+				extract_json_string(body, "title", ""),
+				extract_json_string(body, "description", ""),
+				extract_json_string(body, "final_summary", ""),
+				idempotency_key,
+				json_has_key(body, "title"),
+				json_has_key(body, "description"),
+				json_has_key(body, "final_summary"),
+			)
+			write_remote_chain_callback_response(client, remote_work, payload, idempotency_key, FEDERATION_ENVELOPE_CHAIN_UPDATE, chain_id)
+			return
+		}
+	}
 	result := task_service_update_chain(Task_Chain_Update_Command{
-		chain_id                           = extract_json_string(body, "chain_id", ""),
+		chain_id                           = chain_id,
 		title                              = extract_json_string(body, "title", ""),
 		description                        = extract_json_string(body, "description", ""),
 		coordinator_agent_instance_id      = extract_json_string(body, "coordinator_agent_instance_id", ""),
