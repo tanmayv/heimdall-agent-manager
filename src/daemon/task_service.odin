@@ -643,6 +643,13 @@ task_service_create_concrete_instance_for_agent_id :: proc(agent_id_ref, chain_i
 	template_id := agent_id_template_id(durable_agent_id)
 	provider_profile := agent_resolve_provider_profile("")
 	model_tier := agent_resolve_model_tier("")
+	// Remote-proxy identity fields, populated when the durable agent_id is a
+	// remote proxy so the concrete chain instance is also materialized as a
+	// remote proxy (not a plain local instance the daemon would try to launch).
+	is_remote_proxy := false
+	remote_peer := ""
+	remote_origin := ""
+	remote_agent := ""
 	if idx := agent_id_index(durable_agent_id); idx >= 0 {
 		rec := agent_id_records[idx]
 		if rec.state != "" && rec.state != AGENT_ID_STATE_ACTIVE do return "", false, "agent_id is archived"
@@ -650,16 +657,34 @@ task_service_create_concrete_instance_for_agent_id :: proc(agent_id_ref, chain_i
 		if rec.default_provider_profile != "" do provider_profile = rec.default_provider_profile
 		if rec.default_model_tier != "" do model_tier = rec.default_model_tier
 		if resolved_project_id == "" && rec.default_project_id != "" do resolved_project_id = rec.default_project_id
+		if agent_id_record_is_remote_proxy(rec) {
+			is_remote_proxy = true
+			remote_peer = rec.remote_peer_id
+			remote_origin = rec.remote_origin_daemon_id
+			remote_agent = rec.remote_agent_id
+		}
 	} else {
 		_ = agent_id_upsert(durable_agent_id, durable_agent_id, template_id, provider_profile, model_tier, "", author)
 	}
 	if resolved_project_id == "" {
 		if chain, found := store_get_chain(chain_id); found do resolved_project_id = chain.project_id
 	}
-	instance_id := agent_instance_id_new(durable_agent_id)
-	if !valid_agent_instance_id(instance_id) do return "", false, "failed to generate agent instance id"
 	display_name := durable_agent_id
 	if participant_role != "" && participant_role != "assignee" do display_name = fmt.tprintf("%s %s", durable_agent_id, participant_role)
+	// Remote proxy coordinators/assignees/reviewers must be materialized as a
+	// concrete remote_proxy instance bound to the owning peer. Reuse the canonical
+	// bind path so the concrete remote instance is resolved, the proxy is tagged
+	// correctly (agent_kind=remote_proxy with a concrete remote_agent_instance_id),
+	// and the status-subscribe handshake is established. Without this the instance
+	// would be a plain local record and the runtime waker/federation authorization
+	// would treat a remote agent as local and fail.
+	if is_remote_proxy {
+		rec, bind_ok, bind_msg := federation_remote_proxy_bind(remote_peer, remote_origin, "", remote_agent, durable_agent_id, display_name, template_id, "", "")
+		if !bind_ok do return "", false, bind_msg
+		return rec.agent_instance_id, true, "ok"
+	}
+	instance_id := agent_instance_id_new(durable_agent_id)
+	if !valid_agent_instance_id(instance_id) do return "", false, "failed to generate agent instance id"
 	_, _, upsert_ok := agent_record_upsert(instance_id, display_name, template_id, provider_profile, resolved_project_id, "", model_tier, AGENT_IDENTITY_STATE_PROVISIONED)
 	if !upsert_ok do return "", false, "failed to persist resolved agent instance"
 	return instance_id, true, "ok"
