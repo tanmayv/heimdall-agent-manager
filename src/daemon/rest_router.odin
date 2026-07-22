@@ -437,6 +437,12 @@ handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_C
 		return true
 	}
 
+	// GET /federation/artifacts/{artifact_id}/metadata
+	if len(ctx.segments) == 4 && ctx.segments[0] == "federation" && ctx.segments[1] == "artifacts" && ctx.segments[3] == "metadata" && ctx.method == "GET" {
+		handle_get_federation_artifact_metadata(client, ctx.segments[2], ctx)
+		return true
+	}
+
 	// GET /federation/artifacts/{artifact_id}
 	if len(ctx.segments) == 3 && ctx.segments[0] == "federation" && ctx.segments[1] == "artifacts" && ctx.method == "GET" {
 		handle_get_federation_artifact_content(client, ctx.segments[2], ctx)
