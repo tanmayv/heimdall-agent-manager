@@ -1202,6 +1202,21 @@ federation_remote_task_read_allowed :: proc(state: Task_State, proxy_agent_insta
 	return false
 }
 
+federation_remote_proxy_same_identity_task_read_allowed :: proc(state: Task_State, peer_id, proxy_agent_instance_id: string) -> bool {
+	idx := agent_record_index_by_instance(proxy_agent_instance_id)
+	if idx < 0 do return false
+	proxy_rec := agent_instance_records[idx]
+	if !agent_record_is_remote_proxy(proxy_rec) || proxy_rec.remote_peer_id != peer_id || proxy_rec.agent_id == "" do return false
+	for i in 0..<agent_instance_record_count {
+		rec := agent_instance_records[i]
+		if !agent_record_is_remote_proxy(rec) do continue
+		if rec.remote_peer_id != peer_id do continue
+		if rec.agent_id != proxy_rec.agent_id do continue
+		if federation_remote_task_read_allowed(state, rec.agent_instance_id) do return true
+	}
+	return false
+}
+
 federation_remote_task_authorized :: proc(peer_id, proxy_agent_instance_id, task_id, action: string) -> bool {
 	mapped_peer_id, remote_agent_instance_id, mapped := agent_remote_proxy_lookup(proxy_agent_instance_id)
 	if !mapped || mapped_peer_id != peer_id || remote_agent_instance_id == "" do return false
@@ -1209,13 +1224,13 @@ federation_remote_task_authorized :: proc(peer_id, proxy_agent_instance_id, task
 	if !found do return false
 	switch action {
 	case "read", "comment":
-		return federation_remote_task_read_allowed(state, proxy_agent_instance_id)
+		return federation_remote_task_read_allowed(state, proxy_agent_instance_id) || federation_remote_proxy_same_identity_task_read_allowed(state, peer_id, proxy_agent_instance_id)
 	case "vote":
 		if task_actor_has_role(state, proxy_agent_instance_id, "lgtm_required") do return true
 		if task_actor_has_role(state, proxy_agent_instance_id, "lgtm_optional") do return true
 		return task_reviewer_agent_instance_id(state) == proxy_agent_instance_id
 	case "status":
-		return federation_remote_task_read_allowed(state, proxy_agent_instance_id)
+		return federation_remote_task_read_allowed(state, proxy_agent_instance_id) || federation_remote_proxy_same_identity_task_read_allowed(state, peer_id, proxy_agent_instance_id)
 	}
 	return false
 }
