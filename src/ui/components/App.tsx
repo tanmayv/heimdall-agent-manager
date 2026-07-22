@@ -1325,17 +1325,19 @@ export default function App() {
     if (!durableId || sidebarAgentLaunchingId) return;
     setSidebarAgentLaunchingId(durableId);
     try {
-      const identity = (agents || []).find((agent: any) => durableAgentId(agent) === durableId) || { id: durableId, agentId: durableId };
+      const identityRecord = (agentIdentities || []).find((rec: any) => String(rec?.agent_id || rec?.agentId || '') === durableId) || null;
+      const identity = (agents || []).find((agent: any) => durableAgentId(agent) === durableId) || identityRecord || { id: durableId, agentId: durableId };
+      const remoteProxy = isRemoteProxyAgent(identityRecord) || isRemoteProxyAgent(identity);
       const requestedId = `${durableId}@s-${createAgentSessionToken()}`;
       const result = await daemonApi.startAgent({
         daemonUrl: session?.daemonUrl || '',
         agentId: durableId,
         agentInstanceId: requestedId,
-        provider: identity.providerProfile || defaultConversationProvider(settingsProviders, agentIdentities),
-        templateId: identity.templateId || durableId,
-        projectId: identity.projectId || '',
+        provider: identity.providerProfile || identity.provider_profile || defaultConversationProvider(settingsProviders, agentIdentities),
+        templateId: identity.templateId || identity.template_id || durableId,
+        projectId: remoteProxy ? '' : (identity.projectId || identity.project_id || ''),
         displayName: '',
-        modelTier: identity.modelTier || 'normal',
+        modelTier: identity.modelTier || identity.model_tier || 'normal',
       });
       await refetchAgents();
       const resolvedId = result?.agent_instance_id || result?.agentInstanceId || requestedId;
@@ -1344,7 +1346,7 @@ export default function App() {
     } finally {
       setSidebarAgentLaunchingId('');
     }
-  }, [agents, dispatch, openAgentPage, session?.daemonUrl, settingsProviders, sidebarAgentLaunchingId]);
+  }, [agentIdentities, agents, dispatch, openAgentPage, session?.daemonUrl, settingsProviders, sidebarAgentLaunchingId]);
 
   const createNewConversation = useCallback(() => {
     if (newConversationBusy) return;
@@ -1596,8 +1598,10 @@ export default function App() {
               onRefreshAgents={refetchAgents}
               onNewInstance={async (identity: any) => {
                 const durableId = durableAgentId(identity);
+                const identityRecord = (agentIdentities || []).find((rec: any) => String(rec?.agent_id || rec?.agentId || '') === durableId) || null;
+                const remoteProxy = isRemoteProxyAgent(identityRecord) || isRemoteProxyAgent(identity);
                 const requestedId = `${durableId}@s-${(globalThis.crypto?.randomUUID?.().replace(/-/g, '').slice(0, 10) || Date.now().toString(16))}`;
-                const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentId: durableId, agentInstanceId: requestedId, provider: identity.providerProfile || defaultConversationProvider(settingsProviders, agentIdentities), templateId: identity.templateId || durableId, projectId: identity.projectId || '', displayName: '', modelTier: identity.modelTier || 'normal'});
+                const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentId: durableId, agentInstanceId: requestedId, provider: identity.providerProfile || identity.provider_profile || defaultConversationProvider(settingsProviders, agentIdentities), templateId: identity.templateId || identity.template_id || durableId, projectId: remoteProxy ? '' : (identity.projectId || identity.project_id || ''), displayName: '', modelTier: identity.modelTier || identity.model_tier || 'normal'});
                 await refetchAgents();
                 openAgentPage(result?.agent_instance_id || result?.agentInstanceId || requestedId);
               }}

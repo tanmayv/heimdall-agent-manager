@@ -10,6 +10,7 @@ export interface AgentRemoteInfo {
   peerId: string;
   originDaemonId: string;
   remoteAgentInstanceId: string;
+  remoteAgentId?: string;
   // Real-liveness fields propagated from the origin daemon (Part B). Optional
   // because older/stale records may not carry them yet.
   status?: string;
@@ -41,6 +42,7 @@ export function agentRemoteInfo(agent: any): AgentRemoteInfo | null {
     const peerId = String(remote.peerId || remote.peer_id || '');
     const originDaemonId = String(remote.originDaemonId || remote.origin_daemon_id || '');
     const remoteAgentInstanceId = String(remote.remoteAgentInstanceId || remote.remote_agent_instance_id || '');
+    const remoteAgentId = String(remote.remoteAgentId || remote.remote_agent_id || '');
     const status = String(remote.status || '');
     const connectionState = String(remote.connectionState || remote.connection_state || '');
     const currentTaskId = String(remote.currentTaskId || remote.current_task_id || '');
@@ -50,11 +52,12 @@ export function agentRemoteInfo(agent: any): AgentRemoteInfo | null {
     const lastSeenUnixMs = Number(remote.lastSeenUnixMs ?? remote.last_seen_unix_ms ?? 0);
     const connectedRaw = remote.connected;
     const peerReachableRaw = remote.peerReachable ?? remote.peer_reachable;
-    if (peerId || originDaemonId || remoteAgentInstanceId) {
+    if (peerId || originDaemonId || remoteAgentInstanceId || remoteAgentId) {
       return {
         peerId,
         originDaemonId,
         remoteAgentInstanceId,
+        remoteAgentId,
         status,
         connectionState,
         connected: connectedRaw === undefined ? undefined : Boolean(connectedRaw),
@@ -70,8 +73,9 @@ export function agentRemoteInfo(agent: any): AgentRemoteInfo | null {
   const peerId = String(agent?.remotePeerId || agent?.remote_peer_id || '');
   const originDaemonId = String(agent?.remoteOriginDaemonId || agent?.remote_origin_daemon_id || agent?.originDaemonId || agent?.origin_daemon_id || '');
   const remoteAgentInstanceId = String(agent?.remoteAgentInstanceId || agent?.remote_agent_instance_id || '');
-  if (peerId || originDaemonId || remoteAgentInstanceId) {
-    return { peerId, originDaemonId, remoteAgentInstanceId };
+  const remoteAgentId = String(agent?.remoteAgentId || agent?.remote_agent_id || '');
+  if (peerId || originDaemonId || remoteAgentInstanceId || remoteAgentId) {
+    return { peerId, originDaemonId, remoteAgentInstanceId, remoteAgentId };
   }
   return null;
 }
@@ -79,7 +83,7 @@ export function agentRemoteInfo(agent: any): AgentRemoteInfo | null {
 export function isRemoteProxyAgent(agent: any): boolean {
   const kind = String(agent?.agentKind || agent?.agent_kind || '').toLowerCase();
   const remote = agentRemoteInfo(agent);
-  return kind === 'remote_proxy' && Boolean(remote?.peerId) && Boolean(remote?.remoteAgentInstanceId);
+  return kind === 'remote_proxy' && Boolean(remote?.peerId) && Boolean(remote?.remoteAgentInstanceId || remote?.remoteAgentId);
 }
 
 // remoteAgentStatus normalizes the propagated origin status (Part B) for badge
