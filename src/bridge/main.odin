@@ -273,7 +273,7 @@ run_bridge_server :: proc(cfg: Bridge_Config) -> bool {
 	}
 	listener, err := net.listen_tcp({address, int(cfg.port)})
 	if err != nil {
-		fmt.println("failed to listen", cfg.bind_host, cfg.port)
+		fmt.println("failed to listen", cfg.bind_host, cfg.port, "error:", err)
 		return false
 	}
 	defer net.close(listener)
