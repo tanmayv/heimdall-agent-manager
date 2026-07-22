@@ -700,6 +700,7 @@ AgentInstance {
   startup_status?: "starting" | "ready" | "startup_blocked" | "startup_failed" | "startup_unknown"
   activity_status?: "unknown" | "idle" | "active" | "blocked"
   status_message?: string
+  last_applied_seq?: number   // highest Bridge state_seq applied; for idempotent, ordered updates
   created_at: string
   updated_at: string
   started_at?: string
@@ -716,6 +717,7 @@ Rules:
 - `project_path` is the Bridge-local effective path resolved at launch time.
 - `project_path` is a faithful launch snapshot and must not auto-update if `Project.default_path` or `ProjectBridgePath` changes later. New launches use the new effective path; existing instances keep their launch snapshot.
 - APIs and filters must use `runtime_status` for AgentInstance state, not overloaded `status`.
+- Runtime status updates from the Bridge are applied only when the incoming `state_seq > last_applied_seq` (idempotent, ordered). Both coalesced edge events and the periodic heartbeat digest update this field, so a lost edge event self-corrects on the next heartbeat. See runtime protocol §7.4.
 
 ### 7.8 Project
 
@@ -3257,13 +3259,16 @@ Failure:
 
 ### 23.5 Bridge reports instance status
 
+The Bridge does not stream a message per micro-change. Significant transitions are sent promptly as coalesced edge events; noisy signals (activity flapping, load) ride the periodic heartbeat digest. Every report carries a monotonic `state_seq` so the Hub applies updates idempotently and self-heals any missed event within one heartbeat. Full design: runtime protocol doc §7.4.
+
 ```json
 {
   "type": "agent_instance_status",
   "agent_instance_id": "inst_123",
+  "state_seq": 7,
   "runtime_status": "running",
   "startup_status": "ready",
-  "activity_status": "idle",
+  "activity_status": "active",
   "occurred_at": "2026-07-22T10:00:00Z"
 }
 ```

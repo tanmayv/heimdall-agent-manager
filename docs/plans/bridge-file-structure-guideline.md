@@ -187,8 +187,9 @@ state and drive adapters.
 ```text
 bridge/service/
   runner/
-    runner_service.odin   # launch/stop instances; owns managed-instance lifecycle
-    supervisor.odin       # watch panes/pids, detect exit, emit status changes
+    runner_service.odin   # launch/stop instances; owns managed-instance lifecycle + state_seq
+    supervisor.odin       # watch panes/pids, detect exit, feed state changes to runner
+    reporter.odin         # coalesce/debounce edge events; build heartbeat digest (7.4)
   capabilities/
     capability_service.odin # probe providers, build capability report
   pathcheck/
@@ -205,12 +206,18 @@ Interaction rules:
 - **Does NOT import:** `hubclient`, `control`, `app`, concrete adapters.
 - `runner_service` is the single owner of managed-instance state (the in-memory
   index of what this bridge is running). All status transitions
-  (launching→starting→running→stopping→stopped/failed) happen here and are
-  emitted through the injected event sink. No other package flips instance
-  status.
+  (launching→starting→running→stopping→stopped/failed) happen here. It owns the
+  per-instance monotonic `state_seq`, bumping it on every observed change
+  (protocol 7.4.1). No other package flips instance status or the seq.
+- `reporter` implements the reporting discipline (protocol 7.4). It is the only
+  thing that decides *when* to send to the Hub: it coalesces/debounces
+  edge-triggered transitions into a single `agent_instance_status` per instance
+  per window, drops level-triggered noise (activity flapping, load counters), and
+  builds the full per-instance digest consumed by the heartbeat. This keeps the
+  "don't bombard the Hub" policy in one place instead of scattered `send` calls.
 - `supervisor` detects process/pane exit and calls back into `runner_service`,
-  which emits `wrapper_exited` / status updates — supervisor does not talk to the
-  Hub sink directly.
+  which updates state (and seq) and hands the change to `reporter`. Supervisor
+  does not talk to the Hub sink directly, and never sends per-tick updates.
 - `bootstrap_service` fetches bootstrap via an injected `Bootstrap_Fetcher`
   (implemented in `hubclient` or a small HTTP client), then uses the fs adapter
   to write managed files. It never embeds product data logic; content comes from

@@ -396,6 +396,8 @@ Message to old socket:
 
 ### 7.1 WebSocket heartbeat
 
+The heartbeat is also the **convergence channel**: it carries a compact digest of every managed instance's current state so the Hub can self-heal from any missed edge event (see 7.4). It does not carry logs or transcripts.
+
 Bridge sends:
 
 ```json
@@ -406,14 +408,26 @@ Bridge sends:
   "sent_at": "2026-07-22T10:00:15Z",
   "payload": {
     "status": "online",
-    "active_instance_ids": ["inst_123"],
     "load": {
       "running_instances": 1,
       "max_instances": 3
-    }
+    },
+    "instances": [
+      {
+        "agent_instance_id": "inst_123",
+        "state_seq": 7,
+        "runtime_status": "running",
+        "startup_status": "ready",
+        "activity_status": "active"
+      }
+    ]
   }
 }
 ```
+
+- `instances` is the full set of instances this Bridge currently manages, each with its latest coalesced state and a monotonic `state_seq` (see 7.4).
+- The digest is small (a few fields per instance) and bounded by the Bridge's instance count, so it stays cheap even at the heartbeat cadence.
+- The absence of a previously-reported instance from the digest is itself meaningful: the Hub treats it as gone and reconciles (see 7.4).
 
 Hub replies optionally:
 
@@ -479,10 +493,13 @@ Hub marks Bridge offline when:
 Suggested timings:
 
 ```text
-heartbeat interval: 15s
+heartbeat interval: 15s          # also the max convergence lag for missed edge events
 stale threshold: 45s
 offline threshold: 90s
+edge-event debounce window: 250-500ms   # coalesce rapid per-instance changes (7.4.3)
 ```
+
+The heartbeat interval doubles as the worst-case time for the Hub to self-correct a missed edge event. Shortening it improves convergence latency at the cost of more heartbeats; the digest is intentionally small so 15s is inexpensive.
 
 When Bridge becomes offline, Hub emits user WS event:
 
@@ -497,6 +514,53 @@ When Bridge becomes offline, Hub emits user WS event:
   }
 }
 ```
+
+### 7.4 Reporting discipline: coalesced updates with guaranteed convergence
+
+The Bridge must not bombard the Hub with a message per micro-change, but the Hub must never be left with a stale view. This is achieved with a two-tier reporting model plus a self-healing heartbeat digest. The rule is: **individual events are an optimization for latency; the heartbeat digest is the guarantee of correctness.**
+
+#### 7.4.1 Monotonic per-instance `state_seq`
+
+- The Bridge maintains a monotonically increasing `state_seq` per `agent_instance_id`, bumped on every observed state change for that instance.
+- Every report about an instance (edge event **and** heartbeat digest entry) carries the `state_seq` for the state it describes.
+- The Hub stores the last-applied `state_seq` per instance and applies updates **idempotently and in order**: apply only if `incoming_seq > last_applied_seq`; otherwise ignore. This makes duplicates and out-of-order/retried messages harmless and lets the heartbeat safely re-assert state the Hub may already have.
+
+#### 7.4.2 Edge-triggered vs level-triggered signals
+
+**Edge-triggered — send promptly as a single coalesced event.** These are infrequent, user-visible, and latency-sensitive, so the Hub should not wait a heartbeat to learn them:
+
+- `runtime_status` transitions between meaningful states: `launching → starting → running → stopping → stopped`, and any `→ failed`.
+- `startup_status` reaching a terminal/blocking value: `ready`, `startup_blocked`, `startup_failed`.
+- `wrapper_exited`.
+
+**Level-triggered — never sent as their own events; folded into the next heartbeat digest only.** These are noisy/flappy and their exact intermediate history has no durable value:
+
+- `activity_status` oscillating `idle ↔ active`.
+- load counters (`running_instances`, etc.).
+- any high-frequency progress signal.
+
+#### 7.4.3 Coalescing rules for edge events
+
+- The Bridge debounces edge events per instance with a small window (e.g. 250–500 ms). If an instance changes state several times within the window, the Bridge sends **one** event carrying the latest state and its `state_seq`, not one per intermediate transition.
+- If several instances change in the same window, the Bridge may batch them, but a single instance never emits more than one edge event per debounce window.
+- Terminal transitions (`failed`, `stopped`, `wrapper_exited`) flush immediately without waiting out the debounce window.
+
+#### 7.4.4 Convergence via heartbeat (the guarantee)
+
+Every heartbeat carries the full per-instance digest (7.1). On each heartbeat the Hub reconciles authoritative Bridge truth against its own view:
+
+- For each digest entry, apply by `state_seq` (7.4.1). This repairs any edge event that was dropped, lost on a disconnect, or arrived out of order — the Hub converges within at most one heartbeat interval.
+- For any instance the Hub believes is on this Bridge but is **absent** from the digest, the Hub marks it unreachable/stopped per policy and reconciles (the Bridge is the authority on what it is actually running).
+- Because reconciliation is level-based (current state, not a diff), no event backlog or durable Bridge-side queue is needed. A Bridge that was disconnected simply reports current state on its next heartbeat.
+
+#### 7.4.5 Any real state still propagates
+
+This discipline reduces message volume but never hides state. Guarantees:
+
+- A significant transition (e.g. agent becomes `running`, or `failed`) is delivered near-immediately by an edge event, and independently re-asserted by the next heartbeat digest.
+- If the edge event is lost, the heartbeat still converges the Hub within one interval.
+- A restarted/reconnected Bridge re-establishes the correct Hub view on its first heartbeat after `bridge_hello`, without replaying history.
+- The steady-state cost is bounded: one heartbeat per interval plus at most one coalesced edge event per instance per debounce window.
 
 ---
 
@@ -903,7 +967,9 @@ Hub updates Bridge capabilities and emits user WS invalidation for Bridge.
 
 ### 10.2 `agent_instance_status`
 
-Bridge sends on runtime changes:
+This is the **edge-triggered** channel for significant, latency-sensitive transitions only (see 7.4.2). It is sent coalesced/debounced (7.4.3), not on every micro-change, and it carries `state_seq` so the Hub applies it idempotently and in order (7.4.1). Level-triggered signals such as `activity_status` flapping and load counters are **not** sent here — they ride the heartbeat digest.
+
+Bridge sends on a significant runtime/startup transition:
 
 ```json
 {
@@ -913,9 +979,10 @@ Bridge sends on runtime changes:
   "sent_at": "2026-07-22T10:00:00Z",
   "payload": {
     "agent_instance_id": "inst_123",
+    "state_seq": 7,
     "runtime_status": "running",
     "startup_status": "ready",
-    "activity_status": "idle",
+    "activity_status": "active",
     "status_message": null,
     "tmux": {
       "session": "heimdall",
@@ -930,8 +997,9 @@ Hub validates:
 - instance exists
 - instance.bridge_id matches authenticated Bridge
 - instance.owner_user_id matches Bridge owner
+- `state_seq > last_applied_seq` for this instance (else ignore as stale/duplicate)
 
-Then Hub updates AgentInstance and emits user WS event.
+Then Hub updates AgentInstance, records the new `last_applied_seq`, and emits a user WS event. Because the same state is re-asserted by the next heartbeat digest, a lost `agent_instance_status` event is self-correcting.
 
 ### 10.3 `agent_instance_log_summary`
 
@@ -1567,6 +1635,11 @@ Error object shape:
 - wrapper exit updates status
 - Bridge offline marks instance unreachable
 - reconnect restores running state
+- out-of-order/duplicate `state_seq` is ignored (idempotent apply)
+- dropped edge event self-corrects on next heartbeat digest (convergence within one interval)
+- rapid `activity_status` flapping produces no edge events (level-triggered only)
+- instance absent from heartbeat digest is reconciled to unreachable/stopped
+- multiple changes within debounce window coalesce into one edge event
 
 ### 20.7 Security tests
 
