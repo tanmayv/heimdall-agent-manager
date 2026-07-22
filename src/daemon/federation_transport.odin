@@ -24,6 +24,7 @@ FEDERATION_ENVELOPE_TASK_STATUS :: "status"
 FEDERATION_ENVELOPE_TASK_CREATE :: "task_create"
 FEDERATION_ENVELOPE_CHAIN_UPDATE :: "chain_update"
 FEDERATION_ENVELOPE_TASK_ASSIGN :: "task_assign"
+FEDERATION_ENVELOPE_TASK_COMMENT_RESOLVE :: "comment_resolve"
 FEDERATION_ENVELOPE_USER_CHAT_MESSAGE :: "user_chat_message"
 FEDERATION_ENVELOPE_USER_CHAT_REPLY :: "user_chat_reply"
 FEDERATION_ENVELOPE_DELIVERY_ACK :: "delivery_ack"
@@ -775,7 +776,7 @@ federation_remote_messages_for_fetch :: proc(local_agent_instance_id, conversati
 	stmt: sqlite3_stmt = nil
 	query := `SELECT record_key, message_id, owner_peer_id, owner_daemon_id, local_agent_instance_id, remote_agent_instance_id, proxy_agent_instance_id, conversation_id, origin_conversation_id, body, body_available, created_unix_ms, read_unix_ms
 		FROM federation_remote_messages
-		WHERE local_agent_instance_id = ? AND conversation_id = ? AND owner_daemon_id != ?
+		WHERE local_agent_instance_id = ? AND (conversation_id = ? OR (origin_conversation_id = conversation_id AND conversation_id != ?)) AND owner_daemon_id != ?
 		ORDER BY created_unix_ms ASC
 		LIMIT ?`
 	rc := sqlite3_prepare_v2(task_db.db, cstring(raw_data(query)), -1, &stmt, nil)
@@ -783,8 +784,9 @@ federation_remote_messages_for_fetch :: proc(local_agent_instance_id, conversati
 	defer sqlite3_finalize(stmt)
 	task_db_bind_text(stmt, 1, local_agent_instance_id)
 	task_db_bind_text(stmt, 2, conversation_id)
-	task_db_bind_text(stmt, 3, server_daemon_id)
-	sqlite3_bind_int64(stmt, 4, i64(limit if limit > 0 else 100))
+	task_db_bind_text(stmt, 3, conversation_id)
+	task_db_bind_text(stmt, 4, server_daemon_id)
+	sqlite3_bind_int64(stmt, 5, i64(limit if limit > 0 else 100))
 	for sqlite3_step(stmt) == SQLITE_ROW {
 		row := Federation_Remote_Message_Record{
 			record_key = strings.clone_from_cstring(sqlite3_column_text(stmt, 0)),
@@ -982,7 +984,13 @@ federation_remote_message_store_reply_if_absent :: proc(owner_peer_id, owner_dae
 	task_db_bind_text(stmt, 5, local_agent_instance_id)
 	task_db_bind_text(stmt, 6, remote_agent_instance_id)
 	task_db_bind_text(stmt, 7, proxy_agent_instance_id)
-	task_db_bind_text(stmt, 8, origin_conversation_id)
+	// Replies are addressed to the local recipient, so store them under the
+	// recipient's own conversation id. The original outbound conversation id is
+	// still retained separately for callback/read-receipt authorization. Storing
+	// replies under origin_conversation_id (the remote-proxy conversation) makes
+	// WS notifications fire but `ham-ctl inbox` for the local recipient fetch an
+	// empty result.
+	task_db_bind_text(stmt, 8, conversation_id_for_instance(local_agent_instance_id))
 	task_db_bind_text(stmt, 9, origin_conversation_id)
 	task_db_bind_text(stmt, 10, body)
 	sqlite3_bind_int64(stmt, 11, 1)
@@ -1085,7 +1093,7 @@ federation_remote_fetch_messages :: proc(request: contracts.Fetch_Messages_Reque
 		}
 		append(&messages, contracts.Message{
 			id = contracts.Message_ID(strings.clone(row.record_key)),
-			conversation_id = contracts.Conversation_ID(strings.clone(row.conversation_id)),
+			conversation_id = contracts.Conversation_ID(strings.clone(string(request.conversation_id))),
 			from_agent_instance_id = contracts.Agent_Instance_ID(strings.clone(row.remote_agent_instance_id)),
 			target_agent_instance_id = contracts.Agent_Instance_ID(strings.clone(row.local_agent_instance_id)),
 			body = strings.clone(body),
@@ -1151,12 +1159,20 @@ federation_remote_work_track_notification :: proc(owner_peer_id, origin_daemon_i
 	if extract_json_string(payload, "type", "") != "task_event" do return true
 	task_id := extract_json_string(payload, "task_id", extract_json_string(payload, "fetch_task_id", ""))
 	if task_id == "" do return true
-	proxy_agent_instance_id := extract_json_string(payload, "target_agent_instance_id", "")
-	if proxy_agent_instance_id == "" do return false
+	// The proxy id is the local agent this notification was routed to (the outer
+	// envelope target). The inner payload's target_agent_instance_id names the
+	// event's own target agent (e.g. a task assignee), which for chain-level or
+	// cross-recipient events (coordinator/reviewer/subscriber routing) differs
+	// from — or is empty relative to — the recipient. Prefer the routed recipient
+	// so coordinator/reviewer notifications still create a usable work mapping
+	// instead of failing when the inner target is empty or someone else.
+	proxy_agent_instance_id := local_agent_instance_id
+	if proxy_agent_instance_id == "" do proxy_agent_instance_id = extract_json_string(payload, "target_agent_instance_id", "")
+	if proxy_agent_instance_id == "" do return true
 	chain_id := extract_json_string(payload, "chain_id", extract_json_string(payload, "fetch_chain_id", ""))
 	status := extract_json_string(payload, "status", "")
 	owner_origin_daemon_id := extract_json_string(payload, "origin_daemon_id", origin_daemon_id)
-	if owner_origin_daemon_id == "" do return false
+	if owner_origin_daemon_id == "" do return true
 	created_unix_ms := i64(extract_json_int(payload, "created_unix_ms", int(router_now_unix_ms())))
 	if existing, ok := federation_remote_work_find_task(owner_origin_daemon_id, task_id, local_agent_instance_id); ok {
 		if existing.created_unix_ms != 0 do created_unix_ms = existing.created_unix_ms
@@ -1538,6 +1554,24 @@ federation_task_assign_callback_json :: proc(work: Federation_Remote_Work_Record
 	return strings.to_string(b)
 }
 
+// federation_task_comment_resolve_callback_json forwards a comment-resolve from
+// the actor daemon (B) to the task owner daemon (A). Task-scoped: the actor knows
+// the task_id and comment_id from a chain/task read.
+federation_task_comment_resolve_callback_json :: proc(work: Federation_Remote_Work_Record, from_agent_instance_id, comment_id, idempotency_key: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"kind":"`); strings.write_string(&b, FEDERATION_ENVELOPE_TASK_COMMENT_RESOLVE)
+	strings.write_string(&b, `","idempotency_key":"`); json_write_string(&b, idempotency_key)
+	strings.write_string(&b, `","origin_daemon_id":"`); json_write_string(&b, work.origin_daemon_id)
+	strings.write_string(&b, `","actor_origin_daemon_id":"`); json_write_string(&b, server_daemon_id)
+	strings.write_string(&b, `","task_id":"`); json_write_string(&b, work.task_id)
+	strings.write_string(&b, `","chain_id":"`); json_write_string(&b, work.chain_id)
+	strings.write_string(&b, `","proxy_agent_instance_id":"`); json_write_string(&b, work.proxy_agent_instance_id)
+	strings.write_string(&b, `","from_agent_instance_id":"`); json_write_string(&b, from_agent_instance_id)
+	strings.write_string(&b, `","comment_id":"`); json_write_string(&b, comment_id)
+	strings.write_string(&b, `"}`)
+	return strings.to_string(b)
+}
+
 handle_get_federation_task :: proc(client: net.TCP_Socket, task_id: string, ctx: ^Route_Context) {
 	peer_id, peer_daemon_id, ok := federation_peer_id_for_context(ctx)
 	if !ok {
@@ -1693,9 +1727,12 @@ handle_post_federation_inbox :: proc(client: net.TCP_Socket, body: string, ctx: 
 			write_response(client, 400, "Bad Request", `{"ok":false,"message":"notification target/payload required"}`)
 			return
 		}
+		// Remote-work tracking is a best-effort side index used for later
+		// fetch/authorization; it must never block or fail notification delivery.
+		// A tracking miss previously returned 500, which made the origin's outbox
+		// replay the same notification forever (observed as repeated 500s).
 		if !federation_remote_work_track_notification(peer_id, peer_daemon_id, target_agent_instance_id, payload) {
-			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to persist remote work mapping"}`)
-			return
+			fmt.printfln("FEDERATION_INBOX ts_unix_ms=%d stage=remote_work_track_soft_fail target=%s peer=%s", router_now_unix_ms(), target_agent_instance_id, peer_id)
 		}
 		event_id := notification_outbox_insert_pending(target_agent_instance_id, payload)
 		if event_id == "" {
@@ -2008,7 +2045,7 @@ handle_post_federation_callback :: proc(client: net.TCP_Socket, body: string, ct
 		_ = message_bus_emit(Message_Event{
 			kind = .Messages_Available,
 			message_id = contracts.Message_ID(federation_remote_message_record_key(peer_daemon_id, callback_message_id)),
-			conversation_id = contracts.Conversation_ID(origin_rec.origin_conversation_id),
+			conversation_id = contracts.Conversation_ID(conversation_id_for_instance(origin_rec.local_agent_instance_id)),
 			from_agent_instance_id = contracts.Agent_Instance_ID(proxy_agent_instance_id),
 			target_agent_instance_id = contracts.Agent_Instance_ID(origin_rec.local_agent_instance_id),
 			pending_count = 1,
@@ -2295,6 +2332,33 @@ handle_post_federation_callback :: proc(client: net.TCP_Socket, body: string, ct
 			return
 		}
 		result := task_service_assign(task_id, chain_id, assignee_ref, proxy_agent_instance_id)
+		if !result.ok {
+			write_response(client, result.status_code, federation_status_text(result.status_code), result.message)
+			return
+		}
+		if !federation_delivery_dedupe_record_completed(scope, idempotency_key) {
+			write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to record callback dedupe"}`)
+			return
+		}
+		write_response(client, result.status_code, federation_status_text(result.status_code), result.message)
+	case FEDERATION_ENVELOPE_TASK_COMMENT_RESOLVE:
+		// Actor on peer B resolves a comment on an A-owned task. Same authorization
+		// surface as a remote comment (any chain role that can read the task).
+		target_origin_daemon_id := extract_json_string(body, "origin_daemon_id", "")
+		task_id := extract_json_string(body, "task_id", "")
+		chain_id := extract_json_string(body, "chain_id", "")
+		comment_id := extract_json_string(body, "comment_id", "")
+		from_agent_instance_id := extract_json_string(body, "from_agent_instance_id", "")
+		if target_origin_daemon_id == "" || target_origin_daemon_id != server_daemon_id || task_id == "" || comment_id == "" || from_agent_instance_id != remote_agent_instance_id || !federation_remote_task_authorized(peer_id, proxy_agent_instance_id, task_id, "comment") {
+			write_response(client, 403, "Forbidden", `{"ok":false,"message":"unauthorized remote callback","reason":"comment_resolve_not_authorized"}`)
+			return
+		}
+		scope := federation_delivery_dedupe_scope(FEDERATION_DEDUPE_SCOPE_CALLBACK, peer_id, fmt.tprintf("%s:%s:%s", kind, task_id, comment_id))
+		if federation_delivery_dedupe_completed(scope, idempotency_key) {
+			write_response(client, 200, "OK", `{"ok":true,"deduped":true}`)
+			return
+		}
+		result := task_service_comment_resolve(Task_Comment_Resolve_Command{task_id = task_id, chain_id = chain_id, comment_id = comment_id, author_agent_instance_id = proxy_agent_instance_id})
 		if !result.ok {
 			write_response(client, result.status_code, federation_status_text(result.status_code), result.message)
 			return

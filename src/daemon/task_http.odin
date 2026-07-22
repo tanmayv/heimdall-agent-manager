@@ -195,10 +195,31 @@ handle_task_comment :: proc(client: net.TCP_Socket, body: string) {
 handle_task_comment_resolve :: proc(client: net.TCP_Socket, body: string) {
 	author, ok := task_author_from_body(client, body)
 	if !ok do return
+	task_id := extract_json_string(body, "task_id", "")
+	chain_id := extract_json_string(body, "chain_id", "")
+	comment_id := extract_json_string(body, "comment_id", "")
+	// A remote agent resolving a comment on a peer-owned task forwards the resolve
+	// to the owner (the comment lives on the owner daemon, not locally).
+	remote_origin_daemon_id := extract_json_string(body, "origin_daemon_id", "")
+	if task_id != "" {
+		if remote_work, remote, ambiguous := federation_remote_work_resolve_task(task_id, remote_origin_daemon_id, author); ambiguous {
+			write_remote_task_identity_ambiguous_response(client, task_id)
+			return
+		} else if remote {
+			if comment_id == "" {
+				write_response(client, 400, "Bad Request", `{"ok":false,"message":"comment resolve requires comment_id"}`)
+				return
+			}
+			idempotency_key := fmt.tprintf("comment-resolve:%s:%s:%d", task_id, comment_id, router_now_unix_ms())
+			payload := federation_task_comment_resolve_callback_json(remote_work, author, comment_id, idempotency_key)
+			write_remote_task_callback_response(client, remote_work, payload, idempotency_key, FEDERATION_ENVELOPE_TASK_COMMENT_RESOLVE, task_id)
+			return
+		}
+	}
 	result := task_service_comment_resolve(Task_Comment_Resolve_Command{
-		task_id                  = extract_json_string(body, "task_id", ""),
-		chain_id                 = extract_json_string(body, "chain_id", ""),
-		comment_id               = extract_json_string(body, "comment_id", ""),
+		task_id                  = task_id,
+		chain_id                 = chain_id,
+		comment_id               = comment_id,
 		author_agent_instance_id = author,
 	})
 	write_task_service_response(client, result)

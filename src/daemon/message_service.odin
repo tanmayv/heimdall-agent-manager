@@ -146,7 +146,10 @@ message_service_process_send :: proc(command: Send_Message_Command) -> Service_R
 
 message_service_process_fetch :: proc(command: Fetch_Messages_Command) -> Service_Result {
 	conversation_id := command.conversation_id
-	if conversation_id == "" do conversation_id = contracts.Conversation_ID(registry_conversation_id(string(command.agent_instance_id)))
+	if conversation_id == "" {
+		conversation_id = contracts.Conversation_ID(registry_conversation_id(string(command.agent_instance_id)))
+		if conversation_id == "" do conversation_id = contracts.Conversation_ID(conversation_id_for_instance(string(command.agent_instance_id)))
+	}
 	request := contracts.Fetch_Messages_Request {
 		agent_instance_id = command.agent_instance_id,
 		conversation_id = conversation_id,
