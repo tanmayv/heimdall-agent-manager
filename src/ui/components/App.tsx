@@ -1341,8 +1341,11 @@ export default function App() {
       });
       await refetchAgents();
       const resolvedId = result?.agent_instance_id || result?.agentInstanceId || requestedId;
+      dispatch(showToast({ kind: 'success', title: 'Agent launch requested', message: resolvedId }));
       setSelectedSidebarAgentId(durableId);
       openAgentPage(resolvedId);
+    } catch (err: any) {
+      dispatch(showToast({ kind: 'error', title: `Unable to launch ${durableId}`, message: err?.message || 'Agent launch failed' }));
     } finally {
       setSidebarAgentLaunchingId('');
     }
@@ -1601,9 +1604,15 @@ export default function App() {
                 const identityRecord = (agentIdentities || []).find((rec: any) => String(rec?.agent_id || rec?.agentId || '') === durableId) || null;
                 const remoteProxy = isRemoteProxyAgent(identityRecord) || isRemoteProxyAgent(identity);
                 const requestedId = `${durableId}@s-${(globalThis.crypto?.randomUUID?.().replace(/-/g, '').slice(0, 10) || Date.now().toString(16))}`;
-                const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentId: durableId, agentInstanceId: requestedId, provider: identity.providerProfile || identity.provider_profile || defaultConversationProvider(settingsProviders, agentIdentities), templateId: identity.templateId || identity.template_id || durableId, projectId: remoteProxy ? '' : (identity.projectId || identity.project_id || ''), displayName: '', modelTier: identity.modelTier || identity.model_tier || 'normal'});
-                await refetchAgents();
-                openAgentPage(result?.agent_instance_id || result?.agentInstanceId || requestedId);
+                try {
+                  const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentId: durableId, agentInstanceId: requestedId, provider: identity.providerProfile || identity.provider_profile || defaultConversationProvider(settingsProviders, agentIdentities), templateId: identity.templateId || identity.template_id || durableId, projectId: remoteProxy ? '' : (identity.projectId || identity.project_id || ''), displayName: '', modelTier: identity.modelTier || identity.model_tier || 'normal'});
+                  await refetchAgents();
+                  const resolvedId = result?.agent_instance_id || result?.agentInstanceId || requestedId;
+                  dispatch(showToast({ kind: 'success', title: 'Agent launch requested', message: resolvedId }));
+                  openAgentPage(resolvedId);
+                } catch (err: any) {
+                  dispatch(showToast({ kind: 'error', title: `Unable to launch ${durableId}`, message: err?.message || 'Agent launch failed' }));
+                }
               }}
             />
           ) : urlParams.view === 'new-conversation' ? (
