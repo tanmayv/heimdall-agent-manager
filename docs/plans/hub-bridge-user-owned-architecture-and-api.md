@@ -998,7 +998,8 @@ Artifact {
   artifact_id: string
   owner_user_id: string
   kind: "file" | "text" | "image" | "json" | "diff" | "other"
-  name: string
+  name: string                 // human display label; free-form, non-unique
+  description?: string         // optional longer note/context
   content_type?: string
   size_bytes?: number
   agent_id?: string
@@ -1011,7 +1012,12 @@ Artifact {
 }
 ```
 
-Artifact content access is scoped by `owner_user_id`.
+Rules:
+
+- Artifact content access is scoped by `owner_user_id`.
+- `name` is a human display label, independent of the underlying filename/content-type. It is free-form and non-unique; `artifact_id` is the identity.
+- On agent-created artifacts, `name` defaults to the supplied filename when omitted; the owner can rename anytime.
+- `description` is an optional longer human note shown in the Library and viewer.
 
 ---
 
@@ -2983,7 +2989,8 @@ Metadata fields:
 ```json
 {
   "kind": "file",
-  "name": "report.md",
+  "name": "Q3 Validation Report",
+  "description": "Pass/fail matrix for the reporting-convergence tests",
   "chain_id": "chain_123",
   "task_id": "task_123",
   "agent_id": "agt_123"
@@ -3005,6 +3012,35 @@ GET /api/v1/artifacts/{artifact_id}/content
 Authorization:
 
 - artifact owner must match authenticated user
+
+### 19.5 Update Artifact (rename / edit description)
+
+Edit human metadata. Content bytes are replaced via re-upload (see versioning), not here.
+
+```http
+PATCH /api/v1/artifacts/{artifact_id}
+```
+
+Request:
+
+```json
+{
+  "name": "Q3 Validation Report (final)",
+  "description": "Updated after reviewer feedback"
+}
+```
+
+### 19.6 Delete Artifact
+
+```http
+DELETE /api/v1/artifacts/{artifact_id}
+```
+
+Behavior:
+
+- owner-scoped; returns `204` on success.
+- Deletes the artifact metadata and its blob content.
+- References to the deleted `artifact_id` from chat messages/comments render as an unavailable/deleted placeholder rather than erroring.
 
 ---
 
