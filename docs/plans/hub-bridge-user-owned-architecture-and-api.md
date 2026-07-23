@@ -275,6 +275,7 @@ This is a green-field rewrite. Data migration from the current daemon is out of 
 20c. v1 has no auto-assignment, no auto-promotion of the next task, and no scheduled/automatic nudges. Nudges are manual, triggered by an agent or a user from the UI. Scheduling and auto-assignment are post-v1.
 21. Memory may be proposed by a user or authorized instance, but only the owning user may approve/reject pending memory.
 22. Agent-to-agent inbox/federated message-provider APIs are not part of v1; v1 chat is user↔own-agent only.
+22a. Every `AgentInstance` is bound 1:1 to exactly one `ChatConversation` (no standalone instances). Instances created from the composer, from an explicit Agent-page launch, or by the system for task-chain work all get a conversation. This makes chatting with the coordinator and with individual chain agents uniform.
 23. All durable state lives in a relational database. There are no JSONL, append-only flat-file, or ad hoc on-disk stores for durable product state. Only truly ephemeral in-memory projections (live sockets, connection registries) may live outside the database.
 24. The database engine is an implementation detail behind a repository layer. SQLite is the v1 engine, but no business logic, service, or handler may depend on SQLite-specific APIs, types, SQL dialect quirks, or file semantics. Swapping SQLite for PostgreSQL must be a data-access-layer change only.
 25. No singletons for state or dependencies. Stores, repositories, services, and connection handles are constructed once at startup and passed explicitly via dependency injection. No global mutable state, no package-level mutable singletons.
@@ -942,17 +943,19 @@ Rules:
 
 ### 7.13 Chat/conversation
 
-A conversation is bound 1:1 to a durable agent **session** (`AgentInstance`), locked at first send. Both `agent_id` (identity) and `agent_instance_id` (the session) are permanent for the conversation's life; the session is restartable (7.7) so the conversation continues by relaunching the same instance, not by repointing to a new one.
+**Invariant: every `AgentInstance` has exactly one `ChatConversation`, and vice versa (1:1).** There are no standalone instances. Whenever an instance is created — from the composer, from an explicit "Launch instance" on the Agent page, or by the system for task-chain work — a conversation is created to own it. The conversation is the user's chat window into that instance regardless of what work it does. This makes "chat with the coordinator" and "chat with an individual chain agent" fall out for free: their chain-work instances are conversation-backed.
+
+A conversation is bound 1:1 to a durable agent **session** (`AgentInstance`), locked when the instance is created. Both `agent_id` (identity) and `agent_instance_id` (the session) are permanent for the conversation's life; the session is restartable (7.7) so the conversation continues by relaunching the same instance, not by repointing to a new one.
 
 ```ts
 ChatConversation {
   conversation_id: string
   owner_user_id: string
-  agent_id: string             // permanent identity binding, set at first send
-  agent_instance_id: string    // permanent 1:1 session binding, set at first send
+  agent_id: string             // permanent identity binding, set at creation
+  agent_instance_id: string    // permanent 1:1 session binding, set at creation
   project_id?: string          // locked launch param (may be empty for no project)
-  chain_id?: string
-  title?: string
+  chain_id?: string            // set when created for task-chain work
+  title?: string               // UI may show instance id instead of title where useful
   unread_count: number
   last_message_preview?: string
   last_message_at?: string
@@ -963,10 +966,14 @@ ChatConversation {
 
 Rules:
 
-- Before the first message a conversation is a draft with no bound agent/instance; the New Conversation UI collects launch parameters (agent, project, and advanced provider/tier).
-- On first send the Hub creates the `AgentInstance` session and sets `agent_id` + `agent_instance_id` on the conversation. Both are immutable thereafter; there is no change-agent operation.
+- An instance and its conversation are created together; the conversation is never without an instance once bound. There are three creation triggers, all producing the same conversation+instance pair:
+  - **First message (composer):** the New Conversation UI collects launch params (agent, project, advanced provider/tier); the first send creates the instance + conversation.
+  - **Explicit launch (Agent page):** the user configures launch params and clicks Launch; the instance starts immediately into an empty but live conversation (no first message required). The user is dropped into that conversation to chat.
+  - **System launch (task chain):** when the Hub launches a chain agent (coordinator or a task assignee), it also creates the agent's conversation, bound to the same instance and carrying `chain_id`. This conversation is the user's channel to that agent.
+- `agent_id` + `agent_instance_id` are set at creation and immutable thereafter; there is no change-agent operation.
 - The conversation owns exactly one instance session for its whole life. Two conversations with the same `agent_id` get two separate sessions (isolation).
 - Continuing an idle conversation restarts the same `agent_instance_id` (same bridge); it does not create a new instance.
+- The coordinator's conversation is the chain's coordinator instance conversation; "message coordinator" from the chain view opens it. Individual chain agents are chatted with via their own conversations the same way.
 - `sender_agent_instance_id` on messages equals the conversation's instance, but still marks restart boundaries because the underlying process (and its in-memory context) changed even though the id did not.
 
 ```ts
