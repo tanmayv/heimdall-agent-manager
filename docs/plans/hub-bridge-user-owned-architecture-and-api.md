@@ -701,8 +701,8 @@ AgentInstance {
   conversation_id: string      // required 1:1 conversation owner
   provider: string
   tier: string
-  project_id?: string
-  project_path?: string       // effective path snapshot captured at first launch
+  project_id: string          // resolved launch project; defaults to user's Conversations project when omitted in request
+  project_path: string        // effective path snapshot captured at first launch
   runtime_status: "launching" | "starting" | "running" | "idle" | "busy" | "stopping" | "stopped" | "failed" | "unreachable"
   startup_status?: "starting" | "ready" | "startup_blocked" | "startup_failed" | "startup_unknown"
   activity_status?: "unknown" | "idle" | "active" | "blocked"
@@ -767,6 +767,7 @@ Project {
 Rules:
 
 - Project metadata is Hub/user-owned.
+- Every user has a default conversation project, initially named **Conversations** and `vcs_kind = none`. It is used when creating a normal agent chat/instance without an explicit `project_id`.
 - `default_path` is mandatory.
 - `default_path` is a fallback path; it may or may not be valid on every Bridge.
 - If different machines use different paths, configure ProjectBridgePath overrides.
@@ -817,7 +818,7 @@ TaskChain {
   kind: "private_conversation" | "team_work"
   title: string
   description?: string
-  project_id?: string
+  project_id: string           // resolved chain project; defaults to user's Conversations project when omitted in request
   coordinator_agent_instance_id: string
   default_reviewer_refs: ReviewerRef[]
   publish_state: "draft" | "published"
@@ -983,7 +984,7 @@ ChatConversation {
   owner_user_id: string
   agent_id: string             // permanent identity binding, set at creation
   agent_instance_id: string    // permanent 1:1 session binding, set at creation
-  project_id?: string          // locked launch param (may be empty for no project)
+  project_id: string           // locked launch project; default Conversations project if omitted at create time
   chain_id: string             // same immutable chain as AgentInstance.chain_id
   title?: string               // UI may show instance id instead of title where useful
   unread_count: number
@@ -2163,7 +2164,7 @@ Validation:
 3. Agent supports Bridge
 4. Bridge is online
 5. Bridge supports provider/tier
-6. Project belongs to user if supplied
+6. If `project_id` is omitted, resolve it to the user's default **Conversations** project; otherwise project belongs to user
 7. Project effective path resolves for Bridge
 8. If `chain_id` is supplied, chain belongs to user and is not terminal/archived
 9. If `chain_id` is omitted, optional `chain.default_reviewer_refs` are valid refs for the user (agent-instance refs are not allowed because no chain exists yet; default to the user if omitted)
