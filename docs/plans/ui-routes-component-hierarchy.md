@@ -369,7 +369,7 @@ The current codebase still contains legacy implementation surfaces that are refa
 
 ## 13. Known gaps for UI-17 follow-up
 
-These are intentionally not resolved in UI-16 and should be analyzed in the UI↔backend gap task:
+These are intentionally not resolved in UI-16 and are analyzed in `ui-backend-gap-analysis.md` (UI-17):
 
 - exact frontend route implementation choice (hash routing vs browser routing) and migration policy for old `/workspace` deep links;
 - backend support for unread rollup summaries by project/agent/session;

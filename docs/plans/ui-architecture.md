@@ -2,6 +2,8 @@
 
 Status: Draft — decisions captured as we discuss, ahead of mockups
 Companion to: `hub-bridge-user-owned-architecture-and-api.md` (data model + API)
+Route/component map: `ui-routes-component-hierarchy.md` (UI-16)
+UI/backend gap analysis: `ui-backend-gap-analysis.md` (UI-17)
 
 This document records the UI structure decisions for the rewritten Heimdall
 desktop app. It is chat-first and minimal: the conversation is the star, and
@@ -801,8 +803,9 @@ Content (grouped results):
 
 Search-as-you-type behavior:
 
-- Entity results come from the global search endpoint (§8.4) and update **as the
-  user types**. Actions/navigation items are matched locally and shown instantly.
+- Entity results come from the global search endpoint described in
+  `ui-backend-gap-analysis.md` and update **as the user types**.
+  Actions/navigation items are matched locally and shown instantly.
 - Client debounce (~120–200ms) plus **cancel superseded requests** (abort the
   prior in-flight query when a newer keystroke fires) so only the latest query
   renders; results never jitter/flash stale hits.
@@ -1098,168 +1101,20 @@ component state; WebSocket events patch/invalidate server-state caches.**
 
 ## 8. UI <-> backend gap analysis
 
-Comparison of the rewrite backend surface (arch doc `/api/v1`, runtime protocol)
-against what this UI design consumes. Two directions.
+Durable UI-17 gap analysis now lives in `ui-backend-gap-analysis.md`. That
+document supersedes the earlier inline draft gap notes and is the source of
+truth for:
 
-### 8.1 Backend supports it, UI has not surfaced it yet
+- surface-by-surface `/api/v1` readiness;
+- endpoints supported but unused;
+- UI needs not yet supported by the current Hub backend;
+- task status/review enum mapping;
+- conversation launch, artifact/library, command palette/search, provider profile,
+  and user WebSocket invalidation gaps;
+- no-mock rules for unsupported backend needs.
 
-These exist in the backend plan but are not (fully) placed in the UI; either wire
-them up or consciously defer.
-
-- **`GET /api/v1/me` + `GET /api/v1/me/logout-url`** — the shell must consume
-  `/me` for the current user chip and `/me/logout-url` for logout (UI 1A / footer).
-  Add explicitly; currently only implied.
-- **`GET /api/v1/templates` + `POST /api/v1/templates`** — agent templates are
-  referenced in Agent detail (persona/template), but there is no UI surface to
-  browse/create templates. Decide: a Templates area in the Agents section or
-  Settings, or defer template authoring.
-- **`POST /api/v1/batch/get`** — batch fetch is available; the data layer should
-  use it for list->detail hydration and mention/chip resolution instead of N
-  calls. Not mentioned in §7; add as a data-layer optimization.
-- **`GET /api/v1/agents/{id}?expand=memory_summary`** — RESOLVED: Agent detail
-  Overview + Memory tab now consume `memory_summary` for counts/recent items.
-- **Bridge `project_paths` expand / `POST .../bridge-paths/{bridge_id}/validate`
-  / `PUT|DELETE bridge-paths`** — Project detail (6C) uses these; confirm the UI
-  wires validate + override CRUD, including the per-Bridge delete override.
-- **`agent-instances/{id}/restart` vs reconfigure** — RESOLVED: conversation
-  runtime controls now surface both `PATCH /agent-instances/{id}` (reconfigure
-  provider/tier) and `POST .../restart` (plain relaunch) explicitly.
-- **Task nudge / publish endpoints** — RESOLVED: task detail places
-  `POST .../tasks/{id}/publish` and `nudge`; chain header places chain
-  `publish` and `complete`.
-
-### 8.2 UI expects it, backend does not cover it yet
-
-These are UI needs with no clear backend endpoint in the current plan. Each needs
-a backend task or an explicit UI simplification.
-
-- **Reviewer vote / LGTM endpoint** — RESOLVED (UI simplification): v1 voting is a
-  task status transition (`validated_good`/`validated_not_good`) via
-  `POST .../tasks/{id}/status`. No separate vote endpoint.
-- **Artifact versions / rollback / annotations** — RESOLVED (removed from UI): v1
-  artifact viewer is view + download + rename + description + delete only. No
-  version history, rollback, or annotations in the UI. Backend needs no artifact
-  versioning/annotation work for UI v1.
-- **Workspace/VCS diff surface** — RESOLVED (removed from UI): v1 Workspace tab is
-  effective path + bridge path-validation status only. No VCS branch view or live
-  diff in the UI. Backend needs no VCS/diff endpoints for UI v1.
-- **Structured message mentions storage** — composer emits `@category:id`; backend
-  `ChatMessage` has no mentions field. Handled by the body-only fallback (§3), but
-  if we want clickable/validated mentions we need a backend `mentions` field.
-- **Conversation convenience fields (`current_task_id`, `review_needed_count`)** —
-  UI infers these client-side from loaded chain tasks (works for v1). Optional
-  backend convenience fields would reduce per-conversation task fetches.
-- **Unread counts beyond chat** — sidebar/mobile want unread rollups for task
-  comments/review and artifact activity. Chat has `unread_count`; task/artifact
-  attention counts are not defined. Needs backend attention counts or UI derives
-  chat-only unread in v1 and computes review-needed from loaded tasks.
-- **Artifact "used by" / provenance links** — Project detail and Library filters
-  rely on artifact provenance fields (present on the model); ensure list filters
-  (`agent_id`, `chain_id`, `task_id`, `project_id`) are all queryable.
-- **Command palette global search** — DECIDED: add a **backend global search
-  endpoint** (spec in §8.4). The palette targets one search endpoint instead of
-  fanning out to N per-resource `?q=` calls.
-
-### 8.3 Resolution ownership
-
-- UI-only simplifications (no viewer versions/annotations, no Workspace diff,
-  chat-only unread, status-transition voting) are captured above and need **no
-  backend work**.
-- The one net-new backend requirement for UI v1 is the **global search endpoint**
-  (§8.4). Optional/deferred backend items (structured mentions field, non-chat
-  attention counts, artifact versioning/annotations, VCS/diff) are **not** blockers
-  for the UI v1 skeleton and can be filed separately.
-
-### 8.4 Backend task: global search endpoint
-
-Needed by the command palette (6B) and sidebar search. Define and hand to the
-coordinator.
-
-Endpoint:
-
-```http
-GET /api/v1/search?q=<text>&types=<csv>&limit=<n>&cursor=<opaque>
-```
-
-Request:
-
-- `q` — required free-text query (min length e.g. 1–2 chars).
-- `types` — optional CSV filter over
-  `agent,agent_instance,conversation,task,task-chain,project,artifact,memory`.
-  Omitted = all supported types.
-- `limit` — per-response cap (e.g. default 20, max 50), applied across grouped
-  results.
-- `cursor` — opaque pagination cursor (optional).
-
-Behavior:
-
-- Owner-scoped only: results are restricted to the authenticated user's resources
-  (same `owner_user_id` rules as every other endpoint). No cross-user leakage.
-- Matches on human-visible fields per type (name/title/body-preview/slug/id).
-- Returns grouped, ranked, compact hits — not full resource payloads (the UI
-  fetches detail on selection, optionally via `POST /batch/get`).
-
-Response shape:
-
-```json
-{
-  "data": {
-    "groups": [
-      {
-        "type": "conversation",
-        "hits": [
-          {
-            "id": "conv_123",
-            "label": "Bridge migration plan",
-            "sublabel": "Backend Agent · Heimdall",
-            "score": 0.91,
-            "route": "/conversations/conv_123"
-          }
-        ]
-      },
-      {
-        "type": "task",
-        "hits": [
-          {
-            "id": "task_123",
-            "label": "Implement bridge enrollment",
-            "sublabel": "chain: Hub Rewrite · in_progress",
-            "score": 0.72,
-            "route": "/chains/chain_123?task=task_123"
-          }
-        ]
-      }
-    ]
-  },
-  "page": { "limit": 20, "next_cursor": null, "has_more": false }
-}
-```
-
-Field notes:
-
-- `type` — one of the supported entity types.
-- `id` — stable resource id (used for `@category:id` mention resolution too).
-- `label` / `sublabel` — display strings; `sublabel` carries compact context
-  (agent, project, chain, status, kind).
-- `score` — relevance score for ranking within/across groups (impl-defined).
-- `route` — optional UI route hint; the UI may compute its own route from
-  `type`+`id` instead.
-
-Type-ahead requirements (primary use case):
-
-- Optimized for search-as-you-type: cheap enough to call on nearly every
-  keystroke (after client debounce), small per-group `limit`, indexed lookups,
-  prefix-first ranking, deterministic/stable ordering for a given `q`.
-- Pure `GET`, cancelable/idempotent so the client can abort superseded requests.
-- Server latency target: p95 well under ~100ms for short queries (see arch 20A).
-
-Non-goals for v1:
-
-- No full-text body indexing guarantees; substring/prefix matching on key fields
-  is acceptable for the beta.
-- No highlighting/snippets required in v1 (nice-to-have later).
-- Same endpoint also backs `@category:id` mention autocomplete by passing
-  `types=<single-category>`.
+Keep future gap updates in the companion UI-17 document so implementation tasks
+can reference a single matrix.
 
 ---
 
