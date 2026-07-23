@@ -183,10 +183,14 @@ Rules:
   pinned bridge and same chain (no new instance/chain).
 - After start, the launch controls collapse into locked chips in/near the
   composer/header: agent, project, bridge, provider, tier. Agent/project/bridge
-  are immutable for the conversation. Provider/tier are runtime tuning values:
-  changing either requires an explicit agent restart/reconfigure of the same
-  `agent_instance_id` (see arch 13.6). The UI must present this as a restart
-  action, not a silent dropdown change.
+  are immutable for the conversation. Provider/tier are runtime tuning values.
+  The UI exposes two explicit runtime controls:
+  - **Reconfigure provider/tier** → `PATCH /api/v1/agent-instances/{id}` with the
+    new provider/tier; the Hub restarts the same `agent_instance_id` process.
+  - **Restart** → `POST /api/v1/agent-instances/{id}/restart` to relaunch the
+    same instance without changing provider/tier (e.g. after a crash/idle).
+  Both keep the same instance/conversation/chain; both are explicit actions with
+  a restart indication, never silent dropdown changes.
 - **Current task strip:** when the instance has a current assigned/in-progress
   task in its chain, render a compact task card directly above the chat input:
   title, status, assignee/reviewer chips, quick "open task" link, and primary
@@ -217,9 +221,10 @@ Right Inspector (toggle, default collapsed)
   normal conversation, or shared team chain for chain work). Shows the chain
   summary plus actionable task rows with status; click the chain header to open
   the full chain board.
-- **Workspace** — shown only if the conversation has a `project_id`. Effective
-  path on the pinned bridge, VCS kind/branch, validation status, and live diff /
-  changed files when VCS-backed.
+- **Workspace** — shown only if the conversation has a `project_id`. **v1 scope:**
+  effective path on the pinned bridge plus bridge path-validation status only. No
+  VCS branch view, no live diff, no changed-files list in v1 (no backend VCS/diff
+  endpoints). VCS/diff is out of scope until backend adds it.
 - **Memory** — this agent's memories (`agent_id`-scoped). Supports inline
   approve/reject of pending proposals so the user never leaves the chat. Shows a
   **badge** when proposals are pending, and the inspector surfaces/pulses when a
@@ -472,7 +477,8 @@ Search: [______]  Kind:[all▾]  Agent:[all▾]  Project:[all▾]  Chain:[all▾
 - Filters: kind, agent, project (primary); chain, task (secondary). Backed by
   the artifact provenance fields.
 - Grid (thumbnails/previews) vs list (dense).
-- Row/card click → fullscreen ArtifactViewer (versions, annotations, download).
+- Row/card click → fullscreen ArtifactViewer (view + download; no versioning in
+  v1).
 - Upload supported here (user-created artifacts).
 
 ### Artifact naming / description / delete
@@ -499,7 +505,7 @@ Two artifact surfaces (consistent daily-vs-global pattern):
 The viewer is a fullscreen overlay opened from any artifact chip/card. It is a
 Tier-1 mobile surface, so it must be excellent on small screens.
 
-Required:
+Required (v1):
 
 - **Fullscreen overlay** with breadcrumb/title, meta strip (kind, size, project,
   chain, creator, updated), close.
@@ -509,12 +515,17 @@ Required:
   - image (png/jpg/etc.) → image view with **pinch-zoom/pan** on touch and
     wheel/drag zoom on desktop
   - unknown/binary → metadata + download only
-- **Version selector** (list versions, view a version, rollback with reason).
-- **Download** current or selected version.
+- **Download** the artifact content.
 - **Rename / edit description** from the viewer header (`PATCH`).
 - **Delete** from the viewer (`DELETE`), with the unavailable-placeholder rule.
-- **Annotations:** view existing annotations always; **creating** annotations is
-  best-effort/desktop-first (per mobile tiering) and may be simplified on phones.
+
+Explicitly out of v1 (no backend support):
+
+- version history / version selector
+- rollback to a prior version
+- annotations (view or create)
+
+These return only if/when the backend adds artifact versioning/annotation APIs.
 
 Data/loading:
 
@@ -573,7 +584,13 @@ Task detail (right pane, side-by-side, on select):
 - Body: description, acceptance criteria (REQ-IDs), full threaded comments
   (paginated load-older).
 - Role-aware interactions: comment (add/resolve), legal status transitions only,
-  nudge, vote lgtm/ngtm, assignee/reviewer pickers, publish (if draft).
+  nudge (`POST .../tasks/{id}/nudge`), vote via status transition
+  (`validated_good`/`validated_not_good`), assignee/reviewer pickers, and
+  **publish** for draft tasks (`POST .../tasks/{id}/publish`).
+- **Chain-level lifecycle controls** (chain header/overview): `publish` the chain
+  (`POST /task-chains/{id}/publish`) to move draft->active, and `complete`
+  (`POST /task-chains/{id}/complete`) with final summary + quality rating. These
+  draft->published->complete controls must be visibly placed, not buried.
 - **Assignment picker:** tasks assign actor refs, not free-form names. The
   assignee picker shows same-chain agent instances grouped by `agent_id` (no user
   option in v1). The reviewer picker shows the user plus same-chain agent
@@ -631,7 +648,9 @@ Header: name, state (active/archived), default provider/tier, slug.
 `Edit` (name/template/defaults/instructions), `Archive`.
 
 **Overview** — persona/template, instructions, defaults, counts (# enabled
-bridges, # running instances). The "what is this agent" summary.
+bridges, # running instances), and a **memory summary** from
+`GET /api/v1/agents/{id}?expand=memory_summary` (active/pending counts + recent
+items). The "what is this agent" summary.
 
 **Sessions** — every instance of this agent. Because an instance is 1:1 with a
 conversation (arch invariant 22a), the instances list and conversations list are
@@ -666,8 +685,9 @@ bridge's capabilities. (An agent with no enabled support cannot launch;
 invariant 19.)
 
 **Memory** — this agent's memories (`agent_id`-scoped): list + approve/reject
-pending + add/edit. Same surface as the conversation inspector's Memory tab and
-the global Settings → Memory view.
+pending + add/edit. Uses `memory_summary` for header counts and the memory list
+endpoint for the full list. Same surface as the conversation inspector's Memory
+tab and the global Settings → Memory view.
 
 No Project tab: agents are project-agnostic (no `project_id` on Agent). A project
 is chosen per launch and shown per session in the Sessions list.
@@ -977,7 +997,11 @@ with this document:
   reuse/refactor for the new Conversation page. Add launch controls + locked
   chips + current-task strip to the composer shell.
 - `ArtifactViewer.tsx`, `ArtifactUpload.tsx` — reuse/refactor for Library and
-  conversation artifacts. Mobile fullscreen viewer behavior is required.
+  conversation artifacts. Mobile fullscreen viewer behavior is required. Drop
+  version-history and annotation UI (out of v1); keep view/download/rename/
+  description/delete.
+- **Workspace VCS/diff UI** — do not port diff/branch/changed-file components; v1
+  Workspace tab is effective-path + validation status only.
 - `RuntimeRestartControls.tsx` — reuse/refactor for provider/tier restart flows;
   must respect locked agent/project/bridge and Bridge-dependent provider/tier
   options.
@@ -1059,8 +1083,167 @@ component state; WebSocket events patch/invalidate server-state caches.**
 
 ---
 
-## 8. Open decisions
+## 8. UI <-> backend gap analysis
 
-No open structural UI decisions currently. Remaining work is detailed component
-specification (conversation page, artifact viewer, task detail/comments,
-Settings subsections, provider profiles, and agent packs).
+Comparison of the rewrite backend surface (arch doc `/api/v1`, runtime protocol)
+against what this UI design consumes. Two directions.
+
+### 8.1 Backend supports it, UI has not surfaced it yet
+
+These exist in the backend plan but are not (fully) placed in the UI; either wire
+them up or consciously defer.
+
+- **`GET /api/v1/me` + `GET /api/v1/me/logout-url`** — the shell must consume
+  `/me` for the current user chip and `/me/logout-url` for logout (UI 1A / footer).
+  Add explicitly; currently only implied.
+- **`GET /api/v1/templates` + `POST /api/v1/templates`** — agent templates are
+  referenced in Agent detail (persona/template), but there is no UI surface to
+  browse/create templates. Decide: a Templates area in the Agents section or
+  Settings, or defer template authoring.
+- **`POST /api/v1/batch/get`** — batch fetch is available; the data layer should
+  use it for list->detail hydration and mention/chip resolution instead of N
+  calls. Not mentioned in §7; add as a data-layer optimization.
+- **`GET /api/v1/agents/{id}?expand=memory_summary`** — RESOLVED: Agent detail
+  Overview + Memory tab now consume `memory_summary` for counts/recent items.
+- **Bridge `project_paths` expand / `POST .../bridge-paths/{bridge_id}/validate`
+  / `PUT|DELETE bridge-paths`** — Project detail (6C) uses these; confirm the UI
+  wires validate + override CRUD, including the per-Bridge delete override.
+- **`agent-instances/{id}/restart` vs reconfigure** — RESOLVED: conversation
+  runtime controls now surface both `PATCH /agent-instances/{id}` (reconfigure
+  provider/tier) and `POST .../restart` (plain relaunch) explicitly.
+- **Task nudge / publish endpoints** — RESOLVED: task detail places
+  `POST .../tasks/{id}/publish` and `nudge`; chain header places chain
+  `publish` and `complete`.
+
+### 8.2 UI expects it, backend does not cover it yet
+
+These are UI needs with no clear backend endpoint in the current plan. Each needs
+a backend task or an explicit UI simplification.
+
+- **Reviewer vote / LGTM endpoint** — RESOLVED (UI simplification): v1 voting is a
+  task status transition (`validated_good`/`validated_not_good`) via
+  `POST .../tasks/{id}/status`. No separate vote endpoint.
+- **Artifact versions / rollback / annotations** — RESOLVED (removed from UI): v1
+  artifact viewer is view + download + rename + description + delete only. No
+  version history, rollback, or annotations in the UI. Backend needs no artifact
+  versioning/annotation work for UI v1.
+- **Workspace/VCS diff surface** — RESOLVED (removed from UI): v1 Workspace tab is
+  effective path + bridge path-validation status only. No VCS branch view or live
+  diff in the UI. Backend needs no VCS/diff endpoints for UI v1.
+- **Structured message mentions storage** — composer emits `@category:id`; backend
+  `ChatMessage` has no mentions field. Handled by the body-only fallback (§3), but
+  if we want clickable/validated mentions we need a backend `mentions` field.
+- **Conversation convenience fields (`current_task_id`, `review_needed_count`)** —
+  UI infers these client-side from loaded chain tasks (works for v1). Optional
+  backend convenience fields would reduce per-conversation task fetches.
+- **Unread counts beyond chat** — sidebar/mobile want unread rollups for task
+  comments/review and artifact activity. Chat has `unread_count`; task/artifact
+  attention counts are not defined. Needs backend attention counts or UI derives
+  chat-only unread in v1 and computes review-needed from loaded tasks.
+- **Artifact "used by" / provenance links** — Project detail and Library filters
+  rely on artifact provenance fields (present on the model); ensure list filters
+  (`agent_id`, `chain_id`, `task_id`, `project_id`) are all queryable.
+- **Command palette global search** — DECIDED: add a **backend global search
+  endpoint** (spec in §8.4). The palette targets one search endpoint instead of
+  fanning out to N per-resource `?q=` calls.
+
+### 8.3 Resolution ownership
+
+- UI-only simplifications (no viewer versions/annotations, no Workspace diff,
+  chat-only unread, status-transition voting) are captured above and need **no
+  backend work**.
+- The one net-new backend requirement for UI v1 is the **global search endpoint**
+  (§8.4). Optional/deferred backend items (structured mentions field, non-chat
+  attention counts, artifact versioning/annotations, VCS/diff) are **not** blockers
+  for the UI v1 skeleton and can be filed separately.
+
+### 8.4 Backend task: global search endpoint
+
+Needed by the command palette (6B) and sidebar search. Define and hand to the
+coordinator.
+
+Endpoint:
+
+```http
+GET /api/v1/search?q=<text>&types=<csv>&limit=<n>&cursor=<opaque>
+```
+
+Request:
+
+- `q` — required free-text query (min length e.g. 1–2 chars).
+- `types` — optional CSV filter over
+  `agent,agent_instance,conversation,task,task-chain,project,artifact,memory`.
+  Omitted = all supported types.
+- `limit` — per-response cap (e.g. default 20, max 50), applied across grouped
+  results.
+- `cursor` — opaque pagination cursor (optional).
+
+Behavior:
+
+- Owner-scoped only: results are restricted to the authenticated user's resources
+  (same `owner_user_id` rules as every other endpoint). No cross-user leakage.
+- Matches on human-visible fields per type (name/title/body-preview/slug/id).
+- Returns grouped, ranked, compact hits — not full resource payloads (the UI
+  fetches detail on selection, optionally via `POST /batch/get`).
+
+Response shape:
+
+```json
+{
+  "data": {
+    "groups": [
+      {
+        "type": "conversation",
+        "hits": [
+          {
+            "id": "conv_123",
+            "label": "Bridge migration plan",
+            "sublabel": "Backend Agent · Heimdall",
+            "score": 0.91,
+            "route": "/conversations/conv_123"
+          }
+        ]
+      },
+      {
+        "type": "task",
+        "hits": [
+          {
+            "id": "task_123",
+            "label": "Implement bridge enrollment",
+            "sublabel": "chain: Hub Rewrite · in_progress",
+            "score": 0.72,
+            "route": "/chains/chain_123?task=task_123"
+          }
+        ]
+      }
+    ]
+  },
+  "page": { "limit": 20, "next_cursor": null, "has_more": false }
+}
+```
+
+Field notes:
+
+- `type` — one of the supported entity types.
+- `id` — stable resource id (used for `@category:id` mention resolution too).
+- `label` / `sublabel` — display strings; `sublabel` carries compact context
+  (agent, project, chain, status, kind).
+- `score` — relevance score for ranking within/across groups (impl-defined).
+- `route` — optional UI route hint; the UI may compute its own route from
+  `type`+`id` instead.
+
+Non-goals for v1:
+
+- No full-text body indexing guarantees; substring/prefix matching on key fields
+  is acceptable for the beta.
+- No highlighting/snippets required in v1 (nice-to-have later).
+- Same endpoint also backs `@category:id` mention autocomplete by passing
+  `types=<single-category>`.
+
+---
+
+## 9. Open decisions
+
+No open structural UI decisions currently. Remaining work is the routes +
+component hierarchy section and detailed component specs (conversation page,
+artifact viewer, task detail/comments, Settings subsections, provider profiles).

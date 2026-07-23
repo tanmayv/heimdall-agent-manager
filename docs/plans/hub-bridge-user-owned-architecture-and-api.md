@@ -3353,6 +3353,73 @@ Request:
 
 ---
 
+## 20A. Global search API
+
+Backs the UI command palette / sidebar search and `@category:id` mention
+autocomplete. One owner-scoped endpoint that returns compact, grouped, ranked
+hits across supported entity types. It does not return full resource payloads;
+clients fetch detail on selection (optionally via `POST /api/v1/batch/get`).
+
+```http
+GET /api/v1/search?q=<text>&types=<csv>&limit=<n>&cursor=<opaque>
+```
+
+Parameters:
+
+- `q` — required free-text query.
+- `types` — optional CSV over `agent,agent_instance,conversation,task,task-chain,project,artifact,memory`; omitted = all supported types. Pass a single type to drive mention autocomplete for that category.
+- `limit` — response cap across grouped results (default 20, max 50).
+- `cursor` — opaque pagination cursor.
+
+Rules:
+
+- Owner-scoped only; results restricted to the authenticated user's resources (same `owner_user_id` rules as all endpoints). No cross-user leakage.
+- Matches human-visible fields per type (name/title/body-preview/slug/id).
+- v1 may use substring/prefix matching on key fields; full-text indexing and snippet highlighting are post-v1.
+
+Response:
+
+```json
+{
+  "data": {
+    "groups": [
+      {
+        "type": "conversation",
+        "hits": [
+          {
+            "id": "conv_123",
+            "label": "Bridge migration plan",
+            "sublabel": "Backend Agent · Heimdall",
+            "score": 0.91
+          }
+        ]
+      },
+      {
+        "type": "task",
+        "hits": [
+          {
+            "id": "task_123",
+            "label": "Implement bridge enrollment",
+            "sublabel": "chain: Hub Rewrite · in_progress",
+            "score": 0.72
+          }
+        ]
+      }
+    ]
+  },
+  "page": { "limit": 20, "next_cursor": null, "has_more": false }
+}
+```
+
+Field notes:
+
+- `type` — supported entity type.
+- `id` — stable resource id (also used for `@category:id` mention resolution).
+- `label` / `sublabel` — display strings; `sublabel` carries compact context.
+- `score` — implementation-defined relevance ranking.
+
+---
+
 ## 21. User WebSocket API
 
 ### 21.1 Connect
