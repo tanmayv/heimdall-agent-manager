@@ -46,11 +46,9 @@ After enrollment, the Bridge stores:
 ```toml
 [bridge]
 id = "brg_123"
-hub_url = "http://127.0.0.1:18080"
+hub_url = "https://heimdall.example.com"
 token = "hbr_secret"
 ```
-
-Bridge runtime `hub_url` values may be plaintext `http://` for SSH tunnels/local dev or `https://` for direct TLS. HTTPS uses certificate validation, SNI/hostname verification, and `wss://` for the runtime WebSocket.
 
 All Bridge runtime calls use:
 
@@ -156,13 +154,12 @@ ham-bridge enroll --hub http://127.0.0.1:18080 --token hbe_secret_once
 
 Operational requirements:
 
-- `ham-bridge enroll --hub <url>` must accept plaintext HTTP base URLs for SSH tunnels, including `http://127.0.0.1:<port>` and `http://localhost:<port>`.
-- Direct HTTPS Hub URLs are also supported when the Bridge can validate the Hub certificate: `https://` HTTP/bootstrap/status calls use TLS with SNI, CA roots, and hostname verification; runtime WebSocket derives `wss://` and performs TLS before the WebSocket upgrade. Operators may set `HAM_TLS_CA_FILE=/path/to/ca.pem` to trust a private CA for self-hosted deployments; there is no insecure skip-verify default.
+- `ham-bridge enroll --hub <url>` must accept any valid HTTP(S) base URL, including `http://127.0.0.1:<port>` and `http://localhost:<port>`.
 - The enrolled Bridge persists exactly the supplied `hub_url`; later WebSocket, bootstrap, and runtime HTTP calls use that URL.
-- WebSocket upgrade must work over the same base URL (`ws://` derived from `http://`, `wss://` derived from `https://`); SSH TCP forwarding handles WebSockets transparently.
+- WebSocket upgrade must work over the same base URL; SSH TCP forwarding handles WebSockets transparently.
 - Do not special-case tunnels in Hub authorization. Auth still uses Bridge bearer tokens and assigned-instance checks.
-- Operators who need TLS on the public leg may either terminate TLS before the SSH tunnel and use HTTP inside the tunnel, or preserve hostname/cert validation for an HTTPS tunnel endpoint with local DNS/hosts and a certificate whose SAN matches the configured `hub_url` host.
-- This is not NAT traversal, relay, federation, or reverse-connection support. It is documented/validated support for ordinary outbound Bridge connectivity through a user-managed TCP tunnel or direct HTTPS/WSS Hub connectivity.
+- If using HTTPS through a localhost tunnel, hostname validation may fail if the certificate is for `hub.example.com` but the URL is `https://127.0.0.1:<port>`. Operators should either use HTTP inside the SSH tunnel, or preserve the Hub hostname with local DNS/hosts mapping and tunnel the matching port.
+- This is not NAT traversal, relay, federation, or reverse-connection support. It is documented/validated support for ordinary outbound Bridge connectivity through a user-managed TCP tunnel.
 
 ---
 
@@ -1229,12 +1226,10 @@ Response:
       }
     ],
     "instance_token": "hit_secret_once_or_runtime_token",
-    "hub_url": "http://127.0.0.1:18080"
+    "hub_url": "https://heimdall.example.com"
   }
 }
 ```
-
-Bootstrap echoes the exact `hub_url` persisted by the Bridge, whether it is a plaintext `http://` SSH-tunnel/local-dev URL or a direct `https://` Hub URL. For persisted `https://` URLs, Bridge bootstrap/status/runtime HTTP calls use HTTPS with CA roots, SNI, and hostname verification; runtime WebSocket derives `wss://.../api/v1/bridge-ws`. Plain `http://` tunnel URLs remain valid and derive `ws://` for runtime WebSocket.
 
 Notes:
 
@@ -1491,7 +1486,7 @@ Example Bridge config:
 ```toml
 [bridge]
 id = "brg_123"
-hub_url = "http://127.0.0.1:18080"
+hub_url = "https://heimdall.example.com"
 token = "hbr_secret"
 
 [bridge.runtime]

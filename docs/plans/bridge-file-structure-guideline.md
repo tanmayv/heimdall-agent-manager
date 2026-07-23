@@ -37,10 +37,8 @@ Key differences from the Hub:
    import the Hub WS transport directly (they use an injected interface).
 3. **The Hub is reached through one client package.** Nothing else speaks the
    Hub protocol or holds the bridge token. The client uses the persisted
-   `hub_url` exactly as enrolled/configured, including plaintext HTTP
-   localhost/loopback SSH tunnel URLs and direct HTTPS Hub URLs; do not
-   normalize it back to a public Hub URL. HTTPS must use TLS certificate and
-   hostname validation, and runtime WebSocket derives `wss://`.
+   `hub_url` exactly as enrolled/configured, including localhost/loopback SSH
+   tunnel URLs; do not normalize it back to a public Hub URL.
 4. **External systems (tmux, filesystem, provider CLIs) are reached only through
    adapter packages behind interfaces.** This keeps the runner testable and lets
    OS-specific bits stay isolated.
