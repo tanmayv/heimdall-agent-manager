@@ -396,42 +396,28 @@ Example:
 Authorization: Bearer hut_...
 ```
 
-#### 6.3.1 Issuance model (no self-serve UI required)
+#### 6.3.1 Issuance model (operator-granted only for v1)
 
-There is intentionally **no in-app “create token” page** for v1. Tokens are
-**granted**, via two paths:
+There is intentionally **no in-app “create token” page** and **no HTTP token API**
+for v1. Tokens are **granted by an operator on the Hub host** with an admin
+command that writes through the auth service / repository directly (it runs on
+the Hub host, so it is trusted by locality, not by a bearer token):
 
-1. **Operator/admin issuance on the Hub host (primary for v1).** A Hub-host admin
-   command mints a token for a user by writing through the auth service /
-   repository directly (it runs on the Hub host, so it is trusted by locality,
-   not by a bearer token):
+```bash
+ham-hub tokens issue --user <user_id> [--label "tanmay laptop ham-ctl"] [--expires-in 90d]
+# prints the plaintext token once (hut_...), stores only the hash
+ham-hub tokens list  --user <user_id>       # metadata only, never plaintext
+ham-hub tokens revoke --token-id <tok_id>
+```
 
-   ```bash
-   ham-hub tokens issue --user <user_id> [--label "tanmay laptop ham-ctl"] [--expires-in 90d]
-   # prints the plaintext token once (hut_...), stores only the hash
-   ham-hub tokens list  --user <user_id>       # metadata only, never plaintext
-   ham-hub tokens revoke --token-id <tok_id>
-   ```
+This resolves the bootstrap chicken-and-egg (a client cannot mint its first token
+if minting requires a token) and covers pure-headless deployments with no browser.
+It funnels through one auth service/repository (invariant 27); the plaintext is
+returned exactly once and only the hash is persisted. There is no username/
+password login and no self-serve token page.
 
-   This resolves the bootstrap chicken-and-egg (a client cannot mint its first
-   token if minting requires a token) and covers pure-headless deployments with
-   no browser.
-
-2. **Authenticated HTTP issuance (optional, same contract).** When a caller
-   already has a valid user auth context — a browser trusted-proxy session or an
-   existing user token — the Hub may expose a token API so tokens can grant more
-   tokens without operator access:
-
-   ```http
-   POST   /api/v1/user-tokens        # body: { label?, expires_in_seconds? } -> returns plaintext ONCE
-   GET    /api/v1/user-tokens        # list own tokens (metadata only: id, label, created_at, last_used_at, expires_at)
-   DELETE /api/v1/user-tokens/{id}   # revoke
-   ```
-
-   Both paths funnel through one auth service/repository (invariant 27); the
-   plaintext is returned exactly once and only the hash is persisted. The HTTP
-   path is optional for v1 since granting via `ham-hub tokens issue` is
-   sufficient; there is no username/password login and no self-serve token page.
+An authenticated HTTP token API (`POST/GET/DELETE /api/v1/user-tokens`) is a
+possible post-v1 addition, but is **not** part of v1.
 
 ```ts
 UserApiToken {
