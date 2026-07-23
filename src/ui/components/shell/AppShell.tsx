@@ -9,6 +9,62 @@ type ShellRoute = {
   group: 'primary' | 'secondary';
 };
 
+type AuthUser = {
+  user_id?: string;
+  name?: string;
+  display_name?: string;
+  email?: string;
+};
+
+type AuthStatus = 'checking' | 'authenticated' | 'unauthenticated' | 'forbidden' | 'error';
+
+type AuthState = {
+  status: AuthStatus;
+  user: AuthUser | null;
+  loginUrl: string;
+  logoutUrl: string;
+  error: string;
+};
+
+
+type ConversationSummary = {
+  conversationId: string;
+  agentId: string;
+  agentInstanceId: string;
+  projectId: string;
+  title: string;
+  unreadCount: number;
+  updatedAt: string;
+};
+
+type ProjectSummary = {
+  projectId: string;
+  name: string;
+  isDefaultConversations?: boolean;
+};
+
+type SessionGroup = {
+  conversation: ConversationSummary;
+};
+
+type AgentGroup = {
+  agentId: string;
+  unreadCount: number;
+  sessions: SessionGroup[];
+};
+
+type ProjectGroup = {
+  project: ProjectSummary;
+  unreadCount: number;
+  agents: AgentGroup[];
+};
+
+const DEFAULT_CONVERSATIONS_PROJECT: ProjectSummary = {
+  projectId: 'default-conversations',
+  name: 'Conversations',
+  isDefaultConversations: true,
+};
+
 const NAV_ROUTES: ShellRoute[] = [
   { path: '/conversations', label: 'Conversations', icon: '💬', description: 'Chat sessions grouped by project and agent', group: 'primary' },
   { path: '/chains', label: 'Task Chains', icon: '☑', description: 'Task-chain work and review', group: 'primary' },
@@ -63,7 +119,221 @@ function shellHash(path: string): string {
   return buildRouteHash(path, '');
 }
 
-function NavItem({ item, active, collapsed }: { item: ShellRoute; active: boolean; collapsed: boolean }) {
+function apiUrl(path: string): string {
+  return path.startsWith('/api/v1') ? path : `/api/v1${path.startsWith('/') ? path : `/${path}`}`;
+}
+
+function authRuntimeConfig(): Record<string, any> {
+  if (typeof window === 'undefined') return {};
+  return (window as any).__HEIMDALL_AUTH_CONFIG__ || (window as any).__HEIMDALL_UI_CONFIG__?.auth || {};
+}
+
+function metaContent(name: string): string {
+  if (typeof document === 'undefined') return '';
+  return document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`)?.content || '';
+}
+
+function configuredAuthUrl(kind: 'login' | 'logout'): string {
+  const cfg = authRuntimeConfig();
+  const snake = `${kind}_url`;
+  const camel = `${kind}Url`;
+  const fromConfig = String(cfg?.[snake] || cfg?.[camel] || '').trim();
+  if (fromConfig) return fromConfig;
+  return metaContent(`heimdall-${kind}-url`).trim();
+}
+
+function loginUrlWithReturn(loginUrl: string): string {
+  if (!loginUrl || typeof window === 'undefined') return loginUrl;
+  if (loginUrl.includes('{return_to}')) return loginUrl.replace('{return_to}', encodeURIComponent(window.location.href));
+  if (loginUrl.includes('{returnTo}')) return loginUrl.replace('{returnTo}', encodeURIComponent(window.location.href));
+  return loginUrl;
+}
+
+function isApiV1Url(input: RequestInfo | URL): boolean {
+  const value = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+  try {
+    const url = new URL(value, window.location.href);
+    return url.pathname.startsWith('/api/v1/');
+  } catch (_err) {
+    return String(value).startsWith('/api/v1/');
+  }
+}
+
+function installApiAuthObserver() {
+  if (typeof window === 'undefined' || !(window as any).fetch || (window as any).__heimdallApiAuthObserverInstalled) return;
+  const originalFetch = window.fetch.bind(window);
+  (window as any).__heimdallApiAuthObserverInstalled = true;
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const response = await originalFetch(input, init);
+    if (isApiV1Url(input)) {
+      if (response.status === 401) window.dispatchEvent(new CustomEvent('heimdall:api-unauthenticated'));
+      if (response.status === 403) window.dispatchEvent(new CustomEvent('heimdall:api-forbidden'));
+    }
+    return response;
+  };
+}
+
+async function bootstrapAuth(): Promise<AuthState> {
+  const loginUrl = configuredAuthUrl('login');
+  try {
+    const me = await fetch(apiUrl('/me'), { credentials: 'include' });
+    if (me.status === 401) return { status: 'unauthenticated', user: null, loginUrl, logoutUrl: configuredAuthUrl('logout'), error: '' };
+    if (me.status === 403) return { status: 'forbidden', user: null, loginUrl, logoutUrl: configuredAuthUrl('logout'), error: 'Access denied' };
+    if (!me.ok) return { status: 'error', user: null, loginUrl, logoutUrl: configuredAuthUrl('logout'), error: `Auth check failed (${me.status})` };
+    const meBody = await me.json();
+    let logoutUrl = configuredAuthUrl('logout');
+    const logout = await fetch(apiUrl('/me/logout-url'), { credentials: 'include' });
+    if (logout.ok) {
+      const logoutBody = await logout.json();
+      logoutUrl = String(logoutBody?.data?.logout_url || logoutUrl || '').trim();
+    }
+    return { status: 'authenticated', user: meBody?.data || {}, loginUrl, logoutUrl, error: '' };
+  } catch (error: any) {
+    return { status: 'error', user: null, loginUrl, logoutUrl: configuredAuthUrl('logout'), error: String(error?.message || error || 'Auth check failed') };
+  }
+}
+
+
+function numberValue(value: any): number {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function normalizeConversation(raw: any): ConversationSummary {
+  const conversationId = String(raw?.conversation_id || raw?.conversationId || raw?.id || '');
+  const agentInstanceId = String(raw?.agent_instance_id || raw?.agentInstanceId || raw?.instance_id || '');
+  const agentId = String(raw?.agent_id || raw?.agentId || raw?.agent || 'unknown-agent');
+  const projectId = String(raw?.project_id || raw?.projectId || DEFAULT_CONVERSATIONS_PROJECT.projectId);
+  return {
+    conversationId,
+    agentId: agentId || 'unknown-agent',
+    agentInstanceId,
+    projectId: projectId || DEFAULT_CONVERSATIONS_PROJECT.projectId,
+    title: String(raw?.title || raw?.last_message_preview || raw?.lastMessagePreview || agentInstanceId || conversationId || 'Untitled session'),
+    unreadCount: numberValue(raw?.unread_count ?? raw?.unreadCount),
+    updatedAt: String(raw?.updated_at || raw?.updatedAt || raw?.last_message_at || raw?.lastMessageAt || ''),
+  };
+}
+
+function normalizeProject(raw: any): ProjectSummary {
+  const name = String(raw?.name || raw?.title || 'Untitled project');
+  const projectId = String(raw?.project_id || raw?.projectId || raw?.id || '');
+  // UI-3 requires default-project semantics to survive rename. Do not infer the
+  // protected default project from the display name; use only a durable backend
+  // marker (or the synthetic fallback project id when no backend project exists).
+  const hasDefaultMarker = raw?.is_default_conversations === true || raw?.isDefaultConversations === true;
+  const isSyntheticFallback = projectId === DEFAULT_CONVERSATIONS_PROJECT.projectId;
+  const isDefault = hasDefaultMarker || isSyntheticFallback;
+  return { projectId: projectId || (isDefault ? DEFAULT_CONVERSATIONS_PROJECT.projectId : name), name, isDefaultConversations: isDefault };
+}
+
+function displaySessionId(conversation: ConversationSummary): string {
+  return conversation.agentInstanceId || conversation.conversationId;
+}
+
+function sortByUpdatedDesc<T extends { updatedAt?: string }>(items: T[]): T[] {
+  return [...items].sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')));
+}
+
+function buildProjectConversationTree(conversations: ConversationSummary[], projects: ProjectSummary[]): ProjectGroup[] {
+  const projectsById = new Map<string, ProjectSummary>();
+  const markedDefaultProject = projects.find((project) => project.isDefaultConversations);
+  const defaultProject = markedDefaultProject || DEFAULT_CONVERSATIONS_PROJECT;
+  const defaultProjectId = defaultProject.projectId || DEFAULT_CONVERSATIONS_PROJECT.projectId;
+  projectsById.set(defaultProjectId, { ...defaultProject, projectId: defaultProjectId, isDefaultConversations: true });
+  projects.forEach((project) => {
+    if (project.projectId) projectsById.set(project.projectId, project.projectId === defaultProjectId ? { ...project, isDefaultConversations: true } : project);
+  });
+
+  const grouped = new Map<string, Map<string, ConversationSummary[]>>();
+  conversations.forEach((conversation) => {
+    const rawProjectId = conversation.projectId || DEFAULT_CONVERSATIONS_PROJECT.projectId;
+    const projectId = rawProjectId === DEFAULT_CONVERSATIONS_PROJECT.projectId ? defaultProjectId : rawProjectId;
+    if (!projectsById.has(projectId)) projectsById.set(projectId, { projectId, name: projectId });
+    if (!grouped.has(projectId)) grouped.set(projectId, new Map());
+    const byAgent = grouped.get(projectId)!;
+    if (!byAgent.has(conversation.agentId)) byAgent.set(conversation.agentId, []);
+    byAgent.get(conversation.agentId)!.push(conversation);
+  });
+  if (!grouped.has(defaultProjectId)) grouped.set(defaultProjectId, new Map());
+
+  return Array.from(grouped.entries()).map(([projectId, agentMap]) => {
+    const agents: AgentGroup[] = Array.from(agentMap.entries()).map(([agentId, sessions]) => {
+      const sortedSessions = sortByUpdatedDesc(sessions).map((conversation) => ({ conversation }));
+      return { agentId, sessions: sortedSessions, unreadCount: sortedSessions.reduce((sum, session) => sum + session.conversation.unreadCount, 0) };
+    }).sort((a, b) => b.unreadCount - a.unreadCount || a.agentId.localeCompare(b.agentId));
+    return { project: projectsById.get(projectId) || { projectId, name: projectId }, agents, unreadCount: agents.reduce((sum, agent) => sum + agent.unreadCount, 0) };
+  }).sort((a, b) => {
+    if (a.project.isDefaultConversations) return -1;
+    if (b.project.isDefaultConversations) return 1;
+    return b.unreadCount - a.unreadCount || a.project.name.localeCompare(b.project.name);
+  });
+}
+
+async function fetchApiList(path: string): Promise<any[]> {
+  const response = await fetch(apiUrl(path), { credentials: 'include' });
+  if (!response.ok) return [];
+  const body = await response.json();
+  return Array.isArray(body?.data) ? body.data : [];
+}
+
+function UnreadBadge({ count, debugId }: { count: number; debugId: string }) {
+  if (count <= 0) return null;
+  return <span data-debug-id={debugId} className="ml-auto inline-flex min-w-5 items-center justify-center rounded-full bg-sky-400 px-1.5 py-0.5 text-[10px] font-black text-black">{count > 99 ? '99+' : count}</span>;
+}
+
+function ProjectConversationTree({ groups }: { groups: ProjectGroup[] }) {
+  return (
+    <section data-debug-id="sidebar-project-agent-session-tree" className="mt-4 border-t border-white/10 pt-4">
+      <div className="mb-2 flex items-center justify-between px-1 text-[11px] font-bold uppercase tracking-[0.18em] text-zinc-500">
+        <span>Projects</span>
+      </div>
+      <div className="space-y-3">
+        {groups.map((projectGroup) => (
+          <div key={projectGroup.project.projectId} data-debug-id={`sidebar-project-group-${projectGroup.project.projectId}`} className="rounded-2xl border border-white/8 bg-black/15 p-2">
+            <div className="flex items-center gap-2 px-1 py-1 text-sm font-semibold text-zinc-100">
+              <span className="truncate">{projectGroup.project.name}</span>
+              {projectGroup.project.isDefaultConversations && (
+                <span data-debug-id="sidebar-default-conversations-project-policy" title="Default Conversations project is renamable but not deletable" className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-bold text-zinc-300">renamable · not deletable</span>
+              )}
+              <UnreadBadge count={projectGroup.unreadCount} debugId={`sidebar-project-unread-${projectGroup.project.projectId}`} />
+            </div>
+            {projectGroup.agents.length === 0 ? (
+              <div data-debug-id={`sidebar-project-empty-${projectGroup.project.projectId}`} className="px-1 py-2 text-xs text-zinc-500">No sessions yet.</div>
+            ) : (
+              <div className="mt-1 space-y-1">
+                {projectGroup.agents.map((agentGroup) => (
+                  <div key={agentGroup.agentId} data-debug-id={`sidebar-agent-group-${agentGroup.agentId}`} className="rounded-xl bg-white/[0.03] px-2 py-1.5">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-zinc-300">
+                      <span className="truncate">{agentGroup.agentId}</span>
+                      <UnreadBadge count={agentGroup.unreadCount} debugId={`sidebar-agent-unread-${agentGroup.agentId}`} />
+                    </div>
+                    <div className="mt-1 space-y-1">
+                      {agentGroup.sessions.map(({ conversation }) => (
+                        <a
+                          key={conversation.conversationId}
+                          data-debug-id={`sidebar-session-row-${conversation.conversationId}`}
+                          href={shellHash(`/conversations/${conversation.conversationId}`)}
+                          className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-[12px] text-zinc-400 hover:bg-white/8 hover:text-white"
+                        >
+                          <span className="min-w-0 flex-1 truncate">{conversation.title || displaySessionId(conversation)}</span>
+                          <span className="shrink-0 text-[10px] text-zinc-600">{displaySessionId(conversation)}</span>
+                          <UnreadBadge count={conversation.unreadCount} debugId={`sidebar-session-unread-${conversation.conversationId}`} />
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function NavItem({ item, active, collapsed, badge = 0 }: { item: ShellRoute; active: boolean; collapsed: boolean; badge?: number }) {
   const activeClass = active
     ? 'border-white/20 bg-white/12 text-white shadow-[inset_3px_0_0_rgba(14,165,233,0.95)]'
     : 'border-transparent text-zinc-400 hover:border-white/10 hover:bg-white/8 hover:text-white';
@@ -82,7 +352,81 @@ function NavItem({ item, active, collapsed }: { item: ShellRoute; active: boolea
           <span className="block truncate text-[11px] text-zinc-500 group-hover:text-zinc-400">{item.description}</span>
         </span>
       )}
+      <UnreadBadge count={badge} debugId={`shell-nav-unread-${item.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`} />
     </a>
+  );
+}
+
+function AuthGate() {
+  const [auth, setAuth] = useState<AuthState>({ status: 'checking', user: null, loginUrl: configuredAuthUrl('login'), logoutUrl: configuredAuthUrl('logout'), error: '' });
+
+  useEffect(() => {
+    let cancelled = false;
+    installApiAuthObserver();
+    bootstrapAuth().then((next) => { if (!cancelled) setAuth(next); });
+    const onUnauthenticated = () => setAuth((prev) => ({ ...prev, status: 'unauthenticated', user: null, loginUrl: prev.loginUrl || configuredAuthUrl('login') }));
+    const onForbidden = () => setAuth((prev) => ({ ...prev, status: 'forbidden', error: 'Access denied' }));
+    window.addEventListener('heimdall:api-unauthenticated', onUnauthenticated);
+    window.addEventListener('heimdall:api-forbidden', onForbidden);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('heimdall:api-unauthenticated', onUnauthenticated);
+      window.removeEventListener('heimdall:api-forbidden', onForbidden);
+    };
+  }, []);
+
+  if (auth.status === 'checking') return <AuthStatusScreen debugId="auth-checking" title="Checking session…" body="Verifying trusted-proxy identity with /api/v1/me." />;
+  if (auth.status === 'unauthenticated') return <UnauthenticatedLanding loginUrl={auth.loginUrl} />;
+  if (auth.status === 'forbidden') return <AccessDenied />;
+  if (auth.status === 'error') return <AuthStatusScreen debugId="auth-error" title="Unable to verify session" body={auth.error || 'The app could not reach /api/v1/me.'} />;
+  return <AuthenticatedShell user={auth.user || {}} logoutUrl={auth.logoutUrl} />;
+}
+
+function AuthStatusScreen({ debugId, title, body }: { debugId: string; title: string; body: string }) {
+  return (
+    <main data-debug-id={debugId} className="grid min-h-screen place-items-center bg-[#090909] px-6 text-zinc-100">
+      <section className="w-full max-w-md rounded-[2rem] border border-white/10 bg-white/[0.04] p-8 text-center shadow-2xl">
+        <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-white/10">⌁</div>
+        <h1 className="text-2xl font-semibold">{title}</h1>
+        <p className="mt-3 text-sm leading-6 text-zinc-400">{body}</p>
+      </section>
+    </main>
+  );
+}
+
+function UnauthenticatedLanding({ loginUrl }: { loginUrl: string }) {
+  const target = loginUrlWithReturn(loginUrl);
+  useEffect(() => {
+    if (!target) return;
+    const timer = window.setTimeout(() => window.location.assign(target), 350);
+    return () => window.clearTimeout(timer);
+  }, [target]);
+  return (
+    <main data-debug-id="unauthenticated-landing" className="grid min-h-screen place-items-center bg-[#090909] px-6 text-zinc-100">
+      <section className="w-full max-w-lg rounded-[2rem] border border-white/10 bg-white/[0.04] p-8 text-center shadow-2xl">
+        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-300/80">Trusted-proxy sign in</p>
+        <h1 className="mt-3 text-3xl font-semibold tracking-tight">Redirecting to sign in…</h1>
+        <p className="mt-3 text-sm leading-6 text-zinc-400">Your session is unauthenticated. Heimdall uses the configured external identity provider; no local credentials are collected.</p>
+        {target ? (
+          <a data-debug-id="auth-login-link" href={target} className="mt-6 inline-flex rounded-2xl bg-sky-400 px-5 py-3 text-sm font-bold text-black hover:bg-sky-300">Sign in</a>
+        ) : (
+          <div data-debug-id="auth-login-missing-config" className="mt-6 rounded-2xl border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">Login URL is missing from UI auth config.</div>
+        )}
+      </section>
+    </main>
+  );
+}
+
+function AccessDenied() {
+  return (
+    <main data-debug-id="access-denied" className="grid min-h-screen place-items-center bg-[#090909] px-6 text-zinc-100">
+      <section className="w-full max-w-md rounded-[2rem] border border-red-400/20 bg-red-400/10 p-8 text-center shadow-2xl">
+        <p className="text-xs font-semibold uppercase tracking-[0.22em] text-red-200">403 forbidden</p>
+        <h1 className="mt-3 text-3xl font-semibold tracking-tight">Access denied</h1>
+        <p className="mt-3 text-sm leading-6 text-red-100/80">You are authenticated, but this resource is not available to your account. Heimdall will not redirect to login for 403 responses.</p>
+        <a data-debug-id="access-denied-home-link" href={shellHash('/conversations')} className="mt-6 inline-flex rounded-2xl bg-white/10 px-5 py-3 text-sm font-bold text-white hover:bg-white/15">Back to conversations</a>
+      </section>
+    </main>
   );
 }
 
@@ -129,9 +473,12 @@ function RouteOutlet({ path }: { path: string }) {
   );
 }
 
-export default function AppShell() {
+function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: string }) {
   const [collapsed, setCollapsed] = useState(false);
   const [path, setPath] = useState(routeFromLocation);
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const displayName = user.display_name || user.name || user.user_id || 'Current user';
 
   useEffect(() => {
     const update = () => setPath(routeFromLocation());
@@ -144,8 +491,20 @@ export default function AppShell() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([fetchApiList('/chats?limit=100'), fetchApiList('/projects?limit=100')]).then(([chatRows, projectRows]) => {
+      if (cancelled) return;
+      setConversations(chatRows.map(normalizeConversation).filter((conversation) => conversation.conversationId));
+      setProjects(projectRows.map(normalizeProject));
+    });
+    return () => { cancelled = true; };
+  }, []);
+
   const primary = NAV_ROUTES.filter((item) => item.group === 'primary');
   const secondary = NAV_ROUTES.filter((item) => item.group === 'secondary');
+  const conversationTree = useMemo(() => buildProjectConversationTree(conversations, projects), [conversations, projects]);
+  const totalUnread = conversationTree.reduce((sum, project) => sum + project.unreadCount, 0);
 
   return (
     <div data-debug-id="app-shell" className="flex h-screen min-h-[620px] bg-[#090909] text-zinc-100">
@@ -184,8 +543,9 @@ export default function AppShell() {
             {!collapsed && <span className="font-semibold">Command palette</span>}
           </a>
           <nav data-debug-id="shell-primary-nav" className="space-y-2" aria-label="Primary destinations">
-            {primary.map((item) => <NavItem key={item.path} item={item} active={isRouteActive(path, item.path)} collapsed={collapsed} />)}
+            {primary.map((item) => <NavItem key={item.path} item={item} active={isRouteActive(path, item.path)} collapsed={collapsed} badge={item.path === '/conversations' ? totalUnread : 0} />)}
           </nav>
+          {!collapsed && <ProjectConversationTree groups={conversationTree} />}
         </div>
 
         <div className="border-t border-white/10 p-3">
@@ -193,12 +553,13 @@ export default function AppShell() {
             {secondary.map((item) => <NavItem key={item.path} item={item} active={isRouteActive(path, item.path)} collapsed={collapsed} />)}
           </nav>
           <div data-debug-id="shell-global-ownership-points" className={`rounded-2xl border border-white/10 bg-black/20 p-3 ${collapsed ? 'px-2 text-center' : ''}`}>
-            <div data-debug-id="shell-current-user-owner" title="Current user config is shell-owned" className="text-xs font-semibold text-zinc-300">{collapsed ? 'U' : 'Current user'}</div>
-            {!collapsed && <div className="mt-1 text-[11px] text-zinc-500">/api/v1 current user + config owner</div>}
+            <div data-debug-id="shell-current-user-owner" title="Current user config is shell-owned" className="text-xs font-semibold text-zinc-300">{collapsed ? 'U' : displayName}</div>
+            {!collapsed && <div className="mt-1 truncate text-[11px] text-zinc-500">{user.email || user.user_id || '/api/v1 current user'}</div>}
             <div data-debug-id="shell-user-ws-owner" title="The shell owns exactly one user WebSocket connection" className={`mt-2 inline-flex items-center gap-2 rounded-full bg-emerald-400/10 px-2 py-1 text-[11px] font-semibold text-emerald-200 ${collapsed ? 'justify-center' : ''}`}>
               <span className="h-1.5 w-1.5 rounded-full bg-emerald-300" />
               {!collapsed && <span>User WS owner</span>}
             </div>
+            {logoutUrl && !collapsed && <a data-debug-id="auth-logout-link" href={logoutUrl} className="mt-3 block text-[11px] font-semibold text-zinc-400 underline-offset-4 hover:text-white hover:underline">Sign out</a>}
           </div>
         </div>
       </aside>
@@ -206,4 +567,8 @@ export default function AppShell() {
       <RouteOutlet path={path} />
     </div>
   );
+}
+
+export default function AppShell() {
+  return <AuthGate />;
 }
