@@ -271,6 +271,7 @@ This is a green-field rewrite. Data migration from the current daemon is out of 
 20. Task review in v1 uses a single `reviewer_agent_id`; multi-reviewer participants/LGTM voting are not part of the v1 target API.
 20a. Task and TaskChain each use two orthogonal state fields: `publish_state` (draft/published) and a single execution `status` enum that only applies once published. There is no single flat status enum.
 20b. Dependency unblocking is derived from task status (only `completed` and `cancelled` unblock dependents; `paused` does not) through one centralized helper, not stored per edge.
+20d. Task ordering within a chain is backend-owned and single-source: the Hub computes the transitively reduced dependency graph and a canonical topological order (tie-broken by priority, then created_at) from `depends_on`. The chain-graph API, the UI graph, and next-task selection all use this same order. The UI never computes its own ordering. Dependency cycles are rejected at create/update.
 20c. v1 has no auto-assignment, no auto-promotion of the next task, and no scheduled/automatic nudges. Nudges are manual, triggered by an agent or a user from the UI. Scheduling and auto-assignment are post-v1.
 21. Memory may be proposed by a user or authorized instance, but only the owning user may approve/reject pending memory.
 22. Agent-to-agent inbox/federated message-provider APIs are not part of v1; v1 chat is user↔own-agent only.
@@ -2177,12 +2178,48 @@ Relaunch a stopped/idle session on the same pinned bridge, reusing the same `age
 POST /api/v1/agent-instances/{instance_id}/restart
 ```
 
+Request: empty body.
+
+Response (`202 Accepted`):
+
+```json
+{
+  "data": {
+    "agent_instance_id": "inst_123",
+    "agent_id": "agt_123",
+    "bridge_id": "brg_123",
+    "provider": "claude",
+    "tier": "smart",
+    "project_id": "proj_123",
+    "runtime_status": "launching",
+    "run_count": 2,
+    "last_applied_seq": 41
+  },
+  "meta": {
+    "request_id": "req_123",
+    "server_time": "2026-07-22T10:00:00Z"
+  }
+}
+```
+
 Behavior:
 
 - Same `agent_instance_id`, same `bridge_id`, same `provider`/`tier`/`project`.
 - New process; `run_count` increments; `state_seq` continues monotonically.
-- Fails with `bridge_offline` if the pinned bridge is unavailable.
+- Fails with `409 bridge_offline` if the pinned bridge is unavailable.
 - Continuity is via history/bootstrap replay, not in-process memory.
+
+Error (`409 conflict`, pinned bridge offline):
+
+```json
+{
+  "error": {
+    "code": "bridge_offline",
+    "message": "Pinned bridge brg_123 is offline; the session cannot resume until it reconnects"
+  },
+  "meta": { "request_id": "req_123" }
+}
+```
 
 ### 13.6 Reconfigure instance (change provider/tier)
 
@@ -2211,7 +2248,51 @@ Behavior:
 - If running: Hub restarts the process on the same `agent_instance_id` with the new provider/tier (`running -> stopping -> launching -> running`); conversation history is replayed for continuity.
 - If stopped: the new provider/tier is stored and applied on next start/restart.
 - All task-chain references to this `agent_instance_id` are unaffected.
-- Response returns the updated instance with `runtime_status` reflecting the restart.
+
+Response (`200 OK`):
+
+```json
+{
+  "data": {
+    "agent_instance_id": "inst_123",
+    "agent_id": "agt_123",
+    "bridge_id": "brg_123",
+    "provider": "claude",
+    "tier": "normal",
+    "project_id": "proj_123",
+    "runtime_status": "launching",
+    "run_count": 3
+  },
+  "meta": {
+    "request_id": "req_123",
+    "server_time": "2026-07-22T10:00:00Z"
+  }
+}
+```
+
+Error (`409 conflict`, attempt to change an immutable field):
+
+```json
+{
+  "error": {
+    "code": "conflict",
+    "message": "agent_id, bridge_id, and project_id are immutable for an instance; changing them requires a new instance"
+  },
+  "meta": { "request_id": "req_123" }
+}
+```
+
+Error (`422 provider_unavailable`, provider/tier not offered by the pinned bridge / support policy):
+
+```json
+{
+  "error": {
+    "code": "provider_unavailable",
+    "message": "tier 'normal' for provider 'claude' is not available on bridge brg_123 under this agent's support policy"
+  },
+  "meta": { "request_id": "req_123" }
+}
+```
 
 ---
 
@@ -2502,10 +2583,67 @@ Validation:
 ### 15.3 Get Task Chain detail
 
 ```http
-GET /api/v1/task-chains/{chain_id}?expand=tasks
+GET /api/v1/task-chains/{chain_id}?expand=tasks,graph
 ```
 
-Default detail includes chain metadata and counts. Tasks require `expand=tasks` or separate task list endpoint.
+Default detail includes chain metadata and counts. Tasks require `expand=tasks`. The dependency graph + canonical order require `expand=graph`.
+
+### 15.3a Chain dependency graph and canonical task order
+
+The chain's task ordering is a **backend-owned, single-source concept**. The Hub derives it from the tasks' `depends_on` edges and exposes it so that:
+
+- the UI renders the dependency graph and execution order from it, and
+- next-task selection for a freed-up assignee walks the **same** order.
+
+The UI never computes its own ordering; the backend never picks "next" by a different rule. They read the same structure, so the graph can never disagree with what actually runs next.
+
+The Hub computes two things from the `depends_on` DAG:
+
+1. **Transitive reduction** (minimal edges): redundant edges implied by transitivity are removed. If `A -> B -> C` and also `A -> C`, the `A -> C` edge is dropped. The graph shows only the minimal edge set so dependency structure reads cleanly.
+2. **Canonical order**: a deterministic topological sort of the DAG, tie-broken by (a) explicit `priority`, then (b) `created_at`. This linearization is the single source of truth for "in which order tasks are worked."
+
+`expand=graph` response shape:
+
+```json
+{
+  "graph": {
+    "nodes": [
+      {
+        "task_id": "task_1",
+        "order_rank": 0,
+        "depth": 0,
+        "publish_state": "published",
+        "status": "completed",
+        "assignee_agent_id": "agt_coder",
+        "unblocked": true
+      },
+      {
+        "task_id": "task_7",
+        "order_rank": 6,
+        "depth": 3,
+        "publish_state": "published",
+        "status": "in_progress",
+        "assignee_agent_id": "agt_coder",
+        "unblocked": true
+      }
+    ],
+    "edges": [
+      { "from": "task_1", "to": "task_2" }
+    ],
+    "is_dag": true
+  }
+}
+```
+
+Field meaning:
+
+- `order_rank` — position in the canonical linearization (0-based). Deterministic and stable for a given DAG + priorities.
+- `depth` — longest-path distance from a root; used for top-to-bottom graph layout "levels."
+- `edges` — the transitively reduced (minimal) dependency edges.
+- `unblocked` — all dependencies are `completed`/`cancelled` (per the unblock rule in 20b); the set of `unblocked` + not-yet-started tasks is the runnable frontier.
+- `is_dag` — false if a cycle is detected; creating a dependency that would form a cycle is rejected at task create/update with `409 conflict`.
+
+Next-task selection rule (used when an assignee becomes free): among that assignee's tasks that are `published`, `unblocked`, and not yet started, pick the one with the lowest `order_rank`. This is the same order the graph shows.
 
 ### 15.4 Update Task Chain
 
@@ -3021,12 +3159,32 @@ Edit human metadata. Content bytes are replaced via re-upload (see versioning), 
 PATCH /api/v1/artifacts/{artifact_id}
 ```
 
-Request:
+Request (any subset of the editable fields):
 
 ```json
 {
   "name": "Q3 Validation Report (final)",
   "description": "Updated after reviewer feedback"
+}
+```
+
+Response (`200 OK`):
+
+```json
+{
+  "data": {
+    "artifact_id": "art_123",
+    "name": "Q3 Validation Report (final)",
+    "description": "Updated after reviewer feedback",
+    "kind": "markdown",
+    "content_type": "text/markdown",
+    "size_bytes": 4096,
+    "updated_at": "2026-07-22T10:00:00Z"
+  },
+  "meta": {
+    "request_id": "req_123",
+    "server_time": "2026-07-22T10:00:00Z"
+  }
 }
 ```
 
@@ -3036,9 +3194,13 @@ Request:
 DELETE /api/v1/artifacts/{artifact_id}
 ```
 
+Request: empty body.
+
+Response: `204 No Content` (empty body).
+
 Behavior:
 
-- owner-scoped; returns `204` on success.
+- owner-scoped; returns `204` on success, `404 not_found` if not owned/absent.
 - Deletes the artifact metadata and its blob content.
 - References to the deleted `artifact_id` from chat messages/comments render as an unavailable/deleted placeholder rather than erroring.
 

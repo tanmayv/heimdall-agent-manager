@@ -161,6 +161,78 @@ Two artifact surfaces (consistent daily-vs-global pattern):
 
 ---
 
+## 5A. Chain view (full page)
+
+The chain page's job is **the map**: a simplified dependency graph showing the
+order tasks will be worked, plus deep interaction with a selected task. This is
+distinct from the conversation inspector, which is for high-level updates and
+quick nudge/vote only.
+
+```
+┌───────────────────────────────────────────────────────────────────────┐
+│  ← Hub Rewrite Chain     published · active · 12/20     [message coord] │
+├──────────────────────────────────┬────────────────────────────────────┤
+│         DEPENDENCY GRAPH          │        TASK DETAIL (selected)      │
+│         (top -> bottom)          │                                    │
+│              [P1]                │   Phase 7: Project API             │
+│               │                  │   published · in_progress          │
+│              [P2]                │   assignee ● coder  reviewer ● rev  │
+│               │                  │   deps: P6                         │
+│              [P3]                │   ─────────────────────────────     │
+│            ┌──┼──┐               │   Description / acceptance (REQ-IDs)│
+│          [P4][P5][P11]           │   Comments (threaded, paginated)   │
+│               │                  │   [transitions] [nudge] [vote]     │
+│              [P6] …              │   [assignee/reviewer] [publish]    │
+└──────────────────────────────────┴────────────────────────────────────┘
+```
+
+Graph (the hero):
+
+- **Top-to-bottom DAG**, laid out by `depth` levels from the chain-graph API
+  (`GET /task-chains/{id}?expand=graph`).
+- **Minimal edges only** — the backend transitively reduces the graph; the UI
+  renders exactly the edges it returns. Order/structure is the point, not edge
+  clutter.
+- Node glyph/color = execution `status`; small avatar = assignee.
+- The **unblocked frontier** (runnable-now tasks) is highlighted; downstream
+  dimmed. This visualizes the exact order the backend will pick next tasks.
+- **Draft tasks** render as dashed/ghost nodes (in the plan, not yet workable),
+  so the whole plan is visible even before publish.
+- Completed "waves" collapse by default with a show-completed toggle (keeps focus
+  on now+next).
+- **Click selects** a node (detail on the right). No hover preview.
+
+Ordering is backend-owned (arch doc 15.3a, invariant 20d): the same canonical
+order drives the graph layout AND next-task selection, so the graph never lies
+about what runs next. The UI never computes its own ordering.
+
+Task detail (right pane, side-by-side, on select):
+
+- Header: title, publish_state + status, assignee/reviewer, dependency links.
+- Body: description, acceptance criteria (REQ-IDs), full threaded comments
+  (paginated load-older).
+- Role-aware interactions: comment (add/resolve), legal status transitions only,
+  nudge, vote lgtm/ngtm, assignee/reviewer pickers, publish (if draft).
+- Nothing selected -> right pane shows chain overview (goal, coordinator,
+  progress, final summary).
+
+Coordinator chat is **linked out** ("message coordinator" opens the coordinator
+conversation), not embedded — keeps the chain page focused on graph + tasks.
+
+Inspector vs full chain view:
+
+| Capability | Conversation inspector | Chain view (full page) |
+|---|---|---|
+| See tasks + status | list, grouped | the graph |
+| Dependency order | no | yes (the point) |
+| Quick nudge / vote | yes | yes |
+| Read/add comments | no | yes (full threads) |
+| Status transitions | no | yes |
+| Assignee/reviewer edit | no | yes |
+| Draft / publish | no | yes |
+
+---
+
 ## 6. Settings (modal)
 
 Overlay, not a route. Houses infrequent/global management:
