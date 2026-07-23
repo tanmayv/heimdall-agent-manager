@@ -28,8 +28,55 @@ global context inspector and **no** guide panel (both removed).
 - Pages are routed views. A page that needs a side panel (e.g. the conversation
   inspector, the chain board) owns and toggles it **itself** — it is not shell
   infrastructure.
-- No login page (trusted-proxy auth). The footer user chip links to the IdP /
-  dev-proxy logout URL.
+- No local login **form** (trusted-proxy auth), but there is an **unauthenticated
+  landing** that redirects to the external IdP. See §1A.
+
+---
+
+## 1A. Authentication states (trusted-proxy)
+
+Browser auth is delegated to Authentik/Authelia in front of the Hub (arch doc
+2.4 / §6.6 / invariant 6–7). The UI never renders a Heimdall username/password
+form. It only reacts to auth state.
+
+States:
+
+- **Authenticated:** trusted proxy injected valid identity headers; the Hub maps
+  them to a Heimdall user and `/api/v1` calls succeed. Normal app shell renders.
+- **Unauthenticated (missing/invalid identity):** any `/api/v1` request returns
+  `401 unauthenticated`. The UI must not show the app shell with empty data;
+  instead it renders a minimal **unauthenticated landing** and redirects to the
+  external login.
+- **Forbidden:** a `403` on a specific resource shows access-denied / route-away,
+  but does **not** trigger the login redirect (the user is authenticated, just
+  not authorized for that resource).
+
+Unauthenticated landing behavior:
+
+```text
+app boot / any 401 from /api/v1 or user-ws:
+  -> render UnauthenticatedLanding (no app chrome, no data fetch)
+  -> redirect to the configured external login URL
+     (Authentik/Authelia in prod; ham-dev-proxy selector in dev)
+```
+
+- The login/redirect URL is configuration provided to the UI (e.g. an
+  `auth.login_url` / `login_url` from a public bootstrap/config endpoint or build
+  config); the UI does not hardcode the IdP.
+- The landing offers a single "Sign in" affordance that navigates to that URL, and
+  auto-redirects when possible. It shows a brief "redirecting to sign in…" state
+  rather than a blank screen.
+- After successful IdP login, the proxy re-injects identity headers and the user
+  returns to the app; the UI retries the failed requests / reloads the shell.
+- **Session expiry mid-use:** if a previously authenticated session starts
+  returning `401` (cookie/session expired), the UI drops to the same
+  unauthenticated landing + redirect, preserving the intended return path where
+  the proxy supports it.
+- The footer user chip still links to the IdP/dev-proxy **logout** URL; logout
+  lands the user back on the unauthenticated landing.
+
+This keeps auth entirely in the trusted proxy while giving unauthenticated users
+a clear redirect instead of a broken empty app.
 
 ---
 
