@@ -1364,6 +1364,109 @@ edge/heartbeat reporting (7.4). This keeps one outbound connection (good for the
 SSH-tunnel/NAT story), keeps Hub credentials off both wrapper and agent, and
 makes the Bridge the sole `state_seq` reporter so views never race.
 
+#### 12.0.2 Local Bridge endpoint wire protocol
+
+The local endpoint is the contract between the Bridge and the two local clients
+(wrapper supervisor + agent `ham-ctl`). It is deliberately simple and
+machine-local.
+
+**Transport.**
+
+- Primary: **Unix domain socket** at a per-instance path, e.g.
+  `${run_dir}/bridge.sock` (or a Bridge-wide socket keyed by instance). Unix
+  socket file permissions (0600, owner-only) are the outer access control.
+- Windows/fallback: **loopback TCP** on `127.0.0.1:<port>`, port passed to the
+  client via env.
+- The wrapper/agent learn the endpoint + credential from environment injected at
+  launch:
+
+  ```text
+  HEIMDALL_BRIDGE_ENDPOINT=unix:${run_dir}/bridge.sock   # or tcp:127.0.0.1:<port>
+  HEIMDALL_AGENT_TOKEN=hlat_<local-secret>               # local agent token (12.0.1)
+  HEIMDALL_AGENT_INSTANCE_ID=inst_123                     # convenience/echo only
+  ```
+
+**Framing.** Newline-delimited JSON (JSONL) request/response over the socket, one
+JSON object per line. Rationale: trivial to implement in Odin (wrapper) and any
+agent tooling; no HTTP server needed on the socket. (An HTTP-over-UDS variant is
+acceptable if an implementation prefers it, but JSONL is the baseline.)
+
+**Auth.** Every request carries the local agent token; the Bridge maps it to an
+`agent_instance_id` and rejects unknown/rotated tokens. The wrapper may use a
+separate supervisor token or the same local token with a wider method allowlist
+(implementation choice; the Bridge distinguishes wrapper vs agent by token role).
+
+**Request envelope:**
+
+```json
+{
+  "v": 1,
+  "id": "c1",
+  "token": "hlat_...",
+  "method": "agent.chat.send_to_user",
+  "params": { "body": "done", "chain_id": "chain_123" }
+}
+```
+
+**Response envelope:**
+
+```json
+{ "v": 1, "id": "c1", "ok": true, "data": { "message_id": "msg_123" } }
+```
+
+```json
+{ "v": 1, "id": "c1", "ok": false, "error": { "code": "forbidden", "message": "..." } }
+```
+
+- `id` correlates request/response (client-generated).
+- `token` identifies the caller/instance; never logged.
+- Errors reuse the shared error `code` vocabulary where sensible.
+
+**Methods (two role groups):**
+
+Wrapper -> Bridge (supervisor signals; folded into 7.4 reporting):
+
+```text
+wrapper.startup.report      { phase: starting|ready|startup_blocked|startup_failed|startup_unknown, detail? }
+wrapper.activity.report     { status: idle|active|blocked, source?, detail? }   # level-triggered
+wrapper.liveness.ping       { pane_alive: bool, pid?: number }
+wrapper.exited              { code?: number, reason?: string }
+```
+
+Agent (`ham-ctl`) -> Bridge (relayed to Hub with the instance token; the Bridge
+supplies identity, so params never carry a Hub token or a spoofable sender id):
+
+```text
+agent.chat.send_to_user     { body, chain_id?, artifact_ids? }
+agent.tasks.comment         { task_id, body }
+agent.tasks.status          { task_id, status, comment? }
+agent.tasks.vote            { task_id, result: good|not_good, comment? }
+agent.tasks.nudge           { task_id, message }
+agent.artifacts.create      { name?, kind?, description?, content_ref | inline_bytes }
+agent.memory.propose        { type, title, body, evidence?, ... }
+agent.context.get           { }     # returns bounded current task/chain/conversation view
+agent.start_success         { }     # agent signals it is alive/ready
+```
+
+**Relay + identity rule.** For every `agent.*` method the Bridge:
+
+1. resolves `token -> agent_instance_id` locally,
+2. maps the local method to the corresponding Hub `/api/v1` call,
+3. attaches the Bridge-held **instance token** and the resolved instance identity
+   (the agent cannot set `sender_agent_instance_id` or owner; the Bridge does),
+4. returns the Hub result (or a queued/failed status) back over the socket.
+
+**Method allowlist.** The local endpoint exposes only the methods above. It must
+not proxy arbitrary Hub paths, must not expose Bridge-management actions
+(enroll/revoke/rotate/capabilities), and must not let a local caller act as a
+different instance. This is the local mirror of the instance-token restrictions
+in 12.4.
+
+**Offline behavior.** If the Bridge is disconnected from the Hub, `agent.*`
+relays fail fast with a retryable error (or are queued per Bridge policy); the
+agent CLI surfaces that clearly. Wrapper signals are always accepted locally and
+folded into the next report/heartbeat when the Hub link returns.
+
 ### 12.2 Instance token request headers (Bridge -> Hub relay)
 
 ```http
