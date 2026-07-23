@@ -799,6 +799,19 @@ Content (grouped results):
 - Results are grouped by type. Selecting an entity navigates; selecting an
   action runs it (or opens its modal).
 
+Search-as-you-type behavior:
+
+- Entity results come from the global search endpoint (§8.4) and update **as the
+  user types**. Actions/navigation items are matched locally and shown instantly.
+- Client debounce (~120–200ms) plus **cancel superseded requests** (abort the
+  prior in-flight query when a newer keystroke fires) so only the latest query
+  renders; results never jitter/flash stale hits.
+- Keep the last results visible while the next query is in flight (no clearing to
+  a blank list on each keystroke); show a subtle loading hint instead.
+- Keyboard-first: up/down to move across grouped results, Enter to activate,
+  Esc to close; selection state is stable as results refresh.
+- Cache recent queries in the RTK Query cache so backspacing/re-typing is instant.
+
 Because the palette handles "get me to X" in a few keystrokes, mobile can keep
 nav chrome minimal (see 6D).
 
@@ -1231,6 +1244,14 @@ Field notes:
 - `score` — relevance score for ranking within/across groups (impl-defined).
 - `route` — optional UI route hint; the UI may compute its own route from
   `type`+`id` instead.
+
+Type-ahead requirements (primary use case):
+
+- Optimized for search-as-you-type: cheap enough to call on nearly every
+  keystroke (after client debounce), small per-group `limit`, indexed lookups,
+  prefix-first ranking, deterministic/stable ordering for a given `q`.
+- Pure `GET`, cancelable/idempotent so the client can abort superseded requests.
+- Server latency target: p95 well under ~100ms for short queries (see arch 20A).
 
 Non-goals for v1:
 

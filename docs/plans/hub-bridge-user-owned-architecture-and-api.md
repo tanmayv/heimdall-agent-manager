@@ -3377,6 +3377,17 @@ Rules:
 - Matches human-visible fields per type (name/title/body-preview/slug/id).
 - v1 may use substring/prefix matching on key fields; full-text indexing and snippet highlighting are post-v1.
 
+Type-ahead optimization (primary use case is search-as-you-type):
+
+- **Latency budget:** target p95 well under ~100ms server time for short queries; this endpoint must be cheap enough to call on nearly every keystroke (after client debounce). Do not perform expensive joins or per-hit N+1 lookups; select only the compact hit fields.
+- **Prefix-first matching:** rank prefix/word-boundary matches above interior substring matches so early keystrokes surface obvious candidates. Case-insensitive.
+- **Short-query behavior:** accept `q` as short as 1 char. For very short queries, bias toward recency/usage (recently updated conversations/tasks/etc.) and cap work; returning the most-relevant top-N rather than an exhaustive scan is acceptable.
+- **Bounded work:** always apply `limit` (small default, e.g. 8–10 per group for type-ahead) and a hard server-side scan cap; prefer indexed columns. Never scan full bodies for type-ahead.
+- **Stable ranking:** ranking must be deterministic for a given `q` so results do not jitter as the user types one more character.
+- **Cacheable/idempotent:** pure `GET`, no side effects; safe to cancel superseded in-flight requests and retry.
+- **Empty behavior:** empty or whitespace-only `q` returns an empty result set (or optional recent/suggested items), not an error.
+- **Indexing note:** back this with indexed lookup columns (lowercased name/title, slug, id) per type so type-ahead stays fast as data grows; a shared search index/table is acceptable as long as it stays behind the repository layer.
+
 Response:
 
 ```json
