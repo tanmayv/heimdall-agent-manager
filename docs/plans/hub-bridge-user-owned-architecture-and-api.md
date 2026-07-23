@@ -3614,12 +3614,14 @@ Hub updates:
   "command_id": "cmd_123",
   "agent_instance_id": "inst_123",
   "agent_id": "agt_123",
+  "chain_id": "chain_123",
+  "conversation_id": "conv_123",
   "bridge_id": "brg_123",
   "project_id": "proj_123",
   "project_path": "/Users/tanmayvijay/heimdall-agent-manager",
   "provider": "claude",
   "tier": "smart",
-  "bootstrap_url": "/api/v1/agent-instances/inst_123/bootstrap"
+  "bootstrap_url": "/api/v1/bridge/agent-instances/inst_123/bootstrap"
 }
 ```
 

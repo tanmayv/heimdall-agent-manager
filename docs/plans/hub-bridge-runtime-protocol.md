@@ -1049,8 +1049,8 @@ Hub updates instance status to `stopped` or `failed` depending on context.
 Recommended initial flow:
 
 ```text
-Hub creates AgentInstance
-  -> Hub sends launch_agent to Bridge
+Hub transactionally creates/loads TaskChain + AgentInstance + ChatConversation
+  -> Hub sends launch_agent to Bridge with instance/chain/conversation ids
   -> Bridge fetches bootstrap from Hub using Bridge token
   -> Bridge materializes bootstrap files locally
   -> Bridge launches wrapper with instance token/env
@@ -1079,14 +1079,26 @@ Response:
 ```json
 {
   "data": {
-    "agent_instance_id": "inst_123",
+    "agent_instance": {
+      "agent_instance_id": "inst_123",
+      "agent_id": "agt_123",
+      "conversation_id": "conv_123",
+      "chain_id": "chain_123",
+      "bridge_id": "brg_123",
+      "provider": "claude",
+      "tier": "smart",
+      "project_id": "proj_123",
+      "project_path": "/Users/tanmayvijay/heimdall-agent-manager"
+    },
     "agent": {
       "agent_id": "agt_123",
       "name": "Backend Agent",
-      "instructions": "Focus on backend implementation and tests."
+      "persona": "Pragmatic backend implementer.",
+      "instructions": "Focus on backend implementation and tests.",
+      "template_id": "backend-default"
     },
     "owner_user": {
-      "user_id": "tanmay",
+      "user_id": "usr_123",
       "name": "tanmay",
       "display_name": "Tanmay Vijay"
     },
@@ -1095,30 +1107,75 @@ Response:
       "label": "tanmay-macbook",
       "machine_hostname": "tanmay-macbook"
     },
-    "runtime": {
-      "provider": "claude",
-      "tier": "smart",
-      "project_id": "proj_123",
-      "project_path": "/Users/tanmayvijay/heimdall-agent-manager"
-    },
     "project": {
       "project_id": "proj_123",
       "name": "Heimdall",
+      "description": "Local multi-agent orchestration system.",
       "repo_url": "https://github.com/example/heimdall",
       "vcs_kind": "git"
     },
-    "memory": [
-      {
-        "memory_id": "mem_123",
-        "type": "fact",
-        "title": "Prefers concise summaries",
-        "body": "User prefers concise summaries."
-      }
-    ],
-    "task_context": {
+    "chain": {
       "chain_id": "chain_123",
-      "task_id": "task_123",
-      "title": "Implement bridge enrollment"
+      "kind": "private_conversation",
+      "title": "Backend Agent session",
+      "description": "Private/default work chain for this conversation.",
+      "coordinator_agent_instance_id": "inst_123",
+      "default_reviewer_refs": [
+        { "type": "user", "user_id": "usr_123" }
+      ],
+      "publish_state": "published",
+      "status": "active"
+    },
+    "task_context": {
+      "effective_assignee_ref": { "type": "agent_instance", "agent_instance_id": "inst_123" },
+      "effective_reviewer_refs": [
+        { "type": "user", "user_id": "usr_123" }
+      ],
+      "current_task": {
+        "task_id": "task_123",
+        "title": "Implement bridge enrollment",
+        "status": "in_progress",
+        "acceptance_criteria": [
+          "Enrollment token is one-time",
+          "Bridge token is stored hashed"
+        ]
+      },
+      "runnable_frontier": [
+        { "task_id": "task_456", "title": "Add tests", "order_rank": 4 }
+      ]
+    },
+    "conversation": {
+      "conversation_id": "conv_123",
+      "summary": "User asked this agent to implement bridge enrollment.",
+      "recent_messages": [
+        {
+          "message_id": "msg_123",
+          "direction": "user_to_agent",
+          "body": "Please implement bridge enrollment.",
+          "created_at": "2026-07-22T10:00:00Z"
+        }
+      ]
+    },
+    "memory": {
+      "active": [
+        {
+          "memory_id": "mem_123",
+          "type": "fact",
+          "title": "Prefers concise summaries",
+          "body": "User prefers concise summaries."
+        }
+      ],
+      "templates": []
+    },
+    "artifacts": {
+      "recent": [
+        {
+          "artifact_id": "art_123",
+          "kind": "diff",
+          "name": "bridge-enrollment.diff",
+          "description": "Latest implementation diff for review."
+        }
+      ]
     },
     "files": [
       {
@@ -1130,6 +1187,11 @@ Response:
         "kind": "MEMORY_MD",
         "relative_path": "MEMORY.md",
         "content": "..."
+      },
+      {
+        "kind": "INSTANCE_JSON",
+        "relative_path": ".heimdall/instance.json",
+        "content": "{...}"
       }
     ],
     "instance_token": "hit_secret_once_or_runtime_token",
@@ -1140,10 +1202,15 @@ Response:
 
 Notes:
 
+- `agent_instance.conversation_id` and `agent_instance.chain_id` are required and immutable; they must match the Hub-created records for this instance.
+- If the instance was created without a supplied `chain_id`, `chain.kind = private_conversation` and the chain is this conversation's default/private Work context. If the instance was hydrated into an existing team chain, `chain.kind = team_work` and the same bootstrap shape applies.
+- `task_context` is the current launch-time view, not a durable copy owned by the Bridge. It should include the effective assignee/reviewer refs after applying chain defaults, current assigned/in-progress task when one exists, and a bounded runnable frontier summary.
+- `conversation` is a bounded replay context for restart continuity. Include a summary plus recent messages; do not stream an unbounded transcript through bootstrap.
+- `memory.active` contains only approved/applicable memories. Pending memory is not included unless represented as an explicit task/conversation event.
+- `artifacts.recent` contains metadata/references for relevant artifacts. Large artifact bytes are fetched through artifact endpoints, not embedded in bootstrap.
 - `instance_token` should be scoped to this instance only.
 - If token is returned here, it is a secret and should not be logged.
-- Files array should be bounded.
-- Large skills/assets should be fetched through separate endpoints if necessary.
+- Files array should be bounded. Large skills/assets should be fetched through separate endpoints if necessary.
 
 ### 11.3 Bootstrap content ownership
 
@@ -1151,8 +1218,11 @@ Hub owns bootstrap content decisions:
 
 - persona
 - instructions
-- applicable memory
-- task context
+- immutable instance/conversation/chain identity context
+- chain defaults and effective task assignment/reviewer context
+- bounded conversation replay/summary
+- applicable approved memory
+- artifact metadata/references
 - project metadata
 - template text
 
@@ -1166,10 +1236,13 @@ Bridge owns materialization:
 
 ### 11.4 Bootstrap refresh
 
-If memory/task context changes while an instance runs, Hub should not blindly rewrite local files. Instead:
+If memory/task/conversation context changes while an instance runs, Hub should not blindly rewrite local files. Instead:
 
 - notify agent through normal task/chat mechanisms
+- use task/comment/status APIs for live work changes
 - optionally send a future `refresh_bootstrap` command if needed
+
+On restart or provider/tier reconfigure, the Bridge/wrapper must fetch a fresh bootstrap bundle for the same immutable `agent_instance_id`/`conversation_id`/`chain_id`; it must not reuse stale files from a prior run except through manifest-managed cleanup/rewrite.
 
 ---
 
@@ -1627,6 +1700,11 @@ Error object shape:
 - Bridge can fetch bootstrap for assigned instance
 - Bridge cannot fetch bootstrap for another Bridge's instance
 - bootstrap includes owner/agent/bridge/project context
+- bootstrap includes immutable `agent_instance_id`, `conversation_id`, and `chain_id`
+- bootstrap includes chain kind/default reviewer refs/effective task context
+- bootstrap includes bounded conversation summary/recent messages for restart continuity
+- bootstrap includes applicable approved memory and artifact metadata only (not large blobs)
+- restart/reconfigure fetches fresh bootstrap for the same immutable ids
 - bootstrap includes instance token
 - token is not logged
 
