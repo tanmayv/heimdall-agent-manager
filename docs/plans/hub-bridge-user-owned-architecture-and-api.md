@@ -686,25 +686,28 @@ request override
 
 ### 7.7 Agent instance
 
+An `AgentInstance` is a **durable, restartable session**, not a single process run. The record persists across process restarts and keeps the same `agent_instance_id`. `runtime_status` describes the *current* process; the record outlives any one process. This is what lets a conversation own exactly one instance for its whole life (see 7.13) while the underlying process can stop and start.
+
 ```ts
 AgentInstance {
   agent_instance_id: string
   owner_user_id: string
   agent_id: string
-  bridge_id: string
+  bridge_id: string            // pinned; the session always relaunches on this bridge
   provider: string
   tier: string
   project_id?: string
-  project_path?: string       // effective path snapshot captured at launch time
+  project_path?: string       // effective path snapshot captured at first launch
   runtime_status: "launching" | "starting" | "running" | "idle" | "busy" | "stopping" | "stopped" | "failed" | "unreachable"
   startup_status?: "starting" | "ready" | "startup_blocked" | "startup_failed" | "startup_unknown"
   activity_status?: "unknown" | "idle" | "active" | "blocked"
   status_message?: string
-  last_applied_seq?: number   // highest Bridge state_seq applied; for idempotent, ordered updates
+  last_applied_seq?: number   // highest Bridge state_seq applied; monotonic ACROSS restarts
+  run_count?: number          // number of times this session has been (re)started
   created_at: string
   updated_at: string
-  started_at?: string
-  stopped_at?: string
+  started_at?: string         // start of the CURRENT run
+  stopped_at?: string         // end of the last run (when stopped)
   last_seen_at?: string
 }
 ```
@@ -714,10 +717,29 @@ Rules:
 - Hub owns record.
 - Bridge runs actual process.
 - Instance belongs to same owner as Agent and Bridge.
-- `project_path` is the Bridge-local effective path resolved at launch time.
-- `project_path` is a faithful launch snapshot and must not auto-update if `Project.default_path` or `ProjectBridgePath` changes later. New launches use the new effective path; existing instances keep their launch snapshot.
+- The instance is a restartable session: stopping ends the process but keeps the record; restarting reuses the same `agent_instance_id` and produces a new process on the same pinned `bridge_id`.
+- The `agent_instance_id` is stable across restarts AND across provider/tier changes. Task chains reference instances by `agent_instance_id` (assignee/reviewer/participant); this id must never be forked by a runtime change, or those references would break.
+- Launch parameters split into two mutability tiers:
+  - Immutable session identity: `agent_id`, `bridge_id`, `project_id`, `project_path`. Changing any of these means a different instance, not a reconfigure.
+  - Mutable runtime tuning: `provider`, `tier`. These can be changed mid-session (e.g. mid-conversation). A change triggers a process restart on the same `agent_instance_id`; the record and all task-chain references are preserved.
+- `bridge_id` is pinned for the life of the session. Because `project_path` is bridge-local, the session cannot relaunch on a different bridge; if the pinned bridge is offline the session cannot resume until it is back online.
+- A provider/tier change is only valid to a combination supported by BOTH the pinned bridge's capabilities and the agent-bridge-support policy for (agent, bridge). The selectable range is the intersection of those two.
+- `project_path` is a faithful launch snapshot and must not auto-update if `Project.default_path` or `ProjectBridgePath` changes later.
+- Restart does NOT preserve in-process agent context. A restarted process is a fresh session with empty scrollback; continuity comes from replaying conversation history + bootstrap/memory into the new process, not from the stable id. The stable id preserves identity/attribution, not runtime memory.
 - APIs and filters must use `runtime_status` for AgentInstance state, not overloaded `status`.
-- Runtime status updates from the Bridge are applied only when the incoming `state_seq > last_applied_seq` (idempotent, ordered). Both coalesced edge events and the periodic heartbeat digest update this field, so a lost edge event self-corrects on the next heartbeat. See runtime protocol §7.4.
+- Runtime status updates from the Bridge are applied only when the incoming `state_seq > last_applied_seq` (idempotent, ordered), and `state_seq`/`last_applied_seq` continue monotonically across restarts. Both coalesced edge events and the periodic heartbeat digest update this field, so a lost edge event self-corrects on the next heartbeat. See runtime protocol §7.4.
+
+Lifecycle:
+
+```text
+create -> launching -> starting -> running -> stopping -> stopped
+                                       ^                      |
+                                       |     restart (same id, same bridge)
+                                       +----------------------+
+
+reconfigure(provider|tier): running -> stopping -> launching -> ... -> running
+   (same agent_instance_id; new process uses new provider/tier; history replayed)
+```
 
 ### 7.8 Project
 
@@ -919,12 +941,15 @@ Rules:
 
 ### 7.13 Chat/conversation
 
+A conversation is bound 1:1 to a durable agent **session** (`AgentInstance`), locked at first send. Both `agent_id` (identity) and `agent_instance_id` (the session) are permanent for the conversation's life; the session is restartable (7.7) so the conversation continues by relaunching the same instance, not by repointing to a new one.
+
 ```ts
 ChatConversation {
   conversation_id: string
   owner_user_id: string
-  agent_id?: string
-  agent_instance_id?: string
+  agent_id: string             // permanent identity binding, set at first send
+  agent_instance_id: string    // permanent 1:1 session binding, set at first send
+  project_id?: string          // locked launch param (may be empty for no project)
   chain_id?: string
   title?: string
   unread_count: number
@@ -934,6 +959,14 @@ ChatConversation {
   updated_at: string
 }
 ```
+
+Rules:
+
+- Before the first message a conversation is a draft with no bound agent/instance; the New Conversation UI collects launch parameters (agent, project, and advanced provider/tier).
+- On first send the Hub creates the `AgentInstance` session and sets `agent_id` + `agent_instance_id` on the conversation. Both are immutable thereafter; there is no change-agent operation.
+- The conversation owns exactly one instance session for its whole life. Two conversations with the same `agent_id` get two separate sessions (isolation).
+- Continuing an idle conversation restarts the same `agent_instance_id` (same bridge); it does not create a new instance.
+- `sender_agent_instance_id` on messages equals the conversation's instance, but still marks restart boundaries because the underlying process (and its in-memory context) changed even though the id did not.
 
 ```ts
 ChatMessage {
@@ -2128,6 +2161,51 @@ Behavior:
 - Hub validates ownership.
 - Hub sends stop command to Bridge.
 - Instance moves to `stopping` then `stopped`, or `failed` on error.
+- Stop keeps the durable instance record (restartable session); it does not delete the instance.
+
+### 13.5 Restart instance
+
+Relaunch a stopped/idle session on the same pinned bridge, reusing the same `agent_instance_id` and launch params.
+
+```http
+POST /api/v1/agent-instances/{instance_id}/restart
+```
+
+Behavior:
+
+- Same `agent_instance_id`, same `bridge_id`, same `provider`/`tier`/`project`.
+- New process; `run_count` increments; `state_seq` continues monotonically.
+- Fails with `bridge_offline` if the pinned bridge is unavailable.
+- Continuity is via history/bootstrap replay, not in-process memory.
+
+### 13.6 Reconfigure instance (change provider/tier)
+
+Change the runtime tuning of an existing session mid-life (e.g. mid-conversation) while preserving `agent_instance_id`. This is the only mutation to a running instance's launch params; `agent_id`, `bridge_id`, and `project` are immutable.
+
+```http
+PATCH /api/v1/agent-instances/{instance_id}
+```
+
+Request:
+
+```json
+{
+  "provider": "claude",
+  "tier": "normal"
+}
+```
+
+Validation:
+
+- `provider`/`tier` must be in the intersection of the pinned bridge's capabilities and the agent-bridge-support policy for (agent, bridge).
+- Attempts to change `agent_id`, `bridge_id`, or `project_id` are rejected with `409 conflict` (those define a different instance).
+
+Behavior:
+
+- If running: Hub restarts the process on the same `agent_instance_id` with the new provider/tier (`running -> stopping -> launching -> running`); conversation history is replayed for continuity.
+- If stopped: the new provider/tier is stored and applied on next start/restart.
+- All task-chain references to this `agent_instance_id` are unaffected.
+- Response returns the updated instance with `runtime_status` reflecting the restart.
 
 ---
 
