@@ -3558,9 +3558,10 @@ owner_user_id = auth.user_id
 
 ### 22.6 401/403 UI behavior
 
-- `401 unauthenticated`: show not-authenticated state with link to external login/reload.
-- `403 forbidden`: show access denied or route away.
+- `401 unauthenticated`: render a minimal unauthenticated landing (no app shell, no data fetch) and redirect to the external IdP login. This applies both at app boot and when a previously valid session expires mid-use.
+- `403 forbidden`: show access denied or route away; do NOT trigger the login redirect (the user is authenticated but not authorized).
 - UI should not offer a local Heimdall login form.
+- The external login URL is configuration provided to the UI (e.g. `login_url` from a public bootstrap/config value), not hardcoded; production points at Authentik/Authelia, dev points at the `ham-dev-proxy` user selector. Logout links to the IdP/dev-proxy logout URL and returns to the unauthenticated landing.
 
 ---
 
