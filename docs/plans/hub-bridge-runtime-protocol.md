@@ -32,9 +32,12 @@ The protocol should be explicit, versioned, idempotent, bearer-authenticated, an
 11. Bridge reports machine metadata and capabilities on connect.
 12. Bridge reports runtime status for instances it supervises.
 13. Bridge materializes bootstrap files locally.
-14. The Bridge is the **sole** connection to the Hub for runtime. The wrapper
-    talks only to a **local Bridge endpoint** (unix socket / loopback) and holds
-    no Hub URL or Hub token. The Bridge relays what the Hub needs.
+14. The Bridge is the **sole** connection to the Hub for runtime. Both the
+    wrapper and the agent process (`ham-ctl`) talk only to a **local Bridge
+    endpoint** (unix socket / loopback) and hold no Hub URL or Hub token. The
+    agent authenticates locally with a **Bridge-managed local agent token**; the
+    Bridge relays agent-facing calls to the Hub and asserts the instance identity
+    on the agent's behalf.
 15. The Bridge **manages agent runtimes locally** and minimizes Hub traffic: it
     notifies the Hub only on edge state-changes and sends periodic snapshots
     (heartbeat digest), per the reporting discipline in 7.4. High-frequency local
@@ -1091,8 +1094,11 @@ Hub transactionally creates/loads TaskChain + AgentInstance + ChatConversation
   -> Bridge fetches bootstrap from Hub using Bridge token
   -> Bridge materializes bootstrap files locally
   -> Bridge launches wrapper with materialized files + local Bridge endpoint
-  -> Wrapper reports local signals to the Bridge; Bridge relays agent-facing
-     calls to the Hub with the instance token (wrapper holds no Hub credential)
+     + a Bridge-managed local agent token (via bootstrap/env)
+  -> Wrapper reports local signals to the Bridge
+  -> Agent (ham-ctl) calls the local Bridge endpoint for agent-facing actions
+  -> Bridge relays to the Hub with the instance token and asserts instance
+     identity (neither wrapper nor agent holds a Hub credential)
 ```
 
 This keeps durable bootstrap context centralized while filesystem writes remain local.
@@ -1302,24 +1308,61 @@ the wrapper; the Bridge reports them for all its instances over the Bridge WS
 using its Bridge token, coalesced per 7.4. The wrapper never presents a Hub
 credential.
 
-#### 12.0 Wrapper <-> Bridge boundary (local)
+#### 12.0 Wrapper/agent <-> Bridge boundary (local)
+
+Neither the wrapper nor the agent process talks to the Hub. Both talk only to a
+**local Bridge endpoint** (unix socket or loopback). The Bridge is the single
+owner of the Hub connection and the Hub credential (instance token).
 
 The wrapper is a thin, Bridge-local process supervisor. It:
 
-- talks only to a **local Bridge endpoint** (unix socket or loopback), never to
-  the Hub, and holds no `hub_url` / instance token;
+- talks only to the local Bridge endpoint, never to the Hub, and holds no
+  `hub_url` / Hub token;
 - receives its launch context (bootstrap-materialized files, cwd, command) from
   the Bridge;
 - reports local signals to the Bridge only: startup phase, activity/idle,
-  process/pane liveness, wrapper exit;
-- forwards agent-originated actions (chat send-to-user, task updates, artifact
-  upload) to the Bridge, which relays them to the Hub with the instance token.
+  process/pane liveness, wrapper exit.
 
-The Bridge is therefore the single owner of: the Hub connection, the instance
-token, and the coalesced edge/heartbeat reporting (7.4). This keeps one outbound
-connection (good for the SSH-tunnel/NAT story), keeps the Hub credential off the
-wrapper, and makes the Bridge the sole `state_seq` reporter so wrapper and Bridge
-views never race.
+The **agent process** (running inside tmux) performs agent-facing actions through
+its CLI tooling (`ham-ctl`), which is pointed at the **local Bridge endpoint**,
+not the Hub:
+
+```text
+agent -> ham-ctl -> local Bridge endpoint -> Bridge -> Hub
+```
+
+- chat send-to-user, task updates/comments/votes, artifact upload, memory
+  proposals, etc. go to the Bridge, which relays them to the Hub with the
+  instance token.
+- The Bridge injects/asserts the caller's identity to the Hub (see 12.0.1); the
+  agent does not choose or present a Hub identity.
+
+##### 12.0.1 Local agent token (Bridge-managed, never a Hub credential)
+
+The agent authenticates to the **local Bridge endpoint** with a **local agent
+token** that the Bridge issues at launch (passed via bootstrap/env). This token:
+
+- is a **local-only concept managed by the Bridge**; it is valid only against the
+  local Bridge endpoint on this machine and is meaningless to the Hub;
+- maps 1:1 to one running `agent_instance_id` on this Bridge;
+- lets the Bridge resolve *which instance* a local call belongs to and then relay
+  to the Hub under that instance's identity (using the Bridge-held instance token
+  / Bridge token). The Bridge **sends the identity back to the Hub**; the agent
+  never holds or sees a Hub token;
+- can be rotated/invalidated locally by the Bridge on stop/restart without any
+  Hub round-trip.
+
+This keeps a clean three-layer trust boundary:
+
+- **Hub credential** (instance token / Bridge token): Bridge-only.
+- **Local agent token**: agent<->Bridge only, Bridge-managed.
+- The Hub only ever sees the Bridge, which asserts the instance identity.
+
+The Bridge is therefore the single owner of: the Hub connection, the Hub
+credential, local agent-token issuance/identity assertion, and the coalesced
+edge/heartbeat reporting (7.4). This keeps one outbound connection (good for the
+SSH-tunnel/NAT story), keeps Hub credentials off both wrapper and agent, and
+makes the Bridge the sole `state_seq` reporter so views never race.
 
 ### 12.2 Instance token request headers (Bridge -> Hub relay)
 

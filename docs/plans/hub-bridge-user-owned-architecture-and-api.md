@@ -236,7 +236,8 @@ This is a green-field rewrite. Data migration from the current daemon is out of 
 |---|---|
 | Hub | Central durable control plane and API server. |
 | Bridge | User-owned machine-local runner that connects outbound to Hub and launches wrappers. |
-| Wrapper | Thin per-agent process supervisor launched by a Bridge. Talks only to a local Bridge endpoint (no Hub URL/token); reports local signals to the Bridge and forwards agent-facing actions to the Bridge, which relays them to the Hub. |
+| Wrapper | Thin per-agent process supervisor launched by a Bridge. Talks only to a local Bridge endpoint (no Hub URL/token); reports local signals to the Bridge. |
+| Local agent token | Bridge-issued, local-only credential the agent uses against the local Bridge endpoint. Maps to one running instance; never a Hub credential. The Bridge asserts the instance identity to the Hub. |
 | User | Authenticated Heimdall user derived from Authentik/Authelia trusted headers or a bearer user token. |
 | Agent | Durable Hub-owned identity/persona/instructions, owned by one user. |
 | Agent instance | Runtime instance of an Agent located on one Bridge. Hub owns record; Bridge runs process. |
@@ -1066,7 +1067,7 @@ Rules:
 
 - Conversation and message ownership are single-owner.
 - `ChatMessage.owner_user_id` must equal `ChatConversation.owner_user_id`.
-- `agent_to_user` messages authored with an instance token derive owner from `AgentInstance.owner_user_id`.
+- `agent_to_user` messages are authored by the Bridge relaying on the instance's behalf (the agent calls the local Bridge endpoint via `ham-ctl`; the Bridge asserts the instance identity to the Hub with the instance token). Owner derives from `AgentInstance.owner_user_id`. The agent never presents a Hub credential.
 - Cross-user chat and cross-user agent messaging are not part of v1.
 
 ### 7.14 Artifact
@@ -4127,7 +4128,7 @@ Resolved default-simple v1 decisions:
 
 1. Use `user_id = normalized username` for v1. Revisit immutable IdP subject before production environments where usernames can be renamed.
 2. Bridge path validation is synchronous over the Bridge WebSocket for v1. If validation becomes slow or flaky, promote it to an async command resource later.
-3. Wrapper/agent runtime status reports through the Bridge in v1: the Bridge manages agent runtimes locally and notifies the Hub only on edge state-changes plus periodic heartbeat snapshots (runtime protocol 7.4). The wrapper holds no Hub credential; the Bridge owns the single Hub connection and the instance token. Direct wrapper-to-Hub reporting is explicitly not the v1 model.
+3. Wrapper/agent runtime status reports through the Bridge in v1: the Bridge manages agent runtimes locally and notifies the Hub only on edge state-changes plus periodic heartbeat snapshots (runtime protocol 7.4). Neither the wrapper nor the agent (`ham-ctl`) holds a Hub credential; both talk to a local Bridge endpoint. The agent uses a Bridge-managed local agent token, and the Bridge asserts the instance identity to the Hub. The Bridge owns the single Hub connection and the instance token. Direct wrapper/agent-to-Hub reporting is explicitly not the v1 model.
 4. Artifact blobs are centrally stored by the Hub in v1. Bridge-backed large local artifact content is post-v1.
 5. System/built-in templates are ownerless, read-only system records, not user resources; they are available to all users without introducing a general visibility model. User-created templates are owned by `owner_user_id`. This is an explicit carve-out from invariant 3, which governs user-owned durable resources.
 6. Bridge enrollment token entry should support both interactive paste and environment variable input in `ham-bridge enroll`; the token is never passed in URL params.
