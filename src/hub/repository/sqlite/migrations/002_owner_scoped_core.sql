@@ -248,3 +248,14 @@ CREATE TRIGGER IF NOT EXISTS chat_messages_owner_immutable BEFORE UPDATE OF owne
 CREATE TRIGGER IF NOT EXISTS artifacts_owner_immutable BEFORE UPDATE OF owner_user_id ON artifacts BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS templates_owner_immutable BEFORE UPDATE OF owner_user_id ON templates BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS user_api_tokens_owner_immutable BEFORE UPDATE OF owner_user_id ON user_api_tokens BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
+
+CREATE INDEX IF NOT EXISTS idx_search_agents_owner_lower_name ON agents(owner_user_id, lower(name));
+CREATE INDEX IF NOT EXISTS idx_search_agents_owner_lower_slug ON agents(owner_user_id, lower(slug));
+CREATE INDEX IF NOT EXISTS idx_search_agent_instances_owner_lower_agent ON agent_instances(owner_user_id, lower(agent_id));
+CREATE INDEX IF NOT EXISTS idx_search_chat_conversations_owner_lower_title ON chat_conversations(owner_user_id, lower(title));
+CREATE INDEX IF NOT EXISTS idx_search_task_chains_owner_lower_title ON task_chains(owner_user_id, lower(title));
+CREATE INDEX IF NOT EXISTS idx_search_tasks_owner_lower_title ON tasks(owner_user_id, lower(title));
+CREATE INDEX IF NOT EXISTS idx_search_projects_owner_lower_name ON projects(owner_user_id, lower(name));
+CREATE INDEX IF NOT EXISTS idx_search_projects_owner_lower_slug ON projects(owner_user_id, lower(slug));
+CREATE INDEX IF NOT EXISTS idx_search_artifacts_owner_lower_name ON artifacts(owner_user_id, lower(name));
+CREATE INDEX IF NOT EXISTS idx_search_memories_owner_lower_title ON memories(owner_user_id, lower(title));

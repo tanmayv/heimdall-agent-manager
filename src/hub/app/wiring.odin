@@ -9,6 +9,7 @@ import bridge_runtime_service "odin_test:hub/service/bridge_runtime"
 import content_service "odin_test:hub/service/content"
 import events "odin_test:hub/service/events"
 import project_service "odin_test:hub/service/project"
+import search_service "odin_test:hub/service/search"
 import taskchain_service "odin_test:hub/service/taskchain"
 import user_service "odin_test:hub/service/user"
 import http "odin_test:hub/transport/http"
@@ -27,6 +28,7 @@ App_Graph :: struct {
 	sqlite_projects: sqlite.Project_Repo_SQLite,
 	sqlite_content: sqlite.Content_Repo_SQLite,
 	sqlite_taskchains: sqlite.Taskchain_Repo_SQLite,
+	sqlite_search: sqlite.Search_Repo_SQLite,
 	sqlite_uow_factory: sqlite.SQLite_Unit_Of_Work_Factory,
 	repos: iface.Repositories,
 	uow_factory: iface.Unit_Of_Work_Factory,
@@ -36,6 +38,7 @@ App_Graph :: struct {
 	projects: project_service.Project_Service,
 	content: content_service.Content_Service,
 	taskchains: taskchain_service.Taskchain_Service,
+	search: search_service.Search_Service,
 	auth: auth_service.Auth_Service,
 	user_handlers: http.User_Handlers,
 	bridge_handlers: http.Bridge_Handlers,
@@ -43,6 +46,7 @@ App_Graph :: struct {
 	project_handlers: http.Project_Handlers,
 	content_handlers: http.Content_Handlers,
 	taskchain_handlers: http.Taskchain_Handlers,
+	search_handlers: http.Search_Handlers,
 	router: http.Router,
 }
 
@@ -64,6 +68,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.repos.projects = sqlite.new_project_repository(&graph.sqlite_projects, &graph.db)
 	graph.repos.content = sqlite.new_content_repository(&graph.sqlite_content, &graph.db)
 	graph.repos.taskchains = sqlite.new_taskchain_repository(&graph.sqlite_taskchains, &graph.db)
+	graph.repos.search = sqlite.new_search_repository(&graph.sqlite_search, &graph.db)
 	graph.uow_factory = sqlite.new_unit_of_work_factory(&graph.sqlite_uow_factory, &graph.db, &graph.repos)
 	graph.users = user_service.new_user_service(&graph.repos.users, &graph.clock, &graph.ids)
 	graph.bridges = bridge_service.new_bridge_service(&graph.repos.bridges, &graph.clock, &graph.ids)
@@ -72,6 +77,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.projects = project_service.new_project_service_with_command_sink(&graph.repos.projects, &graph.repos.bridges, bridge_command_sink, &graph.clock, &graph.ids)
 	graph.content = content_service.new_content_service(&graph.repos.content, &graph.repos.agents, &graph.repos.projects, &graph.repos.taskchains, &graph.clock, &graph.ids)
 	graph.taskchains = taskchain_service.new_taskchain_service(&graph.repos.taskchains, &graph.repos.agents, &graph.clock, &graph.ids)
+	graph.search = search_service.new_search_service(&graph.repos.search)
 	graph.auth = auth_service.new_auth_service(auth_service.Trusted_Proxy_Config{
 		username_header = config.username_header,
 		display_name_header = config.display_name_header,
@@ -86,6 +92,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.project_handlers = http.Project_Handlers{auth = &graph.auth, projects = &graph.projects}
 	graph.content_handlers = http.Content_Handlers{auth = &graph.auth, agents = &graph.agents, content = &graph.content}
 	graph.taskchain_handlers = http.Taskchain_Handlers{auth = &graph.auth, taskchains = &graph.taskchains, agents = &graph.agents}
+	graph.search_handlers = http.Search_Handlers{auth = &graph.auth, search = &graph.search}
 	graph.router = http.new_router()
 	register_routes(graph)
 	return true, ""
@@ -101,6 +108,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/me", rawptr(&graph.user_handlers), http.me_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me/logout-url", rawptr(&graph.user_handlers), http.logout_url_handler)
 	http.router_add_upgrade(&graph.router, "GET", "/api/v1/user-ws", rawptr(&graph.user_handlers), http.user_ws_upgrade_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/search", rawptr(&graph.search_handlers), http.search_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/memories", rawptr(&graph.content_handlers), http.list_memories_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/memories", rawptr(&graph.content_handlers), http.create_memory_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/memories/*", rawptr(&graph.content_handlers), http.memory_detail_handler)

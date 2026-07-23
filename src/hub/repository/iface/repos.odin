@@ -7,4 +7,5 @@ Repositories :: struct {
 	projects: Project_Repository,
 	content: Content_Repository,
 	taskchains: Taskchain_Repository,
+	search: Search_Repository,
 }
