@@ -244,7 +244,17 @@ bridge/adapter/
     vcs_adapter.odin      # branch/remote inspection for path validation (uses lib/vcs)
   wrapper/
     wrapper_launcher.odin # assemble + spawn the agent command in tmux
+    wrapper_endpoint.odin # local Bridge endpoint (unix socket/loopback) the
+                          # wrapper talks to; receives local signals
+                          # (startup/activity/liveness/exit) and agent-facing
+                          # actions, and hands them to a service for relay
 ```
+
+Wrapper boundary: the wrapper never talks to the Hub and never holds a Hub
+URL/token. It connects only to the local Bridge endpoint. The Bridge owns the
+single Hub connection + the instance token, and reports to the Hub only on edge
+state-changes plus periodic snapshots (runtime protocol 7.4). This keeps one
+outbound connection and the Hub credential off the wrapper.
 
 Interaction rules:
 

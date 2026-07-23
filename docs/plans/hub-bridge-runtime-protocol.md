@@ -32,8 +32,14 @@ The protocol should be explicit, versioned, idempotent, bearer-authenticated, an
 11. Bridge reports machine metadata and capabilities on connect.
 12. Bridge reports runtime status for instances it supervises.
 13. Bridge materializes bootstrap files locally.
-14. Wrapper/agent may use an instance token for agent-facing Hub APIs.
-15. No tokens are passed in query params.
+14. The Bridge is the **sole** connection to the Hub for runtime. The wrapper
+    talks only to a **local Bridge endpoint** (unix socket / loopback) and holds
+    no Hub URL or Hub token. The Bridge relays what the Hub needs.
+15. The Bridge **manages agent runtimes locally** and minimizes Hub traffic: it
+    notifies the Hub only on edge state-changes and sends periodic snapshots
+    (heartbeat digest), per the reporting discipline in 7.4. High-frequency local
+    signals stay on the Bridge.
+16. No tokens are passed in query params.
 
 ---
 
@@ -1084,8 +1090,9 @@ Hub transactionally creates/loads TaskChain + AgentInstance + ChatConversation
   -> Hub sends launch_agent to Bridge with instance/chain/conversation ids
   -> Bridge fetches bootstrap from Hub using Bridge token
   -> Bridge materializes bootstrap files locally
-  -> Bridge launches wrapper with instance token/env
-  -> Wrapper/agent can call Hub with instance token for agent-facing APIs
+  -> Bridge launches wrapper with materialized files + local Bridge endpoint
+  -> Wrapper reports local signals to the Bridge; Bridge relays agent-facing
+     calls to the Hub with the instance token (wrapper holds no Hub credential)
 ```
 
 This keeps durable bootstrap context centralized while filesystem writes remain local.
@@ -1281,23 +1288,47 @@ On restart or provider/tier reconfigure, the Bridge/wrapper must fetch a fresh b
 
 ### 12.1 Instance token purpose
 
-The instance token identifies one running AgentInstance.
+The instance token identifies one running AgentInstance to the **Hub**. It is a
+Hub credential and is **held by the Bridge**, not handed to the wrapper. The Hub
+accepts it for agent-facing calls that the Bridge relays on behalf of an
+instance:
 
-It can be used by wrapper/agent for:
-
-- startup status
-- heartbeat/activity
 - agent-facing task APIs
 - agent-facing chat APIs
 - artifact upload associated with the instance
 
-### 12.2 Instance token request headers
+Runtime status/heartbeat/activity are **not** reported with the instance token by
+the wrapper; the Bridge reports them for all its instances over the Bridge WS
+using its Bridge token, coalesced per 7.4. The wrapper never presents a Hub
+credential.
+
+#### 12.0 Wrapper <-> Bridge boundary (local)
+
+The wrapper is a thin, Bridge-local process supervisor. It:
+
+- talks only to a **local Bridge endpoint** (unix socket or loopback), never to
+  the Hub, and holds no `hub_url` / instance token;
+- receives its launch context (bootstrap-materialized files, cwd, command) from
+  the Bridge;
+- reports local signals to the Bridge only: startup phase, activity/idle,
+  process/pane liveness, wrapper exit;
+- forwards agent-originated actions (chat send-to-user, task updates, artifact
+  upload) to the Bridge, which relays them to the Hub with the instance token.
+
+The Bridge is therefore the single owner of: the Hub connection, the instance
+token, and the coalesced edge/heartbeat reporting (7.4). This keeps one outbound
+connection (good for the SSH-tunnel/NAT story), keeps the Hub credential off the
+wrapper, and makes the Bridge the sole `state_seq` reporter so wrapper and Bridge
+views never race.
+
+### 12.2 Instance token request headers (Bridge -> Hub relay)
 
 ```http
 Authorization: Bearer hit_...
 ```
 
-No query params.
+Used by the Bridge when relaying an instance's agent-facing calls to the Hub. No
+query params. The wrapper never sends this header (it has no Hub connection).
 
 ### 12.3 Instance auth context
 
