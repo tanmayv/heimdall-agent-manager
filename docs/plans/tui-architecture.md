@@ -68,8 +68,12 @@ The TUI is a user client, identical in spirit to the desktop UI:
 
 - Config/inputs (reusing `ham-ctl` conventions):
   - `--hub` / `$HEIMDALL_HUB_URL`
-  - `--token` / `$HEIMDALL_TOKEN` (user bearer token)
+  - `--token` / `$HEIMDALL_TOKEN` (user API token, granted — not generated in-app)
   - optional `--config` file
+- The user API token is **granted by an operator** on the Hub host
+  (`ham-hub tokens issue --user <user_id>`, arch 6.3.1), or via the optional
+  authenticated token API. There is no in-app token-creation page; the TUI only
+  consumes a token it was given.
 - On start: register a `client_instance_id` (like `/user-client/register`),
   heartbeat, and open `/api/v1/user-ws`.
 - All REST calls send `Authorization: Bearer <user_token>`.
