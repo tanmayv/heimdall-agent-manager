@@ -245,16 +245,23 @@ bridge/adapter/
   wrapper/
     wrapper_launcher.odin # assemble + spawn the agent command in tmux
     wrapper_endpoint.odin # local Bridge endpoint (unix socket/loopback) the
-                          # wrapper talks to; receives local signals
-                          # (startup/activity/liveness/exit) and agent-facing
-                          # actions, and hands them to a service for relay
+                          # wrapper + agent (ham-ctl) talk to; receives local
+                          # signals (startup/activity/liveness/exit) and
+                          # agent-facing actions, authenticates local agent
+                          # tokens, and hands them to a service for relay
+    agent_token_store.odin # issue/verify/rotate Bridge-managed local agent
+                          # tokens (local-only; map token -> agent_instance_id)
 ```
 
-Wrapper boundary: the wrapper never talks to the Hub and never holds a Hub
-URL/token. It connects only to the local Bridge endpoint. The Bridge owns the
-single Hub connection + the instance token, and reports to the Hub only on edge
-state-changes plus periodic snapshots (runtime protocol 7.4). This keeps one
-outbound connection and the Hub credential off the wrapper.
+Wrapper/agent boundary: neither the wrapper nor the agent process talks to the
+Hub or holds a Hub URL/token. Both connect only to the local Bridge endpoint. The
+agent (`ham-ctl`) authenticates with a **Bridge-managed local agent token** and
+issues agent-facing actions (chat/task/artifact/memory) locally; the Bridge
+relays them to the Hub with the instance token and **asserts the instance
+identity** on the agent's behalf. The Bridge owns the single Hub connection + the
+Hub credential, issues/verifies local agent tokens, and reports to the Hub only
+on edge state-changes plus periodic snapshots (runtime protocol 7.4). This keeps
+one outbound connection and all Hub credentials off both wrapper and agent.
 
 Interaction rules:
 
