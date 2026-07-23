@@ -19,7 +19,7 @@ The protocol should be explicit, versioned, idempotent, bearer-authenticated, an
 
 ### 1.1 Runtime protocol goals
 
-1. Bridge connects outbound to Hub.
+1. Bridge connects outbound to Hub (directly or through a user-managed tunnel such as SSH port forwarding).
 2. Hub never needs inbound network access to the user's machine.
 3. Bridge authenticates with a Bridge bearer token.
 4. Bridge token identifies exactly one Bridge.
@@ -129,6 +129,37 @@ The Bridge ID is derived from the token. Do not put `bridge_id` or token in the 
 HTTP fallback transport is post-v1. V1 uses the Bridge WebSocket only. If the Bridge is disconnected, Hub treats it as offline and user actions that require it return `bridge_offline`.
 
 Future fallback endpoints may include HTTP heartbeat, HTTP runtime status, or polling command fetch, but they should not be implemented for the first cut.
+
+### 3.3 V1 support: SSH-tunneled Hub connectivity
+
+A Bridge only needs to initiate HTTP/WebSocket connections to its configured `hub_url`. Therefore v1 explicitly supports user-managed SSH forwarding without any special Hub feature: `hub_url` may be a localhost/loopback endpoint that forwards to the real Hub.
+
+Example: the internal machine can SSH out to the VPS/Hub host:
+
+```bash
+# run on the internal machine
+ssh -N -L 127.0.0.1:18080:127.0.0.1:8080 user@vps.example.com
+ham-bridge enroll --hub http://127.0.0.1:18080 --token hbe_secret_once
+```
+
+Example: the internal machine cannot reach the Hub, but the operator can SSH into it from a laptop that can reach the Hub:
+
+```bash
+# run on the laptop; creates a listener on the internal machine
+ssh -N -R 127.0.0.1:18080:hub.example.com:443 user@internal-machine
+
+# run on the internal machine
+ham-bridge enroll --hub http://127.0.0.1:18080 --token hbe_secret_once
+```
+
+Operational requirements:
+
+- `ham-bridge enroll --hub <url>` must accept any valid HTTP(S) base URL, including `http://127.0.0.1:<port>` and `http://localhost:<port>`.
+- The enrolled Bridge persists exactly the supplied `hub_url`; later WebSocket, bootstrap, and runtime HTTP calls use that URL.
+- WebSocket upgrade must work over the same base URL; SSH TCP forwarding handles WebSockets transparently.
+- Do not special-case tunnels in Hub authorization. Auth still uses Bridge bearer tokens and assigned-instance checks.
+- If using HTTPS through a localhost tunnel, hostname validation may fail if the certificate is for `hub.example.com` but the URL is `https://127.0.0.1:<port>`. Operators should either use HTTP inside the SSH tunnel, or preserve the Hub hostname with local DNS/hosts mapping and tunnel the matching port.
+- This is not NAT traversal, relay, federation, or reverse-connection support. It is documented/validated support for ordinary outbound Bridge connectivity through a user-managed TCP tunnel.
 
 ---
 

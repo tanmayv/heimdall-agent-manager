@@ -1591,6 +1591,7 @@ Notes:
 - `label` is optional.
 - If label is omitted, Hub uses Bridge-reported hostname during enrollment.
 - `expires_in_seconds` should default to 900 and have a max such as 86400.
+- The setup command's `--hub` is the Hub base URL known to the UI. Operators may replace it with a localhost/loopback SSH-tunnel URL when enrolling a Bridge behind an internal network. The Bridge persists the exact `hub_url` used at enrollment.
 
 Response:
 
@@ -1678,10 +1679,12 @@ Response:
   "data": {
     "bridge_id": "brg_123",
     "bridge_token": "hbr_secret",
-    "hub_url": "https://heimdall.example.com"
+    "hub_url": "http://127.0.0.1:18080"
   }
 }
 ```
+
+`hub_url` echoes the base URL used by `ham-bridge enroll`. It may be the public Hub URL or a user-managed tunnel endpoint such as `http://127.0.0.1:18080`.
 
 Validation:
 
