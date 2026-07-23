@@ -45,6 +45,7 @@
           mkdir -p $out/bin
           odin build ${srcDir} -collection:odin_test=src -out:$out/bin/${name}
           wrapProgram $out/bin/${name} --prefix PATH : ${pkgs.lib.makeBinPath runtimeInputs}
+          ${if name == "ham-bridge" then "ln -s ${pkgs.openssl}/bin/openssl $out/bin/openssl" else ""}
           ${if name == "ham-wrapper" then "ln -s ham-wrapper $out/bin/bc-agent-wrapper" else ""}
           ${if name == "ham-test-agent" then "ln -s ham-test-agent $out/bin/bc-test-agent" else ""}
           runHook postBuild
@@ -137,7 +138,9 @@
         in
         {
           ham-daemon = mkOdinDaemonPackage pkgs odin;
-          ham-bridge = mkOdinPackage pkgs odin "ham-bridge" "src/bridge";
+          ham-hub = mkOdinPackageWithRuntime pkgs odin "ham-hub" "src/hub" [ pkgs.sqlite ];
+          ham-bridge = mkOdinPackageWithRuntime pkgs odin "ham-bridge" "src/bridge" [ pkgs.openssl ];
+          ham-dev-proxy = mkOdinPackage pkgs odin "ham-dev-proxy" "src/dev_proxy";
           # ham-wrapper shells out to tmux (agent windows) and git/jj (VCS
           # workspaces). It must carry those on PATH because the daemon launches
           # the wrapper detached with only the daemon's PATH, which does not
@@ -161,9 +164,17 @@
           type = "app";
           program = "${self.packages.${system}.ham-daemon}/bin/ham-daemon";
         };
+        hub = {
+          type = "app";
+          program = "${self.packages.${system}.ham-hub}/bin/ham-hub";
+        };
         bridge = {
           type = "app";
           program = "${self.packages.${system}.ham-bridge}/bin/ham-bridge";
+        };
+        dev-proxy = {
+          type = "app";
+          program = "${self.packages.${system}.ham-dev-proxy}/bin/ham-dev-proxy";
         };
         # daemon-with-wrapper: builds the current ham-wrapper and ham-ctl
         # alongside the ham-daemon and launches the daemon with a generated
@@ -578,6 +589,7 @@
               pkks.tmux
               pkks.curl
               pkks.jq
+              pkks.sqlite
             ];
           };
         });

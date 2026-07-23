@@ -268,12 +268,15 @@ This is a green-field rewrite. Data migration from the current daemon is out of 
 17. Every independently-queryable durable table carries its own `owner_user_id`. It is set once at insert, is immutable, and must equal the parent resource owner; equality is enforced at creation. Immutability is what makes the stored copy always correct (ownership never changes) and enables flat tenant filtering and PostgreSQL RLS.
 18. Machine-token auth resolves `owner_user_id` from the authenticated Bridge/Instance record and scopes access to that Bridge/Instance.
 19. Agents with no enabled Bridge support cannot run. At least one enabled `AgentBridgeSupport` row is required before scheduling or explicit launch.
-20. Task review in v1 uses a single `reviewer_agent_id`; multi-reviewer participants/LGTM voting are not part of the v1 target API.
+20. Task assignment targets concrete same-chain actor refs, not arbitrary agent identities. The coordinator instance is the default assignee. Chain-level default reviewers are inherited by tasks unless overridden.
 20a. Task and TaskChain each use two orthogonal state fields: `publish_state` (draft/published) and a single execution `status` enum that only applies once published. There is no single flat status enum.
 20b. Dependency unblocking is derived from task status (only `completed` and `cancelled` unblock dependents; `paused` does not) through one centralized helper, not stored per edge.
+20d. Task ordering within a chain is backend-owned and single-source: the Hub computes the transitively reduced dependency graph and a canonical topological order (tie-broken by priority, then created_at) from `depends_on`. The chain-graph API, the UI graph, and next-task selection all use this same order. The UI never computes its own ordering. Dependency cycles are rejected at create/update.
 20c. v1 has no auto-assignment, no auto-promotion of the next task, and no scheduled/automatic nudges. Nudges are manual, triggered by an agent or a user from the UI. Scheduling and auto-assignment are post-v1.
 21. Memory may be proposed by a user or authorized instance, but only the owning user may approve/reject pending memory.
 22. Agent-to-agent inbox/federated message-provider APIs are not part of v1; v1 chat is user↔own-agent only.
+22a. Every `AgentInstance` is bound 1:1 to exactly one `ChatConversation` (no standalone instances). Instances created from the composer, from an explicit Agent-page launch, or by the system for task-chain work all get a conversation. This makes chatting with the coordinator and with individual chain agents uniform.
+22b. Every `AgentInstance` belongs to exactly one immutable `TaskChain` (`chain_id` required). Creating an instance with an existing `chain_id` hydrates that agent into that chain. Creating an instance without a `chain_id` creates a private/default chain for that instance in the same transaction. A live instance cannot be moved into another chain; cross-chain context transfer happens through memory/artifacts, not live-context reuse.
 23. All durable state lives in a relational database. There are no JSONL, append-only flat-file, or ad hoc on-disk stores for durable product state. Only truly ephemeral in-memory projections (live sockets, connection registries) may live outside the database.
 24. The database engine is an implementation detail behind a repository layer. SQLite is the v1 engine, but no business logic, service, or handler may depend on SQLite-specific APIs, types, SQL dialect quirks, or file semantics. Swapping SQLite for PostgreSQL must be a data-access-layer change only.
 25. No singletons for state or dependencies. Stores, repositories, services, and connection handles are constructed once at startup and passed explicitly via dependency injection. No global mutable state, no package-level mutable singletons.
@@ -686,24 +689,30 @@ request override
 
 ### 7.7 Agent instance
 
+An `AgentInstance` is a **durable, restartable session**, not a single process run. The record persists across process restarts and keeps the same `agent_instance_id`. `runtime_status` describes the *current* process; the record outlives any one process. This is what lets a conversation own exactly one instance for its whole life (see 7.13) while the underlying process can stop and start.
+
 ```ts
 AgentInstance {
   agent_instance_id: string
   owner_user_id: string
   agent_id: string
-  bridge_id: string
+  bridge_id: string            // pinned; the session always relaunches on this bridge
+  chain_id: string             // required, immutable; every instance belongs to exactly one chain
+  conversation_id: string      // required 1:1 conversation owner
   provider: string
   tier: string
   project_id?: string
-  project_path?: string       // effective path snapshot captured at launch time
+  project_path?: string       // effective path snapshot captured at first launch
   runtime_status: "launching" | "starting" | "running" | "idle" | "busy" | "stopping" | "stopped" | "failed" | "unreachable"
   startup_status?: "starting" | "ready" | "startup_blocked" | "startup_failed" | "startup_unknown"
   activity_status?: "unknown" | "idle" | "active" | "blocked"
   status_message?: string
+  last_applied_seq?: number   // highest Bridge state_seq applied; monotonic ACROSS restarts
+  run_count?: number          // number of times this session has been (re)started
   created_at: string
   updated_at: string
-  started_at?: string
-  stopped_at?: string
+  started_at?: string         // start of the CURRENT run
+  stopped_at?: string         // end of the last run (when stopped)
   last_seen_at?: string
 }
 ```
@@ -713,9 +722,30 @@ Rules:
 - Hub owns record.
 - Bridge runs actual process.
 - Instance belongs to same owner as Agent and Bridge.
-- `project_path` is the Bridge-local effective path resolved at launch time.
-- `project_path` is a faithful launch snapshot and must not auto-update if `Project.default_path` or `ProjectBridgePath` changes later. New launches use the new effective path; existing instances keep their launch snapshot.
+- The instance is a restartable session: stopping ends the process but keeps the record; restarting reuses the same `agent_instance_id` and produces a new process on the same pinned `bridge_id`.
+- Every instance has exactly one immutable `chain_id` and exactly one 1:1 `conversation_id`. If a start request supplies `chain_id`, the instance is hydrated into that existing chain. If no `chain_id` is supplied, the Hub creates a private/default task chain for the instance in the same transaction. The instance can never move chains.
+- The `agent_instance_id` is stable across restarts AND across provider/tier changes. Task chains reference instances by `agent_instance_id` (assignee/reviewer/coordinator); this id must never be forked by a runtime change, or those references would break.
+- Launch parameters split into two mutability tiers:
+  - Immutable session identity: `agent_id`, `bridge_id`, `chain_id`, `conversation_id`, `project_id`, `project_path`. Changing any of these means a different instance, not a reconfigure.
+  - Mutable runtime tuning: `provider`, `tier`. These can be changed mid-session (e.g. mid-conversation). A change triggers a process restart on the same `agent_instance_id`; the record and all task-chain references are preserved.
+- `bridge_id` is pinned for the life of the session. Because `project_path` is bridge-local, the session cannot relaunch on a different bridge; if the pinned bridge is offline the session cannot resume until it is back online.
+- A provider/tier change is only valid to a combination supported by BOTH the pinned bridge's capabilities and the agent-bridge-support policy for (agent, bridge). The selectable range is the intersection of those two.
+- `project_path` is a faithful launch snapshot and must not auto-update if `Project.default_path` or `ProjectBridgePath` changes later.
+- Restart does NOT preserve in-process agent context. A restarted process is a fresh session with empty scrollback; continuity comes from replaying conversation history + bootstrap/memory into the new process, not from the stable id. The stable id preserves identity/attribution, not runtime memory.
 - APIs and filters must use `runtime_status` for AgentInstance state, not overloaded `status`.
+- Runtime status updates from the Bridge are applied only when the incoming `state_seq > last_applied_seq` (idempotent, ordered), and `state_seq`/`last_applied_seq` continue monotonically across restarts. Both coalesced edge events and the periodic heartbeat digest update this field, so a lost edge event self-corrects on the next heartbeat. See runtime protocol §7.4.
+
+Lifecycle:
+
+```text
+create -> launching -> starting -> running -> stopping -> stopped
+                                       ^                      |
+                                       |     restart (same id, same bridge)
+                                       +----------------------+
+
+reconfigure(provider|tier): running -> stopping -> launching -> ... -> running
+   (same agent_instance_id; new process uses new provider/tier; history replayed)
+```
 
 ### 7.8 Project
 
@@ -784,10 +814,12 @@ Status uses **two orthogonal fields** rather than one flat enum (see 7.11 for th
 TaskChain {
   chain_id: string
   owner_user_id: string
+  kind: "private_conversation" | "team_work"
   title: string
   description?: string
   project_id?: string
-  coordinator_agent_id?: string
+  coordinator_agent_instance_id: string
+  default_reviewer_refs: ReviewerRef[]
   publish_state: "draft" | "published"
   status: "active" | "completed" | "cancelled"   // only meaningful when published
   task_counts: TaskCounts
@@ -798,6 +830,10 @@ TaskChain {
   published_at?: string
   completed_at?: string
 }
+
+ReviewerRef =
+  | { type: "user", user_id: string }
+  | { type: "agent_instance", agent_instance_id: string }
 ```
 
 Rules:
@@ -805,6 +841,10 @@ Rules:
 - Tasks inherit ownership from parent TaskChain.
 - A chain is created as `draft`. Publishing (`publish_state = published`) means the chain and its tasks are defined and ready to be worked. `status` starts `active` on publish.
 - Chain `status` is intentionally minimal in v1: `active` while work proceeds, `completed` or `cancelled` when finished. There is no auto-progression; transitions are explicit operator/coordinator actions.
+- The coordinator is a concrete `agent_instance_id`, not an `agent_id`. The coordinator instance is the default assignee for tasks that do not set an assignee override.
+- Default reviewers are chain-level actor refs. Private conversation chains normally use the user as the default reviewer. Team chains may use the user and/or same-chain agent instances.
+- Any `ReviewerRef` with `type = agent_instance` must refer to an instance whose immutable `chain_id` equals this chain. This prevents assigning a live unrelated conversation instance into the chain.
+- The chain roster is derived from instances whose immutable `chain_id` equals the chain plus refs on the chain/tasks; no separate v1 roster/slot table is required.
 
 ```ts
 TaskCounts {
@@ -840,8 +880,8 @@ Task {
   title: string
   description?: string
   acceptance_criteria?: string[]
-  assignee_agent_id?: string
-  reviewer_agent_id?: string
+  assignee_ref?: AssigneeRef     // default = TaskChain.coordinator_agent_instance_id
+  reviewer_refs?: ReviewerRef[]  // default = TaskChain.default_reviewer_refs
   depends_on_task_ids?: string[]
   publish_state: "draft" | "published"
   status:
@@ -859,6 +899,20 @@ Task {
   started_at?: string
   completed_at?: string
 }
+
+AssigneeRef =
+  | { type: "agent_instance", agent_instance_id: string }
+  | { type: "user", user_id: string }
+```
+
+Effective assignment:
+
+```text
+effective_assignee(task) = task.assignee_ref
+  ?? { type: "agent_instance", agent_instance_id: task.chain.coordinator_agent_instance_id }
+
+effective_reviewers(task) = task.reviewer_refs
+  ?? task.chain.default_reviewer_refs
 ```
 
 Execution transitions (all explicit; no auto-promotion in v1):
@@ -884,7 +938,9 @@ unblocks_dependents(status) = status in { completed, cancelled }
 Rules:
 
 - Authorization is checked through `TaskChain.owner_user_id` (and the task's own immutable `owner_user_id` copy for flat listing/RLS).
-- Assigned/reviewer agents must be owned by the same user.
+- Any task `assignee_ref` or `reviewer_refs` override must be a user ref for the chain owner or an `agent_instance` ref whose immutable `chain_id` equals the task's `chain_id`. Tasks cannot assign an unrelated live instance from another conversation/chain.
+- If no assignee override is set, the chain coordinator instance is the default assignee.
+- If no reviewer override is set, the chain's `default_reviewer_refs` apply.
 - There is no auto-assignment, no auto-promotion of the next task, and no scheduled/automatic nudges in v1. All assignment and status changes are explicit operator/agent actions.
 - A task is only workable when `publish_state = published`; a `draft` task is not scheduled, assigned, or nudged.
 
@@ -917,14 +973,19 @@ Rules:
 
 ### 7.13 Chat/conversation
 
+**Invariant: every `AgentInstance` has exactly one `ChatConversation`, and vice versa (1:1).** There are no standalone instances. Whenever an instance is created — from the composer, from an explicit "Launch instance" on the Agent page, or by the system for task-chain work — a conversation is created to own it. The conversation is the user's chat window into that instance regardless of what work it does. This makes "chat with the coordinator" and "chat with an individual chain agent" fall out for free: their chain-work instances are conversation-backed.
+
+A conversation is bound 1:1 to a durable agent **session** (`AgentInstance`), locked when the instance is created. Both `agent_id` (identity) and `agent_instance_id` (the session) are permanent for the conversation's life; the session is restartable (7.7) so the conversation continues by relaunching the same instance, not by repointing to a new one.
+
 ```ts
 ChatConversation {
   conversation_id: string
   owner_user_id: string
-  agent_id?: string
-  agent_instance_id?: string
-  chain_id?: string
-  title?: string
+  agent_id: string             // permanent identity binding, set at creation
+  agent_instance_id: string    // permanent 1:1 session binding, set at creation
+  project_id?: string          // locked launch param (may be empty for no project)
+  chain_id: string             // same immutable chain as AgentInstance.chain_id
+  title?: string               // UI may show instance id instead of title where useful
   unread_count: number
   last_message_preview?: string
   last_message_at?: string
@@ -932,6 +993,18 @@ ChatConversation {
   updated_at: string
 }
 ```
+
+Rules:
+
+- An instance and its conversation are created together; the conversation is never without an instance once bound. There are three creation triggers, all producing the same conversation+instance pair:
+  - **First message (composer):** the New Conversation UI collects launch params (agent, project, advanced provider/tier); the first send creates a private/default task chain, then the instance + conversation bound to that chain.
+  - **Explicit launch (Agent page):** the user configures launch params and clicks Launch; if no `chain_id` is supplied the Hub creates a private/default task chain, then starts the instance immediately into an empty but live conversation (no first message required). The user is dropped into that conversation to chat.
+  - **System launch (task chain):** when the Hub hydrates a chain agent (coordinator, assignee, or reviewer) for an existing chain, it creates the agent's conversation bound to the same instance and existing `chain_id`. This conversation is the user's channel to that agent.
+- `agent_id` + `agent_instance_id` + `chain_id` are set at creation and immutable thereafter; there is no change-agent operation and no move-chain operation.
+- The conversation owns exactly one instance session for its whole life, and that instance belongs to exactly one task chain. Two conversations with the same `agent_id` get two separate sessions/chains unless they were explicitly hydrated into the same existing chain at creation.
+- Continuing an idle conversation restarts the same `agent_instance_id` (same bridge); it does not create a new instance.
+- The coordinator's conversation is the chain's coordinator instance conversation; "message coordinator" from the chain view opens it. Individual chain agents are chatted with via their own conversations the same way.
+- `sender_agent_instance_id` on messages equals the conversation's instance, but still marks restart boundaries because the underlying process (and its in-memory context) changed even though the id did not.
 
 ```ts
 ChatMessage {
@@ -963,7 +1036,8 @@ Artifact {
   artifact_id: string
   owner_user_id: string
   kind: "file" | "text" | "image" | "json" | "diff" | "other"
-  name: string
+  name: string                 // human display label; free-form, non-unique
+  description?: string         // optional longer note/context
   content_type?: string
   size_bytes?: number
   agent_id?: string
@@ -976,7 +1050,12 @@ Artifact {
 }
 ```
 
-Artifact content access is scoped by `owner_user_id`.
+Rules:
+
+- Artifact content access is scoped by `owner_user_id`.
+- `name` is a human display label, independent of the underlying filename/content-type. It is free-form and non-unique; `artifact_id` is the identity.
+- On agent-created artifacts, `name` defaults to the supplied filename when omitted; the owner can rename anytime.
+- `description` is an optional longer human note shown in the Library and viewer.
 
 ---
 
@@ -1512,6 +1591,7 @@ Notes:
 - `label` is optional.
 - If label is omitted, Hub uses Bridge-reported hostname during enrollment.
 - `expires_in_seconds` should default to 900 and have a max such as 86400.
+- The setup command's `--hub` is the Hub base URL known to the UI. For SSH tunnels, operators may replace it with a plaintext localhost/loopback HTTP tunnel URL such as `http://127.0.0.1:18080` when enrolling a Bridge behind an internal network. Direct `https://` Hub URLs are supported when the Bridge can validate the Hub certificate; runtime WebSocket derives `wss://`. Private/self-hosted CAs can be supplied to the Bridge with `HAM_TLS_CA_FILE`; skip-verify is not a default. The Bridge persists the exact `hub_url` used at enrollment.
 
 Response:
 
@@ -1520,7 +1600,7 @@ Response:
   "data": {
     "enrollment_id": "enr_123",
     "expires_at": "2026-07-22T10:15:00Z",
-    "setup_command": "ham-bridge enroll --hub https://heimdall.example.com",
+    "setup_command": "ham-bridge enroll --hub http://127.0.0.1:18080",
     "enrollment_token": "hbe_secret_once"
   },
   "meta": {
@@ -1599,10 +1679,12 @@ Response:
   "data": {
     "bridge_id": "brg_123",
     "bridge_token": "hbr_secret",
-    "hub_url": "https://heimdall.example.com"
+    "hub_url": "http://127.0.0.1:18080"
   }
 }
 ```
+
+`hub_url` echoes the base URL used by `ham-bridge enroll`. For tunnel support it may be a plaintext user-managed tunnel endpoint such as `http://127.0.0.1:18080`; direct HTTPS endpoints such as `https://hub.example.com` are supported with TLS certificate/hostname validation and runtime `wss://` derivation.
 
 Validation:
 
@@ -2000,6 +2082,8 @@ Response:
       "agent_name": "Backend Agent",
       "bridge_id": "brg_123",
       "bridge_label": "tanmay-macbook",
+      "chain_id": "chain_123",
+      "conversation_id": "conv_123",
       "provider": "claude",
       "tier": "smart",
       "project_id": "proj_123",
@@ -2029,7 +2113,7 @@ Idempotency-Key: <required-for-user-initiated-start>
 
 `Idempotency-Key` is required for UI/user-initiated starts and strongly recommended for CLI starts, because this endpoint creates a durable instance and sends a launch command.
 
-Explicit Bridge request:
+Explicit Bridge request, creating a new private/default chain because `chain_id` is omitted:
 
 ```json
 {
@@ -2037,6 +2121,26 @@ Explicit Bridge request:
   "bridge_id": "brg_123",
   "provider": "claude",
   "tier": "smart",
+  "project_id": "proj_123",
+  "chain": {
+    "kind": "private_conversation",
+    "title": "Backend Agent session",
+    "default_reviewer_refs": [
+      { "type": "user", "user_id": "usr_123" }
+    ]
+  }
+}
+```
+
+Hydrate into an existing task chain:
+
+```json
+{
+  "agent_id": "agt_reviewer",
+  "bridge_id": "brg_123",
+  "chain_id": "chain_123",
+  "provider": "claude",
+  "tier": "normal",
   "project_id": "proj_123"
 }
 ```
@@ -2050,6 +2154,8 @@ Hub-selected Bridge request:
 }
 ```
 
+If `chain_id` is omitted, the Hub creates a private/default `TaskChain` in the same transaction as the `AgentInstance` and `ChatConversation`. If `chain_id` is supplied, the instance is hydrated into that existing chain. In both cases the response includes both ids.
+
 Validation:
 
 1. authenticated user owns Agent
@@ -2059,7 +2165,9 @@ Validation:
 5. Bridge supports provider/tier
 6. Project belongs to user if supplied
 7. Project effective path resolves for Bridge
-8. Bridge has capacity if capacity limits are enforced
+8. If `chain_id` is supplied, chain belongs to user and is not terminal/archived
+9. If `chain_id` is omitted, optional `chain.default_reviewer_refs` are valid refs for the user (agent-instance refs are not allowed because no chain exists yet; default to the user if omitted)
+10. Bridge has capacity if capacity limits are enforced
 
 Provider/tier resolution:
 
@@ -2087,6 +2195,8 @@ Response:
     "agent_instance_id": "inst_123",
     "agent_id": "agt_123",
     "bridge_id": "brg_123",
+    "chain_id": "chain_123",
+    "conversation_id": "conv_123",
     "provider": "claude",
     "tier": "smart",
     "project_id": "proj_123",
@@ -2097,7 +2207,7 @@ Response:
 
 HTTP status:
 
-- `201 Created` if instance record created and launch command queued/sent
+- `201 Created` if chain/instance/conversation records were created and launch command queued/sent
 - `202 Accepted` if async launch command accepted but not started
 - repeat request with same `Idempotency-Key` returns the original response
 
@@ -2126,6 +2236,133 @@ Behavior:
 - Hub validates ownership.
 - Hub sends stop command to Bridge.
 - Instance moves to `stopping` then `stopped`, or `failed` on error.
+- Stop keeps the durable instance record (restartable session); it does not delete the instance.
+
+### 13.5 Restart instance
+
+Relaunch a stopped/idle session on the same pinned bridge, reusing the same `agent_instance_id` and launch params.
+
+```http
+POST /api/v1/agent-instances/{instance_id}/restart
+```
+
+Request: empty body.
+
+Response (`202 Accepted`):
+
+```json
+{
+  "data": {
+    "agent_instance_id": "inst_123",
+    "agent_id": "agt_123",
+    "bridge_id": "brg_123",
+    "chain_id": "chain_123",
+    "conversation_id": "conv_123",
+    "provider": "claude",
+    "tier": "smart",
+    "project_id": "proj_123",
+    "runtime_status": "launching",
+    "run_count": 2,
+    "last_applied_seq": 41
+  },
+  "meta": {
+    "request_id": "req_123",
+    "server_time": "2026-07-22T10:00:00Z"
+  }
+}
+```
+
+Behavior:
+
+- Same `agent_instance_id`, same `bridge_id`, same immutable `chain_id`/`conversation_id`, same `provider`/`tier`/`project`.
+- New process; `run_count` increments; `state_seq` continues monotonically.
+- Fails with `409 bridge_offline` if the pinned bridge is unavailable.
+- Continuity is via history/bootstrap replay, not in-process memory.
+
+Error (`409 conflict`, pinned bridge offline):
+
+```json
+{
+  "error": {
+    "code": "bridge_offline",
+    "message": "Pinned bridge brg_123 is offline; the session cannot resume until it reconnects"
+  },
+  "meta": { "request_id": "req_123" }
+}
+```
+
+### 13.6 Reconfigure instance (change provider/tier)
+
+Change the runtime tuning of an existing session mid-life (e.g. mid-conversation) while preserving `agent_instance_id`. This is the only mutation to a running instance's launch params; `agent_id`, `bridge_id`, and `project` are immutable.
+
+```http
+PATCH /api/v1/agent-instances/{instance_id}
+```
+
+Request:
+
+```json
+{
+  "provider": "claude",
+  "tier": "normal"
+}
+```
+
+Validation:
+
+- `provider`/`tier` must be in the intersection of the pinned bridge's capabilities and the agent-bridge-support policy for (agent, bridge).
+- Attempts to change `agent_id`, `bridge_id`, or `project_id` are rejected with `409 conflict` (those define a different instance).
+
+Behavior:
+
+- If running: Hub restarts the process on the same `agent_instance_id` with the new provider/tier (`running -> stopping -> launching -> running`); conversation history is replayed for continuity.
+- If stopped: the new provider/tier is stored and applied on next start/restart.
+- All task-chain references to this `agent_instance_id` are unaffected.
+
+Response (`200 OK`):
+
+```json
+{
+  "data": {
+    "agent_instance_id": "inst_123",
+    "agent_id": "agt_123",
+    "bridge_id": "brg_123",
+    "provider": "claude",
+    "tier": "normal",
+    "project_id": "proj_123",
+    "runtime_status": "launching",
+    "run_count": 3
+  },
+  "meta": {
+    "request_id": "req_123",
+    "server_time": "2026-07-22T10:00:00Z"
+  }
+}
+```
+
+Error (`409 conflict`, attempt to change an immutable field):
+
+```json
+{
+  "error": {
+    "code": "conflict",
+    "message": "agent_id, bridge_id, and project_id are immutable for an instance; changing them requires a new instance"
+  },
+  "meta": { "request_id": "req_123" }
+}
+```
+
+Error (`422 provider_unavailable`, provider/tier not offered by the pinned bridge / support policy):
+
+```json
+{
+  "error": {
+    "code": "provider_unavailable",
+    "message": "tier 'normal' for provider 'claude' is not available on bridge brg_123 under this agent's support policy"
+  },
+  "meta": { "request_id": "req_123" }
+}
+```
 
 ---
 
@@ -2345,7 +2582,8 @@ Filters:
 - `publish_state` (`draft` | `published`)
 - `status`
 - `project_id`
-- `coordinator_agent_id`
+- `coordinator_agent_instance_id`
+- `kind` (`private_conversation` | `team_work`)
 - `q`
 
 Sorts:
@@ -2365,9 +2603,14 @@ Compact response:
       "title": "Bridge Migration",
       "publish_state": "published",
       "status": "active",
+      "kind": "team_work",
       "project_id": "proj_123",
       "project_name": "Heimdall",
-      "coordinator_agent_id": "agt_coord",
+      "coordinator_agent_instance_id": "inst_coord",
+      "default_reviewer_refs": [
+        { "type": "user", "user_id": "usr_123" },
+        { "type": "agent_instance", "agent_instance_id": "inst_reviewer" }
+      ],
       "task_counts": {
         "total": 8,
         "draft": 0,
@@ -2403,23 +2646,111 @@ Request:
 {
   "title": "Bridge Migration",
   "description": "Move Heimdall to Hub/Bridge model",
+  "kind": "team_work",
   "project_id": "proj_123",
-  "coordinator_agent_id": "agt_coord"
+  "coordinator_agent_id": "agt_coord",
+  "default_reviewer_refs": [
+    { "type": "user", "user_id": "usr_123" }
+  ]
+}
+```
+
+Behavior:
+
+- This is a convenience endpoint for team-chain creation. The request names a coordinator `agent_id`; the Hub hydrates a new coordinator `AgentInstance` for the new chain, creates the 1:1 coordinator `ChatConversation`, then stores `coordinator_agent_instance_id` on the chain.
+- The stored TaskChain references concrete instance ids only; the request uses `coordinator_agent_id` because no coordinator instance exists before creation.
+- For private/default conversation chains, callers normally use `POST /api/v1/agent-instances` without `chain_id` instead of this endpoint.
+
+Response (`201 Created`):
+
+```json
+{
+  "data": {
+    "chain_id": "chain_123",
+    "kind": "team_work",
+    "title": "Bridge Migration",
+    "project_id": "proj_123",
+    "coordinator_agent_instance_id": "inst_coord",
+    "coordinator_conversation_id": "conv_coord",
+    "default_reviewer_refs": [
+      { "type": "user", "user_id": "usr_123" }
+    ],
+    "publish_state": "draft",
+    "status": "active"
+  }
 }
 ```
 
 Validation:
 
 - project belongs to user if provided
-- coordinator agent belongs to user if provided
+- coordinator agent belongs to user and has enabled bridge support
+- default reviewer refs are either the owning user or agent instances already in this new chain (usually only user at create time; add chain instances first if an agent reviewer is needed)
 
 ### 15.3 Get Task Chain detail
 
 ```http
-GET /api/v1/task-chains/{chain_id}?expand=tasks
+GET /api/v1/task-chains/{chain_id}?expand=tasks,graph
 ```
 
-Default detail includes chain metadata and counts. Tasks require `expand=tasks` or separate task list endpoint.
+Default detail includes chain metadata and counts. Tasks require `expand=tasks`. The dependency graph + canonical order require `expand=graph`.
+
+### 15.3a Chain dependency graph and canonical task order
+
+The chain's task ordering is a **backend-owned, single-source concept**. The Hub derives it from the tasks' `depends_on` edges and exposes it so that:
+
+- the UI renders the dependency graph and execution order from it, and
+- next-task selection for a freed-up assignee walks the **same** order.
+
+The UI never computes its own ordering; the backend never picks "next" by a different rule. They read the same structure, so the graph can never disagree with what actually runs next.
+
+The Hub computes two things from the `depends_on` DAG:
+
+1. **Transitive reduction** (minimal edges): redundant edges implied by transitivity are removed. If `A -> B -> C` and also `A -> C`, the `A -> C` edge is dropped. The graph shows only the minimal edge set so dependency structure reads cleanly.
+2. **Canonical order**: a deterministic topological sort of the DAG, tie-broken by (a) explicit `priority`, then (b) `created_at`. This linearization is the single source of truth for "in which order tasks are worked."
+
+`expand=graph` response shape:
+
+```json
+{
+  "graph": {
+    "nodes": [
+      {
+        "task_id": "task_1",
+        "order_rank": 0,
+        "depth": 0,
+        "publish_state": "published",
+        "status": "completed",
+        "assignee_ref": { "type": "agent_instance", "agent_instance_id": "inst_coder" },
+        "unblocked": true
+      },
+      {
+        "task_id": "task_7",
+        "order_rank": 6,
+        "depth": 3,
+        "publish_state": "published",
+        "status": "in_progress",
+        "assignee_ref": { "type": "agent_instance", "agent_instance_id": "inst_coder" },
+        "unblocked": true
+      }
+    ],
+    "edges": [
+      { "from": "task_1", "to": "task_2" }
+    ],
+    "is_dag": true
+  }
+}
+```
+
+Field meaning:
+
+- `order_rank` — position in the canonical linearization (0-based). Deterministic and stable for a given DAG + priorities.
+- `depth` — longest-path distance from a root; used for top-to-bottom graph layout "levels."
+- `edges` — the transitively reduced (minimal) dependency edges.
+- `unblocked` — all dependencies are `completed`/`cancelled` (per the unblock rule in 20b); the set of `unblocked` + not-yet-started tasks is the runnable frontier.
+- `is_dag` — false if a cycle is detected; creating a dependency that would form a cycle is rejected at task create/update with `409 conflict`.
+
+Next-task selection rule (used when an assignee instance becomes free): among tasks whose effective assignee is that same-chain `agent_instance_id`, and that are `published`, `unblocked`, and not yet started, pick the one with the lowest `order_rank`. This is the same order the graph shows.
 
 ### 15.4 Update Task Chain
 
@@ -2475,15 +2806,16 @@ Tasks are nested under task chains because ownership is inherited from the paren
 ### 16.1 List Tasks in Chain
 
 ```http
-GET /api/v1/task-chains/{chain_id}/tasks?status=in_progress&assignee_agent_id=agt_123&limit=100
+GET /api/v1/task-chains/{chain_id}/tasks?status=in_progress&assignee_agent_instance_id=inst_coder&limit=100
 ```
 
 Filters:
 
 - `publish_state` (`draft` | `published`)
 - `status`
-- `assignee_agent_id`
-- `reviewer_agent_id`
+- `assignee_agent_instance_id`
+- `reviewer_agent_instance_id`
+- `reviewer_user_id`
 - `q`
 
 Response:
@@ -2497,9 +2829,12 @@ Response:
       "title": "Implement bridge enrollment",
       "publish_state": "published",
       "status": "in_progress",
-      "assignee_agent_id": "agt_backend",
+      "assignee_ref": { "type": "agent_instance", "agent_instance_id": "inst_backend" },
       "assignee_agent_name": "Backend Agent",
-      "reviewer_agent_id": "agt_reviewer",
+      "reviewer_refs": [
+        { "type": "user", "user_id": "usr_123" },
+        { "type": "agent_instance", "agent_instance_id": "inst_reviewer" }
+      ],
       "updated_at": "2026-07-22T10:00:00Z"
     }
   ],
@@ -2528,10 +2863,14 @@ Request:
     "Bridge token is stored hashed",
     "Bridge label defaults to hostname"
   ],
-  "assignee_agent_id": "agt_backend",
-  "reviewer_agent_id": "agt_reviewer"
+  "assignee_ref": { "type": "agent_instance", "agent_instance_id": "inst_backend" },
+  "reviewer_refs": [
+    { "type": "user", "user_id": "usr_123" }
+  ]
 }
 ```
+
+If `assignee_ref` is omitted, the task uses the chain coordinator instance. If `reviewer_refs` is omitted, the task uses the chain's default reviewers. Any agent-instance ref must belong to the same chain.
 
 ### 16.3 Update Task
 
@@ -2543,7 +2882,7 @@ Edits task definition/content (title, description, acceptance criteria, assignee
 
 ### 16.3a Publish Task
 
-Finalizes the task content and moves it from `draft` into the execution axis at `status = assigned` (or the first workable state). A task must have the fields it needs (e.g. an assignee) before publish.
+Finalizes the task content and moves it from `draft` into the execution axis at `status = assigned` (or the first workable state). A task may omit assignee/reviewer fields because the chain coordinator/default reviewers apply, but explicit overrides must validate before publish.
 
 ```http
 POST /api/v1/task-chains/{chain_id}/tasks/{task_id}/publish
@@ -2603,7 +2942,9 @@ Response:
   "data": {
     "task_id": "task_123",
     "nudged": true,
-    "notified_agent_id": "agt_backend"
+    "notified_refs": [
+      { "type": "agent_instance", "agent_instance_id": "inst_backend" }
+    ]
   }
 }
 ```
@@ -2903,7 +3244,8 @@ Metadata fields:
 ```json
 {
   "kind": "file",
-  "name": "report.md",
+  "name": "Q3 Validation Report",
+  "description": "Pass/fail matrix for the reporting-convergence tests",
   "chain_id": "chain_123",
   "task_id": "task_123",
   "agent_id": "agt_123"
@@ -2925,6 +3267,59 @@ GET /api/v1/artifacts/{artifact_id}/content
 Authorization:
 
 - artifact owner must match authenticated user
+
+### 19.5 Update Artifact (rename / edit description)
+
+Edit human metadata. Content bytes are replaced via re-upload (see versioning), not here.
+
+```http
+PATCH /api/v1/artifacts/{artifact_id}
+```
+
+Request (any subset of the editable fields):
+
+```json
+{
+  "name": "Q3 Validation Report (final)",
+  "description": "Updated after reviewer feedback"
+}
+```
+
+Response (`200 OK`):
+
+```json
+{
+  "data": {
+    "artifact_id": "art_123",
+    "name": "Q3 Validation Report (final)",
+    "description": "Updated after reviewer feedback",
+    "kind": "markdown",
+    "content_type": "text/markdown",
+    "size_bytes": 4096,
+    "updated_at": "2026-07-22T10:00:00Z"
+  },
+  "meta": {
+    "request_id": "req_123",
+    "server_time": "2026-07-22T10:00:00Z"
+  }
+}
+```
+
+### 19.6 Delete Artifact
+
+```http
+DELETE /api/v1/artifacts/{artifact_id}
+```
+
+Request: empty body.
+
+Response: `204 No Content` (empty body).
+
+Behavior:
+
+- owner-scoped; returns `204` on success, `404 not_found` if not owned/absent.
+- Deletes the artifact metadata and its blob content.
+- References to the deleted `artifact_id` from chat messages/comments render as an unavailable/deleted placeholder rather than erroring.
 
 ---
 
@@ -3222,12 +3617,14 @@ Hub updates:
   "command_id": "cmd_123",
   "agent_instance_id": "inst_123",
   "agent_id": "agt_123",
+  "chain_id": "chain_123",
+  "conversation_id": "conv_123",
   "bridge_id": "brg_123",
   "project_id": "proj_123",
   "project_path": "/Users/tanmayvijay/heimdall-agent-manager",
   "provider": "claude",
   "tier": "smart",
-  "bootstrap_url": "/api/v1/agent-instances/inst_123/bootstrap"
+  "bootstrap_url": "/api/v1/bridge/agent-instances/inst_123/bootstrap"
 }
 ```
 
@@ -3257,13 +3654,16 @@ Failure:
 
 ### 23.5 Bridge reports instance status
 
+The Bridge does not stream a message per micro-change. Significant transitions are sent promptly as coalesced edge events; noisy signals (activity flapping, load) ride the periodic heartbeat digest. Every report carries a monotonic `state_seq` so the Hub applies updates idempotently and self-heals any missed event within one heartbeat. Full design: runtime protocol doc §7.4.
+
 ```json
 {
   "type": "agent_instance_status",
   "agent_instance_id": "inst_123",
+  "state_seq": 7,
   "runtime_status": "running",
   "startup_status": "ready",
-  "activity_status": "idle",
+  "activity_status": "active",
   "occurred_at": "2026-07-22T10:00:00Z"
 }
 ```

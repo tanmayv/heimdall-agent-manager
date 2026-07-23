@@ -1,0 +1,264 @@
+package main
+
+import "core:fmt"
+import "core:net"
+import "core:os"
+import "core:strconv"
+import "core:strings"
+import "core:thread"
+import "core:time"
+import contracts "odin_test:contracts"
+
+main :: proc() {
+	config := default_dev_proxy_config()
+	parse_args(&config)
+	if len(os.args) > 1 && os.args[1] == "--print-config" {
+		fmt.printfln("ham-dev-proxy listen=%s hub_url=%s default_user=%s", config.listen, config.hub_url, config.default_user)
+		return
+	}
+	run_dev_proxy_server(config)
+}
+
+parse_args :: proc(config: ^Dev_Proxy_Config) {
+	for i := 1; i < len(os.args); i += 1 {
+		arg := os.args[i]
+		if arg == "--listen" && i + 1 < len(os.args) {
+			config.listen = strings.clone(os.args[i + 1]); i += 1
+		} else if arg == "--hub-url" && i + 1 < len(os.args) {
+			config.hub_url = strings.clone(os.args[i + 1]); i += 1
+		} else if arg == "--default-user" && i + 1 < len(os.args) {
+			config.default_user = strings.clone(os.args[i + 1]); i += 1
+		}
+	}
+}
+
+run_dev_proxy_server :: proc(config: Dev_Proxy_Config) -> bool {
+	host, port, ok := split_host_port(config.listen)
+	if !ok {
+		fmt.eprintln("invalid --listen", config.listen)
+		return false
+	}
+	address := net.IP4_Loopback
+	if host != "127.0.0.1" {
+		if parsed, parsed_ok := net.parse_ip4_address(host); parsed_ok do address = parsed
+	}
+	listener, err := net.listen_tcp({address, port})
+	if err != nil {
+		fmt.eprintln("ham-dev-proxy listen failed", config.listen, err)
+		return false
+	}
+	defer net.close(listener)
+	fmt.println("ham-dev-proxy listening", config.listen, "hub_url", config.hub_url)
+	for {
+		client, _, accept_err := net.accept_tcp(listener)
+		if accept_err != nil do continue
+		ctx := new(Dev_Proxy_Client_Context)
+		ctx.config = config
+		ctx.client = client
+		thread.run_with_poly_data(ctx, handle_dev_proxy_client)
+	}
+}
+
+Dev_Proxy_Client_Context :: struct {
+	config: Dev_Proxy_Config,
+	client: net.TCP_Socket,
+}
+
+handle_dev_proxy_client :: proc(ctx: ^Dev_Proxy_Client_Context) {
+	defer free(ctx)
+	client := ctx.client
+	defer net.close(client)
+	request, ok := read_http_request(client)
+	if !ok do return
+	method, target := request_method_target(request)
+	path, query := split_target_query(target)
+	if strings.has_prefix(path, "/_dev/login") {
+		user := query_param(query, "user")
+		if !dev_user_exists(&ctx.config, user) {
+			write_response(client, 400, "Bad Request", "text/plain", "unknown dev user")
+			return
+		}
+		write_response_with_headers(client, 204, "No Content", "text/plain", "", []contracts.HTTP_Header{{name = "Set-Cookie", value = login_response_cookie(user)}})
+		return
+	}
+	if path == "/_dev/logout" {
+		write_response_with_headers(client, 204, "No Content", "text/plain", "", []contracts.HTTP_Header{{name = "Set-Cookie", value = logout_response_cookie()}})
+		return
+	}
+	forward_request(client, &ctx.config, request, method, target)
+}
+
+forward_request :: proc(client: net.TCP_Socket, config: ^Dev_Proxy_Config, request, method, target: string) {
+	incoming := parse_headers(request)
+	defer free_headers(incoming)
+	cookie := header_value(incoming, "Cookie")
+	rewritten, ok := rewrite_headers_for_hub(config, incoming, cookie)
+	if !ok {
+		write_response(client, 400, "Bad Request", "text/plain", "unknown dev user")
+		return
+	}
+	defer free_headers(rewritten)
+	hub_host, hub_port, hub_ok := parse_base_url(config.hub_url)
+	if !hub_ok {
+		write_response(client, 502, "Bad Gateway", "text/plain", "invalid hub_url")
+		return
+	}
+	upstream, dial_err := net.dial_tcp_from_hostname_with_port_override(hub_host, hub_port)
+	if dial_err != nil {
+		write_response(client, 502, "Bad Gateway", "text/plain", "hub unavailable")
+		return
+	}
+	defer net.close(upstream)
+	body := request_body(request)
+	out := strings.builder_make()
+	strings.write_string(&out, method); strings.write_string(&out, " "); strings.write_string(&out, target); strings.write_string(&out, " HTTP/1.1\r\n")
+	strings.write_string(&out, "Host: "); strings.write_string(&out, hub_host); strings.write_string(&out, ":"); strings.write_string(&out, fmt.tprintf("%d", hub_port)); strings.write_string(&out, "\r\n")
+	for h in rewritten {
+		if ascii_equal_fold(h.name, "Host") || ascii_equal_fold(h.name, "Content-Length") || ascii_equal_fold(h.name, "Connection") do continue
+		strings.write_string(&out, h.name); strings.write_string(&out, ": "); strings.write_string(&out, h.value); strings.write_string(&out, "\r\n")
+	}
+	strings.write_string(&out, fmt.tprintf("Content-Length: %d\r\nConnection: close\r\n\r\n", len(body)))
+	strings.write_string(&out, body)
+	out_req := strings.to_string(out)
+	_, send_err := net.send_tcp(upstream, transmute([]byte)out_req)
+	if send_err != nil {
+		write_response(client, 502, "Bad Gateway", "text/plain", "hub send failed")
+		return
+	}
+	proxy_copy_response(client, upstream)
+}
+
+proxy_copy_response :: proc(client, upstream: net.TCP_Socket) {
+	_ = net.set_option(upstream, .Receive_Timeout, 5 * time.Second)
+	buf: [8192]byte
+	for {
+		n, recv_err := net.recv_tcp(upstream, buf[:])
+		if recv_err != nil || n <= 0 do break
+		_, send_err := net.send_tcp(client, buf[:n])
+		if send_err != nil do break
+	}
+}
+
+read_http_request :: proc(client: net.TCP_Socket) -> (string, bool) {
+	buf: [8192]byte
+	data := make([dynamic]byte, 0, 8192)
+	for {
+		n, recv_err := net.recv_tcp(client, buf[:])
+		if recv_err != nil || n <= 0 do return "", false
+		append(&data, ..buf[:n])
+		raw := string(data[:])
+		if request_complete(raw) do return strings.clone(raw), true
+		if len(data) > 1024 * 1024 do return "", false
+	}
+}
+
+request_complete :: proc(raw: string) -> bool {
+	idx := strings.index(raw, "\r\n\r\n")
+	if idx < 0 do return false
+	return len(raw[idx + 4:]) >= content_length(raw[:idx])
+}
+
+content_length :: proc(headers: string) -> int {
+	text := headers
+	for line in strings.split_lines_iterator(&text) {
+		if ascii_has_prefix_fold(line, "Content-Length:") {
+			if parsed, ok := strconv.parse_int(strings.trim_space(line[len("Content-Length:"):])); ok do return int(parsed)
+		}
+	}
+	return 0
+}
+
+request_method_target :: proc(request: string) -> (string, string) {
+	line_end := strings.index(request, "\r\n")
+	if line_end < 0 do return "", ""
+	parts := strings.split(request[:line_end], " ")
+	defer delete(parts)
+	if len(parts) < 2 do return "", ""
+	return strings.clone(parts[0]), strings.clone(parts[1])
+}
+
+split_target_query :: proc(target: string) -> (string, string) {
+	idx := strings.index_byte(target, '?')
+	if idx < 0 do return target, ""
+	return target[:idx], target[idx + 1:]
+}
+
+query_param :: proc(query, name: string) -> string {
+	pairs := strings.split(query, "&")
+	defer delete(pairs)
+	for pair in pairs {
+		eq := strings.index_byte(pair, '=')
+		if eq < 0 do continue
+		if pair[:eq] == name do return strings.clone(pair[eq + 1:])
+	}
+	return ""
+}
+
+parse_headers :: proc(request: string) -> []contracts.HTTP_Header {
+	out := make([dynamic]contracts.HTTP_Header)
+	head_end := strings.index(request, "\r\n\r\n")
+	if head_end < 0 do return out[:]
+	head := request[:head_end]
+	first := true
+	for line in strings.split_lines_iterator(&head) {
+		if first { first = false; continue }
+		colon := strings.index_byte(line, ':')
+		if colon <= 0 do continue
+		append(&out, contracts.HTTP_Header{name = strings.clone(strings.trim_space(line[:colon])), value = strings.clone(strings.trim_space(line[colon + 1:]))})
+	}
+	return out[:]
+}
+
+request_body :: proc(request: string) -> string {
+	idx := strings.index(request, "\r\n\r\n")
+	if idx < 0 do return ""
+	return request[idx + 4:]
+}
+
+parse_base_url :: proc(url: string) -> (string, int, bool) {
+	trimmed := strings.trim_space(url)
+	if strings.has_prefix(trimmed, "http://") do trimmed = trimmed[len("http://"):]
+	slash := strings.index_byte(trimmed, '/')
+	if slash >= 0 do trimmed = trimmed[:slash]
+	colon := strings.last_index_byte(trimmed, ':')
+	if colon < 0 do return strings.clone(trimmed), 80, true
+	port_i, ok := strconv.parse_int(trimmed[colon + 1:])
+	if !ok do return "", 0, false
+	return strings.clone(trimmed[:colon]), int(port_i), true
+}
+
+split_host_port :: proc(value: string) -> (string, int, bool) {
+	colon := strings.last_index_byte(value, ':')
+	if colon < 0 do return "", 0, false
+	port_i, ok := strconv.parse_int(value[colon + 1:])
+	if !ok do return "", 0, false
+	return strings.clone(value[:colon]), int(port_i), true
+}
+
+dev_user_exists :: proc(config: ^Dev_Proxy_Config, username: string) -> bool {
+	for user in config.users {
+		if user.username == username do return true
+	}
+	return false
+}
+
+write_response :: proc(client: net.TCP_Socket, status: int, status_text, content_type, body: string) {
+	write_response_with_headers(client, status, status_text, content_type, body, nil)
+}
+
+write_response_with_headers :: proc(client: net.TCP_Socket, status: int, status_text, content_type, body: string, headers: []contracts.HTTP_Header) {
+	b := strings.builder_make()
+	strings.write_string(&b, fmt.tprintf("HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\n", status, status_text, content_type, len(body)))
+	for h in headers {
+		strings.write_string(&b, h.name); strings.write_string(&b, ": "); strings.write_string(&b, h.value); strings.write_string(&b, "\r\n")
+	}
+	strings.write_string(&b, "Connection: close\r\n\r\n")
+	strings.write_string(&b, body)
+	response := strings.to_string(b)
+	_, _ = net.send_tcp(client, transmute([]byte)response)
+}
+
+ascii_has_prefix_fold :: proc(value, prefix: string) -> bool {
+	if len(value) < len(prefix) do return false
+	return ascii_equal_fold(value[:len(prefix)], prefix)
+}

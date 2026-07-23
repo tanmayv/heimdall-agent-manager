@@ -1,0 +1,223 @@
+name: Release local binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version/tag to stamp into artifacts, for example v0.1.0-beta.1'
+        required: true
+        type: string
+      publish_release:
+        description: 'Create/update the GitHub Release after building artifacts'
+        required: true
+        default: false
+        type: boolean
+      draft:
+        description: 'Create the GitHub Release as a draft'
+        required: true
+        default: true
+        type: boolean
+      prerelease:
+        description: 'Mark the GitHub Release as a prerelease'
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            runner: ubuntu-24.04
+            nix_system: x86_64-linux
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            nix_system: aarch64-linux
+          - target: darwin-amd64
+            runner: macos-15-intel
+            nix_system: x86_64-darwin
+          - target: darwin-arm64
+            runner: macos-14
+            nix_system: aarch64-darwin
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout clean source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="${{ inputs.version }}"
+          fi
+          if [ -z "$version" ]; then
+            echo "release version is required" >&2
+            exit 2
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Build local binaries from flake
+        id: nix-build
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_system="$(nix eval --raw --impure --expr 'builtins.currentSystem')"
+          if [ "$actual_system" != "${{ matrix.nix_system }}" ]; then
+            echo "runner Nix system mismatch: expected ${{ matrix.nix_system }}, got $actual_system" >&2
+            exit 1
+          fi
+          nix build \
+            .#ham-bridge \
+            .#ham-wrapper \
+            .#ham-ctl \
+            --print-out-paths \
+            --no-link | tee "$RUNNER_TEMP/nix-paths.txt"
+          mapfile -t paths < "$RUNNER_TEMP/nix-paths.txt"
+          if [ "${#paths[@]}" -ne 3 ]; then
+            echo "expected three Nix output paths, got ${#paths[@]}" >&2
+            exit 1
+          fi
+          {
+            echo "bridge=${paths[0]}"
+            echo "wrapper=${paths[1]}"
+            echo "ctl=${paths[2]}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Package heimdall-local tarball
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts/release/package-local-binary-tarball.sh \
+            "${{ matrix.target }}" \
+            "${{ steps.version.outputs.version }}" \
+            dist \
+            "${{ steps.nix-build.outputs.bridge }}" \
+            "${{ steps.nix-build.outputs.wrapper }}" \
+            "${{ steps.nix-build.outputs.ctl }}"
+          tar -tzf "dist/heimdall-local-${{ matrix.target }}.tar.gz" | sort | tee "dist/heimdall-local-${{ matrix.target }}.contents.txt"
+          case "$(uname -s)" in
+            Darwin) shasum -a 256 "dist/heimdall-local-${{ matrix.target }}.tar.gz" > "dist/SHA256SUMS-${{ matrix.target }}.txt" ;;
+            *) sha256sum "dist/heimdall-local-${{ matrix.target }}.tar.gz" > "dist/SHA256SUMS-${{ matrix.target }}.txt" ;;
+          esac
+
+      - name: Upload target artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: heimdall-local-${{ matrix.target }}-${{ steps.version.outputs.version }}
+          path: |
+            dist/heimdall-local-${{ matrix.target }}.tar.gz
+            dist/heimdall-local-${{ matrix.target }}.contents.txt
+            dist/SHA256SUMS-${{ matrix.target }}.txt
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-24.04
+    if: ${{ github.ref_type == 'tag' || inputs.publish_release == true }}
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout release metadata
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="${{ inputs.version }}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Download built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Verify tarballs and create SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          version="${{ steps.version.outputs.version }}"
+          expected=(
+            heimdall-local-darwin-arm64.tar.gz
+            heimdall-local-darwin-amd64.tar.gz
+            heimdall-local-linux-amd64.tar.gz
+            heimdall-local-linux-arm64.tar.gz
+          )
+          versioned=()
+          for tarball in "${expected[@]}"; do
+            test -f "$tarball"
+            tar -tzf "$tarball" | grep -Fxq bin/ham-bridge
+            tar -tzf "$tarball" | grep -Fxq bin/ham-wrapper
+            tar -tzf "$tarball" | grep -Fxq bin/ham-ctl
+            tar -tzf "$tarball" | grep -Fxq README.md
+            tar -tzf "$tarball" | grep -Fxq LICENSE
+            target="${tarball#heimdall-local-}"
+            target="${target%.tar.gz}"
+            asset="heimdall-local-${target}-${version}.tar.gz"
+            cp "$tarball" "$asset"
+            versioned+=("$asset")
+          done
+          sha256sum "${versioned[@]}" > SHA256SUMS
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          notes_file="$RUNNER_TEMP/release-notes.md"
+          cat > "$notes_file" <<NOTES
+          Heimdall local Bridge/wrapper/CLI binaries for $VERSION.
+
+          Artifacts:
+          - heimdall-local-darwin-arm64-$VERSION.tar.gz
+          - heimdall-local-darwin-amd64-$VERSION.tar.gz
+          - heimdall-local-linux-amd64-$VERSION.tar.gz
+          - heimdall-local-linux-arm64-$VERSION.tar.gz
+          - SHA256SUMS
+          NOTES
+          release_flags=()
+          if [ "${{ inputs.draft || false }}" = "true" ]; then release_flags+=(--draft); fi
+          if [ "${{ inputs.prerelease || false }}" = "true" ]; then release_flags+=(--prerelease); fi
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            gh release upload "$VERSION" dist/heimdall-local-*-"$VERSION".tar.gz dist/SHA256SUMS --clobber
+          else
+            gh release create "$VERSION" dist/heimdall-local-*-"$VERSION".tar.gz dist/SHA256SUMS \
+              --title "$VERSION" \
+              --notes-file "$notes_file" \
+              "${release_flags[@]}"
+          fi

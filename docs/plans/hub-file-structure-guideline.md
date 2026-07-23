@@ -234,6 +234,7 @@ hub/service/
     bridge_support_service.odin
   instance/
     instance_service.odin  # launch/stop; owns runtime_status transitions
+    status_ingest.odin     # apply Bridge state_seq updates idempotently; heartbeat reconcile (protocol 7.4)
   project/
     project_service.odin   # owns default_path + bridge-path overrides + effective path
   taskchain/
@@ -252,7 +253,22 @@ hub/service/
   runtime/
     bridge_gateway.odin    # send commands to a connected Bridge (via transport hook)
     command_tracker.odin   # command_id lifecycle for launch/stop/validate
+    heartbeat_ingest.odin  # receive bridge heartbeats; feed digest to status_ingest for reconcile
 ```
+
+Reporting-discipline ownership (protocol 7.4):
+
+- `instance/status_ingest.odin` is the single Hub-side entry point for Bridge
+  runtime updates. It applies an update only when `state_seq > last_applied_seq`,
+  persists the new state + seq via the instance repo, and publishes one
+  `resource_changed` event. Both the edge `agent_instance_status` event and each
+  heartbeat digest entry flow through here, so ordering/idempotency live in one
+  place.
+- `runtime/heartbeat_ingest.odin` handles periodic bridge heartbeats, marks the
+  Bridge live, and hands each instance digest entry to `status_ingest` for
+  reconciliation — including marking instances absent from the digest as
+  unreachable/stopped per policy. Transport (`transport/ws/bridge_ws`) only
+  decodes and forwards; it never applies status itself.
 
 Interaction rules:
 

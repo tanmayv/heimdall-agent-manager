@@ -21,6 +21,7 @@ ROUTE_BRIDGE_SEND :: "/bridge/send"
 ROUTE_BRIDGE_REQUEST :: "/bridge/request"
 ROUTE_BRIDGE_REACHABLE :: "/bridge/reachable"
 ROUTE_BRIDGE_HEALTH :: "/bridge/health"
+ROUTE_BRIDGE_VALIDATE_PROJECT_PATH :: "/bridge/validate-project-path"
 ROUTE_BRIDGE_WS :: "/bridge-ws"
 
 ROUTE_FEDERATION_INBOX :: "/federation/inbox"
@@ -67,7 +68,7 @@ bridge_loopback_route_supported :: proc(method, route: string) -> bool {
 	switch route {
 	case ROUTE_BRIDGE_HEALTH:
 		return method == BRIDGE_HTTP_METHOD_GET || method == BRIDGE_HTTP_METHOD_POST
-	case ROUTE_BRIDGE_SEND, ROUTE_BRIDGE_REQUEST:
+	case ROUTE_BRIDGE_SEND, ROUTE_BRIDGE_REQUEST, ROUTE_BRIDGE_VALIDATE_PROJECT_PATH:
 		return method == BRIDGE_HTTP_METHOD_POST
 	case ROUTE_BRIDGE_REACHABLE:
 		return method == BRIDGE_HTTP_METHOD_GET || method == BRIDGE_HTTP_METHOD_POST

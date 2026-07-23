@@ -97,8 +97,24 @@ main :: proc() {
 		return
 	}
 
+	if len(os.args) > 1 && os.args[1] == "enroll" {
+		if !bridge_enroll_command(os.args) do os.exit(1)
+		return
+	}
+
 	bridge_config = bridge_config_from_args(os.args)
+	if has_flag(os.args, "--bootstrap-fetch") {
+		instance_id := option_value(os.args, "--instance-id", "")
+		run_dir := option_value(os.args, "--run-dir", "")
+		if !bridge_bootstrap_fetch_and_materialize(bridge_config.daemon_url, bridge_config.bridge_token, instance_id, run_dir) {
+			fmt.eprintln("bootstrap fetch/materialization failed")
+			os.exit(1)
+		}
+		fmt.println("bootstrap materialized", run_dir)
+		return
+	}
 	bridge_runtime_init()
+	bridge_hub_runtime_start()
 	if bridge_config.chunk_bytes <= 0 do bridge_config.chunk_bytes = contracts.BRIDGE_WS_DEFAULT_CHUNK_BYTES
 	bridge_peer_state_init(bridge_config.peers[:])
 	if len(bridge_config.peers) > 0 do thread.run(bridge_dialer_worker)
@@ -107,9 +123,69 @@ main :: proc() {
 
 print_usage :: proc() {
 	fmt.println("ham-bridge", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
-	fmt.println("usage: ham-bridge [--config <path>] [--bind-host 127.0.0.1] [--port 49323] [--daemon-url URL] [--daemon-id ID] [--bridge-token TOKEN] [--peer-ws ws://host:port/bridge-ws]... [--peer-auth-token TOKEN] [--chunk-bytes N]")
-	fmt.println("loopback routes:", contracts.ROUTE_BRIDGE_HEALTH, contracts.ROUTE_BRIDGE_SEND, contracts.ROUTE_BRIDGE_REQUEST, contracts.ROUTE_BRIDGE_REACHABLE)
+	fmt.println("usage: ham-bridge [--config <path>] [--bind-host 127.0.0.1] [--port 49323] [--daemon-url URL|--hub URL] [--daemon-id ID] [--bridge-token TOKEN] [--peer-ws ws://host:port/bridge-ws]... [--peer-auth-token TOKEN] [--chunk-bytes N]")
+	fmt.println("enroll: ham-bridge enroll --hub http://127.0.0.1:49322 --enrollment-token TOKEN")
+	fmt.println("TLS: https:// Hub URLs use HTTPS and wss:// with certificate/hostname validation; http:// tunnel URLs use ws://.")
+	fmt.println("bootstrap fetch: ham-bridge --bootstrap-fetch --daemon-url URL --bridge-token TOKEN --instance-id INST --run-dir DIR")
+	fmt.println("loopback routes:", contracts.ROUTE_BRIDGE_HEALTH, contracts.ROUTE_BRIDGE_SEND, contracts.ROUTE_BRIDGE_REQUEST, contracts.ROUTE_BRIDGE_VALIDATE_PROJECT_PATH, contracts.ROUTE_BRIDGE_REACHABLE)
 	fmt.println("bridge websocket route:", contracts.ROUTE_BRIDGE_WS)
+}
+
+bridge_enroll_command :: proc(args: []string) -> bool {
+	hub_url := option_value(args, "--hub", option_value(args, "--daemon-url", ""))
+	token := option_value(args, "--enrollment-token", os.get_env("HAM_BRIDGE_ENROLLMENT_TOKEN", context.allocator))
+	if strings.trim_space(hub_url) == "" || strings.trim_space(token) == "" {
+		fmt.eprintln("ham-bridge enroll requires --hub and --enrollment-token (or HAM_BRIDGE_ENROLLMENT_TOKEN)")
+		return false
+	}
+	if !bridge_hub_url_supported(hub_url) {
+		fmt.eprintln("ham-bridge enroll --hub must be an http:// or https:// base URL")
+		return false
+	}
+	body_b := strings.builder_make()
+	strings.write_string(&body_b, "{\"hub_url\":\""); json_write_string(&body_b, hub_url)
+	strings.write_string(&body_b, "\",\"machine\":{\"hostname\":\"ham-bridge\"},\"hostname\":\"ham-bridge\",\"capabilities\":[]}")
+	body := strings.to_string(body_b)
+	headers := [?]http.Header{{name = "Authorization", value = strings.concatenate({"Bearer ", token})}}
+	resp, ok := http.request_with_headers_timeout("POST", hub_url, "/api/v1/bridges/enroll", body, headers[:], http.DEFAULT_TIMEOUT_MS)
+	if !ok || resp.status != 201 {
+		fmt.eprintln("bridge enrollment failed", resp.status, resp.body)
+		return false
+	}
+	bridge_token := extract_json_string(resp.body, "bridge_token", "")
+	bridge_id := extract_json_string(resp.body, "bridge_id", "")
+	persisted_hub_url := extract_json_string(resp.body, "hub_url", hub_url)
+	config_path := cfg_lib.config_path_from_args(args)
+	if !bridge_write_enrolled_config(config_path, persisted_hub_url, bridge_token, bridge_id) do return false
+	fmt.println("bridge enrolled", bridge_id)
+	fmt.println("hub_url", persisted_hub_url)
+	return true
+}
+
+bridge_hub_url_supported :: proc(hub_url: string) -> bool {
+	trimmed := strings.trim_right(strings.trim_space(hub_url), "/")
+	authority := ""
+	if strings.has_prefix(trimmed, "http://") {
+		authority = trimmed[len("http://"):]
+	} else if strings.has_prefix(trimmed, "https://") {
+		authority = trimmed[len("https://"):]
+	} else {
+		return false
+	}
+	if strings.trim_space(authority) == "" do return false
+	if strings.contains(authority, "/") || strings.contains(authority, "?") || strings.contains(authority, "#") do return false
+	return true
+}
+
+bridge_write_enrolled_config :: proc(path, hub_url, bridge_token, bridge_id: string) -> bool {
+	if strings.trim_space(path) == "" || strings.trim_space(hub_url) == "" || strings.trim_space(bridge_token) == "" do return false
+	if slash := strings.last_index_byte(path, '/'); slash > 0 { _ = os.make_directory_all(path[:slash]) }
+	b := strings.builder_make()
+	strings.write_string(&b, "[wrapper]\ndaemon_url = \""); json_write_string(&b, hub_url)
+	strings.write_string(&b, "\"\n\n[daemon]\nbridge_token = \""); json_write_string(&b, bridge_token)
+	strings.write_string(&b, "\"\ndaemon_id = \""); json_write_string(&b, bridge_id)
+	strings.write_string(&b, "\"\n")
+	return os.write_entire_file(path, strings.to_string(b)) == nil
 }
 
 bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
@@ -137,6 +213,7 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 
 	cfg.bind_host = option_value(args, "--bind-host", cfg.bind_host)
 	cfg.daemon_url = option_value(args, "--daemon-url", cfg.daemon_url)
+	cfg.daemon_url = option_value(args, "--hub", cfg.daemon_url)
 	cfg.daemon_id = option_value(args, "--daemon-id", cfg.daemon_id)
 	cfg.bridge_token = option_value(args, "--bridge-token", cfg.bridge_token)
 	cfg.peer_auth_token = option_value(args, "--peer-auth-token", cfg.peer_auth_token)
@@ -313,6 +390,8 @@ handle_bridge_client :: proc(client: net.TCP_Socket) {
 		bridge_handle_send(client, request_body(request))
 	case contracts.ROUTE_BRIDGE_REQUEST:
 		bridge_handle_request(client, request_body(request))
+	case contracts.ROUTE_BRIDGE_VALIDATE_PROJECT_PATH:
+		bridge_handle_validate_project_path(client, request_body(request))
 	case contracts.ROUTE_BRIDGE_REACHABLE:
 		write_response(client, 200, "OK", bridge_reachable_json())
 	case:
@@ -497,6 +576,36 @@ bridge_handle_send :: proc(client: net.TCP_Socket, body: string) {
 		return
 	}
 	write_response(client, 503, "Service Unavailable", bridge_send_unreachable_json(idempotency_key))
+}
+
+bridge_validate_project_path_ws_result_json :: proc(body: string) -> string {
+	return bridge_project_path_validation_result_json(body)
+}
+
+bridge_handle_validate_project_path :: proc(client: net.TCP_Socket, body: string) {
+	write_response(client, 200, "OK", bridge_project_path_validation_result_json(body))
+}
+
+bridge_project_path_validation_result_json :: proc(body: string) -> string {
+	command_id := extract_json_string(body, "command_id", "")
+	if cached, cached_ok := bridge_validation_command_cached(command_id); cached_ok do return cached
+	project_id := extract_json_string(body, "project_id", "")
+	path := extract_json_string(body, "path", "")
+	vcs_kind := extract_json_string(body, "vcs_kind", "")
+	repo_url := extract_json_string(body, "repo_url", "")
+	result := bridge_validate_project_path_local(path, vcs_kind, repo_url)
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"project_path_validation_result\",\"command_id\":\""); json_write_string(&b, command_id)
+	strings.write_string(&b, "\",\"project_id\":\""); json_write_string(&b, project_id)
+	strings.write_string(&b, "\",\"path\":\""); json_write_string(&b, path)
+	strings.write_string(&b, "\",\"ok\":"); strings.write_string(&b, "true" if result.ok else "false")
+	strings.write_string(&b, ",\"validation_error\":\""); json_write_string(&b, result.message)
+	strings.write_string(&b, "\",\"error\":{\"code\":\""); json_write_string(&b, result.error_code)
+	strings.write_string(&b, "\",\"message\":\""); json_write_string(&b, result.message)
+	strings.write_string(&b, "\"}}")
+	result_json := strings.to_string(b)
+	bridge_validation_command_store(command_id, result_json)
+	return result_json
 }
 
 bridge_handle_request :: proc(client: net.TCP_Socket, body: string) {
@@ -827,6 +936,10 @@ bridge_ws_read_loop :: proc(client: net.TCP_Socket) {
 }
 
 bridge_ws_handle_text :: proc(client: net.TCP_Socket, text: string) {
+	if extract_json_string(text, "type", "") == "validate_project_path" {
+		_ = write_ws_text(client, bridge_validate_project_path_ws_result_json(text))
+		return
+	}
 	version := extract_json_int(text, "version", contracts.BRIDGE_WS_FRAME_VERSION)
 	stream_id := extract_json_string(text, "stream_id", "")
 	if !contracts.bridge_ws_frame_version_supported(version) {
