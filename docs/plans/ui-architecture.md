@@ -105,8 +105,10 @@ Right Inspector (toggle, default collapsed)
     ↑instance  ↑project     ↑agent_id   ↑conversation
 ```
 
-- **Work** — this instance's tasks, grouped by chain. Chain = group header
-  (click → full chain board); tasks = actionable rows with status.
+- **Work** — this instance's single immutable task chain (private/default for a
+  normal conversation, or shared team chain for chain work). Shows the chain
+  summary plus actionable task rows with status; click the chain header to open
+  the full chain board.
 - **Workspace** — shown only if the conversation has a `project_id`. Effective
   path on the pinned bridge, VCS kind/branch, validation status, and live diff /
   changed files when VCS-backed.
@@ -119,7 +121,7 @@ Right Inspector (toggle, default collapsed)
   viewer.
 
 Scope note: Memory is identity-scoped (shared across the agent's conversations);
-Work/Workspace/Artifacts are instance/project/conversation scoped.
+Work is the instance's immutable chain; Workspace/Artifacts are project/conversation scoped.
 
 ---
 
@@ -270,10 +272,11 @@ Sessions                                        [ + Launch instance ]
 ```
 
 - **`[ + Launch instance ]`** — configure bridge (from enabled support) +
-  provider/tier (defaulted) + optional project, then start. This **creates a
+  provider/tier (defaulted) + optional project, then start. Because no existing
+  `chain_id` is supplied, this **creates a private/default task chain +
   conversation + starts the instance immediately** into an empty but live
-  conversation, and navigates the user into it to chat (arch 7.13, launch
-  trigger "explicit launch"). No first message required.
+  conversation, and navigates the user into it to chat (arch 7.13 / invariant
+  22b). No first message required.
 - **Open** — go to that instance's conversation.
 - **Start / Stop** per instance — stop idles the conversation (revivable later by
   a message or relaunch, same restartable-session model); start relaunches the

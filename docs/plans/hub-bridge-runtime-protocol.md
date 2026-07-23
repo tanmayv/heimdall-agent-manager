@@ -697,7 +697,7 @@ Bridge should reject expired commands:
 
 Purpose:
 
-- Ask Bridge to launch a wrapper/agent for a Hub-created AgentInstance.
+- Ask Bridge to launch a wrapper/agent for a Hub-created AgentInstance. The Hub has already created the immutable `AgentInstance` + `TaskChain` + 1:1 `ChatConversation` records before sending this command.
 
 Hub sends:
 
@@ -711,6 +711,8 @@ Hub sends:
   "payload": {
     "agent_instance_id": "inst_123",
     "agent_id": "agt_123",
+    "chain_id": "chain_123",
+    "conversation_id": "conv_123",
     "project_id": "proj_123",
     "project_path": "/Users/tanmayvijay/heimdall-agent-manager",
     "provider": "claude",
