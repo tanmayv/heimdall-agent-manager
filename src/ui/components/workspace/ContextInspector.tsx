@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import type { WorkspaceInspectorTab } from './types';
+import { useViewport, useKeyboardInset, MobileInspectorSheet, TOUCH_TARGET_CLASS } from '../shell/responsive';
 
 export default function ContextInspector({
   title = 'Context',
@@ -24,6 +25,65 @@ export default function ContextInspector({
 }) {
   const visibleTabs = tabs.filter((tab) => !tab.hidden);
   const activeTab = visibleTabs.find((tab) => tab.id === activeTabId) || visibleTabs[0] || null;
+  const viewport = useViewport();
+  const isMobile = viewport === 'mobile';
+  // Called unconditionally (rules of hooks); returns 0 on desktop.
+  const keyboardInset = useKeyboardInset();
+
+  // Tab list + active panel. Rendered identically on desktop and mobile so
+  // data-debug-id values are layout-independent (arch doc §6D). On mobile the
+  // segmented control sits inside the bottom sheet.
+  function renderTabsAndPanel() {
+    return (
+      <>
+        {visibleTabs.length > 0 ? (
+          <div data-debug-id="workspace-inspector-tabs" className="mb-4 flex flex-wrap gap-1 rounded-xl border border-white/[0.06] bg-black/30 p-1">
+            {visibleTabs.map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                data-debug-id={tab.buttonDebugId || `workspace-inspector-tab-${tab.id}`}
+                aria-pressed={activeTab?.id === tab.id}
+                disabled={tab.disabled}
+                onClick={() => onTabChange(tab.id)}
+                className={`flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium transition ${activeTab?.id === tab.id ? 'bg-white/[0.08] text-zinc-100 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.10)]' : 'text-zinc-400 hover:text-zinc-200'} disabled:cursor-not-allowed disabled:opacity-50 ${isMobile ? TOUCH_TARGET_CLASS : ''}`}
+              >
+                <span>{tab.label}</span>
+                {tab.badge ? <span className="text-[10px] text-zinc-500">{tab.badge}</span> : null}
+              </button>
+            ))}
+          </div>
+        ) : null}
+        <div className="min-h-0 flex-1 overflow-hidden">
+          {activeTab ? (
+            <div data-debug-id={activeTab.panelDebugId || `workspace-inspector-panel-${activeTab.id}`} className="h-full min-h-0 overflow-y-auto">
+              {activeTab.content}
+            </div>
+          ) : (
+            <div data-debug-id="workspace-inspector-empty" className="rounded-2xl border border-dashed border-white/10 bg-black/20 p-4 text-sm text-zinc-400">No inspector content available for this context.</div>
+          )}
+        </div>
+      </>
+    );
+  }
+
+  // UI-13: mobile = bottom sheet (toggle in header). `collapsed` means the sheet
+  // is hidden; `onToggleCollapsed` opens/closes it. The MobileTopBar inspector
+  // toggle drives the same state, so behavior is identical to desktop collapse.
+  if (isMobile) {
+    return (
+      <MobileInspectorSheet
+        open={!collapsed}
+        onClose={() => onToggleCollapsed?.()}
+        title={title}
+        subtitle={subtitle}
+        headerActions={headerActions}
+        keyboardInset={keyboardInset}
+      >
+        {renderTabsAndPanel()}
+      </MobileInspectorSheet>
+    );
+  }
 
   return (
     <aside
@@ -71,33 +131,7 @@ export default function ContextInspector({
               ) : null}
             </div>
           </div>
-          {visibleTabs.length > 0 ? (
-            <div data-debug-id="workspace-inspector-tabs" className="mb-4 flex flex-wrap gap-1 rounded-xl border border-white/[0.06] bg-black/30 p-1">
-              {visibleTabs.map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  data-debug-id={tab.buttonDebugId || `workspace-inspector-tab-${tab.id}`}
-                  aria-pressed={activeTab?.id === tab.id}
-                  disabled={tab.disabled}
-                  onClick={() => onTabChange(tab.id)}
-                  className={`flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium transition ${activeTab?.id === tab.id ? 'bg-white/[0.08] text-zinc-100 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.10)]' : 'text-zinc-400 hover:text-zinc-200'} disabled:cursor-not-allowed disabled:opacity-50`}
-                >
-                  <span>{tab.label}</span>
-                  {tab.badge ? <span className="text-[10px] text-zinc-500">{tab.badge}</span> : null}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          <div className="min-h-0 flex-1 overflow-hidden">
-            {activeTab ? (
-              <div data-debug-id={activeTab.panelDebugId || `workspace-inspector-panel-${activeTab.id}`} className="h-full min-h-0 overflow-y-auto">
-                {activeTab.content}
-              </div>
-            ) : (
-              <div data-debug-id="workspace-inspector-empty" className="rounded-2xl border border-dashed border-white/10 bg-black/20 p-4 text-sm text-zinc-400">No inspector content available for this context.</div>
-            )}
-          </div>
+          {renderTabsAndPanel()}
         </div>
       )}
     </aside>

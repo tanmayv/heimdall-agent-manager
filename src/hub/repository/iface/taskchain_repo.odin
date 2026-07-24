@@ -8,6 +8,8 @@ Task_Chain_Save_Proc :: proc(ctx: rawptr, chain: domain.Task_Chain) -> (domain.T
 Task_Save_Proc :: proc(ctx: rawptr, task: domain.Task) -> (domain.Task, bool, domain.Domain_Error)
 Task_Get_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID) -> (domain.Task, bool, domain.Domain_Error)
 Task_List_By_Chain_Proc :: proc(ctx: rawptr, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task, domain.Domain_Error)
+Task_Comment_Save_Proc :: proc(ctx: rawptr, comment: domain.Task_Comment) -> (domain.Task_Comment, bool, domain.Domain_Error)
+Task_Comment_List_By_Task_Proc :: proc(ctx: rawptr, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Comment, domain.Domain_Error)
 
 Taskchain_Repository :: struct {
 	ctx: rawptr,
@@ -17,6 +19,8 @@ Taskchain_Repository :: struct {
 	save_task: Task_Save_Proc,
 	get_task: Task_Get_Proc,
 	list_tasks_by_chain: Task_List_By_Chain_Proc,
+	save_comment: Task_Comment_Save_Proc,
+	list_comments_by_task: Task_Comment_List_By_Task_Proc,
 }
 
 taskchain_get_chain :: proc(repo: ^Taskchain_Repository, chain_id: domain.Task_Chain_ID) -> (domain.Task_Chain, bool, domain.Domain_Error) {
@@ -47,4 +51,14 @@ taskchain_get_task :: proc(repo: ^Taskchain_Repository, task_id: domain.Task_ID)
 taskchain_list_tasks_by_chain :: proc(repo: ^Taskchain_Repository, chain_id: domain.Task_Chain_ID, owner_user_id: domain.User_ID) -> ([]domain.Task, domain.Domain_Error) {
 	if repo == nil || repo.list_tasks_by_chain == nil do return nil, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
 	return repo.list_tasks_by_chain(repo.ctx, chain_id, owner_user_id)
+}
+
+taskchain_save_comment :: proc(repo: ^Taskchain_Repository, comment: domain.Task_Comment) -> (domain.Task_Comment, bool, domain.Domain_Error) {
+	if repo == nil || repo.save_comment == nil do return domain.Task_Comment{}, false, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
+	return repo.save_comment(repo.ctx, comment)
+}
+
+taskchain_list_comments_by_task :: proc(repo: ^Taskchain_Repository, task_id: domain.Task_ID, owner_user_id: domain.User_ID) -> ([]domain.Task_Comment, domain.Domain_Error) {
+	if repo == nil || repo.list_comments_by_task == nil do return nil, domain.domain_error(.Internal_Error, "taskchain repository is not configured")
+	return repo.list_comments_by_task(repo.ctx, task_id, owner_user_id)
 }

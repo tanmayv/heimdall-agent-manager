@@ -53,6 +53,17 @@ Task :: struct {
 	completed_at:  string,
 }
 
+Task_Comment :: struct {
+	comment_id: string,
+	task_id: Task_ID,
+	chain_id: Task_Chain_ID,
+	owner_user_id: User_ID,
+	author_agent_instance_id: string,
+	body: string,
+	created_at: string,
+	updated_at: string,
+}
+
 task_status_unblocks_dependents :: proc(status: Task_Status) -> bool {
 	return status == .Completed || status == .Cancelled
 }

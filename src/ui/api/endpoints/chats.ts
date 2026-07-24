@@ -428,8 +428,8 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
         }
       },
     }),
-    sendAgentMessage: build.mutation<any, { agentInstanceId: string; body: string; tempId: string; interrupt?: boolean }>({
-      queryFn: withSessionQuery(async ({ agentInstanceId, body, interrupt }, { session }) => {
+    sendAgentMessage: build.mutation<any, { agentInstanceId: string; body: string; tempId: string; interrupt?: boolean; artifactIds?: string[] }>({
+      queryFn: withSessionQuery(async ({ agentInstanceId, body, interrupt, artifactIds }, { session }) => {
         const res = await daemonApi.sendToAgent({
           daemonUrl: session.daemonUrl,
           clientInstanceId: session.clientInstanceId,
@@ -437,6 +437,7 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
           agentInstanceId,
           body,
           interrupt,
+          artifactIds,
         });
         return { messageId: String(res.message_id || ''), agentInstanceId };
       }),

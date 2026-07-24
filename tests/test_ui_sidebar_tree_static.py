@@ -38,9 +38,12 @@ def main() -> None:
         "sidebar-session-unread-",
         "shell-nav-unread-" ,
         "totalUnread",
-        "fetchApiList('/chats?limit=100')",
-        "fetchApiList('/projects?limit=100')",
-        "normalizeConversation",
+        # UI-14/UI-15: sidebar data lives in RTK Query (cookie-auth), not the old
+        # raw fetchApiList path. Assert the new hook + adapter markers.
+        "useListSidebarConversationsQuery({ limit: 100 })",
+        "useListSidebarProjectsQuery({ limit: 100 })",
+        "sidebarConversationToSummary",
+        "sidebarProjectToSummary",
         "normalizeProject",
         "hasDefaultMarker",
         "raw?.is_default_conversations === true",

@@ -318,6 +318,10 @@ function handleChatEvent(dispatch: any, payload: any, ctx: WsCtx) {
     }
     dispatch(heimdallApi.util.invalidateTags([{ type: 'ConversationSummaries', id: 'ALL' }]));
   }
+  // UI-14: any chat event (new message, read watermark, unread count) can change
+  // the sidebar tree's unread badges. Invalidate the cookie-auth sidebar tag so the
+  // live shell's project/agent/session rollups refresh through this single path.
+  dispatch(heimdallApi.util.invalidateTags([{ type: 'SidebarConversations', id: 'ALL' }]));
 }
 
 function handleMemoryEvent(dispatch: any, payload: any) {

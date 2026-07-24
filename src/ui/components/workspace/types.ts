@@ -171,12 +171,16 @@ export type WorkspaceGenericAgentComposer = {
   textareaClassName?: string;
   controlsClassName?: string;
   footerClassName?: string;
+  // UI-13: forwarded to ChatComposer for bottom-pinned, keyboard/safe-area-aware
+  // mobile layout. No effect on desktop.
+  mobileBottomPinned?: boolean;
 };
 
 export type WorkspaceGenericAgentContext = {
   header: WorkspaceGenericAgentHeader;
   chat: WorkspaceGenericAgentChat;
   workBanner?: WorkspaceGenericAgentBanner | null;
+  currentTaskStrip?: ReactNode | null;
   composer?: WorkspaceGenericAgentComposer | null;
   className?: string;
   bodyClassName?: string;

@@ -23,14 +23,37 @@ export type ChatComposerNotice = {
   tone?: 'error' | 'info' | 'neutral';
 };
 
+export type ChatComposerMention = {
+  type: 'agent' | 'task' | 'task-chain' | 'memory' | 'project' | 'artifact';
+  id: string;
+};
+
+export type ChatComposerMentionSuggestion = ChatComposerMention & {
+  label: string;
+  metadata?: string;
+};
+
+export type ChatComposerSubmitPayload = {
+  body: string;
+  artifactIds: string[];
+  mentions?: ChatComposerMention[];
+};
+
+export type ChatComposerUploadResult = string | { artifactId?: string; artifact_id?: string; link?: string; name?: string; kind?: string } | null | undefined;
+
 export type ChatComposerUploadProps = {
-  onUploaded: (link: string) => void;
+  onUploaded?: (link: string) => void;
+  uploadFile?: (file: File) => Promise<ChatComposerUploadResult>;
+  searchMentions?: (category: ChatComposerMention['type'], query: string) => Promise<ChatComposerMentionSuggestion[]>;
   context?: { projectId?: string; originRef?: string; originKind?: string };
   disabled?: boolean;
+  uploading?: boolean;
   debugIdPrefix: string;
   buttonClassName?: string;
   label?: string;
   error?: string;
+  clearError?: () => void;
+  sendStructuredMentions?: boolean;
 };
 
 export type ChatComposerRuntimeControlsProps = {
@@ -53,7 +76,7 @@ export type ChatComposerProps = {
   sendAriaLabel: string;
   value: string;
   onValueChange: (value: string) => void;
-  onSubmit: () => void | Promise<void>;
+  onSubmit: (payload?: ChatComposerSubmitPayload) => void | Promise<void>;
   onPaste?: (event: any) => void | Promise<void>;
   onKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   inputRef?: RefObject<HTMLTextAreaElement | null>;
@@ -76,4 +99,7 @@ export type ChatComposerProps = {
   textareaClassName?: string;
   controlsClassName?: string;
   footerClassName?: string;
+  // UI-13: when true, the composer is bottom-pinned on mobile and lifts above
+  // the soft keyboard via safe-area + visualViewport insets. No effect on desktop.
+  mobileBottomPinned?: boolean;
 };

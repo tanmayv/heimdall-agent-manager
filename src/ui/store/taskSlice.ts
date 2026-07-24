@@ -190,30 +190,17 @@ export const updateSelectedChainStatus = createAsyncThunk('tasks/updateSelectedC
 
 export const fetchUnreviewedChains = createAsyncThunk(
   'tasks/fetchUnreviewedChains',
-  async (_, { getState }) => {
-    const { session } = (getState() as any).chat;
-    if (!session.clientToken) return [];
-    const data = await daemonApi.listUnreviewedTaskChains({
-      daemonUrl: session.daemonUrl,
-      clientToken: session.clientToken,
-    });
-    return (data.chains ?? []).map(normalizeChain);
-  }
+  // UI-15: legacy audit-sidebar surface removed (AuditSidebar/AuditCard deleted).
+  // Kept as a no-op stub so the slice's public export surface and the rtkq-
+  // migration quarantine marker stay intact; no component dispatches this.
+  async () => []
 );
 
 export const evaluateTaskChain = createAsyncThunk(
   'tasks/evaluateTaskChain',
-  async (payload: { chainId: string; evaluation: 'good' | 'bad' }, { getState }) => {
-    const { session } = (getState() as any).chat;
-    await daemonApi.evaluateTaskChain({
-      daemonUrl: session.daemonUrl,
-      clientInstanceId: session.clientInstanceId,
-      clientToken: session.clientToken,
-      chainId: payload.chainId,
-      evaluation: payload.evaluation,
-    });
-    return { chainId: payload.chainId, evaluation: payload.evaluation };
-  }
+  // UI-15: legacy audit-sidebar surface removed. No-op stub retained for
+  // export-surface compatibility; no component dispatches this.
+  async (payload: { chainId: string; evaluation: 'good' | 'bad' }) => ({ chainId: payload.chainId, evaluation: payload.evaluation })
 );
 
 const initialState = {

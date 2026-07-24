@@ -1,4 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import ConversationLaunchComposer from '../chat/ConversationLaunchComposer';
+import CommandPalette from '../command-palette/CommandPalette';
+import { useViewport, MobileTabBar, MobileTopBar } from './responsive';
+import { useUserWebSocket } from '../../api/useUserWebSocket';
+import { useListSidebarConversationsQuery, useListSidebarProjectsQuery, type SidebarConversation, type SidebarProject } from '../../api/endpoints/sidebar';
 import { buildRouteHash, getRoutePathname } from '../../utils/appLocation';
 
 type ShellRoute = {
@@ -194,27 +199,6 @@ async function bootstrapAuth(): Promise<AuthState> {
 }
 
 
-function numberValue(value: any): number {
-  const parsed = Number(value ?? 0);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function normalizeConversation(raw: any): ConversationSummary {
-  const conversationId = String(raw?.conversation_id || raw?.conversationId || raw?.id || '');
-  const agentInstanceId = String(raw?.agent_instance_id || raw?.agentInstanceId || raw?.instance_id || '');
-  const agentId = String(raw?.agent_id || raw?.agentId || raw?.agent || 'unknown-agent');
-  const projectId = String(raw?.project_id || raw?.projectId || DEFAULT_CONVERSATIONS_PROJECT.projectId);
-  return {
-    conversationId,
-    agentId: agentId || 'unknown-agent',
-    agentInstanceId,
-    projectId: projectId || DEFAULT_CONVERSATIONS_PROJECT.projectId,
-    title: String(raw?.title || raw?.last_message_preview || raw?.lastMessagePreview || agentInstanceId || conversationId || 'Untitled session'),
-    unreadCount: numberValue(raw?.unread_count ?? raw?.unreadCount),
-    updatedAt: String(raw?.updated_at || raw?.updatedAt || raw?.last_message_at || raw?.lastMessageAt || ''),
-  };
-}
-
 function normalizeProject(raw: any): ProjectSummary {
   const name = String(raw?.name || raw?.title || 'Untitled project');
   const projectId = String(raw?.project_id || raw?.projectId || raw?.id || '');
@@ -225,6 +209,26 @@ function normalizeProject(raw: any): ProjectSummary {
   const isSyntheticFallback = projectId === DEFAULT_CONVERSATIONS_PROJECT.projectId;
   const isDefault = hasDefaultMarker || isSyntheticFallback;
   return { projectId: projectId || (isDefault ? DEFAULT_CONVERSATIONS_PROJECT.projectId : name), name, isDefaultConversations: isDefault };
+}
+
+// UI-14: adapt cookie-auth RTK Query sidebar data into the local tree types so
+// server state lives in RTK Query (and is WS-invalidated) while the tree builder
+// keeps its existing typed contract.
+function sidebarConversationToSummary(c: SidebarConversation): ConversationSummary {
+  return {
+    conversationId: c.conversationId,
+    agentId: c.agentId || 'unknown-agent',
+    agentInstanceId: c.agentInstanceId,
+    projectId: c.projectId || DEFAULT_CONVERSATIONS_PROJECT.projectId,
+    title: c.title,
+    unreadCount: c.unreadCount,
+    updatedAt: c.updatedAt,
+  };
+}
+
+function sidebarProjectToSummary(p: SidebarProject): ProjectSummary {
+  const projectId = p.projectId || (p.isDefaultConversations ? DEFAULT_CONVERSATIONS_PROJECT.projectId : p.name);
+  return { projectId, name: p.name, isDefaultConversations: p.isDefaultConversations || projectId === DEFAULT_CONVERSATIONS_PROJECT.projectId };
 }
 
 function displaySessionId(conversation: ConversationSummary): string {
@@ -268,13 +272,6 @@ function buildProjectConversationTree(conversations: ConversationSummary[], proj
     if (b.project.isDefaultConversations) return 1;
     return b.unreadCount - a.unreadCount || a.project.name.localeCompare(b.project.name);
   });
-}
-
-async function fetchApiList(path: string): Promise<any[]> {
-  const response = await fetch(apiUrl(path), { credentials: 'include' });
-  if (!response.ok) return [];
-  const body = await response.json();
-  return Array.isArray(body?.data) ? body.data : [];
 }
 
 function UnreadBadge({ count, debugId }: { count: number; debugId: string }) {
@@ -430,7 +427,7 @@ function AccessDenied() {
   );
 }
 
-function RouteOutlet({ path }: { path: string }) {
+function RouteOutlet({ path, mobileBottomPadded = false }: { path: string; mobileBottomPadded?: boolean }) {
   const title = routeTitle(path);
   const description = routeDescription(path);
   const isKnownRoute = useMemo(() => {
@@ -445,7 +442,7 @@ function RouteOutlet({ path }: { path: string }) {
   }, [path]);
 
   return (
-    <main data-debug-id="shell-main-route-outlet" className="min-w-0 flex-1 overflow-auto bg-[#090909]">
+    <main data-debug-id="shell-main-route-outlet" className={`min-w-0 flex-1 overflow-auto bg-[#090909] ${mobileBottomPadded ? 'pb-20 md:pb-0' : ''}`}>
       <section className="mx-auto flex min-h-full w-full max-w-6xl flex-col px-8 py-7">
         <div className="mb-5 flex items-center justify-between gap-4 border-b border-white/10 pb-5">
           <div>
@@ -462,11 +459,15 @@ function RouteOutlet({ path }: { path: string }) {
           </a>
         </div>
         <div className="grid flex-1 place-items-center rounded-[2rem] border border-dashed border-white/12 bg-white/[0.03] p-8 text-center">
-          <div className="max-w-2xl">
-            <div data-debug-id="shell-page-placeholder-icon" className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-3xl bg-white/10 text-2xl">⌁</div>
-            <h2 className="text-xl font-semibold text-white">{isKnownRoute ? title : 'This route is not part of the v1 shell map'}</h2>
-            <p className="mt-3 text-sm leading-6 text-zinc-400">{isKnownRoute ? description : 'Use the left sidebar to navigate to a v1 route. Legacy workspace, guide, attention-badge, and inspector routes are intentionally not mounted in this shell.'}</p>
-          </div>
+          {path === '/conversations/new' ? (
+            <ConversationLaunchComposer />
+          ) : (
+            <div className="max-w-2xl">
+              <div data-debug-id="shell-page-placeholder-icon" className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-3xl bg-white/10 text-2xl">⌁</div>
+              <h2 className="text-xl font-semibold text-white">{isKnownRoute ? title : 'This route is not part of the v1 shell map'}</h2>
+              <p className="mt-3 text-sm leading-6 text-zinc-400">{isKnownRoute ? description : 'Use the left sidebar to navigate to a v1 route. Legacy workspace, guide, attention-badge, and inspector routes are intentionally not mounted in this shell.'}</p>
+            </div>
+          )}
         </div>
       </section>
     </main>
@@ -476,9 +477,54 @@ function RouteOutlet({ path }: { path: string }) {
 function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: string }) {
   const [collapsed, setCollapsed] = useState(false);
   const [path, setPath] = useState(routeFromLocation);
-  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
-  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const displayName = user.display_name || user.name || user.user_id || 'Current user';
+
+  // UI-14: server state for the sidebar lives in RTK Query (cookie-auth), not
+  // component-local state. The single user-WS connection invalidates the
+  // SidebarConversations tag on chat/unread events so badges refresh live.
+  const conversationsQuery = useListSidebarConversationsQuery({ limit: 100 });
+  const projectsQuery = useListSidebarProjectsQuery({ limit: 100 });
+  const conversations = useMemo(
+    () => (conversationsQuery.data || []).map(sidebarConversationToSummary),
+    [conversationsQuery.data],
+  );
+  const projects = useMemo(
+    () => (projectsQuery.data || []).map(sidebarProjectToSummary),
+    [projectsQuery.data],
+  );
+
+  // UI-14: the shell owns exactly one user WebSocket connection (cookie-auth
+  // `/api/v1/user-ws`). Its events flow through the single `handleUserWsEvent`
+  // invalidation path. ctxRef supplies focus state read at event time.
+  const wsCtxRef = useRef({});
+  const { status: wsStatus, connected: wsConnected } = useUserWebSocket(wsCtxRef);
+
+  // UI-13: viewport-aware shell. On mobile the sidebar is an off-canvas drawer
+  // (toggled), main is full-width, and a bottom tab bar replaces sidebar chrome.
+  const viewport = useViewport();
+  const isMobile = viewport === 'mobile';
+  // Close the mobile drawer whenever the route changes.
+  useEffect(() => { setDrawerOpen(false); }, [path]);
+
+  // UI-12: Cmd/Ctrl-K opens the command palette (desktop). Also the sidebar
+  // Search button and the mobile bottom-tab center button open the same surface.
+  useEffect(() => {
+    function handler(event: KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && (event.key === 'k' || event.key === 'K')) {
+        event.preventDefault();
+        setPaletteOpen((open) => !open);
+      }
+    }
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, []);
+
+  // Palette navigation: convert a logical route into a hash location.
+  const handlePaletteNavigate = (route: string) => {
+    window.location.hash = buildRouteHash(route, '');
+  };
 
   useEffect(() => {
     const update = () => setPath(routeFromLocation());
@@ -491,26 +537,25 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
     };
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    Promise.all([fetchApiList('/chats?limit=100'), fetchApiList('/projects?limit=100')]).then(([chatRows, projectRows]) => {
-      if (cancelled) return;
-      setConversations(chatRows.map(normalizeConversation).filter((conversation) => conversation.conversationId));
-      setProjects(projectRows.map(normalizeProject));
-    });
-    return () => { cancelled = true; };
-  }, []);
-
   const primary = NAV_ROUTES.filter((item) => item.group === 'primary');
   const secondary = NAV_ROUTES.filter((item) => item.group === 'secondary');
   const conversationTree = useMemo(() => buildProjectConversationTree(conversations, projects), [conversations, projects]);
   const totalUnread = conversationTree.reduce((sum, project) => sum + project.unreadCount, 0);
 
   return (
-    <div data-debug-id="app-shell" className="flex h-screen min-h-[620px] bg-[#090909] text-zinc-100">
+    <div data-debug-id="app-shell" className="flex h-screen bg-[#090909] text-zinc-100">
+      {/* UI-13: mobile drawer scrim. Closes the off-canvas sidebar on tap. */}
+      {isMobile && drawerOpen ? (
+        <div
+          data-debug-id="shell-mobile-drawer-scrim"
+          onClick={() => setDrawerOpen(false)}
+          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm md:hidden"
+          aria-hidden="true"
+        />
+      ) : null}
       <aside
         data-debug-id={collapsed ? 'shell-left-sidebar-collapsed' : 'shell-left-sidebar-expanded'}
-        className={`flex shrink-0 flex-col border-r border-white/10 bg-[#101010] transition-[width] duration-200 ${collapsed ? 'w-16' : 'w-80'}`}
+        className={`flex shrink-0 flex-col border-r border-white/10 bg-[#101010] transition-[width,transform] duration-200 ${collapsed ? 'w-16' : 'w-80'} ${isMobile ? 'fixed inset-y-0 left-0 z-50 w-80 transition-transform md:static md:z-auto' : 'md:static'} ${isMobile && !drawerOpen ? '-translate-x-full md:translate-x-0' : 'translate-x-0'}`}
         aria-label="Primary navigation"
       >
         <div className={`flex items-center gap-3 border-b border-white/10 p-3 ${collapsed ? 'justify-center' : 'justify-between'}`}>
@@ -533,15 +578,16 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
         </div>
 
         <div className="flex-1 overflow-y-auto p-3">
-          <a
+          <button
+            type="button"
             data-debug-id="shell-command-palette-button"
-            href={shellHash('/conversations')}
-            title="Command palette placeholder"
-            className={`mb-3 flex min-h-11 items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-zinc-300 hover:bg-white/8 ${collapsed ? 'justify-center' : ''}`}
+            onClick={() => setPaletteOpen(true)}
+            title="Command palette (Cmd/Ctrl-K)"
+            className={`mb-3 flex min-h-11 items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-zinc-300 hover:bg-white/[0.08] ${collapsed ? 'justify-center' : ''}`}
           >
             <span aria-hidden="true" className="grid h-6 w-6 place-items-center">⌘</span>
             {!collapsed && <span className="font-semibold">Command palette</span>}
-          </a>
+          </button>
           <nav data-debug-id="shell-primary-nav" className="space-y-2" aria-label="Primary destinations">
             {primary.map((item) => <NavItem key={item.path} item={item} active={isRouteActive(path, item.path)} collapsed={collapsed} badge={item.path === '/conversations' ? totalUnread : 0} />)}
           </nav>
@@ -555,16 +601,37 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           <div data-debug-id="shell-global-ownership-points" className={`rounded-2xl border border-white/10 bg-black/20 p-3 ${collapsed ? 'px-2 text-center' : ''}`}>
             <div data-debug-id="shell-current-user-owner" title="Current user config is shell-owned" className="text-xs font-semibold text-zinc-300">{collapsed ? 'U' : displayName}</div>
             {!collapsed && <div className="mt-1 truncate text-[11px] text-zinc-500">{user.email || user.user_id || '/api/v1 current user'}</div>}
-            <div data-debug-id="shell-user-ws-owner" title="The shell owns exactly one user WebSocket connection" className={`mt-2 inline-flex items-center gap-2 rounded-full bg-emerald-400/10 px-2 py-1 text-[11px] font-semibold text-emerald-200 ${collapsed ? 'justify-center' : ''}`}>
-              <span className="h-1.5 w-1.5 rounded-full bg-emerald-300" />
-              {!collapsed && <span>User WS owner</span>}
+            <div data-debug-id="shell-user-ws-owner" data-ws-status={wsStatus} title="The shell owns exactly one user WebSocket connection (/api/v1/user-ws)" className={`mt-2 inline-flex items-center gap-2 rounded-full px-2 py-1 text-[11px] font-semibold ${wsConnected ? 'bg-emerald-400/10 text-emerald-200' : wsStatus === 'error' ? 'bg-red-400/10 text-red-200' : 'bg-amber-400/10 text-amber-200'} ${collapsed ? 'justify-center' : ''}`}>
+              <span className={`h-1.5 w-1.5 rounded-full ${wsConnected ? 'bg-emerald-300' : wsStatus === 'error' ? 'bg-red-300' : 'bg-amber-300 animate-pulse'}`} />
+              {!collapsed && <span>{wsConnected ? 'User WS · live' : wsStatus === 'error' ? 'User WS · error' : 'User WS · connecting'}</span>}
             </div>
             {logoutUrl && !collapsed && <a data-debug-id="auth-logout-link" href={logoutUrl} className="mt-3 block text-[11px] font-semibold text-zinc-400 underline-offset-4 hover:text-white hover:underline">Sign out</a>}
           </div>
         </div>
       </aside>
 
-      <RouteOutlet path={path} />
+      {/* UI-13: on mobile, the sidebar is an off-canvas drawer (hidden by default);
+          a mobile top bar carries the drawer toggle + title, and the route outlet
+          gets bottom padding so content clears the bottom tab bar. On >= md the
+          sidebar is a normal static column. */}
+      <div className="flex min-w-0 flex-1 flex-col">
+        {isMobile ? (
+          <MobileTopBar title={routeTitle(path)} onOpenDrawer={() => setDrawerOpen(true)} />
+        ) : null}
+        <RouteOutlet path={path} mobileBottomPadded={isMobile} />
+      </div>
+
+      {/* UI-12/UI-13: mobile bottom tab bar with a command-palette center button.
+          The center button owns the canonical `shell-mobile-palette-button` debug-id
+          so the palette entry point has one stable, layout-independent id. */}
+      <MobileTabBar
+        activePath={path}
+        onNavigate={(route) => { window.location.hash = buildRouteHash(route, ''); }}
+        onOpenPalette={() => setPaletteOpen(true)}
+        chatBadge={totalUnread}
+      />
+
+      <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onNavigate={handlePaletteNavigate} />
     </div>
   );
 }

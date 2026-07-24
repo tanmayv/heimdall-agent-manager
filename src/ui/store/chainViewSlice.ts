@@ -19,7 +19,7 @@ export const fetchChainCoordinatorChatPage = createAsyncThunk('chainView/fetchCh
   return await (dispatch as any)(fetchSelectedChat({ agentId: coordinator, cursor, limit: payload.limit || 50 })).unwrap();
 });
 
-export const sendCoordinatorMessage = createAsyncThunk('chainView/sendCoordinatorMessage', async (payload: { chainId: string; body: string; localId: string }, { dispatch, getState }) => {
+export const sendCoordinatorMessage = createAsyncThunk('chainView/sendCoordinatorMessage', async (payload: { chainId: string; body: string; localId: string; artifactIds?: string[] }, { dispatch, getState }) => {
   const state = getState() as any;
   const session = auth(state);
   const chain = selectCachedChainById(state, payload.chainId);
@@ -45,6 +45,7 @@ export const sendCoordinatorMessage = createAsyncThunk('chainView/sendCoordinato
     clientToken: session.clientToken,
     chainId: payload.chainId,
     body: payload.body,
+    artifactIds: payload.artifactIds,
   });
   if (coordinatorAgentInstanceId && result?.message_id) {
     dispatch(appendMessage({

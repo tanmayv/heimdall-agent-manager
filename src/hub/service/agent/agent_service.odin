@@ -211,6 +211,31 @@ get_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, inst
 	return inst, true, domain.Domain_Error{}
 }
 
+verify_instance_token :: proc(service: ^Agent_Service, token: string) -> (contracts.Auth_Context, domain.Agent_Instance, bool, domain.Domain_Error) {
+	if service == nil || service.agents == nil do return contracts.Auth_Context{}, domain.Agent_Instance{}, false, domain.domain_error(.Internal_Error, "agent service is not configured")
+	if !strings.has_prefix(token, "hit_") do return contracts.Auth_Context{}, domain.Agent_Instance{}, false, domain.domain_error(.Unauthenticated, "instance bearer token is required")
+	instance_id := strings.trim_space(token[len("hit_"):])
+	if instance_id == "" do return contracts.Auth_Context{}, domain.Agent_Instance{}, false, domain.domain_error(.Unauthenticated, "instance bearer token is invalid")
+	inst, ok, err := iface.agent_get_instance(service.agents, instance_id)
+	if !ok do return contracts.Auth_Context{}, domain.Agent_Instance{}, false, err
+	return contracts.Auth_Context{kind = .Instance_Token, user_id = string(inst.owner_user_id), agent_instance_id = inst.agent_instance_id, bridge_id = inst.bridge_id}, inst, true, domain.Domain_Error{}
+}
+
+mark_instance_start_success :: proc(service: ^Agent_Service, auth: contracts.Auth_Context) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
+	if auth.kind != .Instance_Token || auth.agent_instance_id == "" do return domain.Agent_Instance{}, false, domain.domain_error(.Forbidden, "instance token is required")
+	inst, ok, err := iface.agent_get_instance(service.agents, auth.agent_instance_id)
+	if !ok do return domain.Agent_Instance{}, false, err
+	if inst.owner_user_id != domain.User_ID(auth.user_id) do return domain.Agent_Instance{}, false, domain.domain_error(.Not_Found, "agent instance not found")
+	now := platform.clock_now(service.clock)
+	inst.runtime_status = "running"
+	inst.startup_status = "ready"
+	inst.activity_status = "idle"
+	inst.last_applied_seq += 1
+	inst.last_seen_at = now
+	inst.updated_at = now
+	return iface.agent_save_instance(service.agents, inst)
+}
+
 bootstrap_json_for_bridge :: proc(service: ^Agent_Service, owner: domain.User_ID, bridge_id, instance_id: string) -> (string, bool, domain.Domain_Error) {
 	inst, ok, err := iface.agent_get_instance(service.agents, instance_id)
 	if !ok do return "", false, err

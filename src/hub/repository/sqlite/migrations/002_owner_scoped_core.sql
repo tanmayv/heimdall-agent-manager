@@ -146,6 +146,7 @@ CREATE TABLE IF NOT EXISTS task_comments (
   task_id TEXT NOT NULL,
   chain_id TEXT NOT NULL,
   owner_user_id TEXT NOT NULL,
+  author_agent_instance_id TEXT NOT NULL DEFAULT '',
   body TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -227,9 +228,13 @@ CREATE TABLE IF NOT EXISTS templates (
 CREATE TABLE IF NOT EXISTS user_api_tokens (
   token_id TEXT PRIMARY KEY,
   owner_user_id TEXT NOT NULL,
-  token_hash TEXT NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
+  token_hash TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  last_used_at TEXT NOT NULL DEFAULT '',
+  expires_at TEXT NOT NULL DEFAULT '',
+  revoked_at TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TRIGGER IF NOT EXISTS bridges_owner_immutable BEFORE UPDATE OF owner_user_id ON bridges BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
@@ -248,6 +253,8 @@ CREATE TRIGGER IF NOT EXISTS chat_messages_owner_immutable BEFORE UPDATE OF owne
 CREATE TRIGGER IF NOT EXISTS artifacts_owner_immutable BEFORE UPDATE OF owner_user_id ON artifacts BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS templates_owner_immutable BEFORE UPDATE OF owner_user_id ON templates BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS user_api_tokens_owner_immutable BEFORE UPDATE OF owner_user_id ON user_api_tokens BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_api_tokens_token_hash ON user_api_tokens(token_hash);
 
 CREATE INDEX IF NOT EXISTS idx_search_agents_owner_lower_name ON agents(owner_user_id, lower(name));
 CREATE INDEX IF NOT EXISTS idx_search_agents_owner_lower_slug ON agents(owner_user_id, lower(slug));

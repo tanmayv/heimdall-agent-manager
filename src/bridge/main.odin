@@ -24,6 +24,9 @@ Bridge_Config :: struct {
 	peers: [dynamic]cfg_lib.Peer_Config,
 	peer_auth_token: string,
 	chunk_bytes: int,
+	local_endpoint_port: u16,
+	local_endpoint_run_dir: string,
+	agent_command: string,
 }
 
 Bridge_Peer_Link_State :: struct {
@@ -101,6 +104,10 @@ main :: proc() {
 		if !bridge_enroll_command(os.args) do os.exit(1)
 		return
 	}
+	if has_flag(os.args, "--bridge-wrapper-supervisor") || (len(os.args) > 1 && os.args[1] == "wrapper-supervisor") {
+		if !bridge_wrapper_supervisor_main(os.args) do os.exit(1)
+		return
+	}
 
 	bridge_config = bridge_config_from_args(os.args)
 	if has_flag(os.args, "--bootstrap-fetch") {
@@ -114,6 +121,19 @@ main :: proc() {
 		return
 	}
 	bridge_runtime_init()
+	bridge_agent_token_store_init()
+	if bridge_config.local_endpoint_port != 0 {
+		local_config := bridge_local_endpoint_config_default(bridge_config.local_endpoint_run_dir, bridge_config.local_endpoint_port)
+		unix_started := bridge_local_endpoint_start_unix(local_config)
+		loopback_started := bridge_local_endpoint_start_loopback(local_config)
+		bridge_runtime_local_endpoint_unix_started = unix_started
+		bridge_runtime_local_endpoint_loopback_started = loopback_started
+		bridge_runtime_local_endpoint_started = unix_started || loopback_started
+		if bridge_runtime_local_endpoint_started {
+			bridge_runtime_local_endpoint_descriptor = bridge_runtime_select_endpoint(local_config)
+			fmt.println("bridge local endpoint", bridge_runtime_local_endpoint_descriptor, "fallback", bridge_local_endpoint_env_value(local_config, false), "socket_mode", "0600")
+		}
+	}
 	bridge_hub_runtime_start()
 	if bridge_config.chunk_bytes <= 0 do bridge_config.chunk_bytes = contracts.BRIDGE_WS_DEFAULT_CHUNK_BYTES
 	bridge_peer_state_init(bridge_config.peers[:])
@@ -123,10 +143,12 @@ main :: proc() {
 
 print_usage :: proc() {
 	fmt.println("ham-bridge", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
-	fmt.println("usage: ham-bridge [--config <path>] [--bind-host 127.0.0.1] [--port 49323] [--daemon-url URL|--hub URL] [--daemon-id ID] [--bridge-token TOKEN] [--peer-ws ws://host:port/bridge-ws]... [--peer-auth-token TOKEN] [--chunk-bytes N]")
+	fmt.println("usage: ham-bridge [--config <path>] [--bind-host 127.0.0.1] [--port 49323] [--daemon-url URL|--hub URL] [--daemon-id ID] [--bridge-token TOKEN] [--peer-ws ws://host:port/bridge-ws]... [--peer-auth-token TOKEN] [--chunk-bytes N] [--local-endpoint-port PORT] [--local-run-dir DIR] [--agent-command CMD]")
+	fmt.println("wrapper supervisor: ham-bridge wrapper-supervisor --bridge-endpoint unix:/run/heimdall/bridge.sock --agent-token hlat_... --agent-instance-id inst_... --cwd <dir> --agent-command '<cmd>'")
 	fmt.println("enroll: ham-bridge enroll --hub http://127.0.0.1:49322 --enrollment-token TOKEN")
 	fmt.println("TLS: https:// Hub URLs use HTTPS and wss:// with certificate/hostname validation; http:// tunnel URLs use ws://.")
 	fmt.println("bootstrap fetch: ham-bridge --bootstrap-fetch --daemon-url URL --bridge-token TOKEN --instance-id INST --run-dir DIR")
+	fmt.println("wrapper supervisor: ham-bridge wrapper-supervisor --endpoint unix:/run/bridge.sock --agent-token hlat_... --instance-id INST --cwd DIR --command CMD")
 	fmt.println("loopback routes:", contracts.ROUTE_BRIDGE_HEALTH, contracts.ROUTE_BRIDGE_SEND, contracts.ROUTE_BRIDGE_REQUEST, contracts.ROUTE_BRIDGE_VALIDATE_PROJECT_PATH, contracts.ROUTE_BRIDGE_REACHABLE)
 	fmt.println("bridge websocket route:", contracts.ROUTE_BRIDGE_WS)
 }
@@ -198,6 +220,9 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 		peers = make([dynamic]cfg_lib.Peer_Config),
 		peer_auth_token = "",
 		chunk_bytes = contracts.BRIDGE_WS_DEFAULT_CHUNK_BYTES,
+		local_endpoint_port = 0,
+		local_endpoint_run_dir = "/tmp/heimdall-bridge-local",
+		agent_command = "sleep 3600",
 	}
 
 	config_path := cfg_lib.config_path_from_args(args)
@@ -205,6 +230,7 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 		cfg.daemon_url = loaded.config.wrapper.daemon_url
 		cfg.daemon_id = loaded.config.daemon.daemon_id
 		cfg.bridge_token = loaded.config.daemon.bridge_token
+		if len(loaded.config.wrapper.command) > 0 do cfg.agent_command = strings.join(loaded.config.wrapper.command, " ")
 		for peer in loaded.config.bridge.peers {
 			if strings.trim_space(peer.name) == "" || strings.trim_space(peer.endpoint) == "" || strings.trim_space(peer.token) == "" do continue
 			append(&cfg.peers, cfg_lib.Peer_Config{name = strings.clone(peer.name), endpoint = strings.clone(peer.endpoint), token = strings.clone(peer.token)})
@@ -223,6 +249,11 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 	if chunk_s := option_value(args, "--chunk-bytes", ""); chunk_s != "" {
 		if chunk_i, ok := strconv.parse_int(chunk_s); ok do cfg.chunk_bytes = int(chunk_i)
 	}
+	if local_port_s := option_value(args, "--local-endpoint-port", ""); local_port_s != "" {
+		if local_port_i, ok := strconv.parse_int(local_port_s); ok do cfg.local_endpoint_port = u16(local_port_i)
+	}
+	cfg.local_endpoint_run_dir = option_value(args, "--local-run-dir", cfg.local_endpoint_run_dir)
+	cfg.agent_command = option_value(args, "--agent-command", cfg.agent_command)
 	for i in 0..<len(args) {
 		if args[i] == "--peer-ws" && i + 1 < len(args) {
 			append(&cfg.peers, cfg_lib.Peer_Config{name = fmt.tprintf("cli-peer-%d", len(cfg.peers) + 1), endpoint = strings.clone(args[i + 1]), token = strings.clone(cfg.peer_auth_token)})

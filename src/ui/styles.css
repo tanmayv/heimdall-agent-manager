@@ -38,6 +38,24 @@ body {
   color: var(--fd-ink);
 }
 
+/* UI-13: responsive/mobile. Below the md breakpoint, drop the desktop min-width
+   floor so the app can render on phone-width viewports, and expose safe-area
+   inset utilities for keyboard/notch-aware layout (composer, bottom tab bar). */
+@media (max-width: 767px) {
+  body { min-width: 0; min-height: 100vh; }
+}
+
+@supports (padding: env(safe-area-inset-bottom)) {
+  .ui-safe-bottom { padding-bottom: env(safe-area-inset-bottom); }
+  .ui-safe-top { padding-top: env(safe-area-inset-top); }
+  .ui-safe-x {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+}
+.ui-safe-bottom { padding-bottom: var(--ui-safe-bottom, 0px); }
+.ui-safe-top { padding-top: var(--ui-safe-top, 0px); }
+
 * {
   box-sizing: border-box;
   scrollbar-width: thin;

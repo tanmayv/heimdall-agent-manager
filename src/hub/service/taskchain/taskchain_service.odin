@@ -46,6 +46,16 @@ Create_Task_Input :: struct {
 	reviewer_refs_json: string,
 }
 
+Task_Comment_Input :: struct {
+	task_id: domain.Task_ID,
+	body: string,
+}
+
+Comment_Input :: struct {
+	task_id: domain.Task_ID,
+	body: string,
+}
+
 new_taskchain_service :: proc(repo: ^iface.Taskchain_Repository, agents: ^iface.Agent_Repository, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Taskchain_Service {
 	return Taskchain_Service{repo = repo, agents = agents, clock = clock, ids = ids, nudges = make([dynamic]Manual_Nudge)}
 }
@@ -197,6 +207,25 @@ valid_task_transition :: proc(current, next: domain.Task_Status) -> bool {
 	return false
 }
 
+create_comment :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, input: Comment_Input) -> (domain.Task_Comment, bool, domain.Domain_Error) {
+	if strings.trim_space(input.body) == "" do return domain.Task_Comment{}, false, domain.domain_error(.Validation_Failed, "comment body is required")
+	task, ok, err := get_task(service, auth, input.task_id)
+	if !ok do return domain.Task_Comment{}, false, err
+	if auth.kind == .Instance_Token {
+		if auth.agent_instance_id == "" do return domain.Task_Comment{}, false, domain.domain_error(.Forbidden, "instance token is required")
+		if same, same_err := agent_instance_same_chain(service, auth.agent_instance_id, string(task.chain_id), task.owner_user_id); !same do return domain.Task_Comment{}, false, same_err
+	}
+	now := platform.clock_now(service.clock)
+	comment := domain.Task_Comment{comment_id = platform.generate_id(service.ids, "cmt_"), task_id = task.task_id, chain_id = task.chain_id, owner_user_id = task.owner_user_id, author_agent_instance_id = auth.agent_instance_id, body = input.body, created_at = now, updated_at = now}
+	return iface.taskchain_save_comment(service.repo, comment)
+}
+
+list_comments :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID) -> ([]domain.Task_Comment, domain.Domain_Error) {
+	task, ok, err := get_task(service, auth, task_id)
+	if !ok do return nil, err
+	return iface.taskchain_list_comments_by_task(service.repo, task.task_id, task.owner_user_id)
+}
+
 manual_nudge :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID, message: string) -> (Manual_Nudge, bool, domain.Domain_Error) {
 	task, ok, err := get_task(service, auth, task_id)
 	if !ok do return Manual_Nudge{}, false, err
@@ -205,6 +234,26 @@ manual_nudge :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	nudge := Manual_Nudge{task_id = task.task_id, owner_user_id = task.owner_user_id, target = nudge_target_for_status(task.status), message = message, created_at = platform.clock_now(service.clock)}
 	append(&service.nudges, nudge)
 	return nudge, true, domain.Domain_Error{}
+}
+
+comment_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, input: Task_Comment_Input) -> (domain.Task_Comment, bool, domain.Domain_Error) {
+	if strings.trim_space(input.body) == "" do return domain.Task_Comment{}, false, domain.domain_error(.Validation_Failed, "comment body is required")
+	task, ok, err := get_task(service, auth, input.task_id)
+	if !ok do return domain.Task_Comment{}, false, err
+	if task.publish_state != .Published do return domain.Task_Comment{}, false, domain.domain_error(.Conflict, "draft task cannot be commented on")
+	if auth.kind == .Instance_Token {
+		if auth.agent_instance_id == "" do return domain.Task_Comment{}, false, domain.domain_error(.Forbidden, "instance token is required")
+		if !(strings.contains(task.assignee_ref_json, auth.agent_instance_id) || strings.contains(task.reviewer_refs_json, auth.agent_instance_id)) do return domain.Task_Comment{}, false, domain.domain_error(.Forbidden, "instance token is not assigned to this task")
+	}
+	now := platform.clock_now(service.clock)
+	comment := domain.Task_Comment{comment_id = platform.generate_id(service.ids, "cmt_"), task_id = task.task_id, chain_id = task.chain_id, owner_user_id = task.owner_user_id, author_agent_instance_id = auth.agent_instance_id, body = input.body, created_at = now, updated_at = now}
+	return iface.taskchain_save_comment(service.repo, comment)
+}
+
+list_task_comments :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID) -> ([]domain.Task_Comment, domain.Domain_Error) {
+	task, ok, err := get_task(service, auth, task_id)
+	if !ok do return nil, err
+	return iface.taskchain_list_comments_by_task(service.repo, task.task_id, task.owner_user_id)
 }
 
 nudge_target_for_status :: proc(status: domain.Task_Status) -> Nudge_Target {

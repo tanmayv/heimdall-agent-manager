@@ -28,7 +28,7 @@ def main() -> None:
         "onBack: navigateBackOrHome",
         "onBack={navigateBackOrHome}",
         "onBackToHome={navigateBackOrHome}",
-        "debugId=\"agent-detail-back-btn\"",
+        "data-debug-id=\"agent-detail-back-btn\"",
         "data-debug-id=\"conversation-thread-back-btn\"",
         "data-debug-id=\"chain-back-btn\"",
     ]:

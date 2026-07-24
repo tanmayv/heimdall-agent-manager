@@ -27,6 +27,13 @@ export const HEIMDALL_TAG_TYPES = [
   'ChatApprovals',
   'MergeDecisions',
   'Attention',
+  'BridgeSupport',
+  'Bridges',
+  'BridgeEnrollments',
+  'ProjectBridgePaths',
+  // UI-14: cookie-auth sidebar data owned by the live shell.
+  'SidebarConversations',
+  'SidebarProjects',
 ] as const;
 
 export type HeimdallTagType = (typeof HEIMDALL_TAG_TYPES)[number];

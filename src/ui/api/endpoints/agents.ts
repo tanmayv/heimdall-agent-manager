@@ -162,6 +162,19 @@ export const agentsApi = heimdallApi.injectEndpoints({
         { type: 'Agents' as const, id: agentInstanceId },
       ],
     }),
+    // UI-8: Add agent to chain via the rewrite API (POST /api/v1/agent-instances
+    // with existing chain_id). Hydrates a fresh AgentInstance into the chain and
+    // creates its 1:1 conversation; never attaches an unrelated live instance.
+    createAgentInstanceInChain: build.mutation<any, { agentId: string; chainId: string; providerProfile?: string; modelTier?: string; projectId?: string; displayName?: string; templateId?: string }>({
+      queryFn: withSessionQuery(async ({ agentId, chainId, providerProfile, modelTier, projectId, displayName, templateId }, { session }) => {
+        if (!session?.daemonUrl || !session?.clientToken || !agentId || !chainId) return { ok: false, message: 'Missing agentId/chainId' };
+        return daemonApi.createAgentInstanceInChain({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, agentId, chainId, providerProfile, modelTier, projectId, displayName, templateId });
+      }),
+      invalidatesTags: (_result, _error, { chainId }) => [
+        { type: 'Agents' as const, id: 'LIST' },
+        { type: 'ChainTasks' as const, id: chainId },
+      ],
+    }),
     // Remote role content for a local-proxy agent-id. Cached aggressively
     // (keepUnusedDataFor long) since remote templates change rarely; keyed by
     // peer + remote agent-id so it is fetched once per mapping.
@@ -250,4 +263,4 @@ export function patchAgentCachesFromWs(dispatch: any, payload: any) {
   dispatch(heimdallApi.util.invalidateTags([{ type: 'Agents', id: 'LIST' }, { type: 'Agents', id: agentId }]));
 }
 
-export const { useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useFetchPeerAgentTemplateQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation } = agentsApi;
+export const { useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useCreateAgentInstanceInChainMutation, useFetchPeerAgentTemplateQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation } = agentsApi;

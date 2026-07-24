@@ -46,6 +46,43 @@ create_user_stub :: proc(service: ^User_Service, display_name, email: string) ->
 	return iface.user_save(service.users, created)
 }
 
+Create_User_Input :: struct {
+	name: string,
+	email: string,
+	display_name: string,
+}
+
+// create_user is the explicit user-creation path used by `ham-hub users create`.
+// name AND email are mandatory. The user_id is operator-independent: a fresh
+// `usr_...` id is generated so issuance never depends on caller-supplied input.
+create_user :: proc(service: ^User_Service, input: Create_User_Input) -> (domain.User, bool, domain.Domain_Error) {
+	if service == nil || service.users == nil || service.clock == nil || service.ids == nil {
+		return domain.User{}, false, domain.domain_error(.Internal_Error, "user service is not configured")
+	}
+	name := strings.trim_space(input.name)
+	email := strings.trim_space(input.email)
+	if name == "" {
+		return domain.User{}, false, domain.domain_error(.Validation_Failed, "name is required")
+	}
+	if email == "" {
+		return domain.User{}, false, domain.domain_error(.Validation_Failed, "email is required")
+	}
+	display := strings.trim_space(input.display_name)
+	if display == "" do display = name
+	now := platform.clock_now(service.clock)
+	user_id := platform.generate_id(service.ids, "usr_")
+	created := domain.User{
+		user_id = domain.User_ID(user_id),
+		name = name,
+		display_name = display,
+		email = email,
+		status = .Active,
+		created_at = now,
+		updated_at = now,
+	}
+	return iface.user_save(service.users, created)
+}
+
 ensure_user_from_auth :: proc(service: ^User_Service, user_id, display_name, email: string, auto_provision: bool) -> (domain.User, bool, domain.Domain_Error) {
 	if service == nil || service.users == nil || service.clock == nil {
 		return domain.User{}, false, domain.domain_error(.Internal_Error, "user service is not configured")

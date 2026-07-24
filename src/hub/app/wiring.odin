@@ -47,6 +47,7 @@ App_Graph :: struct {
 	content_handlers: http.Content_Handlers,
 	taskchain_handlers: http.Taskchain_Handlers,
 	search_handlers: http.Search_Handlers,
+	agent_action_handlers: http.Agent_Action_Handlers,
 	router: http.Router,
 }
 
@@ -78,14 +79,14 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.content = content_service.new_content_service(&graph.repos.content, &graph.repos.agents, &graph.repos.projects, &graph.repos.taskchains, &graph.clock, &graph.ids)
 	graph.taskchains = taskchain_service.new_taskchain_service(&graph.repos.taskchains, &graph.repos.agents, &graph.clock, &graph.ids)
 	graph.search = search_service.new_search_service(&graph.repos.search)
-	graph.auth = auth_service.new_auth_service(auth_service.Trusted_Proxy_Config{
+	graph.auth = auth_service.new_auth_service_with_tokens(auth_service.Trusted_Proxy_Config{
 		username_header = config.username_header,
 		display_name_header = config.display_name_header,
 		email_header = config.email_header,
 		trusted_proxy_cidrs = config.trusted_proxy_cidrs,
 		auto_provision_users = config.auto_provision_users,
 		logout_url = config.logout_url,
-	}, &graph.users)
+	}, &graph.users, &graph.repos.users, &graph.clock, &graph.ids)
 	graph.user_handlers = http.User_Handlers{auth = &graph.auth, event_bus = &graph.event_bus}
 	graph.bridge_handlers = http.Bridge_Handlers{auth = &graph.auth, bridges = &graph.bridges, agents = &graph.agents, event_bus = &graph.event_bus, bridge_runtime_registry = &graph.bridge_runtime_registry}
 	graph.agent_handlers = http.Agent_Handlers{auth = &graph.auth, agents = &graph.agents, event_bus = &graph.event_bus}
@@ -93,6 +94,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.content_handlers = http.Content_Handlers{auth = &graph.auth, agents = &graph.agents, content = &graph.content}
 	graph.taskchain_handlers = http.Taskchain_Handlers{auth = &graph.auth, taskchains = &graph.taskchains, agents = &graph.agents}
 	graph.search_handlers = http.Search_Handlers{auth = &graph.auth, search = &graph.search}
+	graph.agent_action_handlers = http.Agent_Action_Handlers{agents = &graph.agents, content = &graph.content, taskchains = &graph.taskchains}
 	graph.router = http.new_router()
 	register_routes(graph)
 	return true, ""
@@ -158,6 +160,14 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/publish", rawptr(&graph.taskchain_handlers), http.publish_task_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/status", rawptr(&graph.taskchain_handlers), http.change_task_status_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/nudge", rawptr(&graph.taskchain_handlers), http.nudge_task_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/send-to-user", rawptr(&graph.agent_action_handlers), http.agent_action_chat_send_to_user_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/tasks/comment", rawptr(&graph.agent_action_handlers), http.agent_action_task_comment_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/tasks/status", rawptr(&graph.agent_action_handlers), http.agent_action_task_status_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/tasks/vote", rawptr(&graph.agent_action_handlers), http.agent_action_task_vote_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/tasks/nudge", rawptr(&graph.agent_action_handlers), http.agent_action_task_nudge_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/artifacts/create", rawptr(&graph.agent_action_handlers), http.agent_action_artifact_create_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/memory/propose", rawptr(&graph.agent_action_handlers), http.agent_action_memory_propose_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/start-success", rawptr(&graph.agent_action_handlers), http.agent_action_start_success_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/bridge-enrollments", rawptr(&graph.bridge_handlers), http.create_bridge_enrollment_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/bridge-enrollments", rawptr(&graph.bridge_handlers), http.list_bridge_enrollments_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/bridge-enrollments/*", rawptr(&graph.bridge_handlers), http.revoke_bridge_enrollment_handler)

@@ -1,10 +1,12 @@
 package main
 
 import "core:fmt"
+import "core:os"
 import "core:strings"
 import "core:sync"
 import "core:thread"
 import "core:time"
+import tmux "odin_test:lib/tmux"
 import ws "odin_test:lib/ws"
 
 Bridge_Runtime_Instance :: struct {
@@ -19,14 +21,31 @@ Bridge_Runtime_Command_Result :: struct {
 	result_json: string,
 }
 
+Bridge_Runtime_Launch :: struct {
+	agent_instance_id: string,
+	command_id: string,
+	run_dir: string,
+	tmux_session: string,
+	tmux_window: string,
+	pane_id: string,
+	wrapper_token: string,
+	agent_token: string,
+}
+
 bridge_runtime_mutex: sync.Mutex
 bridge_runtime_instances: [dynamic]Bridge_Runtime_Instance
 bridge_runtime_results: [dynamic]Bridge_Runtime_Command_Result
+bridge_runtime_launches: [dynamic]Bridge_Runtime_Launch
+bridge_runtime_local_endpoint_started: bool
+bridge_runtime_local_endpoint_unix_started: bool
+bridge_runtime_local_endpoint_loopback_started: bool
+bridge_runtime_local_endpoint_descriptor: string
 
 bridge_hub_runtime_init :: proc() {
 	bridge_runtime_mutex = sync.Mutex{}
 	bridge_runtime_instances = make([dynamic]Bridge_Runtime_Instance)
 	bridge_runtime_results = make([dynamic]Bridge_Runtime_Command_Result)
+	bridge_runtime_launches = make([dynamic]Bridge_Runtime_Launch)
 }
 
 bridge_hub_runtime_worker :: proc() {
@@ -85,35 +104,164 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		fmt.println("bridge hub runtime command launch_agent")
 		command_id := extract_json_string(text, "command_id", "")
 		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return }
-		instance_id := extract_json_string(text, "agent_instance_id", "")
 		accepted := bridge_command_result_json(command_id, "accepted", "")
 		bridge_runtime_cache_command(command_id, accepted)
 		_ = ws.send_text(conn, accepted)
-		time.sleep(50 * time.Millisecond)
-		bridge_runtime_set_status(instance_id, "starting", "active")
+		ok, detail := bridge_runtime_launch_agent(command_id, text)
+		instance_id := extract_json_string(text, "agent_instance_id", "")
 		_ = ws.send_text(conn, bridge_instance_status_json(instance_id))
-		time.sleep(50 * time.Millisecond)
-		// M4/v1 smoke runner: no production wrapper supervision yet; report ready/running
-		// once bootstrap materialization has been requested by launch command.
-		bridge_runtime_set_status(instance_id, "running", "idle")
-		_ = ws.send_text(conn, bridge_instance_status_json(instance_id))
+		final_status := "succeeded" if ok else "failed"
+		final_runtime := "starting" if ok else "failed"
+		final := bridge_command_result_json(command_id, final_status, final_runtime)
+		if !ok do fmt.println("bridge launch_agent failed", detail)
+		bridge_runtime_cache_command(command_id, final)
+		_ = ws.send_text(conn, final)
 		return
 	}
 	if type == "stop_agent" {
 		fmt.println("bridge hub runtime command stop_agent")
 		command_id := extract_json_string(text, "command_id", "")
 		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return }
-		instance_id := extract_json_string(text, "agent_instance_id", "")
 		accepted := bridge_command_result_json(command_id, "accepted", "")
 		bridge_runtime_cache_command(command_id, accepted)
 		_ = ws.send_text(conn, accepted)
-		time.sleep(50 * time.Millisecond)
-		bridge_runtime_set_status(instance_id, "stopping", "idle")
+		instance_id := extract_json_string(text, "agent_instance_id", "")
+		ok := bridge_runtime_stop_agent(instance_id)
 		_ = ws.send_text(conn, bridge_instance_status_json(instance_id))
-		time.sleep(50 * time.Millisecond)
-		bridge_runtime_set_status(instance_id, "stopped", "idle")
-		_ = ws.send_text(conn, bridge_instance_status_json(instance_id))
+		final := bridge_command_result_json(command_id, "succeeded" if ok else "failed", "stopped" if ok else "failed")
+		bridge_runtime_cache_command(command_id, final)
+		_ = ws.send_text(conn, final)
 		return
+	}
+}
+
+bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, string) {
+	instance_id := extract_json_string(command_json, "agent_instance_id", "")
+	if strings.trim_space(instance_id) == "" do return false, "missing agent_instance_id"
+	if existing, ok := bridge_runtime_get_launch(instance_id); ok {
+		_ = tmux.kill_window(existing.tmux_session, existing.tmux_window)
+	}
+	run_dir := extract_json_string(command_json, "project_path", "")
+	if strings.trim_space(run_dir) == "" do run_dir = bridge_runtime_default_run_dir(instance_id)
+	if !bridge_bootstrap_fetch_and_materialize(bridge_config.daemon_url, bridge_config.bridge_token, instance_id, run_dir) do return false, "bootstrap fetch/materialization failed"
+	endpoint, endpoint_ok := bridge_runtime_ensure_local_endpoint()
+	if !endpoint_ok do return false, "local endpoint unavailable"
+	bridge_runtime_set_status(instance_id, "starting", "active")
+	instance_token := strings.concatenate({"hit_", instance_id})
+	wrapper_issue := bridge_agent_token_issue(instance_id, instance_token, .Wrapper)
+	agent_issue := bridge_agent_token_issue(instance_id, instance_token, .Agent)
+	agent_command := bridge_runtime_agent_command(command_json)
+	session := bridge_runtime_tmux_session()
+	window := bridge_runtime_tmux_window(instance_id)
+	wrapper_args := bridge_runtime_wrapper_supervisor_argv(endpoint, wrapper_issue.plaintext_token, agent_issue.plaintext_token, instance_id, run_dir, agent_command)
+	launch, launch_ok := tmux.ensure_agent_window(session, window, run_dir, wrapper_args)
+	if !launch_ok || strings.trim_space(launch.pane_id) == "" {
+		bridge_runtime_set_status(instance_id, "failed", "idle")
+		return false, "tmux wrapper launch failed"
+	}
+	bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_instance_id = strings.clone(instance_id), command_id = strings.clone(command_id), run_dir = strings.clone(run_dir), tmux_session = strings.clone(session), tmux_window = strings.clone(window), pane_id = strings.clone(launch.pane_id), wrapper_token = strings.clone(wrapper_issue.plaintext_token), agent_token = strings.clone(agent_issue.plaintext_token)})
+	return true, ""
+}
+
+bridge_runtime_stop_agent :: proc(instance_id: string) -> bool {
+	if strings.trim_space(instance_id) == "" do return false
+	bridge_runtime_set_status(instance_id, "stopping", "idle")
+	stopped := false
+	if launch, ok := bridge_runtime_get_launch(instance_id); ok {
+		stopped = tmux.kill_window(launch.tmux_session, launch.tmux_window)
+		bridge_runtime_remove_launch(instance_id)
+	} else {
+		stopped = true
+	}
+	bridge_runtime_set_status(instance_id, "stopped", "idle")
+	return stopped
+}
+
+bridge_runtime_ensure_local_endpoint :: proc() -> (string, bool) {
+	if bridge_config.local_endpoint_port == 0 do bridge_config.local_endpoint_port = 49324
+	local_config := bridge_local_endpoint_config_default(bridge_config.local_endpoint_run_dir, bridge_config.local_endpoint_port)
+	if !bridge_runtime_local_endpoint_started {
+		bridge_runtime_local_endpoint_unix_started = bridge_local_endpoint_start_unix(local_config)
+		bridge_runtime_local_endpoint_loopback_started = bridge_local_endpoint_start_loopback(local_config)
+		bridge_runtime_local_endpoint_started = bridge_runtime_local_endpoint_unix_started || bridge_runtime_local_endpoint_loopback_started
+		if bridge_runtime_local_endpoint_started {
+			bridge_runtime_local_endpoint_descriptor = bridge_runtime_select_endpoint(local_config)
+		}
+	}
+	if !bridge_runtime_local_endpoint_started do return "", false
+	if bridge_runtime_local_endpoint_descriptor == "" do bridge_runtime_local_endpoint_descriptor = bridge_runtime_select_endpoint(local_config)
+	return bridge_runtime_local_endpoint_descriptor, bridge_runtime_local_endpoint_descriptor != ""
+}
+
+bridge_runtime_select_endpoint :: proc(local_config: Bridge_Local_Endpoint_Config) -> string {
+	// §12.0.2 contract: Unix-domain socket 0600 is primary; loopback TCP is fallback.
+	// Only return a descriptor for a transport that actually started listening.
+	if bridge_runtime_local_endpoint_unix_started do return bridge_local_endpoint_env_value(local_config, true)
+	if bridge_runtime_local_endpoint_loopback_started do return bridge_local_endpoint_env_value(local_config, false)
+	return ""
+}
+
+bridge_runtime_agent_command :: proc(command_json: string) -> string {
+	if cmd := os.get_env_alloc("HEIMDALL_BRIDGE_AGENT_COMMAND", context.allocator); strings.trim_space(cmd) != "" do return cmd
+	if strings.trim_space(bridge_config.agent_command) != "" do return bridge_config.agent_command
+	provider := extract_json_string(command_json, "provider", "")
+	if provider == "test" do return "sleep 3600"
+	return "sleep 3600"
+}
+
+bridge_runtime_wrapper_supervisor_argv :: proc(endpoint, wrapper_token, agent_token, instance_id, run_dir, agent_command: string) -> []string {
+	out := make([dynamic]string)
+	append(&out, bridge_runtime_wrapper_bin(), "wrapper-supervisor", "--bridge-endpoint", endpoint, "--agent-token", wrapper_token, "--child-agent-token", agent_token, "--agent-instance-id", instance_id, "--cwd", run_dir, "--agent-command", agent_command)
+	return out[:]
+}
+
+bridge_runtime_wrapper_bin :: proc() -> string {
+	if v := os.get_env_alloc("HEIMDALL_BRIDGE_WRAPPER_BIN", context.allocator); strings.trim_space(v) != "" do return v
+	if len(os.args) > 0 && strings.trim_space(os.args[0]) != "" do return os.args[0]
+	return "ham-bridge"
+}
+
+bridge_runtime_default_run_dir :: proc(instance_id: string) -> string {
+	base := strings.trim_right(bridge_config.local_endpoint_run_dir, "/")
+	if base == "" do base = "/tmp/heimdall-bridge-local"
+	return strings.concatenate({base, "/instances/", bridge_runtime_safe_part(instance_id)})
+}
+
+bridge_runtime_tmux_session :: proc() -> string { return "heimdall-bridge" }
+bridge_runtime_tmux_window :: proc(instance_id: string) -> string { return strings.concatenate({"agent-", bridge_runtime_safe_part(instance_id)}) }
+
+bridge_runtime_safe_part :: proc(value: string) -> string {
+	b := strings.builder_make()
+	for ch in value {
+		switch ch {
+		case 'a'..='z', 'A'..='Z', '0'..='9', '_', '-', '@', '.': strings.write_rune(&b, ch)
+		case: strings.write_string(&b, "_")
+		}
+	}
+	return strings.to_string(b)
+}
+
+bridge_runtime_get_launch :: proc(instance_id: string) -> (Bridge_Runtime_Launch, bool) {
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	for launch in bridge_runtime_launches { if launch.agent_instance_id == instance_id do return launch, true }
+	return {}, false
+}
+
+bridge_runtime_record_launch :: proc(launch: Bridge_Runtime_Launch) {
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	for i in 0..<len(bridge_runtime_launches) {
+		if bridge_runtime_launches[i].agent_instance_id == launch.agent_instance_id { bridge_runtime_launches[i] = launch; return }
+	}
+	append(&bridge_runtime_launches, launch)
+}
+
+bridge_runtime_remove_launch :: proc(instance_id: string) {
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	for i in 0..<len(bridge_runtime_launches) {
+		if bridge_runtime_launches[i].agent_instance_id == instance_id { unordered_remove(&bridge_runtime_launches, i); return }
 	}
 }
 
@@ -192,7 +340,7 @@ bridge_runtime_cache_command :: proc(command_id, result_json: string) {
 	if command_id == "" do return
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
-	for result in bridge_runtime_results { if result.command_id == command_id do return }
+	for i in 0..<len(bridge_runtime_results) { if bridge_runtime_results[i].command_id == command_id { bridge_runtime_results[i].result_json = strings.clone(result_json); return } }
 	append(&bridge_runtime_results, Bridge_Runtime_Command_Result{command_id = strings.clone(command_id), result_json = strings.clone(result_json)})
 }
 
@@ -216,7 +364,18 @@ bridge_hub_hello_json :: proc() -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"bridge_hello\",\"protocol_version\":1,\"hostname\":\"")
 	bridge_runtime_write_json_string(&b, bridge_config.daemon_id)
-	strings.write_string(&b, "\",\"capabilities\":[{\"provider\":\"claude\",\"tiers\":[\"normal\"],\"default_tier\":\"normal\"}],\"active_instance_ids\":[]}")
+	strings.write_string(&b, "\",\"capabilities\":[{\"provider\":\"claude\",\"tiers\":[\"normal\"],\"default_tier\":\"normal\"}],\"active_instance_ids\":[")
+	sync.mutex_lock(&bridge_runtime_mutex)
+	first := true
+	for launch in bridge_runtime_launches {
+		if !first do strings.write_byte(&b, ',')
+		first = false
+		strings.write_byte(&b, '"')
+		bridge_runtime_write_json_string(&b, launch.agent_instance_id)
+		strings.write_byte(&b, '"')
+	}
+	sync.mutex_unlock(&bridge_runtime_mutex)
+	strings.write_string(&b, "]}")
 	return strings.to_string(b)
 }
 

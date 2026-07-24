@@ -8,6 +8,8 @@ import { agentsApi, useListAgentsQuery } from '../api/endpoints/agents';
 import { useListMemoryQuery } from '../api/endpoints/memory';
 import { useDeleteProjectMutation, useFetchProjectQuery, useListProjectsQuery, useUpdateProjectMutation } from '../api/endpoints/projects';
 import { useFetchAgentDefaultsQuery, useFetchPreferencesQuery, useFetchSettingsCatalogQuery, useSaveAgentDefaultMutation, useSavePreferenceMutation, useLazyFetchAgentTemplateQuery } from '../api/endpoints/settings';
+import { useListBridgesQuery, usePutProjectBridgePathMutation, useDeleteProjectBridgePathMutation, useValidateProjectBridgePathMutation } from '../api/endpoints/bridgeSupport';
+import BridgesPanel from './settings/BridgesPanel';
 import { selectProject } from '../store/projectSlice';
 import { VimEditButton } from './VimSidebar';
 import ChatHoverCopyButton from './ChatHoverCopyButton';
@@ -75,7 +77,7 @@ export default function SettingsPage({ session, onReconnect, onBack }: any) {
 
   const settingsGroups = [
     { title: 'General', items: [{ key: 'defaults', label: 'Default agents' }, { key: 'templates', label: 'Templates' }] },
-    { title: 'Connections', items: [{ key: 'daemon', label: 'Daemons' }, { key: 'providers', label: 'Providers' }] },
+    { title: 'Connections', items: [{ key: 'daemon', label: 'Daemons' }, { key: 'providers', label: 'Providers' }, { key: 'bridges', label: 'Bridges' }] },
     { title: 'Workspace', items: [{ key: 'agents', label: 'Agents & templates' }, { key: 'projects', label: 'Projects' }, { key: 'memory', label: 'Memory browser' }, { key: 'direct-chat', label: 'Direct chat' }] },
   ];
 
@@ -101,6 +103,7 @@ export default function SettingsPage({ session, onReconnect, onBack }: any) {
           {selected === 'defaults' && <DefaultAgentsPanel defaults={agentDefaultsQuery.data?.defaults || []} identities={agentsQuery.data?.identities || []} agents={agents} loading={agentDefaultsQuery.isFetching} onRefresh={() => agentDefaultsQuery.refetch()} onSave={async (use: string, agentId: string) => { await saveAgentDefault({ use, agentId }).unwrap(); }} />}
           {selected === 'templates' && <TemplatesPanel templates={settingsCatalogQuery.data?.templates || []} session={effectiveSession} providers={providers} onRefetchTemplates={() => settingsCatalogQuery.refetch()} />}
           {selected === 'providers' && <ProvidersPanel providers={providers} preferences={preferences || []} session={effectiveSession} daemonProfiles={daemonProfiles} onSaveDefault={async (key: string, value: string) => { await savePreference({ key, value }).unwrap(); }} />}
+          {selected === 'bridges' && <BridgesPanel session={effectiveSession} />}
           {selected === 'projects' && <ProjectsPanel projects={projects} selectedProjectId={selectedProjectListId} selectedProject={selectedProject} loading={projectsQuery.isFetching || selectedProjectQuery.isFetching} mutating={updateProjectState.isLoading || deleteProjectState.isLoading} error={(updateProjectState.error || deleteProjectState.error) ? 'Project mutation failed' : ''} onSelect={(projectId: string) => { dispatch(selectProject(projectId)); }} onSave={(payload: any) => updateProject(payload).unwrap()} onDelete={async (projectId: string) => { await deleteProject({ projectId }).unwrap(); if (selectedProjectListId === projectId) dispatch(selectProject('')); }} />}
           {selected === 'memory' && <MemoryPanel records={memoryRecords} loading={memoryQuery.isFetching} />}
           {selected === 'agents' && <AgentsPanel agents={agents} templates={templates} providers={providers} onCreateAgent={async (payload: any) => { await daemonApi.createAgent({ daemonUrl: effectiveSession.daemonUrl, displayName: payload.displayName, templateId: payload.templateId, providerProfile: payload.providerProfile, modelTier: payload.modelTier }); await refetchAgents(); }} />}
@@ -692,8 +695,104 @@ function ProjectsPanel({ projects, selectedProjectId, selectedProject, loading, 
             </form>
           )}
         </Card>
+        {selectedProject ? <ProjectBridgePathsSection projectId={selectedProject.projectId} defaultPath={projectAnchorValue(selectedProject, 'directory')} /> : null}
       </div>
     </Panel>
+  );
+}
+
+// UI-11: per-Bridge path overrides + advisory validation. Path validation is
+// advisory-only and NEVER blocks launch (arch doc §6C). effective_path =
+// ProjectBridgePath override if present, else Project.default_path.
+function ProjectBridgePathsSection({ projectId, defaultPath }: { projectId: string; defaultPath: string }) {
+  const bridgesQuery = useListBridgesQuery(undefined);
+  const [putPath] = usePutProjectBridgePathMutation();
+  const [deletePath] = useDeleteProjectBridgePathMutation();
+  const [validatePath] = useValidateProjectBridgePathMutation();
+  const [editBridgeId, setEditBridgeId] = useState('');
+  const [editValue, setEditValue] = useState('');
+  const [validatingBridgeId, setValidatingBridgeId] = useState('');
+  const [validationByBridge, setValidationByBridge] = useState<Record<string, any>>({});
+  const [error, setError] = useState('');
+
+  const bridges = bridgesQuery.data?.bridges || [];
+
+  async function handleSave(bridgeId: string) {
+    const path = editValue.trim();
+    if (!path) return;
+    try {
+      await putPath({ projectId, bridgeId, path }).unwrap();
+      setEditBridgeId('');
+    } catch (err: any) {
+      setError(String(err?.message || 'Save override failed'));
+    }
+  }
+
+  async function handleClear(bridgeId: string) {
+    try {
+      await deletePath({ projectId, bridgeId }).unwrap();
+      setValidationByBridge((prev) => { const next = { ...prev }; delete next[bridgeId]; return next; });
+    } catch (err: any) {
+      setError(String(err?.message || 'Clear override failed'));
+    }
+  }
+
+  async function handleValidate(bridgeId: string) {
+    setValidatingBridgeId(bridgeId);
+    setError('');
+    try {
+      const result = await validatePath({ projectId, bridgeId }).unwrap();
+      setValidationByBridge((prev) => ({ ...prev, [bridgeId]: result?.validation || result || { status: 'unknown' } }));
+    } catch (err: any) {
+      setValidationByBridge((prev) => ({ ...prev, [bridgeId]: { status: 'invalid', error: String(err?.message || 'Validation failed') } }));
+    } finally {
+      setValidatingBridgeId('');
+    }
+  }
+
+  const validationTone = (bridgeId: string) => {
+    const v = validationByBridge[bridgeId];
+    const status = String(v?.status || v?.state || '').toLowerCase();
+    if (status === 'valid') return 'border-emerald-400/30 bg-emerald-400/10 text-emerald-100';
+    if (status === 'invalid') return 'border-rose-400/30 bg-rose-400/10 text-rose-100';
+    return 'border-white/10 bg-black/20 text-zinc-400';
+  };
+
+  return (
+    <Card>
+      <h3 className="font-semibold">Bridge paths</h3>
+      <p className="mt-0.5 text-xs text-zinc-500">Per-bridge override for this project. Empty = uses default path. Validation is advisory-only and never blocks launch.</p>
+      <div data-debug-id={`settings-project-bridge-paths-${projectId}`} className="mt-3 space-y-2">
+        <div className="rounded-xl border border-white/10 bg-black/20 px-3 py-2 text-sm text-zinc-400">Default path: <span className="font-mono text-zinc-200">{defaultPath || '—'}</span></div>
+        {bridges.length === 0 ? <div className="text-sm text-zinc-500">No bridges available. Add a bridge in Settings → Bridges.</div> : bridges.map((bridge: any) => {
+          const id = String(bridge?.bridge_id || bridge?.bridgeId || bridge?.id || '');
+          const v = validationByBridge[id];
+          const isEditing = editBridgeId === id;
+          return (
+            <div key={id} data-debug-id={`settings-project-bridge-path-${id}`} className="rounded-xl border border-white/10 bg-black/20 px-3 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="truncate text-sm text-zinc-200">{bridge?.label || bridge?.hostname || id}</span>
+                {v ? <span data-debug-id={`settings-project-bridge-path-status-${id}`} className={`rounded-full border px-2 py-0.5 text-[10.5px] ${validationTone(id)}`}>{String(v?.status || v?.state || 'unknown')}{v?.error ? ` · ${v.error}` : ''}</span> : null}
+              </div>
+              {isEditing ? (
+                <div className="mt-2 flex items-center gap-2">
+                  <input data-debug-id={`settings-project-bridge-path-input-${id}`} value={editValue} onChange={(e) => setEditValue(e.target.value)} placeholder="/path/to/project" className="min-w-0 flex-1 rounded-lg border border-white/10 bg-black/40 px-2 py-1 text-sm text-zinc-100 outline-none focus:border-sky-400" />
+                  <button type="button" data-debug-id={`settings-project-bridge-path-save-${id}`} onClick={() => void handleSave(id)} className="rounded-lg bg-sky-400 px-2 py-1 text-[11px] font-semibold text-black hover:bg-sky-300">Save</button>
+                  <button type="button" data-debug-id={`settings-project-bridge-path-cancel-${id}`} onClick={() => setEditBridgeId('')} className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/10">Cancel</button>
+                </div>
+              ) : (
+                <div className="mt-2 flex items-center gap-2">
+                  <button type="button" data-debug-id={`settings-project-bridge-path-edit-${id}`} onClick={() => { setEditBridgeId(id); setEditValue(''); }} className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/10">Set override</button>
+                  <button type="button" data-debug-id={`settings-project-bridge-path-validate-${id}`} onClick={() => void handleValidate(id)} disabled={validatingBridgeId === id} className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/10 disabled:opacity-50">{validatingBridgeId === id ? 'Validating…' : 'Validate'}</button>
+                  <button type="button" data-debug-id={`settings-project-bridge-path-clear-${id}`} onClick={() => void handleClear(id)} className="rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/10">Clear</button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {error ? <div data-debug-id="settings-project-bridge-paths-error" className="mt-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{error}</div> : null}
+    </Card>
   );
 }
 

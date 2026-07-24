@@ -3,12 +3,14 @@ import {
   useArtifactContentUrl,
   useCreateArtifactAnnotationMutation,
   useDeleteArtifactAnnotationMutation,
+  useDeleteArtifactMutation,
   useFetchArtifactAnnotationsQuery,
   useFetchArtifactMetaQuery,
   useFetchArtifactTextContentQuery,
   useFetchArtifactVersionsQuery,
   useRollbackArtifactMutation,
   useUpdateArtifactAnnotationMutation,
+  useUpdateArtifactMutation,
 } from '../api/endpoints/artifacts';
 import {
   clearLegacyArtifactAnnotations,
@@ -71,7 +73,7 @@ type ArtifactVersion = {
   created_unix_ms: number;
 };
 
-type PreviewKind = 'markdown' | 'png' | 'unsupported';
+type PreviewKind = 'markdown' | 'text' | 'json' | 'diff' | 'png' | 'image' | 'unsupported';
 type CopyState = 'idle' | 'copied' | 'error';
 
 function formatBytes(value: number) {
@@ -86,16 +88,33 @@ function formatBytes(value: number) {
   return `${size >= 10 || unit === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[unit]}`;
 }
 
+// UI-10: kind-aware rendering. text/markdown -> rendered markdown; json ->
+// pretty-printed; diff -> monospace diff; png/jpeg/etc -> image (zoom/pan).
 function classifyPreview(meta: ArtifactMeta | null): PreviewKind {
   if (!meta) return 'unsupported';
   const kind = String(meta.kind || '').toLowerCase();
   const mime = String(meta.mime || '').toLowerCase();
   const ext = String(meta.ext || '').toLowerCase();
-  if (kind === 'markdown' || kind === 'text' || mime === 'text/markdown' || mime === 'text/plain' || ext === '.md' || ext === '.markdown' || ext === '.txt') {
+  if (kind === 'diff' || ext === '.diff' || ext === '.patch' || mime === 'text/x-diff') {
+    return 'diff';
+  }
+  if (kind === 'json' || mime === 'application/json' || mime === 'text/json' || ext === '.json') {
+    return 'json';
+  }
+  if (kind === 'markdown' || mime === 'text/markdown' || ext === '.md' || ext === '.markdown') {
     return 'markdown';
   }
   if (kind === 'png' || mime === 'image/png' || ext === '.png') {
     return 'png';
+  }
+  if (kind === 'jpeg' || kind === 'jpg' || mime === 'image/jpeg' || mime === 'image/jpg' || ext === '.jpg' || ext === '.jpeg'
+      || kind === 'gif' || mime === 'image/gif' || ext === '.gif'
+      || kind === 'webp' || mime === 'image/webp' || ext === '.webp'
+      || mime.startsWith('image/')) {
+    return 'image';
+  }
+  if (kind === 'text' || mime === 'text/plain' || ext === '.txt' || mime.startsWith('text/')) {
+    return 'text';
   }
   return 'unsupported';
 }
@@ -341,6 +360,145 @@ function annotationVersionLabel(annotationVersionNo: number, currentHeadVersionN
   return annotationVersionNo === currentHeadVersionNo ? `v${annotationVersionNo} • head` : `v${annotationVersionNo} • older version`;
 }
 
+// UI-10: image view with wheel/drag zoom on desktop and pinch-zoom/pan on touch.
+// Renders any raster image (jpeg/gif/webp/...) with transform-based zoom and pan.
+function ZoomableImage({ contentUrl, alt }: { contentUrl: string; alt: string }) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [scale, setScale] = useState(1);
+  const [tx, setTx] = useState(0);
+  const [ty, setTy] = useState(0);
+  const dragRef = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
+  const pinchRef = useRef<{ distance: number; scale: number } | null>(null);
+
+  function clampScale(next: number) {
+    return Math.min(8, Math.max(1, next));
+  }
+
+  function handleWheel(event: React.WheelEvent<HTMLDivElement>) {
+    if (!event.ctrlKey && Math.abs(event.deltaY) < 30) return; // trackpad two-finger = scroll
+    event.preventDefault();
+    const delta = -event.deltaY * 0.0025;
+    setScale((current) => clampScale(current * (1 + delta)));
+  }
+
+  function handlePointerDown(event: React.PointerEvent<HTMLDivElement>) {
+    if (event.pointerType === 'touch' && event.isPrimary === false) return;
+    (event.currentTarget as HTMLDivElement).setPointerCapture?.(event.pointerId);
+    dragRef.current = { x: event.clientX, y: event.clientY, tx, ty };
+  }
+
+  function handlePointerMove(event: React.PointerEvent<HTMLDivElement>) {
+    if (!dragRef.current) return;
+    const dx = event.clientX - dragRef.current.x;
+    const dy = event.clientY - dragRef.current.y;
+    setTx(dragRef.current.tx + dx);
+    setTy(dragRef.current.ty + dy);
+  }
+
+  function handlePointerUp() {
+    dragRef.current = null;
+  }
+
+  function handleTouchStart(event: React.TouchEvent<HTMLDivElement>) {
+    if (event.touches.length === 2) {
+      const a = event.touches[0];
+      const b = event.touches[1];
+      const distance = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
+      pinchRef.current = { distance, scale };
+      dragRef.current = null;
+    }
+  }
+
+  function handleTouchMove(event: React.TouchEvent<HTMLDivElement>) {
+    if (event.touches.length === 2 && pinchRef.current) {
+      event.preventDefault();
+      const a = event.touches[0];
+      const b = event.touches[1];
+      const distance = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
+      const ratio = distance / (pinchRef.current.distance || distance);
+      setScale(clampScale(pinchRef.current.scale * ratio));
+    }
+  }
+
+  function handleTouchEnd(event: React.TouchEvent<HTMLDivElement>) {
+    if (event.touches.length < 2) pinchRef.current = null;
+  }
+
+  function reset() {
+    setScale(1);
+    setTx(0);
+    setTy(0);
+  }
+
+  return (
+    <div
+      ref={containerRef}
+      data-debug-id="artifact-viewer-zoomable-image"
+      className="relative flex touch-none select-none items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-black/40"
+      style={{ minHeight: '40vh' }}
+      onWheel={handleWheel}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerUp}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+    >
+      <img
+        data-debug-id="artifact-viewer-image-preview"
+        src={contentUrl}
+        alt={alt}
+        draggable={false}
+        className="max-h-[70vh] max-w-full select-none rounded-xl"
+        style={{ transform: `translate(${tx}px, ${ty}px) scale(${scale})`, transformOrigin: 'center center', transition: dragRef.current ? 'none' : 'transform 0.08s ease-out' }}
+      />
+      <div className="pointer-events-none absolute bottom-2 right-2 flex items-center gap-2">
+        <span data-debug-id="artifact-viewer-image-zoom-label" className="rounded-full bg-black/60 px-2 py-0.5 text-[10.5px] text-zinc-300">{Math.round(scale * 100)}%</span>
+        <button type="button" data-debug-id="artifact-viewer-image-zoom-reset" onClick={reset} className="pointer-events-auto rounded-full bg-black/60 px-2 py-0.5 text-[10.5px] text-zinc-200 hover:bg-black/80">reset</button>
+      </div>
+    </div>
+  );
+}
+
+// UI-10: json/diff/text rendered with monospace. json is pretty-printed; diff
+// keeps +/- markers. Both support copy-all. Self-contained content fetch.
+function ArtifactCodePreview({ artifactId, versionNo, kind }: { artifactId: string; versionNo: number | null; kind: 'json' | 'diff' | 'text' }) {
+  const textQuery = useFetchArtifactTextContentQuery({ artifactId, versionNo }, { skip: !artifactId });
+  const [copyState, setCopyState] = useState<CopyState>('idle');
+  const raw = textQuery.data?.text || '';
+  const display = useMemo(() => {
+    if (kind !== 'json') return raw;
+    try {
+      return JSON.stringify(JSON.parse(raw), null, 2);
+    } catch {
+      return raw;
+    }
+  }, [raw, kind]);
+
+  async function handleCopy() {
+    try {
+      await copyTextToClipboard(display);
+      setCopyState('copied');
+      window.setTimeout(() => setCopyState('idle'), 1200);
+    } catch {
+      setCopyState('error');
+      window.setTimeout(() => setCopyState('idle'), 1500);
+    }
+  }
+
+  if (textQuery.isFetching) return <div className="text-sm text-zinc-400">Loading preview…</div>;
+  if (textQuery.error) return <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">Failed to load artifact content.</div>;
+  return (
+    <div data-debug-id={`artifact-viewer-${kind}-preview`} className="relative">
+      <button type="button" data-debug-id={`artifact-viewer-${kind}-copy-btn`} onClick={handleCopy} className="absolute right-2 top-2 z-10 rounded-lg bg-black/60 px-2 py-1 text-[11px] text-zinc-200 hover:bg-black/80">{copyState === 'copied' ? 'Copied' : copyState === 'error' ? 'Copy failed' : 'Copy all'}</button>
+      <pre data-debug-id={`artifact-viewer-${kind}-body`} className="max-h-[70vh] overflow-auto rounded-2xl border border-white/10 bg-black/40 p-4 text-[12.5px] leading-5 text-zinc-200">
+        <code>{display || '(empty)'}</code>
+      </pre>
+    </div>
+  );
+}
+
 type AnnotationListItemProps = {
   annotation: ArtifactAnnotationRecord;
   currentHeadVersionNo: number;
@@ -461,6 +619,9 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
   const [updateAnnotationMutation] = useUpdateArtifactAnnotationMutation();
   const [deleteAnnotationMutation] = useDeleteArtifactAnnotationMutation();
   const [rollbackArtifactMutation, rollbackState] = useRollbackArtifactMutation();
+  // UI-10: rename / edit description (PATCH) + delete (DELETE).
+  const [updateArtifactMutation] = useUpdateArtifactMutation();
+  const [deleteArtifactMutation] = useDeleteArtifactMutation();
 
   const meta = (metaQuery.data?.artifact || null) as ArtifactMeta | null;
   const currentHeadVersionNo = Number(meta?.current_version_no || 0);
@@ -484,6 +645,13 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
   const [actionMessage, setActionMessage] = useState('');
   const [migrationMessage, setMigrationMessage] = useState('');
   const migrationAttemptedRef = useRef<string>('');
+  // UI-10: inline rename / edit description + delete confirm.
+  const [editMetaOpen, setEditMetaOpen] = useState(false);
+  const [editName, setEditName] = useState('');
+  const [editDescription, setEditDescription] = useState('');
+  const [editBusy, setEditBusy] = useState(false);
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   useEffect(() => {
     setSelectedVersionNo(null);
@@ -499,6 +667,12 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
     setRollbackReason('');
     setActionMessage('');
     setMigrationMessage('');
+    setEditMetaOpen(false);
+    setEditName('');
+    setEditDescription('');
+    setEditBusy(false);
+    setDeleteConfirmOpen(false);
+    setDeleteBusy(false);
     migrationAttemptedRef.current = '';
   }, [artifactId]);
 
@@ -734,6 +908,42 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
     }
   }
 
+  // UI-10: open rename/description editor seeded from current meta (head only).
+  function openEditMeta() {
+    setEditName(meta?.name || title);
+    setEditDescription(meta?.description || '');
+    setEditMetaOpen(true);
+  }
+
+  async function handleSaveMeta() {
+    const name = editName.trim();
+    if (!name) return;
+    setEditBusy(true);
+    try {
+      await updateArtifactMutation({ artifactId, name, description: editDescription.trim(), changeReason: 'rename/description via viewer' }).unwrap();
+      setEditMetaOpen(false);
+      setActionMessage('Updated artifact name and description.');
+    } catch {
+      setActionMessage('Failed to update artifact.');
+    } finally {
+      setEditBusy(false);
+    }
+  }
+
+  // UI-10: soft-delete. Deleted references render as unavailable placeholders.
+  async function handleConfirmDelete() {
+    setDeleteBusy(true);
+    try {
+      await deleteArtifactMutation({ artifactId }).unwrap();
+      setDeleteConfirmOpen(false);
+      onClose();
+    } catch {
+      setActionMessage('Failed to delete artifact.');
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm" onClick={onClose}>
       <div data-debug-id="artifact-viewer" className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-[22px] border border-white/10 bg-[#0b0d12] shadow-[0_40px_120px_rgba(0,0,0,0.55)]" onClick={(event) => event.stopPropagation()}>
@@ -810,6 +1020,9 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
               {copyAllState === 'copied' ? 'Copied all' : copyAllState === 'error' ? 'Copy failed' : 'Copy all'}
             </button>
             <a data-debug-id="artifact-viewer-download-btn" href={contentUrl} download={selectedArtifactMeta?.name || artifactId} className="rounded-xl bg-sky-400 px-3 py-2 text-sm font-semibold text-black hover:bg-sky-300">Download</a>
+            {/* UI-10: rename / edit description (PATCH) and delete (DELETE) from the viewer header. */}
+            <button type="button" data-debug-id="artifact-viewer-edit-meta-btn" onClick={openEditMeta} disabled={selectedVersionNo != null} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40" title="Rename / edit description">✎ Rename</button>
+            <button type="button" data-debug-id="artifact-viewer-delete-btn" onClick={() => setDeleteConfirmOpen((current) => !current)} disabled={selectedVersionNo != null} className="rounded-xl bg-rose-500/15 px-3 py-2 text-sm text-rose-100 hover:bg-rose-500/25 disabled:cursor-not-allowed disabled:opacity-40" title="Delete artifact">🗑 Delete</button>
             <button type="button" data-debug-id="artifact-viewer-close-btn" onClick={onClose} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15">Close</button>
           </div>
         </div>
@@ -818,6 +1031,34 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
             <div className="space-y-4">
               {loading && <div className="text-sm text-zinc-400">Loading artifact…</div>}
               {!loading && error && <div className="rounded-xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">{error}</div>}
+              {/* UI-10: rename / edit description panel (PATCH /api/v1/artifacts/{id}). */}
+              {editMetaOpen ? (
+                <div data-debug-id="artifact-viewer-edit-meta-panel" className="rounded-2xl border border-sky-400/30 bg-sky-400/10 p-4 text-sm text-sky-100">
+                  <div className="font-semibold">Rename / edit description</div>
+                  <div className="mt-1 text-sky-50/80">`name` is a human display label (non-unique); `artifact_id` is the identity. `description` is an optional longer note.</div>
+                  <label className="mt-3 block text-[11px] uppercase tracking-wide text-zinc-400">Name
+                    <input data-debug-id="artifact-viewer-edit-name-input" value={editName} onChange={(e) => setEditName(e.target.value)} className="mt-1 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400" />
+                  </label>
+                  <label className="mt-3 block text-[11px] uppercase tracking-wide text-zinc-400">Description
+                    <textarea data-debug-id="artifact-viewer-edit-description-input" value={editDescription} onChange={(e) => setEditDescription(e.target.value)} rows={3} className="mt-1 w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400" />
+                  </label>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button type="button" data-debug-id="artifact-viewer-edit-save-btn" onClick={handleSaveMeta} disabled={editBusy || !editName.trim()} className="rounded-xl bg-sky-300 px-3 py-2 text-sm font-semibold text-black hover:bg-sky-200 disabled:cursor-not-allowed disabled:opacity-60">{editBusy ? 'Saving…' : 'Save'}</button>
+                    <button type="button" data-debug-id="artifact-viewer-edit-cancel-btn" onClick={() => setEditMetaOpen(false)} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15">Cancel</button>
+                  </div>
+                </div>
+              ) : null}
+              {/* UI-10: delete confirm (DELETE /api/v1/artifacts/{id}). */}
+              {deleteConfirmOpen ? (
+                <div data-debug-id="artifact-viewer-delete-panel" className="rounded-2xl border border-rose-400/30 bg-rose-400/10 p-4 text-sm text-rose-100">
+                  <div className="font-semibold">Delete artifact?</div>
+                  <div className="mt-1 text-rose-50/80">Deleted references in chat/comments render as an unavailable placeholder. This action soft-deletes the artifact.</div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button type="button" data-debug-id="artifact-viewer-delete-confirm-btn" onClick={handleConfirmDelete} disabled={deleteBusy} className="rounded-xl bg-rose-400 px-3 py-2 text-sm font-semibold text-black hover:bg-rose-300 disabled:cursor-not-allowed disabled:opacity-60">{deleteBusy ? 'Deleting…' : 'Delete'}</button>
+                    <button type="button" data-debug-id="artifact-viewer-delete-cancel-btn" onClick={() => setDeleteConfirmOpen(false)} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15">Cancel</button>
+                  </div>
+                </div>
+              ) : null}
               {rollbackConfirmOpen && rollbackAllowed ? (
                 <div className="rounded-2xl border border-amber-400/30 bg-amber-400/10 p-4 text-sm text-amber-100">
                   <div className="font-semibold">Roll back artifact to v{selectedVersionNo}?</div>
@@ -924,8 +1165,13 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                   ) : null}
                   {previewKind === 'png' ? (
                     <RegionAnnotationLayer contentUrl={contentUrl} alt={selectedArtifactMeta.name || artifactId} annotationMode={annotationMode} annotations={annotations} onCreateRegion={handleCreateImageRegion} />
+                  ) : previewKind === 'image' ? (
+                    // UI-10: non-PNG images render with wheel/drag zoom + pinch-zoom/pan.
+                    <ZoomableImage contentUrl={contentUrl} alt={selectedArtifactMeta.name || artifactId} />
                   ) : previewKind === 'markdown' ? (
                     loadingText ? <div className="text-sm text-zinc-400">Loading preview…</div> : <MarkdownBody data-debug-id="artifact-viewer-markdown-preview" source={textContent} className="text-zinc-200" onArtifactClick={setNestedArtifactId} onTextSelectionChange={annotationMode ? handleTextSelectionChange : undefined} />
+                  ) : previewKind === 'json' || previewKind === 'diff' || previewKind === 'text' ? (
+                    <ArtifactCodePreview artifactId={artifactId} versionNo={selectedVersionNo} kind={previewKind} />
                   ) : (
                     <div data-debug-id="artifact-viewer-unsupported-preview" className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-zinc-400">Preview is not available for this artifact type{selectedArtifactMeta.kind ? ` (${selectedArtifactMeta.kind}${selectedArtifactMeta.mime ? `, ${selectedArtifactMeta.mime}` : ''})` : ''}. Use Download to open it externally.</div>
                   )}

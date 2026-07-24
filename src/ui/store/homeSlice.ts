@@ -14,6 +14,7 @@ function initialUrlState() {
     if (view === 'agents') return { surface: 'agents', chainId };
     if (view === 'task-chains') return { surface: 'task-chains', chainId };
     if (view === 'projects') return { surface: 'projects', chainId };
+    if (view === 'library') return { surface: 'library', chainId };
     if (view === 'chain' || chainId) return { surface: 'chain', chainId };
     return { surface: 'home', chainId: '' };
   } catch (_err) {

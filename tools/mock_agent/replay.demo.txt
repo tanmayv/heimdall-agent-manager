@@ -1,0 +1,14 @@
+# Demo replay script: 3 commands with configurable time gaps (acceptance criteria).
+# Exercises context lookup, a chat send, and a shell command, with 1s gaps.
+
+sleep 1
+start-success
+sleep 1
+context
+sleep 1
+say "Step 1 of 3: mock agent says hello"
+sleep 1
+run echo "Step 2 of 3: mock agent ran a shell command"
+sleep 1
+echo "Step 3 of 3: mock agent finishing replay"
+done

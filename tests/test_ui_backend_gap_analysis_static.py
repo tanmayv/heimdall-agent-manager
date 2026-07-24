@@ -86,7 +86,7 @@ def main() -> None:
         "prefix/word-boundary matches rank above interior substring matches",
         "indexed lowercased name/title/slug/id columns",
         "repository-layer ownership of search/index details",
-        "never unbounded typeahead",
+        "No client fan-out over list endpoints",
         "publish `resource_changed` for all resources",
         "do not create fake successful local-only mutations",
     ]:

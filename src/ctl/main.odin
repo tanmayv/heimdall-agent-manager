@@ -2,10 +2,13 @@ package main
 
 import base64 "core:encoding/base64"
 import json "core:encoding/json"
+import "core:c"
 import "core:fmt"
 import "core:math/rand"
+import "core:net"
 import "core:os"
 import "core:strings"
+import "core:sys/posix"
 import "core:time"
 import "odin_test:contracts"
 import cfg_lib "odin_test:lib/config"
@@ -32,6 +35,14 @@ main :: proc() {
 				ctl_start_success(early_url, os.args)
 				return
 			}
+			if early_cmd[0] == "hub" || has_flag(os.args, "--hub") {
+				ctl_hub_user_mode(early_cmd[:], os.args)
+				return
+			}
+			if early_cmd[0] == "agent" || has_flag(os.args, "--agent-mode") {
+				ctl_agent_mode(early_cmd[:], os.args)
+				return
+			}
 		}
 	}
 
@@ -53,6 +64,16 @@ main :: proc() {
 
 	if cmd[0] == "help" {
 		ctl_help(cmd[:])
+		return
+	}
+
+	if cmd[0] == "hub" || has_flag(os.args, "--hub") {
+		ctl_hub_user_mode(cmd[:], os.args)
+		return
+	}
+
+	if cmd[0] == "agent" || has_flag(os.args, "--agent-mode") {
+		ctl_agent_mode(cmd[:], os.args)
 		return
 	}
 
@@ -180,6 +201,361 @@ ctl_health :: proc(daemon_url: string) {
 	fmt.println(response.body)
 }
 
+ctl_hub_user_mode :: proc(cmd: []string, args: []string) {
+	hub_url := hub_user_mode_url(args)
+	user_token := hub_user_mode_token(args)
+	if hub_url == "" || user_token == "" { fmt.println("usage: ham-ctl hub --hub-url <url> --user-token <hut_...> <me|agents|launch|chats|tasks|task-chains> ..."); return }
+	base := strings.trim_right(hub_url, "/")
+	idx := 0
+	if len(cmd) > 0 && cmd[0] == "hub" do idx = 1
+	if idx >= len(cmd) { fmt.println("usage: ham-ctl hub <me|agents|launch|chats|tasks|task-chains> ..."); return }
+	resource := cmd[idx]
+	action := ""
+	if idx + 1 < len(cmd) do action = cmd[idx + 1]
+	if resource == "me" { ctl_hub_request(base, user_token, "GET", "/api/v1/me", ""); return }
+	if resource == "health" { ctl_hub_request(base, user_token, "GET", "/api/v1/health", ""); return }
+	if resource == "agents" { ctl_hub_agents(base, user_token, action, args); return }
+	if resource == "launch" || (resource == "agents" && (action == "run" || action == "start")) { ctl_hub_launch(base, user_token, args); return }
+	if resource == "chats" || resource == "chat" { ctl_hub_chats(base, user_token, action, args); return }
+	if resource == "tasks" { ctl_hub_tasks(base, user_token, action, args); return }
+	if resource == "task-chains" || resource == "chains" { ctl_hub_task_chains(base, user_token, action, args); return }
+	fmt.println("usage: ham-ctl hub <me|agents|launch|chats|tasks|task-chains> ...")
+}
+
+ctl_hub_agents :: proc(base, token, action: string, args: []string) {
+	if action == "" || action == "list" { ctl_hub_request(base, token, "GET", "/api/v1/agents", ""); return }
+	if action == "create" {
+		name := option_value(args, "--name", "")
+		if name == "" { fmt.println("usage: ham-ctl hub agents create --name <name> [--slug <slug>] [--template <id>] [--provider <profile>] [--tier <tier>]"); return }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("name", name)); append(&fields, json_kv("slug", option_value(args, "--slug", name))); append(&fields, json_kv("template_id", option_value(args, "--template", ""))); append(&fields, json_kv("default_provider", option_value(args, "--provider", ""))); append(&fields, json_kv("default_tier", option_value(args, "--tier", ""))); append(&fields, json_kv("instructions", option_value(args, "--instructions", "")))
+		ctl_hub_request(base, token, "POST", "/api/v1/agents", json_object_from_slice(fields[:]))
+		return
+	}
+	if action == "run" || action == "start" { ctl_hub_launch(base, token, args); return }
+	fmt.println("usage: ham-ctl hub agents <list|create|run>")
+}
+
+ctl_hub_launch :: proc(base, token: string, args: []string) {
+	agent_id := option_value(args, "--agent-id", option_value(args, "--agent", ""))
+	if agent_id == "" { fmt.println("usage: ham-ctl hub launch --agent-id <agent_id> [--bridge-id <bridge_id>] [--provider <profile>] [--tier <tier>] [--project-id <id>] [--chain-id <id>]"); return }
+	fields := make([dynamic]string)
+	append(&fields, json_kv("agent_id", agent_id)); append(&fields, json_kv("bridge_id", option_value(args, "--bridge-id", ""))); append(&fields, json_kv("provider", option_value(args, "--provider", ""))); append(&fields, json_kv("tier", option_value(args, "--tier", ""))); append(&fields, json_kv("project_id", option_value(args, "--project-id", option_value(args, "--project", "")))); append(&fields, json_kv("chain_id", option_value(args, "--chain-id", option_value(args, "--chain", ""))))
+	ctl_hub_request(base, token, "POST", "/api/v1/agent-instances", json_object_from_slice(fields[:]))
+}
+
+ctl_hub_chats :: proc(base, token, action: string, args: []string) {
+	if action == "" || action == "list" { ctl_hub_request(base, token, "GET", "/api/v1/chats", ""); return }
+	if action == "create" {
+		agent_id := option_value(args, "--agent-id", option_value(args, "--agent", ""))
+		instance_id := option_value(args, "--agent-instance-id", option_value(args, "--instance-id", ""))
+		if agent_id == "" && instance_id == "" { fmt.println("usage: ham-ctl hub chats create --agent-id <agent_id>|--agent-instance-id <id> [--body <text>]"); return }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("agent_id", agent_id)); append(&fields, json_kv("agent_instance_id", instance_id)); append(&fields, json_kv("bridge_id", option_value(args, "--bridge-id", ""))); append(&fields, json_kv("provider", option_value(args, "--provider", ""))); append(&fields, json_kv("tier", option_value(args, "--tier", ""))); append(&fields, json_kv("project_id", option_value(args, "--project-id", option_value(args, "--project", "")))); append(&fields, json_kv("chain_id", option_value(args, "--chain-id", option_value(args, "--chain", "")))); append(&fields, json_kv("title", option_value(args, "--title", "")))
+		body := option_value(args, "--body", "")
+		if body != "" do append(&fields, strings.concatenate({"\"initial_message\":", json_object(json_kv("body", body))}))
+		ctl_hub_request(base, token, "POST", "/api/v1/chats", json_object_from_slice(fields[:]))
+		return
+	}
+	if action == "send" {
+		cid := option_value(args, "--conversation-id", option_value(args, "--chat-id", ""))
+		body := option_value(args, "--body", "")
+		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do body = string(data) }
+		if cid == "" || body == "" { fmt.println("usage: ham-ctl hub chats send --conversation-id <id> --body <text>"); return }
+		ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/chats/%s/messages", safe_path_part(cid)), json_object(json_kv("body", body)))
+		return
+	}
+	if action == "messages" || action == "fetch" {
+		cid := option_value(args, "--conversation-id", option_value(args, "--chat-id", ""))
+		if cid == "" { fmt.println("usage: ham-ctl hub chats messages --conversation-id <id>"); return }
+		ctl_hub_request(base, token, "GET", fmt.tprintf("/api/v1/chats/%s/messages", safe_path_part(cid)), "")
+		return
+	}
+	fmt.println("usage: ham-ctl hub chats <list|create|send|messages>")
+}
+
+ctl_hub_task_chains :: proc(base, token, action: string, args: []string) {
+	if action == "" || action == "list" { ctl_hub_request(base, token, "GET", "/api/v1/task-chains", ""); return }
+	if action == "create" {
+		title := option_value(args, "--title", "")
+		if title == "" { fmt.println("usage: ham-ctl hub task-chains create --title <title>"); return }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("title", title)); append(&fields, json_kv("kind", option_value(args, "--kind", "team_work"))); append(&fields, json_kv("coordinator_agent_id", option_value(args, "--coordinator-agent-id", option_value(args, "--coordinator", "")))); append(&fields, json_kv("bridge_id", option_value(args, "--bridge-id", ""))); append(&fields, json_kv("project_id", option_value(args, "--project-id", option_value(args, "--project", ""))))
+		ctl_hub_request(base, token, "POST", "/api/v1/task-chains", json_object_from_slice(fields[:]))
+		return
+	}
+	chain_id := option_value(args, "--chain-id", option_value(args, "--chain", ""))
+	if chain_id == "" { fmt.println("usage: ham-ctl hub task-chains <show|publish|complete> --chain-id <id>"); return }
+	if action == "show" { ctl_hub_request(base, token, "GET", fmt.tprintf("/api/v1/task-chains/%s", safe_path_part(chain_id)), ""); return }
+	if action == "publish" { ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/publish", safe_path_part(chain_id)), "{}"); return }
+	if action == "complete" { ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/complete", safe_path_part(chain_id)), "{}"); return }
+	fmt.println("usage: ham-ctl hub task-chains <list|create|show|publish|complete>")
+}
+
+ctl_hub_tasks :: proc(base, token, action: string, args: []string) {
+	chain_id := option_value(args, "--chain-id", option_value(args, "--chain", ""))
+	if action == "list" {
+		if chain_id == "" { fmt.println("usage: ham-ctl hub tasks list --chain-id <id>"); return }
+		ctl_hub_request(base, token, "GET", fmt.tprintf("/api/v1/task-chains/%s/tasks", safe_path_part(chain_id)), ""); return
+	}
+	if action == "create" {
+		title := option_value(args, "--title", "")
+		if chain_id == "" || title == "" { fmt.println("usage: ham-ctl hub tasks create --chain-id <id> --title <title>"); return }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("title", title))
+		if assignee := option_value(args, "--assignee-agent-instance-id", option_value(args, "--assignee", "")); assignee != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", assignee))}))
+		ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/tasks", safe_path_part(chain_id)), json_object_from_slice(fields[:])); return
+	}
+	task_id := option_value(args, "--task-id", option_value(args, "--task", ""))
+	if chain_id == "" || task_id == "" { fmt.println("usage: ham-ctl hub tasks <publish|status|nudge> --chain-id <id> --task-id <id>"); return }
+	if action == "publish" { ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/publish", safe_path_part(chain_id), safe_path_part(task_id)), "{}"); return }
+	if action == "status" { status := option_value(args, "--status", ""); if status == "" { fmt.println("usage: ham-ctl hub tasks status --chain-id <id> --task-id <id> --status <status>"); return }; ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/status", safe_path_part(chain_id), safe_path_part(task_id)), json_object(json_kv("status", status))); return }
+	if action == "nudge" { message := option_value(args, "--message", option_value(args, "--body", "")); ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/nudge", safe_path_part(chain_id), safe_path_part(task_id)), json_object(json_kv("message", message))); return }
+	fmt.println("usage: ham-ctl hub tasks <list|create|publish|status|nudge>")
+}
+
+hub_user_mode_url :: proc(args: []string) -> string {
+	if v := option_value(args, "--hub-url", ""); v != "" do return v
+	if v := option_value(args, "--daemon-url", ""); v != "" do return v
+	if v := os.get_env_alloc("HAM_HUB_URL", context.allocator); v != "" do return v
+	if v := os.get_env_alloc("HEIMDALL_HUB_URL", context.allocator); v != "" do return v
+	return ""
+}
+
+hub_user_mode_token :: proc(args: []string) -> string {
+	if v := option_value(args, "--user-token", ""); v != "" do return v
+	if v := option_value(args, "--token", ""); v != "" do return v
+	if v := os.get_env_alloc("HAM_HUB_USER_TOKEN", context.allocator); v != "" do return v
+	if v := os.get_env_alloc("HEIMDALL_USER_TOKEN", context.allocator); v != "" do return v
+	return ""
+}
+
+// ── agent mode: local Bridge endpoint client (RTE2E-7) ───────────────────────
+// Agent mode talks ONLY to the local Bridge endpoint over JSONL v1 using the
+// local agent token. It never holds or sends a Hub URL or Hub credential; the
+// Bridge is the sole runtime process with Hub access and relays on the agent's
+// behalf. Endpoint discovery: --bridge-endpoint / HEIMDALL_BRIDGE_ENDPOINT.
+// Token discovery: --agent-token / HEIMDALL_AGENT_TOKEN.
+
+ctl_agent_mode :: proc(cmd: []string, args: []string) {
+	endpoint := agent_mode_endpoint(args)
+	token := agent_mode_token(args)
+	if endpoint == "" || token == "" {
+		fmt.println("usage: ham-ctl agent --bridge-endpoint <unix:|tcp:endpoint> --agent-token <hlat_...> <context|start-success|chat|tasks|artifacts|memory> ...")
+		return
+	}
+	idx := 0
+	if len(cmd) > 0 && cmd[0] == "agent" do idx = 1
+	if idx >= len(cmd) { fmt.println("usage: ham-ctl agent <context|start-success|chat|tasks|artifacts|memory> ..."); return }
+	resource := cmd[idx]
+	action := ""
+	if idx + 1 < len(cmd) do action = cmd[idx + 1]
+	if resource == "context" { ctl_agent_call(endpoint, token, "agent.context.get", "{}"); return }
+	if resource == "start-success" { ctl_agent_call(endpoint, token, "agent.start_success", "{}"); return }
+	if resource == "chat" || resource == "chats" { ctl_agentmode_chat(endpoint, token, action, args); return }
+	if resource == "tasks" || resource == "task" { ctl_agentmode_tasks(endpoint, token, action, args); return }
+	if resource == "artifacts" || resource == "artifact" { ctl_agentmode_artifacts(endpoint, token, action, args); return }
+	if resource == "memory" { ctl_agentmode_memory(endpoint, token, action, args); return }
+	fmt.println("usage: ham-ctl agent <context|start-success|chat|tasks|artifacts|memory> ...")
+}
+
+agent_mode_endpoint :: proc(args: []string) -> string {
+	if v := option_value(args, "--bridge-endpoint", ""); v != "" do return v
+	if v := os.get_env_alloc("HEIMDALL_BRIDGE_ENDPOINT", context.allocator); v != "" do return v
+	return ""
+}
+
+agent_mode_token :: proc(args: []string) -> string {
+	if v := option_value(args, "--agent-token", ""); v != "" do return v
+	if v := os.get_env_alloc("HEIMDALL_AGENT_TOKEN", context.allocator); v != "" do return v
+	return ""
+}
+
+ctl_agentmode_chat :: proc(endpoint, token, action: string, args: []string) {
+	if action == "" || action == "send" || action == "send-to-user" {
+		body := option_value(args, "--body", "")
+		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do body = string(data) }
+		if body == "" { fmt.println("usage: ham-ctl agent chat send --body <text>"); return }
+		ctl_agent_call(endpoint, token, "agent.chat.send_to_user", json_object(json_kv("body", body)))
+		return
+	}
+	fmt.println("usage: ham-ctl agent chat <send>")
+}
+
+ctl_agentmode_tasks :: proc(endpoint, token, action: string, args: []string) {
+	if action == "comment" {
+		task_id := option_value(args, "--task-id", option_value(args, "--task", ""))
+		body := option_value(args, "--body", "")
+		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do body = string(data) }
+		if task_id == "" || body == "" { fmt.println("usage: ham-ctl agent tasks comment --task-id <id> --body <text>"); return }
+		ctl_agent_call(endpoint, token, "agent.tasks.comment", json_object(json_kv("task_id", task_id), json_kv("body", body)))
+		return
+	}
+	if action == "status" {
+		task_id := option_value(args, "--task-id", option_value(args, "--task", ""))
+		status := option_value(args, "--status", "")
+		if task_id == "" || status == "" { fmt.println("usage: ham-ctl agent tasks status --task-id <id> --status <status>"); return }
+		ctl_agent_call(endpoint, token, "agent.tasks.status", json_object(json_kv("task_id", task_id), json_kv("status", status)))
+		return
+	}
+	if action == "vote" {
+		task_id := option_value(args, "--task-id", option_value(args, "--task", ""))
+		result := option_value(args, "--result", "")
+		if task_id == "" || result == "" { fmt.println("usage: ham-ctl agent tasks vote --task-id <id> --result <lgtm|ngtm>"); return }
+		ctl_agent_call(endpoint, token, "agent.tasks.vote", json_object(json_kv("task_id", task_id), json_kv("result", result)))
+		return
+	}
+	if action == "nudge" {
+		task_id := option_value(args, "--task-id", option_value(args, "--task", ""))
+		message := option_value(args, "--message", option_value(args, "--body", ""))
+		if task_id == "" { fmt.println("usage: ham-ctl agent tasks nudge --task-id <id> [--message <text>]"); return }
+		ctl_agent_call(endpoint, token, "agent.tasks.nudge", json_object(json_kv("task_id", task_id), json_kv("message", message)))
+		return
+	}
+	fmt.println("usage: ham-ctl agent tasks <comment|status|vote|nudge>")
+}
+
+ctl_agentmode_artifacts :: proc(endpoint, token, action: string, args: []string) {
+	if action == "" || action == "create" {
+		name := option_value(args, "--name", "")
+		kind := option_value(args, "--kind", "markdown")
+		if name == "" { fmt.println("usage: ham-ctl agent artifacts create --name <name> [--kind <kind>] [--content <text>|--file <path>]"); return }
+		content := option_value(args, "--content", "")
+		if file_path := option_value(args, "--file", ""); file_path != "" { data, err := os.read_entire_file(file_path, context.allocator); if err == nil do content = string(data) }
+		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do content = string(data) }
+		if content == "" do content = ""
+		fields := make([dynamic]string)
+		append(&fields, json_kv("name", name)); append(&fields, json_kv("kind", kind)); append(&fields, json_kv("content", content))
+		if ct := option_value(args, "--content-type", ""); ct != "" do append(&fields, json_kv("content_type", ct))
+		if desc := option_value(args, "--description", ""); desc != "" do append(&fields, json_kv("description", desc))
+		ctl_agent_call(endpoint, token, "agent.artifacts.create", json_object_from_slice(fields[:]))
+		return
+	}
+	fmt.println("usage: ham-ctl agent artifacts <create>")
+}
+
+ctl_agentmode_memory :: proc(endpoint, token, action: string, args: []string) {
+	if action == "" || action == "propose" {
+		mem_type := option_value(args, "--type", "")
+		title := option_value(args, "--title", "")
+		if mem_type == "" || title == "" { fmt.println("usage: ham-ctl agent memory propose --type <type> --title <title> [--body <text>] [--evidence <text>]"); return }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("type", mem_type)); append(&fields, json_kv("title", title)); append(&fields, json_kv("body", option_value(args, "--body", "")))
+		if ev := option_value(args, "--evidence", ""); ev != "" do append(&fields, json_kv("evidence", ev))
+		ctl_agent_call(endpoint, token, "agent.memory.propose", json_object_from_slice(fields[:]))
+		return
+	}
+	fmt.println("usage: ham-ctl agent memory <propose>")
+}
+
+ctl_agent_call :: proc(endpoint, token, method, params_json: string) {
+	response, ok := ctl_agent_local_call(endpoint, token, method, params_json)
+	if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
+	fmt.println(response)
+}
+
+// JSONL v1 local endpoint client. Sends one request line, reads one response
+// line. Supports unix:<path> (primary, §12.0.2) and tcp:<host>:<port> (fallback).
+ctl_agent_local_call :: proc(endpoint, token, method, params_json: string) -> (string, bool) {
+	request := ctl_agent_jsonl_request(token, method, params_json)
+	if strings.has_prefix(endpoint, "tcp:") do return ctl_agent_send_tcp(endpoint, request)
+	if strings.has_prefix(endpoint, "unix:") do return ctl_agent_send_unix(endpoint, request)
+	return "", false
+}
+
+ctl_agent_jsonl_request :: proc(token, method, params_json: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `{"v":1,"id":"ham-ctl-agent","token":"`)
+	json_write_string(&b, token)
+	strings.write_string(&b, `","method":"`)
+	json_write_string(&b, method)
+	strings.write_string(&b, `","params":`)
+	if strings.trim_space(params_json) == "" { strings.write_string(&b, "{}") } else { strings.write_string(&b, params_json) }
+	strings.write_string(&b, "}\n")
+	return strings.to_string(b)
+}
+
+ctl_agent_send_tcp :: proc(endpoint, line: string) -> (string, bool) {
+	parts := strings.split(endpoint, ":")
+	defer delete(parts)
+	if len(parts) != 3 do return "", false
+	port_i, port_ok := strconv_parse_int_agent(parts[2])
+	if !port_ok do return "", false
+	address := net.IP4_Loopback
+	if parsed, ok := net.parse_ip4_address(parts[1]); ok do address = parsed
+	socket, err := net.dial_tcp(address, int(port_i))
+	if err != nil do return "", false
+	defer net.close(socket)
+	_, send_err := net.send_tcp(socket, transmute([]byte)line)
+	if send_err != nil do return "", false
+	buf: [8192]byte
+	n, _ := net.recv_tcp(socket, buf[:])
+	if n <= 0 do return "", false
+	return string(buf[:n]), true
+}
+
+ctl_agent_send_unix :: proc(endpoint, line: string) -> (string, bool) {
+	path := strings.trim_prefix(endpoint, "unix:")
+	if strings.trim_space(path) == "" || len(path) + 1 > len(posix.sockaddr_un{}.sun_path) do return "", false
+	fd := posix.socket(.UNIX, .STREAM)
+	if fd < 0 do return "", false
+	defer posix.close(fd)
+	addr: posix.sockaddr_un
+	when ODIN_OS == .Darwin || ODIN_OS == .FreeBSD || ODIN_OS == .NetBSD || ODIN_OS == .OpenBSD || ODIN_OS == .Haiku {
+		addr.sun_len = c.uchar(size_of(addr))
+	}
+	addr.sun_family = .UNIX
+	for i in 0..<len(path) do addr.sun_path[i] = c.char(path[i])
+	addr.sun_path[len(path)] = 0
+	if posix.connect(fd, (^posix.sockaddr)(&addr), posix.socklen_t(size_of(addr))) != .OK do return "", false
+	bytes := transmute([]byte)line
+	if posix.send(fd, raw_data(bytes), c.size_t(len(bytes)), {}) < 0 do return "", false
+	buf: [8192]byte
+	n := posix.recv(fd, raw_data(buf[:]), c.size_t(len(buf)), {})
+	if n <= 0 do return "", false
+	return string(buf[:n]), true
+}
+
+strconv_parse_int_agent :: proc(value: string) -> (int, bool) {
+	result := 0
+	if value == "" do return 0, false
+	for ch in value {
+		if ch < '0' || ch > '9' do return 0, false
+		result = result * 10 + int(ch - '0')
+	}
+	return result, true
+}
+
+ctl_hub_request :: proc(base, user_token, method, path, body: string) {
+	// Preserve any path prefix present in the hub base URL (e.g. when the Hub is
+	// served behind a reverse proxy under /heimdall). The HTTP client drops the
+	// path from the base URL, so we prepend the prefix to the request path.
+	// This makes `ham-ctl hub ... --hub-url http://host/prefix` match `curl`.
+	full_path := hub_url_path_prefix_join(base, path)
+	headers := [?]http.Header{{name = "Authorization", value = strings.concatenate({"Bearer ", user_token})}}
+	response, ok := http.request_with_headers_timeout(method, base, full_path, body, headers[:], http.DEFAULT_TIMEOUT_MS)
+	if !ok { fmt.println(`{"ok":false,"message":"Hub request failed"}`); return }
+	fmt.println(response.body)
+}
+
+hub_url_path_prefix :: proc(base: string) -> string {
+	url := base
+	if strings.has_prefix(url, "https://") {
+		url = url[len("https://"):]
+	} else if strings.has_prefix(url, "http://") {
+		url = url[len("http://"):]
+	}
+	slash := strings.index_byte(url, '/')
+	if slash < 0 do return ""
+	return strings.trim_right(url[slash:], "/")
+}
+
+hub_url_path_prefix_join :: proc(base, path: string) -> string {
+	prefix := hub_url_path_prefix(base)
+	if prefix == "" do return path
+	return strings.concatenate({prefix, path})
+}
+
 ctl_agents_list :: proc(daemon_url: string) {
 	response, ok := http.get(daemon_url, "/agents")
 	if !ok {
@@ -220,7 +596,7 @@ ctl_agents_create :: proc(daemon_url: string, args: []string) {
 	append(&fields, json_kv("template_id", template_id))
 	append(&fields, json_kv("project_id", project_id))
 	append(&fields, json_kv("model_tier", tier))
-	body := fmt.tprintf("{%s}", strings.join(fields[:], ","))
+	body := json_object_from_slice(fields[:])
 	response, ok := http.post(daemon_url, "/agents/create", body)
 	if !ok { fmt.println(`{"ok":false,"message":"create request failed"}`); return }
 	fmt.println(response.body)
@@ -235,7 +611,7 @@ ctl_agents_update :: proc(daemon_url: string, args: []string) {
 	if tier := option_value(args, "--tier", ""); tier != "" do append(&fields, json_kv("model_tier", tier))
 	if dn := option_value(args, "--display-name", ""); dn != "" do append(&fields, json_kv("display_name", dn))
 	if pp := option_value(args, "--provider", ""); pp != "" do append(&fields, json_kv("provider_profile", pp))
-	body := fmt.tprintf("{%s}", strings.join(fields[:], ","))
+	body := json_object_from_slice(fields[:])
 	response, ok := http.post(daemon_url, "/agents/update", body)
 	if !ok { fmt.println(`{"ok":false,"message":"update request failed"}`); return }
 	fmt.println(response.body)
@@ -252,7 +628,7 @@ ctl_agents_defaults :: proc(daemon_url: string, cmd: []string, args: []string) {
 		append(&fields, json_kv("agent_token", token))
 		append(&fields, json_kv("use", default_use))
 		append(&fields, json_kv("agent_id", agent_id))
-		body := fmt.tprintf("{%s}", strings.join(fields[:], ","))
+		body := json_object_from_slice(fields[:])
 		response, ok := http.post(daemon_url, "/agents/defaults", body)
 		if !ok { fmt.println(`{"ok":false,"message":"agent defaults set request failed"}`); return }
 		fmt.println(response.body)
@@ -1247,7 +1623,7 @@ command_tokens :: proc(args: []string) -> [dynamic]string {
 	cmd := make([dynamic]string)
 	for i := 1; i < len(args); i += 1 {
 		arg := args[i]
-		if arg == cfg_lib.CONFIG_PATH_FLAG || arg == "--daemon-url" || arg == "--wrapper-bin" || arg == "--agent" || arg == "--agent-id" || arg == "--token" || arg == "--to" || arg == "--body" || arg == "--limit" || arg == "--task-id" || arg == "--task" || arg == "--chain-id" || arg == "--chain" || arg == "--status" || arg == "--agent-instance-id" || arg == "--role" || arg == "--use" || arg == "--final-summary" || arg == "--summary" || arg == "--user-id" || arg == "--client-instance-id" || arg == "--message-id" || arg == "--result" || arg == "--comment" || arg == "--title" || arg == "--description" || arg == "--goal" || arg == "--priority" || arg == "--assignee-agent-instance-id" || arg == "--assignee" || arg == "--coordinator-agent-instance-id" || arg == "--coordinator" || arg == "--reviewer" || arg == "--comment-id" || arg == "--depends-on" || arg == "--subject-agent" || arg == "--subject-key" || arg == "--scope" || arg == "--type" || arg == "--memory-id" || arg == "--memory" || arg == "--proposal-id" || arg == "--decision" || arg == "--reason" || arg == "--evidence" || arg == "--source-task-id" || arg == "--source-task" || arg == "--expected-version" || arg == "--project-id" || arg == "--project" || arg == "--name" || arg == "--anchor-type" || arg == "--anchor-value" || arg == "--anchor-note" || arg == "--cursor" || arg == "--target-project-id" || arg == memory_ctl_legacy_role_target_flag() || arg == memory_ctl_legacy_removed_target_flag() || arg == "--team" || arg == "--team-id" || arg == "--project-ids" || arg == "--role-key" || arg == "--role-keys" || arg == "--task-chain-type" || arg == "--task-chain-types" || arg == "--template-key" || arg == "--template" || arg == "--file" || arg == "--out" || arg == "--artifact-id" || arg == "--artifact" || arg == "--kind" || arg == "--mime" || arg == "--creator-id" || arg == "--origin-kind" || arg == "--origin-ref" || arg == "--data" || arg == "--version" || arg == "--change-reason" || arg == "--annotation-id" || arg == "--context-type" || arg == "--context-json" {
+		if arg == cfg_lib.CONFIG_PATH_FLAG || arg == "--daemon-url" || arg == "--hub-url" || arg == "--bridge-endpoint" || arg == "--agent-token" || arg == "--wrapper-bin" || arg == "--agent" || arg == "--agent-id" || arg == "--instance-id" || arg == "--bridge-id" || arg == "--provider" || arg == "--tier" || arg == "--conversation-id" || arg == "--chat-id" || arg == "--initial-body" || arg == "--slug" || arg == "--instructions" || arg == "--message" || arg == "--coordinator-agent-id" || arg == "--token" || arg == "--user-token" || arg == "--to" || arg == "--body" || arg == "--limit" || arg == "--task-id" || arg == "--task" || arg == "--chain-id" || arg == "--chain" || arg == "--status" || arg == "--agent-instance-id" || arg == "--role" || arg == "--use" || arg == "--final-summary" || arg == "--summary" || arg == "--user-id" || arg == "--client-instance-id" || arg == "--message-id" || arg == "--result" || arg == "--comment" || arg == "--title" || arg == "--description" || arg == "--goal" || arg == "--priority" || arg == "--assignee-agent-instance-id" || arg == "--assignee" || arg == "--reviewer-agent-instance-id" || arg == "--coordinator-agent-instance-id" || arg == "--coordinator" || arg == "--reviewer" || arg == "--comment-id" || arg == "--depends-on" || arg == "--subject-agent" || arg == "--subject-key" || arg == "--scope" || arg == "--type" || arg == "--memory-id" || arg == "--memory" || arg == "--proposal-id" || arg == "--decision" || arg == "--reason" || arg == "--evidence" || arg == "--source-task-id" || arg == "--source-task" || arg == "--expected-version" || arg == "--project-id" || arg == "--project" || arg == "--name" || arg == "--anchor-type" || arg == "--anchor-value" || arg == "--anchor-note" || arg == "--cursor" || arg == "--target-project-id" || arg == memory_ctl_legacy_role_target_flag() || arg == memory_ctl_legacy_removed_target_flag() || arg == "--team" || arg == "--team-id" || arg == "--project-ids" || arg == "--role-key" || arg == "--role-keys" || arg == "--task-chain-type" || arg == "--task-chain-types" || arg == "--template-key" || arg == "--template" || arg == "--file" || arg == "--out" || arg == "--artifact-id" || arg == "--artifact" || arg == "--kind" || arg == "--mime" || arg == "--creator-id" || arg == "--origin-kind" || arg == "--origin-ref" || arg == "--data" || arg == "--version" || arg == "--change-reason" || arg == "--annotation-id" || arg == "--context-type" || arg == "--context-json" {
 			i += 1
 			continue
 		}
@@ -1409,6 +1785,17 @@ json_kv :: proc(key, value: string) -> string {
 	return strings.to_string(b)
 }
 
+// json_object wraps pre-serialized kv fields into a JSON object using string
+// concatenation. (fmt.tprintf mishandles '{'/'}' + '%s' when field values
+// contain commas, so avoid it here.)
+json_object :: proc(fields: ..string) -> string {
+	return strings.concatenate({"{", strings.join(fields, ","), "}"})
+}
+
+json_object_from_slice :: proc(fields: []string) -> string {
+	return strings.concatenate({"{", strings.join(fields, ","), "}"})
+}
+
 json_write_string :: proc(builder: ^strings.Builder, value: string) {
 	for ch in value {
 		switch ch {
@@ -1427,6 +1814,11 @@ print_usage :: proc(config_path, daemon_url: string) {
 	fmt.println("config", config_path)
 	fmt.println("daemon_url", daemon_url)
 	fmt.println("commands:")
+	fmt.println("  hub me --hub-url <url> --user-token <hut_...>          (/api/v1 user mode; token only in Authorization header)")
+	fmt.println("  hub launch --agent-id <id> [--bridge-id <id>] [--provider <p>] [--tier <t>] [--project-id <id>] [--chain-id <id>] [--initial-body <text>]")
+	fmt.println("  hub chat send --conversation-id <id> --body <text> ; hub chat list ; hub chat messages --conversation-id <id>")
+	fmt.println("  hub task-chains create|publish|show|complete --chain-id <id> [--title <text>] [--summary <text>]")
+	fmt.println("  hub tasks create|publish|status|nudge|list --chain-id <id> [--task-id <id>] [--title <text>] [--status <status>] [--body <text>]")
 	fmt.println("  health")
 	fmt.println("  agents list        (alias: list)")
 	fmt.println("  agents run <agent_id|agent_instance_id> [--agent-id <agent_id>] [--agent pi|claude]  (aliases: agents start, run, start)")

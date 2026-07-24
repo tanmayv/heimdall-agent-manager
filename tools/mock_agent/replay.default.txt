@@ -1,0 +1,20 @@
+# Default mock agent replay script.
+# Each line is an action. Blank lines and '#' comments are ignored.
+#
+# Actions:
+#   sleep <seconds>            wait (surfaces endpoint state)
+#   context                    call agent.context.get
+#   say <text>                 call agent.chat.send_to_user --body <text>
+#   task-comment <id> <text>   call agent.tasks.comment --task-id <id> --body <text>
+#   task-status <id> <status>  call agent.tasks.status --task-id <id> --status <status>
+#   start-success              call agent.start_success
+#   run <shell command>        run arbitrary shell command, log stdout
+#   echo <text>                log a line (no endpoint call)
+#   done                       clean exit
+
+sleep 1
+start-success
+context
+say "Mock agent online"
+sleep 2
+done

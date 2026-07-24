@@ -7,3 +7,4 @@ export * from './workspace';
 export * from './projects';
 export * from './settings';
 export * from './artifacts';
+export * from './sidebar';

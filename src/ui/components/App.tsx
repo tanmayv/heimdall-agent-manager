@@ -51,6 +51,7 @@ import Markdown from './Markdown';
 import ArtifactUploadButton, { appendArtifactLink, useArtifactUpload } from './ArtifactUpload';
 import ChainArtifactsPanel from './ChainArtifactsPanel';
 import ArtifactViewer from './ArtifactViewer';
+import LibraryPage from './LibraryPage';
 import ChatHoverCopyButton from './ChatHoverCopyButton';
 import { navigateBackOr, updateUrlParams, useUrlParams } from './useUrlParams';
 import { getRouteSearch } from '../utils/appLocation';
@@ -60,9 +61,18 @@ import AgentPickerV2 from './AgentPickerV2';
 import NewLocalProxyAgentWizard from './NewLocalProxyAgentWizard';
 import ChatHeader from './chat/ChatHeader';
 import ChatComposer from './chat/ChatComposer';
+import type { ChatComposerSubmitPayload } from './chat/types';
 import ChatMessageList from './chat/ChatMessageList';
 import ChatSidebar from './chat/ChatSidebar';
 import ChatWorkBanner from './chat/ChatWorkBanner';
+import CurrentTaskStrip from './chat/CurrentTaskStrip';
+import WorkChips from './chat/WorkChips';
+import WorkTab from './chat/WorkTab';
+import ConversationMemoryTab from './chat/ConversationMemoryTab';
+import ConversationWorkspaceTab from './chat/ConversationWorkspaceTab';
+import AgentSessionsTab from './chat/AgentSessionsTab';
+import AgentBridgesTab from './chat/AgentBridgesTab';
+import { useChatChainWork } from './chat/useChatChainWork';
 import ContextInspector from './workspace/ContextInspector';
 import GenericAgentWorkspacePage from './workspace/GenericAgentWorkspacePage';
 import UnifiedWorkspaceShell from './workspace/UnifiedWorkspaceShell';
@@ -77,7 +87,7 @@ import { selectTaskCacheProjection, mergeTaskRecord } from '../api/taskCache';
 import { selectChainViewCacheProjection } from '../api/chainViewCache';
 import { useFetchChainTasksQuery, useFetchTaskLogQuery, useFetchTaskQuery, useFetchTaskCommentsQuery, useLazyFetchTaskLogPageQuery } from '../api/endpoints/tasks';
 import { chatEndpoints, useListConversationSummariesQuery, useLazyFetchConversationSummariesPageQuery } from '../api/endpoints/chats';
-import { upsertAgentInCaches, useFetchAgentQuery, useFetchPeerAgentTemplateQuery, useListAgentsQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation, useLazyFetchAgentsPageQuery } from '../api/endpoints/agents';
+import { upsertAgentInCaches, useCreateAgentInstanceInChainMutation, useFetchAgentQuery, useFetchPeerAgentTemplateQuery, useListAgentsQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation, useLazyFetchAgentsPageQuery } from '../api/endpoints/agents';
 import { useAnswerChatApprovalMutation, useDismissChatApprovalMutation, useExecuteMergeViaChainMutation, useFetchAttentionQuery, useListChatApprovalsQuery } from '../api/endpoints/attention';
 import { useDecideMemoryProposalMutation, useListApplicableMemoryQuery, useListMemoryQuery, useProposeMemoryChangeMutation, useLazyFetchMemoryQuery } from '../api/endpoints/memory';
 import { useFetchChainQuery, useFetchWorkspaceQuery, useFocusChainMutation, useLazyFetchWorkspaceDiffQuery, useLazyPreviewWorkspaceMergeQuery, useListChainsQuery, useLazyFetchChainsPageQuery } from '../api/endpoints/workspace';
@@ -1262,6 +1272,55 @@ export default function App() {
     focusChain({ chainId }).catch(() => undefined);
   }, [dispatch, focusChain]);
 
+  // UI-6: shared task-action handlers reused by chat Work surfaces (CurrentTaskStrip / WorkTab)
+  // and the full Chain view. Create task comments (not chat messages), vote, set status, nudge.
+  const openTaskInChain = useCallback((taskId: string) => {
+    const focusChainId = home.selectedChainId || urlParams.chainId || '';
+    if (focusChainId) openChain(focusChainId);
+    // Task selection is URL-driven; surface the task in the chain view.
+    setTimeout(() => updateUrlParams({ taskId }), 0);
+  }, [home.selectedChainId, openChain, urlParams.chainId]);
+
+  const addTaskComment = useCallback(async (task: { taskId: string; chainId: string }, body: string) => {
+    try {
+      await dispatch(addCommentToSelectedTask({ taskId: task.taskId, chainId: task.chainId, body })).unwrap();
+      dispatch(showToast({ kind: 'success', title: 'Comment added', message: task.taskId }));
+    } catch (err: any) {
+      dispatch(showToast({ kind: 'error', title: 'Comment failed', message: err?.message || 'Unable to add task comment' }));
+      throw err;
+    }
+  }, [dispatch]);
+
+  const setTaskStatus = useCallback(async (task: { taskId: string; chainId: string }, status: string, body = '') => {
+    try {
+      await dispatch(updateSelectedTaskStatus({ taskId: task.taskId, chainId: task.chainId, status, body })).unwrap();
+      dispatch(showToast({ kind: 'success', title: 'Task updated', message: `${task.taskId} → ${status}` }));
+    } catch (err: any) {
+      dispatch(showToast({ kind: 'error', title: 'Task update failed', message: err?.message || `Unable to set ${status}` }));
+      throw err;
+    }
+  }, [dispatch]);
+
+  const voteTask = useCallback(async (task: { taskId: string; chainId: string }, approved: boolean, comment?: string) => {
+    try {
+      await dispatch(voteOnSelectedTask({ taskId: task.taskId, chainId: task.chainId, approved, comment: comment || (approved ? 'LGTM from chat.' : 'Changes requested from chat.') })).unwrap();
+      dispatch(showToast({ kind: 'success', title: approved ? 'LGTM recorded' : 'Changes requested', message: task.taskId }));
+    } catch (err: any) {
+      dispatch(showToast({ kind: 'error', title: 'Review vote failed', message: err?.message || 'Unable to vote on task' }));
+      throw err;
+    }
+  }, [dispatch]);
+
+  const nudgeTask = useCallback(async (task: { taskId: string; chainId: string }) => {
+    try {
+      await dispatch(nudgeSelectedTask({ taskId: task.taskId, chainId: task.chainId, body: '', interrupt: false })).unwrap();
+      dispatch(showToast({ kind: 'success', title: 'Nudge sent', message: task.taskId }));
+    } catch (err: any) {
+      dispatch(showToast({ kind: 'error', title: 'Nudge failed', message: err?.message || 'Unable to nudge task' }));
+      throw err;
+    }
+  }, [dispatch]);
+
   const openChainEditor = useCallback((chainId: string, taskId = '') => {
     setAgentPageId('');
     lastUrlChainFocusKeyRef.current = `chain-editor:${chainId}`;
@@ -1283,7 +1342,7 @@ export default function App() {
       dispatch(selectSurface('home'));
       return;
     }
-    if (next === 'attention' || next === 'settings' || next === 'agents' || next === 'task-chains' || next === 'projects') {
+    if (next === 'attention' || next === 'settings' || next === 'agents' || next === 'task-chains' || next === 'projects' || next === 'library') {
       updateUrlParams({ view: next, chainId: null, taskId: null, memoryId: null, agentId: null });
       dispatch(selectSurface(next));
       return;
@@ -1503,6 +1562,7 @@ export default function App() {
               onAgents={() => selectSurfaceWithUrl('agents')}
               onTaskChains={() => selectSurfaceWithUrl('task-chains')}
               onProjects={() => selectSurfaceWithUrl('projects')}
+              onLibrary={() => selectSurfaceWithUrl('library')}
               onSettings={() => selectSurfaceWithUrl('settings')}
               onAttention={() => selectSurfaceWithUrl('attention')}
               attentionBadgeCount={badgeCount}
@@ -1551,7 +1611,7 @@ export default function App() {
               onBack: navigateBackOrHome,
               onRefreshAgents: refetchAgents,
               onRefreshChat: (agentId: string) => dispatch(fetchSelectedChat({ agentId })).unwrap().catch(() => undefined),
-              onSendAgentMessage: async (agentId: string, body: string, interrupt = false, runtime: any = {}) => {
+              onSendAgentMessage: async (agentId: string, body: string, interrupt = false, runtime: any = {}, artifactIds?: string[]) => {
                 const exactAgent = (agents || []).find((agent: any) => agentInstanceId(agent) === agentId) || selectedPageAgent;
                 if (agentId && !agentHasLiveSession(exactAgent)) {
                   await daemonApi.startAgent({
@@ -1566,12 +1626,18 @@ export default function App() {
                   await refetchAgents();
                 }
                 const tempId = `local_temp_chat_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-                await dispatch(sendMessageToSelectedAgent({ agentId, body, tempId, interrupt })).unwrap();
+                await dispatch(sendMessageToSelectedAgent({ agentId, body, tempId, interrupt, artifactIds })).unwrap();
               },
             };
             return (urlParams.view === 'conversation' || isConversationAgent(selectedPageAgent)) ? (
               <ConversationThreadPage
                 {...sharedAgentPageProps}
+                onOpenChain={(chainId: string) => { setAgentPageId(''); openChain(chainId); }}
+                onOpenTask={openTaskInChain}
+                onAddComment={addTaskComment}
+                onSetTaskStatus={setTaskStatus}
+                onVoteTask={voteTask}
+                onNudgeTask={nudgeTask}
               />
             ) : (
               <AgentDetailPage
@@ -1581,6 +1647,11 @@ export default function App() {
                 allAgents={agents}
                 onOpenIdentity={openAgentIdentityPage}
                 onOpenChain={(chainId: string) => { setAgentPageId(''); openChain(chainId); }}
+                onOpenTask={openTaskInChain}
+                onAddComment={addTaskComment}
+                onSetTaskStatus={setTaskStatus}
+                onVoteTask={voteTask}
+                onNudgeTask={nudgeTask}
                 onAgentDeleted={() => { setAgentPageId(''); refetchAgents(); }}
               />
             );
@@ -1682,6 +1753,13 @@ export default function App() {
               onNewProject={() => setNewProjectModalOpen(true)}
               onNewChain={(projectId: string) => dispatch(openNewChainModal({ projectId }))}
             />
+          ) : home.surface === 'library' ? (
+            <LibraryPage
+              session={session}
+              projects={projects}
+              chains={sidebarChains}
+              onBack={navigateBackOrHome}
+            />
           ) : home.surface === 'settings' ? (
             <SettingsPage session={session} onBack={navigateBackOrHome} onReconnect={(config: any) => { dispatch(updateSessionConfig(config)); window.setTimeout(connectSession, 0); }} />
           ) : home.surface === 'memory' ? (
@@ -1722,9 +1800,9 @@ export default function App() {
               initialTaskId={urlParams.taskId}
               onOpenChain={openChain}
               onBack={navigateBackOrHome}
-              onSend={async (body: string) => {
+              onSend={async (body: string, artifactIds?: string[]) => {
                 const localId = `local_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-                await dispatch(sendCoordinatorMessage({ chainId: selectedChain.chainId, body, localId })).unwrap();
+                await dispatch(sendCoordinatorMessage({ chainId: selectedChain.chainId, body, localId, artifactIds })).unwrap();
               }}
               onToggleDiff={() => dispatch(toggleWorkspaceDiff(selectedChain.chainId))}
               onFetchDiff={(file: string) => loadWorkspaceDiff({ chainId: selectedChain.chainId, file })}
@@ -2220,7 +2298,7 @@ function SidebarConversationSection({ conversations = [], chats = {}, summaryByI
 }
 
 
-function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryById = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, collapsed = false, onToggleCollapsed, agents = [], allAgents = [], agentIdentities = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onOpenAgentInstance, onStartAgentInstance, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onMemory, onAgents, onTaskChains, onProjects, onSettings, onAttention, attentionBadgeCount = 0, hasMoreNetwork = false, onLoadMoreNetwork, hasMoreAgents = false, loadingMoreAgents = false, onLoadMoreAgents }: any) {
+function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryById = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, collapsed = false, onToggleCollapsed, agents = [], allAgents = [], agentIdentities = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onOpenAgentInstance, onStartAgentInstance, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onMemory, onAgents, onTaskChains, onProjects, onSettings, onAttention, onLibrary, attentionBadgeCount = 0, hasMoreNetwork = false, onLoadMoreNetwork, hasMoreAgents = false, loadingMoreAgents = false, onLoadMoreAgents }: any) {
   const chainUpdatedMs = (chain: any) => Number(chain?.updatedAtUnixMs || chain?.updated_at_unix_ms || chain?.updatedAt || chain?.updated_at || chain?.createdAtUnixMs || chain?.created_at_unix_ms || 0);
   const sortedChains = [...(chains || [])].sort((a: any, b: any) => chainUpdatedMs(b) - chainUpdatedMs(a));
   const activeChains = sortedChains.filter((chain: any) => !isChainCompleted(chain)).slice(0, 4);
@@ -2235,6 +2313,7 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryByI
       { id: 'attention', icon: '◷', label: 'Needs attention', onClick: onAttention },
       { id: 'memory', icon: '✦', label: 'Memory', onClick: onMemory },
       { id: 'agents', icon: '◎', label: 'Agents', onClick: onAgents },
+      { id: 'library', icon: '▤', label: 'Library', onClick: onLibrary },
       { id: 'task-chains', icon: '☷', label: 'Task chains', onClick: onTaskChains },
       { id: 'projects', icon: '▣', label: 'Projects', onClick: onProjects },
       { id: 'settings', icon: '⚙', label: 'Settings', onClick: onSettings },
@@ -2282,6 +2361,7 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryByI
         <button data-debug-id="nav-home-btn" onClick={onHome} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">⌂</span> Home</button>
         <button data-debug-id="nav-memory-btn" onClick={onMemory} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">✦</span> Memory</button>
         <button data-debug-id="nav-agents-btn" onClick={onAgents} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">◎</span> Agents</button>
+        <button data-debug-id="nav-library-btn" onClick={onLibrary} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">▤</span> Library</button>
         <button data-debug-id="nav-task-chains-btn" onClick={onTaskChains} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">☷</span> Task chains</button>
         <button data-debug-id="nav-projects-btn" onClick={onProjects} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">▣</span> Projects</button>
         <button data-debug-id="nav-settings-btn" onClick={onSettings} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">⚙</span> Settings</button>
@@ -3079,6 +3159,8 @@ function AgentIdentityPage({ agentId, agents = [], agentIdentities = [], chats =
   const tier = identity?.modelTier || identity?.model_tier || 'normal';
   const templateId = String(identity?.templateId || identity?.template_id || identityRecord?.template_id || durableId || '');
   const [templateOpen, setTemplateOpen] = useState(false);
+  // UI-9: Agent detail exposes Overview, Sessions, Bridges, Memory tabs (no Project tab).
+  const [agentTab, setAgentTab] = useState<'overview' | 'sessions' | 'bridges' | 'memory'>('overview');
 
   // Fetch local template detail on-demand when expanded.
   const localTemplateQuery = useFetchAgentTemplateQuery(
@@ -3220,6 +3302,15 @@ function AgentIdentityPage({ agentId, agents = [], agentIdentities = [], chats =
             <p className="mt-5 border-t border-white/[0.06] pt-4 text-[12.5px] text-zinc-500">Every instance below inherits these defaults. Concrete instance navigation stays in the main and secondary sidebars; rows below are read-only summaries.</p>
           </section>
 
+          {/* UI-9: tab strip — Overview, Sessions, Bridges, Memory (no Project tab). */}
+          <div data-debug-id="agent-detail-tab-strip" className="mt-6 mb-2 flex flex-wrap gap-1 rounded-xl border border-white/[0.06] bg-black/30 p-1">
+            {([['overview', 'Overview'], ['sessions', 'Sessions'], ['bridges', 'Bridges'], ['memory', 'Memory']] as const).map(([tabId, label]) => (
+              <button key={tabId} type="button" data-debug-id={`agent-detail-tab-${tabId}`} aria-pressed={agentTab === tabId} onClick={() => setAgentTab(tabId)} className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${agentTab === tabId ? 'bg-white/[0.08] text-zinc-100 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.10)]' : 'text-zinc-400 hover:text-zinc-200'}`}>{label}</button>
+            ))}
+          </div>
+
+          {/* UI-9: Overview tab content — persona/template, instructions, defaults, memory summary, instance summaries. */}
+          {agentTab === 'overview' ? (<>
           {/* Remote-proxy mapping — this local agent-id forwards to an agent-id on a peer daemon. */}
           {isRemoteProxy && remoteMapping ? (
             <section data-debug-id="agent-identity-remote-panel" className="mt-6 rounded-[16px] border border-teal-400/25 bg-teal-400/[0.04] p-5">
@@ -3332,6 +3423,22 @@ function AgentIdentityPage({ agentId, agents = [], agentIdentities = [], chats =
             <AgentIdentityInstanceSummaryGroup title="Recent" group="recent" instances={recent} chats={chats} tasksById={tasksById} chainsById={chainsById} />
             <AgentIdentityInstanceSummaryGroup title="Stopped" group="stopped" instances={stopped} chats={chats} tasksById={tasksById} chainsById={chainsById} />
           </div>
+          </>) : null}
+
+          {/* UI-9: Sessions tab — instances 1:1 with conversations, instance id + runtime metadata + launch flow. */}
+          {agentTab === 'sessions' ? (
+            <AgentSessionsTab durableAgentId={durableId} instances={instances} chainsById={chainsById} providers={providers} bridges={[]} debugPrefix="agent-detail" onOpenInstance={(id) => onNewInstance?.(identity)} onLaunchInstance={async () => { onNewInstance?.(identity); }} />
+          ) : null}
+
+          {/* UI-9: Bridges tab — AgentBridgeSupport config (PATCH /agents/{id}/bridge-support). */}
+          {agentTab === 'bridges' ? (
+            <AgentBridgesTab agentId={durableId} session={session} debugPrefix="agent-detail" />
+          ) : null}
+
+          {/* UI-9: Memory tab — identity-scoped memory with inline approve/reject (same surface as conversation inspector). */}
+          {agentTab === 'memory' ? (
+            <ConversationMemoryTab agentId={durableId} durableAgentId={durableId} projectId={String(projectId || '')} session={session} debugPrefix="agent-detail" records={agentMemories} fetching={memoryQuery.isFetching} error={memoryQuery.isError} />
+          ) : null}
         </div>
       </div>
     </div>
@@ -3428,7 +3535,7 @@ function ChainAgentsInspectorContent({ tasks = [], coordinatorAgentId = '', defa
   );
 }
 
-function AgentDetailPage({ agent, tasksById, chainsById, chats, session, projects = [], providers = [], allAgents = [], chatDraft = '', chatPagination = {}, onChatDraftChange, onBack, onOpenIdentity, onOpenChain, onRefreshChat, onSendAgentMessage, onRefreshAgents, onAgentDeleted }: any) {
+function AgentDetailPage({ agent, tasksById, chainsById, chats, session, projects = [], providers = [], allAgents = [], chatDraft = '', chatPagination = {}, onChatDraftChange, onBack, onOpenIdentity, onOpenChain, onRefreshChat, onSendAgentMessage, onRefreshAgents, onAgentDeleted, onOpenTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask }: any) {
   const draft = chatDraft;
   const setDraft = (next: any) => {
     const value = typeof next === 'function' ? next(draft) : next;
@@ -3450,7 +3557,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
   const [memorySaving, setMemorySaving] = useState(false);
   const [triggerFetchMemory] = useLazyFetchMemoryQuery();
   const [inspectorOpen, setInspectorOpen] = useState(true);
-  const [inspectorTab, setInspectorTab] = useState<'tasks' | 'task-chains' | 'artifacts' | 'project' | 'memory' | 'runtime'>('tasks');
+  const [inspectorTab, setInspectorTab] = useState<'work' | 'tasks' | 'task-chains' | 'artifacts' | 'project' | 'memory' | 'runtime'>('work');
   const [chatProvider, setChatProvider] = useState(agent?.providerProfile || defaultConversationProvider(providers));
   const [chatTier, setChatTier] = useState(agent?.modelTier || 'normal');
   const [runtimeRestarting, setRuntimeRestarting] = useState('');
@@ -3500,6 +3607,9 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
     // Parent callbacks are intentionally omitted.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent?.id]);
+
+  // UI-6: derive Work chip / Review-needed / CurrentTaskStrip from the bound chain's cached tasks.
+  const chainWork = useChatChainWork(String(agent?.id || ''), String(agent?.chainId || ''));
 
   useEffect(() => {
     setEditName(agent?.label || agent?.id || '');
@@ -3632,13 +3742,13 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
     }
   };
 
-  const submit = async (interrupt = false) => {
+  const submit = async (interrupt = false, payload?: ChatComposerSubmitPayload) => {
     const body = draft.trim();
     if (!body || !agent?.id || sending) return;
     setSending(true);
     setSendError('');
     try {
-      await onSendAgentMessage?.(agent.id, body, interrupt, { provider: chatProvider, modelTier: chatTier });
+      await onSendAgentMessage?.(agent.id, body, interrupt, { provider: chatProvider, modelTier: chatTier }, payload?.artifactIds);
       setDraft('');
     } catch (err: any) {
       setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`);
@@ -3657,6 +3767,13 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
   }), [agent, agentLive, chainsById, chatProvider, chatTier, runtime.label, tasksById]);
   const detailAgentContext = detailWorkspaceContext.genericAgent!;
   const detailInspectorTabs = workspaceInspectorTabsFor(detailWorkspaceContext, {
+    work: {
+      id: 'work',
+      label: 'Work',
+      content: <WorkTab chain={chainWork.chain} tasks={chainWork.tasks} progress={chainWork.progress} reviewNeededTasks={chainWork.reviewNeededTasks} agentInstanceId={String(agent?.id || '')} debugPrefix={detailAgentContext.debug.workBannerPrefix} onOpenChain={(chainId: string) => onOpenChain?.(chainId)} onOpenTask={(taskId: string) => onOpenTask?.(taskId)} />,
+      buttonDebugId: 'workspace-inspector-tab-work',
+      panelDebugId: 'workspace-inspector-panel-work',
+    },
     tasks: {
       id: 'tasks',
       label: 'Tasks',
@@ -3758,6 +3875,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
                     subtitle: <span className="truncate font-mono">{detailWorkspaceContext.subtitle}</span>,
                     status: <span data-debug-id="agent-detail-live-status" className={`rounded-full px-3 py-1 text-sm ${agentLive ? 'bg-emerald-400/15 text-emerald-200' : 'bg-zinc-500/15 text-zinc-300'}`}>{detailWorkspaceContext.statusLabel || runtime.label}</span>,
                     actions: <><button data-debug-id="agent-detail-back-btn" onClick={onBack} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">← Back</button><button data-debug-id="agent-detail-all-instances-btn" onClick={() => onOpenIdentity?.(durableAgentId(agent))} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400">All instances</button><button type="button" data-debug-id="agent-detail-chat-artifacts-toggle-btn" onClick={() => { setInspectorTab('artifacts'); setInspectorOpen(true); }} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">Artifacts</button><button type="button" data-debug-id="agent-detail-refresh-chat-btn" onClick={() => agent?.id && onRefreshChat?.(agent.id)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">Refresh</button><button type="button" data-debug-id="agent-detail-nudge-btn" onClick={() => submit(true)} disabled={!agent?.id || sending || !draft.trim()} className="rounded-full border border-amber-400/25 bg-amber-400/10 px-3 py-1 text-[11.5px] text-amber-100 hover:bg-amber-400/20 disabled:cursor-not-allowed disabled:opacity-50">⚡ Nudge</button>{!agentLive && <IconActionButton debugId="agent-detail-start-btn" title="Start agent" icon="▶" onClick={startAgent} disabled={!agent?.id || Boolean(agentBusy)} tone="success" />}{agentLive && <IconActionButton debugId="agent-detail-stop-btn" title="Force stop agent" icon="■" onClick={stopAgent} disabled={Boolean(agentBusy)} tone="warn" />}<IconActionButton debugId="agent-detail-edit-btn" title="Edit agent" icon="✎" onClick={() => setEditOpen(true)} disabled={!agent?.id || Boolean(agentBusy)} /><IconActionButton debugId="agent-detail-delete-btn" title="Delete agent" icon="🗑" onClick={deleteAgent} disabled={!agent?.id || Boolean(agentBusy)} tone="danger" /></>,
+                    bottom: <WorkChips chain={chainWork.chain} progress={chainWork.progress} reviewNeededTasks={chainWork.reviewNeededTasks} debugPrefix={detailAgentContext.debug.composerPrefix + '-work'} onOpenChain={(chainId: string) => onOpenChain?.(chainId)} onOpenReviewTask={(taskId: string) => { setInspectorTab('work'); setInspectorOpen(true); onOpenTask?.(taskId); }} />,
                   },
                   chat: {
                     conversationKey: detailAgentContext.chat.conversationKey,
@@ -3777,9 +3895,10 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
                     inputDebugId: detailAgentContext.debug.composerPrefix + '-input',
                     sendButtonDebugId: detailAgentContext.debug.composerPrefix + '-send-btn',
                     sendAriaLabel: 'Send direct agent message',
+                    mobileBottomPinned: true,
                     value: draft,
                     onValueChange: (value) => { setDraft(value); setSendError(''); },
-                    onSubmit: () => submit(false),
+                    onSubmit: (payload?: ChatComposerSubmitPayload) => submit(false, payload),
                     onPaste: async (event) => {
                       const result = await upload.uploadClipboardImage(event, { originRef: agent?.id || '' });
                       if (result.link) {
@@ -3794,7 +3913,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
                     sendError,
                     sendErrorDebugId: 'agent-detail-chat-send-error',
                     uploadErrorDebugId: 'agent-detail-chat-upload-error',
-                    upload: { onUploaded: (link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }, context: { projectId: agent?.projectId || '', originKind: 'direct_agent_chat', originRef: agent?.id || '' }, disabled: !agent?.id || sending || Boolean(runtimeRestarting), debugIdPrefix: detailAgentContext.debug.uploadPrefix, label: '⇧', buttonClassName: 'inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-lg text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40', error: upload.error },
+                    upload: { uploadFile: upload.uploadFile, uploading: upload.uploading, clearError: upload.clearError, onUploaded: (link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }, context: { projectId: agent?.projectId || '', originKind: 'direct_agent_chat', originRef: agent?.id || '' }, disabled: !agent?.id || sending || Boolean(runtimeRestarting), debugIdPrefix: detailAgentContext.debug.uploadPrefix, label: '⇧', buttonClassName: 'inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-lg text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40', error: upload.error },
                     runtimeControls: { debugPrefix: detailAgentContext.debug.runtimePrefix, providers, projects, provider: chatProvider, modelTier: chatTier, projectId: agent?.projectId || '', disabled: !agent?.id, restarting: Boolean(runtimeRestarting), showProject: true, onRestart: (next) => { void restartExactRuntime(next.provider, next.modelTier, 'runtime', next.projectId); } },
                     notices: [
                       ...(runtimeRestartError ? [{ debugId: 'agent-detail-chat-runtime-restart-error', message: runtimeRestartError, tone: 'error' as const }] : []),
@@ -3803,6 +3922,22 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
                     footer: <><span>🗂 {agent?.projectName || agent?.projectId || 'No project'} · shares memories &amp; skills from the <code>{detailAgentContext.durableAgentId || 'agent'}</code> identity</span><span>⌘↵ to send</span></>,
                     textareaClassName: 'min-h-[74px] w-full resize-none bg-transparent px-3 pt-3 text-[15px] leading-relaxed text-zinc-100 outline-none placeholder:text-zinc-600',
                   },
+                  currentTaskStrip: chainWork.currentTask && chainWork.currentRole ? (
+                    <CurrentTaskStrip
+                      task={chainWork.currentTask}
+                      chain={chainWork.chain}
+                      agentInstanceId={String(agent?.id || '')}
+                      role={chainWork.currentRole}
+                      debugPrefix={detailAgentContext.debug.composerPrefix + '-current-task'}
+                      onComment={(taskId: string, body: string) => onAddComment?.({ taskId, chainId: chainWork.chainId }, body)}
+                      onSubmitForReview={(taskId: string) => onSetTaskStatus?.({ taskId, chainId: chainWork.chainId, status: 'review_ready', body: '' })}
+                      onNudge={(taskId: string) => onNudgeTask?.({ taskId, chainId: chainWork.chainId })}
+                      onVote={(taskId: string, approved: boolean) => onVoteTask?.({ taskId, chainId: chainWork.chainId }, approved)}
+                      onOpenTask={(taskId: string) => { setInspectorTab('work'); setInspectorOpen(true); onOpenTask?.(taskId); }}
+                    />
+                  ) : chainWork.chainId && chainWork.progress.total === 0 ? (
+                    <div data-debug-id={`${detailAgentContext.debug.composerPrefix}-current-task-empty`} className="mb-2 rounded-xl border border-dashed border-white/10 bg-[#101010] px-3 py-2 text-[11.5px] text-zinc-500">No active task — ask the agent to make a plan.</div>
+                  ) : null,
                 }}
               />
             </WorkspaceMainRegion>
@@ -3973,7 +4108,7 @@ function NewConversationPage({ session, projects = [], providers = [], identitie
   );
 }
 
-function ConversationThreadPage({ agent, chats, conversationSummary, session, projects = [], providers = [], chatDraft = '', chatPagination = {}, onChatDraftChange, onBack, onRefreshChat, onRefreshAgents, onSendAgentMessage }: any) {
+function ConversationThreadPage({ agent, chats, conversationSummary, session, projects = [], providers = [], chatDraft = '', chatPagination = {}, onChatDraftChange, onBack, onRefreshChat, onRefreshAgents, onSendAgentMessage, onOpenChain, onOpenTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask }: any) {
   const draft = chatDraft;
   const setDraft = (next: any) => {
     const value = typeof next === 'function' ? next(draft) : next;
@@ -4006,7 +4141,10 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent?.id]);
 
-  const submit = async () => {
+  // UI-6: derive Work chip / Review-needed / CurrentTaskStrip from the bound chain's cached tasks.
+  const chainWork = useChatChainWork(String(agent?.id || ''), String(agent?.chainId || ''));
+
+  const submit = async (payload?: ChatComposerSubmitPayload) => {
     const body = draft.trim();
     if (!body || !agent?.id || sending) return;
     const shouldRestartForSend = !live;
@@ -4020,7 +4158,7 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
         await onRefreshAgents?.();
         setSendPhase('sending');
       }
-      await onSendAgentMessage?.(agent.id, body, false);
+      await onSendAgentMessage?.(agent.id, body, false, {}, payload?.artifactIds);
       setDraft('');
     } catch (err: any) {
       setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`);
@@ -4066,7 +4204,7 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
     setLocallyStopped(false);
   });
   const [inspectorOpen, setInspectorOpen] = useState(true);
-  const [inspectorTab, setInspectorTab] = useState<'artifacts' | 'project' | 'runtime'>('artifacts');
+  const [inspectorTab, setInspectorTab] = useState<'work' | 'workspace' | 'memory' | 'artifacts' | 'project' | 'runtime'>('work');
   const conversationWorkspaceContext = useMemo(() => adaptConversationWorkspaceContext({
     agent,
     title,
@@ -4077,20 +4215,47 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
     modelTier: messageTier,
   }), [agent, live, messageProvider, messageTier, projectName, runtime.label, sendPhase, title]);
   const conversationAgentContext = conversationWorkspaceContext.genericAgent!;
+  const conversationProject = (projects || []).find((project: any) => (project.projectId || project.project_id) === (agent?.projectId || ''));
+  const conversationProjectAnchors = (conversationProject?.anchors || []);
+  const conversationMemoryId = String(agent?.agentId || agent?.agent_id || agent?.id || '').split('@')[0];
+  // UI-7: identity-scoped memory drives the Memory tab + pending-proposal badge on the header.
+  const conversationMemoryQuery = useListApplicableMemoryQuery(
+    { targetAgentId: conversationMemoryId, targetProjectId: agent?.projectId || '' },
+    { skip: !conversationMemoryId || !session?.clientToken },
+  );
+  const conversationMemoryRecords = conversationMemoryQuery.data?.records || [];
+  const pendingMemoryCount = useMemo(() => conversationMemoryRecords.filter((record: any) => String(record.status || '').toLowerCase() === 'pending').length, [conversationMemoryRecords]);
   const conversationInspectorTabs = workspaceInspectorTabsFor(conversationWorkspaceContext, {
+    work: {
+      id: 'work',
+      label: 'Work',
+      content: <WorkTab chain={chainWork.chain} tasks={chainWork.tasks} progress={chainWork.progress} reviewNeededTasks={chainWork.reviewNeededTasks} agentInstanceId={String(agent?.id || '')} debugPrefix={conversationAgentContext.debug.workBannerPrefix} onOpenChain={(chainId: string) => onOpenChain?.(chainId)} onOpenTask={(taskId: string) => onOpenTask?.(taskId)} />,
+      buttonDebugId: 'workspace-inspector-tab-work',
+      panelDebugId: 'workspace-inspector-panel-work',
+    },
+    workspace: {
+      id: 'workspace',
+      label: 'Workspace',
+      // UI-7: Workspace tab is project-scoped; hidden when the conversation has no project_id.
+      hidden: !agent?.projectId,
+      content: <ConversationWorkspaceTab projectId={String(agent?.projectId || '')} projectName={projectName} agentInstanceId={String(agent?.id || '')} projectAnchors={conversationProjectAnchors} debugPrefix={conversationAgentContext.debug.artifactsPrefix} />,
+      buttonDebugId: 'workspace-inspector-tab-workspace',
+      panelDebugId: 'workspace-inspector-panel-workspace',
+    },
+    memory: {
+      id: 'memory',
+      label: <>Memory{pendingMemoryCount > 0 ? <span data-debug-id="conversation-inspector-memory-badge" className="ml-1 rounded-full border border-fuchsia-400/30 bg-fuchsia-400/10 px-1.5 text-[10px] text-fuchsia-200">{pendingMemoryCount}</span> : null}</>,
+      // UI-7: Memory is identity-scoped and always available (never hidden).
+      content: <ConversationMemoryTab agentId={String(agent?.id || '')} durableAgentId={conversationMemoryId} projectId={String(agent?.projectId || '')} session={session} debugPrefix={conversationAgentContext.debug.workBannerPrefix} records={conversationMemoryRecords} fetching={conversationMemoryQuery.isFetching} error={conversationMemoryQuery.isError} />,
+      buttonDebugId: 'workspace-inspector-tab-memory',
+      panelDebugId: 'workspace-inspector-panel-memory',
+    },
     artifacts: {
       id: 'artifacts',
       label: 'Artifacts',
       content: <ChatArtifactsSidePanel embedded debugPrefix={conversationAgentContext.debug.artifactsPrefix} daemonUrl={session?.daemonUrl || ''} clientToken={session?.clientToken || ''} projectId={agent?.projectId || ''} originKind="conversation_chat" originRef={agent?.id || ''} onUploaded={(link: string) => setDraft((prev: string) => appendArtifactLink(prev, link))} onClose={() => setInspectorOpen(false)} />,
       buttonDebugId: 'workspace-inspector-tab-artifacts',
       panelDebugId: 'workspace-inspector-panel-artifacts',
-    },
-    project: {
-      id: 'project',
-      label: 'Project',
-      content: <ContextInfoGrid items={[{ debugId: 'conversation-thread-project-chip', label: 'Project', value: <span>🗂 {projectName}</span> }, { debugId: 'conversation-thread-instance-label', label: 'Instance', value: <code>{conversationWorkspaceContext.subtitle || 'conversation@s-…'}</code> }]} />,
-      buttonDebugId: 'workspace-inspector-tab-project',
-      panelDebugId: 'workspace-inspector-panel-project',
     },
     runtime: {
       id: 'runtime',
@@ -4115,6 +4280,7 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
                   subtitle: <span data-debug-id="conversation-thread-instance-label" className="truncate font-mono">{conversationWorkspaceContext.subtitle}</span>,
                   status: <span data-debug-id="conversation-thread-status-chip" className={`rounded-full border px-3 py-1 text-[11.5px] ${live ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200' : sendPhase === 'starting' ? 'border-sky-400/35 bg-sky-400/10 text-sky-200' : 'border-white/10 bg-[#141414] text-zinc-400'}`}>{conversationWorkspaceContext.statusLabel || runtime.label}</span>,
                   actions: <><button data-debug-id="conversation-thread-back-btn" onClick={onBack} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">← Back</button><button data-debug-id="conversation-thread-artifacts-toggle-btn" onClick={() => { setInspectorTab('artifacts'); setInspectorOpen(true); }} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">Artifacts</button><button data-debug-id="conversation-thread-refresh-btn" onClick={() => agent?.id && onRefreshChat?.(agent.id)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">Refresh</button>{!live ? <button data-debug-id="conversation-thread-start-btn" onClick={startConversation} disabled={Boolean(threadBusy || sending)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50">Start</button> : <button data-debug-id="conversation-thread-stop-btn" onClick={stopConversation} disabled={Boolean(threadBusy || sending)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50">Close</button>}</>,
+                  bottom: <WorkChips chain={chainWork.chain} progress={chainWork.progress} reviewNeededTasks={chainWork.reviewNeededTasks} debugPrefix={conversationAgentContext.debug.composerPrefix + '-work'} onOpenChain={(chainId: string) => onOpenChain?.(chainId)} onOpenReviewTask={(taskId: string) => { setInspectorTab('work'); setInspectorOpen(true); onOpenTask?.(taskId); }} />,
                 },
                 chat: {
                   conversationKey: conversationAgentContext.chat.conversationKey,
@@ -4139,6 +4305,7 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
                   inputDebugId: conversationAgentContext.debug.composerPrefix + '-input',
                   sendButtonDebugId: conversationAgentContext.debug.composerPrefix + '-send-btn',
                   sendAriaLabel: 'Send conversation message',
+                  mobileBottomPinned: true,
                   value: draft,
                   onValueChange: (value) => { setDraft(value); setSendError(''); },
                   onSubmit: submit,
@@ -4155,11 +4322,27 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
                   sendError,
                   sendErrorDebugId: 'conversation-composer-send-error',
                   uploadErrorDebugId: 'conversation-composer-upload-error',
-                  upload: { onUploaded: (link) => { setSendError(''); setDraft((prev: string) => appendArtifactLink(prev, link)); }, context: { projectId: agent?.projectId || '', originKind: 'conversation_chat', originRef: agent?.id || '' }, disabled: !agent?.id || sending, debugIdPrefix: conversationAgentContext.debug.uploadPrefix, label: '⇧', buttonClassName: 'inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-lg text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40', error: upload.error },
+                  upload: { uploadFile: upload.uploadFile, uploading: upload.uploading, clearError: upload.clearError, onUploaded: (link) => { setSendError(''); setDraft((prev: string) => appendArtifactLink(prev, link)); }, context: { projectId: agent?.projectId || '', originKind: 'conversation_chat', originRef: agent?.id || '' }, disabled: !agent?.id || sending, debugIdPrefix: conversationAgentContext.debug.uploadPrefix, label: '⇧', buttonClassName: 'inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-lg text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40', error: upload.error },
                   runtimeControls: { debugPrefix: conversationAgentContext.debug.runtimePrefix, providers, projects, provider: messageProvider, modelTier: messageTier, projectId: agent?.projectId || '', disabled: !agent?.id || sending, restarting: threadBusy === 'restart', showProject: true, onRestart: restartConversationRuntime },
                   notices: sendPhase === 'starting' ? [{ debugId: 'conversation-composer-starting-indicator', message: 'Starting this conversation agent before sending your message…' }] : [],
                   footer: <><span>🗂 {projectName} · shares memories &amp; skills from the <code>conversation</code> identity</span><span>⌘↵ to send</span></>,
                 },
+                currentTaskStrip: chainWork.currentTask && chainWork.currentRole ? (
+                  <CurrentTaskStrip
+                    task={chainWork.currentTask}
+                    chain={chainWork.chain}
+                    agentInstanceId={String(agent?.id || '')}
+                    role={chainWork.currentRole}
+                    debugPrefix={conversationAgentContext.debug.composerPrefix + '-current-task'}
+                    onComment={(taskId: string, body: string) => onAddComment?.({ taskId, chainId: chainWork.chainId }, body)}
+                    onSubmitForReview={(taskId: string) => onSetTaskStatus?.({ taskId, chainId: chainWork.chainId, status: 'review_ready', body: '' })}
+                    onNudge={(taskId: string) => onNudgeTask?.({ taskId, chainId: chainWork.chainId })}
+                    onVote={(taskId: string, approved: boolean) => onVoteTask?.({ taskId, chainId: chainWork.chainId }, approved)}
+                    onOpenTask={(taskId: string) => { setInspectorTab('work'); setInspectorOpen(true); onOpenTask?.(taskId); }}
+                  />
+                ) : chainWork.chainId && chainWork.progress.total === 0 ? (
+                  <div data-debug-id={`${conversationAgentContext.debug.composerPrefix}-current-task-empty`} className="mb-2 rounded-xl border border-dashed border-white/10 bg-[#101010] px-3 py-2 text-[11.5px] text-zinc-500">No active task — ask the agent to make a plan.</div>
+                ) : null,
               }}
             />
           </WorkspaceMainRegion>
@@ -5521,26 +5704,21 @@ function perceivedTaskStatus(task: any, tasksById: Record<string, any>): { label
   return { label: task.status || 'unknown', tone: statusTone(task.status || 'unknown') };
 }
 
-function dependencyOrderedTasks(tasks: any[], tasksById: Record<string, any>): any[] {
-  const byId = new Map<string, any>();
-  const originalIndex = new Map<string, number>();
-  tasks.forEach((task, index) => { byId.set(task.taskId, task); originalIndex.set(task.taskId, index); });
-  const visited = new Set<string>();
-  const visiting = new Set<string>();
-  const out: any[] = [];
-  const visit = (task: any) => {
-    if (!task?.taskId || visited.has(task.taskId)) return;
-    if (visiting.has(task.taskId)) { out.push(task); visited.add(task.taskId); return; }
-    visiting.add(task.taskId);
-    parseDependsOn(task.dependsOn).forEach((depId) => {
-      const dep = byId.get(depId) || tasksById?.[depId];
-      if (dep && byId.has(dep.taskId)) visit(dep);
-    });
-    visiting.delete(task.taskId);
-    if (!visited.has(task.taskId)) { visited.add(task.taskId); out.push(task); }
-  };
-  [...tasks].sort((a, b) => (originalIndex.get(a.taskId) || 0) - (originalIndex.get(b.taskId) || 0)).forEach(visit);
-  return out;
+// UI-8: v1 Chain view orders tasks by CREATION (created_at) with task_id as a
+// deterministic tie-breaker — the backend does not yet expose graph/dependency
+// order, so the UI MUST NOT invent a client-side topological/DAG order. When
+// creation timestamps are missing/zero, fall back to the list order the backend
+// returned (assumed already creation-ordered).
+function dependencyOrderedTasks(tasks: any[], _tasksById: Record<string, any>): any[] {
+  return [...tasks].sort((a, b) => {
+    const aCreated = Number(a?.createdAtUnixMs || a?.created_at_unix_ms || 0);
+    const bCreated = Number(b?.createdAtUnixMs || b?.created_at_unix_ms || 0);
+    if (aCreated && bCreated && aCreated !== bCreated) return aCreated - bCreated;
+    if (aCreated && !bCreated) return -1;
+    if (bCreated && !aCreated) return 1;
+    // Stable tie-break by task_id; keeps deterministic output without inventing order.
+    return String(a?.taskId || '').localeCompare(String(b?.taskId || ''));
+  });
 }
 
 function ChainProgressPanel({ chain, progress }: { chain: any; progress: ChainProgress }) {
@@ -5698,12 +5876,12 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
     await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: coordinatorAgentId, provider: coordinatorProvider || coordinatorAgent?.providerProfile || providers?.[0]?.name || 'pi', templateId: coordinatorAgent?.templateId || 'coordinator', projectId: projectId || coordinatorAgent?.projectId || '', displayName: coordinatorAgent?.label || coordinatorAgentId, modelTier: coordinatorTier || coordinatorAgent?.modelTier || 'normal'});
     await onRefreshAgents?.();
   };
-  const submit = async () => {
+  const submit = async (payload?: ChatComposerSubmitPayload) => {
     const body = draft.trim();
     if (!body) return;
     setSendError('');
     try {
-      await onSend(body);
+      await onSend(body, payload?.artifactIds);
       setDraft('');
     } catch (err: any) {
       setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`);
@@ -5956,6 +6134,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
                       inputDebugId: coordinatorAgentContext.debug.composerPrefix + '-composer-input',
                       sendButtonDebugId: coordinatorAgentContext.debug.composerPrefix + '-send-btn',
                       sendAriaLabel: 'Send coordinator message',
+                      mobileBottomPinned: true,
                       value: draft,
                       onValueChange: (value) => { setDraft(value); setSendError(''); },
                       onSubmit: submit,
@@ -5978,7 +6157,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
                       sendError,
                       sendErrorDebugId: 'chain-coordinator-send-error',
                       uploadErrorDebugId: 'chain-coordinator-paste-error',
-                      upload: { onUploaded: (link) => { setSendError(''); setDraft((current) => appendArtifactLink(current, link)); }, debugIdPrefix: coordinatorAgentContext.debug.uploadPrefix, context: { projectId, originRef: chain.chainId || '' }, buttonClassName: 'inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-lg text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40', label: '⇧', error: composerArtifactUpload.error },
+                      upload: { uploadFile: composerArtifactUpload.uploadFile, uploading: composerArtifactUpload.uploading, clearError: composerArtifactUpload.clearError, onUploaded: (link) => { setSendError(''); setDraft((current) => appendArtifactLink(current, link)); }, debugIdPrefix: coordinatorAgentContext.debug.uploadPrefix, context: { projectId, originRef: chain.chainId || '' }, buttonClassName: 'inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-lg text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40', label: '⇧', error: composerArtifactUpload.error },
                       runtimeControls: { debugPrefix: coordinatorAgentContext.debug.runtimePrefix, providers, projects, provider: coordinatorProvider, modelTier: coordinatorTier, projectId, disabled: true, restarting: false, showProject: true, onRestart: async () => undefined },
                       leftAdornment: <span className="rounded-md border border-white/10 bg-[#1c1c1c] px-2 py-1.5 text-xs text-zinc-500">@ mention agent</span>,
                       footer: <><span>🗂 {projectName} · shares memories &amp; skills from the <code>coordinator</code> identity</span><span>⌘↵ to send</span></>,
@@ -6015,7 +6194,7 @@ function ChainTasksInspectorContent({ chain, chainProgress, activeTasks, complet
       <div className="mt-5 flex items-start justify-between gap-3">
         <div>
           <h2 className="text-[14px] font-semibold text-zinc-100">Task chain plan</h2>
-          <p className="mt-1 text-[11.5px] text-zinc-500">Dependency-ordered. Click a task to expand.</p>
+          <p className="mt-1 text-[11.5px] text-zinc-500">Creation-ordered. Click a task to expand.</p>
         </div>
         <span data-debug-id="chain-task-count" className="rounded-full border border-white/10 bg-[#141414] px-2.5 py-1 text-[11px] text-zinc-400">{activeTasks.length} · {completedTasks.length}</span>
       </div>
@@ -6242,6 +6421,7 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
   const [localError, setLocalError] = useState('');
   const [lastPasteTarget, setLastPasteTarget] = useState('');
   const [agentPicker, setAgentPicker] = useState<{ taskId: string; mode: 'assignee' | 'reviewer' } | null>(null);
+  const dispatch = useDispatch<any>();
   const session = useSelector((state: any) => state.chat?.session || {});
   const conversationSummaryById = useSelector((state: any) => state.chat?.conversationSummaryById || {});
   const conversationSummariesQuery = useListConversationSummariesQuery(undefined, { skip: !session.clientToken, refetchOnMountOrArgChange: true });
@@ -6250,6 +6430,32 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
     [conversationSummaryById, conversationSummariesQuery.data],
   );
   const taskTextArtifactUpload = useArtifactUpload({ projectId, originRef: chainId || '', originKind: 'clipboard_chain_text' });
+  // UI-8: add-agent-to-chain flow (POST /api/v1/agent-instances with existing chain_id).
+  const [createInstanceInChain] = useCreateAgentInstanceInChainMutation();
+  const [addAgentOpen, setAddAgentOpen] = useState(false);
+  const [addAgentBusy, setAddAgentBusy] = useState(false);
+  const sameChainInstanceIds = useMemo(() => new Set((agents || []).filter((agent: any) => String(agent?.chainId || agent?.chain_id || '') === String(chainId)).map((agent: any) => String(agent?.id || ''))), [agents, chainId]);
+  const addAgentToChain = async (agentId: string) => {
+    if (!agentId || !chainId || addAgentBusy) return;
+    setAddAgentBusy(true);
+    try {
+      const result = await createInstanceInChain({ agentId, chainId, projectId: projectId || undefined }).unwrap();
+      const newInstance = result?.agent_instance || result?.agentInstance || result?.agent;
+      if (newInstance) upsertAgentInCaches(dispatch, newInstance);
+      await onRefreshAgents?.();
+      setAddAgentOpen(false);
+      // If the picker is for a task, select the new instance for it.
+      if (agentPicker && newInstance?.agent_instance_id) {
+        if (agentPicker.mode === 'assignee') await onAssignTask?.(pickerTask, String(newInstance.agent_instance_id));
+        else await onSetReviewers?.(pickerTask, [String(newInstance.agent_instance_id)]);
+        setAgentPicker(null);
+      }
+    } catch (err: any) {
+      setLocalError(String(err?.message || err || 'Unable to add agent to chain'));
+    } finally {
+      setAddAgentBusy(false);
+    }
+  };
   const selectableAgents = useMemo(() => [{ id: 'user_proxy', label: 'User / operator', templateId: 'user', providerProfile: 'heimdall', projectId: projectId || '', connected: true, connectionState: 'connected' }, ...(agents || [])], [agents, projectId]);
   const agentsById = useMemo(() => {
     const map = new Map<string, any>();
@@ -6285,15 +6491,47 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
                 <h2 className="text-lg font-semibold text-zinc-100">Set task {agentPicker.mode}</h2>
                 <p className="mt-1 truncate text-sm text-zinc-500">{pickerTask.title || pickerTask.taskId}</p>
               </div>
+              {/* UI-8: if the desired agent identity is not yet in the chain, hydrate a
+                  fresh AgentInstance via POST /api/v1/agent-instances with the existing chain_id. */}
+              <button type="button" data-debug-id="chain-add-agent-to-chain-btn" onClick={() => setAddAgentOpen((open) => !open)} className="shrink-0 rounded-full border border-white/10 px-3 py-1 text-[11.5px] text-zinc-300 hover:bg-white/10">＋ Add agent to chain</button>
             </div>
+            {addAgentOpen ? (
+              <div data-debug-id="chain-add-agent-to-chain-panel" className="mb-4 rounded-2xl border border-sky-400/25 bg-sky-400/[0.05] p-3">
+                <div className="mb-2 text-[11.5px] text-sky-100/80">Choose an agent identity to hydrate into this chain. Creates a new AgentInstance with chain_id and its 1:1 conversation.</div>
+                <AgentPickerV2
+                  debugId="chain-add-agent-identity-picker"
+                  title="Add agent to chain"
+                  entityTypes={['agent_id']}
+                  projectId={projectId || ''}
+                  includeUserProxy={false}
+                  filterPredicate={(row) => row.section === 'agent-ids'}
+                  onClose={() => setAddAgentOpen(false)}
+                  onCancel={() => setAddAgentOpen(false)}
+                  onChange={async (selected) => {
+                    const pick = selected[0];
+                    if (pick) await addAgentToChain(pick.id);
+                  }}
+                />
+                {addAgentBusy ? <div className="mt-2 text-[11.5px] text-zinc-400">Adding agent to chain…</div> : null}
+              </div>
+            ) : null}
             <AgentPickerV2
               key={`${agentPicker.mode}:${agentPicker.taskId}`}
               debugId={`task-${agentPicker.mode}-agent-picker`}
               title={`Set task ${agentPicker.mode}`}
               entityTypes={['agent_instance_id']}
               projectId={projectId || ''}
-              includeUserProxy
+              // UI-8: assignee picker = same-chain instances only (no user option in v1).
+              // reviewer picker = user + same-chain instances.
+              includeUserProxy={agentPicker.mode === 'reviewer'}
               multiple={agentPicker.mode === 'reviewer'}
+              filterPredicate={(row) => {
+                if (row.isUser) return agentPicker.mode === 'reviewer';
+                // Same-chain validation: agent_instance.chain_id == task.chain_id.
+                const inst = (agents || []).find((agent: any) => String(agent?.id || '') === String(row.id));
+                if (!inst) return false;
+                return String(inst.chainId || inst.chain_id || '') === String(pickerTask.chainId || pickerTask.chain_id || chainId);
+              }}
               defaultSelected={pickerDefaults}
               onClose={() => setAgentPicker(null)}
               onCancel={() => setAgentPicker(null)}

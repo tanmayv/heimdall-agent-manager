@@ -268,7 +268,7 @@ export const fetchSelectedChat = createAsyncThunk(
 
 export const sendMessageToSelectedAgent = createAsyncThunk(
   'chat/sendMessageToSelectedAgent',
-  async (payload: { agentId?: string; body: string; tempId: string; interrupt?: boolean }, { dispatch, getState }) => {
+  async (payload: { agentId?: string; body: string; tempId: string; interrupt?: boolean; artifactIds?: string[] }, { dispatch, getState }) => {
     const { selectedAgentId } = (getState() as any).chat;
     const agentInstanceId = payload.agentId || selectedAgentId;
     const res = await (dispatch as any)(chatEndpoints.endpoints.sendAgentMessage.initiate({
@@ -276,6 +276,7 @@ export const sendMessageToSelectedAgent = createAsyncThunk(
       body: payload.body,
       tempId: payload.tempId,
       interrupt: payload.interrupt,
+      artifactIds: payload.artifactIds,
     })).unwrap();
     return { messageId: res.messageId, agentId: agentInstanceId };
   }

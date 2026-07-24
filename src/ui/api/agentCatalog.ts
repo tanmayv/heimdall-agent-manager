@@ -106,6 +106,8 @@ export function mapAgent(agent: any) {
     activitySource,
     currentTaskId: agent.current_task_id || agent.currentTaskId || '',
     currentTaskSince: Number(agent.current_task_since ?? agent.currentTaskSince ?? 0),
+    // UI-6: bound immutable chain for this instance (drives Work chip / CurrentTaskStrip / Work tab).
+    chainId: agent.chain_id || agent.chainId || '',
     state: agent.state || '',
   };
 }

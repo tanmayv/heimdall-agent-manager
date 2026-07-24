@@ -1,5 +1,6 @@
 package sqlite
 
+import "core:c"
 import "core:fmt"
 import "core:os"
 import "core:strings"
@@ -149,6 +150,7 @@ CREATE TABLE IF NOT EXISTS task_comments (
   task_id TEXT NOT NULL,
   chain_id TEXT NOT NULL,
   owner_user_id TEXT NOT NULL,
+  author_agent_instance_id TEXT NOT NULL DEFAULT '',
   body TEXT NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -201,9 +203,13 @@ CREATE TABLE IF NOT EXISTS templates (
 CREATE TABLE IF NOT EXISTS user_api_tokens (
   token_id TEXT PRIMARY KEY,
   owner_user_id TEXT NOT NULL,
-  token_hash TEXT NOT NULL,
+  label TEXT NOT NULL DEFAULT '',
+  token_hash TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  last_used_at TEXT NOT NULL DEFAULT '',
+  expires_at TEXT NOT NULL DEFAULT '',
+  revoked_at TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TRIGGER IF NOT EXISTS bridges_owner_immutable BEFORE UPDATE OF owner_user_id ON bridges BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
@@ -222,6 +228,8 @@ CREATE TRIGGER IF NOT EXISTS chat_messages_owner_immutable BEFORE UPDATE OF owne
 CREATE TRIGGER IF NOT EXISTS artifacts_owner_immutable BEFORE UPDATE OF owner_user_id ON artifacts BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS templates_owner_immutable BEFORE UPDATE OF owner_user_id ON templates BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
 CREATE TRIGGER IF NOT EXISTS user_api_tokens_owner_immutable BEFORE UPDATE OF owner_user_id ON user_api_tokens BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_api_tokens_token_hash ON user_api_tokens(token_hash);
 `
 
 migration_order :: [2]string{"001_foundation.sql", "002_owner_scoped_core.sql"}
@@ -242,6 +250,8 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 		mark_migration_applied(conn, name)
 		delete(sql)
 	}
+	if !upgrade_user_api_tokens_schema(conn) do return false, domain.domain_error(.Internal_Error, "user_api_tokens schema upgrade failed")
+	if !upgrade_task_comments_schema(conn) do return false, domain.domain_error(.Internal_Error, "task_comments schema upgrade failed")
 	return true, domain.Domain_Error{}
 }
 
@@ -259,6 +269,32 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 mark_migration_applied :: proc(conn: ^Conn, version: string) {
 	query := fmt.tprintf("INSERT OR IGNORE INTO schema_migrations (version) VALUES ('%s');", escape_sql_literal(version))
 	exec(conn, query)
+}
+
+upgrade_user_api_tokens_schema :: proc(conn: ^Conn) -> bool {
+	if !table_column_exists(conn, "user_api_tokens", "label") && !exec(conn, "ALTER TABLE user_api_tokens ADD COLUMN label TEXT NOT NULL DEFAULT '';") do return false
+	if !table_column_exists(conn, "user_api_tokens", "last_used_at") && !exec(conn, "ALTER TABLE user_api_tokens ADD COLUMN last_used_at TEXT NOT NULL DEFAULT '';") do return false
+	if !table_column_exists(conn, "user_api_tokens", "expires_at") && !exec(conn, "ALTER TABLE user_api_tokens ADD COLUMN expires_at TEXT NOT NULL DEFAULT '';") do return false
+	if !table_column_exists(conn, "user_api_tokens", "revoked_at") && !exec(conn, "ALTER TABLE user_api_tokens ADD COLUMN revoked_at TEXT NOT NULL DEFAULT '';") do return false
+	if !exec(conn, "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_api_tokens_token_hash ON user_api_tokens(token_hash);") do return false
+	return true
+}
+
+upgrade_task_comments_schema :: proc(conn: ^Conn) -> bool {
+	if !table_column_exists(conn, "task_comments", "author_agent_instance_id") && !exec(conn, "ALTER TABLE task_comments ADD COLUMN author_agent_instance_id TEXT NOT NULL DEFAULT '';") do return false
+	return true
+}
+
+table_column_exists :: proc(conn: ^Conn, table_name, column_name: string) -> bool {
+	if conn == nil || conn.db == nil do return false
+	stmt: sqlite3_stmt = nil
+	query := fmt.tprintf("PRAGMA table_info(%s);", table_name)
+	if sqlite3_prepare_v2(conn.db, cstring(raw_data(query)), c.int(-1), &stmt, nil) != SQLITE_OK do return false
+	defer sqlite3_finalize(stmt)
+	for sqlite3_step(stmt) == SQLITE_ROW {
+		if column_text(stmt, 1) == column_name do return true
+	}
+	return false
 }
 
 escape_sql_literal :: proc(value: string) -> string {
