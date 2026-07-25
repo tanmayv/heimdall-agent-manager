@@ -45,6 +45,10 @@
           mkdir -p $out/bin
           odin build ${srcDir} -collection:odin_test=src -out:$out/bin/${name}
           wrapProgram $out/bin/${name} --prefix PATH : ${pkgs.lib.makeBinPath runtimeInputs}
+          # Bundle the hub migrations SQL into the store output so the apps.hub
+          # wrapper can inject an absolute --migrations-dir (NRX-1/NRX-4) and
+          # `nix run .#hub` works from any CWD.
+          ${if name == "ham-hub" then "mkdir -p $out/share/ham-hub && cp -r src/hub/repository/sqlite/migrations $out/share/ham-hub/migrations" else ""}
           ${if name == "ham-bridge" then "ln -s ${pkgs.openssl}/bin/openssl $out/bin/openssl" else ""}
           ${if name == "ham-wrapper" then "ln -s ham-wrapper $out/bin/bc-agent-wrapper" else ""}
           ${if name == "ham-test-agent" then "ln -s ham-test-agent $out/bin/bc-test-agent" else ""}
@@ -164,9 +168,19 @@
           type = "app";
           program = "${self.packages.${system}.ham-daemon}/bin/ham-daemon";
         };
+        # hub: wraps ham-hub so `nix run .#hub` works from any CWD. The ham-hub
+        # package bundles its migrations under share/ham-hub/migrations; this
+        # wrapper injects the absolute store path via --migrations-dir and
+        # forwards all user args (e.g. `nix run .#hub -- --port 9000 --db x.db`).
         hub = {
           type = "app";
-          program = "${self.packages.${system}.ham-hub}/bin/ham-hub";
+          program = "${(pkgs.writeShellScriptBin "ham-hub" ''
+            #!/usr/bin/env bash
+            set -euo pipefail
+            HAM_HUB="${self.packages.${system}.ham-hub}/bin/ham-hub"
+            MIGRATIONS="${self.packages.${system}.ham-hub}/share/ham-hub/migrations"
+            exec "$HAM_HUB" --migrations-dir "$MIGRATIONS" "$@"
+          '')}/bin/ham-hub";
         };
         bridge = {
           type = "app";
