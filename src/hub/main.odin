@@ -141,7 +141,6 @@ print_token_metadata :: proc(token: domain.User_API_Token) {
 
 parse_token_global_args :: proc(config: ^app.Hub_Config) {
 	parse_args(config)
-	if v := arg_value("--migrations-dir"); v != "" do config.migrations_dir = strings.clone(v)
 }
 
 tokens_index :: proc() -> int {
@@ -201,6 +200,8 @@ parse_args :: proc(config: ^app.Hub_Config) {
 			i += 1
 		} else if arg == "--db" && i + 1 < len(os.args) {
 			config.database_path = strings.clone(os.args[i + 1]); i += 1
+		} else if arg == "--migrations-dir" && i + 1 < len(os.args) {
+			config.migrations_dir = strings.clone(os.args[i + 1]); i += 1
 		} else if arg == "--trusted-proxy-cidr" && i + 1 < len(os.args) {
 			cidrs := make([]string, 1)
 			cidrs[0] = strings.clone(os.args[i + 1])
