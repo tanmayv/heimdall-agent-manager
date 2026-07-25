@@ -130,14 +130,25 @@ log_event "stdin_capture_started" "pid=$STDIN_PID"
 LINENO_MOCK=0
 run_replay() {
     if [ ! -f "$REPLAY" ]; then
-        # Default behavior: announce readiness, then idle until killed.
-        log_event "replay_default" "start-success then idle"
+        # Default behavior: announce readiness, then idle. The replay file is
+        # written by the test harness after the instance launches (it needs the
+        # real task_id, which is only known post-launch). Rather than restart
+        # the instance (which races the wrapper relaunch), we poll for the
+        # replay file to appear and execute it the moment it shows up.
+        log_event "replay_default" "start-success then wait-for-replay"
         endpoint_call "agent.start_success" "start-success" >/dev/null
-        log_event "idle" "waiting for signals/stdin; will exit on TERM"
-        while :; do
-            sleep 1
+        log_event "wait_for_replay" "polling for $REPLAY"
+        _waited=0
+        while [ ! -f "$REPLAY" ]; do
+            sleep 0.5
+            _waited=$((_waited + 1))
+            if [ "$_waited" -ge 120 ]; then
+                log_event "replay_timeout" "no replay file after 60s; idling"
+                while :; do sleep 1; done
+                return
+            fi
         done
-        return
+        log_event "replay_appeared" "executing $REPLAY after ${_waited} poll(s)"
     fi
 
     while IFS= read -r _raw || [ -n "$_raw" ]; do

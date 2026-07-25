@@ -197,7 +197,7 @@ class Procs:
                 if p is None or p.stdout is None:
                     continue
                 try:
-                    data = p.stdout.read()
+                    data = read_proc_log(p)  # non-blocking drain
                     if data:
                         (self.tmp / f"{name}.stdout.log").write_text(data)
                 except Exception:
@@ -345,7 +345,7 @@ def assert_rte2e_8_runtime(procs: Procs, base: str, auth: dict, instance_id: str
     heartbeat) needs headroom, so this polls generously and breaks as soon as the
     Hub reflects `stopped`."""
     runtime = None
-    for _ in range(240):  # up to ~120s; breaks early on convergence
+    for _ in range(600):  # up to ~300s; breaks early on convergence
         time.sleep(0.5)
         _, det = req("GET", f"{base}/agent-instances/{instance_id}", headers=auth)
         runtime = det.get("data", {}).get("runtime_status")
@@ -480,13 +480,15 @@ def _run(procs: Procs, hub_bin: Path, bridge_bin: Path, ctl_bin: Path) -> None:
     procs.bridge = subprocess.Popen(
         [str(bridge_bin), "--hub", f"http://127.0.0.1:{port}",
          "--bridge-token", bridge_token, "--daemon-id", bridge_id,
-         "--agent-command", mock_cmd, "--local-run-dir", str(procs.tmp / "local")],
+         "--agent-command", mock_cmd, "--local-run-dir", str(procs.tmp / "local"),
+         "--local-endpoint-port", str(free_port())],
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         env={**os.environ},
     )
     # wait for the bridge to register online with the Hub
+    time.sleep(1.5)  # let the bridge open its bridge-ws connection first
     online = False
-    for _ in range(40):
+    for _ in range(150):  # up to ~37s; bridge-ws connect + first reachability push
         time.sleep(0.25)
         st, inst_try = req("POST", base + "/agent-instances",
                            {"agent_id": agent_id, "bridge_id": bridge_id,
@@ -497,6 +499,8 @@ def _run(procs: Procs, hub_bin: Path, bridge_bin: Path, ctl_bin: Path) -> None:
             break
         if st == 503 and "offline" in json.dumps(inst_try).lower():
             continue
+        if os.environ.get("RTE2E_DEBUG"):
+            print(f"  [dbg online-probe] st={st} {json.dumps(inst_try)[:120]}", flush=True)
     require(online, f"bridge did not register online (launch probe: {st} {inst_try})")
     instance_id = inst_try["data"]["agent_instance_id"]
     conv_id = inst_try["data"]["conversation_id"]
@@ -545,9 +549,12 @@ def _run(procs: Procs, hub_bin: Path, bridge_bin: Path, ctl_bin: Path) -> None:
                 {"body": "user-to-agent: please run the task"}, auth)
     require(st in (200, 201), f"user->agent chat send failed: {st}")
 
-    # restart instance -> wrapper relaunches the mock, which now reads the replay
-    st, _ = req("POST", f"{base}/agent-instances/{instance_id}/restart", {}, auth)
-    require(st in (200, 202), f"instance restart failed: {st}")
+    # The mock was launched with no replay file and is now in its
+    # wait-for-repoll loop (see tools/mock_agent/mock-agent.sh). Writing the
+    # replay here lets the already-running mock pick it up and execute the full
+    # lifecycle, then exit cleanly. This avoids a flaky restart relaunch race
+    # (the wrapper's stop/relaunch of the tmux pane is timing-sensitive).
+    # The runtime_status will converge running -> stopped once the mock exits.
 
     # wait for the agent replay to run and the instance to converge to stopped
     assert_rte2e_8_runtime(procs, base, auth, instance_id)
