@@ -7,6 +7,7 @@ import agent_service "odin_test:hub/service/agent"
 import bridge_service "odin_test:hub/service/bridge"
 import bridge_runtime_service "odin_test:hub/service/bridge_runtime"
 import content_service "odin_test:hub/service/content"
+import device_auth_service "odin_test:hub/service/device_auth"
 import events "odin_test:hub/service/events"
 import project_service "odin_test:hub/service/project"
 import search_service "odin_test:hub/service/search"
@@ -40,6 +41,9 @@ App_Graph :: struct {
 	taskchains: taskchain_service.Taskchain_Service,
 	search: search_service.Search_Service,
 	auth: auth_service.Auth_Service,
+	device_auth_store: device_auth_service.Grant_Store,
+	device_auth: device_auth_service.Device_Auth_Service,
+	device_auth_handlers: http.Device_Auth_Handlers,
 	user_handlers: http.User_Handlers,
 	bridge_handlers: http.Bridge_Handlers,
 	agent_handlers: http.Agent_Handlers,
@@ -87,6 +91,14 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		auto_provision_users = config.auto_provision_users,
 		logout_url = config.logout_url,
 	}, &graph.users, &graph.repos.users, &graph.clock, &graph.ids)
+	graph.device_auth_store = device_auth_service.new_grant_store(device_auth_service.Grant_Store_Config{
+		verification_uri = config.device_auth_verification_uri,
+		expires_in = config.device_auth_expires_in,
+		interval = config.device_auth_interval,
+		rate_limit = config.device_auth_rate_limit,
+		rate_window = config.device_auth_rate_window,
+	})
+	graph.device_auth = device_auth_service.new_device_auth_service(&graph.device_auth_store, device_auth_service.real_monotonic_clock(), config.trusted_proxy_cidrs)
 	graph.user_handlers = http.User_Handlers{auth = &graph.auth, event_bus = &graph.event_bus}
 	graph.bridge_handlers = http.Bridge_Handlers{auth = &graph.auth, bridges = &graph.bridges, agents = &graph.agents, event_bus = &graph.event_bus, bridge_runtime_registry = &graph.bridge_runtime_registry}
 	graph.agent_handlers = http.Agent_Handlers{auth = &graph.auth, agents = &graph.agents, event_bus = &graph.event_bus}
@@ -94,6 +106,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.content_handlers = http.Content_Handlers{auth = &graph.auth, agents = &graph.agents, content = &graph.content}
 	graph.taskchain_handlers = http.Taskchain_Handlers{auth = &graph.auth, taskchains = &graph.taskchains, agents = &graph.agents}
 	graph.search_handlers = http.Search_Handlers{auth = &graph.auth, search = &graph.search}
+	graph.device_auth_handlers = http.Device_Auth_Handlers{service = &graph.device_auth}
 	graph.agent_action_handlers = http.Agent_Action_Handlers{agents = &graph.agents, content = &graph.content, taskchains = &graph.taskchains}
 	graph.router = http.new_router()
 	register_routes(graph)
@@ -102,11 +115,13 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 
 shutdown_graph :: proc(graph: ^App_Graph) {
 	http.router_free(&graph.router)
+	device_auth_service.grant_store_free(&graph.device_auth_store)
 	sqlite.close(&graph.db)
 }
 
 register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/health", rawptr(graph), health_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/device/authorize", rawptr(&graph.device_auth_handlers), http.device_authorize_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me", rawptr(&graph.user_handlers), http.me_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me/logout-url", rawptr(&graph.user_handlers), http.logout_url_handler)
 	http.router_add_upgrade(&graph.router, "GET", "/api/v1/user-ws", rawptr(&graph.user_handlers), http.user_ws_upgrade_handler)
