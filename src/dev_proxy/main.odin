@@ -16,7 +16,15 @@ main :: proc() {
 		fmt.printfln("ham-dev-proxy listen=%s hub_url=%s default_user=%s", config.listen, config.hub_url, config.default_user)
 		return
 	}
-	run_dev_proxy_server(config)
+	// DP-1 / DP-5: load the persisted dev-user roster + active selection from
+	// the XDG/HEIMDALL_HOME data dir and merge with seed users. The persisted
+	// `active` username becomes config.default_user (the select_dev_user
+	// fallback); an existing ham_dev_user cookie still wins per request.
+	store := new(Dev_Proxy_Store)
+	data_dir, store_path, loaded := dev_proxy_store_init(store, &config)
+	fmt.println("ham-dev-proxy data_dir", data_dir)
+	fmt.printfln("ham-dev-proxy store_path=%s loaded=%v active=%s", store_path, loaded, config.default_user)
+	run_dev_proxy_server(config, store)
 }
 
 parse_args :: proc(config: ^Dev_Proxy_Config) {
@@ -32,7 +40,7 @@ parse_args :: proc(config: ^Dev_Proxy_Config) {
 	}
 }
 
-run_dev_proxy_server :: proc(config: Dev_Proxy_Config) -> bool {
+run_dev_proxy_server :: proc(config: Dev_Proxy_Config, store: ^Dev_Proxy_Store) -> bool {
 	host, port, ok := split_host_port(config.listen)
 	if !ok {
 		fmt.eprintln("invalid --listen", config.listen)
@@ -54,6 +62,7 @@ run_dev_proxy_server :: proc(config: Dev_Proxy_Config) -> bool {
 		if accept_err != nil do continue
 		ctx := new(Dev_Proxy_Client_Context)
 		ctx.config = config
+		ctx.store = store
 		ctx.client = client
 		thread.run_with_poly_data(ctx, handle_dev_proxy_client)
 	}
@@ -61,6 +70,7 @@ run_dev_proxy_server :: proc(config: Dev_Proxy_Config) -> bool {
 
 Dev_Proxy_Client_Context :: struct {
 	config: Dev_Proxy_Config,
+	store: ^Dev_Proxy_Store,
 	client: net.TCP_Socket,
 }
 
