@@ -12,6 +12,7 @@ Error_Code :: enum {
 	Provider_Unavailable,
 	Instance_Not_Running,
 	Rate_Limited,
+	Gone,
 	Internal_Error,
 }
 
@@ -34,6 +35,7 @@ error_code_string :: proc(code: Error_Code) -> string {
 	case .Provider_Unavailable: return "provider_unavailable"
 	case .Instance_Not_Running: return "instance_not_running"
 	case .Rate_Limited: return "rate_limited"
+	case .Gone: return "gone"
 	case .Internal_Error: return "internal_error"
 	}
 	return "internal_error"

@@ -1,20 +1,23 @@
-// HTTP handlers for the device-authorization flow (ELDA-1).
+// HTTP handlers for the device-authorization flow (ELDA-1 / ELDA-2).
 //
-// POST /api/v1/device/authorize is PUBLIC (no bearer/trusted-proxy auth): the
-// device is not yet authenticated — that is the whole point of the flow. It
-// accepts {client, device_label?, os?, app_version?} and returns the
-// device-poll contract. All security rests on the unlinkable two-secret codes,
-// the per-IP rate limit, and the short TTL.
+// Public: POST /api/v1/device/authorize (no auth — the device is not yet
+// authenticated).
+//
+// Trusted-proxy-authenticated (ELDA-2/HBR-5): GET /api/v1/device (HTML page),
+// POST /api/v1/device/verify, POST /api/v1/device/approve. These refuse with
+// 401 when the request did not arrive through the trusted proxy.
 
 package http
 
 import "core:fmt"
 import "core:strings"
+import auth_service "odin_test:hub/service/auth"
 import device_auth "odin_test:hub/service/device_auth"
 import domain "odin_test:hub/domain"
 
 Device_Auth_Handlers :: struct {
 	service: ^device_auth.Device_Auth_Service,
+	auth:    ^auth_service.Auth_Service,
 }
 
 // device_authorize_handler is the public POST /api/v1/device/authorize endpoint.
@@ -40,4 +43,79 @@ device_authorize_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	strings.write_string(&data, fmt.tprintf(",\"expires_in\":%d", result.expires_in))
 	strings.write_string(&data, "}")
 	return respond_success(strings.to_string(data), req.request_id, "", 200)
+}
+
+// device_page_handler serves the self-contained HTML confirm page (ELDA-2/AC1).
+// Trusted-proxy-authenticated: the browser reaches it through the trusted proxy
+// (outpost/dev-proxy), so the identity headers are present. 401 otherwise.
+device_page_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	handlers := (^Device_Auth_Handlers)(ctx)
+	_, ok, auth_resp := require_auth(handlers.auth, req)
+	if !ok do return auth_resp
+	return Response{status = 200, content_type = "text/html; charset=utf-8", body = device_auth.DEVICE_PAGE_HTML}
+}
+
+// device_verify_handler shows the requesting device's info for the given
+// user_code (ELDA-2/AC3). Trusted-proxy-authenticated. Unknown/expired code ->
+// generic 404 "invalid or expired code" (no enumeration); terminal -> 410.
+device_verify_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	handlers := (^Device_Auth_Handlers)(ctx)
+	_, ok, auth_resp := require_auth(handlers.auth, req)
+	if !ok do return auth_resp
+	info, vok, err := device_auth.verify(handlers.service, json_string(req.body, "user_code"))
+	if !vok do return respond_error(err, req.request_id)
+	data := strings.builder_make()
+	strings.write_string(&data, "{\"device_label\":\"")
+	write_handler_json_string(&data, info.device_label)
+	strings.write_string(&data, "\",\"os\":\"")
+	write_handler_json_string(&data, info.os)
+	strings.write_string(&data, "\",\"app_version\":\"")
+	write_handler_json_string(&data, info.app_version)
+	strings.write_string(&data, "\",\"client\":\"")
+	write_handler_json_string(&data, info.client)
+	strings.write_string(&data, "\",\"request_ip\":\"")
+	write_handler_json_string(&data, info.request_ip)
+	strings.write_string(&data, fmt.tprintf("\",\"requested_at\":%d}", info.requested_at))
+	return respond_success(strings.to_string(data), req.request_id, "", 200)
+}
+
+// device_approve_handler records the user's terminal decision (ELDA-2/AC4/AC5/
+// AC6). Trusted-proxy-authenticated. owner_user_id is bound from Auth_Context
+// ONLY — any client-supplied owner field in the body is ignored (ELDA-6).
+device_approve_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	handlers := (^Device_Auth_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth(handlers.auth, req)
+	if !ok do return auth_resp
+	input := device_auth.Approve_Input{
+		user_code = json_string(req.body, "user_code"),
+		// approve defaults to false; body must explicitly send true to approve.
+		approve = json_bool(req.body, "approve"),
+	}
+	// ELDA-6: owner comes from Auth_Context, NEVER from the body. We deliberately
+	// do NOT read owner_user_id/user from req.body.
+	approver_ip := device_auth.resolve_client_ip(
+		req.remote_addr, header_value(req.headers, "X-Forwarded-For"),
+		handlers.service.trusted_cidrs)
+	approver_ua := header_value(req.headers, "User-Agent")
+	aok, err := device_auth.approve(
+		handlers.service, input, auth_ctx.user_id, approver_ip, approver_ua)
+	if !aok do return respond_error(err, req.request_id)
+	return respond_success("{}", req.request_id, "", 200)
+}
+
+// json_bool extracts a boolean field from a JSON body (default false). Tolerates
+// optional whitespace after the colon.
+json_bool :: proc(body, key: string) -> bool {
+	needle := strings.concatenate({"\"", key, "\":"})
+	defer delete(needle)
+	idx := strings.index(body, needle)
+	if idx < 0 {
+		needle2 := strings.concatenate({"\"", key, "\": "})
+		defer delete(needle2)
+		idx = strings.index(body, needle2)
+		if idx < 0 do return false
+	}
+	rest := body[idx + len(needle):]
+	rest = strings.trim_space(rest)
+	return strings.has_prefix(rest, "true")
 }

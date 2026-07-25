@@ -207,6 +207,14 @@ get_grant :: proc(store: ^Grant_Store, device_code: string) -> (Grant, bool) {
 	return grant, ok
 }
 
+// set_grant replaces the grant for a device_code under the mutex (used by
+// approve to write the terminal decision + audit fields atomically).
+set_grant :: proc(store: ^Grant_Store, device_code: string, grant: Grant) {
+	sync.mutex_lock(&store.mutex)
+	defer sync.mutex_unlock(&store.mutex)
+	store.grants[device_code] = grant
+}
+
 // grant_by_user_code looks up a grant by its short user_code (for the browser
 // verify flow, task 2). Returns the device_code + grant snapshot.
 grant_by_user_code :: proc(store: ^Grant_Store, user_code: string) -> (string, Grant, bool) {

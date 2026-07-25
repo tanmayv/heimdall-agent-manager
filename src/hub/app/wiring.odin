@@ -106,7 +106,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.content_handlers = http.Content_Handlers{auth = &graph.auth, agents = &graph.agents, content = &graph.content}
 	graph.taskchain_handlers = http.Taskchain_Handlers{auth = &graph.auth, taskchains = &graph.taskchains, agents = &graph.agents}
 	graph.search_handlers = http.Search_Handlers{auth = &graph.auth, search = &graph.search}
-	graph.device_auth_handlers = http.Device_Auth_Handlers{service = &graph.device_auth}
+	graph.device_auth_handlers = http.Device_Auth_Handlers{service = &graph.device_auth, auth = &graph.auth}
 	graph.agent_action_handlers = http.Agent_Action_Handlers{agents = &graph.agents, content = &graph.content, taskchains = &graph.taskchains}
 	graph.router = http.new_router()
 	register_routes(graph)
@@ -122,6 +122,9 @@ shutdown_graph :: proc(graph: ^App_Graph) {
 register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/health", rawptr(graph), health_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/device/authorize", rawptr(&graph.device_auth_handlers), http.device_authorize_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/device", rawptr(&graph.device_auth_handlers), http.device_page_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/device/verify", rawptr(&graph.device_auth_handlers), http.device_verify_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/device/approve", rawptr(&graph.device_auth_handlers), http.device_approve_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me", rawptr(&graph.user_handlers), http.me_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me/logout-url", rawptr(&graph.user_handlers), http.logout_url_handler)
 	http.router_add_upgrade(&graph.router, "GET", "/api/v1/user-ws", rawptr(&graph.user_handlers), http.user_ws_upgrade_handler)
