@@ -81,7 +81,9 @@ endpoint_call() {
         log_event "endpoint_skipped" "no endpoint/token configured; method=$_method"
         return 1
     fi
-    _resp=$("$HAM_CTL_BIN" agent --bridge-endpoint "$ENDPOINT" --agent-token "$TOKEN" "$@" 2>&1) || true
+    # NOTE: no `|| true` here — `_rc=$?` must capture the real ham-ctl exit
+    # code so a failing endpoint call surfaces in the log (RTE2E-8 follow-up).
+    _resp=$("$HAM_CTL_BIN" agent --bridge-endpoint "$ENDPOINT" --agent-token "$TOKEN" "$@" 2>&1)
     _rc=$?
     log_event "endpoint_call" "method=$_method args=$* rc=$_rc"
     log_line "  response: $_resp"
@@ -200,8 +202,11 @@ run_replay() {
                 endpoint_call "agent.start_success" "start-success" >/dev/null
                 ;;
             run)
-                _out=$(eval "$_rest" 2>&1) || true
-                log_event "run_stdout" "$_rest"
+                # Capture the real eval exit code for the same reason as
+                # endpoint_call above (RTE2E-8 follow-up).
+                _out=$(eval "$_rest" 2>&1)
+                _rc=$?
+                log_event "run_stdout" "$_rest rc=$_rc"
                 [ -n "$_out" ] && printf '%s\n' "$_out" >>"$LOG"
                 ;;
             echo)
