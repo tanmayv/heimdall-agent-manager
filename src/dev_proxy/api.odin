@@ -49,14 +49,7 @@ handle_dev_api_request :: proc(ctx: ^Dev_Proxy_Client_Context, method, path, bod
 	return false
 }
 
-// handle_dev_ui_request is the management HTML UI hook (DP-4, task-19f97e26cdf).
-// Task-2 ships a 404 stub so the API is self-contained without the UI; task-3
-// replaces this with the real self-contained HTML document served at /_dev/.
-handle_dev_ui_request :: proc(client: net.TCP_Socket, path: string) -> bool {
-	if path != "/_dev/" && path != "/_dev" && path != "/_dev/ui" do return false
-	write_response(client, 404, "Not Found", "text/plain", "management UI not yet implemented (task-19f97e26cdf)")
-	return true
-}
+// handle_dev_ui_request (the management HTML UI) lives in ui.odin (DP-4).
 
 // write_api_users serializes the current roster + active selection. Active is
 // null when no persisted active is set (fresh first run).
