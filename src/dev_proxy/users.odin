@@ -17,6 +17,10 @@ Dev_Proxy_Config :: struct {
 	email_header: string,
 	default_user: string,
 	users: []Dev_User,
+	// DP-7: management API/UI (/_dev/*) are served ONLY on a loopback bind.
+	// Set in main() from the parsed --listen host; non-loopback binds get 404
+	// on every /_dev/ route so management is never exposed remotely.
+	management_enabled: bool,
 }
 
 default_dev_proxy_config :: proc() -> Dev_Proxy_Config {

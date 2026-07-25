@@ -24,6 +24,14 @@ main :: proc() {
 	data_dir, store_path, loaded := dev_proxy_store_init(store, &config)
 	fmt.println("ham-dev-proxy data_dir", data_dir)
 	fmt.printfln("ham-dev-proxy store_path=%s loaded=%v active=%s", store_path, loaded, config.default_user)
+	// DP-7: management API/UI (/_dev/*) are served ONLY on a loopback bind.
+	// A non-loopback --listen disables management routes (they 404) so the
+	// dev-only identity manager is never exposed remotely.
+	listen_host, _, _ := split_host_port(config.listen)
+	config.management_enabled = is_loopback_host(listen_host)
+	if !config.management_enabled {
+		fmt.println("ham-dev-proxy: non-loopback bind; management routes disabled")
+	}
 	run_dev_proxy_server(config, store)
 }
 
@@ -57,11 +65,16 @@ run_dev_proxy_server :: proc(config: Dev_Proxy_Config, store: ^Dev_Proxy_Store) 
 	}
 	defer net.close(listener)
 	fmt.println("ham-dev-proxy listening", config.listen, "hub_url", config.hub_url)
+	// Shared mutable config: one heap instance so management-API mutations
+	// (create/delete/set-active) are visible to every connection thread. The
+	// task-1 store mutex guards writes to the users slice + active selection.
+	shared_config := new(Dev_Proxy_Config)
+	shared_config^ = config
 	for {
 		client, _, accept_err := net.accept_tcp(listener)
 		if accept_err != nil do continue
 		ctx := new(Dev_Proxy_Client_Context)
-		ctx.config = config
+		ctx.config = shared_config
 		ctx.store = store
 		ctx.client = client
 		thread.run_with_poly_data(ctx, handle_dev_proxy_client)
@@ -69,7 +82,7 @@ run_dev_proxy_server :: proc(config: Dev_Proxy_Config, store: ^Dev_Proxy_Store) 
 }
 
 Dev_Proxy_Client_Context :: struct {
-	config: Dev_Proxy_Config,
+	config: ^Dev_Proxy_Config,
 	store: ^Dev_Proxy_Store,
 	client: net.TCP_Socket,
 }
@@ -82,20 +95,32 @@ handle_dev_proxy_client :: proc(ctx: ^Dev_Proxy_Client_Context) {
 	if !ok do return
 	method, target := request_method_target(request)
 	path, query := split_target_query(target)
-	if strings.has_prefix(path, "/_dev/login") {
-		user := query_param(query, "user")
-		if !dev_user_exists(&ctx.config, user) {
-			write_response(client, 400, "Bad Request", "text/plain", "unknown dev user")
+	if strings.has_prefix(path, "/_dev/") {
+		// DP-7: hard loopback boundary for the entire management surface.
+		if !ctx.config.management_enabled {
+			write_response(client, 404, "Not Found", "text/plain", "management routes disabled on non-loopback bind")
 			return
 		}
-		write_response_with_headers(client, 204, "No Content", "text/plain", "", []contracts.HTTP_Header{{name = "Set-Cookie", value = login_response_cookie(user)}})
+		// Management routes are handled locally and NEVER forwarded (DP-6).
+		if handle_dev_api_request(ctx, method, path, request_body(request)) do return
+		if handle_dev_ui_request(client, path) do return
+		if strings.has_prefix(path, "/_dev/login") {
+			user := query_param(query, "user")
+			if !dev_user_exists(ctx.config, user) {
+				write_response(client, 400, "Bad Request", "text/plain", "unknown dev user")
+				return
+			}
+			write_response_with_headers(client, 204, "No Content", "text/plain", "", []contracts.HTTP_Header{{name = "Set-Cookie", value = login_response_cookie(user)}})
+			return
+		}
+		if path == "/_dev/logout" {
+			write_response_with_headers(client, 204, "No Content", "text/plain", "", []contracts.HTTP_Header{{name = "Set-Cookie", value = logout_response_cookie()}})
+			return
+		}
+		write_response(client, 404, "Not Found", "text/plain", "not found")
 		return
 	}
-	if path == "/_dev/logout" {
-		write_response_with_headers(client, 204, "No Content", "text/plain", "", []contracts.HTTP_Header{{name = "Set-Cookie", value = logout_response_cookie()}})
-		return
-	}
-	forward_request(client, &ctx.config, request, method, target)
+	forward_request(client, ctx.config, request, method, target)
 }
 
 forward_request :: proc(client: net.TCP_Socket, config: ^Dev_Proxy_Config, request, method, target: string) {
@@ -235,6 +260,13 @@ parse_base_url :: proc(url: string) -> (string, int, bool) {
 	port_i, ok := strconv.parse_int(trimmed[colon + 1:])
 	if !ok do return "", 0, false
 	return strings.clone(trimmed[:colon]), int(port_i), true
+}
+
+// is_loopback_host reports whether a parsed --listen host is loopback
+// (127.0.0.1, ::1, localhost, or empty which defaults to loopback binding).
+// Used to gate the management API/UI surface (DP-7).
+is_loopback_host :: proc(host: string) -> bool {
+	return host == "127.0.0.1" || host == "::1" || host == "localhost" || host == ""
 }
 
 split_host_port :: proc(value: string) -> (string, int, bool) {
