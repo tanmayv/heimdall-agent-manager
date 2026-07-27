@@ -971,7 +971,7 @@ endpoints so WS invalidation applies.
    tokens (B1), real `agent.context` relay (B2), fix start-success command
    rendering/routing (B3), Bridge-scoped instance assertion trust (B4), keep
    HEIMDALL_* env + regression test (B5). Required for agents to use `ham-ctl`
-   to start-success and read/write conversations. Phase commit: `45cbb3a`.
+   to start-success and read/write conversations. Phase commits: `45cbb3a`, `9188b1a`.
 3b. **ctl refactor (§3.7)** — split the `src/ctl` monolith into a package (one
    command family per file); remove access points for legacy daemon-only commands
    but keep the code parked+deprecated under `src/ctl/legacy/` (C2/C3); drop
