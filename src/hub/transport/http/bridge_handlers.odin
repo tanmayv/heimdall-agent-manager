@@ -147,45 +147,44 @@ rename_bridge_handler :: proc(ctx: rawptr, req: Request) -> Response {
 list_bridge_providers_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
 	result, ok, err := bridge_provider_relay(h, req, path_part(req.path, 4), "list_providers", "", "")
-	if !ok do return respond_error(err, req.request_id)
+	if !ok do return bridge_provider_error_response(err, req.request_id)
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }
 
 put_bridge_provider_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
 	name := path_part(req.path, 6)
-	if strings.trim_space(name) == "" do return respond_error(domain.domain_error(.Validation_Failed, "provider name is required"), req.request_id)
-	if strings.contains(req.body, "\"command\":[]") do return respond_error(domain.domain_error(.Validation_Failed, "provider command must not be empty"), req.request_id)
-	profile := strings.builder_make()
-	strings.write_string(&profile, "{\"type\":\"upsert_provider\",\"name\":\""); write_handler_json_string(&profile, name)
-	strings.write_string(&profile, "\",\"profile\":")
-	if strings.trim_space(req.body) == "" { strings.write_string(&profile, "{}") } else { strings.write_string(&profile, req.body) }
-	strings.write_string(&profile, "}")
-	result, ok, err := bridge_provider_relay(h, req, path_part(req.path, 4), "upsert_provider", name, strings.to_string(profile))
-	if !ok do return respond_error(err, req.request_id)
+	if strings.trim_space(name) == "" do return bridge_provider_error_response(domain.domain_error(.Validation_Failed, "provider name is required"), req.request_id)
+	result, ok, err := bridge_provider_relay(h, req, path_part(req.path, 4), "upsert_provider", name, req.body)
+	if !ok do return bridge_provider_error_response(err, req.request_id)
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }
 
 delete_bridge_provider_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
 	result, ok, err := bridge_provider_relay(h, req, path_part(req.path, 4), "delete_provider", path_part(req.path, 6), "")
-	if !ok do return respond_error(err, req.request_id)
+	if !ok do return bridge_provider_error_response(err, req.request_id)
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }
 
 test_bridge_provider_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
 	result, ok, err := bridge_provider_relay(h, req, path_part(req.path, 4), "test_provider", path_part(req.path, 6), req.body)
-	if !ok do return respond_error(err, req.request_id)
+	if !ok do return bridge_provider_error_response(err, req.request_id)
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }
 
 refresh_bridge_providers_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
 	result, ok, err := bridge_provider_relay(h, req, path_part(req.path, 4), "refresh_capabilities", "", "")
-	if !ok do return respond_error(err, req.request_id)
+	if !ok do return bridge_provider_error_response(err, req.request_id)
 	_, _, _ = bridge_service.update_runtime_capabilities(h.bridges, path_part(req.path, 4), result)
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
+bridge_provider_error_response :: proc(err: domain.Domain_Error, request_id: string) -> Response {
+	if err.code != .Validation_Failed do return respond_error(err, request_id)
+	return Response{status = 422, content_type = "application/json", body = contracts.api_error_json(contracts.API_Error{code = domain.error_code_string(err.code), message = err.message, details_json = err.details_json}, contracts.api_meta(request_id, ""))}
 }
 
 bridge_provider_relay :: proc(h: ^Bridge_Handlers, req: Request, bridge_id, command_type, provider_name, body: string) -> (string, bool, domain.Domain_Error) {
@@ -198,30 +197,47 @@ bridge_provider_relay :: proc(h: ^Bridge_Handlers, req: Request, bridge_id, comm
 	cmd_body := bridge_provider_command_json(command_type, command_id, provider_name, body)
 	reply, reply_ok, reply_err := bridge_runtime_service.send_runtime_command_wait(h.bridge_runtime_registry, project_service.Runtime_Command{bridge_id = bridge.bridge_id, command_id = command_id, body_json = cmd_body}, 10000)
 	if !reply_ok do return "", false, reply_err
+	reply_type := json_string(reply, "type")
+	if command_type == "list_providers" && reply_type == "providers_report" {
+		payload, _ := json_object_raw_balanced(reply, "payload")
+		if payload == "" do payload = "{}"
+		return payload, true, domain.Domain_Error{}
+	}
 	status := json_string(reply, "status")
 	result, _ := json_object_raw_balanced(reply, "result")
 	if result == "" do result = "{}"
-	if status == "failed" do return "", false, domain.domain_error(.Validation_Failed, json_string(result, "error"))
+	if status == "failed" {
+		message := json_string(result, "error")
+		if message == "" do message = json_string(result, "message")
+		if message == "" do message = "provider command failed"
+		return "", false, domain.domain_error(.Validation_Failed, message)
+	}
 	return result, true, domain.Domain_Error{}
 }
 
 bridge_provider_command_json :: proc(command_type, command_id, provider_name, body: string) -> string {
-	if body != "" && strings.contains(body, "\"type\"") && strings.contains(body, command_type) {
-		prefix := strings.builder_make()
-		strings.write_string(&prefix, "{\"type\":\""); write_handler_json_string(&prefix, command_type)
-		strings.write_string(&prefix, "\",\"protocol_version\":1,\"command_id\":\""); write_handler_json_string(&prefix, command_id)
-		strings.write_string(&prefix, "\",\"name\":\""); write_handler_json_string(&prefix, provider_name)
-		strings.write_string(&prefix, "\",\"profile\":")
-		if profile, ok := json_object_raw_balanced(body, "profile"); ok { strings.write_string(&prefix, profile) } else { strings.write_string(&prefix, "{}") }
-		strings.write_string(&prefix, "}")
-		return strings.to_string(prefix)
-	}
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\""); write_handler_json_string(&b, command_type)
 	strings.write_string(&b, "\",\"protocol_version\":1,\"command_id\":\""); write_handler_json_string(&b, command_id)
-	strings.write_byte(&b, '"')
-	if provider_name != "" { strings.write_string(&b, ",\"name\":\""); write_handler_json_string(&b, provider_name); strings.write_byte(&b, '"') }
-	if body != "" { strings.write_string(&b, ",\"payload\":"); strings.write_string(&b, body) }
+	strings.write_string(&b, "\",\"payload\":")
+	switch command_type {
+	case "list_providers", "refresh_capabilities":
+		strings.write_string(&b, "{}")
+	case "upsert_provider":
+		strings.write_string(&b, "{\"name\":\""); write_handler_json_string(&b, provider_name)
+		strings.write_string(&b, "\",\"profile\":")
+		if strings.trim_space(body) == "" { strings.write_string(&b, "{}") } else { strings.write_string(&b, body) }
+		strings.write_string(&b, "}")
+	case "delete_provider":
+		strings.write_string(&b, "{\"name\":\""); write_handler_json_string(&b, provider_name); strings.write_string(&b, "\"}")
+	case "test_provider":
+		strings.write_string(&b, "{\"name\":\""); write_handler_json_string(&b, provider_name)
+		tier := json_string(body, "tier")
+		if tier != "" { strings.write_string(&b, "\",\"tier\":\""); write_handler_json_string(&b, tier) }
+		strings.write_string(&b, "\"}")
+	case:
+		strings.write_string(&b, "{}")
+	}
 	strings.write_string(&b, "}")
 	return strings.to_string(b)
 }
@@ -281,7 +297,7 @@ bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connectio
 			_ = got
 			applied := current_seq == state_seq && current_runtime == runtime_status
 			_ = write_ws_text_frame(client, bridge_state_ack_payload(instance_id, applied, current_seq, current_runtime))
-		case "command_result", "project_path_validation_result":
+		case "command_result", "project_path_validation_result", "providers_report":
 			command_id := json_string(text, "command_id")
 			_, _ = bridge_runtime_service.runtime_command_result_idempotent(h.bridge_runtime_registry, bridge_id, command_id, text)
 		case "capability_report":

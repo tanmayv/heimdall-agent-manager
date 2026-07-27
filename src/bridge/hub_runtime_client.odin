@@ -142,16 +142,18 @@ bridge_hub_handle_provider_command :: proc(conn: ^ws.Connection, type, text: str
 		command_id := extract_json_string(text, "command_id", "")
 		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
 		result := bridge_provider_profiles_report_json(bridge_config.daemon_id)
-		final := bridge_command_result_payload_json(command_id, "succeeded", result)
-		bridge_runtime_cache_command(command_id, final)
-		_ = ws.send_text(conn, final)
+		report := bridge_providers_report_json(command_id, result)
+		bridge_runtime_cache_command(command_id, report)
+		_ = ws.send_text(conn, report)
+		_ = ws.send_text(conn, bridge_command_result_payload_json(command_id, "succeeded", "{}"))
 		return true
 	case "upsert_provider":
 		command_id := extract_json_string(text, "command_id", "")
 		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
-		name := extract_json_string(text, "name", extract_json_string(text, "provider", ""))
-		profile_json, profile_ok := bridge_provider_json_extract_object(text, "profile")
-		if !profile_ok do profile_json = text
+		payload := bridge_provider_payload_object(text)
+		name := bridge_provider_json_extract_string(payload, "name", "")
+		profile_json, profile_ok := bridge_provider_json_extract_object(payload, "profile")
+		if !profile_ok do profile_json = "{}"
 		profile, ok, message := bridge_provider_upsert_override_json(name, profile_json)
 		result_b := strings.builder_make()
 		if ok { strings.write_string(&result_b, "{\"provider\":"); bridge_provider_write_profile_json(&result_b, profile); strings.write_byte(&result_b, '}') } else { strings.write_string(&result_b, "{\"error\":\""); bridge_runtime_write_json_string(&result_b, message); strings.write_string(&result_b, "\"}") }
@@ -162,7 +164,8 @@ bridge_hub_handle_provider_command :: proc(conn: ^ws.Connection, type, text: str
 	case "delete_provider":
 		command_id := extract_json_string(text, "command_id", "")
 		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
-		name := extract_json_string(text, "name", extract_json_string(text, "provider", ""))
+		payload := bridge_provider_payload_object(text)
+		name := bridge_provider_json_extract_string(payload, "name", "")
 		deleted, message := bridge_provider_delete_override(name)
 		result := "{\"deleted\":true}" if deleted else strings.concatenate({"{\"deleted\":false,\"error\":\"", bridge_runtime_json_escaped(message), "\"}"})
 		final := bridge_command_result_payload_json(command_id, "succeeded" if deleted else "failed", result)
@@ -172,7 +175,8 @@ bridge_hub_handle_provider_command :: proc(conn: ^ws.Connection, type, text: str
 	case "test_provider":
 		command_id := extract_json_string(text, "command_id", "")
 		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
-		name := extract_json_string(text, "name", extract_json_string(text, "provider", ""))
+		payload := bridge_provider_payload_object(text)
+		name := bridge_provider_json_extract_string(payload, "name", "")
 		result := strings.concatenate({"{\"name\":\"", bridge_runtime_json_escaped(name), "\",\"status\":\"unknown\",\"tested_at\":\"\",\"message\":\"provider start-success probe is not implemented in this bridge build\"}"})
 		final := bridge_command_result_payload_json(command_id, "succeeded", result)
 		bridge_runtime_cache_command(command_id, final)
@@ -447,6 +451,21 @@ bridge_command_result_payload_json :: proc(command_id, status, result_json: stri
 	if strings.trim_space(result_json) == "" { strings.write_string(&b, "{}") } else { strings.write_string(&b, result_json) }
 	strings.write_string(&b, "}}")
 	return strings.to_string(b)
+}
+
+bridge_providers_report_json :: proc(command_id, payload_json: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"providers_report\",\"protocol_version\":1,\"command_id\":\"")
+	bridge_runtime_write_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"payload\":")
+	if strings.trim_space(payload_json) == "" { strings.write_string(&b, "{}") } else { strings.write_string(&b, payload_json) }
+	strings.write_string(&b, "}")
+	return strings.to_string(b)
+}
+
+bridge_provider_payload_object :: proc(text: string) -> string {
+	if payload, ok := bridge_provider_json_extract_object(text, "payload"); ok do return payload
+	return "{}"
 }
 
 bridge_runtime_json_escaped :: proc(value: string) -> string {

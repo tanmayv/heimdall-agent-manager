@@ -539,6 +539,9 @@ bridge_provider_upsert_override_json :: proc(name, body: string) -> (Bridge_Prov
 	override, ok := bridge_provider_override_from_json_with_name(body, name)
 	if !ok do return {}, false, "provider name is required"
 	if strings.trim_space(override.name) != strings.trim_space(name) && strings.trim_space(name) != "" do return {}, false, "provider name mismatch"
+	if override.command_set && len(override.command) == 0 do return {}, false, "provider command must not be empty"
+	candidate, candidate_ok := bridge_provider_candidate_profile(override)
+	if !candidate_ok || len(candidate.command) == 0 do return {}, false, "provider command must not be empty"
 	sync.mutex_lock(&bridge_provider_mutex)
 	bridge_provider_upsert_override_unlocked(override)
 	sync.mutex_unlock(&bridge_provider_mutex)
@@ -546,6 +549,13 @@ bridge_provider_upsert_override_json :: proc(name, body: string) -> (Bridge_Prov
 	profile, profile_ok := bridge_provider_by_name_or_default(override.name)
 	if !profile_ok do return {}, false, "provider not found after save"
 	return profile, true, ""
+}
+
+bridge_provider_candidate_profile :: proc(override: Bridge_Provider_Override) -> (Bridge_Provider_Profile, bool) {
+	for cmd in bridge_config.agent_commands {
+		if cmd.name == override.name do return bridge_provider_apply_override(bridge_provider_profile_from_config(cmd), override), true
+	}
+	return bridge_provider_profile_from_override(override), true
 }
 
 bridge_provider_delete_override :: proc(name: string) -> (bool, string) {
