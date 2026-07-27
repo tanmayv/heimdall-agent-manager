@@ -963,7 +963,7 @@ endpoints so WS invalidation applies.
    capabilities everywhere; removes hardcoded `claude/normal`); bridge default
    provider. Phase commit: `3e8d869`.
 2. **DONE — Backend: hub provider relay routes + `write_bridge_json` fix** (incl. A2/A9
-   real `active_instance_count` / `supported_bridge_count`). Phase commit: `ff075b5`.
+   real `active_instance_count` / `supported_bridge_count`). Phase commits: `ff075b5`, `f627808`.
 3. **Backend: agent deploy/run gaps (§3.5)** — `agent-instances` `agent_id`
    filter, §2.5 resolution on create, `PATCH /agents/{id}` defaults, stop/restart
    wiring, and the A10 `bridge-support` PUT-body contract.
