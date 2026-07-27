@@ -37,10 +37,18 @@ export default function BridgesPanel() {
 
   const bridges = bridgesQuery.data?.bridges || [];
   const enrollments = enrollmentsQuery.data?.enrollments || [];
+  const pendingEnrollments = enrollments.filter(isPendingEnrollment);
 
   useEffect(() => {
-    setHasPendingEnrollments(enrollments.length > 0);
-  }, [enrollments.length]);
+    setHasPendingEnrollments(pendingEnrollments.length > 0);
+  }, [pendingEnrollments.length]);
+
+  function isPendingEnrollment(enrollment: any): boolean {
+    const status = String(enrollment?.status || enrollment?.state || '').toLowerCase();
+    if (status) return status === 'pending' || status === 'created' || status === 'active';
+    if (enrollment?.consumed_at || enrollment?.consumed_by_bridge_id || enrollment?.revoked_at) return false;
+    return true;
+  }
 
   function statusTone(bridge: any): string {
     const status = String(bridge?.status || bridge?.runtime_status || '').toLowerCase();
@@ -169,11 +177,11 @@ export default function BridgesPanel() {
       ) : null}
 
       {/* Pending enrollments */}
-      {enrollments.length > 0 ? (
+      {pendingEnrollments.length > 0 ? (
         <div data-debug-id="settings-bridges-pending" className="mt-4">
           <div className="mb-2 text-[11px] uppercase tracking-[0.18em] text-zinc-500">Pending enrollments</div>
           <div className="space-y-2">
-            {enrollments.map((enr: any) => {
+            {pendingEnrollments.map((enr: any) => {
               const id = String(enr?.enrollment_id || enr?.id || '');
               return (
                 <div key={id} data-debug-id={`settings-bridges-pending-${id}`} className="flex items-center justify-between gap-2 rounded-xl border border-amber-400/20 bg-amber-400/[0.04] px-3 py-2 text-sm">
