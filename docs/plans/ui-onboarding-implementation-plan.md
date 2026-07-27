@@ -981,7 +981,7 @@ endpoints so WS invalidation applies.
    reads (C6/C7); per-subcommand help with examples + high-level top-level help
    (C8–C11). Phase commits: `f273a09`, `7fd6579`.
 4. **DONE — Page 1 Bridges** polish (capability rendering, cookie-auth cleanup, poll). Phase commits: `ff3a827`, `39eca2c`, `2e3dfee`.
-5. **Page 2 Providers** rewrite (configure + test, bridge-persisted, set default).
+5. **DONE — Page 2 Providers** rewrite (configure + test, bridge-persisted). Phase commit: `3844a54`.
 6. **Page 3 Agents** create (template + name + §2.5 provider, tier-only normal
    path).
 7. **Page 3b Agent detail** — per-bridge overrides + multi-instance deploy/run.
