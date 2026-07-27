@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   normalizeBridgeCapabilities,
   useListBridgesQuery,
@@ -14,10 +14,12 @@ import {
 // Add bridge = enrollment ceremony (one-time token shown once). Detail allows
 // rename (PATCH), revoke (= "remove", POST /revoke). No hard delete in v1.
 // Rotate-token is a documented backend gap (not yet served).
-export default function BridgesPanel({ session }: { session?: any }) {
+export default function BridgesPanel() {
   const [enrollOpen, setEnrollOpen] = useState(false);
-  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: enrollOpen ? 3000 : 0 });
-  const enrollmentsQuery = useListBridgeEnrollmentsQuery(undefined, { pollingInterval: enrollOpen ? 3000 : 0 });
+  const [hasPendingEnrollments, setHasPendingEnrollments] = useState(false);
+  const pollActive = enrollOpen || hasPendingEnrollments;
+  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: pollActive ? 3000 : 0 });
+  const enrollmentsQuery = useListBridgeEnrollmentsQuery(undefined, { pollingInterval: pollActive ? 3000 : 0 });
   const [renameBridge] = useRenameBridgeMutation();
   const [revokeBridge] = useRevokeBridgeMutation();
   const [createEnrollment] = useCreateBridgeEnrollmentMutation();
@@ -35,6 +37,10 @@ export default function BridgesPanel({ session }: { session?: any }) {
 
   const bridges = bridgesQuery.data?.bridges || [];
   const enrollments = enrollmentsQuery.data?.enrollments || [];
+
+  useEffect(() => {
+    setHasPendingEnrollments(enrollments.length > 0);
+  }, [enrollments.length]);
 
   function statusTone(bridge: any): string {
     const status = String(bridge?.status || bridge?.runtime_status || '').toLowerCase();
@@ -58,7 +64,10 @@ export default function BridgesPanel({ session }: { session?: any }) {
   }
 
   function buildSetupCommand(result: any): string {
-    const url = result?.hub_url || result?.daemon_url || session?.daemonUrl || window.location.origin || '';
+    const responseCommand = String(result?.setup_command || '');
+    const url = result?.hub_url || result?.daemon_url || (typeof window !== 'undefined' ? window.location.origin : '');
+    if (responseCommand && !responseCommand.includes('$HAM_HUB_URL') && responseCommand.includes(String(result?.enrollment_token || ''))) return responseCommand;
+    if (responseCommand && !responseCommand.includes('$HAM_HUB_URL')) return `${responseCommand} \\\n  --enrollment-token ${result?.enrollment_token || ''}`;
     const token = result?.enrollment_token || '';
     return `ham-bridge enroll --hub ${url} \\\n  --enrollment-token ${token}`;
   }
@@ -69,6 +78,7 @@ export default function BridgesPanel({ session }: { session?: any }) {
     try {
       const result = await createEnrollment({ label: enrollLabel.trim() || undefined, expiresInSeconds: 900 }).unwrap();
       setEnrollResult(result?.enrollment || result);
+      setHasPendingEnrollments(true);
       void enrollmentsQuery.refetch();
       void bridgesQuery.refetch();
     } catch (err: any) {
@@ -209,7 +219,7 @@ export default function BridgesPanel({ session }: { session?: any }) {
                         <span>host: <span className="text-zinc-300">{bridge?.machine_hostname || bridge?.hostname || '—'}</span></span>
                         <span>os: <span className="text-zinc-300">{bridge?.machine_os || bridge?.os || '—'}</span></span>
                         <span>arch: <span className="text-zinc-300">{bridge?.machine_arch || bridge?.arch || '—'}</span></span>
-                        <span>caps: <span className="text-zinc-300">{capabilitiesLabel(bridge)}</span></span>
+                        <span>caps: <span data-debug-id={`settings-bridge-caps-${id}`} className="text-zinc-300">{capabilitiesLabel(bridge)}</span></span>
                         <span>instances: <span className="text-zinc-300">{bridge?.active_instance_count ?? bridge?.instance_count ?? bridge?.instances?.length ?? 0}</span></span>
                         <span>last seen: <span className="text-zinc-300">{bridge?.last_seen_at ? new Date(bridge.last_seen_at).toLocaleString() : '—'}</span></span>
                       </div>
