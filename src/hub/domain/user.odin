@@ -25,4 +25,9 @@ User_API_Token :: struct {
 	last_used_at:  string,
 	expires_at:    string,
 	revoked_at:    string,
+	// Provenance (ELDA-4): 'operator' for CLI-issued tokens,
+	// 'device_authorization' for device-flow tokens. Defaults to 'operator' so
+	// pre-existing tokens stay valid after the 003 migration.
+	created_from:  string,
+	device_label:  string,
 }

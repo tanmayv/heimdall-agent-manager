@@ -101,10 +101,43 @@ issue_user_api_token :: proc(service: ^Auth_Service, input: Issue_User_API_Token
 	revoke_active_user_tokens(service, owner_id)
 	plaintext := platform.generate_id(service.ids, "hut_")
 	now := platform.clock_now(service.clock)
-	token := domain.User_API_Token{token_id = platform.generate_id(service.ids, "utok_"), owner_user_id = owner_id, label = strings.trim_space(input.label), token_hash = hash_user_api_token(plaintext), created_at = now, updated_at = now, expires_at = input.expires_at}
+	token := domain.User_API_Token{token_id = platform.generate_id(service.ids, "utok_"), owner_user_id = owner_id, label = strings.trim_space(input.label), token_hash = hash_user_api_token(plaintext), created_at = now, updated_at = now, expires_at = input.expires_at, created_from = "operator"}
 	saved, saved_ok, save_err := iface.user_token_save(service.user_tokens, token)
 	if !saved_ok do return Issue_User_API_Token_Result{}, false, save_err
 	return Issue_User_API_Token_Result{token = saved, plaintext = plaintext}, true, domain.Domain_Error{}
+}
+
+// issue_device_authorization_token issues a user API token via the device
+// authorization flow (ELDA-4). It is a SEPARATE path from issue_user_api_token:
+// it does NOT call revoke_active_user_tokens and imposes NO per-user cap, so a
+// user can authorize multiple devices and keep all their tokens active. It
+// stamps created_from='device_authorization' and records the device_label for
+// provenance. `owner` is the Auth_Context.user_id bound at approve time (never
+// client-supplied). Returns (token, plaintext, ok, err).
+issue_device_authorization_token :: proc(service: ^Auth_Service, owner: domain.User_ID, device_label: string) -> (domain.User_API_Token, string, bool, domain.Domain_Error) {
+	if service == nil || service.users == nil || service.user_tokens == nil || service.clock == nil || service.ids == nil do return domain.User_API_Token{}, "", false, domain.domain_error(.Internal_Error, "user token service is not configured")
+	owner_id := domain.User_ID(user_service.normalize_user_id(string(owner)))
+	if string(owner_id) == "" do return domain.User_API_Token{}, "", false, domain.domain_error(.Validation_Failed, "user_id is required")
+	// The owner must already exist (trusted-proxy provisioned or `users create`).
+	_, user_ok, user_err := user_service.get_user(service.users, owner_id)
+	if !user_ok do return domain.User_API_Token{}, "", false, user_err
+	// Intentionally NO revoke_active_user_tokens here: multiple device tokens
+	// per user are allowed (ELDA-4 no-cap).
+	plaintext := platform.generate_id(service.ids, "hut_")
+	now := platform.clock_now(service.clock)
+	token := domain.User_API_Token{
+		token_id = platform.generate_id(service.ids, "utok_"),
+		owner_user_id = owner_id,
+		label = strings.trim_space(device_label),
+		token_hash = hash_user_api_token(plaintext),
+		created_at = now,
+		updated_at = now,
+		created_from = "device_authorization",
+		device_label = strings.trim_space(device_label),
+	}
+	saved, saved_ok, save_err := iface.user_token_save(service.user_tokens, token)
+	if !saved_ok do return domain.User_API_Token{}, "", false, save_err
+	return saved, plaintext, true, domain.Domain_Error{}
 }
 
 // revoke_active_user_tokens revokes every non-revoked token owned by user_id.

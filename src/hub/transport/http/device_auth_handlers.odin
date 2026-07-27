@@ -11,6 +11,7 @@ package http
 
 import "core:fmt"
 import "core:strings"
+import contracts "odin_test:contracts"
 import auth_service "odin_test:hub/service/auth"
 import device_auth "odin_test:hub/service/device_auth"
 import domain "odin_test:hub/domain"
@@ -103,6 +104,49 @@ device_approve_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success("{}", req.request_id, "", 200)
 }
 
+// device_token_handler is the public POST /api/v1/device/token poll endpoint
+// (ELDA-3). No auth. Returns the device-poll lifecycle: pending (incl. unknown
+// device_code, anti-enumeration), approved (+access_token, single-use), denied,
+// expired, or slow_down (429 + Retry-After). Per-IP rate-limited.
+device_token_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	handlers := (^Device_Auth_Handlers)(ctx)
+	device_code := json_string(req.body, "device_code")
+	request_ip := device_auth.resolve_client_ip(
+		req.remote_addr, header_value(req.headers, "X-Forwarded-For"),
+		handlers.service.trusted_cidrs)
+	result, err := device_auth.poll(handlers.service, device_code, request_ip)
+	if err.code == .Rate_Limited {
+		// slow_down: 429. The body carries status=slow_down so the device backs off.
+		retry_after := handlers.service.store.config.interval
+		if retry_after <= 0 do retry_after = 5
+		headers := make([]contracts.HTTP_Header, 1)
+		headers[0] = contracts.HTTP_Header{name = "Retry-After", value = fmt.tprintf("%d", retry_after)}
+		return Response{
+			status = 429,
+			content_type = "application/json",
+			body = contracts.api_success_json(strings.concatenate({"{\"status\":\"slow_down\",\"interval\":", fmt.tprintf("%d", retry_after), "}"}), contracts.api_meta(req.request_id, "")),
+			headers = headers,
+		}
+	}
+	data := strings.builder_make()
+	#partial switch result.status {
+	case .Approved:
+		strings.write_string(&data, "{\"status\":\"approved\",\"access_token\":\"")
+		write_handler_json_string(&data, result.access_token)
+		strings.write_string(&data, "\",\"token_id\":\"")
+		write_handler_json_string(&data, result.token_id)
+		strings.write_string(&data, fmt.tprintf("\",\"expires_in\":%d}", result.expires_in))
+	case .Denied:
+		strings.write_string(&data, "{\"status\":\"denied\"}")
+	case .Expired:
+		strings.write_string(&data, "{\"status\":\"expired\"}")
+	case .Slow_Down:
+		strings.write_string(&data, "{\"status\":\"slow_down\"}")
+	case: // .Pending (covers unknown device_code too — anti-enumeration)
+		strings.write_string(&data, "{\"status\":\"pending\"}")
+	}
+	return respond_success(strings.to_string(data), req.request_id, "", 200)
+}
 // json_bool extracts a boolean field from a JSON body (default false). Tolerates
 // optional whitespace after the colon.
 json_bool :: proc(body, key: string) -> bool {

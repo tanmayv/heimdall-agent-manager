@@ -60,7 +60,7 @@ user_token_save_sqlite :: proc(ctx: rawptr, token: domain.User_API_Token) -> (do
 	impl := (^User_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil do return domain.User_API_Token{}, false, domain.domain_error(.Internal_Error, "sqlite user token repository is not open")
 	stmt: sqlite3_stmt = nil
-	query := "INSERT INTO user_api_tokens (token_id, owner_user_id, label, token_hash, created_at, updated_at, last_used_at, expires_at, revoked_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(token_id) DO UPDATE SET label=excluded.label, updated_at=excluded.updated_at, last_used_at=excluded.last_used_at, expires_at=excluded.expires_at, revoked_at=excluded.revoked_at;"
+	query := "INSERT INTO user_api_tokens (token_id, owner_user_id, label, token_hash, created_at, updated_at, last_used_at, expires_at, revoked_at, created_from, device_label) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(token_id) DO UPDATE SET label=excluded.label, updated_at=excluded.updated_at, last_used_at=excluded.last_used_at, expires_at=excluded.expires_at, revoked_at=excluded.revoked_at, created_from=excluded.created_from, device_label=excluded.device_label;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.User_API_Token{}, false, domain.domain_error(.Internal_Error, "failed to prepare user token save")
 	defer sqlite3_finalize(stmt)
 	bind_token(stmt, token)
@@ -80,7 +80,7 @@ user_token_get_by_column :: proc(ctx: rawptr, column, value: string) -> (domain.
 	impl := (^User_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil do return domain.User_API_Token{}, false, domain.domain_error(.Internal_Error, "sqlite user token repository is not open")
 	stmt: sqlite3_stmt = nil
-	query := strings.concatenate({"SELECT token_id, owner_user_id, label, token_hash, created_at, updated_at, last_used_at, expires_at, revoked_at FROM user_api_tokens WHERE ", column, " = ?;"})
+	query := strings.concatenate({"SELECT token_id, owner_user_id, label, token_hash, created_at, updated_at, last_used_at, expires_at, revoked_at, created_from, device_label FROM user_api_tokens WHERE ", column, " = ?;"})
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return domain.User_API_Token{}, false, domain.domain_error(.Internal_Error, "failed to prepare user token lookup")
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, value)
@@ -92,7 +92,7 @@ user_token_list_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_
 	impl := (^User_Repo_SQLite)(ctx)
 	if impl == nil || impl.conn == nil || impl.conn.db == nil do return nil, domain.domain_error(.Internal_Error, "sqlite user token repository is not open")
 	stmt: sqlite3_stmt = nil
-	query := "SELECT token_id, owner_user_id, label, token_hash, created_at, updated_at, last_used_at, expires_at, revoked_at FROM user_api_tokens WHERE owner_user_id = ? ORDER BY created_at DESC;"
+	query := "SELECT token_id, owner_user_id, label, token_hash, created_at, updated_at, last_used_at, expires_at, revoked_at, created_from, device_label FROM user_api_tokens WHERE owner_user_id = ? ORDER BY created_at DESC;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare user token list")
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, string(owner_user_id))
@@ -123,6 +123,8 @@ bind_token :: proc(stmt: sqlite3_stmt, token: domain.User_API_Token) {
 	bind_text(stmt, 7, token.last_used_at)
 	bind_text(stmt, 8, token.expires_at)
 	bind_text(stmt, 9, token.revoked_at)
+	bind_text(stmt, 10, token.created_from)
+	bind_text(stmt, 11, token.device_label)
 }
 
 token_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.User_API_Token {
@@ -136,6 +138,8 @@ token_from_stmt :: proc(stmt: sqlite3_stmt) -> domain.User_API_Token {
 		last_used_at = column_text(stmt, 6),
 		expires_at = column_text(stmt, 7),
 		revoked_at = column_text(stmt, 8),
+		created_from = column_text(stmt, 9),
+		device_label = column_text(stmt, 10),
 	}
 }
 

@@ -51,6 +51,7 @@ main :: proc() {
 	listed, list_err := auth_service.list_user_api_tokens(&graph.auth, alice.user_id)
 	check(list_err.code == .None && len(listed) == 1, "list must return one token metadata row")
 	check(listed[0].label == "alice laptop" && listed[0].token_hash != issued.plaintext, "list must expose metadata and never plaintext")
+	check(listed[0].created_from == "operator" && listed[0].device_label == "", "operator token provenance defaults must be surfaced in list")
 
 	auth_header := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", issued.plaintext})}}
 	me := api_http.router_dispatch(&graph.router, api_http.Request{method = "GET", path = "/api/v1/me", request_id = "req_user_token", remote_addr = "10.99.0.5", headers = auth_header[:]})
@@ -86,6 +87,35 @@ main :: proc() {
 	second_me := api_http.router_dispatch(&graph.router, api_http.Request{method = "GET", path = "/api/v1/me", request_id = "req_second", remote_addr = "10.99.0.5", headers = second_header[:]})
 	check(second_me.status == 200, "newest active token must authenticate after reissue")
 
+	// Device-flow issuance is a separate no-revoke/no-cap path: issuing multiple
+	// device tokens must leave the existing operator token and prior devices active.
+	dev1, dev1_plain, dev1_ok, dev1_err := auth_service.issue_device_authorization_token(&graph.auth, alice.user_id, "Alice MBP")
+	check(dev1_ok, dev1_err.message)
+	dev2, dev2_plain, dev2_ok, dev2_err := auth_service.issue_device_authorization_token(&graph.auth, alice.user_id, "Alice iMac")
+	check(dev2_ok, dev2_err.message)
+	check(dev1.created_from == "device_authorization" && dev1.device_label == "Alice MBP", "device token provenance must be stored")
+	check(dev2.created_from == "device_authorization" && dev2.device_label == "Alice iMac", "second device token provenance must be stored")
+	device_list, device_list_err := auth_service.list_user_api_tokens(&graph.auth, alice.user_id)
+	check(device_list_err.code == .None, "list after device issuance must not error")
+	active_after_devices := 0
+	device_count := 0
+	for t in device_list {
+		if t.revoked_at == "" do active_after_devices += 1
+		if t.created_from == "device_authorization" do device_count += 1
+	}
+	check(active_after_devices == 3, "device issuance must not revoke existing operator or device tokens")
+	check(device_count >= 2, "tokens list must surface multiple device token provenance rows")
+	dev1_header := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", dev1_plain})}}
+	dev2_header := [?]contracts.HTTP_Header{{name = "Authorization", value = strings.concatenate({"Bearer ", dev2_plain})}}
+	dev1_me := api_http.router_dispatch(&graph.router, api_http.Request{method = "GET", path = "/api/v1/me", request_id = "req_dev1", remote_addr = "10.99.0.5", headers = dev1_header[:]})
+	dev2_me := api_http.router_dispatch(&graph.router, api_http.Request{method = "GET", path = "/api/v1/me", request_id = "req_dev2", remote_addr = "10.99.0.5", headers = dev2_header[:]})
+	check(dev1_me.status == 200 && dev2_me.status == 200, "multiple device tokens must remain concurrently active")
+	dev1_revoked, dev1_revoked_ok, dev1_revoke_err := auth_service.revoke_user_api_token(&graph.auth, dev1.token_id)
+	check(dev1_revoked_ok && dev1_revoked.revoked_at != "", dev1_revoke_err.message)
+	dev1_after_revoke := api_http.router_dispatch(&graph.router, api_http.Request{method = "GET", path = "/api/v1/me", request_id = "req_dev1_revoked", remote_addr = "10.99.0.5", headers = dev1_header[:]})
+	dev2_after_revoke := api_http.router_dispatch(&graph.router, api_http.Request{method = "GET", path = "/api/v1/me", request_id = "req_dev2_still_active", remote_addr = "10.99.0.5", headers = dev2_header[:]})
+	check(dev1_after_revoke.status == 401 && dev2_after_revoke.status == 200, "tokens revoke must revoke one device token without revoking other devices")
+
 	expired_user, _, _ := user_service.create_user(&graph.users, user_service.Create_User_Input{name = "Expiry", email = "expiry@example.com"})
 	expired, expired_ok, expired_err := auth_service.issue_user_api_token(&graph.auth, auth_service.Issue_User_API_Token_Input{owner_user_id = expired_user.user_id, label = "expired", expires_at = "2000-01-01T00:00:00Z"})
 	check(expired_ok, expired_err.message)
@@ -118,6 +148,7 @@ test_old_user_api_token_table_upgrade :: proc() {
 	check(issued_ok, issued_err.message)
 	listed, list_err := auth_service.list_user_api_tokens(&graph.auth, upgrade_user.user_id)
 	check(list_err.code == .None && len(listed) == 1 && listed[0].label == "after upgrade", "upgraded old token table must support new token metadata")
+	check(listed[0].created_from == "operator" && listed[0].device_label == "", "upgraded old token table must default provenance columns")
 	app.shutdown_graph(&graph)
 	_ = os.remove(db_path)
 }

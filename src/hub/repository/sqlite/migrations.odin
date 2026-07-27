@@ -232,13 +232,25 @@ CREATE TRIGGER IF NOT EXISTS user_api_tokens_owner_immutable BEFORE UPDATE OF ow
 CREATE UNIQUE INDEX IF NOT EXISTS idx_user_api_tokens_token_hash ON user_api_tokens(token_hash);
 `
 
-migration_order :: [2]string{"001_foundation.sql", "002_owner_scoped_core.sql"}
+// MIGRATION_003_DEVICE_TOKENS is the embedded fallback for the token-provenance
+// migration (ELDA-4). The canonical source is
+// src/hub/repository/sqlite/migrations/003_device_tokens.sql.
+MIGRATION_003_DEVICE_TOKENS :: `ALTER TABLE user_api_tokens ADD COLUMN created_from TEXT NOT NULL DEFAULT 'operator';
+ALTER TABLE user_api_tokens ADD COLUMN device_label TEXT NOT NULL DEFAULT '';
+`
+
+migration_order :: [3]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
 		return false, domain.domain_error(.Internal_Error, "database connection is not open")
 	}
 	for name in migration_order {
+		if migration_applied(conn, name) do continue
+		if name == "003_device_tokens.sql" && table_column_exists(conn, "user_api_tokens", "created_from") && table_column_exists(conn, "user_api_tokens", "device_label") {
+			mark_migration_applied(conn, name)
+			continue
+		}
 		sql := migration_sql(name, migrations_dir)
 		if sql == "" {
 			return false, domain.domain_error(.Internal_Error, fmt.tprintf("missing migration %s", name))
@@ -263,7 +275,16 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	}
 	if name == "001_foundation.sql" do return strings.clone(MIGRATION_001_FOUNDATION)
 	if name == "002_owner_scoped_core.sql" do return strings.clone(MIGRATION_002_OWNER_SCOPED_CORE)
+	if name == "003_device_tokens.sql" do return strings.clone(MIGRATION_003_DEVICE_TOKENS)
 	return ""
+}
+
+migration_applied :: proc(conn: ^Conn, version: string) -> bool {
+	stmt: sqlite3_stmt = nil
+	query := fmt.tprintf("SELECT 1 FROM schema_migrations WHERE version='%s' LIMIT 1;", escape_sql_literal(version))
+	if sqlite3_prepare_v2(conn.db, cstring(raw_data(query)), c.int(-1), &stmt, nil) != SQLITE_OK do return false
+	defer sqlite3_finalize(stmt)
+	return sqlite3_step(stmt) == SQLITE_ROW
 }
 
 mark_migration_applied :: proc(conn: ^Conn, version: string) {
@@ -276,6 +297,8 @@ upgrade_user_api_tokens_schema :: proc(conn: ^Conn) -> bool {
 	if !table_column_exists(conn, "user_api_tokens", "last_used_at") && !exec(conn, "ALTER TABLE user_api_tokens ADD COLUMN last_used_at TEXT NOT NULL DEFAULT '';") do return false
 	if !table_column_exists(conn, "user_api_tokens", "expires_at") && !exec(conn, "ALTER TABLE user_api_tokens ADD COLUMN expires_at TEXT NOT NULL DEFAULT '';") do return false
 	if !table_column_exists(conn, "user_api_tokens", "revoked_at") && !exec(conn, "ALTER TABLE user_api_tokens ADD COLUMN revoked_at TEXT NOT NULL DEFAULT '';") do return false
+	if !table_column_exists(conn, "user_api_tokens", "created_from") && !exec(conn, "ALTER TABLE user_api_tokens ADD COLUMN created_from TEXT NOT NULL DEFAULT 'operator';") do return false
+	if !table_column_exists(conn, "user_api_tokens", "device_label") && !exec(conn, "ALTER TABLE user_api_tokens ADD COLUMN device_label TEXT NOT NULL DEFAULT '';") do return false
 	if !exec(conn, "CREATE UNIQUE INDEX IF NOT EXISTS idx_user_api_tokens_token_hash ON user_api_tokens(token_hash);") do return false
 	return true
 }

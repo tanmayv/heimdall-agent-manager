@@ -8,6 +8,7 @@ import bridge_service "odin_test:hub/service/bridge"
 import bridge_runtime_service "odin_test:hub/service/bridge_runtime"
 import content_service "odin_test:hub/service/content"
 import device_auth_service "odin_test:hub/service/device_auth"
+import domain "odin_test:hub/domain"
 import events "odin_test:hub/service/events"
 import project_service "odin_test:hub/service/project"
 import search_service "odin_test:hub/service/search"
@@ -99,6 +100,10 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		rate_window = config.device_auth_rate_window,
 	})
 	graph.device_auth = device_auth_service.new_device_auth_service(&graph.device_auth_store, device_auth_service.real_monotonic_clock(), config.trusted_proxy_cidrs)
+	// Wire the device-flow token issuer (ELDA-4). The minter captures the graph
+	// so approve() can pre-mint a no-revoke, no-cap device token on the bound
+	// owner and the grant holds the plaintext for the first poll.
+	device_auth_service.with_token_minter(&graph.device_auth, device_minter, rawptr(graph))
 	graph.user_handlers = http.User_Handlers{auth = &graph.auth, event_bus = &graph.event_bus}
 	graph.bridge_handlers = http.Bridge_Handlers{auth = &graph.auth, bridges = &graph.bridges, agents = &graph.agents, event_bus = &graph.event_bus, bridge_runtime_registry = &graph.bridge_runtime_registry}
 	graph.agent_handlers = http.Agent_Handlers{auth = &graph.auth, agents = &graph.agents, event_bus = &graph.event_bus}
@@ -125,6 +130,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/device", rawptr(&graph.device_auth_handlers), http.device_page_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/device/verify", rawptr(&graph.device_auth_handlers), http.device_verify_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/device/approve", rawptr(&graph.device_auth_handlers), http.device_approve_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/device/token", rawptr(&graph.device_auth_handlers), http.device_token_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me", rawptr(&graph.user_handlers), http.me_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me/logout-url", rawptr(&graph.user_handlers), http.logout_url_handler)
 	http.router_add_upgrade(&graph.router, "GET", "/api/v1/user-ws", rawptr(&graph.user_handlers), http.user_ws_upgrade_handler)
@@ -202,4 +208,14 @@ health_handler :: proc(ctx: rawptr, req: http.Request) -> http.Response {
 	graph := (^App_Graph)(ctx)
 	server_time := platform.clock_now(&graph.clock)
 	return http.respond_success("{\"ok\":true,\"version\":1}", req.request_id, server_time)
+}
+
+// device_minter is the task-3 token issuer wired into approve (ELDA-4). It
+// issues a user API token via the device-authorization path (no revoke, no cap,
+// created_from='device_authorization') and returns the plaintext + token_id so
+// the grant can hand it out on the first successful /device/token poll.
+device_minter :: proc(graph_ptr: rawptr, user_id, client, device_label: string) -> (string, string, bool) {
+	graph := (^App_Graph)(graph_ptr)
+	token, plaintext, ok, _ := auth_service.issue_device_authorization_token(&graph.auth, domain.User_ID(user_id), device_label)
+	return plaintext, token.token_id, ok
 }

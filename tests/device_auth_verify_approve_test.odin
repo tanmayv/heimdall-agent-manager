@@ -45,12 +45,14 @@ fake_clock :: proc() -> device_auth.Monotonic_Clock { return {now = fake_now} }
 // --- Fake token minter (records what approve passed it) ---
 MINT_CALLS: [dynamic]Mint_Call
 MINT_RETURN: string = "tok_fake_123"
+MINT_TOKEN_ID: string = "utok_fake_123"
 
 Mint_Call :: struct{user, client, label: string}
 
-fake_minter :: proc(user_id, client, device_label: string) -> (string, bool) {
+fake_minter :: proc(ctx: rawptr, user_id, client, device_label: string) -> (string, string, bool) {
+	_ = ctx
 	append(&MINT_CALLS, Mint_Call{user_id, client, device_label})
-	return MINT_RETURN, true
+	return MINT_RETURN, MINT_TOKEN_ID, true
 }
 
 new_service :: proc() -> (^device_auth.Grant_Store, device_auth.Device_Auth_Service) {
@@ -118,6 +120,7 @@ main :: proc() {
 	assert_eq(MINT_CALLS[0].user, "real-owner-001", "minter got context owner")
 	assert_eq(MINT_CALLS[0].client, "electron", "minter got client")
 	assert_eq(grant_after.minted_token, "tok_fake_123", "pre-minted token stored on grant")
+	assert_eq(grant_after.minted_token_id, "utok_fake_123", "pre-minted token_id stored on grant")
 	fmt.println("AC4+AC6 OK: owner from context, audit fields + pre-mint recorded")
 
 	// --- AC5: terminal grant closed (verify -> Gone, approve -> Conflict) ---

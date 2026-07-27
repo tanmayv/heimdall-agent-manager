@@ -131,6 +131,8 @@ print_token_metadata :: proc(token: domain.User_API_Token) {
 		"token_id=", token.token_id,
 		" user_id=", string(token.owner_user_id),
 		" label=", token.label,
+		" created_from=", token.created_from,
+		" device_label=", token.device_label,
 		" status=", status,
 		" created_at=", token.created_at,
 		" last_used_at=", token.last_used_at,

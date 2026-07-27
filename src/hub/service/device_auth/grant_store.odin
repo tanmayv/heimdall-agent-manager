@@ -16,6 +16,7 @@
 
 package device_auth
 
+import "core:strings"
 import "core:sync"
 import "core:time"
 
@@ -25,6 +26,7 @@ Grant_Status :: enum {
 	Approved,
 	Denied,
 	Expired,
+	Used, // token handed out on first successful poll (single-use, ELDA-3)
 }
 
 // Grant is one device-authorization flow. Fields populated over time:
@@ -45,9 +47,11 @@ Grant :: struct {
 	expires_at:     i64,   // unix seconds
 	status:         Grant_Status,
 	minted_token:   string,
+	minted_token_id: string,
 	approver_ip:    string,
 	approver_ua:    string,
 	decided_at:     i64,
+	last_poll_at:   i64, // unix seconds of the last /device/token poll (slow_down gating)
 }
 
 // Authorize_Input is the public /device/authorize request body (ELDA-1).
@@ -149,7 +153,9 @@ allow_authorize :: proc(store: ^Grant_Store, ip: string, now: i64) -> bool {
 	window := i64(store.config.rate_window)
 	if window <= 0 do window = 60
 	if !has || now - entry.window_start >= window {
-		store.rate[ip] = Rate_Limit_Entry{window_start = now, count = 1}
+		// Map string keys keep the string header/data; clone request-derived IPs so
+		// rate-limit entries never point at temporary request buffers.
+		store.rate[strings.clone(ip)] = Rate_Limit_Entry{window_start = now, count = 1}
 		return true
 	}
 	if entry.count >= store.config.rate_limit do return false

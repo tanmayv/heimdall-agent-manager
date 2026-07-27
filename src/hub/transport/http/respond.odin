@@ -7,6 +7,7 @@ Response :: struct {
 	status:       int,
 	content_type: string,
 	body:         string,
+	headers:      []contracts.HTTP_Header,
 }
 
 respond_success :: proc(data_json: string, request_id, server_time: string, status := 200) -> Response {

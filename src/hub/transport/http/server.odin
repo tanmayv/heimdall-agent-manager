@@ -144,7 +144,14 @@ write_http_response :: proc(client: net.TCP_Socket, resp: Response) {
 	content_type := resp.content_type
 	if content_type == "" do content_type = "application/json"
 	b := strings.builder_make()
-	strings.write_string(&b, fmt.tprintf("HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n", resp.status, status_text(resp.status), content_type, len(body)))
+	strings.write_string(&b, fmt.tprintf("HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\n", resp.status, status_text(resp.status), content_type, len(body)))
+	for h in resp.headers {
+		strings.write_string(&b, h.name)
+		strings.write_string(&b, ": ")
+		strings.write_string(&b, h.value)
+		strings.write_string(&b, "\r\n")
+	}
+	strings.write_string(&b, "\r\n")
 	strings.write_string(&b, body)
 	raw := strings.to_string(b)
 	_, _ = net.send_tcp(client, transmute([]byte)raw)
@@ -161,6 +168,7 @@ status_text :: proc(status: int) -> string {
 	case 403: return "Forbidden"
 	case 404: return "Not Found"
 	case 409: return "Conflict"
+	case 410: return "Gone"
 	case 429: return "Too Many Requests"
 	case 500: return "Internal Server Error"
 	case 503: return "Service Unavailable"
