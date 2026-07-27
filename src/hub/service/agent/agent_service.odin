@@ -27,6 +27,8 @@ Create_Agent_Input :: struct {
 	default_provider: string,
 	default_tier: string,
 	instructions: string,
+	has_default_provider: bool,
+	has_default_tier: bool,
 }
 
 Support_Input :: struct {
@@ -41,6 +43,12 @@ Support_Input :: struct {
 Run_Request :: struct {
 	provider: string,
 	tier: string,
+}
+
+List_Instances_Filter :: struct {
+	agent_id: string,
+	bridge_id: string,
+	runtime_status: string,
 }
 
 Create_Instance_Input :: struct {
@@ -92,8 +100,8 @@ update_agent :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agen
 	if !ok do return domain.Agent{}, false, err
 	if input.name != "" do agent.name = input.name
 	if input.slug != "" do agent.slug = input.slug
-	if input.default_provider != "" do agent.default_provider = input.default_provider
-	if input.default_tier != "" do agent.default_tier = input.default_tier
+	if input.has_default_provider || input.default_provider != "" do agent.default_provider = input.default_provider
+	if input.has_default_tier || input.default_tier != "" do agent.default_tier = input.default_tier
 	if input.instructions != "" do agent.instructions = input.instructions
 	agent.updated_at = platform.clock_now(service.clock)
 	return iface.agent_save(service.agents, agent)
@@ -199,9 +207,22 @@ create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, i
 }
 
 list_instances :: proc(service: ^Agent_Service, auth: contracts.Auth_Context) -> ([]domain.Agent_Instance, domain.Domain_Error) {
+	return list_instances_filtered(service, auth, List_Instances_Filter{})
+}
+
+list_instances_filtered :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, filter: List_Instances_Filter) -> ([]domain.Agent_Instance, domain.Domain_Error) {
 	owner, ok, err := ownership.owner_from_auth(auth)
 	if !ok do return nil, err
-	return iface.agent_list_instances_by_owner(service.agents, owner)
+	instances, list_err := iface.agent_list_instances_by_owner(service.agents, owner)
+	if list_err.code != .None do return nil, list_err
+	out := make([dynamic]domain.Agent_Instance)
+	for inst in instances {
+		if filter.agent_id != "" && inst.agent_id != filter.agent_id do continue
+		if filter.bridge_id != "" && inst.bridge_id != filter.bridge_id do continue
+		if filter.runtime_status != "" && inst.runtime_status != filter.runtime_status do continue
+		append(&out, inst)
+	}
+	return out[:], domain.Domain_Error{}
 }
 
 active_instance_count_for_bridge :: proc(service: ^Agent_Service, bridge_id: string) -> int {
@@ -535,7 +556,7 @@ resolve_provider_tier :: proc(service: ^Agent_Service, auth: contracts.Auth_Cont
 	if !bridge_ok do return domain.Resolved_Provider_Tier{}, false, bridge_err
 	// HBR-11 resolution order: request > support override > agent default > Bridge default.
 	provider := first_non_empty(req.provider, support.provider, agent.default_provider, default_provider_from_bridge(bridge))
-	tier := first_non_empty(req.tier, support.tier, agent.default_tier, default_tier_from_bridge(bridge))
+	tier := first_non_empty(req.tier, support.tier, agent.default_tier, default_tier_for_provider_from_bridge(bridge, provider))
 	return validate_provider_tier_intersection(bridge, support, provider, tier)
 }
 
@@ -549,11 +570,13 @@ validate_pinned_provider_tier :: proc(service: ^Agent_Service, auth: contracts.A
 	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, inst.bridge_id)
 	if !bridge_ok do return domain.Resolved_Provider_Tier{}, false, bridge_err
 	resolved_provider := first_non_empty(provider, support.provider, agent.default_provider, default_provider_from_bridge(bridge))
-	resolved_tier := first_non_empty(tier, support.tier, agent.default_tier, default_tier_from_bridge(bridge))
+	resolved_tier := first_non_empty(tier, support.tier, agent.default_tier, default_tier_for_provider_from_bridge(bridge, resolved_provider))
 	return validate_provider_tier_intersection(bridge, support, resolved_provider, resolved_tier)
 }
 
 validate_provider_tier_intersection :: proc(bridge: domain.Bridge, support: domain.Agent_Bridge_Support, provider, tier: string) -> (domain.Resolved_Provider_Tier, bool, domain.Domain_Error) {
+	if strings.trim_space(provider) == "" do return domain.Resolved_Provider_Tier{}, false, domain.domain_error(.Provider_Unavailable, "no provider is available on bridge")
+	if strings.trim_space(tier) == "" do return domain.Resolved_Provider_Tier{}, false, domain.domain_error(.Provider_Unavailable, "no tier is available for resolved provider")
 	if support.provider != "" && provider != support.provider do return domain.Resolved_Provider_Tier{}, false, domain.domain_error(.Provider_Unavailable, "provider is not enabled by agent bridge support")
 	if support.tier != "" && tier != support.tier do return domain.Resolved_Provider_Tier{}, false, domain.domain_error(.Provider_Unavailable, "tier is not enabled by agent bridge support")
 	if !bridge_supports_provider_tier(bridge, provider, tier) do return domain.Resolved_Provider_Tier{}, false, domain.domain_error(.Provider_Unavailable, "bridge does not support resolved provider/tier")
@@ -561,7 +584,7 @@ validate_provider_tier_intersection :: proc(bridge: domain.Bridge, support: doma
 }
 
 bridge_supports_provider_tier :: proc(bridge: domain.Bridge, provider, tier: string) -> bool {
-	if provider == "" do return true
+	if provider == "" do return false
 	caps := bridge.capabilities_json
 	if caps == "" do return false
 	search_from := 0
@@ -619,7 +642,7 @@ select_bridge_for_agent :: proc(service: ^Agent_Service, auth: contracts.Auth_Co
 		bridge, bridge_ok, _ := iface.bridge_get_bridge(service.bridges, support.bridge_id)
 		if !bridge_ok || bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, bridge.bridge_id) do continue
 		provider := first_non_empty(req.provider, support.provider, agent.default_provider, default_provider_from_bridge(bridge))
-		tier := first_non_empty(req.tier, support.tier, agent.default_tier, default_tier_from_bridge(bridge))
+		tier := first_non_empty(req.tier, support.tier, agent.default_tier, default_tier_for_provider_from_bridge(bridge, provider))
 		if !bridge_supports_provider_tier(bridge, provider, tier) do continue
 		if !found || support.priority > best_priority {
 			best = bridge
@@ -697,6 +720,25 @@ write_service_json_string :: proc(b: ^strings.Builder, value: string) {
 
 default_provider_from_bridge :: proc(bridge: domain.Bridge) -> string { return json_value(bridge.capabilities_json, "provider") }
 default_tier_from_bridge :: proc(bridge: domain.Bridge) -> string { return json_value(bridge.capabilities_json, "default_tier") }
+default_tier_for_provider_from_bridge :: proc(bridge: domain.Bridge, provider: string) -> string {
+	if provider == "" do return default_tier_from_bridge(bridge)
+	caps := bridge.capabilities_json
+	search_from := 0
+	for search_from < len(caps) {
+		rel := strings.index(caps[search_from:], "\"provider\"")
+		if rel < 0 do break
+		idx := search_from + rel
+		value := json_value_at(caps, "provider", idx)
+		if value == provider {
+			next_rel := strings.index(caps[idx + len("\"provider\""):], "\"provider\"")
+			end := len(caps)
+			if next_rel >= 0 do end = idx + len("\"provider\"") + next_rel
+			return json_value(caps[idx:end], "default_tier")
+		}
+		search_from = idx + len("\"provider\"")
+	}
+	return default_tier_from_bridge(bridge)
+}
 first_non_empty :: proc(a, b, c, d: string) -> string { if a != "" do return a; if b != "" do return b; if c != "" do return c; return d }
 
 json_value :: proc(body, key: string) -> string {

@@ -122,7 +122,7 @@ list_agent_instances_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
 	if !ok do return auth_resp
-	instances, err := agent_service.list_instances(h.agents, auth_ctx)
+	instances, err := agent_service.list_instances_filtered(h.agents, auth_ctx, agent_service.List_Instances_Filter{agent_id = query_value(req.query, "agent_id"), bridge_id = query_value(req.query, "bridge_id"), runtime_status = query_value(req.query, "runtime_status")})
 	if err.code != .None do return respond_error(err, req.request_id)
 	b := strings.builder_make(); strings.write_byte(&b, '[')
 	for inst, i in instances { if i > 0 do strings.write_byte(&b, ','); write_agent_instance_json(&b, inst) }
@@ -187,7 +187,7 @@ patch_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
 }
 
 agent_input_from_body :: proc(body: string) -> agent_service.Create_Agent_Input {
-	return agent_service.Create_Agent_Input{name = json_string(body, "name"), slug = json_string(body, "slug"), template_id = json_string(body, "template_id"), default_provider = json_string(body, "default_provider"), default_tier = json_string(body, "default_tier"), instructions = json_string(body, "instructions")}
+	return agent_service.Create_Agent_Input{name = json_string(body, "name"), slug = json_string(body, "slug"), template_id = json_string(body, "template_id"), default_provider = json_string(body, "default_provider"), default_tier = json_string(body, "default_tier"), instructions = json_string(body, "instructions"), has_default_provider = strings.contains(body, "\"default_provider\""), has_default_tier = strings.contains(body, "\"default_tier\"")}
 }
 
 instance_input_from_body :: proc(body: string) -> agent_service.Create_Instance_Input {
@@ -204,16 +204,32 @@ support_input_from_body :: proc(body: string) -> agent_service.Support_Input {
 
 support_inputs_from_body :: proc(body: string) -> []agent_service.Support_Input {
 	out := make([dynamic]agent_service.Support_Input)
-	search_from := 0
-	for search_from < len(body) {
-		rel := strings.index(body[search_from:], "\"bridge_id\"")
-		if rel < 0 do break
-		idx := search_from + rel
-		next_rel := strings.index(body[idx + len("\"bridge_id\""):], "\"bridge_id\"")
-		end := len(body)
-		if next_rel >= 0 do end = idx + len("\"bridge_id\"") + next_rel
-		append(&out, support_input_from_body(body[idx:end]))
-		search_from = end
+	bridges_array := json_array_optional(body, "bridges")
+	if strings.trim_space(bridges_array) != "" && bridges_array != "[]" {
+		for obj in support_object_list_from_array(bridges_array) do append(&out, support_input_from_body(obj))
+		return out[:]
+	}
+	if strings.contains(body, "\"bridge_id\"") do append(&out, support_input_from_body(body))
+	return out[:]
+}
+
+support_object_list_from_array :: proc(array: string) -> []string {
+	out := make([dynamic]string)
+	depth := 0
+	in_string := false
+	escaped := false
+	start := -1
+	for i := 0; i < len(array); i += 1 {
+		ch := array[i]
+		if in_string {
+			if escaped { escaped = false; continue }
+			if ch == '\\' { escaped = true; continue }
+			if ch == '"' do in_string = false
+			continue
+		}
+		if ch == '"' { in_string = true; continue }
+		if ch == '{' { if depth == 0 do start = i; depth += 1; continue }
+		if ch == '}' { depth -= 1; if depth == 0 && start >= 0 { append(&out, array[start:i + 1]); start = -1 } }
 	}
 	return out[:]
 }
