@@ -30,6 +30,7 @@ export const HEIMDALL_TAG_TYPES = [
   'BridgeSupport',
   'Bridges',
   'BridgeEnrollments',
+  'BridgeProviders',
   'ProjectBridgePaths',
   // UI-14: cookie-auth sidebar data owned by the live shell.
   'SidebarConversations',

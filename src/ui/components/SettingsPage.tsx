@@ -10,6 +10,7 @@ import { useDeleteProjectMutation, useFetchProjectQuery, useListProjectsQuery, u
 import { useFetchAgentDefaultsQuery, useFetchPreferencesQuery, useFetchSettingsCatalogQuery, useSaveAgentDefaultMutation, useSavePreferenceMutation, useLazyFetchAgentTemplateQuery } from '../api/endpoints/settings';
 import { useListBridgesQuery, usePutProjectBridgePathMutation, useDeleteProjectBridgePathMutation, useValidateProjectBridgePathMutation } from '../api/endpoints/bridgeSupport';
 import BridgesPanel from './settings/BridgesPanel';
+import { ProvidersPanel as BridgeProvidersPanel } from './settings/ProvidersPanel';
 import { selectProject } from '../store/projectSlice';
 import { VimEditButton } from './VimSidebar';
 import ChatHoverCopyButton from './ChatHoverCopyButton';
@@ -102,7 +103,7 @@ export default function SettingsPage({ session, onReconnect, onBack }: any) {
           <button data-debug-id="settings-close-btn" type="button" onClick={onBack} title="Close settings" className="absolute right-5 top-5 rounded-md border border-white/10 bg-[#141414] px-2 py-1 text-sm text-zinc-400 hover:text-zinc-100">✕</button>
           {selected === 'defaults' && <DefaultAgentsPanel defaults={agentDefaultsQuery.data?.defaults || []} identities={agentsQuery.data?.identities || []} agents={agents} loading={agentDefaultsQuery.isFetching} onRefresh={() => agentDefaultsQuery.refetch()} onSave={async (use: string, agentId: string) => { await saveAgentDefault({ use, agentId }).unwrap(); }} />}
           {selected === 'templates' && <TemplatesPanel templates={settingsCatalogQuery.data?.templates || []} session={effectiveSession} providers={providers} onRefetchTemplates={() => settingsCatalogQuery.refetch()} />}
-          {selected === 'providers' && <ProvidersPanel providers={providers} preferences={preferences || []} session={effectiveSession} daemonProfiles={daemonProfiles} onSaveDefault={async (key: string, value: string) => { await savePreference({ key, value }).unwrap(); }} />}
+          {selected === 'providers' && <BridgeProvidersPanel />}
           {selected === 'bridges' && <BridgesPanel />}
           {selected === 'projects' && <ProjectsPanel projects={projects} selectedProjectId={selectedProjectListId} selectedProject={selectedProject} loading={projectsQuery.isFetching || selectedProjectQuery.isFetching} mutating={updateProjectState.isLoading || deleteProjectState.isLoading} error={(updateProjectState.error || deleteProjectState.error) ? 'Project mutation failed' : ''} onSelect={(projectId: string) => { dispatch(selectProject(projectId)); }} onSave={(payload: any) => updateProject(payload).unwrap()} onDelete={async (projectId: string) => { await deleteProject({ projectId }).unwrap(); if (selectedProjectListId === projectId) dispatch(selectProject('')); }} />}
           {selected === 'memory' && <MemoryPanel records={memoryRecords} loading={memoryQuery.isFetching} />}

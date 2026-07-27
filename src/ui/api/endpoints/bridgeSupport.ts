@@ -145,6 +145,62 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: [{ type: 'BridgeEnrollments' as const, id: 'LIST' }],
     }),
+    listBridgeProviders: build.query<any, { bridgeId: string }>({
+      queryFn: async ({ bridgeId }) => {
+        if (!bridgeId) return { data: { bridge_id: '', providers: [] } };
+        try {
+          const data = await cookieJsonFetch(`/bridges/${encodeURIComponent(bridgeId)}/providers`);
+          return { data: { bridge_id: data?.bridge_id || bridgeId, providers: Array.isArray(data?.providers) ? data.providers : [] } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }],
+    }),
+    upsertBridgeProvider: build.mutation<any, { bridgeId: string; name: string; profile: any }>({
+      queryFn: async ({ bridgeId, name, profile }) => {
+        try {
+          const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/providers/${encodeURIComponent(name)}`, 'PUT', profile);
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }, { type: 'Bridges' as const, id: 'LIST' }, { type: 'Bridges' as const, id: bridgeId }],
+    }),
+    deleteBridgeProvider: build.mutation<any, { bridgeId: string; name: string }>({
+      queryFn: async ({ bridgeId, name }) => {
+        try {
+          const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/providers/${encodeURIComponent(name)}`, 'DELETE');
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }, { type: 'Bridges' as const, id: 'LIST' }, { type: 'Bridges' as const, id: bridgeId }],
+    }),
+    testBridgeProvider: build.mutation<any, { bridgeId: string; name: string; tier?: string }>({
+      queryFn: async ({ bridgeId, name, tier }) => {
+        try {
+          const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/providers/${encodeURIComponent(name)}/test`, 'POST', { tier });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }],
+    }),
+    refreshBridgeCapabilities: build.mutation<any, { bridgeId: string }>({
+      queryFn: async ({ bridgeId }) => {
+        try {
+          const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/providers/refresh`, 'POST');
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }, { type: 'Bridges' as const, id: 'LIST' }, { type: 'Bridges' as const, id: bridgeId }],
+    }),
     putProjectBridgePath: build.mutation<any, { projectId: string; bridgeId: string; path: string }>({
       queryFn: withSessionQuery(async ({ projectId, bridgeId, path }, { session }) => daemonApi.putProjectBridgePath({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, projectId, bridgeId, path })),
       invalidatesTags: (_result, _error, { projectId }) => [{ type: 'ProjectBridgePaths' as const, id: projectId }],
@@ -169,6 +225,11 @@ export const {
   useCreateBridgeEnrollmentMutation,
   useListBridgeEnrollmentsQuery,
   useRevokeBridgeEnrollmentMutation,
+  useListBridgeProvidersQuery,
+  useUpsertBridgeProviderMutation,
+  useDeleteBridgeProviderMutation,
+  useTestBridgeProviderMutation,
+  useRefreshBridgeCapabilitiesMutation,
   usePutProjectBridgePathMutation,
   useDeleteProjectBridgePathMutation,
   useValidateProjectBridgePathMutation,
