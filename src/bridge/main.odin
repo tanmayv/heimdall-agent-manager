@@ -21,12 +21,14 @@ Bridge_Config :: struct {
 	daemon_url: string,
 	daemon_id: string,
 	bridge_token: string,
+	data_dir: string,
 	peers: [dynamic]cfg_lib.Peer_Config,
 	peer_auth_token: string,
 	chunk_bytes: int,
 	local_endpoint_port: u16,
 	local_endpoint_run_dir: string,
 	agent_command: string,
+	agent_commands: [dynamic]cfg_lib.Agent_Command_Config,
 }
 
 Bridge_Peer_Link_State :: struct {
@@ -110,6 +112,7 @@ main :: proc() {
 	}
 
 	bridge_config = bridge_config_from_args(os.args)
+	bridge_provider_store_init()
 	if has_flag(os.args, "--bootstrap-fetch") {
 		instance_id := option_value(os.args, "--instance-id", "")
 		run_dir := option_value(os.args, "--run-dir", "")
@@ -217,12 +220,14 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 		daemon_url = "http://127.0.0.1:49322",
 		daemon_id = "local-daemon",
 		bridge_token = "",
+		data_dir = "~/.local/share/heimdall",
 		peers = make([dynamic]cfg_lib.Peer_Config),
 		peer_auth_token = "",
 		chunk_bytes = contracts.BRIDGE_WS_DEFAULT_CHUNK_BYTES,
 		local_endpoint_port = 0,
 		local_endpoint_run_dir = "/tmp/heimdall-bridge-local",
 		agent_command = "sleep 3600",
+		agent_commands = make([dynamic]cfg_lib.Agent_Command_Config),
 	}
 
 	config_path := cfg_lib.config_path_from_args(args)
@@ -230,7 +235,9 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 		cfg.daemon_url = loaded.config.wrapper.daemon_url
 		cfg.daemon_id = loaded.config.daemon.daemon_id
 		cfg.bridge_token = loaded.config.daemon.bridge_token
+		cfg.data_dir = loaded.config.daemon.data_dir
 		if len(loaded.config.wrapper.command) > 0 do cfg.agent_command = strings.join(loaded.config.wrapper.command, " ")
+		for agent_cmd in loaded.config.wrapper.agent_commands do append(&cfg.agent_commands, agent_cmd)
 		for peer in loaded.config.bridge.peers {
 			if strings.trim_space(peer.name) == "" || strings.trim_space(peer.endpoint) == "" || strings.trim_space(peer.token) == "" do continue
 			append(&cfg.peers, cfg_lib.Peer_Config{name = strings.clone(peer.name), endpoint = strings.clone(peer.endpoint), token = strings.clone(peer.token)})

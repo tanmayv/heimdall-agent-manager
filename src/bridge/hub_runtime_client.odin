@@ -150,7 +150,7 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, 
 	instance_token := strings.concatenate({"hit_", instance_id})
 	wrapper_issue := bridge_agent_token_issue(instance_id, instance_token, .Wrapper)
 	agent_issue := bridge_agent_token_issue(instance_id, instance_token, .Agent)
-	agent_command := bridge_runtime_agent_command(command_json)
+	agent_command := bridge_runtime_agent_command(command_json, agent_issue.plaintext_token, instance_id)
 	session := bridge_runtime_tmux_session()
 	window := bridge_runtime_tmux_window(instance_id)
 	wrapper_args := bridge_runtime_wrapper_supervisor_argv(endpoint, wrapper_issue.plaintext_token, agent_issue.plaintext_token, instance_id, run_dir, agent_command)
@@ -201,11 +201,14 @@ bridge_runtime_select_endpoint :: proc(local_config: Bridge_Local_Endpoint_Confi
 	return ""
 }
 
-bridge_runtime_agent_command :: proc(command_json: string) -> string {
+bridge_runtime_agent_command :: proc(command_json, agent_token, agent_instance_id: string) -> string {
 	if cmd := os.get_env_alloc("HEIMDALL_BRIDGE_AGENT_COMMAND", context.allocator); strings.trim_space(cmd) != "" do return cmd
-	if strings.trim_space(bridge_config.agent_command) != "" do return bridge_config.agent_command
 	provider := extract_json_string(command_json, "provider", "")
-	if provider == "test" do return "sleep 3600"
+	tier := extract_json_string(command_json, "tier", "")
+	if profile, ok := bridge_provider_by_name_or_default(provider); ok && profile.enabled && len(profile.command) > 0 {
+		return bridge_runtime_shell_command_for_profile(profile, tier, agent_token, agent_instance_id)
+	}
+	if strings.trim_space(bridge_config.agent_command) != "" do return bridge_config.agent_command
 	return "sleep 3600"
 }
 
@@ -285,6 +288,10 @@ bridge_runtime_set_status :: proc(instance_id, runtime_status, activity_status: 
 bridge_runtime_instance_snapshot :: proc(instance_id: string) -> (Bridge_Runtime_Instance, bool) {
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	return bridge_runtime_instance_snapshot_locked(instance_id)
+}
+
+bridge_runtime_instance_snapshot_locked :: proc(instance_id: string) -> (Bridge_Runtime_Instance, bool) {
 	for inst in bridge_runtime_instances { if inst.agent_instance_id == instance_id do return inst, true }
 	return {}, false
 }
@@ -306,12 +313,26 @@ bridge_instance_status_json :: proc(instance_id: string) -> string {
 }
 
 bridge_hub_heartbeat_json :: proc() -> string {
+	caps := bridge_provider_capabilities_json()
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
 	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"bridge_heartbeat\",\"protocol_version\":1,\"instances\":[")
+	strings.write_string(&b, "{\"type\":\"bridge_heartbeat\",\"protocol_version\":1,\"capabilities\":")
+	strings.write_string(&b, caps)
+	strings.write_string(&b, ",\"active_instance_ids\":[")
+	first_active := true
+	for launch in bridge_runtime_launches {
+		if !first_active do strings.write_byte(&b, ',')
+		first_active = false
+		strings.write_byte(&b, '"')
+		bridge_runtime_write_json_string(&b, launch.agent_instance_id)
+		strings.write_byte(&b, '"')
+	}
+	strings.write_string(&b, "],\"instances\":[")
 	first := true
-	for inst in bridge_runtime_instances {
+	for launch in bridge_runtime_launches {
+		inst, inst_ok := bridge_runtime_instance_snapshot_locked(launch.agent_instance_id)
+		if !inst_ok do continue
 		if !first do strings.write_byte(&b, ',')
 		first = false
 		strings.write_string(&b, "{\"agent_instance_id\":\"")
@@ -361,10 +382,15 @@ bridge_command_result_json :: proc(command_id, status, runtime_status: string) -
 }
 
 bridge_hub_hello_json :: proc() -> string {
+	caps := bridge_provider_capabilities_json()
 	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"bridge_hello\",\"protocol_version\":1,\"hostname\":\"")
+	strings.write_string(&b, "{\"type\":\"bridge_hello\",\"protocol_version\":1,\"bridge_id\":\"")
 	bridge_runtime_write_json_string(&b, bridge_config.daemon_id)
-	strings.write_string(&b, "\",\"capabilities\":[{\"provider\":\"claude\",\"tiers\":[\"normal\"],\"default_tier\":\"normal\"}],\"active_instance_ids\":[")
+	strings.write_string(&b, "\",\"hostname\":\"")
+	bridge_runtime_write_json_string(&b, bridge_config.daemon_id)
+	strings.write_string(&b, "\",\"capabilities\":")
+	strings.write_string(&b, caps)
+	strings.write_string(&b, ",\"active_instance_ids\":[")
 	sync.mutex_lock(&bridge_runtime_mutex)
 	first := true
 	for launch in bridge_runtime_launches {
