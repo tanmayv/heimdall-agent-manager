@@ -984,7 +984,7 @@ endpoints so WS invalidation applies.
 5. **DONE — Page 2 Providers** rewrite (configure + test, bridge-persisted). Phase commit: `3844a54`.
 6. **DONE — Page 3 Agents** create (template + name + §2.5 provider, tier-only normal
    path). Phase commit: `ac136c5`.
-7. **DONE — Page 3b Agent detail** — per-bridge overrides + multi-instance deploy/run. Phase commit: `14e231b`.
+7. **DONE — Page 3b Agent detail** — per-bridge overrides + multi-instance deploy/run. Phase commits: `14e231b`, `de9a697`.
 8. **Page 4 Composer** — quick launch with optional overrides.
 
 Pages 1 and 3–4 can proceed against real capabilities only after steps 1–2; a
