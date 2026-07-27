@@ -967,10 +967,11 @@ endpoints so WS invalidation applies.
 3. **DONE — Backend: agent deploy/run gaps (§3.5)** — `agent-instances` `agent_id`
    filter, §2.5 resolution on create, `PATCH /agents/{id}` defaults, stop/restart
    wiring, and the A10 `bridge-support` PUT-body contract. Phase commits: `1162d8f`, `a339bec`.
-3a. **Backend/ctl: agent runtime path (§3.5a)** — conversation READ for instance
+3a. **DONE — Backend/ctl: agent runtime path (§3.5a)** — conversation READ for instance
    tokens (B1), real `agent.context` relay (B2), fix start-success command
-   rendering/routing (B3), keep HEIMDALL_* env + regression test (B5). Required
-   for agents to use `ham-ctl` to start-success and read/write conversations.
+   rendering/routing (B3), Bridge-scoped instance assertion trust (B4), keep
+   HEIMDALL_* env + regression test (B5). Required for agents to use `ham-ctl`
+   to start-success and read/write conversations. Phase commit: `45cbb3a`.
 3b. **ctl refactor (§3.7)** — split the `src/ctl` monolith into a package (one
    command family per file); remove access points for legacy daemon-only commands
    but keep the code parked+deprecated under `src/ctl/legacy/` (C2/C3); drop
