@@ -21,7 +21,7 @@ list_agents_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	agents, err := agent_service.list_agents(h.agents, auth_ctx)
 	if err.code != .None do return respond_error(err, req.request_id)
 	b := strings.builder_make(); strings.write_byte(&b, '[')
-	for agent, i in agents { if i > 0 do strings.write_byte(&b, ','); write_agent_json(&b, agent) }
+	for agent, i in agents { if i > 0 do strings.write_byte(&b, ','); write_agent_json(&b, h.agents, agent) }
 	strings.write_byte(&b, ']')
 	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
 }
@@ -32,7 +32,7 @@ create_agent_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if !ok do return auth_resp
 	agent, created, err := agent_service.create_agent(h.agents, auth_ctx, agent_input_from_body(req.body))
 	if !created do return respond_error(err, req.request_id)
-	b := strings.builder_make(); write_agent_json(&b, agent)
+	b := strings.builder_make(); write_agent_json(&b, h.agents, agent)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
 }
 
@@ -44,7 +44,7 @@ agent_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if strings.contains(agent_id, "/") do return respond_error(domain.domain_error(.Not_Found, "route not found"), req.request_id)
 	agent, got, err := agent_service.get_agent(h.agents, auth_ctx, agent_id)
 	if !got do return respond_error(err, req.request_id)
-	b := strings.builder_make(); write_agent_json(&b, agent)
+	b := strings.builder_make(); write_agent_json(&b, h.agents, agent)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
@@ -54,7 +54,7 @@ update_agent_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if !ok do return auth_resp
 	agent, updated, err := agent_service.update_agent(h.agents, auth_ctx, path_part(req.path, 4), agent_input_from_body(req.body))
 	if !updated do return respond_error(err, req.request_id)
-	b := strings.builder_make(); write_agent_json(&b, agent)
+	b := strings.builder_make(); write_agent_json(&b, h.agents, agent)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
@@ -64,7 +64,7 @@ archive_agent_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if !ok do return auth_resp
 	agent, archived, err := agent_service.archive_agent(h.agents, auth_ctx, path_part(req.path, 4))
 	if !archived do return respond_error(err, req.request_id)
-	b := strings.builder_make(); write_agent_json(&b, agent)
+	b := strings.builder_make(); write_agent_json(&b, h.agents, agent)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
@@ -218,7 +218,7 @@ support_inputs_from_body :: proc(body: string) -> []agent_service.Support_Input 
 	return out[:]
 }
 
-write_agent_json :: proc(b: ^strings.Builder, a: domain.Agent) {
+write_agent_json :: proc(b: ^strings.Builder, service: ^agent_service.Agent_Service, a: domain.Agent) {
 	strings.write_string(b, "{\"agent_id\":\""); write_handler_json_string(b, a.agent_id)
 	strings.write_string(b, "\",\"name\":\""); write_handler_json_string(b, a.name)
 	strings.write_string(b, "\",\"slug\":\""); write_handler_json_string(b, a.slug)
@@ -227,7 +227,9 @@ write_agent_json :: proc(b: ^strings.Builder, a: domain.Agent) {
 	strings.write_string(b, "\",\"default_tier\":\""); write_handler_json_string(b, a.default_tier)
 	strings.write_string(b, "\",\"instructions\":\""); write_handler_json_string(b, a.instructions)
 	strings.write_string(b, "\",\"state\":\""); write_handler_json_string(b, domain.agent_state_string(a.state))
-	strings.write_string(b, "\",\"supported_bridge_count\":0,\"active_instance_count\":0,\"updated_at\":\""); write_handler_json_string(b, a.updated_at)
+	strings.write_string(b, "\",\"supported_bridge_count\":"); strings.write_string(b, i32_to_string_http(agent_service.supported_bridge_count_for_agent(service, a)))
+	strings.write_string(b, ",\"active_instance_count\":"); strings.write_string(b, i32_to_string_http(agent_service.active_instance_count_for_agent(service, a)))
+	strings.write_string(b, ",\"updated_at\":\""); write_handler_json_string(b, a.updated_at)
 	strings.write_string(b, "\"}")
 }
 

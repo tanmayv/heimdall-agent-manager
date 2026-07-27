@@ -20,6 +20,19 @@ send_runtime_command :: proc(ctx: rawptr, command: project_service.Runtime_Comma
 	return true, domain.Domain_Error{}
 }
 
+send_runtime_command_wait :: proc(registry: ^project_service.Bridge_Runtime_Registry, command: project_service.Runtime_Command, timeout_ms: int) -> (string, bool, domain.Domain_Error) {
+	if !project_service.bridge_runtime_registry_has_live(registry, command.bridge_id) do return "", false, domain.domain_error(.Bridge_Offline, "bridge is not connected")
+	socket, socket_ok := project_service.bridge_runtime_registry_command_socket(registry, command.bridge_id)
+	if !socket_ok do return "", false, domain.domain_error(.Bridge_Offline, "bridge websocket command path is not connected")
+	if !write_ws_text_frame(socket, command.body_json) do return "", false, domain.domain_error(.Bridge_Offline, "bridge websocket command send failed")
+	deadline := time.to_unix_nanoseconds(time.now()) + i64(time.Duration(timeout_ms) * time.Millisecond)
+	for time.to_unix_nanoseconds(time.now()) < deadline {
+		if cached, ok := runtime_command_cached(registry, command.command_id); ok do return cached, true, domain.Domain_Error{}
+		time.sleep(25 * time.Millisecond)
+	}
+	return "", false, domain.domain_error(.Bridge_Offline, "bridge websocket command timed out")
+}
+
 validate_project_path :: proc(ctx: rawptr, command: project_service.Validate_Project_Path_Command) -> (project_service.Project_Path_Validation_Result, bool, domain.Domain_Error) {
 	registry := (^project_service.Bridge_Runtime_Registry)(ctx)
 	if !project_service.bridge_runtime_registry_has_live(registry, command.bridge_id) do return project_service.Project_Path_Validation_Result{}, false, domain.domain_error(.Bridge_Offline, "bridge is not connected")

@@ -167,6 +167,18 @@ bridge_runtime_connect :: proc(service: ^Bridge_Service, token: string, hostname
 	return iface.bridge_save_bridge(service.repo, bridge)
 }
 
+update_runtime_capabilities :: proc(service: ^Bridge_Service, bridge_id, capabilities_json: string) -> (domain.Bridge, bool, domain.Domain_Error) {
+	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.repo, bridge_id)
+	if !bridge_ok do return domain.Bridge{}, false, bridge_err
+	if bridge.status == .Revoked do return domain.Bridge{}, false, domain.domain_error(.Bridge_Revoked, "bridge is revoked")
+	if capabilities_json != "" && strings.contains(capabilities_json, "\"capabilities\"") do bridge.capabilities_json = capabilities_json
+	now := platform.clock_now(service.clock)
+	bridge.status = .Online
+	bridge.last_seen_at = now
+	bridge.updated_at = now
+	return iface.bridge_save_bridge(service.repo, bridge)
+}
+
 revoke_bridge :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, bridge_id: string) -> (domain.Bridge, bool, domain.Domain_Error) {
 	bridge, ok, err := get_bridge(service, auth, bridge_id)
 	if !ok do return domain.Bridge{}, false, err

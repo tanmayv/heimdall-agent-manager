@@ -490,8 +490,12 @@ bridge_provider_write_string_array_json :: proc(b: ^strings.Builder, values: []s
 }
 
 bridge_provider_override_from_json :: proc(obj: string) -> (Bridge_Provider_Override, bool) {
+	return bridge_provider_override_from_json_with_name(obj, "")
+}
+
+bridge_provider_override_from_json_with_name :: proc(obj, fallback_name: string) -> (Bridge_Provider_Override, bool) {
 	o: Bridge_Provider_Override
-	o.name = bridge_provider_json_extract_string(obj, "name", "")
+	o.name = bridge_provider_json_extract_string(obj, "name", fallback_name)
 	if strings.trim_space(o.name) == "" do return o, false
 	if v, ok := bridge_provider_json_extract_bool(obj, "enabled"); ok { o.enabled = v; o.enabled_set = true }
 	if v, ok := bridge_provider_json_extract_string_array(obj, "command"); ok { o.command = v; o.command_set = true }
@@ -528,6 +532,40 @@ bridge_provider_override_from_json :: proc(obj: string) -> (Bridge_Provider_Over
 		if v, got := bridge_provider_json_extract_int(ad_obj, "max_gap_ms"); got { o.activity_detection.max_gap_ms = v; o.activity_max_gap_set = true }
 	}
 	return o, true
+}
+
+bridge_provider_upsert_override_json :: proc(name, body: string) -> (Bridge_Provider_Profile, bool, string) {
+	bridge_provider_store_init()
+	override, ok := bridge_provider_override_from_json_with_name(body, name)
+	if !ok do return {}, false, "provider name is required"
+	if strings.trim_space(override.name) != strings.trim_space(name) && strings.trim_space(name) != "" do return {}, false, "provider name mismatch"
+	sync.mutex_lock(&bridge_provider_mutex)
+	bridge_provider_upsert_override_unlocked(override)
+	sync.mutex_unlock(&bridge_provider_mutex)
+	if !bridge_provider_save_overrides() do return {}, false, "failed to save provider override"
+	profile, profile_ok := bridge_provider_by_name_or_default(override.name)
+	if !profile_ok do return {}, false, "provider not found after save"
+	return profile, true, ""
+}
+
+bridge_provider_delete_override :: proc(name: string) -> (bool, string) {
+	bridge_provider_store_init()
+	trimmed := strings.trim_space(name)
+	if trimmed == "" do return false, "provider name is required"
+	if bridge_config_agent_command_exists(trimmed) do return false, "deleting config-backed providers or resetting overrides is deferred in v1"
+	deleted := false
+	sync.mutex_lock(&bridge_provider_mutex)
+	for i in 0..<len(bridge_provider_overrides) {
+		if bridge_provider_overrides[i].name == trimmed {
+			ordered_remove(&bridge_provider_overrides, i)
+			deleted = true
+			break
+		}
+	}
+	sync.mutex_unlock(&bridge_provider_mutex)
+	if !deleted do return false, "store-only provider not found"
+	if !bridge_provider_save_overrides() do return false, "failed to save provider overrides"
+	return true, ""
 }
 
 bridge_provider_json_extract_string :: proc(json, key, fallback: string) -> string {

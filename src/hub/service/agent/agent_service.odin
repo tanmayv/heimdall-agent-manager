@@ -204,6 +204,33 @@ list_instances :: proc(service: ^Agent_Service, auth: contracts.Auth_Context) ->
 	return iface.agent_list_instances_by_owner(service.agents, owner)
 }
 
+active_instance_count_for_bridge :: proc(service: ^Agent_Service, bridge_id: string) -> int {
+	if service == nil || service.agents == nil || bridge_id == "" do return 0
+	instances, err := iface.agent_list_instances_by_bridge(service.agents, bridge_id)
+	if err.code != .None do return 0
+	count := 0
+	for inst in instances { if runtime_expected_active(inst.runtime_status) do count += 1 }
+	return count
+}
+
+active_instance_count_for_agent :: proc(service: ^Agent_Service, agent: domain.Agent) -> int {
+	if service == nil || service.agents == nil do return 0
+	instances, err := iface.agent_list_instances_by_owner(service.agents, agent.owner_user_id)
+	if err.code != .None do return 0
+	count := 0
+	for inst in instances { if inst.agent_id == agent.agent_id && runtime_expected_active(inst.runtime_status) do count += 1 }
+	return count
+}
+
+supported_bridge_count_for_agent :: proc(service: ^Agent_Service, agent: domain.Agent) -> int {
+	if service == nil || service.agents == nil do return 0
+	supports, err := iface.agent_list_support(service.agents, agent.agent_id, agent.owner_user_id)
+	if err.code != .None do return 0
+	count := 0
+	for s in supports { if s.enabled do count += 1 }
+	return count
+}
+
 get_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, instance_id: string) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	inst, ok, err := iface.agent_get_instance(service.agents, instance_id)
 	if !ok do return domain.Agent_Instance{}, false, err

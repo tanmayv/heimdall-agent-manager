@@ -133,6 +133,62 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		_ = ws.send_text(conn, final)
 		return
 	}
+	if bridge_hub_handle_provider_command(conn, type, text) do return
+}
+
+bridge_hub_handle_provider_command :: proc(conn: ^ws.Connection, type, text: string) -> bool {
+	switch type {
+	case "list_providers":
+		command_id := extract_json_string(text, "command_id", "")
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		result := bridge_provider_profiles_report_json(bridge_config.daemon_id)
+		final := bridge_command_result_payload_json(command_id, "succeeded", result)
+		bridge_runtime_cache_command(command_id, final)
+		_ = ws.send_text(conn, final)
+		return true
+	case "upsert_provider":
+		command_id := extract_json_string(text, "command_id", "")
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		name := extract_json_string(text, "name", extract_json_string(text, "provider", ""))
+		profile_json, profile_ok := bridge_provider_json_extract_object(text, "profile")
+		if !profile_ok do profile_json = text
+		profile, ok, message := bridge_provider_upsert_override_json(name, profile_json)
+		result_b := strings.builder_make()
+		if ok { strings.write_string(&result_b, "{\"provider\":"); bridge_provider_write_profile_json(&result_b, profile); strings.write_byte(&result_b, '}') } else { strings.write_string(&result_b, "{\"error\":\""); bridge_runtime_write_json_string(&result_b, message); strings.write_string(&result_b, "\"}") }
+		final := bridge_command_result_payload_json(command_id, "succeeded" if ok else "failed", strings.to_string(result_b))
+		bridge_runtime_cache_command(command_id, final)
+		_ = ws.send_text(conn, final)
+		return true
+	case "delete_provider":
+		command_id := extract_json_string(text, "command_id", "")
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		name := extract_json_string(text, "name", extract_json_string(text, "provider", ""))
+		deleted, message := bridge_provider_delete_override(name)
+		result := "{\"deleted\":true}" if deleted else strings.concatenate({"{\"deleted\":false,\"error\":\"", bridge_runtime_json_escaped(message), "\"}"})
+		final := bridge_command_result_payload_json(command_id, "succeeded" if deleted else "failed", result)
+		bridge_runtime_cache_command(command_id, final)
+		_ = ws.send_text(conn, final)
+		return true
+	case "test_provider":
+		command_id := extract_json_string(text, "command_id", "")
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		name := extract_json_string(text, "name", extract_json_string(text, "provider", ""))
+		result := strings.concatenate({"{\"name\":\"", bridge_runtime_json_escaped(name), "\",\"status\":\"unknown\",\"tested_at\":\"\",\"message\":\"provider start-success probe is not implemented in this bridge build\"}"})
+		final := bridge_command_result_payload_json(command_id, "succeeded", result)
+		bridge_runtime_cache_command(command_id, final)
+		_ = ws.send_text(conn, final)
+		return true
+	case "refresh_capabilities":
+		command_id := extract_json_string(text, "command_id", "")
+		if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return true }
+		result := strings.concatenate({"{\"capabilities\":", bridge_provider_capabilities_json(), "}"})
+		final := bridge_command_result_payload_json(command_id, "succeeded", result)
+		bridge_runtime_cache_command(command_id, final)
+		_ = ws.send_text(conn, strings.concatenate({"{\"type\":\"capability_report\",\"protocol_version\":1,\"capabilities\":", bridge_provider_capabilities_json(), "}"}))
+		_ = ws.send_text(conn, final)
+		return true
+	}
+	return false
 }
 
 bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, string) {
@@ -378,6 +434,24 @@ bridge_command_result_json :: proc(command_id, status, runtime_status: string) -
 		strings.write_string(&b, "\"}")
 	}
 	strings.write_string(&b, "}}")
+	return strings.to_string(b)
+}
+
+bridge_command_result_payload_json :: proc(command_id, status, result_json: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"type\":\"command_result\",\"protocol_version\":1,\"command_id\":\"")
+	bridge_runtime_write_json_string(&b, command_id)
+	strings.write_string(&b, "\",\"payload\":{\"status\":\"")
+	bridge_runtime_write_json_string(&b, status)
+	strings.write_string(&b, "\",\"result\":")
+	if strings.trim_space(result_json) == "" { strings.write_string(&b, "{}") } else { strings.write_string(&b, result_json) }
+	strings.write_string(&b, "}}")
+	return strings.to_string(b)
+}
+
+bridge_runtime_json_escaped :: proc(value: string) -> string {
+	b := strings.builder_make()
+	bridge_runtime_write_json_string(&b, value)
 	return strings.to_string(b)
 }
 
