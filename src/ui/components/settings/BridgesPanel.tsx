@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import {
+  normalizeBridgeCapabilities,
   useListBridgesQuery,
   useListBridgeEnrollmentsQuery,
   useRenameBridgeMutation,
@@ -13,15 +14,15 @@ import {
 // Add bridge = enrollment ceremony (one-time token shown once). Detail allows
 // rename (PATCH), revoke (= "remove", POST /revoke). No hard delete in v1.
 // Rotate-token is a documented backend gap (not yet served).
-export default function BridgesPanel({ session }: { session: any }) {
-  const bridgesQuery = useListBridgesQuery(undefined, { skip: !session?.clientToken });
-  const enrollmentsQuery = useListBridgeEnrollmentsQuery(undefined, { skip: !session?.clientToken });
+export default function BridgesPanel({ session }: { session?: any }) {
+  const [enrollOpen, setEnrollOpen] = useState(false);
+  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: enrollOpen ? 3000 : 0 });
+  const enrollmentsQuery = useListBridgeEnrollmentsQuery(undefined, { pollingInterval: enrollOpen ? 3000 : 0 });
   const [renameBridge] = useRenameBridgeMutation();
   const [revokeBridge] = useRevokeBridgeMutation();
   const [createEnrollment] = useCreateBridgeEnrollmentMutation();
   const [revokeEnrollment] = useRevokeBridgeEnrollmentMutation();
 
-  const [enrollOpen, setEnrollOpen] = useState(false);
   const [enrollLabel, setEnrollLabel] = useState('');
   const [enrollBusy, setEnrollBusy] = useState(false);
   const [enrollResult, setEnrollResult] = useState<any>(null);
@@ -38,27 +39,28 @@ export default function BridgesPanel({ session }: { session: any }) {
   function statusTone(bridge: any): string {
     const status = String(bridge?.status || bridge?.runtime_status || '').toLowerCase();
     if (status === 'revoked') return 'bg-rose-400';
-    if (status === 'online' || status === 'connected' || bridge?.last_seen_unix_ms) return 'bg-emerald-400';
+    if (status === 'online' || status === 'connected') return 'bg-emerald-400';
     return 'bg-zinc-600';
   }
 
   function statusLabel(bridge: any): string {
     const status = String(bridge?.status || bridge?.runtime_status || '').toLowerCase();
-    if (status) return status;
-    if (bridge?.last_seen_unix_ms) return 'online';
-    return 'offline';
+    return status || 'offline';
   }
 
   function capabilitiesLabel(bridge: any): string {
-    const caps = bridge?.capabilities || bridge?.capability_report || {};
-    const providers = caps?.providers || caps?.provider_profiles || [];
-    return providers.length ? providers.join(', ') : '—';
+    const providers = normalizeBridgeCapabilities(bridge);
+    return providers.length ? providers.map((cap) => `${cap.provider}${cap.tiers.length ? ` (${cap.tiers.join('/')})` : ''}`).join(', ') : '—';
+  }
+
+  function bridgeReady(bridge: any): boolean {
+    return statusLabel(bridge) === 'online' && normalizeBridgeCapabilities(bridge).length > 0;
   }
 
   function buildSetupCommand(result: any): string {
-    const url = result?.hub_url || result?.daemon_url || session?.daemonUrl || '';
+    const url = result?.hub_url || result?.daemon_url || session?.daemonUrl || window.location.origin || '';
     const token = result?.enrollment_token || '';
-    return `ham-bridge enroll --hub ${url} \\\n  --token ${token}`;
+    return `ham-bridge enroll --hub ${url} \\\n  --enrollment-token ${token}`;
   }
 
   async function handleCreateEnrollment() {
@@ -67,6 +69,8 @@ export default function BridgesPanel({ session }: { session: any }) {
     try {
       const result = await createEnrollment({ label: enrollLabel.trim() || undefined, expiresInSeconds: 900 }).unwrap();
       setEnrollResult(result?.enrollment || result);
+      void enrollmentsQuery.refetch();
+      void bridgesQuery.refetch();
     } catch (err: any) {
       setEnrollError(String(err?.message || err || 'Unable to create enrollment'));
     } finally {
@@ -122,6 +126,7 @@ export default function BridgesPanel({ session }: { session: any }) {
         <button type="button" data-debug-id="settings-bridges-add-btn" onClick={() => { setEnrollOpen((o) => !o); setEnrollResult(null); setEnrollError(''); }} className="rounded-xl border border-sky-400/30 bg-sky-400/10 px-3 py-1.5 text-sm text-sky-100 hover:bg-sky-400/20">＋ Add bridge</button>
       </div>
 
+      {bridgesQuery.isError || enrollmentsQuery.isError ? <div data-debug-id="settings-bridges-load-error" className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">Unable to load bridges. Check your trusted-proxy session and Hub connection.</div> : null}
       {actionError ? <div data-debug-id="settings-bridges-error" className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{actionError}</div> : null}
 
       {/* Enrollment ceremony */}
@@ -142,7 +147,7 @@ export default function BridgesPanel({ session }: { session: any }) {
           ) : (
             <>
               <div data-debug-id="settings-bridges-enroll-result" className="text-sm font-medium text-sky-100">Enrollment created — run on your machine:</div>
-              <div className="mt-1 text-xs text-amber-200">⚠ Shown once. Store the token now — it is a secret.</div>
+              <div className="mt-1 text-xs text-amber-200">⚠ Shown once. Store the token now — it is a secret. This page will poll while you connect the bridge.</div>
               <pre data-debug-id="settings-bridges-enroll-command" className="mt-2 overflow-x-auto rounded-xl border border-white/10 bg-black/50 p-3 text-[12px] leading-5 text-emerald-200">{buildSetupCommand(enrollResult)}</pre>
               <div className="mt-2 flex flex-wrap items-center gap-2">
                 <button type="button" data-debug-id="settings-bridges-enroll-copy-token" onClick={() => void copyToken(enrollResult?.enrollment_token || '')} className="rounded-xl bg-white/10 px-3 py-1.5 text-sm text-zinc-200 hover:bg-white/15">{copiedToken ? 'Copied' : 'Copy token'}</button>
@@ -164,7 +169,7 @@ export default function BridgesPanel({ session }: { session: any }) {
                 <div key={id} data-debug-id={`settings-bridges-pending-${id}`} className="flex items-center justify-between gap-2 rounded-xl border border-amber-400/20 bg-amber-400/[0.04] px-3 py-2 text-sm">
                   <div className="min-w-0">
                     <div className="truncate text-zinc-200">{enr?.label || 'Unlabeled enrollment'}</div>
-                    <div className="mt-0.5 text-[11px] text-zinc-500">expires: {enr?.expires_at || enr?.expires_unix_ms ? new Date(Number(enr?.expires_unix_ms) || enr?.expires_at).toLocaleString() : '—'}</div>
+                    <div className="mt-0.5 text-[11px] text-zinc-500">waiting for bridge to connect… · expires: {enr?.expires_at ? new Date(enr.expires_at).toLocaleString() : enr?.expires_unix_ms ? new Date(Number(enr.expires_unix_ms)).toLocaleString() : '—'}</div>
                   </div>
                   <button type="button" data-debug-id={`settings-bridges-pending-revoke-${id}`} onClick={() => void handleRevokeEnrollment(id)} className="shrink-0 rounded-lg border border-white/10 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/10">Revoke</button>
                 </div>
@@ -195,16 +200,18 @@ export default function BridgesPanel({ session }: { session: any }) {
                         {isRenaming ? (
                           <input data-debug-id={`settings-bridge-rename-input-${id}`} value={renameValue} onChange={(e) => setRenameValue(e.target.value)} className="min-w-0 flex-1 rounded-lg border border-white/10 bg-black/40 px-2 py-0.5 text-sm text-zinc-100 outline-none focus:border-sky-400" autoFocus />
                         ) : (
-                          <span className="truncate text-sm font-medium text-zinc-100">{bridge?.label || bridge?.hostname || id}</span>
+                          <span className="truncate text-sm font-medium text-zinc-100">{bridge?.label || bridge?.machine_hostname || bridge?.hostname || id}</span>
                         )}
+                        <span data-debug-id={`settings-bridge-ready-${id}`} className={`rounded-full border px-2 py-0.5 text-[10px] ${bridgeReady(bridge) ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200' : 'border-amber-400/20 bg-amber-400/5 text-amber-200'}`}>{bridgeReady(bridge) ? 'ready' : 'setup incomplete'}</span>
                       </div>
                       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-zinc-500">
                         <span>status: <span data-debug-id={`settings-bridge-status-label-${id}`} className="text-zinc-300">{statusLabel(bridge)}</span></span>
-                        <span>host: <span className="text-zinc-300">{bridge?.hostname || '—'}</span></span>
-                        <span>os: <span className="text-zinc-300">{bridge?.os || '—'}</span></span>
-                        <span>arch: <span className="text-zinc-300">{bridge?.arch || '—'}</span></span>
+                        <span>host: <span className="text-zinc-300">{bridge?.machine_hostname || bridge?.hostname || '—'}</span></span>
+                        <span>os: <span className="text-zinc-300">{bridge?.machine_os || bridge?.os || '—'}</span></span>
+                        <span>arch: <span className="text-zinc-300">{bridge?.machine_arch || bridge?.arch || '—'}</span></span>
                         <span>caps: <span className="text-zinc-300">{capabilitiesLabel(bridge)}</span></span>
-                        <span>instances: <span className="text-zinc-300">{bridge?.instance_count ?? bridge?.instances?.length ?? 0}</span></span>
+                        <span>instances: <span className="text-zinc-300">{bridge?.active_instance_count ?? bridge?.instance_count ?? bridge?.instances?.length ?? 0}</span></span>
+                        <span>last seen: <span className="text-zinc-300">{bridge?.last_seen_at ? new Date(bridge.last_seen_at).toLocaleString() : '—'}</span></span>
                       </div>
                     </div>
                     <div className="flex shrink-0 items-center gap-1">

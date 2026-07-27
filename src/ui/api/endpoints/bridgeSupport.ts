@@ -11,6 +11,29 @@ export type AgentBridgeSupportEntry = {
   maxInstances?: number;
 };
 
+export type BridgeCapability = {
+  provider: string;
+  tiers: string[];
+  defaultTier?: string;
+};
+
+export function normalizeBridgeCapabilities(raw: any): BridgeCapability[] {
+  const caps = raw?.capabilities || raw?.capability_report || raw?.provider_capabilities || raw || [];
+  const source = Array.isArray(caps)
+    ? caps
+    : Array.isArray(caps?.providers)
+      ? caps.providers
+      : Array.isArray(caps?.provider_profiles)
+        ? caps.provider_profiles
+        : [];
+  return source.map((entry: any) => {
+    if (typeof entry === 'string') return { provider: entry, tiers: [], defaultTier: undefined };
+    const tiers = Array.isArray(entry?.tiers) ? entry.tiers.map((tier: any) => String(tier)).filter(Boolean) : [];
+    const defaultTier = String(entry?.default_tier || entry?.defaultTier || '');
+    return { provider: String(entry?.provider || entry?.name || ''), tiers, defaultTier: defaultTier || undefined };
+  }).filter((entry: BridgeCapability) => Boolean(entry.provider));
+}
+
 function normalizeBridgeSupportEntry(raw: any): AgentBridgeSupportEntry {
   return {
     bridgeId: String(raw?.bridge_id || raw?.bridgeId || ''),
@@ -70,7 +93,7 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
     renameBridge: build.mutation<any, { bridgeId: string; label: string }>({
       queryFn: async ({ bridgeId, label }) => {
         try {
-          const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/rename`, 'PATCH', { label });
+          const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}`, 'PATCH', { label });
           return { data };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };

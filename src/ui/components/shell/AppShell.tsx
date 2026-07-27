@@ -465,7 +465,7 @@ function RouteOutlet({ path, mobileBottomPadded = false }: { path: string; mobil
           {path === '/conversations/new' ? (
             <ConversationLaunchComposer />
           ) : path === '/settings/bridges' ? (
-            <div className="w-full max-w-4xl text-left"><BridgesPanel session={{ clientToken: 'cookie-auth-bypass' }} /></div>
+            <div className="w-full max-w-4xl text-left"><BridgesPanel /></div>
           ) : path === '/settings/providers' ? (
             <div className="w-full max-w-4xl text-left"><ProvidersPanel /></div>
           ) : path === '/agents' ? (
