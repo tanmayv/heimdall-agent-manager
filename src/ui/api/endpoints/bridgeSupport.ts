@@ -72,13 +72,19 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
       queryFn: async (arg) => {
         if (!arg.agentId || !arg.bridgeId) return { data: { ok: false, message: 'Missing agentId/bridgeId' } };
         try {
+          let current: AgentBridgeSupportEntry | undefined;
+          const preservesFields = arg.providerProfile === undefined || arg.modelTier === undefined || arg.priority === undefined || arg.maxInstances === undefined;
+          if (preservesFields) {
+            const rows = normalizeBridgeSupport(await cookieJsonFetch(`/agents/${encodeURIComponent(arg.agentId)}/bridge-support`)).entries;
+            current = rows.find((row) => row.bridgeId === arg.bridgeId);
+          }
           const payload = {
             bridge_id: arg.bridgeId,
-            enabled: arg.enabled !== false,
-            provider: arg.providerProfile || '',
-            tier: arg.modelTier || '',
-            priority: arg.priority || 0,
-            max_instances: arg.maxInstances || 0,
+            enabled: arg.enabled ?? current?.enabled ?? true,
+            provider: arg.providerProfile !== undefined ? arg.providerProfile : (current?.providerProfile || ''),
+            tier: arg.modelTier !== undefined ? arg.modelTier : (current?.modelTier || ''),
+            priority: arg.priority !== undefined ? arg.priority : (current?.priority || 0),
+            max_instances: arg.maxInstances !== undefined ? arg.maxInstances : (current?.maxInstances || 0),
           };
           const data = await cookieMutation(`/agents/${encodeURIComponent(arg.agentId)}/bridge-support/${encodeURIComponent(arg.bridgeId)}`, 'PATCH', payload);
           return { data };
