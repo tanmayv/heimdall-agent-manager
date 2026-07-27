@@ -1,5 +1,6 @@
 import * as daemonApi from '../daemonApi';
 import { applyAgentRuntimeEvent, loadKnownAgents, mapAgent, mergeKnownAndLiveAgents, storeKnownAgents, upsertKnownAgentRecord } from '../agentCatalog';
+import { cookieMutation, cookieJsonFetch } from '../cookieFetch';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
 
 function agentTagId(agent: any, fallback = '') {
@@ -8,6 +9,36 @@ function agentTagId(agent: any, fallback = '') {
 
 export const agentsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
+    listAgentIdentities: build.query<any, void>({
+      queryFn: async () => {
+        try {
+          const data = await cookieJsonFetch('/agents');
+          return { data: { agents: data || [] } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: [{ type: 'Agents' as const, id: 'LIST' }],
+    }),
+    enableBridgeSupport: build.mutation<any, { agentId: string }>({
+      queryFn: async ({ agentId }) => {
+        try {
+          const bridgesData = await cookieJsonFetch('/bridges');
+          const bridges = bridgesData?.bridges || bridgesData || [];
+          const payload = {
+            bridges: bridges.map((b: any) => ({
+              bridge_id: b.bridge_id,
+              enabled: true
+            }))
+          };
+          const data = await cookieMutation(`/agents/${encodeURIComponent(agentId)}/bridge-support`, 'PUT', payload);
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: [{ type: 'Agents' as const, id: 'LIST' }],
+    }),
     listAgents: build.query<any, { limit?: number; offset?: number; projectId?: string; running?: boolean } | void>({
       queryFn: withSessionQuery(async (arg, { session }) => {
         const localKnown = loadKnownAgents();
@@ -175,6 +206,25 @@ export const agentsApi = heimdallApi.injectEndpoints({
         { type: 'ChainTasks' as const, id: chainId },
       ],
     }),
+    createAgent: build.mutation<any, { name: string; slug: string; templateId?: string; defaultProvider?: string; defaultTier?: string; instructions?: string }>({
+      queryFn: async (arg) => {
+        try {
+          const payload = {
+            name: arg.name,
+            slug: arg.slug,
+            template_id: arg.templateId || 'template_default',
+            default_provider: arg.defaultProvider || 'claude',
+            default_tier: arg.defaultTier || 'smart',
+            instructions: arg.instructions || '',
+          };
+          const data = await cookieMutation('/agents', 'POST', payload);
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: [{ type: 'Agents' as const, id: 'LIST' }],
+    }),
     // Remote role content for a local-proxy agent-id. Cached aggressively
     // (keepUnusedDataFor long) since remote templates change rarely; keyed by
     // peer + remote agent-id so it is fetched once per mapping.
@@ -263,4 +313,4 @@ export function patchAgentCachesFromWs(dispatch: any, payload: any) {
   dispatch(heimdallApi.util.invalidateTags([{ type: 'Agents', id: 'LIST' }, { type: 'Agents', id: agentId }]));
 }
 
-export const { useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useCreateAgentInstanceInChainMutation, useFetchPeerAgentTemplateQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation } = agentsApi;
+export const { useListAgentIdentitiesQuery, useEnableBridgeSupportMutation, useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useCreateAgentInstanceInChainMutation, useCreateAgentMutation, useFetchPeerAgentTemplateQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation } = agentsApi;

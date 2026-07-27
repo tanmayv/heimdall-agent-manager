@@ -166,7 +166,7 @@ bridge_enroll_command :: proc(args: []string) -> bool {
 	}
 	body_b := strings.builder_make()
 	strings.write_string(&body_b, "{\"hub_url\":\""); json_write_string(&body_b, hub_url)
-	strings.write_string(&body_b, "\",\"machine\":{\"hostname\":\"ham-bridge\"},\"hostname\":\"ham-bridge\",\"capabilities\":[]}")
+	strings.write_string(&body_b, "\",\"machine\":{\"hostname\":\"ham-bridge\"}}")
 	body := strings.to_string(body_b)
 	headers := [?]http.Header{{name = "Authorization", value = strings.concatenate({"Bearer ", token})}}
 	resp, ok := http.request_with_headers_timeout("POST", hub_url, "/api/v1/bridges/enroll", body, headers[:], http.DEFAULT_TIMEOUT_MS)

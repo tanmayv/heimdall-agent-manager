@@ -25,7 +25,7 @@ export default defineConfig({
       '/_dev/login': { target: DEV_PROXY_URL, changeOrigin: true },
       '/_dev/logout': { target: DEV_PROXY_URL, changeOrigin: true },
       // Rewrite Hub API: cookie-auth, identity injected by the proxy.
-      '/api/v1': { target: DEV_PROXY_URL, changeOrigin: true, cookieDomainRewrite: '' },
+      '/api/v1': { target: DEV_PROXY_URL, changeOrigin: true, cookieDomainRewrite: '', ws: true },
     },
   },
 });

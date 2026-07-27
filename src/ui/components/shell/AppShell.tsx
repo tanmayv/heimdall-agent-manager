@@ -5,6 +5,9 @@ import { useViewport, MobileTabBar, MobileTopBar } from './responsive';
 import { useUserWebSocket } from '../../api/useUserWebSocket';
 import { useListSidebarConversationsQuery, useListSidebarProjectsQuery, type SidebarConversation, type SidebarProject } from '../../api/endpoints/sidebar';
 import { buildRouteHash, getRoutePathname } from '../../utils/appLocation';
+import BridgesPanel from '../settings/BridgesPanel';
+import { AgentsPanel } from '../agents/AgentsPanel';
+import { ProvidersPanel } from '../settings/ProvidersPanel';
 
 type ShellRoute = {
   path: string;
@@ -75,7 +78,7 @@ const NAV_ROUTES: ShellRoute[] = [
   { path: '/chains', label: 'Task Chains', icon: '☑', description: 'Task-chain work and review', group: 'primary' },
   { path: '/agents', label: 'Agents', icon: '🤖', description: 'Agent identities and sessions', group: 'primary' },
   { path: '/library', label: 'Library', icon: '▣', description: 'Artifacts and files', group: 'primary' },
-  { path: '/settings', label: 'Settings', icon: '⚙', description: 'Bridges, projects, providers, and memory', group: 'secondary' },
+  { path: '/settings/bridges', label: 'Settings', icon: '⚙', description: 'Bridges, projects, providers, and memory', group: 'secondary' },
 ];
 
 function routeFromLocation(): string {
@@ -461,6 +464,12 @@ function RouteOutlet({ path, mobileBottomPadded = false }: { path: string; mobil
         <div className="grid flex-1 place-items-center rounded-[2rem] border border-dashed border-white/12 bg-white/[0.03] p-8 text-center">
           {path === '/conversations/new' ? (
             <ConversationLaunchComposer />
+          ) : path === '/settings/bridges' ? (
+            <div className="w-full max-w-4xl text-left"><BridgesPanel session={{ clientToken: 'cookie-auth-bypass' }} /></div>
+          ) : path === '/settings/providers' ? (
+            <div className="w-full max-w-4xl text-left"><ProvidersPanel /></div>
+          ) : path === '/agents' ? (
+            <div className="w-full max-w-4xl text-left"><AgentsPanel /></div>
           ) : (
             <div className="max-w-2xl">
               <div data-debug-id="shell-page-placeholder-icon" className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-3xl bg-white/10 text-2xl">⌁</div>

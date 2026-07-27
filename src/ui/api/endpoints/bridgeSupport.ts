@@ -1,5 +1,6 @@
 import * as daemonApi from '../daemonApi';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
+import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
 
 export type AgentBridgeSupportEntry = {
   bridgeId: string;
@@ -48,11 +49,14 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
       invalidatesTags: (_result, _error, { agentId }) => [{ type: 'BridgeSupport' as const, id: agentId }],
     }),
     listBridges: build.query<any, void | {}>({
-      queryFn: withSessionQuery(async (_arg, { session }) => {
-        if (!session?.daemonUrl || !session?.clientToken) return { bridges: [] };
-        const data = await daemonApi.listBridges({ daemonUrl: session.daemonUrl, clientToken: session.clientToken });
-        return { bridges: data?.bridges || [] };
-      }),
+      queryFn: async () => {
+        try {
+          const data = await cookieJsonFetch('/bridges');
+          return { data: { bridges: data?.bridges || data || [] } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
       providesTags: [{ type: 'Bridges' as const, id: 'LIST' }],
     }),
     fetchBridgeDetail: build.query<any, { bridgeId: string; expand?: string }>({
@@ -64,27 +68,58 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
       providesTags: (_result, _error, { bridgeId }) => [{ type: 'Bridges' as const, id: bridgeId }],
     }),
     renameBridge: build.mutation<any, { bridgeId: string; label: string }>({
-      queryFn: withSessionQuery(async ({ bridgeId, label }, { session }) => daemonApi.renameBridge({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, bridgeId, label })),
+      queryFn: async ({ bridgeId, label }) => {
+        try {
+          const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/rename`, 'PATCH', { label });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
       invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'Bridges' as const, id: 'LIST' }, { type: 'Bridges' as const, id: bridgeId }],
     }),
     revokeBridge: build.mutation<any, { bridgeId: string }>({
-      queryFn: withSessionQuery(async ({ bridgeId }, { session }) => daemonApi.revokeBridge({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, bridgeId })),
+      queryFn: async ({ bridgeId }) => {
+        try {
+          const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/revoke`, 'POST');
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
       invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'Bridges' as const, id: 'LIST' }, { type: 'Bridges' as const, id: bridgeId }],
     }),
     createBridgeEnrollment: build.mutation<any, { label?: string; expiresInSeconds?: number }>({
-      queryFn: withSessionQuery(async ({ label, expiresInSeconds }, { session }) => daemonApi.createBridgeEnrollment({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, label, expiresInSeconds })),
+      queryFn: async ({ label, expiresInSeconds }) => {
+        try {
+          const data = await cookieMutation('/bridge-enrollments', 'POST', { label, expires_in_seconds: expiresInSeconds });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
       invalidatesTags: [{ type: 'BridgeEnrollments' as const, id: 'LIST' }],
     }),
     listBridgeEnrollments: build.query<any, void | {}>({
-      queryFn: withSessionQuery(async (_arg, { session }) => {
-        if (!session?.daemonUrl || !session?.clientToken) return { enrollments: [] };
-        const data = await daemonApi.listBridgeEnrollments({ daemonUrl: session.daemonUrl, clientToken: session.clientToken });
-        return { enrollments: data?.enrollments || [] };
-      }),
+      queryFn: async () => {
+        try {
+          const data = await cookieJsonFetch('/bridge-enrollments');
+          return { data: { enrollments: data?.enrollments || data || [] } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
       providesTags: [{ type: 'BridgeEnrollments' as const, id: 'LIST' }],
     }),
     revokeBridgeEnrollment: build.mutation<any, { enrollmentId: string }>({
-      queryFn: withSessionQuery(async ({ enrollmentId }, { session }) => daemonApi.revokeBridgeEnrollment({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, enrollmentId })),
+      queryFn: async ({ enrollmentId }) => {
+        try {
+          const data = await cookieMutation(`/bridge-enrollments/${encodeURIComponent(enrollmentId)}`, 'DELETE');
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
       invalidatesTags: [{ type: 'BridgeEnrollments' as const, id: 'LIST' }],
     }),
     putProjectBridgePath: build.mutation<any, { projectId: string; bridgeId: string; path: string }>({

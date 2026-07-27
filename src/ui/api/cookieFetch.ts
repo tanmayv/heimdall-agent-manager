@@ -13,7 +13,43 @@ export function apiUrl(path: string): string {
 // queryFn maps it to an error state.
 export async function cookieJsonFetch(path: string): Promise<any> {
   const res = await fetch(apiUrl(path), { credentials: 'include' });
-  if (!res.ok) throw new Error(`Request failed (${res.status})`);
+  if (!res.ok) {
+    let msg = `Request failed (${res.status})`;
+    try {
+      const text = await res.text();
+      const errBody = JSON.parse(text);
+      if (errBody?.error?.message) msg = errBody.error.message;
+      else if (errBody?.message) msg = errBody.message;
+    } catch (e) {}
+    throw new Error(msg);
+  }
   const body = await res.json();
-  return Array.isArray(body?.data) ? body.data : body;
+  return body?.data !== undefined ? body.data : body;
+}
+
+export async function cookieMutation(path: string, method: string = 'POST', data?: any): Promise<any> {
+  const res = await fetch(apiUrl(path), {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: data ? JSON.stringify(data) : undefined,
+    credentials: 'include'
+  });
+  if (!res.ok) {
+    let msg = `Request failed (${res.status})`;
+    try {
+      const text = await res.text();
+      const errBody = JSON.parse(text);
+      if (errBody?.error?.message) msg = errBody.error.message;
+      else if (errBody?.message) msg = errBody.message;
+    } catch (e) {}
+    throw new Error(msg);
+  }
+  const text = await res.text();
+  if (!text) return {};
+  try {
+    const body = JSON.parse(text);
+    return body?.data !== undefined ? body.data : body;
+  } catch (e) {
+    return text;
+  }
 }
