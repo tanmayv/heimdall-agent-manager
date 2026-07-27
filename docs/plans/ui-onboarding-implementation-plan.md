@@ -972,12 +972,12 @@ endpoints so WS invalidation applies.
    rendering/routing (B3), Bridge-scoped instance assertion trust (B4), keep
    HEIMDALL_* env + regression test (B5). Required for agents to use `ham-ctl`
    to start-success and read/write conversations. Phase commits: `45cbb3a`, `9188b1a`.
-3b. **ctl refactor (§3.7)** — split the `src/ctl` monolith into a package (one
+3b. **DONE — ctl refactor (§3.7)** — split the `src/ctl` monolith into a package (one
    command family per file); remove access points for legacy daemon-only commands
    but keep the code parked+deprecated under `src/ctl/legacy/` (C2/C3); drop
    redundant aliases (C4); enforce bearer-only auth (C5); add delta-capable agent
    reads (C6/C7); per-subcommand help with examples + high-level top-level help
-   (C8–C11).
+   (C8–C11). Phase commit: `f273a09`.
 4. **Page 1 Bridges** polish (capability rendering, cookie-auth cleanup, poll).
 5. **Page 2 Providers** rewrite (configure + test, bridge-persisted, set default).
 6. **Page 3 Agents** create (template + name + §2.5 provider, tier-only normal
