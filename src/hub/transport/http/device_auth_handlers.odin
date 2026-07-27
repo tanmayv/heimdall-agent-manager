@@ -63,7 +63,10 @@ device_verify_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	handlers := (^Device_Auth_Handlers)(ctx)
 	_, ok, auth_resp := require_auth(handlers.auth, req)
 	if !ok do return auth_resp
-	info, vok, err := device_auth.verify(handlers.service, json_string(req.body, "user_code"))
+	request_ip := device_auth.resolve_client_ip(
+		req.remote_addr, header_value(req.headers, "X-Forwarded-For"),
+		handlers.service.trusted_cidrs)
+	info, vok, err := device_auth.verify_with_ip(handlers.service, json_string(req.body, "user_code"), request_ip)
 	if !vok do return respond_error(err, req.request_id)
 	data := strings.builder_make()
 	strings.write_string(&data, "{\"device_label\":\"")

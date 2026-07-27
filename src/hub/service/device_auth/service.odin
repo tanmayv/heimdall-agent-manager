@@ -115,9 +115,22 @@ GENERIC_UNKNOWN_CODE_ERROR :: proc() -> domain.Domain_Error {
 //   - pending valid -> Device_Info (AC3)
 // Caller MUST have already passed trusted-proxy auth (handler enforces it).
 verify :: proc(service: ^Device_Auth_Service, user_code: string) -> (Device_Info, bool, domain.Domain_Error) {
+	return verify_with_ip(service, user_code, "")
+}
+
+// verify_with_ip adds ELDA-6 brute-force protection for the short user_code.
+// The HTTP handler passes the trusted-XFF-resolved browser IP; service tests may
+// call verify() directly when they do not need rate limiting.
+verify_with_ip :: proc(service: ^Device_Auth_Service, user_code, request_ip: string) -> (Device_Info, bool, domain.Domain_Error) {
+	now := service.clock.now()
+	if request_ip != "" {
+		sync.mutex_lock(&service.store.mutex)
+		allowed := verify_rate_allow(service.store, request_ip, now)
+		sync.mutex_unlock(&service.store.mutex)
+		if !allowed do return Device_Info{}, false, domain.domain_error(.Rate_Limited, "too many device verification attempts from this IP")
+	}
 	device_code, grant, ok := grant_by_user_code(service.store, user_code)
 	if !ok do return Device_Info{}, false, GENERIC_UNKNOWN_CODE_ERROR()
-	now := service.clock.now()
 	if is_expired(grant, now) {
 		// Evict quietly; report generic error (do not distinguish from unknown).
 		sweep(service.store, now)
@@ -278,6 +291,27 @@ poll :: proc(service: ^Device_Auth_Service, device_code, request_ip: string) -> 
 set_grant_status :: proc(store: ^Grant_Store, device_code: string, status: Grant_Status, grant: ^Grant) {
 	grant.status = status
 	set_grant(store, device_code, grant^)
+}
+
+// verify_rate_allow enforces per-IP brute-force protection for the short
+// user_code. It uses its own key namespace so authorize/token budgets are
+// independent. MUST be called under the store mutex.
+verify_rate_allow :: proc(store: ^Grant_Store, ip: string, now: i64) -> bool {
+	if ip == "" do return true
+	if store.config.rate_limit <= 0 do return true
+	key := strings.concatenate({"verify:", ip})
+	defer delete(key)
+	window := i64(store.config.rate_window)
+	if window <= 0 do window = 60
+	entry, has := store.rate[key]
+	if !has || now - entry.window_start >= window {
+		store.rate[strings.clone(key)] = Rate_Limit_Entry{window_start = now, count = 1}
+		return true
+	}
+	if entry.count >= store.config.rate_limit do return false
+	entry.count += 1
+	store.rate[key] = entry
+	return true
 }
 
 // poll_rate_allow enforces a per-IP poll rate limit using the store's rate map
