@@ -124,12 +124,7 @@ list_support :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agen
 upsert_support :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agent_id: string, input: Support_Input) -> (domain.Agent_Bridge_Support, bool, domain.Domain_Error) {
 	agent, ok, err := get_agent(service, auth, agent_id)
 	if !ok do return domain.Agent_Bridge_Support{}, false, err
-	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, input.bridge_id)
-	if !bridge_ok do return domain.Agent_Bridge_Support{}, false, bridge_err
-	if owner_ok, owner_err := ownership.require_owner(auth, bridge.owner_user_id); !owner_ok do return domain.Agent_Bridge_Support{}, false, owner_err
-	if bridge.owner_user_id != agent.owner_user_id do return domain.Agent_Bridge_Support{}, false, domain.domain_error(.Not_Found, "bridge not found")
-	if !bridge_supports_provider_tier(bridge, input.provider, input.tier) do return domain.Agent_Bridge_Support{}, false, domain.domain_error(.Provider_Unavailable, "bridge does not support requested provider/tier")
-	if input.max_instances < 0 do return domain.Agent_Bridge_Support{}, false, domain.domain_error(.Validation_Failed, "max_instances must be positive")
+	if valid, validate_err := validate_support_input(service, auth, agent, input); !valid do return domain.Agent_Bridge_Support{}, false, validate_err
 	now := platform.clock_now(service.clock)
 	existing, existing_ok, _ := iface.agent_get_support(service.agents, agent_id, input.bridge_id)
 	created_at := now
@@ -138,9 +133,31 @@ upsert_support :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, ag
 	return iface.agent_save_support(service.agents, support)
 }
 
+validate_support_input :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agent: domain.Agent, input: Support_Input) -> (bool, domain.Domain_Error) {
+	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, input.bridge_id)
+	if !bridge_ok do return false, bridge_err
+	if owner_ok, owner_err := ownership.require_owner(auth, bridge.owner_user_id); !owner_ok do return false, owner_err
+	if bridge.owner_user_id != agent.owner_user_id do return false, domain.domain_error(.Not_Found, "bridge not found")
+	if input.max_instances < 0 do return false, domain.domain_error(.Validation_Failed, "max_instances must be positive")
+	if !input.enabled do return true, domain.Domain_Error{}
+	resolved_provider := first_non_empty(input.provider, agent.default_provider, default_provider_from_bridge(bridge), "")
+	resolved_tier := first_non_empty(input.tier, agent.default_tier, default_tier_for_provider_from_bridge(bridge, resolved_provider), "")
+	if strings.trim_space(resolved_provider) == "" do return false, domain.domain_error(.Provider_Unavailable, "no provider is available on bridge")
+	if input.tier != "" || input.provider != "" || agent.default_provider != "" || agent.default_tier != "" {
+		if strings.trim_space(resolved_tier) == "" do return false, domain.domain_error(.Provider_Unavailable, "no tier is available for resolved provider")
+		if !bridge_supports_provider_tier(bridge, resolved_provider, resolved_tier) do return false, domain.domain_error(.Provider_Unavailable, "bridge does not support requested provider/tier")
+		return true, domain.Domain_Error{}
+	}
+	if !bridge_supports_provider_tier(bridge, resolved_provider, resolved_tier) do return false, domain.domain_error(.Provider_Unavailable, "bridge does not support requested provider/tier")
+	return true, domain.Domain_Error{}
+}
+
 replace_supports :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agent_id: string, inputs: []Support_Input) -> ([]domain.Agent_Bridge_Support, bool, domain.Domain_Error) {
 	agent, agent_ok, agent_err := get_agent(service, auth, agent_id)
 	if !agent_ok do return nil, false, agent_err
+	for input in inputs {
+		if valid, validate_err := validate_support_input(service, auth, agent, input); !valid do return nil, false, validate_err
+	}
 	existing, list_err := iface.agent_list_support(service.agents, agent.agent_id, agent.owner_user_id)
 	if list_err.code != .None do return nil, false, list_err
 	for support in existing {
