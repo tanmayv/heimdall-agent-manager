@@ -55,10 +55,13 @@ agent_action_chat_read_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if !ok do return resp
 	conv, conv_ok, conv_err := content_service.get_conversation_by_instance(h.content, auth, inst.agent_instance_id)
 	if !conv_ok do return respond_error(conv_err, req.request_id)
-	updated, saved, err := content_service.mark_read(h.content, auth, conv.conversation_id)
-	if !saved do return respond_error(err, req.request_id)
+	// Direction-safe v1 acknowledgement: Chat_Conversation.unread_count is the
+	// human user's unread agent->user badge, so an agent-side read must not call
+	// content_service.mark_read() or mutate that counter.
 	b := strings.builder_make()
-	write_chat_json(&b, updated)
+	strings.write_string(&b, "{\"accepted\":true,\"conversation\":")
+	write_chat_json(&b, conv)
+	strings.write_byte(&b, '}')
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
 
