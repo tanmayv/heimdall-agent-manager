@@ -109,42 +109,57 @@ function capabilityTiers(capability: BridgeCapability): string[] {
   return capability.default_tier ? [capability.default_tier] : [];
 }
 
-function supportProviderAllowed(support: AgentBridgeSupport, capability: BridgeCapability): boolean {
-  return !support.provider || support.provider === capability.provider;
-}
-
-function supportTierIntersection(support: AgentBridgeSupport, capability: BridgeCapability): string[] {
-  const tiers = capabilityTiers(capability);
-  if (!support.tier) return tiers;
-  return tiers.includes(support.tier) ? [support.tier] : [];
-}
-
 function bridgeOnline(bridge: BridgeOption | undefined): boolean {
   return String(bridge?.status || '').toLowerCase() === 'online';
 }
 
-function supportHasCapabilityIntersection(support: AgentBridgeSupport, bridgesById: Map<string, BridgeOption>): boolean {
-  const bridge = bridgesById.get(support.bridge_id);
-  return bridgeOnline(bridge) && bridgeCapabilityEntries(bridge).some((capability) => supportProviderAllowed(support, capability) && supportTierIntersection(support, capability).length > 0);
+function defaultCapability(bridge: BridgeOption | undefined): BridgeCapability | undefined {
+  const caps = bridgeCapabilityEntries(bridge);
+  return caps.find((cap) => cap.default_tier) || caps[0];
 }
 
-function providersForSupportIntersection(rows: AgentBridgeSupport[], bridgesById: Map<string, BridgeOption>): string[] {
+function capabilityForProvider(bridge: BridgeOption | undefined, provider: string): BridgeCapability | undefined {
+  return bridgeCapabilityEntries(bridge).find((cap) => cap.provider === provider);
+}
+
+function capabilitySupportsTier(capability: BridgeCapability | undefined, tier: string): boolean {
+  if (!capability || !tier) return false;
+  return capabilityTiers(capability).includes(tier);
+}
+
+function resolveProviderTier(agent: AgentOption | undefined, support: AgentBridgeSupport, bridge: BridgeOption | undefined, requestProvider = '', requestTier = ''): { ok: boolean; provider: string; tier: string } {
+  if (!support.enabled || !bridgeOnline(bridge)) return { ok: false, provider: '', tier: '' };
+  const provider = requestProvider || support.provider || agent?.default_provider || defaultCapability(bridge)?.provider || '';
+  const capability = capabilityForProvider(bridge, provider);
+  const tier = requestTier || support.tier || agent?.default_tier || capability?.default_tier || capabilityTiers(capability || {})[0] || '';
+  const supportAllowsProvider = !support.provider || support.provider === provider;
+  const supportAllowsTier = !support.tier || support.tier === tier;
+  return { ok: Boolean(provider && tier && supportAllowsProvider && supportAllowsTier && capabilitySupportsTier(capability, tier)), provider, tier };
+}
+
+function runnableRows(rows: AgentBridgeSupport[], bridgesById: Map<string, BridgeOption>, agent: AgentOption | undefined, requestProvider = '', requestTier = ''): AgentBridgeSupport[] {
+  return rows.filter((support) => resolveProviderTier(agent, support, bridgesById.get(support.bridge_id), requestProvider, requestTier).ok);
+}
+
+function providersForResolvedRequest(rows: AgentBridgeSupport[], bridgesById: Map<string, BridgeOption>, agent: AgentOption | undefined, requestTier: string): string[] {
   const out = new Set<string>();
   rows.forEach((support) => {
     bridgeCapabilityEntries(bridgesById.get(support.bridge_id)).forEach((capability) => {
-      if (capability.provider && supportProviderAllowed(support, capability) && supportTierIntersection(support, capability).length > 0) out.add(capability.provider);
+      const provider = capability.provider || '';
+      if (provider && resolveProviderTier(agent, support, bridgesById.get(support.bridge_id), provider, requestTier).ok) out.add(provider);
     });
   });
   return Array.from(out).sort();
 }
 
-function tiersForSupportIntersection(rows: AgentBridgeSupport[], bridgesById: Map<string, BridgeOption>, selectedProvider: string): string[] {
+function tiersForResolvedRequest(rows: AgentBridgeSupport[], bridgesById: Map<string, BridgeOption>, agent: AgentOption | undefined, requestProvider: string): string[] {
   const out = new Set<string>();
   rows.forEach((support) => {
     bridgeCapabilityEntries(bridgesById.get(support.bridge_id)).forEach((capability) => {
-      if (selectedProvider && capability.provider !== selectedProvider) return;
-      if (!supportProviderAllowed(support, capability)) return;
-      supportTierIntersection(support, capability).forEach((candidate) => out.add(candidate));
+      if (requestProvider && capability.provider !== requestProvider) return;
+      capabilityTiers(capability).forEach((candidate) => {
+        if (resolveProviderTier(agent, support, bridgesById.get(support.bridge_id), requestProvider, candidate).ok) out.add(candidate);
+      });
     });
   });
   return Array.from(out).sort();
@@ -208,11 +223,18 @@ export default function ConversationLaunchComposer() {
   const selectedAgent = useMemo(() => agents.find((agent) => agent.agent_id === agentId), [agents, agentId]);
   const selectedProject = useMemo(() => projects.find((project) => project.project_id === projectId) || defaultProject(projects), [projects, projectId]);
   const bridgesById = useMemo<Map<string, BridgeOption>>(() => new Map(bridges.map((bridge) => [bridge.bridge_id, bridge])), [bridges]);
-  const capableSupport = useMemo(() => support.filter((row) => supportHasCapabilityIntersection(row, bridgesById)), [support, bridgesById]);
-  const constrainedSupport = useMemo(() => capableSupport.filter((row) => !bridgeId || row.bridge_id === bridgeId), [capableSupport, bridgeId]);
-  const providerOptions = useMemo(() => providersForSupportIntersection(constrainedSupport, bridgesById), [constrainedSupport, bridgesById]);
-  const tierOptions = useMemo(() => tiersForSupportIntersection(constrainedSupport, bridgesById, provider), [constrainedSupport, bridgesById, provider]);
-  const pendingTierOptions = useMemo(() => tiersForSupportIntersection(constrainedSupport, bridgesById, pendingProvider), [constrainedSupport, bridgesById, pendingProvider]);
+  const onlineSupport = useMemo(() => support.filter((row) => bridgeOnline(bridgesById.get(row.bridge_id))), [support, bridgesById]);
+  const defaultRunnableSupport = useMemo(() => runnableRows(onlineSupport, bridgesById, selectedAgent, '', ''), [onlineSupport, bridgesById, selectedAgent]);
+  const constrainedSupport = useMemo(() => onlineSupport.filter((row) => !bridgeId || row.bridge_id === bridgeId), [onlineSupport, bridgeId]);
+  const currentRequestProvider = advancedOpen ? provider : '';
+  const currentRequestTier = advancedOpen ? tier : '';
+  const currentRunnableSupport = useMemo(() => runnableRows(constrainedSupport, bridgesById, selectedAgent, currentRequestProvider, currentRequestTier), [constrainedSupport, bridgesById, selectedAgent, currentRequestProvider, currentRequestTier]);
+  const bridgeOptions = useMemo(() => onlineSupport.filter((row) => resolveProviderTier(selectedAgent, row, bridgesById.get(row.bridge_id), currentRequestProvider, currentRequestTier).ok), [onlineSupport, bridgesById, selectedAgent, currentRequestProvider, currentRequestTier]);
+  const providerOptions = useMemo(() => providersForResolvedRequest(constrainedSupport, bridgesById, selectedAgent, currentRequestTier), [constrainedSupport, bridgesById, selectedAgent, currentRequestTier]);
+  const tierOptions = useMemo(() => tiersForResolvedRequest(constrainedSupport, bridgesById, selectedAgent, currentRequestProvider), [constrainedSupport, bridgesById, selectedAgent, currentRequestProvider]);
+  const lockedBridgeSupport = useMemo(() => locked ? support.filter((row) => row.bridge_id === locked.bridge_id) : constrainedSupport, [locked, support, constrainedSupport]);
+  const pendingProviderOptions = useMemo(() => providersForResolvedRequest(lockedBridgeSupport, bridgesById, selectedAgent, pendingTier), [lockedBridgeSupport, bridgesById, selectedAgent, pendingTier]);
+  const pendingTierOptions = useMemo(() => tiersForResolvedRequest(lockedBridgeSupport, bridgesById, selectedAgent, pendingProvider), [lockedBridgeSupport, bridgesById, selectedAgent, pendingProvider]);
 
   useEffect(() => {
     setProvider((current) => current === '' || providerOptions.includes(current) ? current : '');
@@ -223,19 +245,20 @@ export default function ConversationLaunchComposer() {
   }, [tierOptions.join('|')]);
 
   useEffect(() => {
-    setPendingProvider((current) => current === '' || providerOptions.includes(current) ? current : (providerOptions[0] || ''));
-  }, [providerOptions.join('|')]);
+    setPendingProvider((current) => current === '' || pendingProviderOptions.includes(current) ? current : (pendingProviderOptions[0] || ''));
+  }, [pendingProviderOptions.join('|')]);
 
   useEffect(() => {
     setPendingTier((current) => current === '' || pendingTierOptions.includes(current) ? current : (pendingTierOptions[0] || ''));
   }, [pendingTierOptions.join('|')]);
 
   const hasRunnableAgent = runnableAgents.length > 0;
-  const hasCapableBridgeSupport = !agentId || capableSupport.length > 0;
-  const canSend = status !== 'sending' && Boolean(agentId) && hasCapableBridgeSupport && body.trim().length > 0;
+  const hasCapableBridgeSupport = !agentId || (advancedOpen ? currentRunnableSupport.length > 0 : defaultRunnableSupport.length > 0);
+  const advancedSelectionWarning = agentId && advancedOpen && currentRunnableSupport.length === 0 ? 'Selected Bridge/provider/tier does not resolve to any online enabled Bridge support row.' : '';
+  const canSend = status !== 'sending' && Boolean(agentId) && hasCapableBridgeSupport && !advancedSelectionWarning && body.trim().length > 0;
   const usingSyntheticDefault = selectedProject.project_id === SYNTHETIC_DEFAULT_PROJECT_ID;
   const hasPendingProviderTierChange = locked ? pendingProvider !== locked.provider || pendingTier !== locked.tier : false;
-  const pendingProviderValid = pendingProvider === '' || providerOptions.includes(pendingProvider);
+  const pendingProviderValid = pendingProvider === '' || pendingProviderOptions.includes(pendingProvider);
   const pendingTierValid = pendingTier === '' || pendingTierOptions.includes(pendingTier);
   const pendingProviderTierValid = pendingProviderValid && pendingTierValid;
   const canReconfigureProviderTier = hasPendingProviderTierChange && pendingProviderTierValid;
@@ -247,6 +270,10 @@ export default function ConversationLaunchComposer() {
       return;
     }
     if (!body.trim()) return;
+    if (!hasCapableBridgeSupport || advancedSelectionWarning) {
+      setError(advancedSelectionWarning || 'No online enabled Bridge support can run this agent with the current provider/tier resolution.');
+      return;
+    }
     setStatus('sending');
     setError('');
     try {
@@ -336,7 +363,7 @@ export default function ConversationLaunchComposer() {
               <span className="text-xs font-semibold text-emerald-100/70">New provider</span>
               <select data-debug-id="launch-post-start-provider-select" value={pendingProvider} onChange={(event) => setPendingProvider(event.target.value)} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-sm text-white">
                 <option value="">Default</option>
-                {providerOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+                {pendingProviderOptions.map((option) => <option key={option} value={option}>{option}</option>)}
               </select>
             </label>
             <label className="block">
@@ -395,7 +422,7 @@ export default function ConversationLaunchComposer() {
               <span className="text-xs font-semibold text-zinc-400">Bridge / machine</span>
               <select data-debug-id="new-convo-bridge-select" value={bridgeId} onChange={(event) => setBridgeId(event.target.value)} disabled={!agentId} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-sm text-white disabled:opacity-50">
                 <option value="">Auto</option>
-                {capableSupport.map((row) => <option key={row.bridge_id} value={row.bridge_id}>{supportLabel(row, bridgesById)}</option>)}
+                {bridgeOptions.map((row) => <option key={row.bridge_id} value={row.bridge_id}>{supportLabel(row, bridgesById)}</option>) }
               </select>
             </label>
             <label className="block">
@@ -414,6 +441,7 @@ export default function ConversationLaunchComposer() {
             </label>
           </div>
           <p data-debug-id="launch-capability-note" className="mt-3 text-xs text-zinc-500">Bridge options come from <code>/api/v1/agents/:agent_id/bridge-support</code> intersected with <code>/api/v1/bridges</code> capability providers/tiers; compact capability rows use <code>default_tier</code> as the bounded tier until full tier arrays land. Disabled support and unsupported provider/tier pairs are hidden, and Auto lets the Hub select a capable online Bridge.</p>
+          {advancedSelectionWarning && <p data-debug-id="new-convo-advanced-warning" className="mt-3 rounded-2xl border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">{advancedSelectionWarning}</p>}
         </fieldset>
       )}
 
