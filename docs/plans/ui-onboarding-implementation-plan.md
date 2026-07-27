@@ -658,11 +658,13 @@ agent-optimized, and self-documenting. Findings are requirements.
   `Authorization: Bearer` only (arch doc §2.5). Remove query/body token usage.
 
 **Agent-optimized output (easy on context)**
-- C6 — **Return only NEW information.** Agent-mode reads must support delta
-  fetches so an agent does not reprocess the whole conversation each poll:
-  `ham-ctl agent chat read --since <cursor|timestamp>` returns only messages
-  after the cursor, plus a `next_cursor`. Same for tasks/context. Default to
-  compact output; avoid echoing request params back.
+- C6 — **Return only NEW information where the backend has a cursor.**
+  Agent-mode chat reads support delta fetches so an agent does not reprocess the
+  whole conversation each poll: `ham-ctl agent chat read --since
+  <cursor|timestamp>` returns only messages after the cursor, plus a
+  `next_cursor`. For v1, tasks/context are compact snapshots rather than
+  cursor-delta streams because the Hub does not yet expose task/context event
+  cursors. Default to compact output; avoid echoing request params back.
 - C7 — **Compact, stable JSON by default** for agent mode (one object or a small
   array + `next_cursor`), with a `--json` already implied; a `--verbose` may add
   detail. No decorative/log lines mixed into stdout (machine-parseable).

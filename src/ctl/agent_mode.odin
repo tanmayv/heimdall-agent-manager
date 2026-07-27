@@ -50,9 +50,8 @@ agent_mode_token :: proc(args: []string) -> string {
 }
 
 ctl_agentmode_context :: proc(endpoint, token: string, args: []string) {
-	fields := make([dynamic]string)
-	if since := option_value(args, "--since", option_value(args, "--cursor", "")); since != "" do append(&fields, json_kv("since", since))
-	ctl_agent_call(endpoint, token, "agent.context.get", json_object_from_slice(fields[:]))
+	_ = args
+	ctl_agent_call(endpoint, token, "agent.context.get", "{}")
 }
 
 ctl_agentmode_chat :: proc(endpoint, token, action: string, args: []string) {
@@ -246,7 +245,7 @@ print_agent_help :: proc(cmd: []string) {
 	if resource == "tasks" || resource == "task" { print_agent_tasks_help(action); return }
 	if resource == "artifacts" || resource == "artifact" { print_agent_artifacts_help(action); return }
 	if resource == "memory" { print_agent_memory_help(action); return }
-	if resource == "context" { fmt.println("ham-ctl agent context [--since <cursor|timestamp>]\nPurpose: fetch this running instance's compact Hub context via the local Bridge.\nExample:\n  ham-ctl agent context --since 2026-07-27T10:00:00Z"); return }
+	if resource == "context" { fmt.println("ham-ctl agent context\nPurpose: fetch this running instance's compact Hub context snapshot via the local Bridge.\nExample:\n  ham-ctl agent context"); return }
 	if resource == "start-success" { fmt.println("ham-ctl agent start-success\nPurpose: signal that this agent instance is ready.\nExample:\n  ham-ctl agent start-success"); return }
 	fmt.println("ham-ctl agent — Bridge-local commands for a running agent")
 	fmt.println("commands:")
@@ -279,9 +278,9 @@ print_agent_chat_help :: proc(action: string) {
 print_agent_tasks_help :: proc(action: string) {
 	_ = action
 	fmt.println("ham-ctl agent tasks <fetch|comment|status|vote|nudge>")
-	fmt.println("Purpose: fetch compact task context or update tasks assigned to/reviewed by this instance.")
+	fmt.println("Purpose: fetch compact current task context or update tasks assigned to/reviewed by this instance.")
 	fmt.println("Examples:")
-	fmt.println("  ham-ctl agent tasks fetch --since 2026-07-27T10:00:00Z")
+	fmt.println("  ham-ctl agent tasks fetch")
 	fmt.println("  ham-ctl agent tasks comment --task-id task_123 --body 'Implemented the fix.'")
 	fmt.println("  ham-ctl agent tasks status --task-id task_123 --status in_validation")
 	fmt.println("  ham-ctl agent tasks vote --task-id task_123 --result lgtm")

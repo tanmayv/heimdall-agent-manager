@@ -22,7 +22,7 @@ print_usage :: proc(config_path, daemon_url: string) {
 	fmt.println("ham-ctl", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
 	fmt.println("command families:")
 	fmt.println("  agent   Bridge-local agent commands: context, start-success, chat, tasks, artifacts, memory")
-	fmt.println("  hub     Hub /api/v1 user commands: me, agents, launch, chats, tasks, task-chains")
+	fmt.println("  hub     Hub /api/v1 user commands: me, agents, launch, chats, tasks, task-chains, projects, artifacts, memories")
 	fmt.println("  help    Show detailed help: ham-ctl help agent | ham-ctl help hub | ham-ctl help work-guide")
 	fmt.println("examples:")
 	fmt.println("  ham-ctl agent context")
