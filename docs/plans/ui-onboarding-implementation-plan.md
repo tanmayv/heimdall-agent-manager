@@ -979,7 +979,7 @@ endpoints so WS invalidation applies.
    but keep the code parked+deprecated under `src/ctl/legacy/` (C2/C3); drop
    redundant aliases (C4); enforce bearer-only auth (C5); add delta-capable agent
    reads (C6/C7); per-subcommand help with examples + high-level top-level help
-   (C8–C11). Phase commit: `f273a09`.
+   (C8–C11). Phase commits: `f273a09`, `7fd6579`.
 4. **Page 1 Bridges** polish (capability rendering, cookie-auth cleanup, poll).
 5. **Page 2 Providers** rewrite (configure + test, bridge-persisted, set default).
 6. **Page 3 Agents** create (template + name + §2.5 provider, tier-only normal
