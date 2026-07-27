@@ -520,12 +520,29 @@ conversations through the Bridge (agent has no Hub URL/token; the Bridge relays)
   - making top-level `start-success` detect `HEIMDALL_BRIDGE_ENDPOINT` and route
     through agent mode. `bridge_provider_render_starter_prompt` is the single
     place to update the rendered command.
-- **B4 — Instance token is a guessable stand-in (`hit_<instance_id>`).** The
-  Bridge fabricates the instance token as `hit_` + instance id and the Hub
-  accepts any `hit_<existing instance id>` (no secret). For v1 local this is
-  acceptable but should be flagged: real instance tokens should be Hub-issued
-  secrets (runtime protocol §12.1/§6.5). Track as a follow-up, not a blocker for
-  the local onboarding goal.
+- **B4 — Instance-token trust model: Bridge-managed identity, Hub trusts the
+  Bridge.** DECISION: instance tokens are **managed at the Bridge level**, not
+  issued as Hub secrets. The Bridge is the authenticated principal (bridge token
+  over the bridge WS); it owns the local agent tokens it hands to wrappers/agents
+  and maps them to `agent_instance_id`. When the Bridge relays an agent action,
+  **the Hub trusts the instance identity (`agent_instance_id`) asserted by the
+  authenticated Bridge** — it does not require a separately-issued per-instance
+  Hub secret. Requirements:
+  - The Bridge asserts instance identity on relay in a way the Hub authenticates
+    as coming from that Bridge (e.g. the bridge token / bridge-authenticated
+    channel), and the Hub verifies the asserted `agent_instance_id` **belongs to
+    that Bridge** (`instance.bridge_id == authenticated bridge`) and resolves
+    `owner_user_id` from the instance record. Reject if the instance is not on
+    that Bridge.
+  - The `hit_<instance_id>` bearer stays an internal Bridge→Hub relay detail, but
+    the Hub MUST bind it to the calling Bridge (not accept any `hit_<id>` from
+    anywhere). The trust anchor is the Bridge, not the token string.
+  - Local agent tokens (`hlat_...`) remain Bridge-issued and Bridge-scoped; they
+    never reach the Hub. This matches runtime protocol §12 (Bridge asserts
+    instance identity; agent/wrapper hold no Hub credential).
+  Net: no Hub-issued per-instance secret is required; the Bridge is the identity
+  authority for its instances and the Hub trusts Bridge-asserted `instance_id`
+  scoped to that Bridge.
 - **B5 — Env allowlist must keep the three HEIMDALL_* runtime vars.** Confirmed
   present (`HEIMDALL_BRIDGE_ENDPOINT/AGENT_TOKEN/AGENT_INSTANCE_ID`); ensure any
   provider-store launch-resolution rework (§3.1) preserves them, or `ham-ctl
@@ -945,8 +962,8 @@ endpoints so WS invalidation applies.
 1. **DONE — Backend: bridge provider store + capabilities-from-store** (unblocks real
    capabilities everywhere; removes hardcoded `claude/normal`); bridge default
    provider. Phase commit: `3e8d869`.
-2. **Backend: hub provider relay routes + `write_bridge_json` fix** (incl. A2/A9
-   real `active_instance_count` / `supported_bridge_count`).
+2. **DONE — Backend: hub provider relay routes + `write_bridge_json` fix** (incl. A2/A9
+   real `active_instance_count` / `supported_bridge_count`). Phase commit: `ff075b5`.
 3. **Backend: agent deploy/run gaps (§3.5)** — `agent-instances` `agent_id`
    filter, §2.5 resolution on create, `PATCH /agents/{id}` defaults, stop/restart
    wiring, and the A10 `bridge-support` PUT-body contract.
