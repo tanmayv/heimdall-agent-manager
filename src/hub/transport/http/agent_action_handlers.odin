@@ -85,6 +85,7 @@ agent_action_context_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	if conv_ok { strings.write_string(&b, fmt.tprintf("%d", conv.unread_count)) } else { strings.write_string(&b, "0") }
 	strings.write_string(&b, "},\"current_task\":")
 	write_agent_current_task_json(&b, h, auth, inst)
+	strings.write_string(&b, ",\"next_cursor\":\""); write_handler_json_string(&b, auth_ctx_server_time(req)); strings.write_string(&b, "\"")
 	strings.write_byte(&b, '}')
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
