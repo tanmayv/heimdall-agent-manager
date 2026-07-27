@@ -31,6 +31,34 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
       providesTags: [{ type: 'AgentTemplate' as const, id: 'LIST' }],
     }),
+    fetchAgentIdentity: build.query<any, { agentId: string }>({
+      queryFn: async ({ agentId }) => {
+        if (!agentId) return { data: { agent: null } };
+        try {
+          const data = await cookieJsonFetch(`/agents/${encodeURIComponent(agentId)}`);
+          return { data: { agent: data || null } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: agentId }],
+    }),
+    updateAgentIdentity: build.mutation<any, { agentId: string; name?: string; defaultProvider?: string; defaultTier?: string; instructions?: string }>({
+      queryFn: async ({ agentId, name, defaultProvider, defaultTier, instructions }) => {
+        try {
+          const payload: any = {};
+          if (name !== undefined) payload.name = name;
+          if (defaultProvider !== undefined) payload.default_provider = defaultProvider;
+          if (defaultTier !== undefined) payload.default_tier = defaultTier;
+          if (instructions !== undefined) payload.instructions = instructions;
+          const data = await cookieMutation(`/agents/${encodeURIComponent(agentId)}`, 'PATCH', payload);
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: 'LIST' }, { type: 'Agents' as const, id: agentId }, { type: 'BridgeSupport' as const, id: agentId }],
+    }),
     enableBridgeSupport: build.mutation<any, { agentId: string; bridges?: Array<{ bridgeId?: string; bridge_id?: string; enabled?: boolean; provider?: string; providerProfile?: string; tier?: string; modelTier?: string; priority?: number; maxInstances?: number }> }>({
       queryFn: async ({ agentId, bridges }) => {
         try {
@@ -254,20 +282,55 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: [{ type: 'Agents' as const, id: 'LIST' }],
     }),
-    launchAgentInstance: build.mutation<any, { agentId: string; bridgeId?: string; provider?: string; tier?: string }>({
-      queryFn: async ({ agentId, bridgeId, provider, tier }) => {
+    listAgentInstances: build.query<any, { agentId: string }>({
+      queryFn: async ({ agentId }) => {
+        if (!agentId) return { data: { instances: [] } };
+        try {
+          const data = await cookieJsonFetch(`/agent-instances?agent_id=${encodeURIComponent(agentId)}`);
+          return { data: { instances: data || [] } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_result, _error, { agentId }) => [{ type: 'AgentInstances' as const, id: agentId }],
+    }),
+    launchAgentInstance: build.mutation<any, { agentId: string; bridgeId?: string; provider?: string; tier?: string; projectId?: string }>({
+      queryFn: async ({ agentId, bridgeId, provider, tier, projectId }) => {
         try {
           const payload: any = { agent_id: agentId };
           if (bridgeId) payload.bridge_id = bridgeId;
           if (provider) payload.provider = provider;
           if (tier) payload.tier = tier;
+          if (projectId) payload.project_id = projectId;
           const data = await cookieMutation('/agent-instances', 'POST', payload);
           return { data };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
-      invalidatesTags: [{ type: 'Agents' as const, id: 'LIST' }],
+      invalidatesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: 'LIST' }, { type: 'Agents' as const, id: agentId }, { type: 'AgentInstances' as const, id: agentId }],
+    }),
+    stopAgentInstance: build.mutation<any, { agentId: string; instanceId: string }>({
+      queryFn: async ({ instanceId }) => {
+        try {
+          const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/stop`, 'POST', {});
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: 'LIST' }, { type: 'Agents' as const, id: agentId }, { type: 'AgentInstances' as const, id: agentId }],
+    }),
+    restartAgentInstance: build.mutation<any, { agentId: string; instanceId: string }>({
+      queryFn: async ({ instanceId }) => {
+        try {
+          const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}/restart`, 'POST', {});
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: 'LIST' }, { type: 'Agents' as const, id: agentId }, { type: 'AgentInstances' as const, id: agentId }],
     }),
     // Remote role content for a local-proxy agent-id. Cached aggressively
     // (keepUnusedDataFor long) since remote templates change rarely; keyed by
@@ -357,4 +420,4 @@ export function patchAgentCachesFromWs(dispatch: any, payload: any) {
   dispatch(heimdallApi.util.invalidateTags([{ type: 'Agents', id: 'LIST' }, { type: 'Agents', id: agentId }]));
 }
 
-export const { useListAgentIdentitiesQuery, useListAgentTemplatesQuery, useEnableBridgeSupportMutation, useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useCreateAgentInstanceInChainMutation, useCreateAgentMutation, useArchiveAgentIdentityMutation, useLaunchAgentInstanceMutation, useFetchPeerAgentTemplateQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation } = agentsApi;
+export const { useListAgentIdentitiesQuery, useListAgentTemplatesQuery, useFetchAgentIdentityQuery, useUpdateAgentIdentityMutation, useEnableBridgeSupportMutation, useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useCreateAgentInstanceInChainMutation, useCreateAgentMutation, useArchiveAgentIdentityMutation, useListAgentInstancesQuery, useLaunchAgentInstanceMutation, useStopAgentInstanceMutation, useRestartAgentInstanceMutation, useFetchPeerAgentTemplateQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation } = agentsApi;

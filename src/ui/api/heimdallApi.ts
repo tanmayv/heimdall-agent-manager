@@ -13,6 +13,7 @@ export const HEIMDALL_TAG_TYPES = [
   'ConversationSummaries',
   'Agents',
   'AgentTemplate',
+  'AgentInstances',
   'Memory',
   'MemoryHistory',
   'Project',

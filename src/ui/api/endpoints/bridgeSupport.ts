@@ -38,8 +38,8 @@ function normalizeBridgeSupportEntry(raw: any): AgentBridgeSupportEntry {
   return {
     bridgeId: String(raw?.bridge_id || raw?.bridgeId || ''),
     enabled: Boolean(raw?.enabled ?? raw?.is_enabled ?? false),
-    providerProfile: raw?.provider_profile || raw?.providerProfile || undefined,
-    modelTier: raw?.model_tier || raw?.modelTier || undefined,
+    providerProfile: raw?.provider || raw?.provider_profile || raw?.providerProfile || undefined,
+    modelTier: raw?.tier || raw?.model_tier || raw?.modelTier || undefined,
     priority: raw?.priority !== undefined ? Number(raw.priority) : undefined,
     maxInstances: raw?.max_instances !== undefined ? Number(raw.max_instances) : raw?.maxInstances !== undefined ? Number(raw.maxInstances) : undefined,
   };
@@ -57,19 +57,36 @@ function normalizeBridgeSupport(data: any): { agentId: string; entries: AgentBri
 export const bridgeSupportApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     listAgentBridgeSupport: build.query<any, { agentId: string }>({
-      queryFn: withSessionQuery(async ({ agentId }, { session }) => {
-        if (!session?.daemonUrl || !session?.clientToken || !agentId) return { agentId, entries: [] };
-        const data = await daemonApi.listAgentBridgeSupport({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, agentId });
-        return normalizeBridgeSupport(data);
-      }),
+      queryFn: async ({ agentId }) => {
+        if (!agentId) return { data: { agentId, entries: [] } };
+        try {
+          const data = await cookieJsonFetch(`/agents/${encodeURIComponent(agentId)}/bridge-support`);
+          return { data: normalizeBridgeSupport(data) };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
       providesTags: (_result, _error, { agentId }) => [{ type: 'BridgeSupport' as const, id: agentId }],
     }),
     patchAgentBridgeSupport: build.mutation<any, { agentId: string; bridgeId: string; enabled?: boolean; providerProfile?: string; modelTier?: string; priority?: number; maxInstances?: number }>({
-      queryFn: withSessionQuery(async (arg, { session }) => {
-        if (!session?.daemonUrl || !session?.clientToken || !arg.agentId || !arg.bridgeId) return { ok: false, message: 'Missing agentId/bridgeId' };
-        return daemonApi.patchAgentBridgeSupport({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, ...arg });
-      }),
-      invalidatesTags: (_result, _error, { agentId }) => [{ type: 'BridgeSupport' as const, id: agentId }],
+      queryFn: async (arg) => {
+        if (!arg.agentId || !arg.bridgeId) return { data: { ok: false, message: 'Missing agentId/bridgeId' } };
+        try {
+          const payload = {
+            bridge_id: arg.bridgeId,
+            enabled: arg.enabled !== false,
+            provider: arg.providerProfile || '',
+            tier: arg.modelTier || '',
+            priority: arg.priority || 0,
+            max_instances: arg.maxInstances || 0,
+          };
+          const data = await cookieMutation(`/agents/${encodeURIComponent(arg.agentId)}/bridge-support/${encodeURIComponent(arg.bridgeId)}`, 'PATCH', payload);
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { agentId }) => [{ type: 'BridgeSupport' as const, id: agentId }, { type: 'Agents' as const, id: 'LIST' }],
     }),
     listBridges: build.query<any, void | {}>({
       queryFn: async () => {

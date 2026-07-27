@@ -7,6 +7,7 @@ import { useListSidebarConversationsQuery, useListSidebarProjectsQuery, type Sid
 import { buildRouteHash, getRoutePathname } from '../../utils/appLocation';
 import BridgesPanel from '../settings/BridgesPanel';
 import { AgentsPanel } from '../agents/AgentsPanel';
+import { AgentDetailPanel } from '../agents/AgentDetailPanel';
 import { ProvidersPanel } from '../settings/ProvidersPanel';
 
 type ShellRoute = {
@@ -470,6 +471,8 @@ function RouteOutlet({ path, mobileBottomPadded = false }: { path: string; mobil
             <div className="w-full max-w-4xl text-left"><ProvidersPanel /></div>
           ) : path === '/agents' ? (
             <div className="w-full max-w-4xl text-left"><AgentsPanel /></div>
+          ) : path.startsWith('/agents/') ? (
+            <div className="w-full max-w-5xl text-left"><AgentDetailPanel agentId={decodeURIComponent(path.slice('/agents/'.length))} /></div>
           ) : (
             <div className="max-w-2xl">
               <div data-debug-id="shell-page-placeholder-icon" className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-3xl bg-white/10 text-2xl">⌁</div>
