@@ -1,4 +1,6 @@
-const { app, BrowserWindow, ipcMain, dialog, nativeImage, Menu } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, nativeImage, Menu, safeStorage, shell } = require('electron');
+const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 // Visible product identity (window title + dock/taskbar + macOS app menu).
@@ -14,6 +16,56 @@ const appIcon = (() => {
 })();
 const { pruneAndRegister, updatePort, deregister } = require('./instanceRegistry.cjs');
 const { startDebugServer, stopDebugServer } = require('./debugServer.cjs');
+
+function normalizeBaseUrl(value: string): string {
+  return String(value || '').trim().replace(/\/$/, '');
+}
+
+function configuredHubApiBaseUrl(): string {
+  return normalizeBaseUrl(
+    process.env.HEIMDALL_HUB_API_URL ||
+    process.env.HEIMDALL_HUB_URL ||
+    // Default to the public Hub API, not the outpost/dev-proxy browser URL.
+    'http://127.0.0.1:8081'
+  );
+}
+
+function deviceTokenPath(): string {
+  return path.join(app.getPath('userData'), 'device-authorization-token.bin');
+}
+
+function readDeviceToken(): { ok: boolean; token: string; error?: string } {
+  try {
+    const filePath = deviceTokenPath();
+    if (!fs.existsSync(filePath)) return { ok: true, token: '' };
+    if (!safeStorage.isEncryptionAvailable()) return { ok: false, token: '', error: 'Electron safeStorage encryption is unavailable on this OS/session.' };
+    const encrypted = fs.readFileSync(filePath);
+    return { ok: true, token: safeStorage.decryptString(encrypted) };
+  } catch (err: any) {
+    return { ok: false, token: '', error: String(err?.message || err || 'Unable to read stored token') };
+  }
+}
+
+function writeDeviceToken(token: string): { ok: boolean; error?: string } {
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: 'Electron safeStorage encryption is unavailable on this OS/session.' };
+    fs.mkdirSync(app.getPath('userData'), { recursive: true });
+    fs.writeFileSync(deviceTokenPath(), safeStorage.encryptString(String(token || '')));
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: String(err?.message || err || 'Unable to store token') };
+  }
+}
+
+function clearDeviceToken(): { ok: boolean; error?: string } {
+  try {
+    const filePath = deviceTokenPath();
+    if (fs.existsSync(filePath)) fs.rmSync(filePath, { force: true });
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: String(err?.message || err || 'Unable to clear token') };
+  }
+}
 
 // Bypass Nix sandbox GPU library mismatches on Linux to enable full hardware-accelerated rendering.
 if (process.platform === 'linux') {
@@ -103,6 +155,30 @@ ipcMain.handle('odin-api:toggle-debug-server', async (_event, enable: boolean) =
   return { enabled: currentDebugPort !== 0, port: currentDebugPort, pid: process.pid };
 });
 
+ipcMain.handle('heimdall-device-auth:get-config', () => {
+  return { apiBaseUrl: configuredHubApiBaseUrl(), safeStorageAvailable: safeStorage.isEncryptionAvailable() };
+});
+
+ipcMain.handle('heimdall-device-auth:get-token', () => readDeviceToken());
+
+ipcMain.handle('heimdall-device-auth:store-token', (_event, token: string) => writeDeviceToken(token));
+
+ipcMain.handle('heimdall-device-auth:clear-token', () => clearDeviceToken());
+
+ipcMain.handle('heimdall-device-auth:device-info', () => {
+  return {
+    client: 'heimdall-electron',
+    deviceLabel: os.hostname() || 'Heimdall Desktop',
+    os: `${process.platform} ${process.arch}`,
+    appVersion: app.getVersion?.() || '0.1.0',
+  };
+});
+
+ipcMain.handle('heimdall-device-auth:open-external', async (_event, url: string) => {
+  await shell.openExternal(String(url || ''));
+  return { ok: true };
+});
+
 
 // Build an application menu whose FIRST submenu is titled with the app name.
 // On macOS this is the entry next to the Apple logo; without a custom menu an
@@ -147,7 +223,7 @@ app.whenReady().then(async () => {
   // from the client. In dev the renderer runs at the Vite dev-server origin,
   // and Vite's `server.proxy` (see vite.config.js) forwards `/api/v1`,
   // `/_dev/login`, and `/_dev/logout` to `ham-dev-proxy` (127.0.0.1:8080),
-  // which injects `X-authentik-*` server-side from the `ham_dev_user` cookie.
+  // which injects trusted identity headers server-side from the `ham_dev_user` cookie.
   const daemonUrl = process.env.HEIMDALL_DAEMON_URL || 'http://127.0.0.1:49322';
   pruneAndRegister(daemonUrl);
   updatePort(0); // Explicitly 0 since disabled by default
@@ -155,6 +231,8 @@ app.whenReady().then(async () => {
   console.log('[heimdall] startup config:');
   console.log(`  daemon_url=${daemonUrl}`);
   console.log(`  daemon_url_source=${process.env.HEIMDALL_DAEMON_URL ? 'env' : 'default'}`);
+  console.log(`  hub_api_base_url=${configuredHubApiBaseUrl()}`);
+  console.log(`  safe_storage_available=${safeStorage.isEncryptionAvailable()}`);
   console.log(`  pid=${process.pid}`);
   console.log(`  platform=${process.platform}`);
   console.log(`  electron=${process.versions.electron}`);

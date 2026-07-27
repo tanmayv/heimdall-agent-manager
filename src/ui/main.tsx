@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { Provider } from 'react-redux';
 import AppShell from './components/shell/AppShell';
+import ElectronDeviceAuthGate, { installElectronApiFetchBridge } from './components/ElectronDeviceAuthGate';
 import { store } from './store/store';
 import { buildRouteHash } from './utils/appLocation';
 import './debugCapture';
@@ -27,11 +28,14 @@ import './styles.css';
 })();
 
 (window as any).__debugStore = store;
+installElectronApiFetchBridge();
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <Provider store={store}>
-      <AppShell />
+      <ElectronDeviceAuthGate>
+        <AppShell />
+      </ElectronDeviceAuthGate>
     </Provider>
   </React.StrictMode>,
 );
