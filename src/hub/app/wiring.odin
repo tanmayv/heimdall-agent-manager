@@ -112,7 +112,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.taskchain_handlers = http.Taskchain_Handlers{auth = &graph.auth, taskchains = &graph.taskchains, agents = &graph.agents}
 	graph.search_handlers = http.Search_Handlers{auth = &graph.auth, search = &graph.search}
 	graph.device_auth_handlers = http.Device_Auth_Handlers{service = &graph.device_auth, auth = &graph.auth}
-	graph.agent_action_handlers = http.Agent_Action_Handlers{agents = &graph.agents, content = &graph.content, taskchains = &graph.taskchains}
+	graph.agent_action_handlers = http.Agent_Action_Handlers{agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, taskchains = &graph.taskchains}
 	graph.router = http.new_router()
 	register_routes(graph)
 	return true, ""
@@ -185,6 +185,9 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/status", rawptr(&graph.taskchain_handlers), http.change_task_status_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/nudge", rawptr(&graph.taskchain_handlers), http.nudge_task_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/send-to-user", rawptr(&graph.agent_action_handlers), http.agent_action_chat_send_to_user_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/fetch", rawptr(&graph.agent_action_handlers), http.agent_action_chat_fetch_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/read", rawptr(&graph.agent_action_handlers), http.agent_action_chat_read_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/context", rawptr(&graph.agent_action_handlers), http.agent_action_context_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/tasks/comment", rawptr(&graph.agent_action_handlers), http.agent_action_task_comment_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/tasks/status", rawptr(&graph.agent_action_handlers), http.agent_action_task_status_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/tasks/vote", rawptr(&graph.agent_action_handlers), http.agent_action_task_vote_handler)

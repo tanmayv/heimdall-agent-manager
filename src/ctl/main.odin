@@ -32,6 +32,11 @@ main :: proc() {
 		if len(early_cmd) > 0 {
 			early_url := option_value(os.args, "--daemon-url", "http://127.0.0.1:49322")
 			if early_cmd[0] == "start-success" {
+				if agent_mode_endpoint(os.args) != "" && agent_mode_token(os.args) != "" {
+					agent_cmd := [?]string{"agent", "start-success"}
+					ctl_agent_mode(agent_cmd[:], os.args)
+					return
+				}
 				ctl_start_success(early_url, os.args)
 				return
 			}
@@ -177,6 +182,11 @@ main :: proc() {
 	}
 
 	if cmd[0] == "start-success" {
+		if agent_mode_endpoint(os.args) != "" && agent_mode_token(os.args) != "" {
+			agent_cmd := [?]string{"agent", "start-success"}
+			ctl_agent_mode(agent_cmd[:], os.args)
+			return
+		}
 		ctl_start_success(daemon_url, os.args)
 		return
 	}
@@ -379,7 +389,18 @@ ctl_agentmode_chat :: proc(endpoint, token, action: string, args: []string) {
 		ctl_agent_call(endpoint, token, "agent.chat.send_to_user", json_object(json_kv("body", body)))
 		return
 	}
-	fmt.println("usage: ham-ctl agent chat <send>")
+	if action == "fetch" || action == "read-messages" {
+		fields := make([dynamic]string)
+		append(&fields, json_kv_raw("limit", option_value(args, "--limit", "50")))
+		if cursor := option_value(args, "--cursor", ""); cursor != "" do append(&fields, json_kv("cursor", cursor))
+		ctl_agent_call(endpoint, token, "agent.chat.fetch", json_object_from_slice(fields[:]))
+		return
+	}
+	if action == "read" || action == "mark-read" {
+		ctl_agent_call(endpoint, token, "agent.chat.read", "{}")
+		return
+	}
+	fmt.println("usage: ham-ctl agent chat <send|fetch|read>")
 }
 
 ctl_agentmode_tasks :: proc(endpoint, token, action: string, args: []string) {
@@ -1782,6 +1803,15 @@ json_kv :: proc(key, value: string) -> string {
 	strings.write_string(&b, `":"`)
 	json_write_string(&b, value)
 	strings.write_string(&b, `"`)
+	return strings.to_string(b)
+}
+
+json_kv_raw :: proc(key, value_json: string) -> string {
+	b := strings.builder_make()
+	strings.write_string(&b, `"`)
+	json_write_string(&b, key)
+	strings.write_string(&b, `":`)
+	strings.write_string(&b, value_json)
 	return strings.to_string(b)
 }
 

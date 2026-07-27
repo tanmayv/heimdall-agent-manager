@@ -92,6 +92,7 @@ bridge_wrapper_child_env :: proc(config: Bridge_Wrapper_Supervisor_Config) -> []
 bridge_wrapper_append_parent_env_if_present :: proc(out: ^[dynamic]string, key: string) {
 	if !bridge_wrapper_env_key_allowed(key) do return
 	value := os.get_env_alloc(key, context.allocator)
+	defer delete(value)
 	if value == "" do return
 	append(out, strings.concatenate({key, "=", value}))
 }
