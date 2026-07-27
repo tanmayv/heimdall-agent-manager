@@ -964,9 +964,9 @@ endpoints so WS invalidation applies.
    provider. Phase commit: `3e8d869`.
 2. **DONE — Backend: hub provider relay routes + `write_bridge_json` fix** (incl. A2/A9
    real `active_instance_count` / `supported_bridge_count`). Phase commits: `ff075b5`, `f627808`.
-3. **Backend: agent deploy/run gaps (§3.5)** — `agent-instances` `agent_id`
+3. **DONE — Backend: agent deploy/run gaps (§3.5)** — `agent-instances` `agent_id`
    filter, §2.5 resolution on create, `PATCH /agents/{id}` defaults, stop/restart
-   wiring, and the A10 `bridge-support` PUT-body contract.
+   wiring, and the A10 `bridge-support` PUT-body contract. Phase commit: `1162d8f`.
 3a. **Backend/ctl: agent runtime path (§3.5a)** — conversation READ for instance
    tokens (B1), real `agent.context` relay (B2), fix start-success command
    rendering/routing (B3), keep HEIMDALL_* env + regression test (B5). Required
