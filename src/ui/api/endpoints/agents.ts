@@ -332,6 +332,17 @@ export const agentsApi = heimdallApi.injectEndpoints({
       },
       invalidatesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: 'LIST' }, { type: 'Agents' as const, id: agentId }, { type: 'AgentInstances' as const, id: agentId }],
     }),
+    reconfigureAgentInstance: build.mutation<any, { agentId: string; instanceId: string; provider?: string; tier?: string }>({
+      queryFn: async ({ instanceId, provider, tier }) => {
+        try {
+          const data = await cookieMutation(`/agent-instances/${encodeURIComponent(instanceId)}`, 'PATCH', { provider: provider || '', tier: tier || '' });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { agentId }) => [{ type: 'Agents' as const, id: 'LIST' }, { type: 'Agents' as const, id: agentId }, { type: 'AgentInstances' as const, id: agentId }],
+    }),
     // Remote role content for a local-proxy agent-id. Cached aggressively
     // (keepUnusedDataFor long) since remote templates change rarely; keyed by
     // peer + remote agent-id so it is fetched once per mapping.
@@ -420,4 +431,4 @@ export function patchAgentCachesFromWs(dispatch: any, payload: any) {
   dispatch(heimdallApi.util.invalidateTags([{ type: 'Agents', id: 'LIST' }, { type: 'Agents', id: agentId }]));
 }
 
-export const { useListAgentIdentitiesQuery, useListAgentTemplatesQuery, useFetchAgentIdentityQuery, useUpdateAgentIdentityMutation, useEnableBridgeSupportMutation, useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useCreateAgentInstanceInChainMutation, useCreateAgentMutation, useArchiveAgentIdentityMutation, useListAgentInstancesQuery, useLaunchAgentInstanceMutation, useStopAgentInstanceMutation, useRestartAgentInstanceMutation, useFetchPeerAgentTemplateQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation } = agentsApi;
+export const { useListAgentIdentitiesQuery, useListAgentTemplatesQuery, useFetchAgentIdentityQuery, useUpdateAgentIdentityMutation, useEnableBridgeSupportMutation, useListAgentsQuery, useFetchAgentsPageQuery, useLazyFetchAgentsPageQuery, useFetchAgentQuery, useStartAgentMutation, useStopAgentMutation, useCreateAgentInstanceInChainMutation, useCreateAgentMutation, useArchiveAgentIdentityMutation, useListAgentInstancesQuery, useLaunchAgentInstanceMutation, useStopAgentInstanceMutation, useRestartAgentInstanceMutation, useReconfigureAgentInstanceMutation, useFetchPeerAgentTemplateQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation } = agentsApi;

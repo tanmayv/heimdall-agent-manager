@@ -1,4 +1,5 @@
 import * as daemonApi from '../daemonApi';
+import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
 
 const GUIDE_AGENT_ID = 'guide@heimdall';
@@ -159,6 +160,31 @@ function guideChatArgs() {
 
 export const chatEndpoints = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
+    createLaunchConversation: build.mutation<any, { agentId: string; projectId?: string; bridgeId?: string; provider?: string; tier?: string; body: string; artifactIds?: string[] }>({
+      queryFn: async ({ agentId, projectId, bridgeId, provider, tier, body, artifactIds = [] }) => {
+        try {
+          const payload: any = { agent_id: agentId, initial_message: { body }, artifact_ids: artifactIds };
+          if (projectId) payload.project_id = projectId;
+          if (bridgeId) payload.bridge_id = bridgeId;
+          if (provider) payload.provider = provider;
+          if (tier) payload.tier = tier;
+          const conversation = await cookieMutation('/chats', 'POST', payload);
+          let instance: any = {};
+          if (conversation?.agent_instance_id) {
+            try { instance = await cookieJsonFetch(`/agent-instances/${encodeURIComponent(String(conversation.agent_instance_id))}`); } catch (_err) { instance = {}; }
+          }
+          return { data: { conversation, instance } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { agentId }) => [
+        { type: 'SidebarConversations' as const, id: 'ALL' },
+        { type: 'ConversationSummaries' as const, id: 'LIST' },
+        { type: 'Agents' as const, id: 'LIST' },
+        { type: 'AgentInstances' as const, id: agentId },
+      ],
+    }),
     listConversationSummaries: build.query<any, { limit?: number; cursor?: string } | void>({
       queryFn: withSessionQuery(async (arg, { session }) => {
         if (!session?.clientToken) return { summaries: {}, nextCursor: '', hasMore: false };
@@ -508,6 +534,7 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
 });
 
 export const {
+  useCreateLaunchConversationMutation,
   useListConversationSummariesQuery,
   useFetchConversationSummariesPageQuery,
   useLazyFetchConversationSummariesPageQuery,

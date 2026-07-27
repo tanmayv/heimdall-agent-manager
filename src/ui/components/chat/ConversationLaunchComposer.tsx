@@ -1,4 +1,8 @@
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
+import { useListAgentIdentitiesQuery, useReconfigureAgentInstanceMutation, useRestartAgentInstanceMutation } from '../../api/endpoints/agents';
+import { normalizeBridgeCapabilities, useListAgentBridgeSupportQuery, useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
+import { useCreateLaunchConversationMutation } from '../../api/endpoints/chats';
+import { useListSidebarProjectsQuery } from '../../api/endpoints/sidebar';
 import { buildRouteHash } from '../../utils/appLocation';
 
 type AgentOption = {
@@ -59,28 +63,6 @@ const SYNTHETIC_DEFAULT_PROJECT: ProjectOption = {
   is_default_conversations: true,
 };
 
-function apiUrl(path: string): string {
-  return path.startsWith('/api/v1') ? path : `/api/v1${path.startsWith('/') ? path : `/${path}`}`;
-}
-
-async function apiList<T>(path: string): Promise<T[]> {
-  const response = await fetch(apiUrl(path), { credentials: 'include' });
-  if (!response.ok) throw new Error(`${path} failed (${response.status})`);
-  const body = await response.json();
-  return Array.isArray(body?.data) ? body.data : [];
-}
-
-async function apiJson<T>(path: string, init: RequestInit): Promise<T> {
-  const response = await fetch(apiUrl(path), {
-    ...init,
-    credentials: 'include',
-    headers: { 'content-type': 'application/json' },
-  });
-  const body = response.status === 204 ? {} : await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body?.error?.message || body?.message || `${path} failed (${response.status})`);
-  return body?.data || body;
-}
-
 function displayName(value: string | undefined, fallback: string): string {
   const trimmed = String(value || '').trim();
   return trimmed || fallback;
@@ -98,12 +80,23 @@ function normalizeProject(project: ProjectOption): ProjectOption {
   };
 }
 
+function normalizeAgent(agent: any): AgentOption {
+  return {
+    ...agent,
+    agent_id: String(agent?.agent_id || agent?.agentId || agent?.id || ''),
+    name: String(agent?.name || agent?.display_name || agent?.displayName || agent?.agent_id || agent?.id || ''),
+    default_provider: String(agent?.default_provider || agent?.defaultProvider || ''),
+    default_tier: String(agent?.default_tier || agent?.defaultTier || ''),
+    state: String(agent?.state || 'active'),
+  };
+}
+
 function defaultProject(projects: ProjectOption[]): ProjectOption {
   return projects.find(isDefaultProject) || SYNTHETIC_DEFAULT_PROJECT;
 }
 
 function bridgeCapabilityEntries(bridge: BridgeOption | undefined): BridgeCapability[] {
-  return Array.isArray(bridge?.capabilities) ? bridge.capabilities : [];
+  return normalizeBridgeCapabilities(bridge).map((cap) => ({ provider: cap.provider, tiers: cap.tiers, default_tier: cap.defaultTier }));
 }
 
 function capabilityTiers(capability: BridgeCapability): string[] {
@@ -126,8 +119,13 @@ function supportTierIntersection(support: AgentBridgeSupport, capability: Bridge
   return tiers.includes(support.tier) ? [support.tier] : [];
 }
 
+function bridgeOnline(bridge: BridgeOption | undefined): boolean {
+  return String(bridge?.status || '').toLowerCase() === 'online';
+}
+
 function supportHasCapabilityIntersection(support: AgentBridgeSupport, bridgesById: Map<string, BridgeOption>): boolean {
-  return bridgeCapabilityEntries(bridgesById.get(support.bridge_id)).some((capability) => supportProviderAllowed(support, capability) && supportTierIntersection(support, capability).length > 0);
+  const bridge = bridgesById.get(support.bridge_id);
+  return bridgeOnline(bridge) && bridgeCapabilityEntries(bridge).some((capability) => supportProviderAllowed(support, capability) && supportTierIntersection(support, capability).length > 0);
 }
 
 function providersForSupportIntersection(rows: AgentBridgeSupport[], bridgesById: Map<string, BridgeOption>): string[] {
@@ -165,62 +163,51 @@ function lockedValue(value: string): string {
 }
 
 export default function ConversationLaunchComposer() {
-  const [status, setStatus] = useState<LaunchStatus>('loading');
-  const [agents, setAgents] = useState<AgentOption[]>([]);
-  const [projects, setProjects] = useState<ProjectOption[]>([SYNTHETIC_DEFAULT_PROJECT]);
-  const [bridges, setBridges] = useState<BridgeOption[]>([]);
-  const [support, setSupport] = useState<AgentBridgeSupport[]>([]);
+  const agentsQuery = useListAgentIdentitiesQuery();
+  const projectsQuery = useListSidebarProjectsQuery({ limit: 100 });
+  const bridgesQuery = useListBridgesQuery();
+  const [createLaunchConversation] = useCreateLaunchConversationMutation();
+  const [restartAgentInstance] = useRestartAgentInstanceMutation();
+  const [reconfigureAgentInstance] = useReconfigureAgentInstanceMutation();
+  const [status, setStatus] = useState<LaunchStatus>('idle');
   const [agentId, setAgentId] = useState('');
   const [projectId, setProjectId] = useState(SYNTHETIC_DEFAULT_PROJECT_ID);
   const [bridgeId, setBridgeId] = useState('');
   const [provider, setProvider] = useState('');
   const [tier, setTier] = useState('');
   const [body, setBody] = useState('');
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [error, setError] = useState('');
   const [locked, setLocked] = useState<LockedLaunch | null>(null);
   const [pendingProvider, setPendingProvider] = useState('');
   const [pendingTier, setPendingTier] = useState('');
   const [restartStatus, setRestartStatus] = useState('');
+  const supportQuery = useListAgentBridgeSupportQuery({ agentId }, { skip: !agentId });
+
+  const agents = useMemo(() => (agentsQuery.data?.agents || []).map(normalizeAgent).filter((agent: AgentOption) => agent.agent_id), [agentsQuery.data?.agents]);
+  const runnableAgents = useMemo(() => agents.filter((agent: any) => Number(agent.supported_bridge_count ?? agent.supportedBridgeCount ?? 0) > 0), [agents]);
+  const projects = useMemo(() => {
+    const normalizedProjects = (projectsQuery.data || []).map((project: any) => normalizeProject({ project_id: project.projectId || project.project_id, name: project.name, is_default_conversations: project.isDefaultConversations || project.is_default_conversations }));
+    return normalizedProjects.some(isDefaultProject) ? normalizedProjects : [SYNTHETIC_DEFAULT_PROJECT, ...normalizedProjects];
+  }, [projectsQuery.data]);
+  const bridges = useMemo<BridgeOption[]>(() => bridgesQuery.data?.bridges || [], [bridgesQuery.data?.bridges]);
+  const support = useMemo(() => (supportQuery.data?.entries || []).map((row: any) => ({ agent_id: agentId, bridge_id: row.bridgeId || row.bridge_id, enabled: row.enabled !== false, provider: row.providerProfile || row.provider || '', tier: row.modelTier || row.tier || '' })).filter((row: AgentBridgeSupport) => row.enabled), [supportQuery.data?.entries, agentId]);
 
   useEffect(() => {
-    let cancelled = false;
-    setStatus('loading');
-    Promise.all([apiList<AgentOption>('/agents'), apiList<ProjectOption>('/projects'), apiList<BridgeOption>('/bridges')])
-      .then(([agentRows, projectRows, bridgeRows]) => {
-        if (cancelled) return;
-        const normalizedProjects = projectRows.map(normalizeProject);
-        const withFallback = normalizedProjects.some(isDefaultProject) ? normalizedProjects : [SYNTHETIC_DEFAULT_PROJECT, ...normalizedProjects];
-        const selectedDefault = defaultProject(withFallback);
-        setAgents(agentRows);
-        setProjects(withFallback);
-        setBridges(bridgeRows);
-        setProjectId(selectedDefault.project_id || SYNTHETIC_DEFAULT_PROJECT_ID);
-        setStatus('idle');
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setError(String(err?.message || err));
-        setStatus('error');
-      });
-    return () => { cancelled = true; };
-  }, []);
+    const selectedDefault = defaultProject(projects);
+    setProjectId(selectedDefault.project_id || SYNTHETIC_DEFAULT_PROJECT_ID);
+  }, [projects]);
+
+  useEffect(() => { setBridgeId(''); setProvider(''); setTier(''); }, [agentId]);
 
   useEffect(() => {
-    let cancelled = false;
-    setSupport([]);
-    setBridgeId('');
-    if (!agentId) return;
-    apiList<AgentBridgeSupport>(`/agents/${encodeURIComponent(agentId)}/bridge-support`)
-      .then((rows) => {
-        if (!cancelled) setSupport(rows.filter((row) => row.enabled !== false));
-      })
-      .catch(() => { if (!cancelled) setSupport([]); });
-    return () => { cancelled = true; };
-  }, [agentId]);
+    const anyError = agentsQuery.error || projectsQuery.error || bridgesQuery.error;
+    if (anyError) { setError(String((anyError as any)?.error || 'Failed to load launch data')); setStatus('error'); }
+  }, [agentsQuery.error, projectsQuery.error, bridgesQuery.error]);
 
   const selectedAgent = useMemo(() => agents.find((agent) => agent.agent_id === agentId), [agents, agentId]);
   const selectedProject = useMemo(() => projects.find((project) => project.project_id === projectId) || defaultProject(projects), [projects, projectId]);
-  const bridgesById = useMemo(() => new Map(bridges.map((bridge) => [bridge.bridge_id, bridge])), [bridges]);
+  const bridgesById = useMemo<Map<string, BridgeOption>>(() => new Map(bridges.map((bridge) => [bridge.bridge_id, bridge])), [bridges]);
   const capableSupport = useMemo(() => support.filter((row) => supportHasCapabilityIntersection(row, bridgesById)), [support, bridgesById]);
   const constrainedSupport = useMemo(() => capableSupport.filter((row) => !bridgeId || row.bridge_id === bridgeId), [capableSupport, bridgeId]);
   const providerOptions = useMemo(() => providersForSupportIntersection(constrainedSupport, bridgesById), [constrainedSupport, bridgesById]);
@@ -228,12 +215,12 @@ export default function ConversationLaunchComposer() {
   const pendingTierOptions = useMemo(() => tiersForSupportIntersection(constrainedSupport, bridgesById, pendingProvider), [constrainedSupport, bridgesById, pendingProvider]);
 
   useEffect(() => {
-    setProvider((current) => providerOptions.includes(current) ? current : (providerOptions[0] || selectedAgent?.default_provider || ''));
-  }, [providerOptions.join('|'), selectedAgent?.default_provider]);
+    setProvider((current) => current === '' || providerOptions.includes(current) ? current : '');
+  }, [providerOptions.join('|')]);
 
   useEffect(() => {
-    setTier((current) => tierOptions.includes(current) ? current : (tierOptions[0] || selectedAgent?.default_tier || ''));
-  }, [tierOptions.join('|'), selectedAgent?.default_tier]);
+    setTier((current) => current === '' || tierOptions.includes(current) ? current : '');
+  }, [tierOptions.join('|')]);
 
   useEffect(() => {
     setPendingProvider((current) => current === '' || providerOptions.includes(current) ? current : (providerOptions[0] || ''));
@@ -243,6 +230,7 @@ export default function ConversationLaunchComposer() {
     setPendingTier((current) => current === '' || pendingTierOptions.includes(current) ? current : (pendingTierOptions[0] || ''));
   }, [pendingTierOptions.join('|')]);
 
+  const hasRunnableAgent = runnableAgents.length > 0;
   const hasCapableBridgeSupport = !agentId || capableSupport.length > 0;
   const canSend = status !== 'sending' && Boolean(agentId) && hasCapableBridgeSupport && body.trim().length > 0;
   const usingSyntheticDefault = selectedProject.project_id === SYNTHETIC_DEFAULT_PROJECT_ID;
@@ -262,27 +250,17 @@ export default function ConversationLaunchComposer() {
     setStatus('sending');
     setError('');
     try {
-      const payload: Record<string, unknown> = {
-        agent_id: agentId,
-        initial_message: { body: body.trim() },
-        artifact_ids: [],
-      };
-      // Backend currently validates real project ids. Keep the UI default visible,
-      // but omit the synthetic fallback id until the backend exposes the default
-      // Conversations project marker/id documented in UI-17.
-      if (!usingSyntheticDefault) payload.project_id = selectedProject.project_id;
-      if (bridgeId) payload.bridge_id = bridgeId;
-      if (provider) payload.provider = provider;
-      if (tier) payload.tier = tier;
-      const created = await apiJson<any>('/chats', { method: 'POST', body: JSON.stringify(payload) });
-      let boundInstance: any = {};
-      if (created.agent_instance_id) {
-        try {
-          boundInstance = await apiJson<any>(`/agent-instances/${encodeURIComponent(String(created.agent_instance_id))}`, { method: 'GET' });
-        } catch (_err) {
-          boundInstance = {};
-        }
-      }
+      const launched = await createLaunchConversation({
+        agentId,
+        projectId: usingSyntheticDefault ? undefined : selectedProject.project_id,
+        bridgeId: advancedOpen ? bridgeId : '',
+        provider: advancedOpen ? provider : '',
+        tier: advancedOpen ? tier : '',
+        body: body.trim(),
+        artifactIds: [],
+      }).unwrap();
+      const created = launched.conversation || {};
+      const boundInstance = launched.instance || {};
       const nextLocked: LockedLaunch = {
         conversation_id: String(created.conversation_id || boundInstance.conversation_id || ''),
         agent_instance_id: String(created.agent_instance_id || boundInstance.agent_instance_id || ''),
@@ -309,7 +287,7 @@ export default function ConversationLaunchComposer() {
     if (!locked?.agent_instance_id) return;
     setRestartStatus('Restarting…');
     try {
-      await apiJson(`/agent-instances/${encodeURIComponent(locked.agent_instance_id)}/restart`, { method: 'POST', body: '{}' });
+      await restartAgentInstance({ agentId: locked.agent_id, instanceId: locked.agent_instance_id }).unwrap();
       setRestartStatus('Restart requested');
     } catch (err: any) {
       setRestartStatus(String(err?.message || err));
@@ -328,7 +306,7 @@ export default function ConversationLaunchComposer() {
       return;
     }
     try {
-      await apiJson(`/agent-instances/${encodeURIComponent(locked.agent_instance_id)}`, { method: 'PATCH', body: JSON.stringify({ provider: pendingProvider, tier: pendingTier }) });
+      await reconfigureAgentInstance({ agentId: locked.agent_id, instanceId: locked.agent_instance_id, provider: pendingProvider, tier: pendingTier }).unwrap();
       setLocked({ ...locked, provider: pendingProvider, tier: pendingTier });
       setRestartStatus('Provider/tier reconfigure requested explicitly; restart if the running process must relaunch.');
     } catch (err: any) {
@@ -382,7 +360,7 @@ export default function ConversationLaunchComposer() {
   }
 
   return (
-    <form data-debug-id="conversation-launch-composer" onSubmit={submitFirstSend} className="w-full max-w-4xl rounded-[2rem] border border-white/10 bg-white/[0.04] p-6 text-left shadow-2xl">
+    <form data-debug-id="new-convo-composer-shell" onSubmit={submitFirstSend} className="w-full max-w-4xl rounded-[2rem] border border-white/10 bg-white/[0.04] p-6 text-left shadow-2xl">
       <div className="flex items-start justify-between gap-4">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-300/80">Composer launch</p>
@@ -395,63 +373,69 @@ export default function ConversationLaunchComposer() {
       <div data-debug-id="launch-required-agent-control" className="mt-5 grid gap-4 md:grid-cols-2">
         <label className="block">
           <span className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">Agent required</span>
-          <select value={agentId} onChange={(event) => setAgentId(event.target.value)} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-sm text-white">
+          <select data-debug-id="new-convo-agent-select" value={agentId} onChange={(event) => setAgentId(event.target.value)} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-sm text-white">
             <option value="">Choose an agent before sending…</option>
-            {agents.map((agent) => <option key={agent.agent_id} value={agent.agent_id}>{agent.name || agent.agent_id}</option>)}
+            {runnableAgents.map((agent) => <option key={agent.agent_id} value={agent.agent_id}>{agent.name || agent.agent_id}</option>)}
           </select>
         </label>
         <label data-debug-id="launch-project-default-control" className="block">
           <span className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">Project</span>
-          <select value={projectId} onChange={(event) => setProjectId(event.target.value)} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-sm text-white">
+          <select data-debug-id="new-convo-project-select" value={projectId} onChange={(event) => setProjectId(event.target.value)} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-sm text-white">
             {projects.map((project) => <option key={project.project_id} value={project.project_id}>{project.name}{isDefaultProject(project) ? ' · default' : ''}</option>)}
           </select>
         </label>
       </div>
 
-      <fieldset data-debug-id="launch-advanced-bridge-provider-tier-controls" className="mt-5 rounded-3xl border border-white/10 bg-black/20 p-4">
-        <legend className="px-2 text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">Advanced controls constrained by Bridge support</legend>
-        <div className="grid gap-4 md:grid-cols-3">
-          <label className="block">
-            <span className="text-xs font-semibold text-zinc-400">Bridge / machine</span>
-            <select value={bridgeId} onChange={(event) => setBridgeId(event.target.value)} disabled={!agentId} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-sm text-white disabled:opacity-50">
-              <option value="">Auto</option>
-              {capableSupport.map((row) => <option key={row.bridge_id} value={row.bridge_id}>{supportLabel(row, bridgesById)}</option>)}
-            </select>
-          </label>
-          <label className="block">
-            <span className="text-xs font-semibold text-zinc-400">Provider</span>
-            <select value={provider} onChange={(event) => setProvider(event.target.value)} disabled={!agentId} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-sm text-white disabled:opacity-50">
-              <option value="">Default</option>
-              {providerOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-            </select>
-          </label>
-          <label className="block">
-            <span className="text-xs font-semibold text-zinc-400">Tier</span>
-            <select value={tier} onChange={(event) => setTier(event.target.value)} disabled={!agentId} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-sm text-white disabled:opacity-50">
-              <option value="">Default</option>
-              {tierOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-            </select>
-          </label>
-        </div>
-        <p data-debug-id="launch-capability-note" className="mt-3 text-xs text-zinc-500">Bridge options come from <code>/api/v1/agents/:agent_id/bridge-support</code> intersected with <code>/api/v1/bridges</code> capability providers/tiers; compact capability rows use <code>default_tier</code> as the bounded tier until full tier arrays land. Disabled support and unsupported provider/tier pairs are hidden, and Auto lets the Hub select a capable online Bridge.</p>
-      </fieldset>
+      <button data-debug-id="new-convo-advanced-toggle" type="button" onClick={() => setAdvancedOpen(!advancedOpen)} className="mt-5 rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-bold text-zinc-200 hover:bg-white/10">{advancedOpen ? 'Hide' : 'Show'} advanced Bridge/provider overrides</button>
+      {advancedOpen && (
+        <fieldset data-debug-id="launch-advanced-bridge-provider-tier-controls" className="mt-3 rounded-3xl border border-white/10 bg-black/20 p-4">
+          <legend className="px-2 text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">Advanced controls constrained by Bridge support</legend>
+          <div className="grid gap-4 md:grid-cols-3">
+            <label className="block">
+              <span className="text-xs font-semibold text-zinc-400">Bridge / machine</span>
+              <select data-debug-id="new-convo-bridge-select" value={bridgeId} onChange={(event) => setBridgeId(event.target.value)} disabled={!agentId} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-sm text-white disabled:opacity-50">
+                <option value="">Auto</option>
+                {capableSupport.map((row) => <option key={row.bridge_id} value={row.bridge_id}>{supportLabel(row, bridgesById)}</option>)}
+              </select>
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold text-zinc-400">Provider</span>
+              <select data-debug-id="new-convo-provider-select" value={provider} onChange={(event) => setProvider(event.target.value)} disabled={!agentId} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-sm text-white disabled:opacity-50">
+                <option value="">Default</option>
+                {providerOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+              </select>
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold text-zinc-400">Tier</span>
+              <select data-debug-id="new-convo-tier-select" value={tier} onChange={(event) => setTier(event.target.value)} disabled={!agentId} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-sm text-white disabled:opacity-50">
+                <option value="">Default</option>
+                {tierOptions.map((option) => <option key={option} value={option}>{option}</option>)}
+              </select>
+            </label>
+          </div>
+          <p data-debug-id="launch-capability-note" className="mt-3 text-xs text-zinc-500">Bridge options come from <code>/api/v1/agents/:agent_id/bridge-support</code> intersected with <code>/api/v1/bridges</code> capability providers/tiers; compact capability rows use <code>default_tier</code> as the bounded tier until full tier arrays land. Disabled support and unsupported provider/tier pairs are hidden, and Auto lets the Hub select a capable online Bridge.</p>
+        </fieldset>
+      )}
 
       <label className="mt-5 block">
         <span className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">Message</span>
-        <textarea data-debug-id="launch-first-message-input" value={body} onChange={(event) => setBody(event.target.value)} rows={5} placeholder="Ask the selected agent to start working…" className="mt-2 w-full resize-y rounded-3xl border border-white/10 bg-black/30 px-4 py-3 text-sm leading-6 text-white outline-none placeholder:text-zinc-600 focus:border-sky-400/60" />
+        <textarea data-debug-id="new-convo-input" value={body} onChange={(event) => setBody(event.target.value)} rows={5} placeholder="Ask the selected agent to start working…" className="mt-2 w-full resize-y rounded-3xl border border-white/10 bg-black/30 px-4 py-3 text-sm leading-6 text-white outline-none placeholder:text-zinc-600 focus:border-sky-400/60" />
       </label>
 
       {usingSyntheticDefault && (
         <p data-debug-id="launch-synthetic-default-project-gap" className="mt-3 rounded-2xl border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">Using the UI fallback Conversations project. First-send omits the synthetic project id until the backend exposes the default project marker/id documented in UI-17.</p>
       )}
-      {agentId && !hasCapableBridgeSupport && (
-        <p data-debug-id="launch-no-capable-bridge-support" className="mt-3 rounded-2xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">This agent has no enabled Bridge support, so it cannot launch until an enabled support row exists.</p>
+      {!hasRunnableAgent && (
+        <p data-debug-id="new-convo-no-runnable-agent-warning" className="mt-3 rounded-2xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">No runnable agents have enabled Bridge support yet. Create an agent or enable Bridge support before starting a conversation.</p>
       )}
-      {error && <p data-debug-id="launch-error" className="mt-3 rounded-2xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-100">{error}</p>}
+      {agentId && !hasCapableBridgeSupport && (
+        <p data-debug-id="new-convo-no-runnable-agent-warning" className="mt-3 rounded-2xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">This agent has no enabled Bridge support, so it cannot launch until an enabled support row exists.</p>
+      )}
+      {error && <p data-debug-id="new-convo-error" className="mt-3 rounded-2xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-100">{error}</p>}
 
       <div className="mt-5 flex items-center justify-between gap-4">
         <p data-debug-id="launch-send-guard" className="text-xs text-zinc-500">{!agentId ? 'Agent selection is required before send.' : hasCapableBridgeSupport ? 'Ready when the first message is written.' : 'Enable Bridge support before launch.'}</p>
-        <button data-debug-id="launch-first-send-button" type="submit" disabled={!canSend} className="rounded-2xl bg-sky-400 px-5 py-3 text-sm font-black text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">{status === 'sending' ? 'Starting…' : 'Send and start'}</button>
+        <button data-debug-id="new-convo-send-btn" type="submit" disabled={!canSend} className="rounded-2xl bg-sky-400 px-5 py-3 text-sm font-black text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">{status === 'sending' ? 'Starting…' : 'Send and start'}</button>
       </div>
     </form>
   );
