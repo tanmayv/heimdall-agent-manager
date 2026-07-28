@@ -66,7 +66,7 @@ ensure_agent_window_with_shell_unlocked :: proc(session, window, shell_command: 
 		// briefly differ from the requested name, which made pane_for_window miss
 		// the freshly created window and spawn duplicate windows on retry. -P -F
 		// returns the authoritative pane id with no name-matching race.
-		new_window_cmd := []string{"tmux", "new-window", "-t", session, "-n", window, "-P", "-F", "#{pane_id}", shell_command}
+		new_window_cmd := []string{"tmux", "new-window", "-t", exact_session_target(session), "-n", window, "-P", "-F", "#{pane_id}", shell_command}
 		tmux_launch_log("new_window_exec_begin", session, window, start_ms)
 		state, stdout, stderr, err := os.process_exec(os.Process_Desc{command = new_window_cmd}, context.allocator)
 		created_pane := strings.trim_space(string(stdout))
@@ -98,14 +98,25 @@ ensure_agent_window_with_shell_unlocked :: proc(session, window, shell_command: 
 	return Launch_Result{session = session, window = window, pane_id = pane_id}, pane_id != ""
 }
 
+// exact_session_target prefixes a session name with tmux's '=' operator so
+// targeting matches the session name EXACTLY. Without it, tmux does prefix
+// matching on `-t <name>`, so a request for session "heimdall-bridge" silently
+// binds to a pre-existing "heimdall-bridge-test" (or any "heimdall-bridge*"),
+// causing new windows to land in the wrong session. Applies to every place a
+// session NAME is used as a target; window-ids (@N) and pane-ids (%N) are
+// already unique and need no exact prefix.
+exact_session_target :: proc(session: string) -> string {
+	return strings.concatenate({"=", session})
+}
+
 has_session :: proc(session: string) -> bool {
-	has_cmd := []string{"tmux", "has-session", "-t", session}
+	has_cmd := []string{"tmux", "has-session", "-t", exact_session_target(session)}
 	state, _, _, err := os.process_exec(os.Process_Desc{command = has_cmd}, context.allocator)
 	return err == nil && state.success
 }
 
 pane_for_window :: proc(session, window: string) -> string {
-	cmd := []string{"tmux", "list-windows", "-t", session, "-F", "#{window_name}\t#{pane_id}"}
+	cmd := []string{"tmux", "list-windows", "-t", exact_session_target(session), "-F", "#{window_name}\t#{pane_id}"}
 	state, stdout, _, err := os.process_exec(os.Process_Desc{command = cmd}, context.allocator)
 	if err != nil || !state.success do return ""
 
@@ -230,7 +241,7 @@ kill_window :: proc(session, window: string) -> bool {
 }
 
 window_id_for_window :: proc(session, window: string) -> string {
-	cmd := []string{"tmux", "list-windows", "-t", session, "-F", "#{window_name}\t#{window_id}"}
+	cmd := []string{"tmux", "list-windows", "-t", exact_session_target(session), "-F", "#{window_name}\t#{window_id}"}
 	state, stdout, _, err := os.process_exec(os.Process_Desc{command = cmd}, context.allocator)
 	if err != nil || !state.success do return ""
 	lines := strings.split(string(stdout), "\n")
@@ -256,7 +267,7 @@ version :: proc() -> (string, bool) {
 
 kill_session :: proc(name: string) -> bool {
 	if name == "" do return false
-	cmd := []string{"tmux", "kill-session", "-t", name}
+	cmd := []string{"tmux", "kill-session", "-t", exact_session_target(name)}
 	state, _, _, err := os.process_exec(os.Process_Desc{command = cmd}, context.allocator)
 	return err == nil && state.success
 }
