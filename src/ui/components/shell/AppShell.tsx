@@ -6,9 +6,9 @@ import { useUserWebSocket } from '../../api/useUserWebSocket';
 import { useListSidebarConversationsQuery, useListSidebarProjectsQuery, type SidebarConversation, type SidebarProject } from '../../api/endpoints/sidebar';
 import { buildRouteHash, getRoutePathname } from '../../utils/appLocation';
 import BridgesPanel from '../settings/BridgesPanel';
-import { AgentsPanel } from '../agents/AgentsPanel';
+import { AgentsPanel, NewAgentPage } from '../agents/AgentsPanel';
 import { AgentDetailPanel } from '../agents/AgentDetailPanel';
-import { ProvidersPanel } from '../settings/ProvidersPanel';
+import { ProviderEditorPage, ProvidersPanel } from '../settings/ProvidersPanel';
 
 type ShellRoute = {
   path: string;
@@ -68,6 +68,8 @@ type ProjectGroup = {
   agents: AgentGroup[];
 };
 
+type BreadcrumbCrumb = { label: string; href?: string };
+
 const DEFAULT_CONVERSATIONS_PROJECT: ProjectSummary = {
   projectId: 'default-conversations',
   name: 'Conversations',
@@ -90,6 +92,7 @@ function routeFromLocation(): string {
 
 function isRouteActive(currentPath: string, itemPath: string): boolean {
   if (itemPath === '/conversations') return currentPath === '/conversations' || currentPath.startsWith('/conversations/');
+  if (itemPath === '/settings/bridges') return currentPath.startsWith('/settings');
   return currentPath === itemPath || currentPath.startsWith(`${itemPath}/`);
 }
 
@@ -122,6 +125,51 @@ function routeDescription(path: string): string {
   if (path.startsWith('/library')) return 'Filterable artifact list/grid route.';
   if (path.startsWith('/settings')) return 'Settings surface for Bridges, Projects, Providers, Memory, and Defaults.';
   return 'Chat-first home with the routed main region ready for conversation surfaces.';
+}
+
+const SETTINGS_NAV = [
+  { path: '/settings/bridges', label: 'Bridges' },
+  { path: '/settings/providers', label: 'Providers' },
+  { path: '/settings/projects', label: 'Projects' },
+  { path: '/settings/memory', label: 'Memory' },
+  { path: '/settings/defaults', label: 'Defaults' },
+];
+
+function decodeSegment(value: string): string {
+  try { return decodeURIComponent(value); } catch (_err) { return value; }
+}
+
+function routeBreadcrumbs(path: string, conversations: ConversationSummary[] = []): BreadcrumbCrumb[] {
+  if (path === '/conversations/new') return [{ label: 'Conversations', href: '/conversations' }, { label: 'New Conversation' }];
+  if (path.startsWith('/conversations/')) {
+    const id = decodeSegment(path.slice('/conversations/'.length));
+    const convo = conversations.find((item) => item.conversationId === id || item.agentInstanceId === id);
+    return [{ label: 'Conversations', href: '/conversations' }, { label: convo?.agentId || 'Conversation' }, { label: convo?.agentInstanceId || id }];
+  }
+  if (path === '/agents/new') return [{ label: 'Agents', href: '/agents' }, { label: 'New Agent' }];
+  if (path.startsWith('/agents/')) return [{ label: 'Agents', href: '/agents' }, { label: decodeSegment(path.slice('/agents/'.length)) }];
+  if (path.startsWith('/settings/providers/')) {
+    const rest = path.slice('/settings/providers/'.length);
+    if (rest === 'new') return [{ label: 'Settings', href: '/settings/bridges' }, { label: 'Providers', href: '/settings/providers' }, { label: 'New Provider' }];
+    if (rest.endsWith('/edit')) return [{ label: 'Settings', href: '/settings/bridges' }, { label: 'Providers', href: '/settings/providers' }, { label: decodeSegment(rest.slice(0, -'/edit'.length)), href: `/settings/providers/${rest.slice(0, -'/edit'.length)}/edit` }, { label: 'Edit' }];
+  }
+  if (path.startsWith('/settings/')) {
+    const key = path.slice('/settings/'.length).split('/')[0] || 'bridges';
+    const match = SETTINGS_NAV.find((item) => item.path.endsWith(`/${key}`));
+    return [{ label: 'Settings', href: '/settings/bridges' }, { label: match?.label || decodeSegment(key) }];
+  }
+  if (path.startsWith('/chains/')) return [{ label: 'Task Chains', href: '/chains' }, { label: decodeSegment(path.split('/')[2] || 'Chain') }];
+  if (path.startsWith('/library')) return [{ label: 'Library' }];
+  if (path.startsWith('/agents')) return [{ label: 'Agents' }];
+  return [{ label: 'Conversations' }];
+}
+
+function Breadcrumbs({ crumbs }: { crumbs: BreadcrumbCrumb[] }) {
+  return <nav data-debug-id="shell-breadcrumbs" aria-label="Breadcrumb" className="flex flex-wrap items-center gap-2 text-sm text-zinc-400">{crumbs.map((crumb, index) => <span key={`${crumb.label}-${index}`} data-debug-id={`shell-breadcrumb-crumb-${index}`} className="inline-flex items-center gap-2">{index > 0 ? <span className="text-zinc-700">/</span> : null}{crumb.href && index < crumbs.length - 1 ? <a data-debug-id={`shell-breadcrumb-link-${index}`} href={shellHash(crumb.href)} className="font-semibold text-zinc-300 hover:text-white">{crumb.label}</a> : <span className="font-semibold text-white">{crumb.label}</span>}</span>)}</nav>;
+}
+
+function SettingsSubNav({ path }: { path: string }) {
+  return <nav data-debug-id="settings-sub-nav" className="mb-5 flex flex-wrap gap-2 rounded-2xl border border-white/10 bg-black/20 p-2">{SETTINGS_NAV.map((item) => <a key={item.path} data-debug-id={`settings-sub-nav-${item.label.toLowerCase()}`} href={shellHash(item.path)} className={`rounded-xl px-3 py-1.5 text-sm font-semibold ${path === item.path || path.startsWith(`${item.path}/`) ? 'bg-sky-400 text-black' : 'text-zinc-300 hover:bg-white/10 hover:text-white'}`}>{item.label}</a>)}</nav>;
 }
 
 function shellHash(path: string): string {
@@ -431,9 +479,9 @@ function AccessDenied() {
   );
 }
 
-function RouteOutlet({ path, mobileBottomPadded = false }: { path: string; mobileBottomPadded?: boolean }) {
-  const title = routeTitle(path);
+function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: { path: string; mobileBottomPadded?: boolean; conversations?: ConversationSummary[] }) {
   const description = routeDescription(path);
+  const crumbs = routeBreadcrumbs(path, conversations);
   const isKnownRoute = useMemo(() => {
     return [
       '/conversations', '/conversations/new', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/settings',
@@ -442,7 +490,8 @@ function RouteOutlet({ path, mobileBottomPadded = false }: { path: string; mobil
       path.startsWith('/settings/projects') ||
       path.startsWith('/settings/providers') ||
       path.startsWith('/settings/memory') ||
-      path.startsWith('/settings/defaults');
+      path.startsWith('/settings/defaults') ||
+      path === '/agents/new';
   }, [path]);
 
   return (
@@ -451,7 +500,7 @@ function RouteOutlet({ path, mobileBottomPadded = false }: { path: string; mobil
         <div className="mb-5 flex items-center justify-between gap-4 border-b border-white/10 pb-5">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-300/80">Routed main region</p>
-            <h1 data-debug-id="shell-route-title" className="mt-2 text-3xl font-semibold tracking-tight text-white">{isKnownRoute ? title : 'Route not found'}</h1>
+            {isKnownRoute ? <Breadcrumbs crumbs={crumbs} /> : <h1 data-debug-id="shell-route-title" className="mt-2 text-3xl font-semibold tracking-tight text-white">Route not found</h1>}
             <p data-debug-id="shell-route-path" className="mt-1 text-sm text-zinc-500">{path}</p>
           </div>
           <a
@@ -462,6 +511,7 @@ function RouteOutlet({ path, mobileBottomPadded = false }: { path: string; mobil
             New conversation
           </a>
         </div>
+        {path.startsWith('/settings/') ? <SettingsSubNav path={path} /> : null}
         <div className="grid flex-1 place-items-center rounded-[2rem] border border-dashed border-white/12 bg-white/[0.03] p-8 text-center">
           {path === '/conversations/new' ? (
             <ConversationLaunchComposer />
@@ -469,14 +519,22 @@ function RouteOutlet({ path, mobileBottomPadded = false }: { path: string; mobil
             <div className="w-full max-w-4xl text-left"><BridgesPanel /></div>
           ) : path === '/settings/providers' ? (
             <div className="w-full max-w-4xl text-left"><ProvidersPanel /></div>
+          ) : path === '/settings/providers/new' ? (
+            <div className="w-full max-w-5xl text-left"><ProviderEditorPage /></div>
+          ) : path.startsWith('/settings/providers/') && path.endsWith('/edit') ? (
+            <div className="w-full max-w-5xl text-left"><ProviderEditorPage providerName={decodeSegment(path.slice('/settings/providers/'.length, -'/edit'.length))} /></div>
+          ) : path === '/settings/projects' || path === '/settings/memory' || path === '/settings/defaults' ? (
+            <div className="max-w-2xl"><div data-debug-id="shell-page-placeholder-icon" className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-3xl bg-white/10 text-2xl">⚙</div><h2 className="text-xl font-semibold text-white">{routeBreadcrumbs(path)[routeBreadcrumbs(path).length - 1]?.label || 'Settings'}</h2><p className="mt-3 text-sm leading-6 text-zinc-400">This settings section is reachable from the settings sub-navigation; its detailed management surface is outside this onboarding fix.</p></div>
           ) : path === '/agents' ? (
             <div className="w-full max-w-4xl text-left"><AgentsPanel /></div>
+          ) : path === '/agents/new' ? (
+            <div className="w-full max-w-5xl text-left"><NewAgentPage /></div>
           ) : path.startsWith('/agents/') ? (
             <div className="w-full max-w-5xl text-left"><AgentDetailPanel agentId={decodeURIComponent(path.slice('/agents/'.length))} /></div>
           ) : (
             <div className="max-w-2xl">
               <div data-debug-id="shell-page-placeholder-icon" className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-3xl bg-white/10 text-2xl">⌁</div>
-              <h2 className="text-xl font-semibold text-white">{isKnownRoute ? title : 'This route is not part of the v1 shell map'}</h2>
+              <h2 className="text-xl font-semibold text-white">{isKnownRoute ? (crumbs[crumbs.length - 1]?.label || 'Route') : 'This route is not part of the v1 shell map'}</h2>
               <p className="mt-3 text-sm leading-6 text-zinc-400">{isKnownRoute ? description : 'Use the left sidebar to navigate to a v1 route. Legacy workspace, guide, attention-badge, and inspector routes are intentionally not mounted in this shell.'}</p>
             </div>
           )}
@@ -630,7 +688,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
         {isMobile ? (
           <MobileTopBar title={routeTitle(path)} onOpenDrawer={() => setDrawerOpen(true)} />
         ) : null}
-        <RouteOutlet path={path} mobileBottomPadded={isMobile} />
+        <RouteOutlet path={path} mobileBottomPadded={isMobile} conversations={conversations} />
       </div>
 
       {/* UI-12/UI-13: mobile bottom tab bar with a command-palette center button.
