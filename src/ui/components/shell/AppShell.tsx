@@ -1,14 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useDispatch } from 'react-redux';
 import ConversationLaunchComposer from '../chat/ConversationLaunchComposer';
 import CommandPalette from '../command-palette/CommandPalette';
 import { useViewport, MobileTabBar, MobileTopBar } from './responsive';
+import { heimdallApi } from '../../api/heimdallApi';
 import { useUserWebSocket } from '../../api/useUserWebSocket';
+import { cookieJsonFetch, cookieMutation } from '../../api/cookieFetch';
+import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
 import { useListSidebarConversationsQuery, useListSidebarProjectsQuery, type SidebarConversation, type SidebarProject } from '../../api/endpoints/sidebar';
 import { buildRouteHash, getRoutePathname } from '../../utils/appLocation';
+import { readLastSeenUserId, removeAppOwnedClientStorage, writeLastSeenUserId } from '../../utils/clientPersistence';
 import BridgesPanel from '../settings/BridgesPanel';
 import { AgentsPanel, NewAgentPage } from '../agents/AgentsPanel';
 import { AgentDetailPanel } from '../agents/AgentDetailPanel';
 import { ProviderEditorPage, ProvidersPanel } from '../settings/ProvidersPanel';
+import { clearUserClientState } from '../../store/chatSlice';
+import { priorUserClientStateCleared } from '../../store/store';
 
 type ShellRoute = {
   path: string;
@@ -151,7 +158,7 @@ function routeBreadcrumbs(path: string, conversations: ConversationSummary[] = [
   if (path.startsWith('/settings/providers/')) {
     const rest = path.slice('/settings/providers/'.length);
     if (rest === 'new') return [{ label: 'Settings', href: '/settings/bridges' }, { label: 'Providers', href: '/settings/providers' }, { label: 'New Provider' }];
-    if (rest.endsWith('/edit')) return [{ label: 'Settings', href: '/settings/bridges' }, { label: 'Providers', href: '/settings/providers' }, { label: decodeSegment(rest.slice(0, -'/edit'.length)), href: `/settings/providers/${rest.slice(0, -'/edit'.length)}/edit` }, { label: 'Edit' }];
+    if (rest.endsWith('/edit')) return [{ label: 'Settings', href: '/settings/bridges' }, { label: 'Providers', href: '/settings/providers' }, { label: decodeSegment(rest.slice(0, -'/edit'.length)) }, { label: 'Edit' }];
   }
   if (path.startsWith('/settings/')) {
     const key = path.slice('/settings/'.length).split('/')[0] || 'bridges';
@@ -169,7 +176,7 @@ function Breadcrumbs({ crumbs }: { crumbs: BreadcrumbCrumb[] }) {
 }
 
 function SettingsSubNav({ path }: { path: string }) {
-  return <nav data-debug-id="settings-sub-nav" className="mb-5 flex flex-wrap gap-2 rounded-2xl border border-white/10 bg-black/20 p-2">{SETTINGS_NAV.map((item) => <a key={item.path} data-debug-id={`settings-sub-nav-${item.label.toLowerCase()}`} href={shellHash(item.path)} className={`rounded-xl px-3 py-1.5 text-sm font-semibold ${path === item.path || path.startsWith(`${item.path}/`) ? 'bg-sky-400 text-black' : 'text-zinc-300 hover:bg-white/10 hover:text-white'}`}>{item.label}</a>)}</nav>;
+  return <nav data-debug-id="settings-sub-nav" className="mb-5 -mx-1 flex gap-2 overflow-x-auto rounded-2xl border border-white/10 bg-black/20 p-2 sm:mx-0 sm:flex-wrap">{SETTINGS_NAV.map((item) => <a key={item.path} data-debug-id={`settings-sub-nav-${item.label.toLowerCase()}`} href={shellHash(item.path)} className={`inline-flex min-h-[44px] shrink-0 items-center rounded-xl px-4 py-2 text-sm font-semibold ${path === item.path || path.startsWith(`${item.path}/`) ? 'bg-sky-400 text-black' : 'text-zinc-300 hover:bg-white/10 hover:text-white'}`}>{item.label}</a>)}</nav>;
 }
 
 function shellHash(path: string): string {
@@ -406,29 +413,80 @@ function NavItem({ item, active, collapsed, badge = 0 }: { item: ShellRoute; act
   );
 }
 
+function authUserId(user: AuthUser | null | undefined): string {
+  return String(user?.user_id || '').trim();
+}
+
+function clearPriorUserClientState(dispatch: any, nextUserId: string) {
+  dispatch(heimdallApi.util.resetApiState());
+  removeAppOwnedClientStorage();
+  dispatch(priorUserClientStateCleared());
+  dispatch(clearUserClientState({ userId: nextUserId }));
+}
+
 function AuthGate() {
+  const dispatch = useDispatch<any>();
   const [auth, setAuth] = useState<AuthState>({ status: 'checking', user: null, loginUrl: configuredAuthUrl('login'), logoutUrl: configuredAuthUrl('logout'), error: '' });
+  const lastSeenUserRef = useRef(readLastSeenUserId());
+  const refreshingRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
     installApiAuthObserver();
-    bootstrapAuth().then((next) => { if (!cancelled) setAuth(next); });
+
+    async function refreshIdentity(reason: string) {
+      if (refreshingRef.current) return;
+      refreshingRef.current = true;
+      try {
+        const next = await bootstrapAuth();
+        if (cancelled) return;
+        if (next.status === 'authenticated') {
+          const nextUserId = authUserId(next.user);
+          const previousUserId = lastSeenUserRef.current || readLastSeenUserId();
+          if (nextUserId && previousUserId && previousUserId !== nextUserId) {
+            clearPriorUserClientState(dispatch, nextUserId);
+          }
+          if (nextUserId) {
+            writeLastSeenUserId(nextUserId);
+            lastSeenUserRef.current = nextUserId;
+          }
+        }
+        setAuth(next);
+      } catch (err: any) {
+        if (!cancelled) setAuth({ status: 'error', user: null, loginUrl: configuredAuthUrl('login'), logoutUrl: configuredAuthUrl('logout'), error: String(err?.message || err || 'The app could not reach /api/v1/me.') });
+      } finally {
+        refreshingRef.current = false;
+        void reason;
+      }
+    }
+
     const onUnauthenticated = () => setAuth((prev) => ({ ...prev, status: 'unauthenticated', user: null, loginUrl: prev.loginUrl || configuredAuthUrl('login') }));
     const onForbidden = () => setAuth((prev) => ({ ...prev, status: 'forbidden', error: 'Access denied' }));
+    const onFocus = () => { void refreshIdentity('focus'); };
+    const onVisibility = () => { if (document.visibilityState === 'visible') void refreshIdentity('visibilitychange'); };
+    const onUserWsReconnect = () => { void refreshIdentity('user-ws-reconnect'); };
+
+    void refreshIdentity('initial');
     window.addEventListener('heimdall:api-unauthenticated', onUnauthenticated);
     window.addEventListener('heimdall:api-forbidden', onForbidden);
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('heimdall:user-ws-reconnected', onUserWsReconnect);
     return () => {
       cancelled = true;
       window.removeEventListener('heimdall:api-unauthenticated', onUnauthenticated);
       window.removeEventListener('heimdall:api-forbidden', onForbidden);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('heimdall:user-ws-reconnected', onUserWsReconnect);
     };
-  }, []);
+  }, [dispatch]);
 
   if (auth.status === 'checking') return <AuthStatusScreen debugId="auth-checking" title="Checking session…" body="Verifying trusted-proxy identity with /api/v1/me." />;
   if (auth.status === 'unauthenticated') return <UnauthenticatedLanding loginUrl={auth.loginUrl} />;
   if (auth.status === 'forbidden') return <AccessDenied />;
   if (auth.status === 'error') return <AuthStatusScreen debugId="auth-error" title="Unable to verify session" body={auth.error || 'The app could not reach /api/v1/me.'} />;
-  return <AuthenticatedShell user={auth.user || {}} logoutUrl={auth.logoutUrl} />;
+  return <AuthenticatedShell key={authUserId(auth.user) || 'authenticated'} user={auth.user || {}} logoutUrl={auth.logoutUrl} />;
 }
 
 function AuthStatusScreen({ debugId, title, body }: { debugId: string; title: string; body: string }) {
@@ -479,6 +537,30 @@ function AccessDenied() {
   );
 }
 
+function ProjectsSettingsPanel() {
+  const [projects, setProjects] = useState<any[]>([]);
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+  async function load() { setLoading(true); setError(''); try { const rows = await cookieJsonFetch('/projects'); setProjects(Array.isArray(rows) ? rows : []); } catch (err: any) { setError(String(err?.message || err)); } finally { setLoading(false); } }
+  useEffect(() => { void load(); }, []);
+  async function createProject() { if (!name.trim()) return; setError(''); try { await cookieMutation('/projects', 'POST', { name: name.trim(), description }); setName(''); setDescription(''); await load(); } catch (err: any) { setError(String(err?.message || err)); } }
+  return <div data-debug-id="settings-projects-panel" className="w-full max-w-4xl space-y-4 text-left"><h2 className="text-xl font-semibold text-white">Projects</h2><div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4"><div className="grid gap-3 sm:grid-cols-2"><input data-debug-id="settings-project-name-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Website rewrite" className="min-h-[44px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" /><input data-debug-id="settings-project-description-input" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Frontend migration project" className="min-h-[44px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" /></div><button data-debug-id="settings-project-create-btn" type="button" onClick={() => void createProject()} disabled={!name.trim()} className="mt-3 min-h-[44px] w-full rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black disabled:opacity-50 sm:w-auto">Create project</button></div>{error ? <div className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{error}</div> : null}{loading ? <div className="text-sm text-zinc-500">Loading projects…</div> : <div className="space-y-2">{projects.map((project) => <div key={project.project_id || project.projectId || project.id} data-debug-id={`settings-project-row-${project.project_id || project.projectId || project.id}`} className="rounded-xl border border-white/10 bg-black/20 p-3"><div className="break-words font-semibold text-zinc-100">{project.name || project.title || project.project_id}</div><div className="mt-1 break-all text-xs text-zinc-500">{project.project_id || project.projectId || project.id} · {project.repo_url || project.repoUrl || 'no repo'}</div></div>)}</div>}</div>;
+}
+
+function MemorySettingsPanel() {
+  const [records, setRecords] = useState<any[]>([]); const [error, setError] = useState(''); const [loading, setLoading] = useState(true);
+  useEffect(() => { let cancelled = false; setLoading(true); cookieJsonFetch('/memories').then((rows) => { if (!cancelled) setRecords(Array.isArray(rows) ? rows : []); }).catch((err) => { if (!cancelled) setError(String(err?.message || err)); }).finally(() => { if (!cancelled) setLoading(false); }); return () => { cancelled = true; }; }, []);
+  return <div data-debug-id="settings-memory-panel" className="w-full max-w-4xl space-y-4 text-left"><h2 className="text-xl font-semibold text-white">Memory</h2>{error ? <div className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{error}</div> : null}{loading ? <div className="text-sm text-zinc-500">Loading memory…</div> : records.length === 0 ? <div className="rounded-xl border border-dashed border-white/10 p-5 text-sm text-zinc-500">No memory records.</div> : <div className="space-y-2">{records.map((record) => <div key={record.memory_id || record.memoryId || record.id} data-debug-id={`settings-memory-row-${record.memory_id || record.memoryId || record.id}`} className="rounded-xl border border-white/10 bg-black/20 p-3"><div className="break-words font-semibold text-zinc-100">{record.title || record.memory_id || record.id}</div><div className="mt-1 break-all text-xs text-zinc-500">{record.type || 'memory'} · {record.status || 'unknown'}</div>{record.body ? <div className="mt-2 line-clamp-3 break-words text-sm text-zinc-400">{record.body}</div> : null}</div>)}</div>}</div>;
+}
+
+function DefaultsSettingsPanel() {
+  const agentsQuery = useListAgentIdentitiesQuery();
+  const agents = agentsQuery.data?.agents || [];
+  return <div data-debug-id="settings-defaults-panel" className="w-full max-w-4xl space-y-4 text-left"><h2 className="text-xl font-semibold text-white">Defaults</h2><p className="text-sm text-zinc-400">Default-agent choices are managed from available durable identities.</p>{agentsQuery.isLoading ? <div className="text-sm text-zinc-500">Loading agents…</div> : <div className="space-y-2">{agents.map((agent: any) => <div key={agent.agent_id || agent.agentId} data-debug-id={`settings-default-agent-row-${agent.agent_id || agent.agentId}`} className="rounded-xl border border-white/10 bg-black/20 p-3"><div className="break-words font-semibold text-zinc-100">{agent.name || agent.agent_id}</div><div className="mt-1 break-all text-xs text-zinc-500">{agent.agent_id || agent.agentId} · template {agent.template_id || '—'} · tier {agent.default_tier || 'Bridge default'}</div></div>)}</div>}</div>;
+}
+
 function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: { path: string; mobileBottomPadded?: boolean; conversations?: ConversationSummary[] }) {
   const description = routeDescription(path);
   const crumbs = routeBreadcrumbs(path, conversations);
@@ -496,8 +578,8 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
 
   return (
     <main data-debug-id="shell-main-route-outlet" className={`min-w-0 flex-1 overflow-auto bg-[#090909] ${mobileBottomPadded ? 'pb-20 md:pb-0' : ''}`}>
-      <section className="mx-auto flex min-h-full w-full max-w-6xl flex-col px-8 py-7">
-        <div className="mb-5 flex items-center justify-between gap-4 border-b border-white/10 pb-5">
+      <section className="mx-auto flex min-h-full w-full max-w-6xl flex-col px-4 py-4 sm:px-6 sm:py-6 lg:px-8 lg:py-7">
+        <div className="mb-5 flex flex-col items-stretch justify-between gap-4 border-b border-white/10 pb-5 sm:flex-row sm:items-center">
           <div>
             <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-300/80">Routed main region</p>
             {isKnownRoute ? <Breadcrumbs crumbs={crumbs} /> : <h1 data-debug-id="shell-route-title" className="mt-2 text-3xl font-semibold tracking-tight text-white">Route not found</h1>}
@@ -506,13 +588,13 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
           <a
             data-debug-id="shell-new-conversation-link"
             href={shellHash('/conversations/new')}
-            className="rounded-2xl bg-sky-400 px-4 py-2 text-sm font-bold text-black shadow-lg shadow-sky-400/20 hover:bg-sky-300"
+            className="inline-flex min-h-[44px] w-full items-center justify-center rounded-2xl bg-sky-400 px-4 py-2 text-sm font-bold text-black shadow-lg shadow-sky-400/20 hover:bg-sky-300 sm:w-auto"
           >
             New conversation
           </a>
         </div>
         {path.startsWith('/settings/') ? <SettingsSubNav path={path} /> : null}
-        <div className="grid flex-1 place-items-center rounded-[2rem] border border-dashed border-white/12 bg-white/[0.03] p-8 text-center">
+        <div className="grid min-w-0 flex-1 place-items-stretch rounded-2xl border border-dashed border-white/12 bg-white/[0.03] p-4 text-center sm:place-items-center sm:rounded-[2rem] sm:p-8">
           {path === '/conversations/new' ? (
             <ConversationLaunchComposer />
           ) : path === '/settings/bridges' ? (
@@ -523,8 +605,12 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
             <div className="w-full max-w-5xl text-left"><ProviderEditorPage /></div>
           ) : path.startsWith('/settings/providers/') && path.endsWith('/edit') ? (
             <div className="w-full max-w-5xl text-left"><ProviderEditorPage providerName={decodeSegment(path.slice('/settings/providers/'.length, -'/edit'.length))} /></div>
-          ) : path === '/settings/projects' || path === '/settings/memory' || path === '/settings/defaults' ? (
-            <div className="max-w-2xl"><div data-debug-id="shell-page-placeholder-icon" className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-3xl bg-white/10 text-2xl">⚙</div><h2 className="text-xl font-semibold text-white">{routeBreadcrumbs(path)[routeBreadcrumbs(path).length - 1]?.label || 'Settings'}</h2><p className="mt-3 text-sm leading-6 text-zinc-400">This settings section is reachable from the settings sub-navigation; its detailed management surface is outside this onboarding fix.</p></div>
+          ) : path === '/settings/projects' ? (
+            <ProjectsSettingsPanel />
+          ) : path === '/settings/memory' ? (
+            <MemorySettingsPanel />
+          ) : path === '/settings/defaults' ? (
+            <DefaultsSettingsPanel />
           ) : path === '/agents' ? (
             <div className="w-full max-w-4xl text-left"><AgentsPanel /></div>
           ) : path === '/agents/new' ? (

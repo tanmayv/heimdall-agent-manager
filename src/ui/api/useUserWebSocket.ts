@@ -70,6 +70,7 @@ export function useUserWebSocket(ctxRef?: { current: UserWsContext }): { status:
           // fire-and-forget fanout with no per-client replay), so invalidate the
           // RTK Query cache. Only currently-subscribed queries refetch.
           resyncAfterReconnect(dispatch);
+          window.dispatchEvent(new CustomEvent('heimdall:user-ws-reconnected'));
         } else {
           connectedOnceRef.current = true;
         }

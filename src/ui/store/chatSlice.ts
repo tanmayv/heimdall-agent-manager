@@ -407,6 +407,31 @@ const chatSlice = createSlice({
     toggleGuidePanel(state) {
       state.guidePanelOpen = !state.guidePanelOpen;
     },
+    clearUserClientState(state, action) {
+      const userId = String(action.payload?.userId || '');
+      state.daemonProfiles = [];
+      state.session.userId = userId;
+      state.session.userDisplayName = '';
+      state.session.clientInstanceId = '';
+      state.session.clientToken = '';
+      state.session.connected = false;
+      state.session.status = 'idle';
+      state.session.wsStatus = 'idle';
+      state.session.wsConnected = false;
+      state.session.lastChatEvent = null;
+      state.session.error = '';
+      state.selectedAgentId = '';
+      state.conversationSummaryById = {};
+      state.chats = {};
+      state.chatsCursor = {};
+      state.chatsHasMore = {};
+      state.sending = false;
+      state.guidePanelOpen = false;
+      state.guideSending = false;
+      state.testRuns = [];
+      state.fetchingChatsByAgentId = {};
+      state.activeView = 'chat';
+    },
 
     setDaemonUrl(state, action) {
       const daemonUrl = normalizeDaemonUrl(action.payload) || DEFAULT_DAEMON_URL;
@@ -714,7 +739,7 @@ const chatSlice = createSlice({
   },
 });
 
-export const { selectAgent, setView, setDaemonUrl, addDaemonProfile, renameDaemonProfile, removeDaemonProfile, updateSessionConfig, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage, patchChatMessageStatus, receiveChatPage, openGuidePanel, closeGuidePanel, toggleGuidePanel } = chatSlice.actions;
+export const { selectAgent, setView, setDaemonUrl, addDaemonProfile, renameDaemonProfile, removeDaemonProfile, updateSessionConfig, clearUserClientState, userWsConnecting, userWsConnected, userWsDisconnected, userWsError, chatEventReceived, testStartReceived, testDoneReceived, setTestRuns, appendMessage, patchChatMessageStatus, receiveChatPage, openGuidePanel, closeGuidePanel, toggleGuidePanel } = chatSlice.actions;
 
 export const markCoordinatorRead = createAsyncThunk('chat/markCoordinatorRead', async (agentInstanceId: string, { getState }) => {
   const state = getState() as any;

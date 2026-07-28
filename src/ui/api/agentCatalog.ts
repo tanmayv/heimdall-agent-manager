@@ -1,8 +1,14 @@
+import { userScopedStorageKey } from '../utils/clientPersistence';
+
 const KNOWN_AGENTS_STORAGE_KEY = 'odin.knownAgents';
+
+function knownAgentsStorageKey(): string {
+  return userScopedStorageKey(KNOWN_AGENTS_STORAGE_KEY);
+}
 
 export function loadKnownAgents(): any[] {
   try {
-    return JSON.parse(window.localStorage.getItem(KNOWN_AGENTS_STORAGE_KEY) || '[]');
+    return JSON.parse(window.localStorage.getItem(knownAgentsStorageKey()) || '[]');
   } catch {
     return [];
   }
@@ -10,7 +16,7 @@ export function loadKnownAgents(): any[] {
 
 export function storeKnownAgents(agents: any[]) {
   try {
-    window.localStorage.setItem(KNOWN_AGENTS_STORAGE_KEY, JSON.stringify(agents || []));
+    window.localStorage.setItem(knownAgentsStorageKey(), JSON.stringify(agents || []));
   } catch {
     // Local known-agent records are a UI convenience when daemon persistence is unavailable.
   }
