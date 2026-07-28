@@ -1055,7 +1055,7 @@ endpoints so WS invalidation applies.
    path). Phase commit: `ac136c5`.
 7. **DONE — Page 3b Agent detail** — per-bridge overrides + multi-instance deploy/run. Phase commits: `14e231b`, `de9a697`.
 8. **DONE — Page 4 Composer** — quick launch with optional overrides. Phase commits: `902b99c`, `330c0c5`.
-9. **DONE — Settings navigation/form UX** — settings sub-nav, routed provider/agent editors, reusable breadcrumbs, provider chip inputs/no typed JSON, review fixes for reachable Projects/Memory/Defaults panels, unique routed-form debug ids, and mobile-friendly routed forms/sub-nav/sticky action bars. Phase commits: `42dcf02`, `310a795`.
+9. **DONE — Settings navigation/form UX** — settings sub-nav, routed provider/agent editors, reusable breadcrumbs, provider chip inputs/no typed JSON, review fixes for reachable Projects/Memory/Defaults panels, unique routed-form debug ids, and mobile-friendly routed forms/sub-nav/sticky action bars. Phase commits: `42dcf02`, `310a795`, `0dfba6e`.
 10. **DONE — Identity refresh + per-user client-state isolation (§3.10)** — re-fetch `/me` on focus/visibility/user-WS reconnect, reset RTKQ + Redux client state on user change, wipe all `odin.*`/`heimdall.*` local/session storage, track last-seen user id, and namespace live known-agent persistence by user id. Phase commit: `310a795`.
 
 Pages 1 and 3–4 can proceed against real capabilities only after steps 1–2; a
