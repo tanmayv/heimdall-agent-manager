@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  useArtifactContentUrl,
+  useArtifactContentState,
   useCreateArtifactAnnotationMutation,
   useDeleteArtifactAnnotationMutation,
   useDeleteArtifactMutation,
@@ -94,7 +94,12 @@ function classifyPreview(meta: ArtifactMeta | null): PreviewKind {
   if (!meta) return 'unsupported';
   const kind = String(meta.kind || '').toLowerCase();
   const mime = String(meta.mime || '').toLowerCase();
-  const ext = String(meta.ext || '').toLowerCase();
+  const rawExt = String(meta.ext || '').toLowerCase();
+  const name = String(meta.name || '').toLowerCase();
+  const nameDot = name.lastIndexOf('.');
+  const ext = rawExt
+    ? (rawExt.startsWith('.') ? rawExt : `.${rawExt}`)
+    : (nameDot >= 0 ? name.slice(nameDot) : '');
   if (kind === 'diff' || ext === '.diff' || ext === '.patch' || mime === 'text/x-diff') {
     return 'diff';
   }
@@ -107,7 +112,7 @@ function classifyPreview(meta: ArtifactMeta | null): PreviewKind {
   if (kind === 'png' || mime === 'image/png' || ext === '.png') {
     return 'png';
   }
-  if (kind === 'jpeg' || kind === 'jpg' || mime === 'image/jpeg' || mime === 'image/jpg' || ext === '.jpg' || ext === '.jpeg'
+  if (kind === 'image' || kind === 'jpeg' || kind === 'jpg' || mime === 'image/jpeg' || mime === 'image/jpg' || ext === '.jpg' || ext === '.jpeg'
       || kind === 'gif' || mime === 'image/gif' || ext === '.gif'
       || kind === 'webp' || mime === 'image/webp' || ext === '.webp'
       || mime.startsWith('image/')) {
@@ -720,7 +725,9 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
       .filter((row: ArtifactAnnotationRecord | null): row is ArtifactAnnotationRecord => Boolean(row));
   }, [annotationsQuery.data, artifactId, meta, selectedArtifactMeta]);
 
-  const contentUrl = useArtifactContentUrl({ daemonUrl, clientToken, artifactId, versionNo: selectedVersionNo });
+  const contentState = useArtifactContentState({ daemonUrl, clientToken, artifactId, versionNo: selectedVersionNo });
+  const contentUrl = contentState.url;
+  const imagePreviewNeedsContent = previewKind === 'png' || previewKind === 'image';
   const textQuery = useFetchArtifactTextContentQuery(
     { artifactId, versionNo: selectedVersionNo },
     { skip: !artifactId || !clientToken || previewKind !== 'markdown' },
@@ -728,6 +735,8 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
   const textContent = textQuery.data?.text || '';
   const loading = metaQuery.isFetching || versionsQuery.isFetching;
   const loadingText = textQuery.isFetching;
+  const loadingContent = imagePreviewNeedsContent && contentState.loading;
+  const contentError = imagePreviewNeedsContent ? contentState.error : '';
   const error = metaQuery.error
     ? 'Failed to load artifact metadata.'
     : versionsQuery.error
@@ -1019,7 +1028,11 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
             >
               {copyAllState === 'copied' ? 'Copied all' : copyAllState === 'error' ? 'Copy failed' : 'Copy all'}
             </button>
-            <a data-debug-id="artifact-viewer-download-btn" href={contentUrl} download={selectedArtifactMeta?.name || artifactId} className="rounded-xl bg-sky-400 px-3 py-2 text-sm font-semibold text-black hover:bg-sky-300">Download</a>
+            {contentUrl ? (
+              <a data-debug-id="artifact-viewer-download-btn" href={contentUrl} download={selectedArtifactMeta?.name || artifactId} className="rounded-xl bg-sky-400 px-3 py-2 text-sm font-semibold text-black hover:bg-sky-300">Download</a>
+            ) : (
+              <button type="button" data-debug-id="artifact-viewer-download-btn" disabled className="cursor-not-allowed rounded-xl bg-zinc-700 px-3 py-2 text-sm font-semibold text-zinc-400" title={contentState.loading ? 'Artifact content is still downloading' : contentState.error || 'Artifact content is unavailable'}>{contentState.loading ? 'Downloading…' : 'Download'}</button>
+            )}
             {/* UI-10: rename / edit description (PATCH) and delete (DELETE) from the viewer header. */}
             <button type="button" data-debug-id="artifact-viewer-edit-meta-btn" onClick={openEditMeta} disabled={selectedVersionNo != null} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40" title="Rename / edit description">✎ Rename</button>
             <button type="button" data-debug-id="artifact-viewer-delete-btn" onClick={() => setDeleteConfirmOpen((current) => !current)} disabled={selectedVersionNo != null} className="rounded-xl bg-rose-500/15 px-3 py-2 text-sm text-rose-100 hover:bg-rose-500/25 disabled:cursor-not-allowed disabled:opacity-40" title="Delete artifact">🗑 Delete</button>
@@ -1163,7 +1176,17 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                       )}
                     </div>
                   ) : null}
-                  {previewKind === 'png' ? (
+                  {loadingContent ? (
+                    <div data-debug-id="artifact-viewer-content-loading" className="grid min-h-[40vh] place-items-center rounded-2xl border border-white/10 bg-black/30 px-6 py-10 text-center">
+                      <div>
+                        <div className="mx-auto mb-3 h-8 w-8 animate-spin rounded-full border-2 border-sky-300/30 border-t-sky-300" />
+                        <div className="text-sm font-medium text-zinc-200">Downloading artifact…</div>
+                        <div className="mt-1 text-xs text-zinc-500">{selectedArtifactMeta.size_bytes ? formatBytes(Number(selectedArtifactMeta.size_bytes)) : 'Preparing preview'}</div>
+                      </div>
+                    </div>
+                  ) : contentError ? (
+                    <div data-debug-id="artifact-viewer-content-error" className="rounded-xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">{contentError}</div>
+                  ) : previewKind === 'png' ? (
                     <RegionAnnotationLayer contentUrl={contentUrl} alt={selectedArtifactMeta.name || artifactId} annotationMode={annotationMode} annotations={annotations} onCreateRegion={handleCreateImageRegion} />
                   ) : previewKind === 'image' ? (
                     // UI-10: non-PNG images render with wheel/drag zoom + pinch-zoom/pan.

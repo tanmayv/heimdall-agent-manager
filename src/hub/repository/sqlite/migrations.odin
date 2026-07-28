@@ -360,7 +360,18 @@ WHERE memory_id = 'mem_system_heimdall_ctl_communication'
   AND instr(body, 'Artifacts: use artifacts for large logs') = 0;
 `
 
-migration_order :: [10]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql"}
+MIGRATION_011_ARTIFACT_DOWNLOAD_SKILL_MEMORY :: `UPDATE memories
+SET body = replace(
+  body,
+  'Read artifact bodies with ./.heimdall/bin/ham-ctl agent artifacts read --artifact-id <artifact_id> (aliases: content or get).',
+  'Read artifact bodies with ./.heimdall/bin/ham-ctl agent artifacts read --artifact-id <artifact_id> (aliases: content or get). To materialize an artifact as a local file, run ./.heimdall/bin/ham-ctl agent artifacts download --artifact-id <artifact_id> --dir <directory>; it writes a random filename with the inferred extension and returns the filename/path.'
+),
+updated_at = '2026-07-28T22:45:00Z'
+WHERE memory_id = 'mem_system_heimdall_ctl_communication'
+  AND instr(body, 'artifacts download --artifact-id') = 0;
+`
+
+migration_order :: [11]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -404,6 +415,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "008_read_inbound_messages_skill_memory.sql" do return strings.clone(MIGRATION_008_READ_INBOUND_MESSAGES_SKILL_MEMORY)
 	if name == "009_artifact_metadata.sql" do return strings.clone(MIGRATION_009_ARTIFACT_METADATA)
 	if name == "010_artifact_usage_skill_memory.sql" do return strings.clone(MIGRATION_010_ARTIFACT_USAGE_SKILL_MEMORY)
+	if name == "011_artifact_download_skill_memory.sql" do return strings.clone(MIGRATION_011_ARTIFACT_DOWNLOAD_SKILL_MEMORY)
 	return ""
 }
 

@@ -14,7 +14,7 @@ const ARTIFACT_UPLOAD_SPECS = [
 ] as const;
 export const ARTIFACT_UPLOAD_ACCEPT = ARTIFACT_UPLOAD_SPECS.flatMap((spec) => [...spec.exts, spec.mime]).join(',');
 const SUPPORTED_FILE_ERROR = 'Unsupported file. Upload a supported artifact (.md, .png, .jpg, .jpeg, .csv, .html, or .htm).';
-const MAX_UPLOAD_BYTES = 10 * 1024 * 1024; // Mirror daemon size guardrail (ARTIFACT_DEFAULT_MAX_BYTES) for a friendlier client-side error.
+export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // Mirror Hub artifact payload guardrail for friendlier client-side errors.
 
 type ArtifactKindMime = { kind: string; mime: string };
 export type ClipboardUploadResult = { handled: boolean; link: string | null };

@@ -824,7 +824,7 @@ default_config :: proc() -> Config {
 	cfg.daemon.system_agent_ids[0] = "guide"
 	cfg.daemon.system_agent_ids[1] = "memory-auditor"
 	cfg.daemon.system_agent_ids[2] = "memory-reviewer"
-	cfg.daemon.artifact_max_bytes = 10 * 1024 * 1024
+	cfg.daemon.artifact_max_bytes = 50 * 1024 * 1024
 	cfg.daemon.artifact_blob_dir = ""
 	cfg.daemon.bridge_url = ""
 	cfg.daemon.bridge_token = ""

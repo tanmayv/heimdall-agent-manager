@@ -105,6 +105,11 @@ function sanitizeProjectId(projectId?: string): string {
   return projectId === 'default' ? '' : (projectId || '');
 }
 
+function bearerHeaders(clientToken?: string): Record<string, string> {
+  const token = String(clientToken || '').trim();
+  return token ? { 'Authorization': `Bearer ${token}` } : {};
+}
+
 export async function registerUserClient({ daemonUrl, userId, clientInstanceId, clientToken }: SessionRequest) {
   return requestJson(joinUrl(daemonUrl, '/user-client/register'), {
     method: 'POST',
@@ -779,9 +784,9 @@ export async function createArtifact({ daemonUrl, clientToken, file, name, kind 
     if (originRef) form.append('origin_ref', originRef);
     return requestFormJson(joinUrl(daemonUrl, '/api/v1/artifacts'), {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${clientToken}` },
+      headers: bearerHeaders(clientToken),
       body: form,
-      timeoutMs: 30000,
+      timeoutMs: 120000,
     });
   }
   const body: any = {
@@ -797,7 +802,7 @@ export async function createArtifact({ daemonUrl, clientToken, file, name, kind 
   if (originRef) body.origin_ref = originRef;
   return requestJson(joinUrl(daemonUrl, '/api/v1/artifacts'), {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${clientToken}` },
+    headers: bearerHeaders(clientToken),
     body,
   });
 }
@@ -805,14 +810,14 @@ export async function createArtifact({ daemonUrl, clientToken, file, name, kind 
 export async function fetchArtifactMeta({ daemonUrl, clientToken, artifactId }: { daemonUrl: string; clientToken: string; artifactId: string }) {
   return requestJson(joinUrl(daemonUrl, `/api/v1/artifacts/${encodeURIComponent(artifactId)}`), {
     method: 'GET',
-    headers: { 'Authorization': `Bearer ${clientToken}` },
+    headers: bearerHeaders(clientToken),
   });
 }
 
 export async function fetchArtifactVersions({ daemonUrl, clientToken, artifactId }: { daemonUrl: string; clientToken: string; artifactId: string }) {
   return requestJson(joinUrl(daemonUrl, `/api/v1/artifacts/${encodeURIComponent(artifactId)}/versions`), {
     method: 'GET',
-    headers: { 'Authorization': `Bearer ${clientToken}` },
+    headers: bearerHeaders(clientToken),
   });
 }
 
@@ -832,7 +837,7 @@ export async function listArtifacts({ daemonUrl, clientToken, projectId = '', cr
   if (includeDeleted) params.set('include_deleted', 'true');
   return requestJson(joinUrl(daemonUrl, `/api/v1/artifacts?${params.toString()}`), {
     method: 'GET',
-    headers: { 'Authorization': `Bearer ${clientToken}` },
+    headers: bearerHeaders(clientToken),
   });
 }
 
@@ -847,7 +852,7 @@ export async function updateArtifact({ daemonUrl, clientToken, artifactId, name,
   if (description !== undefined) patchBody.description = description;
   return requestJson(joinUrl(daemonUrl, `/api/v1/artifacts/${encodeURIComponent(artifactId)}`), {
     method: 'PATCH',
-    headers: { 'Authorization': `Bearer ${clientToken}` },
+    headers: bearerHeaders(clientToken),
     body: patchBody,
   });
 }
@@ -910,7 +915,7 @@ export async function deleteArtifact({ daemonUrl, clientToken, artifactId }: { d
   // returns 204 No Content). Legacy POST /artifacts/delete is unserved by the Hub.
   return requestJson(joinUrl(daemonUrl, `/api/v1/artifacts/${encodeURIComponent(artifactId)}`), {
     method: 'DELETE',
-    headers: { 'Authorization': `Bearer ${clientToken}` },
+    headers: bearerHeaders(clientToken),
   });
 }
 

@@ -112,17 +112,23 @@ export function installElectronApiFetchBridge() {
     const isApi = isApiV1Input(input);
     const nextInput = isApi ? await rewriteApiInput(input) : input;
     let nextInit = init;
+    let sentStoredToken = false;
+    let explicitAuthorization = false;
     if (isApi) {
       const headers = new Headers(init?.headers || (input instanceof Request ? input.headers : undefined));
+      explicitAuthorization = headers.has('Authorization');
       const token = await getBearerToken();
-      if (token && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`);
+      if (token && !explicitAuthorization) {
+        headers.set('Authorization', `Bearer ${token}`);
+        sentStoredToken = true;
+      }
       // Electron uses bearer tokens only; do not send browser/outpost cookies on
       // device-authorized API calls even if the configured API URL is same-origin.
       nextInit = { ...init, headers, credentials: 'omit' };
     }
     const response = await originalFetch(nextInput, nextInit);
-    if (isApi && response.status === 401) {
-      await clearBearerToken();
+    if (isApi && response.status === 401 && !explicitAuthorization) {
+      if (sentStoredToken) await clearBearerToken();
       window.dispatchEvent(new CustomEvent('heimdall:electron-device-auth-required'));
     }
     return response;

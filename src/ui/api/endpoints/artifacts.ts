@@ -72,8 +72,19 @@ type DeleteArtifactAnnotationArgs = {
   versionNo?: number | null;
 };
 
+function isElectronDeviceAuth(): boolean {
+  return typeof window !== 'undefined' && Boolean((window as any).odinApi?.deviceAuth);
+}
+
 function auth(session: any) {
-  return { daemonUrl: session.daemonUrl, clientToken: session.clientToken };
+  // Hub v1 artifact endpoints should be auth-mode neutral. In the routed
+  // Authentik app, same-origin cookies authenticate relative /api/v1 requests;
+  // in Electron, the fetch bridge rewrites relative /api/v1 requests to the
+  // configured Hub and injects the secure-store user token. Do not pass legacy
+  // Redux clientToken values on those paths.
+  const token = String(session?.clientToken || '');
+  if (isElectronDeviceAuth() || token === 'v1') return { daemonUrl: '', clientToken: '' };
+  return { daemonUrl: session.daemonUrl, clientToken: token };
 }
 
 function artifactIdOf(row: any, fallback = '') {
@@ -93,14 +104,21 @@ function annotationScopeTag(artifactId: string, versionNo?: number | null) {
 }
 
 function artifactContentUrl(session: any, artifactId: string, versionNo?: number | null) {
-  return daemonApi.artifactContentUrl({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, artifactId, version: versionNo });
+  const a = auth(session);
+  return daemonApi.artifactContentUrl({ daemonUrl: a.daemonUrl, clientToken: a.clientToken, artifactId, version: versionNo });
+}
+
+function artifactFetchInit(session: any): RequestInit {
+  const a = auth(session);
+  return a.clientToken
+    ? { headers: { 'Authorization': `Bearer ${a.clientToken}` }, credentials: 'omit' }
+    : { credentials: 'include' };
 }
 
 export const artifactsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     listArtifacts: build.query<any, ArtifactListArgs>({
       queryFn: withSessionQuery(async ({ projectId = '', creatorId = '', originRef = '', includeDeleted = false, limit = 20, offset = 0 }, { session }) => {
-        if (!session?.clientToken) return { artifacts: [] };
         const data = await daemonApi.listArtifacts({ ...auth(session), projectId, creatorId, originRef, includeDeleted, limit, offset });
         return { ...data, artifacts: normalizeArtifacts(data) };
       }),
@@ -112,7 +130,6 @@ export const artifactsApi = heimdallApi.injectEndpoints({
     }),
     fetchArtifactsPage: build.query<any, ArtifactListArgs & { offset: number }>({
       queryFn: withSessionQuery(async ({ projectId = '', creatorId = '', originRef = '', includeDeleted = false, limit = 20, offset }, { session }) => {
-        if (!session?.clientToken) return { artifacts: [] };
         const data = await daemonApi.listArtifacts({ ...auth(session), projectId, creatorId, originRef, includeDeleted, limit, offset });
         return { ...data, artifacts: normalizeArtifacts(data) };
       }),
@@ -142,7 +159,7 @@ export const artifactsApi = heimdallApi.injectEndpoints({
     }),
     fetchArtifactMeta: build.query<any, { artifactId: string }>({
       queryFn: withSessionQuery(async ({ artifactId }, { session }) => {
-        if (!session?.clientToken || !artifactId) return { artifact: null };
+        if (!artifactId) return { artifact: null };
         const data = await daemonApi.fetchArtifactMeta({ ...auth(session), artifactId });
         return { ...data, artifact: normalizeArtifact(data?.artifact || data?.data || data) };
       }),
@@ -150,7 +167,7 @@ export const artifactsApi = heimdallApi.injectEndpoints({
     }),
     fetchArtifactVersions: build.query<any, { artifactId: string }>({
       queryFn: withSessionQuery(async ({ artifactId }, { session }) => {
-        if (!session?.clientToken || !artifactId) return { versions: [] };
+        if (!artifactId) return { versions: [] };
         try {
           const data = await daemonApi.fetchArtifactVersions({ ...auth(session), artifactId });
           return { ...data, versions: Array.isArray(data?.versions) ? data.versions : (Array.isArray(data?.data) ? data.data : []) };
@@ -162,10 +179,8 @@ export const artifactsApi = heimdallApi.injectEndpoints({
     }),
     fetchArtifactTextContent: build.query<any, ArtifactTextContentArgs>({
       queryFn: withSessionQuery(async ({ artifactId, versionNo = null }, { session }) => {
-        if (!session?.clientToken || !artifactId) return { artifactId, versionNo, text: '' };
-        const response = await fetch(artifactContentUrl(session, artifactId, versionNo), {
-          headers: { 'Authorization': `Bearer ${session.clientToken}` },
-        });
+        if (!artifactId) return { artifactId, versionNo, text: '' };
+        const response = await fetch(artifactContentUrl(session, artifactId, versionNo), artifactFetchInit(session));
         if (!response.ok) throw new Error(`Failed to load artifact content (${response.status})`);
         return { artifactId, versionNo, text: await response.text() };
       }),
@@ -174,7 +189,7 @@ export const artifactsApi = heimdallApi.injectEndpoints({
     }),
     fetchArtifactAnnotations: build.query<any, ArtifactAnnotationsArgs>({
       queryFn: withSessionQuery(async ({ artifactId, versionNo = null }, { session }) => {
-        if (!session?.clientToken || !artifactId) return { annotations: [] };
+        if (!artifactId) return { annotations: [] };
         try {
           const data = await daemonApi.fetchArtifactAnnotations({ ...auth(session), artifactId, versionNo });
           return { ...data, annotations: Array.isArray(data?.annotations) ? data.annotations : (Array.isArray(data?.data) ? data.data : []) };
@@ -269,12 +284,16 @@ export function normalizeArtifact(row: any) {
   if (!row) return null;
   const artifactId = artifactIdOf(row);
   const mime = String(row?.mime || row?.content_type || row?.contentType || '');
+  const rawSize = row?.size_bytes ?? row?.sizeBytes ?? row?.size;
+  const sizeBytes = Number(rawSize || 0);
   return {
     ...row,
     artifact_id: artifactId,
     artifactId,
     mime,
     content_type: row?.content_type || row?.contentType || mime,
+    size_bytes: Number.isFinite(sizeBytes) ? sizeBytes : 0,
+    sizeBytes: Number.isFinite(sizeBytes) ? sizeBytes : 0,
     link: row?.link || (artifactId ? `artifact://${artifactId}` : ''),
   };
 }
@@ -293,18 +312,21 @@ export function normalizeArtifacts(data: any) {
     });
 }
 
-export function useArtifactContentUrl({ daemonUrl, clientToken, artifactId, versionNo = null }: { daemonUrl: string; clientToken: string; artifactId: string; versionNo?: number | null }) {
-  const [objectUrl, setObjectUrl] = useState('');
+export function useArtifactContentState({ daemonUrl, clientToken, artifactId, versionNo = null }: { daemonUrl: string; clientToken: string; artifactId: string; versionNo?: number | null }) {
+  const [state, setState] = useState<{ url: string; loading: boolean; error: string }>({ url: '', loading: false, error: '' });
   useEffect(() => {
-    if (!daemonUrl || !clientToken || !artifactId) {
-      setObjectUrl('');
+    const token = String(clientToken || '');
+    const ambientAuth = isElectronDeviceAuth() || token === 'v1';
+    if (!artifactId || (!ambientAuth && (!daemonUrl || !token))) {
+      setState({ url: '', loading: false, error: '' });
       return;
     }
     let cancelled = false;
     let nextUrl = '';
-    fetch(daemonApi.artifactContentUrl({ daemonUrl, artifactId, version: versionNo }), {
-      headers: { 'Authorization': `Bearer ${clientToken}` },
-    })
+    setState({ url: '', loading: true, error: '' });
+    fetch(daemonApi.artifactContentUrl({ daemonUrl: ambientAuth ? '' : daemonUrl, artifactId, version: versionNo }), ambientAuth
+      ? { credentials: 'include' }
+      : { headers: token ? { 'Authorization': `Bearer ${token}` } : undefined, credentials: token ? 'omit' : 'include' })
       .then((response) => {
         if (!response.ok) throw new Error(`Failed to load artifact content (${response.status})`);
         return response.blob();
@@ -312,17 +334,21 @@ export function useArtifactContentUrl({ daemonUrl, clientToken, artifactId, vers
       .then((blob) => {
         nextUrl = URL.createObjectURL(blob);
         if (cancelled) URL.revokeObjectURL(nextUrl);
-        else setObjectUrl(nextUrl);
+        else setState({ url: nextUrl, loading: false, error: '' });
       })
-      .catch(() => {
-        if (!cancelled) setObjectUrl('');
+      .catch((err) => {
+        if (!cancelled) setState({ url: '', loading: false, error: String(err?.message || err || 'Failed to load artifact content') });
       });
     return () => {
       cancelled = true;
       if (nextUrl) URL.revokeObjectURL(nextUrl);
     };
   }, [daemonUrl, clientToken, artifactId, versionNo]);
-  return objectUrl;
+  return state;
+}
+
+export function useArtifactContentUrl({ daemonUrl, clientToken, artifactId, versionNo = null }: { daemonUrl: string; clientToken: string; artifactId: string; versionNo?: number | null }) {
+  return useArtifactContentState({ daemonUrl, clientToken, artifactId, versionNo }).url;
 }
 
 export const {

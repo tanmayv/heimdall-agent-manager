@@ -170,7 +170,14 @@ ctl_agentmode_artifacts :: proc(endpoint, token, action: string, args: []string)
 		ctl_agent_artifact_content(endpoint, token, artifact_id)
 		return
 	}
-	fmt.println("usage: ham-ctl agent artifacts <list|create|show|content>")
+	if action == "download" {
+		artifact_id := option_value(args, "--artifact-id", option_value(args, "--artifact", ""))
+		dir := option_value(args, "--dir", option_value(args, "--directory", option_value(args, "--out-dir", "")))
+		if artifact_id == "" || dir == "" { fmt.println("usage: ham-ctl agent artifacts download --artifact-id <id> --dir <directory>"); return }
+		ctl_agent_artifact_download(endpoint, token, artifact_id, dir)
+		return
+	}
+	fmt.println("usage: ham-ctl agent artifacts <list|create|show|content|download>")
 }
 
 ctl_agent_artifact_content :: proc(endpoint, token, artifact_id: string) {
@@ -182,6 +189,27 @@ ctl_agent_artifact_content :: proc(endpoint, token, artifact_id: string) {
 	}
 	content := extract_json_string_unescaped(response, "content", "")
 	fmt.print(content)
+}
+
+ctl_agent_artifact_download :: proc(endpoint, token, artifact_id, dir: string) {
+	meta_response, meta_ok := ctl_agent_local_call(endpoint, token, "agent.artifacts.show", json_object(json_kv("artifact_id", artifact_id)))
+	if !meta_ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
+	if !strings.contains(meta_response, `"ok":true`) { fmt.println(meta_response); return }
+	content_response, content_ok := ctl_agent_local_call(endpoint, token, "agent.artifacts.content", json_object(json_kv("artifact_id", artifact_id)))
+	if !content_ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
+	if !strings.contains(content_response, `"ok":true`) { fmt.println(content_response); return }
+	if os.make_directory_all(dir) != nil { fmt.println(`{"ok":false,"message":"download directory could not be created"}`); os.exit(1) }
+	ext := artifact_download_extension(meta_response, content_response)
+	filename := artifact_download_random_filename(ext)
+	path := path_join_agent(dir, filename)
+	content := extract_json_string_unescaped(content_response, "content", "")
+	if os.write_entire_file(path, transmute([]byte)content) != nil { fmt.println(`{"ok":false,"message":"artifact could not be written"}`); os.exit(1) }
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"filename":"`); json_write_string(&b, filename)
+	strings.write_string(&b, `","path":"`); json_write_string(&b, path)
+	strings.write_string(&b, `","artifact_id":"`); json_write_string(&b, artifact_id)
+	strings.write_string(&b, `"}`)
+	fmt.println(strings.to_string(b))
 }
 
 ctl_agentmode_memory :: proc(endpoint, token, action: string, args: []string) {
@@ -238,10 +266,7 @@ ctl_agent_send_tcp :: proc(endpoint, line: string) -> (string, bool) {
 	defer net.close(socket)
 	_, send_err := net.send_tcp(socket, transmute([]byte)line)
 	if send_err != nil do return "", false
-	buf: [8192]byte
-	n, _ := net.recv_tcp(socket, buf[:])
-	if n <= 0 do return "", false
-	return string(buf[:n]), true
+	return ctl_agent_recv_tcp(socket)
 }
 
 ctl_agent_send_unix :: proc(endpoint, line: string) -> (string, bool) {
@@ -260,10 +285,143 @@ ctl_agent_send_unix :: proc(endpoint, line: string) -> (string, bool) {
 	if posix.connect(fd, (^posix.sockaddr)(&addr), posix.socklen_t(size_of(addr))) != .OK do return "", false
 	bytes := transmute([]byte)line
 	if posix.send(fd, raw_data(bytes), c.size_t(len(bytes)), {}) < 0 do return "", false
+	return ctl_agent_recv_unix(fd)
+}
+
+ctl_agent_recv_tcp :: proc(socket: net.TCP_Socket) -> (string, bool) {
+	out := make([dynamic]byte, 0, 8192)
 	buf: [8192]byte
-	n := posix.recv(fd, raw_data(buf[:]), c.size_t(len(buf)), {})
-	if n <= 0 do return "", false
-	return string(buf[:n]), true
+	for len(out) < 64 * 1024 * 1024 {
+		n, err := net.recv_tcp(socket, buf[:])
+		if err != nil || n <= 0 do break
+		append(&out, ..buf[:n])
+		if byte_slice_contains(out[:], '\n') do return string(out[:]), true
+	}
+	if len(out) == 0 do return "", false
+	return string(out[:]), true
+}
+
+ctl_agent_recv_unix :: proc(fd: posix.FD) -> (string, bool) {
+	out := make([dynamic]byte, 0, 8192)
+	buf: [8192]byte
+	for len(out) < 64 * 1024 * 1024 {
+		n := posix.recv(fd, raw_data(buf[:]), c.size_t(len(buf)), {})
+		if n <= 0 do break
+		append(&out, ..buf[:int(n)])
+		if byte_slice_contains(out[:], '\n') do return string(out[:]), true
+	}
+	if len(out) == 0 do return "", false
+	return string(out[:]), true
+}
+
+byte_slice_contains :: proc(values: []byte, needle: byte) -> bool {
+	for v in values { if v == needle do return true }
+	return false
+}
+
+artifact_download_extension :: proc(meta_response, content_response: string) -> string {
+	if ext := normalize_extension(extract_json_string_unescaped(meta_response, "ext", "")); ext != "" do return ext
+	if ext := extension_from_name(extract_json_string_unescaped(meta_response, "name", "")); ext != "" do return ext
+	mime := extract_json_string_unescaped(content_response, "mime", "")
+	if mime == "" do mime = extract_json_string_unescaped(meta_response, "mime", "")
+	if mime == "" do mime = extract_json_string_unescaped(content_response, "content_type", "")
+	if mime == "" do mime = extract_json_string_unescaped(meta_response, "content_type", "")
+	if ext := extension_from_mime(mime); ext != "" do return ext
+	if ext := extension_from_kind(extract_json_string_unescaped(meta_response, "kind", "")); ext != "" do return ext
+	return "bin"
+}
+
+normalize_extension :: proc(value: string) -> string {
+	v := strings.to_lower(strings.trim_space(value))
+	for strings.has_prefix(v, ".") do v = v[1:]
+	if len(v) == 0 || len(v) > 16 do return ""
+	for ch in v { if !((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) do return "" }
+	return v
+}
+
+extension_from_name :: proc(name: string) -> string {
+	trimmed := strings.trim_space(name)
+	slash := strings.last_index_byte(trimmed, '/')
+	backslash := strings.last_index_byte(trimmed, '\\')
+	sep := slash
+	if backslash > sep do sep = backslash
+	dot := strings.last_index_byte(trimmed, '.')
+	if dot <= sep || dot < 0 || dot + 1 >= len(trimmed) do return ""
+	return normalize_extension(trimmed[dot + 1:])
+}
+
+extension_from_mime :: proc(mime: string) -> string {
+	m := strings.to_lower(strings.trim_space(mime))
+	if semicolon := strings.index_byte(m, ';'); semicolon >= 0 do m = strings.trim_space(m[:semicolon])
+	switch m {
+	case "text/markdown", "text/x-markdown": return "md"
+	case "text/plain": return "txt"
+	case "application/json", "text/json": return "json"
+	case "text/html": return "html"
+	case "text/css": return "css"
+	case "application/javascript", "text/javascript": return "js"
+	case "image/png": return "png"
+	case "image/jpeg", "image/jpg": return "jpg"
+	case "image/gif": return "gif"
+	case "image/webp": return "webp"
+	case "image/svg+xml": return "svg"
+	case "application/pdf": return "pdf"
+	case "application/zip": return "zip"
+	case "application/gzip": return "gz"
+	case "application/octet-stream": return "bin"
+	}
+	return ""
+}
+
+extension_from_kind :: proc(kind: string) -> string {
+	switch strings.to_lower(strings.trim_space(kind)) {
+	case "markdown", "md": return "md"
+	case "text", "txt", "log": return "txt"
+	case "json": return "json"
+	case "html": return "html"
+	case "png": return "png"
+	case "jpeg", "jpg": return "jpg"
+	case "gif": return "gif"
+	case "webp": return "webp"
+	case "pdf": return "pdf"
+	}
+	return ""
+}
+
+artifact_download_random_filename :: proc(ext: string) -> string {
+	suffix, ok := random_hex_agent(8)
+	if !ok do suffix = fmt.tprintf("%d", os.get_pid())
+	clean_ext := normalize_extension(ext)
+	if clean_ext == "" do clean_ext = "bin"
+	return fmt.tprintf("artifact_%s.%s", suffix, clean_ext)
+}
+
+random_hex_agent :: proc(n: int) -> (string, bool) {
+	if n <= 0 do return "", true
+	f, err := os.open("/dev/urandom")
+	if err != nil do return "", false
+	defer os.close(f)
+	buf := make([]byte, n)
+	defer delete(buf)
+	got := 0
+	for got < n {
+		r, rerr := os.read(f, buf[got:])
+		if rerr != nil || r <= 0 do return "", false
+		got += r
+	}
+	b := strings.builder_make()
+	hex := "0123456789abcdef"
+	for byte_value in buf {
+		strings.write_byte(&b, hex[int(byte_value >> 4)])
+		strings.write_byte(&b, hex[int(byte_value & 0x0f)])
+	}
+	return strings.to_string(b), true
+}
+
+path_join_agent :: proc(dir, filename: string) -> string {
+	base := strings.trim_right(dir, "/")
+	if base == "" do return filename
+	return strings.concatenate({base, "/", filename})
 }
 
 strconv_parse_int_agent :: proc(value: string) -> (int, bool) {
@@ -340,17 +498,19 @@ print_agent_tasks_help :: proc(action: string) {
 
 print_agent_artifacts_help :: proc(action: string) {
 	_ = action
-	fmt.println("ham-ctl agent artifacts <list|create|show|content>")
+	fmt.println("ham-ctl agent artifacts <list|create|show|content|download>")
 	fmt.println("Purpose: list, create, and read artifacts through the local Bridge.")
 	fmt.println("Commands:")
 	fmt.println("  list")
 	fmt.println("  create --name <name> [--kind <kind>] [--content <text>|--file <path>|--stdin]")
 	fmt.println("  show --artifact-id <id> [--with-content]")
 	fmt.println("  content|read|get --artifact-id <id>")
+	fmt.println("  download --artifact-id <id> --dir <directory>  # writes a random filename with the inferred extension")
 	fmt.println("Examples:")
 	fmt.println("  ham-ctl agent artifacts list")
 	fmt.println("  ham-ctl agent artifacts create --name test-log --kind markdown --file /tmp/test.log")
 	fmt.println("  ham-ctl agent artifacts read --artifact-id art_123")
+	fmt.println("  ham-ctl agent artifacts download --artifact-id art_123 --dir /tmp")
 }
 
 print_agent_memory_help :: proc(action: string) {

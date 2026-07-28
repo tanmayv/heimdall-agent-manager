@@ -7,7 +7,8 @@ import "core:strings"
 import "core:thread"
 import contracts "odin_test:contracts"
 
-MAX_HTTP_REQUEST_BYTES :: 16 * 1024 * 1024
+// Allow 50 MiB artifact payloads plus multipart/base64 framing overhead.
+MAX_HTTP_REQUEST_BYTES :: 80 * 1024 * 1024
 
 Server_Config :: struct {
 	bind_host: string,

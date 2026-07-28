@@ -20,6 +20,7 @@ import {
   useListBridgesQuery,
   type BridgeCapability,
 } from '../../api/endpoints/bridgeSupport';
+import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 import ChatMessageList from './ChatMessageList';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
@@ -57,6 +58,15 @@ type Message = {
   artifact_ids_json?: string;
   artifactIdsJson?: string;
   sending?: boolean;
+};
+
+type PendingAttachment = {
+  localId: string;
+  id: string;
+  name: string;
+  file: File;
+  status: 'uploading' | 'uploaded' | 'error';
+  error: string;
 };
 
 const tierOrder = ['cheap', 'normal', 'smart'];
@@ -270,7 +280,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const [olderHasMore, setOlderHasMore] = useState(false);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState('');
-  const [attachments, setAttachments] = useState<{id: string, name: string}[]>([]);
+  const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
   const [provider, setProvider] = useState('');
   const [tier, setTier] = useState('');
@@ -306,6 +316,10 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const needsStart = runtimeNeedsStart(runtimeStatus);
   const runtimeActionBusy = restartState.isLoading || stopState.isLoading;
   const runtimeButtonLabel = runtimeActionBusy ? (stopState.isLoading ? 'Stopping…' : (needsStart ? 'Starting…' : 'Restarting…')) : (needsStart ? 'Start' : 'Stop');
+  const hasUploadingAttachments = attachments.some((item) => item.status === 'uploading');
+  const hasFailedAttachments = attachments.some((item) => item.status === 'error');
+  const uploadedAttachments = attachments.filter((item) => item.status === 'uploaded' && item.id);
+  const sendDisabled = hasUploadingAttachments || hasFailedAttachments || (!draft.trim() && uploadedAttachments.length === 0);
 
   useEffect(() => { if (!renaming) setTitleDraft(rawTitle || title); }, [rawTitle, title, renaming]);
   useEffect(() => { if (agentInstanceId && (conversation?.unread_count || conversation?.unreadCount)) void markRead({ conversationId }); }, [conversationId, agentInstanceId]);
@@ -391,24 +405,54 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     }
   }
 
+  async function uploadAttachment(file: File, existingLocalId = '') {
+    const localId = existingLocalId || `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const name = file.name || 'attachment';
+    const tooLarge = file.size > MAX_UPLOAD_BYTES;
+    setError('');
+    setAttachments((current) => {
+      const without = current.filter((item) => item.localId !== localId);
+      return [...without, { localId, id: '', name, file, status: tooLarge ? 'error' : 'uploading', error: tooLarge ? `File is too large. Maximum upload size is ${Math.round(MAX_UPLOAD_BYTES / (1024 * 1024))} MB.` : '' }];
+    });
+    if (tooLarge) return;
+    try {
+      const res = await createArtifact({
+        file,
+        name: file.name,
+        mime: file.type || 'application/octet-stream',
+        kind: (file.type || '').startsWith('image/') ? 'image' : 'text',
+        originKind: 'conversation_chat',
+        originRef: conversationId,
+      }).unwrap();
+      const artifact = res?.artifact || res;
+      const id = String(artifact?.artifact_id || artifact?.artifactId || artifact?.id || '');
+      if (!id) throw new Error('Upload failed: Hub did not return an artifact id.');
+      setAttachments((current) => current.map((item) => item.localId === localId ? { ...item, id, status: 'uploaded', error: '' } : item));
+    } catch (err: any) {
+      setAttachments((current) => current.map((item) => item.localId === localId ? { ...item, status: 'error', error: errMsg(err, 'Upload failed') } : item));
+    }
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (sendDisabled) return;
     const body = draft.trim();
-    if (!body && attachments.length === 0) return;
-    const local = optimisticUserMessage(conversationId, body || 'Uploaded file');
+    const attachmentIds = uploadedAttachments.map(a => a.id);
+    const sendBody = body || (attachmentIds.length ? 'Uploaded file' : '');
+    if (!sendBody && attachmentIds.length === 0) return;
+    const local = optimisticUserMessage(conversationId, sendBody);
     const localId = msgId(local, 0);
-    const attachmentIds = attachments.map(a => a.id);
     (local as any).artifact_ids_json = JSON.stringify(attachmentIds);
     setError('');
     setDraft('');
     setAttachments([]);
     setLocalMessages((current) => [...current, local]);
     try {
-      const result = await sendMessage({ conversationId, body, artifactIds: attachmentIds }).unwrap();
+      const result = await sendMessage({ conversationId, body: sendBody, artifactIds: attachmentIds }).unwrap();
       const sent = sentMessageFromResult(result);
       setLocalMessages((current) => current.map((message) => {
         if (msgId(message, 0) !== localId) return message;
-        return sent ? { ...sent, body: String(sent.body || body), direction: sent.direction || 'user_to_agent', artifact_ids_json: (sent as any).artifact_ids_json || JSON.stringify(attachmentIds) } : { ...message, sending: false };
+        return sent ? { ...sent, body: String(sent.body || sendBody), direction: sent.direction || 'user_to_agent', artifact_ids_json: (sent as any).artifact_ids_json || JSON.stringify(attachmentIds) } : { ...message, sending: false };
       }));
       void messagesQuery.refetch();
     } catch (err: any) {
@@ -552,41 +596,30 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
       <form onSubmit={submit} data-debug-id="conversation-composer-shell" className="shrink-0 border-t border-white/10 px-2 py-2 sm:px-4 sm:py-3">
         {error ? <div data-debug-id="conversation-composer-send-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">{error}</div> : null}
         {attachments.length > 0 && (
-          <div className="mb-2 flex flex-wrap gap-2">
-            {attachments.map((a, i) => (
-              <div key={i} className="flex items-center gap-1 rounded-lg bg-sky-400/10 px-2 py-1 text-xs text-sky-300" title={a.name}>
-                <span className="max-w-[150px] truncate">{a.name}</span>
-                <button type="button" onClick={() => setAttachments(prev => prev.filter((_, idx) => idx !== i))} className="hover:text-sky-100">×</button>
+          <div data-debug-id="conversation-attachment-tray" className="mb-2 space-y-2 rounded-2xl border border-white/10 bg-white/[0.03] p-2 text-xs text-zinc-200">
+            {attachments.map((a) => (
+              <div key={a.localId} data-debug-id={`conversation-attachment-${a.localId}`} className="rounded-xl border border-white/10 bg-black/20 px-2.5 py-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className={a.status === 'uploaded' ? 'text-emerald-300' : a.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{a.status === 'uploading' ? '⇧' : a.status === 'uploaded' ? '✓' : '!'}</span>
+                  <span className="min-w-0 flex-1 truncate" title={a.name}>{a.name}</span>
+                  <span className={a.status === 'uploaded' ? 'text-emerald-300' : a.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{a.status === 'uploading' ? 'Uploading…' : a.status === 'uploaded' ? 'Uploaded' : 'Failed'}</span>
+                  {a.status === 'error' ? <button type="button" data-debug-id={`conversation-attachment-retry-${a.localId}`} onClick={() => void uploadAttachment(a.file, a.localId)} className="rounded-full border border-white/10 px-2 py-0.5 text-zinc-200 hover:bg-white/10">Retry</button> : null}
+                  <button type="button" data-debug-id={`conversation-attachment-remove-${a.localId}`} onClick={() => setAttachments(prev => prev.filter((item) => item.localId !== a.localId))} className="rounded-full border border-white/10 px-2 py-0.5 text-zinc-400 hover:bg-white/10">Remove</button>
+                </div>
+                {a.status === 'uploading' ? <div data-debug-id={`conversation-attachment-progress-${a.localId}`} className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full w-1/2 animate-pulse rounded-full bg-sky-300" /></div> : null}
+                {a.error ? <div data-debug-id={`conversation-attachment-error-${a.localId}`} className="mt-1 text-red-300">{a.error}</div> : null}
               </div>
             ))}
+            {hasUploadingAttachments ? <div data-debug-id="conversation-attachment-uploading-hint" className="text-[11px] text-zinc-500">You can keep typing. Send unlocks when uploads finish.</div> : null}
+            {hasFailedAttachments ? <div data-debug-id="conversation-attachment-failed-hint" className="text-[11px] text-red-300">Retry or remove failed uploads before sending.</div> : null}
           </div>
         )}
         <div className="flex items-end gap-2">
           <label data-debug-id="conversation-attach-btn" className="grid h-[44px] w-[44px] shrink-0 cursor-pointer place-items-center rounded-2xl border border-white/10 bg-black/30 text-xl text-zinc-400 hover:bg-white/5 hover:text-white" title="Upload Attachment">
-            <input data-debug-id="conversation-attach-input" type="file" className="hidden" onChange={async (e) => {
-              const file = e.target.files?.[0];
-              if (!file) return;
-              try {
-                const res = await createArtifact({
-                  file,
-                  name: file.name,
-                  mime: file.type || 'application/octet-stream',
-                  kind: (file.type || '').startsWith('image/') ? 'image' : 'text',
-                  originKind: 'conversation_chat',
-                  originRef: conversationId,
-                }).unwrap();
-                const artifact = res?.artifact || res;
-                const id = artifact?.artifact_id || artifact?.artifactId || artifact?.id;
-                if (id) {
-                  setAttachments(prev => [...prev, { id, name: file.name }]);
-                } else {
-                  setError('Upload failed: Hub did not return an artifact id.');
-                }
-              } catch (err: any) {
-                setError(errMsg(err, 'Failed to upload attachment'));
-              } finally {
-                e.target.value = '';
-              }
+            <input data-debug-id="conversation-attach-input" type="file" multiple className="hidden" onChange={(e) => {
+              const files = Array.from(e.target.files || []) as File[];
+              e.target.value = '';
+              files.forEach((file) => void uploadAttachment(file));
             }} />
             ＋
           </label>
@@ -599,7 +632,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
             placeholder="Message the agent… (Cmd/Ctrl+Enter to send)"
             className="min-h-[44px] flex-1 resize-none rounded-2xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-sky-400/60 sm:px-4"
           />
-          <button data-debug-id="conversation-composer-send-btn" type="submit" disabled={!draft.trim() && attachments.length === 0} className="rounded-2xl bg-sky-400 px-4 py-2.5 text-sm font-black text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">Send</button>
+          <button data-debug-id="conversation-composer-send-btn" type="submit" disabled={sendDisabled} title={hasUploadingAttachments ? 'Wait for uploads to finish before sending' : hasFailedAttachments ? 'Retry or remove failed uploads before sending' : 'Send'} className="rounded-2xl bg-sky-400 px-4 py-2.5 text-sm font-black text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">{hasUploadingAttachments ? 'Uploading…' : 'Send'}</button>
         </div>
       </form>
     </section>

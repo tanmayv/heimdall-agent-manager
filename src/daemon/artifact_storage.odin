@@ -7,7 +7,7 @@ import "core:os"
 import "core:strings"
 import contracts "odin_test:contracts"
 
-ARTIFACT_DEFAULT_MAX_BYTES :: 10 * 1024 * 1024
+ARTIFACT_DEFAULT_MAX_BYTES :: 50 * 1024 * 1024
 
 Artifact_Validation_Result :: struct {
 	kind:       string,
