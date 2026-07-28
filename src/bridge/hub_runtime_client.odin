@@ -250,8 +250,10 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, 
 	stale_session := bridge_runtime_tmux_session()
 	stale_window := bridge_runtime_tmux_window(instance_id)
 	for tmux.kill_window(stale_session, stale_window) {}
-	run_dir := extract_json_string(command_json, "project_path", "")
-	if strings.trim_space(run_dir) == "" do run_dir = bridge_runtime_default_run_dir(instance_id)
+	// Agents always run in their own managed run dir (never the project path).
+	// The project path/description is provided to the agent via AGENTS.md instead,
+	// so the agent decides when/how to work against the project checkout.
+	run_dir := bridge_runtime_default_run_dir(instance_id)
 	endpoint, endpoint_ok := bridge_runtime_ensure_local_endpoint()
 	if !endpoint_ok do return false, "local endpoint unavailable"
 	bridge_runtime_set_status(instance_id, "starting", "active")

@@ -332,11 +332,15 @@ bootstrap_json_for_bridge :: proc(service: ^Agent_Service, owner: domain.User_ID
 	project_name := ""
 	project_repo := ""
 	project_vcs := ""
+	project_desc := ""
+	project_path := inst.project_path
 	if inst.project_id != "" && service.projects != nil {
 		if project, project_ok, _ := iface.project_get(service.projects, inst.project_id); project_ok {
 			project_name = project.name
 			project_repo = project.repo_url
 			project_vcs = project.vcs_kind
+			project_desc = project.description
+			if strings.trim_space(project_path) == "" do project_path = project.default_path
 		}
 	}
 	b := strings.builder_make()
@@ -384,6 +388,14 @@ bootstrap_json_for_bridge :: proc(service: ^Agent_Service, owner: domain.User_ID
 	if chain_ok {
 		strings.write_string(&b, "\\nTask chain: "); write_service_json_string(&b, chain.title); strings.write_string(&b, " ("); write_service_json_string(&b, string(chain.chain_id)); strings.write_string(&b, ")")
 		strings.write_string(&b, "\\nCoordinator: "); if chain.coordinator_agent_instance_id == inst.agent_instance_id { strings.write_string(&b, "you (coordinator)") } else { write_service_json_string(&b, chain.coordinator_agent_instance_id) }
+	}
+	if strings.trim_space(project_name) != "" || strings.trim_space(project_path) != "" {
+		strings.write_string(&b, "\\n\\n## Project\\nThis agent is associated with a project. You run in your own managed working directory (not the project directory). Work against the project checkout below when the task requires it.\\n")
+		if strings.trim_space(project_name) != "" { strings.write_string(&b, "\\n- Name: "); write_service_json_string(&b, project_name) }
+		if strings.trim_space(project_path) != "" { strings.write_string(&b, "\\n- Path: "); write_service_json_string(&b, project_path) }
+		if strings.trim_space(project_repo) != "" { strings.write_string(&b, "\\n- Repo: "); write_service_json_string(&b, project_repo) }
+		if strings.trim_space(project_vcs) != "" { strings.write_string(&b, "\\n- VCS: "); write_service_json_string(&b, project_vcs) }
+		if strings.trim_space(project_desc) != "" { strings.write_string(&b, "\\n- Description: "); write_service_json_string(&b, project_desc) }
 	}
 	strings.write_string(&b, "\\n\\n## Working with tasks (REQUIRED)\\nYou MUST track all substantial work as tasks in this task chain. This is not optional.\\n\\nRules you must follow:\\n1. Before starting work, ALWAYS run ./.heimdall/bin/ham-ctl agent tasks fetch to see the current tasks in your chain.\\n2. Do NOT do meaningful work that is not represented by a task. If a task does not exist for what you are about to do, create one (coordinator) or ask the coordinator to create one.\\n3. When you begin a task, move it to in_progress: ./.heimdall/bin/ham-ctl agent tasks status --task-id <id> --status in_progress\\n4. As you make progress, you MUST post a comment on the task describing what you did, what changed, and what is next: ./.heimdall/bin/ham-ctl agent tasks comment --task-id <id> --body \\\"<progress update>\\\". Add a comment at every meaningful step, on blockers, and before handing off for review.\\n5. When the work is complete, submit it for review: ./.heimdall/bin/ham-ctl agent tasks status --task-id <id> --status in_validation (or ./.heimdall/bin/ham-ctl agent tasks done --task-id <id>). Include a summary comment of what to review.\\n6. Reviewers vote with ./.heimdall/bin/ham-ctl agent tasks vote --task-id <id> --result lgtm|ngtm --comment \\\"<feedback>\\\". If you receive ngtm, address the feedback, comment what you changed, and re-submit.\\n7. Use ./.heimdall/bin/ham-ctl agent tasks nudge --task-id <id> to request attention on a stalled task.\\n\\nKeep task status and comments current at all times so the whole chain reflects real progress.")
 	write_bootstrap_memory_markdown(&b, service, owner, inst)
