@@ -1,6 +1,16 @@
 import * as daemonApi from '../daemonApi';
 import { upsertTaskLogEvent } from '../taskCache';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
+import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
+
+// The rewrite shell is cookie-authenticated (same session as /api/v1/me), not the
+// legacy per-client token session. Task-chain reads/writes below must use
+// cookieJsonFetch/cookieMutation against /api/v1/task-chains/... so they work in
+// the routed/Electron shell where session.clientToken is not populated.
+function unwrapData(res: any): any {
+  if (res && typeof res === 'object' && 'data' in res && !Array.isArray(res)) return (res as any).data;
+  return res;
+}
 
 function normalizeTask(task: any) {
   const result: any = {
@@ -124,93 +134,94 @@ function normalizeTaskChainDetail(data: any) {
 export const tasksApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     fetchTaskChainDetail: build.query<any, { chainId: string }>({
-      queryFn: withSessionQuery(async ({ chainId }, { session }) => {
-        if (!session?.clientToken || !chainId) return { chain: null };
-        const data = await daemonApi.fetchTaskChainDetail({
-          daemonUrl: session.daemonUrl,
-          clientToken: session.clientToken,
-          chainId,
-        });
-        return { chain: data ? normalizeTaskChainDetail(data) : null };
-      }),
+      queryFn: async ({ chainId }) => {
+        if (!chainId) return { data: { chain: null } };
+        try {
+          const raw = await cookieJsonFetch(`/task-chains/${encodeURIComponent(chainId)}`);
+          const data = unwrapData(raw);
+          return { data: { chain: data ? normalizeTaskChainDetail(data) : null } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
       providesTags: (_result, _error, { chainId }) => [
         { type: 'Chain', id: chainId },
         { type: 'ChainTasks', id: chainId },
       ],
     }),
     createTaskChain: build.mutation<any, { title: string; description?: string; kind?: string; coordinatorAgentId?: string }>({
-      queryFn: withSessionQuery(async ({ title, description, kind, coordinatorAgentId }, { session }) => {
-        return daemonApi.createTaskChainRest({
-          daemonUrl: session.daemonUrl,
-          clientToken: session.clientToken,
-          title,
-          description,
-          kind,
-          coordinatorAgentId,
-        });
-      }),
+      queryFn: async ({ title, description, kind, coordinatorAgentId }) => {
+        try {
+          const data = await cookieMutation('/task-chains', 'POST', { title, description: description || '', kind: kind || 'team_work', coordinator_agent_id: coordinatorAgentId || '' });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
       invalidatesTags: ['ChainList'],
     }),
     updateTaskChain: build.mutation<any, { chainId: string; title?: string; description?: string; status?: string }>({
-      queryFn: withSessionQuery(async ({ chainId, title, description, status }, { session }) => {
-        return daemonApi.updateTaskChainRest({
-          daemonUrl: session.daemonUrl,
-          clientToken: session.clientToken,
-          chainId,
-          title,
-          description,
-          status,
-        });
-      }),
+      queryFn: async ({ chainId, title, description, status }) => {
+        try {
+          const body: any = {};
+          if (title !== undefined) body.title = title;
+          if (description !== undefined) body.description = description;
+          if (status !== undefined) body.status = status;
+          const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}`, 'PATCH', body);
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
       invalidatesTags: (_result, _error, { chainId }) => [{ type: 'Chain', id: chainId }, 'ChainList'],
     }),
     updateTaskDetail: build.mutation<any, { chainId: string; taskId: string; title?: string; description?: string; assigneeRef?: any; reviewerRefs?: any[] }>({
-      queryFn: withSessionQuery(async ({ chainId, taskId, title, description, assigneeRef, reviewerRefs }, { session }) => {
-        return daemonApi.updateTaskDetail({
-          daemonUrl: session.daemonUrl,
-          clientToken: session.clientToken,
-          chainId,
-          taskId,
-          title,
-          description,
-          assigneeRef,
-          reviewerRefs,
-        });
-      }),
+      queryFn: async ({ chainId, taskId, title, description, assigneeRef, reviewerRefs }) => {
+        try {
+          const body: any = {};
+          if (title !== undefined) body.title = title;
+          if (description !== undefined) body.description = description;
+          if (assigneeRef !== undefined) body.assignee_ref = assigneeRef;
+          if (reviewerRefs !== undefined) body.reviewer_refs = reviewerRefs;
+          const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/tasks/${encodeURIComponent(taskId)}`, 'PATCH', body);
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
       invalidatesTags: (_result, _error, { chainId, taskId }) => preciseTaskTags(taskId, chainId),
     }),
     cancelTaskDetail: build.mutation<any, { chainId: string; taskId: string }>({
-      queryFn: withSessionQuery(async ({ chainId, taskId }, { session }) => {
-        return daemonApi.cancelTaskDetail({
-          daemonUrl: session.daemonUrl,
-          clientToken: session.clientToken,
-          chainId,
-          taskId,
-        });
-      }),
+      queryFn: async ({ chainId, taskId }) => {
+        try {
+          const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/tasks/${encodeURIComponent(taskId)}/cancel`, 'POST', {});
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
       invalidatesTags: (_result, _error, { chainId, taskId }) => preciseTaskTags(taskId, chainId),
     }),
     addChainMember: build.mutation<any, { chainId: string; agentInstanceId: string; role?: string }>({
-      queryFn: withSessionQuery(async ({ chainId, agentInstanceId, role }, { session }) => {
-        return daemonApi.addChainMember({
-          daemonUrl: session.daemonUrl,
-          clientToken: session.clientToken,
-          chainId,
-          agentInstanceId,
-          role,
-        });
-      }),
+      queryFn: async ({ chainId, agentInstanceId, role }) => {
+        try {
+          const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/members`, 'POST', { agent_instance_id: agentInstanceId, role: role || 'worker' });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
       invalidatesTags: (_result, _error, { chainId }) => [{ type: 'Chain', id: chainId }],
     }),
     removeChainMember: build.mutation<any, { chainId: string; agentInstanceId: string }>({
-      queryFn: withSessionQuery(async ({ chainId, agentInstanceId }, { session }) => {
-        return daemonApi.removeChainMember({
-          daemonUrl: session.daemonUrl,
-          clientToken: session.clientToken,
-          chainId,
-          agentInstanceId,
-        });
-      }),
+      queryFn: async ({ chainId, agentInstanceId }) => {
+        try {
+          const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/members/${encodeURIComponent(agentInstanceId)}`, 'DELETE');
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
       invalidatesTags: (_result, _error, { chainId }) => [{ type: 'Chain', id: chainId }],
     }),
 
@@ -425,17 +436,15 @@ export const tasksApi = heimdallApi.injectEndpoints({
       },
     }),
     createTask: build.mutation<any, { chainId: string; title: string; description?: string; status?: string; agentToken?: string }>({
-      queryFn: withSessionQuery(async ({ chainId, title, description, status = 'planning', agentToken }, { session }) => {
-        return daemonApi.createTask({
-          daemonUrl: session.daemonUrl,
-          ...taskMutationAuth(session, agentToken),
-          chain_id: chainId,
-          title,
-          description,
-          status,
-        });
-      }),
-      invalidatesTags: (_result, _error, { chainId }) => chainId ? [{ type: 'ChainTasks', id: chainId }] : [],
+      queryFn: async ({ chainId, title, description }) => {
+        try {
+          const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/tasks`, 'POST', { title, description: description || '' });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { chainId }) => chainId ? [{ type: 'Chain' as const, id: chainId }, { type: 'ChainTasks' as const, id: chainId }] : [],
     }),
     deleteTask: build.mutation<any, { taskId: string; chainId: string; agentToken?: string }>({
       queryFn: withSessionQuery(async ({ taskId, chainId, agentToken }, { session }) => {
@@ -449,26 +458,15 @@ export const tasksApi = heimdallApi.injectEndpoints({
       invalidatesTags: (_result, _error, { taskId, chainId }) => preciseTaskTags(taskId, chainId, true),
     }),
     addTaskComment: build.mutation<any, { taskId: string; chainId: string; body: string; agentToken?: string; resolveImmediately?: boolean }>({
-      queryFn: withSessionQuery(async ({ taskId, chainId, body, agentToken, resolveImmediately }, { session }) => {
-        const response = await daemonApi.addTaskComment({
-          daemonUrl: session.daemonUrl,
-          ...taskMutationAuth(session, agentToken),
-          taskId,
-          chainId,
-          body,
-        });
-        if (resolveImmediately && response?.comment_id) {
-          await daemonApi.resolveTaskComment({
-            daemonUrl: session.daemonUrl,
-            ...taskMutationAuth(session, agentToken),
-            taskId,
-            chainId,
-            commentId: response.comment_id,
-          });
+      queryFn: async ({ taskId, chainId, body }) => {
+        try {
+          const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/tasks/${encodeURIComponent(taskId)}/comments`, 'POST', { body });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
-        return response;
-      }),
-      invalidatesTags: (_result, _error, { taskId, chainId }) => preciseTaskTags(taskId, chainId, true),
+      },
+      invalidatesTags: (_result, _error, { taskId, chainId }) => [...preciseTaskTags(taskId, chainId, true), { type: 'Chain' as const, id: chainId }],
     }),
     resolveTaskComment: build.mutation<any, { taskId: string; chainId: string; commentId: string; agentToken?: string }>({
       queryFn: withSessionQuery(async ({ taskId, chainId, commentId, agentToken }, { session }) => {
@@ -483,17 +481,15 @@ export const tasksApi = heimdallApi.injectEndpoints({
       invalidatesTags: (_result, _error, { taskId, chainId }) => preciseTaskTags(taskId, chainId, true),
     }),
     setTaskStatus: build.mutation<any, { taskId: string; chainId: string; status: string; body?: string; agentToken?: string }>({
-      queryFn: withSessionQuery(async ({ taskId, chainId, status, body = '', agentToken }, { session }) => {
-        return daemonApi.updateTaskStatus({
-          daemonUrl: session.daemonUrl,
-          ...taskMutationAuth(session, agentToken),
-          taskId,
-          chainId,
-          status,
-          body,
-        });
-      }),
-      invalidatesTags: (_result, _error, { taskId, chainId }) => preciseTaskTags(taskId, chainId),
+      queryFn: async ({ taskId, chainId, status }) => {
+        try {
+          const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/tasks/${encodeURIComponent(taskId)}/status`, 'POST', { status });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { taskId, chainId }) => [...preciseTaskTags(taskId, chainId), { type: 'Chain' as const, id: chainId }],
     }),
     updateTask: build.mutation<any, { taskId: string; chainId: string; title?: string; description?: string; acceptanceCriteria?: string; dependsOn?: string; agentToken?: string }>({
       queryFn: withSessionQuery(async ({ taskId, chainId, title, description, acceptanceCriteria, dependsOn, agentToken }, { session }) => {
@@ -549,30 +545,26 @@ export const tasksApi = heimdallApi.injectEndpoints({
       invalidatesTags: (_result, _error, { taskId, chainId }) => preciseTaskTags(taskId, chainId),
     }),
     voteTask: build.mutation<any, { taskId: string; chainId: string; result?: 'lgtm' | 'ngtm'; approved?: boolean; comment?: string; agentToken?: string }>({
-      queryFn: withSessionQuery(async ({ taskId, chainId, result, approved, comment = '', agentToken }, { session }) => {
-        const isApproved = approved ?? (result === 'lgtm');
-        return daemonApi.voteTask({
-          daemonUrl: session.daemonUrl,
-          ...taskMutationAuth(session, agentToken),
-          taskId,
-          chainId,
-          approved: isApproved,
-          comment,
-        });
-      }),
-      invalidatesTags: (_result, _error, { taskId, chainId }) => preciseTaskTags(taskId, chainId),
+      queryFn: async ({ taskId, chainId, result, approved, comment = '' }) => {
+        try {
+          const isApproved = approved ?? (result === 'lgtm');
+          const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/tasks/${encodeURIComponent(taskId)}/vote`, 'POST', { vote: isApproved ? 'lgtm' : 'ngtm', comment });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { taskId, chainId }) => [...preciseTaskTags(taskId, chainId), { type: 'Chain' as const, id: chainId }],
     }),
     nudgeTask: build.mutation<any, { taskId: string; chainId: string; body?: string; message?: string; interrupt?: boolean; agentToken?: string }>({
-      queryFn: withSessionQuery(async ({ taskId, chainId, body, message, interrupt, agentToken }, { session }) => {
-        return daemonApi.nudgeTask({
-          daemonUrl: session.daemonUrl,
-          ...taskMutationAuth(session, agentToken),
-          taskId,
-          chainId,
-          body: body ?? message ?? '',
-          interrupt,
-        });
-      }),
+      queryFn: async ({ taskId, chainId, body, message }) => {
+        try {
+          const data = await cookieMutation(`/task-chains/${encodeURIComponent(chainId)}/tasks/${encodeURIComponent(taskId)}/nudge`, 'POST', { message: body ?? message ?? '' });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
       invalidatesTags: (_result, _error, { taskId, chainId }) => preciseTaskTags(taskId, chainId),
     }),
   }),
