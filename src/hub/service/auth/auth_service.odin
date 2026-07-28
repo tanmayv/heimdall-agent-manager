@@ -15,6 +15,7 @@ Trusted_Proxy_Config :: struct {
 	email_header: string,
 	trusted_proxy_cidrs: []string,
 	auto_provision_users: bool,
+	login_url: string,
 	logout_url: string,
 }
 
@@ -231,6 +232,11 @@ write_hex_byte :: proc(builder: ^strings.Builder, value: byte) {
 hex_digit :: proc(n: byte) -> byte {
 	if n < 10 do return '0' + n
 	return 'a' + (n - 10)
+}
+
+login_url :: proc(service: ^Auth_Service) -> string {
+	if service == nil do return ""
+	return service.config.login_url
 }
 
 logout_url :: proc(service: ^Auth_Service) -> string {

@@ -90,6 +90,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		email_header = config.email_header,
 		trusted_proxy_cidrs = config.trusted_proxy_cidrs,
 		auto_provision_users = config.auto_provision_users,
+		login_url = config.login_url,
 		logout_url = config.logout_url,
 	}, &graph.users, &graph.repos.users, &graph.clock, &graph.ids)
 	graph.device_auth_store = device_auth_service.new_grant_store(device_auth_service.Grant_Store_Config{
@@ -132,6 +133,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/device/verify", rawptr(&graph.device_auth_handlers), http.device_verify_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/device/approve", rawptr(&graph.device_auth_handlers), http.device_approve_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/device/token", rawptr(&graph.device_auth_handlers), http.device_token_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/auth/config", rawptr(&graph.user_handlers), http.auth_config_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me", rawptr(&graph.user_handlers), http.me_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me/logout-url", rawptr(&graph.user_handlers), http.logout_url_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me/tokens", rawptr(&graph.user_handlers), http.list_my_tokens_handler)

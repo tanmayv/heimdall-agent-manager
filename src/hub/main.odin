@@ -209,6 +209,8 @@ parse_args :: proc(config: ^app.Hub_Config) {
 			cidrs[0] = strings.clone(os.args[i + 1])
 			config.trusted_proxy_cidrs = cidrs
 			i += 1
+		} else if arg == "--login-url" && i + 1 < len(os.args) {
+			config.login_url = strings.clone(os.args[i + 1]); i += 1
 		} else if arg == "--logout-url" && i + 1 < len(os.args) {
 			config.logout_url = strings.clone(os.args[i + 1]); i += 1
 		} else if arg == "--device-auth-verification-uri" && i + 1 < len(os.args) {

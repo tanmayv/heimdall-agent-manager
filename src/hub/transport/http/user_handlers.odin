@@ -33,6 +33,17 @@ User_Handlers :: struct {
 	ws_tickets: User_WS_Ticket_Store,
 }
 
+auth_config_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	handlers := (^User_Handlers)(ctx)
+	builder := strings.builder_make()
+	strings.write_string(&builder, "{\"login_url\":\"")
+	write_handler_json_string(&builder, auth_service.login_url(handlers.auth))
+	strings.write_string(&builder, "\",\"logout_url\":\"")
+	write_handler_json_string(&builder, auth_service.logout_url(handlers.auth))
+	strings.write_string(&builder, "\"}")
+	return respond_success(strings.to_string(builder), req.request_id, auth_ctx_server_time(req))
+}
+
 me_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	handlers := (^User_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth(handlers.auth, req)

@@ -206,13 +206,34 @@ function metaContent(name: string): string {
   return document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`)?.content || '';
 }
 
+function usableAuthUrl(value: string): string {
+  const trimmed = String(value || '').trim();
+  if (!trimmed || (trimmed.startsWith('%') && trimmed.endsWith('%'))) return '';
+  return trimmed;
+}
+
 function configuredAuthUrl(kind: 'login' | 'logout'): string {
   const cfg = authRuntimeConfig();
   const snake = `${kind}_url`;
   const camel = `${kind}Url`;
-  const fromConfig = String(cfg?.[snake] || cfg?.[camel] || '').trim();
+  const fromConfig = usableAuthUrl(String(cfg?.[snake] || cfg?.[camel] || ''));
   if (fromConfig) return fromConfig;
-  return metaContent(`heimdall-${kind}-url`).trim();
+  return usableAuthUrl(metaContent(`heimdall-${kind}-url`));
+}
+
+async function fetchPublicAuthConfig(): Promise<{ loginUrl: string; logoutUrl: string }> {
+  let loginUrl = configuredAuthUrl('login');
+  let logoutUrl = configuredAuthUrl('logout');
+  try {
+    const response = await fetch(apiUrl('/auth/config'), { credentials: 'include' });
+    if (response.ok) {
+      const body = await response.json();
+      const data = body?.data || body || {};
+      loginUrl = usableAuthUrl(data.login_url || data.loginUrl || loginUrl) || loginUrl;
+      logoutUrl = usableAuthUrl(data.logout_url || data.logoutUrl || logoutUrl) || logoutUrl;
+    }
+  } catch (_err) {}
+  return { loginUrl, logoutUrl };
 }
 
 function loginUrlWithReturn(loginUrl: string): string {
@@ -247,14 +268,15 @@ function installApiAuthObserver() {
 }
 
 async function bootstrapAuth(): Promise<AuthState> {
-  const loginUrl = configuredAuthUrl('login');
+  const authConfig = await fetchPublicAuthConfig();
+  const loginUrl = authConfig.loginUrl;
   try {
     const me = await fetch(apiUrl('/me'), { credentials: 'include' });
-    if (me.status === 401) return { status: 'unauthenticated', user: null, loginUrl, logoutUrl: configuredAuthUrl('logout'), error: '' };
-    if (me.status === 403) return { status: 'forbidden', user: null, loginUrl, logoutUrl: configuredAuthUrl('logout'), error: 'Access denied' };
-    if (!me.ok) return { status: 'error', user: null, loginUrl, logoutUrl: configuredAuthUrl('logout'), error: `Auth check failed (${me.status})` };
+    if (me.status === 401) return { status: 'unauthenticated', user: null, loginUrl, logoutUrl: authConfig.logoutUrl, error: '' };
+    if (me.status === 403) return { status: 'forbidden', user: null, loginUrl, logoutUrl: authConfig.logoutUrl, error: 'Access denied' };
+    if (!me.ok) return { status: 'error', user: null, loginUrl, logoutUrl: authConfig.logoutUrl, error: `Auth check failed (${me.status})` };
     const meBody = await me.json();
-    let logoutUrl = configuredAuthUrl('logout');
+    let logoutUrl = authConfig.logoutUrl;
     const logout = await fetch(apiUrl('/me/logout-url'), { credentials: 'include' });
     if (logout.ok) {
       const logoutBody = await logout.json();

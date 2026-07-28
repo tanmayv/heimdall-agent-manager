@@ -10,6 +10,7 @@ Hub_Config :: struct {
 	email_header: string,
 	trusted_proxy_cidrs: []string,
 	auto_provision_users: bool,
+	login_url: string,
 	logout_url: string,
 	// Device-authorization flow (ELDA-1). The verification_uri is the browser/
 	// outpost URL the device opens; the API endpoint is /api/v1/device/authorize.
@@ -33,6 +34,7 @@ default_config :: proc() -> Hub_Config {
 		email_header = "X-authentik-email",
 		trusted_proxy_cidrs = cidrs,
 		auto_provision_users = true,
+		login_url = "",
 		logout_url = "https://auth.example.com/application/o/heimdall/end-session/",
 		device_auth_verification_uri = "https://auth.example.com/application/o/heimdall/device/",
 		device_auth_expires_in = 600,

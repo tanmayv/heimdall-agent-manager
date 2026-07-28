@@ -47,6 +47,7 @@ nix run .#hub -- --port 8090 --db /tmp/hub.db    # custom port + db
 - `--migrations-dir <path>` — migrations source dir. **Injected automatically**
   by the `.#hub` wrapper (see caveat below); you normally do not pass this.
 - `--trusted-proxy-cidr <cidr>` — trusted-proxy CIDR (repeatable; replaces set).
+- `--login-url <url>` — browser login/SSO URL returned by `/api/v1/auth/config`; the routed UI redirects here on 401/invalid trusted-proxy headers. Supports `{return_to}` / `{returnTo}` placeholders.
 - `--logout-url <url>` — logout/SSO end-session URL.
 
 **Defaults** (`src/hub/app/config_bind.odin`): `bind_host=127.0.0.1`,
