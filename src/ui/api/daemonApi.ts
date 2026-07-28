@@ -1224,3 +1224,57 @@ export async function fetchTaskChains({
     headers: { 'Authorization': `Bearer ${clientToken}` },
   });
 }
+
+export async function fetchTaskChainDetail({ daemonUrl, clientToken, chainId }: { daemonUrl: string; clientToken: string; chainId: string }) {
+  return requestJson(joinUrl(daemonUrl, `/api/v1/task-chains/${encodeURIComponent(chainId)}`), {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+  });
+}
+
+export async function createTaskChainRest({ daemonUrl, clientToken, title, description, kind, coordinatorAgentId }: { daemonUrl: string; clientToken: string; title: string; description?: string; kind?: string; coordinatorAgentId?: string }) {
+  return requestJson(joinUrl(daemonUrl, '/api/v1/task-chains'), {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+    body: { title, description: description || '', kind: kind || 'team_work', coordinator_agent_id: coordinatorAgentId || '' },
+  });
+}
+
+export async function updateTaskChainRest({ daemonUrl, clientToken, chainId, title, description, status }: { daemonUrl: string; clientToken: string; chainId: string; title?: string; description?: string; status?: string }) {
+  return requestJson(joinUrl(daemonUrl, `/api/v1/task-chains/${encodeURIComponent(chainId)}`), {
+    method: 'PATCH',
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+    body: { title, description, status },
+  });
+}
+
+export async function updateTaskDetail({ daemonUrl, clientToken, chainId, taskId, title, description, assigneeRef, reviewerRefs }: { daemonUrl: string; clientToken: string; chainId: string; taskId: string; title?: string; description?: string; assigneeRef?: any; reviewerRefs?: any[] }) {
+  return requestJson(joinUrl(daemonUrl, `/api/v1/task-chains/${encodeURIComponent(chainId)}/tasks/${encodeURIComponent(taskId)}`), {
+    method: 'PATCH',
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+    body: { title, description, assignee_ref: assigneeRef, reviewer_refs: reviewerRefs },
+  });
+}
+
+export async function cancelTaskDetail({ daemonUrl, clientToken, chainId, taskId }: { daemonUrl: string; clientToken: string; chainId: string; taskId: string }) {
+  return requestJson(joinUrl(daemonUrl, `/api/v1/task-chains/${encodeURIComponent(chainId)}/tasks/${encodeURIComponent(taskId)}/cancel`), {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+    body: {},
+  });
+}
+
+export async function addChainMember({ daemonUrl, clientToken, chainId, agentInstanceId, role }: { daemonUrl: string; clientToken: string; chainId: string; agentInstanceId: string; role?: string }) {
+  return requestJson(joinUrl(daemonUrl, `/api/v1/task-chains/${encodeURIComponent(chainId)}/members`), {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+    body: { agent_instance_id: agentInstanceId, role: role || 'assignee' },
+  });
+}
+
+export async function removeChainMember({ daemonUrl, clientToken, chainId, agentInstanceId }: { daemonUrl: string; clientToken: string; chainId: string; agentInstanceId: string }) {
+  return requestJson(joinUrl(daemonUrl, `/api/v1/task-chains/${encodeURIComponent(chainId)}/members/${encodeURIComponent(agentInstanceId)}`), {
+    method: 'DELETE',
+    headers: { 'Authorization': `Bearer ${clientToken}` },
+  });
+}

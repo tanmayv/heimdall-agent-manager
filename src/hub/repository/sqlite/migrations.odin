@@ -371,7 +371,91 @@ WHERE memory_id = 'mem_system_heimdall_ctl_communication'
   AND instr(body, 'artifacts download --artifact-id') = 0;
 `
 
-migration_order :: [11]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql"}
+MIGRATION_012_TASK_CHAINS_V2 :: `ALTER TABLE task_chains ADD COLUMN description TEXT NOT NULL DEFAULT '';
+ALTER TABLE tasks ADD COLUMN description TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS task_chain_members (
+  chain_id TEXT NOT NULL,
+  agent_instance_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL DEFAULT '',
+  owner_user_id TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'worker',
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (chain_id, agent_instance_id)
+);
+
+CREATE TABLE IF NOT EXISTS task_dependencies (
+  task_id TEXT NOT NULL,
+  depends_on_task_id TEXT NOT NULL,
+  chain_id TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (task_id, depends_on_task_id)
+);
+
+CREATE TABLE IF NOT EXISTS task_votes (
+  task_id TEXT NOT NULL,
+  reviewer_agent_instance_id TEXT NOT NULL,
+  chain_id TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL,
+  vote TEXT NOT NULL,
+  comment TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (task_id, reviewer_agent_instance_id)
+);
+
+CREATE TRIGGER IF NOT EXISTS task_chain_members_owner_immutable BEFORE UPDATE OF owner_user_id ON task_chain_members BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS task_dependencies_owner_immutable BEFORE UPDATE OF owner_user_id ON task_dependencies BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS task_votes_owner_immutable BEFORE UPDATE OF owner_user_id ON task_votes BEGIN SELECT RAISE(ABORT, 'owner_user_id is immutable'); END;
+`
+
+MIGRATION_013_TASK_WORKFLOW_SKILL_MEMORY :: `INSERT INTO memories (memory_id, owner_user_id, agent_id, type, status, title, body, evidence, created_at, updated_at)
+VALUES (
+  'mem_system_heimdall_tasks',
+  'system',
+  '',
+  'skill',
+  'active',
+  'Heimdall Task Workflow Skill',
+  'Use the managed Heimdall CLI wrapper to manage and execute tasks within your assigned task chain: ./.heimdall/bin/ham-ctl agent tasks ...\n\nFetch current tasks: run ./.heimdall/bin/ham-ctl agent tasks list (or fetch) to discover tasks assigned to you or available in your chain.\n\nCreate tasks: if you are the chain coordinator, decompose complex work into discrete tasks with ./.heimdall/bin/ham-ctl agent tasks create --title "<title>" --description "<description>". Set dependencies when appropriate.\n\nUpdate task status: start work by moving task to in_progress. When finished, submit for review with ./.heimdall/bin/ham-ctl agent tasks done --task-id <id> (or status --status in_validation).\n\nReview & Vote: as a reviewer, evaluate submitted tasks and record your decision with ./.heimdall/bin/ham-ctl agent tasks vote --task-id <id> --result lgtm|ngtm --comment "<feedback>".\n\nTask Comments: post progress updates or clarify requirements with ./.heimdall/bin/ham-ctl agent tasks comment --task-id <id> --body "<comment>".\n\nNudge: request attention on a stalled task with ./.heimdall/bin/ham-ctl agent tasks nudge --task-id <id>.',
+  'Seeded system task workflow skill memory.',
+  '2026-07-28T00:00:00Z',
+  '2026-07-28T00:00:00Z'
+)
+ON CONFLICT(memory_id) DO UPDATE SET
+  agent_id=excluded.agent_id,
+  type=excluded.type,
+  status=excluded.status,
+  title=excluded.title,
+  body=excluded.body,
+  evidence=excluded.evidence,
+  updated_at=excluded.updated_at;
+
+INSERT INTO memories (memory_id, owner_user_id, agent_id, type, status, title, body, evidence, created_at, updated_at)
+VALUES (
+  'mem_system_use_current_chain_tasks',
+  'system',
+  '',
+  'habit',
+  'active',
+  'Use Current Task Chain to Organize Work',
+  'Organize all substantial work as tasks within your current task chain. Before starting work, check active tasks with ./.heimdall/bin/ham-ctl agent tasks fetch. Keep task status current as work progresses. Submit tasks for review using status --status in_validation when complete. If a reviewer returns NGTM, address feedback promptly and re-submit for review.',
+  'Seeded system default habit memory.',
+  '2026-07-28T00:00:00Z',
+  '2026-07-28T00:00:00Z'
+)
+ON CONFLICT(memory_id) DO UPDATE SET
+  agent_id=excluded.agent_id,
+  type=excluded.type,
+  status=excluded.status,
+  title=excluded.title,
+  body=excluded.body,
+  evidence=excluded.evidence,
+  updated_at=excluded.updated_at;
+`
+
+migration_order :: [13]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -396,6 +480,7 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 	}
 	if !upgrade_user_api_tokens_schema(conn) do return false, domain.domain_error(.Internal_Error, "user_api_tokens schema upgrade failed")
 	if !upgrade_task_comments_schema(conn) do return false, domain.domain_error(.Internal_Error, "task_comments schema upgrade failed")
+	if !upgrade_task_chains_v2_schema(conn) do return false, domain.domain_error(.Internal_Error, "task_chains_v2 schema upgrade failed")
 	return true, domain.Domain_Error{}
 }
 
@@ -416,6 +501,8 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "009_artifact_metadata.sql" do return strings.clone(MIGRATION_009_ARTIFACT_METADATA)
 	if name == "010_artifact_usage_skill_memory.sql" do return strings.clone(MIGRATION_010_ARTIFACT_USAGE_SKILL_MEMORY)
 	if name == "011_artifact_download_skill_memory.sql" do return strings.clone(MIGRATION_011_ARTIFACT_DOWNLOAD_SKILL_MEMORY)
+	if name == "012_task_chains_v2.sql" do return strings.clone(MIGRATION_012_TASK_CHAINS_V2)
+	if name == "013_task_workflow_skill_memory.sql" do return strings.clone(MIGRATION_013_TASK_WORKFLOW_SKILL_MEMORY)
 	return ""
 }
 
@@ -470,4 +557,10 @@ escape_sql_literal :: proc(value: string) -> string {
 		}
 	}
 	return strings.to_string(builder)
+}
+
+upgrade_task_chains_v2_schema :: proc(conn: ^Conn) -> bool {
+	if !table_column_exists(conn, "task_chains", "description") && !exec(conn, "ALTER TABLE task_chains ADD COLUMN description TEXT NOT NULL DEFAULT '';") do return false
+	if !table_column_exists(conn, "tasks", "description") && !exec(conn, "ALTER TABLE tasks ADD COLUMN description TEXT NOT NULL DEFAULT '';") do return false
+	return true
 }

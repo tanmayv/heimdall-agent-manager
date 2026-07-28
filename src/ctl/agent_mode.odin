@@ -97,8 +97,32 @@ ctl_agentmode_chat_fetch :: proc(endpoint, token: string, args: []string) {
 }
 
 ctl_agentmode_tasks :: proc(endpoint, token, action: string, args: []string) {
-	if action == "fetch" || action == "read" || action == "context" {
+	if action == "" || action == "list" || action == "fetch" || action == "read" || action == "context" {
 		ctl_agentmode_context(endpoint, token, args)
+		return
+	}
+	if action == "done" {
+		task_id := option_value(args, "--task-id", option_value(args, "--task", ""))
+		if task_id == "" { fmt.println("usage: ham-ctl agent tasks done --task-id <id>"); return }
+		ctl_agent_call(endpoint, token, "agent.tasks.status", json_object(json_kv("task_id", task_id), json_kv("status", "in_validation")))
+		return
+	}
+	if action == "create" {
+		title := option_value(args, "--title", "")
+		if title == "" { fmt.println("usage: ham-ctl agent tasks create --title <title> [--description <desc>] [--assignee <id>] [--reviewer <ref>]"); return }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("title", title))
+		if desc := option_value(args, "--description", ""); desc != "" do append(&fields, json_kv("description", desc))
+		if assignee := option_value(args, "--assignee-agent-instance-id", option_value(args, "--assignee", "")); assignee != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", assignee))}))
+		if reviewer := option_value(args, "--reviewer", ""); reviewer != "" do append(&fields, strings.concatenate({"\"reviewer_refs\":[", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", reviewer)), "]"}))
+		ctl_agent_call(endpoint, token, "agent.tasks.create", json_object_from_slice(fields[:]))
+		return
+	}
+	if action == "depend" {
+		task_id := option_value(args, "--task-id", option_value(args, "--task", ""))
+		on_id := option_value(args, "--depends-on", option_value(args, "--on", ""))
+		if task_id == "" || on_id == "" { fmt.println("usage: ham-ctl agent tasks depend --task-id <id> --depends-on <id>"); return }
+		ctl_agent_call(endpoint, token, "agent.tasks.depend", json_object(json_kv("task_id", task_id), json_kv("depends_on_task_id", on_id)))
 		return
 	}
 	if action == "comment" {
@@ -118,9 +142,10 @@ ctl_agentmode_tasks :: proc(endpoint, token, action: string, args: []string) {
 	}
 	if action == "vote" {
 		task_id := option_value(args, "--task-id", option_value(args, "--task", ""))
-		result := option_value(args, "--result", "")
-		if task_id == "" || result == "" { fmt.println("usage: ham-ctl agent tasks vote --task-id <id> --result <lgtm|ngtm>"); return }
-		ctl_agent_call(endpoint, token, "agent.tasks.vote", json_object(json_kv("task_id", task_id), json_kv("result", result)))
+		result := option_value(args, "--result", option_value(args, "--vote", ""))
+		comment := option_value(args, "--comment", "")
+		if task_id == "" || result == "" { fmt.println("usage: ham-ctl agent tasks vote --task-id <id> --result <lgtm|ngtm> [--comment <text>]"); return }
+		ctl_agent_call(endpoint, token, "agent.tasks.vote", json_object(json_kv("task_id", task_id), json_kv("result", result), json_kv("comment", comment)))
 		return
 	}
 	if action == "nudge" {
@@ -130,7 +155,7 @@ ctl_agentmode_tasks :: proc(endpoint, token, action: string, args: []string) {
 		ctl_agent_call(endpoint, token, "agent.tasks.nudge", json_object(json_kv("task_id", task_id), json_kv("message", message)))
 		return
 	}
-	fmt.println("usage: ham-ctl agent tasks <fetch|comment|status|vote|nudge>")
+	fmt.println("usage: ham-ctl agent tasks <fetch|create|depend|comment|status|vote|nudge>")
 }
 
 ctl_agentmode_artifacts :: proc(endpoint, token, action: string, args: []string) {

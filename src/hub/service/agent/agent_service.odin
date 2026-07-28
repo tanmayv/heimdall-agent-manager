@@ -217,6 +217,13 @@ create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, i
 	if !conv_ok do return domain.Agent_Instance{}, false, conv_err
 	if saved.conversation_id == "" { saved.conversation_id = conv.conversation_id; saved, saved_ok, save_err = iface.agent_save_instance(service.agents, saved); if !saved_ok do return domain.Agent_Instance{}, false, save_err }
 	if input.chain_id == "" { update_private_chain_coordinator(service, saved) }
+	if service.taskchains != nil && saved.chain_id != "" {
+		members, _ := iface.taskchain_list_members_by_chain(service.taskchains, domain.Task_Chain_ID(saved.chain_id), saved.owner_user_id)
+		role := "coordinator" if len(members) == 0 else "worker"
+		now_m := platform.clock_now(service.clock)
+		member := domain.Task_Chain_Member{chain_id = domain.Task_Chain_ID(saved.chain_id), agent_instance_id = saved.agent_instance_id, agent_id = saved.agent_id, owner_user_id = saved.owner_user_id, role = role, created_at = now_m}
+		iface.taskchain_save_member(service.taskchains, member)
+	}
 	command_id := strings.concatenate({platform.generate_id(service.ids, "cmd_launch_"), "_", saved.agent_instance_id})
 	command := project_service.Runtime_Command{bridge_id = bridge.bridge_id, command_id = command_id, body_json = launch_command_json(command_id, saved)}
 	if sent, send_err := project_service.bridge_command_send_runtime(service.bridge_command_sink, command); !sent do return domain.Agent_Instance{}, false, send_err
@@ -374,6 +381,11 @@ bootstrap_json_for_bridge :: proc(service: ^Agent_Service, owner: domain.User_ID
 	write_bootstrap_memories(&b, service, owner, inst)
 	strings.write_string(&b, "],\"files\":[{\"kind\":\"AGENTS_MD\",\"relative_path\":\"AGENTS.md\",\"content\":\"# Agent bootstrap\\n\\nAgent: "); write_service_json_string(&b, agent.name)
 	strings.write_string(&b, "\\nInstance: "); write_service_json_string(&b, inst.agent_instance_id)
+	if chain_ok {
+		strings.write_string(&b, "\\nTask chain: "); write_service_json_string(&b, chain.title); strings.write_string(&b, " ("); write_service_json_string(&b, string(chain.chain_id)); strings.write_string(&b, ")")
+		strings.write_string(&b, "\\nCoordinator: "); if chain.coordinator_agent_instance_id == inst.agent_instance_id { strings.write_string(&b, "you (coordinator)") } else { write_service_json_string(&b, chain.coordinator_agent_instance_id) }
+	}
+	strings.write_string(&b, "\\n\\n## Working with tasks\\nOrganize your work as tasks in this chain:\\n- Fetch chain tasks: ./.heimdall/bin/ham-ctl agent tasks fetch\\n- Change task status: ./.heimdall/bin/ham-ctl agent tasks status --task-id <id> --status in_progress\\n- Submit for review: ./.heimdall/bin/ham-ctl agent tasks status --task-id <id> --status in_validation (or ham-ctl agent tasks done --task-id <id>)\\n- Reviewer voting: ./.heimdall/bin/ham-ctl agent tasks vote --task-id <id> --result lgtm|ngtm [--comment \\\"...\\\"]\\n- Comment on task: ./.heimdall/bin/ham-ctl agent tasks comment --task-id <id> --body \\\"...\\\"\\n- Nudge assignee/reviewer: ./.heimdall/bin/ham-ctl agent tasks nudge --task-id <id>")
 	write_bootstrap_memory_markdown(&b, service, owner, inst)
 	strings.write_string(&b, "\"}]")
 	write_bootstrap_default_skill_fields(&b, service, owner, inst)

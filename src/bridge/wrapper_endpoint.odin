@@ -229,7 +229,7 @@ bridge_local_method_allowed :: proc(method: string, role: Bridge_Local_Token_Rol
 	case .Wrapper:
 		return method == "wrapper.startup.report" || method == "wrapper.activity.report" || method == "wrapper.liveness.ping" || method == "wrapper.exited" || method == "wrapper.notifications.subscribe"
 	case .Agent:
-		return method == "agent.chat.send_to_user" || method == "agent.chat.send_to_agent" || method == "agent.chat.fetch" || method == "agent.chat.read" || method == "agent.agents.live" || method == "agent.tasks.comment" || method == "agent.tasks.status" || method == "agent.tasks.vote" || method == "agent.tasks.nudge" || method == "agent.artifacts.create" || method == "agent.artifacts.list" || method == "agent.artifacts.show" || method == "agent.artifacts.content" || method == "agent.memory.propose" || method == "agent.context.get" || method == "agent.start_success"
+		return method == "agent.chat.send_to_user" || method == "agent.chat.send_to_agent" || method == "agent.chat.fetch" || method == "agent.chat.read" || method == "agent.agents.live" || method == "agent.tasks.create" || method == "agent.tasks.depend" || method == "agent.tasks.comment" || method == "agent.tasks.status" || method == "agent.tasks.vote" || method == "agent.tasks.nudge" || method == "agent.artifacts.create" || method == "agent.artifacts.list" || method == "agent.artifacts.show" || method == "agent.artifacts.content" || method == "agent.memory.propose" || method == "agent.context.get" || method == "agent.start_success"
 	}
 	return false
 }
@@ -278,6 +278,9 @@ bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec
 		// any prior bridge-local state (starting, failed, unreachable, stopped, etc.).
 		bridge_runtime_mark_start_success(rec.agent_instance_id)
 		if bridge_provider_test_mark_start_success(rec.agent_instance_id) do return bridge_local_response_data(request_id, "{\"accepted\":true,\"provider_test\":true}")
+		if strings.has_prefix(rec.agent_instance_id, "inst_ptest_") {
+			return bridge_local_response_data(request_id, "{\"accepted\":true,\"provider_test\":true}")
+		}
 	}
 	if strings.trim_space(rec.instance_token) == "" do return bridge_local_response_error(request_id, "unavailable", "Bridge-held instance token is unavailable")
 	relay := bridge_local_relay_agent_method(method, params, rec)
@@ -304,6 +307,8 @@ bridge_local_agent_method_path :: proc(method: string) -> string {
 	case "agent.chat.read": return "/api/v1/agent-actions/chat/read"
 	case "agent.agents.live": return "/api/v1/agent-actions/agents/live"
 	case "agent.context.get": return "/api/v1/agent-actions/context"
+	case "agent.tasks.create": return "/api/v1/agent-actions/tasks/create"
+	case "agent.tasks.depend": return "/api/v1/agent-actions/tasks/depend"
 	case "agent.tasks.comment": return "/api/v1/agent-actions/tasks/comment"
 	case "agent.tasks.status": return "/api/v1/agent-actions/tasks/status"
 	case "agent.tasks.vote": return "/api/v1/agent-actions/tasks/vote"

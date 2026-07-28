@@ -1,3 +1,4 @@
+import TaskChainOverview from '../taskchain/TaskChainOverview';
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
 import {
   useFetchConversationQuery,
@@ -285,6 +286,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const [provider, setProvider] = useState('');
   const [tier, setTier] = useState('');
   const [reconfigStatus, setReconfigStatus] = useState('');
+  const [taskChainOpen, setTaskChainOpen] = useState(false);
   const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
@@ -569,10 +571,33 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
             ) : null}
           </div>
           <button type="button" data-debug-id="conversation-thread-refresh-btn" onClick={() => void messagesQuery.refetch()} className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10">Refresh</button>
+          {chainId ? (
+            <button
+              type="button"
+              data-debug-id="taskchain-overview-toggle-btn"
+              onClick={() => setTaskChainOpen((open) => !open)}
+              className="rounded-xl border border-sky-400/30 bg-sky-400/10 px-3 py-1.5 text-xs font-semibold text-sky-200 hover:bg-sky-400/20"
+            >
+              {taskChainOpen ? 'Hide Task Chain' : 'Task Chain'}
+            </button>
+          ) : null}
         </div>
       </header>
 
-      <div data-debug-id="conversation-thread-transcript" className="min-h-0 flex-1 px-2 py-2 sm:px-4 sm:py-3">
+      {taskChainOpen && chainId ? (
+        <div className="flex h-full min-h-0 w-full flex-col sm:flex-row">
+          {/* Mobile view (< 768px): TaskChain 100% width (Requirement 10) */}
+          <div className="flex h-full w-full min-h-0 flex-col sm:hidden">
+            <TaskChainOverview
+              chainId={chainId}
+              onClose={() => setTaskChainOpen(false)}
+              isMobile={true}
+            />
+          </div>
+          {/* Desktop view (>= 768px): 50/50 split panel */}
+          <div className="hidden h-full min-h-0 w-full flex-row sm:flex">
+            <div className="flex h-full min-h-0 w-1/2 flex-col border-r border-white/10">
+              <div data-debug-id="conversation-thread-transcript" className="min-h-0 flex-1 px-2 py-2 sm:px-4 sm:py-3">
         <ChatMessageList
           conversationKey={conversationId}
           messages={chatMessages}
@@ -646,6 +671,94 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
           <button data-debug-id="conversation-composer-send-btn" type="submit" disabled={sendDisabled} title={hasUploadingAttachments ? 'Wait for uploads to finish before sending' : hasFailedAttachments ? 'Retry or remove failed uploads before sending' : 'Send'} className="rounded-2xl bg-sky-400 px-4 py-2.5 text-sm font-black text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">{hasUploadingAttachments ? 'Uploading…' : 'Send'}</button>
         </div>
       </form>
+            </div>
+            <div className="flex h-full min-h-0 w-1/2 flex-col">
+              <TaskChainOverview
+                chainId={chainId}
+                onClose={() => setTaskChainOpen(false)}
+                isMobile={false}
+              />
+            </div>
+          </div>
+        </div>
+      ) : (
+        <>
+          <div data-debug-id="conversation-thread-transcript" className="min-h-0 flex-1 px-2 py-2 sm:px-4 sm:py-3">
+        <ChatMessageList
+          conversationKey={conversationId}
+          messages={chatMessages}
+          debugPrefix="conversation-thread"
+          hasMore={olderHasMore && Boolean(olderCursor)}
+          loadingOlder={olderMessagesState.isFetching}
+          onLoadOlder={loadOlderMessages}
+          formatTimestamp={formatMessageTimestamp}
+          getDeliveryStatus={deliveryStatusFor}
+          renderMessageBody={({ message }) => (
+            <div className="flex flex-col gap-1">
+              <Markdown source={message.body} compact copyAll={false} />
+              {message.artifactIds && message.artifactIds.length > 0 && (
+                <div className="mt-2 flex max-w-full flex-wrap gap-2">
+                  {message.artifactIds.map((id) => (
+                    <ArtifactAttachmentPreview key={id} artifactId={id} session={{ daemonUrl: '', clientToken: '' }} debugId={`conversation-thread-artifact-${message.messageId}-${id}`} />
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          wrapperClassName="relative h-full min-h-0 overflow-hidden"
+          scrollClassName="chat-scrollbar h-full min-h-0 space-y-3 overflow-y-auto rounded-none bg-[#090909] px-1 py-2 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
+          emptyState={messagesQuery.isFetching ? (
+            <div data-debug-id="conversation-thread-empty-state" className="grid h-full min-h-[220px] place-items-center rounded-2xl border border-dashed border-white/10 p-6 text-sm text-zinc-500">Loading messages…</div>
+          ) : (
+            <div data-debug-id="conversation-thread-empty-state" className="grid h-full min-h-[220px] place-items-center rounded-2xl border border-dashed border-white/10 p-6 text-sm text-zinc-500">No messages yet. Say something below.</div>
+          )}
+        />
+      </div>
+
+      <form onSubmit={submit} data-debug-id="conversation-composer-shell" className="shrink-0 border-t border-white/10 px-2 py-2 sm:px-4 sm:py-3">
+        {error ? <div data-debug-id="conversation-composer-send-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">{error}</div> : null}
+        {attachments.length > 0 && (
+          <div data-debug-id="conversation-attachment-tray" className="mb-2 space-y-2 rounded-2xl border border-white/10 bg-white/[0.03] p-2 text-xs text-zinc-200">
+            {attachments.map((a) => (
+              <div key={a.localId} data-debug-id={`conversation-attachment-${a.localId}`} className="rounded-xl border border-white/10 bg-black/20 px-2.5 py-2">
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className={a.status === 'uploaded' ? 'text-emerald-300' : a.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{a.status === 'uploading' ? '⇧' : a.status === 'uploaded' ? '✓' : '!'}</span>
+                  <span className="min-w-0 flex-1 truncate" title={a.name}>{a.name}</span>
+                  <span className={a.status === 'uploaded' ? 'text-emerald-300' : a.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{a.status === 'uploading' ? 'Uploading…' : a.status === 'uploaded' ? 'Uploaded' : 'Failed'}</span>
+                  {a.status === 'error' ? <button type="button" data-debug-id={`conversation-attachment-retry-${a.localId}`} onClick={() => void uploadAttachment(a.file, a.localId)} className="rounded-full border border-white/10 px-2 py-0.5 text-zinc-200 hover:bg-white/10">Retry</button> : null}
+                  <button type="button" data-debug-id={`conversation-attachment-remove-${a.localId}`} onClick={() => setAttachments(prev => prev.filter((item) => item.localId !== a.localId))} className="rounded-full border border-white/10 px-2 py-0.5 text-zinc-400 hover:bg-white/10">Remove</button>
+                </div>
+                {a.status === 'uploading' ? <div data-debug-id={`conversation-attachment-progress-${a.localId}`} className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full w-1/2 animate-pulse rounded-full bg-sky-300" /></div> : null}
+                {a.error ? <div data-debug-id={`conversation-attachment-error-${a.localId}`} className="mt-1 text-red-300">{a.error}</div> : null}
+              </div>
+            ))}
+            {hasUploadingAttachments ? <div data-debug-id="conversation-attachment-uploading-hint" className="text-[11px] text-zinc-500">You can keep typing. Send unlocks when uploads finish.</div> : null}
+            {hasFailedAttachments ? <div data-debug-id="conversation-attachment-failed-hint" className="text-[11px] text-red-300">Retry or remove failed uploads before sending.</div> : null}
+          </div>
+        )}
+        <div className="flex items-end gap-2">
+          <label data-debug-id="conversation-attach-btn" className="grid h-[44px] w-[44px] shrink-0 cursor-pointer place-items-center rounded-2xl border border-white/10 bg-black/30 text-xl text-zinc-400 hover:bg-white/5 hover:text-white" title="Upload Attachment">
+            <input data-debug-id="conversation-attach-input" type="file" multiple className="hidden" onChange={(e) => {
+              const files = Array.from(e.target.files || []) as File[];
+              e.target.value = '';
+              files.forEach((file) => void uploadAttachment(file));
+            }} />
+            ＋
+          </label>
+          <textarea
+            data-debug-id="conversation-composer-input"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void submit(e as any); } }}
+            rows={2}
+            placeholder="Message the agent… (Cmd/Ctrl+Enter to send)"
+            className="min-h-[44px] flex-1 resize-none rounded-2xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-sky-400/60 sm:px-4"
+          />
+          <button data-debug-id="conversation-composer-send-btn" type="submit" disabled={sendDisabled} title={hasUploadingAttachments ? 'Wait for uploads to finish before sending' : hasFailedAttachments ? 'Retry or remove failed uploads before sending' : 'Send'} className="rounded-2xl bg-sky-400 px-4 py-2.5 text-sm font-black text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">{hasUploadingAttachments ? 'Uploading…' : 'Send'}</button>
+        </div>
+      </form>
+        </>
+      )}
     </section>
   );
 }

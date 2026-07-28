@@ -158,18 +158,66 @@ agent_action_task_nudge_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 202)
 }
 
+agent_action_task_create_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	chain_id := json_string(params, "chain_id")
+	if chain_id == "" do chain_id = inst.chain_id
+	if chain, chain_ok, _ := taskchain_service.get_chain(h.taskchains, auth, domain.Task_Chain_ID(chain_id)); chain_ok {
+		if chain.coordinator_agent_instance_id != "" && chain.coordinator_agent_instance_id != inst.agent_instance_id {
+			return respond_error(domain.domain_error(.Forbidden, "only chain coordinator can create tasks"), req.request_id)
+		}
+	}
+	task, created, err := taskchain_service.create_task(h.taskchains, auth, taskchain_service.Create_Task_Input{
+		chain_id = domain.Task_Chain_ID(chain_id),
+		title = json_string(params, "title"),
+		description = json_string(params, "description"),
+		assignee_ref_json = json_object_or_empty(params, "assignee_ref"),
+		reviewer_refs_json = json_array_optional(params, "reviewer_refs"),
+	})
+	if !created do return respond_error(err, req.request_id)
+	b := strings.builder_make()
+	write_task_json(&b, task)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
+}
+
+agent_action_task_depend_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, inst, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	task_id := domain.Task_ID(json_string(params, "task_id"))
+	depends_on_task_id := domain.Task_ID(json_string(params, "depends_on_task_id"))
+	if depends_on_task_id == "" do depends_on_task_id = domain.Task_ID(json_string(params, "on"))
+	if task, task_ok, _ := taskchain_service.get_task(h.taskchains, auth, task_id); task_ok {
+		if chain, chain_ok, _ := taskchain_service.get_chain(h.taskchains, auth, task.chain_id); chain_ok {
+			if chain.coordinator_agent_instance_id != "" && chain.coordinator_agent_instance_id != inst.agent_instance_id {
+				return respond_error(domain.domain_error(.Forbidden, "only chain coordinator can add task dependencies"), req.request_id)
+			}
+		}
+	}
+	dep, added, err := taskchain_service.add_task_dependency(h.taskchains, auth, task_id, depends_on_task_id)
+	if !added do return respond_error(err, req.request_id)
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"task_id\":\""); write_handler_json_string(&b, string(dep.task_id)); strings.write_string(&b, "\",\"depends_on_task_id\":\""); write_handler_json_string(&b, string(dep.depends_on_task_id)); strings.write_string(&b, "\"}")
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
+}
+
 agent_action_task_vote_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
 	auth, _, ok, resp := require_instance_action_auth(h, req)
 	if !ok do return resp
 	params := json_object_raw(req.body, "params")
+	task_id := domain.Task_ID(json_string(params, "task_id"))
 	result := json_string(params, "result")
-	status: domain.Task_Status = .Validated_Good
-	if result == "not_good" || result == "ngtm" do status = .Validated_Not_Good
-	task, changed, err := taskchain_service.change_task_status(h.taskchains, auth, domain.Task_ID(json_string(params, "task_id")), status)
-	if !changed do return respond_error(err, req.request_id)
+	if result == "" do result = json_string(params, "vote")
+	comment := json_string(params, "comment")
+	vote, recorded, err := taskchain_service.record_task_vote(h.taskchains, auth, taskchain_service.Vote_Input{task_id = task_id, vote = result, comment = comment})
+	if !recorded do return respond_error(err, req.request_id)
 	b := strings.builder_make()
-	write_task_json(&b, task)
+	write_task_vote_json(&b, vote)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
 
@@ -253,16 +301,6 @@ agent_action_memory_propose_handler :: proc(ctx: rawptr, req: Request) -> Respon
 	b := strings.builder_make()
 	write_memory_json(&b, mem, false)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
-}
-
-write_task_comment_json :: proc(b: ^strings.Builder, c: domain.Task_Comment) {
-	strings.write_string(b, "{\"comment_id\":\""); write_handler_json_string(b, c.comment_id)
-	strings.write_string(b, "\",\"task_id\":\""); write_handler_json_string(b, string(c.task_id))
-	strings.write_string(b, "\",\"chain_id\":\""); write_handler_json_string(b, string(c.chain_id))
-	strings.write_string(b, "\",\"author_agent_instance_id\":\""); write_handler_json_string(b, c.author_agent_instance_id)
-	strings.write_string(b, "\",\"body\":\""); write_handler_json_string(b, c.body)
-	strings.write_string(b, "\",\"created_at\":\""); write_handler_json_string(b, c.created_at)
-	strings.write_string(b, "\"}")
 }
 
 agent_action_start_success_handler :: proc(ctx: rawptr, req: Request) -> Response {

@@ -89,18 +89,54 @@ ctl_hub_task_chains :: proc(base, token, action: string, args: []string) {
 	if action == "" || action == "list" { ctl_hub_request(base, token, "GET", "/api/v1/task-chains", ""); return }
 	if action == "create" {
 		title := option_value(args, "--title", "")
-		if title == "" { fmt.println("usage: ham-ctl hub task-chains create --title <title>"); return }
+		if title == "" { fmt.println("usage: ham-ctl hub task-chains create --title <title> [--description <text>] [--kind <kind>] [--coordinator <id>]"); return }
 		fields := make([dynamic]string)
-		append(&fields, json_kv("title", title)); append(&fields, json_kv("kind", option_value(args, "--kind", "team_work"))); append(&fields, json_kv("coordinator_agent_id", option_value(args, "--coordinator-agent-id", option_value(args, "--coordinator", "")))); append(&fields, json_kv("bridge_id", option_value(args, "--bridge-id", ""))); append(&fields, json_kv("project_id", option_value(args, "--project-id", option_value(args, "--project", ""))))
+		append(&fields, json_kv("title", title)); append(&fields, json_kv("description", option_value(args, "--description", ""))); append(&fields, json_kv("kind", option_value(args, "--kind", "team_work"))); append(&fields, json_kv("coordinator_agent_id", option_value(args, "--coordinator-agent-id", option_value(args, "--coordinator", "")))); append(&fields, json_kv("bridge_id", option_value(args, "--bridge-id", ""))); append(&fields, json_kv("project_id", option_value(args, "--project-id", option_value(args, "--project", ""))))
 		ctl_hub_request(base, token, "POST", "/api/v1/task-chains", json_object_from_slice(fields[:]))
 		return
 	}
 	chain_id := option_value(args, "--chain-id", option_value(args, "--chain", ""))
-	if chain_id == "" { fmt.println("usage: ham-ctl hub task-chains <show|publish|complete> --chain-id <id>"); return }
+	if chain_id == "" { fmt.println("usage: ham-ctl hub task-chains <show|update|members|publish|complete> --chain-id <id>"); return }
 	if action == "show" { ctl_hub_request(base, token, "GET", fmt.tprintf("/api/v1/task-chains/%s", safe_path_part(chain_id)), ""); return }
+	if action == "update" {
+		fields := make([dynamic]string)
+		if title := option_value(args, "--title", ""); title != "" do append(&fields, json_kv("title", title))
+		if desc := option_value(args, "--description", ""); desc != "" do append(&fields, json_kv("description", desc))
+		if status := option_value(args, "--status", ""); status != "" do append(&fields, json_kv("status", status))
+		ctl_hub_request(base, token, "PATCH", fmt.tprintf("/api/v1/task-chains/%s", safe_path_part(chain_id)), json_object_from_slice(fields[:]))
+		return
+	}
+	if action == "members" {
+		sub := option_value(args, "--action", "")
+		if len(args) > 4 && (args[3] == "add" || args[3] == "remove" || args[3] == "list") do sub = args[3]
+		if sub == "" || sub == "list" { ctl_hub_request(base, token, "GET", fmt.tprintf("/api/v1/task-chains/%s/members", safe_path_part(chain_id)), ""); return }
+		if sub == "add" {
+			inst := option_value(args, "--agent-instance-id", option_value(args, "--instance-id", ""))
+			role := option_value(args, "--role", "assignee")
+			if inst == "" { fmt.println("usage: ham-ctl hub task-chains members --chain-id <id> add --agent-instance-id <id> [--role <role>]"); return }
+			ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/members", safe_path_part(chain_id)), json_object(json_kv("agent_instance_id", inst), json_kv("role", role))); return
+		}
+		if sub == "remove" {
+			inst := option_value(args, "--agent-instance-id", option_value(args, "--instance-id", ""))
+			if inst == "" { fmt.println("usage: ham-ctl hub task-chains members --chain-id <id> remove --agent-instance-id <id>"); return }
+			ctl_hub_request(base, token, "DELETE", fmt.tprintf("/api/v1/task-chains/%s/members/%s", safe_path_part(chain_id), safe_path_part(inst)), ""); return
+		}
+	}
+	if action == "add-agent" {
+		agent_id := option_value(args, "--agent-id", option_value(args, "--agent", ""))
+		if chain_id == "" || agent_id == "" { fmt.println("usage: ham-ctl hub task-chains add-agent --chain-id <id> --agent-id <id> [--bridge-id <id>] [--provider <profile>] [--tier <tier>] [--project-id <id>]"); return }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("agent_id", agent_id))
+		append(&fields, json_kv("chain_id", chain_id))
+		if b := option_value(args, "--bridge-id", ""); b != "" do append(&fields, json_kv("bridge_id", b))
+		if p := option_value(args, "--provider", ""); p != "" do append(&fields, json_kv("provider", p))
+		if t := option_value(args, "--tier", ""); t != "" do append(&fields, json_kv("tier", t))
+		if pr := option_value(args, "--project-id", ""); pr != "" do append(&fields, json_kv("project_id", pr))
+		ctl_hub_request(base, token, "POST", "/api/v1/agent-instances", json_object_from_slice(fields[:])); return
+	}
 	if action == "publish" { ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/publish", safe_path_part(chain_id)), "{}"); return }
 	if action == "complete" { ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/complete", safe_path_part(chain_id)), "{}"); return }
-	fmt.println("usage: ham-ctl hub task-chains <list|create|show|publish|complete>")
+	fmt.println("usage: ham-ctl hub task-chains <list|create|show|update|members|add-agent|publish|complete>")
 }
 
 ctl_hub_tasks :: proc(base, token, action: string, args: []string) {
@@ -111,18 +147,84 @@ ctl_hub_tasks :: proc(base, token, action: string, args: []string) {
 	}
 	if action == "create" {
 		title := option_value(args, "--title", "")
-		if chain_id == "" || title == "" { fmt.println("usage: ham-ctl hub tasks create --chain-id <id> --title <title>"); return }
+		if chain_id == "" || title == "" { fmt.println("usage: ham-ctl hub tasks create --chain-id <id> --title <title> [--description <desc>] [--assignee <id>] [--reviewer <ref>] [--depends-on <id,id>]"); return }
 		fields := make([dynamic]string)
 		append(&fields, json_kv("title", title))
+		if desc := option_value(args, "--description", ""); desc != "" do append(&fields, json_kv("description", desc))
 		if assignee := option_value(args, "--assignee-agent-instance-id", option_value(args, "--assignee", "")); assignee != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", assignee))}))
+		if reviewer := option_value(args, "--reviewer", ""); reviewer != "" do append(&fields, strings.concatenate({"\"reviewer_refs\":[", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", reviewer)), "]"}))
+		if deps := option_value(args, "--depends-on", option_value(args, "--on", "")); deps != "" {
+			parts := strings.split(deps, ",")
+			defer delete(parts)
+			buf := strings.builder_make()
+			strings.write_string(&buf, "\"depends_on\":[")
+			for p, i in parts {
+				if i > 0 do strings.write_byte(&buf, ',')
+				strings.write_byte(&buf, '"')
+				strings.write_string(&buf, strings.trim_space(p))
+				strings.write_byte(&buf, '"')
+			}
+			strings.write_byte(&buf, ']')
+			append(&fields, strings.to_string(buf))
+		}
 		ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/tasks", safe_path_part(chain_id)), json_object_from_slice(fields[:])); return
 	}
 	task_id := option_value(args, "--task-id", option_value(args, "--task", ""))
-	if chain_id == "" || task_id == "" { fmt.println("usage: ham-ctl hub tasks <publish|status|nudge> --chain-id <id> --task-id <id>"); return }
+	if chain_id == "" || task_id == "" { fmt.println("usage: ham-ctl hub tasks <update|publish|status|done|cancel|depend|comments|votes|nudge> --chain-id <id> --task-id <id>"); return }
+	if action == "update" {
+		fields := make([dynamic]string)
+		if title := option_value(args, "--title", ""); title != "" do append(&fields, json_kv("title", title))
+		if desc := option_value(args, "--description", ""); desc != "" do append(&fields, json_kv("description", desc))
+		if assignee := option_value(args, "--assignee-agent-instance-id", option_value(args, "--assignee", "")); assignee != "" do append(&fields, strings.concatenate({"\"assignee_ref\":", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", assignee))}))
+		if reviewer := option_value(args, "--reviewer", ""); reviewer != "" do append(&fields, strings.concatenate({"\"reviewer_refs\":[", json_object(json_kv("type", "agent_instance"), json_kv("agent_instance_id", reviewer)), "]"}))
+		if deps := option_value(args, "--depends-on", option_value(args, "--on", "")); deps != "" {
+			parts := strings.split(deps, ",")
+			defer delete(parts)
+			buf := strings.builder_make()
+			strings.write_string(&buf, "\"depends_on\":[")
+			for p, i in parts {
+				if i > 0 do strings.write_byte(&buf, ',')
+				strings.write_byte(&buf, '"')
+				strings.write_string(&buf, strings.trim_space(p))
+				strings.write_byte(&buf, '"')
+			}
+			strings.write_byte(&buf, ']')
+			append(&fields, strings.to_string(buf))
+		}
+		ctl_hub_request(base, token, "PATCH", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s", safe_path_part(chain_id), safe_path_part(task_id)), json_object_from_slice(fields[:])); return
+	}
+	if action == "done" { ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/status", safe_path_part(chain_id), safe_path_part(task_id)), json_object(json_kv("status", "in_validation"))); return }
+	if action == "depend" {
+		on_id := option_value(args, "--on", option_value(args, "--depends-on", ""))
+		if on_id == "" { fmt.println("usage: ham-ctl hub tasks depend --chain-id <id> --task-id <id> --on <depends_on_task_id>"); return }
+		ctl_hub_request(base, token, "PATCH", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s", safe_path_part(chain_id), safe_path_part(task_id)), json_object(strings.concatenate({"\"depends_on\":[\"", on_id, "\"]"}))); return
+	}
 	if action == "publish" { ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/publish", safe_path_part(chain_id), safe_path_part(task_id)), "{}"); return }
 	if action == "status" { status := option_value(args, "--status", ""); if status == "" { fmt.println("usage: ham-ctl hub tasks status --chain-id <id> --task-id <id> --status <status>"); return }; ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/status", safe_path_part(chain_id), safe_path_part(task_id)), json_object(json_kv("status", status))); return }
+	if action == "cancel" { ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/cancel", safe_path_part(chain_id), safe_path_part(task_id)), "{}"); return }
+	if action == "comments" {
+		sub := option_value(args, "--action", "")
+		if len(args) > 5 && (args[5] == "add" || args[5] == "list") do sub = args[5]
+		if sub == "" || sub == "list" { ctl_hub_request(base, token, "GET", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/comments", safe_path_part(chain_id), safe_path_part(task_id)), ""); return }
+		if sub == "add" {
+			body := option_value(args, "--body", "")
+			if body == "" { fmt.println("usage: ham-ctl hub tasks comments --chain-id <id> --task-id <id> add --body <text>"); return }
+			ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/comments", safe_path_part(chain_id), safe_path_part(task_id)), json_object(json_kv("body", body))); return
+		}
+	}
+	if action == "votes" {
+		sub := option_value(args, "--action", "")
+		if len(args) > 5 && (args[5] == "add" || args[5] == "list" || args[5] == "vote") do sub = args[5]
+		if sub == "" || sub == "list" { ctl_hub_request(base, token, "GET", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/votes", safe_path_part(chain_id), safe_path_part(task_id)), ""); return }
+		if sub == "add" || sub == "vote" {
+			vote := option_value(args, "--vote", option_value(args, "--result", ""))
+			comment := option_value(args, "--comment", "")
+			if vote == "" { fmt.println("usage: ham-ctl hub tasks votes --chain-id <id> --task-id <id> vote --vote <lgtm|ngtm> [--comment <text>]"); return }
+			ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/vote", safe_path_part(chain_id), safe_path_part(task_id)), json_object(json_kv("vote", vote), json_kv("comment", comment))); return
+		}
+	}
 	if action == "nudge" { message := option_value(args, "--message", option_value(args, "--body", "")); ctl_hub_request(base, token, "POST", fmt.tprintf("/api/v1/task-chains/%s/tasks/%s/nudge", safe_path_part(chain_id), safe_path_part(task_id)), json_object(json_kv("message", message))); return }
-	fmt.println("usage: ham-ctl hub tasks <list|create|publish|status|nudge>")
+	fmt.println("usage: ham-ctl hub tasks <list|create|update|publish|status|done|cancel|depend|comments|votes|nudge>")
 }
 
 ctl_hub_projects :: proc(base, token, action: string, args: []string) {

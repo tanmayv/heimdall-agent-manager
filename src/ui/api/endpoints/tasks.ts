@@ -4,23 +4,28 @@ import { heimdallApi, withSessionQuery } from '../heimdallApi';
 
 function normalizeTask(task: any) {
   const result: any = {
-    id: task.task_id,
-    taskId: task.task_id,
+    id: task.task_id || task.id,
+    taskId: task.task_id || task.id,
     chainId: task.chain_id || '',
     title: task.title || '',
+    description: task.description || '',
     priority: task.priority || 'normal',
     status: task.status || 'pending',
     assigneeAgentInstanceId: task.assignee_agent_instance_id || '',
     reviewerAgentInstanceId: task.reviewer_agent_instance_id || '',
     coordinatorAgentInstanceId: task.coordinator_agent_instance_id || '',
-    dependsOn: task.depends_on || '',
+    dependsOn: task.depends_on || (task.depends_on_task_ids ? task.depends_on_task_ids : []),
+    blocked: Boolean(task.blocked),
+    assigneeRef: task.assignee_ref || task.assigneeRef || (task.assignee_agent_instance_id ? { type: 'agent_instance', agent_instance_id: task.assignee_agent_instance_id } : null),
+    reviewerRefs: task.reviewer_refs || task.reviewerRefs || (task.reviewer_agent_instance_id ? [{ type: 'agent_instance', agent_instance_id: task.reviewer_agent_instance_id }] : []),
+    comments: (task.comments || []).map(normalizeTaskComments),
     createdBy: task.created_by || '',
     createdAtUnixMs: Number(task.created_at_unix_ms || 0),
     updatedAtUnixMs: Number(task.updated_at_unix_ms || 0),
     notActionableReason: task.not_actionable_reason || '',
     votes: (task.votes || []).map((vote: any) => ({
-      reviewerAgentInstanceId: vote.reviewer_agent_instance_id,
-      approved: Boolean(vote.approved),
+      reviewerAgentInstanceId: vote.reviewer_agent_instance_id || vote.reviewerAgentInstanceId,
+      vote: vote.vote || (vote.approved ? 'lgtm' : 'ngtm'),
       comment: vote.comment || '',
     })),
     participants: (task.participants || []).map((participant: any) => ({
@@ -30,9 +35,6 @@ function normalizeTask(task: any) {
     unresolvedCommentCount: Number(task.unresolved_comment_count || 0),
     commentIds: task.comment_ids || [],
   };
-  if (task.description !== undefined) {
-    result.description = task.description;
-  }
   if (task.acceptance_criteria !== undefined) {
     result.acceptanceCriteria = task.acceptance_criteria;
   }
@@ -94,8 +96,124 @@ function preciseTaskTags(taskId?: string, chainId?: string, includeComments = fa
   return tags;
 }
 
+
+function normalizeTaskChainDetail(data: any) {
+  if (!data) return null;
+  return {
+    chainId: data.chain_id || data.chainId,
+    title: data.title || '',
+    description: data.description || '',
+    publishState: data.publish_state || 'draft',
+    status: data.status || 'active',
+    kind: data.kind || 'team_work',
+    coordinatorAgentInstanceId: data.coordinator_agent_instance_id || '',
+    defaultReviewerRefs: data.default_reviewer_refs || [],
+    members: (data.members || []).map((m: any) => ({
+      chainId: m.chain_id,
+      agentInstanceId: m.agent_instance_id,
+      agentId: m.agent_id,
+      role: m.role,
+      createdAt: m.created_at,
+    })),
+    tasks: (data.tasks || []).map(normalizeTask),
+    createdAt: data.created_at || '',
+    updatedAt: data.updated_at || '',
+  };
+}
+
 export const tasksApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
+    fetchTaskChainDetail: build.query<any, { chainId: string }>({
+      queryFn: withSessionQuery(async ({ chainId }, { session }) => {
+        if (!session?.clientToken || !chainId) return { chain: null };
+        const data = await daemonApi.fetchTaskChainDetail({
+          daemonUrl: session.daemonUrl,
+          clientToken: session.clientToken,
+          chainId,
+        });
+        return { chain: data ? normalizeTaskChainDetail(data) : null };
+      }),
+      providesTags: (_result, _error, { chainId }) => [
+        { type: 'Chain', id: chainId },
+        { type: 'ChainTasks', id: chainId },
+      ],
+    }),
+    createTaskChain: build.mutation<any, { title: string; description?: string; kind?: string; coordinatorAgentId?: string }>({
+      queryFn: withSessionQuery(async ({ title, description, kind, coordinatorAgentId }, { session }) => {
+        return daemonApi.createTaskChainRest({
+          daemonUrl: session.daemonUrl,
+          clientToken: session.clientToken,
+          title,
+          description,
+          kind,
+          coordinatorAgentId,
+        });
+      }),
+      invalidatesTags: ['ChainList'],
+    }),
+    updateTaskChain: build.mutation<any, { chainId: string; title?: string; description?: string; status?: string }>({
+      queryFn: withSessionQuery(async ({ chainId, title, description, status }, { session }) => {
+        return daemonApi.updateTaskChainRest({
+          daemonUrl: session.daemonUrl,
+          clientToken: session.clientToken,
+          chainId,
+          title,
+          description,
+          status,
+        });
+      }),
+      invalidatesTags: (_result, _error, { chainId }) => [{ type: 'Chain', id: chainId }, 'ChainList'],
+    }),
+    updateTaskDetail: build.mutation<any, { chainId: string; taskId: string; title?: string; description?: string; assigneeRef?: any; reviewerRefs?: any[] }>({
+      queryFn: withSessionQuery(async ({ chainId, taskId, title, description, assigneeRef, reviewerRefs }, { session }) => {
+        return daemonApi.updateTaskDetail({
+          daemonUrl: session.daemonUrl,
+          clientToken: session.clientToken,
+          chainId,
+          taskId,
+          title,
+          description,
+          assigneeRef,
+          reviewerRefs,
+        });
+      }),
+      invalidatesTags: (_result, _error, { chainId, taskId }) => preciseTaskTags(taskId, chainId),
+    }),
+    cancelTaskDetail: build.mutation<any, { chainId: string; taskId: string }>({
+      queryFn: withSessionQuery(async ({ chainId, taskId }, { session }) => {
+        return daemonApi.cancelTaskDetail({
+          daemonUrl: session.daemonUrl,
+          clientToken: session.clientToken,
+          chainId,
+          taskId,
+        });
+      }),
+      invalidatesTags: (_result, _error, { chainId, taskId }) => preciseTaskTags(taskId, chainId),
+    }),
+    addChainMember: build.mutation<any, { chainId: string; agentInstanceId: string; role?: string }>({
+      queryFn: withSessionQuery(async ({ chainId, agentInstanceId, role }, { session }) => {
+        return daemonApi.addChainMember({
+          daemonUrl: session.daemonUrl,
+          clientToken: session.clientToken,
+          chainId,
+          agentInstanceId,
+          role,
+        });
+      }),
+      invalidatesTags: (_result, _error, { chainId }) => [{ type: 'Chain', id: chainId }],
+    }),
+    removeChainMember: build.mutation<any, { chainId: string; agentInstanceId: string }>({
+      queryFn: withSessionQuery(async ({ chainId, agentInstanceId }, { session }) => {
+        return daemonApi.removeChainMember({
+          daemonUrl: session.daemonUrl,
+          clientToken: session.clientToken,
+          chainId,
+          agentInstanceId,
+        });
+      }),
+      invalidatesTags: (_result, _error, { chainId }) => [{ type: 'Chain', id: chainId }],
+    }),
+
     fetchChainTasks: build.query<any, { chainId: string; limit?: number; offset?: number }>({
       queryFn: withSessionQuery(async ({ chainId, limit = 100, offset = 0 }, { session }) => {
         if (!session?.clientToken || !chainId) return { chainId, tasks: [] };
@@ -306,13 +424,14 @@ export const tasksApi = heimdallApi.injectEndpoints({
         }
       },
     }),
-    createTask: build.mutation<any, { chainId: string; title: string; status?: string; agentToken?: string }>({
-      queryFn: withSessionQuery(async ({ chainId, title, status = 'planning', agentToken }, { session }) => {
+    createTask: build.mutation<any, { chainId: string; title: string; description?: string; status?: string; agentToken?: string }>({
+      queryFn: withSessionQuery(async ({ chainId, title, description, status = 'planning', agentToken }, { session }) => {
         return daemonApi.createTask({
           daemonUrl: session.daemonUrl,
           ...taskMutationAuth(session, agentToken),
           chain_id: chainId,
           title,
+          description,
           status,
         });
       }),
@@ -363,8 +482,8 @@ export const tasksApi = heimdallApi.injectEndpoints({
       }),
       invalidatesTags: (_result, _error, { taskId, chainId }) => preciseTaskTags(taskId, chainId, true),
     }),
-    setTaskStatus: build.mutation<any, { taskId: string; chainId: string; status: string; body: string; agentToken?: string }>({
-      queryFn: withSessionQuery(async ({ taskId, chainId, status, body, agentToken }, { session }) => {
+    setTaskStatus: build.mutation<any, { taskId: string; chainId: string; status: string; body?: string; agentToken?: string }>({
+      queryFn: withSessionQuery(async ({ taskId, chainId, status, body = '', agentToken }, { session }) => {
         return daemonApi.updateTaskStatus({
           daemonUrl: session.daemonUrl,
           ...taskMutationAuth(session, agentToken),
@@ -429,27 +548,28 @@ export const tasksApi = heimdallApi.injectEndpoints({
       }),
       invalidatesTags: (_result, _error, { taskId, chainId }) => preciseTaskTags(taskId, chainId),
     }),
-    voteTask: build.mutation<any, { taskId: string; chainId: string; approved: boolean; comment: string; agentToken?: string }>({
-      queryFn: withSessionQuery(async ({ taskId, chainId, approved, comment, agentToken }, { session }) => {
+    voteTask: build.mutation<any, { taskId: string; chainId: string; result?: 'lgtm' | 'ngtm'; approved?: boolean; comment?: string; agentToken?: string }>({
+      queryFn: withSessionQuery(async ({ taskId, chainId, result, approved, comment = '', agentToken }, { session }) => {
+        const isApproved = approved ?? (result === 'lgtm');
         return daemonApi.voteTask({
           daemonUrl: session.daemonUrl,
           ...taskMutationAuth(session, agentToken),
           taskId,
           chainId,
-          approved,
+          approved: isApproved,
           comment,
         });
       }),
       invalidatesTags: (_result, _error, { taskId, chainId }) => preciseTaskTags(taskId, chainId),
     }),
-    nudgeTask: build.mutation<any, { taskId: string; chainId: string; body: string; interrupt?: boolean; agentToken?: string }>({
-      queryFn: withSessionQuery(async ({ taskId, chainId, body, interrupt, agentToken }, { session }) => {
+    nudgeTask: build.mutation<any, { taskId: string; chainId: string; body?: string; message?: string; interrupt?: boolean; agentToken?: string }>({
+      queryFn: withSessionQuery(async ({ taskId, chainId, body, message, interrupt, agentToken }, { session }) => {
         return daemonApi.nudgeTask({
           daemonUrl: session.daemonUrl,
           ...taskMutationAuth(session, agentToken),
           taskId,
           chainId,
-          body,
+          body: body ?? message ?? '',
           interrupt,
         });
       }),
@@ -469,4 +589,24 @@ export const {
   useLazyFetchTaskCommentQuery,
   useFetchTaskLogQuery,
   useLazyFetchTaskLogPageQuery,
+
+  useFetchTaskChainDetailQuery,
+  useCreateTaskChainMutation,
+  useUpdateTaskChainMutation,
+  useUpdateTaskDetailMutation,
+  useCancelTaskDetailMutation,
+  useAddChainMemberMutation,
+  useRemoveChainMemberMutation,
+
+  useCreateTaskMutation,
+  useDeleteTaskMutation,
+  useAddTaskCommentMutation,
+  useResolveTaskCommentMutation,
+  useSetTaskStatusMutation,
+  useUpdateTaskMutation,
+  useAssignTaskMutation,
+  useAddTaskParticipantMutation,
+  useRemoveTaskParticipantMutation,
+  useVoteTaskMutation,
+  useNudgeTaskMutation,
 } = tasksApi;

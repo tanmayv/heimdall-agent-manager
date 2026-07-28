@@ -32,18 +32,36 @@ Taskchain_Service :: struct {
 
 Create_Chain_Input :: struct {
 	title: string,
-	owner_user_id: string, // ignored; authoritative owner comes from AuthContext
+	description: string,
+	owner_user_id: string,
 	kind: string,
 	coordinator_agent_id: string,
 	default_reviewer_refs_json: string,
 }
 
+Update_Chain_Input :: struct {
+	title: string,
+	description: string,
+	status: string,
+}
+
 Create_Task_Input :: struct {
 	chain_id: domain.Task_Chain_ID,
 	title: string,
-	owner_user_id: string, // rejected if not equal to parent/auth owner
+	description: string,
+	owner_user_id: string,
 	assignee_ref_json: string,
 	reviewer_refs_json: string,
+	depends_on: []domain.Task_ID,
+}
+
+Update_Task_Input :: struct {
+	title: string,
+	description: string,
+	assignee_ref_json: string,
+	reviewer_refs_json: string,
+	depends_on: []domain.Task_ID,
+	has_depends_on: bool,
 }
 
 Task_Comment_Input :: struct {
@@ -54,6 +72,12 @@ Task_Comment_Input :: struct {
 Comment_Input :: struct {
 	task_id: domain.Task_ID,
 	body: string,
+}
+
+Vote_Input :: struct {
+	task_id: domain.Task_ID,
+	vote: string, // "lgtm" or "ngtm"
+	comment: string,
 }
 
 new_taskchain_service :: proc(repo: ^iface.Taskchain_Repository, agents: ^iface.Agent_Repository, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Taskchain_Service {
@@ -90,6 +114,7 @@ create_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 		chain_id = domain.Task_Chain_ID(platform.generate_id(service.ids, "chain_")),
 		owner_user_id = owner,
 		title = input.title,
+		description = input.description,
 		publish_state = .Draft,
 		status = .Active,
 		kind = kind,
@@ -97,6 +122,23 @@ create_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 		created_at = now,
 		updated_at = now,
 	}
+	return iface.taskchain_save_chain(service.repo, chain)
+}
+
+update_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, input: Update_Chain_Input) -> (domain.Task_Chain, bool, domain.Domain_Error) {
+	chain, ok, err := get_chain(service, auth, chain_id)
+	if !ok do return domain.Task_Chain{}, false, err
+	if input.title != "" do chain.title = input.title
+	if input.description != "" do chain.description = input.description
+	if input.status != "" {
+		st := chain_status_from_string(input.status)
+		if st != chain.status {
+			if !valid_chain_transition(chain.status, st) do return domain.Task_Chain{}, false, domain.domain_error(.Conflict, "invalid chain status transition")
+			chain.status = st
+			if st == .Completed || st == .Cancelled do chain.completed_at = platform.clock_now(service.clock)
+		}
+	}
+	chain.updated_at = platform.clock_now(service.clock)
 	return iface.taskchain_save_chain(service.repo, chain)
 }
 
@@ -155,6 +197,7 @@ create_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, i
 		chain_id = chain.chain_id,
 		owner_user_id = chain.owner_user_id,
 		title = input.title,
+		description = input.description,
 		publish_state = .Draft,
 		status = .Assigned,
 		assignee_ref_json = assignee_ref,
@@ -162,7 +205,50 @@ create_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, i
 		created_at = now,
 		updated_at = now,
 	}
-	return iface.taskchain_save_task(service.repo, task)
+	saved_task, save_ok, save_err := iface.taskchain_save_task(service.repo, task)
+	if !save_ok do return domain.Task{}, false, save_err
+
+	for dep_id in input.depends_on {
+		if _, dep_ok, dep_err := add_task_dependency(service, auth, saved_task.task_id, dep_id); !dep_ok {
+			return domain.Task{}, false, dep_err
+		}
+	}
+
+	return saved_task, true, domain.Domain_Error{}
+}
+
+update_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID, input: Update_Task_Input) -> (domain.Task, bool, domain.Domain_Error) {
+	task, ok, err := get_task(service, auth, task_id)
+	if !ok do return domain.Task{}, false, err
+	chain, chain_ok, chain_err := iface.taskchain_get_chain(service.repo, task.chain_id)
+	if !chain_ok do return domain.Task{}, false, chain_err
+
+	if input.title != "" do task.title = input.title
+	if input.description != "" do task.description = input.description
+	if input.assignee_ref_json != "" do task.assignee_ref_json = input.assignee_ref_json
+	if input.reviewer_refs_json != "" do task.reviewer_refs_json = input.reviewer_refs_json
+
+	if refs_ok, refs_err := validate_actor_refs(service, chain, task.assignee_ref_json, task.reviewer_refs_json); !refs_ok do return domain.Task{}, false, refs_err
+	task.updated_at = platform.clock_now(service.clock)
+	saved, save_ok, save_err := iface.taskchain_save_task(service.repo, task)
+	if !save_ok do return domain.Task{}, false, save_err
+
+	if input.has_depends_on {
+		// clear existing deps and add new ones
+		existing_deps, _ := iface.taskchain_list_dependencies_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
+		for ed in existing_deps {
+			if ed.task_id == task.task_id {
+				iface.taskchain_remove_dependency(service.repo, task.task_id, ed.depends_on_task_id, chain.owner_user_id)
+			}
+		}
+		for dep_id in input.depends_on {
+			if _, dep_ok, dep_err := add_task_dependency(service, auth, task.task_id, dep_id); !dep_ok {
+				return domain.Task{}, false, dep_err
+			}
+		}
+	}
+
+	return saved, true, domain.Domain_Error{}
 }
 
 publish_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID) -> (domain.Task, bool, domain.Domain_Error) {
@@ -185,6 +271,24 @@ change_task_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 	if !ok do return domain.Task{}, false, err
 	if task.publish_state != .Published do return domain.Task{}, false, domain.domain_error(.Conflict, "draft task has no execution status")
 	if !valid_task_transition(task.status, next) do return domain.Task{}, false, domain.domain_error(.Conflict, "invalid task status transition")
+
+	// Dependency Gating: reject transition to In_Progress if any dependency is blocked
+	if next == .In_Progress {
+		deps, dep_err := iface.taskchain_list_dependencies_by_chain(service.repo, task.chain_id, task.owner_user_id)
+		if dep_err.code == .None {
+			for dep in deps {
+				if dep.task_id == task.task_id {
+					parent_task, p_ok, _ := iface.taskchain_get_task(service.repo, dep.depends_on_task_id)
+					if p_ok {
+						if !domain.task_status_unblocks_dependents(parent_task.status) {
+							return domain.Task{}, false, domain.domain_error(.Conflict, "task is blocked by dependencies")
+						}
+					}
+				}
+			}
+		}
+	}
+
 	now := platform.clock_now(service.clock)
 	task.status = next
 	task.updated_at = now
@@ -256,6 +360,220 @@ list_task_comments :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 	return iface.taskchain_list_comments_by_task(service.repo, task.task_id, task.owner_user_id)
 }
 
+// --- Member Management ---
+
+add_chain_member :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, agent_instance_id: string, role: string) -> (domain.Task_Chain_Member, bool, domain.Domain_Error) {
+	chain, ok, err := get_chain(service, auth, chain_id)
+	if !ok do return domain.Task_Chain_Member{}, false, err
+	if agent_instance_id == "" do return domain.Task_Chain_Member{}, false, domain.domain_error(.Validation_Failed, "agent_instance_id is required")
+
+	agent_id := ""
+	if service.agents != nil {
+		inst, inst_ok, _ := iface.agent_get_instance(service.agents, agent_instance_id)
+		if inst_ok {
+			if inst.owner_user_id != chain.owner_user_id do return domain.Task_Chain_Member{}, false, domain.domain_error(.Conflict, "agent instance owner mismatch")
+			agent_id = inst.agent_id
+		}
+	}
+
+	member_role := role
+	if member_role == "" do member_role = "worker"
+	now := platform.clock_now(service.clock)
+
+	member := domain.Task_Chain_Member{
+		chain_id = chain.chain_id,
+		agent_instance_id = agent_instance_id,
+		agent_id = agent_id,
+		owner_user_id = chain.owner_user_id,
+		role = member_role,
+		created_at = now,
+	}
+
+	return iface.taskchain_save_member(service.repo, member)
+}
+
+remove_chain_member :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, agent_instance_id: string) -> (bool, domain.Domain_Error) {
+	chain, ok, err := get_chain(service, auth, chain_id)
+	if !ok do return false, err
+
+	members, list_err := iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
+	if list_err.code != .None do return false, list_err
+
+	// Disallow removing sole coordinator
+	is_target_coordinator := false
+	coordinator_count := 0
+	for m in members {
+		if m.role == "coordinator" {
+			coordinator_count += 1
+			if m.agent_instance_id == agent_instance_id do is_target_coordinator = true
+		}
+	}
+
+	if is_target_coordinator && coordinator_count <= 1 {
+		return false, domain.domain_error(.Conflict, "cannot remove sole coordinator from task chain")
+	}
+
+	return iface.taskchain_remove_member(service.repo, chain.chain_id, agent_instance_id, chain.owner_user_id)
+}
+
+list_chain_members :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> ([]domain.Task_Chain_Member, domain.Domain_Error) {
+	chain, ok, err := get_chain(service, auth, chain_id)
+	if !ok do return nil, err
+	return iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
+}
+
+// --- Task Dependencies ---
+
+add_task_dependency :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id, depends_on_task_id: domain.Task_ID) -> (domain.Task_Dependency, bool, domain.Domain_Error) {
+	task, ok, err := get_task(service, auth, task_id)
+	if !ok do return domain.Task_Dependency{}, false, err
+	dep_task, dep_ok, dep_err := get_task(service, auth, depends_on_task_id)
+	if !dep_ok do return domain.Task_Dependency{}, false, dep_err
+
+	if task.chain_id != dep_task.chain_id do return domain.Task_Dependency{}, false, domain.domain_error(.Conflict, "dependencies must be in the same chain")
+	if task.task_id == dep_task.task_id do return domain.Task_Dependency{}, false, domain.domain_error(.Conflict, "task cannot depend on itself")
+
+	// Cycle detection
+	if has_dependency_cycle(service, task.chain_id, task.owner_user_id, task.task_id, dep_task.task_id) {
+		return domain.Task_Dependency{}, false, domain.domain_error(.Conflict, "circular dependency detected")
+	}
+
+	now := platform.clock_now(service.clock)
+	dep := domain.Task_Dependency{
+		task_id = task.task_id,
+		depends_on_task_id = dep_task.task_id,
+		chain_id = task.chain_id,
+		owner_user_id = task.owner_user_id,
+		created_at = now,
+	}
+
+	return iface.taskchain_save_dependency(service.repo, dep)
+}
+
+remove_task_dependency :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id, depends_on_task_id: domain.Task_ID) -> (bool, domain.Domain_Error) {
+	task, ok, err := get_task(service, auth, task_id)
+	if !ok do return false, err
+	return iface.taskchain_remove_dependency(service.repo, task.task_id, depends_on_task_id, task.owner_user_id)
+}
+
+list_chain_dependencies :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> ([]domain.Task_Dependency, domain.Domain_Error) {
+	chain, ok, err := get_chain(service, auth, chain_id)
+	if !ok do return nil, err
+	return iface.taskchain_list_dependencies_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
+}
+
+has_dependency_cycle :: proc(service: ^Taskchain_Service, chain_id: domain.Task_Chain_ID, owner: domain.User_ID, target_task_id, current_dep_id: domain.Task_ID) -> bool {
+	if target_task_id == current_dep_id do return true
+	deps, err := iface.taskchain_list_dependencies_by_chain(service.repo, chain_id, owner)
+	if err.code != .None do return false
+	for d in deps {
+		if d.task_id == current_dep_id {
+			if has_dependency_cycle(service, chain_id, owner, target_task_id, d.depends_on_task_id) do return true
+		}
+	}
+	return false
+}
+
+// --- Reviewer Voting & Quorum ---
+
+record_task_vote :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, input: Vote_Input) -> (domain.Task_Vote, bool, domain.Domain_Error) {
+	task, ok, err := get_task(service, auth, input.task_id)
+	if !ok do return domain.Task_Vote{}, false, err
+	if task.publish_state != .Published do return domain.Task_Vote{}, false, domain.domain_error(.Conflict, "draft task cannot receive votes")
+
+	voter_instance_id := ""
+	if auth.kind == .Instance_Token {
+		voter_instance_id = auth.agent_instance_id
+	}
+
+	// Assignee cannot vote on own task
+	if voter_instance_id != "" && strings.contains(task.assignee_ref_json, voter_instance_id) {
+		return domain.Task_Vote{}, false, domain.domain_error(.Forbidden, "assignee cannot vote on their own task")
+	}
+
+	now := platform.clock_now(service.clock)
+	v := input.vote
+	if v != "lgtm" && v != "ngtm" do return domain.Task_Vote{}, false, domain.domain_error(.Validation_Failed, "vote must be lgtm or ngtm")
+
+	vote := domain.Task_Vote{
+		task_id = task.task_id,
+		reviewer_agent_instance_id = voter_instance_id,
+		chain_id = task.chain_id,
+		owner_user_id = task.owner_user_id,
+		vote = v,
+		comment = input.comment,
+		created_at = now,
+		updated_at = now,
+	}
+
+	saved_vote, save_ok, save_err := iface.taskchain_save_vote(service.repo, vote)
+	if !save_ok do return domain.Task_Vote{}, false, save_err
+
+	// Evaluate Quorum and auto-promote task status
+	evaluate_task_quorum(service, task)
+
+	return saved_vote, true, domain.Domain_Error{}
+}
+
+evaluate_task_quorum :: proc(service: ^Taskchain_Service, task: domain.Task) {
+	if task.status != .In_Validation do return
+
+	votes, err := iface.taskchain_list_votes_by_task(service.repo, task.task_id, task.owner_user_id)
+	if err.code != .None do return
+
+	has_ngtm := false
+	lgtm_count := 0
+	for v in votes {
+		if v.vote == "ngtm" do has_ngtm = true
+		if v.vote == "lgtm" do lgtm_count += 1
+	}
+
+	updated_status := task.status
+	if has_ngtm {
+		updated_status = .Validated_Not_Good
+	} else {
+		required_count := count_required_reviewers(task.reviewer_refs_json)
+		if required_count <= 1 && lgtm_count >= 1 {
+			updated_status = .Validated_Good
+		} else if required_count > 1 && lgtm_count >= required_count {
+			updated_status = .Validated_Good
+		}
+	}
+
+	if updated_status != task.status {
+		t := task
+		t.status = updated_status
+		t.updated_at = platform.clock_now(service.clock)
+		iface.taskchain_save_task(service.repo, t)
+	}
+}
+
+count_required_reviewers :: proc(reviewer_refs_json: string) -> int {
+	if reviewer_refs_json == "" || reviewer_refs_json == "[]" do return 0
+	count := 0
+	search := 0
+	for search < len(reviewer_refs_json) {
+		rel := strings.index(reviewer_refs_json[search:], "agent_instance_id")
+		if rel < 0 do break
+		count += 1
+		search += rel + len("agent_instance_id")
+	}
+	search = 0
+	for search < len(reviewer_refs_json) {
+		rel := strings.index(reviewer_refs_json[search:], "user_id")
+		if rel < 0 do break
+		count += 1
+		search += rel + len("user_id")
+	}
+	return count
+}
+
+list_task_votes :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task_id: domain.Task_ID) -> ([]domain.Task_Vote, domain.Domain_Error) {
+	task, ok, err := get_task(service, auth, task_id)
+	if !ok do return nil, err
+	return iface.taskchain_list_votes_by_task(service.repo, task.task_id, task.owner_user_id)
+}
+
 nudge_target_for_status :: proc(status: domain.Task_Status) -> Nudge_Target {
 	switch status {
 	case .Assigned, .In_Progress, .Validated_Not_Good, .Paused: return .Assignee
@@ -322,8 +640,8 @@ agent_instance_same_chain :: proc(service: ^Taskchain_Service, instance_id, chai
 	return true, domain.Domain_Error{}
 }
 
-agent_instance_ref_json :: proc(instance_id: string) -> string { return strings.concatenate({"{\"type\":\"agent_instance\",\"agent_instance_id\":\"", instance_id, "\"}"}) }
-user_ref_json :: proc(user_id: string) -> string { return strings.concatenate({"{\"type\":\"user\",\"user_id\":\"", user_id, "\"}"}) }
+agent_instance_ref_json :: proc(instance_id: string) -> string { return strings.concatenate({`{"type":"agent_instance","agent_instance_id":"`, instance_id, `"}`}) }
+user_ref_json :: proc(user_id: string) -> string { return strings.concatenate({`{"type":"user","user_id":"`, user_id, `"}`}) }
 
 json_string_value_after :: proc(body: string, key_idx: int) -> string {
 	if key_idx < 0 || key_idx >= len(body) do return ""
@@ -334,4 +652,10 @@ json_string_value_after :: proc(body: string, key_idx: int) -> string {
 	if len(rest) == 0 || rest[0] != '"' do return ""
 	for i := 1; i < len(rest); i += 1 { if rest[i] == '"' do return rest[1:i] }
 	return ""
+}
+
+chain_status_from_string :: proc(status: string) -> domain.Task_Chain_Status {
+	if status == "completed" do return .Completed
+	if status == "cancelled" do return .Cancelled
+	return .Active
 }

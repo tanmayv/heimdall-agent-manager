@@ -1,3 +1,4 @@
+import TaskChainsPage from '../taskchain/TaskChainsPage';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch } from 'react-redux';
 import ConversationLaunchComposer from '../chat/ConversationLaunchComposer';
@@ -777,6 +778,8 @@ function DefaultsSettingsPanel() {
 }
 
 function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: { path: string; mobileBottomPadded?: boolean; conversations?: ConversationSummary[] }) {
+  const viewport = useViewport();
+  const isMobile = viewport === 'mobile';
   const description = routeDescription(path);
   const crumbs = routeBreadcrumbs(path, conversations);
   const isConversationThreadRoute = path.startsWith('/conversations/') && path !== '/conversations/new';
@@ -823,6 +826,10 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
           <MemorySettingsPanel />
         ) : path === '/settings/defaults' ? (
           <DefaultsSettingsPanel />
+        ) : path === '/chains' ? (
+          <TaskChainsPage isMobile={isMobile} />
+        ) : path.startsWith('/chains/') ? (
+          <TaskChainsPage chainId={decodeURIComponent(path.slice('/chains/'.length))} isMobile={isMobile} />
         ) : path === '/agents' ? (
           <AgentsPanel />
         ) : path === '/agents/new' ? (

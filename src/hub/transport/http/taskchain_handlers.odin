@@ -29,7 +29,7 @@ create_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
 	if !ok do return auth_resp
-	chain, created, err := taskchain_service.create_chain(h.taskchains, auth_ctx, taskchain_service.Create_Chain_Input{title = json_string(req.body, "title"), owner_user_id = json_string(req.body, "owner_user_id"), kind = json_string(req.body, "kind"), coordinator_agent_id = json_string(req.body, "coordinator_agent_id"), default_reviewer_refs_json = json_array_raw(req.body, "default_reviewer_refs")})
+	chain, created, err := taskchain_service.create_chain(h.taskchains, auth_ctx, taskchain_service.Create_Chain_Input{title = json_string(req.body, "title"), description = json_string(req.body, "description"), owner_user_id = json_string(req.body, "owner_user_id"), kind = json_string(req.body, "kind"), coordinator_agent_id = json_string(req.body, "coordinator_agent_id"), default_reviewer_refs_json = json_array_raw(req.body, "default_reviewer_refs")})
 	if !created do return respond_error(err, req.request_id)
 	if coord_agent_id := json_string(req.body, "coordinator_agent_id"); coord_agent_id != "" {
 		if h.agents == nil do return respond_error(domain.domain_error(.Internal_Error, "agent service is not configured"), req.request_id)
@@ -42,6 +42,17 @@ create_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
 }
 
+patch_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := path_part(req.path, 4)
+	chain, updated, err := taskchain_service.update_chain(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id), taskchain_service.Update_Chain_Input{title = json_string(req.body, "title"), description = json_string(req.body, "description"), status = json_string(req.body, "status")})
+	if !updated do return respond_error(err, req.request_id)
+	b := strings.builder_make(); write_chain_json(&b, chain)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+}
+
 task_chain_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
@@ -49,7 +60,33 @@ task_chain_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	chain_id := path_part(req.path, 4)
 	chain, got, err := taskchain_service.get_chain(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id))
 	if !got do return respond_error(err, req.request_id)
-	b := strings.builder_make(); write_chain_json(&b, chain)
+
+	tasks, _ := taskchain_service.list_tasks(h.taskchains, auth_ctx, chain.chain_id)
+	members, _ := taskchain_service.list_chain_members(h.taskchains, auth_ctx, chain.chain_id)
+	deps, _ := taskchain_service.list_chain_dependencies(h.taskchains, auth_ctx, chain.chain_id)
+
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"chain_id\":\""); write_handler_json_string(&b, string(chain.chain_id))
+	strings.write_string(&b, "\",\"title\":\""); write_handler_json_string(&b, chain.title)
+	strings.write_string(&b, "\",\"description\":\""); write_handler_json_string(&b, chain.description)
+	strings.write_string(&b, "\",\"publish_state\":\""); write_handler_json_string(&b, publish_state_http(chain.publish_state))
+	strings.write_string(&b, "\",\"status\":\""); write_handler_json_string(&b, chain_status_http(chain.status))
+	strings.write_string(&b, "\",\"kind\":\""); write_handler_json_string(&b, chain.kind)
+	strings.write_string(&b, "\",\"coordinator_agent_instance_id\":\""); write_handler_json_string(&b, chain.coordinator_agent_instance_id)
+	strings.write_string(&b, "\",\"default_reviewer_refs\":"); strings.write_string(&b, json_or_empty_array(chain.default_reviewer_refs_json))
+	strings.write_string(&b, ",\"created_at\":\""); write_handler_json_string(&b, chain.created_at)
+	strings.write_string(&b, "\",\"updated_at\":\""); write_handler_json_string(&b, chain.updated_at)
+	strings.write_string(&b, "\",\"members\":[")
+	for m, i in members {
+		if i > 0 do strings.write_byte(&b, ',')
+		write_member_json(&b, m)
+	}
+	strings.write_string(&b, "],\"tasks\":[")
+	for task, i in tasks {
+		if i > 0 do strings.write_byte(&b, ',')
+		write_task_detail_json(&b, h, auth_ctx, task, deps)
+	}
+	strings.write_string(&b, "]}")
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
@@ -82,9 +119,15 @@ list_tasks_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	chain_id := path_part(req.path, 4)
 	tasks, err := taskchain_service.list_tasks(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id))
 	if err.code != .None do return respond_error(err, req.request_id)
+	deps, _ := taskchain_service.list_chain_dependencies(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id))
 	b := strings.builder_make(); strings.write_byte(&b, '[')
 	written := 0
-	for task in tasks { if !task_matches_query(task, req.query) do continue; if written > 0 do strings.write_byte(&b, ','); write_task_json(&b, task); written += 1 }
+	for task in tasks {
+		if !task_matches_query(task, req.query) do continue
+		if written > 0 do strings.write_byte(&b, ',')
+		write_task_detail_json(&b, h, auth_ctx, task, deps)
+		written += 1
+	}
 	strings.write_byte(&b, ']')
 	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
 }
@@ -94,10 +137,26 @@ create_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := path_part(req.path, 4)
-	task, created, err := taskchain_service.create_task(h.taskchains, auth_ctx, taskchain_service.Create_Task_Input{chain_id = domain.Task_Chain_ID(chain_id), title = json_string(req.body, "title"), owner_user_id = json_string(req.body, "owner_user_id"), assignee_ref_json = json_object_or_empty(req.body, "assignee_ref"), reviewer_refs_json = json_array_optional(req.body, "reviewer_refs")})
+	deps := json_array_of_strings(req.body, "depends_on")
+	task, created, err := taskchain_service.create_task(h.taskchains, auth_ctx, taskchain_service.Create_Task_Input{chain_id = domain.Task_Chain_ID(chain_id), title = json_string(req.body, "title"), description = json_string(req.body, "description"), owner_user_id = json_string(req.body, "owner_user_id"), assignee_ref_json = json_object_or_empty(req.body, "assignee_ref"), reviewer_refs_json = json_array_optional(req.body, "reviewer_refs"), depends_on = deps})
 	if !created do return respond_error(err, req.request_id)
 	b := strings.builder_make(); write_task_json(&b, task)
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
+}
+
+patch_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+	task_id := domain.Task_ID(path_part(req.path, 6))
+	if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
+	has_deps := strings.contains(req.body, "\"depends_on\"")
+	deps := json_array_of_strings(req.body, "depends_on")
+	task, updated, err := taskchain_service.update_task(h.taskchains, auth_ctx, task_id, taskchain_service.Update_Task_Input{title = json_string(req.body, "title"), description = json_string(req.body, "description"), assignee_ref_json = json_object_or_empty(req.body, "assignee_ref"), reviewer_refs_json = json_array_optional(req.body, "reviewer_refs"), depends_on = deps, has_depends_on = has_deps})
+	if !updated do return respond_error(err, req.request_id)
+	b := strings.builder_make(); write_task_json(&b, task)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
 publish_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
@@ -128,6 +187,19 @@ change_task_status_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
+cancel_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+	task_id := domain.Task_ID(path_part(req.path, 6))
+	if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
+	task, changed, err := taskchain_service.change_task_status(h.taskchains, auth_ctx, task_id, .Cancelled)
+	if !changed do return respond_error(err, req.request_id)
+	b := strings.builder_make(); write_task_json(&b, task)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
+}
+
 nudge_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
@@ -142,19 +214,175 @@ nudge_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req))
 }
 
-require_task_path_scope :: proc(h: ^Taskchain_Handlers, auth_ctx: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, task_id: domain.Task_ID, req: Request) -> (bool, Response) {
-	task, ok, err := taskchain_service.get_task(h.taskchains, auth_ctx, task_id)
-	if !ok do return false, respond_error(err, req.request_id)
-	if task.chain_id != chain_id do return false, respond_error(domain.domain_error(.Not_Found, "task not found in chain"), req.request_id)
-	return true, Response{}
+list_task_comments_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+	task_id := domain.Task_ID(path_part(req.path, 6))
+	if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
+	comments, err := taskchain_service.list_task_comments(h.taskchains, auth_ctx, task_id)
+	if err.code != .None do return respond_error(err, req.request_id)
+	b := strings.builder_make(); strings.write_byte(&b, '[')
+	for c, i in comments { if i > 0 do strings.write_byte(&b, ','); write_task_comment_json(&b, c) }
+	strings.write_byte(&b, ']')
+	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
+}
+
+create_task_comment_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+	task_id := domain.Task_ID(path_part(req.path, 6))
+	if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
+	comment, saved, err := taskchain_service.comment_task(h.taskchains, auth_ctx, taskchain_service.Task_Comment_Input{task_id = task_id, body = json_string(req.body, "body")})
+	if !saved do return respond_error(err, req.request_id)
+	b := strings.builder_make(); write_task_comment_json(&b, comment)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
+}
+
+list_task_votes_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+	task_id := domain.Task_ID(path_part(req.path, 6))
+	if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
+	votes, err := taskchain_service.list_task_votes(h.taskchains, auth_ctx, task_id)
+	if err.code != .None do return respond_error(err, req.request_id)
+	b := strings.builder_make(); strings.write_byte(&b, '[')
+	for v, i in votes { if i > 0 do strings.write_byte(&b, ','); write_task_vote_json(&b, v) }
+	strings.write_byte(&b, ']')
+	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
+}
+
+vote_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+	task_id := domain.Task_ID(path_part(req.path, 6))
+	if matched, mismatch_resp := require_task_path_scope(h, auth_ctx, chain_id, task_id, req); !matched do return mismatch_resp
+	vote, recorded, err := taskchain_service.record_task_vote(h.taskchains, auth_ctx, taskchain_service.Vote_Input{task_id = task_id, vote = json_string(req.body, "vote"), comment = json_string(req.body, "comment")})
+	if !recorded do return respond_error(err, req.request_id)
+	b := strings.builder_make(); write_task_vote_json(&b, vote)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+list_chain_members_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+	members, err := taskchain_service.list_chain_members(h.taskchains, auth_ctx, chain_id)
+	if err.code != .None do return respond_error(err, req.request_id)
+	b := strings.builder_make(); strings.write_byte(&b, '[')
+	for m, i in members { if i > 0 do strings.write_byte(&b, ','); write_member_json(&b, m) }
+	strings.write_byte(&b, ']')
+	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
+}
+
+add_chain_member_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+	member, added, err := taskchain_service.add_chain_member(h.taskchains, auth_ctx, chain_id, json_string(req.body, "agent_instance_id"), json_string(req.body, "role"))
+	if !added do return respond_error(err, req.request_id)
+	b := strings.builder_make(); write_member_json(&b, member)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
+}
+
+remove_chain_member_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Taskchain_Handlers)(ctx)
+	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	if !ok do return auth_resp
+	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
+	agent_instance_id := path_part(req.path, 6)
+	removed, err := taskchain_service.remove_chain_member(h.taskchains, auth_ctx, chain_id, agent_instance_id)
+	if !removed do return respond_error(err, req.request_id)
+	return respond_success("{\"removed\":true}", req.request_id, auth_ctx_server_time(req))
 }
 
 write_chain_json :: proc(b: ^strings.Builder, c: domain.Task_Chain) {
-	strings.write_string(b, "{\"chain_id\":\""); write_handler_json_string(b, string(c.chain_id)); strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, c.title); strings.write_string(b, "\",\"publish_state\":\""); write_handler_json_string(b, publish_state_http(c.publish_state)); strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, chain_status_http(c.status)); strings.write_string(b, "\",\"kind\":\""); write_handler_json_string(b, c.kind); strings.write_string(b, "\",\"coordinator_agent_instance_id\":\""); write_handler_json_string(b, c.coordinator_agent_instance_id); strings.write_string(b, "\",\"default_reviewer_refs\":"); strings.write_string(b, json_or_empty_array(c.default_reviewer_refs_json)); strings.write_string(b, ",\"created_at\":\""); write_handler_json_string(b, c.created_at); strings.write_string(b, "\",\"updated_at\":\""); write_handler_json_string(b, c.updated_at); strings.write_string(b, "\"}")
+	strings.write_string(b, "{\"chain_id\":\""); write_handler_json_string(b, string(c.chain_id)); strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, c.title); strings.write_string(b, "\",\"description\":\""); write_handler_json_string(b, c.description); strings.write_string(b, "\",\"publish_state\":\""); write_handler_json_string(b, publish_state_http(c.publish_state)); strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, chain_status_http(c.status)); strings.write_string(b, "\",\"kind\":\""); write_handler_json_string(b, c.kind); strings.write_string(b, "\",\"coordinator_agent_instance_id\":\""); write_handler_json_string(b, c.coordinator_agent_instance_id); strings.write_string(b, "\",\"default_reviewer_refs\":"); strings.write_string(b, json_or_empty_array(c.default_reviewer_refs_json)); strings.write_string(b, ",\"created_at\":\""); write_handler_json_string(b, c.created_at); strings.write_string(b, "\",\"updated_at\":\""); write_handler_json_string(b, c.updated_at); strings.write_string(b, "\"}")
 }
 
 write_task_json :: proc(b: ^strings.Builder, t: domain.Task) {
-	strings.write_string(b, "{\"task_id\":\""); write_handler_json_string(b, string(t.task_id)); strings.write_string(b, "\",\"chain_id\":\""); write_handler_json_string(b, string(t.chain_id)); strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, t.title); strings.write_string(b, "\",\"publish_state\":\""); write_handler_json_string(b, publish_state_http(t.publish_state)); strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, task_status_http(t.status)); strings.write_string(b, "\",\"assignee_ref\":"); strings.write_string(b, json_or_empty_object(t.assignee_ref_json)); strings.write_string(b, ",\"reviewer_refs\":"); strings.write_string(b, json_or_empty_array(t.reviewer_refs_json)); strings.write_string(b, ",\"unblocks_dependents\":"); strings.write_string(b, "true" if domain.task_status_unblocks_dependents(t.status) else "false"); strings.write_string(b, ",\"updated_at\":\""); write_handler_json_string(b, t.updated_at); strings.write_string(b, "\"}")
+	strings.write_string(b, "{\"task_id\":\""); write_handler_json_string(b, string(t.task_id)); strings.write_string(b, "\",\"chain_id\":\""); write_handler_json_string(b, string(t.chain_id)); strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, t.title); strings.write_string(b, "\",\"description\":\""); write_handler_json_string(b, t.description); strings.write_string(b, "\",\"publish_state\":\""); write_handler_json_string(b, publish_state_http(t.publish_state)); strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, task_status_http(t.status)); strings.write_string(b, "\",\"assignee_ref\":"); strings.write_string(b, json_or_empty_object(t.assignee_ref_json)); strings.write_string(b, ",\"reviewer_refs\":"); strings.write_string(b, json_or_empty_array(t.reviewer_refs_json)); strings.write_string(b, ",\"unblocks_dependents\":"); strings.write_string(b, "true" if domain.task_status_unblocks_dependents(t.status) else "false"); strings.write_string(b, ",\"updated_at\":\""); write_handler_json_string(b, t.updated_at); strings.write_string(b, "\"}")
+}
+
+write_task_detail_json :: proc(b: ^strings.Builder, h: ^Taskchain_Handlers, auth_ctx: contracts.Auth_Context, t: domain.Task, deps: []domain.Task_Dependency) {
+	is_blocked := false
+	dep_ids := make([dynamic]string)
+	defer delete(dep_ids)
+	for d in deps {
+		if d.task_id == t.task_id {
+			append(&dep_ids, string(d.depends_on_task_id))
+			if parent, p_ok, _ := taskchain_service.get_task(h.taskchains, auth_ctx, d.depends_on_task_id); p_ok {
+				if !domain.task_status_unblocks_dependents(parent.status) do is_blocked = true
+			}
+		}
+	}
+
+	comments, _ := taskchain_service.list_task_comments(h.taskchains, auth_ctx, t.task_id)
+	votes, _ := taskchain_service.list_task_votes(h.taskchains, auth_ctx, t.task_id)
+
+	strings.write_string(b, "{\"task_id\":\""); write_handler_json_string(b, string(t.task_id))
+	strings.write_string(b, "\",\"chain_id\":\""); write_handler_json_string(b, string(t.chain_id))
+	strings.write_string(b, "\",\"title\":\""); write_handler_json_string(b, t.title)
+	strings.write_string(b, "\",\"description\":\""); write_handler_json_string(b, t.description)
+	strings.write_string(b, "\",\"publish_state\":\""); write_handler_json_string(b, publish_state_http(t.publish_state))
+	strings.write_string(b, "\",\"status\":\""); write_handler_json_string(b, task_status_http(t.status))
+	strings.write_string(b, "\",\"assignee_ref\":"); strings.write_string(b, json_or_empty_object(t.assignee_ref_json))
+	strings.write_string(b, ",\"reviewer_refs\":"); strings.write_string(b, json_or_empty_array(t.reviewer_refs_json))
+	strings.write_string(b, ",\"blocked\":"); strings.write_string(b, "true" if is_blocked else "false")
+	strings.write_string(b, ",\"depends_on\":[")
+	for id, i in dep_ids {
+		if i > 0 do strings.write_byte(b, ',')
+		strings.write_string(b, "\""); write_handler_json_string(b, id); strings.write_string(b, "\"")
+	}
+	strings.write_string(b, "],\"comments\":[")
+	for c, i in comments {
+		if i > 0 do strings.write_byte(b, ',')
+		write_task_comment_json(b, c)
+	}
+	strings.write_string(b, "],\"votes\":[")
+	for v, i in votes {
+		if i > 0 do strings.write_byte(b, ',')
+		write_task_vote_json(b, v)
+	}
+	strings.write_string(b, "],\"created_at\":\""); write_handler_json_string(b, t.created_at)
+	strings.write_string(b, "\",\"updated_at\":\""); write_handler_json_string(b, t.updated_at); strings.write_string(b, "\"}")
+}
+
+write_member_json :: proc(b: ^strings.Builder, m: domain.Task_Chain_Member) {
+	strings.write_string(b, "{\"chain_id\":\""); write_handler_json_string(b, string(m.chain_id))
+	strings.write_string(b, "\",\"agent_instance_id\":\""); write_handler_json_string(b, m.agent_instance_id)
+	strings.write_string(b, "\",\"agent_id\":\""); write_handler_json_string(b, m.agent_id)
+	strings.write_string(b, "\",\"role\":\""); write_handler_json_string(b, m.role)
+	strings.write_string(b, "\",\"created_at\":\""); write_handler_json_string(b, m.created_at)
+	strings.write_string(b, "\"}")
+}
+
+write_task_vote_json :: proc(b: ^strings.Builder, v: domain.Task_Vote) {
+	strings.write_string(b, "{\"task_id\":\""); write_handler_json_string(b, string(v.task_id))
+	strings.write_string(b, "\",\"reviewer_agent_instance_id\":\""); write_handler_json_string(b, v.reviewer_agent_instance_id)
+	strings.write_string(b, "\",\"vote\":\""); write_handler_json_string(b, v.vote)
+	strings.write_string(b, "\",\"comment\":\""); write_handler_json_string(b, v.comment)
+	strings.write_string(b, "\",\"created_at\":\""); write_handler_json_string(b, v.created_at)
+	strings.write_string(b, "\"}")
+}
+
+write_task_comment_json :: proc(b: ^strings.Builder, c: domain.Task_Comment) {
+	strings.write_string(b, "{\"comment_id\":\""); write_handler_json_string(b, c.comment_id)
+	strings.write_string(b, "\",\"task_id\":\""); write_handler_json_string(b, string(c.task_id))
+	strings.write_string(b, "\",\"chain_id\":\""); write_handler_json_string(b, string(c.chain_id))
+	strings.write_string(b, "\",\"author_agent_instance_id\":\""); write_handler_json_string(b, c.author_agent_instance_id)
+	strings.write_string(b, "\",\"body\":\""); write_handler_json_string(b, c.body)
+	strings.write_string(b, "\",\"created_at\":\""); write_handler_json_string(b, c.created_at)
+	strings.write_string(b, "\"}")
 }
 
 path_part :: proc(path: string, index: int) -> string {
@@ -180,3 +408,27 @@ json_object_from_value :: proc(value:string)->string{ i:=0; for i<len(value)&&js
 json_is_ws :: proc(ch: byte)->bool{ return ch==' ' || ch=='\t' || ch=='\r' || ch=='\n' }
 json_balanced_from :: proc(value:string, open, close:byte)->string{ depth:=0; in_string:=false; escaped:=false; for i:=0; i<len(value); i+=1{ ch:=value[i]; if in_string { if escaped { escaped=false; continue }; if ch=='\\' { escaped=true; continue }; if ch=='"' do in_string=false; continue }; if ch=='"' { in_string=true; continue }; if ch==open do depth+=1; if ch==close { depth-=1; if depth==0 do return value[:i+1] } }; return "" }
 task_matches_query :: proc(task: domain.Task, query: string) -> bool { assignee:=query_value(query,"assignee_agent_instance_id"); if assignee!="" && !strings.contains(task.assignee_ref_json, assignee) do return false; reviewer:=query_value(query,"reviewer_agent_instance_id"); if reviewer!="" && !strings.contains(task.reviewer_refs_json, reviewer) do return false; reviewer_user:=query_value(query,"reviewer_user_id"); if reviewer_user!="" && !strings.contains(task.reviewer_refs_json, reviewer_user) do return false; return true }
+
+require_task_path_scope :: proc(h: ^Taskchain_Handlers, auth_ctx: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, task_id: domain.Task_ID, req: Request) -> (bool, Response) {
+	task, ok, err := taskchain_service.get_task(h.taskchains, auth_ctx, task_id)
+	if !ok do return false, respond_error(err, req.request_id)
+	if task.chain_id != chain_id do return false, respond_error(domain.domain_error(.Not_Found, "task not found in chain"), req.request_id)
+	return true, Response{}
+}
+
+json_array_of_strings :: proc(body: string, key: string) -> []domain.Task_ID {
+	raw := json_array_optional(body, key)
+	if raw == "" || raw == "[]" do return nil
+	res := make([dynamic]domain.Task_ID)
+	search := 0
+	for search < len(raw) {
+		q1 := strings.index_byte(raw[search:], '"')
+		if q1 < 0 do break
+		q2 := strings.index_byte(raw[search + q1 + 1:], '"')
+		if q2 < 0 do break
+		val := raw[search + q1 + 1 : search + q1 + 1 + q2]
+		if val != "" do append(&res, domain.Task_ID(val))
+		search = search + q1 + 1 + q2 + 1
+	}
+	return res[:]
+}
