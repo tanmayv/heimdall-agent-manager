@@ -1,6 +1,7 @@
 package main
 
 import "core:c"
+import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:sys/posix"
@@ -20,7 +21,7 @@ bridge_bootstrap_fetch_and_materialize :: proc(hub_url, bridge_token, instance_i
 	skill_content := extract_json_string(resp.body, "default_skill_content", "")
 	skill_path := bridge_bootstrap_skill_relative_path(provider, skill_name)
 	skill_written := bridge_bootstrap_write_skill_file(run_dir, skill_path, skill_content)
-	_ = bridge_bootstrap_write_ham_ctl_wrapper(run_dir, bridge_endpoint, agent_token, instance_id)
+	if !bridge_bootstrap_write_ham_ctl_wrapper(run_dir, bridge_endpoint, agent_token, instance_id) do return false
 	manifest := strings.builder_make()
 	strings.write_string(&manifest, "{\"agent_instance_id\":\""); strings.write_string(&manifest, instance_id)
 	strings.write_string(&manifest, "\",\"managed_files\":[{\"relative_path\":\"AGENTS.md\",\"kind\":\"AGENTS_MD\"},{\"relative_path\":\".heimdall/bin/ham-ctl\",\"kind\":\"CTL_WRAPPER\"}")
@@ -94,7 +95,10 @@ bridge_bootstrap_ctl_guidance :: proc() -> string {
 
 bridge_bootstrap_write_ham_ctl_wrapper :: proc(run_dir, bridge_endpoint, agent_token, instance_id: string) -> bool {
 	ctl := bridge_bootstrap_ham_ctl_path()
-	if strings.trim_space(ctl) == "" do return false
+	if strings.trim_space(ctl) == "" {
+		fmt.eprintln("bridge bootstrap failed: ham-ctl not found; set [wrapper].ham_ctl_bin or HEIMDALL_HAM_CTL_BIN")
+		return false
+	}
 	bin_dir := strings.concatenate({strings.trim_right(run_dir, "/"), "/.heimdall/bin"})
 	_ = os.make_directory_all(bin_dir)
 	wrapper_path := strings.concatenate({bin_dir, "/ham-ctl"})
@@ -123,12 +127,23 @@ bridge_bootstrap_shell_quote :: proc(b: ^strings.Builder, value: string) {
 }
 
 bridge_bootstrap_ham_ctl_path :: proc() -> string {
+	if configured := bridge_bootstrap_normalize_executable_path(bridge_config.ham_ctl_bin); configured != "" do return configured
 	if v := os.get_env_alloc("HEIMDALL_HAM_CTL_BIN", context.allocator); strings.trim_space(v) != "" {
-		if absolute, err := os.get_absolute_path(v, context.allocator); err == nil && strings.trim_space(absolute) != "" do return absolute
-		return v
+		if normalized := bridge_bootstrap_normalize_executable_path(v); normalized != "" do return normalized
 	}
 	if found := bridge_bootstrap_find_on_path("ham-ctl"); found != "" do return found
 	return ""
+}
+
+bridge_bootstrap_normalize_executable_path :: proc(value: string) -> string {
+	trimmed := strings.trim_space(value)
+	if trimmed == "" do return ""
+	if strings.contains(trimmed, "/") {
+		expanded := bridge_expand_home(trimmed)
+		if absolute, err := os.get_absolute_path(expanded, context.allocator); err == nil && strings.trim_space(absolute) != "" do return absolute
+		return expanded
+	}
+	return bridge_bootstrap_find_on_path(trimmed)
 }
 
 bridge_bootstrap_find_on_path :: proc(name: string) -> string {

@@ -15,7 +15,7 @@ def main():
     for s in ['restart_instance :: proc','reconfigure_instance :: proc','relaunch_instance :: proc','ensure_instance_conversation','resolve_instance_chain','taskchain_get_chain','content_save_conversation','validate_pinned_provider_tier','validate_provider_tier_intersection','run_count += 1','stopped_at = ""']:
         require(s in svc, f'missing restart/reconfigure behavior {s}')
     require('agent_id, bridge_id, project_id, chain_id, and conversation_id are immutable' in svc and '.Conflict' in svc, 'immutable instance fields must be rejected with conflict')
-    require('support.provider != "" && provider != support.provider' in svc and 'support.tier != "" && tier != support.tier' in svc, 'provider/tier must be validated against support policy intersection')
+    require('AgentBridgeSupport' in svc and 'no longer allowlists provider/tier' in svc and 'bridge_supports_provider_tier(bridge, provider, tier)' in svc, 'provider/tier must be validated against the bridge capability matrix')
     require('bridge_runtime_registry_has_live' in svc and 'pinned bridge is offline' in svc, 'restart must require pinned live bridge')
     require('launch_command_json(command_id, next)' in svc, 'restart/reconfigure must replay bootstrap via launch command')
     require('private_conversation' in svc and 'conversation_id = conversation_id' in svc and 'write_bootstrap_messages' in svc, 'HBR-24 requires private chain creation and chain/conversation-aware bootstrap')
@@ -24,7 +24,7 @@ def main():
         require(route in wiring, f'missing route {route}')
     for s in ['restart_agent_instance_handler','patch_agent_instance_handler','reconfigure_input_from_body','has_agent_id','has_bridge_id','has_project_id']:
         require(s in handlers, f'missing handler/parser {s}')
-    require('restart_idle_conversation_instance' in content_handlers and 'agent_service.restart_instance' in content_handlers and 'inst.runtime_status=="idle" || inst.runtime_status=="stopped"' in content_handlers, 'continuing idle/stopped conversation must restart the pinned instance')
+    require('restart_stopped_conversation_instance' in content_handlers and 'agent_service.restart_instance' in content_handlers and 'inst.runtime_status=="stopped" || inst.runtime_status=="failed" || inst.runtime_status=="unreachable"' in content_handlers and 'inst.runtime_status=="idle"' not in content_handlers, 'continuing stopped/error conversation must restart the pinned instance, but live idle must not restart')
     require('agent_service.create_instance' in content_handlers and 'get_conversation_by_instance' in content_handlers, 'first-message chat creation without an instance must create a bound instance conversation')
     require('validate_initial_message' in content_handlers and 'if !sent do return respond_error(send_err' in content_handlers, 'initial-message chat creation must propagate message validation/save errors')
     require('chain_id = chain_id' in svc and 'chain_id = json_string(body, "chain_id")' in handlers, 'system/task-chain launch must bind conversation chain_id')

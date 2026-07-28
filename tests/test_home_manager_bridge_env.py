@@ -19,6 +19,7 @@ let
   hmStub = {{ lib, ... }}: {{
     options = {{
       home.username = lib.mkOption {{ type = lib.types.str; default = "tester"; }};
+      home.homeDirectory = lib.mkOption {{ type = lib.types.str; default = "/home/tester"; }};
       home.profileDirectory = lib.mkOption {{ type = lib.types.str; default = "/home/tester/.nix-profile"; }};
       home.packages = lib.mkOption {{ type = lib.types.listOf lib.types.anything; default = []; }};
       home.activation = lib.mkOption {{ type = lib.types.attrsOf lib.types.anything; default = {{}}; }};
@@ -90,6 +91,8 @@ def main() -> int:
         require(f"{env_name} shell is absolute bash", env.get("SHELL", "").endswith("/bin/bash"))
         path = env.get("PATH", "")
         require(f"{env_name} PATH includes home profile", "/home/tester/.nix-profile/bin" in path)
+        require(f"{env_name} PATH includes pi install dir", "/home/tester/.pi/agent/bin" in path)
+        require(f"{env_name} PATH includes user local bin", "/home/tester/.local/bin" in path)
         require(f"{env_name} PATH includes tmux package", "tmux" in path)
         require(f"{env_name} PATH includes bash package", "bash" in path)
         require(f"{env_name} PATH includes system fallback", "/run/current-system/sw/bin" in path)

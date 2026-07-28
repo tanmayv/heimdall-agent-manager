@@ -40,9 +40,9 @@ endpoint = "http://127.0.0.1:49323"
 token    = "plk_3b4afbe5089462d2618fd6f566b640fa35b7688c77797e1ece12f6187afa0b86"
 
 [guide_agent]
-enabled = true
-autostart = true
-restart_if_stopped = true
+enabled = false
+autostart = false
+restart_if_stopped = false
 agent_instance_id = "guide@heimdall"
 template_id = "guide"
 provider_profile = "jetski"

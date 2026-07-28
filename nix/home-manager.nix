@@ -423,6 +423,8 @@ let
 
   bridgeDefaultPath = lib.concatStringsSep ":" [
     "${config.home.profileDirectory}/bin"
+    "${config.home.homeDirectory}/.pi/agent/bin"
+    "${config.home.homeDirectory}/.local/bin"
     (lib.makeBinPath [ pkgs.tmux pkgs.bashInteractive pkgs.coreutils ])
     "/run/current-system/sw/bin"
     "/etc/profiles/per-user/${config.home.username}/bin"
@@ -632,17 +634,17 @@ in
     guideAgent = {
       enabled = lib.mkOption {
         type        = lib.types.bool;
-        default     = true;
+        default     = false;
         description = "Whether the guide agent is enabled (`[guide_agent].enabled`).";
       };
       autostart = lib.mkOption {
         type        = lib.types.bool;
-        default     = true;
+        default     = false;
         description = "Whether the daemon should start the guide agent during daemon startup (`[guide_agent].autostart`).";
       };
       restartIfStopped = lib.mkOption {
         type        = lib.types.bool;
-        default     = true;
+        default     = false;
         description = "Guide-agent config parity for `[guide_agent].restart_if_stopped`. The current runtime stores and reports this value, but no restart loop behavior was found in the daemon yet.";
       };
       agentInstanceId = lib.mkOption {

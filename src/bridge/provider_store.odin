@@ -835,7 +835,23 @@ bridge_agent_runtime_profile :: proc(profile: Bridge_Provider_Profile) -> agent_
 bridge_runtime_agent_argv_for_profile :: proc(profile: Bridge_Provider_Profile, tier, agent_token, agent_instance_id: string) -> []string {
 	resolved_tier := tier
 	if strings.trim_space(resolved_tier) == "" do resolved_tier = bridge_provider_default_tier(profile)
-	return agent_runtime.build_agent_command(bridge_agent_runtime_profile(profile), resolved_tier, bridge_config.daemon_url, agent_token, agent_instance_id)
+	argv := agent_runtime.build_agent_command(bridge_agent_runtime_profile(profile), resolved_tier, bridge_config.daemon_url, agent_token, agent_instance_id)
+	if len(argv) > 0 {
+		argv[0] = bridge_runtime_resolve_provider_executable(argv[0])
+	}
+	return argv
+}
+
+bridge_runtime_resolve_provider_executable :: proc(command: string) -> string {
+	trimmed := strings.trim_space(command)
+	if trimmed == "" do return command
+	if strings.contains(trimmed, "/") {
+		expanded := bridge_expand_home(trimmed)
+		if absolute, err := os.get_absolute_path(expanded, context.allocator); err == nil && strings.trim_space(absolute) != "" do return absolute
+		return expanded
+	}
+	if found := bridge_runtime_find_on_path(trimmed); found != "" do return found
+	return command
 }
 
 bridge_runtime_shell_command_for_profile :: proc(profile: Bridge_Provider_Profile, tier, agent_token, agent_instance_id: string) -> string {

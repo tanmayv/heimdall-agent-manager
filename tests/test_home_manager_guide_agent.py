@@ -17,6 +17,7 @@ let
   hmStub = {{ lib, ... }}: {{
     options = {{
       home.username = lib.mkOption {{ type = lib.types.str; default = "tester"; }};
+      home.homeDirectory = lib.mkOption {{ type = lib.types.str; default = "/home/tester"; }};
       home.profileDirectory = lib.mkOption {{ type = lib.types.str; default = "/home/tester/.nix-profile"; }};
       home.packages = lib.mkOption {{ type = lib.types.listOf lib.types.anything; default = []; }};
       home.activation = lib.mkOption {{ type = lib.types.attrsOf lib.types.anything; default = {{}}; }};
@@ -64,9 +65,9 @@ def require(name: str, ok: bool):
 def main() -> int:
     default_cfg = render_config("{}")
     require("default config renders guide_agent section", "[guide_agent]" in default_cfg)
-    require("default guide enabled true", 'enabled = true' in default_cfg)
-    require("default guide autostart true", 'autostart = true' in default_cfg)
-    require("default guide restart_if_stopped true", 'restart_if_stopped = true' in default_cfg)
+    require("default guide disabled", 'enabled = false' in default_cfg)
+    require("default guide autostart disabled", 'autostart = false' in default_cfg)
+    require("default guide restart_if_stopped disabled", 'restart_if_stopped = false' in default_cfg)
     require("default guide singleton id", 'agent_instance_id = "guide@heimdall"' in default_cfg)
     require("default guide template id", 'template_id = "guide"' in default_cfg)
     require("default guide provider profile", 'provider_profile = "pi"' in default_cfg)
@@ -76,9 +77,9 @@ def main() -> int:
     custom_cfg = render_config('''
       {
         programs.heimdall.guideAgent = {
-          enabled = false;
-          autostart = false;
-          restartIfStopped = false;
+          enabled = true;
+          autostart = true;
+          restartIfStopped = true;
           agentInstanceId = "guide@alt";
           templateId = "guide-custom";
           providerProfile = "";
@@ -86,9 +87,9 @@ def main() -> int:
         };
       }
     ''')
-    require("custom guide enabled false", 'enabled = false' in custom_cfg)
-    require("custom guide autostart false", 'autostart = false' in custom_cfg)
-    require("custom guide restart_if_stopped false", 'restart_if_stopped = false' in custom_cfg)
+    require("custom guide enabled true", 'enabled = true' in custom_cfg)
+    require("custom guide autostart true", 'autostart = true' in custom_cfg)
+    require("custom guide restart_if_stopped true", 'restart_if_stopped = true' in custom_cfg)
     require("custom guide instance id", 'agent_instance_id = "guide@alt"' in custom_cfg)
     require("custom guide template id", 'template_id = "guide-custom"' in custom_cfg)
     require("custom guide empty provider profile", 'provider_profile = ""' in custom_cfg)

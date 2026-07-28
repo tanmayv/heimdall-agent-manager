@@ -187,7 +187,14 @@ function formatMessageTimestamp(unixMs: number): ChatTimestamp {
 
 function runtimeNeedsStart(status: string): boolean {
   const normalized = String(status || '').toLowerCase();
-  return !normalized || normalized === 'stopped' || normalized === 'failed' || normalized === 'unreachable' || normalized === 'idle';
+  // `idle` is a live Bridge runtime state: the wrapper is connected and ready,
+  // just not currently busy. Show Stop for idle/running/busy instances so users
+  // can stop the real process instead of accidentally relaunching it.
+  return !normalized || normalized === 'stopped' || normalized === 'failed' || normalized === 'unreachable';
+}
+
+function runtimeIsStopping(status: string): boolean {
+  return String(status || '').toLowerCase() === 'stopping';
 }
 
 function deliveryStatusFor(message: ChatMessage): ChatDeliveryStatus {
@@ -269,7 +276,8 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const instanceProvider = String(instance?.provider || '');
   const instanceTier = String(instance?.tier || '');
   const instanceBridgeId = String(instance?.bridge_id || instance?.bridgeId || '');
-  const runtimeStatus = String(instance?.runtime_status || instance?.runtimeStatus || '');
+  const conversationRuntimeStatus = String(conversation?.runtime_status || conversation?.runtimeStatus || '');
+  const runtimeStatus = String(instance?.runtime_status || instance?.runtimeStatus || conversationRuntimeStatus || '');
 
   const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 5000, refetchOnMountOrArgChange: true });
   const bridges = bridgesQuery.data?.bridges || [];
@@ -317,8 +325,9 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     [olderMessages, baseMessages, localMessages, agentId, agentInstanceId],
   );
   const needsStart = runtimeNeedsStart(runtimeStatus);
+  const runtimeStopping = runtimeIsStopping(runtimeStatus);
   const runtimeActionBusy = reconfigureState.isLoading || restartState.isLoading || stopState.isLoading;
-  const runtimeButtonLabel = runtimeActionBusy ? (stopState.isLoading ? 'Stopping…' : (needsStart ? 'Starting…' : 'Restarting…')) : (needsStart ? 'Start' : 'Stop');
+  const runtimeButtonLabel = runtimeActionBusy ? (stopState.isLoading ? 'Stopping…' : (needsStart ? 'Starting…' : 'Restarting…')) : (runtimeStopping ? 'Stopping…' : needsStart ? 'Start' : 'Stop');
   const hasUploadingAttachments = attachments.some((item) => item.status === 'uploading');
   const hasFailedAttachments = attachments.some((item) => item.status === 'error');
   const uploadedAttachments = attachments.filter((item) => item.status === 'uploaded' && item.id);
@@ -542,7 +551,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <button type="button" data-debug-id={needsStart ? 'conversation-thread-start-btn' : 'conversation-thread-stop-btn'} onClick={() => void toggleRuntime()} disabled={!agentInstanceId || runtimeActionBusy} className={needsStart ? 'rounded-xl bg-emerald-400 px-3 py-1.5 text-xs font-bold text-black hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50' : 'rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-1.5 text-xs font-bold text-red-100 hover:bg-red-400/20 disabled:cursor-not-allowed disabled:opacity-50'}>{runtimeButtonLabel}</button>
+          <button type="button" data-debug-id={needsStart ? 'conversation-thread-start-btn' : 'conversation-thread-stop-btn'} onClick={() => void toggleRuntime()} disabled={!agentInstanceId || runtimeActionBusy || runtimeStopping} className={needsStart ? 'rounded-xl bg-emerald-400 px-3 py-1.5 text-xs font-bold text-black hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50' : 'rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-1.5 text-xs font-bold text-red-100 hover:bg-red-400/20 disabled:cursor-not-allowed disabled:opacity-50'}>{runtimeButtonLabel}</button>
           <div className="relative">
             <button type="button" data-debug-id="conversation-runtime-menu-btn" aria-haspopup="menu" aria-expanded={runtimeMenuOpen ? 'true' : 'false'} onClick={() => setRuntimeMenuOpen((open) => !open)} className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10">Runtime</button>
             {runtimeMenuOpen ? (

@@ -5,6 +5,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CLIENT = ROOT / "src" / "bridge" / "hub_runtime_client.odin"
 MAIN = ROOT / "src" / "bridge" / "main.odin"
+BOOTSTRAP = ROOT / "src" / "bridge" / "bootstrap_service.odin"
+PROVIDER_STORE = ROOT / "src" / "bridge" / "provider_store.odin"
 OLD_WRAPPER = ROOT / "src" / "wrapper"
 OLD_CTL = ROOT / "src" / "ctl"
 
@@ -17,6 +19,8 @@ def require(condition: bool, message: str) -> None:
 def main() -> None:
     client = CLIENT.read_text(encoding="utf-8")
     main_src = MAIN.read_text(encoding="utf-8")
+    bootstrap = BOOTSTRAP.read_text(encoding="utf-8")
+    provider_store = PROVIDER_STORE.read_text(encoding="utf-8")
 
     for marker in [
         "bridge_runtime_launch_agent :: proc",
@@ -24,8 +28,8 @@ def main() -> None:
         "bridge_runtime_ensure_local_endpoint",
         "bridge_agent_token_issue(instance_id, instance_token, .Wrapper)",
         "bridge_agent_token_issue(instance_id, instance_token, .Agent)",
-        "bridge_runtime_wrapper_supervisor_argv",
-        "wrapper-supervisor",
+        "bridge_runtime_ham_wrapper_argv",
+        "bridge-runtime",
         "--child-agent-token",
         "tmux.ensure_agent_window",
         "bridge_runtime_record_launch",
@@ -41,6 +45,26 @@ def main() -> None:
         "bridge_command_result_json(command_id, final_status, final_runtime)",
     ]:
         require(marker in client, f"missing real launch marker: {marker}")
+
+    for marker in [
+        "bridge_runtime_resolve_provider_executable",
+        "bridge_runtime_find_on_path(trimmed)",
+    ]:
+        require(marker in provider_store, f"missing provider store marker: {marker}")
+
+    for marker in [
+        "cfg.ham_ctl_bin = loaded.config.wrapper.ham_ctl_bin",
+        "--ham-ctl-bin",
+        "wrapper-supervisor is removed; use ham-wrapper bridge-runtime",
+    ]:
+        require(marker in main_src, f"missing Bridge config marker: {marker}")
+
+    for marker in [
+        "if !bridge_bootstrap_write_ham_ctl_wrapper(run_dir, bridge_endpoint, agent_token, instance_id) do return false",
+        "bridge_config.ham_ctl_bin",
+        "bridge bootstrap failed: ham-ctl not found",
+    ]:
+        require(marker in bootstrap, f"missing bootstrap marker: {marker}")
 
     for forbidden in [
         "M4/v1 smoke runner",

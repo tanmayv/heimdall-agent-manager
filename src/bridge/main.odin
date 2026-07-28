@@ -29,6 +29,7 @@ Bridge_Config :: struct {
 	local_endpoint_port: u16,
 	local_endpoint_run_dir: string,
 	agent_command: string,
+	ham_ctl_bin: string,
 	agent_commands: [dynamic]cfg_lib.Agent_Command_Config,
 }
 
@@ -269,6 +270,7 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 		local_endpoint_port = 0,
 		local_endpoint_run_dir = "/tmp/heimdall-bridge-local",
 		agent_command = "sleep 3600",
+		ham_ctl_bin = "",
 		agent_commands = make([dynamic]cfg_lib.Agent_Command_Config),
 	}
 
@@ -278,6 +280,7 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 		cfg.daemon_id = loaded.config.daemon.daemon_id
 		cfg.bridge_token = loaded.config.daemon.bridge_token
 		cfg.data_dir = loaded.config.daemon.data_dir
+		cfg.ham_ctl_bin = loaded.config.wrapper.ham_ctl_bin
 		if len(loaded.config.wrapper.command) > 0 do cfg.agent_command = strings.join(loaded.config.wrapper.command, " ")
 		for agent_cmd in loaded.config.wrapper.agent_commands do append(&cfg.agent_commands, agent_cmd)
 		for peer in loaded.config.bridge.peers {
@@ -305,6 +308,7 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 	}
 	cfg.local_endpoint_run_dir = option_value(args, "--local-run-dir", cfg.local_endpoint_run_dir)
 	cfg.agent_command = option_value(args, "--agent-command", cfg.agent_command)
+	cfg.ham_ctl_bin = bridge_expand_home(option_value(args, "--ham-ctl-bin", cfg.ham_ctl_bin))
 	for i in 0..<len(args) {
 		if args[i] == "--peer-ws" && i + 1 < len(args) {
 			append(&cfg.peers, cfg_lib.Peer_Config{name = fmt.tprintf("cli-peer-%d", len(cfg.peers) + 1), endpoint = strings.clone(args[i + 1]), token = strings.clone(cfg.peer_auth_token)})

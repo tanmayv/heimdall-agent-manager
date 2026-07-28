@@ -14,7 +14,7 @@ GUIDE_AGENT_MD = (ROOT / 'src/prompts/guide-agent.md').read_text()
 WRAPPER = (ROOT / 'src/wrapper/main.odin').read_text()
 
 checks = [
-    ('config has guide_agent section and defaults', 'Guide_Agent_Config :: struct' in CONFIG and 'cfg.guide_agent.agent_instance_id = "guide@heimdall"' in CONFIG and 'cfg.guide_agent.model_tier = "smart"' in CONFIG),
+    ('config has guide_agent section and disabled defaults', 'Guide_Agent_Config :: struct' in CONFIG and 'cfg.guide_agent.enabled = false' in CONFIG and 'cfg.guide_agent.autostart = false' in CONFIG and 'cfg.guide_agent.restart_if_stopped = false' in CONFIG and 'cfg.guide_agent.agent_instance_id = "guide@heimdall"' in CONFIG and 'cfg.guide_agent.model_tier = "smart"' in CONFIG),
     ('config parses [guide_agent]', 'if line == "[guide_agent]"' in CONFIG and 'parse_guide_agent_key' in CONFIG),
     ('guide service uses configurable singleton id', 'GUIDE_AGENT_DEFAULT_ID :: "guide@heimdall"' in GUIDE and 'guide_agent_instance_id :: proc()' in GUIDE and 'invalid_singleton_id' not in GUIDE),
     ('agent upsert permits configured guide template only', 'guide_singleton_template_mismatch' in (ROOT / 'src/daemon/agents_start.odin').read_text() and 'guide_template_reserved' not in (ROOT / 'src/daemon/agents_start.odin').read_text()),

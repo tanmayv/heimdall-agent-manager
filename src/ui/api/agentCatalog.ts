@@ -31,6 +31,7 @@ function safeStartupStatus(agent: any) {
 export function mapAgent(agent: any) {
   const lastSeenUnixMs = Number(agent.last_seen_unix_ms ?? agent.lastSeenUnixMs ?? 0);
   const startupStatus = safeStartupStatus(agent);
+  const runtimeStatus = String(agent.runtime_status || agent.runtimeStatus || '').toLowerCase();
   const execState = agent.exec_state || agent.execState || '';
   const execStateSinceUnixMs = Number(agent.exec_state_since_unix_ms ?? agent.execStateSinceUnixMs ?? 0);
   const blockedReason = agent.blocked_reason || agent.blockedReason || '';
@@ -43,6 +44,18 @@ export function mapAgent(agent: any) {
     status = 'offline';
   } else if (startupStatus) {
     status = startupStatus;
+  } else if (runtimeStatus === 'launching' || runtimeStatus === 'starting') {
+    status = 'starting';
+  } else if (runtimeStatus === 'running' || runtimeStatus === 'busy') {
+    status = 'connected';
+  } else if (runtimeStatus === 'idle') {
+    status = 'idle';
+  } else if (runtimeStatus === 'stopping') {
+    status = 'stopping';
+  } else if (runtimeStatus === 'failed') {
+    status = 'startup_failed';
+  } else if (runtimeStatus === 'stopped' || runtimeStatus === 'unreachable') {
+    status = 'offline';
   } else if (agent.connected) {
     if (activityStatus === 'active') {
       status = 'connected';
@@ -100,8 +113,9 @@ export function mapAgent(agent: any) {
       remoteAgentInstanceId: agent.remote_agent_instance_id || agent.remoteAgentInstanceId || '',
     } : null),
     providerProfile: agent.provider_profile || agent.providerProfile || agent.agent_class || '',
-    connected: Boolean(agent.connected),
-    connectionState: agent.connection_state || agent.connectionState || '',
+    connected: Boolean(agent.connected) || ['launching', 'starting', 'running', 'idle', 'busy', 'stopping'].includes(runtimeStatus),
+    connectionState: agent.connection_state || agent.connectionState || (['launching', 'starting', 'running', 'idle', 'busy', 'stopping'].includes(runtimeStatus) ? 'connected' : ''),
+    runtimeStatus,
     modelTier: (String(agent.agent_kind || agent.agentKind || '').toLowerCase() === 'remote_proxy') ? (agent.model_tier || agent.modelTier || '') : (agent.model_tier || agent.modelTier || 'normal'),
     known: agent.known ?? true,
     execState,

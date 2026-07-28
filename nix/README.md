@@ -56,6 +56,8 @@ programs.heimdall = {
 };
 ```
 
+Home Manager gives the bridge service a deterministic agent-launch environment: the Home Manager profile, `~/.pi/agent/bin`, `~/.local/bin`, required Nix tools, and system fallbacks are on `PATH`, and matching `ham-wrapper`/`ham-ctl` binaries are pinned via environment variables. If a provider binary lives somewhere else, add it with `programs.heimdall.bridge.environment.PATH` or configure the provider `command` as an absolute path.
+
 Enroll once and write the Hub-issued bridge token to that file:
 
 ```sh
@@ -99,9 +101,9 @@ programs.heimdall = {
 
   # ── [guide_agent] ──────────────────────────────────────────────────────
   guideAgent = {
-    enabled          = true;
-    autostart        = true;
-    restartIfStopped = true;
+    enabled          = false;
+    autostart        = false;
+    restartIfStopped = false;
     agentInstanceId  = "guide@heimdall";
     templateId       = "guide";
     providerProfile  = "pi";
@@ -277,15 +279,16 @@ programs.heimdall = {
 
 | Option | Type | Default |
 |---|---|---|
-| `enabled` | bool | `true` |
-| `autostart` | bool | `true` |
-| `restartIfStopped` | bool | `true` |
+| `enabled` | bool | `false` |
+| `autostart` | bool | `false` |
+| `restartIfStopped` | bool | `false` |
 | `agentInstanceId` | str | `"guide@heimdall"` |
 | `templateId` | str | `"guide"` |
 | `providerProfile` | str | `"pi"` |
 | `modelTier` | `"cheap"\|"normal"\|"smart"` | `"smart"` |
 
 Notes:
+- The guide agent is disabled by default; set `enabled = true` and `autostart = true` to opt in.
 - `restartIfStopped` is rendered for config parity, but the current daemon only stores/reports it; no restart-loop behavior is implemented yet.
 - Non-default `agentInstanceId` values render correctly, but the current daemon only launches the default singleton and otherwise reports `invalid_singleton_id`.
 - Set `providerProfile = ""` to fall back to `[daemon].default_agent_provider_profile`, then `pi`.

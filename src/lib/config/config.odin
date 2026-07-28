@@ -832,9 +832,9 @@ default_config :: proc() -> Config {
 	cfg.daemon.federation_advertised_agent_instance_ids = nil
 	cfg.bridge.peers = make([dynamic]Peer_Config)
 
-	cfg.guide_agent.enabled = true
-	cfg.guide_agent.autostart = true
-	cfg.guide_agent.restart_if_stopped = true
+	cfg.guide_agent.enabled = false
+	cfg.guide_agent.autostart = false
+	cfg.guide_agent.restart_if_stopped = false
 	cfg.guide_agent.agent_instance_id = "guide@heimdall"
 	cfg.guide_agent.template_id = "guide"
 	cfg.guide_agent.provider_profile = "pi"
