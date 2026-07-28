@@ -32,6 +32,19 @@ bridge_bootstrap_fetch_and_materialize :: proc(hub_url, bridge_token, instance_i
 	return true
 }
 
+bridge_bootstrap_materialize_local_provider_test :: proc(run_dir, bridge_endpoint, agent_token, instance_id, provider: string) -> bool {
+	if strings.trim_space(run_dir) == "" || strings.trim_space(bridge_endpoint) == "" || strings.trim_space(agent_token) == "" || strings.trim_space(instance_id) == "" do return false
+	_ = os.make_directory_all(run_dir)
+	content := strings.concatenate({"# Provider test bootstrap\n\nInstance: ", instance_id, "\nProvider: ", provider, "\n\nThis is a temporary Heimdall provider smoke-test run. Report readiness with `./.heimdall/bin/ham-ctl agent start-success` after the provider is usable.\n", bridge_bootstrap_ctl_guidance()})
+	if os.write_entire_file(strings.concatenate({strings.trim_right(run_dir, "/"), "/AGENTS.md"}), content) != nil do return false
+	if !bridge_bootstrap_write_ham_ctl_wrapper(run_dir, bridge_endpoint, agent_token, instance_id) do return false
+	manifest := strings.builder_make()
+	strings.write_string(&manifest, "{\"agent_instance_id\":\""); strings.write_string(&manifest, instance_id)
+	strings.write_string(&manifest, "\",\"provider_test\":true,\"managed_files\":[{\"relative_path\":\"AGENTS.md\",\"kind\":\"AGENTS_MD\"},{\"relative_path\":\".heimdall/bin/ham-ctl\",\"kind\":\"CTL_WRAPPER\"}]}")
+	if os.write_entire_file(strings.concatenate({strings.trim_right(run_dir, "/"), "/heimdall-bootstrap-manifest.json"}), strings.to_string(manifest)) != nil do return false
+	return true
+}
+
 bridge_bootstrap_skill_relative_path :: proc(provider, skill_name: string) -> string {
 	profile, ok := bridge_provider_by_name_or_default(provider)
 	if !ok || strings.trim_space(profile.skill_dir) == "" do return ""

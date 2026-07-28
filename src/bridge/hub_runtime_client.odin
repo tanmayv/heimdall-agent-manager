@@ -387,6 +387,12 @@ bridge_runtime_run_provider_test_single :: proc(conn: ^ws.Connection, command_id
 	instance_token := strings.concatenate({"hit_", instance_id})
 	wrapper_issue := bridge_agent_token_issue(instance_id, instance_token, .Wrapper)
 	agent_issue := bridge_agent_token_issue(instance_id, instance_token, .Agent)
+	if !bridge_bootstrap_materialize_local_provider_test(run_dir, endpoint, agent_issue.plaintext_token, instance_id, provider) {
+		msg := "provider test bootstrap materialization failed"
+		_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "failed", "done", msg, ""))
+		bridge_runtime_set_status(instance_id, "stopped", "idle")
+		return bridge_provider_test_result_json_with_tier(test_id, provider, tier, "failed", msg, "")
+	}
 	session := "heimdall-bridge-test"
 	window := strings.concatenate({"ptest-", bridge_runtime_safe_part(test_id)})
 	_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "launching", "launching", "launching provider test", ""))
