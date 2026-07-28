@@ -53,6 +53,10 @@ handle_client :: proc(client: net.TCP_Socket, source: net.Endpoint, router: ^Rou
 		remote_addr = net.address_to_string_allocator(source.address),
 		headers = headers,
 	}
+	if method == "OPTIONS" {
+		write_http_response(client, Response{status = 204, content_type = "text/plain", body = ""})
+		return
+	}
 	if ascii_equal_fold(header_value(headers, "Upgrade"), "websocket") && router_dispatch_upgrade(router, req_obj, client) do return
 	resp := router_dispatch(router, req_obj)
 	write_http_response(client, resp)
@@ -145,6 +149,10 @@ write_http_response :: proc(client: net.TCP_Socket, resp: Response) {
 	if content_type == "" do content_type = "application/json"
 	b := strings.builder_make()
 	strings.write_string(&b, fmt.tprintf("HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\n", resp.status, status_text(resp.status), content_type, len(body)))
+	strings.write_string(&b, "Access-Control-Allow-Origin: *\r\n")
+	strings.write_string(&b, "Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS\r\n")
+	strings.write_string(&b, "Access-Control-Allow-Headers: Authorization, Content-Type, X-Request-Id, X-Heimdall-Instance-Token\r\n")
+	strings.write_string(&b, "Access-Control-Max-Age: 600\r\n")
 	for h in resp.headers {
 		strings.write_string(&b, h.name)
 		strings.write_string(&b, ": ")
