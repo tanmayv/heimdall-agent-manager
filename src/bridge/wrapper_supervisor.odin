@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:net"
 import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:sys/posix"
 import "core:thread"
 import "core:time"
@@ -25,6 +26,13 @@ Bridge_Wrapper_Supervisor_Config :: struct {
 	liveness_interval_ms: int,
 	activity_interval_ms: int,
 }
+
+bridge_wrapper_notify_mutex: sync.Mutex
+bridge_wrapper_notify_count: int
+bridge_wrapper_notify_first_sender: string
+bridge_wrapper_notify_last_sender: string
+bridge_wrapper_notify_pane_id: string
+bridge_wrapper_notify_scheduled: bool
 
 bridge_wrapper_supervisor_main :: proc(args: []string) -> bool {
 	config := bridge_wrapper_supervisor_config_from_args(args)
@@ -257,8 +265,42 @@ bridge_wrapper_dispatch_push_lines :: proc(config: Bridge_Wrapper_Supervisor_Con
 bridge_wrapper_deliver_message_push :: proc(config: Bridge_Wrapper_Supervisor_Config, line: string) {
 	sender := bridge_local_extract_json_string(line, "sender_agent_instance_id", "user")
 	if strings.trim_space(sender) == "" do sender = "user"
-	msg := strings.concatenate({"New message from ", sender, " — run 'ham-ctl agent chat read' to view."})
-	_ = tmux.send_text(config.pane_id, msg, true)
+	sync.mutex_lock(&bridge_wrapper_notify_mutex)
+	if bridge_wrapper_notify_count == 0 do bridge_wrapper_notify_first_sender = strings.clone(sender)
+	bridge_wrapper_notify_last_sender = strings.clone(sender)
+	bridge_wrapper_notify_pane_id = strings.clone(config.pane_id)
+	bridge_wrapper_notify_count += 1
+	if !bridge_wrapper_notify_scheduled {
+		bridge_wrapper_notify_scheduled = true
+		thread.run(bridge_wrapper_notification_flush_worker)
+	}
+	sync.mutex_unlock(&bridge_wrapper_notify_mutex)
+}
+
+bridge_wrapper_notification_flush_worker :: proc() {
+	time.sleep(2 * time.Second)
+	sync.mutex_lock(&bridge_wrapper_notify_mutex)
+	count := bridge_wrapper_notify_count
+	first_sender := bridge_wrapper_notify_first_sender
+	last_sender := bridge_wrapper_notify_last_sender
+	pane_id := bridge_wrapper_notify_pane_id
+	bridge_wrapper_notify_count = 0
+	bridge_wrapper_notify_first_sender = ""
+	bridge_wrapper_notify_last_sender = ""
+	bridge_wrapper_notify_pane_id = ""
+	bridge_wrapper_notify_scheduled = false
+	sync.mutex_unlock(&bridge_wrapper_notify_mutex)
+	if count <= 0 || strings.trim_space(pane_id) == "" do return
+	msg := ""
+	if count == 1 {
+		sender := last_sender
+		if strings.trim_space(sender) == "" do sender = first_sender
+		if strings.trim_space(sender) == "" do sender = "user"
+		msg = strings.concatenate({"New message from ", sender, " — run 'ham-ctl agent chat read' to view."})
+	} else {
+		msg = fmt.tprintf("%d new messages — run 'ham-ctl agent chat read' to view.", count)
+	}
+	_ = tmux.send_text(pane_id, msg, true)
 }
 
 bridge_wrapper_int_from_string :: proc(value: string) -> int {

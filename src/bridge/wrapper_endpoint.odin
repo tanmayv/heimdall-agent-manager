@@ -249,6 +249,7 @@ bridge_local_handle_wrapper_method :: proc(request_id, method, params: string, r
 	if method == "wrapper.exited" {
 		bridge_runtime_set_status(rec.agent_instance_id, "stopped", "idle")
 		bridge_wrapper_push_drop(rec.agent_instance_id)
+		bridge_runtime_remove_launch(rec.agent_instance_id)
 		return bridge_local_response_data(request_id, "{\"accepted\":true}")
 	}
 	if method == "wrapper.notifications.subscribe" {
