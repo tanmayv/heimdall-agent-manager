@@ -412,7 +412,14 @@ function ProjectConversationTree({ groups }: { groups: ProjectGroup[] }) {
                 {projectGroup.agents.map((agentGroup) => (
                   <div key={agentGroup.agentId} data-debug-id={`sidebar-agent-group-${agentGroup.agentId}`} className="rounded-xl bg-white/[0.03] px-2 py-1.5">
                     <div className="flex items-center gap-2 text-xs font-semibold text-zinc-300">
-                      <span className="truncate">{agentGroup.agentName}</span>
+                      <span className="min-w-0 flex-1 truncate">{agentGroup.agentName}</span>
+                      <a
+                        data-debug-id={`sidebar-agent-new-conversation-${agentGroup.agentId}`}
+                        href={buildRouteHash('/conversations/new', `agent_id=${encodeURIComponent(agentGroup.agentId)}`)}
+                        title={`Start a new conversation with ${agentGroup.agentName}`}
+                        aria-label={`Start a new conversation with ${agentGroup.agentName}`}
+                        className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-white/10 bg-white/5 text-sm font-black text-zinc-300 hover:bg-sky-400 hover:text-black"
+                      >+</a>
                       <UnreadBadge count={agentGroup.unreadCount} debugId={`sidebar-agent-unread-${agentGroup.agentId}`} />
                     </div>
                     <div className="mt-1 space-y-1">

@@ -3,7 +3,7 @@ import { useListAgentIdentitiesQuery, useReconfigureAgentInstanceMutation, useRe
 import { normalizeBridgeCapabilities, useListAgentBridgeSupportQuery, useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 import { useCreateLaunchConversationMutation } from '../../api/endpoints/chats';
 import { useListSidebarProjectsQuery } from '../../api/endpoints/sidebar';
-import { buildRouteHash } from '../../utils/appLocation';
+import { buildRouteHash, getRouteSearch } from '../../utils/appLocation';
 
 type AgentOption = {
   agent_id: string;
@@ -164,6 +164,10 @@ export default function ConversationLaunchComposer() {
   const [pendingTier, setPendingTier] = useState('');
   const [restartStatus, setRestartStatus] = useState('');
   const supportQuery = useListAgentBridgeSupportQuery({ agentId }, { skip: !agentId, refetchOnMountOrArgChange: true });
+  const preselectedAgentId = useMemo(() => {
+    const params = new URLSearchParams(getRouteSearch().replace(/^\?/, ''));
+    return String(params.get('agent_id') || params.get('agentId') || '').trim();
+  }, []);
 
   const agents = useMemo(() => (agentsQuery.data?.agents || []).map(normalizeAgent).filter((agent: AgentOption) => agent.agent_id), [agentsQuery.data?.agents]);
   const runnableAgents = useMemo(() => agents.filter((agent: any) => agent.state !== 'archived'), [agents]);
@@ -178,6 +182,11 @@ export default function ConversationLaunchComposer() {
     const selectedDefault = defaultProject(projects);
     setProjectId(selectedDefault.project_id || SYNTHETIC_DEFAULT_PROJECT_ID);
   }, [projects]);
+
+  useEffect(() => {
+    if (!preselectedAgentId || agentId) return;
+    if (agents.some((agent) => agent.agent_id === preselectedAgentId)) setAgentId(preselectedAgentId);
+  }, [agentId, agents, preselectedAgentId]);
 
   useEffect(() => { setBridgeId(''); setProvider(''); setTier(''); }, [agentId]);
 

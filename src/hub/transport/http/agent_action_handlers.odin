@@ -271,8 +271,22 @@ agent_action_start_success_handler :: proc(ctx: rawptr, req: Request) -> Respons
 	if !ok do return resp
 	inst, saved, err := agent_service.mark_instance_start_success(h.agents, auth)
 	if !saved do return respond_error(err, req.request_id)
+	startup_note, note_saved, _ := content_service.send_agent_message(h.content, auth, inst.agent_instance_id, content_service.Message_Input{body = "Agent has started and is ready.", artifact_ids_json = "[]"})
+	conv, conv_ok, _ := content_service.get_conversation_by_instance(h.content, auth, inst.agent_instance_id)
+	if conv_ok {
+		messages, msg_err := content_service.list_messages(h.content, auth, conv.conversation_id, 50, "")
+		if msg_err.code == .None {
+			for msg in messages {
+				if msg.direction == "user_to_agent" { content_service.notify_agent_message(h.content, conv, "user_to_agent", "user", msg.message_id); break }
+			}
+		}
+	}
 	b := strings.builder_make()
+	strings.write_string(&b, "{\"instance\":")
 	write_agent_instance_json(&b, inst)
+	strings.write_string(&b, ",\"startup_message\":")
+	if note_saved { write_message_json(&b, startup_note, h.content) } else { strings.write_string(&b, "null") }
+	strings.write_byte(&b, '}')
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
 
