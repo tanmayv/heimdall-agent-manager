@@ -206,7 +206,7 @@ async function useUser(username) {
 }
 
 async function deleteUser(username) {
-  if (!confirm("Delete dev user \\"" + username + "\\"?")) return;
+  if (!confirm('Delete dev user "' + username + '"?')) return;
   clearErr();
   try {
     const res = await fetch("/_dev/api/users/" + encodeURIComponent(username), {

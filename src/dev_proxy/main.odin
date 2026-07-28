@@ -144,23 +144,94 @@ forward_request :: proc(client: net.TCP_Socket, config: ^Dev_Proxy_Config, reque
 		return
 	}
 	defer net.close(upstream)
+
+	// WebSocket detection: a client requesting `Connection: Upgrade` +
+	// `Upgrade: websocket` needs a persistent bidirectional tunnel, not the
+	// one-shot request/response copy. We must FORWARD the upgrade headers to the
+	// hub (unlike normal requests, where Connection is stripped and forced to
+	// close), relay the `101`, then pump both directions with no read timeout
+	// until either side closes.
+	is_ws := ascii_equal_fold(header_value(incoming, "Upgrade"), "websocket")
+
 	body := request_body(request)
 	out := strings.builder_make()
 	strings.write_string(&out, method); strings.write_string(&out, " "); strings.write_string(&out, target); strings.write_string(&out, " HTTP/1.1\r\n")
 	strings.write_string(&out, "Host: "); strings.write_string(&out, hub_host); strings.write_string(&out, ":"); strings.write_string(&out, fmt.tprintf("%d", hub_port)); strings.write_string(&out, "\r\n")
 	for h in rewritten {
 		if ascii_equal_fold(h.name, "Host") || ascii_equal_fold(h.name, "Content-Length") || ascii_equal_fold(h.name, "Connection") do continue
+		// For non-WS requests we drop any client-supplied Upgrade; for WS we keep
+		// the Sec-WebSocket-* headers (they pass through the loop below) and add
+		// our own Connection/Upgrade line explicitly.
+		if is_ws && ascii_equal_fold(h.name, "Upgrade") do continue
 		strings.write_string(&out, h.name); strings.write_string(&out, ": "); strings.write_string(&out, h.value); strings.write_string(&out, "\r\n")
 	}
-	strings.write_string(&out, fmt.tprintf("Content-Length: %d\r\nConnection: close\r\n\r\n", len(body)))
-	strings.write_string(&out, body)
+	if is_ws {
+		strings.write_string(&out, "Connection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+	} else {
+		strings.write_string(&out, fmt.tprintf("Content-Length: %d\r\nConnection: close\r\n\r\n", len(body)))
+		strings.write_string(&out, body)
+	}
 	out_req := strings.to_string(out)
 	_, send_err := net.send_tcp(upstream, transmute([]byte)out_req)
 	if send_err != nil {
 		write_response(client, 502, "Bad Gateway", "text/plain", "hub send failed")
 		return
 	}
+	if is_ws {
+		proxy_tunnel_bidirectional(client, upstream)
+		return
+	}
 	proxy_copy_response(client, upstream)
+}
+
+// proxy_tunnel_bidirectional pumps raw bytes in both directions between the
+// browser and the hub after a WebSocket upgrade. The hub's `101 Switching
+// Protocols` response (and all subsequent frames) flow through the
+// upstream->client direction; browser frames flow client->upstream. No receive
+// timeout: the tunnel stays open until either side closes/errs, then both are
+// torn down. This is what the one-shot `proxy_copy_response` (5s timeout) could
+// not do, which caused the user-ws to drop every 5s and the UI to reconnect and
+// refetch in a loop.
+Proxy_Tunnel_Half :: struct { src: net.TCP_Socket, dst: net.TCP_Socket }
+
+proxy_tunnel_bidirectional :: proc(client, upstream: net.TCP_Socket) {
+	// No read timeouts on either socket for the life of the tunnel. A zero
+	// Duration disables the timeout; the value must be a time.Duration (a bare
+	// literal 0 panics set_option).
+	_ = net.set_option(client, .Receive_Timeout, time.Duration(0))
+	_ = net.set_option(upstream, .Receive_Timeout, time.Duration(0))
+	// Pump upstream -> client on a worker thread (fire-and-forget, matching the
+	// codebase's thread pattern). Each direction, when it ends, closes BOTH
+	// sockets — so whichever side closes first also unblocks the peer direction's
+	// blocking recv, and both halves exit. (Double-close of an fd microseconds
+	// apart is harmless for this local dev tool; net.close on a closed socket is
+	// a no-op error.) The deferred net.close(upstream) in forward_request is a
+	// backstop for the same fd.
+	half := new(Proxy_Tunnel_Half)
+	half.src = upstream; half.dst = client
+	thread.run_with_poly_data(half, proxy_tunnel_pump)
+	// Pump client -> upstream on this thread until either side closes.
+	proxy_tunnel_copy(client, upstream)
+}
+
+proxy_tunnel_pump :: proc(half: ^Proxy_Tunnel_Half) {
+	src := half.src
+	dst := half.dst
+	free(half)
+	proxy_tunnel_copy(src, dst)
+}
+
+proxy_tunnel_copy :: proc(src, dst: net.TCP_Socket) {
+	buf: [8192]byte
+	for {
+		n, recv_err := net.recv_tcp(src, buf[:])
+		if recv_err != nil || n <= 0 do break
+		_, send_err := net.send_tcp(dst, buf[:n])
+		if send_err != nil do break
+	}
+	// End of this direction: close both so the peer direction unblocks and exits.
+	net.close(src)
+	net.close(dst)
 }
 
 proxy_copy_response :: proc(client, upstream: net.TCP_Socket) {
