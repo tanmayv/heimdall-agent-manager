@@ -12,11 +12,15 @@ let
   flake = builtins.getFlake (toString {ROOT});
   system = builtins.currentSystem;
   pkgs = import flake.inputs.nixpkgs {{ inherit system; }};
-  lib = pkgs.lib;
+  lib = pkgs.lib // {{ hm = {{ dag = {{ entryAfter = deps: value: value; }}; }}; }};
   module = flake.outputs.homeModules.default;
   hmStub = {{ lib, ... }}: {{
     options = {{
+      home.username = lib.mkOption {{ type = lib.types.str; default = "tester"; }};
+      home.profileDirectory = lib.mkOption {{ type = lib.types.str; default = "/home/tester/.nix-profile"; }};
       home.packages = lib.mkOption {{ type = lib.types.listOf lib.types.anything; default = []; }};
+      home.activation = lib.mkOption {{ type = lib.types.attrsOf lib.types.anything; default = {{}}; }};
+      assertions = lib.mkOption {{ type = lib.types.listOf lib.types.anything; default = []; }};
       xdg.configFile = lib.mkOption {{
         type = lib.types.attrsOf (lib.types.submodule ({{ name, ... }}: {{
           options.source = lib.mkOption {{ type = lib.types.path; }};
@@ -24,6 +28,7 @@ let
         default = {{}};
       }};
       systemd.user.services = lib.mkOption {{ type = lib.types.attrsOf lib.types.anything; default = {{}}; }};
+      launchd.agents = lib.mkOption {{ type = lib.types.attrsOf lib.types.anything; default = {{}}; }};
     }};
   }};
   eval = lib.evalModules {{
