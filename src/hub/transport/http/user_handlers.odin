@@ -160,12 +160,13 @@ user_ws_ticket_store_free :: proc(store: ^User_WS_Ticket_Store) {
 }
 
 user_ws_ticket_store_put :: proc(store: ^User_WS_Ticket_Store, ticket: string, auth_ctx: contracts.Auth_Context, ttl_seconds: i64) {
-	if store == nil || store.tickets == nil do return
+	if store == nil do return
 	now := time.to_unix_seconds(time.now())
 	ttl := ttl_seconds
 	if ttl <= 0 do ttl = 30
 	sync.mutex_lock(&store.mutex)
 	defer sync.mutex_unlock(&store.mutex)
+	if store.tickets == nil do store.tickets = make(map[string]User_WS_Ticket)
 	for existing, item in store.tickets {
 		if item.expires_at <= now do delete_key(&store.tickets, existing)
 	}
