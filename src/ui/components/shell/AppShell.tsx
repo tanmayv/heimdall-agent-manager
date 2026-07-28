@@ -155,6 +155,7 @@ function routeBreadcrumbs(path: string, conversations: ConversationSummary[] = [
   }
   if (path === '/agents/new') return [{ label: 'Agents', href: '/agents' }, { label: 'New Agent' }];
   if (path.startsWith('/agents/')) return [{ label: 'Agents', href: '/agents' }, { label: decodeSegment(path.slice('/agents/'.length)) }];
+  if (path === '/settings') return [{ label: 'Settings' }];
   if (path.startsWith('/settings/providers/')) {
     const rest = path.slice('/settings/providers/'.length);
     if (rest === 'new') return [{ label: 'Settings', href: '/settings/bridges' }, { label: 'Providers', href: '/settings/providers' }, { label: 'New Provider' }];
@@ -593,11 +594,11 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
             New conversation
           </a>
         </div>
-        {path.startsWith('/settings/') ? <SettingsSubNav path={path} /> : null}
+        {path.startsWith('/settings') ? <SettingsSubNav path={path} /> : null}
         <div className="grid min-w-0 flex-1 place-items-stretch rounded-2xl border border-dashed border-white/12 bg-white/[0.03] p-4 text-center sm:place-items-center sm:rounded-[2rem] sm:p-8">
           {path === '/conversations/new' ? (
             <ConversationLaunchComposer />
-          ) : path === '/settings/bridges' ? (
+          ) : path === '/settings' || path === '/settings/bridges' ? (
             <div className="w-full max-w-4xl text-left"><BridgesPanel /></div>
           ) : path === '/settings/providers' ? (
             <div className="w-full max-w-4xl text-left"><ProvidersPanel /></div>
