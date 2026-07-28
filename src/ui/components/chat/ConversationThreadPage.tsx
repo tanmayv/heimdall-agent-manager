@@ -70,6 +70,39 @@ function bridgeId(bridge: any): string { return String(bridge?.bridge_id || brid
 function msgId(m: Message, i: number): string { return String(m.message_id || m.messageId || m.id || `idx-${i}`); }
 function msgDir(m: Message): string { return String(m.direction || ''); }
 
+function localMessageId(): string {
+  return `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function optimisticUserMessage(conversationId: string, body: string): Message {
+  return {
+    message_id: localMessageId(),
+    conversation_id: conversationId,
+    direction: 'user_to_agent',
+    body,
+    created_unix_ms: Date.now(),
+    sending: true,
+  };
+}
+
+function sentMessageFromResult(result: any): Message | null {
+  const candidate = result?.message || result?.chat_message || result?.chatMessage || result;
+  if (!candidate || typeof candidate !== 'object') return null;
+  const id = String(candidate.message_id || candidate.messageId || candidate.id || '');
+  const body = String(candidate.body || '');
+  if (!id && !body) return null;
+  return { ...candidate, sending: false } as Message;
+}
+
+function failedLocalMessage(message: Message, error: string): Message {
+  return {
+    ...message,
+    sending: false,
+    delivery_failed_unix_ms: Date.now(),
+    delivery_error: error,
+  };
+}
+
 function capTiers(cap: BridgeCapability | undefined): string[] {
   if (!cap) return [];
   const t = Array.isArray(cap.tiers) ? cap.tiers.filter(Boolean) : [];
@@ -161,7 +194,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const messagesQuery = useFetchConversationMessagesQuery({ conversationId }, { skip: !conversationId, pollingInterval: 4000, refetchOnMountOrArgChange: true });
   const [fetchOlderMessages, olderMessagesState] = useLazyFetchConversationMessagesQuery();
   const [updateConversationTitle, updateTitleState] = useUpdateConversationTitleMutation();
-  const [sendMessage, sendState] = useSendConversationMessageMutation();
+  const [sendMessage] = useSendConversationMessageMutation();
   const [markRead] = useMarkConversationReadMutation();
   const [reconfigureInstance] = useReconfigureAgentInstanceMutation();
   const [restartInstance, restartState] = useRestartAgentInstanceMutation();
@@ -193,6 +226,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const [olderHasMore, setOlderHasMore] = useState(false);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState('');
+  const [localMessages, setLocalMessages] = useState<Message[]>([]);
   const [provider, setProvider] = useState('');
   const [tier, setTier] = useState('');
   const [reconfigStatus, setReconfigStatus] = useState('');
@@ -221,8 +255,8 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   }, [caps, provider, providerOptions, instanceProvider, instanceTier]);
 
   const chatMessages = useMemo(
-    () => normalizeConversationMessages([...olderMessages, ...baseMessages], agentId || agentInstanceId),
-    [olderMessages, baseMessages, agentId, agentInstanceId],
+    () => normalizeConversationMessages([...olderMessages, ...baseMessages, ...localMessages], agentId || agentInstanceId),
+    [olderMessages, baseMessages, localMessages, agentId, agentInstanceId],
   );
   const needsStart = runtimeNeedsStart(runtimeStatus);
   const runtimeActionBusy = restartState.isLoading || stopState.isLoading;
@@ -239,7 +273,16 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     setOlderMessages([]);
     setOlderCursor('');
     setOlderHasMore(false);
+    setLocalMessages([]);
   }, [conversationId]);
+  useEffect(() => {
+    if (baseMessages.length === 0 || localMessages.length === 0) return;
+    const serverIds = new Set(baseMessages.map((message, index) => msgId(message, index)));
+    setLocalMessages((current) => current.filter((message, index) => {
+      const id = msgId(message, index);
+      return !id || id.startsWith('local_') || !serverIds.has(id);
+    }));
+  }, [baseMessages, localMessages.length]);
   useEffect(() => {
     if (olderMessages.length > 0) return;
     setOlderCursor(String(messagesQuery.data?.nextCursor || ''));
@@ -306,13 +349,22 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     event.preventDefault();
     const body = draft.trim();
     if (!body) return;
+    const local = optimisticUserMessage(conversationId, body);
+    const localId = msgId(local, 0);
     setError('');
+    setDraft('');
+    setLocalMessages((current) => [...current, local]);
     try {
-      await sendMessage({ conversationId, body }).unwrap();
-      setDraft('');
+      const result = await sendMessage({ conversationId, body }).unwrap();
+      const sent = sentMessageFromResult(result);
+      setLocalMessages((current) => current.map((message) => {
+        if (msgId(message, 0) !== localId) return message;
+        return sent ? { ...sent, body: String(sent.body || body), direction: sent.direction || 'user_to_agent' } : { ...message, sending: false };
+      }));
       void messagesQuery.refetch();
     } catch (err: any) {
-      setError(errMsg(err, 'Send failed'));
+      const message = errMsg(err, 'Send failed');
+      setLocalMessages((current) => current.map((item) => (msgId(item, 0) === localId ? failedLocalMessage(item, message) : item)));
     }
   }
 
@@ -448,7 +500,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
             placeholder="Message the agent… (Cmd/Ctrl+Enter to send)"
             className="min-h-[44px] flex-1 resize-none rounded-2xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-sky-400/60 sm:px-4"
           />
-          <button data-debug-id="conversation-composer-send-btn" type="submit" disabled={sendState.isLoading || !draft.trim()} className="rounded-2xl bg-sky-400 px-4 py-2.5 text-sm font-black text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">{sendState.isLoading ? 'Sending…' : 'Send'}</button>
+          <button data-debug-id="conversation-composer-send-btn" type="submit" disabled={!draft.trim()} className="rounded-2xl bg-sky-400 px-4 py-2.5 text-sm font-black text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">Send</button>
         </div>
       </form>
     </section>
