@@ -910,9 +910,7 @@ bridge_provider_test_sanitize_diagnostics :: proc(value: string) -> string {
 bridge_hub_hello_json :: proc() -> string {
 	caps := bridge_provider_capabilities_json()
 	b := strings.builder_make()
-	strings.write_string(&b, "{\"type\":\"bridge_hello\",\"protocol_version\":1,\"bridge_id\":\"")
-	bridge_runtime_write_json_string(&b, bridge_config.daemon_id)
-	strings.write_string(&b, "\",\"hostname\":\"")
+	strings.write_string(&b, "{\"type\":\"bridge_hello\",\"protocol_version\":1,\"hostname\":\"")
 	bridge_runtime_write_json_string(&b, bridge_config.daemon_id)
 	strings.write_string(&b, "\",\"capabilities\":")
 	strings.write_string(&b, caps)
