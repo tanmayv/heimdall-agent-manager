@@ -974,6 +974,162 @@ Bridge responds:
 }
 ```
 
+### 9.6 Provider management commands
+
+These commands let the Hub relay UI-driven provider configuration and testing to
+the Bridge. They implement the onboarding Providers flow
+(`docs/plans/ui-onboarding-implementation-plan.md` §3). The Bridge owns provider
+config; the Hub never persists it. `config.toml` `[wrapper.agent-cmd.*]` is the
+read-only defaults source and the bridge-local provider store holds **overrides
+only**; the Bridge returns the **effective** (merged) profiles.
+
+A provider profile has this shape (fields mirror `Agent_Command_Config` in
+`src/lib/config/config.odin`; no credentials/env are stored — providers run in
+the operator's existing shell environment):
+
+```json
+{
+  "name": "pi",
+  "enabled": true,
+  "source": "config",          // "config" | "store" | "merged"
+  "has_override": false,
+  "command": ["pi"],
+  "models": { "flag": "--model", "cheap": "...", "normal": "...", "smart": "..." },
+  "prompt_flags": [],
+  "yolo_flags": [],
+  "starter_prompt": "First, run: {ctl_bin} --token {token} start-success. ...",
+  "prompt_delivery": "",
+  "startup_detection": {
+    "enabled": false,
+    "startup_probe_seconds": 0,
+    "capture_interval_ms": 0,
+    "blocked_patterns": [],
+    "auto_enter_patterns": [],
+    "auto_enter_pre_keys": [],
+    "startup_unknown_is_blocked": false,
+    "sanitized_reason_mapping": []
+  },
+  "activity_detection": {
+    "enabled": true,
+    "sample_line_count": 20,
+    "ignore_bottom_lines": 0,
+    "check_interval_seconds": 15,
+    "min_gap_ms": 100,
+    "max_gap_ms": 500
+  },
+  "last_test": { "status": "ok", "tested_at": "2026-07-27T10:00:00Z", "message": "start-success received" }
+}
+```
+
+#### 9.6.1 `list_providers`
+
+Hub asks the Bridge for the effective provider profiles.
+
+```json
+{
+  "type": "list_providers",
+  "message_id": "msg_hub_provlist_1",
+  "command_id": "cmd_provlist_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-27T10:00:00Z",
+  "payload": {}
+}
+```
+
+Bridge responds with `providers_report` (see 10.5) and a command result.
+
+#### 9.6.2 `upsert_provider`
+
+Hub asks the Bridge to write an override for one provider (create or replace).
+The Bridge persists the override in its local store; it never writes
+`config.toml`.
+
+```json
+{
+  "type": "upsert_provider",
+  "message_id": "msg_hub_provput_1",
+  "command_id": "cmd_provput_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-27T10:00:00Z",
+  "payload": {
+    "name": "pi",
+    "profile": {
+      "enabled": true,
+      "command": ["pi"],
+      "models": { "flag": "--model", "cheap": "anthropic/claude-sonnet-4-6", "normal": "anthropic/claude-sonnet-4-6", "smart": "anthropic/claude-opus-4-8" },
+      "prompt_flags": [],
+      "yolo_flags": ["--dangerously-skip-permissions"],
+      "starter_prompt": "First, run: {ctl_bin} --token {token} start-success. ...",
+      "prompt_delivery": "",
+      "startup_detection": { "enabled": true, "startup_probe_seconds": 20, "capture_interval_ms": 500, "blocked_patterns": [], "auto_enter_patterns": ["Yes, I trust this folder"], "auto_enter_pre_keys": [""], "startup_unknown_is_blocked": false, "sanitized_reason_mapping": [] },
+      "activity_detection": { "enabled": true, "sample_line_count": 20, "ignore_bottom_lines": 0, "check_interval_seconds": 15, "min_gap_ms": 100, "max_gap_ms": 500 }
+    }
+  }
+}
+```
+
+Bridge command result payload returns the merged effective profile:
+
+```json
+{ "provider": { "name": "pi", "source": "merged", "has_override": true, "enabled": true, "command": ["pi"], "models": { } } }
+```
+
+Validation: an empty `command` array is rejected with a `validation_failed`
+command result.
+
+#### 9.6.3 `delete_provider`
+
+Hub asks the Bridge to remove a store-only provider (or, post-v1, reset an
+override to config defaults). Removing a provider that only exists in
+`config.toml` is rejected.
+
+```json
+{
+  "type": "delete_provider",
+  "message_id": "msg_hub_provdel_1",
+  "command_id": "cmd_provdel_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-27T10:00:00Z",
+  "payload": { "name": "pi" }
+}
+```
+
+Bridge command result payload: `{ "deleted": true }`.
+
+#### 9.6.4 `test_provider`
+
+Hub asks the Bridge to validate a provider by the **start-success probe**: the
+Bridge launches the provider command in a throwaway sandbox cwd/tmux and waits
+(bounded, e.g. 30–60s) for the probe agent to run `ham-ctl ... start-success`.
+Pass = start-success received; fail/timeout = provider could not start or could
+not reach ctl. No per-tier round-trip and no token spend beyond CLI startup.
+
+```json
+{
+  "type": "test_provider",
+  "message_id": "msg_hub_provtest_1",
+  "command_id": "cmd_provtest_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-27T10:00:00Z",
+  "payload": { "name": "pi", "tier": "normal" }
+}
+```
+
+Bridge command result payload:
+
+```json
+{
+  "name": "pi",
+  "status": "ok",
+  "tested_at": "2026-07-27T10:00:04Z",
+  "message": "start-success received in 4.2s",
+  "diagnostics": "<sanitized captured output>"
+}
+```
+
+`status` is `ok` | `failed` | `unknown`; a timeout returns `failed` with an
+explanatory `message`.
+
 ---
 
 ## 10. Bridge-to-Hub runtime events
@@ -1079,6 +1235,45 @@ The Bridge should not stream raw terminal transcripts by default. If it reports 
 ```
 
 Hub updates instance status to `stopped` or `failed` depending on context.
+
+### 10.5 `providers_report`
+
+Bridge responds to `list_providers` (9.6.1) with the effective (merged) provider
+profiles. See 9.6 for the profile shape.
+
+```json
+{
+  "type": "providers_report",
+  "message_id": "msg_brg_provlist_1",
+  "command_id": "cmd_provlist_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-27T10:00:00Z",
+  "payload": {
+    "providers": [
+      {
+        "name": "pi",
+        "enabled": true,
+        "source": "config",
+        "has_override": false,
+        "command": ["pi"],
+        "models": { "flag": "--model", "cheap": "...", "normal": "...", "smart": "..." },
+        "prompt_flags": [],
+        "yolo_flags": [],
+        "starter_prompt": "First, run: {ctl_bin} --token {token} start-success. ...",
+        "prompt_delivery": "",
+        "startup_detection": { },
+        "activity_detection": { },
+        "last_test": { }
+      }
+    ]
+  }
+}
+```
+
+The Hub relays this to the UI via `GET /api/v1/bridges/{id}/providers`. The
+capabilities advertised in `capability_report` (10.1) are derived from the
+`enabled` effective profiles here (one entry per provider, `tiers` = tiers with a
+non-empty model).
 
 ---
 
@@ -1628,6 +1823,10 @@ V1 behavior:
 | `stop_agent` | fail_if_offline; mark instance `unreachable` if Bridge is already offline |
 | `validate_project_path` | fail_if_offline |
 | `refresh_capabilities` | fail_if_offline; Bridge also reports capabilities on reconnect |
+| `list_providers` | fail_if_offline |
+| `upsert_provider` | fail_if_offline |
+| `delete_provider` | fail_if_offline |
+| `test_provider` | fail_if_offline |
 | `sync_runtime_state` | send only after reconnect |
 
 ### 15.2 User-facing offline errors

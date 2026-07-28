@@ -153,16 +153,17 @@ endpoint via `HEIMDALL_BRIDGE_ENDPOINT`.
 
 ## 4. Provider / profile prerequisites (on the Bridge host)
 
-The Bridge's `launch_agent` launches `ham-bridge wrapper-supervisor`, which runs
-the configured `--agent-command`. Prerequisites on the Bridge host:
+The Bridge's `launch_agent` launches `ham-wrapper bridge-runtime` inside the tmux
+agent pane, passing the configured provider command after `--`. Prerequisites on
+the Bridge host:
 
 - At least one known-good provider CLI installed and authenticated, e.g.:
   - `pi` (this coding agent) with a working profile, **or**
   - whichever provider the launched agent template targets.
 - The provider's credentials live **only on the Bridge host's environment**;
-  they are never passed into the wrapper/agent child env beyond the sanitized
-  allowlist (PATH, HOME, USER, … + `HEIMDALL_BRIDGE_ENDPOINT`,
-  `HEIMDALL_AGENT_TOKEN`, `HEIMDALL_AGENT_INSTANCE_ID`).
+  `ham-wrapper bridge-runtime` passes through the process environment plus the
+  Heimdall runtime variables `HEIMDALL_BRIDGE_ENDPOINT`, `HEIMDALL_AGENT_TOKEN`,
+  `HEIMDALL_AGENT_INSTANCE_ID`, and `HEIMDALL_CTL_BIN`.
 - Confirm the agent command works standalone before wiring it as
   `--agent-command`, e.g. `pi --version` and a one-shot prompt.
 

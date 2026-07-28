@@ -96,9 +96,8 @@ issue_user_api_token :: proc(service: ^Auth_Service, input: Issue_User_API_Token
 	// provisioning); otherwise issue fails with a clear error.
 	_, user_ok, user_err := user_service.get_user(service.users, owner_id)
 	if !user_ok do return Issue_User_API_Token_Result{}, false, user_err
-	// Single active token per user: revoke any existing active (non-revoked)
-	// token before issuing a new one.
-	revoke_active_user_tokens(service, owner_id)
+	// Multiple active user tokens are allowed. Each Electron/device install can keep
+	// its own token and be revoked independently.
 	plaintext := platform.generate_id(service.ids, "hut_")
 	now := platform.clock_now(service.clock)
 	token := domain.User_API_Token{token_id = platform.generate_id(service.ids, "utok_"), owner_user_id = owner_id, label = strings.trim_space(input.label), token_hash = hash_user_api_token(plaintext), created_at = now, updated_at = now, expires_at = input.expires_at, created_from = "operator"}
@@ -108,12 +107,11 @@ issue_user_api_token :: proc(service: ^Auth_Service, input: Issue_User_API_Token
 }
 
 // issue_device_authorization_token issues a user API token via the device
-// authorization flow (ELDA-4). It is a SEPARATE path from issue_user_api_token:
-// it does NOT call revoke_active_user_tokens and imposes NO per-user cap, so a
-// user can authorize multiple devices and keep all their tokens active. It
-// stamps created_from='device_authorization' and records the device_label for
-// provenance. `owner` is the Auth_Context.user_id bound at approve time (never
-// client-supplied). Returns (token, plaintext, ok, err).
+// authorization flow (ELDA-4). Like manual user-token issuance, it imposes no
+// per-user cap, so a user can authorize multiple devices and keep all their
+// tokens active. It stamps created_from='device_authorization' and records the
+// device_label for provenance. `owner` is the Auth_Context.user_id bound at
+// approve time (never client-supplied). Returns (token, plaintext, ok, err).
 issue_device_authorization_token :: proc(service: ^Auth_Service, owner: domain.User_ID, device_label: string) -> (domain.User_API_Token, string, bool, domain.Domain_Error) {
 	if service == nil || service.users == nil || service.user_tokens == nil || service.clock == nil || service.ids == nil do return domain.User_API_Token{}, "", false, domain.domain_error(.Internal_Error, "user token service is not configured")
 	owner_id := domain.User_ID(user_service.normalize_user_id(string(owner)))
@@ -141,7 +139,8 @@ issue_device_authorization_token :: proc(service: ^Auth_Service, owner: domain.U
 }
 
 // revoke_active_user_tokens revokes every non-revoked token owned by user_id.
-// Used to enforce at-most-one-active-token-per-user on issuance.
+// Kept for administrative cleanup flows; normal issuance allows multiple active
+// user/device tokens per user.
 revoke_active_user_tokens :: proc(service: ^Auth_Service, owner_id: domain.User_ID) {
 	if service == nil || service.user_tokens == nil || service.clock == nil do return
 	tokens, list_err := iface.user_token_list_by_owner(service.user_tokens, owner_id)
@@ -166,6 +165,20 @@ revoke_user_api_token :: proc(service: ^Auth_Service, token_id: string) -> (doma
 	if service == nil || service.user_tokens == nil || service.clock == nil do return domain.User_API_Token{}, false, domain.domain_error(.Internal_Error, "user token service is not configured")
 	token, ok, err := iface.user_token_get_by_id(service.user_tokens, token_id)
 	if !ok do return domain.User_API_Token{}, false, err
+	if token.revoked_at != "" do return token, true, domain.Domain_Error{}
+	now := platform.clock_now(service.clock)
+	token.revoked_at = now
+	token.updated_at = now
+	return iface.user_token_save(service.user_tokens, token)
+}
+
+revoke_user_api_token_for_owner :: proc(service: ^Auth_Service, owner_user_id: domain.User_ID, token_id: string) -> (domain.User_API_Token, bool, domain.Domain_Error) {
+	if service == nil || service.user_tokens == nil || service.clock == nil do return domain.User_API_Token{}, false, domain.domain_error(.Internal_Error, "user token service is not configured")
+	owner_id := domain.User_ID(user_service.normalize_user_id(string(owner_user_id)))
+	if string(owner_id) == "" do return domain.User_API_Token{}, false, domain.domain_error(.Validation_Failed, "user_id is required")
+	token, ok, err := iface.user_token_get_by_id(service.user_tokens, token_id)
+	if !ok do return domain.User_API_Token{}, false, err
+	if token.owner_user_id != owner_id do return domain.User_API_Token{}, false, domain.domain_error(.Not_Found, "user token not found")
 	if token.revoked_at != "" do return token, true, domain.Domain_Error{}
 	now := platform.clock_now(service.clock)
 	token.revoked_at = now

@@ -6,6 +6,7 @@ import {
   useListBridgeProvidersQuery,
   useListBridgesQuery,
   useRefreshBridgeCapabilitiesMutation,
+  useSetBridgeProviderDefaultsMutation,
   useTestBridgeProviderMutation,
   useUpsertBridgeProviderMutation,
 } from '../../api/endpoints/bridgeSupport';
@@ -68,7 +69,9 @@ const emptyForm: ProviderForm = {
 };
 
 export function ProvidersPanel() {
-  const bridgesQuery = useListBridgesQuery();
+  // Poll: a Bridge can come online / report capabilities after this page loaded,
+  // and the Hub emits no user-WS event for bridge liveness.
+  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 5000, refetchOnMountOrArgChange: true });
   const bridges = bridgesQuery.data?.bridges || [];
   const [selectedBridgeId, setSelectedBridgeId] = useState('');
   const selectedBridge = bridges.find((bridge: any) => bridgeId(bridge) === selectedBridgeId) || bridges[0];
@@ -78,16 +81,23 @@ export function ProvidersPanel() {
   const [upsertProvider] = useUpsertBridgeProviderMutation();
   const [deleteProvider] = useDeleteBridgeProviderMutation();
   const [testProvider] = useTestBridgeProviderMutation();
+  const [setDefaults] = useSetBridgeProviderDefaultsMutation();
   const [refreshCaps] = useRefreshBridgeCapabilitiesMutation();
   const providers = providersQuery.data?.providers || [];
   const capabilities = useMemo(() => normalizeBridgeCapabilities(selectedBridge), [selectedBridge]);
   const [actionError, setActionError] = useState('');
   const [testBusy, setTestBusy] = useState('');
+  const [defaultBusy, setDefaultBusy] = useState('');
+  const [defaultOverride, setDefaultOverride] = useState<{ provider: string; tier: string } | null>(null);
   const [testResults, setTestResults] = useState<Record<string, any>>({});
 
   useEffect(() => {
     if (!selectedBridgeId && bridges.length > 0) setSelectedBridgeId(bridgeId(bridges[0]));
   }, [bridges, selectedBridgeId]);
+
+  useEffect(() => { setDefaultOverride(null); }, [selectedId]);
+
+  const currentDefaults = useMemo(() => defaultOverride || providerDefault(providersQuery.data, providers), [defaultOverride, providersQuery.data, providers]);
 
   async function toggleEnabled(profile: any) {
     if (!selectedId || offline) return;
@@ -100,13 +110,30 @@ export function ProvidersPanel() {
     }
   }
 
+  async function saveDefaults(provider: string, tier: string) {
+    if (!selectedId || offline || !provider || !tier || defaultBusy) return;
+    setActionError('');
+    setDefaultBusy(`${provider}:${tier}`);
+    setDefaultOverride({ provider, tier });
+    try {
+      await setDefaults({ bridgeId: selectedId, provider, tier }).unwrap();
+      await providersQuery.refetch();
+      await bridgesQuery.refetch();
+    } catch (err: any) {
+      setDefaultOverride(null);
+      setActionError(String(err?.message || 'Default save failed'));
+    } finally {
+      setDefaultBusy('');
+    }
+  }
+
   async function runTest(profile: any) {
     if (!selectedId || offline) return;
     const name = String(profile.name || '');
     setTestBusy(name);
     setActionError('');
     try {
-      const result = await testProvider({ bridgeId: selectedId, name, tier: defaultTier(profile) }).unwrap();
+      const result = await testProvider({ bridgeId: selectedId, name }).unwrap();
       setTestResults((prev) => ({ ...prev, [name]: result }));
     } catch (err: any) {
       setTestResults((prev) => ({ ...prev, [name]: { status: 'failed', message: String(err?.message || 'Test failed') } }));
@@ -155,7 +182,8 @@ export function ProvidersPanel() {
         </label>
         {bridges.length === 0 ? <div className="mt-3 rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No bridges connected yet. Add a Bridge first.</div> : null}
         {selectedBridge && offline ? <div className="mt-3 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">bridge_offline: provider edit/test is disabled until this Bridge reconnects.</div> : null}
-        {capabilities.length > 0 ? <div className="mt-3 text-xs text-zinc-500">Reported capabilities: <span className="text-zinc-300">{capabilities.map((cap) => `${cap.provider}${cap.tiers.length ? ` (${cap.tiers.join('/')})` : ''}`).join(', ')}</span></div> : null}
+        {capabilities.length > 0 ? <div className="mt-3 text-xs text-zinc-500">Capability matrix: <span className="text-zinc-300">{capabilities.map((cap) => `${cap.provider}${cap.tiers.length ? ` (${cap.tiers.join('/')})` : cap.defaultTier ? ` (${cap.defaultTier})` : ''}`).join(', ')}</span></div> : null}
+        {providers.length > 0 ? <div className="mt-3 rounded-xl border border-white/10 bg-black/20 p-3 text-xs text-zinc-400">Bridge default: <span className="text-zinc-100">{currentDefaults.provider || '—'} / {currentDefaults.tier || '—'}</span>. Use the radio buttons in provider rows to change it.{defaultBusy ? <span className="ml-2 text-sky-300">Saving…</span> : null}</div> : null}
       </div>
 
       {actionError ? <div className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{actionError}</div> : null}
@@ -171,6 +199,8 @@ export function ProvidersPanel() {
         {providers.map((profile: any) => {
           const name = String(profile.name || '');
           const result = testResults[name] || profile.last_test;
+          const defaults = currentDefaults;
+          const tiers = configuredTiers(profile);
           return (
             <div key={name} data-debug-id={`providers-provider-row-${name}`} className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
               <div className="flex flex-wrap items-start justify-between gap-3">
@@ -178,12 +208,13 @@ export function ProvidersPanel() {
                   <div className="flex flex-wrap items-center gap-2"><h3 className="font-semibold text-white">{name}</h3><span data-debug-id={`provider-source-badge-${name}`} className="rounded-full border border-white/10 bg-black/30 px-2 py-0.5 text-[10px] uppercase tracking-wide text-zinc-400">{profile.source || 'config'}</span><span className={`rounded-full px-2 py-0.5 text-[10px] ${profile.enabled ? 'bg-emerald-400/10 text-emerald-200' : 'bg-zinc-500/10 text-zinc-400'}`}>{profile.enabled ? 'enabled' : 'disabled'}</span></div>
                   <div className="mt-2 break-all font-mono text-xs text-zinc-400">{(profile.command || []).join(' ') || 'no command configured'}</div>
                   <div className="mt-1 break-words text-xs text-zinc-500">model flag: <span className="text-zinc-300">{profile.models?.flag || '—'}</span> · cheap <span className="text-zinc-300">{profile.models?.cheap || '—'}</span> · normal <span className="text-zinc-300">{profile.models?.normal || '—'}</span> · smart <span className="text-zinc-300">{profile.models?.smart || '—'}</span></div>
-                  <div data-debug-id={`providers-test-result-${name}`} className="mt-2 text-xs text-zinc-500">test: <span className={result?.status === 'ok' || result?.status === 'passed' ? 'text-emerald-300' : result?.status === 'failed' || result?.status === 'timeout' ? 'text-red-300' : 'text-zinc-300'}>{result?.status || 'not run'}</span>{result?.message ? ` · ${result.message}` : ''}{result?.tested_at ? ` · ${result.tested_at}` : ''}</div>
+                  {profile.enabled && tiers.length ? <div className="mt-3 flex flex-wrap gap-3 rounded-xl bg-black/20 px-3 py-2 text-xs text-zinc-300"><label data-debug-id={`providers-default-btn-${name}`} className="flex items-center gap-2"><input type="radio" name="bridge-default-provider" checked={defaults.provider === name} disabled={Boolean(defaultBusy)} onChange={() => void saveDefaults(name, defaults.tier && tiers.includes(defaults.tier) ? defaults.tier : tiers[0])} /> Default provider</label><span className="text-zinc-500">Default tier:</span>{tiers.map((tier) => <label key={tier} className="flex items-center gap-1"><input type="radio" name="bridge-default-tier" checked={defaults.provider === name && defaults.tier === tier} disabled={Boolean(defaultBusy)} onChange={() => void saveDefaults(name, tier)} /> {tier}{defaultBusy === `${name}:${tier}` ? <span className="text-sky-300">…</span> : null}</label>)}</div> : null}
+                  <div data-debug-id={`providers-test-result-${name}`} className="mt-2 text-xs text-zinc-500">test: <span className={result?.status === 'ok' || result?.status === 'passed' ? 'text-emerald-300' : result?.status === 'failed' || result?.status === 'timeout' ? 'text-red-300' : 'text-zinc-300'}>{result?.status || 'not run'}</span>{result?.message ? ` · ${result.message}` : ''}{result?.tested_at ? ` · ${result.tested_at}` : ''}{Array.isArray(result?.tiers) && result.tiers.length ? <span className="mt-1 block">{result.tiers.map((tierResult: any) => `${tierResult.tier || 'tier'}:${tierResult.status || 'unknown'}`).join(' · ')}</span> : null}</div>
                 </div>
                 <div className="grid w-full grid-cols-2 gap-2 sm:flex sm:w-auto sm:flex-wrap">
                   <button data-debug-id={`providers-enabled-toggle-${name}`} type="button" onClick={() => void toggleEnabled(profile)} disabled={offline} className="min-h-[44px] rounded-lg border border-white/10 px-3 py-2 text-xs text-zinc-300 hover:bg-white/10 disabled:opacity-50">{profile.enabled ? 'Disable' : 'Enable'}</button>
                   <a data-debug-id={`providers-edit-btn-${name}`} href={shellHash(`/settings/providers/${encodeURIComponent(name)}/edit?bridge=${encodeURIComponent(selectedId)}`)} aria-disabled={offline} className={`inline-flex min-h-[44px] items-center justify-center rounded-lg border border-white/10 px-3 py-2 text-xs text-zinc-300 hover:bg-white/10 ${offline ? 'pointer-events-none opacity-50' : ''}`}>Edit</a>
-                  <button data-debug-id={`providers-test-btn-${name}`} type="button" onClick={() => void runTest(profile)} disabled={offline || testBusy === name} className="min-h-[44px] rounded-lg border border-sky-400/30 px-3 py-2 text-xs text-sky-100 hover:bg-sky-400/10 disabled:opacity-50">{testBusy === name ? 'Testing…' : 'Test'}</button>
+                  <button data-debug-id={`providers-test-btn-${name}`} type="button" onClick={() => void runTest(profile)} disabled={offline || testBusy === name} className="min-h-[44px] rounded-lg border border-sky-400/30 px-3 py-2 text-xs text-sky-100 hover:bg-sky-400/10 disabled:opacity-50">{testBusy === name ? 'Testing…' : `Test ${configuredTiers(profile).length || 'all'} tier${configuredTiers(profile).length === 1 ? '' : 's'}`}</button>
                   <button data-debug-id={`providers-delete-btn-${name}`} type="button" onClick={() => void removeProvider(profile)} disabled={offline || profile.source !== 'store'} className="min-h-[44px] rounded-lg border border-rose-400/20 px-3 py-2 text-xs text-rose-200 hover:bg-rose-400/10 disabled:opacity-40">Delete</button>
                 </div>
               </div>
@@ -197,7 +228,7 @@ export function ProvidersPanel() {
 
 export function ProviderEditorPage({ providerName = '' }: { providerName?: string }) {
   const isEdit = Boolean(providerName);
-  const bridgesQuery = useListBridgesQuery();
+  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 5000, refetchOnMountOrArgChange: true });
   const bridges = bridgesQuery.data?.bridges || [];
   const [selectedBridgeId, setSelectedBridgeId] = useState('');
   const selectedBridge = bridges.find((bridge: any) => bridgeId(bridge) === selectedBridgeId) || bridges[0];
@@ -296,7 +327,14 @@ function shellHash(path: string): string { return `#${path.startsWith('/') ? pat
 function asArray(value: any): string[] { return Array.isArray(value) ? value.map(String).filter(Boolean) : String(value || '').split(/\s+/).map((part) => part.trim()).filter(Boolean); }
 function asLines(value: any): string[] { return Array.isArray(value) ? value.map(String).filter(Boolean) : String(value || '').split(/\r?\n/).map((part) => part.trim()).filter(Boolean); }
 function intValue(value: string, fallback: number): number { const n = Number.parseInt(value, 10); return Number.isFinite(n) ? n : fallback; }
-function defaultTier(profile: any): string { return profile.models?.normal ? 'normal' : profile.models?.cheap ? 'cheap' : profile.models?.smart ? 'smart' : 'normal'; }
+function configuredTiers(profile: any): string[] { return ['cheap', 'normal', 'smart'].filter((tier) => Boolean(profile.models?.[tier])); }
+function providerDefault(data: any, providers: any[]): { provider: string; tier: string } {
+  const provider = String(data?.default_provider || data?.defaultProvider || providers.find((profile: any) => profile.enabled && configuredTiers(profile).length)?.name || '');
+  const profile = providers.find((item: any) => String(item.name || '') === provider) || providers.find((item: any) => item.enabled && configuredTiers(item).length);
+  const tiers = configuredTiers(profile || {});
+  const tier = String(data?.default_tier || data?.defaultTier || (tiers.includes('normal') ? 'normal' : tiers[0] || ''));
+  return { provider, tier };
+}
 
 function parseReasonMappings(value: any): ReasonMapping[] { return asLines(value).map((line) => { const idx = line.indexOf('='); return idx >= 0 ? { key: line.slice(0, idx), reason: line.slice(idx + 1) } : { key: line, reason: '' }; }); }
 

@@ -143,7 +143,7 @@
         {
           ham-daemon = mkOdinDaemonPackage pkgs odin;
           ham-hub = mkOdinPackageWithRuntime pkgs odin "ham-hub" "src/hub" [ pkgs.sqlite ];
-          ham-bridge = mkOdinPackageWithRuntime pkgs odin "ham-bridge" "src/bridge" [ pkgs.openssl ];
+          ham-bridge = mkOdinPackageWithRuntime pkgs odin "ham-bridge" "src/bridge" [ pkgs.openssl pkgs.tmux ];
           ham-dev-proxy = mkOdinPackage pkgs odin "ham-dev-proxy" "src/dev_proxy";
           # ham-wrapper shells out to tmux (agent windows) and git/jj (VCS
           # workspaces). It must carry those on PATH because the daemon launches
@@ -184,7 +184,12 @@
         };
         bridge = {
           type = "app";
-          program = "${self.packages.${system}.ham-bridge}/bin/ham-bridge";
+          program = "${(pkgs.writeShellScriptBin "ham-bridge" ''
+            #!/usr/bin/env bash
+            set -euo pipefail
+            export HEIMDALL_HAM_WRAPPER_BIN="${self.packages.${system}.ham-wrapper}/bin/ham-wrapper"
+            exec "${self.packages.${system}.ham-bridge}/bin/ham-bridge" "$@"
+          '')}/bin/ham-bridge";
         };
         dev-proxy = {
           type = "app";

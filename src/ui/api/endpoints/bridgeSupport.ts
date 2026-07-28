@@ -173,7 +173,7 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
         if (!bridgeId) return { data: { bridge_id: '', providers: [] } };
         try {
           const data = await cookieJsonFetch(`/bridges/${encodeURIComponent(bridgeId)}/providers`);
-          return { data: { bridge_id: data?.bridge_id || bridgeId, providers: Array.isArray(data?.providers) ? data.providers : [] } };
+          return { data: { bridge_id: data?.bridge_id || bridgeId, default_provider: data?.default_provider || data?.defaultProvider || '', default_tier: data?.default_tier || data?.defaultTier || '', providers: Array.isArray(data?.providers) ? data.providers : [] } };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
@@ -195,6 +195,17 @@ export const bridgeSupportApi = heimdallApi.injectEndpoints({
       queryFn: async ({ bridgeId, name }) => {
         try {
           const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/providers/${encodeURIComponent(name)}`, 'DELETE');
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { bridgeId }) => [{ type: 'BridgeProviders' as const, id: bridgeId }, { type: 'Bridges' as const, id: 'LIST' }, { type: 'Bridges' as const, id: bridgeId }],
+    }),
+    setBridgeProviderDefaults: build.mutation<any, { bridgeId: string; provider: string; tier: string }>({
+      queryFn: async ({ bridgeId, provider, tier }) => {
+        try {
+          const data = await cookieMutation(`/bridges/${encodeURIComponent(bridgeId)}/provider-defaults`, 'POST', { provider, tier });
           return { data };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
@@ -251,6 +262,7 @@ export const {
   useListBridgeProvidersQuery,
   useUpsertBridgeProviderMutation,
   useDeleteBridgeProviderMutation,
+  useSetBridgeProviderDefaultsMutation,
   useTestBridgeProviderMutation,
   useRefreshBridgeCapabilitiesMutation,
   usePutProjectBridgePathMutation,

@@ -759,6 +759,342 @@ data in client caches/localStorage. Backend is correct; this is UI-only.
   wiped on switch). Track the last-seen `user_id` (e.g. in `localStorage`) to
   detect the change on load as well as at runtime.
 
+### 3.11 Auth-gate startup race (regression in N8) + dev-proxy WS gap (bugs)
+
+- **N11 — `AuthGate` hangs on "Checking session…" under StrictMode.** RCA: the
+  N8 refresh code uses a `refreshingRef` single-flight guard plus a `cancelled`
+  check that skips `setAuth`. Under React 18 `<StrictMode>` (dev double-mount,
+  refs preserved across the remount of the same instance): mount-1 sets
+  `refreshingRef=true` and starts `bootstrapAuth`; cleanup sets `cancelled=true`
+  but does NOT reset `refreshingRef`; mount-2's `refreshIdentity('initial')`
+  sees `refreshingRef===true` and returns early (never fetches, never
+  `setAuth`); mount-1's fetch resolves, hits `cancelled`, skips `setAuth`. Net:
+  `status` stays `checking` forever. A later `focus`/`visibilitychange` fires a
+  fresh `refreshIdentity` (guard now reset) → resolves → unblocks. That is why
+  **switching focus, not reload, fixes it**.
+  Fix: make the single-flight guard per-effect-instance (reset it in cleanup),
+  or drop the guard for the initial call and scope it locally; guarantee at
+  least one non-cancelled `bootstrapAuth` reaches `setAuth`, and never leave the
+  gate stuck in `checking` after the effect settles (e.g. retry/settle-to-error
+  fallback). Backend/dev-proxy are correct; UI-only.
+- **N12 — dev-proxy cannot proxy the user WebSocket (dev only).** `ham-dev-proxy`
+  forwards `/api/v1/user-ws` as one-shot HTTP: it relays the `101` then blocks
+  ~5s in `proxy_copy_response` (its `Receive_Timeout`) and closes, so the live
+  user-WS churns/reconnects forever in dev (measured `101` after 5.0s). It does
+  not block `/me` (both hub and proxy are threaded), so it is NOT the cause of
+  N11, but the WS-driven invalidation is effectively dead through the dev proxy.
+  Fix: give `ham-dev-proxy` real WebSocket pass-through (detect `Upgrade:
+  websocket`, relay the `101`, then bidirectionally stream both sockets until
+  either closes — no read timeout for upgraded conns), OR route `/api/v1/user-ws`
+  straight to the hub in `vite.config.js` dev proxy (bypass ham-dev-proxy for
+  the WS only; the hub authenticates the WS from injected headers/CIDR the same
+  way). Prefer real pass-through so dev matches the Authentik topology.
+
+### 3.12 Bridge agent runtime must be pane-native (foundational bug)
+
+**Goal:** agents run interactively in a tmux pane; the wrapper runs the agent and
+both the wrapper's and the agent's lifecycles are tied to that pane. `send-keys`
+delivers future notifications; the initial prompt is passed via the agent's
+prompt flag when available (`prompt_delivery = "flag-injection"`), else via
+delayed `send-keys` (`prompt_delivery = "tmux"`). Reference: `config.toml`
+`[wrapper.agent-cmd.*]` and the legacy `src/wrapper/main.odin` (ham-wrapper).
+
+**RCA (current bug):** the bridge wrapper-supervisor
+(`src/bridge/wrapper_supervisor.odin`) runs the agent as a detached piped
+subprocess: `os.process_start({"sh","-c",agent_command})`. The tmux pane runs
+the supervisor binary, and the agent (pi) is a child on pipes with **no PTY in
+the pane**. Consequence: `capture-pane` is blank (provider-test frames/
+diagnostics are empty), the agent is not interactive, `send-keys` has no TTY to
+target, startup detection cannot drive trust/confirm prompts, and lifecycle is
+tied to a child process handle, not the pane. The provider-test still "passes"
+because pi runs headless and can call start-success — masking the defect.
+
+**Requirement:** rework the bridge runtime so the **agent is the pane's
+foreground process** and the **wrapper is a sibling supervisor tied to the
+pane**, matching ham-wrapper's proven model. Reuse ham-wrapper logic; break
+daemon compatibility where needed (the daemon HTTP boundary is replaced by the
+bridge local endpoint).
+
+Reuse (pane-native, already depends only on `src/lib/tmux` + `src/lib/config`;
+extract into a shared lib such as `src/lib/agent_runtime/`):
+- `build_agent_command` — full argv incl. `flag-injection` initial prompt
+  (command + yolo_flags + model flag/value + prompt_flags + rendered
+  starter_prompt).
+- `ensure_agent_window` — launch that argv **directly as the pane process** (pi
+  gets a real PTY and renders in the pane).
+- `startup_probe_agent` — `auto_enter_patterns` / `auto_enter_pre_keys` via
+  `send-keys`, `blocked_patterns`, sanitized reasons.
+- `deliver_tmux_starter_prompt` — `prompt_delivery = "tmux"` delayed send-keys
+  path (delay + Enter per config).
+- `sample_activity_status` — activity via `capture_pane_text`.
+- pane-liveness polling (`tmux.pane_exists`).
+
+Drop / repoint (daemon-coupled parts the bridge/hub already own):
+- `/register`, `/reconnect`, daemon `ws_url` — bridge relays; no daemon
+  registration.
+- `generate_bootstrap_files` — the bridge already materializes bootstrap.
+- `report_startup_status` / `heartbeat_loop` HTTP → repoint to the bridge local
+  endpoint (`wrapper.startup.report` / `wrapper.activity.report` /
+  `wrapper.liveness.ping` / `wrapper.exited`), which already exists.
+- token-bearing `ham-ctl` in the starter prompt → already handled by
+  `ham-ctl agent ...` mode.
+- project validation / preferences fetch — bridge/hub concern.
+
+Lifecycle tied to the pane (bidirectional):
+- **pane gone → wrapper exits** (poll `tmux.pane_exists(pane_id)`; on false,
+  report `wrapper.exited` and terminate — no orphaned supervisor).
+- **agent exits → pane closes → wrapper exits** (pi is the pane process; when it
+  ends the pane ends; do not keep a dead pane alive with a trailing
+  `read`/`sleep` on the runtime path).
+- **stop/teardown → kill the pane** (`kill_window`) so stopping the instance
+  tears down both wrapper and agent.
+
+Scope: applies to **both** normal instance launches and provider-test launches
+(same code path), so the provider-test pane viewer (§provider-test plan) shows
+real frames. This is a targeted rework of the ~150-line bridge supervisor plus a
+lib extraction — not a full port of the 2440-line ham-wrapper.
+
+**Acceptance for §3.12:** after this lands, we can launch an instance and see the
+wrapper run the agent (pi) live in a tmux pane, and a full provider test
+(`/settings/providers/{name}/test`) shows real captured pane frames and resolves
+`passed` on a genuine interactive start-success.
+
+**How to implement §3.12 (concrete, step by step):**
+
+Current wrong code (the one line that causes everything): in
+`src/bridge/wrapper_supervisor.odin:30`,
+`os.process_start({"sh","-c",config.agent_command}, ...)` runs the agent as a
+piped child. And in `src/bridge/hub_runtime_client.odin` the tmux pane runs the
+*supervisor* (`bridge_runtime_wrapper_supervisor_argv` at ~L412, used at L229 and
+L286) instead of the agent. We invert both.
+
+Target architecture:
+```
+tmux window/pane  ─runs→  the AGENT argv directly (pi ... [--prompt "..."])   (has the PTY)
+ham-bridge wrapper-supervisor  ─sibling process, NOT in the pane→  watches pane_id, reports to bridge local endpoint
+```
+
+Step 1 — Extract shared, daemon-free logic into a new package
+`src/lib/agent_runtime/`. Copy these procs from `src/wrapper/main.odin` and
+strip any daemon/HTTP references (they already depend only on `src/lib/tmux` +
+`src/lib/config`):
+- `build_agent_command(agent_cmd, ...) -> []string` (argv incl. flag-injection
+  prompt) — reuse the existing logic; the "prompt as arg" path is
+  `prompt_delivery == "flag-injection"`.
+- `startup_probe_agent(startup_cfg, pane_id) -> Startup_Probe_Result` (auto-enter
+  via `tmux send-keys`, blocked_patterns, sanitized reasons).
+- `deliver_tmux_starter_prompt(agent_cmd, ..., pane_id)` (only fires when
+  `prompt_delivery == "tmux"`; delay + send-keys + Enter).
+- `sample_activity_status(pane_id, activity_cfg)` (uses
+  `tmux.capture_pane_text`).
+- `render_starter_prompt_for_agent(...)` / template substitution helpers.
+Do NOT copy: `register_request_json`, `report_startup_status` (HTTP),
+`heartbeat_loop` (HTTP), `generate_bootstrap_files`, project validation.
+
+Step 2 — Bridge spawns the WRAPPER with flags (mirror the legacy daemon model).
+Reference: `src/daemon/agents_start.odin` (~L761) starts `ham-wrapper` with CLI
+flags — `--agent-token <token>`, `--tier`, `--project-id`, and the
+`agent_instance_id` — and the wrapper (not the daemon) then creates the tmux
+pane and launches the agent as the pane process. Do the SAME here: the bridge is
+to the wrapper what the daemon was, except the wrapper talks to the bridge local
+endpoint instead of the daemon.
+
+In `src/bridge/hub_runtime_client.odin`:
+- The bridge does NOT create the agent pane and does NOT build the agent argv.
+  It resolves the effective provider profile + tier, then spawns the
+  wrapper-supervisor with **flags** (identity via flags, daemon-style):
+  `bridge_runtime_wrapper_supervisor_argv` passes
+  `--bridge-endpoint <endpoint>`, `--agent-token <local hlat token>`,
+  `--agent-instance-id <id>`, `--provider <name>`, `--tier <tier>`,
+  `--run-dir <dir>`, and the tmux session/window names (or lets the wrapper
+  derive them). REMOVE `--agent-command` and `--pane-id` (the wrapper now OWNS
+  pane creation). Keep env vars as a fallback only.
+- The bridge no longer calls `tmux.ensure_agent_window` for the agent; the
+  wrapper does. The bridge still spawns the wrapper process via
+  `os.process_start` (the wrapper is the bridge's child; the agent is the
+  wrapper's pane).
+
+Step 3 — Rewrite `src/bridge/wrapper_supervisor.odin` to create the pane, launch
+the agent as the pane process, and supervise it:
+- Delete the `os.process_start(sh -c <agent_command>)` block entirely.
+- Read identity from flags first, env as fallback: `--agent-token` /
+  `HEIMDALL_AGENT_TOKEN`, `--agent-instance-id` / `HEIMDALL_AGENT_INSTANCE_ID`,
+  `--bridge-endpoint` / `HEIMDALL_BRIDGE_ENDPOINT`, plus `--provider` / `--tier`
+  / `--run-dir`.
+- Build the AGENT argv with the extracted `build_agent_command` (honors
+  `prompt_delivery`/`prompt_flags`; flag-injection puts the initial prompt as an
+  arg).
+- Launch the agent AS the pane process:
+  `tmux.ensure_agent_window(session, window, run_dir, AGENT_ARGV)` and capture
+  `launch.pane_id`. **The pane env MUST include** `HEIMDALL_BRIDGE_ENDPOINT`,
+  `HEIMDALL_AGENT_TOKEN`, and `HEIMDALL_AGENT_INSTANCE_ID` so the agent's
+  `ham-ctl agent start-success` (and other `ham-ctl agent ...` calls) work —
+  the agent↔ctl handoff stays env-based even though the bridge↔wrapper handoff
+  is flag-based. Pass these into the tmux launch env (e.g. via the shell command
+  `export`s or tmux `-e`), matching how the old supervisor set the child env.
+- Report `wrapper.startup.report "starting"` to the bridge local endpoint.
+- Run `startup_probe_agent(...)` against `pane_id` (send-keys auto-answers).
+  Report `ready` / `startup_blocked` / `startup_failed` accordingly.
+- If `prompt_delivery == "tmux"`, call `deliver_tmux_starter_prompt(...)` after
+  the pane is ready.
+- Loop: every liveness interval, `if !tmux.pane_exists(pane_id) { report
+  wrapper.exited; return }`; every activity interval, `sample_activity_status`
+  and report `wrapper.activity.report`. This replaces the old
+  `os.process_wait`-based loop, tying lifecycle to the pane.
+
+Step 4 — Pane lifecycle hygiene:
+- The pane runs ONLY the agent argv; do NOT append a trailing
+  `; echo ...; read` on the runtime/provider-test path (that keeps a dead pane
+  alive and would block exit detection). `build_shell_command` currently appends
+  `read` — add a variant/flag for a "no-hold" runtime launch, or run the agent
+  argv directly without the interactive hold.
+- On stop/teardown and on provider-test completion, `tmux.kill_window` (already
+  done in the test path) so both pane and sibling supervisor end.
+
+Step 5 — Provider test uses the SAME spawn-wrapper path. In
+`bridge_runtime_run_provider_test` (`hub_runtime_client.odin`), stop calling
+`ensure_agent_window` with supervisor args directly; instead spawn the wrapper
+the same way as a normal launch (Step 2), and let the wrapper create the pane +
+launch the agent. The provider-test frame loop then captures the wrapper-owned
+`pane_id`. To learn that `pane_id`, the wrapper should report it to the bridge
+(e.g. include `pane_id` in the first `wrapper.startup.report`), and the bridge
+correlates it to the test by `agent_instance_id`. Result:
+`tmux.capture_pane_text(pane_id, ...)` returns real content, fixing the blank
+frames/diagnostics.
+
+Verification:
+- Launch an instance; `tmux capture-pane -t <pane_id> -p` must show the pi TUI.
+- The agent's `ham-ctl agent start-success` must succeed (proves the pane env
+  carries `HEIMDALL_BRIDGE_ENDPOINT`/`HEIMDALL_AGENT_TOKEN`/`_INSTANCE_ID`),
+  flipping the instance to `runtime_status=running` / `startup_status=ready`.
+- A provider test must emit non-empty `provider_test_frame` payloads and
+  non-blank diagnostics, and resolve `passed`.
+
+### 3.13 Message notification via the wrapper (bridge → wrapper → agent)
+
+**Goal:** a running agent is notified of new messages by its **wrapper**, which
+delivers the notification into the agent's tmux pane (via `send-keys`). Support
+all three directions with new-message notification:
+- **user → agent** (existing `user_to_agent` chat),
+- **agent → user** (existing `agent_to_user` chat),
+- **agent → agent** (new `agent_to_agent`).
+The agent then fetches the actual message body over the local endpoint
+(`ham-ctl agent chat read/fetch`) — notifications are lightweight; bodies are
+pulled, not pushed (consistent with the metadata-only channel model).
+
+**Gaps today (confirmed):**
+1. `agent_to_agent` direction is **not implemented** (only `user_to_agent` /
+   `agent_to_user` in `content_service`).
+2. The bridge local endpoint is **wrapper → bridge only** (request/response); the
+   bridge cannot **push** to the wrapper.
+3. On `send_message`, the hub pushes **nothing** toward the bridge — there is no
+   wake/notify path to a running agent.
+
+**Requirement:**
+- **Hub:** on a new message for a conversation whose instance is running, emit a
+  lightweight **notify command to the owning bridge** over the bridge WS (reuse
+  `send_runtime_command`), e.g. `notify_agent_message { agent_instance_id,
+  conversation_id, direction, sender, unread_count, message_id }`. No body in the
+  notification. Also add **`agent_to_agent`** messaging: an instance token may
+  send to another instance **in the same chain** (arch invariant: same-chain
+  actor refs only); the target instance's conversation gets the message and the
+  same notify path fires. Keep owner-scoping (both instances same owner).
+- **Bridge:** on `notify_agent_message`, **push** it to the target instance's
+  wrapper. This needs a **bridge → wrapper push channel** (the local endpoint
+  must support server-initiated messages to the wrapper, not just
+  wrapper-initiated calls — e.g. keep the wrapper's local connection open for
+  push, or a wrapper long-poll/subscribe method).
+- **Wrapper:** on receiving a notify, deliver a concise notification **into the
+  agent's pane via `tmux send-keys`** (e.g. "New message from <sender>; run
+  `ham-ctl agent chat read` to view."), respecting a small debounce so rapid
+  messages coalesce. The wrapper is the sole component that talks to the pane, so
+  all agent-facing notifications go through it (this is why §3.12 pane-native is
+  a prerequisite).
+- **Agent:** reads bodies via `ham-ctl agent chat read/fetch` (already added,
+  §3.5a B1) and replies via `ham-ctl agent chat send ...`.
+
+**Dependencies:** requires §3.12 (agent must be the interactive pane process for
+`send-keys` to reach it) and §3.5a B1 (conversation read for instance tokens).
+
+**Acceptance:** with two agents in the same chain plus a user, we can exercise
+user→agent, agent→user, and agent→agent messages; each running recipient agent
+receives a `send-keys` notification in its pane from its wrapper and can read the
+new message via `ham-ctl agent chat read`.
+
+**How to implement §3.13 (concrete, step by step):**
+
+Step 1 — Bridge → wrapper PUSH channel. Today the local endpoint
+(`src/bridge/wrapper_endpoint.odin`) is a persistent JSONL connection but the
+bridge only ever *replies* to wrapper-initiated lines. Make it bidirectional:
+- Add a wrapper method `wrapper.notifications.subscribe` that the wrapper calls
+  once at startup. The bridge stores that client socket keyed by
+  `agent_instance_id` (a map `instance_id -> socket`), and keeps the connection
+  open.
+- Add a bridge-internal function `bridge_wrapper_push(instance_id, json)` that
+  writes a JSONL line to that stored socket (server-initiated). Guard with a
+  mutex; on write failure drop the entry (wrapper will resubscribe on relaunch).
+- The wrapper's local-endpoint client loop must now also READ unsolicited lines
+  (not just read-its-own-reply): run a small read loop that dispatches inbound
+  `{"push":"agent_message", ...}` frames.
+
+Step 2 — Hub emits a notify on new message. In
+`src/hub/service/content/content_service.odin`, after a message is saved in
+`send_message` (user→agent) and `send_agent_message` (agent→user), and the new
+`send_agent_to_agent` (Step 4):
+- Look up the target conversation's `agent_instance_id` and its `bridge_id`
+  (from the AgentInstance record).
+- If that instance is running on a live bridge, call
+  `send_runtime_command(registry, Runtime_Command{bridge_id, body_json})` (the
+  existing hub→bridge WS command path, `src/hub/service/bridge_runtime`) with a
+  lightweight command:
+  `{"type":"notify_agent_message","payload":{"agent_instance_id":...,
+  "conversation_id":...,"direction":...,"sender":...,"unread_count":...,
+  "message_id":...}}`. NO message body.
+- This requires content_service to have access to the agent repo (to resolve
+  instance→bridge) and the bridge command sink — inject them at construction (no
+  singletons). If a direct dependency is undesirable, emit a domain event the
+  app layer forwards to the bridge command sink.
+
+Step 3 — Bridge handles `notify_agent_message`. In
+`src/bridge/hub_runtime_client.odin` command dispatch (same switch as
+`launch_agent` / provider commands), add a `notify_agent_message` case that
+extracts `agent_instance_id` and calls `bridge_wrapper_push(instance_id,
+<notify json>)`. It is fire-and-forget (no command_result needed, or reply
+`accepted`).
+
+Step 4 — Wrapper delivers to the pane. In the wrapper supervisor (post-§3.12,
+which already holds `pane_id`): on an inbound push frame, format a concise line
+like `New message from <sender> — run 'ham-ctl agent chat read' to view.` and
+`tmux.send_text(pane_id, line, true)` (send-keys + Enter). Debounce: if multiple
+notifications arrive within e.g. 2s, coalesce into one "N new messages" line so
+rapid traffic does not spam the pane.
+
+Step 5 — agent_to_agent messaging (hub). Add `send_agent_to_agent` to
+`content_service`:
+- Auth: instance token (`auth.kind == .Instance_Token`); sender =
+  `auth.agent_instance_id`.
+- Validate the TARGET instance exists, is owned by the SAME user, and is in the
+  SAME `chain_id` as the sender (arch invariant: same-chain actor refs only).
+  Reject otherwise (`forbidden`).
+- Save a `Chat_Message` on the TARGET's conversation with
+  `direction = "agent_to_agent"`, `sender_agent_instance_id = sender`, bump the
+  target conversation `unread_count`, then run the Step 2 notify for the target.
+- Expose it: new agent-action route
+  `POST /api/v1/agent-actions/chat/send-to-agent` (instance-token auth),
+  bridge local method `agent.chat.send_to_agent` (allowlist + relay in
+  `wrapper_endpoint.odin`), and `ham-ctl agent chat send-to-agent
+  --to-instance <id> --body <text>`.
+
+Step 6 — direction handling everywhere. `agent_to_agent` is a new
+`Chat_Message.direction` value; ensure read/fetch (`ham-ctl agent chat read`)
+and the UI message rendering tolerate it (treat unknown direction as a labeled
+message, per §3.6 A-series robustness).
+
+Verification: run two instances in one chain; from agent A run
+`ham-ctl agent chat send-to-agent --to-instance <B> --body hi`; agent B's pane
+gets a send-keys notification and `ham-ctl agent chat read` shows the message.
+Repeat for user→agent (UI/composer) and agent→user (`ham-ctl agent chat send`).
+
 ---
 
 ## 4. Page-by-page UI plan (onboarding order)

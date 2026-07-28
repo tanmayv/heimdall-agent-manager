@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch } from 'react-redux';
 import ConversationLaunchComposer from '../chat/ConversationLaunchComposer';
+import ConversationThreadPage from '../chat/ConversationThreadPage';
 import CommandPalette from '../command-palette/CommandPalette';
 import { useViewport, MobileTabBar, MobileTopBar } from './responsive';
 import { heimdallApi } from '../../api/heimdallApi';
@@ -353,9 +354,7 @@ function ProjectConversationTree({ groups }: { groups: ProjectGroup[] }) {
           <div key={projectGroup.project.projectId} data-debug-id={`sidebar-project-group-${projectGroup.project.projectId}`} className="rounded-2xl border border-white/8 bg-black/15 p-2">
             <div className="flex items-center gap-2 px-1 py-1 text-sm font-semibold text-zinc-100">
               <span className="truncate">{projectGroup.project.name}</span>
-              {projectGroup.project.isDefaultConversations && (
-                <span data-debug-id="sidebar-default-conversations-project-policy" title="Default Conversations project is renamable but not deletable" className="rounded-full bg-white/10 px-2 py-0.5 text-[10px] font-bold text-zinc-300">renamable · not deletable</span>
-              )}
+
               <UnreadBadge count={projectGroup.unreadCount} debugId={`sidebar-project-unread-${projectGroup.project.projectId}`} />
             </div>
             {projectGroup.agents.length === 0 ? (
@@ -569,6 +568,7 @@ function DefaultsSettingsPanel() {
 function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: { path: string; mobileBottomPadded?: boolean; conversations?: ConversationSummary[] }) {
   const description = routeDescription(path);
   const crumbs = routeBreadcrumbs(path, conversations);
+  const isConversationThreadRoute = path.startsWith('/conversations/') && path !== '/conversations/new';
   const isKnownRoute = useMemo(() => {
     return [
       '/conversations', '/conversations/new', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/settings',
@@ -581,55 +581,49 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
       path === '/agents/new';
   }, [path]);
 
+  if (isConversationThreadRoute) {
+    return (
+      <main data-debug-id="shell-main-route-outlet" className={`min-w-0 flex-1 overflow-hidden bg-[#090909] ${mobileBottomPadded ? 'pb-16 md:pb-0' : ''}`}>
+        <ConversationThreadPage conversationId={decodeSegment(path.slice('/conversations/'.length))} />
+      </main>
+    );
+  }
+
   return (
     <main data-debug-id="shell-main-route-outlet" className={`min-w-0 flex-1 overflow-auto bg-[#090909] ${mobileBottomPadded ? 'pb-20 md:pb-0' : ''}`}>
-      <section className="mx-auto flex min-h-full w-full max-w-6xl flex-col px-4 py-4 sm:px-6 sm:py-6 lg:px-8 lg:py-7">
-        <div className="mb-5 flex flex-col items-stretch justify-between gap-4 border-b border-white/10 pb-5 sm:flex-row sm:items-center">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-300/80">Routed main region</p>
-            {isKnownRoute ? <Breadcrumbs crumbs={crumbs} /> : <h1 data-debug-id="shell-route-title" className="mt-2 text-3xl font-semibold tracking-tight text-white">Route not found</h1>}
-            <p data-debug-id="shell-route-path" className="mt-1 text-sm text-zinc-500">{path}</p>
-          </div>
-          <a
-            data-debug-id="shell-new-conversation-link"
-            href={shellHash('/conversations/new')}
-            className="inline-flex min-h-[44px] w-full items-center justify-center rounded-2xl bg-sky-400 px-4 py-2 text-sm font-bold text-black shadow-lg shadow-sky-400/20 hover:bg-sky-300 sm:w-auto"
-          >
-            New conversation
-          </a>
-        </div>
+      <section className="mx-auto flex min-h-full w-full max-w-6xl flex-col items-start px-3 py-3 text-left sm:px-4 sm:py-4 lg:px-5 lg:py-5">
         {path.startsWith('/settings') ? <SettingsSubNav path={path} /> : null}
-        <div className="grid min-w-0 flex-1 place-items-stretch rounded-2xl border border-dashed border-white/12 bg-white/[0.03] p-4 text-center sm:place-items-center sm:rounded-[2rem] sm:p-8">
-          {path === '/conversations/new' ? (
-            <ConversationLaunchComposer />
-          ) : path === '/settings' || path === '/settings/bridges' ? (
-            <div className="w-full max-w-4xl text-left"><BridgesPanel /></div>
-          ) : path === '/settings/providers' ? (
-            <div className="w-full max-w-4xl text-left"><ProvidersPanel /></div>
-          ) : path === '/settings/providers/new' ? (
-            <div className="w-full max-w-5xl text-left"><ProviderEditorPage /></div>
-          ) : path.startsWith('/settings/providers/') && path.endsWith('/edit') ? (
-            <div className="w-full max-w-5xl text-left"><ProviderEditorPage providerName={decodeSegment(path.slice('/settings/providers/'.length, -'/edit'.length))} /></div>
-          ) : path === '/settings/projects' ? (
-            <ProjectsSettingsPanel />
-          ) : path === '/settings/memory' ? (
-            <MemorySettingsPanel />
-          ) : path === '/settings/defaults' ? (
-            <DefaultsSettingsPanel />
-          ) : path === '/agents' ? (
-            <div className="w-full max-w-4xl text-left"><AgentsPanel /></div>
-          ) : path === '/agents/new' ? (
-            <div className="w-full max-w-5xl text-left"><NewAgentPage /></div>
-          ) : path.startsWith('/agents/') ? (
-            <div className="w-full max-w-5xl text-left"><AgentDetailPanel agentId={decodeURIComponent(path.slice('/agents/'.length))} /></div>
-          ) : (
-            <div className="max-w-2xl">
-              <div data-debug-id="shell-page-placeholder-icon" className="mx-auto mb-4 grid h-14 w-14 place-items-center rounded-3xl bg-white/10 text-2xl">⌁</div>
-              <h2 className="text-xl font-semibold text-white">{isKnownRoute ? (crumbs[crumbs.length - 1]?.label || 'Route') : 'This route is not part of the v1 shell map'}</h2>
-              <p className="mt-3 text-sm leading-6 text-zinc-400">{isKnownRoute ? description : 'Use the left sidebar to navigate to a v1 route. Legacy workspace, guide, attention-badge, and inspector routes are intentionally not mounted in this shell.'}</p>
-            </div>
-          )}
-        </div>
+        {path === '/conversations/new' ? (
+          <ConversationLaunchComposer />
+        ) : path === '/settings' || path === '/settings/bridges' ? (
+          <BridgesPanel />
+        ) : path === '/settings/providers' ? (
+          <ProvidersPanel />
+        ) : path === '/settings/providers/new' ? (
+          <ProviderEditorPage />
+        ) : path.startsWith('/settings/providers/') && path.endsWith('/edit') ? (
+          <ProviderEditorPage providerName={decodeSegment(path.slice('/settings/providers/'.length, -'/edit'.length))} />
+        ) : path === '/settings/projects' ? (
+          <ProjectsSettingsPanel />
+        ) : path === '/settings/memory' ? (
+          <MemorySettingsPanel />
+        ) : path === '/settings/defaults' ? (
+          <DefaultsSettingsPanel />
+        ) : path === '/agents' ? (
+          <AgentsPanel />
+        ) : path === '/agents/new' ? (
+          <NewAgentPage />
+        ) : path.startsWith('/agents/') ? (
+          <AgentDetailPanel agentId={decodeURIComponent(path.slice('/agents/'.length))} />
+        ) : (
+          <div className="w-full max-w-2xl rounded-2xl border border-white/10 bg-white/[0.03] p-5 text-left">
+            <div data-debug-id="shell-page-placeholder-icon" className="mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-white/10 text-2xl">⌁</div>
+            {isKnownRoute ? <Breadcrumbs crumbs={crumbs} /> : <h1 data-debug-id="shell-route-title" className="text-2xl font-semibold tracking-tight text-white">Route not found</h1>}
+            <p data-debug-id="shell-route-path" className="mt-1 text-xs text-zinc-600">{path}</p>
+            <h2 className="mt-4 text-xl font-semibold text-white">{isKnownRoute ? (crumbs[crumbs.length - 1]?.label || 'Route') : 'This route is not part of the v1 shell map'}</h2>
+            <p className="mt-3 text-sm leading-6 text-zinc-400">{isKnownRoute ? description : 'Use the left sidebar to navigate to a v1 route. Legacy workspace, guide, attention-badge, and inspector routes are intentionally not mounted in this shell.'}</p>
+          </div>
+        )}
       </section>
     </main>
   );

@@ -59,9 +59,11 @@ render_starter_prompt_for_agent :: proc(profile: Agent_Profile, daemon_url, agen
 	out, _ = strings.replace_all(out, "{instance}", agent_instance_id)
 	out, _ = strings.replace_all(out, "{agent_instance_id}", agent_instance_id)
 	out, _ = strings.replace_all(out, "{daemon_url}", daemon_url)
-	out, _ = strings.replace_all(out, "{ctl_bin}", "ham-ctl")
-	out, _ = strings.replace_all(out, strings.concatenate({"ham-ctl --token ", agent_token, " start-success"}), "ham-ctl agent start-success")
-	out, _ = strings.replace_all(out, "ham-ctl start-success", "ham-ctl agent start-success")
+	out, _ = strings.replace_all(out, "{ctl_bin}", "./.heimdall/bin/ham-ctl")
+	out, _ = strings.replace_all(out, strings.concatenate({"./.heimdall/bin/ham-ctl --token ", agent_token, " start-success"}), "./.heimdall/bin/ham-ctl agent start-success")
+	out, _ = strings.replace_all(out, "ham-ctl --token ", "./.heimdall/bin/ham-ctl --token ")
+	out, _ = strings.replace_all(out, "ham-ctl start-success", "./.heimdall/bin/ham-ctl agent start-success")
+	out = strings.concatenate({out, "\n\nHeimdall runtime: use `./.heimdall/bin/ham-ctl` for CLI actions. Your agent token is `", agent_token, "` and your agent instance id is `", agent_instance_id, "`; they are also available in HEIMDALL_AGENT_TOKEN and HEIMDALL_AGENT_INSTANCE_ID."})
 	return out
 }
 

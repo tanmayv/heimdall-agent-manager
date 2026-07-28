@@ -33,6 +33,16 @@ main :: proc() {
 		return
 	}
 
+	// Convenience for Bridge-launched agents: the managed .heimdall/bin/ham-ctl
+	// wrapper exports local endpoint/token env, so allow `ham-ctl agents live`
+	// without requiring the extra `agent` namespace.
+	if cmd[0] == "agents" || cmd[0] == "instances" {
+		if agent_mode_endpoint(os.args) != "" && agent_mode_token(os.args) != "" {
+			ctl_agent_mode(cmd[:], os.args)
+			return
+		}
+	}
+
 	if cmd[0] == "start-success" {
 		if agent_mode_endpoint(os.args) != "" && agent_mode_token(os.args) != "" {
 			agent_cmd := [?]string{"agent", "start-success"}

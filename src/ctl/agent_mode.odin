@@ -30,11 +30,12 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	}
 	if resource == "context" { ctl_agentmode_context(endpoint, token, args); return }
 	if resource == "start-success" { ctl_agent_call(endpoint, token, "agent.start_success", "{}"); return }
+	if resource == "agents" || resource == "instances" { ctl_agentmode_agents(endpoint, token, action, args); return }
 	if resource == "chat" || resource == "chats" { ctl_agentmode_chat(endpoint, token, action, args); return }
 	if resource == "tasks" || resource == "task" { ctl_agentmode_tasks(endpoint, token, action, args); return }
 	if resource == "artifacts" || resource == "artifact" { ctl_agentmode_artifacts(endpoint, token, action, args); return }
 	if resource == "memory" { ctl_agentmode_memory(endpoint, token, action, args); return }
-	fmt.println("usage: ham-ctl agent <context|start-success|chat|tasks|artifacts|memory> ...")
+	fmt.println("usage: ham-ctl agent <context|start-success|agents|chat|tasks|artifacts|memory> ...")
 }
 
 agent_mode_endpoint :: proc(args: []string) -> string {
@@ -54,6 +55,12 @@ ctl_agentmode_context :: proc(endpoint, token: string, args: []string) {
 	ctl_agent_call(endpoint, token, "agent.context.get", "{}")
 }
 
+ctl_agentmode_agents :: proc(endpoint, token, action: string, args: []string) {
+	_ = args
+	if action == "" || action == "live" || action == "running" { ctl_agent_call(endpoint, token, "agent.agents.live", "{}"); return }
+	fmt.println("usage: ham-ctl agent agents <live|running>")
+}
+
 ctl_agentmode_chat :: proc(endpoint, token, action: string, args: []string) {
 	if action == "" || action == "send" || action == "send-to-user" {
 		body := option_value(args, "--body", "")
@@ -70,12 +77,11 @@ ctl_agentmode_chat :: proc(endpoint, token, action: string, args: []string) {
 		ctl_agent_call(endpoint, token, "agent.chat.send_to_agent", json_object(json_kv("to_instance", to_instance), json_kv("body", body)))
 		return
 	}
-	if action == "fetch" || action == "read-messages" {
+	if action == "fetch" || action == "read" || action == "read-messages" {
 		ctl_agentmode_chat_fetch(endpoint, token, args)
 		return
 	}
-	if action == "read" || action == "mark-read" {
-		if option_value(args, "--since", option_value(args, "--cursor", "")) != "" { ctl_agentmode_chat_fetch(endpoint, token, args); return }
+	if action == "mark-read" {
 		ctl_agent_call(endpoint, token, "agent.chat.read", "{}")
 		return
 	}
@@ -250,6 +256,7 @@ print_agent_help :: proc(cmd: []string) {
 		}
 	}
 	if resource == "chat" || resource == "chats" { print_agent_chat_help(action); return }
+	if resource == "agents" || resource == "instances" { fmt.println("ham-ctl agent agents <live|running>\nPurpose: list live agent instances visible to this agent's owner via the local Bridge.\nExamples:\n  ham-ctl agents live\n  ham-ctl agent agents live"); return }
 	if resource == "tasks" || resource == "task" { print_agent_tasks_help(action); return }
 	if resource == "artifacts" || resource == "artifact" { print_agent_artifacts_help(action); return }
 	if resource == "memory" { print_agent_memory_help(action); return }
@@ -260,11 +267,13 @@ print_agent_help :: proc(cmd: []string) {
 	fmt.println("  context        Fetch instance, conversation, chain, task, and unread summary")
 	fmt.println("  start-success  Mark startup ready")
 	fmt.println("  chat           Read/send the bound user conversation")
+	fmt.println("  agents         List live/running agent instances")
 	fmt.println("  tasks          Fetch current task context and comment/status/vote/nudge assigned tasks")
 	fmt.println("  artifacts      Create artifacts attached to this instance")
 	fmt.println("  memory         Propose memory")
 	fmt.println("examples:")
 	fmt.println("  ham-ctl agent context")
+	fmt.println("  ham-ctl agents live")
 	fmt.println("  ham-ctl agent chat read --since 2026-07-27T10:00:00Z")
 	fmt.println("  ham-ctl agent chat send --body 'Done; tests pass.'")
 }
@@ -277,7 +286,8 @@ print_agent_chat_help :: proc(action: string) {
 	fmt.println("  send --body <text> | --stdin")
 	fmt.println("  send-to-agent --to-instance <id> --body <text> | --stdin")
 	fmt.println("  fetch [--since <cursor|timestamp>] [--limit N]")
-	fmt.println("  read [--since <cursor|timestamp>] [--limit N]  # with --since returns delta; without --since acknowledges only")
+	fmt.println("  read [--since <cursor|timestamp>] [--limit N]  # fetches user_to_agent and agent_to_agent messages")
+	fmt.println("  mark-read  # acknowledges without fetching")
 	fmt.println("Examples:")
 	fmt.println("  ham-ctl agent chat fetch --since 2026-07-27T10:00:00Z --limit 20")
 	fmt.println("  ham-ctl agent chat read --since msg_cursor")

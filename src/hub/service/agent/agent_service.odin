@@ -1,5 +1,6 @@
 package agent
 
+import "core:fmt"
 import "core:strings"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
@@ -140,15 +141,17 @@ validate_support_input :: proc(service: ^Agent_Service, auth: contracts.Auth_Con
 	if bridge.owner_user_id != agent.owner_user_id do return false, domain.domain_error(.Not_Found, "bridge not found")
 	if input.max_instances < 0 do return false, domain.domain_error(.Validation_Failed, "max_instances must be positive")
 	if !input.enabled do return true, domain.Domain_Error{}
-	resolved_provider := first_non_empty(input.provider, agent.default_provider, default_provider_from_bridge(bridge), "")
-	resolved_tier := first_non_empty(input.tier, agent.default_tier, default_tier_for_provider_from_bridge(bridge, resolved_provider), "")
-	if strings.trim_space(resolved_provider) == "" do return false, domain.domain_error(.Provider_Unavailable, "no provider is available on bridge")
-	if input.tier != "" || input.provider != "" || agent.default_provider != "" || agent.default_tier != "" {
-		if strings.trim_space(resolved_tier) == "" do return false, domain.domain_error(.Provider_Unavailable, "no tier is available for resolved provider")
-		if !bridge_supports_provider_tier(bridge, resolved_provider, resolved_tier) do return false, domain.domain_error(.Provider_Unavailable, "bridge does not support requested provider/tier")
+	// AgentBridgeSupport does not allowlist provider/tier. Enabling a bridge is
+	// allowed even when the agent's global default is not supported there; runtime
+	// resolution will return provider_unavailable and the UI can prompt for an
+	// override. Only validate explicit support-level preferred defaults against
+	// the bridge's real capability matrix.
+	if strings.trim_space(input.provider) != "" {
+		if !bridge_supports_provider(bridge, input.provider) do return false, domain.domain_error(.Provider_Unavailable, fmt.tprintf("bridge does not support provider %s", input.provider))
+		if strings.trim_space(input.tier) != "" && !bridge_supports_provider_tier(bridge, input.provider, input.tier) do return false, domain.domain_error(.Provider_Unavailable, fmt.tprintf("bridge does not support provider/tier %s/%s", input.provider, input.tier))
 		return true, domain.Domain_Error{}
 	}
-	if !bridge_supports_provider_tier(bridge, resolved_provider, resolved_tier) do return false, domain.domain_error(.Provider_Unavailable, "bridge does not support requested provider/tier")
+	if strings.trim_space(input.tier) != "" && !bridge_supports_any_provider_tier(bridge, input.tier) do return false, domain.domain_error(.Provider_Unavailable, fmt.tprintf("bridge does not support tier %s for any configured provider", input.tier))
 	return true, domain.Domain_Error{}
 }
 
@@ -179,24 +182,21 @@ delete_support :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, ag
 	return iface.agent_delete_support(service.agents, agent.agent_id, bridge_id, agent.owner_user_id)
 }
 
+default_support_for_agent_bridge :: proc(agent: domain.Agent, bridge_id: string) -> domain.Agent_Bridge_Support {
+	return domain.Agent_Bridge_Support{agent_id = agent.agent_id, bridge_id = bridge_id, owner_user_id = agent.owner_user_id, enabled = true}
+}
+
 create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, input: Create_Instance_Input) -> (domain.Agent_Instance, bool, domain.Domain_Error) {
 	owner, owner_ok, owner_err := ownership.owner_from_auth(auth)
 	if !owner_ok do return domain.Agent_Instance{}, false, owner_err
 	agent, agent_ok, agent_err := get_agent(service, auth, input.agent_id)
 	if !agent_ok do return domain.Agent_Instance{}, false, agent_err
-	bridge_id := input.bridge_id
-	if bridge_id == "" {
-		selected, selected_ok, select_err := select_bridge_for_agent(service, auth, agent, Run_Request{provider = input.provider, tier = input.tier})
-		if !selected_ok do return domain.Agent_Instance{}, false, select_err
-		bridge_id = selected.bridge_id
-	}
+	bridge_id := strings.trim_space(input.bridge_id)
+	if bridge_id == "" do return domain.Agent_Instance{}, false, domain.domain_error(.Validation_Failed, "bridge_id is required; choose the bridge to run this agent on")
 	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, bridge_id)
 	if !bridge_ok do return domain.Agent_Instance{}, false, bridge_err
 	if bridge.owner_user_id != owner || bridge.owner_user_id != agent.owner_user_id do return domain.Agent_Instance{}, false, domain.domain_error(.Not_Found, "bridge not found")
 	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, bridge.bridge_id) do return domain.Agent_Instance{}, false, domain.domain_error(.Bridge_Offline, "bridge is offline")
-	support, support_ok, support_err := iface.agent_get_support(service.agents, agent.agent_id, bridge.bridge_id)
-	if !support_ok do return domain.Agent_Instance{}, false, support_err
-	if !support.enabled do return domain.Agent_Instance{}, false, domain.domain_error(.Provider_Unavailable, "agent bridge support is disabled")
 	resolved, resolved_ok, resolved_err := resolve_provider_tier(service, auth, agent.agent_id, bridge.bridge_id, Run_Request{provider = input.provider, tier = input.tier})
 	if !resolved_ok do return domain.Agent_Instance{}, false, resolved_err
 	chain_id, chain_ok, chain_err := resolve_instance_chain(service, owner, input.chain_id, agent.name)
@@ -236,7 +236,13 @@ list_instances_filtered :: proc(service: ^Agent_Service, auth: contracts.Auth_Co
 	for inst in instances {
 		if filter.agent_id != "" && inst.agent_id != filter.agent_id do continue
 		if filter.bridge_id != "" && inst.bridge_id != filter.bridge_id do continue
-		if filter.runtime_status != "" && inst.runtime_status != filter.runtime_status do continue
+		if filter.runtime_status != "" {
+			if filter.runtime_status == "live" || filter.runtime_status == "active" {
+				if !runtime_expected_active(inst.runtime_status) do continue
+			} else if inst.runtime_status != filter.runtime_status {
+				continue
+			}
+		}
 		append(&out, inst)
 	}
 	return out[:], domain.Domain_Error{}
@@ -261,11 +267,13 @@ active_instance_count_for_agent :: proc(service: ^Agent_Service, agent: domain.A
 }
 
 supported_bridge_count_for_agent :: proc(service: ^Agent_Service, agent: domain.Agent) -> int {
-	if service == nil || service.agents == nil do return 0
-	supports, err := iface.agent_list_support(service.agents, agent.agent_id, agent.owner_user_id)
+	if service == nil || service.bridges == nil do return 0
+	bridges, err := iface.bridge_list_by_owner(service.bridges, agent.owner_user_id)
 	if err.code != .None do return 0
 	count := 0
-	for s in supports { if s.enabled do count += 1 }
+	for bridge in bridges {
+		if bridge.status == .Online && bridge.capabilities_json != "" do count += 1
+	}
 	return count
 }
 
@@ -358,11 +366,93 @@ bootstrap_json_for_bridge :: proc(service: ^Agent_Service, owner: domain.User_ID
 	write_bootstrap_messages(&b, service, inst)
 	strings.write_string(&b, "],\"messages\":[")
 	write_bootstrap_messages(&b, service, inst)
-	strings.write_string(&b, "]},\"memory\":[],\"files\":[{\"kind\":\"AGENTS_MD\",\"relative_path\":\"AGENTS.md\",\"content\":\"# Agent bootstrap\\n\\nAgent: "); write_service_json_string(&b, agent.name)
+	strings.write_string(&b, "]},\"memory\":[")
+	write_bootstrap_memories(&b, service, owner, inst)
+	strings.write_string(&b, "],\"files\":[{\"kind\":\"AGENTS_MD\",\"relative_path\":\"AGENTS.md\",\"content\":\"# Agent bootstrap\\n\\nAgent: "); write_service_json_string(&b, agent.name)
 	strings.write_string(&b, "\\nInstance: "); write_service_json_string(&b, inst.agent_instance_id)
-	strings.write_string(&b, "\"}],\"instance_token\":\"hit_"); write_service_json_string(&b, inst.agent_instance_id)
+	write_bootstrap_memory_markdown(&b, service, owner, inst)
+	strings.write_string(&b, "\"}]")
+	write_bootstrap_default_skill_fields(&b, service, owner, inst)
+	strings.write_string(&b, ",\"instance_token\":\"hit_"); write_service_json_string(&b, inst.agent_instance_id)
 	strings.write_string(&b, "\",\"hub_url\":\""); write_service_json_string(&b, bridge.hub_url); strings.write_string(&b, "\"}")
 	return strings.to_string(b), true, domain.Domain_Error{}
+}
+
+write_bootstrap_default_skill_fields :: proc(b: ^strings.Builder, service: ^Agent_Service, owner: domain.User_ID, inst: domain.Agent_Instance) {
+	if service == nil || service.content == nil do return
+	memories, err := iface.content_list_memories(service.content, owner)
+	if err.code != .None do return
+	for m in memories {
+		if !bootstrap_memory_applies(m, inst) || m.type != "skill" do continue
+		strings.write_string(b, ",\"default_skill_name\":\"heimdall-ctl-communication\",\"default_skill_content\":\"")
+		write_bootstrap_skill_file_content(b, m)
+		strings.write_string(b, "\"")
+		return
+	}
+}
+
+write_bootstrap_skill_file_content :: proc(b: ^strings.Builder, m: domain.Memory) {
+	content := strings.builder_make()
+	strings.write_string(&content, "---\nname: heimdall-ctl-communication\ndescription: Use Heimdall CLI for agent startup, chat communication, task coordination, and concise status reporting. Load when communicating through Heimdall or reacting to message notifications.\n---\n\n# ")
+	strings.write_string(&content, m.title)
+	strings.write_string(&content, "\n\n")
+	body := m.body
+	if strings.index(body, "\\n") >= 0 {
+		replaced, _ := strings.replace_all(body, "\\n", "\n")
+		body = replaced
+	}
+	strings.write_string(&content, body)
+	write_service_json_string(b, strings.to_string(content))
+}
+
+write_bootstrap_memories :: proc(b: ^strings.Builder, service: ^Agent_Service, owner: domain.User_ID, inst: domain.Agent_Instance) {
+	if service == nil || service.content == nil do return
+	memories, err := iface.content_list_memories(service.content, owner)
+	if err.code != .None do return
+	written := 0
+	for m in memories {
+		if !bootstrap_memory_applies(m, inst) do continue
+		if written > 0 do strings.write_byte(b, ',')
+		strings.write_string(b, "{\"memory_id\":\""); write_service_json_string(b, m.memory_id)
+		strings.write_string(b, "\",\"agent_id\":\""); write_service_json_string(b, m.agent_id)
+		strings.write_string(b, "\",\"type\":\""); write_service_json_string(b, m.type)
+		strings.write_string(b, "\",\"status\":\""); write_service_json_string(b, m.status)
+		strings.write_string(b, "\",\"title\":\""); write_service_json_string(b, m.title)
+		strings.write_string(b, "\",\"body\":\""); write_service_json_string(b, m.body)
+		strings.write_string(b, "\",\"evidence\":\""); write_service_json_string(b, m.evidence)
+		strings.write_string(b, "\"}")
+		written += 1
+	}
+}
+
+write_bootstrap_memory_markdown :: proc(b: ^strings.Builder, service: ^Agent_Service, owner: domain.User_ID, inst: domain.Agent_Instance) {
+	if service == nil || service.content == nil do return
+	memories, err := iface.content_list_memories(service.content, owner)
+	if err.code != .None do return
+	written := 0
+	for m in memories {
+		if !bootstrap_memory_applies(m, inst) do continue
+		if written == 0 do strings.write_string(b, "\\n\\n## Applicable Memories / Skills")
+		strings.write_string(b, "\\n\\n### "); write_service_json_string(b, m.title)
+		strings.write_string(b, "\\nType: "); write_service_json_string(b, m.type)
+		strings.write_string(b, "\\n\\n"); write_bootstrap_markdown_json_string(b, m.body)
+		written += 1
+	}
+}
+
+write_bootstrap_markdown_json_string :: proc(b: ^strings.Builder, value: string) {
+	text := value
+	if strings.index(text, "\\n") >= 0 {
+		replaced, _ := strings.replace_all(text, "\\n", "\n")
+		text = replaced
+	}
+	write_service_json_string(b, text)
+}
+
+bootstrap_memory_applies :: proc(m: domain.Memory, inst: domain.Agent_Instance) -> bool {
+	if m.status != "active" do return false
+	if m.agent_id == "" do return true
+	return m.agent_id == inst.agent_id || m.agent_id == inst.agent_instance_id
 }
 
 write_bootstrap_task_context :: proc(b: ^strings.Builder, service: ^Agent_Service, inst: domain.Agent_Instance, chain: domain.Task_Chain, chain_ok: bool) {
@@ -484,9 +574,19 @@ apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_
 	inst, ok, err := iface.agent_get_instance(service.agents, instance_id)
 	if !ok do return domain.Agent_Instance{}, false, err
 	if inst.bridge_id != bridge_id do return domain.Agent_Instance{}, false, domain.domain_error(.Not_Found, "agent instance not found on bridge")
-	if state_seq <= inst.last_applied_seq do return inst, false, domain.Domain_Error{}
+	effective_state_seq := state_seq
+	if effective_state_seq <= inst.last_applied_seq {
+		// Bridge runtime state is in-memory and can restart while ham-wrapper
+		// processes keep running. A wrapper reconnect/liveness report with a reset
+		// bridge-local seq is authoritative for recovery from non-live Hub states.
+		if runtime_expected_active(runtime_status) && (inst.runtime_status == "unreachable" || inst.runtime_status == "launching" || inst.runtime_status == "starting") {
+			effective_state_seq = inst.last_applied_seq + 1
+		} else {
+			return inst, false, domain.Domain_Error{}
+		}
+	}
 	now := platform.clock_now(service.clock)
-	inst.last_applied_seq = state_seq
+	inst.last_applied_seq = effective_state_seq
 	if runtime_status != "" do inst.runtime_status = runtime_status
 	if activity_status != "" do inst.activity_status = activity_status
 	inst.last_seen_at = now
@@ -566,13 +666,15 @@ ensure_instance_conversation :: proc(service: ^Agent_Service, inst: domain.Agent
 resolve_provider_tier :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agent_id, bridge_id: string, req: Run_Request) -> (domain.Resolved_Provider_Tier, bool, domain.Domain_Error) {
 	agent, ok, err := get_agent(service, auth, agent_id)
 	if !ok do return domain.Resolved_Provider_Tier{}, false, err
-	support, support_ok, support_err := iface.agent_get_support(service.agents, agent_id, bridge_id)
-	if !support_ok do return domain.Resolved_Provider_Tier{}, false, support_err
-	if support.owner_user_id != agent.owner_user_id do return domain.Resolved_Provider_Tier{}, false, domain.domain_error(.Not_Found, "support not found")
+	support := default_support_for_agent_bridge(agent, bridge_id)
+	if stored, stored_ok, _ := iface.agent_get_support(service.agents, agent_id, bridge_id); stored_ok {
+		if stored.owner_user_id != agent.owner_user_id do return domain.Resolved_Provider_Tier{}, false, domain.domain_error(.Not_Found, "support not found")
+		support = stored
+	}
 	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, bridge_id)
 	if !bridge_ok do return domain.Resolved_Provider_Tier{}, false, bridge_err
-	// HBR-11 resolution order: request > support override > agent default > Bridge default.
-	provider := first_non_empty(req.provider, support.provider, agent.default_provider, default_provider_from_bridge(bridge))
+	// Resolution order: request > per-bridge override > agent default tier > Bridge default.
+	provider := first_non_empty(req.provider, support.provider, default_provider_from_bridge(bridge), "")
 	tier := first_non_empty(req.tier, support.tier, agent.default_tier, default_tier_for_provider_from_bridge(bridge, provider))
 	return validate_provider_tier_intersection(bridge, support, provider, tier)
 }
@@ -581,22 +683,26 @@ validate_pinned_provider_tier :: proc(service: ^Agent_Service, auth: contracts.A
 	agent, ok, err := get_agent(service, auth, inst.agent_id)
 	if !ok do return domain.Resolved_Provider_Tier{}, false, err
 	if agent.owner_user_id != inst.owner_user_id do return domain.Resolved_Provider_Tier{}, false, domain.domain_error(.Not_Found, "agent not found")
-	support, support_ok, support_err := iface.agent_get_support(service.agents, inst.agent_id, inst.bridge_id)
-	if !support_ok do return domain.Resolved_Provider_Tier{}, false, support_err
-	if support.owner_user_id != inst.owner_user_id || !support.enabled do return domain.Resolved_Provider_Tier{}, false, domain.domain_error(.Provider_Unavailable, "agent bridge support is not enabled")
+	support := default_support_for_agent_bridge(agent, inst.bridge_id)
+	if stored, stored_ok, _ := iface.agent_get_support(service.agents, inst.agent_id, inst.bridge_id); stored_ok {
+		if stored.owner_user_id != inst.owner_user_id do return domain.Resolved_Provider_Tier{}, false, domain.domain_error(.Not_Found, "support not found")
+		support = stored
+	}
 	bridge, bridge_ok, bridge_err := iface.bridge_get_bridge(service.bridges, inst.bridge_id)
 	if !bridge_ok do return domain.Resolved_Provider_Tier{}, false, bridge_err
-	resolved_provider := first_non_empty(provider, support.provider, agent.default_provider, default_provider_from_bridge(bridge))
+	resolved_provider := first_non_empty(provider, support.provider, default_provider_from_bridge(bridge), "")
 	resolved_tier := first_non_empty(tier, support.tier, agent.default_tier, default_tier_for_provider_from_bridge(bridge, resolved_provider))
 	return validate_provider_tier_intersection(bridge, support, resolved_provider, resolved_tier)
 }
 
 validate_provider_tier_intersection :: proc(bridge: domain.Bridge, support: domain.Agent_Bridge_Support, provider, tier: string) -> (domain.Resolved_Provider_Tier, bool, domain.Domain_Error) {
+	// The Bridge capability matrix is the ONLY hard constraint. AgentBridgeSupport
+	// no longer allowlists provider/tier — its provider/tier are just an optional
+	// preferred default (used earlier in resolution order), never a whitelist. An
+	// agent may run any provider/tier the Bridge actually supports.
 	if strings.trim_space(provider) == "" do return domain.Resolved_Provider_Tier{}, false, domain.domain_error(.Provider_Unavailable, "no provider is available on bridge")
 	if strings.trim_space(tier) == "" do return domain.Resolved_Provider_Tier{}, false, domain.domain_error(.Provider_Unavailable, "no tier is available for resolved provider")
-	if support.provider != "" && provider != support.provider do return domain.Resolved_Provider_Tier{}, false, domain.domain_error(.Provider_Unavailable, "provider is not enabled by agent bridge support")
-	if support.tier != "" && tier != support.tier do return domain.Resolved_Provider_Tier{}, false, domain.domain_error(.Provider_Unavailable, "tier is not enabled by agent bridge support")
-	if !bridge_supports_provider_tier(bridge, provider, tier) do return domain.Resolved_Provider_Tier{}, false, domain.domain_error(.Provider_Unavailable, "bridge does not support resolved provider/tier")
+	if !bridge_supports_provider_tier(bridge, provider, tier) do return domain.Resolved_Provider_Tier{}, false, domain.domain_error(.Provider_Unavailable, fmt.tprintf("bridge does not support provider/tier %s/%s; pick a supported provider/tier or set an agent override for this bridge", provider, tier))
 	return domain.Resolved_Provider_Tier{provider = provider, tier = tier}, true, domain.Domain_Error{}
 }
 
@@ -617,6 +723,28 @@ bridge_supports_provider_tier :: proc(bridge: domain.Bridge, provider, tier: str
 			if next_rel >= 0 do end = idx + len("\"provider\"") + next_rel
 			return json_tiers_array_contains(caps[idx:end], tier)
 		}
+		search_from = idx + len("\"provider\"")
+	}
+	return false
+}
+
+bridge_supports_provider :: proc(bridge: domain.Bridge, provider: string) -> bool {
+	return bridge_supports_provider_tier(bridge, provider, "")
+}
+
+bridge_supports_any_provider_tier :: proc(bridge: domain.Bridge, tier: string) -> bool {
+	if strings.trim_space(tier) == "" do return false
+	caps := bridge.capabilities_json
+	if caps == "" do return false
+	search_from := 0
+	for search_from < len(caps) {
+		rel := strings.index(caps[search_from:], "\"provider\"")
+		if rel < 0 do return false
+		idx := search_from + rel
+		next_rel := strings.index(caps[idx + len("\"provider\""):], "\"provider\"")
+		end := len(caps)
+		if next_rel >= 0 do end = idx + len("\"provider\"") + next_rel
+		if json_tiers_array_contains(caps[idx:end], tier) do return true
 		search_from = idx + len("\"provider\"")
 	}
 	return false
@@ -654,12 +782,18 @@ select_bridge_for_agent :: proc(service: ^Agent_Service, auth: contracts.Auth_Co
 	best: domain.Bridge
 	best_priority := -2147483648
 	found := false
+	online_enabled_found := false
+	last_provider := ""
+	last_tier := ""
 	for support in supports {
 		if !support.enabled do continue
 		bridge, bridge_ok, _ := iface.bridge_get_bridge(service.bridges, support.bridge_id)
 		if !bridge_ok || bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(service.bridge_runtime_registry, bridge.bridge_id) do continue
+		online_enabled_found = true
 		provider := first_non_empty(req.provider, support.provider, agent.default_provider, default_provider_from_bridge(bridge))
 		tier := first_non_empty(req.tier, support.tier, agent.default_tier, default_tier_for_provider_from_bridge(bridge, provider))
+		last_provider = provider
+		last_tier = tier
 		if !bridge_supports_provider_tier(bridge, provider, tier) do continue
 		if !found || support.priority > best_priority {
 			best = bridge
@@ -667,6 +801,7 @@ select_bridge_for_agent :: proc(service: ^Agent_Service, auth: contracts.Auth_Co
 			found = true
 		}
 	}
+	if !found && online_enabled_found do return domain.Bridge{}, false, domain.domain_error(.Provider_Unavailable, fmt.tprintf("no enabled online bridge supports resolved provider/tier %s/%s; pick a supported provider/tier or set an agent override for that bridge", last_provider, last_tier))
 	if !found do return domain.Bridge{}, false, domain.domain_error(.Bridge_Offline, "no online supported bridge is available")
 	return best, true, domain.Domain_Error{}
 }

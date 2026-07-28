@@ -174,6 +174,14 @@ test_bridge_provider_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	return respond_success(result, req.request_id, auth_ctx_server_time(req))
 }
 
+set_bridge_provider_defaults_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Bridge_Handlers)(ctx)
+	result, ok, err := bridge_provider_relay(h, req, path_part(req.path, 4), "set_provider_defaults", "", req.body)
+	if !ok do return bridge_provider_error_response(err, req.request_id)
+	_, _, _ = bridge_service.update_runtime_capabilities(h.bridges, path_part(req.path, 4), result)
+	return respond_success(result, req.request_id, auth_ctx_server_time(req))
+}
+
 refresh_bridge_providers_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Bridge_Handlers)(ctx)
 	result, ok, err := bridge_provider_relay(h, req, path_part(req.path, 4), "refresh_capabilities", "", "")
@@ -239,6 +247,10 @@ bridge_provider_command_json :: proc(command_type, command_id, provider_name, bo
 		strings.write_string(&b, "}")
 	case "delete_provider":
 		strings.write_string(&b, "{\"name\":\""); write_handler_json_string(&b, provider_name); strings.write_string(&b, "\"}")
+	case "set_provider_defaults":
+		strings.write_string(&b, "{\"provider\":\""); write_handler_json_string(&b, json_string(body, "provider"))
+		strings.write_string(&b, "\",\"tier\":\""); write_handler_json_string(&b, json_string(body, "tier"))
+		strings.write_string(&b, "\"}")
 	case "test_provider":
 		strings.write_string(&b, "{\"name\":\""); write_handler_json_string(&b, provider_name); strings.write_string(&b, "\"")
 		tier := json_string(body, "tier")

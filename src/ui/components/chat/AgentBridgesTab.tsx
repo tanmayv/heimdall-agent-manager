@@ -18,10 +18,10 @@ function bridgeCapabilitiesLabel(bridge: any): string {
 }
 
 // UI-9: Bridges tab — AgentBridgeSupport config for this agent.
-// Shows which bridges this agent may run on, per-bridge provider/tier override,
-// priority, max_instances, enable/disable toggle. -> PATCH /agents/{id}/bridge-support.
-// Validated against each bridge's capabilities (an agent with no enabled support
-// cannot launch; invariant 19).
+// Shows which bridges this agent may run on, per-bridge preferred provider/tier
+// defaults, priority, max_instances, enable/disable toggle. -> PATCH /agents/{id}/bridge-support.
+// Provider/tier preferences are advisory; the bridge capability matrix is the
+// hard runtime constraint.
 export default function AgentBridgesTab({ agentId, session, debugPrefix }: AgentBridgesTabProps) {
   const supportQuery = useListAgentBridgeSupportQuery({ agentId }, { skip: !agentId || !session?.clientToken });
   const bridgesQuery = useListBridgesQuery(undefined, { skip: !session?.clientToken });
@@ -55,7 +55,7 @@ export default function AgentBridgesTab({ agentId, session, debugPrefix }: Agent
             <div data-debug-id={`${debugPrefix}-bridges-summary`} className="mt-0.5 text-[11px] text-zinc-500">{enabledCount} enabled · {entries.length} configured</div>
           </div>
         </div>
-        <p className="mt-2 text-[11px] leading-5 text-zinc-500">An agent with no enabled support cannot launch (invariant 19). Provider/tier overrides must be within each bridge's capabilities.</p>
+        <p className="mt-2 text-[11px] leading-5 text-zinc-500">An agent with no enabled support cannot launch. Provider/tier values are preferred defaults only; the Bridge capability matrix decides what can run.</p>
       </div>
 
       {error ? <div data-debug-id={`${debugPrefix}-bridges-error`} className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{error}</div> : null}
@@ -79,8 +79,8 @@ export default function AgentBridgesTab({ agentId, session, debugPrefix }: Agent
                     <div className="truncate text-sm text-zinc-100">{bridge?.label || bridge?.name || entry.bridgeId}</div>
                     <div className="mt-0.5 truncate text-[11px] text-zinc-500"><code>{entry.bridgeId}</code>{bridge ? ` · ${bridgeCapabilitiesLabel(bridge)}` : ''}</div>
                     <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-zinc-500">
-                      {entry.providerProfile ? <span>provider: <span className="text-zinc-300">{entry.providerProfile}</span></span> : null}
-                      {entry.modelTier ? <span>tier: <span className="text-zinc-300">{entry.modelTier}</span></span> : null}
+                      {entry.providerProfile ? <span>preferred provider: <span className="text-zinc-300">{entry.providerProfile}</span></span> : null}
+                      {entry.modelTier ? <span>preferred tier: <span className="text-zinc-300">{entry.modelTier}</span></span> : null}
                       {entry.priority !== undefined ? <span>priority: <span className="text-zinc-300">{entry.priority}</span></span> : null}
                       {entry.maxInstances !== undefined ? <span>max: <span className="text-zinc-300">{entry.maxInstances}</span></span> : null}
                     </div>

@@ -222,7 +222,7 @@ bridge_local_method_allowed :: proc(method: string, role: Bridge_Local_Token_Rol
 	case .Wrapper:
 		return method == "wrapper.startup.report" || method == "wrapper.activity.report" || method == "wrapper.liveness.ping" || method == "wrapper.exited" || method == "wrapper.notifications.subscribe"
 	case .Agent:
-		return method == "agent.chat.send_to_user" || method == "agent.chat.send_to_agent" || method == "agent.chat.fetch" || method == "agent.chat.read" || method == "agent.tasks.comment" || method == "agent.tasks.status" || method == "agent.tasks.vote" || method == "agent.tasks.nudge" || method == "agent.artifacts.create" || method == "agent.memory.propose" || method == "agent.context.get" || method == "agent.start_success"
+		return method == "agent.chat.send_to_user" || method == "agent.chat.send_to_agent" || method == "agent.chat.fetch" || method == "agent.chat.read" || method == "agent.agents.live" || method == "agent.tasks.comment" || method == "agent.tasks.status" || method == "agent.tasks.vote" || method == "agent.tasks.nudge" || method == "agent.artifacts.create" || method == "agent.memory.propose" || method == "agent.context.get" || method == "agent.start_success"
 	}
 	return false
 }
@@ -244,6 +244,7 @@ bridge_local_handle_wrapper_method :: proc(request_id, method, params: string, r
 		return bridge_local_response_data(request_id, "{\"accepted\":true}")
 	}
 	if method == "wrapper.liveness.ping" {
+		bridge_runtime_set_status(rec.agent_instance_id, "running", "idle")
 		return bridge_local_response_data(request_id, "{\"accepted\":true}")
 	}
 	if method == "wrapper.exited" {
@@ -253,6 +254,11 @@ bridge_local_handle_wrapper_method :: proc(request_id, method, params: string, r
 		return bridge_local_response_data(request_id, "{\"accepted\":true}")
 	}
 	if method == "wrapper.notifications.subscribe" {
+		// Subscription itself is a live signal. This is the bridge-restart recovery
+		// path: a ham-wrapper that outlived the bridge can reconnect with its
+		// persisted wrapper token and rehydrate bridge runtime state before the next
+		// liveness tick.
+		bridge_runtime_set_status(rec.agent_instance_id, "running", "idle")
 		return bridge_local_response_data(request_id, "{\"accepted\":true,\"subscribed\":true}")
 	}
 	return bridge_local_response_error(request_id, "forbidden", "wrapper method is not allowlisted")
@@ -286,6 +292,7 @@ bridge_local_agent_method_path :: proc(method: string) -> string {
 	case "agent.chat.send_to_agent": return "/api/v1/agent-actions/chat/send-to-agent"
 	case "agent.chat.fetch": return "/api/v1/agent-actions/chat/fetch"
 	case "agent.chat.read": return "/api/v1/agent-actions/chat/read"
+	case "agent.agents.live": return "/api/v1/agent-actions/agents/live"
 	case "agent.context.get": return "/api/v1/agent-actions/context"
 	case "agent.tasks.comment": return "/api/v1/agent-actions/tasks/comment"
 	case "agent.tasks.status": return "/api/v1/agent-actions/tasks/status"

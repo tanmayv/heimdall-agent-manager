@@ -32,6 +32,8 @@ ctl_hub_user_mode :: proc(cmd: []string, args: []string) {
 
 ctl_hub_agents :: proc(base, token, action: string, args: []string) {
 	if action == "" || action == "list" { ctl_hub_request(base, token, "GET", "/api/v1/agents", ""); return }
+	if action == "instances" { ctl_hub_request(base, token, "GET", "/api/v1/agent-instances", ""); return }
+	if action == "running" || action == "live" { ctl_hub_request(base, token, "GET", "/api/v1/agent-instances?runtime_status=live", ""); return }
 	if action == "create" {
 		name := option_value(args, "--name", "")
 		if name == "" { fmt.println("usage: ham-ctl hub agents create --name <name> [--slug <slug>] [--template <id>] [--provider <profile>] [--tier <tier>]"); return }
@@ -40,12 +42,13 @@ ctl_hub_agents :: proc(base, token, action: string, args: []string) {
 		ctl_hub_request(base, token, "POST", "/api/v1/agents", json_object_from_slice(fields[:]))
 		return
 	}
-	fmt.println("usage: ham-ctl hub agents <list|create>")
+	fmt.println("usage: ham-ctl hub agents <list|instances|running|live|create>")
 }
 
 ctl_hub_launch :: proc(base, token: string, args: []string) {
 	agent_id := option_value(args, "--agent-id", option_value(args, "--agent", ""))
-	if agent_id == "" { fmt.println("usage: ham-ctl hub launch --agent-id <agent_id> [--bridge-id <bridge_id>] [--provider <profile>] [--tier <tier>] [--project-id <id>] [--chain-id <id>]"); return }
+	if agent_id == "" { fmt.println("usage: ham-ctl hub launch --agent-id <agent_id> --bridge-id <bridge_id> [--provider <profile>] [--tier <tier>] [--project-id <id>] [--chain-id <id>]"); return }
+	if option_value(args, "--bridge-id", "") == "" { fmt.println("usage: ham-ctl hub launch --agent-id <agent_id> --bridge-id <bridge_id> [--provider <profile>] [--tier <tier>] [--project-id <id>] [--chain-id <id>]"); return }
 	fields := make([dynamic]string)
 	append(&fields, json_kv("agent_id", agent_id)); append(&fields, json_kv("bridge_id", option_value(args, "--bridge-id", ""))); append(&fields, json_kv("provider", option_value(args, "--provider", ""))); append(&fields, json_kv("tier", option_value(args, "--tier", ""))); append(&fields, json_kv("project_id", option_value(args, "--project-id", option_value(args, "--project", "")))); append(&fields, json_kv("chain_id", option_value(args, "--chain-id", option_value(args, "--chain", ""))))
 	ctl_hub_request(base, token, "POST", "/api/v1/agent-instances", json_object_from_slice(fields[:]))

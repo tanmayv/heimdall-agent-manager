@@ -8,6 +8,7 @@ import "core:os"
 import "core:strconv"
 import "core:strings"
 import "core:sync"
+import "core:sys/posix"
 import "core:thread"
 import "core:time"
 import contracts "odin_test:contracts"
@@ -93,6 +94,9 @@ bridge_chunk_acks: [dynamic]Bridge_Chunk_Ack
 bridge_sequence: i64
 
 main :: proc() {
+	when ODIN_OS != .Windows {
+		_ = posix.signal(.SIGPIPE, auto_cast posix.SIG_IGN)
+	}
 	if has_flag(os.args, "--version") {
 		fmt.println("ham-bridge", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION, "bridge", contracts.BRIDGE_LOOPBACK_CONTRACT_VERSION, "ws", contracts.BRIDGE_WS_FRAME_VERSION)
 		return
@@ -107,10 +111,8 @@ main :: proc() {
 		return
 	}
 	if has_flag(os.args, "--bridge-wrapper-supervisor") || (len(os.args) > 1 && os.args[1] == "wrapper-supervisor") {
-		bridge_config = bridge_config_from_args(os.args)
-		bridge_provider_store_init()
-		if !bridge_wrapper_supervisor_main(os.args) do os.exit(1)
-		return
+		fmt.eprintln("ham-bridge wrapper-supervisor is removed; use ham-wrapper bridge-runtime")
+		os.exit(1)
 	}
 
 	bridge_config = bridge_config_from_args(os.args)
@@ -118,7 +120,10 @@ main :: proc() {
 	if has_flag(os.args, "--bootstrap-fetch") {
 		instance_id := option_value(os.args, "--instance-id", "")
 		run_dir := option_value(os.args, "--run-dir", "")
-		if !bridge_bootstrap_fetch_and_materialize(bridge_config.daemon_url, bridge_config.bridge_token, instance_id, run_dir) {
+		bridge_endpoint := option_value(os.args, "--bridge-endpoint", os.get_env_alloc("HEIMDALL_BRIDGE_ENDPOINT", context.allocator))
+		agent_token := option_value(os.args, "--agent-token", os.get_env_alloc("HEIMDALL_AGENT_TOKEN", context.allocator))
+		provider := option_value(os.args, "--provider", "")
+		if !bridge_bootstrap_fetch_and_materialize(bridge_config.daemon_url, bridge_config.bridge_token, instance_id, run_dir, bridge_endpoint, agent_token, provider) {
 			fmt.eprintln("bootstrap fetch/materialization failed")
 			os.exit(1)
 		}
@@ -127,17 +132,12 @@ main :: proc() {
 	}
 	bridge_runtime_init()
 	bridge_agent_token_store_init()
-	if bridge_config.local_endpoint_port != 0 {
+	// Start the local endpoint at bridge boot, not lazily on launch. Wrappers may
+	// outlive and reconnect after a bridge restart, so recovery requires the local
+	// JSONL socket before any new launch command arrives.
+	if endpoint, endpoint_ok := bridge_runtime_ensure_local_endpoint(); endpoint_ok {
 		local_config := bridge_local_endpoint_config_default(bridge_config.local_endpoint_run_dir, bridge_config.local_endpoint_port)
-		unix_started := bridge_local_endpoint_start_unix(local_config)
-		loopback_started := bridge_local_endpoint_start_loopback(local_config)
-		bridge_runtime_local_endpoint_unix_started = unix_started
-		bridge_runtime_local_endpoint_loopback_started = loopback_started
-		bridge_runtime_local_endpoint_started = unix_started || loopback_started
-		if bridge_runtime_local_endpoint_started {
-			bridge_runtime_local_endpoint_descriptor = bridge_runtime_select_endpoint(local_config)
-			fmt.println("bridge local endpoint", bridge_runtime_local_endpoint_descriptor, "fallback", bridge_local_endpoint_env_value(local_config, false), "socket_mode", "0600")
-		}
+		fmt.println("bridge local endpoint", endpoint, "fallback", bridge_local_endpoint_env_value(local_config, false), "socket_mode", "0600")
 	}
 	bridge_hub_runtime_start()
 	if bridge_config.chunk_bytes <= 0 do bridge_config.chunk_bytes = contracts.BRIDGE_WS_DEFAULT_CHUNK_BYTES
@@ -149,11 +149,11 @@ main :: proc() {
 print_usage :: proc() {
 	fmt.println("ham-bridge", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
 	fmt.println("usage: ham-bridge [--config <path>] [--bind-host 127.0.0.1] [--port 49323] [--daemon-url URL|--hub URL] [--daemon-id ID] [--bridge-token TOKEN] [--peer-ws ws://host:port/bridge-ws]... [--peer-auth-token TOKEN] [--chunk-bytes N] [--local-endpoint-port PORT] [--local-run-dir DIR] [--agent-command CMD]")
-	fmt.println("wrapper supervisor: ham-bridge wrapper-supervisor --bridge-endpoint unix:/run/heimdall/bridge.sock --agent-token hlat_... --agent-instance-id inst_... --provider pi --tier normal --run-dir <dir>")
+	fmt.println("bridge runtime: ham-wrapper bridge-runtime --bridge-endpoint unix:/run/heimdall/bridge.sock --agent-token hlat_... --agent-instance-id inst_... --provider pi --tier normal --run-dir <dir> -- <agent-command>")
 	fmt.println("enroll: ham-bridge enroll --hub http://127.0.0.1:49322 --enrollment-token TOKEN")
 	fmt.println("TLS: https:// Hub URLs use HTTPS and wss:// with certificate/hostname validation; http:// tunnel URLs use ws://.")
 	fmt.println("bootstrap fetch: ham-bridge --bootstrap-fetch --daemon-url URL --bridge-token TOKEN --instance-id INST --run-dir DIR")
-	fmt.println("wrapper supervisor: ham-bridge wrapper-supervisor --bridge-endpoint unix:/run/bridge.sock --agent-token hlat_... --agent-instance-id INST --run-dir DIR")
+	fmt.println("bridge runtime: ham-wrapper bridge-runtime --bridge-endpoint unix:/run/bridge.sock --agent-token hlat_... --agent-instance-id INST --run-dir DIR -- <agent-command>")
 	fmt.println("loopback routes:", contracts.ROUTE_BRIDGE_HEALTH, contracts.ROUTE_BRIDGE_SEND, contracts.ROUTE_BRIDGE_REQUEST, contracts.ROUTE_BRIDGE_VALIDATE_PROJECT_PATH, contracts.ROUTE_BRIDGE_REACHABLE)
 	fmt.println("bridge websocket route:", contracts.ROUTE_BRIDGE_WS)
 }

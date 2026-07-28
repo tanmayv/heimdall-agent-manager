@@ -239,7 +239,111 @@ MIGRATION_003_DEVICE_TOKENS :: `ALTER TABLE user_api_tokens ADD COLUMN created_f
 ALTER TABLE user_api_tokens ADD COLUMN device_label TEXT NOT NULL DEFAULT '';
 `
 
-migration_order :: [3]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql"}
+MIGRATION_004_DEFAULT_SKILL_MEMORY :: `INSERT INTO memories (memory_id, owner_user_id, agent_id, type, status, title, body, evidence, created_at, updated_at)
+VALUES (
+  'mem_system_heimdall_ctl_communication',
+  'system',
+  '',
+  'skill',
+  'active',
+  'Heimdall CLI communication basics',
+  'Use the managed Heimdall CLI wrapper from the agent run directory for all Heimdall communication: ./.heimdall/bin/ham-ctl. The wrapper injects HEIMDALL_AGENT_TOKEN, HEIMDALL_AGENT_INSTANCE_ID, and HEIMDALL_BRIDGE_ENDPOINT, so do not paste tokens into commands unless explicitly needed.\n\nStartup: after you are fully ready, report readiness with ./.heimdall/bin/ham-ctl agent start-success.\n\nList live agents: to discover other running instances you can message, run ./.heimdall/bin/ham-ctl agents live (equivalent: ./.heimdall/bin/ham-ctl agent agents live). Use returned agent_instance_id values for agent-to-agent messaging; do not rely on display names.\n\nReading inbound messages: when notified about a new message, run ./.heimdall/bin/ham-ctl agent chat read before responding. This fetches the agent-visible conversation transcript, including user_to_agent messages from the user and agent_to_agent messages from other agents. Treat chat messages from the user as authoritative task guidance.\n\nReplying to the user: use ./.heimdall/bin/ham-ctl agent chat send --body "<concise status or answer>". Keep replies concise, include concrete results, blockers, and next steps. Do not dump large logs or files inline; summarize and attach/create an artifact when appropriate.\n\nAgent-to-agent communication: use ./.heimdall/bin/ham-ctl agent chat send-to-agent --to-instance <agent_instance_id> --body "..." when you know the target instance id. This is allowed across task chains and across bridges for agents owned by the same user. Target exact agent_instance_id values.\n\nTask communication: prefer durable Heimdall task comments/status/chat commands over ad-hoc terminal notes. Reference stable IDs such as agent_instance_id, task_id, chain_id, artifact_id, and file paths.\n\nBest practices: acknowledge messages promptly, state what you changed or checked, include exact commands/tests run when reporting completion, mention blockers explicitly, and avoid exposing secrets or raw tokens in chat, comments, artifacts, or logs.',
+  'Seeded system default memory. Applies to all agents because agent_id is empty and owner_user_id is system.',
+  '2026-07-28T00:00:00Z',
+  '2026-07-28T00:00:00Z'
+)
+ON CONFLICT(memory_id) DO UPDATE SET
+  agent_id=excluded.agent_id,
+  type=excluded.type,
+  status=excluded.status,
+  title=excluded.title,
+  body=excluded.body,
+  evidence=excluded.evidence,
+  updated_at=excluded.updated_at;
+`
+
+MIGRATION_005_AGENT_TO_AGENT_CROSS_CHAIN_MEMORY :: `UPDATE memories
+SET body = 'Use the managed Heimdall CLI wrapper from the agent run directory for all Heimdall communication: ./.heimdall/bin/ham-ctl. The wrapper injects HEIMDALL_AGENT_TOKEN, HEIMDALL_AGENT_INSTANCE_ID, and HEIMDALL_BRIDGE_ENDPOINT, so do not paste tokens into commands unless explicitly needed.\n\nStartup: after you are fully ready, report readiness with ./.heimdall/bin/ham-ctl agent start-success.\n\nList live agents: to discover other running instances you can message, run ./.heimdall/bin/ham-ctl agents live (equivalent: ./.heimdall/bin/ham-ctl agent agents live). Use returned agent_instance_id values for agent-to-agent messaging; do not rely on display names.\n\nReading inbound messages: when notified about a new message, run ./.heimdall/bin/ham-ctl agent chat read before responding. This fetches the agent-visible conversation transcript, including user_to_agent messages from the user and agent_to_agent messages from other agents. Treat chat messages from the user as authoritative task guidance.\n\nReplying to the user: use ./.heimdall/bin/ham-ctl agent chat send --body "<concise status or answer>". Keep replies concise, include concrete results, blockers, and next steps. Do not dump large logs or files inline; summarize and attach/create an artifact when appropriate.\n\nAgent-to-agent communication: use ./.heimdall/bin/ham-ctl agent chat send-to-agent --to-instance <agent_instance_id> --body "..." when you know the target instance id. This is allowed across task chains and across bridges for agents owned by the same user. Target exact agent_instance_id values.\n\nTask communication: prefer durable Heimdall task comments/status/chat commands over ad-hoc terminal notes. Reference stable IDs such as agent_instance_id, task_id, chain_id, artifact_id, and file paths.\n\nBest practices: acknowledge messages promptly, state what you changed or checked, include exact commands/tests run when reporting completion, mention blockers explicitly, and avoid exposing secrets or raw tokens in chat, comments, artifacts, or logs.',
+    updated_at = '2026-07-28T00:10:00Z'
+WHERE memory_id = 'mem_system_heimdall_ctl_communication';
+`
+
+
+MIGRATION_006_LIVE_AGENTS_SKILL_MEMORY :: `UPDATE memories
+SET body = 'Use the managed Heimdall CLI wrapper from the agent run directory for all Heimdall communication: ./.heimdall/bin/ham-ctl. The wrapper injects HEIMDALL_AGENT_TOKEN, HEIMDALL_AGENT_INSTANCE_ID, and HEIMDALL_BRIDGE_ENDPOINT, so do not paste tokens into commands unless explicitly needed.\n\nStartup: after you are fully ready, report readiness with ./.heimdall/bin/ham-ctl agent start-success.\n\nList live agents: to discover other running instances you can message, run ./.heimdall/bin/ham-ctl agents live (equivalent: ./.heimdall/bin/ham-ctl agent agents live). Use returned agent_instance_id values for agent-to-agent messaging; do not rely on display names.\n\nReading inbound messages: when notified about a new message, run ./.heimdall/bin/ham-ctl agent chat read before responding. This fetches the agent-visible conversation transcript, including user_to_agent messages from the user and agent_to_agent messages from other agents. Treat chat messages from the user as authoritative task guidance.\n\nReplying to the user: use ./.heimdall/bin/ham-ctl agent chat send --body "<concise status or answer>". Keep replies concise, include concrete results, blockers, and next steps. Do not dump large logs or files inline; summarize and attach/create an artifact when appropriate.\n\nAgent-to-agent communication: use ./.heimdall/bin/ham-ctl agent chat send-to-agent --to-instance <agent_instance_id> --body "..." when you know the target instance id. This is allowed across task chains and across bridges for agents owned by the same user. Target exact agent_instance_id values.\n\nTask communication: prefer durable Heimdall task comments/status/chat commands over ad-hoc terminal notes. Reference stable IDs such as agent_instance_id, task_id, chain_id, artifact_id, and file paths.\n\nBest practices: acknowledge messages promptly, state what you changed or checked, include exact commands/tests run when reporting completion, mention blockers explicitly, and avoid exposing secrets or raw tokens in chat, comments, artifacts, or logs.',
+    updated_at = '2026-07-28T00:20:00Z'
+WHERE memory_id = 'mem_system_heimdall_ctl_communication';
+`
+
+
+MIGRATION_007_HIDE_AGENT_TO_AGENT_FROM_USER_CHAT :: `-- Agent-to-agent messages are delivered to the target instance inbox, but they
+-- must not drive the human-facing conversation transcript/preview.
+UPDATE chat_conversations
+SET
+  last_message_preview = COALESCE((
+    SELECT m.body
+    FROM chat_messages m
+    WHERE m.conversation_id = chat_conversations.conversation_id
+      AND m.owner_user_id = chat_conversations.owner_user_id
+      AND m.direction != 'agent_to_agent'
+    ORDER BY m.created_at DESC
+    LIMIT 1
+  ), ''),
+  last_message_at = COALESCE((
+    SELECT m.created_at
+    FROM chat_messages m
+    WHERE m.conversation_id = chat_conversations.conversation_id
+      AND m.owner_user_id = chat_conversations.owner_user_id
+      AND m.direction != 'agent_to_agent'
+    ORDER BY m.created_at DESC
+    LIMIT 1
+  ), ''),
+  updated_at = COALESCE((
+    SELECT m.created_at
+    FROM chat_messages m
+    WHERE m.conversation_id = chat_conversations.conversation_id
+      AND m.owner_user_id = chat_conversations.owner_user_id
+      AND m.direction != 'agent_to_agent'
+    ORDER BY m.created_at DESC
+    LIMIT 1
+  ), chat_conversations.updated_at)
+WHERE EXISTS (
+  SELECT 1 FROM chat_messages a
+  WHERE a.conversation_id = chat_conversations.conversation_id
+    AND a.owner_user_id = chat_conversations.owner_user_id
+    AND a.direction = 'agent_to_agent'
+)
+AND NOT EXISTS (
+  SELECT 1 FROM chat_messages newer_visible
+  WHERE newer_visible.conversation_id = chat_conversations.conversation_id
+    AND newer_visible.owner_user_id = chat_conversations.owner_user_id
+    AND newer_visible.direction != 'agent_to_agent'
+    AND newer_visible.created_at > (
+      SELECT MAX(a2a.created_at)
+      FROM chat_messages a2a
+      WHERE a2a.conversation_id = chat_conversations.conversation_id
+        AND a2a.owner_user_id = chat_conversations.owner_user_id
+        AND a2a.direction = 'agent_to_agent'
+    )
+);
+`
+
+
+MIGRATION_008_READ_INBOUND_MESSAGES_SKILL_MEMORY :: `UPDATE memories
+SET body = replace(
+  replace(
+    body,
+    'Reading user messages: when notified about a new message, run ./.heimdall/bin/ham-ctl agent chat read before responding. Treat chat messages from the user as authoritative task guidance.',
+    'Reading inbound messages: when notified about a new message, run ./.heimdall/bin/ham-ctl agent chat read before responding. This fetches the agent-visible conversation transcript, including user_to_agent messages from the user and agent_to_agent messages from other agents. Treat chat messages from the user as authoritative task guidance.'
+  ),
+  'Reading user messages: when notified about a new message, run ./.heimdall/bin/ham-ctl agent chat read before responding. Treat chat messages from the user as authoritative task guidance.',
+  'Reading inbound messages: when notified about a new message, run ./.heimdall/bin/ham-ctl agent chat read before responding. This fetches the agent-visible conversation transcript, including user_to_agent messages from the user and agent_to_agent messages from other agents. Treat chat messages from the user as authoritative task guidance.'
+),
+updated_at = '2026-07-28T00:25:00Z'
+WHERE memory_id = 'mem_system_heimdall_ctl_communication';
+`
+
+migration_order :: [8]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -276,6 +380,11 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "001_foundation.sql" do return strings.clone(MIGRATION_001_FOUNDATION)
 	if name == "002_owner_scoped_core.sql" do return strings.clone(MIGRATION_002_OWNER_SCOPED_CORE)
 	if name == "003_device_tokens.sql" do return strings.clone(MIGRATION_003_DEVICE_TOKENS)
+	if name == "004_default_skill_memory.sql" do return strings.clone(MIGRATION_004_DEFAULT_SKILL_MEMORY)
+	if name == "005_agent_to_agent_cross_chain_memory.sql" do return strings.clone(MIGRATION_005_AGENT_TO_AGENT_CROSS_CHAIN_MEMORY)
+	if name == "006_live_agents_skill_memory.sql" do return strings.clone(MIGRATION_006_LIVE_AGENTS_SKILL_MEMORY)
+	if name == "007_hide_agent_to_agent_from_user_chat.sql" do return strings.clone(MIGRATION_007_HIDE_AGENT_TO_AGENT_FROM_USER_CHAT)
+	if name == "008_read_inbound_messages_skill_memory.sql" do return strings.clone(MIGRATION_008_READ_INBOUND_MESSAGES_SKILL_MEMORY)
 	return ""
 }
 

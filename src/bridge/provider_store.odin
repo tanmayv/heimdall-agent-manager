@@ -27,6 +27,7 @@ Bridge_Provider_Profile :: struct {
 	prompt_tmux_enter: bool,
 	agent_run_dir: string,
 	use_random_dir: bool,
+	skill_dir: string,
 	models: cfg_lib.Model_Tiers_Config,
 	startup_detection: cfg_lib.Startup_Detection_Config,
 	activity_detection: cfg_lib.Activity_Detection_Config,
@@ -54,6 +55,8 @@ Bridge_Provider_Override :: struct {
 	agent_run_dir_set: bool,
 	use_random_dir: bool,
 	use_random_dir_set: bool,
+	skill_dir: string,
+	skill_dir_set: bool,
 	models: cfg_lib.Model_Tiers_Config,
 	models_flag_set: bool,
 	models_cheap_set: bool,
@@ -80,6 +83,8 @@ Bridge_Provider_Override :: struct {
 bridge_provider_mutex: sync.Mutex
 bridge_provider_store_loaded: bool
 bridge_provider_store_path_value: string
+bridge_provider_default_provider_value: string
+bridge_provider_default_tier_value: string
 bridge_provider_overrides: [dynamic]Bridge_Provider_Override
 
 bridge_provider_store_init :: proc() {
@@ -111,7 +116,10 @@ bridge_provider_load_unlocked :: proc() {
 	if strings.trim_space(path) == "" do return
 	raw, err := os.read_entire_file(path, context.allocator)
 	if err != nil do return
-	providers_array, ok := bridge_provider_json_extract_array(string(raw), "providers")
+	body := string(raw)
+	bridge_provider_default_provider_value = bridge_provider_json_extract_string(body, "default_provider", "")
+	bridge_provider_default_tier_value = bridge_provider_json_extract_string(body, "default_tier", "")
+	providers_array, ok := bridge_provider_json_extract_array(body, "providers")
 	if !ok do return
 	objects := bridge_provider_json_top_level_objects(providers_array)
 	for obj in objects {
@@ -140,7 +148,9 @@ bridge_provider_save_overrides :: proc() -> bool {
 	if strings.trim_space(path) == "" do return false
 	if slash := strings.last_index_byte(path, '/'); slash > 0 { _ = os.make_directory_all(path[:slash]) }
 	b := strings.builder_make()
-	strings.write_string(&b, "{\n  \"providers\": [")
+	strings.write_string(&b, "{\n  \"default_provider\": \""); json_write_string(&b, bridge_provider_default_provider_value)
+	strings.write_string(&b, "\",\n  \"default_tier\": \""); json_write_string(&b, bridge_provider_default_tier_value)
+	strings.write_string(&b, "\",\n  \"providers\": [")
 	for override, i in bridge_provider_overrides {
 		if i > 0 do strings.write_string(&b, ",")
 		strings.write_string(&b, "\n    ")
@@ -233,6 +243,7 @@ bridge_provider_apply_override :: proc(profile: Bridge_Provider_Profile, overrid
 	if override.prompt_tmux_enter_set do result.prompt_tmux_enter = override.prompt_tmux_enter
 	if override.agent_run_dir_set do result.agent_run_dir = strings.clone(override.agent_run_dir)
 	if override.use_random_dir_set do result.use_random_dir = override.use_random_dir
+	if override.skill_dir_set do result.skill_dir = strings.clone(override.skill_dir)
 	if override.models_flag_set do result.models.flag = strings.clone(override.models.flag)
 	if override.models_cheap_set do result.models.cheap = strings.clone(override.models.cheap)
 	if override.models_normal_set do result.models.normal = strings.clone(override.models.normal)
@@ -255,11 +266,22 @@ bridge_provider_apply_override :: proc(profile: Bridge_Provider_Profile, overrid
 }
 
 bridge_default_provider_name :: proc() -> string {
-	profiles := bridge_effective_provider_profiles()
-	for profile in profiles {
-		if profile.enabled && bridge_provider_default_tier(profile) != "" do return profile.name
-	}
+	profile, ok := bridge_default_provider_profile()
+	if ok do return profile.name
 	return ""
+}
+
+bridge_default_provider_profile :: proc() -> (Bridge_Provider_Profile, bool) {
+	profiles := bridge_effective_provider_profiles()
+	if bridge_provider_default_provider_value != "" {
+		for profile in profiles {
+			if profile.name == bridge_provider_default_provider_value && profile.enabled && bridge_provider_default_tier(profile) != "" do return profile, true
+		}
+	}
+	for profile in profiles {
+		if profile.enabled && bridge_provider_default_tier(profile) != "" do return profile, true
+	}
+	return {}, false
 }
 
 bridge_provider_by_name_or_default :: proc(name: string) -> (Bridge_Provider_Profile, bool) {
@@ -268,17 +290,35 @@ bridge_provider_by_name_or_default :: proc(name: string) -> (Bridge_Provider_Pro
 	if wanted != "" {
 		for profile in profiles { if profile.name == wanted do return profile, true }
 	}
-	for profile in profiles {
-		if profile.enabled && bridge_provider_default_tier(profile) != "" do return profile, true
-	}
-	return {}, false
+	return bridge_default_provider_profile()
 }
 
 bridge_provider_default_tier :: proc(profile: Bridge_Provider_Profile) -> string {
+	if bridge_provider_default_tier_value != "" && bridge_provider_model_for_tier(profile, bridge_provider_default_tier_value) != "" do return bridge_provider_default_tier_value
 	if strings.trim_space(profile.models.normal) != "" do return "normal"
 	if strings.trim_space(profile.models.cheap) != "" do return "cheap"
 	if strings.trim_space(profile.models.smart) != "" do return "smart"
 	return ""
+}
+
+bridge_provider_set_defaults :: proc(provider, tier: string) -> (bool, string) {
+	bridge_provider_store_init()
+	profiles := bridge_effective_provider_profiles()
+	found_provider := false
+	for profile in profiles {
+		if profile.name == provider && profile.enabled && bridge_provider_default_tier(profile) != "" {
+			found_provider = true
+			if tier != "" && bridge_provider_model_for_tier(profile, tier) == "" do return false, "selected tier is not configured for selected provider"
+			break
+		}
+	}
+	if !found_provider do return false, "selected provider is not enabled or has no configured tiers"
+	sync.mutex_lock(&bridge_provider_mutex)
+	bridge_provider_default_provider_value = strings.clone(provider)
+	bridge_provider_default_tier_value = strings.clone(tier)
+	sync.mutex_unlock(&bridge_provider_mutex)
+	if !bridge_provider_save_overrides() do return false, "failed to save provider defaults"
+	return true, ""
 }
 
 bridge_provider_model_for_tier :: proc(profile: Bridge_Provider_Profile, tier: string) -> string {
@@ -290,22 +330,27 @@ bridge_provider_capabilities_json :: proc() -> string {
 	b := strings.builder_make()
 	strings.write_byte(&b, '[')
 	first_profile := true
-	for profile in profiles {
-		if !profile.enabled do continue
-		default_tier := bridge_provider_default_tier(profile)
-		if default_tier == "" do continue
-		if !first_profile do strings.write_byte(&b, ',')
-		first_profile = false
-		strings.write_string(&b, "{\"provider\":\"")
-		json_write_string(&b, profile.name)
-		strings.write_string(&b, "\",\"tiers\":[")
-		first_tier := true
-		bridge_provider_write_capability_tier(&b, &first_tier, "cheap", profile.models.cheap)
-		bridge_provider_write_capability_tier(&b, &first_tier, "normal", profile.models.normal)
-		bridge_provider_write_capability_tier(&b, &first_tier, "smart", profile.models.smart)
-		strings.write_string(&b, "],\"default_tier\":\"")
-		json_write_string(&b, default_tier)
-		strings.write_string(&b, "\"}")
+	default_provider := bridge_default_provider_name()
+	for pass in 0..<2 {
+		for profile in profiles {
+			if pass == 0 && profile.name != default_provider do continue
+			if pass == 1 && profile.name == default_provider do continue
+			if !profile.enabled do continue
+			default_tier := bridge_provider_default_tier(profile)
+			if default_tier == "" do continue
+			if !first_profile do strings.write_byte(&b, ',')
+			first_profile = false
+			strings.write_string(&b, "{\"provider\":\"")
+			json_write_string(&b, profile.name)
+			strings.write_string(&b, "\",\"tiers\":[")
+			first_tier := true
+			bridge_provider_write_capability_tier(&b, &first_tier, "cheap", profile.models.cheap)
+			bridge_provider_write_capability_tier(&b, &first_tier, "normal", profile.models.normal)
+			bridge_provider_write_capability_tier(&b, &first_tier, "smart", profile.models.smart)
+			strings.write_string(&b, "],\"default_tier\":\"")
+			json_write_string(&b, default_tier)
+			strings.write_string(&b, "\"}")
+		}
 	}
 	strings.write_byte(&b, ']')
 	return strings.to_string(b)
@@ -325,6 +370,8 @@ bridge_provider_profiles_report_json :: proc(bridge_id: string) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"bridge_id\":\"")
 	json_write_string(&b, bridge_id)
+	strings.write_string(&b, "\",\"default_provider\":\""); json_write_string(&b, bridge_default_provider_name())
+	strings.write_string(&b, "\",\"default_tier\":\""); if profile, ok := bridge_default_provider_profile(); ok { json_write_string(&b, bridge_provider_default_tier(profile)) }
 	strings.write_string(&b, "\",\"providers\":[")
 	for profile, i in profiles {
 		if i > 0 do strings.write_byte(&b, ',')
@@ -349,6 +396,7 @@ bridge_provider_write_profile_json :: proc(b: ^strings.Builder, profile: Bridge_
 	strings.write_string(b, ",\"prompt_tmux_enter\":"); strings.write_string(b, "true" if profile.prompt_tmux_enter else "false")
 	strings.write_string(b, ",\"agent_run_dir\":\""); json_write_string(b, profile.agent_run_dir)
 	strings.write_string(b, "\",\"use_random_dir\":"); strings.write_string(b, "true" if profile.use_random_dir else "false")
+	strings.write_string(b, ",\"skill_dir\":\""); json_write_string(b, profile.skill_dir); strings.write_byte(b, '"')
 	strings.write_string(b, ",\"startup_detection\":"); bridge_provider_write_startup_json(b, profile.startup_detection)
 	strings.write_string(b, ",\"activity_detection\":"); bridge_provider_write_activity_json(b, profile.activity_detection)
 	strings.write_string(b, "}")
@@ -378,6 +426,7 @@ bridge_provider_write_override_json :: proc(b: ^strings.Builder, override: Bridg
 	if override.prompt_tmux_enter_set { bridge_provider_write_json_field_prefix(b, &first, "prompt_tmux_enter"); strings.write_string(b, "true" if override.prompt_tmux_enter else "false") }
 	if override.agent_run_dir_set { bridge_provider_write_json_field_prefix(b, &first, "agent_run_dir"); strings.write_byte(b, '"'); json_write_string(b, override.agent_run_dir); strings.write_byte(b, '"') }
 	if override.use_random_dir_set { bridge_provider_write_json_field_prefix(b, &first, "use_random_dir"); strings.write_string(b, "true" if override.use_random_dir else "false") }
+	if override.skill_dir_set { bridge_provider_write_json_field_prefix(b, &first, "skill_dir"); strings.write_byte(b, '"'); json_write_string(b, override.skill_dir); strings.write_byte(b, '"') }
 	if bridge_provider_override_has_models(override) {
 		bridge_provider_write_json_field_prefix(b, &first, "models")
 		bridge_provider_write_override_models_json(b, override)
@@ -508,6 +557,7 @@ bridge_provider_override_from_json_with_name :: proc(obj, fallback_name: string)
 	if v, ok := bridge_provider_json_extract_bool(obj, "prompt_tmux_enter"); ok { o.prompt_tmux_enter = v; o.prompt_tmux_enter_set = true }
 	if v, ok := bridge_provider_json_extract_string_set(obj, "agent_run_dir"); ok { o.agent_run_dir = bridge_expand_home(v); o.agent_run_dir_set = true }
 	if v, ok := bridge_provider_json_extract_bool(obj, "use_random_dir"); ok { o.use_random_dir = v; o.use_random_dir_set = true }
+	if v, ok := bridge_provider_json_extract_string_set(obj, "skill_dir"); ok { o.skill_dir = v; o.skill_dir_set = true }
 	if models_obj, ok := bridge_provider_json_extract_object(obj, "models"); ok {
 		if v, got := bridge_provider_json_extract_string_set(models_obj, "flag"); got { o.models.flag = v; o.models_flag_set = true }
 		if v, got := bridge_provider_json_extract_string_set(models_obj, "cheap"); got { o.models.cheap = v; o.models_cheap_set = true }
@@ -806,9 +856,11 @@ bridge_provider_render_starter_prompt :: proc(prompt, agent_token, agent_instanc
 	out, _ = strings.replace_all(out, "{instance}", agent_instance_id)
 	out, _ = strings.replace_all(out, "{agent_instance_id}", agent_instance_id)
 	out, _ = strings.replace_all(out, "{daemon_url}", bridge_config.daemon_url)
-	out, _ = strings.replace_all(out, "{ctl_bin}", "ham-ctl")
-	out, _ = strings.replace_all(out, strings.concatenate({"ham-ctl --token ", agent_token, " start-success"}), "ham-ctl agent start-success")
-	out, _ = strings.replace_all(out, "ham-ctl start-success", "ham-ctl agent start-success")
+	out, _ = strings.replace_all(out, "{ctl_bin}", "./.heimdall/bin/ham-ctl")
+	out, _ = strings.replace_all(out, strings.concatenate({"./.heimdall/bin/ham-ctl --token ", agent_token, " start-success"}), "./.heimdall/bin/ham-ctl agent start-success")
+	out, _ = strings.replace_all(out, "ham-ctl --token ", "./.heimdall/bin/ham-ctl --token ")
+	out, _ = strings.replace_all(out, "ham-ctl start-success", "./.heimdall/bin/ham-ctl agent start-success")
+	out = strings.concatenate({out, "\n\nHeimdall runtime: use `./.heimdall/bin/ham-ctl` for CLI actions. Your agent token is `", agent_token, "` and your agent instance id is `", agent_instance_id, "`; they are also available in HEIMDALL_AGENT_TOKEN and HEIMDALL_AGENT_INSTANCE_ID."})
 	return out
 }
 

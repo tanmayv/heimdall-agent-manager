@@ -25,6 +25,10 @@ main :: proc() {
 	if len(os.args) > 1 && os.args[1] == "test" {
 		os.exit(run_test_command(os.args))
 	}
+	if len(os.args) > 1 && os.args[1] == "bridge-runtime" {
+		if !wrapper_bridge_runtime_main(os.args) do os.exit(1)
+		return
+	}
 	if has_flag(os.args, "--version") {
 		fmt.println("ham-wrapper", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
 		return

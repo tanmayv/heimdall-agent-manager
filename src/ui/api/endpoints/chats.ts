@@ -1,5 +1,5 @@
 import * as daemonApi from '../daemonApi';
-import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
+import { apiUrl, cookieJsonFetch, cookieMutation } from '../cookieFetch';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
 
 const GUIDE_AGENT_ID = 'guide@heimdall';
@@ -183,6 +183,97 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
         { type: 'ConversationSummaries' as const, id: 'LIST' },
         { type: 'Agents' as const, id: 'LIST' },
         { type: 'AgentInstances' as const, id: agentId },
+      ],
+    }),
+    // Cookie-auth conversation thread endpoints (hub-native, /api/v1/chats/{id}).
+    // Unlike fetchDirectChat/sendAgentMessage (legacy clientToken path), these use
+    // the cookie session the rewrite shell runs on, keyed by conversation_id.
+    fetchConversation: build.query<any, { conversationId: string }>({
+      queryFn: async ({ conversationId }) => {
+        if (!conversationId) return { data: { conversation: null } };
+        try {
+          const list = await cookieJsonFetch('/chats');
+          const rows = Array.isArray(list) ? list : (list?.data || list?.conversations || []);
+          const conversation = rows.find((c: any) => String(c?.conversation_id || c?.conversationId) === conversationId) || null;
+          return { data: { conversation } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_r, _e, { conversationId }) => [{ type: 'ConversationSummaries' as const, id: conversationId }],
+    }),
+    fetchConversationMessages: build.query<any, { conversationId: string; limit?: number; cursor?: string }>({
+      queryFn: async ({ conversationId, limit = 100, cursor = '' }) => {
+        if (!conversationId) return { data: { messages: [], nextCursor: '', hasMore: false } };
+        try {
+          const params = new URLSearchParams({ limit: String(limit) });
+          if (cursor) params.set('cursor', cursor);
+          const res = await fetch(apiUrl(`/chats/${encodeURIComponent(conversationId)}/messages?${params.toString()}`), { credentials: 'include' });
+          if (!res.ok) {
+            let msg = `Request failed (${res.status})`;
+            try {
+              const text = await res.text();
+              const body = JSON.parse(text);
+              msg = String(body?.error?.message || body?.message || msg);
+            } catch (_err) {}
+            throw new Error(msg);
+          }
+          const body = await res.json();
+          const rows = Array.isArray(body) ? body : (Array.isArray(body?.data) ? body.data : (body?.messages || []));
+          const page = body?.page || {};
+          const nextCursor = String(page.next_cursor ?? page.nextCursor ?? body?.next_cursor ?? body?.nextCursor ?? '');
+          const hasMore = Boolean(page.has_more ?? page.hasMore ?? body?.has_more ?? body?.hasMore ?? false);
+          return { data: { messages: rows, nextCursor, hasMore } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_r, _e, { conversationId }) => [{ type: 'Chat' as const, id: conversationId }],
+    }),
+    updateConversationTitle: build.mutation<any, { conversationId: string; title: string }>({
+      queryFn: async ({ conversationId, title }) => {
+        if (!conversationId || !title.trim()) return { error: { status: 'CUSTOM_ERROR', error: 'Missing conversation or title' } as any };
+        try {
+          const data = await cookieMutation(`/chats/${encodeURIComponent(conversationId)}`, 'PATCH', { title: title.trim() });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_r, _e, { conversationId }) => [
+        { type: 'ConversationSummaries' as const, id: conversationId },
+        { type: 'SidebarConversations' as const, id: 'ALL' },
+      ],
+    }),
+    sendConversationMessage: build.mutation<any, { conversationId: string; body: string; artifactIds?: string[] }>({
+      queryFn: async ({ conversationId, body, artifactIds = [] }) => {
+        if (!conversationId || !body.trim()) return { error: { status: 'CUSTOM_ERROR', error: 'Missing conversation or body' } as any };
+        try {
+          const data = await cookieMutation(`/chats/${encodeURIComponent(conversationId)}/messages`, 'POST', { body, artifact_ids: artifactIds });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_r, _e, { conversationId }) => [
+        { type: 'Chat' as const, id: conversationId },
+        { type: 'ConversationSummaries' as const, id: conversationId },
+        { type: 'SidebarConversations' as const, id: 'ALL' },
+      ],
+    }),
+    markConversationRead: build.mutation<any, { conversationId: string }>({
+      queryFn: async ({ conversationId }) => {
+        if (!conversationId) return { data: {} };
+        try {
+          const data = await cookieMutation(`/chats/${encodeURIComponent(conversationId)}/read`, 'POST');
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_r, _e, { conversationId }) => [
+        { type: 'ConversationSummaries' as const, id: conversationId },
+        { type: 'SidebarConversations' as const, id: 'ALL' },
       ],
     }),
     listConversationSummaries: build.query<any, { limit?: number; cursor?: string } | void>({
@@ -535,6 +626,12 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
 
 export const {
   useCreateLaunchConversationMutation,
+  useFetchConversationQuery,
+  useFetchConversationMessagesQuery,
+  useLazyFetchConversationMessagesQuery,
+  useUpdateConversationTitleMutation,
+  useSendConversationMessageMutation,
+  useMarkConversationReadMutation,
   useListConversationSummariesQuery,
   useFetchConversationSummariesPageQuery,
   useLazyFetchConversationSummariesPageQuery,
