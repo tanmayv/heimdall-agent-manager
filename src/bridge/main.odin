@@ -148,11 +148,11 @@ main :: proc() {
 
 print_usage :: proc() {
 	fmt.println("ham-bridge", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
-	fmt.println("usage: ham-bridge [--config <path>] [--bind-host 127.0.0.1] [--port 49323] [--daemon-url URL|--hub URL] [--daemon-id ID] [--bridge-token TOKEN] [--peer-ws ws://host:port/bridge-ws]... [--peer-auth-token TOKEN] [--chunk-bytes N] [--local-endpoint-port PORT] [--local-run-dir DIR] [--agent-command CMD]")
+	fmt.println("usage: ham-bridge [--config <path>] [--bind-host 127.0.0.1] [--port 49323] [--daemon-url URL|--hub URL] [--daemon-id ID] [--bridge-token TOKEN|--bridge-token-file PATH] [--peer-ws ws://host:port/bridge-ws]... [--peer-auth-token TOKEN] [--chunk-bytes N] [--local-endpoint-port PORT] [--local-run-dir DIR] [--agent-command CMD]")
 	fmt.println("bridge runtime: ham-wrapper bridge-runtime --bridge-endpoint unix:/run/heimdall/bridge.sock --agent-token hlat_... --agent-instance-id inst_... --provider pi --tier normal --run-dir <dir> -- <agent-command>")
-	fmt.println("enroll: ham-bridge enroll --hub http://127.0.0.1:49322 --enrollment-token TOKEN")
+	fmt.println("enroll: ham-bridge enroll --hub http://127.0.0.1:49322 --enrollment-token TOKEN [--bridge-token-file PATH]")
 	fmt.println("TLS: https:// Hub URLs use HTTPS and wss:// with certificate/hostname validation; http:// tunnel URLs use ws://.")
-	fmt.println("bootstrap fetch: ham-bridge --bootstrap-fetch --daemon-url URL --bridge-token TOKEN --instance-id INST --run-dir DIR")
+	fmt.println("bootstrap fetch: ham-bridge --bootstrap-fetch --daemon-url URL --bridge-token TOKEN|--bridge-token-file PATH --instance-id INST --run-dir DIR")
 	fmt.println("bridge runtime: ham-wrapper bridge-runtime --bridge-endpoint unix:/run/bridge.sock --agent-token hlat_... --agent-instance-id INST --run-dir DIR -- <agent-command>")
 	fmt.println("loopback routes:", contracts.ROUTE_BRIDGE_HEALTH, contracts.ROUTE_BRIDGE_SEND, contracts.ROUTE_BRIDGE_REQUEST, contracts.ROUTE_BRIDGE_VALIDATE_PROJECT_PATH, contracts.ROUTE_BRIDGE_REACHABLE)
 	fmt.println("bridge websocket route:", contracts.ROUTE_BRIDGE_WS)
@@ -182,8 +182,15 @@ bridge_enroll_command :: proc(args: []string) -> bool {
 	bridge_token := extract_json_string(resp.body, "bridge_token", "")
 	bridge_id := extract_json_string(resp.body, "bridge_id", "")
 	persisted_hub_url := extract_json_string(resp.body, "hub_url", hub_url)
+	token_file := option_value(args, "--bridge-token-file", os.get_env("HAM_BRIDGE_TOKEN_FILE", context.allocator))
 	config_path := cfg_lib.config_path_from_args(args)
-	if !bridge_write_enrolled_config(config_path, persisted_hub_url, bridge_token, bridge_id) do return false
+	if strings.trim_space(token_file) != "" {
+		if !bridge_write_token_file(token_file, bridge_token) do return false
+		if !bridge_write_enrolled_config(config_path, persisted_hub_url, "", bridge_id) do return false
+		fmt.println("bridge_token_file", token_file)
+	} else {
+		if !bridge_write_enrolled_config(config_path, persisted_hub_url, bridge_token, bridge_id) do return false
+	}
 	fmt.println("bridge enrolled", bridge_id)
 	fmt.println("hub_url", persisted_hub_url)
 	return true
@@ -205,14 +212,45 @@ bridge_hub_url_supported :: proc(hub_url: string) -> bool {
 }
 
 bridge_write_enrolled_config :: proc(path, hub_url, bridge_token, bridge_id: string) -> bool {
-	if strings.trim_space(path) == "" || strings.trim_space(hub_url) == "" || strings.trim_space(bridge_token) == "" do return false
+	if strings.trim_space(path) == "" || strings.trim_space(hub_url) == "" do return false
 	if slash := strings.last_index_byte(path, '/'); slash > 0 { _ = os.make_directory_all(path[:slash]) }
 	b := strings.builder_make()
 	strings.write_string(&b, "[wrapper]\ndaemon_url = \""); json_write_string(&b, hub_url)
-	strings.write_string(&b, "\"\n\n[daemon]\nbridge_token = \""); json_write_string(&b, bridge_token)
-	strings.write_string(&b, "\"\ndaemon_id = \""); json_write_string(&b, bridge_id)
+	strings.write_string(&b, "\"\n\n[daemon]\n")
+	if strings.trim_space(bridge_token) != "" {
+		strings.write_string(&b, "bridge_token = \""); json_write_string(&b, bridge_token)
+		strings.write_string(&b, "\"\n")
+	}
+	strings.write_string(&b, "daemon_id = \""); json_write_string(&b, bridge_id)
 	strings.write_string(&b, "\"\n")
 	return os.write_entire_file(path, strings.to_string(b)) == nil
+}
+
+bridge_write_token_file :: proc(path, token: string) -> bool {
+	if strings.trim_space(path) == "" || strings.trim_space(token) == "" do return false
+	if slash := strings.last_index_byte(path, '/'); slash > 0 { _ = os.make_directory_all(path[:slash]) }
+	content := strings.concatenate({strings.trim_space(token), "\n"})
+	defer delete(content)
+	err := os.write_entire_file(path, content, os.Permissions{.Read_User, .Write_User})
+	if err != nil {
+		fmt.eprintln("failed to write bridge token file", path)
+		return false
+	}
+	_ = os.chmod(path, os.Permissions{.Read_User, .Write_User})
+	return true
+}
+
+bridge_read_token_file :: proc(path: string) -> (string, bool) {
+	trimmed_path := strings.trim_space(path)
+	if trimmed_path == "" do return "", false
+	data, err := os.read_entire_file(trimmed_path, context.allocator)
+	if err != nil {
+		fmt.eprintln("failed to read bridge token file", trimmed_path)
+		return "", false
+	}
+	text := strings.trim_space(string(data))
+	if text == "" do return "", false
+	return strings.clone(text), true
 }
 
 bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
@@ -250,6 +288,8 @@ bridge_config_from_args :: proc(args: []string) -> Bridge_Config {
 	cfg.daemon_url = option_value(args, "--daemon-url", cfg.daemon_url)
 	cfg.daemon_url = option_value(args, "--hub", cfg.daemon_url)
 	cfg.daemon_id = option_value(args, "--daemon-id", cfg.daemon_id)
+	bridge_token_file := option_value(args, "--bridge-token-file", os.get_env("HAM_BRIDGE_TOKEN_FILE", context.allocator))
+	if token_from_file, token_file_ok := bridge_read_token_file(bridge_token_file); token_file_ok do cfg.bridge_token = token_from_file
 	cfg.bridge_token = option_value(args, "--bridge-token", cfg.bridge_token)
 	cfg.peer_auth_token = option_value(args, "--peer-auth-token", cfg.peer_auth_token)
 	if port_s := option_value(args, "--port", ""); port_s != "" {

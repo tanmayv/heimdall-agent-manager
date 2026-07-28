@@ -34,6 +34,40 @@ three core binaries.
 
 ---
 
+## Bridge service example
+
+For a user-owned Bridge connected to a remote Hub, keep the enrolled bridge
+token outside the Nix store and let Home Manager create a user service:
+
+```nix
+programs.heimdall = {
+  enable = true;
+  packageNames = [ "bridge" "wrapper" "ctl" ];
+
+  bridge = {
+    enable = true;
+    hubUrl = "https://heimdall.mundus.in";
+    tokenFile = "${config.xdg.configHome}/heimdall/bridge-token";
+    service = {
+      enable = true;
+      startOnBoot = true; # systemd --user on Linux, launchd on macOS
+    };
+  };
+};
+```
+
+Enroll once and write the Hub-issued bridge token to that file:
+
+```sh
+ham-bridge enroll \
+  --hub https://heimdall.mundus.in \
+  --enrollment-token hbe_once_... \
+  --bridge-token-file ~/.config/heimdall/bridge-token
+chmod 600 ~/.config/heimdall/bridge-token
+```
+
+---
+
 ## Full example — equivalent to the repo's `config.toml`
 
 The following Nix configuration produces the same `config.toml` that ships

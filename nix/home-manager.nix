@@ -280,7 +280,9 @@ let
     // { models    = mkModels ac.models; }
     // lib.optionalAttrs (ac.startupDetection != null)  { startup_detection = mkStartupDetection ac.startupDetection; };
 
-  wrapperPkg = self.packages.${pkgs.stdenv.hostPlatform.system}.ham-wrapper;
+  system = pkgs.stdenv.hostPlatform.system;
+  wrapperPkg = self.packages.${system}.ham-wrapper;
+  bridgePkg = self.packages.${system}.ham-bridge;
 
   mkDaemon = d:
     { bind_host = d.bindHost; port = d.port; data_dir = d.dataDir;
@@ -343,8 +345,8 @@ let
 
   resolvePackage = name:
     let
-      basePkg = self.packages.${pkgs.stdenv.hostPlatform.system}.${
-        { daemon = "ham-daemon"; wrapper = "ham-wrapper"; ctl = "ham-ctl";
+      basePkg = self.packages.${system}.${
+        { daemon = "ham-daemon"; hub = "ham-hub"; bridge = "ham-bridge"; wrapper = "ham-wrapper"; ctl = "ham-ctl";
           test-agent = "ham-test-agent"; ui = "heimdall"; }.${name}
       };
       daemonUrlForUi = "http://${cfg.daemon.bindHost}:${toString cfg.daemon.port}";
@@ -361,7 +363,22 @@ let
       }
     else basePkg;
 
-  daemonPkg = self.packages.${pkgs.stdenv.hostPlatform.system}.ham-daemon;
+  daemonPkg = self.packages.${system}.ham-daemon;
+
+  bridgeCommandArgs = [
+    "${bridgePkg}/bin/ham-bridge"
+    "--hub" cfg.bridge.hubUrl
+    "--bind-host" cfg.bridge.bindHost
+    "--port" (toString cfg.bridge.port)
+    "--local-run-dir" cfg.bridge.localRunDir
+  ]
+  ++ lib.optionals (cfg.bridge.tokenFile != null) [ "--bridge-token-file" cfg.bridge.tokenFile ]
+  ++ lib.optionals (cfg.bridge.localEndpointPort != null) [ "--local-endpoint-port" (toString cfg.bridge.localEndpointPort) ]
+  ++ cfg.bridge.extraArgs;
+
+  bridgeEnvironment = {
+    HEIMDALL_HAM_WRAPPER_BIN = "${wrapperPkg}/bin/ham-wrapper";
+  } // cfg.bridge.environment;
 
 in
 {
@@ -371,12 +388,14 @@ in
     enable = lib.mkEnableOption "Heimdall Agent Manager";
 
     packageNames = lib.mkOption {
-      type    = lib.types.listOf (lib.types.enum [ "daemon" "wrapper" "ctl" "test-agent" "ui" ]);
+      type    = lib.types.listOf (lib.types.enum [ "daemon" "hub" "bridge" "wrapper" "ctl" "test-agent" "ui" ]);
       default = [ "daemon" "wrapper" "ctl" ];
       example = [ "daemon" "wrapper" "ctl" "ui" ];
       description = ''
         Heimdall packages to install and add to $PATH.
         "daemon"     → ham-daemon  (+ bc-odin-daemon symlink)
+        "hub"        → ham-hub
+        "bridge"     → ham-bridge
         "wrapper"    → ham-wrapper (+ bc-agent-wrapper symlink)
         "ctl"        → ham-ctl     (+ bc-odinctl symlink)
         "test-agent" → ham-test-agent
@@ -704,6 +723,81 @@ in
       };
     };
 
+    # ── Bridge service ───────────────────────────────────────────────────────
+
+    bridge = {
+      enable = lib.mkOption {
+        type        = lib.types.bool;
+        default     = false;
+        description = "Install/configure the ham-bridge user service.";
+      };
+      hubUrl = lib.mkOption {
+        type        = lib.types.str;
+        default     = "http://127.0.0.1:8081";
+        example     = "https://heimdall.mundus.in";
+        description = "Hub base URL used by ham-bridge (--hub).";
+      };
+      tokenFile = lib.mkOption {
+        type        = lib.types.nullOr lib.types.str;
+        default     = "${config.xdg.configHome}/heimdall/bridge-token";
+        defaultText = lib.literalExpression ''"''${config.xdg.configHome}/heimdall/bridge-token"'';
+        description = ''
+          Path to a file containing the enrolled bridge token (hbr_...). The
+          token file is read by ham-bridge via --bridge-token-file and is not
+          generated into the Nix store. Create it with mode 0600, or enroll with
+          `ham-bridge enroll --hub <hub> --enrollment-token <token> --bridge-token-file <path>`.
+        '';
+      };
+      bindHost = lib.mkOption {
+        type        = lib.types.str;
+        default     = "127.0.0.1";
+        description = "Loopback host for the bridge HTTP server.";
+      };
+      port = lib.mkOption {
+        type        = lib.types.port;
+        default     = 49323;
+        description = "Loopback TCP port for the bridge HTTP server.";
+      };
+      localEndpointPort = lib.mkOption {
+        type        = lib.types.nullOr lib.types.port;
+        default     = null;
+        description = "Optional TCP port for the wrapper-local bridge endpoint. Null lets ham-bridge use its socket/fallback default.";
+      };
+      localRunDir = lib.mkOption {
+        type        = lib.types.str;
+        default     = "/tmp/heimdall-bridge-local";
+        description = "Runtime directory for the bridge local endpoint socket/files.";
+      };
+      logDir = lib.mkOption {
+        type        = lib.types.str;
+        default     = "${config.xdg.stateHome}/heimdall/logs";
+        defaultText = lib.literalExpression ''"''${config.xdg.stateHome}/heimdall/logs"'';
+        description = "Directory used for launchd stdout/stderr logs on macOS.";
+      };
+      extraArgs = lib.mkOption {
+        type        = lib.types.listOf lib.types.str;
+        default     = [];
+        description = "Additional arguments appended to the ham-bridge service command.";
+      };
+      environment = lib.mkOption {
+        type        = lib.types.attrsOf lib.types.str;
+        default     = {};
+        description = "Extra environment variables for the bridge service.";
+      };
+      service = {
+        enable = lib.mkOption {
+          type        = lib.types.bool;
+          default     = true;
+          description = "Create a systemd user service on Linux or launchd agent on macOS.";
+        };
+        startOnBoot = lib.mkOption {
+          type        = lib.types.bool;
+          default     = true;
+          description = "Start the bridge service on user login.";
+        };
+      };
+    };
+
     # ── [ctl] ─────────────────────────────────────────────────────────────────
 
     ctl = {
@@ -722,26 +816,65 @@ in
 
   # ── Activation ────────────────────────────────────────────────────────────
 
-  config = lib.mkIf cfg.enable {
-    home.packages =
-      (map resolvePackage cfg.packageNames)
-      ++ cfg.extraPackages;
+  config = lib.mkIf cfg.enable (
+    {
+      home.packages =
+        (map resolvePackage cfg.packageNames)
+        ++ lib.optional cfg.bridge.enable bridgePkg
+        ++ lib.optional cfg.bridge.enable wrapperPkg
+        ++ cfg.extraPackages;
 
-    xdg.configFile."heimdall/config.toml".source =
-      tomlFormat.generate "heimdall-config.toml" configAttrs;
+      xdg.configFile."heimdall/config.toml".source =
+        tomlFormat.generate "heimdall-config.toml" configAttrs;
 
-    systemd.user.services.heimdall-daemon = lib.mkIf (cfg.daemon.enable && cfg.daemon.service.enable && cfg.daemon.service.startOnBoot) {
-      Unit = {
-        Description = "Heimdall Agent Manager Daemon";
-        After       = [ "network.target" ];
+      home.activation.heimdallBridgeDirs = lib.mkIf cfg.bridge.enable (lib.hm.dag.entryAfter [ "writeBoundary" ] ''
+        $DRY_RUN_CMD mkdir -p ${lib.escapeShellArg cfg.bridge.logDir}
+        ${lib.optionalString (cfg.bridge.tokenFile != null) "$DRY_RUN_CMD mkdir -p $(dirname ${lib.escapeShellArg cfg.bridge.tokenFile})"}
+      '');
+    }
+    // lib.optionalAttrs (!pkgs.stdenv.isDarwin) {
+      systemd.user.services.heimdall-daemon = lib.mkIf (cfg.daemon.enable && cfg.daemon.service.enable && cfg.daemon.service.startOnBoot) {
+        Unit = {
+          Description = "Heimdall Agent Manager Daemon";
+          After       = [ "network.target" ];
+        };
+        Service = {
+          ExecStart = "${daemonPkg}/bin/ham-daemon";
+          Restart    = "on-failure";
+          RestartSec = "5s";
+          KillMode   = "process";
+        };
+        Install.WantedBy = [ "default.target" ];
       };
-      Service = {
-        ExecStart = "${daemonPkg}/bin/ham-daemon";
-        Restart    = "on-failure";
-        RestartSec = "5s";
-        KillMode   = "process";
+
+      systemd.user.services.heimdall-bridge = lib.mkIf (cfg.bridge.enable && cfg.bridge.service.enable && cfg.bridge.service.startOnBoot) {
+        Unit = {
+          Description = "Heimdall Bridge";
+          After       = [ "network-online.target" ];
+        };
+        Service = {
+          ExecStart   = lib.escapeShellArgs bridgeCommandArgs;
+          Environment = lib.mapAttrsToList (name: value: "${name}=${value}") bridgeEnvironment;
+          Restart     = "on-failure";
+          RestartSec  = "5s";
+          KillMode    = "process";
+        };
+        Install.WantedBy = [ "default.target" ];
       };
-      Install.WantedBy = [ "default.target" ];
-    };
-  };
+    }
+    // lib.optionalAttrs pkgs.stdenv.isDarwin {
+      launchd.agents.heimdall-bridge = lib.mkIf (cfg.bridge.enable && cfg.bridge.service.enable && cfg.bridge.service.startOnBoot) {
+        enable = true;
+        config = {
+          Label = "works.earendil.heimdall-bridge";
+          ProgramArguments = bridgeCommandArgs;
+          EnvironmentVariables = bridgeEnvironment;
+          RunAtLoad = true;
+          KeepAlive = { Crashed = true; SuccessfulExit = false; };
+          StandardOutPath = "${cfg.bridge.logDir}/heimdall-bridge.out.log";
+          StandardErrorPath = "${cfg.bridge.logDir}/heimdall-bridge.err.log";
+        };
+      };
+    }
+  );
 }
