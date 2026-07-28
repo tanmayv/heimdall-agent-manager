@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 
 // Shared per-instance runtime selectors (provider / tier / project) with an
-// explicit pending + Restart affordance. Changing a selector NEVER silently
-// restarts and NEVER mutates durable identity defaults: it marks the runtime
-// settings pending and reveals a Restart button. Clicking Restart calls the
-// provided onRestart with the exact selected values so the caller can restart
-// the exact agent_instance_id (preserving its inbox/history) with overrides.
+// explicit Restart affordance. Changing a selector NEVER silently restarts and
+// NEVER mutates durable identity defaults: it marks the runtime settings pending.
+// Clicking Restart calls the provided onRestart with the exact selected values so
+// the caller can restart the exact agent_instance_id (preserving inbox/history)
+// either as-is or with runtime-only overrides.
 
 export type RuntimeRestartValue = { provider: string; modelTier: string; projectId: string };
 
@@ -96,19 +96,16 @@ export default function RuntimeRestartControls({
           })}
         </select>
       ) : null}
-      {pending ? (
-        <button
-          type="button"
-          data-debug-id={`${debugPrefix}-restart-btn`}
-          onClick={() => { void onRestart({ provider: nextProvider, modelTier: nextTier, projectId: showProject ? nextProject : projectId }); }}
-          disabled={controlsDisabled}
-          className="inline-flex h-8 items-center gap-1 rounded-md border border-sky-400/40 bg-sky-400/10 px-2.5 text-xs font-medium text-sky-100 transition hover:bg-sky-400/20 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {restarting ? 'Restarting…' : '↻ Restart to apply'}
-        </button>
-      ) : (
-        <span data-debug-id={`${debugPrefix}-runtime-pending-hint`} className="text-[11px] text-zinc-600">Runtime settings applied</span>
-      )}
+      <button
+        type="button"
+        data-debug-id={`${debugPrefix}-restart-btn`}
+        onClick={() => { void onRestart({ provider: nextProvider, modelTier: nextTier, projectId: showProject ? nextProject : projectId }); }}
+        disabled={controlsDisabled}
+        className="inline-flex h-8 items-center gap-1 rounded-md border border-sky-400/40 bg-sky-400/10 px-2.5 text-xs font-medium text-sky-100 transition hover:bg-sky-400/20 disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        {restarting ? 'Restarting…' : pending ? '↻ Restart to apply' : '↻ Restart current'}
+      </button>
+      <span data-debug-id={`${debugPrefix}-runtime-pending-hint`} className="text-[11px] text-zinc-600">{pending ? 'Runtime changes pending' : 'Runtime settings applied'}</span>
     </div>
   );
 }

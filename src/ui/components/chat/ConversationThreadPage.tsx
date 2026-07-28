@@ -249,7 +249,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const [updateConversationTitle, updateTitleState] = useUpdateConversationTitleMutation();
   const [sendMessage] = useSendConversationMessageMutation();
   const [markRead] = useMarkConversationReadMutation();
-  const [reconfigureInstance] = useReconfigureAgentInstanceMutation();
+  const [reconfigureInstance, reconfigureState] = useReconfigureAgentInstanceMutation();
   const [restartInstance, restartState] = useRestartAgentInstanceMutation();
   const [stopInstance, stopState] = useStopAgentInstanceMutation();
   const [createArtifact] = useCreateArtifactMutation();
@@ -285,6 +285,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const [provider, setProvider] = useState('');
   const [tier, setTier] = useState('');
   const [reconfigStatus, setReconfigStatus] = useState('');
+  const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
   const [titleError, setTitleError] = useState('');
@@ -314,7 +315,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     [olderMessages, baseMessages, localMessages, agentId, agentInstanceId],
   );
   const needsStart = runtimeNeedsStart(runtimeStatus);
-  const runtimeActionBusy = restartState.isLoading || stopState.isLoading;
+  const runtimeActionBusy = reconfigureState.isLoading || restartState.isLoading || stopState.isLoading;
   const runtimeButtonLabel = runtimeActionBusy ? (stopState.isLoading ? 'Stopping…' : (needsStart ? 'Starting…' : 'Restarting…')) : (needsStart ? 'Start' : 'Stop');
   const hasUploadingAttachments = attachments.some((item) => item.status === 'uploading');
   const hasFailedAttachments = attachments.some((item) => item.status === 'error');
@@ -466,14 +467,16 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     const nextProvider = provider || providerOptions[0] || '';
     const nextTier = tier || tierOptions[0] || '';
     if (!nextProvider || !nextTier) { setReconfigStatus('Choose a provider and tier first.'); return; }
-    setReconfigStatus('Reconfiguring…');
+    setReconfigStatus('Applying selected runtime config…');
     try {
       await reconfigureInstance({ agentId, instanceId: agentInstanceId, provider: nextProvider, tier: nextTier }).unwrap();
-      setReconfigStatus(`Applied ${nextProvider}/${nextTier} — relaunching…`);
+      setReconfigStatus(`Applied ${nextProvider}/${nextTier} — restarting…`);
+      await restartInstance({ agentId, instanceId: agentInstanceId }).unwrap();
+      setReconfigStatus(`Restart requested with ${nextProvider}/${nextTier}.`);
       void instanceQuery.refetch();
       void messagesQuery.refetch();
     } catch (err: any) {
-      setReconfigStatus(errMsg(err, 'Reconfigure failed'));
+      setReconfigStatus(errMsg(err, 'Reconfigure/restart failed'));
     }
   }
 
@@ -538,6 +541,33 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
         </div>
         <div className="flex shrink-0 items-center gap-2">
           <button type="button" data-debug-id={needsStart ? 'conversation-thread-start-btn' : 'conversation-thread-stop-btn'} onClick={() => void toggleRuntime()} disabled={!agentInstanceId || runtimeActionBusy} className={needsStart ? 'rounded-xl bg-emerald-400 px-3 py-1.5 text-xs font-bold text-black hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50' : 'rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-1.5 text-xs font-bold text-red-100 hover:bg-red-400/20 disabled:cursor-not-allowed disabled:opacity-50'}>{runtimeButtonLabel}</button>
+          <div className="relative">
+            <button type="button" data-debug-id="conversation-runtime-menu-btn" aria-haspopup="menu" aria-expanded={runtimeMenuOpen ? 'true' : 'false'} onClick={() => setRuntimeMenuOpen((open) => !open)} className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10">Runtime</button>
+            {runtimeMenuOpen ? (
+              <div data-debug-id="conversation-runtime-menu" className="absolute right-0 top-full z-40 mt-2 w-[min(92vw,430px)] rounded-2xl border border-white/10 bg-[#101010] p-3 text-left shadow-2xl shadow-black/60">
+                <div data-debug-id="conversation-runtime-controls" className="space-y-3">
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    <label className="text-[11px] text-zinc-500">Provider
+                      <select data-debug-id="conversation-provider-select" value={provider} onChange={(e) => setProvider(e.target.value)} disabled={runtimeActionBusy} className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50">
+                        {providerOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+                      </select>
+                    </label>
+                    <label className="text-[11px] text-zinc-500">Tier
+                      <select data-debug-id="conversation-tier-select" value={tier} onChange={(e) => setTier(e.target.value)} disabled={runtimeActionBusy} className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50">
+                        {tierOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+                      </select>
+                    </label>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" data-debug-id="conversation-reconfigure-btn" onClick={() => void applyReconfigure()} disabled={!selectionChangesConfig || runtimeActionBusy} title={selectionChangesConfig ? 'Save the selected provider/tier and relaunch' : 'Selection matches the current config'} className="rounded-lg border border-sky-400/30 bg-sky-400/10 px-3 py-1.5 text-xs text-sky-100 hover:bg-sky-400/20 disabled:cursor-not-allowed disabled:opacity-40">Apply &amp; relaunch</button>
+                    <button type="button" data-debug-id="conversation-restart-btn" onClick={() => void doRestart()} disabled={runtimeActionBusy} title="Relaunch the process with its current provider/tier" className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40">Restart current config</button>
+                  </div>
+                  {reconfigStatus ? <div data-debug-id="conversation-reconfigure-status" className="text-[11px] text-zinc-400">{reconfigStatus}</div> : null}
+                  <p data-debug-id="conversation-runtime-hint" className="text-[10px] leading-4 text-zinc-600"><span className="text-zinc-400">Apply &amp; relaunch</span> saves the selected provider/tier then restarts this exact instance. <span className="text-zinc-400">Restart current config</span> relaunches as-is.</p>
+                </div>
+              </div>
+            ) : null}
+          </div>
           <button type="button" data-debug-id="conversation-thread-refresh-btn" onClick={() => void messagesQuery.refetch()} className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10">Refresh</button>
         </div>
       </header>
@@ -573,25 +603,6 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
           )}
         />
       </div>
-
-      <fieldset data-debug-id="conversation-thread-runtime-controls" className="hidden shrink-0 border-t border-white/10 px-3 py-1.5 sm:block sm:px-4 sm:py-2">
-        <div className="flex flex-wrap items-end gap-2">
-          <label className="text-[11px] text-zinc-500">Provider
-            <select data-debug-id="conversation-provider-select" value={provider} onChange={(e) => setProvider(e.target.value)} className="ml-2 rounded-lg border border-white/10 bg-black/30 px-2 py-1 text-xs text-white">
-              {providerOptions.map((p) => <option key={p} value={p}>{p}</option>)}
-            </select>
-          </label>
-          <label className="text-[11px] text-zinc-500">Tier
-            <select data-debug-id="conversation-tier-select" value={tier} onChange={(e) => setTier(e.target.value)} className="ml-2 rounded-lg border border-white/10 bg-black/30 px-2 py-1 text-xs text-white">
-              {tierOptions.map((t) => <option key={t} value={t}>{t}</option>)}
-            </select>
-          </label>
-          <button type="button" data-debug-id="conversation-reconfigure-btn" onClick={() => void applyReconfigure()} disabled={!selectionChangesConfig} title={selectionChangesConfig ? 'Save the selected provider/tier and relaunch' : 'Selection matches the current config'} className="rounded-lg border border-sky-400/30 bg-sky-400/10 px-3 py-1 text-xs text-sky-100 hover:bg-sky-400/20 disabled:cursor-not-allowed disabled:opacity-40">Apply &amp; relaunch</button>
-          <button type="button" data-debug-id="conversation-restart-btn" onClick={() => void doRestart()} title="Relaunch the process with its current provider/tier (does not use the dropdowns)" className="rounded-lg border border-white/10 bg-white/5 px-3 py-1 text-xs text-zinc-200 hover:bg-white/10">Restart (current config)</button>
-          {reconfigStatus ? <span data-debug-id="conversation-reconfigure-status" className="text-[11px] text-zinc-400">{reconfigStatus}</span> : null}
-        </div>
-        <p data-debug-id="conversation-runtime-hint" className="mt-1 hidden text-[10px] text-zinc-600 md:block">The provider/tier dropdowns only take effect on <span className="text-zinc-400">Apply &amp; relaunch</span>. <span className="text-zinc-400">Restart (current config)</span> relaunches as-is — use it to recover an idle/unreachable instance without changing settings.</p>
-      </fieldset>
 
       <form onSubmit={submit} data-debug-id="conversation-composer-shell" className="shrink-0 border-t border-white/10 px-2 py-2 sm:px-4 sm:py-3">
         {error ? <div data-debug-id="conversation-composer-send-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">{error}</div> : null}

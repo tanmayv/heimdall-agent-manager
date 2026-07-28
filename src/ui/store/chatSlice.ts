@@ -80,6 +80,36 @@ function createClientInstanceId() {
   return clientInstanceId;
 }
 
+function extractMessageArtifactIds(message: any): string[] | undefined {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const push = (value: any) => {
+    const raw = typeof value === 'object' && value !== null
+      ? String(value.artifact_id || value.artifactId || value.id || '')
+      : String(value || '');
+    const id = raw.replace(/^artifact:\/\//i, '').trim();
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    out.push(id);
+  };
+  const direct = message?.artifact_ids ?? message?.artifactIds;
+  if (Array.isArray(direct)) direct.forEach(push);
+  const json = message?.artifact_ids_json ?? message?.artifactIdsJson;
+  if (typeof json === 'string' && json.trim()) {
+    try {
+      const parsed = JSON.parse(json);
+      if (Array.isArray(parsed)) parsed.forEach(push);
+    } catch (_err) {}
+  } else if (Array.isArray(json)) {
+    json.forEach(push);
+  }
+  const body = String(message?.body || '');
+  const re = /artifact:\/\/([A-Za-z0-9._:-]+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(body)) !== null) push(match[1]);
+  return out.length ? out : undefined;
+}
+
 function mapMessage(message: any) {
   const createdUnixMs = Number(message.created_unix_ms ?? message.createdUnixMs ?? 0);
   const createdTime = createdUnixMs ? new Date(createdUnixMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
@@ -100,6 +130,7 @@ function mapMessage(message: any) {
     deliveryFailedUnixMs,
     deliveryError: message.delivery_error ?? message.deliveryError ?? '',
     interrupt: !!message.interrupt,
+    artifactIds: extractMessageArtifactIds(message),
     sending: Boolean(message.sending),
     optimistic: Boolean(message.optimistic),
     error: Boolean(message.error),
@@ -689,7 +720,7 @@ const chatSlice = createSlice({
       .addCase(sendMessageToSelectedAgent.pending, (state: any, action) => {
         state.sending = true;
         state.session.error = '';
-        const { body, tempId, agentId: explicitAgentId } = action.meta.arg;
+        const { body, tempId, agentId: explicitAgentId, artifactIds } = action.meta.arg;
         const agentId = explicitAgentId || state.selectedAgentId;
         if (agentId && tempId) {
           if (!state.chats[agentId]) {
@@ -705,6 +736,7 @@ const chatSlice = createSlice({
             deliveredUnixMs: 0,
             createdUnixMs: Date.now(),
             optimistic: true,
+            artifactIds,
           });
         }
       })

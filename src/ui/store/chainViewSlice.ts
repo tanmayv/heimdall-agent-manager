@@ -36,6 +36,7 @@ export const sendCoordinatorMessage = createAsyncThunk('chainView/sendCoordinato
         readUnixMs: 0,
         sending: true,
         optimistic: true,
+        artifactIds: payload.artifactIds,
       },
     }));
   }
@@ -57,6 +58,7 @@ export const sendCoordinatorMessage = createAsyncThunk('chainView/sendCoordinato
         createdUnixMs: Date.now(),
         deliveredUnixMs: Number(result.delivered_unix_ms || 0),
         readUnixMs: 0,
+        artifactIds: payload.artifactIds,
       },
     }));
   }

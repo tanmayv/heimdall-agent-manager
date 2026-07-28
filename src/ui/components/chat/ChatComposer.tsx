@@ -125,6 +125,7 @@ export default function ChatComposer({
   const [attachments, setAttachments] = useState<AttachmentState[]>([]);
   const [dragActive, setDragActive] = useState(false);
   const [remoteMentionSuggestions, setRemoteMentionSuggestions] = useState<ChatComposerMentionSuggestion[]>([]);
+  const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false);
   const localMentionSuggestions = useMemo(() => mentionSuggestionsFor(value), [value]);
   const parsedMentions = useMemo(() => parseMentions(value), [value]);
   const mentionSuggestions = remoteMentionSuggestions.length > 0 ? remoteMentionSuggestions : localMentionSuggestions;
@@ -262,7 +263,7 @@ export default function ChatComposer({
           {upload?.uploadFile ? (
             <>
               <input ref={fileInputRef} type="file" multiple data-debug-id={`${upload.debugIdPrefix}-input`} className="hidden" onChange={(event) => { uploadFiles(Array.from(event.target.files || []) as File[]); event.target.value = ''; }} />
-              <button type="button" data-debug-id={`${upload.debugIdPrefix}-btn`} disabled={upload.disabled || hasUploadingAttachments} onClick={() => { upload.clearError?.(); fileInputRef.current?.click(); }} className={upload.buttonClassName || 'framer-pill bg-white/10 text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40'}>{hasUploadingAttachments ? 'Uploading…' : (upload.label || 'Attach')}</button>
+              <button type="button" data-debug-id={`${upload.debugIdPrefix}-btn`} disabled={upload.disabled || hasUploadingAttachments} onClick={() => { upload.clearError?.(); fileInputRef.current?.click(); }} className={`${upload.buttonClassName || 'framer-pill bg-white/10 text-zinc-100 hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40'} ${isMobile ? TOUCH_TARGET_CLASS : ''}`}>{hasUploadingAttachments ? 'Uploading…' : (upload.label || 'Attach')}</button>
             </>
           ) : upload ? (
             <ArtifactUploadButton
@@ -275,18 +276,37 @@ export default function ChatComposer({
             />
           ) : null}
           {runtimeControls ? (
-            <RuntimeRestartControls
-              debugPrefix={runtimeControls.debugPrefix}
-              providers={runtimeControls.providers}
-              projects={runtimeControls.projects}
-              provider={runtimeControls.provider}
-              modelTier={runtimeControls.modelTier}
-              projectId={runtimeControls.projectId}
-              disabled={runtimeControls.disabled}
-              restarting={runtimeControls.restarting}
-              showProject={runtimeControls.showProject}
-              onRestart={runtimeControls.onRestart}
-            />
+            <div className="relative">
+              <button
+                type="button"
+                data-debug-id={`${runtimeControls.debugPrefix}-runtime-menu-btn`}
+                aria-haspopup="menu"
+                aria-expanded={runtimeMenuOpen ? 'true' : 'false'}
+                onClick={() => setRuntimeMenuOpen((open) => !open)}
+                className={`inline-flex items-center justify-center gap-1 rounded-md border border-white/10 bg-[#1c1c1c] px-2.5 text-xs font-medium text-zinc-300 hover:border-white/20 hover:text-zinc-100 ${isMobile ? TOUCH_TARGET_CLASS : 'h-8'}`}
+              >
+                {runtimeControls.restarting ? 'Runtime…' : 'Runtime'}
+              </button>
+              {runtimeMenuOpen ? (
+                <div data-debug-id={`${runtimeControls.debugPrefix}-runtime-menu`} className="absolute bottom-full left-0 z-30 mb-2 w-[min(92vw,430px)] rounded-2xl border border-white/10 bg-[#101010] p-3 shadow-2xl shadow-black/50">
+                  <RuntimeRestartControls
+                    debugPrefix={runtimeControls.debugPrefix}
+                    providers={runtimeControls.providers}
+                    projects={runtimeControls.projects}
+                    provider={runtimeControls.provider}
+                    modelTier={runtimeControls.modelTier}
+                    projectId={runtimeControls.projectId}
+                    disabled={runtimeControls.disabled}
+                    restarting={runtimeControls.restarting}
+                    showProject={runtimeControls.showProject}
+                    onRestart={async (next) => {
+                      await runtimeControls.onRestart(next);
+                      setRuntimeMenuOpen(false);
+                    }}
+                  />
+                </div>
+              ) : null}
+            </div>
           ) : null}
           {leftAdornment}
         </div>

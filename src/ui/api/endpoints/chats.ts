@@ -18,6 +18,7 @@ type ChatMessage = {
   deliveryFailedUnixMs: number;
   deliveryError: string;
   interrupt: boolean;
+  artifactIds?: string[];
   sending?: boolean;
   optimistic?: boolean;
   error?: boolean;
@@ -25,6 +26,36 @@ type ChatMessage = {
 
 function timeLabel(unixMs: number): string {
   return unixMs > 0 ? new Date(unixMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+}
+
+function extractMessageArtifactIds(message: any): string[] | undefined {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const push = (value: any) => {
+    const raw = typeof value === 'object' && value !== null
+      ? String(value.artifact_id || value.artifactId || value.id || '')
+      : String(value || '');
+    const id = raw.replace(/^artifact:\/\//i, '').trim();
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    out.push(id);
+  };
+  const direct = message?.artifact_ids ?? message?.artifactIds;
+  if (Array.isArray(direct)) direct.forEach(push);
+  const json = message?.artifact_ids_json ?? message?.artifactIdsJson;
+  if (typeof json === 'string' && json.trim()) {
+    try {
+      const parsed = JSON.parse(json);
+      if (Array.isArray(parsed)) parsed.forEach(push);
+    } catch (_err) {}
+  } else if (Array.isArray(json)) {
+    json.forEach(push);
+  }
+  const body = String(message?.body || '');
+  const re = /artifact:\/\/([A-Za-z0-9._:-]+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(body)) !== null) push(match[1]);
+  return out.length ? out : undefined;
 }
 
 function mapMessage(message: any): ChatMessage {
@@ -46,6 +77,7 @@ function mapMessage(message: any): ChatMessage {
     deliveryFailedUnixMs,
     deliveryError: String(message.delivery_error ?? message.deliveryError ?? ''),
     interrupt: Boolean(message.interrupt),
+    artifactIds: extractMessageArtifactIds(message),
     sending: Boolean(message.sending),
     optimistic: Boolean(message.optimistic),
     error: Boolean(message.error),
@@ -79,7 +111,7 @@ function normalizeConversationSummaries(data: any) {
   return byId;
 }
 
-function optimisticMessage(id: string, body: string): ChatMessage {
+function optimisticMessage(id: string, body: string, artifactIds?: string[]): ChatMessage {
   const now = Date.now();
   return {
     id,
@@ -95,6 +127,7 @@ function optimisticMessage(id: string, body: string): ChatMessage {
     deliveryFailedUnixMs: 0,
     deliveryError: '',
     interrupt: false,
+    artifactIds,
     sending: true,
     optimistic: true,
     error: false,
@@ -558,8 +591,8 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
         });
         return { messageId: String(res.message_id || ''), agentInstanceId };
       }),
-      async onQueryStarted({ agentInstanceId, body, tempId }, { dispatch, queryFulfilled }) {
-        const optimistic = optimisticMessage(tempId, body);
+      async onQueryStarted({ agentInstanceId, body, tempId, artifactIds }, { dispatch, queryFulfilled }) {
+        const optimistic = optimisticMessage(tempId, body, artifactIds);
         const patch = dispatch(chatEndpoints.util.updateQueryData('fetchDirectChat', { agentInstanceId, limit: 50 }, (draft: any) => {
           if (!draft) return;
           upsertMessage(draft.messages || (draft.messages = []), optimistic);

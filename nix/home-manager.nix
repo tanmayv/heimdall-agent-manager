@@ -283,6 +283,7 @@ let
   system = pkgs.stdenv.hostPlatform.system;
   wrapperPkg = self.packages.${system}.ham-wrapper;
   bridgePkg = self.packages.${system}.ham-bridge;
+  ctlPkg = self.packages.${system}.ham-ctl;
 
   mkDaemon = d:
     { bind_host = d.bindHost; port = d.port; data_dir = d.dataDir;
@@ -420,8 +421,22 @@ let
   ++ lib.optionals (bridgeCfg.tokenFile != null) [ "--bridge-token-file" bridgeCfg.tokenFile ]
   ++ bridgeCfg.extraArgs;
 
+  bridgeDefaultPath = lib.concatStringsSep ":" [
+    "${config.home.profileDirectory}/bin"
+    (lib.makeBinPath [ pkgs.tmux pkgs.bashInteractive pkgs.coreutils ])
+    "/run/current-system/sw/bin"
+    "/etc/profiles/per-user/${config.home.username}/bin"
+    "/opt/homebrew/bin"
+    "/usr/local/bin"
+    "/usr/bin"
+    "/bin"
+  ];
+
   bridgeEnvironmentFor = bridgeCfg: {
     HEIMDALL_HAM_WRAPPER_BIN = "${wrapperPkg}/bin/ham-wrapper";
+    HEIMDALL_HAM_CTL_BIN = "${ctlPkg}/bin/ham-ctl";
+    PATH = bridgeDefaultPath;
+    SHELL = "${pkgs.bashInteractive}/bin/bash";
   } // bridgeCfg.environment;
 
   bridgeServicePorts = map (entry: entry.config.port) enabledBridgeServiceEntries;
@@ -903,6 +918,8 @@ in
         (map resolvePackage cfg.packageNames)
         ++ lib.optional anyBridgeEnabled bridgePkg
         ++ lib.optional anyBridgeEnabled wrapperPkg
+        ++ lib.optional anyBridgeEnabled ctlPkg
+        ++ lib.optional anyBridgeEnabled pkgs.tmux
         ++ cfg.extraPackages;
 
       xdg.configFile."heimdall/config.toml".source =

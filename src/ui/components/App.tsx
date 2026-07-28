@@ -48,6 +48,7 @@ import type { MergeDecision } from '../api/attentionCatalog';
 import { dismissToast, showToast } from '../store/toastSlice';
 import Markdown from './Markdown';
 import ArtifactUploadButton, { appendArtifactLink, useArtifactUpload } from './ArtifactUpload';
+import { ArtifactAttachmentPreview } from './ArtifactAttachmentPreview';
 import ChainArtifactsPanel from './ChainArtifactsPanel';
 import ArtifactViewer from './ArtifactViewer';
 import LibraryPage from './LibraryPage';
@@ -3891,6 +3892,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
                     onLoadOlder: chatPagination.onLoadOlder,
                     formatTimestamp: formatChatTimestamp,
                     getDeliveryStatus: deliveryStatusFor,
+                    renderMessageBody: ({ message }) => <ChatBodyWithArtifacts message={message} debugPrefix={detailAgentContext.debug.messageListPrefix} />,
                   },
                   workBanner: { agent, tasksById, debugPrefix: detailAgentContext.debug.workBannerPrefix, onStart: startAgent, startDisabled: !agent?.id || Boolean(agentBusy) },
                   composer: {
@@ -4296,6 +4298,7 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
                   getDeliveryStatus: deliveryStatusFor,
                   emptyState: <div data-debug-id="conversation-thread-empty-state" className="rounded-[22px] border border-dashed border-white/10 bg-[#111111]/70 p-7 text-sm text-zinc-500"><div className="text-base font-semibold text-zinc-200">This thread is ready.</div><p className="mt-2 max-w-[560px] leading-6">Send the first message to start the exact <code className="rounded bg-white/5 px-1 py-0.5 text-zinc-300">conversation</code> instance. If the agent is stopped, Heimdall will resume this same thread and keep the history attached to {agent?.id || 'conversation@s-…'}.</p></div>,
                   renderMessageTop: ({ message, index, messages: allMessages }) => (!message.isUser && live && index === allMessages.length - 1 ? <span data-debug-id="conversation-thread-worked-status" className="mb-3 inline-flex items-center gap-1 rounded-full border border-[#262626] bg-[#141414] px-3 py-1 text-[12px] text-zinc-500">Worked for 36s ›</span> : null),
+                  renderMessageBody: ({ message }) => <ChatBodyWithArtifacts message={message} debugPrefix={conversationAgentContext.debug.messageListPrefix} />,
                 },
                 workBanner: {
                   agent: locallyStopped ? { ...agent, status: 'stopped', startupStatus: 'stopped' } : agent,
@@ -5197,7 +5200,50 @@ type CoordinatorMessage = {
   deliveryError: string;
   sending: boolean;
   authorLabel: string;
+  artifactIds?: string[];
 };
+
+function extractChatArtifactIds(message: any): string[] | undefined {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const push = (value: any) => {
+    const raw = typeof value === 'object' && value !== null
+      ? String(value.artifact_id || value.artifactId || value.id || '')
+      : String(value || '');
+    const id = raw.replace(/^artifact:\/\//i, '').trim();
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    out.push(id);
+  };
+  const direct = message?.artifact_ids ?? message?.artifactIds;
+  if (Array.isArray(direct)) direct.forEach(push);
+  const json = message?.artifact_ids_json ?? message?.artifactIdsJson;
+  if (typeof json === 'string' && json.trim()) {
+    try {
+      const parsed = JSON.parse(json);
+      if (Array.isArray(parsed)) parsed.forEach(push);
+    } catch (_err) {}
+  } else if (Array.isArray(json)) {
+    json.forEach(push);
+  }
+  const body = String(message?.body || '');
+  const re = /artifact:\/\/([A-Za-z0-9._:-]+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(body)) !== null) push(match[1]);
+  return out.length ? out : undefined;
+}
+
+function mergeArtifactIds(left?: string[], right?: string[]): string[] | undefined {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  [...(left || []), ...(right || [])].forEach((id) => {
+    const normalized = String(id || '').replace(/^artifact:\/\//i, '').trim();
+    if (!normalized || seen.has(normalized)) return;
+    seen.add(normalized);
+    out.push(normalized);
+  });
+  return out.length ? out : undefined;
+}
 
 function normalizeCoordinatorMessages(list: any[]): CoordinatorMessage[] {
   const deduped = new Map<string, CoordinatorMessage>();
@@ -5217,6 +5263,7 @@ function normalizeCoordinatorMessages(list: any[]): CoordinatorMessage[] {
       deliveryError: String(msg?.delivery_error || msg?.deliveryError || ''),
       sending: Boolean(msg?.sending),
       authorLabel: isUser ? 'You' : (msg?.agent_instance_id || msg?.agentInstanceId || 'Coordinator'),
+      artifactIds: extractChatArtifactIds(msg),
     } as CoordinatorMessage;
     const current = deduped.get(messageId);
     if (!current) {
@@ -5234,6 +5281,7 @@ function normalizeCoordinatorMessages(list: any[]): CoordinatorMessage[] {
       deliveryError: next.deliveryError || current.deliveryError,
       sending: current.sending && next.sending,
       authorLabel: next.authorLabel || current.authorLabel,
+      artifactIds: mergeArtifactIds(current.artifactIds, next.artifactIds),
     });
   });
   const normalized = Array.from(deduped.values());
@@ -5431,6 +5479,27 @@ function UserActionReplyBubble({ body }: { body: string }) {
   return <Markdown source={body} compact copyAll={false} className="mt-1" />;
 }
 
+function ChatArtifactPreviews({ message, debugPrefix }: { message: { messageId: string; artifactIds?: string[] }; debugPrefix: string }) {
+  const ids = message.artifactIds || [];
+  if (ids.length === 0) return null;
+  return (
+    <div className="mt-2 flex max-w-full flex-wrap gap-2">
+      {ids.map((id) => (
+        <ArtifactAttachmentPreview key={id} artifactId={id} debugId={`${debugPrefix}-artifact-${message.messageId}-${id}`} />
+      ))}
+    </div>
+  );
+}
+
+function ChatBodyWithArtifacts({ message, debugPrefix, children }: { message: { messageId: string; body: string; artifactIds?: string[] }; debugPrefix: string; children?: ReactNode }) {
+  return (
+    <div className="flex max-w-full flex-col gap-1">
+      {children || <Markdown source={message.body} compact copyAll={false} />}
+      <ChatArtifactPreviews message={message} debugPrefix={debugPrefix} />
+    </div>
+  );
+}
+
 function deriveCoordinatorActionReplies(messages: CoordinatorMessage[]): Record<string, string> {
   const replies: Record<string, string> = {};
   const pending: { messageId: string; action: CoordinatorActionPayload }[] = [];
@@ -5583,20 +5652,22 @@ function CoordinatorMessageList({ chainId, messages, onReply, debugPrefix = 'cha
       formatTimestamp={formatChatTimestamp}
       getDeliveryStatus={deliveryStatusFor}
       renderMessageBody={({ message, onReply: reply }) => {
-        if (message.isUser) return <UserActionReplyBubble body={message.body} />;
+        if (message.isUser) return <ChatBodyWithArtifacts message={message} debugPrefix={debugPrefix}><UserActionReplyBubble body={message.body} /></ChatBodyWithArtifacts>;
         const action = parseCoordinatorActionPayload(message.body);
-        if (!action) return <Markdown source={message.body} compact copyAll={false} />;
+        if (!action) return <ChatBodyWithArtifacts message={message} debugPrefix={debugPrefix} />;
         return (
-          <CoordinatorActionCard
-            action={action}
-            messageId={message.messageId}
-            debugPrefix={debugPrefix}
-            usedReply={usedActionCards[message.messageId] || persistedActionReplies[message.messageId] || ''}
-            onUse={(nextReply) => {
-              setUsedActionCards((prev) => ({ ...prev, [message.messageId]: nextReply }));
-              reply(nextReply);
-            }}
-          />
+          <ChatBodyWithArtifacts message={message} debugPrefix={debugPrefix}>
+            <CoordinatorActionCard
+              action={action}
+              messageId={message.messageId}
+              debugPrefix={debugPrefix}
+              usedReply={usedActionCards[message.messageId] || persistedActionReplies[message.messageId] || ''}
+              onUse={(nextReply) => {
+                setUsedActionCards((prev) => ({ ...prev, [message.messageId]: nextReply }));
+                reply(nextReply);
+              }}
+            />
+          </ChatBodyWithArtifacts>
         );
       }}
     />
@@ -6108,20 +6179,23 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
                         void onSend(reply).catch((err: any) => setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`));
                       },
                       renderMessageBody: ({ message, onReply }) => {
-                        if (message.isUser) return <UserActionReplyBubble body={message.body} />;
+                        const debugPrefix = coordinatorAgentContext.debug.messageListPrefix;
+                        if (message.isUser) return <ChatBodyWithArtifacts message={message} debugPrefix={debugPrefix}><UserActionReplyBubble body={message.body} /></ChatBodyWithArtifacts>;
                         const action = parseCoordinatorActionPayload(message.body);
-                        if (!action) return <Markdown source={message.body} compact copyAll={false} />;
+                        if (!action) return <ChatBodyWithArtifacts message={message} debugPrefix={debugPrefix} />;
                         return (
-                          <CoordinatorActionCard
-                            action={action}
-                            messageId={message.messageId}
-                            debugPrefix={coordinatorAgentContext.debug.messageListPrefix}
-                            usedReply={usedActionCards[message.messageId] || persistedActionReplies[message.messageId] || ''}
-                            onUse={(nextReply) => {
-                              setUsedActionCards((prev) => ({ ...prev, [message.messageId]: nextReply }));
-                              onReply(nextReply);
-                            }}
-                          />
+                          <ChatBodyWithArtifacts message={message} debugPrefix={debugPrefix}>
+                            <CoordinatorActionCard
+                              action={action}
+                              messageId={message.messageId}
+                              debugPrefix={debugPrefix}
+                              usedReply={usedActionCards[message.messageId] || persistedActionReplies[message.messageId] || ''}
+                              onUse={(nextReply) => {
+                                setUsedActionCards((prev) => ({ ...prev, [message.messageId]: nextReply }));
+                                onReply(nextReply);
+                              }}
+                            />
+                          </ChatBodyWithArtifacts>
                         );
                       },
                     },
