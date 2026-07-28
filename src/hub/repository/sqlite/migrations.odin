@@ -343,7 +343,15 @@ updated_at = '2026-07-28T00:25:00Z'
 WHERE memory_id = 'mem_system_heimdall_ctl_communication';
 `
 
-migration_order :: [8]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql"}
+MIGRATION_009_ARTIFACT_METADATA :: `ALTER TABLE artifacts ADD COLUMN mime TEXT NOT NULL DEFAULT '';
+ALTER TABLE artifacts ADD COLUMN ext TEXT NOT NULL DEFAULT '';
+ALTER TABLE artifacts ADD COLUMN sha256 TEXT NOT NULL DEFAULT '';
+ALTER TABLE artifacts ADD COLUMN origin_kind TEXT NOT NULL DEFAULT '';
+ALTER TABLE artifacts ADD COLUMN origin_ref TEXT NOT NULL DEFAULT '';
+ALTER TABLE artifacts ADD COLUMN deleted_at TEXT;
+`
+
+migration_order :: [9]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -385,6 +393,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "006_live_agents_skill_memory.sql" do return strings.clone(MIGRATION_006_LIVE_AGENTS_SKILL_MEMORY)
 	if name == "007_hide_agent_to_agent_from_user_chat.sql" do return strings.clone(MIGRATION_007_HIDE_AGENT_TO_AGENT_FROM_USER_CHAT)
 	if name == "008_read_inbound_messages_skill_memory.sql" do return strings.clone(MIGRATION_008_READ_INBOUND_MESSAGES_SKILL_MEMORY)
+	if name == "009_artifact_metadata.sql" do return strings.clone(MIGRATION_009_ARTIFACT_METADATA)
 	return ""
 }
 

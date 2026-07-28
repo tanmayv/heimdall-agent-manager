@@ -13,11 +13,13 @@ import {
   useRestartAgentInstanceMutation,
   useStopAgentInstanceMutation,
 } from '../../api/endpoints/agents';
+import { useCreateArtifactMutation } from '../../api/endpoints/artifacts';
 import {
   normalizeBridgeCapabilities,
   useListBridgesQuery,
   type BridgeCapability,
 } from '../../api/endpoints/bridgeSupport';
+import Markdown from '../Markdown';
 import ChatMessageList from './ChatMessageList';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
 
@@ -157,6 +159,14 @@ function normalizeConversationMessages(rows: Message[], agentLabel: string): Cha
       const createdUnixMs = messageCreatedUnixMs(message);
       const sender = String(message.sender_agent_instance_id || message.senderAgentInstanceId || '');
       const authorLabel = isUser ? 'you' : direction === 'system' ? 'system' : (sender || agentLabel || 'agent');
+      let artifactIds: string[] | undefined = undefined;
+      const artifactIdsJson = (message as any).artifact_ids_json;
+      if (artifactIdsJson && typeof artifactIdsJson === 'string') {
+        try {
+          const parsed = JSON.parse(artifactIdsJson);
+          if (Array.isArray(parsed)) artifactIds = parsed;
+        } catch (e) {}
+      }
       return {
         order: index,
         chatMessage: {
@@ -171,6 +181,7 @@ function normalizeConversationMessages(rows: Message[], agentLabel: string): Cha
           deliveryError: String(message.delivery_error || message.deliveryError || ''),
           sending: Boolean(message.sending),
           authorLabel,
+          artifactIds,
         } satisfies ChatMessage,
       };
     })
@@ -199,6 +210,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const [reconfigureInstance] = useReconfigureAgentInstanceMutation();
   const [restartInstance, restartState] = useRestartAgentInstanceMutation();
   const [stopInstance, stopState] = useStopAgentInstanceMutation();
+  const [createArtifact] = useCreateArtifactMutation();
 
   const conversation = convQuery.data?.conversation || null;
   const agentId = String(conversation?.agent_id || conversation?.agentId || '');
@@ -226,6 +238,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const [olderHasMore, setOlderHasMore] = useState(false);
   const [draft, setDraft] = useState('');
   const [error, setError] = useState('');
+  const [attachments, setAttachments] = useState<{id: string, name: string}[]>([]);
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
   const [provider, setProvider] = useState('');
   const [tier, setTier] = useState('');
@@ -274,6 +287,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     setOlderCursor('');
     setOlderHasMore(false);
     setLocalMessages([]);
+    setAttachments([]);
   }, [conversationId]);
   useEffect(() => {
     if (baseMessages.length === 0 || localMessages.length === 0) return;
@@ -348,18 +362,21 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   async function submit(event: FormEvent) {
     event.preventDefault();
     const body = draft.trim();
-    if (!body) return;
-    const local = optimisticUserMessage(conversationId, body);
+    if (!body && attachments.length === 0) return;
+    const local = optimisticUserMessage(conversationId, body || 'Uploaded file');
     const localId = msgId(local, 0);
+    const attachmentIds = attachments.map(a => a.id);
+    (local as any).artifact_ids_json = JSON.stringify(attachmentIds);
     setError('');
     setDraft('');
+    setAttachments([]);
     setLocalMessages((current) => [...current, local]);
     try {
-      const result = await sendMessage({ conversationId, body }).unwrap();
+      const result = await sendMessage({ conversationId, body, artifactIds: attachmentIds }).unwrap();
       const sent = sentMessageFromResult(result);
       setLocalMessages((current) => current.map((message) => {
         if (msgId(message, 0) !== localId) return message;
-        return sent ? { ...sent, body: String(sent.body || body), direction: sent.direction || 'user_to_agent' } : { ...message, sending: false };
+        return sent ? { ...sent, body: String(sent.body || body), direction: sent.direction || 'user_to_agent', artifact_ids_json: (sent as any).artifact_ids_json || JSON.stringify(attachmentIds) } : { ...message, sending: false };
       }));
       void messagesQuery.refetch();
     } catch (err: any) {
@@ -459,6 +476,20 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
           onLoadOlder={loadOlderMessages}
           formatTimestamp={formatMessageTimestamp}
           getDeliveryStatus={deliveryStatusFor}
+          renderMessageBody={({ message }) => (
+            <div className="flex flex-col gap-1">
+              <Markdown source={message.body} compact copyAll={false} />
+              {message.artifactIds && message.artifactIds.length > 0 && (
+                <div className="mt-1 flex flex-wrap gap-2">
+                  {message.artifactIds.map(id => (
+                    <a key={id} href={`#/library/artifacts/${encodeURIComponent(id)}`} className="flex items-center gap-1 rounded bg-sky-400/10 px-2 py-1 text-[11px] text-sky-300 hover:bg-sky-400/20">
+                      <span className="opacity-70">▣</span> {id}
+                    </a>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           wrapperClassName="relative h-full min-h-0 overflow-hidden"
           scrollClassName="chat-scrollbar h-full min-h-0 space-y-3 overflow-y-auto rounded-none bg-[#090909] px-1 py-2 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
           emptyState={messagesQuery.isFetching ? (
@@ -490,7 +521,44 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
 
       <form onSubmit={submit} data-debug-id="conversation-composer-shell" className="shrink-0 border-t border-white/10 px-2 py-2 sm:px-4 sm:py-3">
         {error ? <div data-debug-id="conversation-composer-send-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">{error}</div> : null}
+        {attachments.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-2">
+            {attachments.map((a, i) => (
+              <div key={i} className="flex items-center gap-1 rounded-lg bg-sky-400/10 px-2 py-1 text-xs text-sky-300" title={a.name}>
+                <span className="max-w-[150px] truncate">{a.name}</span>
+                <button type="button" onClick={() => setAttachments(prev => prev.filter((_, idx) => idx !== i))} className="hover:text-sky-100">×</button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="flex items-end gap-2">
+          <label className="grid h-[44px] w-[44px] shrink-0 cursor-pointer place-items-center rounded-2xl border border-white/10 bg-black/30 text-xl text-zinc-400 hover:bg-white/5 hover:text-white" title="Upload Attachment">
+            <input type="file" className="hidden" onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (!file) return;
+              const reader = new FileReader();
+              reader.onload = async (ev) => {
+                const resultStr = ev.target?.result as string;
+                const base64Data = resultStr.includes(',') ? resultStr.split(',')[1] : resultStr;
+                try {
+                  const res = await createArtifact({
+                    name: file.name,
+                    mime: file.type || 'application/octet-stream',
+                    kind: (file.type || '').startsWith('image/') ? 'image' : 'text',
+                    contentBase64: base64Data,
+                  }).unwrap();
+                  if (res.artifact_id || res.artifactId || res.id) {
+                    setAttachments(prev => [...prev, { id: res.artifact_id || res.artifactId || res.id, name: file.name }]);
+                  }
+                } catch (err: any) {
+                  setError(errMsg(err, 'Failed to upload attachment'));
+                }
+              };
+              reader.readAsDataURL(file);
+              e.target.value = '';
+            }} />
+            ＋
+          </label>
           <textarea
             data-debug-id="conversation-composer-input"
             value={draft}
@@ -500,7 +568,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
             placeholder="Message the agent… (Cmd/Ctrl+Enter to send)"
             className="min-h-[44px] flex-1 resize-none rounded-2xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-sky-400/60 sm:px-4"
           />
-          <button data-debug-id="conversation-composer-send-btn" type="submit" disabled={!draft.trim()} className="rounded-2xl bg-sky-400 px-4 py-2.5 text-sm font-black text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">Send</button>
+          <button data-debug-id="conversation-composer-send-btn" type="submit" disabled={!draft.trim() && attachments.length === 0} className="rounded-2xl bg-sky-400 px-4 py-2.5 text-sm font-black text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">Send</button>
         </div>
       </form>
     </section>

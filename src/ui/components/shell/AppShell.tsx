@@ -16,6 +16,8 @@ import { AgentsPanel, NewAgentPage } from '../agents/AgentsPanel';
 import { AgentDetailPanel } from '../agents/AgentDetailPanel';
 import { ProviderEditorPage, ProvidersPanel } from '../settings/ProvidersPanel';
 import UserTokensPanel from '../settings/UserTokensPanel';
+import LibraryPage from '../LibraryPage';
+import ArtifactViewer from '../ArtifactViewer';
 import { clearUserClientState } from '../../store/chatSlice';
 import { priorUserClientStateCleared } from '../../store/store';
 
@@ -638,6 +640,10 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
           <NewAgentPage />
         ) : path.startsWith('/agents/') ? (
           <AgentDetailPanel agentId={decodeURIComponent(path.slice('/agents/'.length))} />
+        ) : path === '/library' ? (
+          <LibraryPage session={{ clientToken: 'v1', daemonUrl: '' }} />
+        ) : path.startsWith('/library/artifacts/') ? (
+          <ArtifactViewer artifactId={decodeURIComponent(path.slice('/library/artifacts/'.length))} daemonUrl="" clientToken="v1" onClose={() => window.history.back()} />
         ) : (
           <div className="w-full max-w-2xl rounded-2xl border border-white/10 bg-white/[0.03] p-5 text-left">
             <div data-debug-id="shell-page-placeholder-icon" className="mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-white/10 text-2xl">⌁</div>

@@ -1,7 +1,7 @@
 # Plan: Hub Artifacts Upload, Library, Chat Attachments, and Agent CLI Access
 
-Status: Draft
-Owner: TBD
+Status: Implemented (Phase 1 & 2)
+Owner: Owl Team
 Scope: Heimdall Hub rewrite (`src/hub`, `src/ui`, `src/ctl`, `src/bridge`)
 
 ## Goal

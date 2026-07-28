@@ -12,6 +12,7 @@ export type ChatMessage = {
   deliveryError: string;
   sending: boolean;
   authorLabel: string;
+  artifactIds?: string[];
 };
 
 export type ChatTimestamp = { label: string; iso: string };

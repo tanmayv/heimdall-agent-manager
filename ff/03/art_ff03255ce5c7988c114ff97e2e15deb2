@@ -1,0 +1,128 @@
+# ZV2 Overbilling Audit Report: June 29-30, 2026
+
+## 1. Executive Summary (OB-5)
+This audit report presents the analysis of ZV2 daily network overbilling for June 29 and June 30, 2026. 
+The analysis compares actual physical traffic logs (Mastermind) against the active migration states (Zone Move Planner - ZMP) and default cluster-to-zone mappings to identify overbilled traffic.
+Overbilled traffic is defined as traffic that was **physically inter-zone** (crossing physical zones, incurring default egress charges) but **logically intra-zone** (where the ZMP target zone matched the source zone, meaning the customer expected it to be free/cheap intra-zone traffic).
+
+Across the entire fleet:
+- **Total Unique Projects Affected**: 142,787
+- **Total Overbilled Usages**:
+  - **June 29, 2026**: 30,845,422.31 GiB (~30.8 PB) | Estimated Cost: **$308,454.22**
+  - **June 30, 2026**: 28,599,719.59 GiB (~28.6 PB) | Estimated Cost: **$285,997.20**
+- **Total Combined Overbilling Cost**: **$594,451.42**
+
+---
+
+## 2. Test Run vs. Global Run (OB-4, OB-5)
+
+### A. Test Run (Subset Validation)
+Before running the pipeline globally, a trial run was performed on a subset of 50 projects. The results were validated by the tester using Confluence DB and Teloneum sawmill logs.
+- **Subset Scope**: 50 selected projects.
+- **Subset Results**: Only 1 project (`922893749567`) had active overbilled traffic during June 29-30, 2026.
+- **Subset Total Usages**: 7.13 GiB overbilled | Estimated Cost: **$0.07 USD**.
+- **Subset Flow Details**:
+  - 2026-06-30 | src: `901420247464` | dst: `922893749567` | physical: `us-west1-a` -> `us-central1-b` | logical: `us-west1-a` -> `us-west1-a` | 2.29 GiB.
+  - 2026-06-30 | src: `901420247464` | dst: `922893749567` | physical: `us-west1-c` -> `us-central1-a` | logical: `us-west1-c` -> `us-west1-c` | 0.76 GiB.
+  - 2026-06-29 | src: `901420247464` | dst: `922893749567` | physical: `us-west1-a` -> `us-central1-b` | logical: `us-west1-a` -> `us-west1-a` | 1.80 GiB.
+  - 2026-06-30 | src: `901420247464` | dst: `922893749567` | physical: `us-west1-a` -> `us-central1-a` | logical: `us-west1-a` -> `us-west1-a` | 1.52 GiB.
+  - 2026-06-29 | src: `901420247464` | dst: `922893749567` | physical: `us-west1-b` -> `us-central1-a` | logical: `us-west1-b` -> `us-west1-b` | 0.76 GiB.
+
+### B. Global Run (Full Execution)
+The pipeline was run globally for all active projects. The initial execution was optimized by splitting the daily runs and applying a join-first filter to avoid F1 memory limits and worker RPC errors.
+- **Global Scope**: All projects with active ZMP migrations.
+- **Global Results**: 142,787 unique projects affected.
+- **Global Total Usages**: 59,445,141.90 GiB (~59.4 PB) | Combined Cost: **$594,451.42 USD**.
+
+---
+
+## 3. Methodology & SQL Queries (OB-1, OB-2, OB-3)
+
+### Pipeline Logic
+1. **Identify Active Destination Projects (OB-1)**: Query Spanner `project_history` for projects undergoing active migrations on day $D$.
+2. **Identify Mastermind Traffic (OB-2)**: Extract daily VM traffic where the destination project has an active migration.
+3. **Reconcile Zones (OB-2, OB-3)**: Check if the traffic source zone (resolved via cluster default mapping) matches the ZMP migration logical target zone, and differs from the physical destination zone.
+4. **Aggregate (OB-3)**: Sum the physical bytes and estimate the cost at $0.01 per GiB.
+
+### SQL Query Template (Optimized v2)
+The following query (`relational.sawmill.daily_overbilling_v2`) was used for the execution:
+```sql
+SET QueryRequest.accounting_group = 'cloudnet-billing';
+SET QueryRequest.exec_mode = 'distributed';
+SET QueryRequest.num_workers = 40000;
+
+WITH ActiveMigrations AS (
+  SELECT DISTINCT
+    project_number,
+    zone_name AS target_zone
+  FROM
+    `/span/global/cloud-cluster-zone-move-planner:zone-move-planner.prod.us-west1`.project_history
+  WHERE
+    flow_cancel_timestamp_usec = 0
+    AND flow_start_timestamp_usec <= <DATE_END_MICROS>
+    AND (flow_finish_timestamp_usec = 0 OR flow_finish_timestamp_usec >= <DATE_START_MICROS>)
+),
+
+DefaultMap AS (
+  SELECT DISTINCT
+    LOWER(cluster) AS cluster,
+    primary_zone AS default_zone
+  FROM
+    cloud_zones_all.cluster_mappings.latest
+  WHERE
+    primary_zone IS NOT NULL AND primary_zone != ''
+)
+
+SELECT
+  m._PARTITION_DATE AS date,
+  m.src_cloud_project_id AS src_project,
+  m.dst_cloud_project_id AS dst_project,
+  sz.default_zone AS src_zone,
+  dz.default_zone AS default_dst_zone,
+  am.target_zone AS logical_dst_zone,
+  SUM(m.bytes / 1073741824.0) AS overbilled_gib,
+  SUM(m.bytes / 1073741824.0) * 0.01 AS estimated_cost_usd
+FROM
+  mastermind.aggregated_cloud.all m
+JOIN ActiveMigrations am 
+  ON m.dst_cloud_project_id = am.project_number
+LEFT JOIN DefaultMap sz ON LOWER(m.src_cluster) = sz.cluster
+LEFT JOIN DefaultMap dz ON LOWER(m.dst_cluster) = dz.cluster
+WHERE
+  m._PARTITION_DATE = <DATE>
+  AND sz.default_zone = am.target_zone
+  AND sz.default_zone != dz.default_zone
+GROUP BY
+  1, 2, 3, 4, 5, 6;
+```
+
+---
+
+## 4. Top 20 Overbilled Projects Breakdown
+Here are the top 20 projects with the highest estimated overbilling during June 29-30, 2026:
+
+| Rank | Project ID (Number) | June 29 (GiB) | June 30 (GiB) | Total GiB | Estimated Cost (USD) |
+|------|---------------------|---------------|---------------|-----------|----------------------|
+| 1 | 907511300926 | 5320689.52 | 3299863.78 | 8620553.29 | $86205.53 |
+| 2 | 796451879189 | 3423242.76 | 3603178.64 | 7026421.39 | $70264.21 |
+| 3 | 96073661764 | 1497963.19 | 1926133.42 | 3424096.61 | $34240.97 |
+| 4 | 992605230576 | 1073509.49 | 1576518.52 | 2650028.01 | $26500.28 |
+| 5 | 304555893827 | 1306582.62 | 1245541.91 | 2552124.53 | $25521.25 |
+| 6 | 919457896710 | 1203583.45 | 1276575.78 | 2480159.23 | $24801.59 |
+| 7 | 1057609554664 | 1174067.58 | 877740.03 | 2051807.61 | $20518.08 |
+| 8 | 73598570203 | 1964991.52 | 62957.87 | 2027949.40 | $20279.49 |
+| 9 | 152706447465 | 734343.50 | 666133.31 | 1400476.81 | $14004.77 |
+| 10 | 189815991824 | 549604.07 | 663679.34 | 1213283.41 | $12132.83 |
+| 11 | 941316604630 | 582247.63 | 589326.77 | 1171574.40 | $11715.74 |
+| 12 | 172964823047 | 570000.21 | 497722.68 | 1067722.89 | $10677.23 |
+| 13 | 129648229394 | 421146.61 | 610409.31 | 1031555.92 | $10315.56 |
+| 14 | 192266591709 | 548452.91 | 189635.35 | 738088.26 | $7380.88 |
+| 15 | 335169793773 | 332874.04 | 331412.37 | 664286.41 | $6642.86 |
+| 16 | 803773481685 | 289445.97 | 292680.98 | 582126.95 | $5821.27 |
+| 17 | 547946566270 | 241524.90 | 240146.27 | 481671.17 | $4816.71 |
+| 18 | 256895546997 | 63991.69 | 412845.94 | 476837.63 | $4768.38 |
+| 19 | 419190870032 | 90798.73 | 369506.80 | 460305.53 | $4603.06 |
+| 20 | 254847342427 | 229730.92 | 188339.69 | 418070.61 | $4180.71 |
+
+---
+*Generated by coder-1@zv2-with-mastermind-chain-19f65087749*

@@ -1,0 +1,29 @@
+# Historical ZV2 Impact Analysis Summary
+
+## 1. ZV2 Bug Context (REQ-MM-0.1)
+The ZV2 (Zone Virtualization) billing bug involves a misclassification issue within the Teloneum billing pipeline. Teloneum was natively resolving destination clusters using `default_clusters` from `ProjectClusterUsage` data. For projects undergoing zone migrations, Teloneum should have been utilizing the `additional_clusters` mapping. 
+
+By falling back to the default zone instead of the ZV2 mapped underlying physical zone, Teloneum incorrectly classified `intra-zone` traffic as `inter-zone` traffic (overbilling), and vice versa (underbilling).
+
+## 2. Hypothesis & Subset Targeting (REQ-MM-1)
+To retrospectively calculate the overbilled volumes for pre-April dates, we developed a Mastermind reconstruction query. The hypothesis joins Mastermind physical traffic flows (`mastermind.aggregated_cloud.all`) with actual physical cluster mappings (`cloud_zones_all.cluster_mappings.latest`) and active migrating cluster zones derived from Zone Move Planner (ZMP). 
+
+We tested this hypothesis strictly against a subset of known heavily impacted projects according to the April 30 Concord daily impact table proxy (`concord.zv2_impact_daily_20260430`):
+1. **Project `503447060668`** (~32M GiB proxy overbilled)
+2. **Project `280190017096`** (~10M GiB proxy overbilled)
+
+## 3. Validation Results (REQ-MM-2 & REQ-MM-3)
+Validation of the Mastermind reconstruction against subset `503447060668` resulted in **0 bytes** of derived overbilling. While this complies with REQ-MM-3 (reconstruction DID NOT exceed the maximum known `$41,877,749` billed revenue usage ceiling), it fundamentally conflicts with the expected `~32M GiB` proxy footprint.
+
+## 4. Anomalies & Known Data Gaps (REQ-MM-4)
+The validation check surfaced a critical flaw in querying regional Spanner instances for ZMP data:
+
+1. **Regional ZMP Spanner Fragmentation:**
+Project `503447060668` is an EU project with physical components in `europe-north1`. The current hypothesis query only unions `target_zone` resolutions from North American Spanner instances (e.g., `us-west1`, `us-east1`, `us-east4`). The resulting `INNER JOIN` completely nullifies EU project physical traffic flows. 
+2. **Missing Outliers:**
+Following the outlier logic, expanding the query to union `europe-west1` explicitly still yielded `0` records. This confirms fragmentation extends beyond a few major regional nodes.
+3. **Ghost Migrations:**
+If a project underwent a silent/ghost migration that circumvented ZMP tracking or was purged from Spanner, physical telemetry footprinting will permanently under-represent the impact vs true Concord numbers.
+
+## 5. Next Steps
+To operationalize this Mastermind reconstruction on a global scale, the Mastermind CTE (`Zv2Clusters`) MUST be expanded to encompass a dynamic `UNION DISTINCT` spanning **every active regional `zone-move-planner.prod.*` Spanner directory globally**, rather than statically mapping individual instances.

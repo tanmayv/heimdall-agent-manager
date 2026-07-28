@@ -3,6 +3,8 @@ package http
 import "core:fmt"
 import "core:strconv"
 import "core:strings"
+import internal_b64 "core:encoding/base64"
+
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import auth_service "odin_test:hub/service/auth"
@@ -41,7 +43,24 @@ read_chat_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handl
 list_artifacts_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; rows,err:=content_service.list_artifacts(h.content,auth); if err.code!=.None do return respond_error(err,req.request_id); b:=strings.builder_make(); strings.write_byte(&b,'['); for r,i in rows{ if i>0 do strings.write_byte(&b,','); write_artifact_json(&b,r,false)}; strings.write_byte(&b,']'); return respond_list(strings.to_string(b),contracts.API_Page{limit=contracts.API_DEFAULT_PAGE_LIMIT,has_more=false},req.request_id,auth_ctx_server_time(req)) }
 create_artifact_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; a,saved,err:=content_service.create_artifact(h.content,auth,artifact_input(req.body)); if !saved do return respond_error(err,req.request_id); b:=strings.builder_make(); write_artifact_json(&b,a,false); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req),201) }
 artifact_detail_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; a,got,err:=content_service.get_artifact(h.content,auth,path_part(req.path,4)); if !got do return respond_error(err,req.request_id); b:=strings.builder_make(); write_artifact_json(&b,a,false); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req)) }
-artifact_content_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; a,got,err:=content_service.get_artifact(h.content,auth,path_part(req.path,4)); if !got do return respond_error(err,req.request_id); b:=strings.builder_make(); strings.write_string(&b,"{\"artifact_id\":\""); write_handler_json_string(&b,a.artifact_id); strings.write_string(&b,"\",\"content\":\""); write_handler_json_string(&b,a.content); strings.write_string(&b,"\"}"); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req)) }
+artifact_content_handler :: proc(ctx:rawptr, req:Request)->Response{
+	h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp;
+	a,got,err:=content_service.get_artifact(h.content,auth,path_part(req.path,4)); if !got do return respond_error(err,req.request_id);
+	
+	ctype := a.mime
+	if ctype == "" do ctype = a.content_type
+	
+	headers := make([dynamic]contracts.HTTP_Header, 0, 2)
+	append(&headers, contracts.HTTP_Header{name = "Content-Disposition", value = fmt.tprintf("inline; filename=\"%s\"", a.name)})
+	append(&headers, contracts.HTTP_Header{name = "Cache-Control", value = "private, max-age=60"})
+	
+	return Response{
+		status = 200,
+		content_type = ctype,
+		body = a.content,
+		headers = headers[:],
+	}
+}
 patch_artifact_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; a,saved,err:=content_service.update_artifact(h.content,auth,path_part(req.path,4),json_string(req.body,"name"),json_string(req.body,"description")); if !saved do return respond_error(err,req.request_id); b:=strings.builder_make(); write_artifact_json(&b,a,false); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req)) }
 delete_artifact_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; deleted,err:=content_service.delete_artifact(h.content,auth,path_part(req.path,4)); if !deleted do return respond_error(err,req.request_id); return Response{status=204,content_type="application/json",body=""} }
 
@@ -54,7 +73,17 @@ default_str :: proc(v,d:string)->string{ if v=="" do return d; return v }
 memory_input :: proc(body:string)->content_service.Memory_Input{ return content_service.Memory_Input{agent_id=json_string(body,"agent_id"),type=json_string(body,"type"),title=json_string(body,"title"),body=json_string(body,"body"),evidence=json_string(body,"evidence"),status=json_string(body,"status")} }
 chat_input :: proc(body:string)->content_service.Chat_Input{ return content_service.Chat_Input{agent_id=json_string(body,"agent_id"),agent_instance_id=json_string(body,"agent_instance_id"),chain_id=json_string(body,"chain_id"),project_id=domain.Project_ID(json_string(body,"project_id")),title=json_string(body,"title"),initial_body=json_object_string(body,"initial_message","body"),artifact_ids_json=json_array_raw(body,"artifact_ids"),bridge_id=json_string(body,"bridge_id"),provider=json_string(body,"provider"),tier=json_string(body,"tier")} }
 message_input :: proc(body:string)->content_service.Message_Input{ return content_service.Message_Input{body=json_string(body,"body"),artifact_ids_json=json_array_raw(body,"artifact_ids")} }
-artifact_input :: proc(body:string)->content_service.Artifact_Input{ return content_service.Artifact_Input{kind=json_string(body,"kind"),name=json_string(body,"name"),description=json_string(body,"description"),content_type=json_string(body,"content_type"),content=json_string(body,"content"),filename=json_string(body,"filename"),agent_id=json_string(body,"agent_id"),agent_instance_id=json_string(body,"agent_instance_id"),chain_id=json_string(body,"chain_id"),task_id=json_string(body,"task_id"),project_id=domain.Project_ID(json_string(body,"project_id"))} }
+artifact_input :: proc(body:string)->content_service.Artifact_Input{
+	content := json_string(body,"content")
+	b64 := json_string(body,"content_base64")
+	if b64 != "" {
+		dec, _ := internal_b64.decode(b64, allocator = context.temp_allocator)
+		if len(dec) > 0 {
+			content = string(dec)
+		}
+	}
+	return content_service.Artifact_Input{kind=json_string(body,"kind"),name=json_string(body,"name"),description=json_string(body,"description"),content_type=json_string(body,"content_type"),content=content,filename=json_string(body,"filename"),agent_id=json_string(body,"agent_id"),agent_instance_id=json_string(body,"agent_instance_id"),chain_id=json_string(body,"chain_id"),task_id=json_string(body,"task_id"),project_id=domain.Project_ID(json_string(body,"project_id")),mime=json_string(body,"mime"),ext=json_string(body,"ext"),sha256=json_string(body,"sha256"),origin_kind=json_string(body,"origin_kind"),origin_ref=json_string(body,"origin_ref")}
+}
 template_input :: proc(body:string)->content_service.Template_Input{ return content_service.Template_Input{name=json_string(body,"name"),description=json_string(body,"description"),persona=json_string(body,"persona"),instructions=json_string(body,"instructions")} }
 
 write_memory_json :: proc(b:^strings.Builder,m:domain.Memory,preview:bool){ strings.write_string(b,"{\"memory_id\":\""); write_handler_json_string(b,m.memory_id); strings.write_string(b,"\",\"agent_id\":\""); write_handler_json_string(b,m.agent_id); strings.write_string(b,"\",\"type\":\""); write_handler_json_string(b,m.type); strings.write_string(b,"\",\"status\":\""); write_handler_json_string(b,m.status); strings.write_string(b,"\",\"title\":\""); write_handler_json_string(b,m.title); if preview { strings.write_string(b,"\",\"body_preview\":\""); write_handler_json_string(b,m.body) } else { strings.write_string(b,"\",\"body\":\""); write_handler_json_string(b,m.body); strings.write_string(b,"\",\"evidence\":\""); write_handler_json_string(b,m.evidence) }; strings.write_string(b,"\",\"updated_at\":\""); write_handler_json_string(b,m.updated_at); strings.write_string(b,"\"}") }
