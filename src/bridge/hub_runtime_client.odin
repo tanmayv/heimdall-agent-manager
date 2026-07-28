@@ -285,8 +285,10 @@ bridge_runtime_run_provider_test :: proc(conn: ^ws.Connection, command_id, comma
 	window := strings.concatenate({"ptest-", bridge_runtime_safe_part(test_id)})
 	wrapper_args := bridge_runtime_wrapper_supervisor_argv(endpoint, wrapper_issue.plaintext_token, agent_issue.plaintext_token, instance_id, run_dir, agent_command)
 	_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "launching", "launching", "launching provider test", ""))
-	launch_start_ns := time.to_unix_nanoseconds(time.now())
-	launch_deadline_ns := launch_start_ns + i64(time.Duration(launch_deadline_ms) * time.Millisecond)
+	test_start_ns := time.to_unix_nanoseconds(time.now())
+	hard_deadline_abs_ns := test_start_ns + i64(time.Duration(hard_deadline_ms) * time.Millisecond)
+	launch_deadline_ns := test_start_ns + i64(time.Duration(launch_deadline_ms) * time.Millisecond)
+	if launch_deadline_ns > hard_deadline_abs_ns do launch_deadline_ns = hard_deadline_abs_ns
 	launch, launch_ok := tmux.ensure_agent_window(session, window, run_dir, wrapper_args)
 	if !launch_ok || strings.trim_space(launch.pane_id) == "" || time.to_unix_nanoseconds(time.now()) > launch_deadline_ns {
 		bridge_runtime_set_status(instance_id, "failed", "idle")
@@ -300,7 +302,7 @@ bridge_runtime_run_provider_test :: proc(conn: ^ws.Connection, command_id, comma
 	startup_seen := false
 	startup_failed := false
 	startup_message := ""
-	last_launch_status_ns := launch_start_ns
+	last_launch_status_ns := test_start_ns
 	for time.to_unix_nanoseconds(time.now()) < launch_deadline_ns {
 		now_launch := time.to_unix_nanoseconds(time.now())
 		if inst, inst_ok := bridge_runtime_instance_snapshot(instance_id); inst_ok {
@@ -327,7 +329,8 @@ bridge_runtime_run_provider_test :: proc(conn: ^ws.Connection, command_id, comma
 	_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "in_progress", "awaiting_start_success", "awaiting start-success", ""))
 	start_ns := time.to_unix_nanoseconds(time.now())
 	deadline_ns := start_ns + i64(time.Duration(start_deadline_ms) * time.Millisecond)
-	hard_deadline_ns := start_ns + i64(time.Duration(hard_deadline_ms) * time.Millisecond)
+	if deadline_ns > hard_deadline_abs_ns do deadline_ns = hard_deadline_abs_ns
+	hard_deadline_ns := hard_deadline_abs_ns
 	last_frame_ns := i64(0)
 	last_status_ns := start_ns
 	last_frame := ""
