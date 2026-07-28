@@ -276,13 +276,7 @@ async function bootstrapAuth(): Promise<AuthState> {
     if (me.status === 403) return { status: 'forbidden', user: null, loginUrl, logoutUrl: authConfig.logoutUrl, error: 'Access denied' };
     if (!me.ok) return { status: 'error', user: null, loginUrl, logoutUrl: authConfig.logoutUrl, error: `Auth check failed (${me.status})` };
     const meBody = await me.json();
-    let logoutUrl = authConfig.logoutUrl;
-    const logout = await fetch(apiUrl('/me/logout-url'), { credentials: 'include' });
-    if (logout.ok) {
-      const logoutBody = await logout.json();
-      logoutUrl = String(logoutBody?.data?.logout_url || logoutUrl || '').trim();
-    }
-    return { status: 'authenticated', user: meBody?.data || {}, loginUrl, logoutUrl, error: '' };
+    return { status: 'authenticated', user: meBody?.data || {}, loginUrl, logoutUrl: authConfig.logoutUrl, error: '' };
   } catch (error: any) {
     return { status: 'error', user: null, loginUrl, logoutUrl: configuredAuthUrl('logout'), error: String(error?.message || error || 'Auth check failed') };
   }
