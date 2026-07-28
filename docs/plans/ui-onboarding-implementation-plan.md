@@ -690,6 +690,51 @@ per-subcommand help with examples. Legacy daemon-only commands have their access
 points removed (unwired from dispatch + help) but their code kept, parked under
 `src/ctl/legacy/` and marked deprecated for easy future re-enable.
 
+### 3.8 Settings navigation + shell chrome fixes (must fix)
+
+The settings pages work but are not reachable/usable by clicking
+(`src/ui/components/shell/AppShell.tsx`).
+
+- **N1 — Settings sub-nav.** Sidebar “Settings” only links to `/settings/bridges`;
+  Providers/Projects/Memory/Defaults have no clickable path. Add a settings
+  sub-nav (tabs or left-rail) so every settings page is reachable by clicking.
+- **N2 — Large editor/detail forms are routed pages, not modals.** Applies to
+  every big form/own-substate surface; only small confirmations stay inline.
+  Known conversions: provider editor → `/settings/providers/new` +
+  `/settings/providers/{name}/edit` (already done); **AgentsPanel “Create agent”
+  modal → routed `/agents/new` page** (still a `fixed inset-0` modal). The
+  command palette and the mobile nav drawer stay overlays (transient nav, not
+  forms).
+- **N3 — Dynamic breadcrumbs in the routed header, one reusable component.**
+  `Breadcrumbs` + a route→crumbs resolver, generic for any route; replaces the
+  ad-hoc `routeTitle`/`shell-route-title`. Non-last crumbs link to their
+  ancestor; labels use cached RTKQ data when available, else the raw id.
+  Examples: `Settings / Providers / New Provider`;
+  `Conversations / <agent-id> / <conversation-or-instance-id>`;
+  `Agents / <agent-id>`. Debug ids: `shell-breadcrumbs`,
+  `shell-breadcrumb-crumb-${index}`, `shell-breadcrumb-link-${index}`.
+
+### 3.9 Form input UX — no user-typed JSON/arrays (provider form first)
+
+Goal: a user cannot cause a parse error by mistyping a format. Apply to the
+provider form now; reuse the components elsewhere.
+
+- **N4 — Placeholders with a concrete example on every input** (e.g. `pi`,
+  `anthropic/claude-sonnet-4-6`, `--model`, `20`, `Yes, I trust this folder`).
+- **N5 — List fields = chip input, one item per add.** Text box + Add/Enter
+  appends one item as a removable chip (label + ×); the UI assembles the array.
+  No comma-splitting or JSON. Covers `command`, `prompt_flags`, `yolo_flags`,
+  `blocked_patterns`, `auto_enter_patterns`, `auto_enter_pre_keys`,
+  `sanitized_reason_mapping`.
+  - Parallel lists (`auto_enter_patterns` ↔ `auto_enter_pre_keys`) use **paired
+    rows** so indices stay aligned; `sanitized_reason_mapping` uses key + reason
+    fields per row (not `key=value`).
+- **N6 — Typed scalars use typed inputs** (numbers → numeric with min/step,
+  booleans → checkbox/toggle). The client always sends correctly-typed JSON.
+- **N7 — Reusable `ChipListInput` component** for all list fields. Debug ids from
+  a prefix: `${prefix}-chip-input`, `${prefix}-chip-add-btn`,
+  `${prefix}-chip-${index}`, `${prefix}-chip-remove-btn-${index}`.
+
 ---
 
 ## 4. Page-by-page UI plan (onboarding order)
@@ -986,6 +1031,7 @@ endpoints so WS invalidation applies.
    path). Phase commit: `ac136c5`.
 7. **DONE — Page 3b Agent detail** — per-bridge overrides + multi-instance deploy/run. Phase commits: `14e231b`, `de9a697`.
 8. **DONE — Page 4 Composer** — quick launch with optional overrides. Phase commits: `902b99c`, `330c0c5`.
+9. **DONE — Settings navigation/form UX** — settings sub-nav, routed provider/agent editors, reusable breadcrumbs, provider chip inputs/no typed JSON. Phase commit: `42dcf02`.
 
 Pages 1 and 3–4 can proceed against real capabilities only after steps 1–2; a
 temporary path is to ship Page 1 first (it needs no new backend) while the
