@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { ReactNode } from 'react';
+import type { FormEvent, ReactNode } from 'react';
 
 const API_PREFIX = '/api/v1';
 
@@ -21,7 +21,7 @@ type FlowState = {
 };
 
 type GateState = 'checking' | 'ready' | 'authorize';
-type DeviceScreenState = 'starting' | 'pending' | 'approved' | 'denied' | 'expired' | 'error';
+type DeviceScreenState = 'manual' | 'starting' | 'pending' | 'approved' | 'denied' | 'expired' | 'error';
 
 let fetchBridgeInstalled = false;
 let cachedBearerToken: string | null | undefined;
@@ -147,6 +147,27 @@ async function checkCurrentToken(): Promise<boolean> {
   return Boolean(response.ok);
 }
 
+async function validateAndStoreUserToken(token: string): Promise<void> {
+  const trimmed = token.trim();
+  if (!trimmed) throw new Error('Paste a user token first.');
+  const response = await fetch(await absoluteApiUrl('/me'), {
+    headers: { Authorization: `Bearer ${trimmed}` },
+    credentials: 'omit',
+  });
+  if (!response.ok) {
+    let msg = `Token validation failed (${response.status})`;
+    try {
+      const text = await response.text();
+      const body = JSON.parse(text);
+      msg = String(body?.error?.message || body?.message || msg);
+    } catch (_err) {}
+    throw new Error(msg);
+  }
+  const stored = await deviceBridge()?.storeToken(trimmed);
+  if (!stored?.ok) throw new Error(stored?.error || 'Unable to store token in Electron safeStorage.');
+  cachedBearerToken = trimmed;
+}
+
 export default function ElectronDeviceAuthGate({ children }: { children: ReactNode }) {
   const [state, setState] = useState<GateState>(() => isElectronDeviceAuthAvailable() ? 'checking' : 'ready');
 
@@ -183,10 +204,12 @@ function DeviceAuthShell({ title, body, children }: { title: string; body: strin
 }
 
 function ElectronDeviceAuthScreen({ onAuthenticated }: { onAuthenticated: () => void }) {
-  const [status, setStatus] = useState<DeviceScreenState>('starting');
+  const [status, setStatus] = useState<DeviceScreenState>('manual');
   const [flow, setFlow] = useState<FlowState | null>(null);
-  const [message, setMessage] = useState('Requesting a one-time device code…');
-  const startedRef = useRef(false);
+  const [message, setMessage] = useState('Paste a user token from Settings → User tokens to unlock the Electron app.');
+  const [tokenDraft, setTokenDraft] = useState('');
+  const [manualError, setManualError] = useState('');
+  const [manualBusy, setManualBusy] = useState(false);
   const pollTimerRef = useRef<number | null>(null);
 
   const stopPoll = () => {
@@ -196,6 +219,7 @@ function ElectronDeviceAuthScreen({ onAuthenticated }: { onAuthenticated: () => 
 
   const startAuthorize = async () => {
     stopPoll();
+    setManualError('');
     setStatus('starting');
     setMessage('Requesting a one-time device code…');
     setFlow(null);
@@ -278,15 +302,23 @@ function ElectronDeviceAuthScreen({ onAuthenticated }: { onAuthenticated: () => 
     }
   };
 
-  useEffect(() => {
-    if (startedRef.current) return;
-    startedRef.current = true;
-    startAuthorize();
-    return () => stopPoll();
-    // startAuthorize closes over component state setters only; this one-shot
-    // effect intentionally creates a single grant per screen lifetime.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  useEffect(() => () => stopPoll(), []);
+
+  const submitManualToken = async (event: FormEvent) => {
+    event.preventDefault();
+    setManualBusy(true);
+    setManualError('');
+    try {
+      await validateAndStoreUserToken(tokenDraft);
+      setStatus('approved');
+      setMessage('Token accepted. Loading Heimdall…');
+      window.setTimeout(onAuthenticated, 150);
+    } catch (err: any) {
+      setManualError(String(err?.message || err || 'Token validation failed.'));
+    } finally {
+      setManualBusy(false);
+    }
+  };
 
   const openBrowser = async () => {
     if (!flow?.verificationUri) return;
@@ -303,7 +335,26 @@ function ElectronDeviceAuthScreen({ onAuthenticated }: { onAuthenticated: () => 
 
   const terminal = status === 'denied' || status === 'expired' || status === 'error';
   return (
-    <DeviceAuthShell title={status === 'starting' ? 'Requesting access…' : 'Sign in from your browser'} body={message}>
+    <DeviceAuthShell title={status === 'manual' ? 'Enter your Heimdall user token' : status === 'starting' ? 'Requesting access…' : 'Sign in from your browser'} body={message}>
+      {status === 'manual' ? (
+        <form data-debug-id="electron-device-auth-token-form" onSubmit={submitManualToken} className="mt-8 space-y-4 text-left">
+          <label className="block text-sm font-medium text-zinc-300">
+            User token
+            <input
+              data-debug-id="electron-device-auth-token-input"
+              type="password"
+              value={tokenDraft}
+              onChange={(event) => { setTokenDraft(event.target.value); setManualError(''); }}
+              placeholder="hut_..."
+              className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 font-mono text-sm text-white outline-none placeholder:text-zinc-600 focus:border-sky-400/60"
+              autoFocus
+            />
+          </label>
+          {manualError ? <div data-debug-id="electron-device-auth-token-error" className="rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">{manualError}</div> : null}
+          <button data-debug-id="electron-device-auth-token-submit" type="submit" disabled={manualBusy || !tokenDraft.trim()} className="w-full rounded-2xl bg-sky-400 px-5 py-3 text-sm font-bold text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:opacity-50">{manualBusy ? 'Checking…' : 'Use token'}</button>
+          <button data-debug-id="electron-device-auth-use-browser-flow" type="button" onClick={startAuthorize} className="w-full rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-sm font-bold text-zinc-100 hover:bg-white/10">Use browser device authorization instead</button>
+        </form>
+      ) : null}
       {flow ? (
         <div className="mt-8 space-y-5">
           <div className="rounded-3xl border border-sky-400/30 bg-sky-400/10 p-5">

@@ -15,6 +15,7 @@ import BridgesPanel from '../settings/BridgesPanel';
 import { AgentsPanel, NewAgentPage } from '../agents/AgentsPanel';
 import { AgentDetailPanel } from '../agents/AgentDetailPanel';
 import { ProviderEditorPage, ProvidersPanel } from '../settings/ProvidersPanel';
+import UserTokensPanel from '../settings/UserTokensPanel';
 import { clearUserClientState } from '../../store/chatSlice';
 import { priorUserClientStateCleared } from '../../store/store';
 
@@ -89,7 +90,7 @@ const NAV_ROUTES: ShellRoute[] = [
   { path: '/chains', label: 'Task Chains', icon: '☑', description: 'Task-chain work and review', group: 'primary' },
   { path: '/agents', label: 'Agents', icon: '🤖', description: 'Agent identities and sessions', group: 'primary' },
   { path: '/library', label: 'Library', icon: '▣', description: 'Artifacts and files', group: 'primary' },
-  { path: '/settings/bridges', label: 'Settings', icon: '⚙', description: 'Bridges, projects, providers, and memory', group: 'secondary' },
+  { path: '/settings/bridges', label: 'Settings', icon: '⚙', description: 'Bridges, providers, user tokens, projects, and memory', group: 'secondary' },
 ];
 
 function routeFromLocation(): string {
@@ -115,6 +116,7 @@ function routeTitle(path: string): string {
   if (path.startsWith('/library/artifacts/')) return 'Artifact viewer';
   if (path.startsWith('/library')) return 'Library';
   if (path.startsWith('/settings/bridges')) return 'Bridge settings';
+  if (path.startsWith('/settings/user-tokens')) return 'User token settings';
   if (path.startsWith('/settings/projects')) return 'Project settings';
   if (path.startsWith('/settings/providers')) return 'Provider settings';
   if (path.startsWith('/settings/memory')) return 'Memory settings';
@@ -131,13 +133,14 @@ function routeDescription(path: string): string {
   if (path.startsWith('/agents/')) return 'Agent overview, sessions, Bridges, and memory tabs will attach to this route.';
   if (path.startsWith('/library/artifacts/')) return 'Fullscreen artifact viewer route owned by the Library surface.';
   if (path.startsWith('/library')) return 'Filterable artifact list/grid route.';
-  if (path.startsWith('/settings')) return 'Settings surface for Bridges, Projects, Providers, Memory, and Defaults.';
+  if (path.startsWith('/settings')) return 'Settings surface for Bridges, Providers, User tokens, Projects, Memory, and Defaults.';
   return 'Chat-first home with the routed main region ready for conversation surfaces.';
 }
 
 const SETTINGS_NAV = [
   { path: '/settings/bridges', label: 'Bridges' },
   { path: '/settings/providers', label: 'Providers' },
+  { path: '/settings/user-tokens', label: 'User tokens' },
   { path: '/settings/projects', label: 'Projects' },
   { path: '/settings/memory', label: 'Memory' },
   { path: '/settings/defaults', label: 'Defaults' },
@@ -180,7 +183,8 @@ function Breadcrumbs({ crumbs }: { crumbs: BreadcrumbCrumb[] }) {
 function SettingsSubNav({ path }: { path: string }) {
   return <nav data-debug-id="settings-sub-nav" className="mb-5 -mx-1 flex gap-2 overflow-x-auto rounded-2xl border border-white/10 bg-black/20 p-2 sm:mx-0 sm:flex-wrap">{SETTINGS_NAV.map((item) => {
     const active = path === item.path || path.startsWith(`${item.path}/`) || (path === '/settings' && item.path === '/settings/bridges');
-    return <a key={item.path} data-debug-id={`settings-sub-nav-${item.label.toLowerCase()}`} href={shellHash(item.path)} className={`inline-flex min-h-[44px] shrink-0 items-center rounded-xl px-4 py-2 text-sm font-semibold ${active ? 'bg-sky-400 text-black' : 'text-zinc-300 hover:bg-white/10 hover:text-white'}`}>{item.label}</a>;
+    const debugKey = item.label.toLowerCase().replace(/\s+/g, '-');
+    return <a key={item.path} data-debug-id={`settings-sub-nav-${debugKey}`} href={shellHash(item.path)} className={`inline-flex min-h-[44px] shrink-0 items-center rounded-xl px-4 py-2 text-sm font-semibold ${active ? 'bg-sky-400 text-black' : 'text-zinc-300 hover:bg-white/10 hover:text-white'}`}>{item.label}</a>;
   })}</nav>;
 }
 
@@ -574,6 +578,7 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
       '/conversations', '/conversations/new', '/chains', '/chains/new', '/agents', '/agents/new', '/library', '/settings',
     ].some((known) => path === known || path.startsWith(`${known}/`)) ||
       path.startsWith('/settings/bridges') ||
+      path.startsWith('/settings/user-tokens') ||
       path.startsWith('/settings/projects') ||
       path.startsWith('/settings/providers') ||
       path.startsWith('/settings/memory') ||
@@ -599,6 +604,8 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
           <BridgesPanel />
         ) : path === '/settings/providers' ? (
           <ProvidersPanel />
+        ) : path === '/settings/user-tokens' ? (
+          <UserTokensPanel />
         ) : path === '/settings/providers/new' ? (
           <ProviderEditorPage />
         ) : path.startsWith('/settings/providers/') && path.endsWith('/edit') ? (

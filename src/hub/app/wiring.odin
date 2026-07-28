@@ -104,7 +104,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	// so approve() can pre-mint a no-revoke, no-cap device token on the bound
 	// owner and the grant holds the plaintext for the first poll.
 	device_auth_service.with_token_minter(&graph.device_auth, device_minter, rawptr(graph))
-	graph.user_handlers = http.User_Handlers{auth = &graph.auth, event_bus = &graph.event_bus}
+	graph.user_handlers = http.User_Handlers{auth = &graph.auth, event_bus = &graph.event_bus, ws_tickets = http.new_user_ws_ticket_store()}
 	graph.bridge_handlers = http.Bridge_Handlers{auth = &graph.auth, bridges = &graph.bridges, agents = &graph.agents, event_bus = &graph.event_bus, bridge_runtime_registry = &graph.bridge_runtime_registry}
 	graph.agent_handlers = http.Agent_Handlers{auth = &graph.auth, agents = &graph.agents, event_bus = &graph.event_bus}
 	graph.project_handlers = http.Project_Handlers{auth = &graph.auth, projects = &graph.projects}
@@ -120,6 +120,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 
 shutdown_graph :: proc(graph: ^App_Graph) {
 	http.router_free(&graph.router)
+	http.user_ws_ticket_store_free(&graph.user_handlers.ws_tickets)
 	device_auth_service.grant_store_free(&graph.device_auth_store)
 	sqlite.close(&graph.db)
 }
@@ -133,6 +134,10 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/device/token", rawptr(&graph.device_auth_handlers), http.device_token_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me", rawptr(&graph.user_handlers), http.me_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/me/logout-url", rawptr(&graph.user_handlers), http.logout_url_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/me/tokens", rawptr(&graph.user_handlers), http.list_my_tokens_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/me/tokens", rawptr(&graph.user_handlers), http.issue_my_token_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/me/tokens/*/revoke", rawptr(&graph.user_handlers), http.revoke_my_token_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/me/ws-ticket", rawptr(&graph.user_handlers), http.issue_user_ws_ticket_handler)
 	http.router_add_upgrade(&graph.router, "GET", "/api/v1/user-ws", rawptr(&graph.user_handlers), http.user_ws_upgrade_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/search", rawptr(&graph.search_handlers), http.search_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/memories", rawptr(&graph.content_handlers), http.list_memories_handler)

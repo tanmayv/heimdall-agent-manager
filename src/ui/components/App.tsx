@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import SettingsPage from './SettingsPage';
 import MemoryManagementPage from './MemoryManagementPage';
 import ChainEditor from './ChainEditor';
 // TODO(rtkq-migration owner=task-19f69e242e4): App still has explicit component-level task/chat thunk dispatches for open/load-more flows; replace these with RTKQ hooks or endpoint initiate calls during cleanup.
@@ -1761,7 +1760,11 @@ export default function App() {
               onBack={navigateBackOrHome}
             />
           ) : home.surface === 'settings' ? (
-            <SettingsPage session={session} onBack={navigateBackOrHome} onReconnect={(config: any) => { dispatch(updateSessionConfig(config)); window.setTimeout(connectSession, 0); }} />
+            <div data-debug-id="legacy-settings-removed" className="mx-auto max-w-2xl rounded-3xl border border-white/10 bg-white/[0.04] p-6 text-left">
+              <h2 className="text-2xl font-semibold text-white">Settings moved</h2>
+              <p className="mt-2 text-sm text-zinc-400">The legacy settings modal was removed. Use the routed settings surface instead.</p>
+              <a data-debug-id="legacy-settings-open-routed-btn" href="#/settings/bridges" className="mt-4 inline-flex rounded-2xl bg-sky-400 px-4 py-2 text-sm font-bold text-black hover:bg-sky-300">Open settings</a>
+            </div>
           ) : home.surface === 'memory' ? (
             <MemoryManagementPage
               selectedMemoryId={urlParams.memoryId}

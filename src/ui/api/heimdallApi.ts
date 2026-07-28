@@ -25,6 +25,7 @@ export const HEIMDALL_TAG_TYPES = [
   'ArtifactVersions',
   'ArtifactAnnotations',
   'Preferences',
+  'UserTokens',
   'ChatApprovals',
   'MergeDecisions',
   'Attention',

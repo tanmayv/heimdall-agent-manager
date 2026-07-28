@@ -14,16 +14,57 @@ import {
 // invalidates the smallest relevant RTK Query cache entries. There is no second
 // connection and no durable full-data stream.
 //
-// Auth model: `/api/v1/user-ws` is served behind the trusted-proxy auth that the
-// rest of `/api/v1` uses. Browsers send cookies automatically on the WebSocket
-// handshake, so this uses the SAME credential session as `fetch(..., {credentials:'include'})`
-// — no client token in the URL (unlike the legacy token-bearing user-ws path).
+// Auth model: browsers use the trusted-proxy/cookie-auth `/api/v1/user-ws`
+// handshake. Electron cannot set Authorization on WebSocket handshakes, so it
+// first mints a short-lived `/api/v1/me/ws-ticket` over bearer-authenticated
+// fetch, then connects with `?ticket=...`. The long-lived `hut_...` token is
+// never placed in the WebSocket URL.
 
 const INITIAL_BACKOFF_MS = 1500;
 const MAX_BACKOFF_MS = 30000;
 
-function userWsUrl(): string {
+function hasElectronDeviceAuth(): boolean {
+  return typeof window !== 'undefined' && Boolean((window as any).odinApi?.deviceAuth);
+}
+
+async function electronApiBaseUrl(): Promise<string> {
+  try {
+    const cfg = await (window as any).odinApi?.deviceAuth?.getConfig?.();
+    return String(cfg?.apiBaseUrl || (window as any).odinApi?.hubApiBaseUrl || '').replace(/\/$/, '');
+  } catch (_err) {
+    return String((window as any).odinApi?.hubApiBaseUrl || '').replace(/\/$/, '');
+  }
+}
+
+function httpToWsUrl(base: string, path: string): string {
+  const parsed = new URL(base || window.location.origin);
+  parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+  parsed.pathname = path;
+  parsed.search = '';
+  parsed.hash = '';
+  return parsed.toString();
+}
+
+async function electronUserWsUrl(): Promise<string> {
+  const response = await fetch('/api/v1/me/ws-ticket', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+  const text = await response.text();
+  let body: any = {};
+  if (text) {
+    try { body = JSON.parse(text); } catch (_err) { body = {}; }
+  }
+  const data = body?.data !== undefined ? body.data : body;
+  if (!response.ok) throw new Error(String(data?.error?.message || data?.message || `WebSocket ticket failed (${response.status})`));
+  const ticket = String(data?.ticket || '');
+  if (!ticket) throw new Error('WebSocket ticket response did not include a ticket');
+  const base = await electronApiBaseUrl();
+  const url = new URL(httpToWsUrl(base, '/api/v1/user-ws'));
+  url.searchParams.set('ticket', ticket);
+  return url.toString();
+}
+
+async function userWsUrl(): Promise<string> {
   if (typeof window === 'undefined') return '';
+  if (hasElectronDeviceAuth()) return electronUserWsUrl();
   const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${scheme}//${window.location.host}/api/v1/user-ws`;
 }
@@ -48,16 +89,16 @@ export function useUserWebSocket(ctxRef?: { current: UserWsContext }): { status:
     let reconnectTimer: number | undefined;
     let backoff = INITIAL_BACKOFF_MS;
 
-    const connect = () => {
+    const connect = async () => {
       if (stoppedRef.current) return;
-      const url = userWsUrl();
-      if (!url) return;
       dispatch(userWsConnecting());
       try {
+        const url = await userWsUrl();
+        if (!url || stoppedRef.current) return;
         socket = new WebSocket(url);
       } catch (err: any) {
         dispatch(userWsError(String(err?.message || err || 'WebSocket construction failed')));
-        reconnectTimer = window.setTimeout(connect, backoff);
+        reconnectTimer = window.setTimeout(() => { void connect(); }, backoff);
         backoff = Math.min(MAX_BACKOFF_MS, Math.round(backoff * 1.7));
         return;
       }
@@ -93,12 +134,12 @@ export function useUserWebSocket(ctxRef?: { current: UserWsContext }): { status:
       socket.onclose = () => {
         if (stoppedRef.current) return;
         dispatch(userWsDisconnected());
-        reconnectTimer = window.setTimeout(connect, backoff);
+        reconnectTimer = window.setTimeout(() => { void connect(); }, backoff);
         backoff = Math.min(MAX_BACKOFF_MS, Math.round(backoff * 1.7));
       };
     };
 
-    connect();
+    void connect();
 
     return () => {
       stoppedRef.current = true;
