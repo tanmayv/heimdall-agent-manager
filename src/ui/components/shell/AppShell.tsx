@@ -51,6 +51,7 @@ type ConversationSummary = {
   conversationId: string;
   agentId: string;
   agentInstanceId: string;
+  agentName: string;
   projectId: string;
   title: string;
   unreadCount: number;
@@ -69,6 +70,7 @@ type SessionGroup = {
 
 type AgentGroup = {
   agentId: string;
+  agentName: string;
   unreadCount: number;
   sessions: SessionGroup[];
 };
@@ -300,11 +302,13 @@ function normalizeProject(raw: any): ProjectSummary {
 // UI-14: adapt cookie-auth RTK Query sidebar data into the local tree types so
 // server state lives in RTK Query (and is WS-invalidated) while the tree builder
 // keeps its existing typed contract.
-function sidebarConversationToSummary(c: SidebarConversation): ConversationSummary {
+function sidebarConversationToSummary(c: SidebarConversation, agentNamesById: Map<string, string>): ConversationSummary {
+  const agentId = c.agentId || 'unknown-agent';
   return {
     conversationId: c.conversationId,
-    agentId: c.agentId || 'unknown-agent',
+    agentId,
     agentInstanceId: c.agentInstanceId,
+    agentName: displayAgentName(agentId, c.agentName || agentNamesById.get(agentId)),
     projectId: c.projectId || DEFAULT_CONVERSATIONS_PROJECT.projectId,
     title: c.title,
     unreadCount: c.unreadCount,
@@ -317,8 +321,29 @@ function sidebarProjectToSummary(p: SidebarProject): ProjectSummary {
   return { projectId, name: p.name, isDefaultConversations: p.isDefaultConversations || projectId === DEFAULT_CONVERSATIONS_PROJECT.projectId };
 }
 
-function displaySessionId(conversation: ConversationSummary): string {
-  return conversation.agentInstanceId || conversation.conversationId;
+function looksLikeInternalId(value: string): boolean {
+  return /^(agt|inst|chat|conv|usr|brg|task|chain|proj|art)_[a-z0-9]/i.test(String(value || '').trim());
+}
+
+function displayAgentName(agentId: string, name?: string): string {
+  const trimmed = String(name || '').trim();
+  if (trimmed && trimmed !== agentId && !looksLikeInternalId(trimmed)) return trimmed;
+  return 'Unnamed agent';
+}
+
+function displayConversationTitle(conversation: ConversationSummary): string {
+  const title = String(conversation.title || '').trim();
+  if (!title || title === conversation.agentId || title === conversation.agentInstanceId || title === conversation.conversationId || looksLikeInternalId(title)) {
+    return conversation.agentName;
+  }
+  return title;
+}
+
+function displayConversationMeta(conversation: ConversationSummary): string {
+  if (!conversation.updatedAt) return '';
+  const date = new Date(conversation.updatedAt);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
 function sortByUpdatedDesc<T extends { updatedAt?: string }>(items: T[]): T[] {
@@ -350,8 +375,9 @@ function buildProjectConversationTree(conversations: ConversationSummary[], proj
   return Array.from(grouped.entries()).map(([projectId, agentMap]) => {
     const agents: AgentGroup[] = Array.from(agentMap.entries()).map(([agentId, sessions]) => {
       const sortedSessions = sortByUpdatedDesc(sessions).map((conversation) => ({ conversation }));
-      return { agentId, sessions: sortedSessions, unreadCount: sortedSessions.reduce((sum, session) => sum + session.conversation.unreadCount, 0) };
-    }).sort((a, b) => b.unreadCount - a.unreadCount || a.agentId.localeCompare(b.agentId));
+      const named = sortedSessions.find((session) => session.conversation.agentName && session.conversation.agentName !== 'Unnamed agent')?.conversation.agentName;
+      return { agentId, agentName: named || 'Unnamed agent', sessions: sortedSessions, unreadCount: sortedSessions.reduce((sum, session) => sum + session.conversation.unreadCount, 0) };
+    }).sort((a, b) => b.unreadCount - a.unreadCount || a.agentName.localeCompare(b.agentName));
     return { project: projectsById.get(projectId) || { projectId, name: projectId }, agents, unreadCount: agents.reduce((sum, agent) => sum + agent.unreadCount, 0) };
   }).sort((a, b) => {
     if (a.project.isDefaultConversations) return -1;
@@ -386,7 +412,7 @@ function ProjectConversationTree({ groups }: { groups: ProjectGroup[] }) {
                 {projectGroup.agents.map((agentGroup) => (
                   <div key={agentGroup.agentId} data-debug-id={`sidebar-agent-group-${agentGroup.agentId}`} className="rounded-xl bg-white/[0.03] px-2 py-1.5">
                     <div className="flex items-center gap-2 text-xs font-semibold text-zinc-300">
-                      <span className="truncate">{agentGroup.agentId}</span>
+                      <span className="truncate">{agentGroup.agentName}</span>
                       <UnreadBadge count={agentGroup.unreadCount} debugId={`sidebar-agent-unread-${agentGroup.agentId}`} />
                     </div>
                     <div className="mt-1 space-y-1">
@@ -397,8 +423,8 @@ function ProjectConversationTree({ groups }: { groups: ProjectGroup[] }) {
                           href={shellHash(`/conversations/${conversation.conversationId}`)}
                           className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-[12px] text-zinc-400 hover:bg-white/8 hover:text-white"
                         >
-                          <span className="min-w-0 flex-1 truncate">{conversation.title || displaySessionId(conversation)}</span>
-                          <span className="shrink-0 text-[10px] text-zinc-600">{displaySessionId(conversation)}</span>
+                          <span className="min-w-0 flex-1 truncate">{displayConversationTitle(conversation)}</span>
+                          {displayConversationMeta(conversation) ? <span className="shrink-0 text-[10px] text-zinc-600">{displayConversationMeta(conversation)}</span> : null}
                           <UnreadBadge count={conversation.unreadCount} debugId={`sidebar-session-unread-${conversation.conversationId}`} />
                         </a>
                       ))}
@@ -670,9 +696,19 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   // SidebarConversations tag on chat/unread events so badges refresh live.
   const conversationsQuery = useListSidebarConversationsQuery({ limit: 100 });
   const projectsQuery = useListSidebarProjectsQuery({ limit: 100 });
+  const agentIdentitiesQuery = useListAgentIdentitiesQuery();
+  const agentNamesById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const agent of (agentIdentitiesQuery.data?.agents || [])) {
+      const id = String(agent?.agent_id || agent?.agentId || agent?.id || '').trim();
+      const name = String(agent?.name || agent?.display_name || agent?.displayName || '').trim();
+      if (id && name) map.set(id, name);
+    }
+    return map;
+  }, [agentIdentitiesQuery.data]);
   const conversations = useMemo(
-    () => (conversationsQuery.data || []).map(sidebarConversationToSummary),
-    [conversationsQuery.data],
+    () => (conversationsQuery.data || []).map((conversation) => sidebarConversationToSummary(conversation, agentNamesById)),
+    [agentNamesById, conversationsQuery.data],
   );
   const projects = useMemo(
     () => (projectsQuery.data || []).map(sidebarProjectToSummary),

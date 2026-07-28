@@ -11,6 +11,7 @@ export type SidebarConversation = {
   conversationId: string;
   agentId: string;
   agentInstanceId: string;
+  agentName?: string;
   projectId: string;
   title: string;
   unreadCount: number;
@@ -37,6 +38,7 @@ function normalizeSidebarConversation(raw: any): SidebarConversation {
     conversationId,
     agentId: agentId || 'unknown-agent',
     agentInstanceId,
+    agentName: String(raw?.agent_name || raw?.agentName || raw?.agent_display_name || raw?.agentDisplayName || '').trim() || undefined,
     projectId: projectId || 'default-conversations',
     title: String(raw?.title || raw?.last_message_preview || raw?.lastMessagePreview || agentInstanceId || conversationId || 'Untitled session'),
     unreadCount: asNumber(raw?.unread_count ?? raw?.unreadCount),
