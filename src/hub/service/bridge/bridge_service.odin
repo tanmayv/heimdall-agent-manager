@@ -137,6 +137,12 @@ get_bridge :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, bridg
 	return bridge, true, domain.Domain_Error{}
 }
 
+bridge_owner_user_id :: proc(service: ^Bridge_Service, bridge_id: string) -> string {
+	bridge, ok, _ := iface.bridge_get_bridge(service.repo, bridge_id)
+	if !ok do return ""
+	return string(bridge.owner_user_id)
+}
+
 rename_bridge :: proc(service: ^Bridge_Service, auth: contracts.Auth_Context, bridge_id, label: string) -> (domain.Bridge, bool, domain.Domain_Error) {
 	bridge, ok, err := get_bridge(service, auth, bridge_id)
 	if !ok do return domain.Bridge{}, false, err

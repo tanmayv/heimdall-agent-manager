@@ -38,9 +38,14 @@ publish_resource_changed :: proc(bus: ^User_Event_Bus, owner_user_id, resource, 
 	if bus == nil || owner_user_id == "" do return
 	bus.event_seq += 1
 	event := resource_changed_json(bus.event_seq, resource, resource_id, change, summary_json)
+	publish_raw_to_user(bus, owner_user_id, event)
+}
+
+publish_raw_to_user :: proc(bus: ^User_Event_Bus, owner_user_id, event_json: string) {
+	if bus == nil || owner_user_id == "" || event_json == "" do return
 	for i in 0..<bus.client_count {
 		if bus.connected[i] && bus.owner_user_ids[i] == owner_user_id {
-			if !write_ws_text_frame(bus.sockets[i], event) do user_ws_remove(bus, i)
+			if !write_ws_text_frame(bus.sockets[i], event_json) do user_ws_remove(bus, i)
 		}
 	}
 }

@@ -195,7 +195,9 @@ bridge_provider_relay :: proc(h: ^Bridge_Handlers, req: Request, bridge_id, comm
 	if bridge.status != .Online || !project_service.bridge_runtime_registry_has_live(h.bridge_runtime_registry, bridge.bridge_id) do return "", false, domain.domain_error(.Bridge_Offline, fmt.tprintf("Bridge %s is not connected", bridge.bridge_id))
 	command_id := fmt.tprintf("cmd_provider_%d", time.to_unix_nanoseconds(time.now()))
 	cmd_body := bridge_provider_command_json(command_type, command_id, provider_name, body)
-	reply, reply_ok, reply_err := bridge_runtime_service.send_runtime_command_wait(h.bridge_runtime_registry, project_service.Runtime_Command{bridge_id = bridge.bridge_id, command_id = command_id, body_json = cmd_body}, 10000)
+	timeout_ms := 10000
+	if command_type == "test_provider" do timeout_ms = json_int(body, "hard_deadline_ms", 90000) + 10000
+	reply, reply_ok, reply_err := bridge_runtime_service.send_runtime_command_wait(h.bridge_runtime_registry, project_service.Runtime_Command{bridge_id = bridge.bridge_id, command_id = command_id, body_json = cmd_body}, timeout_ms)
 	if !reply_ok do return "", false, reply_err
 	reply_type := json_string(reply, "type")
 	if command_type == "list_providers" && reply_type == "providers_report" {
@@ -231,10 +233,15 @@ bridge_provider_command_json :: proc(command_type, command_id, provider_name, bo
 	case "delete_provider":
 		strings.write_string(&b, "{\"name\":\""); write_handler_json_string(&b, provider_name); strings.write_string(&b, "\"}")
 	case "test_provider":
-		strings.write_string(&b, "{\"name\":\""); write_handler_json_string(&b, provider_name)
+		strings.write_string(&b, "{\"name\":\""); write_handler_json_string(&b, provider_name); strings.write_string(&b, "\"")
 		tier := json_string(body, "tier")
-		if tier != "" { strings.write_string(&b, "\",\"tier\":\""); write_handler_json_string(&b, tier) }
-		strings.write_string(&b, "\"}")
+		if tier != "" { strings.write_string(&b, ",\"tier\":\""); write_handler_json_string(&b, tier); strings.write_string(&b, "\"") }
+		strings.write_string(&b, ",\"capture_frames\":"); strings.write_string(&b, "true" if strings.contains(body, "\"capture_frames\":true") else "false")
+		timeout_keys := [?]string{"launch_deadline_ms", "start_success_deadline_ms", "hard_deadline_ms", "frame_interval_ms"}
+		for key in timeout_keys {
+			if json_key_present(body, key) { strings.write_string(&b, ",\""); write_handler_json_string(&b, key); strings.write_string(&b, "\":"); strings.write_string(&b, fmt.tprintf("%d", json_int(body, key, 0))) }
+		}
+		strings.write_string(&b, "}")
 	case:
 		strings.write_string(&b, "{}")
 	}
@@ -302,6 +309,9 @@ bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connectio
 			_, _ = bridge_runtime_service.runtime_command_result_idempotent(h.bridge_runtime_registry, bridge_id, command_id, text)
 		case "capability_report":
 			_, _, _ = bridge_service.update_runtime_capabilities(h.bridges, bridge_id, text)
+		case "provider_test_status", "provider_test_frame":
+			owner_user_id := bridge_service.bridge_owner_user_id(h.bridges, bridge_id)
+			events.publish_raw_to_user(h.event_bus, owner_user_id, text)
 		}
 
 	}

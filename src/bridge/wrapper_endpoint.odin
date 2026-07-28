@@ -194,6 +194,7 @@ bridge_local_handle_wrapper_method :: proc(request_id, method, params: string, r
 }
 
 bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec: Bridge_Local_Agent_Token_Record) -> string {
+	if method == "agent.start_success" && bridge_provider_test_mark_start_success(rec.agent_instance_id) do return bridge_local_response_data(request_id, "{\"accepted\":true,\"provider_test\":true}")
 	if strings.trim_space(rec.instance_token) == "" do return bridge_local_response_error(request_id, "unavailable", "Bridge-held instance token is unavailable")
 	relay := bridge_local_relay_agent_method(method, params, rec)
 	if !relay.ok do return bridge_local_response_error(request_id, "retryable_unavailable", "Hub relay failed")
