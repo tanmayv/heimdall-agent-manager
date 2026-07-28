@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import base64 "core:encoding/base64"
 import http "odin_test:lib/http_client"
 
 ctl_hub_user_mode :: proc(cmd: []string, args: []string) {
@@ -156,18 +157,21 @@ ctl_hub_artifacts :: proc(base, token, action: string, args: []string) {
 	if action == "create" {
 		name := option_value(args, "--name", "")
 		content := option_value(args, "--content", "")
-		if file_path := option_value(args, "--file", ""); file_path != "" { data, err := os.read_entire_file(file_path, context.allocator); if err == nil do content = string(data) }
-		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do content = string(data) }
+		content_base64 := ""
+		if file_path := option_value(args, "--file", ""); file_path != "" { data, err := os.read_entire_file(file_path, context.allocator); if err == nil do content_base64 = base64.encode(data) }
+		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do content_base64 = base64.encode(data) }
 		if name == "" { fmt.println("usage: ham-ctl hub artifacts create --name <name> [--kind <kind>] [--content <text>|--file <path>|--stdin]"); return }
 		fields := make([dynamic]string)
-		append(&fields, json_kv("name", name)); append(&fields, json_kv("kind", option_value(args, "--kind", "file"))); append(&fields, json_kv("content", content)); append(&fields, json_kv("description", option_value(args, "--description", ""))); append(&fields, json_kv("content_type", option_value(args, "--content-type", option_value(args, "--mime", "")))); append(&fields, json_kv("project_id", option_value(args, "--project-id", option_value(args, "--project", ""))))
+		append(&fields, json_kv("name", name)); append(&fields, json_kv("kind", option_value(args, "--kind", "file")))
+		if content_base64 != "" { append(&fields, json_kv("content_base64", content_base64)) } else { append(&fields, json_kv("content", content)) }
+		append(&fields, json_kv("description", option_value(args, "--description", ""))); append(&fields, json_kv("content_type", option_value(args, "--content-type", option_value(args, "--mime", "")))); append(&fields, json_kv("project_id", option_value(args, "--project-id", option_value(args, "--project", ""))))
 		ctl_hub_request(base, token, "POST", "/api/v1/artifacts", json_object_from_slice(fields[:]))
 		return
 	}
 	artifact_id := option_value(args, "--artifact-id", option_value(args, "--artifact", ""))
 	if artifact_id == "" { fmt.println("usage: ham-ctl hub artifacts <show|content|update|delete> --artifact-id <id>"); return }
 	if action == "show" { ctl_hub_request(base, token, "GET", fmt.tprintf("/api/v1/artifacts/%s", safe_path_part(artifact_id)), ""); return }
-	if action == "content" || action == "get" { ctl_hub_request(base, token, "GET", fmt.tprintf("/api/v1/artifacts/%s/content", safe_path_part(artifact_id)), ""); return }
+	if action == "content" || action == "get" { ctl_hub_request_raw(base, token, "GET", fmt.tprintf("/api/v1/artifacts/%s/content", safe_path_part(artifact_id)), ""); return }
 	if action == "update" { ctl_hub_request(base, token, "PATCH", fmt.tprintf("/api/v1/artifacts/%s", safe_path_part(artifact_id)), json_object(json_kv("name", option_value(args, "--name", "")), json_kv("description", option_value(args, "--description", "")))); return }
 	if action == "delete" { ctl_hub_request(base, token, "DELETE", fmt.tprintf("/api/v1/artifacts/%s", safe_path_part(artifact_id)), ""); return }
 	fmt.println("usage: ham-ctl hub artifacts <list|create|show|content|update|delete>")
@@ -217,6 +221,14 @@ ctl_hub_request :: proc(base, user_token, method, path, body: string) {
 	response, ok := http.request_with_headers_timeout(method, base, full_path, body, headers[:], http.DEFAULT_TIMEOUT_MS)
 	if !ok { fmt.println(`{"ok":false,"message":"Hub request failed"}`); return }
 	fmt.println(response.body)
+}
+
+ctl_hub_request_raw :: proc(base, user_token, method, path, body: string) {
+	full_path := hub_url_path_prefix_join(base, path)
+	headers := [?]http.Header{{name = "Authorization", value = strings.concatenate({"Bearer ", user_token})}}
+	response, ok := http.request_with_headers_timeout(method, base, full_path, body, headers[:], http.DEFAULT_TIMEOUT_MS)
+	if !ok { fmt.println(`{"ok":false,"message":"Hub request failed"}`); return }
+	_, _ = os.write(os.stdout, transmute([]byte)response.body)
 }
 
 hub_url_path_prefix :: proc(base: string) -> string {

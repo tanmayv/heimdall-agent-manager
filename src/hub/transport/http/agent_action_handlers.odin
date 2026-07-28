@@ -2,6 +2,7 @@ package http
 
 import "core:fmt"
 import "core:strings"
+import internal_b64 "core:encoding/base64"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
 import agent_service "odin_test:hub/service/agent"
@@ -178,8 +179,13 @@ agent_action_artifact_create_handler :: proc(ctx: rawptr, req: Request) -> Respo
 	auth, inst, ok, resp := require_instance_action_auth(h, req)
 	if !ok do return resp
 	params := json_object_raw(req.body, "params")
-	content := json_string(params, "inline_bytes")
-	if content == "" do content = json_string(params, "content")
+	content := json_string(params, "content")
+	b64 := json_string(params, "content_base64")
+	if b64 == "" do b64 = json_string(params, "inline_bytes")
+	if b64 != "" {
+		dec, _ := internal_b64.decode(b64, allocator = context.temp_allocator)
+		if len(dec) > 0 do content = string(dec)
+	}
 	artifact, saved, err := content_service.create_artifact(h.content, auth, content_service.Artifact_Input{kind = json_string(params, "kind"), name = json_string(params, "name"), description = json_string(params, "description"), content_type = json_string(params, "content_type"), content = content, filename = json_string(params, "filename"), agent_id = inst.agent_id, agent_instance_id = inst.agent_instance_id, chain_id = inst.chain_id, project_id = inst.project_id})
 	if !saved do return respond_error(err, req.request_id)
 	b := strings.builder_make()

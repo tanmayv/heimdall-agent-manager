@@ -65,10 +65,30 @@ async function requestJson(url: string, { method = 'GET', body, headers, timeout
     const data = await response.json().catch(() => null);
     if (!response.ok) {
       const details: string[] = [];
-      if (data?.error) details.push(`error=${data.error}`);
+      if (data?.error) details.push(`error=${typeof data.error === 'string' ? data.error : (data.error.message || data.error.code || JSON.stringify(data.error))}`);
       if (Array.isArray(data?.blocking_dependents) && data.blocking_dependents.length) details.push(`blocking dependents: ${data.blocking_dependents.join(', ')}`);
       const suffix = details.length ? ` (${details.join('; ')})` : '';
-      throw new Error(`${data?.message || `Daemon request failed with ${response.status}`}${suffix}`);
+      throw new Error(`${data?.message || data?.error?.message || `Daemon request failed with ${response.status}`}${suffix}`);
+    }
+    return data;
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+async function requestFormJson(url: string, { method = 'POST', body, headers, timeoutMs = DEFAULT_TIMEOUT_MS }: RequestOptions = {}): Promise<any> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method,
+      headers: { ...headers },
+      body: body as BodyInit,
+      signal: controller.signal,
+    });
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      throw new Error(`${data?.message || data?.error?.message || `Daemon request failed with ${response.status}`}`);
     }
     return data;
   } finally {
@@ -744,7 +764,26 @@ export async function fetchTaskComment({ daemonUrl, clientToken, taskId, comment
   });
 }
 
-export async function createArtifact({ daemonUrl, clientToken, name, kind = '', mime = '', projectId = '', description = '', originKind = '', originRef = '', contentBase64 }: { daemonUrl: string; clientToken: string; name: string; kind?: string; mime?: string; projectId?: string; description?: string; originKind?: string; originRef?: string; contentBase64: string }) {
+export async function createArtifact({ daemonUrl, clientToken, file, name, kind = '', mime = '', projectId = '', description = '', originKind = '', originRef = '', contentBase64 = '' }: { daemonUrl: string; clientToken: string; file?: File | Blob | null; name: string; kind?: string; mime?: string; projectId?: string; description?: string; originKind?: string; originRef?: string; contentBase64?: string }) {
+  if (file) {
+    const form = new FormData();
+    form.append('file', file, name || 'artifact');
+    if (name) form.append('name', name);
+    if (kind) form.append('kind', kind);
+    if (mime) form.append('mime', mime);
+    if (mime) form.append('content_type', mime);
+    const sanitizedProjectId = sanitizeProjectId(projectId);
+    if (sanitizedProjectId) form.append('project_id', sanitizedProjectId);
+    if (description) form.append('description', description);
+    if (originKind) form.append('origin_kind', originKind);
+    if (originRef) form.append('origin_ref', originRef);
+    return requestFormJson(joinUrl(daemonUrl, '/api/v1/artifacts'), {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${clientToken}` },
+      body: form,
+      timeoutMs: 30000,
+    });
+  }
   const body: any = {
     name,
     kind,
@@ -753,9 +792,10 @@ export async function createArtifact({ daemonUrl, clientToken, name, kind = '', 
     content_base64: contentBase64,
   };
   if (mime) body.mime = mime;
+  if (mime) body.content_type = mime;
   if (originKind) body.origin_kind = originKind;
   if (originRef) body.origin_ref = originRef;
-  return requestJson(joinUrl(daemonUrl, '/artifacts/create'), {
+  return requestJson(joinUrl(daemonUrl, '/api/v1/artifacts'), {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${clientToken}` },
     body,
@@ -763,23 +803,24 @@ export async function createArtifact({ daemonUrl, clientToken, name, kind = '', 
 }
 
 export async function fetchArtifactMeta({ daemonUrl, clientToken, artifactId }: { daemonUrl: string; clientToken: string; artifactId: string }) {
-  return requestJson(joinUrl(daemonUrl, `/artifacts/${encodeURIComponent(artifactId)}`), {
+  return requestJson(joinUrl(daemonUrl, `/api/v1/artifacts/${encodeURIComponent(artifactId)}`), {
     method: 'GET',
     headers: { 'Authorization': `Bearer ${clientToken}` },
   });
 }
 
 export async function fetchArtifactVersions({ daemonUrl, clientToken, artifactId }: { daemonUrl: string; clientToken: string; artifactId: string }) {
-  return requestJson(joinUrl(daemonUrl, `/artifacts/${encodeURIComponent(artifactId)}/versions`), {
+  return requestJson(joinUrl(daemonUrl, `/api/v1/artifacts/${encodeURIComponent(artifactId)}/versions`), {
     method: 'GET',
     headers: { 'Authorization': `Bearer ${clientToken}` },
   });
 }
 
-export function artifactContentUrl({ daemonUrl, clientToken, artifactId, version }: { daemonUrl: string; clientToken: string; artifactId: string; version?: number | null }) {
-  const params = new URLSearchParams({ token: clientToken });
+export function artifactContentUrl({ daemonUrl, artifactId, version }: { daemonUrl: string; clientToken?: string; artifactId: string; version?: number | null }) {
+  const params = new URLSearchParams();
   if (version != null && Number.isFinite(version)) params.set('version', String(version));
-  return joinUrl(daemonUrl, `/artifacts/${encodeURIComponent(artifactId)}/content?${params.toString()}`);
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  return joinUrl(daemonUrl, `/api/v1/artifacts/${encodeURIComponent(artifactId)}/content${suffix}`);
 }
 
 export async function listArtifacts({ daemonUrl, clientToken, projectId = '', creatorId = '', originRef = '', includeDeleted = false, limit = 100, offset = 0 }: { daemonUrl: string; clientToken: string; projectId?: string; creatorId?: string; originRef?: string; includeDeleted?: boolean; limit?: number; offset?: number }) {
@@ -789,7 +830,7 @@ export async function listArtifacts({ daemonUrl, clientToken, projectId = '', cr
   if (creatorId) params.set('creator_id', creatorId);
   if (originRef) params.set('origin_ref', originRef);
   if (includeDeleted) params.set('include_deleted', 'true');
-  return requestJson(joinUrl(daemonUrl, `/artifacts?${params.toString()}`), {
+  return requestJson(joinUrl(daemonUrl, `/api/v1/artifacts?${params.toString()}`), {
     method: 'GET',
     headers: { 'Authorization': `Bearer ${clientToken}` },
   });

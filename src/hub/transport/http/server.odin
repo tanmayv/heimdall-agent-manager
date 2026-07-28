@@ -7,6 +7,8 @@ import "core:strings"
 import "core:thread"
 import contracts "odin_test:contracts"
 
+MAX_HTTP_REQUEST_BYTES :: 16 * 1024 * 1024
+
 Server_Config :: struct {
 	bind_host: string,
 	port: int,
@@ -72,7 +74,7 @@ read_http_request :: proc(client: net.TCP_Socket) -> (string, bool) {
 		append(&data, ..buf[:n])
 		raw := string(data[:])
 		if request_complete(raw) do return strings.clone(raw), true
-		if len(data) > 1024 * 1024 do return "", false
+		if len(data) > MAX_HTTP_REQUEST_BYTES do return "", false
 	}
 }
 

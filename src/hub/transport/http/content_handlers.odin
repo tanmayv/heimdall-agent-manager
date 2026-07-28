@@ -41,7 +41,7 @@ send_chat_message_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Conte
 read_chat_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; c,saved,err:=content_service.mark_read(h.content,auth,path_part(req.path,4)); if !saved do return respond_error(err,req.request_id); b:=strings.builder_make(); write_chat_json(&b,c); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req)) }
 
 list_artifacts_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; rows,err:=content_service.list_artifacts(h.content,auth); if err.code!=.None do return respond_error(err,req.request_id); b:=strings.builder_make(); strings.write_byte(&b,'['); for r,i in rows{ if i>0 do strings.write_byte(&b,','); write_artifact_json(&b,r,false)}; strings.write_byte(&b,']'); return respond_list(strings.to_string(b),contracts.API_Page{limit=contracts.API_DEFAULT_PAGE_LIMIT,has_more=false},req.request_id,auth_ctx_server_time(req)) }
-create_artifact_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; a,saved,err:=content_service.create_artifact(h.content,auth,artifact_input(req.body)); if !saved do return respond_error(err,req.request_id); b:=strings.builder_make(); write_artifact_json(&b,a,false); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req),201) }
+create_artifact_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; a,saved,err:=content_service.create_artifact(h.content,auth,artifact_input_from_request(req)); if !saved do return respond_error(err,req.request_id); b:=strings.builder_make(); write_artifact_json(&b,a,false); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req),201) }
 artifact_detail_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; a,got,err:=content_service.get_artifact(h.content,auth,path_part(req.path,4)); if !got do return respond_error(err,req.request_id); b:=strings.builder_make(); write_artifact_json(&b,a,false); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req)) }
 artifact_content_handler :: proc(ctx:rawptr, req:Request)->Response{
 	h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp;
@@ -84,12 +84,112 @@ artifact_input :: proc(body:string)->content_service.Artifact_Input{
 	}
 	return content_service.Artifact_Input{kind=json_string(body,"kind"),name=json_string(body,"name"),description=json_string(body,"description"),content_type=json_string(body,"content_type"),content=content,filename=json_string(body,"filename"),agent_id=json_string(body,"agent_id"),agent_instance_id=json_string(body,"agent_instance_id"),chain_id=json_string(body,"chain_id"),task_id=json_string(body,"task_id"),project_id=domain.Project_ID(json_string(body,"project_id")),mime=json_string(body,"mime"),ext=json_string(body,"ext"),sha256=json_string(body,"sha256"),origin_kind=json_string(body,"origin_kind"),origin_ref=json_string(body,"origin_ref")}
 }
+artifact_input_from_request :: proc(req:Request)->content_service.Artifact_Input{
+	ctype := header_value(req.headers,"Content-Type")
+	if strings.contains(ctype,"multipart/form-data") {
+		if input, ok := multipart_artifact_input(req.body,ctype); ok do return input
+	}
+	return artifact_input(req.body)
+}
+multipart_artifact_input :: proc(body,ctype:string)->(content_service.Artifact_Input,bool){
+	boundary := multipart_boundary(ctype)
+	if boundary == "" do return {},false
+	marker := strings.concatenate({"--",boundary}); defer delete(marker)
+	marker_crlf := strings.concatenate({"\r\n",marker}); defer delete(marker_crlf)
+	marker_lf := strings.concatenate({"\n",marker}); defer delete(marker_lf)
+	input: content_service.Artifact_Input
+	pos := 0
+	seen := false
+	for {
+		rel := strings.index(body[pos:],marker)
+		if rel < 0 do break
+		start := pos + rel + len(marker)
+		if start + 2 <= len(body) && body[start:start+2] == "--" do break
+		if start + 2 <= len(body) && body[start:start+2] == "\r\n" { start += 2 } else if start < len(body) && body[start] == '\n' { start += 1 }
+		head_rel := strings.index(body[start:],"\r\n\r\n")
+		sep_len := 4
+		if head_rel < 0 { head_rel = strings.index(body[start:],"\n\n"); sep_len = 2 }
+		if head_rel < 0 do break
+		head := body[start:start+head_rel]
+		content_start := start + head_rel + sep_len
+		next_rel := strings.index(body[content_start:],marker_crlf)
+		if next_rel < 0 do next_rel = strings.index(body[content_start:],marker_lf)
+		if next_rel < 0 do break
+		content_end := content_start + next_rel
+		part_body := body[content_start:content_end]
+		part_name := multipart_disposition_param(head,"name")
+		filename := multipart_disposition_param(head,"filename")
+		part_ctype := multipart_header_value(head,"Content-Type")
+		if filename != "" && (part_name == "file" || input.content == "") {
+			input.content = part_body
+			input.filename = filename
+			if input.name == "" do input.name = filename
+			if part_ctype != "" { input.content_type = part_ctype; input.mime = part_ctype }
+			seen = true
+		} else if part_name != "" {
+			multipart_set_artifact_field(&input,part_name,part_body)
+			seen = true
+		}
+		pos = content_end
+	}
+	return input,seen
+}
+multipart_boundary :: proc(ctype:string)->string{
+	idx := strings.index(ctype,"boundary=")
+	if idx < 0 do return ""
+	value := strings.trim_space(ctype[idx+len("boundary="):])
+	if semi := strings.index_byte(value,';'); semi >= 0 do value = strings.trim_space(value[:semi])
+	if len(value) >= 2 && value[0] == '"' {
+		if end := strings.index_byte(value[1:],'"'); end >= 0 do return value[1:1+end]
+	}
+	return value
+}
+multipart_header_value :: proc(headers,key:string)->string{
+	text := headers
+	for line in strings.split_lines_iterator(&text) {
+		colon := strings.index_byte(line,':')
+		if colon <= 0 do continue
+		if ascii_equal_fold(strings.trim_space(line[:colon]),key) do return strings.trim_space(line[colon+1:])
+	}
+	return ""
+}
+multipart_disposition_param :: proc(headers,param:string)->string{
+	disp := multipart_header_value(headers,"Content-Disposition")
+	needle := strings.concatenate({param,"="}); defer delete(needle)
+	idx := strings.index(disp,needle)
+	if idx < 0 do return ""
+	value := strings.trim_space(disp[idx+len(needle):])
+	if len(value) >= 1 && value[0] == '"' {
+		if end := strings.index_byte(value[1:],'"'); end >= 0 do return value[1:1+end]
+	}
+	if semi := strings.index_byte(value,';'); semi >= 0 do return strings.trim_space(value[:semi])
+	return strings.trim_space(value)
+}
+multipart_set_artifact_field :: proc(input:^content_service.Artifact_Input,name,value:string){
+	switch name {
+	case "name": input.name = value
+	case "kind": input.kind = value
+	case "description": input.description = value
+	case "content_type": input.content_type = value
+	case "mime": input.mime = value
+	case "ext": input.ext = value
+	case "sha256": input.sha256 = value
+	case "origin_kind": input.origin_kind = value
+	case "origin_ref": input.origin_ref = value
+	case "filename": input.filename = value
+	case "agent_id": input.agent_id = value
+	case "agent_instance_id": input.agent_instance_id = value
+	case "chain_id": input.chain_id = value
+	case "task_id": input.task_id = value
+	case "project_id": input.project_id = domain.Project_ID(value)
+	}
+}
 template_input :: proc(body:string)->content_service.Template_Input{ return content_service.Template_Input{name=json_string(body,"name"),description=json_string(body,"description"),persona=json_string(body,"persona"),instructions=json_string(body,"instructions")} }
 
 write_memory_json :: proc(b:^strings.Builder,m:domain.Memory,preview:bool){ strings.write_string(b,"{\"memory_id\":\""); write_handler_json_string(b,m.memory_id); strings.write_string(b,"\",\"agent_id\":\""); write_handler_json_string(b,m.agent_id); strings.write_string(b,"\",\"type\":\""); write_handler_json_string(b,m.type); strings.write_string(b,"\",\"status\":\""); write_handler_json_string(b,m.status); strings.write_string(b,"\",\"title\":\""); write_handler_json_string(b,m.title); if preview { strings.write_string(b,"\",\"body_preview\":\""); write_handler_json_string(b,m.body) } else { strings.write_string(b,"\",\"body\":\""); write_handler_json_string(b,m.body); strings.write_string(b,"\",\"evidence\":\""); write_handler_json_string(b,m.evidence) }; strings.write_string(b,"\",\"updated_at\":\""); write_handler_json_string(b,m.updated_at); strings.write_string(b,"\"}") }
 write_chat_json :: proc(b:^strings.Builder,c:domain.Chat_Conversation){ strings.write_string(b,"{\"conversation_id\":\""); write_handler_json_string(b,c.conversation_id); strings.write_string(b,"\",\"agent_id\":\""); write_handler_json_string(b,c.agent_id); strings.write_string(b,"\",\"agent_instance_id\":\""); write_handler_json_string(b,c.agent_instance_id); strings.write_string(b,"\",\"chain_id\":\""); write_handler_json_string(b,c.chain_id); strings.write_string(b,"\",\"title\":\""); write_handler_json_string(b,c.title); strings.write_string(b,"\",\"unread_count\":"); strings.write_string(b,fmt.tprintf("%d",c.unread_count)); strings.write_string(b,",\"last_message_preview\":\""); write_handler_json_string(b,c.last_message_preview); strings.write_string(b,"\",\"last_message_at\":\""); write_handler_json_string(b,c.last_message_at); strings.write_string(b,"\",\"updated_at\":\""); write_handler_json_string(b,c.updated_at); strings.write_string(b,"\"}") }
 write_message_json :: proc(b:^strings.Builder,m:domain.Chat_Message,svc:^content_service.Content_Service){ body:=content_service.message_body_for_response(svc,m); strings.write_string(b,"{\"message_id\":\""); write_handler_json_string(b,m.message_id); strings.write_string(b,"\",\"conversation_id\":\""); write_handler_json_string(b,m.conversation_id); strings.write_string(b,"\",\"direction\":\""); write_handler_json_string(b,m.direction); strings.write_string(b,"\",\"body\":\""); write_handler_json_string(b,body); strings.write_string(b,"\",\"artifact_ids\":"); strings.write_string(b,artifact_json_or_empty(m.artifact_ids_json)); strings.write_string(b,",\"created_at\":\""); write_handler_json_string(b,m.created_at); strings.write_string(b,"\"}") }
-write_artifact_json :: proc(b:^strings.Builder,a:domain.Artifact,with_content:bool){ strings.write_string(b,"{\"artifact_id\":\""); write_handler_json_string(b,a.artifact_id); strings.write_string(b,"\",\"kind\":\""); write_handler_json_string(b,a.kind); strings.write_string(b,"\",\"name\":\""); write_handler_json_string(b,a.name); strings.write_string(b,"\",\"description\":\""); write_handler_json_string(b,a.description); strings.write_string(b,"\",\"content_type\":\""); write_handler_json_string(b,a.content_type); strings.write_string(b,"\",\"size_bytes\":"); strings.write_string(b,fmt.tprintf("%d",a.size_bytes)); if with_content {strings.write_string(b,",\"content\":\""); write_handler_json_string(b,a.content)}; strings.write_string(b,",\"updated_at\":\""); write_handler_json_string(b,a.updated_at); strings.write_string(b,"\"}") }
+write_artifact_json :: proc(b:^strings.Builder,a:domain.Artifact,with_content:bool){ strings.write_string(b,"{\"artifact_id\":\""); write_handler_json_string(b,a.artifact_id); strings.write_string(b,"\",\"kind\":\""); write_handler_json_string(b,a.kind); strings.write_string(b,"\",\"name\":\""); write_handler_json_string(b,a.name); strings.write_string(b,"\",\"description\":\""); write_handler_json_string(b,a.description); strings.write_string(b,"\",\"content_type\":\""); write_handler_json_string(b,a.content_type); strings.write_string(b,"\",\"mime\":\""); write_handler_json_string(b,a.mime); strings.write_string(b,"\",\"ext\":\""); write_handler_json_string(b,a.ext); strings.write_string(b,"\",\"sha256\":\""); write_handler_json_string(b,a.sha256); strings.write_string(b,"\",\"origin_kind\":\""); write_handler_json_string(b,a.origin_kind); strings.write_string(b,"\",\"origin_ref\":\""); write_handler_json_string(b,a.origin_ref); strings.write_string(b,"\",\"agent_id\":\""); write_handler_json_string(b,a.agent_id); strings.write_string(b,"\",\"agent_instance_id\":\""); write_handler_json_string(b,a.agent_instance_id); strings.write_string(b,"\",\"chain_id\":\""); write_handler_json_string(b,a.chain_id); strings.write_string(b,"\",\"task_id\":\""); write_handler_json_string(b,a.task_id); strings.write_string(b,"\",\"project_id\":\""); write_handler_json_string(b,string(a.project_id)); strings.write_string(b,"\",\"link\":\"artifact://"); write_handler_json_string(b,a.artifact_id); strings.write_string(b,"\",\"size_bytes\":"); strings.write_string(b,fmt.tprintf("%d",a.size_bytes)); if with_content {strings.write_string(b,",\"content\":\""); write_handler_json_string(b,a.content)}; strings.write_string(b,",\"deleted_at\":\""); write_handler_json_string(b,a.deleted_at); strings.write_string(b,"\",\"created_at\":\""); write_handler_json_string(b,a.created_at); strings.write_string(b,"\",\"updated_at\":\""); write_handler_json_string(b,a.updated_at); strings.write_string(b,"\"}") }
 write_template_json :: proc(b:^strings.Builder,t:domain.Template){ strings.write_string(b,"{\"template_id\":\""); write_handler_json_string(b,t.template_id); strings.write_string(b,"\",\"is_system\":"); strings.write_string(b,"true" if t.is_system else "false"); strings.write_string(b,",\"name\":\""); write_handler_json_string(b,t.name); strings.write_string(b,"\",\"description\":\""); write_handler_json_string(b,t.description); strings.write_string(b,"\",\"persona\":\""); write_handler_json_string(b,t.persona); strings.write_string(b,"\",\"instructions\":\""); write_handler_json_string(b,t.instructions); strings.write_string(b,"\"}") }
 
 query_value :: proc(q,key:string)->string{ parts:=strings.split(q,"&"); defer delete(parts); for p in parts{ eq:=strings.index_byte(p,'='); if eq>=0 && p[:eq]==key do return p[eq+1:] }; return "" }

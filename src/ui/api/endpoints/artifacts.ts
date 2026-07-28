@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import * as daemonApi from '../daemonApi';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
 
@@ -11,6 +12,7 @@ type ArtifactListArgs = {
 };
 
 type ArtifactCreateArgs = {
+  file?: File | Blob | null;
   name: string;
   kind?: string;
   mime?: string;
@@ -18,7 +20,7 @@ type ArtifactCreateArgs = {
   description?: string;
   originKind?: string;
   originRef?: string;
-  contentBase64: string;
+  contentBase64?: string;
 };
 
 type ArtifactUpdateArgs = {
@@ -141,21 +143,29 @@ export const artifactsApi = heimdallApi.injectEndpoints({
     fetchArtifactMeta: build.query<any, { artifactId: string }>({
       queryFn: withSessionQuery(async ({ artifactId }, { session }) => {
         if (!session?.clientToken || !artifactId) return { artifact: null };
-        return daemonApi.fetchArtifactMeta({ ...auth(session), artifactId });
+        const data = await daemonApi.fetchArtifactMeta({ ...auth(session), artifactId });
+        return { ...data, artifact: normalizeArtifact(data?.artifact || data?.data || data) };
       }),
       providesTags: (_result, _error, { artifactId }) => [{ type: 'Artifact' as const, id: artifactId }],
     }),
     fetchArtifactVersions: build.query<any, { artifactId: string }>({
       queryFn: withSessionQuery(async ({ artifactId }, { session }) => {
         if (!session?.clientToken || !artifactId) return { versions: [] };
-        return daemonApi.fetchArtifactVersions({ ...auth(session), artifactId });
+        try {
+          const data = await daemonApi.fetchArtifactVersions({ ...auth(session), artifactId });
+          return { ...data, versions: Array.isArray(data?.versions) ? data.versions : (Array.isArray(data?.data) ? data.data : []) };
+        } catch {
+          return { versions: [] };
+        }
       }),
       providesTags: (_result, _error, { artifactId }) => [{ type: 'ArtifactVersions' as const, id: artifactId }],
     }),
     fetchArtifactTextContent: build.query<any, ArtifactTextContentArgs>({
       queryFn: withSessionQuery(async ({ artifactId, versionNo = null }, { session }) => {
         if (!session?.clientToken || !artifactId) return { artifactId, versionNo, text: '' };
-        const response = await fetch(artifactContentUrl(session, artifactId, versionNo));
+        const response = await fetch(artifactContentUrl(session, artifactId, versionNo), {
+          headers: { 'Authorization': `Bearer ${session.clientToken}` },
+        });
         if (!response.ok) throw new Error(`Failed to load artifact content (${response.status})`);
         return { artifactId, versionNo, text: await response.text() };
       }),
@@ -165,7 +175,12 @@ export const artifactsApi = heimdallApi.injectEndpoints({
     fetchArtifactAnnotations: build.query<any, ArtifactAnnotationsArgs>({
       queryFn: withSessionQuery(async ({ artifactId, versionNo = null }, { session }) => {
         if (!session?.clientToken || !artifactId) return { annotations: [] };
-        return daemonApi.fetchArtifactAnnotations({ ...auth(session), artifactId, versionNo });
+        try {
+          const data = await daemonApi.fetchArtifactAnnotations({ ...auth(session), artifactId, versionNo });
+          return { ...data, annotations: Array.isArray(data?.annotations) ? data.annotations : (Array.isArray(data?.data) ? data.data : []) };
+        } catch {
+          return { annotations: [] };
+        }
       }),
       providesTags: (_result, _error, { artifactId, versionNo = null }) => [
         { type: 'ArtifactAnnotations' as const, id: artifactId },
@@ -173,7 +188,11 @@ export const artifactsApi = heimdallApi.injectEndpoints({
       ],
     }),
     createArtifact: build.mutation<any, ArtifactCreateArgs>({
-      queryFn: withSessionQuery(async (args, { session }) => daemonApi.createArtifact({ ...auth(session), ...args })),
+      queryFn: withSessionQuery(async (args, { session }) => {
+        const data = await daemonApi.createArtifact({ ...auth(session), ...args });
+        const artifact = normalizeArtifact(data?.artifact || data?.data || data);
+        return { ...data, artifact, link: artifact?.link || (artifact?.artifact_id ? `artifact://${artifact.artifact_id}` : '') };
+      }),
       invalidatesTags: (result, _error, { projectId = '', originRef = '' }) => {
         const artifactId = artifactIdOf(result?.artifact);
         return [
@@ -246,19 +265,64 @@ export const artifactsApi = heimdallApi.injectEndpoints({
   }),
 });
 
+export function normalizeArtifact(row: any) {
+  if (!row) return null;
+  const artifactId = artifactIdOf(row);
+  const mime = String(row?.mime || row?.content_type || row?.contentType || '');
+  return {
+    ...row,
+    artifact_id: artifactId,
+    artifactId,
+    mime,
+    content_type: row?.content_type || row?.contentType || mime,
+    link: row?.link || (artifactId ? `artifact://${artifactId}` : ''),
+  };
+}
+
 export function normalizeArtifacts(data: any) {
-  const rows = Array.isArray(data?.artifacts) ? data.artifacts : [];
-  return [...rows]
+  const rows = Array.isArray(data?.artifacts)
+    ? data.artifacts
+    : (Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : []));
+  return rows
+    .map((row: any) => normalizeArtifact(row))
     .filter((row: any) => row?.artifact_id || row?.artifactId)
     .sort((a: any, b: any) => {
-      const left = Number(b?.updated_unix_ms || b?.updatedUnixMs || b?.created_unix_ms || b?.createdUnixMs || 0);
-      const right = Number(a?.updated_unix_ms || a?.updatedUnixMs || a?.created_unix_ms || a?.createdUnixMs || 0);
+      const left = Number(b?.updated_unix_ms || b?.updatedUnixMs || b?.updated_at || b?.updatedAt || b?.created_unix_ms || b?.createdUnixMs || 0);
+      const right = Number(a?.updated_unix_ms || a?.updatedUnixMs || a?.updated_at || a?.updatedAt || a?.created_unix_ms || a?.createdUnixMs || 0);
       return left - right;
     });
 }
 
 export function useArtifactContentUrl({ daemonUrl, clientToken, artifactId, versionNo = null }: { daemonUrl: string; clientToken: string; artifactId: string; versionNo?: number | null }) {
-  return daemonApi.artifactContentUrl({ daemonUrl, clientToken, artifactId, version: versionNo });
+  const [objectUrl, setObjectUrl] = useState('');
+  useEffect(() => {
+    if (!daemonUrl || !clientToken || !artifactId) {
+      setObjectUrl('');
+      return;
+    }
+    let cancelled = false;
+    let nextUrl = '';
+    fetch(daemonApi.artifactContentUrl({ daemonUrl, artifactId, version: versionNo }), {
+      headers: { 'Authorization': `Bearer ${clientToken}` },
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error(`Failed to load artifact content (${response.status})`);
+        return response.blob();
+      })
+      .then((blob) => {
+        nextUrl = URL.createObjectURL(blob);
+        if (cancelled) URL.revokeObjectURL(nextUrl);
+        else setObjectUrl(nextUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setObjectUrl('');
+      });
+    return () => {
+      cancelled = true;
+      if (nextUrl) URL.revokeObjectURL(nextUrl);
+    };
+  }, [daemonUrl, clientToken, artifactId, versionNo]);
+  return objectUrl;
 }
 
 export const {

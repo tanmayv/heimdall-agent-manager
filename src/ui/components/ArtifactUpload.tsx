@@ -49,19 +49,6 @@ function classifyFile(file: File): ArtifactKindMime | null {
   return null;
 }
 
-function readFileAsBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('Failed to read file.'));
-    reader.onload = () => {
-      const result = String(reader.result || '');
-      const comma = result.indexOf(',');
-      resolve(comma >= 0 ? result.slice(comma + 1) : result);
-    };
-    reader.readAsDataURL(file);
-  });
-}
-
 function buildClipboardImageName() {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   return `clipboard-image-${stamp}.png`;
@@ -133,15 +120,14 @@ export function useArtifactUpload(context: ArtifactUploadContext = {}): UseArtif
     }
     setUploading(true);
     try {
-      const contentBase64 = await readFileAsBase64(file);
       const res = await createArtifact({
+        file,
         name,
         kind,
         mime,
         projectId: projectId || '',
         originKind: originKind || context.originKind || 'chat',
         originRef: originRef || context.originRef || '',
-        contentBase64,
       }).unwrap();
       const link = res?.link || (res?.artifact?.artifact_id ? `artifact://${res.artifact.artifact_id}` : '');
       if (!link) {

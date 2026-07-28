@@ -154,7 +154,10 @@ bind_text :: proc(stmt: sqlite3_stmt, index: int, value: string) {
 column_text :: proc(stmt: sqlite3_stmt, index: int) -> string {
 	ptr := sqlite3_column_text(stmt, c.int(index))
 	if ptr == nil do return ""
-	return strings.clone_from_cstring(ptr)
+	n := int(sqlite3_column_bytes(stmt, c.int(index)))
+	if n <= 0 do return ""
+	bytes := ([^]byte)(rawptr(ptr))[:n]
+	return strings.clone(string(bytes))
 }
 
 user_status_string :: proc(status: domain.User_Status) -> string {

@@ -4,6 +4,7 @@ import "core:c"
 import "core:fmt"
 import "core:net"
 import "core:os"
+import base64 "core:encoding/base64"
 import "core:strings"
 import "core:sys/posix"
 
@@ -138,11 +139,13 @@ ctl_agentmode_artifacts :: proc(endpoint, token, action: string, args: []string)
 		kind := option_value(args, "--kind", "markdown")
 		if name == "" { fmt.println("usage: ham-ctl agent artifacts create --name <name> [--kind <kind>] [--content <text>|--file <path>]"); return }
 		content := option_value(args, "--content", "")
-		if file_path := option_value(args, "--file", ""); file_path != "" { data, err := os.read_entire_file(file_path, context.allocator); if err == nil do content = string(data) }
-		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do content = string(data) }
+		content_base64 := ""
+		if file_path := option_value(args, "--file", ""); file_path != "" { data, err := os.read_entire_file(file_path, context.allocator); if err == nil do content_base64 = base64.encode(data) }
+		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do content_base64 = base64.encode(data) }
 		if content == "" do content = ""
 		fields := make([dynamic]string)
-		append(&fields, json_kv("name", name)); append(&fields, json_kv("kind", kind)); append(&fields, json_kv("content", content))
+		append(&fields, json_kv("name", name)); append(&fields, json_kv("kind", kind))
+		if content_base64 != "" { append(&fields, json_kv("content_base64", content_base64)) } else { append(&fields, json_kv("content", content)) }
 		if ct := option_value(args, "--content-type", ""); ct != "" do append(&fields, json_kv("content_type", ct))
 		if desc := option_value(args, "--description", ""); desc != "" do append(&fields, json_kv("description", desc))
 		ctl_agent_call(endpoint, token, "agent.artifacts.create", json_object_from_slice(fields[:]))

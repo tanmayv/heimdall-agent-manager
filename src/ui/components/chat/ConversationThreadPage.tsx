@@ -532,30 +532,31 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
           </div>
         )}
         <div className="flex items-end gap-2">
-          <label className="grid h-[44px] w-[44px] shrink-0 cursor-pointer place-items-center rounded-2xl border border-white/10 bg-black/30 text-xl text-zinc-400 hover:bg-white/5 hover:text-white" title="Upload Attachment">
-            <input type="file" className="hidden" onChange={(e) => {
+          <label data-debug-id="conversation-attach-btn" className="grid h-[44px] w-[44px] shrink-0 cursor-pointer place-items-center rounded-2xl border border-white/10 bg-black/30 text-xl text-zinc-400 hover:bg-white/5 hover:text-white" title="Upload Attachment">
+            <input data-debug-id="conversation-attach-input" type="file" className="hidden" onChange={async (e) => {
               const file = e.target.files?.[0];
               if (!file) return;
-              const reader = new FileReader();
-              reader.onload = async (ev) => {
-                const resultStr = ev.target?.result as string;
-                const base64Data = resultStr.includes(',') ? resultStr.split(',')[1] : resultStr;
-                try {
-                  const res = await createArtifact({
-                    name: file.name,
-                    mime: file.type || 'application/octet-stream',
-                    kind: (file.type || '').startsWith('image/') ? 'image' : 'text',
-                    contentBase64: base64Data,
-                  }).unwrap();
-                  if (res.artifact_id || res.artifactId || res.id) {
-                    setAttachments(prev => [...prev, { id: res.artifact_id || res.artifactId || res.id, name: file.name }]);
-                  }
-                } catch (err: any) {
-                  setError(errMsg(err, 'Failed to upload attachment'));
+              try {
+                const res = await createArtifact({
+                  file,
+                  name: file.name,
+                  mime: file.type || 'application/octet-stream',
+                  kind: (file.type || '').startsWith('image/') ? 'image' : 'text',
+                  originKind: 'conversation_chat',
+                  originRef: conversationId,
+                }).unwrap();
+                const artifact = res?.artifact || res;
+                const id = artifact?.artifact_id || artifact?.artifactId || artifact?.id;
+                if (id) {
+                  setAttachments(prev => [...prev, { id, name: file.name }]);
+                } else {
+                  setError('Upload failed: Hub did not return an artifact id.');
                 }
-              };
-              reader.readAsDataURL(file);
-              e.target.value = '';
+              } catch (err: any) {
+                setError(errMsg(err, 'Failed to upload attachment'));
+              } finally {
+                e.target.value = '';
+              }
             }} />
             ＋
           </label>
