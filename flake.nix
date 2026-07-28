@@ -188,6 +188,7 @@
             #!/usr/bin/env bash
             set -euo pipefail
             export HEIMDALL_HAM_WRAPPER_BIN="${self.packages.${system}.ham-wrapper}/bin/ham-wrapper"
+            export HEIMDALL_HAM_CTL_BIN="${self.packages.${system}.ham-ctl}/bin/ham-ctl"
             exec "${self.packages.${system}.ham-bridge}/bin/ham-bridge" "$@"
           '')}/bin/ham-bridge";
         };
