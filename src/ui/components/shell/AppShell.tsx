@@ -432,15 +432,15 @@ function AuthGate() {
   const dispatch = useDispatch<any>();
   const [auth, setAuth] = useState<AuthState>({ status: 'checking', user: null, loginUrl: configuredAuthUrl('login'), logoutUrl: configuredAuthUrl('logout'), error: '' });
   const lastSeenUserRef = useRef(readLastSeenUserId());
-  const refreshingRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
+    let refreshing = false;
     installApiAuthObserver();
 
     async function refreshIdentity(reason: string) {
-      if (refreshingRef.current) return;
-      refreshingRef.current = true;
+      if (refreshing) return;
+      refreshing = true;
       try {
         const next = await bootstrapAuth();
         if (cancelled) return;
@@ -459,7 +459,7 @@ function AuthGate() {
       } catch (err: any) {
         if (!cancelled) setAuth({ status: 'error', user: null, loginUrl: configuredAuthUrl('login'), logoutUrl: configuredAuthUrl('logout'), error: String(err?.message || err || 'The app could not reach /api/v1/me.') });
       } finally {
-        refreshingRef.current = false;
+        refreshing = false;
         void reason;
       }
     }
@@ -478,6 +478,7 @@ function AuthGate() {
     window.addEventListener('heimdall:user-ws-reconnected', onUserWsReconnect);
     return () => {
       cancelled = true;
+      refreshing = false;
       window.removeEventListener('heimdall:api-unauthenticated', onUnauthenticated);
       window.removeEventListener('heimdall:api-forbidden', onForbidden);
       window.removeEventListener('focus', onFocus);
