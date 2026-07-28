@@ -8,6 +8,7 @@
   "main": "electron-dist/main.cjs",
   "scripts": {
     "dev": "npm run build:electron && node scripts/patch-electron-dev-name.mjs && concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
+    "hub:tunnel-proxy": "node scripts/hub-tunnel-proxy.mjs",
     "typecheck": "tsc -b",
     "build:electron": "tsc -p tsconfig.electron.json && cp src/ui/electron/icon.png electron-dist/icon.png",
     "build": "npm run typecheck && vite build && npm run build:electron",
