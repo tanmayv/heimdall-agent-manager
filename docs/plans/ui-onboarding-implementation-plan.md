@@ -735,6 +735,30 @@ provider form now; reuse the components elsewhere.
   a prefix: `${prefix}-chip-input`, `${prefix}-chip-add-btn`,
   `${prefix}-chip-${index}`, `${prefix}-chip-remove-btn-${index}`.
 
+### 3.10 Identity refresh + per-user client-state isolation (bug)
+
+RCA: the shell fetches `/api/v1/me` once on mount (`AuthGate` `useEffect([])`)
+and never re-fetches, so switching the trusted-proxy user (dev-proxy or a real
+IdP re-login) leaves the old user's name/email in the header and the old user's
+data in client caches/localStorage. Backend is correct; this is UI-only.
+
+- **N8 — Re-validate identity.** Re-fetch `/me` on window focus/visibility
+  change (and on user-WS reconnect) so an identity change is picked up without a
+  manual reload.
+- **N9 — On `user_id` change, wipe all prior-user client state.** When the
+  resolved `user_id` differs from the last-seen one:
+  - reset the RTK Query cache (`dispatch(heimdallApi.util.resetApiState())`),
+  - clear any Redux slices holding per-user data,
+  - remove **all** app-owned `localStorage`/`sessionStorage` keys that can hold
+    another user's data (e.g. `odin.knownAgents`, `heimdall.*`, `odin.*`,
+    `heimdall.artifact.annotations*`, `heimdall.chainEditor.layout*`,
+    `heimdall.ui.launchAgentDefaults*`, `heimdall.sidebar.*`). Prefer a single
+    namespaced prefix so a wipe is one pass; audit and migrate stray keys.
+- **N10 — Namespace future client persistence by user.** New client-persisted
+  state must be keyed under the current `user_id` (or stored so it is trivially
+  wiped on switch). Track the last-seen `user_id` (e.g. in `localStorage`) to
+  detect the change on load as well as at runtime.
+
 ---
 
 ## 4. Page-by-page UI plan (onboarding order)
@@ -1031,7 +1055,8 @@ endpoints so WS invalidation applies.
    path). Phase commit: `ac136c5`.
 7. **DONE — Page 3b Agent detail** — per-bridge overrides + multi-instance deploy/run. Phase commits: `14e231b`, `de9a697`.
 8. **DONE — Page 4 Composer** — quick launch with optional overrides. Phase commits: `902b99c`, `330c0c5`.
-9. **DONE — Settings navigation/form UX** — settings sub-nav, routed provider/agent editors, reusable breadcrumbs, provider chip inputs/no typed JSON. Phase commit: `42dcf02`.
+9. **DONE — Settings navigation/form UX** — settings sub-nav, routed provider/agent editors, reusable breadcrumbs, provider chip inputs/no typed JSON, review fixes for reachable Projects/Memory/Defaults panels, unique routed-form debug ids, and mobile-friendly routed forms/sub-nav/sticky action bars. Phase commits: `42dcf02`, `310a795`.
+10. **DONE — Identity refresh + per-user client-state isolation (§3.10)** — re-fetch `/me` on focus/visibility/user-WS reconnect, reset RTKQ + Redux client state on user change, wipe all `odin.*`/`heimdall.*` local/session storage, track last-seen user id, and namespace live known-agent persistence by user id. Phase commit: `310a795`.
 
 Pages 1 and 3–4 can proceed against real capabilities only after steps 1–2; a
 temporary path is to ship Page 1 first (it needs no new backend) while the
