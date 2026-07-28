@@ -5,6 +5,7 @@ import "core:os"
 import "core:strings"
 import "core:sync"
 import cfg_lib "odin_test:lib/config"
+import agent_runtime "odin_test:lib/agent_runtime"
 
 Bridge_Provider_Source :: enum {
 	Config,
@@ -766,29 +767,25 @@ bridge_clone_string_slice :: proc(values: []string) -> []string {
 	return out
 }
 
+bridge_agent_runtime_profile :: proc(profile: Bridge_Provider_Profile) -> agent_runtime.Agent_Profile {
+	return agent_runtime.Agent_Profile{
+		command = profile.command,
+		yolo_flags = profile.yolo_flags,
+		prompt_flags = profile.prompt_flags,
+		starter_prompt = profile.starter_prompt,
+		prompt_delivery = profile.prompt_delivery,
+		prompt_tmux_delay_ms = profile.prompt_tmux_delay_ms,
+		prompt_tmux_enter = profile.prompt_tmux_enter,
+		models = profile.models,
+		startup_detection = profile.startup_detection,
+		activity_detection = profile.activity_detection,
+	}
+}
+
 bridge_runtime_agent_argv_for_profile :: proc(profile: Bridge_Provider_Profile, tier, agent_token, agent_instance_id: string) -> []string {
-	argv := make([dynamic]string)
-	append(&argv, ..profile.command)
-	append(&argv, ..profile.yolo_flags)
 	resolved_tier := tier
 	if strings.trim_space(resolved_tier) == "" do resolved_tier = bridge_provider_default_tier(profile)
-	if profile.models.flag != "" {
-		model := bridge_provider_model_for_tier(profile, resolved_tier)
-		if model != "" {
-			append(&argv, profile.models.flag)
-			append(&argv, model)
-		}
-	}
-	delivery := profile.prompt_delivery
-	if delivery != "tmux" && delivery != "none" && delivery != "flag-injection" do delivery = "flag-injection"
-	if delivery == "flag-injection" {
-		starter_prompt := bridge_provider_render_starter_prompt(profile.starter_prompt, agent_token, agent_instance_id)
-		if starter_prompt != "" {
-			append(&argv, ..profile.prompt_flags)
-			append(&argv, starter_prompt)
-		}
-	}
-	return argv[:]
+	return agent_runtime.build_agent_command(bridge_agent_runtime_profile(profile), resolved_tier, bridge_config.daemon_url, agent_token, agent_instance_id)
 }
 
 bridge_runtime_shell_command_for_profile :: proc(profile: Bridge_Provider_Profile, tier, agent_token, agent_instance_id: string) -> string {

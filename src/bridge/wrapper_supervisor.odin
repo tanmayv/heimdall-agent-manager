@@ -8,7 +8,7 @@ import "core:strings"
 import "core:sys/posix"
 import "core:thread"
 import "core:time"
-import cfg_lib "odin_test:lib/config"
+import agent_runtime "odin_test:lib/agent_runtime"
 import tmux "odin_test:lib/tmux"
 
 Bridge_Wrapper_Supervisor_Config :: struct {
@@ -51,9 +51,9 @@ bridge_wrapper_supervisor_main :: proc(args: []string) -> bool {
 	notify_config := new(Bridge_Wrapper_Supervisor_Config)
 	notify_config^ = config
 	thread.run_with_data(rawptr(notify_config), bridge_wrapper_notifications_subscribe_thread)
-	probe := bridge_wrapper_startup_probe(profile.startup_detection, config.pane_id)
+	probe := agent_runtime.startup_probe_agent(profile.startup_detection, config.pane_id)
 	_ = bridge_wrapper_send_startup(config, probe.status, probe.detail)
-	if profile.prompt_delivery == "tmux" do bridge_wrapper_deliver_tmux_prompt(config, profile)
+	_ = agent_runtime.deliver_tmux_starter_prompt(bridge_agent_runtime_profile(profile), bridge_config.daemon_url, config.child_agent_token, config.agent_instance_id, config.pane_id)
 	ready_reported := true
 	last_liveness := time.to_unix_nanoseconds(time.now())
 	last_activity := last_liveness
@@ -72,14 +72,8 @@ bridge_wrapper_supervisor_main :: proc(args: []string) -> bool {
 			last_liveness = now
 		}
 		if now - last_activity >= i64(time.Duration(config.activity_interval_ms) * time.Millisecond) {
-			status := "idle"
-			source := "pane_alive"
-			line_count := 20
-			if profile_ok && profile.activity_detection.sample_line_count > 0 do line_count = profile.activity_detection.sample_line_count
-			if text, ok := tmux.capture_pane_text(config.pane_id, line_count); ok {
-				if strings.trim_space(text) != "" { status = "active"; source = "pane_output" }
-			}
-			_ = bridge_wrapper_send_activity(config, status, source)
+			activity := agent_runtime.sample_activity_status(config.pane_id, profile.activity_detection)
+			_ = bridge_wrapper_send_activity(config, activity.status, activity.source)
 			last_activity = now
 		}
 		time.sleep(250 * time.Millisecond)
@@ -103,62 +97,6 @@ bridge_wrapper_supervisor_config_from_args :: proc(args: []string) -> Bridge_Wra
 	}
 	if cfg.child_agent_token == "" do cfg.child_agent_token = cfg.local_agent_token
 	return cfg
-}
-
-Bridge_Wrapper_Probe_Result :: struct { status: string, detail: string }
-
-bridge_wrapper_startup_probe :: proc(cfg: cfg_lib.Startup_Detection_Config, pane_id: string) -> Bridge_Wrapper_Probe_Result {
-	if !cfg.enabled do return Bridge_Wrapper_Probe_Result{status = "ready", detail = "startup detection disabled"}
-	probe_seconds := cfg.startup_probe_seconds
-	if probe_seconds <= 0 do probe_seconds = 20
-	interval_ms := cfg.capture_interval_ms
-	if interval_ms <= 0 do interval_ms = 500
-	deadline := time.to_unix_nanoseconds(time.now()) + i64(time.Duration(probe_seconds) * time.Second)
-	last_auto_enter := i64(0)
-	for time.to_unix_nanoseconds(time.now()) < deadline {
-		if !tmux.pane_exists(pane_id) do return Bridge_Wrapper_Probe_Result{status = "startup_failed", detail = "agent pane exited during startup"}
-		pane_text, ok := tmux.capture_pane_text(pane_id, 80)
-		if ok {
-			if idx := bridge_wrapper_first_pattern(pane_text, cfg.blocked_patterns); idx >= 0 do return Bridge_Wrapper_Probe_Result{status = "startup_blocked", detail = bridge_wrapper_reason(cfg, idx, "startup blocked")}
-			now := time.to_unix_nanoseconds(time.now())
-			if now - last_auto_enter >= i64(2 * time.Second) {
-				if idx := bridge_wrapper_first_pattern(pane_text, cfg.auto_enter_patterns); idx >= 0 {
-					if idx < len(cfg.auto_enter_pre_keys) && strings.trim_space(cfg.auto_enter_pre_keys[idx]) != "" {
-						_ = tmux.send_text(pane_id, cfg.auto_enter_pre_keys[idx], true)
-					} else {
-						_ = tmux.send_text(pane_id, "", true)
-					}
-					last_auto_enter = now
-					deadline = now + i64(time.Duration(probe_seconds) * time.Second)
-				}
-			}
-		}
-		time.sleep(time.Duration(interval_ms) * time.Millisecond)
-	}
-	if cfg.startup_unknown_is_blocked do return Bridge_Wrapper_Probe_Result{status = "startup_blocked", detail = "startup readiness unknown"}
-	return Bridge_Wrapper_Probe_Result{status = "ready", detail = "startup probe completed"}
-}
-
-bridge_wrapper_deliver_tmux_prompt :: proc(config: Bridge_Wrapper_Supervisor_Config, profile: Bridge_Provider_Profile) {
-	prompt := bridge_provider_render_starter_prompt(profile.starter_prompt, config.child_agent_token, config.agent_instance_id)
-	if strings.trim_space(prompt) == "" do return
-	delay := profile.prompt_tmux_delay_ms
-	if delay > 0 do time.sleep(time.Duration(delay) * time.Millisecond)
-	_ = tmux.send_text(config.pane_id, prompt, profile.prompt_tmux_enter)
-}
-
-bridge_wrapper_first_pattern :: proc(text: string, patterns: []string) -> int {
-	lower_text := strings.to_lower(text)
-	for pattern, i in patterns {
-		p := strings.to_lower(strings.trim_space(pattern))
-		if p != "" && strings.contains(lower_text, p) do return i
-	}
-	return -1
-}
-
-bridge_wrapper_reason :: proc(cfg: cfg_lib.Startup_Detection_Config, idx: int, fallback: string) -> string {
-	if idx >= 0 && idx < len(cfg.sanitized_reason_mapping) && strings.trim_space(cfg.sanitized_reason_mapping[idx]) != "" do return cfg.sanitized_reason_mapping[idx]
-	return fallback
 }
 
 bridge_wrapper_agent_pane_argv :: proc(config: Bridge_Wrapper_Supervisor_Config, profile: Bridge_Provider_Profile) -> []string {
