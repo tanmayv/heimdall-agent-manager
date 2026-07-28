@@ -186,7 +186,9 @@ bridge_enroll_command :: proc(args: []string) -> bool {
 	config_path := cfg_lib.config_path_from_args(args)
 	if strings.trim_space(token_file) != "" {
 		if !bridge_write_token_file(token_file, bridge_token) do return false
-		if !bridge_write_enrolled_config(config_path, persisted_hub_url, "", bridge_id) do return false
+		if !bridge_write_enrolled_config(config_path, persisted_hub_url, "", bridge_id) {
+			fmt.eprintln("warning: bridge token was saved, but config.toml could not be updated; pass --hub/--bridge-token-file when starting ham-bridge")
+		}
 		fmt.println("bridge_token_file", token_file)
 	} else {
 		if !bridge_write_enrolled_config(config_path, persisted_hub_url, bridge_token, bridge_id) do return false
