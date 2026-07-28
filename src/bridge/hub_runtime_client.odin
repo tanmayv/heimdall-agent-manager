@@ -259,6 +259,7 @@ bridge_runtime_run_provider_test :: proc(conn: ^ws.Connection, command_id, comma
 	instance_id := bridge_provider_json_extract_string(payload, "test_instance_id", "")
 	if instance_id == "" do instance_id = strings.concatenate({"inst_", test_id})
 	capture_frames := strings.contains(payload, "\"capture_frames\":true")
+	launch_deadline_ms := bridge_runtime_provider_test_int(payload, "launch_deadline_ms", 20000, 1000, 300000)
 	start_deadline_ms := bridge_runtime_provider_test_int(payload, "start_success_deadline_ms", 60000, 1000, 300000)
 	hard_deadline_ms := bridge_runtime_provider_test_int(payload, "hard_deadline_ms", 90000, start_deadline_ms, 300000)
 	frame_interval_ms := bridge_runtime_provider_test_int(payload, "frame_interval_ms", 500, 200, 5000)
@@ -284,21 +285,51 @@ bridge_runtime_run_provider_test :: proc(conn: ^ws.Connection, command_id, comma
 	window := strings.concatenate({"ptest-", bridge_runtime_safe_part(test_id)})
 	wrapper_args := bridge_runtime_wrapper_supervisor_argv(endpoint, wrapper_issue.plaintext_token, agent_issue.plaintext_token, instance_id, run_dir, agent_command)
 	_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "launching", "launching", "launching provider test", ""))
-	bridge_runtime_set_status(instance_id, "starting", "active")
+	launch_start_ns := time.to_unix_nanoseconds(time.now())
+	launch_deadline_ns := launch_start_ns + i64(time.Duration(launch_deadline_ms) * time.Millisecond)
 	launch, launch_ok := tmux.ensure_agent_window(session, window, run_dir, wrapper_args)
-	if !launch_ok || strings.trim_space(launch.pane_id) == "" {
+	if !launch_ok || strings.trim_space(launch.pane_id) == "" || time.to_unix_nanoseconds(time.now()) > launch_deadline_ns {
 		bridge_runtime_set_status(instance_id, "failed", "idle")
 		msg := "tmux wrapper launch failed"
+		if launch_ok && strings.trim_space(launch.pane_id) != "" do msg = "provider launch deadline exceeded"
 		_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "failed", "done", msg, ""))
+		if launch_ok && strings.trim_space(launch.pane_id) != "" do _ = tmux.kill_window(session, window)
 		return bridge_provider_test_result_json(test_id, provider, "failed", msg, "")
 	}
 	bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_instance_id = strings.clone(instance_id), command_id = strings.clone(command_id), run_dir = strings.clone(run_dir), tmux_session = strings.clone(session), tmux_window = strings.clone(window), pane_id = strings.clone(launch.pane_id), wrapper_token = strings.clone(wrapper_issue.plaintext_token), agent_token = strings.clone(agent_issue.plaintext_token)})
+	startup_seen := false
+	startup_failed := false
+	startup_message := ""
+	last_launch_status_ns := launch_start_ns
+	for time.to_unix_nanoseconds(time.now()) < launch_deadline_ns {
+		now_launch := time.to_unix_nanoseconds(time.now())
+		if inst, inst_ok := bridge_runtime_instance_snapshot(instance_id); inst_ok {
+			if inst.runtime_status == "failed" || inst.runtime_status == "stopped" { startup_failed = true; startup_message = strings.concatenate({"provider process ", inst.runtime_status}); break }
+			startup_seen = true
+			break
+		}
+		if now_launch - last_launch_status_ns >= i64(15 * time.Second) {
+			_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "launching", "launching", "launching provider test", ""))
+			last_launch_status_ns = now_launch
+		}
+		time.sleep(100 * time.Millisecond)
+	}
+	if startup_failed || !startup_seen {
+		msg := startup_message
+		if msg == "" do msg = "provider launch deadline exceeded"
+		_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "failed", "done", msg, ""))
+		_ = tmux.kill_window(session, window)
+		bridge_runtime_remove_launch(instance_id)
+		bridge_runtime_set_status(instance_id, "stopped", "idle")
+		return bridge_provider_test_result_json(test_id, provider, "failed", msg, "")
+	}
 	bridge_provider_test_record(Bridge_Provider_Test{test_id = strings.clone(test_id), provider = strings.clone(provider), tier = strings.clone(tier), agent_instance_id = strings.clone(instance_id), status = "in_progress", message = "awaiting start-success", pane_id = strings.clone(launch.pane_id), tmux_session = strings.clone(session), tmux_window = strings.clone(window)})
 	_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "in_progress", "awaiting_start_success", "awaiting start-success", ""))
 	start_ns := time.to_unix_nanoseconds(time.now())
 	deadline_ns := start_ns + i64(time.Duration(start_deadline_ms) * time.Millisecond)
 	hard_deadline_ns := start_ns + i64(time.Duration(hard_deadline_ms) * time.Millisecond)
 	last_frame_ns := i64(0)
+	last_status_ns := start_ns
 	last_frame := ""
 	status := "timeout"
 	message := "provider did not report start-success before deadline"
@@ -312,6 +343,10 @@ bridge_runtime_run_provider_test :: proc(conn: ^ws.Connection, command_id, comma
 			if inst.runtime_status == "failed" || inst.runtime_status == "stopped" { status = "failed"; message = strings.concatenate({"provider process ", inst.runtime_status}); break }
 		}
 		if now >= deadline_ns { status = "timeout"; break }
+		if now - last_status_ns >= i64(15 * time.Second) {
+			_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "in_progress", "awaiting_start_success", "awaiting start-success", ""))
+			last_status_ns = now
+		}
 		if capture_frames && now - last_frame_ns >= i64(time.Duration(frame_interval_ms) * time.Millisecond) {
 			if frame, frame_ok := tmux.capture_pane_text(launch.pane_id, 80); frame_ok && frame != last_frame {
 				last_frame = frame
