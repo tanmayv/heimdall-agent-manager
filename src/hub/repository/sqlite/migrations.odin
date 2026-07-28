@@ -351,7 +351,16 @@ ALTER TABLE artifacts ADD COLUMN origin_ref TEXT NOT NULL DEFAULT '';
 ALTER TABLE artifacts ADD COLUMN deleted_at TEXT;
 `
 
-migration_order :: [9]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql"}
+MIGRATION_010_ARTIFACT_USAGE_SKILL_MEMORY :: `UPDATE memories
+SET body = body || '
+
+Artifacts: use artifacts for large logs, screenshots, diffs, generated files, or any output too large/noisy for chat. Create artifacts from an agent run with ./.heimdall/bin/ham-ctl agent artifacts create --name "<name>" --kind markdown --content "...", --file <path>, or --stdin; use --content-type <mime> when useful. List available artifacts with ./.heimdall/bin/ham-ctl agent artifacts list. Inspect metadata with ./.heimdall/bin/ham-ctl agent artifacts show --artifact-id <artifact_id> or include content with --with-content. Read artifact bodies with ./.heimdall/bin/ham-ctl agent artifacts read --artifact-id <artifact_id> (aliases: content or get). When reporting work, summarize briefly in chat and include the artifact_id / artifact://<artifact_id> reference rather than pasting large content inline.',
+    updated_at = '2026-07-28T00:30:00Z'
+WHERE memory_id = 'mem_system_heimdall_ctl_communication'
+  AND instr(body, 'Artifacts: use artifacts for large logs') = 0;
+`
+
+migration_order :: [10]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -394,6 +403,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "007_hide_agent_to_agent_from_user_chat.sql" do return strings.clone(MIGRATION_007_HIDE_AGENT_TO_AGENT_FROM_USER_CHAT)
 	if name == "008_read_inbound_messages_skill_memory.sql" do return strings.clone(MIGRATION_008_READ_INBOUND_MESSAGES_SKILL_MEMORY)
 	if name == "009_artifact_metadata.sql" do return strings.clone(MIGRATION_009_ARTIFACT_METADATA)
+	if name == "010_artifact_usage_skill_memory.sql" do return strings.clone(MIGRATION_010_ARTIFACT_USAGE_SKILL_MEMORY)
 	return ""
 }
 

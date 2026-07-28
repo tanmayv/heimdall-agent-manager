@@ -134,7 +134,11 @@ ctl_agentmode_tasks :: proc(endpoint, token, action: string, args: []string) {
 }
 
 ctl_agentmode_artifacts :: proc(endpoint, token, action: string, args: []string) {
-	if action == "" || action == "create" {
+	if action == "" || action == "list" {
+		ctl_agent_call(endpoint, token, "agent.artifacts.list", "{}")
+		return
+	}
+	if action == "create" {
 		name := option_value(args, "--name", "")
 		kind := option_value(args, "--kind", "markdown")
 		if name == "" { fmt.println("usage: ham-ctl agent artifacts create --name <name> [--kind <kind>] [--content <text>|--file <path>]"); return }
@@ -151,7 +155,33 @@ ctl_agentmode_artifacts :: proc(endpoint, token, action: string, args: []string)
 		ctl_agent_call(endpoint, token, "agent.artifacts.create", json_object_from_slice(fields[:]))
 		return
 	}
-	fmt.println("usage: ham-ctl agent artifacts <create>")
+	if action == "show" {
+		artifact_id := option_value(args, "--artifact-id", option_value(args, "--artifact", ""))
+		if artifact_id == "" { fmt.println("usage: ham-ctl agent artifacts show --artifact-id <id> [--with-content]"); return }
+		fields := make([dynamic]string)
+		append(&fields, json_kv("artifact_id", artifact_id))
+		if has_flag(args, "--with-content") do append(&fields, json_kv_raw("with_content", "true"))
+		ctl_agent_call(endpoint, token, "agent.artifacts.show", json_object_from_slice(fields[:]))
+		return
+	}
+	if action == "content" || action == "get" || action == "read" {
+		artifact_id := option_value(args, "--artifact-id", option_value(args, "--artifact", ""))
+		if artifact_id == "" { fmt.println("usage: ham-ctl agent artifacts content --artifact-id <id>"); return }
+		ctl_agent_artifact_content(endpoint, token, artifact_id)
+		return
+	}
+	fmt.println("usage: ham-ctl agent artifacts <list|create|show|content>")
+}
+
+ctl_agent_artifact_content :: proc(endpoint, token, artifact_id: string) {
+	response, ok := ctl_agent_local_call(endpoint, token, "agent.artifacts.content", json_object(json_kv("artifact_id", artifact_id)))
+	if !ok { fmt.println(`{"ok":false,"message":"local Bridge endpoint is not reachable"}`); os.exit(1) }
+	if !strings.contains(response, `"ok":true`) {
+		fmt.println(response)
+		return
+	}
+	content := extract_json_string_unescaped(response, "content", "")
+	fmt.print(content)
 }
 
 ctl_agentmode_memory :: proc(endpoint, token, action: string, args: []string) {
@@ -272,7 +302,7 @@ print_agent_help :: proc(cmd: []string) {
 	fmt.println("  chat           Read/send the bound user conversation")
 	fmt.println("  agents         List live/running agent instances")
 	fmt.println("  tasks          Fetch current task context and comment/status/vote/nudge assigned tasks")
-	fmt.println("  artifacts      Create artifacts attached to this instance")
+	fmt.println("  artifacts      List/create/read artifacts visible to this instance owner")
 	fmt.println("  memory         Propose memory")
 	fmt.println("examples:")
 	fmt.println("  ham-ctl agent context")
@@ -310,10 +340,17 @@ print_agent_tasks_help :: proc(action: string) {
 
 print_agent_artifacts_help :: proc(action: string) {
 	_ = action
-	fmt.println("ham-ctl agent artifacts create --name <name> [--kind <kind>] [--content <text>|--file <path>|--stdin]")
-	fmt.println("Purpose: create an artifact scoped to this agent instance.")
-	fmt.println("Example:")
+	fmt.println("ham-ctl agent artifacts <list|create|show|content>")
+	fmt.println("Purpose: list, create, and read artifacts through the local Bridge.")
+	fmt.println("Commands:")
+	fmt.println("  list")
+	fmt.println("  create --name <name> [--kind <kind>] [--content <text>|--file <path>|--stdin]")
+	fmt.println("  show --artifact-id <id> [--with-content]")
+	fmt.println("  content|read|get --artifact-id <id>")
+	fmt.println("Examples:")
+	fmt.println("  ham-ctl agent artifacts list")
 	fmt.println("  ham-ctl agent artifacts create --name test-log --kind markdown --file /tmp/test.log")
+	fmt.println("  ham-ctl agent artifacts read --artifact-id art_123")
 }
 
 print_agent_memory_help :: proc(action: string) {

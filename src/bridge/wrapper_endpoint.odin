@@ -222,7 +222,7 @@ bridge_local_method_allowed :: proc(method: string, role: Bridge_Local_Token_Rol
 	case .Wrapper:
 		return method == "wrapper.startup.report" || method == "wrapper.activity.report" || method == "wrapper.liveness.ping" || method == "wrapper.exited" || method == "wrapper.notifications.subscribe"
 	case .Agent:
-		return method == "agent.chat.send_to_user" || method == "agent.chat.send_to_agent" || method == "agent.chat.fetch" || method == "agent.chat.read" || method == "agent.agents.live" || method == "agent.tasks.comment" || method == "agent.tasks.status" || method == "agent.tasks.vote" || method == "agent.tasks.nudge" || method == "agent.artifacts.create" || method == "agent.memory.propose" || method == "agent.context.get" || method == "agent.start_success"
+		return method == "agent.chat.send_to_user" || method == "agent.chat.send_to_agent" || method == "agent.chat.fetch" || method == "agent.chat.read" || method == "agent.agents.live" || method == "agent.tasks.comment" || method == "agent.tasks.status" || method == "agent.tasks.vote" || method == "agent.tasks.nudge" || method == "agent.artifacts.create" || method == "agent.artifacts.list" || method == "agent.artifacts.show" || method == "agent.artifacts.content" || method == "agent.memory.propose" || method == "agent.context.get" || method == "agent.start_success"
 	}
 	return false
 }
@@ -299,6 +299,9 @@ bridge_local_agent_method_path :: proc(method: string) -> string {
 	case "agent.tasks.vote": return "/api/v1/agent-actions/tasks/vote"
 	case "agent.tasks.nudge": return "/api/v1/agent-actions/tasks/nudge"
 	case "agent.artifacts.create": return "/api/v1/agent-actions/artifacts/create"
+	case "agent.artifacts.list": return "/api/v1/agent-actions/artifacts/list"
+	case "agent.artifacts.show": return "/api/v1/agent-actions/artifacts/show"
+	case "agent.artifacts.content": return "/api/v1/agent-actions/artifacts/content"
 	case "agent.memory.propose": return "/api/v1/agent-actions/memory/propose"
 	case "agent.start_success": return "/api/v1/agent-actions/start-success"
 	}

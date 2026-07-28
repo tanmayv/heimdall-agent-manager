@@ -193,6 +193,56 @@ agent_action_artifact_create_handler :: proc(ctx: rawptr, req: Request) -> Respo
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
 }
 
+agent_action_artifact_list_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, _, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	rows, err := content_service.list_artifacts(h.content, auth)
+	if err.code != .None do return respond_error(err, req.request_id)
+	b := strings.builder_make()
+	strings.write_byte(&b, '[')
+	for artifact, i in rows { if i > 0 do strings.write_byte(&b, ','); write_artifact_json(&b, artifact, false) }
+	strings.write_byte(&b, ']')
+	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
+}
+
+agent_action_artifact_show_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, _, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	artifact_id := json_string(params, "artifact_id")
+	if artifact_id == "" do artifact_id = json_string(params, "artifact")
+	if artifact_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "artifact_id is required"), req.request_id)
+	artifact, got, err := content_service.get_artifact(h.content, auth, artifact_id)
+	if !got do return respond_error(err, req.request_id)
+	with_content := strings.contains(params, "\"with_content\":true")
+	b := strings.builder_make()
+	write_artifact_json(&b, artifact, with_content)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
+agent_action_artifact_content_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, _, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	artifact_id := json_string(params, "artifact_id")
+	if artifact_id == "" do artifact_id = json_string(params, "artifact")
+	if artifact_id == "" do return respond_error(domain.domain_error(.Validation_Failed, "artifact_id is required"), req.request_id)
+	artifact, got, err := content_service.get_artifact(h.content, auth, artifact_id)
+	if !got do return respond_error(err, req.request_id)
+	b := strings.builder_make()
+	strings.write_string(&b, "{\"artifact_id\":\""); write_handler_json_string(&b, artifact.artifact_id)
+	strings.write_string(&b, "\",\"name\":\""); write_handler_json_string(&b, artifact.name)
+	strings.write_string(&b, "\",\"content_type\":\""); write_handler_json_string(&b, artifact.content_type)
+	strings.write_string(&b, "\",\"mime\":\""); write_handler_json_string(&b, artifact.mime)
+	strings.write_string(&b, "\",\"size_bytes\":"); strings.write_string(&b, fmt.tprintf("%d", artifact.size_bytes))
+	strings.write_string(&b, ",\"content\":\""); write_handler_json_string(&b, artifact.content)
+	strings.write_string(&b, "\"}")
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
+}
+
 agent_action_memory_propose_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
 	auth, inst, ok, resp := require_instance_action_auth(h, req)

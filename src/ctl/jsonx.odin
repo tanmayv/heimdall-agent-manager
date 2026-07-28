@@ -24,6 +24,51 @@ extract_json_string :: proc(body, key, fallback: string) -> string {
 	return body[start:start + end]
 }
 
+extract_json_string_unescaped :: proc(body, key, fallback: string) -> string {
+	pattern := fmt.tprintf("\"%s\":\"", key)
+	idx := strings.index(body, pattern)
+	if idx < 0 do return fallback
+	start := idx + len(pattern)
+	end := start
+	escaped := false
+	for end < len(body) {
+		ch := body[end]
+		if escaped {
+			escaped = false
+		} else if ch == '\\' {
+			escaped = true
+		} else if ch == '"' {
+			return json_unescape_string(body[start:end])
+		}
+		end += 1
+	}
+	return fallback
+}
+
+json_unescape_string :: proc(value: string) -> string {
+	b := strings.builder_make()
+	i := 0
+	for i < len(value) {
+		ch := value[i]
+		if ch == '\\' && i + 1 < len(value) {
+			next := value[i + 1]
+			switch next {
+			case 'n': strings.write_byte(&b, '\n')
+			case 'r': strings.write_byte(&b, '\r')
+			case 't': strings.write_byte(&b, '\t')
+			case '"': strings.write_byte(&b, '"')
+			case '\\': strings.write_byte(&b, '\\')
+			case: strings.write_byte(&b, next)
+			}
+			i += 2
+			continue
+		}
+		strings.write_byte(&b, ch)
+		i += 1
+	}
+	return strings.to_string(b)
+}
+
 json_kv :: proc(key, value: string) -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, `"`)
