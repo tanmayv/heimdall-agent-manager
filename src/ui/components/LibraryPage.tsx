@@ -1,12 +1,12 @@
 import { useMemo, useState } from 'react';
 import {
-  useArtifactContentUrl,
   useListArtifactsQuery,
   useDeleteArtifactMutation,
   useUpdateArtifactMutation,
 } from '../api/endpoints/artifacts';
 import { useListAgentsQuery } from '../api/endpoints/agents';
 import ArtifactUploadButton, { useArtifactUpload } from './ArtifactUpload';
+import { ArtifactImagePreview, isArtifactImage } from './ArtifactAttachmentPreview';
 import ArtifactViewer from './ArtifactViewer';
 
 export type LibraryPageProps = {
@@ -99,9 +99,7 @@ function kindIcon(kind: string): string {
 }
 
 function isImage(a: ArtifactRow): boolean {
-  const kind = String(a?.kind || '').toLowerCase();
-  const mime = String(a?.mime || '').toLowerCase();
-  return kind === 'png' || kind === 'jpeg' || kind === 'jpg' || kind === 'image' || mime.startsWith('image/');
+  return isArtifactImage(a);
 }
 
 // UI-10: Library — a filterable gallery/list of ALL the user's artifacts across
@@ -312,7 +310,13 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
               return (
                 <div key={id} data-debug-id={`library-row-${id}`} className="grid grid-cols-[1fr_5rem_5rem_6rem_7rem_3rem] items-center gap-2 border-b border-white/[0.04] px-3 py-2 text-sm hover:bg-white/[0.02]">
                   <button type="button" data-debug-id={`library-row-open-${id}`} onClick={() => setActiveArtifactId(id)} className="flex min-w-0 items-center gap-2 text-left">
-                    <span className="text-base opacity-50">{kindIcon(kindLabel(a))}</span>
+                    {isImage(a) ? (
+                      <span className="h-8 w-8 shrink-0 overflow-hidden rounded-lg border border-white/10 bg-black/30">
+                        <ArtifactThumbnail artifactId={id} session={session} alt={a?.name || id} />
+                      </span>
+                    ) : (
+                      <span className="text-base opacity-50">{kindIcon(kindLabel(a))}</span>
+                    )}
                     <span className="min-w-0 flex-1 truncate text-zinc-100">{a?.name || id}</span>
                   </button>
                   <span className="truncate text-[11.5px] text-zinc-500">{kindLabel(a)}</span>
@@ -339,6 +343,5 @@ export default function LibraryPage({ session, projects, chains = [], onBack }: 
 }
 
 function ArtifactThumbnail({ artifactId, session, alt }: { artifactId: string; session: any; alt: string }) {
-  const url = useArtifactContentUrl({ daemonUrl: session?.daemonUrl || '', clientToken: session?.clientToken || '', artifactId });
-  return <img data-debug-id={`library-thumbnail-${artifactId}`} src={url} alt={alt} loading="lazy" className="h-full w-full object-cover" />;
+  return <ArtifactImagePreview artifactId={artifactId} session={session} alt={alt} debugId={`library-thumbnail-${artifactId}`} className="h-full w-full object-cover" />;
 }

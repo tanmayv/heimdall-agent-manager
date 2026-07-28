@@ -155,6 +155,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/artifacts", rawptr(&graph.content_handlers), http.list_artifacts_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/artifacts", rawptr(&graph.content_handlers), http.create_artifact_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/artifacts/*/content", rawptr(&graph.content_handlers), http.artifact_content_handler)
+	http.router_add(&graph.router, "GET", "/api/v1/artifacts/*/download", rawptr(&graph.content_handlers), http.artifact_download_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/artifacts/*", rawptr(&graph.content_handlers), http.artifact_detail_handler)
 	http.router_add(&graph.router, "PATCH", "/api/v1/artifacts/*", rawptr(&graph.content_handlers), http.patch_artifact_handler)
 	http.router_add(&graph.router, "DELETE", "/api/v1/artifacts/*", rawptr(&graph.content_handlers), http.delete_artifact_handler)

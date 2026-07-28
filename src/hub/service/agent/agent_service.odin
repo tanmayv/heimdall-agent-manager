@@ -305,6 +305,7 @@ mark_instance_start_success :: proc(service: ^Agent_Service, auth: contracts.Aut
 	inst.activity_status = "idle"
 	inst.last_applied_seq += 1
 	inst.last_seen_at = now
+	inst.stopped_at = ""
 	inst.updated_at = now
 	return iface.agent_save_instance(service.agents, inst)
 }
@@ -591,7 +592,7 @@ apply_bridge_status_report :: proc(service: ^Agent_Service, bridge_id, instance_
 	if activity_status != "" do inst.activity_status = activity_status
 	inst.last_seen_at = now
 	inst.updated_at = now
-	if inst.runtime_status == "stopped" || inst.runtime_status == "failed" || inst.runtime_status == "unreachable" do inst.stopped_at = now
+	apply_runtime_startup_projection(&inst, now)
 	return iface.agent_save_instance(service.agents, inst)
 }
 
@@ -605,7 +606,7 @@ reconcile_bridge_heartbeat :: proc(service: ^Agent_Service, bridge_id: string, a
 		if runtime_expected_active(inst.runtime_status) && !string_slice_contains(active_instance_ids, inst.agent_instance_id) {
 			inst.runtime_status = "unreachable"
 			inst.updated_at = now
-			inst.stopped_at = now
+			apply_runtime_startup_projection(&inst, now)
 			_, saved, _ := iface.agent_save_instance(service.agents, inst)
 			if saved do changed += 1
 		}
@@ -820,6 +821,22 @@ publish_state_string :: proc(state: domain.Publish_State) -> string { if state =
 chain_status_string :: proc(status: domain.Task_Chain_Status) -> string { if status == .Completed do return "completed"; if status == .Cancelled do return "cancelled"; return "active" }
 task_status_string :: proc(status: domain.Task_Status) -> string { switch status { case .Assigned: return "assigned"; case .In_Progress: return "in_progress"; case .In_Validation: return "in_validation"; case .Validated_Good: return "validated_good"; case .Validated_Not_Good: return "validated_not_good"; case .Paused: return "paused"; case .Completed: return "completed"; case .Cancelled: return "cancelled" }; return "assigned" }
 json_or_empty_array :: proc(value: string) -> string { if strings.trim_space(value) == "" do return "[]"; return value }
+
+apply_runtime_startup_projection :: proc(inst: ^domain.Agent_Instance, now: string) {
+	if inst == nil do return
+	switch inst.runtime_status {
+	case "running", "idle", "busy":
+		inst.startup_status = "ready"
+	case "launching", "starting":
+		inst.startup_status = "starting"
+	case "failed":
+		inst.startup_status = "startup_failed"
+		inst.stopped_at = now
+	case "stopped", "unreachable":
+		inst.startup_status = "stopped"
+		inst.stopped_at = now
+	}
+}
 
 runtime_expected_active :: proc(runtime_status: string) -> bool {
 	return runtime_status == "launching" || runtime_status == "starting" || runtime_status == "running" || runtime_status == "idle" || runtime_status == "busy" || runtime_status == "stopping"

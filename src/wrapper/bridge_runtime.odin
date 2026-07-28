@@ -263,17 +263,33 @@ wrapper_bridge_dispatch_push_lines :: proc(cfg: Bridge_Runtime_Config, pending: 
 		if idx < 0 do return
 		line := strings.trim_space((pending^)[:idx])
 		pending^ = (pending^)[idx + 1:]
-		if line == "" || !strings.contains(line, "\"push\":\"agent_message\"") do continue
-		wrapper_bridge_deliver_message_push(cfg, line)
+		if line == "" do continue
+		if strings.contains(line, "\"push\":\"startup_prompt\"") {
+			wrapper_bridge_deliver_startup_prompt(cfg)
+			continue
+		}
+		if strings.contains(line, "\"push\":\"agent_message\"") do wrapper_bridge_deliver_message_push(cfg, line)
 	}
 }
 
 wrapper_bridge_deliver_message_push :: proc(cfg: Bridge_Runtime_Config, line: string) {
 	sender := extract_json_string(line, "sender_agent_instance_id", extract_json_string(line, "sender", "user"))
 	if strings.trim_space(sender) == "" do sender = "user"
-	pane := cfg.pane_id
-	if strings.trim_space(pane) == "" do pane = os.get_env_alloc("TMUX_PANE", context.allocator)
+	pane := wrapper_bridge_prompt_pane(cfg)
 	if strings.trim_space(pane) == "" do return
 	msg := strings.concatenate({"New message from ", sender, " — run './.heimdall/bin/ham-ctl agent chat read' to view."})
 	_ = tmux.send_text(pane, msg, true)
+}
+
+wrapper_bridge_deliver_startup_prompt :: proc(cfg: Bridge_Runtime_Config) {
+	pane := wrapper_bridge_prompt_pane(cfg)
+	if strings.trim_space(pane) == "" do return
+	msg := "Heimdall is still waiting for startup acknowledgement. If you are ready, run './.heimdall/bin/ham-ctl agent start-success'."
+	_ = tmux.send_text(pane, msg, true)
+}
+
+wrapper_bridge_prompt_pane :: proc(cfg: Bridge_Runtime_Config) -> string {
+	pane := cfg.pane_id
+	if strings.trim_space(pane) == "" do pane = os.get_env_alloc("TMUX_PANE", context.allocator)
+	return pane
 }

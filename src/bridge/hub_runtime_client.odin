@@ -9,11 +9,20 @@ import "core:time"
 import tmux "odin_test:lib/tmux"
 import ws "odin_test:lib/ws"
 
+BRIDGE_WRAPPER_STALE_MS :: 10_000
+BRIDGE_START_SUCCESS_TIMEOUT_MS :: 120_000
+BRIDGE_START_SUCCESS_PROMPT_AFTER_MS :: 30_000
+BRIDGE_START_SUCCESS_PROMPT_INTERVAL_MS :: 60_000
+
 Bridge_Runtime_Instance :: struct {
 	agent_instance_id: string,
 	state_seq: int,
 	runtime_status: string,
 	activity_status: string,
+	last_seen_unix_ms: i64,
+	start_deadline_unix_ms: i64,
+	start_success_seen: bool,
+	last_start_prompt_unix_ms: i64,
 }
 
 Bridge_Runtime_Command_Result :: struct {
@@ -690,21 +699,106 @@ bridge_provider_test_cancel_provider :: proc(provider: string) -> bool {
 	return to_remove_test != ""
 }
 
+bridge_runtime_now_ms :: proc() -> i64 {
+	return bridge_now_unix_ms()
+}
+
 bridge_runtime_set_status :: proc(instance_id, runtime_status, activity_status: string) {
 	if strings.trim_space(instance_id) == "" do return
+	now := bridge_runtime_now_ms()
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	bridge_runtime_set_status_locked(instance_id, runtime_status, activity_status, now, true)
+}
+
+bridge_runtime_note_wrapper_signal :: proc(instance_id, activity_status: string) {
+	if strings.trim_space(instance_id) == "" do return
+	now := bridge_runtime_now_ms()
+	should_prompt := false
+	sync.mutex_lock(&bridge_runtime_mutex)
+	if inst, ok := bridge_runtime_instance_snapshot_locked(instance_id); ok {
+		// A wrapper liveness/activity signal proves the wrapper process is alive, but
+		// it is NOT equivalent to agent start-success. Any pre-success state remains
+		// "starting" until the agent explicitly calls `ham-ctl agent start-success`.
+		if !inst.start_success_seen {
+			if inst.runtime_status == "failed" {
+				// If startup timed out, keep it non-running until an absolute
+				// start-success arrives. Continue nudging the pane.
+				bridge_runtime_set_status_locked(instance_id, "failed", activity_status, now, true)
+				should_prompt = bridge_runtime_maybe_mark_start_prompt_locked(instance_id, now, true)
+			} else {
+				bridge_runtime_set_status_locked(instance_id, "starting", activity_status, now, true)
+				should_prompt = bridge_runtime_maybe_mark_start_prompt_locked(instance_id, now, inst.runtime_status == "unreachable" || inst.runtime_status == "stopped")
+			}
+			sync.mutex_unlock(&bridge_runtime_mutex)
+			if should_prompt do bridge_wrapper_push_startup_prompt(instance_id)
+			return
+		}
+		bridge_runtime_set_status_locked(instance_id, "running", activity_status, now, true)
+		sync.mutex_unlock(&bridge_runtime_mutex)
+		return
+	}
+	// No in-memory record usually means bridge restart while the tmux wrapper kept
+	// running. Rediscover it as "starting" rather than "running"; Hub will keep a
+	// durable already-ready instance running if appropriate, and otherwise the pane
+	// receives an explicit start-success prompt.
+	bridge_runtime_set_status_locked(instance_id, "starting", activity_status, now, true)
+	should_prompt = bridge_runtime_maybe_mark_start_prompt_locked(instance_id, now, true)
+	sync.mutex_unlock(&bridge_runtime_mutex)
+	if should_prompt do bridge_wrapper_push_startup_prompt(instance_id)
+}
+
+bridge_runtime_mark_start_success :: proc(instance_id: string) {
+	if strings.trim_space(instance_id) == "" do return
+	now := bridge_runtime_now_ms()
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	bridge_runtime_set_status_locked(instance_id, "running", "idle", now, true)
+}
+
+bridge_runtime_set_status_locked :: proc(instance_id, runtime_status, activity_status: string, now: i64, touch_seen: bool) {
 	for i in 0..<len(bridge_runtime_instances) {
 		if bridge_runtime_instances[i].agent_instance_id == instance_id {
+			old_runtime := bridge_runtime_instances[i].runtime_status
 			if bridge_runtime_instances[i].runtime_status != runtime_status || bridge_runtime_instances[i].activity_status != activity_status {
 				bridge_runtime_instances[i].state_seq += 1
 				bridge_runtime_instances[i].runtime_status = runtime_status
 				bridge_runtime_instances[i].activity_status = activity_status
 			}
+			if touch_seen || bridge_runtime_instances[i].last_seen_unix_ms == 0 do bridge_runtime_instances[i].last_seen_unix_ms = now
+			if runtime_status == "starting" {
+				bridge_runtime_instances[i].start_success_seen = false
+				if old_runtime != "starting" || bridge_runtime_instances[i].start_deadline_unix_ms == 0 do bridge_runtime_instances[i].start_deadline_unix_ms = now + BRIDGE_START_SUCCESS_TIMEOUT_MS
+			} else if runtime_status == "running" {
+				bridge_runtime_instances[i].start_success_seen = true
+				bridge_runtime_instances[i].start_deadline_unix_ms = 0
+				bridge_runtime_instances[i].last_start_prompt_unix_ms = 0
+			} else if !bridge_runtime_status_active(runtime_status) {
+				bridge_runtime_instances[i].start_deadline_unix_ms = 0
+			}
 			return
 		}
 	}
-	append(&bridge_runtime_instances, Bridge_Runtime_Instance{agent_instance_id = strings.clone(instance_id), state_seq = 1, runtime_status = strings.clone(runtime_status), activity_status = strings.clone(activity_status)})
+	deadline: i64 = 0
+	seen := runtime_status == "running"
+	if runtime_status == "starting" do deadline = now + BRIDGE_START_SUCCESS_TIMEOUT_MS
+	append(&bridge_runtime_instances, Bridge_Runtime_Instance{agent_instance_id = strings.clone(instance_id), state_seq = 1, runtime_status = strings.clone(runtime_status), activity_status = strings.clone(activity_status), last_seen_unix_ms = now, start_deadline_unix_ms = deadline, start_success_seen = seen})
+}
+
+bridge_runtime_maybe_mark_start_prompt_locked :: proc(instance_id: string, now: i64, force: bool) -> bool {
+	for i in 0..<len(bridge_runtime_instances) {
+		if bridge_runtime_instances[i].agent_instance_id != instance_id do continue
+		inst := &bridge_runtime_instances[i]
+		if inst.start_success_seen do return false
+		if !force {
+			started_at := inst.start_deadline_unix_ms - BRIDGE_START_SUCCESS_TIMEOUT_MS
+			if inst.start_deadline_unix_ms == 0 || now - started_at < BRIDGE_START_SUCCESS_PROMPT_AFTER_MS do return false
+		}
+		if inst.last_start_prompt_unix_ms > 0 && now - inst.last_start_prompt_unix_ms < BRIDGE_START_SUCCESS_PROMPT_INTERVAL_MS do return false
+		inst.last_start_prompt_unix_ms = now
+		return true
+	}
+	return false
 }
 
 bridge_runtime_instance_snapshot :: proc(instance_id: string) -> (Bridge_Runtime_Instance, bool) {
@@ -736,8 +830,10 @@ bridge_instance_status_json :: proc(instance_id: string) -> string {
 
 bridge_hub_heartbeat_json :: proc() -> string {
 	caps := bridge_provider_capabilities_json()
+	now := bridge_runtime_now_ms()
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	bridge_runtime_expire_stale_locked(now)
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"bridge_heartbeat\",\"protocol_version\":1,\"capabilities\":")
 	strings.write_string(&b, caps)
@@ -754,7 +850,7 @@ bridge_hub_heartbeat_json :: proc() -> string {
 	strings.write_string(&b, "],\"instances\":[")
 	first := true
 	for inst in bridge_runtime_instances {
-		if !bridge_runtime_status_active(inst.runtime_status) do continue
+		if strings.trim_space(inst.runtime_status) == "" do continue
 		if !first do strings.write_byte(&b, ',')
 		first = false
 		strings.write_string(&b, "{\"agent_instance_id\":\"")
@@ -769,6 +865,26 @@ bridge_hub_heartbeat_json :: proc() -> string {
 	}
 	strings.write_string(&b, "]}")
 	return strings.to_string(b)
+}
+
+bridge_runtime_expire_stale_locked :: proc(now: i64) {
+	for i in 0..<len(bridge_runtime_instances) {
+		inst := &bridge_runtime_instances[i]
+		if !bridge_runtime_status_active(inst.runtime_status) do continue
+		if inst.last_seen_unix_ms > 0 && now - inst.last_seen_unix_ms > BRIDGE_WRAPPER_STALE_MS {
+			inst.state_seq += 1
+			inst.runtime_status = "unreachable"
+			inst.activity_status = "idle"
+			inst.start_deadline_unix_ms = 0
+			continue
+		}
+		if inst.runtime_status == "starting" && !inst.start_success_seen && inst.start_deadline_unix_ms > 0 && now >= inst.start_deadline_unix_ms {
+			inst.state_seq += 1
+			inst.runtime_status = "failed"
+			inst.activity_status = "idle"
+			inst.start_deadline_unix_ms = 0
+		}
+	}
 }
 
 bridge_runtime_status_active :: proc(runtime_status: string) -> bool {

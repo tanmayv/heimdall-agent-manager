@@ -47,16 +47,21 @@ list_artifacts_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_
 create_artifact_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; a,saved,err:=content_service.create_artifact(h.content,auth,artifact_input_from_request(req)); if !saved do return respond_error(err,req.request_id); b:=strings.builder_make(); write_artifact_json(&b,a,false); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req),201) }
 artifact_detail_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; a,got,err:=content_service.get_artifact(h.content,auth,path_part(req.path,4)); if !got do return respond_error(err,req.request_id); b:=strings.builder_make(); write_artifact_json(&b,a,false); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req)) }
 artifact_content_handler :: proc(ctx:rawptr, req:Request)->Response{
+	return artifact_content_response(ctx, req, false)
+}
+artifact_download_handler :: proc(ctx:rawptr, req:Request)->Response{
+	return artifact_content_response(ctx, req, true)
+}
+artifact_content_response :: proc(ctx:rawptr, req:Request, force_download:bool)->Response{
 	h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp;
 	a,got,err:=content_service.get_artifact(h.content,auth,path_part(req.path,4)); if !got do return respond_error(err,req.request_id);
-	
-	ctype := a.mime
-	if ctype == "" do ctype = a.content_type
-	
-	headers := make([dynamic]contracts.HTTP_Header, 0, 2)
-	append(&headers, contracts.HTTP_Header{name = "Content-Disposition", value = fmt.tprintf("inline; filename=\"%s\"", a.name)})
+	ctype := artifact_response_content_type(a)
+	disposition := "inline"
+	if force_download || artifact_query_download(req.query) do disposition = "attachment"
+	headers := make([dynamic]contracts.HTTP_Header, 0, 4)
+	append(&headers, contracts.HTTP_Header{name = "Content-Disposition", value = artifact_content_disposition(disposition, a.name)})
 	append(&headers, contracts.HTTP_Header{name = "Cache-Control", value = "private, max-age=60"})
-	
+	append(&headers, contracts.HTTP_Header{name = "X-Content-Type-Options", value = "nosniff"})
 	return Response{
 		status = 200,
 		content_type = ctype,
@@ -64,6 +69,42 @@ artifact_content_handler :: proc(ctx:rawptr, req:Request)->Response{
 		headers = headers[:],
 	}
 }
+artifact_response_content_type :: proc(a:domain.Artifact)->string{
+	ctype:=strings.trim_space(a.mime); if ctype=="" do ctype=strings.trim_space(a.content_type); if ctype=="" do ctype="application/octet-stream"; return ctype
+}
+artifact_query_download :: proc(query:string)->bool{
+	v:=strings.to_lower(query_value(query,"download")); if v=="" do v=strings.to_lower(query_value(query,"dl"))
+	disposition:=strings.to_lower(query_value(query,"disposition"))
+	return v=="1" || v=="true" || v=="yes" || disposition=="attachment" || disposition=="download"
+}
+artifact_content_disposition :: proc(disposition,name:string)->string{
+	safe:=artifact_header_filename(name); if safe=="" do safe="artifact"
+	return fmt.tprintf("%s; filename=\"%s\"; filename*=UTF-8''%s", disposition, safe, artifact_filename_star(name))
+}
+artifact_header_filename :: proc(name:string)->string{
+	trimmed:=strings.trim_space(name); if trimmed=="" do return "artifact"
+	b:=strings.builder_make()
+	for i:=0; i<len(trimmed); i+=1{
+		ch:=trimmed[i]
+		if ch<32 || ch==127 || ch=='"' || ch=='\\' || ch=='/' || ch=='\r' || ch=='\n' {
+			strings.write_byte(&b,'_')
+		} else {
+			strings.write_byte(&b,ch)
+		}
+	}
+	return strings.to_string(b)
+}
+artifact_filename_star :: proc(name:string)->string{
+	trimmed:=strings.trim_space(name); if trimmed=="" do trimmed="artifact"
+	b:=strings.builder_make()
+	for i:=0; i<len(trimmed); i+=1{
+		ch:=trimmed[i]
+		unreserved := (ch>='a' && ch<='z') || (ch>='A' && ch<='Z') || (ch>='0' && ch<='9') || ch=='-' || ch=='.' || ch=='_' || ch=='~'
+		if unreserved { strings.write_byte(&b,ch) } else { strings.write_string(&b,fmt.tprintf("%%%02X",int(ch))) }
+	}
+	return strings.to_string(b)
+}
+
 patch_artifact_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; a,saved,err:=content_service.update_artifact(h.content,auth,path_part(req.path,4),json_string(req.body,"name"),json_string(req.body,"description")); if !saved do return respond_error(err,req.request_id); b:=strings.builder_make(); write_artifact_json(&b,a,false); return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req)) }
 delete_artifact_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; deleted,err:=content_service.delete_artifact(h.content,auth,path_part(req.path,4)); if !deleted do return respond_error(err,req.request_id); return Response{status=204,content_type="application/json",body=""} }
 

@@ -14,6 +14,7 @@ import {
   useStopAgentInstanceMutation,
 } from '../../api/endpoints/agents';
 import { useCreateArtifactMutation } from '../../api/endpoints/artifacts';
+import { ArtifactAttachmentPreview } from '../ArtifactAttachmentPreview';
 import {
   normalizeBridgeCapabilities,
   useListBridgesQuery,
@@ -51,6 +52,10 @@ type Message = {
   deliveryError?: string;
   sender_agent_instance_id?: string;
   senderAgentInstanceId?: string;
+  artifact_ids?: string[];
+  artifactIds?: string[];
+  artifact_ids_json?: string;
+  artifactIdsJson?: string;
   sending?: boolean;
 };
 
@@ -71,6 +76,40 @@ const EMPTY_DELIVERY: ChatDeliveryStatus = { glyph: '', label: '', tone: '' };
 function bridgeId(bridge: any): string { return String(bridge?.bridge_id || bridge?.bridgeId || bridge?.id || ''); }
 function msgId(m: Message, i: number): string { return String(m.message_id || m.messageId || m.id || `idx-${i}`); }
 function msgDir(m: Message): string { return String(m.direction || ''); }
+
+function extractMessageArtifactIds(message: Message): string[] | undefined {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const push = (value: any) => {
+    const raw = typeof value === 'object' && value !== null
+      ? String(value.artifact_id || value.artifactId || value.id || '')
+      : String(value || '');
+    const id = raw.replace(/^artifact:\/\//i, '').trim();
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    out.push(id);
+  };
+
+  const direct = (message as any).artifact_ids ?? (message as any).artifactIds;
+  if (Array.isArray(direct)) direct.forEach(push);
+
+  const artifactIdsJson = (message as any).artifact_ids_json ?? (message as any).artifactIdsJson;
+  if (typeof artifactIdsJson === 'string' && artifactIdsJson.trim()) {
+    try {
+      const parsed = JSON.parse(artifactIdsJson);
+      if (Array.isArray(parsed)) parsed.forEach(push);
+    } catch (e) {}
+  } else if (Array.isArray(artifactIdsJson)) {
+    artifactIdsJson.forEach(push);
+  }
+
+  const body = String(message.body || '');
+  const artifactLinkPattern = /artifact:\/\/([A-Za-z0-9._:-]+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = artifactLinkPattern.exec(body)) !== null) push(match[1]);
+
+  return out.length ? out : undefined;
+}
 
 function localMessageId(): string {
   return `local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -159,14 +198,7 @@ function normalizeConversationMessages(rows: Message[], agentLabel: string): Cha
       const createdUnixMs = messageCreatedUnixMs(message);
       const sender = String(message.sender_agent_instance_id || message.senderAgentInstanceId || '');
       const authorLabel = isUser ? 'you' : direction === 'system' ? 'system' : (sender || agentLabel || 'agent');
-      let artifactIds: string[] | undefined = undefined;
-      const artifactIdsJson = (message as any).artifact_ids_json;
-      if (artifactIdsJson && typeof artifactIdsJson === 'string') {
-        try {
-          const parsed = JSON.parse(artifactIdsJson);
-          if (Array.isArray(parsed)) artifactIds = parsed;
-        } catch (e) {}
-      }
+      const artifactIds = extractMessageArtifactIds(message);
       return {
         order: index,
         chatMessage: {
@@ -480,11 +512,9 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
             <div className="flex flex-col gap-1">
               <Markdown source={message.body} compact copyAll={false} />
               {message.artifactIds && message.artifactIds.length > 0 && (
-                <div className="mt-1 flex flex-wrap gap-2">
-                  {message.artifactIds.map(id => (
-                    <a key={id} href={`#/library/artifacts/${encodeURIComponent(id)}`} className="flex items-center gap-1 rounded bg-sky-400/10 px-2 py-1 text-[11px] text-sky-300 hover:bg-sky-400/20">
-                      <span className="opacity-70">▣</span> {id}
-                    </a>
+                <div className="mt-2 flex max-w-full flex-wrap gap-2">
+                  {message.artifactIds.map((id) => (
+                    <ArtifactAttachmentPreview key={id} artifactId={id} session={{ daemonUrl: '', clientToken: '' }} debugId={`conversation-thread-artifact-${message.messageId}-${id}`} />
                   ))}
                 </div>
               )}

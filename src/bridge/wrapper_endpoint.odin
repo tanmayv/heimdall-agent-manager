@@ -109,8 +109,8 @@ bridge_local_endpoint_unix_client_thread :: proc(client: posix.FD) {
 			line := strings.trim_space(pending[:idx])
 			pending = pending[idx + 1:]
 			if line == "" do continue
-			resp := bridge_local_endpoint_handle_jsonl_line(line)
 			if inst, sub_ok := bridge_local_subscribe_instance(line); sub_ok { registered_instance = inst; bridge_wrapper_push_register_unix(inst, client) }
+			resp := bridge_local_endpoint_handle_jsonl_line(line)
 			resp_line := strings.concatenate({resp, "\n"})
 			bytes := transmute([]byte)resp_line
 			_ = posix.send(client, raw_data(bytes), c.size_t(len(bytes)), {})
@@ -144,8 +144,8 @@ bridge_local_endpoint_client_thread :: proc(client: net.TCP_Socket) {
 			line := strings.trim_space(pending[:idx])
 			pending = pending[idx + 1:]
 			if line == "" do continue
-			resp := bridge_local_endpoint_handle_jsonl_line(line)
 			if inst, sub_ok := bridge_local_subscribe_instance(line); sub_ok { registered_instance = inst; bridge_wrapper_push_register_tcp(inst, client) }
+			resp := bridge_local_endpoint_handle_jsonl_line(line)
 			resp_line := strings.concatenate({resp, "\n"})
 			_, _ = net.send_tcp(client, transmute([]byte)resp_line)
 		}
@@ -202,8 +202,15 @@ bridge_wrapper_push_drop :: proc(instance_id: string) {
 	for i in 0..<len(bridge_wrapper_push_conns) { if bridge_wrapper_push_conns[i].agent_instance_id == instance_id { unordered_remove(&bridge_wrapper_push_conns, i); return } }
 }
 bridge_wrapper_push :: proc(instance_id, json_payload: string) -> bool {
+	return bridge_wrapper_push_line(instance_id, strings.concatenate({"{\"push\":\"agent_message\",\"payload\":", json_payload, "}\n"}))
+}
+
+bridge_wrapper_push_startup_prompt :: proc(instance_id: string) -> bool {
+	return bridge_wrapper_push_line(instance_id, "{\"push\":\"startup_prompt\"}\n")
+}
+
+bridge_wrapper_push_line :: proc(instance_id, line: string) -> bool {
 	if bridge_wrapper_push_conns == nil do return false
-	line := strings.concatenate({"{\"push\":\"agent_message\",\"payload\":", json_payload, "}\n"})
 	bytes := transmute([]byte)line
 	sync.mutex_lock(&bridge_wrapper_push_mutex)
 	defer sync.mutex_unlock(&bridge_wrapper_push_mutex)
@@ -233,18 +240,19 @@ bridge_local_handle_wrapper_method :: proc(request_id, method, params: string, r
 		pane_id := bridge_local_extract_json_string(params, "pane_id", "")
 		if pane_id != "" do bridge_runtime_update_launch_pane(rec.agent_instance_id, pane_id)
 		runtime := "starting"
-		if phase == "ready" do runtime = "running"
+		// Wrapper "ready" only means the child process was launched. The agent is
+		// not running from Heimdall's perspective until explicit start-success.
 		if phase == "startup_failed" do runtime = "failed"
-		bridge_runtime_set_status(rec.agent_instance_id, runtime, "idle")
+		if runtime == "starting" { bridge_runtime_note_wrapper_signal(rec.agent_instance_id, "idle") } else { bridge_runtime_set_status(rec.agent_instance_id, runtime, "idle") }
 		return bridge_local_response_data(request_id, "{\"accepted\":true}")
 	}
 	if method == "wrapper.activity.report" {
 		activity := bridge_local_extract_json_string(params, "status", "idle")
-		bridge_runtime_set_status(rec.agent_instance_id, "running", activity)
+		bridge_runtime_note_wrapper_signal(rec.agent_instance_id, activity)
 		return bridge_local_response_data(request_id, "{\"accepted\":true}")
 	}
 	if method == "wrapper.liveness.ping" {
-		bridge_runtime_set_status(rec.agent_instance_id, "running", "idle")
+		bridge_runtime_note_wrapper_signal(rec.agent_instance_id, "idle")
 		return bridge_local_response_data(request_id, "{\"accepted\":true}")
 	}
 	if method == "wrapper.exited" {
@@ -257,8 +265,8 @@ bridge_local_handle_wrapper_method :: proc(request_id, method, params: string, r
 		// Subscription itself is a live signal. This is the bridge-restart recovery
 		// path: a ham-wrapper that outlived the bridge can reconnect with its
 		// persisted wrapper token and rehydrate bridge runtime state before the next
-		// liveness tick.
-		bridge_runtime_set_status(rec.agent_instance_id, "running", "idle")
+		// liveness tick, without implying start-success.
+		bridge_runtime_note_wrapper_signal(rec.agent_instance_id, "idle")
 		return bridge_local_response_data(request_id, "{\"accepted\":true,\"subscribed\":true}")
 	}
 	return bridge_local_response_error(request_id, "forbidden", "wrapper method is not allowlisted")
@@ -266,7 +274,9 @@ bridge_local_handle_wrapper_method :: proc(request_id, method, params: string, r
 
 bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec: Bridge_Local_Agent_Token_Record) -> string {
 	if method == "agent.start_success" {
-		bridge_runtime_set_status(rec.agent_instance_id, "running", "idle")
+		// Absolute transition: a valid instance token can mark the agent running from
+		// any prior bridge-local state (starting, failed, unreachable, stopped, etc.).
+		bridge_runtime_mark_start_success(rec.agent_instance_id)
 		if bridge_provider_test_mark_start_success(rec.agent_instance_id) do return bridge_local_response_data(request_id, "{\"accepted\":true,\"provider_test\":true}")
 	}
 	if strings.trim_space(rec.instance_token) == "" do return bridge_local_response_error(request_id, "unavailable", "Bridge-held instance token is unavailable")
