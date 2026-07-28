@@ -16,7 +16,7 @@ const target = new URL(targetRaw);
 const listenMatch = listen.match(/^([^:]+):(\d+)$/);
 
 if (!listenMatch) {
-  console.error('usage: node scripts/hub-tunnel-proxy.mjs [--listen 127.0.0.1:18080] [--target https://hub-dev.mundus.in]');
+  console.error('usage: node scripts/hub-tunnel-proxy.mjs [--listen 127.0.0.1:18080] [--target https://hub-dev.mundus.in] [--connect-host 192.168.0.200] [--connect-port 443]');
   process.exit(2);
 }
 if (target.protocol !== 'https:') {
@@ -28,6 +28,8 @@ const listenHost = listenMatch[1];
 const listenPort = Number(listenMatch[2]);
 const targetHost = target.hostname;
 const targetPort = Number(target.port || 443);
+const connectHost = argValue('--connect-host', process.env.HEIMDALL_TUNNEL_PROXY_CONNECT_HOST || targetHost);
+const connectPort = Number(argValue('--connect-port', process.env.HEIMDALL_TUNNEL_PROXY_CONNECT_PORT || String(targetPort)));
 const targetOrigin = `${target.protocol}//${target.host}`;
 
 function targetPath(incomingUrl) {
@@ -49,8 +51,8 @@ function filteredHeaders(headers) {
 
 const server = http.createServer((req, res) => {
   const upstream = https.request({
-    hostname: targetHost,
-    port: targetPort,
+    hostname: connectHost,
+    port: connectPort,
     servername: targetHost,
     method: req.method,
     path: targetPath(req.url),
@@ -73,8 +75,8 @@ const server = http.createServer((req, res) => {
 
 server.on('upgrade', (req, socket, head) => {
   const upstream = tls.connect({
-    host: targetHost,
-    port: targetPort,
+    host: connectHost,
+    port: connectPort,
     servername: targetHost,
   });
 
@@ -107,4 +109,7 @@ server.listen(listenPort, listenHost, () => {
   console.log(`[hub-tunnel-proxy] listening http://${listenHost}:${listenPort}`);
   console.log(`[hub-tunnel-proxy] forwarding HTTP -> ${targetOrigin}`);
   console.log(`[hub-tunnel-proxy] forwarding WS   -> ${targetOrigin.replace(/^https:/, 'wss:')}`);
+  if (connectHost !== targetHost || connectPort !== targetPort) {
+    console.log(`[hub-tunnel-proxy] TCP connect override ${connectHost}:${connectPort}; TLS SNI/Host/cert name ${targetHost}`);
+  }
 });
