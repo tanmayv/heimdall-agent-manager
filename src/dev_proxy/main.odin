@@ -235,7 +235,13 @@ proxy_tunnel_copy :: proc(src, dst: net.TCP_Socket) {
 }
 
 proxy_copy_response :: proc(client, upstream: net.TCP_Socket) {
-	_ = net.set_option(upstream, .Receive_Timeout, 5 * time.Second)
+	// The hub sends Connection: close + Content-Length and closes when done, so
+	// this read loop terminates on EOF. The timeout is only a backstop against a
+	// truly stuck upstream. It must be generous: some endpoints (e.g. the
+	// provider test, which launches an agent and waits for start-success) take
+	// several seconds to respond. A short 5s timeout dropped those responses
+	// mid-flight, surfacing as a 500 / "socket hang up" in the UI.
+	_ = net.set_option(upstream, .Receive_Timeout, 120 * time.Second)
 	buf: [8192]byte
 	for {
 		n, recv_err := net.recv_tcp(upstream, buf[:])
