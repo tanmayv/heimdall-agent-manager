@@ -4,14 +4,14 @@ import domain "odin_test:hub/domain"
 
 Agent_Save_Proc :: proc(ctx: rawptr, agent: domain.Agent) -> (domain.Agent, bool, domain.Domain_Error)
 Agent_Get_Proc :: proc(ctx: rawptr, agent_id: string) -> (domain.Agent, bool, domain.Domain_Error)
-Agent_List_By_Owner_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID) -> ([]domain.Agent, domain.Domain_Error)
+Agent_List_By_Owner_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID, limit: int, cursor: string) -> ([]domain.Agent, domain.Domain_Error)
 Agent_Save_Support_Proc :: proc(ctx: rawptr, support: domain.Agent_Bridge_Support) -> (domain.Agent_Bridge_Support, bool, domain.Domain_Error)
 Agent_Get_Support_Proc :: proc(ctx: rawptr, agent_id, bridge_id: string) -> (domain.Agent_Bridge_Support, bool, domain.Domain_Error)
 Agent_List_Support_Proc :: proc(ctx: rawptr, agent_id: string, owner_user_id: domain.User_ID) -> ([]domain.Agent_Bridge_Support, domain.Domain_Error)
 Agent_Delete_Support_Proc :: proc(ctx: rawptr, agent_id, bridge_id: string, owner_user_id: domain.User_ID) -> (bool, domain.Domain_Error)
 Agent_Save_Instance_Proc :: proc(ctx: rawptr, instance: domain.Agent_Instance) -> (domain.Agent_Instance, bool, domain.Domain_Error)
 Agent_Get_Instance_Proc :: proc(ctx: rawptr, instance_id: string) -> (domain.Agent_Instance, bool, domain.Domain_Error)
-Agent_List_Instances_By_Owner_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID) -> ([]domain.Agent_Instance, domain.Domain_Error)
+Agent_List_Instances_By_Owner_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID, limit: int, cursor: string) -> ([]domain.Agent_Instance, domain.Domain_Error)
 Agent_List_Instances_By_Bridge_Proc :: proc(ctx: rawptr, bridge_id: string) -> ([]domain.Agent_Instance, domain.Domain_Error)
 
 Agent_Repository :: struct {
@@ -39,9 +39,9 @@ agent_get :: proc(repo: ^Agent_Repository, agent_id: string) -> (domain.Agent, b
 	return repo.get(repo.ctx, agent_id)
 }
 
-agent_list_by_owner :: proc(repo: ^Agent_Repository, owner_user_id: domain.User_ID) -> ([]domain.Agent, domain.Domain_Error) {
+agent_list_by_owner :: proc(repo: ^Agent_Repository, owner_user_id: domain.User_ID, limit: int = 50, cursor: string = "") -> ([]domain.Agent, domain.Domain_Error) {
 	if repo == nil || repo.list_by_owner == nil do return nil, domain.domain_error(.Internal_Error, "agent repository is not configured")
-	return repo.list_by_owner(repo.ctx, owner_user_id)
+	return repo.list_by_owner(repo.ctx, owner_user_id, limit, cursor)
 }
 
 agent_save_support :: proc(repo: ^Agent_Repository, support: domain.Agent_Bridge_Support) -> (domain.Agent_Bridge_Support, bool, domain.Domain_Error) {
@@ -74,9 +74,9 @@ agent_get_instance :: proc(repo: ^Agent_Repository, instance_id: string) -> (dom
 	return repo.get_instance(repo.ctx, instance_id)
 }
 
-agent_list_instances_by_owner :: proc(repo: ^Agent_Repository, owner_user_id: domain.User_ID) -> ([]domain.Agent_Instance, domain.Domain_Error) {
+agent_list_instances_by_owner :: proc(repo: ^Agent_Repository, owner_user_id: domain.User_ID, limit: int = 50, cursor: string = "") -> ([]domain.Agent_Instance, domain.Domain_Error) {
 	if repo == nil || repo.list_instances_by_owner == nil do return nil, domain.domain_error(.Internal_Error, "agent repository is not configured")
-	return repo.list_instances_by_owner(repo.ctx, owner_user_id)
+	return repo.list_instances_by_owner(repo.ctx, owner_user_id, limit, cursor)
 }
 
 agent_list_instances_by_bridge :: proc(repo: ^Agent_Repository, bridge_id: string) -> ([]domain.Agent_Instance, domain.Domain_Error) {

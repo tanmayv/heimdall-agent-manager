@@ -10,9 +10,17 @@ Project_Handlers :: struct { auth: ^auth_service.Auth_Service, projects: ^projec
 
 list_projects_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Project_Handlers)(ctx); auth_ctx, ok, auth_resp := require_auth(h.auth, req); if !ok do return auth_resp
-	projects, err := project_service.list(h.projects, auth_ctx); if err.code != .None do return respond_error(err, req.request_id)
-	b := strings.builder_make(); strings.write_byte(&b, '['); for p, i in projects { if i > 0 do strings.write_byte(&b, ','); write_project_json(&b, p) }; strings.write_byte(&b, ']')
-	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
+	limit := query_int(req.query, "limit", 50)
+	if limit <= 0 do limit = 50
+	if limit > 200 do limit = 200
+	cursor := query_value(req.query, "cursor")
+	projects, err := project_service.list(h.projects, auth_ctx, limit, cursor); if err.code != .None do return respond_error(err, req.request_id)
+	b := strings.builder_make(); strings.write_byte(&b, '[')
+	next_cursor := ""
+	for p, i in projects { if i > 0 do strings.write_byte(&b, ','); write_project_json(&b, p); next_cursor = p.created_at }
+	strings.write_byte(&b, ']')
+	has_more := len(projects) >= limit
+	return respond_list(strings.to_string(b), contracts.API_Page{limit = limit, next_cursor = next_cursor if has_more else "", has_more = has_more}, req.request_id, auth_ctx_server_time(req))
 }
 
 create_project_handler :: proc(ctx: rawptr, req: Request) -> Response {

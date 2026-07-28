@@ -5,7 +5,7 @@ import domain "odin_test:hub/domain"
 Project_Get_Proc :: proc(ctx: rawptr, project_id: domain.Project_ID) -> (domain.Project, bool, domain.Domain_Error)
 Project_Save_Proc :: proc(ctx: rawptr, project: domain.Project) -> (domain.Project, bool, domain.Domain_Error)
 Project_Update_Proc :: proc(ctx: rawptr, project: domain.Project) -> (domain.Project, bool, domain.Domain_Error)
-Project_List_By_Owner_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID) -> ([]domain.Project, domain.Domain_Error)
+Project_List_By_Owner_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID, limit: int, cursor: string) -> ([]domain.Project, domain.Domain_Error)
 Project_Save_Bridge_Path_Proc :: proc(ctx: rawptr, path: domain.Project_Bridge_Path) -> (domain.Project_Bridge_Path, bool, domain.Domain_Error)
 Project_Get_Bridge_Path_Proc :: proc(ctx: rawptr, project_id: domain.Project_ID, bridge_id: string) -> (domain.Project_Bridge_Path, bool, domain.Domain_Error)
 Project_List_Bridge_Paths_Proc :: proc(ctx: rawptr, project_id: domain.Project_ID, owner_user_id: domain.User_ID) -> ([]domain.Project_Bridge_Path, domain.Domain_Error)
@@ -38,9 +38,9 @@ project_update :: proc(repo: ^Project_Repository, project: domain.Project) -> (d
 	return repo.update(repo.ctx, project)
 }
 
-project_list_by_owner :: proc(repo: ^Project_Repository, owner_user_id: domain.User_ID) -> ([]domain.Project, domain.Domain_Error) {
+project_list_by_owner :: proc(repo: ^Project_Repository, owner_user_id: domain.User_ID, limit: int = 50, cursor: string = "") -> ([]domain.Project, domain.Domain_Error) {
 	if repo == nil || repo.list_by_owner == nil do return nil, domain.domain_error(.Internal_Error, "project repository is not configured")
-	return repo.list_by_owner(repo.ctx, owner_user_id)
+	return repo.list_by_owner(repo.ctx, owner_user_id, limit, cursor)
 }
 
 project_save_bridge_path :: proc(repo: ^Project_Repository, path: domain.Project_Bridge_Path) -> (domain.Project_Bridge_Path, bool, domain.Domain_Error) {

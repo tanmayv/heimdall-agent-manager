@@ -1,83 +1,147 @@
-import type { ProjectAnchor } from '../daemonApi';
-import * as daemonApi from '../daemonApi';
-import { heimdallApi, withSessionQuery } from '../heimdallApi';
+import { heimdallApi } from '../heimdallApi';
+import { cookieJsonFetch, cookieMutation } from '../cookieFetch';
 
-export type { ProjectAnchor };
+export type ProjectBridgePath = {
+  bridge_id: string;
+  path: string;
+  is_validated?: boolean;
+  last_validated_at?: string;
+  validation_error?: string;
+};
 
-function auth(session: any) {
-  return { daemonUrl: session.daemonUrl, clientInstanceId: session.clientInstanceId, clientToken: session.clientToken };
-}
+export type Project = {
+  project_id: string;
+  name: string;
+  description?: string;
+  repo_url?: string;
+  vcs_kind?: 'none' | 'git' | 'jj' | string;
+  default_path: string;
+  is_default_conversations?: boolean;
+  created_at?: string;
+  updated_at?: string;
+  bridge_paths?: ProjectBridgePath[];
+};
 
 function projectTagId(project: any, fallback = '') {
-  return String(project?.projectId || project?.project_id || fallback || '');
+  return String(project?.project_id || project?.projectId || fallback || '');
 }
 
 export const projectsApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     listProjects: build.query<any, { scope?: string } | void>({
-      queryFn: withSessionQuery(async (_arg, { session }) => {
-        if (!session?.clientToken) return { projects: [] };
-        const data = await daemonApi.listProjects(auth(session));
-        const projects = [...(data.projects || [])].sort((left: any, right: any) => {
-          const diff = (left.order ?? 0) - (right.order ?? 0);
-          if (diff !== 0) return diff;
-          return (right.updatedUnixMs || right.createdUnixMs || 0) - (left.updatedUnixMs || left.createdUnixMs || 0);
-        });
-        return { ...data, projects };
-      }),
+      queryFn: async () => {
+        try {
+          const data = await cookieJsonFetch('/projects');
+          const projects = Array.isArray(data) ? data : (data?.projects || []);
+          return { data: { projects } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
       providesTags: (result) => [
         { type: 'Projects' as const, id: 'LIST' },
+        { type: 'SidebarProjects' as const, id: 'ALL' },
         ...((result?.projects || []).map((project: any) => ({ type: 'Project' as const, id: projectTagId(project) })).filter((tag: any) => Boolean(tag.id))),
       ],
     }),
     fetchProject: build.query<any, { projectId: string; scope?: string }>({
-      queryFn: withSessionQuery(async ({ projectId }, { session }) => {
-        if (!session?.clientToken || !projectId) return { project: null };
-        return daemonApi.showProject({ ...auth(session), projectId });
-      }),
-      providesTags: (_result, _error, { projectId }) => [{ type: 'Project' as const, id: projectId }],
-      async onQueryStarted(_arg, { dispatch, queryFulfilled }) {
+      queryFn: async ({ projectId }) => {
+        if (!projectId) return { data: { project: null, bridge_paths: [] } };
         try {
-          const { data } = await queryFulfilled;
-          const project = data?.project;
-          const id = projectTagId(project);
-          if (!id) return;
-          dispatch(projectsApi.util.updateQueryData('listProjects', undefined, (draft: any) => {
-            const rows = draft?.projects || (draft.projects = []);
-            const index = rows.findIndex((item: any) => projectTagId(item) === id);
-            if (index >= 0) rows[index] = project;
-            else rows.unshift(project);
-          }));
-        } catch (_error) {
-          // noop
+          const data = await cookieJsonFetch(`/projects/${encodeURIComponent(projectId)}`);
+          const project = data?.project || data;
+          const bridge_paths = project?.bridge_paths || data?.bridge_paths || [];
+          return { data: { project: { ...project, bridge_paths }, bridge_paths } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
         }
       },
+      providesTags: (_result, _error, { projectId }) => [{ type: 'Project' as const, id: projectId }],
     }),
-    createProject: build.mutation<any, { name: string; description?: string; anchors?: ProjectAnchor[] }>({
-      queryFn: withSessionQuery(async ({ name, description, anchors = [] }, { session }) => {
-        return daemonApi.createProject({ ...auth(session), name, description, anchors });
-      }),
-      invalidatesTags: [{ type: 'Projects' as const, id: 'LIST' }],
+    createProject: build.mutation<any, { name: string; description?: string; repo_url?: string; vcs_kind?: string; default_path?: string }>({
+      queryFn: async (payload) => {
+        try {
+          const data = await cookieMutation('/projects', 'POST', payload);
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: [
+        { type: 'Projects' as const, id: 'LIST' },
+        { type: 'SidebarProjects' as const, id: 'ALL' },
+      ],
     }),
-    updateProject: build.mutation<any, { projectId: string; name?: string; description?: string; anchors?: ProjectAnchor[] }>({
-      queryFn: withSessionQuery(async ({ projectId, name, description, anchors = [] }, { session }) => {
-        return daemonApi.updateProject({ ...auth(session), projectId, name, description, anchors });
-      }),
+    updateProject: build.mutation<any, { projectId: string; name?: string; description?: string; repo_url?: string; vcs_kind?: string; default_path?: string }>({
+      queryFn: async ({ projectId, ...payload }) => {
+        try {
+          const data = await cookieMutation(`/projects/${encodeURIComponent(projectId)}`, 'PATCH', payload);
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
       invalidatesTags: (_result, _error, { projectId }) => [
         { type: 'Project' as const, id: projectId },
         { type: 'Projects' as const, id: 'LIST' },
+        { type: 'SidebarProjects' as const, id: 'ALL' },
       ],
     }),
     deleteProject: build.mutation<any, { projectId: string }>({
-      queryFn: withSessionQuery(async ({ projectId }, { session }) => daemonApi.deleteProject({ ...auth(session), projectId })),
+      queryFn: async ({ projectId }) => {
+        try {
+          const data = await cookieMutation(`/projects/${encodeURIComponent(projectId)}`, 'DELETE');
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
       invalidatesTags: (_result, _error, { projectId }) => [
         { type: 'Project' as const, id: projectId },
         { type: 'Projects' as const, id: 'LIST' },
+        { type: 'SidebarProjects' as const, id: 'ALL' },
       ],
     }),
-    reorderProjects: build.mutation<any, { projectIds: string[] }>({
-      queryFn: withSessionQuery(async ({ projectIds }, { session }) => daemonApi.reorderProjects({ ...auth(session), projectIds })),
-      invalidatesTags: [{ type: 'Projects' as const, id: 'LIST' }],
+    setProjectBridgePath: build.mutation<any, { projectId: string; bridgeId: string; path: string }>({
+      queryFn: async ({ projectId, bridgeId, path }) => {
+        try {
+          const data = await cookieMutation(`/projects/${encodeURIComponent(projectId)}/bridge-paths/${encodeURIComponent(bridgeId)}`, 'PUT', { path });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { projectId }) => [
+        { type: 'Project' as const, id: projectId },
+        { type: 'ProjectBridgePaths' as const, id: projectId },
+      ],
+    }),
+    deleteProjectBridgePath: build.mutation<any, { projectId: string; bridgeId: string }>({
+      queryFn: async ({ projectId, bridgeId }) => {
+        try {
+          const data = await cookieMutation(`/projects/${encodeURIComponent(projectId)}/bridge-paths/${encodeURIComponent(bridgeId)}`, 'DELETE');
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { projectId }) => [
+        { type: 'Project' as const, id: projectId },
+        { type: 'ProjectBridgePaths' as const, id: projectId },
+      ],
+    }),
+    validateProjectBridgePath: build.mutation<any, { projectId: string; bridgeId: string }>({
+      queryFn: async ({ projectId, bridgeId }) => {
+        try {
+          const data = await cookieMutation(`/projects/${encodeURIComponent(projectId)}/bridge-paths/${encodeURIComponent(bridgeId)}/validate`, 'POST');
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { projectId }) => [
+        { type: 'Project' as const, id: projectId },
+      ],
     }),
   }),
 });
@@ -88,5 +152,7 @@ export const {
   useCreateProjectMutation,
   useUpdateProjectMutation,
   useDeleteProjectMutation,
-  useReorderProjectsMutation,
+  useSetProjectBridgePathMutation,
+  useDeleteProjectBridgePathMutation,
+  useValidateProjectBridgePathMutation,
 } = projectsApi;

@@ -1,4 +1,5 @@
 import { type FormEvent, useEffect, useMemo, useState } from 'react';
+import { cookieJsonFetch } from '../../api/cookieFetch';
 import { useListAgentIdentitiesQuery, useReconfigureAgentInstanceMutation, useRestartAgentInstanceMutation } from '../../api/endpoints/agents';
 import { normalizeBridgeCapabilities, useListAgentBridgeSupportQuery, useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 import { useCreateLaunchConversationMutation } from '../../api/endpoints/chats';
@@ -163,6 +164,7 @@ export default function ConversationLaunchComposer() {
   const [pendingProvider, setPendingProvider] = useState('');
   const [pendingTier, setPendingTier] = useState('');
   const [restartStatus, setRestartStatus] = useState('');
+  const [projectDetail, setProjectDetail] = useState<any>(null);
   const supportQuery = useListAgentBridgeSupportQuery({ agentId }, { skip: !agentId, refetchOnMountOrArgChange: true });
   const preselectedAgentId = useMemo(() => {
     const params = new URLSearchParams(getRouteSearch().replace(/^\?/, ''));
@@ -197,6 +199,22 @@ export default function ConversationLaunchComposer() {
 
   const selectedAgent = useMemo(() => agents.find((agent) => agent.agent_id === agentId), [agents, agentId]);
   const selectedProject = useMemo(() => projects.find((project) => project.project_id === projectId) || defaultProject(projects), [projects, projectId]);
+
+  useEffect(() => {
+    if (!projectId || projectId === SYNTHETIC_DEFAULT_PROJECT_ID || selectedProject?.is_default_conversations || selectedProject?.isDefaultConversations) {
+      setProjectDetail(null);
+      return;
+    }
+    let cancelled = false;
+    cookieJsonFetch(`/projects/${projectId}`)
+      .then((data) => {
+        if (!cancelled) setProjectDetail(data?.data || data || null);
+      })
+      .catch(() => {
+        if (!cancelled) setProjectDetail(null);
+      });
+    return () => { cancelled = true; };
+  }, [projectId, selectedProject]);
   const bridgesById = useMemo<Map<string, BridgeOption>>(() => new Map(bridges.map((bridge) => [bridge.bridge_id, bridge])), [bridges]);
   const bridgeOptions = useMemo(() => bridges.filter((bridge) => bridgeOnline(bridge) && bridgeCapabilityEntries(bridge).length > 0), [bridges]);
   const selectedBridge = bridgeId ? bridgesById.get(bridgeId) : undefined;
@@ -238,6 +256,15 @@ export default function ConversationLaunchComposer() {
   // unrunnable or flash the resolve warning — the options simply aren't ready.
   const capabilityDataLoading = Boolean(agentId) && (bridgesQuery.isLoading || bridgesQuery.isFetching || supportQuery.isLoading || supportQuery.isFetching) && bridges.length === 0;
   const hasCapableBridgeSupport = !agentId || capabilityDataLoading || Boolean(selectedBridge);
+  const effectiveBridgePathInfo = useMemo(() => {
+    if (!projectDetail || !selectedBridge) return null;
+    const bridgePaths: any[] = Array.isArray(projectDetail.bridge_paths) ? projectDetail.bridge_paths : Array.isArray(projectDetail.bridgePaths) ? projectDetail.bridgePaths : [];
+    const match = bridgePaths.find((bp: any) => String(bp.bridge_id || bp.bridgeId) === selectedBridge.bridge_id);
+    const effectivePath = match?.path || projectDetail.default_path || projectDetail.defaultPath || '';
+    const isValidated = Boolean(match?.is_validated || match?.isValidated);
+    return { effectivePath, isValidated };
+  }, [projectDetail, selectedBridge]);
+
   const canSend = status !== 'sending' && Boolean(agentId) && Boolean(selectedBridge) && launchPairSupported && body.trim().length > 0;
   const usingSyntheticDefault = selectedProject.project_id === SYNTHETIC_DEFAULT_PROJECT_ID;
   const hasPendingProviderTierChange = locked ? pendingProvider !== locked.provider || pendingTier !== locked.tier : false;
@@ -423,6 +450,16 @@ export default function ConversationLaunchComposer() {
             </select>
           </label>
         </div>
+        {effectiveBridgePathInfo && effectiveBridgePathInfo.effectivePath ? (
+          <div data-debug-id="new-convo-project-path-hint" className="mt-3 rounded-2xl bg-zinc-800/60 px-3 py-2 text-xs text-zinc-300">
+            Runs in: <code className="font-semibold text-zinc-100">{effectiveBridgePathInfo.effectivePath}</code>{' '}
+            {effectiveBridgePathInfo.isValidated ? (
+              <span className="font-semibold text-emerald-400">(✓ validated)</span>
+            ) : (
+              <span className="font-semibold text-amber-400">(⚠ path not validated on this bridge)</span>
+            )}
+          </div>
+        ) : null}
         {selectedBridge ? <p data-debug-id="launch-capability-note" className={`mt-3 rounded-2xl px-3 py-2 text-xs ${launchPairSupported ? 'bg-emerald-400/10 text-emerald-100' : 'bg-amber-400/10 text-amber-100'}`}>Will launch on <span className="font-semibold">{bridgeLabel(selectedBridge)}</span> with <span className="font-semibold">{launchProvider || '—'} / {launchTier || '—'}</span>. These values start from the bridge/agent defaults; change provider or tier here to override only this instance.</p> : <p data-debug-id="launch-capability-note" className="mt-3 rounded-2xl bg-amber-400/10 px-3 py-2 text-xs text-amber-100">Choose the Bridge to run this agent on.</p>}
       </fieldset>
 
@@ -438,7 +475,7 @@ export default function ConversationLaunchComposer() {
         <p data-debug-id="new-convo-no-runnable-agent-warning" className="mt-3 rounded-2xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">No runnable agents are available. Create an agent before starting a conversation.</p>
       )}
       {agentId && !hasCapableBridgeSupport && (
-        <p data-debug-id="new-convo-no-runnable-agent-warning" className="mt-3 rounded-2xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">Choose an online Bridge to run this agent on.</p>
+        <p data-debug-id="new-convo-no-bridge-warning" className="mt-3 rounded-2xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">Choose an online Bridge to run this agent on.</p>
       )}
       {error && <p data-debug-id="new-convo-error" className="mt-3 rounded-2xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-sm text-red-100">{error}</p>}
 

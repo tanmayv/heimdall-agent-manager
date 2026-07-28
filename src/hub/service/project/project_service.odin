@@ -190,10 +190,10 @@ get :: proc(service: ^Project_Service, auth: contracts.Auth_Context, project_id:
 	return project, true, domain.Domain_Error{}
 }
 
-list :: proc(service: ^Project_Service, auth: contracts.Auth_Context) -> ([]domain.Project, domain.Domain_Error) {
+list :: proc(service: ^Project_Service, auth: contracts.Auth_Context, limit: int = 50, cursor: string = "") -> ([]domain.Project, domain.Domain_Error) {
 	owner, ok, err := ownership.owner_from_auth(auth)
 	if !ok do return nil, err
-	return iface.project_list_by_owner(service.projects, owner)
+	return iface.project_list_by_owner(service.projects, owner, limit, cursor)
 }
 
 update :: proc(service: ^Project_Service, auth: contracts.Auth_Context, project_id: domain.Project_ID, input: Update_Project_Input) -> (domain.Project, bool, domain.Domain_Error) {

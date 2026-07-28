@@ -16,6 +16,8 @@ export type SidebarConversation = {
   title: string;
   unreadCount: number;
   updatedAt: string;
+  bridgeId?: string;
+  runtimeStatus?: string;
 };
 
 export type SidebarProject = {
@@ -34,6 +36,8 @@ function normalizeSidebarConversation(raw: any): SidebarConversation {
   const agentInstanceId = String(raw?.agent_instance_id || raw?.agentInstanceId || raw?.instance_id || '');
   const agentId = String(raw?.agent_id || raw?.agentId || raw?.agent || 'unknown-agent');
   const projectId = String(raw?.project_id || raw?.projectId || 'default-conversations');
+  const bridgeId = String(raw?.bridge_id || raw?.bridgeId || '').trim() || undefined;
+  const runtimeStatus = String(raw?.runtime_status || raw?.runtimeStatus || raw?.status || '').trim() || undefined;
   return {
     conversationId,
     agentId: agentId || 'unknown-agent',
@@ -43,6 +47,8 @@ function normalizeSidebarConversation(raw: any): SidebarConversation {
     title: String(raw?.title || raw?.last_message_preview || raw?.lastMessagePreview || agentInstanceId || conversationId || 'Untitled session'),
     unreadCount: asNumber(raw?.unread_count ?? raw?.unreadCount),
     updatedAt: String(raw?.updated_at || raw?.updatedAt || raw?.last_message_at || raw?.lastMessageAt || ''),
+    bridgeId,
+    runtimeStatus,
   };
 }
 

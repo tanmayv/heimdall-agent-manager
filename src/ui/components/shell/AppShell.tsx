@@ -9,9 +9,11 @@ import { useUserWebSocket } from '../../api/useUserWebSocket';
 import { cookieJsonFetch, cookieMutation } from '../../api/cookieFetch';
 import { useListAgentIdentitiesQuery } from '../../api/endpoints/agents';
 import { useListSidebarConversationsQuery, useListSidebarProjectsQuery, type SidebarConversation, type SidebarProject } from '../../api/endpoints/sidebar';
+import { useListBridgesQuery } from '../../api/endpoints/bridgeSupport';
 import { buildRouteHash, getRoutePathname } from '../../utils/appLocation';
 import { readLastSeenUserId, removeAppOwnedClientStorage, writeLastSeenUserId } from '../../utils/clientPersistence';
 import BridgesPanel from '../settings/BridgesPanel';
+import ProjectsPanel from '../settings/ProjectsPanel';
 import { AgentsPanel, NewAgentPage } from '../agents/AgentsPanel';
 import { AgentDetailPanel } from '../agents/AgentDetailPanel';
 import { ProviderEditorPage, ProvidersPanel } from '../settings/ProvidersPanel';
@@ -56,6 +58,8 @@ type ConversationSummary = {
   title: string;
   unreadCount: number;
   updatedAt: string;
+  bridgeId?: string;
+  runtimeStatus?: string;
 };
 
 type ProjectSummary = {
@@ -313,6 +317,8 @@ function sidebarConversationToSummary(c: SidebarConversation, agentNamesById: Ma
     title: c.title,
     unreadCount: c.unreadCount,
     updatedAt: c.updatedAt,
+    bridgeId: c.bridgeId,
+    runtimeStatus: c.runtimeStatus,
   };
 }
 
@@ -391,27 +397,146 @@ function UnreadBadge({ count, debugId }: { count: number; debugId: string }) {
   return <span data-debug-id={debugId} className="ml-auto inline-flex min-w-5 items-center justify-center rounded-full bg-sky-400 px-1.5 py-0.5 text-[10px] font-black text-black">{count > 99 ? '99+' : count}</span>;
 }
 
-function ProjectConversationTree({ groups }: { groups: ProjectGroup[] }) {
-  return (
-    <section data-debug-id="sidebar-project-agent-session-tree" className="mt-4 border-t border-white/10 pt-4">
-      <div className="mb-2 flex items-center justify-between px-1 text-[11px] font-bold uppercase tracking-[0.18em] text-zinc-500">
-        <span>Projects</span>
-      </div>
-      <div className="space-y-3">
-        {groups.map((projectGroup) => (
-          <div key={projectGroup.project.projectId} data-debug-id={`sidebar-project-group-${projectGroup.project.projectId}`} className="rounded-2xl border border-white/8 bg-black/15 p-2">
-            <div className="flex items-center gap-2 px-1 py-1 text-sm font-semibold text-zinc-100">
-              <span className="truncate">{projectGroup.project.name}</span>
+const BRIDGE_PALETTE = ['emerald', 'sky', 'violet', 'amber', 'rose', 'teal', 'fuchsia', 'lime'] as const;
 
-              <UnreadBadge count={projectGroup.unreadCount} debugId={`sidebar-project-unread-${projectGroup.project.projectId}`} />
-            </div>
-            {projectGroup.agents.length === 0 ? (
-              <div data-debug-id={`sidebar-project-empty-${projectGroup.project.projectId}`} className="px-1 py-2 text-xs text-zinc-500">No sessions yet.</div>
-            ) : (
-              <div className="mt-1 space-y-1">
-                {projectGroup.agents.map((agentGroup) => (
+function bridgeColorSlot(bridgeId?: string): string {
+  if (!bridgeId) return 'zinc';
+  let h = 0;
+  for (let i = 0; i < bridgeId.length; i++) {
+    h = (h * 31 + bridgeId.charCodeAt(i)) >>> 0;
+  }
+  return BRIDGE_PALETTE[h % BRIDGE_PALETTE.length];
+}
+
+type LiveState = 'live' | 'starting' | 'stopping' | 'off' | 'stale' | 'error' | 'none';
+
+function liveStateFromRuntime(runtimeStatus?: string): LiveState {
+  switch (String(runtimeStatus || '').toLowerCase()) {
+    case 'running': case 'idle': case 'busy': return 'live';
+    case 'launching': case 'starting': return 'starting';
+    case 'stopping': return 'stopping';
+    case 'stopped': return 'off';
+    case 'unreachable': return 'stale';
+    case 'failed': return 'error';
+    default: return 'none';
+  }
+}
+
+const DOT_COLOR_CLASSES: Record<string, { solid: string; half: string }> = {
+  emerald: { solid: 'bg-emerald-400', half: 'bg-emerald-400/60 border border-emerald-400' },
+  sky: { solid: 'bg-sky-400', half: 'bg-sky-400/60 border border-sky-400' },
+  violet: { solid: 'bg-violet-400', half: 'bg-violet-400/60 border border-violet-400' },
+  amber: { solid: 'bg-amber-400', half: 'bg-amber-400/60 border border-amber-400' },
+  rose: { solid: 'bg-rose-400', half: 'bg-rose-400/60 border border-rose-400' },
+  teal: { solid: 'bg-teal-400', half: 'bg-teal-400/60 border border-teal-400' },
+  fuchsia: { solid: 'bg-fuchsia-400', half: 'bg-fuchsia-400/60 border border-fuchsia-400' },
+  lime: { solid: 'bg-lime-400', half: 'bg-lime-400/60 border border-lime-400' },
+  zinc: { solid: 'bg-zinc-500', half: 'bg-zinc-500/60' },
+};
+
+function StatusDot({
+  bridgeId,
+  runtimeStatus,
+  debugId,
+  label,
+}: {
+  bridgeId?: string;
+  runtimeStatus?: string;
+  debugId?: string;
+  label?: string;
+}) {
+  const state = liveStateFromRuntime(runtimeStatus);
+  const isLive = state === 'live';
+  const isStarting = state === 'starting' || state === 'stopping';
+  const isRunning = isLive || isStarting;
+  const colorKey = isRunning ? bridgeColorSlot(bridgeId) : 'zinc';
+  const colorStyle = DOT_COLOR_CLASSES[colorKey] || DOT_COLOR_CLASSES.zinc;
+
+  let tooltip = label ? `${label} · ` : '';
+  tooltip += isRunning ? `running on ${bridgeId || 'unknown bridge'}` : 'not running';
+  if (runtimeStatus) tooltip += ` (${runtimeStatus})`;
+
+  let dot;
+  if (isLive) {
+    dot = <span className={`h-2 w-2 rounded-full ${colorStyle.solid} animate-pulse`} />;
+  } else if (isStarting) {
+    dot = <span className={`h-2 w-2 rounded-full ${colorStyle.half} animate-pulse`} />;
+  } else {
+    dot = <span className="h-2 w-2 rounded-full border border-zinc-500 bg-transparent" />;
+  }
+
+  return (
+    <span
+      data-debug-id={debugId}
+      data-bridge-color={colorKey}
+      data-live-state={state}
+      title={tooltip}
+      aria-label={tooltip}
+      className="inline-flex items-center justify-center shrink-0"
+    >
+      {dot}
+    </span>
+  );
+}
+
+function ProjectGroupItem({ projectGroup }: { projectGroup: ProjectGroup }) {
+  const projectId = projectGroup.project.projectId;
+  const storageKey = `heimdall:project-collapsed:${projectId}`;
+  const [collapsed, setCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(storageKey) === 'true';
+    } catch (_err) {
+      return false;
+    }
+  });
+
+  const toggleCollapsed = () => {
+    setCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem(storageKey, String(next));
+      } catch (_err) {}
+      return next;
+    });
+  };
+
+  return (
+    <div data-debug-id={`sidebar-project-group-${projectId}`} className="rounded-2xl border border-white/8 bg-black/15 p-2">
+      <div className="flex items-center justify-between gap-2 px-1 py-1">
+        <button
+          type="button"
+          data-debug-id={`sidebar-project-toggle-btn-${projectId}`}
+          onClick={toggleCollapsed}
+          aria-expanded={!collapsed}
+          aria-controls={`sidebar-project-body-${projectId}`}
+          className="flex min-w-0 flex-1 items-center gap-1.5 text-left text-sm font-semibold text-zinc-100 hover:text-white"
+        >
+          <span data-debug-id={`sidebar-project-chevron-${projectId}`} className="inline-block w-4 text-center text-xs text-zinc-400">
+            {collapsed ? '▸' : '▾'}
+          </span>
+          <span className="truncate">{projectGroup.project.name}</span>
+        </button>
+        <UnreadBadge count={projectGroup.unreadCount} debugId={`sidebar-project-unread-${projectId}`} />
+      </div>
+      {!collapsed && (
+        <div id={`sidebar-project-body-${projectId}`} data-debug-id={`sidebar-project-body-${projectId}`}>
+          {projectGroup.agents.length === 0 ? (
+            <div data-debug-id={`sidebar-project-empty-${projectId}`} className="px-1 py-2 text-xs text-zinc-500">No sessions yet.</div>
+          ) : (
+            <div className="mt-1 space-y-1">
+              {projectGroup.agents.map((agentGroup) => {
+                const activeSession = agentGroup.sessions.find((s) => liveStateFromRuntime(s.conversation.runtimeStatus) === 'live')
+                  || agentGroup.sessions.find((s) => liveStateFromRuntime(s.conversation.runtimeStatus) === 'starting')
+                  || agentGroup.sessions[0];
+                return (
                   <div key={agentGroup.agentId} data-debug-id={`sidebar-agent-group-${agentGroup.agentId}`} className="rounded-xl bg-white/[0.03] px-2 py-1.5">
                     <div className="flex items-center gap-2 text-xs font-semibold text-zinc-300">
+                      <StatusDot
+                        bridgeId={activeSession?.conversation.bridgeId}
+                        runtimeStatus={activeSession?.conversation.runtimeStatus}
+                        debugId={`sidebar-agent-status-dot-${agentGroup.agentId}`}
+                        label={agentGroup.agentName}
+                      />
                       <span className="min-w-0 flex-1 truncate">{agentGroup.agentName}</span>
                       <a
                         data-debug-id={`sidebar-agent-new-conversation-${agentGroup.agentId}`}
@@ -430,6 +555,12 @@ function ProjectConversationTree({ groups }: { groups: ProjectGroup[] }) {
                           href={shellHash(`/conversations/${conversation.conversationId}`)}
                           className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-[12px] text-zinc-400 hover:bg-white/8 hover:text-white"
                         >
+                          <StatusDot
+                            bridgeId={conversation.bridgeId}
+                            runtimeStatus={conversation.runtimeStatus}
+                            debugId={`sidebar-session-status-dot-${conversation.conversationId}`}
+                            label={displayConversationTitle(conversation)}
+                          />
                           <span className="min-w-0 flex-1 truncate">{displayConversationTitle(conversation)}</span>
                           {displayConversationMeta(conversation) ? <span className="shrink-0 text-[10px] text-zinc-600">{displayConversationMeta(conversation)}</span> : null}
                           <UnreadBadge count={conversation.unreadCount} debugId={`sidebar-session-unread-${conversation.conversationId}`} />
@@ -437,10 +568,45 @@ function ProjectConversationTree({ groups }: { groups: ProjectGroup[] }) {
                       ))}
                     </div>
                   </div>
-                ))}
-              </div>
-            )}
-          </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProjectConversationTree({ groups }: { groups: ProjectGroup[] }) {
+  const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 10000 });
+  const bridges = bridgesQuery.data?.bridges || [];
+
+  return (
+    <section data-debug-id="sidebar-project-agent-session-tree" className="mt-4 border-t border-white/10 pt-4">
+      <div className="mb-2 flex items-center justify-between px-1 text-[11px] font-bold uppercase tracking-[0.18em] text-zinc-500">
+        <span>Projects</span>
+      </div>
+      {bridges.length > 0 && (
+        <div data-debug-id="sidebar-bridge-legend" className="mb-3 flex flex-wrap items-center gap-2 px-1 text-[11px] text-zinc-400">
+          <span className="font-semibold text-zinc-500">Bridges:</span>
+          {bridges.map((b: any) => {
+            const bridgeId = String(b.bridge_id || b.bridgeId || b.id || '');
+            const label = b.label || b.machine_hostname || bridgeId;
+            const slot = bridgeColorSlot(bridgeId);
+            const solid = DOT_COLOR_CLASSES[slot]?.solid || 'bg-zinc-500';
+            return (
+              <span key={bridgeId} data-debug-id={`sidebar-bridge-legend-item-${bridgeId}`} className="inline-flex items-center gap-1">
+                <span className={`h-2 w-2 rounded-full ${solid}`} />
+                <span>{label}</span>
+              </span>
+            );
+          })}
+        </div>
+      )}
+      <div className="space-y-3">
+        {groups.map((projectGroup) => (
+          <ProjectGroupItem key={projectGroup.project.projectId} projectGroup={projectGroup} />
         ))}
       </div>
     </section>
@@ -596,17 +762,7 @@ function AccessDenied() {
   );
 }
 
-function ProjectsSettingsPanel() {
-  const [projects, setProjects] = useState<any[]>([]);
-  const [name, setName] = useState('');
-  const [description, setDescription] = useState('');
-  const [error, setError] = useState('');
-  const [loading, setLoading] = useState(true);
-  async function load() { setLoading(true); setError(''); try { const rows = await cookieJsonFetch('/projects'); setProjects(Array.isArray(rows) ? rows : []); } catch (err: any) { setError(String(err?.message || err)); } finally { setLoading(false); } }
-  useEffect(() => { void load(); }, []);
-  async function createProject() { if (!name.trim()) return; setError(''); try { await cookieMutation('/projects', 'POST', { name: name.trim(), description }); setName(''); setDescription(''); await load(); } catch (err: any) { setError(String(err?.message || err)); } }
-  return <div data-debug-id="settings-projects-panel" className="w-full max-w-4xl space-y-4 text-left"><h2 className="text-xl font-semibold text-white">Projects</h2><div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4"><div className="grid gap-3 sm:grid-cols-2"><input data-debug-id="settings-project-name-input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Website rewrite" className="min-h-[44px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" /><input data-debug-id="settings-project-description-input" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Frontend migration project" className="min-h-[44px] rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400" /></div><button data-debug-id="settings-project-create-btn" type="button" onClick={() => void createProject()} disabled={!name.trim()} className="mt-3 min-h-[44px] w-full rounded-xl bg-sky-400 px-4 py-2 text-sm font-semibold text-black disabled:opacity-50 sm:w-auto">Create project</button></div>{error ? <div className="rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{error}</div> : null}{loading ? <div className="text-sm text-zinc-500">Loading projects…</div> : <div className="space-y-2">{projects.map((project) => <div key={project.project_id || project.projectId || project.id} data-debug-id={`settings-project-row-${project.project_id || project.projectId || project.id}`} className="rounded-xl border border-white/10 bg-black/20 p-3"><div className="break-words font-semibold text-zinc-100">{project.name || project.title || project.project_id}</div><div className="mt-1 break-all text-xs text-zinc-500">{project.project_id || project.projectId || project.id} · {project.repo_url || project.repoUrl || 'no repo'}</div></div>)}</div>}</div>;
-}
+
 
 function MemorySettingsPanel() {
   const [records, setRecords] = useState<any[]>([]); const [error, setError] = useState(''); const [loading, setLoading] = useState(true);
@@ -662,7 +818,7 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
         ) : path.startsWith('/settings/providers/') && path.endsWith('/edit') ? (
           <ProviderEditorPage providerName={decodeSegment(path.slice('/settings/providers/'.length, -'/edit'.length))} />
         ) : path === '/settings/projects' ? (
-          <ProjectsSettingsPanel />
+          <ProjectsPanel />
         ) : path === '/settings/memory' ? (
           <MemorySettingsPanel />
         ) : path === '/settings/defaults' ? (

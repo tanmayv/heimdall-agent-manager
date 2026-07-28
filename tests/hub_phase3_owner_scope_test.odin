@@ -38,7 +38,7 @@ proj_update :: proc(ctx: rawptr, project: domain.Project) -> (domain.Project, bo
 	for i in 0..<repo.project_count { if repo.projects[i].project_id == project.project_id { repo.projects[i] = project; return project, true, domain.Domain_Error{} } }
 	return domain.Project{}, false, domain.domain_error(.Not_Found, "project not found")
 }
-proj_list_by_owner :: proc(ctx: rawptr, owner_user_id: domain.User_ID) -> ([]domain.Project, domain.Domain_Error) {
+proj_list_by_owner :: proc(ctx: rawptr, owner_user_id: domain.User_ID, limit: int, cursor: string) -> ([]domain.Project, domain.Domain_Error) {
 	repo := (^Fake_Repo)(ctx)
 	out := make([dynamic]domain.Project)
 	for i in 0..<repo.project_count { if repo.projects[i].owner_user_id == owner_user_id do append(&out, repo.projects[i]) }
@@ -68,8 +68,8 @@ main :: proc() {
 	ids := platform.ID_Generator{ctx = rawptr(&repo_data), generate = fixed_id_generate}
 	project_repo := iface.Project_Repository{ctx = rawptr(&repo_data), get = proj_get, save = proj_save, update = proj_update, list_by_owner = proj_list_by_owner}
 	task_repo := iface.Taskchain_Repository{ctx = rawptr(&repo_data), get_chain = chain_get, save_chain = chain_save, save_task = task_save, get_task = task_get}
-	projects := project_service.new_project_service(&project_repo, &clock, &ids)
-	taskchains := taskchain_service.new_taskchain_service(&task_repo, &clock, &ids)
+	projects := project_service.new_project_service(&project_repo, nil, &clock, &ids)
+	taskchains := taskchain_service.new_taskchain_service(&task_repo, nil, &clock, &ids)
 	auth_a := contracts.Auth_Context{kind = .Trusted_Proxy, user_id = "alice"}
 	auth_b := contracts.Auth_Context{kind = .Trusted_Proxy, user_id = "bob"}
 

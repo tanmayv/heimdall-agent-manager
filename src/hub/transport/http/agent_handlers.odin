@@ -18,12 +18,18 @@ list_agents_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
 	if !ok do return auth_resp
-	agents, err := agent_service.list_agents(h.agents, auth_ctx)
+	limit := query_int(req.query, "limit", 50)
+	if limit <= 0 do limit = 50
+	if limit > 200 do limit = 200
+	cursor := query_value(req.query, "cursor")
+	agents, err := agent_service.list_agents(h.agents, auth_ctx, limit, cursor)
 	if err.code != .None do return respond_error(err, req.request_id)
 	b := strings.builder_make(); strings.write_byte(&b, '[')
-	for agent, i in agents { if i > 0 do strings.write_byte(&b, ','); write_agent_json(&b, h.agents, agent) }
+	next_cursor := ""
+	for agent, i in agents { if i > 0 do strings.write_byte(&b, ','); write_agent_json(&b, h.agents, agent); next_cursor = agent.created_at }
 	strings.write_byte(&b, ']')
-	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
+	has_more := len(agents) >= limit
+	return respond_list(strings.to_string(b), contracts.API_Page{limit = limit, next_cursor = next_cursor if has_more else "", has_more = has_more}, req.request_id, auth_ctx_server_time(req))
 }
 
 create_agent_handler :: proc(ctx: rawptr, req: Request) -> Response {
@@ -122,12 +128,18 @@ list_agent_instances_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Handlers)(ctx)
 	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
 	if !ok do return auth_resp
-	instances, err := agent_service.list_instances_filtered(h.agents, auth_ctx, agent_service.List_Instances_Filter{agent_id = query_value(req.query, "agent_id"), bridge_id = query_value(req.query, "bridge_id"), runtime_status = query_value(req.query, "runtime_status")})
+	limit := query_int(req.query, "limit", 50)
+	if limit <= 0 do limit = 50
+	if limit > 200 do limit = 200
+	cursor := query_value(req.query, "cursor")
+	instances, err := agent_service.list_instances_filtered(h.agents, auth_ctx, agent_service.List_Instances_Filter{agent_id = query_value(req.query, "agent_id"), bridge_id = query_value(req.query, "bridge_id"), runtime_status = query_value(req.query, "runtime_status")}, limit, cursor)
 	if err.code != .None do return respond_error(err, req.request_id)
 	b := strings.builder_make(); strings.write_byte(&b, '[')
-	for inst, i in instances { if i > 0 do strings.write_byte(&b, ','); write_agent_instance_json(&b, inst) }
+	next_cursor := ""
+	for inst, i in instances { if i > 0 do strings.write_byte(&b, ','); write_agent_instance_json(&b, inst); next_cursor = inst.created_at }
 	strings.write_byte(&b, ']')
-	return respond_list(strings.to_string(b), contracts.API_Page{limit = contracts.API_DEFAULT_PAGE_LIMIT, has_more = false}, req.request_id, auth_ctx_server_time(req))
+	has_more := len(instances) >= limit
+	return respond_list(strings.to_string(b), contracts.API_Page{limit = limit, next_cursor = next_cursor if has_more else "", has_more = has_more}, req.request_id, auth_ctx_server_time(req))
 }
 
 create_agent_instance_handler :: proc(ctx: rawptr, req: Request) -> Response {
@@ -281,8 +293,7 @@ write_agent_instance_json :: proc(b: ^strings.Builder, inst: domain.Agent_Instan
 }
 
 i32_to_string_http :: proc(v: int) -> string {
-	if v == 0 do return "0"
-	return strings.clone(fmt.tprintf("%d", v))
+	return fmt.tprintf("%d", v)
 }
 
 write_support_json :: proc(b: ^strings.Builder, s: domain.Agent_Bridge_Support) {
@@ -291,6 +302,8 @@ write_support_json :: proc(b: ^strings.Builder, s: domain.Agent_Bridge_Support) 
 	strings.write_string(b, "\",\"enabled\":"); strings.write_string(b, "true" if s.enabled else "false")
 	strings.write_string(b, ",\"provider\":\""); write_handler_json_string(b, s.provider)
 	strings.write_string(b, "\",\"tier\":\""); write_handler_json_string(b, s.tier)
-	strings.write_string(b, "\",\"priority\":0,\"max_instances\":0,\"updated_at\":\""); write_handler_json_string(b, s.updated_at)
+	strings.write_string(b, "\",\"priority\":"); strings.write_string(b, i32_to_string_http(s.priority))
+	strings.write_string(b, ",\"max_instances\":"); strings.write_string(b, i32_to_string_http(s.max_instances))
+	strings.write_string(b, ",\"updated_at\":\""); write_handler_json_string(b, s.updated_at)
 	strings.write_string(b, "\"}")
 }

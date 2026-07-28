@@ -83,10 +83,10 @@ create_agent :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, inpu
 	return iface.agent_save(service.agents, agent)
 }
 
-list_agents :: proc(service: ^Agent_Service, auth: contracts.Auth_Context) -> ([]domain.Agent, domain.Domain_Error) {
+list_agents :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, limit: int = 50, cursor: string = "") -> ([]domain.Agent, domain.Domain_Error) {
 	owner, ok, err := ownership.owner_from_auth(auth)
 	if !ok do return nil, err
-	return iface.agent_list_by_owner(service.agents, owner)
+	return iface.agent_list_by_owner(service.agents, owner, limit, cursor)
 }
 
 get_agent :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agent_id: string) -> (domain.Agent, bool, domain.Domain_Error) {
@@ -223,14 +223,16 @@ create_instance :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, i
 	return saved, true, domain.Domain_Error{}
 }
 
-list_instances :: proc(service: ^Agent_Service, auth: contracts.Auth_Context) -> ([]domain.Agent_Instance, domain.Domain_Error) {
-	return list_instances_filtered(service, auth, List_Instances_Filter{})
+list_instances :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, limit: int = 50, cursor: string = "") -> ([]domain.Agent_Instance, domain.Domain_Error) {
+	return list_instances_filtered(service, auth, List_Instances_Filter{}, limit, cursor)
 }
 
-list_instances_filtered :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, filter: List_Instances_Filter) -> ([]domain.Agent_Instance, domain.Domain_Error) {
+list_instances_filtered :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, filter: List_Instances_Filter, limit: int = 50, cursor: string = "") -> ([]domain.Agent_Instance, domain.Domain_Error) {
 	owner, ok, err := ownership.owner_from_auth(auth)
 	if !ok do return nil, err
-	instances, list_err := iface.agent_list_instances_by_owner(service.agents, owner)
+	has_filter := filter.agent_id != "" || filter.bridge_id != "" || filter.runtime_status != ""
+	fetch_limit := limit if !has_filter else max(limit * 10, 500)
+	instances, list_err := iface.agent_list_instances_by_owner(service.agents, owner, fetch_limit, cursor)
 	if list_err.code != .None do return nil, list_err
 	out := make([dynamic]domain.Agent_Instance)
 	for inst in instances {
@@ -244,6 +246,7 @@ list_instances_filtered :: proc(service: ^Agent_Service, auth: contracts.Auth_Co
 			}
 		}
 		append(&out, inst)
+		if len(out) >= limit do break
 	}
 	return out[:], domain.Domain_Error{}
 }
@@ -259,7 +262,7 @@ active_instance_count_for_bridge :: proc(service: ^Agent_Service, bridge_id: str
 
 active_instance_count_for_agent :: proc(service: ^Agent_Service, agent: domain.Agent) -> int {
 	if service == nil || service.agents == nil do return 0
-	instances, err := iface.agent_list_instances_by_owner(service.agents, agent.owner_user_id)
+	instances, err := iface.agent_list_instances_by_owner(service.agents, agent.owner_user_id, 1000, "")
 	if err.code != .None do return 0
 	count := 0
 	for inst in instances { if inst.agent_id == agent.agent_id && runtime_expected_active(inst.runtime_status) do count += 1 }

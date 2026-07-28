@@ -36,13 +36,21 @@ agent_get_sqlite :: proc(ctx: rawptr, agent_id: string) -> (domain.Agent, bool, 
 	return agent_from_stmt(stmt), true, domain.Domain_Error{}
 }
 
-agent_list_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID) -> ([]domain.Agent, domain.Domain_Error) {
+agent_list_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID, limit: int, cursor: string) -> ([]domain.Agent, domain.Domain_Error) {
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
-	query := "SELECT agent_id, owner_user_id, name, slug, template_id, default_provider, default_tier, instructions, state, created_at, updated_at FROM agents WHERE owner_user_id = ? ORDER BY updated_at DESC;"
+	effective_limit := limit; if effective_limit <= 0 do effective_limit = 50
+	query := "SELECT agent_id, owner_user_id, name, slug, template_id, default_provider, default_tier, instructions, state, created_at, updated_at FROM agents WHERE owner_user_id = ? ORDER BY created_at DESC, agent_id DESC LIMIT ?;"
+	if cursor != "" do query = "SELECT agent_id, owner_user_id, name, slug, template_id, default_provider, default_tier, instructions, state, created_at, updated_at FROM agents WHERE owner_user_id = ? AND created_at < ? ORDER BY created_at DESC, agent_id DESC LIMIT ?;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare agent list")
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, string(owner_user_id))
+	if cursor != "" {
+		bind_text(stmt, 2, cursor)
+		bind_text(stmt, 3, i32_to_string(effective_limit))
+	} else {
+		bind_text(stmt, 2, i32_to_string(effective_limit))
+	}
 	out := make([dynamic]domain.Agent)
 	for sqlite3_step(stmt) == SQLITE_ROW do append(&out, agent_from_stmt(stmt))
 	return out[:], domain.Domain_Error{}
@@ -115,13 +123,21 @@ agent_get_instance_sqlite :: proc(ctx: rawptr, instance_id: string) -> (domain.A
 	return instance_from_stmt(stmt), true, domain.Domain_Error{}
 }
 
-agent_list_instances_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID) -> ([]domain.Agent_Instance, domain.Domain_Error) {
+agent_list_instances_by_owner_sqlite :: proc(ctx: rawptr, owner_user_id: domain.User_ID, limit: int, cursor: string) -> ([]domain.Agent_Instance, domain.Domain_Error) {
 	impl := (^Agent_Repo_SQLite)(ctx)
 	stmt: sqlite3_stmt = nil
-	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, provider, tier, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, created_at, updated_at, started_at, stopped_at, last_seen_at FROM agent_instances WHERE owner_user_id = ? ORDER BY updated_at DESC;"
+	effective_limit := limit; if effective_limit <= 0 do effective_limit = 50
+	query := "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, provider, tier, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, created_at, updated_at, started_at, stopped_at, last_seen_at FROM agent_instances WHERE owner_user_id = ? ORDER BY created_at DESC, agent_instance_id DESC LIMIT ?;"
+	if cursor != "" do query = "SELECT agent_instance_id, owner_user_id, agent_id, bridge_id, provider, tier, project_id, project_path, chain_id, conversation_id, runtime_status, startup_status, activity_status, status_message, last_applied_seq, run_count, created_at, updated_at, started_at, stopped_at, last_seen_at FROM agent_instances WHERE owner_user_id = ? AND created_at < ? ORDER BY created_at DESC, agent_instance_id DESC LIMIT ?;"
 	if sqlite3_prepare_v2(impl.conn.db, cstring(raw_data(query)), -1, &stmt, nil) != SQLITE_OK do return nil, domain.domain_error(.Internal_Error, "failed to prepare instance list")
 	defer sqlite3_finalize(stmt)
 	bind_text(stmt, 1, string(owner_user_id))
+	if cursor != "" {
+		bind_text(stmt, 2, cursor)
+		bind_text(stmt, 3, i32_to_string(effective_limit))
+	} else {
+		bind_text(stmt, 2, i32_to_string(effective_limit))
+	}
 	out := make([dynamic]domain.Agent_Instance)
 	for sqlite3_step(stmt) == SQLITE_ROW do append(&out, instance_from_stmt(stmt))
 	return out[:], domain.Domain_Error{}
