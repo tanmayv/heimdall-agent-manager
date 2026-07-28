@@ -75,7 +75,9 @@ if (process.platform === 'linux') {
 // In UNPACKAGED mode (Nix/dev) macOS otherwise shows "Electron"; setting the name
 // AND installing a custom app menu whose first submenu is the app name (below) is
 // what actually renames the menu-bar entry.
+process.title = APP_DISPLAY_NAME;
 app.setName(APP_DISPLAY_NAME);
+app.setAppUserModelId?.('works.earendil.heimdall');
 
 // Keep Electron state namespaced under "heimdall-ui" (so it doesn't collide with
 // the ham daemon/wrapper config dir at <appData>/heimdall/, and so existing
@@ -109,12 +111,20 @@ function createWindow() {
     },
   });
 
+  const forceWindowTitle = () => {
+    win.setTitle(APP_DISPLAY_NAME);
+    win.webContents.executeJavaScript(`document.title = ${JSON.stringify(APP_DISPLAY_NAME)}`, true).catch(() => undefined);
+  };
+
   // The renderer's <title> would otherwise override our window title once the
   // page loads; force it back to the product name.
+  win.setTitle(APP_DISPLAY_NAME);
   win.on('page-title-updated', (event: any) => {
     event.preventDefault();
-    win.setTitle(APP_DISPLAY_NAME);
+    forceWindowTitle();
   });
+  win.once('ready-to-show', forceWindowTitle);
+  win.webContents.on('did-finish-load', forceWindowTitle);
 
   if (isDev) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL || 'http://127.0.0.1:5173');
@@ -215,6 +225,7 @@ app.whenReady().then(async () => {
   }
 
   // About-panel identity (macOS shows this from the app menu > About).
+  app.setName(APP_DISPLAY_NAME);
   app.setAboutPanelOptions?.({ applicationName: APP_DISPLAY_NAME });
   installAppMenu();
 
