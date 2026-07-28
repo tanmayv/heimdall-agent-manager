@@ -71,13 +71,30 @@ export default function BridgesPanel() {
     return statusLabel(bridge) === 'online' && normalizeBridgeCapabilities(bridge).length > 0;
   }
 
+  function configuredHubUrl(): string {
+    const explicit = String(
+      resultEnv('VITE_HEIMDALL_HUB_API_URL') ||
+      resultEnv('VITE_HEIMDALL_HUB_URL') ||
+      (typeof window !== 'undefined' ? ((window as any).odinApi?.hubApiBaseUrl || '') : '')
+    ).trim().replace(/\/$/, '');
+    if (explicit) return explicit;
+    if (typeof window === 'undefined') return '';
+    const { protocol, hostname, port } = window.location;
+    if (hostname.startsWith('heimdall.')) return `${protocol}//hub.${hostname.slice('heimdall.'.length)}${port ? `:${port}` : ''}`;
+    return window.location.origin;
+  }
+
+  function resultEnv(key: string): string {
+    return String((import.meta as any).env?.[key] || '');
+  }
+
   function buildSetupCommand(result: any): string {
     const responseCommand = String(result?.setup_command || '');
-    const url = result?.hub_url || result?.daemon_url || (typeof window !== 'undefined' ? window.location.origin : '');
+    const url = String(result?.hub_url || result?.daemon_url || configuredHubUrl()).replace(/\/$/, '');
     if (responseCommand && !responseCommand.includes('$HAM_HUB_URL') && responseCommand.includes(String(result?.enrollment_token || ''))) return responseCommand;
     if (responseCommand && !responseCommand.includes('$HAM_HUB_URL')) return `${responseCommand} \\\n  --enrollment-token ${result?.enrollment_token || ''}`;
     const token = result?.enrollment_token || '';
-    return `ham-bridge enroll --hub ${url} \\\n  --enrollment-token ${token}`;
+    return `ham-bridge enroll --hub ${url || '<hub-url>'} \\\n  --enrollment-token ${token}`;
   }
 
   async function handleCreateEnrollment() {
