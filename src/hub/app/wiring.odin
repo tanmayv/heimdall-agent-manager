@@ -81,7 +81,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	bridge_command_sink := bridge_runtime_service.new_bridge_command_sink(&graph.bridge_runtime_registry)
 	graph.agents = agent_service.new_agent_service_with_runtime(&graph.repos.agents, &graph.repos.bridges, &graph.repos.projects, &graph.repos.content, &graph.repos.taskchains, bridge_command_sink, &graph.bridge_runtime_registry, &graph.clock, &graph.ids)
 	graph.projects = project_service.new_project_service_with_command_sink(&graph.repos.projects, &graph.repos.bridges, bridge_command_sink, &graph.clock, &graph.ids)
-	graph.content = content_service.new_content_service(&graph.repos.content, &graph.repos.agents, &graph.repos.projects, &graph.repos.taskchains, &graph.clock, &graph.ids)
+	graph.content = content_service.new_content_service_with_runtime(&graph.repos.content, &graph.repos.agents, &graph.repos.projects, &graph.repos.taskchains, bridge_command_sink, &graph.clock, &graph.ids)
 	graph.taskchains = taskchain_service.new_taskchain_service(&graph.repos.taskchains, &graph.repos.agents, &graph.clock, &graph.ids)
 	graph.search = search_service.new_search_service(&graph.repos.search)
 	graph.auth = auth_service.new_auth_service_with_tokens(auth_service.Trusted_Proxy_Config{
@@ -185,6 +185,7 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/status", rawptr(&graph.taskchain_handlers), http.change_task_status_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/task-chains/*/tasks/*/nudge", rawptr(&graph.taskchain_handlers), http.nudge_task_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/send-to-user", rawptr(&graph.agent_action_handlers), http.agent_action_chat_send_to_user_handler)
+	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/send-to-agent", rawptr(&graph.agent_action_handlers), http.agent_action_chat_send_to_agent_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/fetch", rawptr(&graph.agent_action_handlers), http.agent_action_chat_fetch_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/chat/read", rawptr(&graph.agent_action_handlers), http.agent_action_chat_read_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/agent-actions/context", rawptr(&graph.agent_action_handlers), http.agent_action_context_handler)

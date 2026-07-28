@@ -28,6 +28,20 @@ agent_action_chat_send_to_user_handler :: proc(ctx: rawptr, req: Request) -> Res
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
 }
 
+agent_action_chat_send_to_agent_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	h := (^Agent_Action_Handlers)(ctx)
+	auth, _, ok, resp := require_instance_action_auth(h, req)
+	if !ok do return resp
+	params := json_object_raw(req.body, "params")
+	target := json_string(params, "to_instance")
+	if target == "" do target = json_string(params, "target_agent_instance_id")
+	msg, saved, err := content_service.send_agent_to_agent(h.content, auth, target, content_service.Message_Input{body = json_string(params, "body"), artifact_ids_json = json_array_optional(params, "artifact_ids")})
+	if !saved do return respond_error(err, req.request_id)
+	b := strings.builder_make()
+	write_message_json(&b, msg, h.content)
+	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 201)
+}
+
 agent_action_chat_fetch_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
 	auth, inst, ok, resp := require_instance_action_auth(h, req)

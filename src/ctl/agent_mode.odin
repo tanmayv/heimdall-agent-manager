@@ -62,6 +62,14 @@ ctl_agentmode_chat :: proc(endpoint, token, action: string, args: []string) {
 		ctl_agent_call(endpoint, token, "agent.chat.send_to_user", json_object(json_kv("body", body)))
 		return
 	}
+	if action == "send-to-agent" {
+		body := option_value(args, "--body", "")
+		to_instance := option_value(args, "--to-instance", option_value(args, "--target-agent-instance-id", ""))
+		if has_flag(args, "--stdin") { data, err := os.read_entire_file("/dev/stdin", context.allocator); if err == nil do body = string(data) }
+		if body == "" || to_instance == "" { fmt.println("usage: ham-ctl agent chat send-to-agent --to-instance <id> --body <text>"); return }
+		ctl_agent_call(endpoint, token, "agent.chat.send_to_agent", json_object(json_kv("to_instance", to_instance), json_kv("body", body)))
+		return
+	}
 	if action == "fetch" || action == "read-messages" {
 		ctl_agentmode_chat_fetch(endpoint, token, args)
 		return
@@ -71,7 +79,7 @@ ctl_agentmode_chat :: proc(endpoint, token, action: string, args: []string) {
 		ctl_agent_call(endpoint, token, "agent.chat.read", "{}")
 		return
 	}
-	fmt.println("usage: ham-ctl agent chat <send|fetch|read>")
+	fmt.println("usage: ham-ctl agent chat <send|send-to-agent|fetch|read>")
 }
 
 ctl_agentmode_chat_fetch :: proc(endpoint, token: string, args: []string) {
@@ -263,10 +271,11 @@ print_agent_help :: proc(cmd: []string) {
 
 print_agent_chat_help :: proc(action: string) {
 	_ = action
-	fmt.println("ham-ctl agent chat <send|fetch|read>")
+	fmt.println("ham-ctl agent chat <send|send-to-agent|fetch|read>")
 	fmt.println("Purpose: read or write this instance's bound conversation through the Bridge.")
 	fmt.println("Commands:")
 	fmt.println("  send --body <text> | --stdin")
+	fmt.println("  send-to-agent --to-instance <id> --body <text> | --stdin")
 	fmt.println("  fetch [--since <cursor|timestamp>] [--limit N]")
 	fmt.println("  read [--since <cursor|timestamp>] [--limit N]  # with --since returns delta; without --since acknowledges only")
 	fmt.println("Examples:")

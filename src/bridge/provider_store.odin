@@ -766,7 +766,7 @@ bridge_clone_string_slice :: proc(values: []string) -> []string {
 	return out
 }
 
-bridge_runtime_shell_command_for_profile :: proc(profile: Bridge_Provider_Profile, tier, agent_token, agent_instance_id: string) -> string {
+bridge_runtime_agent_argv_for_profile :: proc(profile: Bridge_Provider_Profile, tier, agent_token, agent_instance_id: string) -> []string {
 	argv := make([dynamic]string)
 	append(&argv, ..profile.command)
 	append(&argv, ..profile.yolo_flags)
@@ -779,12 +779,21 @@ bridge_runtime_shell_command_for_profile :: proc(profile: Bridge_Provider_Profil
 			append(&argv, model)
 		}
 	}
-	starter_prompt := bridge_provider_render_starter_prompt(profile.starter_prompt, agent_token, agent_instance_id)
-	if starter_prompt != "" {
-		append(&argv, ..profile.prompt_flags)
-		append(&argv, starter_prompt)
+	delivery := profile.prompt_delivery
+	if delivery != "tmux" && delivery != "none" && delivery != "flag-injection" do delivery = "flag-injection"
+	if delivery == "flag-injection" {
+		starter_prompt := bridge_provider_render_starter_prompt(profile.starter_prompt, agent_token, agent_instance_id)
+		if starter_prompt != "" {
+			append(&argv, ..profile.prompt_flags)
+			append(&argv, starter_prompt)
+		}
 	}
-	return bridge_shell_join(argv[:])
+	return argv[:]
+}
+
+bridge_runtime_shell_command_for_profile :: proc(profile: Bridge_Provider_Profile, tier, agent_token, agent_instance_id: string) -> string {
+	argv := bridge_runtime_agent_argv_for_profile(profile, tier, agent_token, agent_instance_id)
+	return bridge_shell_join(argv)
 }
 
 bridge_provider_render_starter_prompt :: proc(prompt, agent_token, agent_instance_id: string) -> string {

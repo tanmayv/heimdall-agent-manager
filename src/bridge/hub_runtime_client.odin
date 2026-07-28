@@ -148,6 +148,13 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		_ = ws.send_text(conn, final)
 		return
 	}
+	if type == "notify_agent_message" {
+		command_id := extract_json_string(text, "command_id", "")
+		instance_id := extract_json_string(text, "agent_instance_id", "")
+		ok := bridge_wrapper_push(instance_id, text)
+		if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
+		return
+	}
 	if bridge_hub_handle_provider_command(conn, type, text) do return
 }
 
@@ -223,16 +230,17 @@ bridge_runtime_launch_agent :: proc(command_id, command_json: string) -> (bool, 
 	instance_token := strings.concatenate({"hit_", instance_id})
 	wrapper_issue := bridge_agent_token_issue(instance_id, instance_token, .Wrapper)
 	agent_issue := bridge_agent_token_issue(instance_id, instance_token, .Agent)
-	agent_command := bridge_runtime_agent_command(command_json, agent_issue.plaintext_token, instance_id)
 	session := bridge_runtime_tmux_session()
 	window := bridge_runtime_tmux_window(instance_id)
-	wrapper_args := bridge_runtime_wrapper_supervisor_argv(endpoint, wrapper_issue.plaintext_token, agent_issue.plaintext_token, instance_id, run_dir, agent_command)
-	launch, launch_ok := tmux.ensure_agent_window(session, window, run_dir, wrapper_args)
-	if !launch_ok || strings.trim_space(launch.pane_id) == "" {
+	provider, tier := bridge_runtime_provider_tier(command_json)
+	bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_instance_id = strings.clone(instance_id), command_id = strings.clone(command_id), run_dir = strings.clone(run_dir), tmux_session = strings.clone(session), tmux_window = strings.clone(window), wrapper_token = strings.clone(wrapper_issue.plaintext_token), agent_token = strings.clone(agent_issue.plaintext_token)})
+	wrapper_args := bridge_runtime_wrapper_supervisor_argv(endpoint, wrapper_issue.plaintext_token, agent_issue.plaintext_token, instance_id, run_dir, session, window, provider, tier)
+	_, wrapper_err := os.process_start(os.Process_Desc{command = wrapper_args, working_dir = run_dir})
+	if wrapper_err != nil {
+		bridge_runtime_remove_launch(instance_id)
 		bridge_runtime_set_status(instance_id, "failed", "idle")
-		return false, "tmux wrapper launch failed"
+		return false, "wrapper supervisor launch failed"
 	}
-	bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_instance_id = strings.clone(instance_id), command_id = strings.clone(command_id), run_dir = strings.clone(run_dir), tmux_session = strings.clone(session), tmux_window = strings.clone(window), pane_id = strings.clone(launch.pane_id), wrapper_token = strings.clone(wrapper_issue.plaintext_token), agent_token = strings.clone(agent_issue.plaintext_token)})
 	return true, ""
 }
 
@@ -280,35 +288,35 @@ bridge_runtime_run_provider_test :: proc(conn: ^ws.Connection, command_id, comma
 	instance_token := strings.concatenate({"hit_", instance_id})
 	wrapper_issue := bridge_agent_token_issue(instance_id, instance_token, .Wrapper)
 	agent_issue := bridge_agent_token_issue(instance_id, instance_token, .Agent)
-	agent_command := bridge_runtime_agent_command(command_json, agent_issue.plaintext_token, instance_id)
 	session := "heimdall-bridge-test"
 	window := strings.concatenate({"ptest-", bridge_runtime_safe_part(test_id)})
-	wrapper_args := bridge_runtime_wrapper_supervisor_argv(endpoint, wrapper_issue.plaintext_token, agent_issue.plaintext_token, instance_id, run_dir, agent_command)
 	_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "launching", "launching", "launching provider test", ""))
 	test_start_ns := time.to_unix_nanoseconds(time.now())
 	hard_deadline_abs_ns := test_start_ns + i64(time.Duration(hard_deadline_ms) * time.Millisecond)
 	launch_deadline_ns := test_start_ns + i64(time.Duration(launch_deadline_ms) * time.Millisecond)
 	if launch_deadline_ns > hard_deadline_abs_ns do launch_deadline_ns = hard_deadline_abs_ns
-	launch, launch_ok := tmux.ensure_agent_window(session, window, run_dir, wrapper_args)
-	if !launch_ok || strings.trim_space(launch.pane_id) == "" || time.to_unix_nanoseconds(time.now()) > launch_deadline_ns {
-		bridge_runtime_set_status(instance_id, "failed", "idle")
-		msg := "tmux wrapper launch failed"
-		if launch_ok && strings.trim_space(launch.pane_id) != "" do msg = "provider launch deadline exceeded"
+	bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_instance_id = strings.clone(instance_id), command_id = strings.clone(command_id), run_dir = strings.clone(run_dir), tmux_session = strings.clone(session), tmux_window = strings.clone(window), wrapper_token = strings.clone(wrapper_issue.plaintext_token), agent_token = strings.clone(agent_issue.plaintext_token)})
+	wrapper_args := bridge_runtime_wrapper_supervisor_argv(endpoint, wrapper_issue.plaintext_token, agent_issue.plaintext_token, instance_id, run_dir, session, window, provider, tier)
+	_, wrapper_err := os.process_start(os.Process_Desc{command = wrapper_args, working_dir = run_dir})
+	if wrapper_err != nil {
+		msg := "wrapper supervisor launch failed"
 		_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "failed", "done", msg, ""))
-		if launch_ok && strings.trim_space(launch.pane_id) != "" do _ = tmux.kill_window(session, window)
+		_ = tmux.kill_window(session, window)
+		bridge_runtime_remove_launch(instance_id)
+		bridge_runtime_set_status(instance_id, "stopped", "idle")
 		return bridge_provider_test_result_json(test_id, provider, "failed", msg, "")
 	}
-	bridge_runtime_record_launch(Bridge_Runtime_Launch{agent_instance_id = strings.clone(instance_id), command_id = strings.clone(command_id), run_dir = strings.clone(run_dir), tmux_session = strings.clone(session), tmux_window = strings.clone(window), pane_id = strings.clone(launch.pane_id), wrapper_token = strings.clone(wrapper_issue.plaintext_token), agent_token = strings.clone(agent_issue.plaintext_token)})
 	startup_seen := false
 	startup_failed := false
 	startup_message := ""
+	pane_id := ""
 	last_launch_status_ns := test_start_ns
 	for time.to_unix_nanoseconds(time.now()) < launch_deadline_ns {
 		now_launch := time.to_unix_nanoseconds(time.now())
+		if launch, launch_ok := bridge_runtime_get_launch(instance_id); launch_ok && strings.trim_space(launch.pane_id) != "" do pane_id = launch.pane_id
 		if inst, inst_ok := bridge_runtime_instance_snapshot(instance_id); inst_ok {
 			if inst.runtime_status == "failed" || inst.runtime_status == "stopped" { startup_failed = true; startup_message = strings.concatenate({"provider process ", inst.runtime_status}); break }
-			startup_seen = true
-			break
+			if pane_id != "" { startup_seen = true; break }
 		}
 		if now_launch - last_launch_status_ns >= i64(15 * time.Second) {
 			_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "launching", "launching", "launching provider test", ""))
@@ -316,7 +324,7 @@ bridge_runtime_run_provider_test :: proc(conn: ^ws.Connection, command_id, comma
 		}
 		time.sleep(100 * time.Millisecond)
 	}
-	if startup_failed || !startup_seen {
+	if startup_failed || !startup_seen || pane_id == "" {
 		msg := startup_message
 		if msg == "" do msg = "provider launch deadline exceeded"
 		_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "failed", "done", msg, ""))
@@ -325,7 +333,7 @@ bridge_runtime_run_provider_test :: proc(conn: ^ws.Connection, command_id, comma
 		bridge_runtime_set_status(instance_id, "stopped", "idle")
 		return bridge_provider_test_result_json(test_id, provider, "failed", msg, "")
 	}
-	bridge_provider_test_record(Bridge_Provider_Test{test_id = strings.clone(test_id), provider = strings.clone(provider), tier = strings.clone(tier), agent_instance_id = strings.clone(instance_id), status = "in_progress", message = "awaiting start-success", pane_id = strings.clone(launch.pane_id), tmux_session = strings.clone(session), tmux_window = strings.clone(window)})
+	bridge_provider_test_record(Bridge_Provider_Test{test_id = strings.clone(test_id), provider = strings.clone(provider), tier = strings.clone(tier), agent_instance_id = strings.clone(instance_id), status = "in_progress", message = "awaiting start-success", pane_id = strings.clone(pane_id), tmux_session = strings.clone(session), tmux_window = strings.clone(window)})
 	_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, "in_progress", "awaiting_start_success", "awaiting start-success", ""))
 	start_ns := time.to_unix_nanoseconds(time.now())
 	deadline_ns := start_ns + i64(time.Duration(start_deadline_ms) * time.Millisecond)
@@ -351,7 +359,7 @@ bridge_runtime_run_provider_test :: proc(conn: ^ws.Connection, command_id, comma
 			last_status_ns = now
 		}
 		if capture_frames && now - last_frame_ns >= i64(time.Duration(frame_interval_ms) * time.Millisecond) {
-			if frame, frame_ok := tmux.capture_pane_text(launch.pane_id, 80); frame_ok && frame != last_frame {
+			if frame, frame_ok := tmux.capture_pane_text(pane_id, 80); frame_ok && frame != last_frame {
 				last_frame = frame
 				last_frame_ns = now
 				_ = ws.send_text(conn, bridge_provider_test_frame_json(test_id, frame))
@@ -359,7 +367,7 @@ bridge_runtime_run_provider_test :: proc(conn: ^ws.Connection, command_id, comma
 		}
 		time.sleep(100 * time.Millisecond)
 	}
-	diagnostics, _ := tmux.capture_pane_text(launch.pane_id, 30)
+	diagnostics, _ := tmux.capture_pane_text(pane_id, 30)
 	if status == "passed" do message = "agent booted and reported start-success"
 	_ = ws.send_text(conn, bridge_provider_test_status_json(test_id, status, "done", message, diagnostics))
 	_ = tmux.kill_window(session, window)
@@ -393,15 +401,20 @@ bridge_runtime_select_endpoint :: proc(local_config: Bridge_Local_Endpoint_Confi
 	return ""
 }
 
-bridge_runtime_agent_command :: proc(command_json, agent_token, agent_instance_id: string) -> string {
-	if cmd := os.get_env_alloc("HEIMDALL_BRIDGE_AGENT_COMMAND", context.allocator); strings.trim_space(cmd) != "" do return cmd
+bridge_runtime_provider_tier :: proc(command_json: string) -> (string, string) {
 	provider := extract_json_string(command_json, "provider", "")
 	tier := extract_json_string(command_json, "tier", "")
-	if provider == "" {
+	if provider == "" || tier == "" {
 		payload := bridge_provider_payload_object(command_json)
-		provider = bridge_provider_json_extract_string(payload, "name", "")
+		if provider == "" do provider = bridge_provider_json_extract_string(payload, "name", "")
 		if tier == "" do tier = bridge_provider_json_extract_string(payload, "tier", "")
 	}
+	return provider, tier
+}
+
+bridge_runtime_agent_command :: proc(command_json, agent_token, agent_instance_id: string) -> string {
+	if cmd := os.get_env_alloc("HEIMDALL_BRIDGE_AGENT_COMMAND", context.allocator); strings.trim_space(cmd) != "" do return cmd
+	provider, tier := bridge_runtime_provider_tier(command_json)
 	if profile, ok := bridge_provider_by_name_or_default(provider); ok && profile.enabled && len(profile.command) > 0 {
 		return bridge_runtime_shell_command_for_profile(profile, tier, agent_token, agent_instance_id)
 	}
@@ -409,9 +422,11 @@ bridge_runtime_agent_command :: proc(command_json, agent_token, agent_instance_i
 	return "sleep 3600"
 }
 
-bridge_runtime_wrapper_supervisor_argv :: proc(endpoint, wrapper_token, agent_token, instance_id, run_dir, agent_command: string) -> []string {
+bridge_runtime_wrapper_supervisor_argv :: proc(endpoint, wrapper_token, agent_token, instance_id, run_dir, session, window, provider, tier: string) -> []string {
 	out := make([dynamic]string)
-	append(&out, bridge_runtime_wrapper_bin(), "wrapper-supervisor", "--bridge-endpoint", endpoint, "--agent-token", wrapper_token, "--child-agent-token", agent_token, "--agent-instance-id", instance_id, "--cwd", run_dir, "--agent-command", agent_command)
+	append(&out, bridge_runtime_wrapper_bin(), "wrapper-supervisor", "--bridge-endpoint", endpoint, "--agent-token", wrapper_token, "--child-agent-token", agent_token, "--agent-instance-id", instance_id, "--run-dir", run_dir, "--tmux-session", session, "--tmux-window", window)
+	if provider != "" do append(&out, "--provider", provider)
+	if tier != "" do append(&out, "--tier", tier)
 	return out[:]
 }
 
@@ -462,6 +477,23 @@ bridge_runtime_remove_launch :: proc(instance_id: string) {
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
 	for i in 0..<len(bridge_runtime_launches) {
 		if bridge_runtime_launches[i].agent_instance_id == instance_id { unordered_remove(&bridge_runtime_launches, i); return }
+	}
+}
+
+bridge_runtime_update_launch_pane :: proc(instance_id, pane_id: string) {
+	if strings.trim_space(instance_id) == "" || strings.trim_space(pane_id) == "" do return
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	for i in 0..<len(bridge_runtime_launches) {
+		if bridge_runtime_launches[i].agent_instance_id == instance_id {
+			bridge_runtime_launches[i].pane_id = strings.clone(pane_id)
+			break
+		}
+	}
+	for i in 0..<len(bridge_provider_tests) {
+		if bridge_provider_tests[i].agent_instance_id == instance_id {
+			bridge_provider_tests[i].pane_id = strings.clone(pane_id)
+		}
 	}
 }
 

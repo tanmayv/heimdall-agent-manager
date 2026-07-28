@@ -5,6 +5,7 @@ import "core:fmt"
 import "core:net"
 import "core:os"
 import "core:strings"
+import "core:sync"
 import "core:sys/posix"
 import "core:thread"
 import http "odin_test:lib/http_client"
@@ -24,6 +25,11 @@ Bridge_Local_Relay_Result :: struct {
 	body: string,
 	ok: bool,
 }
+
+Bridge_Wrapper_Push_Conn_Kind :: enum { TCP, Unix }
+Bridge_Wrapper_Push_Conn :: struct { agent_instance_id: string, kind: Bridge_Wrapper_Push_Conn_Kind, tcp: net.TCP_Socket, unix: posix.FD }
+bridge_wrapper_push_mutex: sync.Mutex
+bridge_wrapper_push_conns: [dynamic]Bridge_Wrapper_Push_Conn
 
 bridge_local_endpoint_config_default :: proc(run_dir: string, loopback_port: u16) -> Bridge_Local_Endpoint_Config {
 	return Bridge_Local_Endpoint_Config{
@@ -86,7 +92,11 @@ bridge_local_endpoint_accept_unix_loop :: proc(listener: posix.FD) {
 }
 
 bridge_local_endpoint_unix_client_thread :: proc(client: posix.FD) {
-	defer posix.close(client)
+	registered_instance := ""
+	defer {
+		if registered_instance != "" do bridge_wrapper_push_drop(registered_instance)
+		posix.close(client)
+	}
 	buf: [8192]byte
 	pending := ""
 	for {
@@ -100,6 +110,7 @@ bridge_local_endpoint_unix_client_thread :: proc(client: posix.FD) {
 			pending = pending[idx + 1:]
 			if line == "" do continue
 			resp := bridge_local_endpoint_handle_jsonl_line(line)
+			if inst, sub_ok := bridge_local_subscribe_instance(line); sub_ok { registered_instance = inst; bridge_wrapper_push_register_unix(inst, client) }
 			resp_line := strings.concatenate({resp, "\n"})
 			bytes := transmute([]byte)resp_line
 			_ = posix.send(client, raw_data(bytes), c.size_t(len(bytes)), {})
@@ -116,7 +127,11 @@ bridge_local_endpoint_accept_loop :: proc(listener: net.TCP_Socket) {
 }
 
 bridge_local_endpoint_client_thread :: proc(client: net.TCP_Socket) {
-	defer net.close(client)
+	registered_instance := ""
+	defer {
+		if registered_instance != "" do bridge_wrapper_push_drop(registered_instance)
+		net.close(client)
+	}
 	buf: [8192]byte
 	pending := ""
 	for {
@@ -130,6 +145,7 @@ bridge_local_endpoint_client_thread :: proc(client: net.TCP_Socket) {
 			pending = pending[idx + 1:]
 			if line == "" do continue
 			resp := bridge_local_endpoint_handle_jsonl_line(line)
+			if inst, sub_ok := bridge_local_subscribe_instance(line); sub_ok { registered_instance = inst; bridge_wrapper_push_register_tcp(inst, client) }
 			resp_line := strings.concatenate({resp, "\n"})
 			_, _ = net.send_tcp(client, transmute([]byte)resp_line)
 		}
@@ -159,12 +175,54 @@ bridge_local_spoofable_params :: proc(params: string) -> bool {
 	return false
 }
 
+bridge_local_subscribe_instance :: proc(line: string) -> (string, bool) {
+	if bridge_local_extract_json_string(line, "method", "") != "wrapper.notifications.subscribe" do return "", false
+	if bridge_local_extract_json_int(line, "v", 0) != 1 do return "", false
+	params := bridge_local_extract_json_object(line, "params")
+	if bridge_local_spoofable_params(params) do return "", false
+	token := bridge_local_extract_json_string(line, "token", "")
+	rec, ok := bridge_agent_token_verify(token)
+	if !ok || rec.role != .Wrapper do return "", false
+	return rec.agent_instance_id, rec.agent_instance_id != ""
+}
+
+bridge_wrapper_push_register_tcp :: proc(instance_id: string, socket: net.TCP_Socket) { bridge_wrapper_push_register(Bridge_Wrapper_Push_Conn{agent_instance_id=strings.clone(instance_id),kind=.TCP,tcp=socket}) }
+bridge_wrapper_push_register_unix :: proc(instance_id: string, socket: posix.FD) { bridge_wrapper_push_register(Bridge_Wrapper_Push_Conn{agent_instance_id=strings.clone(instance_id),kind=.Unix,unix=socket}) }
+bridge_wrapper_push_register :: proc(conn: Bridge_Wrapper_Push_Conn) {
+	if bridge_wrapper_push_conns == nil do bridge_wrapper_push_conns = make([dynamic]Bridge_Wrapper_Push_Conn)
+	sync.mutex_lock(&bridge_wrapper_push_mutex)
+	defer sync.mutex_unlock(&bridge_wrapper_push_mutex)
+	for i in 0..<len(bridge_wrapper_push_conns) { if bridge_wrapper_push_conns[i].agent_instance_id == conn.agent_instance_id { bridge_wrapper_push_conns[i] = conn; return } }
+	append(&bridge_wrapper_push_conns, conn)
+}
+bridge_wrapper_push_drop :: proc(instance_id: string) {
+	if bridge_wrapper_push_conns == nil do return
+	sync.mutex_lock(&bridge_wrapper_push_mutex)
+	defer sync.mutex_unlock(&bridge_wrapper_push_mutex)
+	for i in 0..<len(bridge_wrapper_push_conns) { if bridge_wrapper_push_conns[i].agent_instance_id == instance_id { unordered_remove(&bridge_wrapper_push_conns, i); return } }
+}
+bridge_wrapper_push :: proc(instance_id, json_payload: string) -> bool {
+	if bridge_wrapper_push_conns == nil do return false
+	line := strings.concatenate({"{\"push\":\"agent_message\",\"payload\":", json_payload, "}\n"})
+	bytes := transmute([]byte)line
+	sync.mutex_lock(&bridge_wrapper_push_mutex)
+	defer sync.mutex_unlock(&bridge_wrapper_push_mutex)
+	for i in 0..<len(bridge_wrapper_push_conns) {
+		if bridge_wrapper_push_conns[i].agent_instance_id != instance_id do continue
+		ok := false
+		if bridge_wrapper_push_conns[i].kind == .TCP { _, err := net.send_tcp(bridge_wrapper_push_conns[i].tcp, bytes); ok = err == nil } else { ok = posix.send(bridge_wrapper_push_conns[i].unix, raw_data(bytes), c.size_t(len(bytes)), {}) >= 0 }
+		if !ok { unordered_remove(&bridge_wrapper_push_conns, i); return false }
+		return true
+	}
+	return false
+}
+
 bridge_local_method_allowed :: proc(method: string, role: Bridge_Local_Token_Role) -> bool {
 	switch role {
 	case .Wrapper:
-		return method == "wrapper.startup.report" || method == "wrapper.activity.report" || method == "wrapper.liveness.ping" || method == "wrapper.exited"
+		return method == "wrapper.startup.report" || method == "wrapper.activity.report" || method == "wrapper.liveness.ping" || method == "wrapper.exited" || method == "wrapper.notifications.subscribe"
 	case .Agent:
-		return method == "agent.chat.send_to_user" || method == "agent.chat.fetch" || method == "agent.chat.read" || method == "agent.tasks.comment" || method == "agent.tasks.status" || method == "agent.tasks.vote" || method == "agent.tasks.nudge" || method == "agent.artifacts.create" || method == "agent.memory.propose" || method == "agent.context.get" || method == "agent.start_success"
+		return method == "agent.chat.send_to_user" || method == "agent.chat.send_to_agent" || method == "agent.chat.fetch" || method == "agent.chat.read" || method == "agent.tasks.comment" || method == "agent.tasks.status" || method == "agent.tasks.vote" || method == "agent.tasks.nudge" || method == "agent.artifacts.create" || method == "agent.memory.propose" || method == "agent.context.get" || method == "agent.start_success"
 	}
 	return false
 }
@@ -172,6 +230,8 @@ bridge_local_method_allowed :: proc(method: string, role: Bridge_Local_Token_Rol
 bridge_local_handle_wrapper_method :: proc(request_id, method, params: string, rec: Bridge_Local_Agent_Token_Record) -> string {
 	if method == "wrapper.startup.report" {
 		phase := bridge_local_extract_json_string(params, "phase", "startup_unknown")
+		pane_id := bridge_local_extract_json_string(params, "pane_id", "")
+		if pane_id != "" do bridge_runtime_update_launch_pane(rec.agent_instance_id, pane_id)
 		runtime := "starting"
 		if phase == "ready" do runtime = "running"
 		if phase == "startup_failed" do runtime = "failed"
@@ -188,13 +248,20 @@ bridge_local_handle_wrapper_method :: proc(request_id, method, params: string, r
 	}
 	if method == "wrapper.exited" {
 		bridge_runtime_set_status(rec.agent_instance_id, "stopped", "idle")
+		bridge_wrapper_push_drop(rec.agent_instance_id)
 		return bridge_local_response_data(request_id, "{\"accepted\":true}")
+	}
+	if method == "wrapper.notifications.subscribe" {
+		return bridge_local_response_data(request_id, "{\"accepted\":true,\"subscribed\":true}")
 	}
 	return bridge_local_response_error(request_id, "forbidden", "wrapper method is not allowlisted")
 }
 
 bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec: Bridge_Local_Agent_Token_Record) -> string {
-	if method == "agent.start_success" && bridge_provider_test_mark_start_success(rec.agent_instance_id) do return bridge_local_response_data(request_id, "{\"accepted\":true,\"provider_test\":true}")
+	if method == "agent.start_success" {
+		bridge_runtime_set_status(rec.agent_instance_id, "running", "idle")
+		if bridge_provider_test_mark_start_success(rec.agent_instance_id) do return bridge_local_response_data(request_id, "{\"accepted\":true,\"provider_test\":true}")
+	}
 	if strings.trim_space(rec.instance_token) == "" do return bridge_local_response_error(request_id, "unavailable", "Bridge-held instance token is unavailable")
 	relay := bridge_local_relay_agent_method(method, params, rec)
 	if !relay.ok do return bridge_local_response_error(request_id, "retryable_unavailable", "Hub relay failed")
@@ -215,6 +282,7 @@ bridge_local_relay_agent_method :: proc(method, params: string, rec: Bridge_Loca
 bridge_local_agent_method_path :: proc(method: string) -> string {
 	switch method {
 	case "agent.chat.send_to_user": return "/api/v1/agent-actions/chat/send-to-user"
+	case "agent.chat.send_to_agent": return "/api/v1/agent-actions/chat/send-to-agent"
 	case "agent.chat.fetch": return "/api/v1/agent-actions/chat/fetch"
 	case "agent.chat.read": return "/api/v1/agent-actions/chat/read"
 	case "agent.context.get": return "/api/v1/agent-actions/context"

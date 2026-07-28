@@ -107,6 +107,8 @@ main :: proc() {
 		return
 	}
 	if has_flag(os.args, "--bridge-wrapper-supervisor") || (len(os.args) > 1 && os.args[1] == "wrapper-supervisor") {
+		bridge_config = bridge_config_from_args(os.args)
+		bridge_provider_store_init()
 		if !bridge_wrapper_supervisor_main(os.args) do os.exit(1)
 		return
 	}
@@ -147,11 +149,11 @@ main :: proc() {
 print_usage :: proc() {
 	fmt.println("ham-bridge", contracts.APP_VERSION, "protocol", contracts.PROTOCOL_VERSION)
 	fmt.println("usage: ham-bridge [--config <path>] [--bind-host 127.0.0.1] [--port 49323] [--daemon-url URL|--hub URL] [--daemon-id ID] [--bridge-token TOKEN] [--peer-ws ws://host:port/bridge-ws]... [--peer-auth-token TOKEN] [--chunk-bytes N] [--local-endpoint-port PORT] [--local-run-dir DIR] [--agent-command CMD]")
-	fmt.println("wrapper supervisor: ham-bridge wrapper-supervisor --bridge-endpoint unix:/run/heimdall/bridge.sock --agent-token hlat_... --agent-instance-id inst_... --cwd <dir> --agent-command '<cmd>'")
+	fmt.println("wrapper supervisor: ham-bridge wrapper-supervisor --bridge-endpoint unix:/run/heimdall/bridge.sock --agent-token hlat_... --agent-instance-id inst_... --provider pi --tier normal --run-dir <dir>")
 	fmt.println("enroll: ham-bridge enroll --hub http://127.0.0.1:49322 --enrollment-token TOKEN")
 	fmt.println("TLS: https:// Hub URLs use HTTPS and wss:// with certificate/hostname validation; http:// tunnel URLs use ws://.")
 	fmt.println("bootstrap fetch: ham-bridge --bootstrap-fetch --daemon-url URL --bridge-token TOKEN --instance-id INST --run-dir DIR")
-	fmt.println("wrapper supervisor: ham-bridge wrapper-supervisor --endpoint unix:/run/bridge.sock --agent-token hlat_... --instance-id INST --cwd DIR --command CMD")
+	fmt.println("wrapper supervisor: ham-bridge wrapper-supervisor --bridge-endpoint unix:/run/bridge.sock --agent-token hlat_... --agent-instance-id INST --run-dir DIR")
 	fmt.println("loopback routes:", contracts.ROUTE_BRIDGE_HEALTH, contracts.ROUTE_BRIDGE_SEND, contracts.ROUTE_BRIDGE_REQUEST, contracts.ROUTE_BRIDGE_VALIDATE_PROJECT_PATH, contracts.ROUTE_BRIDGE_REACHABLE)
 	fmt.println("bridge websocket route:", contracts.ROUTE_BRIDGE_WS)
 }
