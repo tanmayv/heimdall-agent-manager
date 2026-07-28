@@ -112,7 +112,7 @@ export function NewAgentPage() {
           </div>
           <a data-debug-id="agents-create-header-cancel-btn" href={shellHash('/agents')} className="inline-flex min-h-[44px] items-center justify-center rounded-xl bg-white/10 px-4 py-2 text-sm hover:bg-white/15">Cancel</a>
         </div>
-        {state.noCapabilities ? <div data-debug-id="agents-no-capabilities-warning" className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">No online Bridge reports provider capabilities. Open <a className="underline" href={shellHash('/settings/bridges')}>Bridges</a> or <a className="underline" href={shellHash('/settings/providers')}>Providers</a> to connect/configure one before creating agents.</div> : null}
+        {state.noCapabilities ? <div data-debug-id="agents-no-capabilities-warning" className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-sm text-amber-100">No online Bridge reports provider capabilities. Open <a data-debug-id="agents-no-capabilities-bridges-link" className="underline" href={shellHash('/settings/bridges')}>Bridges</a> or <a data-debug-id="agents-no-capabilities-providers-link" className="underline" href={shellHash('/settings/providers')}>Providers</a> to connect/configure one before creating agents.</div> : null}
         {state.errorMsg ? <div className="mt-4 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{state.errorMsg}</div> : null}
       </div>
       <form onSubmit={handleSubmit} className="rounded-2xl border border-white/10 bg-white/[0.035] p-4 sm:p-5">

@@ -177,7 +177,10 @@ function Breadcrumbs({ crumbs }: { crumbs: BreadcrumbCrumb[] }) {
 }
 
 function SettingsSubNav({ path }: { path: string }) {
-  return <nav data-debug-id="settings-sub-nav" className="mb-5 -mx-1 flex gap-2 overflow-x-auto rounded-2xl border border-white/10 bg-black/20 p-2 sm:mx-0 sm:flex-wrap">{SETTINGS_NAV.map((item) => <a key={item.path} data-debug-id={`settings-sub-nav-${item.label.toLowerCase()}`} href={shellHash(item.path)} className={`inline-flex min-h-[44px] shrink-0 items-center rounded-xl px-4 py-2 text-sm font-semibold ${path === item.path || path.startsWith(`${item.path}/`) ? 'bg-sky-400 text-black' : 'text-zinc-300 hover:bg-white/10 hover:text-white'}`}>{item.label}</a>)}</nav>;
+  return <nav data-debug-id="settings-sub-nav" className="mb-5 -mx-1 flex gap-2 overflow-x-auto rounded-2xl border border-white/10 bg-black/20 p-2 sm:mx-0 sm:flex-wrap">{SETTINGS_NAV.map((item) => {
+    const active = path === item.path || path.startsWith(`${item.path}/`) || (path === '/settings' && item.path === '/settings/bridges');
+    return <a key={item.path} data-debug-id={`settings-sub-nav-${item.label.toLowerCase()}`} href={shellHash(item.path)} className={`inline-flex min-h-[44px] shrink-0 items-center rounded-xl px-4 py-2 text-sm font-semibold ${active ? 'bg-sky-400 text-black' : 'text-zinc-300 hover:bg-white/10 hover:text-white'}`}>{item.label}</a>;
+  })}</nav>;
 }
 
 function shellHash(path: string): string {
