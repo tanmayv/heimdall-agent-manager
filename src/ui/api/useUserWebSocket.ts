@@ -22,6 +22,10 @@ import {
 
 const INITIAL_BACKOFF_MS = 1500;
 const MAX_BACKOFF_MS = 30000;
+// Hub keeps user WebSockets open by waiting for occasional client frames. Send a
+// lightweight heartbeat well below the server idle timeout so healthy browser
+// sockets do not reconnect/resync every minute.
+const HEARTBEAT_INTERVAL_MS = 25000;
 
 function hasElectronDeviceAuth(): boolean {
   return typeof window !== 'undefined' && Boolean((window as any).odinApi?.deviceAuth);
@@ -87,7 +91,25 @@ export function useUserWebSocket(ctxRef?: { current: UserWsContext }): { status:
     stoppedRef.current = false;
     let socket: WebSocket | null = null;
     let reconnectTimer: number | undefined;
+    let heartbeatTimer: number | undefined;
     let backoff = INITIAL_BACKOFF_MS;
+
+    const clearHeartbeat = () => {
+      if (heartbeatTimer) window.clearInterval(heartbeatTimer);
+      heartbeatTimer = undefined;
+    };
+
+    const startHeartbeat = () => {
+      clearHeartbeat();
+      heartbeatTimer = window.setInterval(() => {
+        if (!socket || socket.readyState !== WebSocket.OPEN) return;
+        try {
+          socket.send(JSON.stringify({ type: 'client_heartbeat', at: Date.now() }));
+        } catch (_err) {
+          try { socket.close(); } catch { /* ignore */ }
+        }
+      }, HEARTBEAT_INTERVAL_MS);
+    };
 
     const connect = async () => {
       if (stoppedRef.current) return;
@@ -105,6 +127,7 @@ export function useUserWebSocket(ctxRef?: { current: UserWsContext }): { status:
 
       socket.onopen = () => {
         backoff = INITIAL_BACKOFF_MS;
+        startHeartbeat();
         dispatch(userWsConnected());
         if (connectedOnceRef.current) {
           // Reconnect: events emitted during the outage were lost (the user WS is
@@ -132,6 +155,7 @@ export function useUserWebSocket(ctxRef?: { current: UserWsContext }): { status:
       };
 
       socket.onclose = () => {
+        clearHeartbeat();
         if (stoppedRef.current) return;
         dispatch(userWsDisconnected());
         reconnectTimer = window.setTimeout(() => { void connect(); }, backoff);
@@ -144,6 +168,7 @@ export function useUserWebSocket(ctxRef?: { current: UserWsContext }): { status:
     return () => {
       stoppedRef.current = true;
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      clearHeartbeat();
       if (socket) {
         socket.onclose = null;
         socket.onerror = null;

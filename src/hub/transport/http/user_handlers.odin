@@ -143,7 +143,10 @@ user_ws_upgrade_handler :: proc(ctx: rawptr, req: Request, client: net.TCP_Socke
 	defer events.user_ws_remove(handlers.event_bus, idx)
 	_ = events.write_ws_text_frame(client, "{\"type\":\"user_ws_ready\",\"protocol_version\":1}")
 	for {
-		if _, frame_ok := read_user_ws_text_blocking(client, 60 * time.Second); !frame_ok do return
+		// The browser client sends lightweight heartbeat frames every ~25s. Keep the
+		// server idle timeout comfortably above that so normal sockets do not churn,
+		// while still eventually collecting half-open dead connections.
+		if _, frame_ok := read_user_ws_text_blocking(client, 120 * time.Second); !frame_ok do return
 	}
 }
 
