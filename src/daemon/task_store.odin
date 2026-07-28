@@ -635,3 +635,15 @@ task_store_update_chain_audit_ts :: proc(chain_id: string, ts: i64) -> bool {
 	task_chains[idx].last_audit_at_unix_ms = ts
 	return task_db_save_chain(task_chains[idx])
 }
+
+task_store_get_active_task_for_agent :: proc(agent_instance_id: string) -> (task_id: string, ok: bool) {
+	for i in 0..<task_state_count {
+		t := task_states[i]
+		if t.assignee_agent_instance_id == agent_instance_id {
+			if t.status == .In_Progress || t.status == .Queued {
+				return t.task_id, true
+			}
+		}
+	}
+	return "", false
+}

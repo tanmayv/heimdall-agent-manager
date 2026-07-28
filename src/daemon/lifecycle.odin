@@ -3,6 +3,8 @@ package main
 import "core:fmt"
 import "core:net"
 import "core:strings"
+import contracts "odin_test:contracts"
+import mp "odin_test:lib/message_provider"
 
 handle_register :: proc(client: net.TCP_Socket, body: string) {
 	agent_instance_id := extract_json_string(body, "agent_instance_id", "unknown")
@@ -101,7 +103,15 @@ handle_register :: proc(client: net.TCP_Socket, body: string) {
 	prefs_json := serialize_all_preferences_json(user_id, agent_class)
 	defer delete(prefs_json)
 
-	write_response(client, 200, "OK", register_response_json(record, template_persona, template_instructions, prefs_json))
+	agent_unread := mp.unread_count(&message_provider, contracts.Unread_Count_Request{
+		agent_instance_id = contracts.Agent_Instance_ID(agent_instance_id),
+	}).unread_count
+	user_unread := chat_unread_count(user_id, agent_instance_id)
+	unread_count := agent_unread + user_unread
+
+	assigned_task_id, _ := task_store_get_active_task_for_agent(agent_instance_id)
+
+	write_response(client, 200, "OK", register_response_json(record, template_persona, template_instructions, prefs_json, unread_count, assigned_task_id))
 }
 
 handle_startup_report :: proc(client: net.TCP_Socket, body: string) {

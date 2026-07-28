@@ -1,0 +1,2214 @@
+# Heimdall Hub ↔ Bridge Runtime Protocol
+
+Status: Draft target runtime protocol  
+Scope: Bridge authentication, WebSocket transport, command lifecycle, bootstrap fetch, runtime state reporting  
+Parent architecture/API doc: `docs/plans/hub-bridge-user-owned-architecture-and-api.md`
+
+---
+
+## 1. Hub ↔ Bridge runtime protocol
+
+This section extends the same architecture and API principles to the machine-runtime boundary.
+
+The Bridge protocol is the contract between:
+
+- Hub: durable owner, scheduler, command issuer, auth authority
+- Bridge: user-owned machine runner, wrapper launcher, local filesystem/provider adapter
+
+The protocol should be explicit, versioned, idempotent, bearer-authenticated, and optimized for reconnects. It should not leak user-wide data to the Bridge. The Bridge receives only the commands and bootstrap payloads necessary to run instances assigned to that Bridge.
+
+### 1.1 Runtime protocol goals
+
+1. Bridge connects outbound to Hub (directly or through a user-managed tunnel such as SSH port forwarding).
+2. Hub never needs inbound network access to the user's machine.
+3. Bridge authenticates with a Bridge bearer token.
+4. Bridge token identifies exactly one Bridge.
+5. Bridge can only operate on resources assigned to that Bridge.
+6. Runtime messages use a consistent envelope.
+7. Commands are idempotent and acknowledged.
+8. Reconnects are safe.
+9. Offline Bridges are represented clearly in Hub state.
+10. Hub can queue or fail commands according to command type.
+11. Bridge reports machine metadata and capabilities on connect.
+12. Bridge reports runtime status for instances it supervises.
+13. Bridge materializes bootstrap files locally.
+14. The Bridge is the **sole** connection to the Hub for runtime. Both the
+    wrapper and the agent process (`ham-ctl`) talk only to a **local Bridge
+    endpoint** (unix socket / loopback) and hold no Hub URL or Hub token. The
+    agent authenticates locally with a **Bridge-managed local agent token**; the
+    Bridge relays agent-facing calls to the Hub and asserts the instance identity
+    on the agent's behalf.
+15. The Bridge **manages agent runtimes locally** and minimizes Hub traffic: it
+    notifies the Hub only on edge state-changes and sends periodic snapshots
+    (heartbeat digest), per the reporting discipline in 7.4. High-frequency local
+    signals stay on the Bridge.
+16. No tokens are passed in query params.
+
+---
+
+## 2. Bridge runtime authentication
+
+### 2.1 Bridge token
+
+After enrollment, the Bridge stores:
+
+```toml
+[bridge]
+id = "brg_123"
+hub_url = "https://heimdall.example.com"
+token = "hbr_secret"
+```
+
+All Bridge runtime calls use:
+
+```http
+Authorization: Bearer hbr_secret
+```
+
+The Hub maps the token to:
+
+```ts
+BridgeAuthContext {
+  kind: "bridge_token"
+  bridge_id: string
+  owner_user_id: string
+  token_id: string
+  scopes: string[]
+}
+```
+
+### 2.2 Bridge token scopes
+
+V1 treats a Bridge token as a full-bridge-runtime token for its own Bridge only. Fine-grained Bridge token scopes are post-v1. The storage model may still reserve a place for future scopes.
+
+Future scopes may include:
+
+```text
+bridge:connect
+bridge:heartbeat
+bridge:report_capabilities
+bridge:report_runtime
+bridge:fetch_bootstrap
+bridge:fetch_command_payload
+bridge:upload_runtime_artifact
+```
+
+### 2.3 Token rejection
+
+Hub must reject Bridge token requests when:
+
+- token missing
+- token invalid
+- token revoked
+- Bridge revoked
+- Bridge owner user disabled
+- token presented for a different Bridge ID
+
+Error response:
+
+```json
+{
+  "error": {
+    "code": "bridge_revoked",
+    "message": "Bridge token is revoked"
+  },
+  "meta": {
+    "request_id": "req_123"
+  }
+}
+```
+
+---
+
+## 3. Bridge runtime transport
+
+### 3.1 Primary transport: WebSocket
+
+Bridge connects:
+
+```http
+GET /api/v1/bridge-ws
+Authorization: Bearer hbr_secret
+```
+
+The Bridge ID is derived from the token. Do not put `bridge_id` or token in the URL.
+
+### 3.2 Fallback transport: HTTP heartbeat/status
+
+HTTP fallback transport is post-v1. V1 uses the Bridge WebSocket only. If the Bridge is disconnected, Hub treats it as offline and user actions that require it return `bridge_offline`.
+
+Future fallback endpoints may include HTTP heartbeat, HTTP runtime status, or polling command fetch, but they should not be implemented for the first cut.
+
+### 3.3 V1 support: SSH-tunneled Hub connectivity
+
+A Bridge only needs to initiate HTTP/WebSocket connections to its configured `hub_url`. Therefore v1 explicitly supports user-managed SSH forwarding without any special Hub feature: `hub_url` may be a localhost/loopback endpoint that forwards to the real Hub.
+
+Example: the internal machine can SSH out to the VPS/Hub host:
+
+```bash
+# run on the internal machine
+ssh -N -L 127.0.0.1:18080:127.0.0.1:8080 user@vps.example.com
+ham-bridge enroll --hub http://127.0.0.1:18080 --token hbe_secret_once
+```
+
+Example: the internal machine cannot reach the Hub, but the operator can SSH into it from a laptop that can reach the Hub:
+
+```bash
+# run on the laptop; creates a listener on the internal machine
+ssh -N -R 127.0.0.1:18080:hub.example.com:443 user@internal-machine
+
+# run on the internal machine
+ham-bridge enroll --hub http://127.0.0.1:18080 --token hbe_secret_once
+```
+
+Operational requirements:
+
+- `ham-bridge enroll --hub <url>` must accept any valid HTTP(S) base URL, including `http://127.0.0.1:<port>` and `http://localhost:<port>`.
+- The enrolled Bridge persists exactly the supplied `hub_url`; later WebSocket, bootstrap, and runtime HTTP calls use that URL.
+- WebSocket upgrade must work over the same base URL; SSH TCP forwarding handles WebSockets transparently.
+- Do not special-case tunnels in Hub authorization. Auth still uses Bridge bearer tokens and assigned-instance checks.
+- If using HTTPS through a localhost tunnel, hostname validation may fail if the certificate is for `hub.example.com` but the URL is `https://127.0.0.1:<port>`. Operators should either use HTTP inside the SSH tunnel, or preserve the Hub hostname with local DNS/hosts mapping and tunnel the matching port.
+- This is not NAT traversal, relay, federation, or reverse-connection support. It is documented/validated support for ordinary outbound Bridge connectivity through a user-managed TCP tunnel.
+
+---
+
+## 4. Runtime message envelope
+
+All WebSocket messages should use a consistent envelope.
+
+### 4.1 Base envelope
+
+```ts
+BridgeWsEnvelope {
+  type: string
+  message_id: string
+  protocol_version: number
+  sent_at: string
+  payload: object
+}
+```
+
+Example:
+
+```json
+{
+  "type": "bridge_hello",
+  "message_id": "msg_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:00Z",
+  "payload": {
+    "machine": {
+      "hostname": "tanmay-macbook",
+      "os": "macos",
+      "arch": "arm64"
+    }
+  }
+}
+```
+
+### 4.2 Command envelope
+
+Hub-to-Bridge commands add `command_id`:
+
+```ts
+BridgeCommandEnvelope {
+  type: string
+  message_id: string
+  command_id: string
+  protocol_version: number
+  sent_at: string
+  payload: object
+}
+```
+
+Example:
+
+```json
+{
+  "type": "launch_agent",
+  "message_id": "msg_200",
+  "command_id": "cmd_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:00Z",
+  "payload": {
+    "agent_instance_id": "inst_123"
+  }
+}
+```
+
+### 4.3 Message IDs
+
+`message_id` is unique per sender and used for diagnostics/deduplication.
+
+Rules:
+
+- Sender generates `message_id`.
+- Receiver may ignore duplicate `message_id` values within a retention window.
+- `message_id` does not imply command idempotency by itself.
+
+### 4.4 Command IDs
+
+`command_id` is generated by Hub and is the idempotency key for Hub-issued commands.
+
+Rules:
+
+- Bridge must treat duplicate `command_id` as the same command.
+- If command already completed, Bridge should return the previous result when possible.
+- If command is in progress, Bridge should return `accepted` or `in_progress`.
+- Hub stores command state durably or at least recoverably enough for reconnect.
+
+---
+
+## 5. Protocol versioning
+
+V1 hardcodes `protocol_version = 1` and rejects mismatches. Version negotiation and discovery endpoints are post-v1 and should be added only when a v2 protocol exists.
+
+### 5.1 Version number
+
+Every message includes:
+
+```json
+"protocol_version": 1
+```
+
+### 5.2 Hub-supported versions
+
+This discovery endpoint is post-v1. When protocol v2 exists, Hub may expose supported Bridge protocol versions:
+
+```http
+GET /api/v1/bridge/protocol
+Authorization: Bearer hbr_secret
+```
+
+Response:
+
+```json
+{
+  "data": {
+    "min_version": 1,
+    "max_version": 1,
+    "recommended_version": 1
+  }
+}
+```
+
+### 5.3 Version mismatch
+
+If Bridge connects with unsupported protocol:
+
+```json
+{
+  "type": "protocol_error",
+  "message_id": "msg_hub_1",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:00Z",
+  "payload": {
+    "code": "unsupported_protocol_version",
+    "message": "Bridge protocol version 0 is not supported",
+    "min_version": 1,
+    "max_version": 1
+  }
+}
+```
+
+Hub should then close the socket.
+
+---
+
+## 6. Bridge connection lifecycle
+
+### 6.1 Sequence
+
+```text
+Bridge process starts
+  -> reads local bridge config
+  -> connects to /api/v1/bridge-ws with bearer token
+  -> sends bridge_hello
+  -> Hub validates token and hello
+  -> Hub marks Bridge online
+  -> Hub sends bridge_ready
+  -> Bridge sends periodic heartbeats
+  -> Hub sends commands as needed
+  -> Bridge reports command/runtime results
+```
+
+### 6.2 Bridge hello
+
+Bridge sends immediately after WS open:
+
+```json
+{
+  "type": "bridge_hello",
+  "message_id": "msg_brg_hello_1",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:00Z",
+  "payload": {
+    "bridge_id": "brg_123",
+    "machine": {
+      "hostname": "tanmay-macbook",
+      "os": "macos",
+      "arch": "arm64"
+    },
+    "bridge_version": "0.1.0",
+    "wrapper_version": "0.1.0",
+    "capabilities": [
+      {
+        "provider": "claude",
+        "tiers": ["normal", "smart"],
+        "default_tier": "normal",
+        "max_concurrent_agents": 3
+      }
+    ],
+    "active_instance_ids": ["inst_123"],
+    "supported_protocol_versions": [1]
+  }
+}
+```
+
+Notes:
+
+- `bridge_id` is informational and must match the token-derived Bridge ID.
+- Hub must reject mismatch.
+- `active_instance_ids` lets Hub reconcile state after reconnect.
+
+### 6.3 Hub bridge_ready
+
+Hub replies:
+
+```json
+{
+  "type": "bridge_ready",
+  "message_id": "msg_hub_ready_1",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:01Z",
+  "payload": {
+    "bridge_id": "brg_123",
+    "server_time": "2026-07-22T10:00:01Z",
+    "heartbeat_interval_seconds": 15,
+    "command_ack_timeout_seconds": 10,
+    "runtime_status_interval_seconds": 30
+  }
+}
+```
+
+### 6.4 Hub state updates on hello
+
+On valid hello, Hub updates Bridge:
+
+- `status = online`
+- `last_seen_at = now`
+- `machine_hostname`
+- `machine_os`
+- `machine_arch`
+- `capabilities`
+
+Label handling:
+
+- If `label_is_user_customized = false`, Hub may update label to hostname.
+- If `label_is_user_customized = true`, Hub keeps user label unchanged.
+
+### 6.5 Duplicate Bridge connections
+
+If the same Bridge connects twice:
+
+Recommended v1 policy:
+
+- newest connection wins
+- old socket receives `connection_replaced` then closes
+
+Message to old socket:
+
+```json
+{
+  "type": "connection_replaced",
+  "message_id": "msg_hub_replace_1",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:00Z",
+  "payload": {
+    "reason": "newer_bridge_connection"
+  }
+}
+```
+
+---
+
+## 7. Heartbeats and liveness
+
+### 7.1 WebSocket heartbeat
+
+The heartbeat is also the **convergence channel**: it carries a compact digest of every managed instance's current state so the Hub can self-heal from any missed edge event (see 7.4). It does not carry logs or transcripts.
+
+Bridge sends:
+
+```json
+{
+  "type": "bridge_heartbeat",
+  "message_id": "msg_brg_hb_1",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:15Z",
+  "payload": {
+    "status": "online",
+    "load": {
+      "running_instances": 1,
+      "max_instances": 3
+    },
+    "instances": [
+      {
+        "agent_instance_id": "inst_123",
+        "state_seq": 7,
+        "runtime_status": "running",
+        "startup_status": "ready",
+        "activity_status": "active"
+      }
+    ]
+  }
+}
+```
+
+- `instances` is the full set of instances this Bridge currently manages, each with its latest coalesced state and a monotonic `state_seq` (see 7.4).
+- The digest is small (a few fields per instance) and bounded by the Bridge's instance count, so it stays cheap even at the heartbeat cadence.
+- The absence of a previously-reported instance from the digest is itself meaningful: the Hub treats it as gone and reconciles (see 7.4).
+
+Hub replies optionally:
+
+```json
+{
+  "type": "bridge_heartbeat_ack",
+  "message_id": "msg_hub_hb_ack_1",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:15Z",
+  "payload": {
+    "server_time": "2026-07-22T10:00:15Z"
+  }
+}
+```
+
+### 7.2 HTTP heartbeat fallback
+
+```http
+POST /api/v1/bridge/heartbeat
+Authorization: Bearer hbr_secret
+```
+
+Request:
+
+```json
+{
+  "status": "online",
+  "machine": {
+    "hostname": "tanmay-macbook",
+    "os": "macos",
+    "arch": "arm64"
+  },
+  "active_instance_ids": ["inst_123"],
+  "capabilities": [
+    {
+      "provider": "claude",
+      "tiers": ["normal", "smart"]
+    }
+  ]
+}
+```
+
+Response:
+
+```json
+{
+  "data": {
+    "bridge_id": "brg_123",
+    "status": "online",
+    "server_time": "2026-07-22T10:00:15Z",
+    "recommended_next_heartbeat_seconds": 15
+  }
+}
+```
+
+### 7.3 Offline detection
+
+Hub marks Bridge offline when:
+
+- WS disconnects and no reconnect occurs within grace period
+- or heartbeat is stale beyond threshold
+
+Suggested timings:
+
+```text
+heartbeat interval: 15s          # also the max convergence lag for missed edge events
+stale threshold: 45s
+offline threshold: 90s
+edge-event debounce window: 250-500ms   # coalesce rapid per-instance changes (7.4.3)
+```
+
+The heartbeat interval doubles as the worst-case time for the Hub to self-correct a missed edge event. Shortening it improves convergence latency at the cost of more heartbeats; the digest is intentionally small so 15s is inexpensive.
+
+When Bridge becomes offline, Hub emits user WS event:
+
+```json
+{
+  "type": "resource_changed",
+  "resource": "bridge",
+  "resource_id": "brg_123",
+  "change": "status_changed",
+  "summary": {
+    "status": "offline"
+  }
+}
+```
+
+### 7.4 Reporting discipline: coalesced updates with guaranteed convergence
+
+The Bridge must not bombard the Hub with a message per micro-change, but the Hub must never be left with a stale view. This is achieved with a two-tier reporting model plus a self-healing heartbeat digest. The rule is: **individual events are an optimization for latency; the heartbeat digest is the guarantee of correctness.**
+
+#### 7.4.1 Monotonic per-instance `state_seq`
+
+- The Bridge maintains a monotonically increasing `state_seq` per `agent_instance_id`, bumped on every observed state change for that instance.
+- Every report about an instance (edge event **and** heartbeat digest entry) carries the `state_seq` for the state it describes.
+- The Hub stores the last-applied `state_seq` per instance and applies updates **idempotently and in order**: apply only if `incoming_seq > last_applied_seq`; otherwise ignore. This makes duplicates and out-of-order/retried messages harmless and lets the heartbeat safely re-assert state the Hub may already have.
+
+#### 7.4.2 Edge-triggered vs level-triggered signals
+
+**Edge-triggered — send promptly as a single coalesced event.** These are infrequent, user-visible, and latency-sensitive, so the Hub should not wait a heartbeat to learn them:
+
+- `runtime_status` transitions between meaningful states: `launching → starting → running → stopping → stopped`, and any `→ failed`.
+- `startup_status` reaching a terminal/blocking value: `ready`, `startup_blocked`, `startup_failed`.
+- `wrapper_exited`.
+
+**Level-triggered — never sent as their own events; folded into the next heartbeat digest only.** These are noisy/flappy and their exact intermediate history has no durable value:
+
+- `activity_status` oscillating `idle ↔ active`.
+- load counters (`running_instances`, etc.).
+- any high-frequency progress signal.
+
+#### 7.4.3 Coalescing rules for edge events
+
+- The Bridge debounces edge events per instance with a small window (e.g. 250–500 ms). If an instance changes state several times within the window, the Bridge sends **one** event carrying the latest state and its `state_seq`, not one per intermediate transition.
+- If several instances change in the same window, the Bridge may batch them, but a single instance never emits more than one edge event per debounce window.
+- Terminal transitions (`failed`, `stopped`, `wrapper_exited`) flush immediately without waiting out the debounce window.
+
+#### 7.4.4 Convergence via heartbeat (the guarantee)
+
+Every heartbeat carries the full per-instance digest (7.1). On each heartbeat the Hub reconciles authoritative Bridge truth against its own view:
+
+- For each digest entry, apply by `state_seq` (7.4.1). This repairs any edge event that was dropped, lost on a disconnect, or arrived out of order — the Hub converges within at most one heartbeat interval.
+- For any instance the Hub believes is on this Bridge but is **absent** from the digest, the Hub marks it unreachable/stopped per policy and reconciles (the Bridge is the authority on what it is actually running).
+- Because reconciliation is level-based (current state, not a diff), no event backlog or durable Bridge-side queue is needed. A Bridge that was disconnected simply reports current state on its next heartbeat.
+
+#### 7.4.5 Any real state still propagates
+
+This discipline reduces message volume but never hides state. Guarantees:
+
+- A significant transition (e.g. agent becomes `running`, or `failed`) is delivered near-immediately by an edge event, and independently re-asserted by the next heartbeat digest.
+- If the edge event is lost, the heartbeat still converges the Hub within one interval.
+- A restarted/reconnected Bridge re-establishes the correct Hub view on its first heartbeat after `bridge_hello`, without replaying history.
+- The steady-state cost is bounded: one heartbeat per interval plus at most one coalesced edge event per instance per debounce window.
+
+---
+
+## 8. Command lifecycle
+
+### 8.1 Command states
+
+Hub tracks commands with states:
+
+```text
+queued
+sent
+accepted
+in_progress
+succeeded
+failed
+cancelled
+expired
+```
+
+### 8.2 Command lifecycle
+
+```text
+Hub creates command
+  -> if Bridge online: send over WS, state=sent
+  -> Bridge validates and replies command_result accepted/failed
+  -> Bridge reports progress/status
+  -> Bridge reports final command_result succeeded/failed
+  -> Hub updates target resource and emits user WS invalidation
+```
+
+### 8.3 Command result message
+
+Bridge sends command result for both immediate and final results.
+
+Accepted:
+
+```json
+{
+  "type": "command_result",
+  "message_id": "msg_brg_cmd_result_1",
+  "command_id": "cmd_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:02Z",
+  "payload": {
+    "status": "accepted"
+  }
+}
+```
+
+Succeeded:
+
+```json
+{
+  "type": "command_result",
+  "message_id": "msg_brg_cmd_result_2",
+  "command_id": "cmd_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:12Z",
+  "payload": {
+    "status": "succeeded",
+    "result": {
+      "agent_instance_id": "inst_123"
+    }
+  }
+}
+```
+
+Failed:
+
+```json
+{
+  "type": "command_result",
+  "message_id": "msg_brg_cmd_result_3",
+  "command_id": "cmd_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:12Z",
+  "payload": {
+    "status": "failed",
+    "error": {
+      "code": "provider_unavailable",
+      "message": "Provider claude:smart is unavailable on this bridge",
+      "details": {
+        "provider": "claude",
+        "tier": "smart"
+      }
+    }
+  }
+}
+```
+
+### 8.4 Idempotency rules
+
+Bridge must persist recent command outcomes locally or in memory for at least the reconnect window.
+
+For duplicate `command_id`:
+
+- if command not seen: process normally
+- if command accepted/in progress: reply `accepted` or `in_progress`
+- if command succeeded: reply `succeeded` with previous result if available
+- if command failed: reply `failed` with previous error if available
+
+### 8.5 Command expiration
+
+Commands should include expiry when appropriate:
+
+```json
+{
+  "expires_at": "2026-07-22T10:05:00Z"
+}
+```
+
+Bridge should reject expired commands:
+
+```json
+{
+  "type": "command_result",
+  "command_id": "cmd_123",
+  "payload": {
+    "status": "failed",
+    "error": {
+      "code": "command_expired",
+      "message": "Command expired before execution"
+    }
+  }
+}
+```
+
+---
+
+## 9. Hub-to-Bridge commands
+
+### 9.1 `launch_agent`
+
+Purpose:
+
+- Ask Bridge to launch a wrapper/agent for a Hub-created AgentInstance. The Hub has already created the immutable `AgentInstance` + `TaskChain` + 1:1 `ChatConversation` records before sending this command.
+
+Hub sends:
+
+```json
+{
+  "type": "launch_agent",
+  "message_id": "msg_hub_launch_1",
+  "command_id": "cmd_launch_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:00Z",
+  "payload": {
+    "agent_instance_id": "inst_123",
+    "agent_id": "agt_123",
+    "chain_id": "chain_123",
+    "conversation_id": "conv_123",
+    "project_id": "proj_123",
+    "project_path": "/Users/tanmayvijay/heimdall-agent-manager",
+    "provider": "claude",
+    "tier": "smart",
+    "bootstrap_url": "/api/v1/bridge/agent-instances/inst_123/bootstrap",
+    "expires_at": "2026-07-22T10:05:00Z"
+  }
+}
+```
+
+Bridge validation:
+
+1. command Bridge matches authenticated Bridge
+2. provider/tier is locally available
+3. project_path exists or can be created if policy allows
+4. wrapper binary exists in PATH or configured path
+5. no duplicate active launch for same instance
+6. capacity not exceeded
+
+Bridge immediate response:
+
+```json
+{
+  "type": "command_result",
+  "message_id": "msg_brg_launch_ack_1",
+  "command_id": "cmd_launch_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:01Z",
+  "payload": {
+    "status": "accepted"
+  }
+}
+```
+
+Bridge then:
+
+1. fetches bootstrap using Bridge token
+2. creates run dir
+3. writes managed bootstrap files
+4. starts wrapper/agent in tmux
+5. reports instance status updates
+6. reports final command result succeeded/failed
+
+### 9.2 `stop_agent`
+
+Hub sends:
+
+```json
+{
+  "type": "stop_agent",
+  "message_id": "msg_hub_stop_1",
+  "command_id": "cmd_stop_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:10:00Z",
+  "payload": {
+    "agent_instance_id": "inst_123",
+    "reason": "user_requested",
+    "grace_seconds": 10,
+    "force": false,
+    "expires_at": "2026-07-22T10:11:00Z"
+  }
+}
+```
+
+Bridge behavior:
+
+- ask wrapper/agent to stop gracefully when possible
+- close tmux pane/session/window according to local policy
+- after grace period, force kill if `force=true` or command policy allows
+- report final runtime status
+
+Final result:
+
+```json
+{
+  "type": "command_result",
+  "message_id": "msg_brg_stop_result_1",
+  "command_id": "cmd_stop_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:10:08Z",
+  "payload": {
+    "status": "succeeded",
+    "result": {
+      "agent_instance_id": "inst_123",
+      "runtime_status": "stopped"
+    }
+  }
+}
+```
+
+### 9.3 `validate_project_path`
+
+Hub sends:
+
+```json
+{
+  "type": "validate_project_path",
+  "message_id": "msg_hub_validate_1",
+  "command_id": "cmd_validate_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:00Z",
+  "payload": {
+    "project_id": "proj_123",
+    "path": "/home/tanmay/src/heimdall-agent-manager",
+    "vcs_kind": "git",
+    "repo_url": "https://github.com/example/heimdall",
+    "expires_at": "2026-07-22T10:01:00Z"
+  }
+}
+```
+
+Bridge checks:
+
+- path exists
+- path is directory
+- readable/writable as needed
+- VCS kind matches if specified
+- Git/JJ root can be found if required
+- repo remote matches if feasible
+
+Bridge result:
+
+```json
+{
+  "type": "project_path_validation_result",
+  "message_id": "msg_brg_validate_result_1",
+  "command_id": "cmd_validate_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:03Z",
+  "payload": {
+    "project_id": "proj_123",
+    "path": "/home/tanmay/src/heimdall-agent-manager",
+    "ok": true,
+    "details": {
+      "vcs_kind": "git",
+      "repo_root": "/home/tanmay/src/heimdall-agent-manager",
+      "current_branch": "main"
+    }
+  }
+}
+```
+
+Failure:
+
+```json
+{
+  "type": "project_path_validation_result",
+  "message_id": "msg_brg_validate_result_2",
+  "command_id": "cmd_validate_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:03Z",
+  "payload": {
+    "project_id": "proj_123",
+    "path": "/missing/path",
+    "ok": false,
+    "error": {
+      "code": "path_not_found",
+      "message": "Path does not exist"
+    }
+  }
+}
+```
+
+### 9.4 `refresh_capabilities`
+
+Hub asks Bridge to re-detect providers:
+
+```json
+{
+  "type": "refresh_capabilities",
+  "message_id": "msg_hub_caps_1",
+  "command_id": "cmd_caps_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:00Z",
+  "payload": {}
+}
+```
+
+Bridge responds with `capability_report` and command result.
+
+### 9.5 `sync_runtime_state`
+
+Hub asks Bridge to report all known local instances:
+
+```json
+{
+  "type": "sync_runtime_state",
+  "message_id": "msg_hub_sync_1",
+  "command_id": "cmd_sync_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:00Z",
+  "payload": {}
+}
+```
+
+Bridge responds:
+
+```json
+{
+  "type": "runtime_state_snapshot",
+  "message_id": "msg_brg_snapshot_1",
+  "command_id": "cmd_sync_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:02Z",
+  "payload": {
+    "instances": [
+      {
+        "agent_instance_id": "inst_123",
+        "runtime_status": "running",
+        "startup_status": "ready",
+        "activity_status": "idle",
+        "tmux": {
+          "session": "heimdall",
+          "window": "inst_123"
+        }
+      }
+    ]
+  }
+}
+```
+
+### 9.6 Provider management commands
+
+These commands let the Hub relay UI-driven provider configuration and testing to
+the Bridge. They implement the onboarding Providers flow
+(`docs/plans/ui-onboarding-implementation-plan.md` §3). The Bridge owns provider
+config; the Hub never persists it. `config.toml` `[wrapper.agent-cmd.*]` is the
+read-only defaults source and the bridge-local provider store holds **overrides
+only**; the Bridge returns the **effective** (merged) profiles.
+
+A provider profile has this shape (fields mirror `Agent_Command_Config` in
+`src/lib/config/config.odin`; no credentials/env are stored — providers run in
+the operator's existing shell environment):
+
+```json
+{
+  "name": "pi",
+  "enabled": true,
+  "source": "config",          // "config" | "store" | "merged"
+  "has_override": false,
+  "command": ["pi"],
+  "models": { "flag": "--model", "cheap": "...", "normal": "...", "smart": "..." },
+  "prompt_flags": [],
+  "yolo_flags": [],
+  "starter_prompt": "First, run: {ctl_bin} --token {token} start-success. ...",
+  "prompt_delivery": "",
+  "startup_detection": {
+    "enabled": false,
+    "startup_probe_seconds": 0,
+    "capture_interval_ms": 0,
+    "blocked_patterns": [],
+    "auto_enter_patterns": [],
+    "auto_enter_pre_keys": [],
+    "startup_unknown_is_blocked": false,
+    "sanitized_reason_mapping": []
+  },
+  "activity_detection": {
+    "enabled": true,
+    "sample_line_count": 20,
+    "ignore_bottom_lines": 0,
+    "check_interval_seconds": 15,
+    "min_gap_ms": 100,
+    "max_gap_ms": 500
+  },
+  "last_test": { "status": "ok", "tested_at": "2026-07-27T10:00:00Z", "message": "start-success received" }
+}
+```
+
+#### 9.6.1 `list_providers`
+
+Hub asks the Bridge for the effective provider profiles.
+
+```json
+{
+  "type": "list_providers",
+  "message_id": "msg_hub_provlist_1",
+  "command_id": "cmd_provlist_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-27T10:00:00Z",
+  "payload": {}
+}
+```
+
+Bridge responds with `providers_report` (see 10.5) and a command result.
+
+#### 9.6.2 `upsert_provider`
+
+Hub asks the Bridge to write an override for one provider (create or replace).
+The Bridge persists the override in its local store; it never writes
+`config.toml`.
+
+```json
+{
+  "type": "upsert_provider",
+  "message_id": "msg_hub_provput_1",
+  "command_id": "cmd_provput_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-27T10:00:00Z",
+  "payload": {
+    "name": "pi",
+    "profile": {
+      "enabled": true,
+      "command": ["pi"],
+      "models": { "flag": "--model", "cheap": "anthropic/claude-sonnet-4-6", "normal": "anthropic/claude-sonnet-4-6", "smart": "anthropic/claude-opus-4-8" },
+      "prompt_flags": [],
+      "yolo_flags": ["--dangerously-skip-permissions"],
+      "starter_prompt": "First, run: {ctl_bin} --token {token} start-success. ...",
+      "prompt_delivery": "",
+      "startup_detection": { "enabled": true, "startup_probe_seconds": 20, "capture_interval_ms": 500, "blocked_patterns": [], "auto_enter_patterns": ["Yes, I trust this folder"], "auto_enter_pre_keys": [""], "startup_unknown_is_blocked": false, "sanitized_reason_mapping": [] },
+      "activity_detection": { "enabled": true, "sample_line_count": 20, "ignore_bottom_lines": 0, "check_interval_seconds": 15, "min_gap_ms": 100, "max_gap_ms": 500 }
+    }
+  }
+}
+```
+
+Bridge command result payload returns the merged effective profile:
+
+```json
+{ "provider": { "name": "pi", "source": "merged", "has_override": true, "enabled": true, "command": ["pi"], "models": { } } }
+```
+
+Validation: an empty `command` array is rejected with a `validation_failed`
+command result.
+
+#### 9.6.3 `delete_provider`
+
+Hub asks the Bridge to remove a store-only provider (or, post-v1, reset an
+override to config defaults). Removing a provider that only exists in
+`config.toml` is rejected.
+
+```json
+{
+  "type": "delete_provider",
+  "message_id": "msg_hub_provdel_1",
+  "command_id": "cmd_provdel_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-27T10:00:00Z",
+  "payload": { "name": "pi" }
+}
+```
+
+Bridge command result payload: `{ "deleted": true }`.
+
+#### 9.6.4 `test_provider`
+
+Hub asks the Bridge to validate a provider by the **start-success probe**: the
+Bridge launches the provider command in a throwaway sandbox cwd/tmux and waits
+(bounded, e.g. 30–60s) for the probe agent to run `ham-ctl ... start-success`.
+Pass = start-success received; fail/timeout = provider could not start or could
+not reach ctl. No per-tier round-trip and no token spend beyond CLI startup.
+
+```json
+{
+  "type": "test_provider",
+  "message_id": "msg_hub_provtest_1",
+  "command_id": "cmd_provtest_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-27T10:00:00Z",
+  "payload": { "name": "pi", "tier": "normal" }
+}
+```
+
+Bridge command result payload:
+
+```json
+{
+  "name": "pi",
+  "status": "ok",
+  "tested_at": "2026-07-27T10:00:04Z",
+  "message": "start-success received in 4.2s",
+  "diagnostics": "<sanitized captured output>"
+}
+```
+
+`status` is `ok` | `failed` | `unknown`; a timeout returns `failed` with an
+explanatory `message`.
+
+---
+
+## 10. Bridge-to-Hub runtime events
+
+### 10.1 `capability_report`
+
+Bridge sends when capabilities change or on request:
+
+```json
+{
+  "type": "capability_report",
+  "message_id": "msg_brg_caps_1",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:00Z",
+  "payload": {
+    "capabilities": [
+      {
+        "provider": "claude",
+        "tiers": ["normal", "smart"],
+        "default_tier": "normal",
+        "max_concurrent_agents": 3
+      },
+      {
+        "provider": "codex",
+        "tiers": ["normal"]
+      }
+    ]
+  }
+}
+```
+
+Hub updates Bridge capabilities and emits user WS invalidation for Bridge.
+
+### 10.2 `agent_instance_status`
+
+This is the **edge-triggered** channel for significant, latency-sensitive transitions only (see 7.4.2). It is sent coalesced/debounced (7.4.3), not on every micro-change, and it carries `state_seq` so the Hub applies it idempotently and in order (7.4.1). Level-triggered signals such as `activity_status` flapping and load counters are **not** sent here — they ride the heartbeat digest.
+
+Bridge sends on a significant runtime/startup transition:
+
+```json
+{
+  "type": "agent_instance_status",
+  "message_id": "msg_brg_inst_status_1",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:00Z",
+  "payload": {
+    "agent_instance_id": "inst_123",
+    "state_seq": 7,
+    "runtime_status": "running",
+    "startup_status": "ready",
+    "activity_status": "active",
+    "status_message": null,
+    "tmux": {
+      "session": "heimdall",
+      "window": "inst_123"
+    }
+  }
+}
+```
+
+Hub validates:
+
+- instance exists
+- instance.bridge_id matches authenticated Bridge
+- instance.owner_user_id matches Bridge owner
+- `state_seq > last_applied_seq` for this instance (else ignore as stale/duplicate)
+
+Then Hub updates AgentInstance, records the new `last_applied_seq`, and emits a user WS event. Because the same state is re-asserted by the next heartbeat digest, a lost `agent_instance_status` event is self-correcting.
+
+### 10.3 `agent_instance_log_summary`
+
+The Bridge should not stream raw terminal transcripts by default. If it reports diagnostics, they should be sanitized and bounded.
+
+```json
+{
+  "type": "agent_instance_log_summary",
+  "message_id": "msg_brg_logsum_1",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:00Z",
+  "payload": {
+    "agent_instance_id": "inst_123",
+    "kind": "startup_diagnostic",
+    "summary": "Provider prompt detected; waiting for user approval",
+    "redacted": true
+  }
+}
+```
+
+### 10.4 `wrapper_exited`
+
+```json
+{
+  "type": "wrapper_exited",
+  "message_id": "msg_brg_exit_1",
+  "protocol_version": 1,
+  "sent_at": "2026-07-22T10:00:00Z",
+  "payload": {
+    "agent_instance_id": "inst_123",
+    "exit_code": 0,
+    "reason": "process_exited"
+  }
+}
+```
+
+Hub updates instance status to `stopped` or `failed` depending on context.
+
+### 10.5 `providers_report`
+
+Bridge responds to `list_providers` (9.6.1) with the effective (merged) provider
+profiles. See 9.6 for the profile shape.
+
+```json
+{
+  "type": "providers_report",
+  "message_id": "msg_brg_provlist_1",
+  "command_id": "cmd_provlist_123",
+  "protocol_version": 1,
+  "sent_at": "2026-07-27T10:00:00Z",
+  "payload": {
+    "providers": [
+      {
+        "name": "pi",
+        "enabled": true,
+        "source": "config",
+        "has_override": false,
+        "command": ["pi"],
+        "models": { "flag": "--model", "cheap": "...", "normal": "...", "smart": "..." },
+        "prompt_flags": [],
+        "yolo_flags": [],
+        "starter_prompt": "First, run: {ctl_bin} --token {token} start-success. ...",
+        "prompt_delivery": "",
+        "startup_detection": { },
+        "activity_detection": { },
+        "last_test": { }
+      }
+    ]
+  }
+}
+```
+
+The Hub relays this to the UI via `GET /api/v1/bridges/{id}/providers`. The
+capabilities advertised in `capability_report` (10.1) are derived from the
+`enabled` effective profiles here (one entry per provider, `tiers` = tiers with a
+non-empty model).
+
+---
+
+## 11. Bootstrap fetch flow
+
+### 11.1 Recommended v1 flow
+
+Recommended initial flow:
+
+```text
+Hub transactionally creates/loads TaskChain + AgentInstance + ChatConversation
+  -> Hub sends launch_agent to Bridge with instance/chain/conversation ids
+  -> Bridge fetches bootstrap from Hub using Bridge token
+  -> Bridge materializes bootstrap files locally
+  -> Bridge launches wrapper with materialized files + local Bridge endpoint
+     + a Bridge-managed local agent token (via bootstrap/env)
+  -> Wrapper reports local signals to the Bridge
+  -> Agent (ham-ctl) calls the local Bridge endpoint for agent-facing actions
+  -> Bridge relays to the Hub with the instance token and asserts instance
+     identity (neither wrapper nor agent holds a Hub credential)
+```
+
+This keeps durable bootstrap context centralized while filesystem writes remain local.
+
+### 11.2 Fetch bootstrap endpoint
+
+```http
+GET /api/v1/bridge/agent-instances/{instance_id}/bootstrap
+Authorization: Bearer hbr_secret
+```
+
+Authorization:
+
+- token identifies Bridge
+- instance must exist
+- instance.bridge_id must equal authenticated Bridge
+- instance owner must equal Bridge owner
+- instance must be in launchable state
+
+Response:
+
+```json
+{
+  "data": {
+    "agent_instance": {
+      "agent_instance_id": "inst_123",
+      "agent_id": "agt_123",
+      "conversation_id": "conv_123",
+      "chain_id": "chain_123",
+      "bridge_id": "brg_123",
+      "provider": "claude",
+      "tier": "smart",
+      "project_id": "proj_123",
+      "project_path": "/Users/tanmayvijay/heimdall-agent-manager"
+    },
+    "agent": {
+      "agent_id": "agt_123",
+      "name": "Backend Agent",
+      "persona": "Pragmatic backend implementer.",
+      "instructions": "Focus on backend implementation and tests.",
+      "template_id": "backend-default"
+    },
+    "owner_user": {
+      "user_id": "usr_123",
+      "name": "tanmay",
+      "display_name": "Tanmay Vijay"
+    },
+    "bridge": {
+      "bridge_id": "brg_123",
+      "label": "tanmay-macbook",
+      "machine_hostname": "tanmay-macbook"
+    },
+    "project": {
+      "project_id": "proj_123",
+      "name": "Heimdall",
+      "description": "Local multi-agent orchestration system.",
+      "repo_url": "https://github.com/example/heimdall",
+      "vcs_kind": "git"
+    },
+    "chain": {
+      "chain_id": "chain_123",
+      "kind": "private_conversation",
+      "title": "Backend Agent session",
+      "description": "Private/default work chain for this conversation.",
+      "coordinator_agent_instance_id": "inst_123",
+      "default_reviewer_refs": [
+        { "type": "user", "user_id": "usr_123" }
+      ],
+      "publish_state": "published",
+      "status": "active"
+    },
+    "task_context": {
+      "effective_assignee_ref": { "type": "agent_instance", "agent_instance_id": "inst_123" },
+      "effective_reviewer_refs": [
+        { "type": "user", "user_id": "usr_123" }
+      ],
+      "current_task": {
+        "task_id": "task_123",
+        "title": "Implement bridge enrollment",
+        "status": "in_progress",
+        "acceptance_criteria": [
+          "Enrollment token is one-time",
+          "Bridge token is stored hashed"
+        ]
+      },
+      "runnable_frontier": [
+        { "task_id": "task_456", "title": "Add tests", "order_rank": 4 }
+      ]
+    },
+    "conversation": {
+      "conversation_id": "conv_123",
+      "summary": "User asked this agent to implement bridge enrollment.",
+      "recent_messages": [
+        {
+          "message_id": "msg_123",
+          "direction": "user_to_agent",
+          "body": "Please implement bridge enrollment.",
+          "created_at": "2026-07-22T10:00:00Z"
+        }
+      ]
+    },
+    "memory": {
+      "active": [
+        {
+          "memory_id": "mem_123",
+          "type": "fact",
+          "title": "Prefers concise summaries",
+          "body": "User prefers concise summaries."
+        }
+      ],
+      "templates": []
+    },
+    "artifacts": {
+      "recent": [
+        {
+          "artifact_id": "art_123",
+          "kind": "diff",
+          "name": "bridge-enrollment.diff",
+          "description": "Latest implementation diff for review."
+        }
+      ]
+    },
+    "files": [
+      {
+        "kind": "AGENTS_MD",
+        "relative_path": "AGENTS.md",
+        "content": "..."
+      },
+      {
+        "kind": "MEMORY_MD",
+        "relative_path": "MEMORY.md",
+        "content": "..."
+      },
+      {
+        "kind": "INSTANCE_JSON",
+        "relative_path": ".heimdall/instance.json",
+        "content": "{...}"
+      }
+    ],
+    "instance_token": "hit_secret_once_or_runtime_token",
+    "hub_url": "https://heimdall.example.com"
+  }
+}
+```
+
+Notes:
+
+- `agent_instance.conversation_id` and `agent_instance.chain_id` are required and immutable; they must match the Hub-created records for this instance.
+- If the instance was created without a supplied `chain_id`, `chain.kind = private_conversation` and the chain is this conversation's default/private Work context. If the instance was hydrated into an existing team chain, `chain.kind = team_work` and the same bootstrap shape applies.
+- `task_context` is the current launch-time view, not a durable copy owned by the Bridge. It should include the effective assignee/reviewer refs after applying chain defaults, current assigned/in-progress task when one exists, and a bounded runnable frontier summary.
+- `conversation` is a bounded replay context for restart continuity. Include a summary plus recent messages; do not stream an unbounded transcript through bootstrap.
+- `memory.active` contains only approved/applicable memories. Pending memory is not included unless represented as an explicit task/conversation event.
+- `artifacts.recent` contains metadata/references for relevant artifacts. Large artifact bytes are fetched through artifact endpoints, not embedded in bootstrap.
+- `instance_token` should be scoped to this instance only.
+- If token is returned here, it is a secret and should not be logged.
+- Files array should be bounded. Large skills/assets should be fetched through separate endpoints if necessary.
+
+### 11.3 Bootstrap content ownership
+
+Hub owns bootstrap content decisions:
+
+- persona
+- instructions
+- immutable instance/conversation/chain identity context
+- chain defaults and effective task assignment/reviewer context
+- bounded conversation replay/summary
+- applicable approved memory
+- artifact metadata/references
+- project metadata
+- template text
+
+Bridge owns materialization:
+
+- choosing local run dir
+- writing files
+- manifest cleanup
+- permissions
+- launching wrapper
+
+### 11.4 Bootstrap refresh
+
+If memory/task/conversation context changes while an instance runs, Hub should not blindly rewrite local files. Instead:
+
+- notify agent through normal task/chat mechanisms
+- use task/comment/status APIs for live work changes
+- optionally send a future `refresh_bootstrap` command if needed
+
+On restart or provider/tier reconfigure, the Bridge/wrapper must fetch a fresh bootstrap bundle for the same immutable `agent_instance_id`/`conversation_id`/`chain_id`; it must not reuse stale files from a prior run except through manifest-managed cleanup/rewrite.
+
+---
+
+## 12. Wrapper/instance token model
+
+### 12.1 Instance token purpose
+
+The instance token identifies one running AgentInstance to the **Hub**. It is a
+Hub credential and is **held by the Bridge**, not handed to the wrapper. The Hub
+accepts it for agent-facing calls that the Bridge relays on behalf of an
+instance:
+
+- agent-facing task APIs
+- agent-facing chat APIs
+- artifact upload associated with the instance
+
+Runtime status/heartbeat/activity are **not** reported with the instance token by
+the wrapper; the Bridge reports them for all its instances over the Bridge WS
+using its Bridge token, coalesced per 7.4. The wrapper never presents a Hub
+credential.
+
+#### 12.0 Wrapper/agent <-> Bridge boundary (local)
+
+Neither the wrapper nor the agent process talks to the Hub. Both talk only to a
+**local Bridge endpoint** (unix socket or loopback). The Bridge is the single
+owner of the Hub connection and the Hub credential (instance token).
+
+The wrapper is a thin, Bridge-local process supervisor. It:
+
+- talks only to the local Bridge endpoint, never to the Hub, and holds no
+  `hub_url` / Hub token;
+- receives its launch context (bootstrap-materialized files, cwd, command) from
+  the Bridge;
+- reports local signals to the Bridge only: startup phase, activity/idle,
+  process/pane liveness, wrapper exit.
+
+The **agent process** (running inside tmux) performs agent-facing actions through
+its CLI tooling (`ham-ctl`), which is pointed at the **local Bridge endpoint**,
+not the Hub:
+
+```text
+agent -> ham-ctl -> local Bridge endpoint -> Bridge -> Hub
+```
+
+- chat send-to-user, task updates/comments/votes, artifact upload, memory
+  proposals, etc. go to the Bridge, which relays them to the Hub with the
+  instance token.
+- The Bridge injects/asserts the caller's identity to the Hub (see 12.0.1); the
+  agent does not choose or present a Hub identity.
+
+##### 12.0.1 Local agent token (Bridge-managed, never a Hub credential)
+
+The agent authenticates to the **local Bridge endpoint** with a **local agent
+token** that the Bridge issues at launch (passed via bootstrap/env). This token:
+
+- is a **local-only concept managed by the Bridge**; it is valid only against the
+  local Bridge endpoint on this machine and is meaningless to the Hub;
+- maps 1:1 to one running `agent_instance_id` on this Bridge;
+- lets the Bridge resolve *which instance* a local call belongs to and then relay
+  to the Hub under that instance's identity (using the Bridge-held instance token
+  / Bridge token). The Bridge **sends the identity back to the Hub**; the agent
+  never holds or sees a Hub token;
+- can be rotated/invalidated locally by the Bridge on stop/restart without any
+  Hub round-trip.
+
+This keeps a clean three-layer trust boundary:
+
+- **Hub credential** (instance token / Bridge token): Bridge-only.
+- **Local agent token**: agent<->Bridge only, Bridge-managed.
+- The Hub only ever sees the Bridge, which asserts the instance identity.
+
+The Bridge is therefore the single owner of: the Hub connection, the Hub
+credential, local agent-token issuance/identity assertion, and the coalesced
+edge/heartbeat reporting (7.4). This keeps one outbound connection (good for the
+SSH-tunnel/NAT story), keeps Hub credentials off both wrapper and agent, and
+makes the Bridge the sole `state_seq` reporter so views never race.
+
+#### 12.0.2 Local Bridge endpoint wire protocol
+
+The local endpoint is the contract between the Bridge and the two local clients
+(wrapper supervisor + agent `ham-ctl`). It is deliberately simple and
+machine-local.
+
+**Transport.**
+
+- Primary: **Unix domain socket** at a per-instance path, e.g.
+  `${run_dir}/bridge.sock` (or a Bridge-wide socket keyed by instance). Unix
+  socket file permissions (0600, owner-only) are the outer access control.
+- Windows/fallback: **loopback TCP** on `127.0.0.1:<port>`, port passed to the
+  client via env.
+- The wrapper/agent learn the endpoint + credential from environment injected at
+  launch:
+
+  ```text
+  HEIMDALL_BRIDGE_ENDPOINT=unix:${run_dir}/bridge.sock   # or tcp:127.0.0.1:<port>
+  HEIMDALL_AGENT_TOKEN=hlat_<local-secret>               # local agent token (12.0.1)
+  HEIMDALL_AGENT_INSTANCE_ID=inst_123                     # convenience/echo only
+  ```
+
+**Framing.** Newline-delimited JSON (JSONL) request/response over the socket, one
+JSON object per line. Rationale: trivial to implement in Odin (wrapper) and any
+agent tooling; no HTTP server needed on the socket. (An HTTP-over-UDS variant is
+acceptable if an implementation prefers it, but JSONL is the baseline.)
+
+**Auth.** Every request carries the local agent token; the Bridge maps it to an
+`agent_instance_id` and rejects unknown/rotated tokens. The wrapper may use a
+separate supervisor token or the same local token with a wider method allowlist
+(implementation choice; the Bridge distinguishes wrapper vs agent by token role).
+
+**Request envelope:**
+
+```json
+{
+  "v": 1,
+  "id": "c1",
+  "token": "hlat_...",
+  "method": "agent.chat.send_to_user",
+  "params": { "body": "done", "chain_id": "chain_123" }
+}
+```
+
+**Response envelope:**
+
+```json
+{ "v": 1, "id": "c1", "ok": true, "data": { "message_id": "msg_123" } }
+```
+
+```json
+{ "v": 1, "id": "c1", "ok": false, "error": { "code": "forbidden", "message": "..." } }
+```
+
+- `id` correlates request/response (client-generated).
+- `token` identifies the caller/instance; never logged.
+- Errors reuse the shared error `code` vocabulary where sensible.
+
+**Methods (two role groups):**
+
+Wrapper -> Bridge (supervisor signals; folded into 7.4 reporting):
+
+```text
+wrapper.startup.report      { phase: starting|ready|startup_blocked|startup_failed|startup_unknown, detail? }
+wrapper.activity.report     { status: idle|active|blocked, source?, detail? }   # level-triggered
+wrapper.liveness.ping       { pane_alive: bool, pid?: number }
+wrapper.exited              { code?: number, reason?: string }
+```
+
+Agent (`ham-ctl`) -> Bridge (relayed to Hub with the instance token; the Bridge
+supplies identity, so params never carry a Hub token or a spoofable sender id):
+
+```text
+agent.chat.send_to_user     { body, chain_id?, artifact_ids? }
+agent.tasks.comment         { task_id, body }
+agent.tasks.status          { task_id, status, comment? }
+agent.tasks.vote            { task_id, result: good|not_good, comment? }
+agent.tasks.nudge           { task_id, message }
+agent.artifacts.create      { name?, kind?, description?, content_ref | inline_bytes }
+agent.memory.propose        { type, title, body, evidence?, ... }
+agent.context.get           { }     # returns bounded current task/chain/conversation view
+agent.start_success         { }     # agent signals it is alive/ready
+```
+
+**Relay + identity rule.** For every `agent.*` method the Bridge:
+
+1. resolves `token -> agent_instance_id` locally,
+2. maps the local method to the corresponding Hub `/api/v1` call,
+3. attaches the Bridge-held **instance token** and the resolved instance identity
+   (the agent cannot set `sender_agent_instance_id` or owner; the Bridge does),
+4. returns the Hub result (or a queued/failed status) back over the socket.
+
+**Method allowlist.** The local endpoint exposes only the methods above. It must
+not proxy arbitrary Hub paths, must not expose Bridge-management actions
+(enroll/revoke/rotate/capabilities), and must not let a local caller act as a
+different instance. This is the local mirror of the instance-token restrictions
+in 12.4.
+
+**Offline behavior.** If the Bridge is disconnected from the Hub, `agent.*`
+relays fail fast with a retryable error (or are queued per Bridge policy); the
+agent CLI surfaces that clearly. Wrapper signals are always accepted locally and
+folded into the next report/heartbeat when the Hub link returns.
+
+### 12.2 Instance token request headers (Bridge -> Hub relay)
+
+```http
+Authorization: Bearer hit_...
+```
+
+Used by the Bridge when relaying an instance's agent-facing calls to the Hub. No
+query params. The wrapper never sends this header (it has no Hub connection).
+
+### 12.3 Instance auth context
+
+```ts
+InstanceAuthContext {
+  kind: "instance_token"
+  owner_user_id: string
+  agent_id: string
+  agent_instance_id: string
+  bridge_id: string
+}
+```
+
+### 12.4 Instance token restrictions
+
+Instance token cannot:
+
+- access another user's data
+- access another agent's private data unless assigned/authorized
+- mutate Bridge configuration
+- mutate Agent identity defaults
+- list all user Bridges
+- rotate tokens
+
+---
+
+## 13. Runtime state machine
+
+### 13.1 AgentInstance runtime_status
+
+Recommended statuses:
+
+```text
+launching
+starting
+running
+idle
+busy
+stopping
+stopped
+failed
+unreachable
+```
+
+Meanings:
+
+| Status | Meaning |
+|---|---|
+| `launching` | Hub created instance and sent/queued launch command. |
+| `starting` | Bridge launched wrapper/agent and startup detection is underway. |
+| `running` | Agent is alive and usable. |
+| `idle` | Agent is running and appears idle. |
+| `busy` | Agent is running and active. |
+| `stopping` | Stop command in progress. |
+| `stopped` | Runtime intentionally stopped or exited cleanly. |
+| `failed` | Launch/runtime failed. |
+| `unreachable` | Bridge went offline while instance was expected running. |
+
+### 13.2 Startup status
+
+```text
+starting
+ready
+startup_blocked
+startup_failed
+startup_unknown
+```
+
+### 13.3 Activity status
+
+```text
+unknown
+idle
+active
+blocked
+```
+
+### 13.4 Bridge offline effect on instances
+
+When Bridge goes offline:
+
+- Hub marks Bridge `offline`.
+- Running instances on that Bridge become `unreachable` after grace period.
+- Hub should not mark them `stopped` unless Bridge later confirms.
+- On reconnect, Bridge sends active_instance_ids/runtime snapshot and Hub reconciles.
+
+---
+
+## 14. Reconnect and reconciliation
+
+### 14.1 Bridge reconnect
+
+On reconnect, Bridge sends `bridge_hello` with:
+
+- machine metadata
+- capabilities
+- active_instance_ids
+- supported protocol versions
+
+Hub then sends `sync_runtime_state` if needed.
+
+### 14.2 Reconciliation rules
+
+For each Hub instance assigned to Bridge:
+
+- If Hub thinks running and Bridge reports active: keep/update status.
+- If Hub thinks running and Bridge does not report active: ask Bridge for snapshot; if absent, mark failed/stopped/unreachable depending on last known state.
+- If Bridge reports unknown instance ID: Hub may ask for details or tell Bridge to stop it.
+- If Hub has pending command and Bridge did not acknowledge before disconnect: resend same `command_id` if not expired.
+
+### 14.3 Unknown local instances
+
+Bridge may report an instance not known by Hub:
+
+```json
+{
+  "agent_instance_id": "inst_unknown",
+  "runtime_status": "running"
+}
+```
+
+Recommended v1 behavior:
+
+- Hub sends `stop_agent` or `forget_local_instance` command only if safe.
+- Otherwise Hub records diagnostic and asks user to inspect Bridge.
+
+Future protocol may include orphan adoption, but v1 should avoid it.
+
+---
+
+## 15. Offline command behavior
+
+
+### 15.1 Command categories
+
+Offline command queues are post-v1. In v1, commands that require a Bridge fail synchronously with `bridge_offline` if the Bridge is offline. Stop/sync commands may run after reconnect as part of reconciliation, but Hub should not build durable offline command replay yet.
+
+Future command categories may declare offline behavior:
+
+```text
+fail_if_offline
+queue_until_online
+queue_until_expiry
+```
+
+V1 behavior:
+
+| Command | Offline behavior |
+|---|---|
+| `launch_agent` | fail_if_offline |
+| `stop_agent` | fail_if_offline; mark instance `unreachable` if Bridge is already offline |
+| `validate_project_path` | fail_if_offline |
+| `refresh_capabilities` | fail_if_offline; Bridge also reports capabilities on reconnect |
+| `list_providers` | fail_if_offline |
+| `upsert_provider` | fail_if_offline |
+| `delete_provider` | fail_if_offline |
+| `test_provider` | fail_if_offline |
+| `sync_runtime_state` | send only after reconnect |
+
+### 15.2 User-facing offline errors
+
+If user starts an agent on offline Bridge:
+
+```json
+{
+  "error": {
+    "code": "bridge_offline",
+    "message": "Bridge tanmay-macbook is offline"
+  }
+}
+```
+
+If Hub-selected Bridge is requested and all supported Bridges are offline:
+
+```json
+{
+  "error": {
+    "code": "bridge_offline",
+    "message": "No supported online bridge is available for this agent"
+  }
+}
+```
+
+---
+
+## 16. Bridge local configuration
+
+Example Bridge config:
+
+```toml
+[bridge]
+id = "brg_123"
+hub_url = "https://heimdall.example.com"
+token = "hbr_secret"
+
+[bridge.runtime]
+max_concurrent_agents = 3
+run_dir_root = "~/.local/share/heimdall/runs"
+
+[wrapper]
+command = "ham-wrapper"
+
+[providers.claude]
+enabled = true
+command = ["claude"]
+tiers.normal = "sonnet"
+tiers.smart = "opus"
+
+[providers.codex]
+enabled = true
+command = ["codex"]
+tiers.normal = "gpt-5"
+```
+
+Bridge reports capabilities derived from config and local checks.
+
+### 16.1 Hostname detection
+
+Bridge should report hostname using platform-appropriate methods.
+
+Required field:
+
+```json
+"hostname": "tanmay-macbook"
+```
+
+Optional fields:
+
+```json
+"os": "macos"
+"arch": "arm64"
+```
+
+Default Bridge label is hostname when no explicit label was set during enrollment.
+
+---
+
+## 17. Security boundaries
+
+### 17.1 Hub must enforce
+
+- Bridge token maps to exactly one Bridge.
+- Bridge can only fetch bootstrap for instances assigned to that Bridge.
+- Bridge can only report status for instances assigned to that Bridge.
+- Bridge cannot mutate user-owned records outside runtime status/capability reports.
+- Bridge cannot act as arbitrary user.
+- Instance token maps to exactly one instance.
+- User APIs require user AuthContext.
+
+### 17.2 Bridge must protect
+
+- bridge token
+- instance tokens
+- provider credentials
+- local run dirs
+- bootstrap files containing memory/context
+
+### 17.3 Logging rules
+
+Never log:
+
+- bridge token
+- enrollment token
+- instance token
+- provider API keys
+- raw terminal transcript by default
+
+Diagnostic logs should redact secrets.
+
+### 17.4 Token storage
+
+Hub stores token hashes, not raw tokens, for:
+
+- user API tokens
+- Bridge enrollment tokens
+- Bridge tokens
+- instance tokens, unless short-lived signed tokens are used
+
+Bridge stores raw Bridge token locally because it needs to authenticate.
+
+---
+
+## 18. Bridge runtime REST endpoints
+
+V1 runtime control uses the Bridge WebSocket. The HTTP runtime endpoints below are post-v1 fallback/diagnostic endpoints unless explicitly used for bootstrap fetch.
+
+### 18.1 Bridge heartbeat
+
+```http
+POST /api/v1/bridge/heartbeat
+Authorization: Bearer hbr_secret
+```
+
+Request:
+
+```json
+{
+  "status": "online",
+  "machine": {
+    "hostname": "tanmay-macbook",
+    "os": "macos",
+    "arch": "arm64"
+  },
+  "capabilities": [
+    {
+      "provider": "claude",
+      "tiers": ["normal", "smart"]
+    }
+  ],
+  "active_instance_ids": ["inst_123"]
+}
+```
+
+### 18.2 Fetch bootstrap
+
+```http
+GET /api/v1/bridge/agent-instances/{instance_id}/bootstrap
+Authorization: Bearer hbr_secret
+```
+
+### 18.3 Report runtime status fallback
+
+```http
+POST /api/v1/bridge/agent-instances/{instance_id}/status
+Authorization: Bearer hbr_secret
+```
+
+Request:
+
+```json
+{
+  "runtime_status": "running",
+  "startup_status": "ready",
+  "activity_status": "idle",
+  "status_message": null
+}
+```
+
+### 18.4 Upload runtime diagnostic artifact
+
+Optional future endpoint:
+
+```http
+POST /api/v1/bridge/agent-instances/{instance_id}/diagnostics
+Authorization: Bearer hbr_secret
+```
+
+Use for bounded diagnostic artifacts, not raw unbounded transcripts.
+
+---
+
+## 19. Bridge protocol error codes
+
+Recommended Bridge/runtime-specific error codes:
+
+```text
+unsupported_protocol_version
+bridge_revoked
+bridge_token_invalid
+bridge_id_mismatch
+command_expired
+command_duplicate
+command_not_supported
+provider_unavailable
+tier_unavailable
+capacity_exceeded
+wrapper_not_found
+project_path_not_found
+project_path_not_directory
+project_path_permission_denied
+vcs_kind_mismatch
+repo_remote_mismatch
+bootstrap_fetch_failed
+bootstrap_materialization_failed
+tmux_launch_failed
+wrapper_exited_early
+instance_not_found
+instance_not_assigned_to_bridge
+instance_already_running
+instance_not_running
+stop_failed
+runtime_status_invalid
+```
+
+Error object shape:
+
+```json
+{
+  "code": "wrapper_not_found",
+  "message": "ham-wrapper was not found in PATH",
+  "details": {
+    "path": "ham-wrapper"
+  }
+}
+```
+
+---
+
+## 20. Bridge protocol test matrix
+
+### 20.1 Auth tests
+
+- valid Bridge token connects
+- invalid token rejected
+- revoked token rejected
+- token for Bridge A cannot report status for Bridge B
+- disabled owner user causes Bridge token rejection
+
+### 20.2 Connection tests
+
+- Bridge hello marks online
+- heartbeat updates last_seen_at
+- disconnect marks offline after threshold
+- duplicate connection replaces old socket
+- reconnect reconciles active instances
+
+### 20.3 Capability tests
+
+- hello reports capabilities
+- capability_report updates Hub store
+- unsupported provider/tier prevents launch
+- capability change emits user WS invalidation
+
+### 20.4 Command tests
+
+- launch command accepted
+- duplicate launch command idempotent
+- expired command rejected
+- stop command transitions status
+- validation command returns ok/failure
+- command result updates command state
+
+### 20.5 Bootstrap tests
+
+- Bridge can fetch bootstrap for assigned instance
+- Bridge cannot fetch bootstrap for another Bridge's instance
+- bootstrap includes owner/agent/bridge/project context
+- bootstrap includes immutable `agent_instance_id`, `conversation_id`, and `chain_id`
+- bootstrap includes chain kind/default reviewer refs/effective task context
+- bootstrap includes bounded conversation summary/recent messages for restart continuity
+- bootstrap includes applicable approved memory and artifact metadata only (not large blobs)
+- restart/reconfigure fetches fresh bootstrap for the same immutable ids
+- bootstrap includes instance token
+- token is not logged
+
+### 20.6 Runtime status tests
+
+- Bridge can report status for assigned instance
+- Bridge cannot report unknown/unassigned instance as running
+- wrapper exit updates status
+- Bridge offline marks instance unreachable
+- reconnect restores running state
+- out-of-order/duplicate `state_seq` is ignored (idempotent apply)
+- dropped edge event self-corrects on next heartbeat digest (convergence within one interval)
+- rapid `activity_status` flapping produces no edge events (level-triggered only)
+- instance absent from heartbeat digest is reconciled to unreachable/stopped
+- multiple changes within debounce window coalesce into one edge event
+
+### 20.7 Security tests
+
+- no token accepted in query params
+- no token accepted in JSON body
+- Bridge token cannot call user APIs
+- instance token cannot call Bridge management APIs
+- logs redact secrets
+
+---
+
+## 21. Bridge protocol implementation milestones
+
+### Milestone A: Bridge token auth and WS skeleton
+
+Deliverables:
+
+- `/api/v1/bridge-ws`
+- Bridge token auth context
+- bridge_hello
+- bridge_ready
+- heartbeat
+- online/offline state
+
+### Milestone B: Capabilities and Bridge status
+
+Deliverables:
+
+- capability detection in Bridge
+- capability_report
+- Hub capability persistence
+- UI invalidation events
+
+### Milestone C: Command framework
+
+Deliverables:
+
+- command envelope
+- command state store
+- command_result handling
+- idempotency by command_id
+- resend on reconnect
+
+### Milestone D: Project path validation
+
+Deliverables:
+
+- validate_project_path command
+- Bridge filesystem checks
+- ProjectBridgePath validation result storage
+
+### Milestone E: Agent launch
+
+Deliverables:
+
+- launch_agent command
+- bootstrap fetch endpoint
+- Bridge materialization
+- wrapper launch
+- instance status updates
+
+### Milestone F: Stop/reconcile
+
+Deliverables:
+
+- stop_agent command
+- wrapper/tmux stop semantics
+- reconnect runtime snapshot
+- unreachable instance handling
+
+### Milestone G: Security hardening
+
+Deliverables:
+
+- token redaction
+- Bridge token scope enforcement
+- instance token scope enforcement
+- negative auth tests
+
+---
+
+## 22. Final Hub/Bridge protocol invariant
+
+> The Hub decides what should run and owns the durable record. The Bridge proves who it is with a bearer token, reports what this machine can do, receives bounded commands for instances assigned to it, fetches only the bootstrap it is authorized to materialize, and reports runtime state back to the Hub.
+

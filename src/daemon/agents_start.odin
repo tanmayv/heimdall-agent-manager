@@ -177,7 +177,7 @@ handle_agents_templates :: proc(client: net.TCP_Socket) {
 		rec := agent_template_records[i]
 		if rec.archived_at_unix_ms != 0 do continue
 		if wrote > 0 do strings.write_string(&builder, `,`)
-		agent_template_record_json(&builder, rec)
+		agent_template_record_json_slim(&builder, rec)
 		wrote += 1
 	}
 	if wrote == 0 {
@@ -192,6 +192,7 @@ handle_agents_list :: proc(client: net.TCP_Socket, request: string) {
 	limit_str := query_param(request, "limit")
 	offset_str := query_param(request, "offset")
 	include_identities := query_param(request, "include_identities") == "true"
+	running_filter := query_param(request, "running") == "true"
 	_ = query_param(request, "include_conversations") // concrete conversation instances are already part of /agents
 	limit := 0
 	offset := 0
@@ -209,6 +210,15 @@ handle_agents_list :: proc(client: net.TCP_Socket, request: string) {
 		rec := agent_instance_records[i]
 		if rec.archived_at_unix_ms != 0 do continue
 		if project_id != "" && rec.project_id != project_id do continue
+		is_live := false
+		agent_kind := agent_kind_normalize(rec.agent_kind)
+		if agent_kind == AGENT_KIND_REMOTE_PROXY {
+			remote_status, _ := remote_proxy_status_get(rec.agent_instance_id)
+			is_live = federation_peer_reachable(rec.remote_peer_id) && federation_agent_status_is_live(remote_status.status)
+		} else {
+			is_live = registry_find_agent(rec.agent_instance_id) >= 0
+		}
+		if running_filter && !is_live do continue
 		if matched < offset { matched += 1; continue }
 		if limit > 0 && wrote >= limit { matched += 1; continue }
 		if wrote > 0 do strings.write_string(&builder, `,`)
@@ -417,7 +427,6 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 	display_name := extract_json_string(body, "display_name", extract_json_string(body, "alias", ""))
 	agent_instance_id := extract_json_string(body, "agent_instance_id", "")
 	agent_id_ref := extract_json_string(body, "agent_id", "")
-	new_message := extract_json_string(body, "new_message", "")
 	config_path := extract_json_string(body, "config_path", server_config_path)
 	// Starting by durable agent_id creates a fresh concrete instance. Supplying an
 	// existing concrete/legacy agent_instance_id resumes that exact instance.
@@ -556,7 +565,7 @@ handle_agents_start :: proc(client: net.TCP_Socket, body: string) {
 		return
 	}
 	registry_add_pending_agent_token(agent_instance_id, agent_token)
-	ok := launch_wrapper_detached(agent_instance_id, provider_profile, config_path, log_path, agent_token, display_name, final_tier, resolved_project_id, "manual_agent_start", "", "", new_message)
+	ok := launch_wrapper_detached(agent_instance_id, provider_profile, config_path, log_path, agent_token, display_name, final_tier, resolved_project_id, "manual_agent_start", "", "")
 	if !ok {
 		agent_runtime_tracker_launch_failed(agent_instance_id, agent_token, "manual_agent_start")
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to start wrapper"}`)
@@ -615,10 +624,14 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 	if agent_kind == AGENT_KIND_REMOTE_PROXY do provider_profile_json = remote_status_for_json.provider_profile
 	strings.write_string(builder, `","agent_kind":"`); json_write_string(builder, agent_kind)
 	strings.write_string(builder, `","provider_profile":"`); json_write_string(builder, provider_profile_json)
-	strings.write_string(builder, `","project_id":"`); json_write_string(builder, rec.project_id)
+	// For remote proxies the durable local record has no project binding; surface
+	// the project propagated from the origin (mirrors provider/tier handling).
+	project_id_json := rec.project_id
+	if agent_kind == AGENT_KIND_REMOTE_PROXY && remote_status_for_json.project_id != "" do project_id_json = remote_status_for_json.project_id
+	strings.write_string(builder, `","project_id":"`); json_write_string(builder, project_id_json)
 	project_name := ""
-	if rec.project_id != "" {
-		if pidx := project_index(rec.project_id); pidx >= 0 do project_name = project_records[pidx].name
+	if project_id_json != "" {
+		if pidx := project_index(project_id_json); pidx >= 0 do project_name = project_records[pidx].name
 	}
 	strings.write_string(builder, `","project_name":"`); json_write_string(builder, project_name)
 	strings.write_string(builder, `","run_dir":"`); json_write_string(builder, rec.run_dir)
@@ -654,6 +667,7 @@ agent_instance_record_json :: proc(builder: ^strings.Builder, rec: Agent_Instanc
 		strings.write_string(builder, `,"current_task_id":"`); json_write_string(builder, remote_status.current_task_id)
 		strings.write_string(builder, `","provider_profile":"`); json_write_string(builder, remote_status.provider_profile)
 		strings.write_string(builder, `","model_tier":"`); json_write_string(builder, remote_status.model_tier)
+		strings.write_string(builder, `","project_id":"`); json_write_string(builder, remote_status.project_id)
 		strings.write_string(builder, `","last_seen_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", remote_status.last_seen_unix_ms))
 		strings.write_string(builder, `,"peer_reachable":`); strings.write_string(builder, "true" if remote_peer_reachable_for_json else "false")
 		strings.write_string(builder, `}`)
@@ -740,7 +754,7 @@ query_param :: proc(request, name: string) -> string {
 	return query[start:start + end]
 }
 
-launch_wrapper_detached :: proc(agent_instance_id, selected_agent, config_path, log_path, agent_token, display_name, model_tier, project_id: string, launch_source: string = "", chain_id: string = "", task_id: string = "", new_message: string = "") -> bool {
+launch_wrapper_detached :: proc(agent_instance_id, selected_agent, config_path, log_path, agent_token, display_name, model_tier, project_id: string, launch_source: string = "", chain_id: string = "", task_id: string = "") -> bool {
 	spawn_start_ms := router_now_unix_ms()
 	fmt.printfln("DAEMON_LAUNCH ts_unix_ms=%d stage=wrapper_spawn_build_begin source=%s chain=%s task=%s target=%s provider=%s tier=%s project=%s log=%s", spawn_start_ms, launch_source, chain_id, task_id, agent_instance_id, selected_agent, model_tier, project_id, log_path)
 	_ = os.make_directory_all(parent_dir(log_path))
@@ -773,10 +787,6 @@ launch_wrapper_detached :: proc(agent_instance_id, selected_agent, config_path, 
 	if task_id != "" {
 		strings.write_string(&builder, " --current-task-id ")
 		strings.write_string(&builder, shell_quote(task_id))
-	}
-	if new_message != "" {
-		strings.write_string(&builder, " --new-message ")
-		strings.write_string(&builder, shell_quote(new_message))
 	}
 	strings.write_string(&builder, " ")
 	strings.write_string(&builder, shell_quote(agent_instance_id))
@@ -890,6 +900,15 @@ handle_agent_template_show :: proc(client: net.TCP_Socket, body: string) {
 handle_agent_template_archive :: proc(client: net.TCP_Socket, body: string) {
 	template_id := extract_json_string(body, "template_id", "")
 	if agent_template_index(template_id) < 0 { write_response(client, 404, "Not Found", `{"ok":false,"message":"template not found"}`); return }
+	
+	for i in 0..<agent_id_record_count {
+		rec := agent_id_records[i]
+		if rec.archived_at_unix_ms == 0 && rec.template_id == template_id {
+			write_response(client, 400, "Bad Request", `{"ok":false,"message":"Cannot archive template because it is still in use by one or more durable agent identities."}`)
+			return
+		}
+	}
+	
 	if !agent_template_append_event(Agent_Template_Event{kind = .Agent_Template_Archived, template_id = template_id, author = "api"}) { write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to archive agent template"}`); return }
 	write_response(client, 200, "OK", `{"ok":true,"message":"archived"}`)
 }
@@ -931,7 +950,7 @@ handle_agent_instance_update :: proc(client: net.TCP_Socket, body: string) {
 	// keeps ordinary per-instance updates from mutating shared identity defaults.
 	if extract_json_bool(body, "update_agent_id_defaults", false) {
 		resolved_agent_id := agent_id_from_instance_id(rec.agent_instance_id)
-		_ = agent_id_update_defaults(resolved_agent_id, display_name, provider_profile, model_tier, project_id, "api")
+		_ = agent_id_update_defaults(resolved_agent_id, display_name, template_id, provider_profile, model_tier, project_id, "api")
 	}
 	write_agent_ok_response(client, "updated", agent_instance_records[agent_record_index(rec.agent_record_id)])
 }
@@ -983,8 +1002,9 @@ handle_agent_id_update :: proc(client: net.TCP_Socket, body: string) {
 	// default_project: applied verbatim (empty clears) so this endpoint can both
 	// set and unset a durable default project. Reject a non-existent, non-empty id.
 	project_id := extract_json_string(body, "default_project_id", extract_json_string(body, "project_id", rec.default_project_id))
+	template_id := extract_json_string(body, "template_id", rec.template_id)
 	if strings.trim_space(project_id) != "" && !project_exists(project_id) { write_response(client, 400, "Bad Request", agents_invalid_project_json(project_id)); return }
-	if !agent_id_update_defaults(agent_id, display_name, provider_profile, model_tier, project_id, "api") {
+	if !agent_id_update_defaults(agent_id, display_name, template_id, provider_profile, model_tier, project_id, "api") {
 		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to update agent identity"}`)
 		return
 	}
@@ -1104,6 +1124,23 @@ agent_template_record_json :: proc(builder: ^strings.Builder, rec: Agent_Templat
 	for i in 0..<rec.memory_template_count { if i > 0 do strings.write_string(builder, `,`); strings.write_string(builder, `"`); json_write_string(builder, rec.memory_templates[i]); strings.write_string(builder, `"`) }
 	strings.write_string(builder, `]}`)
 }
+
+agent_template_record_json_slim :: proc(builder: ^strings.Builder, rec: Agent_Template_Record) {
+	strings.write_string(builder, `{"template_id":"`); json_write_string(builder, rec.template_id)
+	strings.write_string(builder, `","display_name":"`); json_write_string(builder, rec.display_name)
+	strings.write_string(builder, `","description":"`); json_write_string(builder, rec.description)
+	strings.write_string(builder, `","parent_template_id":"`); json_write_string(builder, rec.parent_template_id)
+	strings.write_string(builder, `","default_provider_profile":"`); json_write_string(builder, rec.default_provider_profile)
+	strings.write_string(builder, `","bootstrap_defaults":"`); json_write_string(builder, rec.bootstrap_defaults)
+	strings.write_string(builder, `","suggested_model_tier":"`); json_write_string(builder, rec.suggested_model_tier)
+	strings.write_string(builder, `","created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.created_unix_ms))
+	strings.write_string(builder, `,"updated_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.updated_unix_ms))
+	strings.write_string(builder, `,"archived_at_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.archived_at_unix_ms))
+	strings.write_string(builder, `,"memory_templates":[`)
+	for i in 0..<rec.memory_template_count { if i > 0 do strings.write_string(builder, `,`); strings.write_string(builder, `"`); json_write_string(builder, rec.memory_templates[i]); strings.write_string(builder, `"`) }
+	strings.write_string(builder, `]}`)
+}
+
 
 handle_agents_test_connectivity :: proc(client: net.TCP_Socket, body: string) {
 	b := strings.builder_make()

@@ -1,10 +1,19 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
-import mermaid from 'mermaid';
 import { artifactsApi } from '../api/endpoints/artifacts';
 
+type MermaidRenderer = {
+  initialize: (config: Record<string, any>) => void;
+  render: (id: string, code: string) => Promise<{ svg: string; bindFunctions?: (element: Element) => void }>;
+};
+
 let mermaidInitialized = false;
-function ensureMermaidInitialized() {
+function ensureMermaidInitialized(): MermaidRenderer | null {
+  // The installed mermaid package in this workspace advertises a missing ESM
+  // entry. Keep markdown rendering usable by treating mermaid as optional rather
+  // than importing the broken package at module load time.
+  const mermaid = (globalThis as any).mermaid as MermaidRenderer | undefined;
+  if (!mermaid) return null;
   if (!mermaidInitialized) {
     mermaid.initialize({
       startOnLoad: false,
@@ -13,6 +22,7 @@ function ensureMermaidInitialized() {
     });
     mermaidInitialized = true;
   }
+  return mermaid;
 }
 
 export type MarkdownTextSelection = {
@@ -291,7 +301,11 @@ export default function MarkdownBody({ source, className, compact, copyAll = tru
     if (containers.length === 0) return undefined;
 
     let cancelled = false;
-    ensureMermaidInitialized();
+    const mermaid = ensureMermaidInitialized();
+    if (!mermaid) {
+      containers.forEach((container) => container.setAttribute('data-mermaid-rendered', 'unavailable'));
+      return undefined;
+    }
 
     containers.forEach(async (container, idx) => {
       if (cancelled) return;

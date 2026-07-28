@@ -191,6 +191,7 @@ memory_service_list_json :: proc(body: string, calling_agent_id: string = "") ->
 	defer delete(status_text)
 	status, status_ok := memory_status_parse(status_text)
 	include_all := extract_json_bool(body, "include_all_statuses", false) || status_text == "all"
+	include_body := extract_json_bool(body, "include_body", false)
 	if !status_ok && !include_all do return `{"ok":false,"message":"invalid memory status"}`
 
 	type_text := extract_json_string(body, "type", "")
@@ -217,7 +218,7 @@ memory_service_list_json :: proc(body: string, calling_agent_id: string = "") ->
 	for rec in records {
 		if !memory_record_matches_filters(rec, type_text, target_project_filter, target_agent_filter) do continue
 		if wrote do strings.write_string(&builder, `,`)
-		memory_write_record_json(&builder, rec)
+		memory_write_record_json(&builder, rec, include_body)
 		wrote = true
 	}
 	strings.write_string(&builder, `]}`)
@@ -236,6 +237,7 @@ memory_service_applicable_json :: proc(body, calling_agent_id: string) -> Memory
 	ctx_agent_id := strings.trim_space(extract_json_string(body, "target_agent_id", ""))
 	if ctx_agent_id == "" && calling_agent_id != "" do ctx_agent_id = agent_id_from_instance_id(calling_agent_id)
 	defer delete(ctx_agent_id)
+	include_body := extract_json_bool(body, "include_body", true)
 
 	records := memory_db_list_records(.Active, false)
 	defer {
@@ -249,7 +251,7 @@ memory_service_applicable_json :: proc(body, calling_agent_id: string) -> Memory
 	for rec in records {
 		if !memory_record_applies(rec, ctx_agent_id, target_project_id) do continue
 		if wrote do strings.write_string(&builder, `,`)
-		memory_write_record_json(&builder, rec)
+		memory_write_record_json(&builder, rec, include_body)
 		wrote = true
 	}
 	strings.write_string(&builder, `]}`)
@@ -264,7 +266,7 @@ memory_service_show_json :: proc(body: string) -> string {
 	defer memory_record_free(rec)
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"ok":true,"record":`)
-	memory_write_record_json(&builder, rec)
+	memory_write_record_json(&builder, rec, true)
 	strings.write_string(&builder, `}`)
 	return strings.to_string(builder)
 }
@@ -463,7 +465,7 @@ memory_bucket_slug :: proc(value: string) -> string {
 	return out
 }
 
-memory_write_record_json :: proc(builder: ^strings.Builder, rec: contracts.Memory_Record) {
+memory_write_record_json :: proc(builder: ^strings.Builder, rec: contracts.Memory_Record, include_body := false) {
 	target := memory_target_string(rec.target_agent_id, rec.target_project_id)
 	defer delete(target)
 	strings.write_string(builder, `{"memory_id":"`); json_write_string(builder, rec.memory_id)
@@ -473,11 +475,15 @@ memory_write_record_json :: proc(builder: ^strings.Builder, rec: contracts.Memor
 	strings.write_string(builder, `","target":"`); json_write_string(builder, target)
 	strings.write_string(builder, `","type":"`); json_write_string(builder, memory_type_string_service(rec.type))
 	strings.write_string(builder, `","title":"`); json_write_string(builder, rec.title)
-	strings.write_string(builder, `","body":"`); json_write_string(builder, rec.body)
+	if include_body {
+		strings.write_string(builder, `","body":"`); json_write_string(builder, rec.body)
+	}
 	strings.write_string(builder, `","status":"`); json_write_string(builder, memory_status_string_service(rec.status))
 	strings.write_string(builder, `","reason":"`); json_write_string(builder, rec.reason)
-	strings.write_string(builder, `","evidence":"`); json_write_string(builder, rec.evidence)
-	strings.write_string(builder, `","metadata_json":"`); json_write_string(builder, rec.metadata_json)
+	if include_body {
+		strings.write_string(builder, `","evidence":"`); json_write_string(builder, rec.evidence)
+		strings.write_string(builder, `","metadata_json":"`); json_write_string(builder, rec.metadata_json)
+	}
 	strings.write_string(builder, `","source_task_id":"`); json_write_string(builder, rec.source_task_id)
 	strings.write_string(builder, `","version":`); strings.write_string(builder, fmt.tprintf("%d", rec.version))
 	strings.write_string(builder, `,"created_unix_ms":`); strings.write_string(builder, fmt.tprintf("%d", rec.created_unix_ms))

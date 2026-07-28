@@ -4,9 +4,9 @@ import json
 import time
 import sys
 
-DAEMON_URL = "http://127.0.0.1:49325"
+DAEMON_URL = "http://127.0.0.1:49328"
 HOST = "127.0.0.1"
-PORT = 49325
+PORT = 49328
 
 def main():
     agent_id = "test-dup-agent@default"

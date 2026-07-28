@@ -15,7 +15,9 @@ export const selectChainViewCacheProjection = createSelector([selectApiQueries],
     switch (entry.endpointName) {
       case 'listChains': {
         for (const chain of entry?.data?.chains || []) {
-          if (chain?.chainId) chainsById[chain.chainId] = chain;
+          if (chain?.chainId) {
+            chainsById[chain.chainId] = { ...(chainsById[chain.chainId] || {}), ...chain };
+          }
         }
         break;
       }

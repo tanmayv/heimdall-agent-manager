@@ -355,7 +355,11 @@ handle_client :: proc(client: net.TCP_Socket) {
 		return
 	}
 
-	if strings.has_prefix(request, "POST /agents/start ") {
+	// Match with a query-tolerant check: federation forwards this route through
+	// the bridge with a `?peer_token=...&peer_daemon_id=...` query appended, so a
+	// strict trailing-space prefix ("POST /agents/start ") would miss it and fall
+	// through to the catch-all 404, surfacing as a 502 "not found" on the origin.
+	if request_line_matches(request, "POST", "/agents/start") {
 		handle_agents_start(client, request_body(request))
 		return
 	}

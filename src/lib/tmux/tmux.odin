@@ -26,8 +26,21 @@ ensure_agent_window :: proc(session, window, cwd: string, command: []string) -> 
 	return result, ok
 }
 
+ensure_agent_pane_process_window :: proc(session, window, cwd: string, command: []string) -> (Launch_Result, bool) {
+	start_ms := tmux_now_unix_ms()
+	tmux_launch_log("ensure_pane_process_begin", session, window, start_ms)
+	lock := acquire_session_lock(session)
+	defer release_session_lock(lock)
+	result, ok := ensure_agent_window_with_shell_unlocked(session, window, build_pane_process_shell_command(cwd, command), start_ms)
+	tmux_launch_log(fmt.tprintf("ensure_pane_process_done ok=%t pane=%s", ok, result.pane_id), session, window, start_ms)
+	return result, ok
+}
+
 ensure_agent_window_unlocked :: proc(session, window, cwd: string, command: []string, start_ms: i64 = 0) -> (Launch_Result, bool) {
-	shell_command := build_shell_command(cwd, command)
+	return ensure_agent_window_with_shell_unlocked(session, window, build_shell_command(cwd, command), start_ms)
+}
+
+ensure_agent_window_with_shell_unlocked :: proc(session, window, shell_command: string, start_ms: i64 = 0) -> (Launch_Result, bool) {
 	tmux_launch_log("shell_command_built", session, window, start_ms)
 
 	if !has_session(session) {
@@ -253,6 +266,30 @@ create_throwaway_session :: proc(name: string) -> bool {
 	cmd := []string{"tmux", "new-session", "-d", "-s", name}
 	state, _, _, err := os.process_exec(os.Process_Desc{command = cmd}, context.allocator)
 	return err == nil && state.success
+}
+
+build_pane_process_shell_command :: proc(cwd: string, command: []string) -> string {
+	inner := strings.builder_make()
+	strings.write_string(&inner, "cd ")
+	strings.write_string(&inner, shell_quote(cwd))
+	strings.write_string(&inner, " && exec ")
+	if len(command) == 0 {
+		strings.write_string(&inner, "pi")
+	} else {
+		for arg, i in command {
+			if i > 0 do strings.write_string(&inner, " ")
+			strings.write_string(&inner, shell_quote(arg))
+		}
+	}
+
+	builder := strings.builder_make()
+	strings.write_string(&builder, "exec ")
+	shell := os.get_env_alloc("SHELL", context.allocator)
+	if strings.trim_space(shell) == "" do shell = "/bin/zsh"
+	strings.write_string(&builder, shell_quote(shell))
+	strings.write_string(&builder, " -l -c ")
+	strings.write_string(&builder, shell_quote(strings.to_string(inner)))
+	return strings.to_string(builder)
 }
 
 build_shell_command :: proc(cwd: string, command: []string) -> string {

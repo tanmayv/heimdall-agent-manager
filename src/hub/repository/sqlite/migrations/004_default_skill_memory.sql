@@ -1,0 +1,21 @@
+INSERT INTO memories (memory_id, owner_user_id, agent_id, type, status, title, body, evidence, created_at, updated_at)
+VALUES (
+  'mem_system_heimdall_ctl_communication',
+  'system',
+  '',
+  'skill',
+  'active',
+  'Heimdall CLI communication basics',
+  'Use the managed Heimdall CLI wrapper from the agent run directory for all Heimdall communication: `./.heimdall/bin/ham-ctl`. The wrapper injects `HEIMDALL_AGENT_TOKEN`, `HEIMDALL_AGENT_INSTANCE_ID`, and `HEIMDALL_BRIDGE_ENDPOINT`, so do not paste tokens into commands unless explicitly needed.\n\nStartup: after you are fully ready, report readiness with `./.heimdall/bin/ham-ctl agent start-success`.\n\nList live agents: to discover other running instances you can message, run `./.heimdall/bin/ham-ctl agents live` (equivalent: `./.heimdall/bin/ham-ctl agent agents live`). Use returned `agent_instance_id` values for agent-to-agent messaging; do not rely on display names.\n\nReading inbound messages: when notified about a new message, run `./.heimdall/bin/ham-ctl agent chat read` before responding. This fetches the agent-visible conversation transcript, including `user_to_agent` messages from the user and `agent_to_agent` messages from other agents. Treat chat messages from the user as authoritative task guidance.\n\nReplying to the user: use `./.heimdall/bin/ham-ctl agent chat send --body "<concise status or answer>"`. Keep replies concise, include concrete results, blockers, and next steps. Do not dump large logs or files inline; summarize and attach/create an artifact when appropriate.\n\nAgent-to-agent communication: use `./.heimdall/bin/ham-ctl agent chat send-to-agent --to-instance <agent_instance_id> --body "..."` when you know the target instance id. This is allowed across task chains and across bridges for agents owned by the same user. Target exact `agent_instance_id` values.\n\nTask communication: prefer durable Heimdall task comments/status/chat commands over ad-hoc terminal notes. Reference stable IDs such as agent_instance_id, task_id, chain_id, artifact_id, and file paths.\n\nBest practices: acknowledge messages promptly, state what you changed or checked, include exact commands/tests run when reporting completion, mention blockers explicitly, and avoid exposing secrets or raw tokens in chat, comments, artifacts, or logs.',
+  'Seeded system default memory. Applies to all agents because agent_id is empty and owner_user_id is system.',
+  '2026-07-28T00:00:00Z',
+  '2026-07-28T00:00:00Z'
+)
+ON CONFLICT(memory_id) DO UPDATE SET
+  agent_id=excluded.agent_id,
+  type=excluded.type,
+  status=excluded.status,
+  title=excluded.title,
+  body=excluded.body,
+  evidence=excluded.evidence,
+  updated_at=excluded.updated_at;

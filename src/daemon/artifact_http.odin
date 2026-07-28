@@ -142,6 +142,49 @@ federation_artifact_fetch_through :: proc(origin_daemon_id, route_peer_id, artif
 	return transmute([]byte)strings.clone(resp.body), true
 }
 
+federation_artifact_metadata_fetch_through :: proc(origin_daemon_id, route_peer_id, artifact_id: string) -> (string, bool) {
+	resolved_origin_daemon_id := strings.trim_space(origin_daemon_id)
+	resolved_artifact_id := strings.trim_space(artifact_id)
+	if resolved_origin_daemon_id == "" || resolved_artifact_id == "" do return "", false
+	resolved_peer_id, dest_daemon_id, peer_status, found := federation_direct_peer_lookup(strings.trim_space(route_peer_id), resolved_origin_daemon_id)
+	if !found || peer_status != PEER_STATUS_LINKED || dest_daemon_id == "" do return "", false
+	path := fmt.tprintf("%s/%s/metadata", contracts.ROUTE_FEDERATION_ARTIFACTS_PREFIX, resolved_artifact_id)
+	resp, fetch_ok := bridge_request(dest_daemon_id, contracts.BRIDGE_HTTP_METHOD_GET, path, "", federation_idempotency_key("artifact_meta", server_daemon_id, resolved_artifact_id), ARTIFACT_FEDERATION_FETCH_TIMEOUT_MS)
+	if !fetch_ok || resp.status != 200 {
+		fmt.println("artifact_metadata_fetch_through: bridge request failed", "origin_daemon_id", resolved_origin_daemon_id, "artifact_id", resolved_artifact_id, "status", resp.status, "fetch_ok", fetch_ok)
+		return "", false
+	}
+	return artifact_federation_reference_upsert(
+		resolved_peer_id,
+		resolved_origin_daemon_id,
+		resolved_artifact_id,
+		extract_json_string(resp.body, "name", ""),
+		extract_json_string(resp.body, "kind", ""),
+		extract_json_string(resp.body, "mime", ""),
+		extract_json_string(resp.body, "ext", ""),
+		extract_json_string(resp.body, "description", ""),
+		extract_json_string(resp.body, "project_id", ""),
+		extract_json_string(resp.body, "creator_id", resolved_peer_id),
+		extract_json_i64(resp.body, "size_bytes", 0),
+		extract_json_string(resp.body, "sha256", ""),
+	)
+}
+
+artifact_try_fetch_remote_reference :: proc(artifact_id: string) -> (string, bool) {
+	trimmed := strings.trim_space(artifact_id)
+	if trimmed == "" do return "", false
+	for i in 0..<peer_link_record_count {
+		rec := peer_link_records[i]
+		if rec.removed_at_unix_ms != 0 || rec.status != PEER_STATUS_LINKED do continue
+		origin_daemon_id := strings.trim_space(rec.daemon_id)
+		if origin_daemon_id == "" do continue
+		if local_artifact_id, ok := federation_artifact_metadata_fetch_through(origin_daemon_id, rec.peer_id, trimmed); ok && local_artifact_id != "" {
+			return local_artifact_id, true
+		}
+	}
+	return "", false
+}
+
 artifact_resolve_content :: proc(rec: Artifact_Record) -> (Artifact_Record, []byte, bool) {
 	if data, read_ok := artifact_read_blob(rec.rel_path); read_ok {
 		return rec, data, true
@@ -243,6 +286,12 @@ handle_post_artifact_create :: proc(client: net.TCP_Socket, body: string, ctx: ^
 handle_get_artifact :: proc(client: net.TCP_Socket, artifact_id: string, ctx: ^Route_Context) {
 	_, _, ok := artifact_authorize_identity(client, ctx)
 	if !ok do return
+	if _, found := artifact_db_get(artifact_id); !found {
+		if local_artifact_id, fetched := artifact_try_fetch_remote_reference(artifact_id); fetched {
+			artifact_write_metadata_response(client, local_artifact_id)
+			return
+		}
+	}
 	artifact_write_metadata_response(client, artifact_id)
 }
 
@@ -254,16 +303,24 @@ handle_get_artifacts :: proc(client: net.TCP_Socket, ctx: ^Route_Context) {
 	if limit_str := query_param_value(ctx.query, "limit"); limit_str != "" {
 		if parsed, parse_ok := strconv.parse_int(limit_str); parse_ok do limit = int(parsed)
 	}
+	offset := 0
+	if offset_str := query_param_value(ctx.query, "offset"); offset_str != "" {
+		if parsed, parse_ok := strconv.parse_int(offset_str); parse_ok do offset = int(parsed)
+	}
 	include_deleted := false
 	if include_deleted_str := query_param_value(ctx.query, "include_deleted"); include_deleted_str == "true" || include_deleted_str == "1" do include_deleted = true
 
-	recs := artifact_db_list(Artifact_List_Filter{
+	recs, total := artifact_db_list(Artifact_List_Filter{
 		project_id = query_param_value(ctx.query, "project_id"),
 		creator_id = query_param_value(ctx.query, "creator_id"),
 		origin_ref = query_param_value(ctx.query, "origin_ref"),
 		include_deleted = include_deleted,
 		limit = limit,
+		offset = offset,
 	})
+
+	has_more := limit > 0 && total > offset + len(recs)
+	next_offset := offset + len(recs)
 
 	builder := strings.builder_make()
 	strings.write_string(&builder, `{"ok":true,"artifacts":[`)
@@ -271,7 +328,17 @@ handle_get_artifacts :: proc(client: net.TCP_Socket, ctx: ^Route_Context) {
 		if idx > 0 do strings.write_string(&builder, `,`)
 		artifact_write_public_json(&builder, rec)
 	}
-	strings.write_string(&builder, `]}`)
+	strings.write_string(&builder, `],"total":`)
+	strings.write_string(&builder, fmt.tprintf("%d", total))
+	strings.write_string(&builder, `,"limit":`)
+	strings.write_string(&builder, fmt.tprintf("%d", limit))
+	strings.write_string(&builder, `,"offset":`)
+	strings.write_string(&builder, fmt.tprintf("%d", offset))
+	strings.write_string(&builder, `,"next_offset":`)
+	strings.write_string(&builder, fmt.tprintf("%d", next_offset))
+	strings.write_string(&builder, `,"has_more":`)
+	strings.write_string(&builder, "true" if has_more else "false")
+	strings.write_string(&builder, `}`)
 	write_response(client, 200, "OK", strings.to_string(builder))
 }
 
@@ -281,8 +348,13 @@ handle_get_artifact_content :: proc(client: net.TCP_Socket, artifact_id: string,
 
 	rec, found := artifact_db_get(artifact_id)
 	if !found {
-		artifact_write_error(client, 404, "Not Found", "not_found", "artifact not found")
-		return
+		if local_artifact_id, fetched := artifact_try_fetch_remote_reference(artifact_id); fetched {
+			rec, found = artifact_db_get(local_artifact_id)
+		}
+		if !found {
+			artifact_write_error(client, 404, "Not Found", "not_found", "artifact not found")
+			return
+		}
 	}
 	if rec.deleted {
 		artifact_write_error(client, 410, "Gone", "gone", "artifact deleted")
@@ -339,6 +411,24 @@ handle_get_artifact_content :: proc(client: net.TCP_Socket, artifact_id: string,
 		return
 	}
 	artifact_write_binary_content_response(client, resolved_rec, data)
+}
+
+handle_get_federation_artifact_metadata :: proc(client: net.TCP_Socket, artifact_id: string, ctx: ^Route_Context) {
+	_, _, ok := federation_peer_id_for_context(ctx)
+	if !ok {
+		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"peer not configured or token mismatch"}`)
+		return
+	}
+	rec, found := artifact_db_get(artifact_id)
+	if !found {
+		artifact_write_error(client, 404, "Not Found", "not_found", "artifact not found")
+		return
+	}
+	if ok, reason := artifact_federation_self_contained_eligible(rec); !ok {
+		artifact_write_error(client, 403, "Forbidden", "not_shareable", reason)
+		return
+	}
+	artifact_write_single_response(client, rec)
 }
 
 handle_get_federation_artifact_content :: proc(client: net.TCP_Socket, artifact_id: string, ctx: ^Route_Context) {

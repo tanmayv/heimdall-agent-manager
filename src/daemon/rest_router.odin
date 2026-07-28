@@ -326,6 +326,14 @@ handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_C
 		return true
 	}
 
+	// GET /tasks/{task_id}/comments/{comment_id}
+	if len(ctx.segments) == 4 && ctx.segments[0] == "tasks" && ctx.segments[2] == "comments" && ctx.method == "GET" {
+		task_id := ctx.segments[1]
+		comment_id := ctx.segments[3]
+		handle_get_task_comment(client, task_id, comment_id, ctx)
+		return true
+	}
+
 	// GET /federation/agents?peer_token=...
 	if len(ctx.segments) == 2 && ctx.segments[0] == "federation" && ctx.segments[1] == "agents" && ctx.method == "GET" {
 		handle_get_federation_agents(client, ctx)
@@ -341,6 +349,12 @@ handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_C
 	// POST /federation/proxies/bind
 	if len(ctx.segments) == 3 && ctx.segments[0] == "federation" && ctx.segments[1] == "proxies" && ctx.segments[2] == "bind" && ctx.method == "POST" {
 		handle_post_federation_proxy_bind(client, request_body(request), ctx)
+		return true
+	}
+
+	// POST /federation/proxies/remap (change which remote agent-id a local proxy maps to)
+	if len(ctx.segments) == 3 && ctx.segments[0] == "federation" && ctx.segments[1] == "proxies" && ctx.segments[2] == "remap" && ctx.method == "POST" {
+		handle_post_federation_proxy_remap(client, request_body(request), ctx)
 		return true
 	}
 
@@ -365,6 +379,13 @@ handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_C
 	// POST /federation/stop (owner stops the real agent for a peer's remote_proxy)
 	if len(ctx.segments) == 2 && ctx.segments[0] == "federation" && ctx.segments[1] == "stop" && ctx.method == "POST" {
 		handle_post_federation_stop(client, request_body(request), ctx)
+		return true
+	}
+
+	// POST /federation/subscribe (owner registers a peer's remote_proxy as a
+	// status subscriber and pushes one current-status snapshot, without start/stop)
+	if len(ctx.segments) == 2 && ctx.segments[0] == "federation" && ctx.segments[1] == "subscribe" && ctx.method == "POST" {
+		handle_post_federation_subscribe(client, request_body(request), ctx)
 		return true
 	}
 
@@ -398,9 +419,27 @@ handle_rest_route :: proc(client: net.TCP_Socket, request: string, ctx: ^Route_C
 		return true
 	}
 
+	// GET /federation/peers/{peer_id}/agents/{agent_id}/template (proxy-side pass-through)
+	if len(ctx.segments) == 6 && ctx.segments[0] == "federation" && ctx.segments[1] == "peers" && ctx.segments[3] == "agents" && ctx.segments[5] == "template" && ctx.method == "GET" {
+		handle_get_federation_peer_agent_template(client, ctx.segments[2], ctx.segments[4], ctx)
+		return true
+	}
+
+	// GET /federation/agents/{agent_id}/template (origin-side; peer-authorized)
+	if len(ctx.segments) == 4 && ctx.segments[0] == "federation" && ctx.segments[1] == "agents" && ctx.segments[3] == "template" && ctx.method == "GET" {
+		handle_get_federation_agent_template(client, ctx.segments[2], ctx)
+		return true
+	}
+
 	// GET /federation/messages/{message_id}
 	if len(ctx.segments) == 3 && ctx.segments[0] == "federation" && ctx.segments[1] == "messages" && ctx.method == "GET" {
 		handle_get_federation_message(client, ctx.segments[2], ctx)
+		return true
+	}
+
+	// GET /federation/artifacts/{artifact_id}/metadata
+	if len(ctx.segments) == 4 && ctx.segments[0] == "federation" && ctx.segments[1] == "artifacts" && ctx.segments[3] == "metadata" && ctx.method == "GET" {
+		handle_get_federation_artifact_metadata(client, ctx.segments[2], ctx)
 		return true
 	}
 

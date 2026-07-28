@@ -555,9 +555,9 @@ task_unresolved_comments :: proc(task_id: string) -> []Task_Comment_State {
 
 // --- JSON serialization ---
 
-task_state_json :: proc(state: Task_State) -> string {
+task_state_json :: proc(state: Task_State, include_detail := false) -> string {
 	builder := strings.builder_make()
-	task_write_state_json(&builder, state)
+	task_write_state_json(&builder, state, include_detail)
 	return strings.to_string(builder)
 }
 
@@ -609,14 +609,16 @@ task_log_json_paginated :: proc(task_id: string, limit: int, cursor: int) -> str
 	return strings.to_string(builder)
 }
 
-task_write_state_json :: proc(builder: ^strings.Builder, state: Task_State) {
+task_write_state_json :: proc(builder: ^strings.Builder, state: Task_State, include_detail := false) {
 	unresolved := task_unresolved_comments(state.task_id)
 	defer delete(unresolved)
 	strings.write_string(builder, `{"task_id":"`);            json_write_string(builder, state.task_id)
 	strings.write_string(builder, `","chain_id":"`);          json_write_string(builder, state.chain_id)
 	strings.write_string(builder, `","title":"`);             json_write_string(builder, state.title)
-	strings.write_string(builder, `","description":"`);       json_write_string(builder, state.description)
-	strings.write_string(builder, `","acceptance_criteria":"`); json_write_string(builder, state.acceptance_criteria)
+	if include_detail {
+		strings.write_string(builder, `","description":"`);       json_write_string(builder, state.description)
+		strings.write_string(builder, `","acceptance_criteria":"`); json_write_string(builder, state.acceptance_criteria)
+	}
 	strings.write_string(builder, `","priority":"`);          json_write_string(builder, state.priority)
 	strings.write_string(builder, `","status":"`);            json_write_string(builder, task_status_to_string(state.status))
 	strings.write_string(builder, `","assignee_agent_instance_id":"`); json_write_string(builder, state.assignee_agent_instance_id)
@@ -629,16 +631,12 @@ task_write_state_json :: proc(builder: ^strings.Builder, state: Task_State) {
 	strings.write_string(builder, `,"not_actionable_reason":"`); json_write_string(builder, task_not_actionable_reason(state))
 	strings.write_string(builder, `","unresolved_comment_count":`); strings.write_string(builder, fmt.tprintf("%d", len(unresolved)))
 	
-	strings.write_string(builder, `,"unresolved_comments":[`)
+	strings.write_string(builder, `,"comment_ids":[`)
 	for c, idx in unresolved {
 		if idx > 0 do strings.write_string(builder, `,`)
-		strings.write_string(builder, `{"comment_id":"`)
+		strings.write_string(builder, `"`)
 		json_write_string(builder, c.comment_id)
-		strings.write_string(builder, `","body":"`)
-		json_write_string(builder, c.body)
-		strings.write_string(builder, `","author_agent_instance_id":"`)
-		json_write_string(builder, c.author_agent_instance_id)
-		strings.write_string(builder, `"}`)
+		strings.write_string(builder, `"`)
 	}
 	strings.write_string(builder, `]`)
 

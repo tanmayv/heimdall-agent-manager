@@ -3,13 +3,11 @@ import { upsertTaskLogEvent } from '../taskCache';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
 
 function normalizeTask(task: any) {
-  return {
+  const result: any = {
     id: task.task_id,
     taskId: task.task_id,
     chainId: task.chain_id || '',
     title: task.title || '',
-    description: task.description || '',
-    acceptanceCriteria: task.acceptance_criteria || '',
     priority: task.priority || 'normal',
     status: task.status || 'pending',
     assigneeAgentInstanceId: task.assignee_agent_instance_id || '',
@@ -30,8 +28,15 @@ function normalizeTask(task: any) {
       role: participant.role,
     })),
     unresolvedCommentCount: Number(task.unresolved_comment_count || 0),
-    unresolvedComments: (task.unresolved_comments || []).map(normalizeTaskLogEvent),
+    commentIds: task.comment_ids || [],
   };
+  if (task.description !== undefined) {
+    result.description = task.description;
+  }
+  if (task.acceptance_criteria !== undefined) {
+    result.acceptanceCriteria = task.acceptance_criteria;
+  }
+  return result;
 }
 
 function normalizeTaskLogEvent(event: any) {
@@ -91,23 +96,73 @@ function preciseTaskTags(taskId?: string, chainId?: string, includeComments = fa
 
 export const tasksApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
-    fetchChainTasks: build.query<any, { chainId: string }>({
-      queryFn: withSessionQuery(async ({ chainId }, { session }) => {
+    fetchChainTasks: build.query<any, { chainId: string; limit?: number; offset?: number }>({
+      queryFn: withSessionQuery(async ({ chainId, limit = 100, offset = 0 }, { session }) => {
         if (!session?.clientToken || !chainId) return { chainId, tasks: [] };
         const data = await daemonApi.listChainTasks({
           daemonUrl: session.daemonUrl,
           clientToken: session.clientToken,
           chainId,
+          limit,
+          offset,
         });
         return {
           chainId,
           tasks: (data?.tasks || []).map(normalizeTask),
+          total: data?.total || 0,
+          limit: data?.limit || limit,
+          offset: data?.offset || offset,
+          next_offset: data?.next_offset || 0,
+          has_more: data?.has_more || false,
         };
       }),
       providesTags: (result, _error, { chainId }) => [
         { type: 'ChainTasks' as const, id: chainId },
         ...((result?.tasks || []).map((task: any) => ({ type: 'Task' as const, id: task.taskId }))),
       ],
+    }),
+    fetchChainTasksPage: build.query<any, { chainId: string; limit?: number; offset: number }>({
+      queryFn: withSessionQuery(async ({ chainId, limit = 100, offset }, { session }) => {
+        if (!session?.clientToken || !chainId) return { chainId, tasks: [] };
+        const data = await daemonApi.listChainTasks({
+          daemonUrl: session.daemonUrl,
+          clientToken: session.clientToken,
+          chainId,
+          limit,
+          offset,
+        });
+        return {
+          chainId,
+          tasks: (data?.tasks || []).map(normalizeTask),
+          total: data?.total || 0,
+          limit: data?.limit || limit,
+          offset: data?.offset || offset,
+          next_offset: data?.next_offset || 0,
+          has_more: data?.has_more || false,
+        };
+      }),
+      async onQueryStarted(arg, { dispatch, queryFulfilled }) {
+        try {
+          const { data } = await queryFulfilled;
+          const { chainId, limit = 100 } = arg;
+          const cacheKeyArgs = { chainId, limit };
+          dispatch(
+            tasksApi.util.updateQueryData('fetchChainTasks', cacheKeyArgs as any, (draft) => {
+              if (!draft) return;
+              draft.has_more = data.has_more;
+              draft.next_offset = data.next_offset;
+              draft.total = data.total;
+              
+              const existingIds = new Set(draft.tasks.map((t: any) => t.taskId));
+              for (const task of data.tasks) {
+                if (!existingIds.has(task.taskId)) {
+                  draft.tasks.push(task);
+                }
+              }
+            })
+          );
+        } catch {}
+      }
     }),
     fetchTask: build.query<any, { taskId: string }>({
       queryFn: withSessionQuery(async ({ taskId }, { session }) => {
@@ -123,18 +178,85 @@ export const tasksApi = heimdallApi.injectEndpoints({
       }),
       providesTags: (_result, _error, { taskId }) => [{ type: 'Task', id: taskId }],
     }),
-    fetchTaskComments: build.query<any, { taskId: string; unresolved?: boolean }>({
-      queryFn: withSessionQuery(async ({ taskId, unresolved = false }, { session }) => {
+    fetchTaskComments: build.query<any, { taskId: string; unresolved?: boolean; limit?: number; offset?: number }>({
+      queryFn: withSessionQuery(async ({ taskId, unresolved = false, limit = 20, offset = 0 }, { session }) => {
         if (!session?.clientToken || !taskId) return { taskId, comments: [] };
         const data = await daemonApi.fetchTaskComments({
           daemonUrl: session.daemonUrl,
           clientToken: session.clientToken,
           taskId,
           unresolved,
+          limit,
+          offset,
         });
         return {
           taskId,
           comments: (data?.comments || []).map(normalizeTaskComments),
+          total: data?.total || 0,
+          limit: data?.limit || limit,
+          offset: data?.offset || offset,
+          next_offset: data?.next_offset || 0,
+          has_more: data?.has_more || false,
+        };
+      }),
+      providesTags: (_result, _error, { taskId }) => [{ type: 'TaskComments', id: taskId }],
+    }),
+    fetchTaskCommentsPage: build.query<any, { taskId: string; unresolved?: boolean; limit?: number; offset: number }>({
+      queryFn: withSessionQuery(async ({ taskId, unresolved = false, limit = 20, offset }, { session }) => {
+        if (!session?.clientToken || !taskId) return { taskId, comments: [] };
+        const data = await daemonApi.fetchTaskComments({
+          daemonUrl: session.daemonUrl,
+          clientToken: session.clientToken,
+          taskId,
+          unresolved,
+          limit,
+          offset,
+        });
+        return {
+          taskId,
+          comments: (data?.comments || []).map(normalizeTaskComments),
+          total: data?.total || 0,
+          limit: data?.limit || limit,
+          offset: data?.offset || offset,
+          next_offset: data?.next_offset || 0,
+          has_more: data?.has_more || false,
+        };
+      }),
+      async onQueryStarted(arg, { dispatch, queryFulfilled }) {
+        try {
+          const { data } = await queryFulfilled;
+          const { taskId, unresolved = false, limit = 20 } = arg;
+          const cacheKeyArgs = { taskId, unresolved, limit };
+          dispatch(
+            tasksApi.util.updateQueryData('fetchTaskComments', cacheKeyArgs as any, (draft) => {
+              if (!draft) return;
+              draft.has_more = data.has_more;
+              draft.next_offset = data.next_offset;
+              draft.total = data.total;
+              
+              const existingIds = new Set(draft.comments.map((c: any) => c.comment_id || c.commentId));
+              for (const comment of data.comments) {
+                const id = comment.comment_id || comment.commentId;
+                if (!existingIds.has(id)) {
+                  draft.comments.push(comment);
+                }
+              }
+            })
+          );
+        } catch {}
+      }
+    }),
+    fetchTaskComment: build.query<any, { taskId: string; commentId: string }>({
+      queryFn: withSessionQuery(async ({ taskId, commentId }, { session }) => {
+        if (!session?.clientToken || !taskId || !commentId) return { comment: null };
+        const data = await daemonApi.fetchTaskComment({
+          daemonUrl: session.daemonUrl,
+          clientToken: session.clientToken,
+          taskId,
+          commentId,
+        });
+        return {
+          comment: data?.comment ? normalizeTaskComments(data.comment) : null,
         };
       }),
       providesTags: (_result, _error, { taskId }) => [{ type: 'TaskComments', id: taskId }],
@@ -338,8 +460,13 @@ export const tasksApi = heimdallApi.injectEndpoints({
 
 export const {
   useFetchChainTasksQuery,
+  useLazyFetchChainTasksPageQuery,
   useFetchTaskQuery,
+  useLazyFetchTaskQuery,
   useFetchTaskCommentsQuery,
+  useLazyFetchTaskCommentsPageQuery,
+  useFetchTaskCommentQuery,
+  useLazyFetchTaskCommentQuery,
   useFetchTaskLogQuery,
   useLazyFetchTaskLogPageQuery,
 } = tasksApi;

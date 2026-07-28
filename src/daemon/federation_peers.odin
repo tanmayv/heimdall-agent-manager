@@ -355,6 +355,11 @@ reachable_daemon_apply_body :: proc(body: string, emit_event: bool) -> int {
 		// On peer link (re)connect, push one current-status snapshot per proxy
 		// subscriber so the peer re-syncs after any missed transitions (B1).
 		_ = federation_agent_status_resync_peer(replay_peer_ids[i])
+		// Also re-subscribe from the proxy side: if the ORIGIN daemon restarted it
+		// lost its in-memory subscriber index, so a resync alone has nothing to
+		// send. Re-issuing subscribe re-registers each local proxy and pulls a
+		// fresh snapshot so already-running remote agents report live again.
+		_ = federation_resubscribe_proxies_for_peer(replay_peer_ids[i])
 	}
 	if emit_event && changed_count > 0 do federation_reachability_emit_event(strings.to_string(changed_ids), changed_count)
 	return changed_count
@@ -775,6 +780,62 @@ handle_get_federation_agents :: proc(client: net.TCP_Socket, ctx: ^Route_Context
 	write_response(client, 200, "OK", federation_advertised_agents_json())
 }
 
+// handle_get_federation_agent_template resolves the template (persona +
+// instructions + role defaults) for a peer-advertised agent-id so a proxy-side
+// daemon can display the remote role's content. Peer-authorized; only exposes
+// templates of agent-ids this daemon actually advertises.
+handle_get_federation_agent_template :: proc(client: net.TCP_Socket, agent_id: string, ctx: ^Route_Context) {
+	if _, _, ok := federation_peer_id_for_context(ctx); !ok {
+		write_response(client, 401, "Unauthorized", `{"ok":false,"message":"peer not configured or token mismatch"}`)
+		return
+	}
+	trimmed := strings.trim_space(agent_id)
+	if trimmed == "" || !federation_agent_is_advertised(trimmed) {
+		write_response(client, 404, "Not Found", `{"ok":false,"message":"agent not advertised"}`)
+		return
+	}
+	template_id := ""
+	if idx := agent_id_index(trimmed); idx >= 0 do template_id = agent_id_records[idx].template_id
+	if template_id == "" {
+		if ridx := agent_record_index_by_instance(trimmed); ridx >= 0 do template_id = agent_instance_records[ridx].template_id
+	}
+	tidx := agent_template_index(template_id)
+	if template_id == "" || tidx < 0 || agent_template_records[tidx].archived_at_unix_ms != 0 {
+		write_response(client, 404, "Not Found", `{"ok":false,"message":"template not found"}`)
+		return
+	}
+	b := strings.builder_make()
+	strings.write_string(&b, `{"ok":true,"agent_id":"`); json_write_string(&b, trimmed)
+	strings.write_string(&b, `","template":`); agent_template_record_json(&b, agent_template_records[tidx])
+	strings.write_string(&b, `}`)
+	write_response(client, 200, "OK", strings.to_string(b))
+}
+
+// handle_get_federation_peer_agent_template is the proxy-side pass-through: it
+// forwards the template request to the origin daemon over the bridge so the UI
+// can fetch remote role content by peer + agent_id.
+handle_get_federation_peer_agent_template :: proc(client: net.TCP_Socket, peer_id, agent_id: string, ctx: ^Route_Context) {
+	_, ok := rest_authorize_user(client, ctx)
+	if !ok do return
+	resolved_peer_id, dest_daemon_id, status, found := federation_direct_peer_lookup(peer_id_normalize(peer_id), "")
+	_ = resolved_peer_id
+	if !found || dest_daemon_id == "" {
+		write_response(client, 404, "Not Found", `{"ok":false,"message":"peer not found"}`)
+		return
+	}
+	if status != PEER_STATUS_LINKED {
+		write_response(client, 503, "Service Unavailable", `{"ok":false,"message":"peer unreachable"}`)
+		return
+	}
+	path := fmt.tprintf("/federation/agents/%s/template", agent_id)
+	resp, fetch_ok := bridge_request(dest_daemon_id, contracts.BRIDGE_HTTP_METHOD_GET, path, "", federation_idempotency_key("peer_agent_template", server_daemon_id, fmt.tprintf("%s:%s", peer_id, agent_id)), FEDERATION_HTTP_TIMEOUT_MS)
+	if !fetch_ok {
+		write_response(client, 503, "Service Unavailable", `{"ok":false,"message":"peer unreachable"}`)
+		return
+	}
+	write_response(client, resp.status, federation_status_text(resp.status), resp.body)
+}
+
 federation_remote_agent_id_create :: proc(bridge_daemon_id, remote_agent_id, display_name, template_id, provider_profile, model_tier: string) -> (ok: bool, message: string) {
 	remote_agent_id_trimmed := strings.trim_space(remote_agent_id)
 	if remote_agent_id_trimmed == "" do return false, "remote_agent_id required"
@@ -864,11 +925,13 @@ federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_ins
 					if idx := agent_record_index(existing.agent_record_id); idx >= 0 {
 						updated := agent_instance_records[idx]
 						if started_from_agent_id do _, _, _ = federation_forward_start(updated.remote_peer_id, updated.remote_agent_instance_id, "", "", updated.agent_instance_id)
+						else do _, _, _ = federation_forward_subscribe(updated.remote_peer_id, updated.remote_agent_instance_id, updated.agent_instance_id)
 						return updated, true, ""
 					}
 				}
 			}
 			if started_from_agent_id do _, _, _ = federation_forward_start(existing.remote_peer_id, existing.remote_agent_instance_id, "", "", existing.agent_instance_id)
+			else do _, _, _ = federation_forward_subscribe(existing.remote_peer_id, existing.remote_agent_instance_id, existing.agent_instance_id)
 			return existing, true, ""
 		}
 	}
@@ -880,11 +943,13 @@ federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_ins
 				if idx := agent_record_index(existing.agent_record_id); idx >= 0 {
 					updated := agent_instance_records[idx]
 					if started_from_agent_id do _, _, _ = federation_forward_start(updated.remote_peer_id, updated.remote_agent_instance_id, "", "", updated.agent_instance_id)
+					else do _, _, _ = federation_forward_subscribe(updated.remote_peer_id, updated.remote_agent_instance_id, updated.agent_instance_id)
 					return updated, true, ""
 				}
 			}
 		}
 		if started_from_agent_id do _, _, _ = federation_forward_start(existing.remote_peer_id, existing.remote_agent_instance_id, "", "", existing.agent_instance_id)
+		else do _, _, _ = federation_forward_subscribe(existing.remote_peer_id, existing.remote_agent_instance_id, existing.agent_instance_id)
 		return existing, true, ""
 	}
 	local_display_name := strings.trim_space(display_name)
@@ -908,6 +973,7 @@ federation_remote_proxy_bind :: proc(peer_id, origin_daemon_id, remote_agent_ins
 	if idx < 0 do return Agent_Instance_Record{}, false, "remote proxy not found after save"
 	rec := agent_instance_records[idx]
 	if started_from_agent_id do _, _, _ = federation_forward_start(rec.remote_peer_id, rec.remote_agent_instance_id, "", "", rec.agent_instance_id)
+	else do _, _, _ = federation_forward_subscribe(rec.remote_peer_id, rec.remote_agent_instance_id, rec.agent_instance_id)
 	return rec, true, ""
 }
 
@@ -929,6 +995,41 @@ handle_post_federation_reachability :: proc(client: net.TCP_Socket, body: string
 	strings.write_string(&b, `,"changed_count":`); strings.write_string(&b, fmt.tprintf("%d", changed))
 	strings.write_string(&b, `}`)
 	write_response(client, 202, "Accepted", strings.to_string(b))
+}
+
+// handle_post_federation_proxy_remap changes which remote agent-id (and
+// optionally which peer) an existing LOCAL proxy agent-id maps to. It re-upserts
+// the durable remote_proxy identity keyed by local_agent_id, so the local id and
+// its history stay stable while the origin mapping changes. Does not launch or
+// touch running instances.
+handle_post_federation_proxy_remap :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {
+	_, ok := rest_authorize_user(client, ctx)
+	if !ok do return
+	local_agent_id := strings.trim_space(extract_json_string(body, "local_agent_id", ""))
+	if local_agent_id == "" { write_response(client, 400, "Bad Request", `{"ok":false,"message":"local_agent_id required"}`); return }
+	idx := agent_id_index(local_agent_id)
+	if idx < 0 { write_response(client, 404, "Not Found", `{"ok":false,"message":"local agent_id not found"}`); return }
+	existing := agent_id_records[idx]
+	if agent_kind_normalize(existing.agent_kind) != AGENT_KIND_REMOTE_PROXY { write_response(client, 400, "Bad Request", `{"ok":false,"message":"agent_id is not a remote proxy"}`); return }
+	remote_agent_id := strings.trim_space(extract_json_string(body, "remote_agent_id", ""))
+	if remote_agent_id == "" { write_response(client, 400, "Bad Request", `{"ok":false,"message":"remote_agent_id required"}`); return }
+	// Peer/origin default to the current mapping when omitted (remap agent-id only).
+	peer_id := strings.trim_space(extract_json_string(body, "peer_id", existing.remote_peer_id))
+	if peer_id == "" do peer_id = existing.remote_peer_id
+	resolved_peer_id, dest_daemon_id, status, found := federation_direct_peer_lookup(peer_id_normalize(peer_id), "")
+	if !found || resolved_peer_id == "" { write_response(client, 404, "Not Found", `{"ok":false,"message":"peer not found"}`); return }
+	if status != PEER_STATUS_LINKED { write_response(client, 503, "Service Unavailable", `{"ok":false,"message":"peer unreachable"}`); return }
+	origin_daemon_id := strings.trim_space(extract_json_string(body, "origin_daemon_id", ""))
+	if origin_daemon_id == "" do origin_daemon_id = dest_daemon_id if dest_daemon_id != "" else existing.remote_origin_daemon_id
+	display_name := strings.trim_space(extract_json_string(body, "display_name", existing.display_name))
+	template_id := strings.trim_space(extract_json_string(body, "template_id", existing.template_id))
+	if !agent_id_upsert_remote_proxy(local_agent_id, display_name if display_name != "" else local_agent_id, template_id if template_id != "" else remote_agent_id, resolved_peer_id, origin_daemon_id, remote_agent_id, "api") {
+		write_response(client, 500, "Internal Server Error", `{"ok":false,"message":"failed to remap remote agent_id"}`)
+		return
+	}
+	b := strings.builder_make(); strings.write_string(&b, `{"ok":true,"message":"remote proxy remapped","identity":`)
+	if ridx := agent_id_index(local_agent_id); ridx >= 0 { agent_id_record_json(&b, agent_id_records[ridx]) } else { strings.write_string(&b, `null`) }
+	strings.write_string(&b, `}`); write_response(client, 200, "OK", strings.to_string(b))
 }
 
 handle_post_federation_proxy_bind :: proc(client: net.TCP_Socket, body: string, ctx: ^Route_Context) {

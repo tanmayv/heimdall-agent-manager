@@ -53,8 +53,9 @@ request_blocking :: proc(method, base_url, path, body: string, timeout_ms := 0) 
 }
 
 request_blocking_with_headers :: proc(method, base_url, path, body: string, extra_headers: []Header, timeout_ms := 0) -> (Response, bool) {
-	host, port, ok := parse_base_url(base_url)
+	host, port, secure, ok := parse_base_url(base_url)
 	if !ok do return {}, false
+	if secure do return request_tls_with_headers(method, host, port, path, body, extra_headers, timeout_ms)
 
 	socket, dial_ok := dial_tcp_with_timeout(host, int(port), timeout_ms)
 	if !dial_ok do return {}, false
@@ -65,17 +66,7 @@ request_blocking_with_headers :: proc(method, base_url, path, body: string, extr
 		if net.set_option(socket, .Receive_Timeout, timeout) != nil do return {}, false
 	}
 
-	req_b := strings.builder_make()
-	strings.write_string(&req_b, fmt.tprintf("%s %s HTTP/1.1\r\nHost: %s:%d\r\nContent-Type: application/json\r\n", method, path, host, port))
-	for h in extra_headers {
-		if strings.trim_space(h.name) == "" do continue
-		strings.write_string(&req_b, h.name)
-		strings.write_string(&req_b, ": ")
-		strings.write_string(&req_b, h.value)
-		strings.write_string(&req_b, "\r\n")
-	}
-	strings.write_string(&req_b, fmt.tprintf("Content-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body))
-	req := strings.to_string(req_b)
+	req := build_http_request(method, host, port, path, body, extra_headers)
 	_, send_err := net.send_tcp(socket, transmute([]byte)req)
 	if send_err != nil do return {}, false
 
@@ -89,7 +80,72 @@ request_blocking_with_headers :: proc(method, base_url, path, body: string, extr
 		if response_complete(string(data[:])) do break
 	}
 
-	raw := string(data[:])
+	return parse_response_bytes(data[:])
+}
+
+request_tls_with_headers :: proc(method, host: string, port: u16, path, body: string, extra_headers: []Header, timeout_ms := 0) -> (Response, bool) {
+	stdin_r, stdin_w, stdin_err := os.pipe()
+	if stdin_err != nil do return {}, false
+	defer os.close(stdin_r)
+	stdout_r, stdout_w, stdout_err := os.pipe()
+	if stdout_err != nil { _ = os.close(stdin_w); return {}, false }
+	defer os.close(stdout_r)
+
+	command := tls_client_command(host, port)
+	process, start_err := os.process_start(os.Process_Desc{command = command, stdin = stdin_r, stdout = stdout_w})
+	_ = os.close(stdout_w)
+	if start_err != nil { _ = os.close(stdin_w); return {}, false }
+
+	req := build_http_request(method, host, port, path, body, extra_headers)
+	_, write_err := os.write(stdin_w, transmute([]byte)req)
+	_ = os.close(stdin_w)
+	if write_err != nil {
+		_ = os.process_kill(process)
+		_, _ = os.process_wait(process)
+		return {}, false
+	}
+
+	deadline := time.to_unix_nanoseconds(time.now()) + i64(time.Duration(timeout_ms if timeout_ms > 0 else DEFAULT_TIMEOUT_MS) * time.Millisecond)
+	data := make([dynamic]byte, 0, 8192)
+	buf: [8192]byte
+	for time.to_unix_nanoseconds(time.now()) < deadline {
+		if ready, pipe_err := os.pipe_has_data(stdout_r); pipe_err != nil {
+			break
+		} else if ready {
+			n, read_err := os.read(stdout_r, buf[:])
+			if read_err != nil || n <= 0 do break
+			append(&data, ..buf[:n])
+			if response_complete(string(data[:])) do break
+		} else {
+			if state, wait_err := os.process_wait(process, 0); wait_err == nil {
+				_ = state
+				break
+			}
+			time.sleep(10 * time.Millisecond)
+		}
+	}
+	_ = os.process_terminate(process)
+	_, _ = os.process_wait(process, 250 * time.Millisecond)
+	if len(data) == 0 do return {}, false
+	return parse_response_bytes(data[:])
+}
+
+build_http_request :: proc(method, host: string, port: u16, path, body: string, extra_headers: []Header) -> string {
+	req_b := strings.builder_make()
+	strings.write_string(&req_b, fmt.tprintf("%s %s HTTP/1.1\r\nHost: %s:%d\r\nContent-Type: application/json\r\n", method, path, host, port))
+	for h in extra_headers {
+		if strings.trim_space(h.name) == "" do continue
+		strings.write_string(&req_b, h.name)
+		strings.write_string(&req_b, ": ")
+		strings.write_string(&req_b, h.value)
+		strings.write_string(&req_b, "\r\n")
+	}
+	strings.write_string(&req_b, fmt.tprintf("Content-Length: %d\r\nConnection: close\r\n\r\n%s", len(body), body))
+	return strings.to_string(req_b)
+}
+
+parse_response_bytes :: proc(data: []byte) -> (Response, bool) {
+	raw := string(data)
 	response_body := raw
 	if idx := strings.index(raw, "\r\n\r\n"); idx >= 0 {
 		headers := raw[:idx]
@@ -293,6 +349,25 @@ endpoint_from_resolution_output :: proc(output: string, port: int) -> (net.Endpo
 	return net.Endpoint{}, false
 }
 
+tls_client_command :: proc(host: string, port: u16) -> []string {
+	cmd := make([dynamic]string)
+	append(&cmd, "openssl")
+	append(&cmd, "s_client")
+	append(&cmd, "-quiet")
+	append(&cmd, "-verify_return_error")
+	append(&cmd, "-servername")
+	append(&cmd, host_trim_brackets(host))
+	append(&cmd, "-verify_hostname")
+	append(&cmd, host_trim_brackets(host))
+	if ca_file := strings.trim_space(os.get_env("HAM_TLS_CA_FILE", context.temp_allocator)); ca_file != "" {
+		append(&cmd, "-CAfile")
+		append(&cmd, ca_file)
+	}
+	append(&cmd, "-connect")
+	append(&cmd, fmt.tprintf("%s:%d", host_trim_brackets(host), port))
+	return cmd[:]
+}
+
 host_trim_brackets :: proc(host: string) -> string {
 	if len(host) >= 2 && host[0] == '[' && host[len(host)-1] == ']' {
 		return host[1:len(host)-1]
@@ -348,19 +423,30 @@ endpoint_to_sockaddr :: proc(ep: net.Endpoint) -> (sockaddr: posix.sockaddr_stor
 	}
 }
 
-parse_base_url :: proc(base_url: string) -> (host: string, port: u16, ok: bool) {
+parse_base_url :: proc(base_url: string) -> (host: string, port: u16, secure: bool, ok: bool) {
 	url := base_url
-	if strings.has_prefix(url, "http://") {
+	default_port: u16 = 80
+	if strings.has_prefix(url, "https://") {
+		url = url[len("https://"):]
+		default_port = 443
+		secure = true
+	} else if strings.has_prefix(url, "http://") {
 		url = url[len("http://"):]
+		default_port = 80
 	}
+	url = strings.trim_right(url, "/")
+	if slash := strings.index_byte(url, '/'); slash >= 0 do url = url[:slash]
 
 	colon := strings.last_index_byte(url, ':')
-	if colon < 0 do return "", 0, false
+	if colon < 0 {
+		host = url
+		return host, default_port, secure, strings.trim_space(host) != ""
+	}
 
 	host = url[:colon]
 	port_s := url[colon + 1:]
 	port_i, port_ok := strconv.parse_int(port_s)
-	if !port_ok do return "", 0, false
+	if !port_ok do return "", 0, false, false
 
-	return host, u16(port_i), true
+	return host, u16(port_i), secure, true
 }

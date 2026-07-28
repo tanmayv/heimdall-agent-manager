@@ -94,7 +94,7 @@ use_random_dir = false
 [wrapper.agent-cmd.jetski]
 command = ["/google/bin/releases/jetski-devs/tools/cli"]
 prompt_flags = ["--prompt-interactive"]
-starter_prompt = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap files (AGENTS.md and .agents/skills/) for context."
+starter_prompt = "First, run: {ctl_bin} --token {token} start-success."
 yolo_flags = ["--dangerously-skip-permissions"]
 
 [wrapper.agent-cmd.jetski.bootstrap.AGENTS_MD]
@@ -117,7 +117,7 @@ yolo_flags = []
 # pi accepts the starter prompt as a positional arg:
 #   pi "prompt"
 prompt_flags = []
-starter_prompt = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap file (AGENTS.md or CLAUDE.md) for context, identity, and what you can do."
+starter_prompt = "First, run: {ctl_bin} --token {token} start-success."
 
 [wrapper.agent-cmd.pi.models]
 flag = "--model"
@@ -147,7 +147,7 @@ max_gap_ms = 500
 command = ["pi"]
 yolo_flags = []
 prompt_flags = []
-starter_prompt = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap file (AGENTS.md or CLAUDE.md) for context, identity, and what you can do."
+starter_prompt = "First, run: {ctl_bin} --token {token} start-success."
 
 [wrapper.agent-cmd.claude.bootstrap.AGENTS_MD]
 name = "AGENTS.md"
@@ -217,7 +217,7 @@ auto_enter_pre_keys = ["Down"]
 command = ["codex"]
 yolo_flags = []
 prompt_flags = []
-starter_prompt = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap file (AGENTS.md or CLAUDE.md) for context, identity, and what you can do."
+starter_prompt = "First, run: {ctl_bin} --token {token} start-success."
 
 [wrapper.agent-cmd.codex.models]
 flag = "-m"
@@ -234,7 +234,7 @@ smart = "gpt-5-pro"
 command = ["agy"]
 yolo_flags = ["--dangerously-skip-permissions"]
 prompt_flags = ["--prompt-interactive"]
-starter_prompt = "First, run: {ctl_bin} --token {token} start-success. Then read your bootstrap files (AGENTS.md and .agents/skills/) for context."
+starter_prompt = "First, run: {ctl_bin} --token {token} start-success."
 
 [wrapper.agent-cmd.antigravity.bootstrap.AGENTS_MD]
 name = "AGENTS.md"

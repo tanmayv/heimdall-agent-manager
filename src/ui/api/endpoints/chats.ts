@@ -1,4 +1,5 @@
 import * as daemonApi from '../daemonApi';
+import { apiUrl, cookieJsonFetch, cookieMutation } from '../cookieFetch';
 import { heimdallApi, withSessionQuery } from '../heimdallApi';
 
 const GUIDE_AGENT_ID = 'guide@heimdall';
@@ -129,17 +130,18 @@ function mergeOlderMessages(existing: ChatMessage[], older: ChatMessage[]) {
   return Array.from(byId.values()).sort((left, right) => Number(left.createdUnixMs || 0) - Number(right.createdUnixMs || 0));
 }
 
-function patchConversationSummary(draft: Record<string, any> | undefined, agentInstanceId: string, body: string) {
+function patchConversationSummary(draft: any, agentInstanceId: string, body: string) {
   if (!draft) return;
+  const summaries = draft.summaries || draft;
   const now = Date.now();
-  const existing = draft[agentInstanceId] || { agentInstanceId, agentId: '', projectId: '', title: '' };
-  draft[agentInstanceId] = {
+  const existing = summaries[agentInstanceId] || { agentInstanceId, agentId: '', projectId: '', title: '' };
+  summaries[agentInstanceId] = {
     ...existing,
     lastMessageUnixMs: now,
     unreadCount: 0,
   };
   if (!existing.title && body.trim()) {
-    draft[agentInstanceId].title = body.trim().slice(0, 80);
+    summaries[agentInstanceId].title = body.trim().slice(0, 80);
   }
 }
 
@@ -158,17 +160,180 @@ function guideChatArgs() {
 
 export const chatEndpoints = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
-    listConversationSummaries: build.query<Record<string, any>, void>({
-      queryFn: withSessionQuery(async (_arg, { session }) => {
-        if (!session?.clientToken) return {};
+    createLaunchConversation: build.mutation<any, { agentId: string; projectId?: string; bridgeId?: string; provider?: string; tier?: string; body: string; artifactIds?: string[] }>({
+      queryFn: async ({ agentId, projectId, bridgeId, provider, tier, body, artifactIds = [] }) => {
+        try {
+          const payload: any = { agent_id: agentId, initial_message: { body }, artifact_ids: artifactIds };
+          if (projectId) payload.project_id = projectId;
+          if (bridgeId) payload.bridge_id = bridgeId;
+          if (provider) payload.provider = provider;
+          if (tier) payload.tier = tier;
+          const conversation = await cookieMutation('/chats', 'POST', payload);
+          let instance: any = {};
+          if (conversation?.agent_instance_id) {
+            try { instance = await cookieJsonFetch(`/agent-instances/${encodeURIComponent(String(conversation.agent_instance_id))}`); } catch (_err) { instance = {}; }
+          }
+          return { data: { conversation, instance } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_result, _error, { agentId }) => [
+        { type: 'SidebarConversations' as const, id: 'ALL' },
+        { type: 'ConversationSummaries' as const, id: 'LIST' },
+        { type: 'Agents' as const, id: 'LIST' },
+        { type: 'AgentInstances' as const, id: agentId },
+      ],
+    }),
+    // Cookie-auth conversation thread endpoints (hub-native, /api/v1/chats/{id}).
+    // Unlike fetchDirectChat/sendAgentMessage (legacy clientToken path), these use
+    // the cookie session the rewrite shell runs on, keyed by conversation_id.
+    fetchConversation: build.query<any, { conversationId: string }>({
+      queryFn: async ({ conversationId }) => {
+        if (!conversationId) return { data: { conversation: null } };
+        try {
+          const list = await cookieJsonFetch('/chats');
+          const rows = Array.isArray(list) ? list : (list?.data || list?.conversations || []);
+          const conversation = rows.find((c: any) => String(c?.conversation_id || c?.conversationId) === conversationId) || null;
+          return { data: { conversation } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_r, _e, { conversationId }) => [{ type: 'ConversationSummaries' as const, id: conversationId }],
+    }),
+    fetchConversationMessages: build.query<any, { conversationId: string; limit?: number; cursor?: string }>({
+      queryFn: async ({ conversationId, limit = 100, cursor = '' }) => {
+        if (!conversationId) return { data: { messages: [], nextCursor: '', hasMore: false } };
+        try {
+          const params = new URLSearchParams({ limit: String(limit) });
+          if (cursor) params.set('cursor', cursor);
+          const res = await fetch(apiUrl(`/chats/${encodeURIComponent(conversationId)}/messages?${params.toString()}`), { credentials: 'include' });
+          if (!res.ok) {
+            let msg = `Request failed (${res.status})`;
+            try {
+              const text = await res.text();
+              const body = JSON.parse(text);
+              msg = String(body?.error?.message || body?.message || msg);
+            } catch (_err) {}
+            throw new Error(msg);
+          }
+          const body = await res.json();
+          const rows = Array.isArray(body) ? body : (Array.isArray(body?.data) ? body.data : (body?.messages || []));
+          const page = body?.page || {};
+          const nextCursor = String(page.next_cursor ?? page.nextCursor ?? body?.next_cursor ?? body?.nextCursor ?? '');
+          const hasMore = Boolean(page.has_more ?? page.hasMore ?? body?.has_more ?? body?.hasMore ?? false);
+          return { data: { messages: rows, nextCursor, hasMore } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      providesTags: (_r, _e, { conversationId }) => [{ type: 'Chat' as const, id: conversationId }],
+    }),
+    updateConversationTitle: build.mutation<any, { conversationId: string; title: string }>({
+      queryFn: async ({ conversationId, title }) => {
+        if (!conversationId || !title.trim()) return { error: { status: 'CUSTOM_ERROR', error: 'Missing conversation or title' } as any };
+        try {
+          const data = await cookieMutation(`/chats/${encodeURIComponent(conversationId)}`, 'PATCH', { title: title.trim() });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_r, _e, { conversationId }) => [
+        { type: 'ConversationSummaries' as const, id: conversationId },
+        { type: 'SidebarConversations' as const, id: 'ALL' },
+      ],
+    }),
+    sendConversationMessage: build.mutation<any, { conversationId: string; body: string; artifactIds?: string[] }>({
+      queryFn: async ({ conversationId, body, artifactIds = [] }) => {
+        if (!conversationId || !body.trim()) return { error: { status: 'CUSTOM_ERROR', error: 'Missing conversation or body' } as any };
+        try {
+          const data = await cookieMutation(`/chats/${encodeURIComponent(conversationId)}/messages`, 'POST', { body, artifact_ids: artifactIds });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_r, _e, { conversationId }) => [
+        { type: 'Chat' as const, id: conversationId },
+        { type: 'ConversationSummaries' as const, id: conversationId },
+        { type: 'SidebarConversations' as const, id: 'ALL' },
+      ],
+    }),
+    markConversationRead: build.mutation<any, { conversationId: string }>({
+      queryFn: async ({ conversationId }) => {
+        if (!conversationId) return { data: {} };
+        try {
+          const data = await cookieMutation(`/chats/${encodeURIComponent(conversationId)}/read`, 'POST');
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_r, _e, { conversationId }) => [
+        { type: 'ConversationSummaries' as const, id: conversationId },
+        { type: 'SidebarConversations' as const, id: 'ALL' },
+      ],
+    }),
+    listConversationSummaries: build.query<any, { limit?: number; cursor?: string } | void>({
+      queryFn: withSessionQuery(async (arg, { session }) => {
+        if (!session?.clientToken) return { summaries: {}, nextCursor: '', hasMore: false };
+        const args = (arg && typeof arg === 'object') ? arg : {};
+        const limit = args.limit ?? 10000;
+        const cursor = args.cursor ?? '';
         const data = await daemonApi.listConversations({
           daemonUrl: session.daemonUrl,
           clientInstanceId: session.clientInstanceId,
           clientToken: session.clientToken,
+          limit,
+          cursor,
         });
-        return normalizeConversationSummaries(data);
+        const summaries = normalizeConversationSummaries(data);
+        return {
+          summaries,
+          nextCursor: data.next_cursor || '',
+          hasMore: Boolean(data.has_more),
+        };
       }),
-      providesTags: [{ type: 'ConversationSummaries', id: 'ALL' }],
+      providesTags: (result, _error, arg) => [
+        { type: 'ConversationSummaries' as const, id: JSON.stringify(arg || {}) },
+        ...Object.keys(result?.summaries || {}).map((id) => ({ type: 'Chat' as const, id })),
+      ],
+    }),
+    fetchConversationSummariesPage: build.query<any, { limit: number; cursor: string }>({
+      queryFn: withSessionQuery(async ({ limit, cursor }, { session }) => {
+        if (!session?.clientToken) return { summaries: {}, nextCursor: '', hasMore: false };
+        const data = await daemonApi.listConversations({
+          daemonUrl: session.daemonUrl,
+          clientInstanceId: session.clientInstanceId,
+          clientToken: session.clientToken,
+          limit,
+          cursor,
+        });
+        const summaries = normalizeConversationSummaries(data);
+        return {
+          summaries,
+          nextCursor: data.next_cursor || '',
+          hasMore: Boolean(data.has_more),
+        };
+      }),
+      async onQueryStarted(arg, { dispatch, queryFulfilled }) {
+        try {
+          const { data } = await queryFulfilled;
+          const baseArgs = undefined;
+          dispatch(
+            chatEndpoints.util.updateQueryData('listConversationSummaries', baseArgs, (draft: any) => {
+              if (!draft) return;
+              draft.summaries = { ...(draft.summaries || {}), ...data.summaries };
+              draft.nextCursor = data.nextCursor;
+              draft.hasMore = data.hasMore;
+            })
+          );
+        } catch (_error) {
+          // noop
+        }
+      },
     }),
     fetchDirectChat: build.query<any, { agentInstanceId: string; limit?: number }>({
       queryFn: withSessionQuery(async ({ agentInstanceId, limit = 50 }, { session, state }) => {
@@ -203,7 +368,8 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
             markedRead: true,
           });
           dispatch(chatEndpoints.util.updateQueryData('listConversationSummaries', undefined, (draft: any) => {
-            if (draft?.[agentInstanceId]) draft[agentInstanceId].unreadCount = 0;
+            const summaries = draft?.summaries || draft;
+            if (summaries?.[agentInstanceId]) summaries[agentInstanceId].unreadCount = 0;
           }));
         } catch (_error) {
           // noop
@@ -274,7 +440,8 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
             markedRead: true,
           });
           dispatch(chatEndpoints.util.updateQueryData('listConversationSummaries', undefined, (draft: any) => {
-            if (draft?.[GUIDE_AGENT_ID]) draft[GUIDE_AGENT_ID].unreadCount = 0;
+            const summaries = draft?.summaries || draft;
+            if (summaries?.[GUIDE_AGENT_ID]) summaries[GUIDE_AGENT_ID].unreadCount = 0;
           }));
         } catch (_error) {
           // noop
@@ -370,15 +537,16 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
         try {
           await queryFulfilled;
           dispatch(chatEndpoints.util.updateQueryData('listConversationSummaries', undefined, (draft: any) => {
-            if (draft?.[agentInstanceId]) draft[agentInstanceId].unreadCount = 0;
+            const summaries = draft?.summaries || draft;
+            if (summaries?.[agentInstanceId]) summaries[agentInstanceId].unreadCount = 0;
           }));
         } catch (_error) {
           // noop
         }
       },
     }),
-    sendAgentMessage: build.mutation<any, { agentInstanceId: string; body: string; tempId: string; interrupt?: boolean }>({
-      queryFn: withSessionQuery(async ({ agentInstanceId, body, interrupt }, { session }) => {
+    sendAgentMessage: build.mutation<any, { agentInstanceId: string; body: string; tempId: string; interrupt?: boolean; artifactIds?: string[] }>({
+      queryFn: withSessionQuery(async ({ agentInstanceId, body, interrupt, artifactIds }, { session }) => {
         const res = await daemonApi.sendToAgent({
           daemonUrl: session.daemonUrl,
           clientInstanceId: session.clientInstanceId,
@@ -386,6 +554,7 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
           agentInstanceId,
           body,
           interrupt,
+          artifactIds,
         });
         return { messageId: String(res.message_id || ''), agentInstanceId };
       }),
@@ -456,7 +625,16 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
 });
 
 export const {
+  useCreateLaunchConversationMutation,
+  useFetchConversationQuery,
+  useFetchConversationMessagesQuery,
+  useLazyFetchConversationMessagesQuery,
+  useUpdateConversationTitleMutation,
+  useSendConversationMessageMutation,
+  useMarkConversationReadMutation,
   useListConversationSummariesQuery,
+  useFetchConversationSummariesPageQuery,
+  useLazyFetchConversationSummariesPageQuery,
   useFetchDirectChatQuery,
   useLazyFetchDirectChatPageQuery,
   useFetchGuideChatQuery,

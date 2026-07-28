@@ -57,7 +57,7 @@ handle_get_task_chains :: proc(client: net.TCP_Socket, ctx: ^Route_Context) {
 		
 		if !first do strings.write_string(&b, `,`)
 		first = false
-		task_write_chain_json(&b, chain)
+		task_write_chain_json_slim(&b, chain)
 		count += 1
 	}
 
@@ -130,11 +130,26 @@ handle_get_chain_tasks :: proc(client: net.TCP_Socket, chain_id: string, ctx: ^R
 		if val, parse_ok := strconv.parse_i64(updated_before_str); parse_ok do updated_before = val
 	}
 
+	limit_str := query_param_value(ctx.query, "limit")
+	offset_str := query_param_value(ctx.query, "offset")
+	limit := 20
+	offset := 0
+	if limit_str != "" {
+		if val, parse_ok := strconv.parse_int(limit_str); parse_ok do limit = int(val)
+	}
+	if offset_str != "" {
+		if val, parse_ok := strconv.parse_int(offset_str); parse_ok do offset = int(val)
+	}
+
 	b := strings.builder_make()
 	strings.write_string(&b, `{"chain_id":"`)
 	json_write_string(&b, chain_id)
 	strings.write_string(&b, `","tasks":[`)
+	
 	first := true
+	matched_count := 0
+	wrote := 0
+
 	for state in store_tasks_in_chain(chain_id) {
 		// Apply filters
 		if created_after > 0 && state.created_at_unix_ms < created_after do continue
@@ -142,11 +157,30 @@ handle_get_chain_tasks :: proc(client: net.TCP_Socket, chain_id: string, ctx: ^R
 		if updated_after > 0 && state.updated_at_unix_ms < updated_after do continue
 		if updated_before > 0 && state.updated_at_unix_ms > updated_before do continue
 
+		matched_count += 1
+		if matched_count - 1 < offset do continue
+		if limit > 0 && wrote >= limit do continue
+
 		if !first do strings.write_string(&b, `,`)
 		first = false
 		task_write_state_json(&b, state)
+		wrote += 1
 	}
-	strings.write_string(&b, `]}`)
+
+	has_more := limit > 0 && matched_count > offset + wrote
+	next_offset := offset + wrote
+
+	strings.write_string(&b, `],"total":`)
+	strings.write_string(&b, fmt.tprintf("%d", matched_count))
+	strings.write_string(&b, `,"limit":`)
+	strings.write_string(&b, fmt.tprintf("%d", limit))
+	strings.write_string(&b, `,"offset":`)
+	strings.write_string(&b, fmt.tprintf("%d", offset))
+	strings.write_string(&b, `,"next_offset":`)
+	strings.write_string(&b, fmt.tprintf("%d", next_offset))
+	strings.write_string(&b, `,"has_more":`)
+	strings.write_string(&b, "true" if has_more else "false")
+	strings.write_string(&b, `}`)
 	write_response(client, 200, "OK", strings.to_string(b))
 }
 
@@ -167,7 +201,7 @@ handle_get_task :: proc(client: net.TCP_Socket, task_id: string, ctx: ^Route_Con
 	if state, ok := store_get_task(task_id); ok {
 		b := strings.builder_make()
 		strings.write_string(&b, `{"task":`)
-		task_write_state_json(&b, state)
+		task_write_state_json(&b, state, true)
 		strings.write_string(&b, `}`)
 		write_response(client, 200, "OK", strings.to_string(b))
 		return
@@ -191,14 +225,34 @@ handle_get_task_comments :: proc(client: net.TCP_Socket, task_id: string, ctx: ^
 
 	unresolved_str := query_param_value(ctx.query, "unresolved")
 	unresolved_only := unresolved_str == "true"
+	limit_str := query_param_value(ctx.query, "limit")
+	offset_str := query_param_value(ctx.query, "offset")
+
+	limit := 20
+	offset := 0
+	if limit_str != "" {
+		if val, parse_ok := strconv.parse_int(limit_str); parse_ok do limit = int(val)
+	}
+	if offset_str != "" {
+		if val, parse_ok := strconv.parse_int(offset_str); parse_ok do offset = int(val)
+	}
 
 	b := strings.builder_make()
 	strings.write_string(&b, `{"comments":[`)
 	first := true
 	comments := store_comments_of(task_id)
 	defer delete(comments)
+
+	matched_count := 0
+	wrote := 0
+
 	for c in comments {
 		if unresolved_only && c.resolved do continue
+		
+		matched_count += 1
+		if matched_count - 1 < offset do continue
+		if limit > 0 && wrote >= limit do continue
+
 		if !first do strings.write_string(&b, `,`)
 		first = false
 		strings.write_string(&b, `{"comment_id":"`);              json_write_string(&b, c.comment_id)
@@ -207,9 +261,52 @@ handle_get_task_comments :: proc(client: net.TCP_Socket, task_id: string, ctx: ^
 		strings.write_string(&b, `","resolved":`);                strings.write_string(&b, "true" if c.resolved else "false")
 		strings.write_string(&b, `,"created_unix_ms":`);          strings.write_string(&b, fmt.tprintf("%d", c.created_unix_ms))
 		strings.write_string(&b, `}`)
+		wrote += 1
 	}
-	strings.write_string(&b, `]}`)
+
+	has_more := limit > 0 && matched_count > offset + wrote
+	next_offset := offset + wrote
+
+	strings.write_string(&b, `],"total":`)
+	strings.write_string(&b, fmt.tprintf("%d", matched_count))
+	strings.write_string(&b, `,"limit":`)
+	strings.write_string(&b, fmt.tprintf("%d", limit))
+	strings.write_string(&b, `,"offset":`)
+	strings.write_string(&b, fmt.tprintf("%d", offset))
+	strings.write_string(&b, `,"next_offset":`)
+	strings.write_string(&b, fmt.tprintf("%d", next_offset))
+	strings.write_string(&b, `,"has_more":`)
+	strings.write_string(&b, "true" if has_more else "false")
+	strings.write_string(&b, `}`)
 	write_response(client, 200, "OK", strings.to_string(b))
+}
+
+write_tasks_list_json :: proc(builder: ^strings.Builder, chain_id: string, created_after, created_before, updated_after, updated_before: i64, limit, offset: int) -> int {
+	first := true
+	count := 0
+	matched_count := 0
+	
+	for state in store_all_tasks() {
+		if chain_id != "" && state.chain_id != chain_id do continue
+		
+		// Apply filters
+		if created_after > 0 && state.created_at_unix_ms < created_after do continue
+		if created_before > 0 && state.created_at_unix_ms > created_before do continue
+		if updated_after > 0 && state.updated_at_unix_ms < updated_after do continue
+		if updated_before > 0 && state.updated_at_unix_ms > updated_before do continue
+		
+		matched_count += 1
+		
+		// Apply limit/offset
+		if matched_count - 1 < offset do continue
+		if count >= limit do continue
+		
+		if !first do strings.write_string(builder, `,`)
+		first = false
+		task_write_state_json(builder, state)
+		count += 1
+	}
+	return matched_count
 }
 
 // GET /tasks
@@ -261,35 +358,35 @@ handle_get_tasks :: proc(client: net.TCP_Socket, ctx: ^Route_Context) {
 
 	b := strings.builder_make()
 	strings.write_string(&b, `{"tasks":[`)
-	
-	first := true
-	count := 0
-	matched_count := 0
-	
-	for state in store_all_tasks() {
-		if chain_id != "" && state.chain_id != chain_id do continue
-		
-		// Apply filters
-		if created_after > 0 && state.created_at_unix_ms < created_after do continue
-		if created_before > 0 && state.created_at_unix_ms > created_before do continue
-		if updated_after > 0 && state.updated_at_unix_ms < updated_after do continue
-		if updated_before > 0 && state.updated_at_unix_ms > updated_before do continue
-		
-		matched_count += 1
-		
-		// Apply limit/offset
-		if matched_count - 1 < offset do continue
-		if count >= limit do continue
-		
-		if !first do strings.write_string(&b, `,`)
-		first = false
-		task_write_state_json(&b, state)
-		count += 1
-	}
-	
+	matched_count := write_tasks_list_json(&b, chain_id, created_after, created_before, updated_after, updated_before, limit, offset)
 	strings.write_string(&b, `],"total_count":`)
 	strings.write_string(&b, fmt.tprintf("%d", matched_count))
 	strings.write_string(&b, `}`)
+	
+	write_response(client, 200, "OK", strings.to_string(b))
+}
+
+// GET /tasks/{task_id}/comments/{comment_id}
+handle_get_task_comment :: proc(client: net.TCP_Socket, task_id, comment_id: string, ctx: ^Route_Context) {
+	author, ok := rest_authorize(client, ctx)
+	if !ok do return
+
+	c, found := store_comment_by_id(task_id, comment_id)
+	if !found {
+		write_response(client, 404, "Not Found", `{"error":"not_found","message":"comment not found"}`)
+		return
+	}
+
+	b := strings.builder_make()
+	strings.write_string(&b, `{"comment":{`)
+	strings.write_string(&b, `"comment_id":"`);              json_write_string(&b, c.comment_id)
+	strings.write_string(&b, `","task_id":"`);                 json_write_string(&b, c.task_id)
+	strings.write_string(&b, `","chain_id":"`);                json_write_string(&b, c.chain_id)
+	strings.write_string(&b, `","body":"`);                   json_write_string(&b, c.body)
+	strings.write_string(&b, `","author_agent_instance_id":"`); json_write_string(&b, c.author_agent_instance_id)
+	strings.write_string(&b, `","resolved":`);                strings.write_string(&b, "true" if c.resolved else "false")
+	strings.write_string(&b, `,"created_unix_ms":`);          strings.write_string(&b, fmt.tprintf("%d", c.created_unix_ms))
+	strings.write_string(&b, `}}`)
 	
 	write_response(client, 200, "OK", strings.to_string(b))
 }

@@ -1,0 +1,567 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AgentPickerV2 — interactive mock</title>
+<style>
+  :root {
+    --bg: #0b0d12;
+    --panel: rgba(255,255,255,0.03);
+    --border: rgba(255,255,255,0.10);
+    --border-strong: rgba(255,255,255,0.22);
+    --text: #e7e9ee;
+    --muted: #8b90a0;
+    --faint: #5a5f70;
+    --sky: #38bdf8;
+    --sky-bg: rgba(56,189,248,0.12);
+    --emerald: #34d399;
+    --teal: #2dd4bf;
+    --violet: #a78bfa;
+    --red: #f87171;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: radial-gradient(1200px 600px at 20% -10%, #12161f, var(--bg));
+    color: var(--text);
+    font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    min-height: 100vh;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 20px 80px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); margin: 0 0 24px; font-size: 13px; }
+  .layout { display: grid; grid-template-columns: 320px 1fr; gap: 22px; align-items: start; }
+  @media (max-width: 880px) { .layout { grid-template-columns: 1fr; } }
+
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 18px; padding: 16px; }
+  .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .14em; color: var(--muted); margin: 0 0 12px; }
+
+  .ctl { margin-bottom: 16px; }
+  .ctl > label { display:block; font-size: 11px; text-transform: uppercase; letter-spacing:.1em; color: var(--faint); margin-bottom: 7px; }
+  .chips { display:flex; flex-wrap: wrap; gap: 6px; }
+  .toggle {
+    cursor:pointer; user-select:none; border:1px solid var(--border); background: rgba(255,255,255,0.02);
+    padding: 6px 11px; border-radius: 999px; font-size: 12px; color: var(--muted); transition: all .12s;
+  }
+  .toggle:hover { border-color: var(--border-strong); color: var(--text); }
+  .toggle.on { background: var(--sky-bg); border-color: rgba(56,189,248,.45); color: #d8f2ff; }
+  .row-inline { display:flex; align-items:center; gap: 8px; }
+  select, input[type=number], input.presetsel {
+    background: rgba(0,0,0,.35); border:1px solid var(--border); color: var(--text);
+    border-radius: 10px; padding: 7px 9px; font: inherit; font-size: 13px; outline: none; width: 100%;
+  }
+  select:focus, input:focus { border-color: var(--sky); }
+  .hint { font-size: 11px; color: var(--faint); margin-top: 6px; }
+
+  .preset-btn {
+    display:block; width:100%; text-align:left; cursor:pointer; margin-bottom:6px;
+    border:1px solid var(--border); background: rgba(255,255,255,0.02); color: var(--text);
+    border-radius: 12px; padding: 9px 11px; font-size: 12.5px; transition: all .12s;
+  }
+  .preset-btn:hover { border-color: var(--border-strong); background: rgba(255,255,255,0.05); }
+  .preset-btn small { display:block; color: var(--faint); font-size: 11px; margin-top:2px; }
+
+  /* ---------- picker ---------- */
+  .picker { border:1px solid var(--border); background: rgba(0,0,0,.20); border-radius: 18px; padding: 14px; }
+  .picker-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom: 10px; }
+  .picker-title { font-weight: 600; }
+  .head-right { display:flex; align-items:center; gap:8px; }
+  .mode-pill { font-size: 11px; color: var(--muted); background: rgba(255,255,255,.05); padding: 4px 10px; border-radius: 999px; }
+  .icon-btn {
+    width:28px; height:28px; border-radius:9px; border:1px solid var(--border); background: rgba(255,255,255,.03);
+    color: var(--muted); cursor:pointer; font-size:16px; line-height:1; display:flex; align-items:center; justify-content:center; transition: all .12s;
+  }
+  .icon-btn:hover { border-color: var(--border-strong); color: var(--text); background: rgba(255,255,255,.06); }
+
+  .summary { display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-bottom: 10px; min-height: 4px; }
+  .summary:empty { display:none; }
+  .schip {
+    display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:4px 6px 4px 10px;
+    border-radius: 999px; border:1px solid rgba(56,189,248,.35); background: var(--sky-bg); color:#dff3ff;
+  }
+  .schip .rm { cursor:pointer; border:none; background:transparent; color:#bfe6fb; font-size:14px; line-height:1; padding:0 2px; }
+  .schip .rm:hover { color:#fff; }
+  .schip.remote { border-color: rgba(45,212,191,.4); background: rgba(45,212,191,.12); color:#cffbf3; }
+  .clear-all { margin-left:auto; font-size:11px; color:var(--faint); background:none;border:none;cursor:pointer; }
+  .clear-all:hover { color: var(--text); }
+
+  .search { width:100%; margin-bottom: 12px; }
+
+  .section-label { font-size:10px; text-transform:uppercase; letter-spacing:.18em; color:var(--faint); margin: 12px 2px 8px; }
+  .section-label:first-child { margin-top: 2px; }
+  .results { max-height: 400px; overflow-y: auto; padding-right: 4px; }
+  .results::-webkit-scrollbar { width: 8px; }
+  .results::-webkit-scrollbar-thumb { background: rgba(255,255,255,.1); border-radius: 8px; }
+
+  .prow {
+    width:100%; text-align:left; cursor:pointer; display:flex; align-items:flex-start; gap:10px;
+    border:1px solid var(--border); background: rgba(0,0,0,.20); border-radius: 14px;
+    padding: 10px 12px; margin-bottom: 8px; transition: all .12s; position: relative;
+  }
+  .prow:hover { border-color: var(--border-strong); background: rgba(255,255,255,.04); }
+  .prow.sel { border-color: rgba(56,189,248,.55); background: var(--sky-bg); }
+  .prow.identity { border-style: dashed; border-color: rgba(167,139,250,.28); background: rgba(167,139,250,.05); }
+  .prow.identity.sel { border-color: rgba(167,139,250,.6); background: rgba(167,139,250,.14); }
+  .prow.disabled { opacity:.4; cursor:not-allowed; }
+
+  /* checkbox only in multi mode */
+  .check {
+    margin-top: 2px; width:18px; height:18px; border-radius:6px; border:1.5px solid var(--border-strong);
+    display:flex;align-items:center;justify-content:center; font-size:12px; color:#001; flex:none;
+  }
+  .prow.sel .check { background: var(--sky); border-color: var(--sky); }
+
+  /* live status dot */
+  .dot { width:9px; height:9px; border-radius:999px; flex:none; margin-top:6px; }
+  .dot.live { background: var(--emerald); box-shadow: 0 0 0 3px rgba(52,211,153,.18); }
+  .dot.off  { background: #4a4f5e; }
+
+  .pbody { min-width:0; flex:1; }
+  .ptitle { font-weight:600; font-size:13.5px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:center; gap:7px; }
+  .psub { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--faint); margin-top:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .rowchips { display:flex; flex-wrap:wrap; gap:5px; margin-top:7px; }
+  .rc { font-size:10px; color:var(--muted); background: rgba(255,255,255,.05); padding:2px 7px; border-radius:999px; white-space:nowrap; max-width:100%; overflow:hidden; text-overflow:ellipsis; }
+  .rc.remote { background: rgba(45,212,191,.14); color:#a7f3e6; border:1px solid rgba(45,212,191,.25); }
+  .rc.type { background: rgba(167,139,250,.14); color:#d9ccff; }
+
+  /* tiny inline tag next to title */
+  .tag { font-size:9.5px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; padding:2px 6px; border-radius:6px; }
+  .tag.remote { background: rgba(45,212,191,.16); color:#9df0e2; }
+  .tag.user { background: rgba(255,255,255,.08); color:#e7e9ee; }
+  .tag.id { background: rgba(167,139,250,.16); color:#e0d5ff; }
+
+  .empty { border:1px dashed var(--border); border-radius:12px; padding:18px; text-align:center; color:var(--faint); font-size:13px; }
+
+  /* footer (multi ok/close) */
+  .picker-foot { display:flex; align-items:center; gap:10px; margin-top:12px; padding-top:12px; border-top:1px solid var(--border); }
+  .foot-count { font-size:12px; color: var(--muted); }
+  .btn {
+    border:1px solid var(--border); background: rgba(255,255,255,.04); color: var(--text);
+    border-radius: 10px; padding: 8px 16px; font: inherit; font-size:13px; font-weight:600; cursor:pointer; transition: all .12s;
+  }
+  .btn:hover { border-color: var(--border-strong); background: rgba(255,255,255,.07); }
+  .btn.primary { background: var(--sky); border-color: var(--sky); color:#05141c; }
+  .btn.primary:hover { background:#5cc9fb; }
+  .btn.primary:disabled { opacity:.4; cursor:not-allowed; }
+  .btn.ghost { margin-left:auto; }
+
+  /* ---------- emitted output ---------- */
+  .out { margin-top: 22px; }
+  pre {
+    background:#05070b; border:1px solid var(--border); border-radius:14px; padding:14px;
+    font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color:#a9e5ff; overflow:auto; margin:0; max-height:260px;
+  }
+  .flash { animation: flash .5s; }
+  @keyframes flash { from { background:#0e2233; } to { background:#05070b; } }
+  .event-log { margin-top:12px; font-size:12px; color: var(--muted); }
+  .event-log b { color:#9df0e2; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>AgentPickerV2 — interactive mock</h1>
+  <p class="sub">Store-backed selector. Remote agents appear inline with a <b>remote</b> tag (never a separate identity to bind here). Green dot = live. Caller configures what is selectable and single/multi; picker owns rendering, filtering, search, and emits typed selections.</p>
+
+  <div class="layout">
+    <!-- CONTROLS -->
+    <div>
+      <div class="card">
+        <h2>Caller config (props)</h2>
+
+        <div class="ctl">
+          <label>entityTypes</label>
+          <div class="chips" id="entity-chips">
+            <span class="toggle on" data-k="entityTypes" data-v="agent_id">agent_id</span>
+            <span class="toggle on" data-k="entityTypes" data-v="agent_instance_id">agent_instance_id</span>
+          </div>
+        </div>
+
+        <div class="ctl">
+          <label>selection mode</label>
+          <div class="chips" id="mode-chips">
+            <span class="toggle on" data-k="multiple" data-v="false">single</span>
+            <span class="toggle" data-k="multiple" data-v="true">multiple</span>
+          </div>
+        </div>
+
+        <div class="ctl">
+          <label>maxSelections (multi only)</label>
+          <input type="number" id="maxsel" min="0" value="0" />
+          <div class="hint">0 = unlimited</div>
+        </div>
+
+        <div class="ctl">
+          <label>projectId scope filter</label>
+          <select id="project"><option value="">— any —</option></select>
+        </div>
+
+        <div class="ctl">
+          <div class="row-inline"><span class="toggle on" id="includeremote" data-v="on">includeRemoteProxies</span></div>
+          <div class="hint">show bound remote proxies (tagged remote)</div>
+        </div>
+
+        <div class="ctl">
+          <div class="row-inline"><span class="toggle" id="userproxy" data-v="off">includeUserProxy</span></div>
+          <div class="hint">for assignee / reviewer / coordinator</div>
+        </div>
+
+        <div class="ctl">
+          <div class="row-inline"><span class="toggle" id="onlyrunning" data-v="off">filter: running only</span></div>
+          <div class="hint">example caller filterPredicate</div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:16px">
+        <h2>Caller presets</h2>
+        <button class="preset-btn" data-preset="palette">Command palette
+          <small>agent_id + instance · single</small></button>
+        <button class="preset-btn" data-preset="startInstance">Start agent instance
+          <small>agent_id only · single</small></button>
+        <button class="preset-btn" data-preset="openChat">Open existing chat
+          <small>instance · single · running only</small></button>
+        <button class="preset-btn" data-preset="reviewer">Assign reviewer
+          <small>instance · single · +user_proxy</small></button>
+        <button class="preset-btn" data-preset="subscribers">Subscribers / LGTM set
+          <small>instance · multiple · +user_proxy</small></button>
+      </div>
+    </div>
+
+    <!-- PICKER + OUTPUT -->
+    <div>
+      <div class="picker" id="picker" data-debug-id="mock-picker">
+        <div class="picker-head">
+          <div class="picker-title">Select agents</div>
+          <div class="head-right">
+            <div class="mode-pill" id="mode-pill">single</div>
+            <button class="icon-btn" id="close-btn" title="Close" data-debug-id="mock-picker-close-btn">×</button>
+          </div>
+        </div>
+        <div class="summary" id="summary"></div>
+        <input class="search" id="search" placeholder="Search agents, ids, daemons…" data-debug-id="mock-picker-search-input" />
+        <div class="results" id="results"></div>
+        <div class="picker-foot" id="foot" style="display:none">
+          <span class="foot-count" id="foot-count">0 selected</span>
+          <button class="btn ghost" id="cancel-btn" data-debug-id="mock-picker-cancel-btn">Cancel</button>
+          <button class="btn primary" id="ok-btn" data-debug-id="mock-picker-ok-btn">OK</button>
+        </div>
+      </div>
+
+      <div class="out">
+        <div class="card">
+          <h2>onChange(selected) — live selection state</h2>
+          <pre id="output">[]</pre>
+          <div class="event-log" id="event-log">Waiting for confirm / selection…</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ------------------------------------------------------------------
+// MOCK DATA (stands in for RTK Query useListAgentsQuery + federation)
+// A bound remote proxy is just a LOCAL agent_instance_id with remote metadata.
+// ------------------------------------------------------------------
+const PROJECTS = [
+  { projectId: 'heimdall', name: 'Heimdall' },
+  { projectId: 'broccoli', name: 'Broccoli Comms' },
+  { projectId: 'atlas', name: 'Atlas' },
+];
+
+// durable agent identities (local + remote-origin durable ids)
+const IDENTITIES = [
+  { agent_id: 'reviewer-bot', display_name: 'Reviewer Bot', template_id: 'reviewer', provider: 'pi', tier: 'smart', project: 'heimdall' },
+  { agent_id: 'coder-01', display_name: 'Coder 01', template_id: 'coder', provider: 'claude', tier: 'normal', project: 'heimdall' },
+  { agent_id: 'planner', display_name: 'Planner', template_id: 'coordinator', provider: 'pi', tier: 'smart', project: 'atlas' },
+  { agent_id: 'scribe', display_name: 'Scribe', template_id: 'writer', provider: 'claude', tier: 'cheap', project: 'broccoli' },
+  { agent_id: 'gpu-runner', display_name: 'GPU Runner', template_id: 'runner', provider: 'pi', tier: 'smart', project: 'heimdall', remote: { daemonId: 'daemon-west', peerId: 'peer-west' } },
+];
+
+// concrete instances (local + bound remote proxies, all with LOCAL ids)
+const AGENTS = [
+  { id: 'coder-01@heimdall', agent_id: 'coder-01', display_name: 'Coder 01', template_id: 'coder', provider: 'claude', tier: 'normal', project: 'heimdall', live: true },
+  { id: 'coder-01@atlas', agent_id: 'coder-01', display_name: 'Coder 01', template_id: 'coder', provider: 'pi', tier: 'smart', project: 'atlas', live: false },
+  { id: 'reviewer-bot@heimdall', agent_id: 'reviewer-bot', display_name: 'Reviewer Bot', template_id: 'reviewer', provider: 'pi', tier: 'smart', project: 'heimdall', live: true },
+  { id: 'planner@atlas', agent_id: 'planner', display_name: 'Planner', template_id: 'coordinator', provider: 'pi', tier: 'smart', project: 'atlas', live: true },
+  { id: 'scribe@broccoli', agent_id: 'scribe', display_name: 'Scribe', template_id: 'writer', provider: 'claude', tier: 'cheap', project: 'broccoli', live: false },
+  { id: 'convo-4821', agent_id: 'conversation', display_name: 'Quick question', template_id: 'conversation', provider: 'claude', tier: 'normal', project: 'heimdall', live: true, conversationTitle: 'Quick question about VCS' },
+  // bound remote proxies — LOCAL ids, remote metadata → remote tag
+  { id: 'gpu-runner@peer-west', agent_id: 'gpu-runner', display_name: 'GPU Runner', template_id: 'runner', provider: 'pi', tier: 'smart', project: 'heimdall', live: true, remote: { daemonId: 'daemon-west', peerId: 'peer-west' } },
+  { id: 'eval-bot@peer-west', agent_id: 'eval-bot', display_name: 'Eval Bot', template_id: 'reviewer', provider: 'claude', tier: 'normal', project: '', live: false, remote: { daemonId: 'daemon-west', peerId: 'peer-west' } },
+];
+
+// ------------------------------------------------------------------
+// STATE
+// ------------------------------------------------------------------
+const config = {
+  entityTypes: new Set(['agent_id', 'agent_instance_id']),
+  multiple: false,
+  maxSelections: 0,
+  projectId: '',
+  includeRemoteProxies: true,
+  includeUserProxy: false,
+  onlyRunning: false,
+};
+let selection = []; // AgentSelection[]
+let query = '';
+
+// ------------------------------------------------------------------
+// HELPERS
+// ------------------------------------------------------------------
+function selKey(s) { return `${s.type}:${s.id}`; }  // ids are always local & unique per tier
+const isSelected = (key) => selection.some(s => selKey(s) === key);
+
+function buildRows() {
+  const rows = [];
+  const wantId = config.entityTypes.has('agent_id');
+  const wantInst = config.entityTypes.has('agent_instance_id');
+  const scope = config.projectId;
+
+  // agent-id rows (durable identities)
+  if (wantId) {
+    for (const idn of IDENTITIES) {
+      if (idn.remote && !config.includeRemoteProxies) continue;
+      if (scope && idn.project !== scope) continue;
+      rows.push(mkRow({
+        type:'agent_id', locality: idn.remote?'remote':'local', id: idn.agent_id, label: idn.display_name,
+        subtitle: `agent_id: ${idn.agent_id}` + (idn.remote?` · ${idn.remote.daemonId}`:''),
+        section:'agent-ids', remote: idn.remote||null, live:false, isId:true,
+        chips:[['type','agent id'], idn.remote?['remote', `remote · ${idn.remote.daemonId}`]:null, ['','new instance'], ['', idn.template_id], ['', idn.tier]].filter(Boolean),
+        search:[idn.agent_id, idn.display_name, idn.template_id, idn.provider, idn.remote?.daemonId, idn.remote?.peerId].filter(Boolean).join(' ')
+      }));
+    }
+  }
+
+  // instance rows (concrete: local + bound remote proxies)
+  if (wantInst) {
+    for (const a of AGENTS) {
+      if (a.remote && !config.includeRemoteProxies) continue;
+      if (scope && a.project !== scope) continue;
+      if (config.onlyRunning && !a.live) continue;
+      rows.push(mkRow({
+        type:'agent_instance_id', locality: a.remote?'remote':'local', id: a.id, label: a.display_name,
+        subtitle: a.id + (a.remote?` · ${a.remote.daemonId} via ${a.remote.peerId}`:''),
+        section:'instances', remote: a.remote||null, live: a.live, conversationTitle: a.conversationTitle,
+        chips:[a.remote?['remote', `remote · ${a.remote.daemonId}`]:null, ['', a.template_id], ['', a.provider], a.project?['', `home ${a.project}`]:null].filter(Boolean),
+        search:[a.id, a.display_name, a.template_id, a.provider, a.project, a.conversationTitle, a.remote?.daemonId, a.remote?.peerId].filter(Boolean).join(' ')
+      }));
+    }
+    if (config.includeUserProxy && !config.onlyRunning) {
+      rows.push(mkRow({
+        type:'agent_instance_id', locality:'local', id:'user_proxy', label:'User / operator',
+        subtitle:'user_proxy', section:'instances', remote:null, live:false, isUser:true,
+        chips:[['user','user'], ['', 'operator']], search:'user proxy operator user_proxy'
+      }));
+    }
+  }
+  return rows;
+}
+
+function mkRow(o) { o.key = selKey(o); o.searchText = (o.search||'').toLowerCase(); return o; }
+
+// ------------------------------------------------------------------
+// SELECTION LOGIC
+// ------------------------------------------------------------------
+function toggleRow(row) {
+  if (row.disabled) return;
+  const key = row.key;
+  const asSel = { type: row.type, id: row.id, label: row.label, live: row.live };
+  if (row.remote) asSel.remote = { daemonId: row.remote.daemonId, peerId: row.remote.peerId };
+
+  if (!config.multiple) {
+    selection = [asSel];
+    render();
+    emit('select', selection);   // single mode acts immediately
+    return;
+  }
+  if (isSelected(key)) selection = selection.filter(s => selKey(s) !== key);
+  else {
+    if (config.maxSelections && selection.length >= config.maxSelections) return;
+    selection = [...selection, asSel];
+  }
+  render();
+}
+function removeChip(key) { selection = selection.filter(s => selKey(s) !== key); render(); }
+function clearAll() { selection = []; render(); }
+
+function emit(kind, payload) {
+  const log = document.getElementById('event-log');
+  const label = kind === 'select' ? 'onChange (single click)' : kind === 'confirm' ? 'onConfirm (OK)' : 'onCancel / onClose';
+  log.innerHTML = `<b>${label}</b> → ${payload.length} selection(s) emitted to caller`;
+}
+
+// ------------------------------------------------------------------
+// RENDER
+// ------------------------------------------------------------------
+const SECTION_TITLES = { 'agent-ids':'Durable agent IDs', 'instances':'Instances' };
+
+function render() {
+  document.getElementById('mode-pill').textContent =
+    config.multiple ? (config.maxSelections ? `multiple · max ${config.maxSelections}` : 'multiple') : 'single';
+
+  // summary chips
+  const summary = document.getElementById('summary');
+  summary.innerHTML = '';
+  if (selection.length) {
+    for (const s of selection) {
+      const key = selKey(s);
+      const c = document.createElement('span');
+      c.className = 'schip' + (s.remote?' remote':'');
+      c.innerHTML = `<span>${s.type==='agent_id'?'🆔':'▣'} ${escapeHtml(s.id)}${s.remote?` · ${escapeHtml(s.remote.daemonId)}`:''}</span>`;
+      const rm = document.createElement('button'); rm.className='rm'; rm.textContent='×';
+      rm.onclick = () => removeChip(key); c.appendChild(rm); summary.appendChild(c);
+    }
+    if (config.multiple) {
+      const ca = document.createElement('button'); ca.className='clear-all'; ca.textContent=`clear ${selection.length}`;
+      ca.onclick = clearAll; summary.appendChild(ca);
+    }
+  }
+
+  // rows
+  let rows = buildRows().filter(r => !query || r.searchText.includes(query));
+  const results = document.getElementById('results');
+  results.innerHTML = '';
+
+  if (!rows.length) {
+    results.innerHTML = `<div class="empty" data-debug-id="mock-picker-empty">No matching agents.</div>`;
+  } else {
+    const maxed = config.multiple && config.maxSelections && selection.length >= config.maxSelections;
+    const grouped = {};
+    for (const r of rows) (grouped[r.section] ||= []).push(r);
+    for (const gk of ['agent-ids','instances']) {
+      if (!grouped[gk]) continue;
+      const label = document.createElement('div');
+      label.className = 'section-label';
+      label.textContent = SECTION_TITLES[gk];
+      results.appendChild(label);
+      for (const r of grouped[gk]) {
+        const sel = isSelected(r.key);
+        r.disabled = (!sel && maxed);
+        results.appendChild(renderRow(r, sel));
+      }
+    }
+  }
+
+  // footer only in multi mode
+  const foot = document.getElementById('foot');
+  foot.style.display = config.multiple ? 'flex' : 'none';
+  if (config.multiple) {
+    document.getElementById('foot-count').textContent =
+      `${selection.length} selected` + (config.maxSelections?` / ${config.maxSelections}`:'');
+    document.getElementById('ok-btn').disabled = selection.length === 0;
+  }
+
+  document.getElementById('output').textContent = JSON.stringify(selection, null, 2);
+  const out = document.getElementById('output');
+  out.classList.remove('flash'); void out.offsetWidth; out.classList.add('flash');
+}
+
+function renderRow(r, sel) {
+  const b = document.createElement('button');
+  b.className = `prow ${r.isId?'identity':''} ${sel?'sel':''} ${r.disabled?'disabled':''}`;
+  b.setAttribute('data-debug-id', `mock-picker-row-${r.key}`);
+
+  // multi mode → checkbox; single mode → live dot only (no checkbox)
+  const lead = config.multiple
+    ? `<div class="check">${sel?'✓':''}</div>`
+    : `<div class="dot ${r.live?'live':'off'}" title="${r.live?'live':'offline'}"></div>`;
+  // in multi mode we still want a live dot inline in the title
+  const titleDot = config.multiple ? `<span class="dot ${r.live?'live':'off'}" style="margin-top:0"></span>` : '';
+
+  const tags = [];
+  if (r.remote) tags.push(`<span class="tag remote">remote</span>`);
+  if (r.isUser) tags.push(`<span class="tag user">user</span>`);
+  const conv = r.conversationTitle ? `<div class="psub" style="color:#8ecbff">Conversation: ${escapeHtml(r.conversationTitle)}</div>` : '';
+  const chips = r.chips.map(([cls,txt]) => `<span class="rc ${cls}">${escapeHtml(txt)}</span>`).join('');
+
+  b.innerHTML = `
+    ${lead}
+    <div class="pbody">
+      <div class="ptitle">${titleDot}<span>${escapeHtml(r.label)}</span>${tags.join('')}</div>
+      <div class="psub">${escapeHtml(r.subtitle)}</div>
+      ${conv}
+      <div class="rowchips">${chips}</div>
+    </div>`;
+  b.onclick = () => toggleRow(r);
+  return b;
+}
+
+function escapeHtml(s){return String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+// ------------------------------------------------------------------
+// WIRE CONTROLS
+// ------------------------------------------------------------------
+document.getElementById('close-btn').onclick = () => emit('close', selection);
+document.getElementById('cancel-btn').onclick = () => { emit('cancel', []); };
+document.getElementById('ok-btn').onclick = () => { if (selection.length) emit('confirm', selection); };
+
+function wireToggleGroup(containerId, onChange) {
+  document.getElementById(containerId).querySelectorAll('.toggle').forEach(t => {
+    t.onclick = () => { onChange(t); render(); };
+  });
+}
+wireToggleGroup('entity-chips', (t) => {
+  const v = t.dataset.v;
+  if (config.entityTypes.has(v)) { if (config.entityTypes.size>1) config.entityTypes.delete(v); }
+  else config.entityTypes.add(v);
+  t.classList.toggle('on', config.entityTypes.has(v));
+  pruneSelection();
+});
+wireToggleGroup('mode-chips', (t) => {
+  const val = t.dataset.v === 'true';
+  config.multiple = val;
+  document.querySelectorAll('#mode-chips .toggle').forEach(x => x.classList.toggle('on', (x.dataset.v==='true')===val));
+  if (!val && selection.length > 1) selection = selection.slice(0,1);
+});
+document.getElementById('maxsel').oninput = (e) => { config.maxSelections = Math.max(0, parseInt(e.target.value||'0',10)); render(); };
+document.getElementById('includeremote').onclick = (e) => { config.includeRemoteProxies = !config.includeRemoteProxies; e.target.classList.toggle('on', config.includeRemoteProxies); pruneSelection(); render(); };
+document.getElementById('userproxy').onclick = (e) => { config.includeUserProxy = !config.includeUserProxy; e.target.classList.toggle('on', config.includeUserProxy); render(); };
+document.getElementById('onlyrunning').onclick = (e) => { config.onlyRunning = !config.onlyRunning; e.target.classList.toggle('on', config.onlyRunning); pruneSelection(); render(); };
+document.getElementById('search').oninput = (e) => { query = e.target.value.trim().toLowerCase(); render(); };
+
+const projSel = document.getElementById('project');
+PROJECTS.forEach(p => { const o=document.createElement('option'); o.value=p.projectId; o.textContent=p.name; projSel.appendChild(o); });
+projSel.onchange = (e) => { config.projectId = e.target.value; pruneSelection(); render(); };
+
+function pruneSelection() {
+  const valid = new Set(buildRows().map(r => r.key));
+  selection = selection.filter(s => valid.has(selKey(s)));
+}
+
+const PRESETS = {
+  palette:       { entityTypes:['agent_id','agent_instance_id'], multiple:false, userProxy:false, onlyRunning:false, max:0, remote:true },
+  startInstance: { entityTypes:['agent_id'], multiple:false, userProxy:false, onlyRunning:false, max:0, remote:true },
+  openChat:      { entityTypes:['agent_instance_id'], multiple:false, userProxy:false, onlyRunning:true, max:0, remote:true },
+  reviewer:      { entityTypes:['agent_instance_id'], multiple:false, userProxy:true, onlyRunning:false, max:0, remote:true },
+  subscribers:   { entityTypes:['agent_instance_id'], multiple:true, userProxy:true, onlyRunning:false, max:0, remote:true },
+};
+document.querySelectorAll('.preset-btn').forEach(btn => {
+  btn.onclick = () => {
+    const p = PRESETS[btn.dataset.preset];
+    config.entityTypes = new Set(p.entityTypes);
+    config.multiple = p.multiple;
+    config.includeUserProxy = p.userProxy;
+    config.onlyRunning = p.onlyRunning;
+    config.maxSelections = p.max;
+    config.includeRemoteProxies = p.remote;
+    selection = [];
+    syncControls();
+    render();
+  };
+});
+
+function syncControls() {
+  document.querySelectorAll('#entity-chips .toggle').forEach(t => t.classList.toggle('on', config.entityTypes.has(t.dataset.v)));
+  document.querySelectorAll('#mode-chips .toggle').forEach(t => t.classList.toggle('on', (t.dataset.v==='true')===config.multiple));
+  document.getElementById('maxsel').value = config.maxSelections;
+  document.getElementById('includeremote').classList.toggle('on', config.includeRemoteProxies);
+  document.getElementById('userproxy').classList.toggle('on', config.includeUserProxy);
+  document.getElementById('onlyrunning').classList.toggle('on', config.onlyRunning);
+}
+
+syncControls();
+render();
+</script>
+</body>
+</html>

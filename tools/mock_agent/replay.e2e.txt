@@ -1,0 +1,12 @@
+# Clean E2E replay used by tests/mock_agent_wrapper_launch_test.odin and the
+# runtime E2E smoke. Three observable steps with 1s gaps:
+#   1. agent.context.get  -> real local-endpoint response (instance id)
+#   2. shell command      -> stdout captured in the log
+#   3. finish             -> clean exit so the wrapper reports process_exited
+sleep 1
+context
+sleep 1
+run echo "mock-e2e-step"
+sleep 1
+echo "finishing E2E replay"
+done

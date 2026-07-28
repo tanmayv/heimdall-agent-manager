@@ -2,6 +2,7 @@ import ChatComposer from '../chat/ChatComposer';
 import ChatHeader from '../chat/ChatHeader';
 import ChatMessageList from '../chat/ChatMessageList';
 import ChatWorkBanner from '../chat/ChatWorkBanner';
+import type { ReactNode } from 'react';
 import type { WorkspaceGenericAgentContext } from './types';
 
 export default function GenericAgentWorkspacePage({
@@ -17,10 +18,11 @@ export default function GenericAgentWorkspacePage({
           <ChatMessageList {...context.chat} />
         </div>
       </div>
-      {(context.workBanner || context.composer) ? (
+      {(context.workBanner || context.currentTaskStrip || context.composer) ? (
         <div data-debug-id="generic-agent-page-composer-region" className={context.composerContainerClassName || 'px-5 pb-[18px] pt-3'}>
           <div className={context.bodyInnerClassName || 'mx-auto flex h-full max-w-[760px] flex-col'}>
             {context.workBanner ? <ChatWorkBanner {...context.workBanner} /> : null}
+            {context.currentTaskStrip ? (context.currentTaskStrip as ReactNode) : null}
             {context.composer ? <ChatComposer {...context.composer} /> : null}
           </div>
         </div>

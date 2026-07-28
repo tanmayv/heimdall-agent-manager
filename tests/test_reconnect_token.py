@@ -3,7 +3,7 @@ import urllib.request
 import json
 import sys
 
-DAEMON_URL = "http://127.0.0.1:49325"
+DAEMON_URL = "http://127.0.0.1:49328"
 
 def main():
     agent_id = "test-reconnect-agent@default"

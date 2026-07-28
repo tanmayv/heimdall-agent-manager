@@ -2,7 +2,7 @@ import urllib.request
 import json
 import sys
 
-DAEMON_URL = "http://127.0.0.1:49325"
+DAEMON_URL = "http://127.0.0.1:49328"
 
 EXPECTED_TEMPLATES = {
     "planner": {
@@ -65,8 +65,18 @@ EXPECTED_TEMPLATES = {
     }
 }
 
+def request_post(path, data):
+    req = urllib.request.Request(
+        f"{DAEMON_URL}{path}",
+        data=json.dumps(data).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+    res = urllib.request.urlopen(req)
+    return json.loads(res.read().decode("utf-8"))
+
 def main():
-    print("[*] Fetching seeded agent templates from daemon...")
+    print("[*] Fetching seeded agent templates from daemon (list)...")
     req = urllib.request.Request(f"{DAEMON_URL}/agents/templates")
     try:
         res = urllib.request.urlopen(req)
@@ -82,20 +92,43 @@ def main():
     templates_list = body.get("templates", [])
     templates_dict = {t["template_id"]: t for t in templates_list}
     
-    print(f"[*] Found {len(templates_list)} templates.")
+    print(f"[*] Found {len(templates_list)} templates in list.")
     
     errors = 0
+    # 1. Verify list is slim (no persona or instructions)
+    for tpl in templates_list:
+        tid = tpl.get("template_id")
+        if "persona" in tpl:
+            print(f"[-] Template '{tid}' in list response contains 'persona' (should be slim)")
+            errors += 1
+        if "instructions" in tpl:
+            print(f"[-] Template '{tid}' in list response contains 'instructions' (should be slim)")
+            errors += 1
+
+    # 2. Verify details on-demand via show endpoint
     for key, expected in EXPECTED_TEMPLATES.items():
         if key not in templates_dict:
-            print(f"[-] Missing expected template: {key}")
+            print(f"[-] Missing expected template in list: {key}")
             errors += 1
             continue
             
-        actual = templates_dict[key]
+        print(f"[*] Verifying template detail for '{key}'...")
+        try:
+            show_res = request_post("/agents/templates/show", {"template_id": key})
+            if not show_res.get("ok"):
+                print(f"[-] Failed to show template '{key}':", show_res)
+                errors += 1
+                continue
+            actual = show_res.get("template", {})
+        except Exception as e:
+            print(f"[-] Show template '{key}' request failed:", e)
+            errors += 1
+            continue
+
         for field, exp_val in expected.items():
             act_val = actual.get(field)
             if act_val != exp_val:
-                print(f"[-] Template '{key}' field '{field}' mismatch:")
+                print(f"[-] Template '{key}' field '{field}' mismatch in detail:")
                 print(f"    Expected: {repr(exp_val)}")
                 print(f"    Actual:   {repr(act_val)}")
                 errors += 1
@@ -104,7 +137,7 @@ def main():
         print(f"[-] Validation failed with {errors} errors.")
         sys.exit(1)
         
-    print("[+] All templates seeded and validated successfully!")
+    print("[+] All templates seeded and validated successfully (slim list & detailed show)!")
     sys.exit(0)
 
 if __name__ == "__main__":

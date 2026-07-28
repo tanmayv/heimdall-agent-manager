@@ -1,8 +1,14 @@
+import { userScopedStorageKey } from '../utils/clientPersistence';
+
 const KNOWN_AGENTS_STORAGE_KEY = 'odin.knownAgents';
+
+function knownAgentsStorageKey(): string {
+  return userScopedStorageKey(KNOWN_AGENTS_STORAGE_KEY);
+}
 
 export function loadKnownAgents(): any[] {
   try {
-    return JSON.parse(window.localStorage.getItem(KNOWN_AGENTS_STORAGE_KEY) || '[]');
+    return JSON.parse(window.localStorage.getItem(knownAgentsStorageKey()) || '[]');
   } catch {
     return [];
   }
@@ -10,7 +16,7 @@ export function loadKnownAgents(): any[] {
 
 export function storeKnownAgents(agents: any[]) {
   try {
-    window.localStorage.setItem(KNOWN_AGENTS_STORAGE_KEY, JSON.stringify(agents || []));
+    window.localStorage.setItem(knownAgentsStorageKey(), JSON.stringify(agents || []));
   } catch {
     // Local known-agent records are a UI convenience when daemon persistence is unavailable.
   }
@@ -85,6 +91,7 @@ export function mapAgent(agent: any) {
       currentTaskId: agent.remote.current_task_id || agent.remote.currentTaskId || '',
       providerProfile: agent.remote.provider_profile || agent.remote.providerProfile || '',
       modelTier: agent.remote.model_tier || agent.remote.modelTier || '',
+      projectId: agent.remote.project_id || agent.remote.projectId || '',
       lastSeenUnixMs: Number(agent.remote.last_seen_unix_ms ?? agent.remote.lastSeenUnixMs ?? 0),
       peerReachable: (agent.remote.peer_reachable ?? agent.remote.peerReachable) === undefined ? undefined : Boolean(agent.remote.peer_reachable ?? agent.remote.peerReachable),
     } : ((agent.remote_peer_id || agent.remotePeerId || agent.remote_agent_instance_id || agent.remoteAgentInstanceId || agent.remote_origin_daemon_id || agent.remoteOriginDaemonId) ? {
@@ -105,6 +112,8 @@ export function mapAgent(agent: any) {
     activitySource,
     currentTaskId: agent.current_task_id || agent.currentTaskId || '',
     currentTaskSince: Number(agent.current_task_since ?? agent.currentTaskSince ?? 0),
+    // UI-6: bound immutable chain for this instance (drives Work chip / CurrentTaskStrip / Work tab).
+    chainId: agent.chain_id || agent.chainId || '',
     state: agent.state || '',
   };
 }
@@ -165,7 +174,7 @@ function sortAgentsInPlace(agents: any[]) {
   });
 }
 
-export function mergeKnownAndLiveAgents(localKnownAgents: any[], daemonAgents: any[], daemonReachable = false) {
+export function mergeKnownAndLiveAgents(localKnownAgents: any[], daemonAgents: any[], daemonReachable = false, isPaged = false) {
   const byId: Record<string, any> = {};
   const defaultRuntimeAliases: Record<string, string> = {};
   const putAgent = (agent: any) => {
@@ -192,7 +201,7 @@ export function mergeKnownAndLiveAgents(localKnownAgents: any[], daemonAgents: a
   }
   for (const agent of localKnownAgents.map((item) => mapAgent(metadataOnlyAgent(item)))) {
     if (!agent.id) continue;
-    if (daemonReachable && !daemonIds.has(agent.id)) continue;
+    if (daemonReachable && !isPaged && !daemonIds.has(agent.id)) continue;
     putAgent({ ...agent, status: 'offline', startupStatus: '', known: true });
   }
   for (const rawDaemonAgent of daemonAgents) {

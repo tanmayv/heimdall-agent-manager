@@ -51,16 +51,28 @@ import Markdown from './Markdown';
 import ArtifactUploadButton, { appendArtifactLink, useArtifactUpload } from './ArtifactUpload';
 import ChainArtifactsPanel from './ChainArtifactsPanel';
 import ArtifactViewer from './ArtifactViewer';
+import LibraryPage from './LibraryPage';
 import ChatHoverCopyButton from './ChatHoverCopyButton';
 import { navigateBackOr, updateUrlParams, useUrlParams } from './useUrlParams';
 import { getRouteSearch } from '../utils/appLocation';
 import { VimSidebarProvider, VimEditButton } from './VimSidebar';
 import AgentPicker from './AgentPicker';
+import AgentPickerV2 from './AgentPickerV2';
+import NewLocalProxyAgentWizard from './NewLocalProxyAgentWizard';
 import ChatHeader from './chat/ChatHeader';
 import ChatComposer from './chat/ChatComposer';
+import type { ChatComposerSubmitPayload } from './chat/types';
 import ChatMessageList from './chat/ChatMessageList';
 import ChatSidebar from './chat/ChatSidebar';
 import ChatWorkBanner from './chat/ChatWorkBanner';
+import CurrentTaskStrip from './chat/CurrentTaskStrip';
+import WorkChips from './chat/WorkChips';
+import WorkTab from './chat/WorkTab';
+import ConversationMemoryTab from './chat/ConversationMemoryTab';
+import ConversationWorkspaceTab from './chat/ConversationWorkspaceTab';
+import AgentSessionsTab from './chat/AgentSessionsTab';
+import AgentBridgesTab from './chat/AgentBridgesTab';
+import { useChatChainWork } from './chat/useChatChainWork';
 import ContextInspector from './workspace/ContextInspector';
 import GenericAgentWorkspacePage from './workspace/GenericAgentWorkspacePage';
 import UnifiedWorkspaceShell from './workspace/UnifiedWorkspaceShell';
@@ -71,17 +83,17 @@ import type { WorkspaceContext, WorkspaceInspectorTab } from './workspace/types'
 import * as daemonApi from '../api/daemonApi';
 import { agentRemoteInfo, isRemoteProxyAgent, remoteAgentStatus, remoteAgentIsLive, remoteProxyContext } from '../api/agentRemote';
 import { agentHasLiveSession } from '../api/agentLiveness';
-import { selectTaskCacheProjection } from '../api/taskCache';
+import { selectTaskCacheProjection, mergeTaskRecord } from '../api/taskCache';
 import { selectChainViewCacheProjection } from '../api/chainViewCache';
 import { useFetchChainTasksQuery, useFetchTaskLogQuery, useFetchTaskQuery, useFetchTaskCommentsQuery, useLazyFetchTaskLogPageQuery } from '../api/endpoints/tasks';
-import { chatEndpoints, useListConversationSummariesQuery } from '../api/endpoints/chats';
-import { upsertAgentInCaches, useFetchAgentQuery, useListAgentsQuery } from '../api/endpoints/agents';
+import { chatEndpoints, useListConversationSummariesQuery, useLazyFetchConversationSummariesPageQuery } from '../api/endpoints/chats';
+import { upsertAgentInCaches, useCreateAgentInstanceInChainMutation, useFetchAgentQuery, useFetchPeerAgentTemplateQuery, useListAgentsQuery, useListPeerAdvertisedAgentsQuery, useRemapRemoteProxyMutation, useLazyFetchAgentsPageQuery } from '../api/endpoints/agents';
 import { useAnswerChatApprovalMutation, useDismissChatApprovalMutation, useExecuteMergeViaChainMutation, useFetchAttentionQuery, useListChatApprovalsQuery } from '../api/endpoints/attention';
-import { useDecideMemoryProposalMutation, useListApplicableMemoryQuery, useListMemoryQuery, useProposeMemoryChangeMutation } from '../api/endpoints/memory';
-import { useFetchChainQuery, useFetchWorkspaceQuery, useFocusChainMutation, useLazyFetchWorkspaceDiffQuery, useLazyPreviewWorkspaceMergeQuery, useListChainsQuery } from '../api/endpoints/workspace';
+import { useDecideMemoryProposalMutation, useListApplicableMemoryQuery, useListMemoryQuery, useProposeMemoryChangeMutation, useLazyFetchMemoryQuery } from '../api/endpoints/memory';
+import { useFetchChainQuery, useFetchWorkspaceQuery, useFocusChainMutation, useLazyFetchWorkspaceDiffQuery, useLazyPreviewWorkspaceMergeQuery, useListChainsQuery, useLazyFetchChainsPageQuery } from '../api/endpoints/workspace';
 import { useCreateProjectMutation, useListProjectsQuery } from '../api/endpoints/projects';
-import { useFetchSettingsCatalogQuery } from '../api/endpoints/settings';
-import { useListArtifactsQuery } from '../api/endpoints/artifacts';
+import { useFetchSettingsCatalogQuery, useFetchAgentTemplateQuery } from '../api/endpoints/settings';
+import { useListArtifactsQuery, useLazyFetchArtifactsPageQuery } from '../api/endpoints/artifacts';
 import { handleUserWsEvent, resyncAfterReconnect } from '../api/wsInvalidation';
 
 type Chain = {
@@ -344,7 +356,9 @@ function createConversationInstanceId(): string {
   return `conversation@s-${token}`;
 }
 
-function defaultConversationProvider(providers: any[] = []): string {
+function defaultConversationProvider(providers: any[] = [], identities: any[] = []): string {
+  const convoIdentity = (identities || []).find((i: any) => String(i?.id || i?.agentId || i?.agent_id) === 'conversation');
+  if (convoIdentity?.providerProfile) return convoIdentity.providerProfile;
   return (providers || []).find((provider: any) => String(provider?.name || provider?.id || '').toLowerCase() === 'pi')?.name || providers?.[0]?.name || providers?.[0]?.id || 'pi';
 }
 
@@ -626,13 +640,29 @@ function attentionCount(tasksById: Record<string, any>, attention: any, pendingM
 export default function App() {
   const dispatch = useDispatch<any>();
   const { session, daemonProfiles, selectedAgentId, chats, chatsCursor, chatsHasMore, guidePanelOpen, guideSending, fetchingChatsByAgentId, conversationSummaryById } = useSelector((state: any) => state.chat);
-  const conversationSummariesQuery = useListConversationSummariesQuery(undefined, { skip: !session.clientToken });
-  const effectiveConversationSummaryById = conversationSummariesQuery.data || conversationSummaryById;
+  const conversationSummariesQuery = useListConversationSummariesQuery(undefined, { skip: !session.clientToken, refetchOnMountOrArgChange: true });
+  const [triggerFetchConversationsPage, fetchConversationsPageResult] = useLazyFetchConversationSummariesPageQuery();
+  // Merge (not replace) the query result over the redux cache so titles never
+  // blank out during a refetch when query.data is momentarily undefined.
+  const effectiveConversationSummaryById = useMemo(
+    () => ({ ...(conversationSummaryById || {}), ...(conversationSummariesQuery.data?.summaries || {}) }),
+    [conversationSummaryById, conversationSummariesQuery.data],
+  );
+
+  const hasMoreConversations = Boolean(conversationSummariesQuery.data?.hasMore);
+  const handleLoadMoreConversations = useCallback(async () => {
+    if (conversationSummariesQuery.isFetching || fetchConversationsPageResult.isFetching) return;
+    const cursor = conversationSummariesQuery.data?.nextCursor || '';
+    if (cursor) {
+      await triggerFetchConversationsPage({ limit: 20, cursor }).unwrap();
+    }
+  }, [conversationSummariesQuery.data, conversationSummariesQuery.isFetching, fetchConversationsPageResult.isFetching, triggerFetchConversationsPage]);
   const { selectedProjectId: selectedProjectIdPreference } = useSelector((state: any) => state.projects);
   const projectsQuery = useListProjectsQuery({ scope: `${session.daemonUrl || ''}:${session.clientInstanceId || ''}:${session.clientToken || ''}` }, { skip: !session.connected || !session.clientToken });
   const settingsCatalogQuery = useFetchSettingsCatalogQuery({ scope: `${session.daemonUrl || ''}:${session.clientInstanceId || ''}` }, { skip: !session.connected || !session.daemonUrl });
   const [createProject, createProjectState] = useCreateProjectMutation();
-  const chainsQuery = useListChainsQuery(undefined, { skip: !session.clientToken });
+  const chainsQuery = useListChainsQuery({}, { skip: !session.clientToken });
+  const [triggerFetchChainsPage, fetchChainsPageResult] = useLazyFetchChainsPageQuery();
   const routeChainId = (() => {
     try {
       const params = new URLSearchParams(getRouteSearch());
@@ -693,8 +723,9 @@ export default function App() {
   }, []);
   const agentsQuery = useListAgentsQuery(undefined, {
     skip: !session.daemonUrl,
-    pollingInterval: chainCreationProgress?.active || home.surface === 'agents' || urlParams.view === 'agent-identity' || guidePanelOpen || Boolean(selectedSidebarAgentId) ? 2000 : 0,
+    pollingInterval: chainCreationProgress?.active || home.surface === 'agents' || urlParams.view === 'agent-identity' || guidePanelOpen || Boolean(selectedSidebarAgentId) ? 10000 : 0,
   });
+  const [triggerFetchAgentsPage, fetchAgentsPageResult] = useLazyFetchAgentsPageQuery();
   const agents = agentsQuery.data?.agents || [];
   const agentIdentities = agentsQuery.data?.identities || [];
   useEffect(() => { agentsRefetchRef.current = agentsQuery.refetch; }, [agentsQuery.refetch]);
@@ -707,7 +738,7 @@ export default function App() {
     { agentInstanceId: agentPageId || '' },
     {
       skip: !agentPageId,
-      pollingInterval: agentPageId ? 2000 : 0,
+      pollingInterval: agentPageId ? 10000 : 0,
     },
   );
   useEffect(() => { sessionRef.current = session; }, [session]);
@@ -743,6 +774,16 @@ export default function App() {
   const chains: Chain[] = useMemo(() => Object.values(chainsById || {}) as Chain[], [chainsById]);
   useEffect(() => { chainsRef.current = chains; }, [chains]);
   useEffect(() => { chainsRefetchRef.current = chainsQuery.refetch; }, [chainsQuery.refetch]);
+  const handleLoadMoreChains = useCallback(() => {
+    if (chainsQuery.isFetching || fetchChainsPageResult.isFetching) return;
+    const nextOffset = chainsQuery.data?.chains?.length || 0;
+    triggerFetchChainsPage({ limit: 20, offset: nextOffset });
+  }, [chainsQuery.data, chainsQuery.isFetching, fetchChainsPageResult.isFetching, triggerFetchChainsPage]);
+  const handleLoadMoreAgents = useCallback(() => {
+    if (agentsQuery.isFetching || fetchAgentsPageResult.isFetching) return;
+    const nextOffset = agentsQuery.data?.agents?.length || 0;
+    triggerFetchAgentsPage({ limit: 20, offset: nextOffset });
+  }, [agentsQuery.data, agentsQuery.isFetching, fetchAgentsPageResult.isFetching, triggerFetchAgentsPage]);
   const selectedProjectId = home.selectedProjectId || selectedProjectIdPreference || projects[0]?.projectId || 'default';
   const selectedChain = home.selectedChainId ? (chainsById[home.selectedChainId] || selectedChainQuery.data?.chain || null) : null;
   const selectedWorkspaceQuery = useFetchWorkspaceQuery(
@@ -766,7 +807,7 @@ export default function App() {
   }, [cacheChainView.mergePreviewByChainId, cacheChainView.workspaceByChainId, cacheChainView.workspaceDiffByChainId, chainViewUi, selectedChain?.chainId, selectedWorkspaceQuery.data?.workspace, selectedWorkspaceQuery.isFetching]);
   useEffect(() => { chainViewRef.current = chainView; }, [chainView]);
   const selectedChainTasksQuery = useFetchChainTasksQuery(
-    { chainId: selectedChain?.chainId || '' },
+    { chainId: selectedChain?.chainId || '', limit: 100 },
     { skip: !selectedChain?.chainId },
   );
   const creationProgressChainQuery = useFetchChainQuery(
@@ -784,7 +825,7 @@ export default function App() {
     },
   );
   const creationProgressChainTasksQuery = useFetchChainTasksQuery(
-    { chainId: chainCreationProgress?.chainId || '' },
+    { chainId: chainCreationProgress?.chainId || '', limit: 100 },
     {
       skip: !chainCreationProgress?.active || !chainCreationProgress?.chainId,
       pollingInterval: chainCreationProgress?.active ? 2000 : 0,
@@ -795,13 +836,17 @@ export default function App() {
     { taskId: selectedTaskIdForQuery },
     { skip: !selectedTaskIdForQuery },
   );
+  const selectedTaskQuery = useFetchTaskQuery(
+    { taskId: selectedTaskIdForQuery },
+    { skip: !selectedTaskIdForQuery || !session.clientToken },
+  );
   const [loadTaskLogPage] = useLazyFetchTaskLogPageQuery();
   const selectedChainTasks = selectedChainTasksQuery.data?.tasks || ((selectedChain?.chainId ? (chainTaskIds[selectedChain.chainId] || []).map((id: string) => tasksById[id]).filter(Boolean) : []) as any[]);
   const selectedTasksById = useMemo(() => {
     if (!selectedChain?.chainId) return tasksById;
     const next = { ...tasksById } as Record<string, any>;
     for (const task of selectedChainTasks) {
-      if (task?.taskId) next[task.taskId] = task;
+      if (task?.taskId) next[task.taskId] = mergeTaskRecord(next[task.taskId], task);
     }
     return next;
   }, [selectedChain?.chainId, selectedChainTasks, tasksById]);
@@ -1094,7 +1139,7 @@ export default function App() {
   }, [dispatch]);
   const startGuideAgent = useCallback(async () => {
     const agent = guideAgent || { id: GUIDE_AGENT_ID, templateId: 'guide' };
-    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id || GUIDE_AGENT_ID, provider: agent.providerProfile || defaultConversationProvider(settingsProviders), templateId: agent.templateId || 'guide', projectId: agent.projectId || '', displayName: agent.label || 'Heimdall Guide', modelTier: agent.modelTier || 'smart'});
+    await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: agent.id || GUIDE_AGENT_ID, provider: agent.providerProfile || defaultConversationProvider(settingsProviders, agentIdentities), templateId: agent.templateId || 'guide', projectId: agent.projectId || '', displayName: agent.label || 'Heimdall Guide', modelTier: agent.modelTier || 'smart'});
     await refetchAgents();
   }, [guideAgent, refetchAgents, session?.daemonUrl, settingsProviders]);
   const guideContextLabel = useMemo(() => {
@@ -1227,6 +1272,55 @@ export default function App() {
     focusChain({ chainId }).catch(() => undefined);
   }, [dispatch, focusChain]);
 
+  // UI-6: shared task-action handlers reused by chat Work surfaces (CurrentTaskStrip / WorkTab)
+  // and the full Chain view. Create task comments (not chat messages), vote, set status, nudge.
+  const openTaskInChain = useCallback((taskId: string) => {
+    const focusChainId = home.selectedChainId || urlParams.chainId || '';
+    if (focusChainId) openChain(focusChainId);
+    // Task selection is URL-driven; surface the task in the chain view.
+    setTimeout(() => updateUrlParams({ taskId }), 0);
+  }, [home.selectedChainId, openChain, urlParams.chainId]);
+
+  const addTaskComment = useCallback(async (task: { taskId: string; chainId: string }, body: string) => {
+    try {
+      await dispatch(addCommentToSelectedTask({ taskId: task.taskId, chainId: task.chainId, body })).unwrap();
+      dispatch(showToast({ kind: 'success', title: 'Comment added', message: task.taskId }));
+    } catch (err: any) {
+      dispatch(showToast({ kind: 'error', title: 'Comment failed', message: err?.message || 'Unable to add task comment' }));
+      throw err;
+    }
+  }, [dispatch]);
+
+  const setTaskStatus = useCallback(async (task: { taskId: string; chainId: string }, status: string, body = '') => {
+    try {
+      await dispatch(updateSelectedTaskStatus({ taskId: task.taskId, chainId: task.chainId, status, body })).unwrap();
+      dispatch(showToast({ kind: 'success', title: 'Task updated', message: `${task.taskId} → ${status}` }));
+    } catch (err: any) {
+      dispatch(showToast({ kind: 'error', title: 'Task update failed', message: err?.message || `Unable to set ${status}` }));
+      throw err;
+    }
+  }, [dispatch]);
+
+  const voteTask = useCallback(async (task: { taskId: string; chainId: string }, approved: boolean, comment?: string) => {
+    try {
+      await dispatch(voteOnSelectedTask({ taskId: task.taskId, chainId: task.chainId, approved, comment: comment || (approved ? 'LGTM from chat.' : 'Changes requested from chat.') })).unwrap();
+      dispatch(showToast({ kind: 'success', title: approved ? 'LGTM recorded' : 'Changes requested', message: task.taskId }));
+    } catch (err: any) {
+      dispatch(showToast({ kind: 'error', title: 'Review vote failed', message: err?.message || 'Unable to vote on task' }));
+      throw err;
+    }
+  }, [dispatch]);
+
+  const nudgeTask = useCallback(async (task: { taskId: string; chainId: string }) => {
+    try {
+      await dispatch(nudgeSelectedTask({ taskId: task.taskId, chainId: task.chainId, body: '', interrupt: false })).unwrap();
+      dispatch(showToast({ kind: 'success', title: 'Nudge sent', message: task.taskId }));
+    } catch (err: any) {
+      dispatch(showToast({ kind: 'error', title: 'Nudge failed', message: err?.message || 'Unable to nudge task' }));
+      throw err;
+    }
+  }, [dispatch]);
+
   const openChainEditor = useCallback((chainId: string, taskId = '') => {
     setAgentPageId('');
     lastUrlChainFocusKeyRef.current = `chain-editor:${chainId}`;
@@ -1248,7 +1342,7 @@ export default function App() {
       dispatch(selectSurface('home'));
       return;
     }
-    if (next === 'attention' || next === 'settings' || next === 'agents' || next === 'task-chains' || next === 'projects') {
+    if (next === 'attention' || next === 'settings' || next === 'agents' || next === 'task-chains' || next === 'projects' || next === 'library') {
       updateUrlParams({ view: next, chainId: null, taskId: null, memoryId: null, agentId: null });
       dispatch(selectSurface(next));
       return;
@@ -1290,26 +1384,31 @@ export default function App() {
     if (!durableId || sidebarAgentLaunchingId) return;
     setSidebarAgentLaunchingId(durableId);
     try {
-      const identity = (agents || []).find((agent: any) => durableAgentId(agent) === durableId) || { id: durableId, agentId: durableId };
+      const identityRecord = (agentIdentities || []).find((rec: any) => String(rec?.agent_id || rec?.agentId || '') === durableId) || null;
+      const identity = (agents || []).find((agent: any) => durableAgentId(agent) === durableId) || identityRecord || { id: durableId, agentId: durableId };
+      const remoteProxy = isRemoteProxyAgent(identityRecord) || isRemoteProxyAgent(identity);
       const requestedId = `${durableId}@s-${createAgentSessionToken()}`;
       const result = await daemonApi.startAgent({
         daemonUrl: session?.daemonUrl || '',
         agentId: durableId,
         agentInstanceId: requestedId,
-        provider: identity.providerProfile || defaultConversationProvider(settingsProviders),
-        templateId: identity.templateId || durableId,
-        projectId: identity.projectId || '',
+        provider: identity.providerProfile || identity.provider_profile || defaultConversationProvider(settingsProviders, agentIdentities),
+        templateId: identity.templateId || identity.template_id || durableId,
+        projectId: remoteProxy ? '' : (identity.projectId || identity.project_id || ''),
         displayName: '',
-        modelTier: identity.modelTier || 'normal',
+        modelTier: identity.modelTier || identity.model_tier || 'normal',
       });
       await refetchAgents();
       const resolvedId = result?.agent_instance_id || result?.agentInstanceId || requestedId;
+      dispatch(showToast({ kind: 'success', title: 'Agent launch requested', message: resolvedId }));
       setSelectedSidebarAgentId(durableId);
       openAgentPage(resolvedId);
+    } catch (err: any) {
+      dispatch(showToast({ kind: 'error', title: `Unable to launch ${durableId}`, message: err?.message || 'Agent launch failed' }));
     } finally {
       setSidebarAgentLaunchingId('');
     }
-  }, [agents, dispatch, openAgentPage, session?.daemonUrl, settingsProviders, sidebarAgentLaunchingId]);
+  }, [agentIdentities, agents, dispatch, openAgentPage, session?.daemonUrl, settingsProviders, sidebarAgentLaunchingId]);
 
   const createNewConversation = useCallback(() => {
     if (newConversationBusy) return;
@@ -1322,7 +1421,7 @@ export default function App() {
     setNewConversationBusy(true);
     try {
       const requestedId = createConversationInstanceId();
-      const effectiveProvider = provider || defaultConversationProvider(settingsProviders);
+      const effectiveProvider = provider || defaultConversationProvider(settingsProviders, agentIdentities);
       await daemonApi.createAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, displayName: '', providerProfile: effectiveProvider, templateId: 'conversation', projectId: projectId || '', modelTier: modelTier || 'smart'}).catch((err: any) => {
         const message = String(err?.message || err || '').toLowerCase();
         if (!message.includes('already') && !message.includes('exists')) throw err;
@@ -1343,12 +1442,12 @@ export default function App() {
     setNewConversationBusy(true);
     try {
       const requestedId = createConversationInstanceId();
-      const effectiveProvider = provider || defaultConversationProvider(settingsProviders);
+      const effectiveProvider = provider || defaultConversationProvider(settingsProviders, agentIdentities);
       await daemonApi.createAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, displayName: '', providerProfile: effectiveProvider, templateId: 'conversation', projectId: projectId || '', modelTier: modelTier || 'smart'}).catch((err: any) => {
         const message = String(err?.message || err || '').toLowerCase();
         if (!message.includes('already') && !message.includes('exists')) throw err;
       });
-      const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, provider: effectiveProvider, templateId: 'conversation', projectId: projectId || '', displayName: '', modelTier: modelTier || 'smart', newMessage: body});
+      const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: requestedId, provider: effectiveProvider, templateId: 'conversation', projectId: projectId || '', displayName: '', modelTier: modelTier || 'smart'});
       const resolvedId = result?.agent_instance_id || result?.agentInstanceId || requestedId;
       let sent = false;
       let sendResult: any = null;
@@ -1361,7 +1460,7 @@ export default function App() {
           sent = true;
         } catch (err: any) {
           lastSendError = err;
-          if (!String(err?.message || err || '').toLowerCase().includes('unknown agent')) throw err;
+          if (!String(err?.data?.message || err?.message || JSON.stringify(err) || '').toLowerCase().includes('unknown agent')) throw err;
         }
       }
       if (!sent) throw lastSendError || new Error('Timed out waiting for conversation agent');
@@ -1385,10 +1484,19 @@ export default function App() {
   const activeProject = projectsById[selectedProjectId] || projects[0];
   const shownGroups = chainGroups;
   const conversationAgents = useMemo(() => {
+    // A conversation is worth listing when it has a durable title, is currently
+    // running, or is the one the user just opened/clicked (so a brand-new empty
+    // thread stays visible while it is active). Empty, stopped, title-less
+    // threads are hidden to keep the list meaningful.
+    const worthShowing = (agent: any) => {
+      const id = agentInstanceId(agent);
+      const hasTitle = Boolean(String(effectiveConversationSummaryById?.[id]?.title || '').trim());
+      return hasTitle || agentHasLiveSession(agent) || id === agentPageId;
+    };
     const concrete = (agents || []).filter((agent: any) => isConcreteConversationThread(agent));
-    if (concrete.length > 0) return concrete;
-    return (agents || []).filter((agent: any) => isConversationAgent(agent));
-  }, [agents]);
+    const pool = concrete.length > 0 ? concrete : (agents || []).filter((agent: any) => isConversationAgent(agent));
+    return pool.filter(worthShowing);
+  }, [agents, effectiveConversationSummaryById, agentPageId]);
   const closeNewProjectModal = useCallback(() => {
     setNewProjectModalOpen(false);
   }, []);
@@ -1454,7 +1562,15 @@ export default function App() {
               onAgents={() => selectSurfaceWithUrl('agents')}
               onTaskChains={() => selectSurfaceWithUrl('task-chains')}
               onProjects={() => selectSurfaceWithUrl('projects')}
+              onLibrary={() => selectSurfaceWithUrl('library')}
               onSettings={() => selectSurfaceWithUrl('settings')}
+              onAttention={() => selectSurfaceWithUrl('attention')}
+              attentionBadgeCount={badgeCount}
+              hasMoreNetwork={hasMoreConversations}
+              onLoadMoreNetwork={handleLoadMoreConversations}
+              hasMoreAgents={Boolean(agentsQuery.data?.hasMore)}
+              loadingMoreAgents={fetchAgentsPageResult.isFetching}
+              onLoadMoreAgents={handleLoadMoreAgents}
             />
           </aside>
           {selectedSidebarAgentId && !sidebarCollapsed ? (
@@ -1474,17 +1590,6 @@ export default function App() {
         </WorkspaceLeftSidebar>
 
         <main className="relative min-w-0 flex-1 overflow-y-auto">
-          <button
-            type="button"
-            data-debug-id="attention-bell-btn"
-            onClick={() => selectSurfaceWithUrl('attention')}
-            title={badgeCount > 0 ? `${badgeCount} item${badgeCount === 1 ? '' : 's'} need attention` : 'Attention'}
-            aria-label={badgeCount > 0 ? `${badgeCount} item${badgeCount === 1 ? '' : 's'} need attention` : 'Attention'}
-            className="fixed right-4 top-3 z-40 grid h-9 w-9 place-items-center rounded-xl border border-white/10 bg-[#141414]/95 text-zinc-300 shadow-xl shadow-black/30 backdrop-blur transition hover:bg-[#1c1c1c] hover:text-zinc-100"
-          >
-            <span aria-hidden="true" className="text-[16px] leading-none">◷</span>
-            {badgeCount > 0 ? <span data-debug-id="attention-bell-badge" className="absolute -right-1 -top-1 min-w-4 rounded-full bg-sky-400 px-1 text-center text-[10px] font-semibold leading-4 text-black">{badgeCount > 99 ? '99+' : badgeCount}</span> : null}
-          </button>
           {agentPageId ? (() => {
             const listAgent = (agents || []).find((agent: any) => agent.id === agentPageId) || null;
             const selectedPageAgent = selectedAgentDetailQuery.data?.agent || listAgent || { id: agentPageId, label: agentPageId, status: 'unknown' };
@@ -1506,13 +1611,13 @@ export default function App() {
               onBack: navigateBackOrHome,
               onRefreshAgents: refetchAgents,
               onRefreshChat: (agentId: string) => dispatch(fetchSelectedChat({ agentId })).unwrap().catch(() => undefined),
-              onSendAgentMessage: async (agentId: string, body: string, interrupt = false, runtime: any = {}) => {
+              onSendAgentMessage: async (agentId: string, body: string, interrupt = false, runtime: any = {}, artifactIds?: string[]) => {
                 const exactAgent = (agents || []).find((agent: any) => agentInstanceId(agent) === agentId) || selectedPageAgent;
                 if (agentId && !agentHasLiveSession(exactAgent)) {
                   await daemonApi.startAgent({
                     daemonUrl: session?.daemonUrl || '',
                     agentInstanceId: agentId,
-                    provider: runtime.provider || exactAgent?.providerProfile || defaultConversationProvider(settingsProviders),
+                    provider: runtime.provider || exactAgent?.providerProfile || defaultConversationProvider(settingsProviders, agentIdentities),
                     templateId: exactAgent?.templateId || durableAgentId(exactAgent) || String(agentId).split('@')[0],
                     projectId: exactAgent?.projectId || '',
                     displayName: exactAgent?.label || agentId,
@@ -1521,12 +1626,18 @@ export default function App() {
                   await refetchAgents();
                 }
                 const tempId = `local_temp_chat_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-                await dispatch(sendMessageToSelectedAgent({ agentId, body, tempId, interrupt })).unwrap();
+                await dispatch(sendMessageToSelectedAgent({ agentId, body, tempId, interrupt, artifactIds })).unwrap();
               },
             };
             return (urlParams.view === 'conversation' || isConversationAgent(selectedPageAgent)) ? (
               <ConversationThreadPage
                 {...sharedAgentPageProps}
+                onOpenChain={(chainId: string) => { setAgentPageId(''); openChain(chainId); }}
+                onOpenTask={openTaskInChain}
+                onAddComment={addTaskComment}
+                onSetTaskStatus={setTaskStatus}
+                onVoteTask={voteTask}
+                onNudgeTask={nudgeTask}
               />
             ) : (
               <AgentDetailPage
@@ -1536,6 +1647,11 @@ export default function App() {
                 allAgents={agents}
                 onOpenIdentity={openAgentIdentityPage}
                 onOpenChain={(chainId: string) => { setAgentPageId(''); openChain(chainId); }}
+                onOpenTask={openTaskInChain}
+                onAddComment={addTaskComment}
+                onSetTaskStatus={setTaskStatus}
+                onVoteTask={voteTask}
+                onNudgeTask={nudgeTask}
                 onAgentDeleted={() => { setAgentPageId(''); refetchAgents(); }}
               />
             );
@@ -1543,20 +1659,31 @@ export default function App() {
             <AgentIdentityPage
               agentId={urlParams.agentId || ''}
               agents={agents}
+              agentIdentities={agentIdentities}
               chats={chats}
               tasksById={tasksById}
               chainsById={chainsById}
               projects={projects}
               providers={settingsProviders}
+              templates={settingsTemplates}
               session={session}
               onBack={navigateBackOrHome}
+              onOpenMemory={(memoryId: string) => updateUrlParams({ view: 'memory', memoryId })}
               onRefreshAgents={refetchAgents}
               onNewInstance={async (identity: any) => {
                 const durableId = durableAgentId(identity);
+                const identityRecord = (agentIdentities || []).find((rec: any) => String(rec?.agent_id || rec?.agentId || '') === durableId) || null;
+                const remoteProxy = isRemoteProxyAgent(identityRecord) || isRemoteProxyAgent(identity);
                 const requestedId = `${durableId}@s-${(globalThis.crypto?.randomUUID?.().replace(/-/g, '').slice(0, 10) || Date.now().toString(16))}`;
-                const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentId: durableId, agentInstanceId: requestedId, provider: identity.providerProfile || defaultConversationProvider(settingsProviders), templateId: identity.templateId || durableId, projectId: identity.projectId || '', displayName: '', modelTier: identity.modelTier || 'normal'});
-                await refetchAgents();
-                openAgentPage(result?.agent_instance_id || result?.agentInstanceId || requestedId);
+                try {
+                  const result = await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentId: durableId, agentInstanceId: requestedId, provider: identity.providerProfile || identity.provider_profile || defaultConversationProvider(settingsProviders, agentIdentities), templateId: identity.templateId || identity.template_id || durableId, projectId: remoteProxy ? '' : (identity.projectId || identity.project_id || ''), displayName: '', modelTier: identity.modelTier || identity.model_tier || 'normal'});
+                  await refetchAgents();
+                  const resolvedId = result?.agent_instance_id || result?.agentInstanceId || requestedId;
+                  dispatch(showToast({ kind: 'success', title: 'Agent launch requested', message: resolvedId }));
+                  openAgentPage(resolvedId);
+                } catch (err: any) {
+                  dispatch(showToast({ kind: 'error', title: `Unable to launch ${durableId}`, message: err?.message || 'Agent launch failed' }));
+                }
               }}
             />
           ) : urlParams.view === 'new-conversation' ? (
@@ -1564,6 +1691,7 @@ export default function App() {
               session={session}
               projects={projects}
               providers={settingsProviders}
+              identities={agentIdentities}
               defaultProjectId={urlParams.projectId || selectedProjectId}
               busy={newConversationBusy}
               onBack={navigateBackOrHome}
@@ -1594,11 +1722,15 @@ export default function App() {
               projects={projects}
               session={session}
               providers={settingsProviders}
+              templates={settingsTemplates}
               onBack={navigateBackOrHome}
               onOpenIdentity={openAgentIdentityPage}
               onOpenInstance={openAgentPage}
               onStartInstance={startSidebarAgentInstance}
               onRefreshAgents={refetchAgents}
+              hasMore={Boolean(agentsQuery.data?.hasMore)}
+              loadingMore={fetchAgentsPageResult.isFetching}
+              onLoadMore={handleLoadMoreAgents}
             />
           ) : home.surface === 'task-chains' ? (
             <TaskChainsSurface
@@ -1608,6 +1740,9 @@ export default function App() {
               onBack={navigateBackOrHome}
               onOpenChain={openChain}
               onNewChain={() => dispatch(openNewChainModal({ projectId: selectedProjectId }))}
+              hasMore={Boolean(chainsQuery.data?.hasMore)}
+              loadingMore={fetchChainsPageResult.isFetching}
+              onLoadMore={handleLoadMoreChains}
             />
           ) : home.surface === 'projects' ? (
             <ProjectsSurface
@@ -1617,6 +1752,13 @@ export default function App() {
               onOpenProject={openProject}
               onNewProject={() => setNewProjectModalOpen(true)}
               onNewChain={(projectId: string) => dispatch(openNewChainModal({ projectId }))}
+            />
+          ) : home.surface === 'library' ? (
+            <LibraryPage
+              session={session}
+              projects={projects}
+              chains={sidebarChains}
+              onBack={navigateBackOrHome}
             />
           ) : home.surface === 'settings' ? (
             <SettingsPage session={session} onBack={navigateBackOrHome} onReconnect={(config: any) => { dispatch(updateSessionConfig(config)); window.setTimeout(connectSession, 0); }} />
@@ -1658,9 +1800,9 @@ export default function App() {
               initialTaskId={urlParams.taskId}
               onOpenChain={openChain}
               onBack={navigateBackOrHome}
-              onSend={async (body: string) => {
+              onSend={async (body: string, artifactIds?: string[]) => {
                 const localId = `local_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-                await dispatch(sendCoordinatorMessage({ chainId: selectedChain.chainId, body, localId })).unwrap();
+                await dispatch(sendCoordinatorMessage({ chainId: selectedChain.chainId, body, localId, artifactIds })).unwrap();
               }}
               onToggleDiff={() => dispatch(toggleWorkspaceDiff(selectedChain.chainId))}
               onFetchDiff={(file: string) => loadWorkspaceDiff({ chainId: selectedChain.chainId, file })}
@@ -1729,6 +1871,19 @@ export default function App() {
                 await dispatch(addParticipantToSelectedTask({ taskId: task.taskId, chainId: task.chainId, agentInstanceId, role: 'lgtm_required' })).unwrap();
                 dispatch(showToast({ kind: 'success', title: 'Reviewer updated', message: agentInstanceId }));
               }}
+              onSetReviewers={async (task: any, agentInstanceIds: string[]) => {
+                const current = new Set(taskReviewerIds(task));
+                const next = new Set((agentInstanceIds || []).filter(Boolean));
+                const toAdd = [...next].filter((id) => !current.has(id));
+                const toRemove = [...current].filter((id) => !next.has(id));
+                for (const id of toRemove) {
+                  await dispatch(removeParticipantFromSelectedTask({ taskId: task.taskId, chainId: task.chainId, agentInstanceId: id, role: 'lgtm_required' })).unwrap().catch(() => undefined);
+                }
+                for (const id of toAdd) {
+                  await dispatch(addParticipantToSelectedTask({ taskId: task.taskId, chainId: task.chainId, agentInstanceId: id, role: 'lgtm_required' })).unwrap();
+                }
+                dispatch(showToast({ kind: 'success', title: 'Reviewers updated', message: `${next.size} reviewer(s)` }));
+              }}
             />
           ) : home.surface === 'attention' ? (
             <AttentionSurface
@@ -1766,7 +1921,7 @@ export default function App() {
               onCreateAgent={() => selectSurfaceWithUrl('agents')}
               onCreateConversation={() => startEmptyConversation({ projectId: activeProject?.projectId || selectedProjectId || '' })}
               onCreateProject={() => setNewProjectModalOpen(true)}
-              onPromptConversation={(body: string) => startFirstMessageConversation({ body, projectId: activeProject?.projectId || selectedProjectId || '', provider: defaultConversationProvider(settingsProviders), modelTier: 'smart' })}
+              onPromptConversation={(body: string) => startFirstMessageConversation({ body, projectId: activeProject?.projectId || selectedProjectId || '', provider: defaultConversationProvider(settingsProviders, agentIdentities), modelTier: 'smart' })}
               conversationBusy={newConversationBusy}
             />
           )}
@@ -2028,7 +2183,7 @@ function writeLaunchAgentDefaults(daemonUrl: string, defaults: any) {
 
 const SIDEBAR_PAGE_SIZE = 5;
 
-function SidebarConversationSection({ conversations = [], chats = {}, summaryById = {}, projectsById = {}, selectedAgentId = '', onOpenConversation, onNewConversation, newConversationBusy = false, compact = false }: any) {
+function SidebarConversationSection({ conversations = [], chats = {}, summaryById = {}, projectsById = {}, selectedAgentId = '', onOpenConversation, onNewConversation, newConversationBusy = false, compact = false, hasMoreNetwork = false, onLoadMoreNetwork }: any) {
   const [conversationLimit, setConversationLimit] = useState(SIDEBAR_PAGE_SIZE);
   const [conversationLoadingMore, setConversationLoadingMore] = useState(false);
   const sortedConversations = useMemo(() => [...(conversations || [])].sort((left: any, right: any) => conversationSortUnixMs(right, chats?.[right.id] || [], summaryById?.[right.id]) - conversationSortUnixMs(left, chats?.[left.id] || [], summaryById?.[left.id])), [conversations, chats, summaryById]);
@@ -2036,14 +2191,19 @@ function SidebarConversationSection({ conversations = [], chats = {}, summaryByI
   const visibleConversations = sortedConversations.slice(0, conversationLimit);
   const hiddenConversationCount = Math.max(0, sortedConversations.length - visibleConversations.length);
   const loadMoreConversations = useCallback(async () => {
-    if (conversationLoadingMore || hiddenConversationCount <= 0) return;
-    setConversationLoadingMore(true);
-    try {
+    if (conversationLoadingMore) return;
+    if (hiddenConversationCount > 0) {
       setConversationLimit((current) => Math.min(sortedConversations.length, current + SIDEBAR_PAGE_SIZE));
-    } finally {
-      setConversationLoadingMore(false);
+    } else if (hasMoreNetwork && onLoadMoreNetwork) {
+      setConversationLoadingMore(true);
+      try {
+        await onLoadMoreNetwork();
+        setConversationLimit((current) => current + SIDEBAR_PAGE_SIZE);
+      } finally {
+        setConversationLoadingMore(false);
+      }
     }
-  }, [conversationLoadingMore, hiddenConversationCount, sortedConversations.length]);
+  }, [conversationLoadingMore, hiddenConversationCount, sortedConversations.length, hasMoreNetwork, onLoadMoreNetwork]);
   const groups = useMemo(() => {
     const grouped: Record<string, { projectId: string; projectName: string; rows: any[] }> = {};
     for (const agent of visibleConversations || []) {
@@ -2069,7 +2229,7 @@ function SidebarConversationSection({ conversations = [], chats = {}, summaryByI
     <div className="mb-3" data-debug-id="sidebar-conversations">
       {onNewConversation && (
         <button
-          data-debug-id="sidebar-new-conversation-btn"
+          type="button" data-debug-id="sidebar-new-conversation-btn"
           onClick={() => onNewConversation?.()}
           disabled={newConversationBusy}
           className="mx-1 mb-3 flex w-[calc(100%-0.5rem)] items-center gap-2 rounded-xl border border-white/10 bg-[#141414] px-3 py-2 text-[12px] font-medium text-zinc-100 transition hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50"
@@ -2118,7 +2278,7 @@ function SidebarConversationSection({ conversations = [], chats = {}, summaryByI
         )}
         {conversationLoadingMore ? <div data-debug-id="sidebar-conversations-loading" className="px-2 py-2 text-xs text-zinc-500">Loading more conversations…</div> : null}
       </div>
-      {hiddenConversationCount > 0 ? (
+      {(hiddenConversationCount > 0 || hasMoreNetwork) ? (
         <button
           type="button"
           data-debug-id="sidebar-conversations-show-more-btn"
@@ -2126,7 +2286,11 @@ function SidebarConversationSection({ conversations = [], chats = {}, summaryByI
           disabled={conversationLoadingMore}
           className="mt-2 w-full rounded-lg border border-white/10 px-2 py-1.5 text-xs text-zinc-400 transition hover:bg-[#141414] hover:text-zinc-100 disabled:cursor-wait disabled:opacity-60"
         >
-          {conversationLoadingMore ? 'Loading…' : `Show ${Math.min(SIDEBAR_PAGE_SIZE, hiddenConversationCount)} more conversations`}
+          {conversationLoadingMore ? 'Loading…' : (
+            hiddenConversationCount > 0 
+              ? `Show ${Math.min(SIDEBAR_PAGE_SIZE, hiddenConversationCount)} more conversations`
+              : 'Show more from server'
+          )}
         </button>
       ) : null}
     </div>
@@ -2134,17 +2298,22 @@ function SidebarConversationSection({ conversations = [], chats = {}, summaryByI
 }
 
 
-function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryById = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, collapsed = false, onToggleCollapsed, agents = [], allAgents = [], agentIdentities = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onOpenAgentInstance, onStartAgentInstance, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onMemory, onAgents, onTaskChains, onProjects, onSettings }: any) {
+function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryById = {}, projectsById = {}, selectedAgentId = '', selectedChainId = '', onOpenConversation, onNewConversation, newConversationBusy = false, collapsed = false, onToggleCollapsed, agents = [], allAgents = [], agentIdentities = [], selectedSidebarAgentId = '', sidebarAgentLaunchingId = '', onSelectSidebarAgent, onOpenAgentInstance, onStartAgentInstance, chains = [], projects = {}, onOpenChain, onNewChain, onHome, onMemory, onAgents, onTaskChains, onProjects, onSettings, onAttention, onLibrary, attentionBadgeCount = 0, hasMoreNetwork = false, onLoadMoreNetwork, hasMoreAgents = false, loadingMoreAgents = false, onLoadMoreAgents }: any) {
   const chainUpdatedMs = (chain: any) => Number(chain?.updatedAtUnixMs || chain?.updated_at_unix_ms || chain?.updatedAt || chain?.updated_at || chain?.createdAtUnixMs || chain?.created_at_unix_ms || 0);
   const sortedChains = [...(chains || [])].sort((a: any, b: any) => chainUpdatedMs(b) - chainUpdatedMs(a));
   const activeChains = sortedChains.filter((chain: any) => !isChainCompleted(chain)).slice(0, 4);
-  const agentGroups = durableAgentGroups(agents, agentIdentities);
+  // Sidebar Agents section only surfaces durable agent-ids that currently have
+  // at least one live instance. Management/history for dormant agents lives on
+  // the Agents surface.
+  const agentGroups = durableAgentGroups(agents, agentIdentities).filter((group: any) => group.running > 0);
   const [collapsedMenuOpen, setCollapsedMenuOpen] = useState(false);
   if (collapsed) {
     const collapsedItems = [
       { id: 'home', icon: '⌂', label: 'Home', onClick: onHome },
+      { id: 'attention', icon: '◷', label: 'Needs attention', onClick: onAttention },
       { id: 'memory', icon: '✦', label: 'Memory', onClick: onMemory },
       { id: 'agents', icon: '◎', label: 'Agents', onClick: onAgents },
+      { id: 'library', icon: '▤', label: 'Library', onClick: onLibrary },
       { id: 'task-chains', icon: '☷', label: 'Task chains', onClick: onTaskChains },
       { id: 'projects', icon: '▣', label: 'Projects', onClick: onProjects },
       { id: 'settings', icon: '⚙', label: 'Settings', onClick: onSettings },
@@ -2165,10 +2334,23 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryByI
     <div data-debug-id="conversation-focused-sidebar" data-sidebar-collapsed="false" className="flex h-full flex-col bg-[#090909] text-zinc-100">
       <div className="flex items-center justify-between px-4 pb-2 pt-3">
         <div className="text-sm font-semibold tracking-[0.02em]">Heimdall</div>
-        <button type="button" data-debug-id="conversation-sidebar-collapse-btn" onClick={onToggleCollapsed} title="Collapse sidebar" aria-label="Collapse sidebar" className="grid h-8 w-8 place-items-center rounded-lg border border-white/10 text-zinc-500 hover:bg-[#141414] hover:text-zinc-100">☰</button>
+        <div className="flex items-center gap-1.5">
+          <button
+            type="button"
+            data-debug-id="attention-bell-btn"
+            onClick={onAttention}
+            title={attentionBadgeCount > 0 ? `${attentionBadgeCount} item${attentionBadgeCount === 1 ? '' : 's'} need attention` : 'Attention'}
+            aria-label={attentionBadgeCount > 0 ? `${attentionBadgeCount} item${attentionBadgeCount === 1 ? '' : 's'} need attention` : 'Attention'}
+            className="relative grid h-8 w-8 place-items-center rounded-lg border border-white/10 text-zinc-500 transition hover:bg-[#141414] hover:text-zinc-100"
+          >
+            <span aria-hidden="true" className="text-[15px] leading-none">◷</span>
+            {attentionBadgeCount > 0 ? <span data-debug-id="attention-bell-badge" className="absolute -right-1 -top-1 min-w-4 rounded-full bg-sky-400 px-1 text-center text-[10px] font-semibold leading-4 text-black">{attentionBadgeCount > 99 ? '99+' : attentionBadgeCount}</span> : null}
+          </button>
+          <button type="button" data-debug-id="conversation-sidebar-collapse-btn" onClick={onToggleCollapsed} title="Collapse sidebar" aria-label="Collapse sidebar" className="grid h-8 w-8 place-items-center rounded-lg border border-white/10 text-zinc-500 hover:bg-[#141414] hover:text-zinc-100">☰</button>
+        </div>
       </div>
       <button
-        data-debug-id="sidebar-new-conversation-btn"
+        type="button" data-debug-id="sidebar-new-conversation-btn"
         onClick={() => onNewConversation?.()}
         disabled={newConversationBusy}
         className="mx-3 mb-2 flex items-center gap-2 rounded-[10px] border border-[#262626] bg-[#141414] px-3 py-2 text-[13px] font-medium text-zinc-100 transition hover:border-sky-500 disabled:cursor-not-allowed disabled:opacity-50"
@@ -2179,6 +2361,7 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryByI
         <button data-debug-id="nav-home-btn" onClick={onHome} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">⌂</span> Home</button>
         <button data-debug-id="nav-memory-btn" onClick={onMemory} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">✦</span> Memory</button>
         <button data-debug-id="nav-agents-btn" onClick={onAgents} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">◎</span> Agents</button>
+        <button data-debug-id="nav-library-btn" onClick={onLibrary} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">▤</span> Library</button>
         <button data-debug-id="nav-task-chains-btn" onClick={onTaskChains} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">☷</span> Task chains</button>
         <button data-debug-id="nav-projects-btn" onClick={onProjects} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">▣</span> Projects</button>
         <button data-debug-id="nav-settings-btn" onClick={onSettings} className="flex items-center gap-2 rounded-md px-3 py-2 text-left text-[13px] text-zinc-500 hover:bg-[#141414] hover:text-zinc-100"><span className="w-4 text-center">⚙</span> Settings</button>
@@ -2218,6 +2401,8 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryByI
           onNewConversation={null}
           newConversationBusy={newConversationBusy}
           compact
+          hasMoreNetwork={hasMoreNetwork}
+          onLoadMoreNetwork={onLoadMoreNetwork}
         />
         <SidebarDurableAgentsSection
           groups={agentGroups}
@@ -2226,6 +2411,9 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryByI
           onSelectAgent={onSelectSidebarAgent}
           onOpenInstance={onOpenAgentInstance}
           onStartAgent={onStartAgentInstance}
+          hasMore={hasMoreAgents}
+          loadingMore={loadingMoreAgents}
+          onLoadMore={onLoadMoreAgents}
         />
       </div>
       <div className="border-t border-[#262626] px-3 py-3 text-[11px] text-zinc-700">
@@ -2235,30 +2423,34 @@ function ConversationFocusedSidebar({ conversations = [], chats = {}, summaryByI
   );
 }
 
-function SidebarDurableAgentsSection({ groups = [], selectedAgentId = '', launchingAgentId = '', onSelectAgent, onOpenInstance, onStartAgent }: any) {
+function SidebarDurableAgentsSection({ groups = [], selectedAgentId = '', launchingAgentId = '', onSelectAgent, onOpenInstance, onStartAgent, hasMore = false, loadingMore = false, onLoadMore }: any) {
   const [agentLimit, setAgentLimit] = useState(SIDEBAR_PAGE_SIZE);
   const [agentsLoadingMore, setAgentsLoadingMore] = useState(false);
   useEffect(() => { setAgentLimit((current) => Math.min(Math.max(SIDEBAR_PAGE_SIZE, current), Math.max(SIDEBAR_PAGE_SIZE, (groups || []).length))); }, [groups?.length]);
   const visibleGroups = (groups || []).slice(0, agentLimit);
   const hiddenAgentCount = Math.max(0, (groups || []).length - visibleGroups.length);
   const loadMoreAgents = useCallback(async () => {
-    if (agentsLoadingMore || hiddenAgentCount <= 0) return;
-    setAgentsLoadingMore(true);
-    try {
+    if (agentsLoadingMore || loadingMore) return;
+    if (hiddenAgentCount > 0) {
       setAgentLimit((current) => Math.min((groups || []).length, current + SIDEBAR_PAGE_SIZE));
-    } finally {
-      setAgentsLoadingMore(false);
+    } else if (hasMore && onLoadMore) {
+      setAgentsLoadingMore(true);
+      try {
+        await onLoadMore();
+      } finally {
+        setAgentsLoadingMore(false);
+      }
     }
-  }, [agentsLoadingMore, hiddenAgentCount, groups]);
+  }, [agentsLoadingMore, loadingMore, hiddenAgentCount, groups, hasMore, onLoadMore]);
   return (
     <section data-debug-id="sidebar-durable-agents" className="mb-3 border-b border-[#171717] pb-3">
       <div className="flex items-center justify-between px-2 pb-1 pt-2 text-[10.5px] uppercase tracking-[0.18em] text-zinc-500">
         <span>Agents</span>
-        <span className="text-[10px] normal-case tracking-normal text-zinc-700">{visibleGroups.length}/{(groups || []).length} durable</span>
+        <span className="text-[10px] normal-case tracking-normal text-zinc-700">{visibleGroups.length}/{(groups || []).length} live</span>
       </div>
       <div data-debug-id="sidebar-agents-paged-list" className="max-h-[248px] overflow-y-auto pr-1">
         {groups.length === 0 ? (
-          <div className="px-2 py-2 text-xs text-zinc-600">No durable agents yet</div>
+          <div className="px-2 py-2 text-xs text-zinc-600">No live agents</div>
         ) : visibleGroups.map((group: any) => {
           const liveInstances = (group.instances || []).filter((instance: any) => agentHasLiveSession(instance)).sort((a: any, b: any) => agentUpdatedUnixMs(b) - agentUpdatedUnixMs(a));
           const live = liveInstances.length;
@@ -2315,15 +2507,15 @@ function SidebarDurableAgentsSection({ groups = [], selectedAgentId = '', launch
         })}
         {agentsLoadingMore ? <div data-debug-id="sidebar-agents-loading" className="px-2 py-2 text-xs text-zinc-500">Loading more agents…</div> : null}
       </div>
-      {hiddenAgentCount > 0 ? (
+      {hiddenAgentCount > 0 || hasMore ? (
         <button
           type="button"
           data-debug-id="sidebar-agents-show-more-btn"
           onClick={loadMoreAgents}
-          disabled={agentsLoadingMore}
+          disabled={agentsLoadingMore || loadingMore}
           className="mt-2 w-full rounded-lg border border-white/10 px-2 py-1.5 text-xs text-zinc-400 transition hover:bg-[#141414] hover:text-zinc-100 disabled:cursor-wait disabled:opacity-60"
         >
-          {agentsLoadingMore ? 'Loading…' : `Show ${Math.min(SIDEBAR_PAGE_SIZE, hiddenAgentCount)} more agents`}
+          {agentsLoadingMore || loadingMore ? 'Loading…' : hiddenAgentCount > 0 ? `Show ${Math.min(SIDEBAR_PAGE_SIZE, hiddenAgentCount)} more agents` : 'Show more agents'}
         </button>
       ) : null}
     </section>
@@ -2384,8 +2576,9 @@ function SidebarAgentInstancesPanel({ agentId = '', agents = [], chats = {}, tas
   );
 }
 
-function AgentsManagementSurface({ agents = [], agentIdentities = [], chats = {}, tasksById = {}, chainsById = {}, projects = [], session = {}, providers = [], onBack, onOpenIdentity, onOpenInstance, onStartInstance, onRefreshAgents }: any) {
+function AgentsManagementSurface({ agents = [], agentIdentities = [], chats = {}, tasksById = {}, chainsById = {}, projects = [], session = {}, providers = [], templates = [], onBack, onOpenIdentity, onOpenInstance, onStartInstance, onRefreshAgents, hasMore = false, loadingMore = false, onLoadMore }: any) {
   const groups = durableAgentGroups(agents, agentIdentities);
+  const [proxyWizardOpen, setProxyWizardOpen] = useState(false);
 
   const handleDelete = async (agentId: string) => {
     if (!session?.daemonUrl || !session?.clientToken) return;
@@ -2427,27 +2620,34 @@ function AgentsManagementSurface({ agents = [], agentIdentities = [], chats = {}
           </div>
         </div>
         <div className="rounded-2xl border border-teal-400/20 bg-teal-400/[0.035] p-5">
-          <h2 className="text-base font-semibold text-teal-100">Create remote proxy</h2>
+          <h2 className="text-base font-semibold text-teal-100">Create local proxy agent-id</h2>
+          <p className="mt-1 text-sm text-zinc-500">Attach a durable local proxy identity to an agent-id on a linked remote daemon — existing or newly created.</p>
           <div className="mt-4">
-            <AgentPicker
-              debugId="agents-management-remote-agent-picker"
-              daemonUrl={session?.daemonUrl || ''}
-              clientToken={session?.clientToken || ''}
-              agents={agents}
-              projects={projects}
-              templates={[]}
-              providers={providers}
-              remotePeersEnabled
-              selectionOnly
-              onRefreshAgents={onRefreshAgents}
-              onSelected={async (agentId: string) => {
-                await onRefreshAgents?.();
-                onOpenIdentity?.(agentId);
-              }}
-            />
+            <button
+              type="button"
+              data-debug-id="agents-management-new-proxy-btn"
+              onClick={() => setProxyWizardOpen(true)}
+              className="w-full rounded-xl border border-teal-400/30 bg-teal-400/10 px-4 py-3 text-sm font-semibold text-teal-100 transition hover:border-teal-400/50 hover:bg-teal-400/15"
+            >
+              + New local proxy agent-id
+            </button>
           </div>
         </div>
       </div>
+
+      {proxyWizardOpen ? (
+        <NewLocalProxyAgentWizard
+          daemonUrl={session?.daemonUrl || ''}
+          clientToken={session?.clientToken || ''}
+          templates={templates}
+          providers={providers}
+          onClose={() => setProxyWizardOpen(false)}
+          onCreated={async (localAgentId: string) => {
+            await onRefreshAgents?.();
+            onOpenIdentity?.(localAgentId);
+          }}
+        />
+      ) : null}
 
       <div className="rounded-2xl border border-[#262626] bg-[#101010] overflow-hidden">
         <table className="w-full text-left text-sm text-zinc-300">
@@ -2465,15 +2665,22 @@ function AgentsManagementSurface({ agents = [], agentIdentities = [], chats = {}
             ) : groups.map((group: any) => {
               const representative = group.instances[0] || {};
               const template = representative.templateId || representative.template_id || 'agent';
+              const liveCount = (group.instances || []).filter((instance: any) => agentHasLiveSession(instance)).length;
               return (
-                <tr key={group.agentId} className="hover:bg-white/[0.02]">
-                  <td className="px-4 py-3 font-medium text-zinc-100">{group.agentId}</td>
-                  <td className="px-4 py-3">{template}</td>
-                  <td className="px-4 py-3">{group.instances.length}</td>
+                <tr key={group.agentId} data-debug-id={`agents-management-agent-${group.agentId}`} onClick={() => onOpenIdentity?.(group.agentId)} className="cursor-pointer transition hover:bg-white/[0.03]">
+                  <td className="px-4 py-3">
+                    <button type="button" data-debug-id={`agents-management-open-btn-${group.agentId}`} onClick={(event) => { event.stopPropagation(); onOpenIdentity?.(group.agentId); }} className="flex items-center gap-2 text-left font-medium text-zinc-100 hover:text-sky-200">
+                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${liveCount > 0 ? 'bg-emerald-400' : 'bg-zinc-600'}`} />
+                      <span className="truncate">{group.agentId}</span>
+                    </button>
+                  </td>
+                  <td className="px-4 py-3 text-zinc-400">{template}</td>
+                  <td className="px-4 py-3 text-zinc-400">{group.instances.length}{liveCount > 0 ? <span className="ml-1 text-emerald-300">· {liveCount} live</span> : null}</td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex justify-end gap-2">
-                      <button type="button" onClick={() => onStartInstance?.(group.agentId)} className="rounded border border-white/10 px-3 py-1.5 text-xs font-medium hover:bg-[#171717]">Launch</button>
-                      <button type="button" onClick={() => handleDelete(group.agentId)} className="rounded border border-red-900/50 bg-red-900/20 px-3 py-1.5 text-xs text-red-400 hover:bg-red-900/40">Delete</button>
+                      <button type="button" data-debug-id={`agents-management-manage-btn-${group.agentId}`} onClick={(event) => { event.stopPropagation(); onOpenIdentity?.(group.agentId); }} className="rounded border border-white/10 px-3 py-1.5 text-xs font-medium hover:bg-[#171717]">Manage</button>
+                      <button type="button" data-debug-id={`agents-management-launch-btn-${group.agentId}`} onClick={(event) => { event.stopPropagation(); onStartInstance?.(group.agentId); }} className="rounded border border-white/10 px-3 py-1.5 text-xs font-medium hover:bg-[#171717]">Launch</button>
+                      <button type="button" data-debug-id={`agents-management-delete-btn-${group.agentId}`} onClick={(event) => { event.stopPropagation(); handleDelete(group.agentId); }} className="rounded border border-red-900/50 bg-red-900/20 px-3 py-1.5 text-xs text-red-400 hover:bg-red-900/40">Delete</button>
                     </div>
                   </td>
                 </tr>
@@ -2482,11 +2689,24 @@ function AgentsManagementSurface({ agents = [], agentIdentities = [], chats = {}
           </tbody>
         </table>
       </div>
+      {hasMore && (
+        <div className="mt-6 flex justify-center">
+          <button
+            type="button"
+            data-debug-id="agents-load-more-btn"
+            onClick={onLoadMore}
+            disabled={loadingMore}
+            className="rounded-xl border border-white/10 px-4 py-2 text-sm font-semibold text-zinc-300 hover:bg-[#171717] disabled:opacity-50"
+          >
+            {loadingMore ? 'Loading...' : 'Show more'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
-function TaskChainsSurface({ chains = [], projectsById = {}, selectedChainId = '', onBack, onOpenChain, onNewChain }: any) {
+function TaskChainsSurface({ chains = [], projectsById = {}, selectedChainId = '', onBack, onOpenChain, onNewChain, hasMore = false, loadingMore = false, onLoadMore }: any) {
   const chainUpdatedMs = (chain: any) => Number(chain?.updatedAtUnixMs || chain?.updated_at_unix_ms || chain?.createdAtUnixMs || chain?.created_at_unix_ms || 0);
   const sorted = [...(chains || [])].sort((a: any, b: any) => chainUpdatedMs(b) - chainUpdatedMs(a));
   const active = sorted.filter((chain: any) => !isChainCompleted(chain));
@@ -2505,7 +2725,20 @@ function TaskChainsSurface({ chains = [], projectsById = {}, selectedChainId = '
     <div data-debug-id="task-chains-surface" className="mx-auto max-w-5xl px-8 py-8">
       <div className="mb-6 flex flex-wrap items-center justify-between gap-3"><div><div className="text-xs uppercase tracking-[0.22em] text-zinc-500">Task chains</div><h1 className="mt-1 text-2xl font-semibold text-zinc-100">All task chains</h1><p className="mt-1 text-sm text-zinc-500">Completed chains live here instead of the sidebar.</p></div><div className="flex gap-2"><button type="button" data-debug-id="task-chains-back-btn" onClick={onBack} className="rounded-xl border border-white/10 px-3 py-2 text-sm text-zinc-300 hover:bg-[#171717]">Back</button><button type="button" data-debug-id="task-chains-new-btn" onClick={() => onNewChain?.()} className="rounded-xl bg-zinc-100 px-3 py-2 text-sm font-medium text-zinc-950 hover:bg-white">+ New task chain</button></div></div>
       <section data-debug-id="task-chains-active-list" className="mb-6"><div className="mb-2 text-xs uppercase tracking-[0.18em] text-zinc-500">Active</div><div className="grid gap-2">{active.length ? active.map((chain: any) => renderChain(chain, false)) : <div className="rounded-xl border border-dashed border-[#2a2a2a] p-4 text-sm text-zinc-500">No active chains.</div>}</div></section>
-      <section data-debug-id="task-chains-completed-list"><div className="mb-2 text-xs uppercase tracking-[0.18em] text-zinc-500">Completed</div><div className="grid gap-2">{completed.length ? completed.map((chain: any) => renderChain(chain, true)) : <div className="rounded-xl border border-dashed border-[#2a2a2a] p-4 text-sm text-zinc-500">No completed chains yet.</div>}</div></section>
+      <section data-debug-id="task-chains-completed-list" className="mb-6"><div className="mb-2 text-xs uppercase tracking-[0.18em] text-zinc-500">Completed</div><div className="grid gap-2">{completed.length ? completed.map((chain: any) => renderChain(chain, true)) : <div className="rounded-xl border border-dashed border-[#2a2a2a] p-4 text-sm text-zinc-500">No completed chains yet.</div>}</div></section>
+      {hasMore && (
+        <div className="mt-6 flex justify-center">
+          <button
+            type="button"
+            data-debug-id="task-chains-load-more-btn"
+            onClick={onLoadMore}
+            disabled={loadingMore}
+            className="rounded-xl border border-white/10 px-4 py-2 text-sm font-medium text-zinc-300 hover:bg-[#171717] disabled:opacity-50"
+          >
+            {loadingMore ? 'Loading...' : 'Show more'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -2891,12 +3124,26 @@ function AgentIdentityInstanceSummaryGroup({ title, group, instances, chats, tas
   );
 }
 
-function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, chainsById = {}, projects = [], providers = [], session = {}, onBack, onNewInstance, onRefreshAgents }: any) {
+function AgentIdentityPage({ agentId, agents = [], agentIdentities = [], chats = {}, tasksById = {}, chainsById = {}, projects = [], providers = [], templates = [], session = {}, onBack, onNewInstance, onOpenMemory, onRefreshAgents }: any) {
   const durableId = String(agentId || '').split('@')[0];
   const instances = useMemo(() => (agents || [])
     .filter((agent: any) => durableAgentId(agent) === durableId || (!durableId && agentInstanceId(agent)))
     .sort((a: any, b: any) => agentUpdatedUnixMs(b) - agentUpdatedUnixMs(a)), [agents, durableId]);
-  const identity = instances[0] || { id: durableId, agentId: durableId, agent_id: durableId };
+  // Durable identity record (from /agents identities) carries remote-proxy
+  // mapping for dormant proxies with no live instance.
+  const identityRecord = useMemo(() => (agentIdentities || []).find((rec: any) => String(rec?.agent_id || rec?.agentId || '') === durableId) || null, [agentIdentities, durableId]);
+  const remoteMapping = useMemo(() => {
+    const src = identityRecord?.remote || null;
+    const kind = String(identityRecord?.agent_kind || identityRecord?.agentKind || (src ? 'remote_proxy' : 'local')).toLowerCase();
+    if (kind !== 'remote_proxy' || !src) return null;
+    return {
+      peerId: String(src.peer_id || src.peerId || ''),
+      originDaemonId: String(src.origin_daemon_id || src.originDaemonId || ''),
+      remoteAgentId: String(src.remote_agent_id || src.remoteAgentId || ''),
+    };
+  }, [identityRecord]);
+  const isRemoteProxy = Boolean(remoteMapping);
+  const identity = instances[0] || identityRecord || { id: durableId, agentId: durableId, agent_id: durableId };
   const running = instances.filter((agent: any) => agentHasLiveSession(agent));
   const stopped = instances.filter((agent: any) => {
     if (agentHasLiveSession(agent)) return false;
@@ -2910,12 +3157,66 @@ function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, c
   const projectName = project?.name || identity?.projectName || identity?.project_name || projectId || 'No project';
   const providerName = identity?.providerProfile || identity?.provider_profile || providers?.[0]?.name || 'default';
   const tier = identity?.modelTier || identity?.model_tier || 'normal';
-  const memoryCount = 0;
+  const templateId = String(identity?.templateId || identity?.template_id || identityRecord?.template_id || durableId || '');
+  const [templateOpen, setTemplateOpen] = useState(false);
+  // UI-9: Agent detail exposes Overview, Sessions, Bridges, Memory tabs (no Project tab).
+  const [agentTab, setAgentTab] = useState<'overview' | 'sessions' | 'bridges' | 'memory'>('overview');
+
+  // Fetch local template detail on-demand when expanded.
+  const localTemplateQuery = useFetchAgentTemplateQuery(
+    { templateId },
+    { skip: isRemoteProxy || !templateId || !session?.clientToken || !templateOpen }
+  );
+  const localTemplateRecord = localTemplateQuery.data?.template || null;
+
+  // For remote proxies the template content lives on the origin daemon: fetch it
+  // over the cached federation pass-through on-demand.
+  const remoteTemplateQuery = useFetchPeerAgentTemplateQuery(
+    { peerId: remoteMapping?.peerId || '', remoteAgentId: remoteMapping?.remoteAgentId || '' },
+    { skip: !isRemoteProxy || !remoteMapping?.peerId || !remoteMapping?.remoteAgentId || !session?.clientToken || !templateOpen },
+  );
+  const remoteTemplateRecord = remoteTemplateQuery.data?.template || null;
+  const templateRecord = isRemoteProxy ? remoteTemplateRecord : localTemplateRecord;
+  const memoryQuery = useListApplicableMemoryQuery(
+    { targetAgentId: durableId, targetProjectId: projectId || '' },
+    { skip: !durableId || !session?.clientToken },
+  );
+  const agentMemories = memoryQuery.data?.records || [];
+  const memoryCount = agentMemories.length;
+
+  // Remote-proxy remapping: pick a different advertised remote agent-id on the peer.
+  const advertisedQuery = useListPeerAdvertisedAgentsQuery(
+    { peerId: remoteMapping?.peerId || '' },
+    { skip: !isRemoteProxy || !remoteMapping?.peerId || !session?.clientToken },
+  );
+  const advertisedAgents = advertisedQuery.data?.agents || [];
+  const [remapOpen, setRemapOpen] = useState(false);
+  const [remapTarget, setRemapTarget] = useState('');
+  const [remapError, setRemapError] = useState('');
+  const [remapping, setRemapping] = useState(false);
+  const [remapRemoteProxy] = useRemapRemoteProxyMutation();
+  useEffect(() => { setRemapTarget(remoteMapping?.remoteAgentId || ''); setRemapError(''); }, [remoteMapping?.remoteAgentId, remapOpen]);
+  const applyRemap = async () => {
+    if (!remoteMapping || !remapTarget.trim() || remapping) return;
+    setRemapping(true);
+    setRemapError('');
+    try {
+      await remapRemoteProxy({ localAgentId: durableId, remoteAgentId: remapTarget.trim(), peerId: remoteMapping.peerId, originDaemonId: remoteMapping.originDaemonId }).unwrap();
+      setRemapOpen(false);
+      await onRefreshAgents?.();
+    } catch (err: any) {
+      setRemapError(String(err?.message || err || 'Unable to remap remote agent-id.'));
+    } finally {
+      setRemapping(false);
+    }
+  };
+
   const [editOpen, setEditOpen] = useState(false);
   const [editName, setEditName] = useState(identity?.label || identity?.displayName || identity?.display_name || durableId || '');
   const [editProvider, setEditProvider] = useState(identity?.providerProfile || identity?.provider_profile || providers?.[0]?.name || 'pi');
   const [editProject, setEditProject] = useState(projectId || '');
   const [editTier, setEditTier] = useState(tier || 'normal');
+  const [editTemplate, setEditTemplate] = useState(templateId || '');
   const [editError, setEditError] = useState('');
   const [editSaving, setEditSaving] = useState(false);
 
@@ -2924,15 +3225,16 @@ function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, c
     setEditProvider(identity?.providerProfile || identity?.provider_profile || providers?.[0]?.name || 'pi');
     setEditProject(projectId || '');
     setEditTier(tier || 'normal');
+    setEditTemplate(templateId || '');
     setEditError('');
-  }, [identity?.id, identity?.label, identity?.displayName, identity?.display_name, identity?.providerProfile, identity?.provider_profile, projectId, tier, durableId, providers]);
+  }, [identity?.id, identity?.label, identity?.displayName, identity?.display_name, identity?.providerProfile, identity?.provider_profile, projectId, tier, templateId, durableId, providers]);
 
   const saveIdentityDefaults = async () => {
     if (!identity || editSaving) return;
     setEditSaving(true);
     setEditError('');
     try {
-      await daemonApi.updateAgent({ daemonUrl: session?.daemonUrl || '', agentRecordId: identity.agentRecordId || identity.agent_record_id || '', agentInstanceId: agentInstanceId(identity) || durableId, displayName: editName.trim() || durableId, providerProfile: editProvider, projectId: editProject, modelTier: editTier, updateAgentIdDefaults: true });
+      await daemonApi.updateAgent({ daemonUrl: session?.daemonUrl || '', agentRecordId: identity.agentRecordId || identity.agent_record_id || '', agentInstanceId: agentInstanceId(identity) || durableId, displayName: editName.trim() || durableId, templateId: editTemplate, providerProfile: editProvider, projectId: editProject, modelTier: editTier, updateAgentIdDefaults: true });
       setEditOpen(false);
       await onRefreshAgents?.();
     } catch (err: any) {
@@ -2966,6 +3268,11 @@ function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, c
               <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Default provider<select data-debug-id="agent-identity-edit-provider-select" value={editProvider} onChange={(event) => setEditProvider(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400">{(providers?.length ? providers : [{ name: 'pi' }]).map((provider: any) => <option key={provider.name} value={provider.name}>{provider.name}</option>)}</select></label>
               <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Default project<select data-debug-id="agent-identity-edit-project-select" value={editProject} onChange={(event) => setEditProject(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400"><option value="">No project</option>{(projects || []).map((project: any) => <option key={project.projectId || project.project_id} value={project.projectId || project.project_id}>{project.name || project.projectId || project.project_id}</option>)}</select></label>
               <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Default tier<select data-debug-id="agent-identity-edit-tier-select" value={editTier} onChange={(event) => setEditTier(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400"><option value="normal">normal</option><option value="smart">smart</option><option value="cheap">cheap</option></select></label>
+              {isRemoteProxy ? (
+                <div className="md:col-span-2 rounded-xl border border-teal-400/20 bg-teal-400/[0.05] px-3 py-2 text-[11px] normal-case tracking-normal text-teal-200/90">Template is owned by the origin daemon for remote proxies. Use “Change remote mapping” to point at a different remote agent-id/role.</div>
+              ) : (
+                <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500 md:col-span-2">Template (role)<select data-debug-id="agent-identity-edit-template-select" value={editTemplate} onChange={(event) => setEditTemplate(event.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400">{(templates?.length ? templates : [{ template_id: editTemplate || 'agent', display_name: editTemplate || 'agent' }]).map((t: any) => { const id = t.template_id || t.templateId; return <option key={id} value={id}>{(t.display_name || t.displayName || id)} ({id})</option>; })}{editTemplate && !(templates || []).some((t: any) => (t.template_id || t.templateId) === editTemplate) ? <option value={editTemplate}>{editTemplate}</option> : null}</select><span className="mt-1 block normal-case tracking-normal text-[11px] text-zinc-500">Changes the persona/instructions injected into new instances at launch.</span></label>
+              )}
             </div>
             {editError && <div data-debug-id="agent-identity-edit-error" className="mt-3 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{editError}</div>}
             <div className="mt-5 flex justify-end gap-2"><IconActionButton debugId="agent-identity-edit-cancel-btn" title="Cancel" icon="×" onClick={() => setEditOpen(false)} /><IconActionButton debugId="agent-identity-edit-save-btn" title="Save defaults" icon="✓" onClick={saveIdentityDefaults} disabled={editSaving || !editName.trim()} tone="primary" /></div>
@@ -2987,12 +3294,127 @@ function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, c
               </div>
             </div>
             <div className="mt-5 grid gap-x-6 gap-y-4 md:grid-cols-2">
-              <div data-debug-id="agent-identity-template"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Template</div><div className="mt-1 text-sm text-zinc-200">{agentTemplateLabel(identity)}</div></div>
+              <div data-debug-id="agent-identity-template"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Template</div><div className="mt-1 text-sm text-zinc-200">{templateRecord ? `${templateRecord.display_name || templateRecord.displayName || templateId}` : agentTemplateLabel(identity)} <span className="text-zinc-500">({templateId || '—'})</span></div></div>
               <div data-debug-id="agent-identity-default-project"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Default project</div><div className="mt-1 text-sm text-zinc-200">{projectName}</div></div>
               <div data-debug-id="agent-identity-provider-tier"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Provider / tier</div><div className="mt-1 text-sm text-zinc-200">{providerName} · {tier}</div></div>
-              <div data-debug-id="agent-identity-memory-summary"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Shared memories</div><div className="mt-1 text-sm text-zinc-200">{memoryCount ? `${memoryCount} active` : 'load via Memory page'} <span className="text-zinc-500">(target_agent_id = {durableId || '—'})</span></div></div>
+              <div data-debug-id="agent-identity-memory-summary"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Associated memories</div><div className="mt-1 text-sm text-zinc-200">{memoryQuery.isLoading ? 'loading…' : (memoryCount ? `${memoryCount} active` : 'none active')} <span className="text-zinc-500">(agent_id = {durableId || '—'})</span></div></div>
             </div>
             <p className="mt-5 border-t border-white/[0.06] pt-4 text-[12.5px] text-zinc-500">Every instance below inherits these defaults. Concrete instance navigation stays in the main and secondary sidebars; rows below are read-only summaries.</p>
+          </section>
+
+          {/* UI-9: tab strip — Overview, Sessions, Bridges, Memory (no Project tab). */}
+          <div data-debug-id="agent-detail-tab-strip" className="mt-6 mb-2 flex flex-wrap gap-1 rounded-xl border border-white/[0.06] bg-black/30 p-1">
+            {([['overview', 'Overview'], ['sessions', 'Sessions'], ['bridges', 'Bridges'], ['memory', 'Memory']] as const).map(([tabId, label]) => (
+              <button key={tabId} type="button" data-debug-id={`agent-detail-tab-${tabId}`} aria-pressed={agentTab === tabId} onClick={() => setAgentTab(tabId)} className={`rounded-lg px-3 py-1.5 text-xs font-medium transition ${agentTab === tabId ? 'bg-white/[0.08] text-zinc-100 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.10)]' : 'text-zinc-400 hover:text-zinc-200'}`}>{label}</button>
+            ))}
+          </div>
+
+          {/* UI-9: Overview tab content — persona/template, instructions, defaults, memory summary, instance summaries. */}
+          {agentTab === 'overview' ? (<>
+          {/* Remote-proxy mapping — this local agent-id forwards to an agent-id on a peer daemon. */}
+          {isRemoteProxy && remoteMapping ? (
+            <section data-debug-id="agent-identity-remote-panel" className="mt-6 rounded-[16px] border border-teal-400/25 bg-teal-400/[0.04] p-5">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-[11px] uppercase tracking-wide text-teal-200/80">Remote proxy mapping</div>
+                  <div className="mt-1 text-sm text-zinc-200">This local agent-id forwards to a remote agent on a peer daemon. Template, provider and tier are owned by the origin.</div>
+                </div>
+                <span className="shrink-0 rounded-full bg-teal-400/15 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide text-teal-100">remote</span>
+              </div>
+              <div className="mt-4 grid gap-x-6 gap-y-4 md:grid-cols-3">
+                <div data-debug-id="agent-identity-remote-agent-id"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Remote agent-id</div><div className="mt-1 truncate font-mono text-sm text-zinc-100">{remoteMapping.remoteAgentId || '—'}</div></div>
+                <div data-debug-id="agent-identity-remote-peer"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Peer</div><div className="mt-1 truncate text-sm text-zinc-200">{remoteMapping.peerId || '—'}</div></div>
+                <div data-debug-id="agent-identity-remote-daemon"><div className="text-[11px] uppercase tracking-wide text-zinc-600">Origin daemon</div><div className="mt-1 truncate text-sm text-zinc-200">{remoteMapping.originDaemonId || '—'}</div></div>
+              </div>
+              <div className="mt-4 flex items-center gap-2">
+                <button type="button" data-debug-id="agent-identity-remote-remap-btn" onClick={() => setRemapOpen((v) => !v)} className="rounded-full border border-teal-400/30 bg-teal-400/10 px-3 py-1 text-xs font-medium text-teal-100 hover:bg-teal-400/20">Change remote mapping →</button>
+                {advertisedQuery.isFetching ? <span className="text-[11px] text-zinc-500">loading advertised agents…</span> : null}
+              </div>
+              {remapOpen ? (
+                <div data-debug-id="agent-identity-remote-remap-panel" className="mt-3 rounded-xl border border-white/10 bg-black/25 p-3">
+                  <label className="block text-[11px] uppercase tracking-wide text-zinc-500">Map to remote agent-id on <span className="text-zinc-300">{remoteMapping.peerId}</span></label>
+                  {advertisedAgents.length ? (
+                    <select data-debug-id="agent-identity-remote-remap-select" value={remapTarget} onChange={(e) => setRemapTarget(e.target.value)} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400">
+                      {!advertisedAgents.some((a: any) => String(a.agent_id || a.agentId || '') === remapTarget) && remapTarget ? <option value={remapTarget}>{remapTarget} (current)</option> : null}
+                      {advertisedAgents.map((a: any) => { const rid = String(a.agent_id || a.agentId || a.agent_instance_id || ''); return <option key={rid} value={rid}>{(a.display_name || a.displayName || rid)} · {rid}</option>; })}
+                    </select>
+                  ) : (
+                    <input data-debug-id="agent-identity-remote-remap-input" value={remapTarget} onChange={(e) => setRemapTarget(e.target.value)} placeholder="remote-agent-id" className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-sky-400" />
+                  )}
+                  {remapError ? <div className="mt-2 rounded-lg border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-100">{remapError}</div> : null}
+                  <div className="mt-3 flex justify-end gap-2">
+                    <button type="button" data-debug-id="agent-identity-remote-remap-cancel-btn" onClick={() => setRemapOpen(false)} className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-zinc-300 hover:bg-white/[0.07]">Cancel</button>
+                    <button type="button" data-debug-id="agent-identity-remote-remap-save-btn" onClick={applyRemap} disabled={remapping || !remapTarget.trim() || remapTarget.trim() === remoteMapping.remoteAgentId} className="rounded-lg bg-teal-400 px-4 py-1.5 text-xs font-semibold text-[#04201a] hover:bg-teal-300 disabled:cursor-not-allowed disabled:opacity-40">{remapping ? 'Saving…' : 'Save mapping'}</button>
+                  </div>
+                </div>
+              ) : null}
+            </section>
+          ) : null}
+
+          {/* Template content viewer — the persona + instructions injected into new instances at launch. */}
+          <section data-debug-id="agent-identity-template-panel" className="mt-6 overflow-hidden rounded-[16px] border border-white/10 bg-[#111]">
+            <button type="button" data-debug-id="agent-identity-template-toggle-btn" onClick={() => setTemplateOpen((v) => !v)} aria-expanded={templateOpen} className="flex w-full items-center justify-between gap-3 px-5 py-3 text-left transition hover:bg-white/[0.03]">
+              <div className="min-w-0">
+                <div className="text-[11px] uppercase tracking-wide text-zinc-500">Template · role behavior</div>
+                <div className="mt-0.5 truncate text-sm font-medium text-zinc-100">{templateRecord?.display_name || templateRecord?.displayName || templateId || 'agent'} <span className="text-zinc-500">({templateId || '—'})</span></div>
+              </div>
+              <span className="shrink-0 text-zinc-500">{templateOpen ? '⌃' : '›'}</span>
+            </button>
+            {templateOpen ? (
+              <div data-debug-id="agent-identity-template-content" className="space-y-4 border-t border-white/10 px-5 py-4">
+                {isRemoteProxy ? <p className="text-[11px] text-teal-200/80">Role content fetched from origin daemon <span className="font-mono">{remoteMapping?.originDaemonId || remoteMapping?.peerId}</span> (cached).</p> : null}
+                {templateRecord?.description ? <p className="text-[13px] text-zinc-400">{templateRecord.description}</p> : null}
+                {isRemoteProxy && remoteTemplateQuery.isLoading ? (
+                  <div className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">Loading remote role content…</div>
+                ) : isRemoteProxy && remoteTemplateQuery.isError ? (
+                  <div className="rounded-xl border border-amber-400/25 bg-amber-400/[0.05] p-4 text-sm text-amber-200">Unable to load remote template (peer may be unreachable).</div>
+                ) : templateRecord ? (
+                  <>
+                    <div>
+                      <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Persona</div>
+                      <div data-debug-id="agent-identity-template-persona" className="rounded-xl bg-black/25 p-3"><Markdown source={String(templateRecord.persona || '_No persona set._')} className="text-[13px] text-zinc-300" /></div>
+                    </div>
+                    <div>
+                      <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Instructions</div>
+                      <div data-debug-id="agent-identity-template-instructions" className="rounded-xl bg-black/25 p-3"><Markdown source={String(templateRecord.instructions || '_No instructions set._')} className="text-[13px] text-zinc-300" /></div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">Template “{templateId}” details not loaded. It may be a built-in default without stored persona/instructions.</div>
+                )}
+              </div>
+            ) : null}
+          </section>
+
+          {/* Associated memories for this agent-id within its project scope. */}
+          <section data-debug-id="agent-identity-memory-panel" className="mt-6 rounded-[16px] border border-white/10 bg-[#111] p-5">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[11px] uppercase tracking-wide text-zinc-500">Associated memories</div>
+                <div className="mt-0.5 text-[12px] text-zinc-500">Active memories applicable to <code className="text-zinc-300">{durableId || '—'}</code>{projectId ? <> in <code className="text-zinc-300">{projectName}</code></> : ' (all projects)'}</div>
+              </div>
+              <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-xs text-zinc-300">{memoryCount}</span>
+            </div>
+            {memoryQuery.isLoading ? (
+              <div className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">Loading memories…</div>
+            ) : agentMemories.length === 0 ? (
+              <div data-debug-id="agent-identity-memory-empty" className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">No active memories associated with this agent-id.</div>
+            ) : (
+              <div className="space-y-2">
+                {agentMemories.map((mem: any) => {
+                  const mid = String(mem.memoryId || mem.memory_id || mem.id || '');
+                  return (
+                    <button key={mid} type="button" data-debug-id={`agent-identity-memory-item-${mid}`} onClick={() => onOpenMemory?.(mid)} className="flex w-full items-start justify-between gap-3 rounded-xl border border-white/10 bg-black/20 px-3 py-2.5 text-left transition hover:border-white/20 hover:bg-white/[0.04]">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-medium text-zinc-100">{mem.title || mem.summary || mid}</div>
+                        {mem.body || mem.summary ? <div className="mt-0.5 line-clamp-2 text-[12px] text-zinc-500">{mem.body || mem.summary}</div> : null}
+                      </div>
+                      <span className="shrink-0 rounded-full bg-white/[0.05] px-2 py-0.5 text-[10px] uppercase tracking-wide text-zinc-400">{mem.type || mem.memoryType || 'memory'}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
           </section>
 
           <div data-debug-id="agent-identity-instance-summary-list" className="mt-7">
@@ -3001,6 +3423,22 @@ function AgentIdentityPage({ agentId, agents = [], chats = {}, tasksById = {}, c
             <AgentIdentityInstanceSummaryGroup title="Recent" group="recent" instances={recent} chats={chats} tasksById={tasksById} chainsById={chainsById} />
             <AgentIdentityInstanceSummaryGroup title="Stopped" group="stopped" instances={stopped} chats={chats} tasksById={tasksById} chainsById={chainsById} />
           </div>
+          </>) : null}
+
+          {/* UI-9: Sessions tab — instances 1:1 with conversations, instance id + runtime metadata + launch flow. */}
+          {agentTab === 'sessions' ? (
+            <AgentSessionsTab durableAgentId={durableId} instances={instances} chainsById={chainsById} providers={providers} bridges={[]} debugPrefix="agent-detail" onOpenInstance={(id) => onNewInstance?.(identity)} onLaunchInstance={async () => { onNewInstance?.(identity); }} />
+          ) : null}
+
+          {/* UI-9: Bridges tab — AgentBridgeSupport config (PATCH /agents/{id}/bridge-support). */}
+          {agentTab === 'bridges' ? (
+            <AgentBridgesTab agentId={durableId} session={session} debugPrefix="agent-detail" />
+          ) : null}
+
+          {/* UI-9: Memory tab — identity-scoped memory with inline approve/reject (same surface as conversation inspector). */}
+          {agentTab === 'memory' ? (
+            <ConversationMemoryTab agentId={durableId} durableAgentId={durableId} projectId={String(projectId || '')} session={session} debugPrefix="agent-detail" records={agentMemories} fetching={memoryQuery.isFetching} error={memoryQuery.isError} />
+          ) : null}
         </div>
       </div>
     </div>
@@ -3097,7 +3535,7 @@ function ChainAgentsInspectorContent({ tasks = [], coordinatorAgentId = '', defa
   );
 }
 
-function AgentDetailPage({ agent, tasksById, chainsById, chats, session, projects = [], providers = [], allAgents = [], chatDraft = '', chatPagination = {}, onChatDraftChange, onBack, onOpenIdentity, onOpenChain, onRefreshChat, onSendAgentMessage, onRefreshAgents, onAgentDeleted }: any) {
+function AgentDetailPage({ agent, tasksById, chainsById, chats, session, projects = [], providers = [], allAgents = [], chatDraft = '', chatPagination = {}, onChatDraftChange, onBack, onOpenIdentity, onOpenChain, onRefreshChat, onSendAgentMessage, onRefreshAgents, onAgentDeleted, onOpenTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask }: any) {
   const draft = chatDraft;
   const setDraft = (next: any) => {
     const value = typeof next === 'function' ? next(draft) : next;
@@ -3117,8 +3555,9 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
   const [memoryError, setMemoryError] = useState('');
   const [memoryEditor, setMemoryEditor] = useState<any>(null);
   const [memorySaving, setMemorySaving] = useState(false);
+  const [triggerFetchMemory] = useLazyFetchMemoryQuery();
   const [inspectorOpen, setInspectorOpen] = useState(true);
-  const [inspectorTab, setInspectorTab] = useState<'tasks' | 'task-chains' | 'artifacts' | 'project' | 'memory' | 'runtime'>('tasks');
+  const [inspectorTab, setInspectorTab] = useState<'work' | 'tasks' | 'task-chains' | 'artifacts' | 'project' | 'memory' | 'runtime'>('work');
   const [chatProvider, setChatProvider] = useState(agent?.providerProfile || defaultConversationProvider(providers));
   const [chatTier, setChatTier] = useState(agent?.modelTier || 'normal');
   const [runtimeRestarting, setRuntimeRestarting] = useState('');
@@ -3169,6 +3608,9 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent?.id]);
 
+  // UI-6: derive Work chip / Review-needed / CurrentTaskStrip from the bound chain's cached tasks.
+  const chainWork = useChatChainWork(String(agent?.id || ''), String(agent?.chainId || ''));
+
   useEffect(() => {
     setEditName(agent?.label || agent?.id || '');
     setEditProvider(agent?.providerProfile || '');
@@ -3189,8 +3631,40 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
     if (agentStopDone) setStopProgress((current: any) => current?.agentId === agent?.id ? { ...current, completed: true, completedAt: Date.now() } : current);
   }, [stopProgress?.active, stopProgress?.agentId, stopProgress?.completed, agent?.id, agentStopDone]);
 
-  const openMemoryEditor = (record?: any) => {
-    setMemoryEditor(record ? { mode: 'edit', memoryId: record.memory_id || record.memoryId, expectedVersion: Number(record.version || 0), type: record.type || 'fact', title: record.title || '', body: record.body || '', evidence: record.evidence || '', metadataJson: record.metadata_json || record.metadataJson || '', targetAgentId: record.target_agent_id || record.targetAgentId || agentMemoryId, targetProjectId: record.target_project_id || record.targetProjectId || '' } : { mode: 'new', type: 'fact', title: '', body: '', evidence: '', metadataJson: '', targetAgentId: agentMemoryId, targetProjectId: '' });
+  const openMemoryEditor = async (record?: any) => {
+    if (record) {
+      const memoryId = record.memory_id || record.memoryId;
+      setMemoryEditor({
+        mode: 'edit',
+        memoryId,
+        loading: true,
+        type: record.type || 'fact',
+        title: record.title || '',
+        body: '',
+        evidence: '',
+        metadataJson: '',
+        expectedVersion: Number(record.version || 0),
+        targetAgentId: record.target_agent_id || record.targetAgentId || agentMemoryId,
+        targetProjectId: record.target_project_id || record.targetProjectId || ''
+      });
+      try {
+        const res = await triggerFetchMemory({ memoryId }).unwrap();
+        if (res?.record) {
+          setMemoryEditor((prev: any) => prev && prev.memoryId === memoryId ? {
+            ...prev,
+            loading: false,
+            body: res.record.body || '',
+            evidence: res.record.evidence || '',
+            metadataJson: res.record.metadata_json || res.record.metadataJson || '',
+          } : prev);
+        }
+      } catch (err) {
+        console.error("Failed to fetch memory details", err);
+        setMemoryEditor((prev: any) => prev && prev.memoryId === memoryId ? { ...prev, loading: false } : prev);
+      }
+    } else {
+      setMemoryEditor({ mode: 'new', type: 'fact', title: '', body: '', evidence: '', metadataJson: '', targetAgentId: agentMemoryId, targetProjectId: '' });
+    }
   };
 
   const saveMemoryEditor = async () => {
@@ -3268,13 +3742,13 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
     }
   };
 
-  const submit = async (interrupt = false) => {
+  const submit = async (interrupt = false, payload?: ChatComposerSubmitPayload) => {
     const body = draft.trim();
     if (!body || !agent?.id || sending) return;
     setSending(true);
     setSendError('');
     try {
-      await onSendAgentMessage?.(agent.id, body, interrupt, { provider: chatProvider, modelTier: chatTier });
+      await onSendAgentMessage?.(agent.id, body, interrupt, { provider: chatProvider, modelTier: chatTier }, payload?.artifactIds);
       setDraft('');
     } catch (err: any) {
       setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`);
@@ -3293,6 +3767,13 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
   }), [agent, agentLive, chainsById, chatProvider, chatTier, runtime.label, tasksById]);
   const detailAgentContext = detailWorkspaceContext.genericAgent!;
   const detailInspectorTabs = workspaceInspectorTabsFor(detailWorkspaceContext, {
+    work: {
+      id: 'work',
+      label: 'Work',
+      content: <WorkTab chain={chainWork.chain} tasks={chainWork.tasks} progress={chainWork.progress} reviewNeededTasks={chainWork.reviewNeededTasks} agentInstanceId={String(agent?.id || '')} debugPrefix={detailAgentContext.debug.workBannerPrefix} onOpenChain={(chainId: string) => onOpenChain?.(chainId)} onOpenTask={(taskId: string) => onOpenTask?.(taskId)} />,
+      buttonDebugId: 'workspace-inspector-tab-work',
+      panelDebugId: 'workspace-inspector-panel-work',
+    },
     tasks: {
       id: 'tasks',
       label: 'Tasks',
@@ -3394,6 +3875,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
                     subtitle: <span className="truncate font-mono">{detailWorkspaceContext.subtitle}</span>,
                     status: <span data-debug-id="agent-detail-live-status" className={`rounded-full px-3 py-1 text-sm ${agentLive ? 'bg-emerald-400/15 text-emerald-200' : 'bg-zinc-500/15 text-zinc-300'}`}>{detailWorkspaceContext.statusLabel || runtime.label}</span>,
                     actions: <><button data-debug-id="agent-detail-back-btn" onClick={onBack} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">← Back</button><button data-debug-id="agent-detail-all-instances-btn" onClick={() => onOpenIdentity?.(durableAgentId(agent))} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400">All instances</button><button type="button" data-debug-id="agent-detail-chat-artifacts-toggle-btn" onClick={() => { setInspectorTab('artifacts'); setInspectorOpen(true); }} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">Artifacts</button><button type="button" data-debug-id="agent-detail-refresh-chat-btn" onClick={() => agent?.id && onRefreshChat?.(agent.id)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">Refresh</button><button type="button" data-debug-id="agent-detail-nudge-btn" onClick={() => submit(true)} disabled={!agent?.id || sending || !draft.trim()} className="rounded-full border border-amber-400/25 bg-amber-400/10 px-3 py-1 text-[11.5px] text-amber-100 hover:bg-amber-400/20 disabled:cursor-not-allowed disabled:opacity-50">⚡ Nudge</button>{!agentLive && <IconActionButton debugId="agent-detail-start-btn" title="Start agent" icon="▶" onClick={startAgent} disabled={!agent?.id || Boolean(agentBusy)} tone="success" />}{agentLive && <IconActionButton debugId="agent-detail-stop-btn" title="Force stop agent" icon="■" onClick={stopAgent} disabled={Boolean(agentBusy)} tone="warn" />}<IconActionButton debugId="agent-detail-edit-btn" title="Edit agent" icon="✎" onClick={() => setEditOpen(true)} disabled={!agent?.id || Boolean(agentBusy)} /><IconActionButton debugId="agent-detail-delete-btn" title="Delete agent" icon="🗑" onClick={deleteAgent} disabled={!agent?.id || Boolean(agentBusy)} tone="danger" /></>,
+                    bottom: <WorkChips chain={chainWork.chain} progress={chainWork.progress} reviewNeededTasks={chainWork.reviewNeededTasks} debugPrefix={detailAgentContext.debug.composerPrefix + '-work'} onOpenChain={(chainId: string) => onOpenChain?.(chainId)} onOpenReviewTask={(taskId: string) => { setInspectorTab('work'); setInspectorOpen(true); onOpenTask?.(taskId); }} />,
                   },
                   chat: {
                     conversationKey: detailAgentContext.chat.conversationKey,
@@ -3413,9 +3895,10 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
                     inputDebugId: detailAgentContext.debug.composerPrefix + '-input',
                     sendButtonDebugId: detailAgentContext.debug.composerPrefix + '-send-btn',
                     sendAriaLabel: 'Send direct agent message',
+                    mobileBottomPinned: true,
                     value: draft,
                     onValueChange: (value) => { setDraft(value); setSendError(''); },
-                    onSubmit: () => submit(false),
+                    onSubmit: (payload?: ChatComposerSubmitPayload) => submit(false, payload),
                     onPaste: async (event) => {
                       const result = await upload.uploadClipboardImage(event, { originRef: agent?.id || '' });
                       if (result.link) {
@@ -3430,7 +3913,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
                     sendError,
                     sendErrorDebugId: 'agent-detail-chat-send-error',
                     uploadErrorDebugId: 'agent-detail-chat-upload-error',
-                    upload: { onUploaded: (link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }, context: { projectId: agent?.projectId || '', originKind: 'direct_agent_chat', originRef: agent?.id || '' }, disabled: !agent?.id || sending || Boolean(runtimeRestarting), debugIdPrefix: detailAgentContext.debug.uploadPrefix, label: '⇧', buttonClassName: 'inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-lg text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40', error: upload.error },
+                    upload: { uploadFile: upload.uploadFile, uploading: upload.uploading, clearError: upload.clearError, onUploaded: (link) => { setSendError(''); setDraft((prev) => appendArtifactLink(prev, link)); }, context: { projectId: agent?.projectId || '', originKind: 'direct_agent_chat', originRef: agent?.id || '' }, disabled: !agent?.id || sending || Boolean(runtimeRestarting), debugIdPrefix: detailAgentContext.debug.uploadPrefix, label: '⇧', buttonClassName: 'inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-lg text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40', error: upload.error },
                     runtimeControls: { debugPrefix: detailAgentContext.debug.runtimePrefix, providers, projects, provider: chatProvider, modelTier: chatTier, projectId: agent?.projectId || '', disabled: !agent?.id, restarting: Boolean(runtimeRestarting), showProject: true, onRestart: (next) => { void restartExactRuntime(next.provider, next.modelTier, 'runtime', next.projectId); } },
                     notices: [
                       ...(runtimeRestartError ? [{ debugId: 'agent-detail-chat-runtime-restart-error', message: runtimeRestartError, tone: 'error' as const }] : []),
@@ -3439,11 +3922,27 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
                     footer: <><span>🗂 {agent?.projectName || agent?.projectId || 'No project'} · shares memories &amp; skills from the <code>{detailAgentContext.durableAgentId || 'agent'}</code> identity</span><span>⌘↵ to send</span></>,
                     textareaClassName: 'min-h-[74px] w-full resize-none bg-transparent px-3 pt-3 text-[15px] leading-relaxed text-zinc-100 outline-none placeholder:text-zinc-600',
                   },
+                  currentTaskStrip: chainWork.currentTask && chainWork.currentRole ? (
+                    <CurrentTaskStrip
+                      task={chainWork.currentTask}
+                      chain={chainWork.chain}
+                      agentInstanceId={String(agent?.id || '')}
+                      role={chainWork.currentRole}
+                      debugPrefix={detailAgentContext.debug.composerPrefix + '-current-task'}
+                      onComment={(taskId: string, body: string) => onAddComment?.({ taskId, chainId: chainWork.chainId }, body)}
+                      onSubmitForReview={(taskId: string) => onSetTaskStatus?.({ taskId, chainId: chainWork.chainId, status: 'review_ready', body: '' })}
+                      onNudge={(taskId: string) => onNudgeTask?.({ taskId, chainId: chainWork.chainId })}
+                      onVote={(taskId: string, approved: boolean) => onVoteTask?.({ taskId, chainId: chainWork.chainId }, approved)}
+                      onOpenTask={(taskId: string) => { setInspectorTab('work'); setInspectorOpen(true); onOpenTask?.(taskId); }}
+                    />
+                  ) : chainWork.chainId && chainWork.progress.total === 0 ? (
+                    <div data-debug-id={`${detailAgentContext.debug.composerPrefix}-current-task-empty`} className="mb-2 rounded-xl border border-dashed border-white/10 bg-[#101010] px-3 py-2 text-[11.5px] text-zinc-500">No active task — ask the agent to make a plan.</div>
+                  ) : null,
                 }}
               />
             </WorkspaceMainRegion>
           )}
-          inspector={<ContextInspector title={detailWorkspaceContext.title} subtitle={detailWorkspaceContext.subtitle || 'agent'} tabs={detailInspectorTabs} activeTabId={inspectorTab} onTabChange={(tabId) => { setInspectorTab(tabId as any); setInspectorOpen(true); }} collapsed={!inspectorOpen} onToggleCollapsed={() => setInspectorOpen((open) => !open)} className={`${!inspectorOpen ? 'w-0 border-l-0 p-0' : 'w-[420px] border-l border-[#262626] p-4'} min-h-0 shrink-0 overflow-hidden bg-[#0d0d0d] transition-[width,padding] duration-200`} />}
+          inspector={<ContextInspector title={detailWorkspaceContext.title} subtitle={detailWorkspaceContext.subtitle || 'agent'} tabs={detailInspectorTabs} activeTabId={inspectorTab} onTabChange={(tabId) => { setInspectorTab(tabId as any); setInspectorOpen(true); }} collapsed={!inspectorOpen} onToggleCollapsed={() => setInspectorOpen((open) => !open)} className={`${!inspectorOpen ? 'w-[52px] border-l border-[#262626] p-0' : 'w-[420px] border-l border-[#262626] p-4'} min-h-0 shrink-0 overflow-hidden bg-[#0d0d0d] transition-[width,padding] duration-200`} />}
         />
       </section>
 
@@ -3451,10 +3950,16 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
         <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/60 px-4 py-10 backdrop-blur-sm" onMouseDown={() => setMemoryEditor(null)}>
           <div data-debug-id="agent-memory-editor" className="max-h-[90vh] w-full max-w-4xl overflow-y-auto rounded-3xl border border-white/10 bg-[#101217] p-5 shadow-2xl shadow-black/50" onMouseDown={(event) => event.stopPropagation()}>
             <div className="mb-4 flex items-center justify-between gap-3"><h2 className="text-lg font-semibold text-zinc-100">{memoryEditor.mode === 'edit' ? 'Edit memory' : 'Add memory'}</h2><IconActionButton debugId="agent-memory-editor-close-btn" title="Close" icon="×" onClick={() => setMemoryEditor(null)} /></div>
-            <div className="grid gap-3 md:grid-cols-3"><label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Type<select data-debug-id="agent-memory-editor-type-select" value={memoryEditor.type} onChange={(event) => setMemoryEditor({ ...memoryEditor, type: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400">{['fact', 'habit', 'episode', 'expertise', 'skill', 'template'].map((type) => <option key={type} value={type}>{type}</option>)}</select></label><label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500 md:col-span-2">Title<input data-debug-id="agent-memory-editor-title-input" value={memoryEditor.title} onChange={(event) => setMemoryEditor({ ...memoryEditor, title: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400" /></label></div>
-            <label className="mt-3 block text-xs font-semibold uppercase tracking-wide text-zinc-500"><div className="mb-2 flex items-center justify-between gap-3"><span>Body</span><VimEditButton debugId="agent-memory-editor-body-vim-edit-btn" title={memoryEditor.mode === 'edit' ? 'Edit Memory Body' : 'New Memory Body'} value={memoryEditor.body} onApply={(value) => setMemoryEditor({ ...memoryEditor, body: value })} lang="markdown" /></div><textarea data-debug-id="agent-memory-editor-body-textarea" value={memoryEditor.body} onChange={(event) => setMemoryEditor({ ...memoryEditor, body: event.target.value })} rows={12} className="w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 font-mono text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400" placeholder="Memory body" /></label>
-            <label className="mt-3 block text-xs font-semibold uppercase tracking-wide text-zinc-500">Evidence<input data-debug-id="agent-memory-editor-evidence-input" value={memoryEditor.evidence} onChange={(event) => setMemoryEditor({ ...memoryEditor, evidence: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400" /></label>
-            <div className="mt-5 flex justify-end gap-2"><IconActionButton debugId="agent-memory-editor-cancel-btn" title="Cancel" icon="×" onClick={() => setMemoryEditor(null)} /><IconActionButton debugId="agent-memory-editor-save-btn" title="Save memory" icon="✓" onClick={saveMemoryEditor} disabled={memorySaving || !memoryEditor.title?.trim() || !memoryEditor.body?.trim()} tone="primary" /></div>
+            {memoryEditor.loading ? (
+              <div className="py-20 text-center text-sm text-zinc-500">Loading memory details…</div>
+            ) : (
+              <>
+                <div className="grid gap-3 md:grid-cols-3"><label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Type<select data-debug-id="agent-memory-editor-type-select" value={memoryEditor.type} onChange={(event) => setMemoryEditor({ ...memoryEditor, type: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400">{['fact', 'habit', 'episode', 'expertise', 'skill', 'template'].map((type) => <option key={type} value={type}>{type}</option>)}</select></label><label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500 md:col-span-2">Title<input data-debug-id="agent-memory-editor-title-input" value={memoryEditor.title} onChange={(event) => setMemoryEditor({ ...memoryEditor, title: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400" /></label></div>
+                <label className="mt-3 block text-xs font-semibold uppercase tracking-wide text-zinc-500"><div className="mb-2 flex items-center justify-between gap-3"><span>Body</span><VimEditButton debugId="agent-memory-editor-body-vim-edit-btn" title={memoryEditor.mode === 'edit' ? 'Edit Memory Body' : 'New Memory Body'} value={memoryEditor.body} onApply={(value) => setMemoryEditor({ ...memoryEditor, body: value })} lang="markdown" /></div><textarea data-debug-id="agent-memory-editor-body-textarea" value={memoryEditor.body} onChange={(event) => setMemoryEditor({ ...memoryEditor, body: event.target.value })} rows={12} className="w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 font-mono text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400" placeholder="Memory body" /></label>
+                <label className="mt-3 block text-xs font-semibold uppercase tracking-wide text-zinc-500">Evidence<input data-debug-id="agent-memory-editor-evidence-input" value={memoryEditor.evidence} onChange={(event) => setMemoryEditor({ ...memoryEditor, evidence: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400" /></label>
+              </>
+            )}
+            <div className="mt-5 flex justify-end gap-2"><IconActionButton debugId="agent-memory-editor-cancel-btn" title="Cancel" icon="×" onClick={() => setMemoryEditor(null)} /><IconActionButton debugId="agent-memory-editor-save-btn" title="Save memory" icon="✓" onClick={saveMemoryEditor} disabled={memorySaving || memoryEditor.loading || !memoryEditor.title?.trim() || !memoryEditor.body?.trim()} tone="primary" /></div>
           </div>
         </div>
       )}
@@ -3463,26 +3968,30 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
 }
 
 
-function NewConversationPage({ session, projects = [], providers = [], defaultProjectId = '', busy = false, onBack, onFirstMessage, onOpenChain, onPickAgent, onPlanWork }: any) {
+function NewConversationPage({ session, projects = [], providers = [], identities = [], defaultProjectId = '', busy = false, onBack, onFirstMessage, onOpenChain, onPickAgent, onPlanWork }: any) {
   const [draft, setDraft] = useState('');
-  const [projectId, setProjectId] = useState(defaultProjectId || projects?.[0]?.projectId || projects?.[0]?.project_id || '');
-  const [provider, setProvider] = useState(defaultConversationProvider(providers));
+  const [projectId, setProjectId] = useState(() => {
+    const initial = defaultProjectId || projects?.[0]?.projectId || projects?.[0]?.project_id || '';
+    return initial === 'default' ? '' : initial;
+  });
+  const [provider, setProvider] = useState(defaultConversationProvider(providers, identities));
   const [tier, setTier] = useState('smart');
   const [error, setError] = useState('');
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const providerOptions = providers?.length ? providers : [{ name: 'pi' }];
-  const selectedProject = (projects || []).find((project: any) => (project.projectId || project.project_id) === projectId) || projects?.[0] || null;
+  const selectedProject = projectId ? ((projects || []).find((project: any) => (project.projectId || project.project_id) === projectId) || null) : null;
   const projectName = selectedProject?.name || projectId || 'No project';
   const daemonLabel = daemonDisplayLabel(session?.daemonUrl || '');
-
+ 
   useEffect(() => {
-    setProjectId(defaultProjectId || projects?.[0]?.projectId || projects?.[0]?.project_id || '');
+    const nextVal = defaultProjectId || projects?.[0]?.projectId || projects?.[0]?.project_id || '';
+    setProjectId(nextVal === 'default' ? '' : nextVal);
   }, [defaultProjectId, projects]);
-
+ 
   useEffect(() => {
-    setProvider(defaultConversationProvider(providers));
-  }, [providers]);
-
+    setProvider(defaultConversationProvider(providers, identities));
+  }, [providers, identities]);
+ 
   const submit = async () => {
     const body = draft.trim();
     if (!body || busy) return;
@@ -3494,14 +4003,14 @@ function NewConversationPage({ session, projects = [], providers = [], defaultPr
       setError(`Unable to start the conversation. ${String(err?.message || err || 'Try again.')}`);
     }
   };
-
+ 
   const optionCards = [
     { id: 'ask', title: 'Ask a question', detail: 'One-off help using shared memory & skills.', action: () => inputRef.current?.focus() },
     { id: 'open-chain', title: 'Open a task chain →', detail: 'Escalate to a multi-agent chain with review.', action: () => onOpenChain?.() },
     { id: 'pick-agent', title: 'Pick another agent', detail: 'Run a coder / reviewer / planner identity.', action: () => onPickAgent?.() },
     { id: 'plan-work', title: 'Plan work', detail: 'Draft tasks in the chain editor.', action: () => onPlanWork?.() },
   ];
-
+ 
   return (
     <div data-debug-id="new-conversation-page" className="flex min-h-full flex-col bg-[#090909] text-zinc-100">
       <div className="flex h-[52px] items-center justify-between gap-3 border-b border-[#1f1f1f] bg-[#0b0b0b]/95 px-[18px] text-[12.5px] text-zinc-500">
@@ -3514,11 +4023,11 @@ function NewConversationPage({ session, projects = [], providers = [], defaultPr
         <label className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-[#141414] px-3 py-1.5 text-[11.5px] text-zinc-400 shadow-[0_10px_30px_rgba(0,0,0,0.18)]">
           <span>🗂</span>
           <select data-debug-id="new-convo-project-select" value={projectId} onChange={(event) => { setProjectId(event.target.value); setError(''); }} className="bg-transparent text-zinc-300 outline-none">
-            {(projects || []).map((project: any) => {
+            <option value="">No project</option>
+            {(projects || []).filter((project: any) => (project.projectId || project.project_id) !== 'default').map((project: any) => {
               const id = project.projectId || project.project_id || '';
-              return <option key={id || 'project'} value={id}>{project.name || id || 'No project'}</option>;
+              return <option key={id} value={id}>{project.name || id}</option>;
             })}
-            {(!projects || projects.length === 0) && <option value="">No project</option>}
           </select>
         </label>
       </div>
@@ -3599,7 +4108,7 @@ function NewConversationPage({ session, projects = [], providers = [], defaultPr
   );
 }
 
-function ConversationThreadPage({ agent, chats, conversationSummary, session, projects = [], providers = [], chatDraft = '', chatPagination = {}, onChatDraftChange, onBack, onRefreshChat, onRefreshAgents, onSendAgentMessage }: any) {
+function ConversationThreadPage({ agent, chats, conversationSummary, session, projects = [], providers = [], chatDraft = '', chatPagination = {}, onChatDraftChange, onBack, onRefreshChat, onRefreshAgents, onSendAgentMessage, onOpenChain, onOpenTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask }: any) {
   const draft = chatDraft;
   const setDraft = (next: any) => {
     const value = typeof next === 'function' ? next(draft) : next;
@@ -3632,7 +4141,10 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent?.id]);
 
-  const submit = async () => {
+  // UI-6: derive Work chip / Review-needed / CurrentTaskStrip from the bound chain's cached tasks.
+  const chainWork = useChatChainWork(String(agent?.id || ''), String(agent?.chainId || ''));
+
+  const submit = async (payload?: ChatComposerSubmitPayload) => {
     const body = draft.trim();
     if (!body || !agent?.id || sending) return;
     const shouldRestartForSend = !live;
@@ -3646,7 +4158,7 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
         await onRefreshAgents?.();
         setSendPhase('sending');
       }
-      await onSendAgentMessage?.(agent.id, body, false);
+      await onSendAgentMessage?.(agent.id, body, false, {}, payload?.artifactIds);
       setDraft('');
     } catch (err: any) {
       setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`);
@@ -3692,7 +4204,7 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
     setLocallyStopped(false);
   });
   const [inspectorOpen, setInspectorOpen] = useState(true);
-  const [inspectorTab, setInspectorTab] = useState<'artifacts' | 'project' | 'runtime'>('artifacts');
+  const [inspectorTab, setInspectorTab] = useState<'work' | 'workspace' | 'memory' | 'artifacts' | 'project' | 'runtime'>('work');
   const conversationWorkspaceContext = useMemo(() => adaptConversationWorkspaceContext({
     agent,
     title,
@@ -3703,20 +4215,47 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
     modelTier: messageTier,
   }), [agent, live, messageProvider, messageTier, projectName, runtime.label, sendPhase, title]);
   const conversationAgentContext = conversationWorkspaceContext.genericAgent!;
+  const conversationProject = (projects || []).find((project: any) => (project.projectId || project.project_id) === (agent?.projectId || ''));
+  const conversationProjectAnchors = (conversationProject?.anchors || []);
+  const conversationMemoryId = String(agent?.agentId || agent?.agent_id || agent?.id || '').split('@')[0];
+  // UI-7: identity-scoped memory drives the Memory tab + pending-proposal badge on the header.
+  const conversationMemoryQuery = useListApplicableMemoryQuery(
+    { targetAgentId: conversationMemoryId, targetProjectId: agent?.projectId || '' },
+    { skip: !conversationMemoryId || !session?.clientToken },
+  );
+  const conversationMemoryRecords = conversationMemoryQuery.data?.records || [];
+  const pendingMemoryCount = useMemo(() => conversationMemoryRecords.filter((record: any) => String(record.status || '').toLowerCase() === 'pending').length, [conversationMemoryRecords]);
   const conversationInspectorTabs = workspaceInspectorTabsFor(conversationWorkspaceContext, {
+    work: {
+      id: 'work',
+      label: 'Work',
+      content: <WorkTab chain={chainWork.chain} tasks={chainWork.tasks} progress={chainWork.progress} reviewNeededTasks={chainWork.reviewNeededTasks} agentInstanceId={String(agent?.id || '')} debugPrefix={conversationAgentContext.debug.workBannerPrefix} onOpenChain={(chainId: string) => onOpenChain?.(chainId)} onOpenTask={(taskId: string) => onOpenTask?.(taskId)} />,
+      buttonDebugId: 'workspace-inspector-tab-work',
+      panelDebugId: 'workspace-inspector-panel-work',
+    },
+    workspace: {
+      id: 'workspace',
+      label: 'Workspace',
+      // UI-7: Workspace tab is project-scoped; hidden when the conversation has no project_id.
+      hidden: !agent?.projectId,
+      content: <ConversationWorkspaceTab projectId={String(agent?.projectId || '')} projectName={projectName} agentInstanceId={String(agent?.id || '')} projectAnchors={conversationProjectAnchors} debugPrefix={conversationAgentContext.debug.artifactsPrefix} />,
+      buttonDebugId: 'workspace-inspector-tab-workspace',
+      panelDebugId: 'workspace-inspector-panel-workspace',
+    },
+    memory: {
+      id: 'memory',
+      label: <>Memory{pendingMemoryCount > 0 ? <span data-debug-id="conversation-inspector-memory-badge" className="ml-1 rounded-full border border-fuchsia-400/30 bg-fuchsia-400/10 px-1.5 text-[10px] text-fuchsia-200">{pendingMemoryCount}</span> : null}</>,
+      // UI-7: Memory is identity-scoped and always available (never hidden).
+      content: <ConversationMemoryTab agentId={String(agent?.id || '')} durableAgentId={conversationMemoryId} projectId={String(agent?.projectId || '')} session={session} debugPrefix={conversationAgentContext.debug.workBannerPrefix} records={conversationMemoryRecords} fetching={conversationMemoryQuery.isFetching} error={conversationMemoryQuery.isError} />,
+      buttonDebugId: 'workspace-inspector-tab-memory',
+      panelDebugId: 'workspace-inspector-panel-memory',
+    },
     artifacts: {
       id: 'artifacts',
       label: 'Artifacts',
       content: <ChatArtifactsSidePanel embedded debugPrefix={conversationAgentContext.debug.artifactsPrefix} daemonUrl={session?.daemonUrl || ''} clientToken={session?.clientToken || ''} projectId={agent?.projectId || ''} originKind="conversation_chat" originRef={agent?.id || ''} onUploaded={(link: string) => setDraft((prev: string) => appendArtifactLink(prev, link))} onClose={() => setInspectorOpen(false)} />,
       buttonDebugId: 'workspace-inspector-tab-artifacts',
       panelDebugId: 'workspace-inspector-panel-artifacts',
-    },
-    project: {
-      id: 'project',
-      label: 'Project',
-      content: <ContextInfoGrid items={[{ debugId: 'conversation-thread-project-chip', label: 'Project', value: <span>🗂 {projectName}</span> }, { debugId: 'conversation-thread-instance-label', label: 'Instance', value: <code>{conversationWorkspaceContext.subtitle || 'conversation@s-…'}</code> }]} />,
-      buttonDebugId: 'workspace-inspector-tab-project',
-      panelDebugId: 'workspace-inspector-panel-project',
     },
     runtime: {
       id: 'runtime',
@@ -3741,6 +4280,7 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
                   subtitle: <span data-debug-id="conversation-thread-instance-label" className="truncate font-mono">{conversationWorkspaceContext.subtitle}</span>,
                   status: <span data-debug-id="conversation-thread-status-chip" className={`rounded-full border px-3 py-1 text-[11.5px] ${live ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200' : sendPhase === 'starting' ? 'border-sky-400/35 bg-sky-400/10 text-sky-200' : 'border-white/10 bg-[#141414] text-zinc-400'}`}>{conversationWorkspaceContext.statusLabel || runtime.label}</span>,
                   actions: <><button data-debug-id="conversation-thread-back-btn" onClick={onBack} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-300 hover:border-white/20 hover:text-zinc-100">← Back</button><button data-debug-id="conversation-thread-artifacts-toggle-btn" onClick={() => { setInspectorTab('artifacts'); setInspectorOpen(true); }} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">Artifacts</button><button data-debug-id="conversation-thread-refresh-btn" onClick={() => agent?.id && onRefreshChat?.(agent.id)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-400 hover:text-zinc-100">Refresh</button>{!live ? <button data-debug-id="conversation-thread-start-btn" onClick={startConversation} disabled={Boolean(threadBusy || sending)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50">Start</button> : <button data-debug-id="conversation-thread-stop-btn" onClick={stopConversation} disabled={Boolean(threadBusy || sending)} className="rounded-full border border-white/10 bg-[#141414] px-3 py-1 text-[11.5px] text-zinc-100 hover:border-sky-400 disabled:cursor-not-allowed disabled:opacity-50">Close</button>}</>,
+                  bottom: <WorkChips chain={chainWork.chain} progress={chainWork.progress} reviewNeededTasks={chainWork.reviewNeededTasks} debugPrefix={conversationAgentContext.debug.composerPrefix + '-work'} onOpenChain={(chainId: string) => onOpenChain?.(chainId)} onOpenReviewTask={(taskId: string) => { setInspectorTab('work'); setInspectorOpen(true); onOpenTask?.(taskId); }} />,
                 },
                 chat: {
                   conversationKey: conversationAgentContext.chat.conversationKey,
@@ -3765,6 +4305,7 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
                   inputDebugId: conversationAgentContext.debug.composerPrefix + '-input',
                   sendButtonDebugId: conversationAgentContext.debug.composerPrefix + '-send-btn',
                   sendAriaLabel: 'Send conversation message',
+                  mobileBottomPinned: true,
                   value: draft,
                   onValueChange: (value) => { setDraft(value); setSendError(''); },
                   onSubmit: submit,
@@ -3781,16 +4322,32 @@ function ConversationThreadPage({ agent, chats, conversationSummary, session, pr
                   sendError,
                   sendErrorDebugId: 'conversation-composer-send-error',
                   uploadErrorDebugId: 'conversation-composer-upload-error',
-                  upload: { onUploaded: (link) => { setSendError(''); setDraft((prev: string) => appendArtifactLink(prev, link)); }, context: { projectId: agent?.projectId || '', originKind: 'conversation_chat', originRef: agent?.id || '' }, disabled: !agent?.id || sending, debugIdPrefix: conversationAgentContext.debug.uploadPrefix, label: '⇧', buttonClassName: 'inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-lg text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40', error: upload.error },
+                  upload: { uploadFile: upload.uploadFile, uploading: upload.uploading, clearError: upload.clearError, onUploaded: (link) => { setSendError(''); setDraft((prev: string) => appendArtifactLink(prev, link)); }, context: { projectId: agent?.projectId || '', originKind: 'conversation_chat', originRef: agent?.id || '' }, disabled: !agent?.id || sending, debugIdPrefix: conversationAgentContext.debug.uploadPrefix, label: '⇧', buttonClassName: 'inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-lg text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40', error: upload.error },
                   runtimeControls: { debugPrefix: conversationAgentContext.debug.runtimePrefix, providers, projects, provider: messageProvider, modelTier: messageTier, projectId: agent?.projectId || '', disabled: !agent?.id || sending, restarting: threadBusy === 'restart', showProject: true, onRestart: restartConversationRuntime },
                   notices: sendPhase === 'starting' ? [{ debugId: 'conversation-composer-starting-indicator', message: 'Starting this conversation agent before sending your message…' }] : [],
                   footer: <><span>🗂 {projectName} · shares memories &amp; skills from the <code>conversation</code> identity</span><span>⌘↵ to send</span></>,
                 },
+                currentTaskStrip: chainWork.currentTask && chainWork.currentRole ? (
+                  <CurrentTaskStrip
+                    task={chainWork.currentTask}
+                    chain={chainWork.chain}
+                    agentInstanceId={String(agent?.id || '')}
+                    role={chainWork.currentRole}
+                    debugPrefix={conversationAgentContext.debug.composerPrefix + '-current-task'}
+                    onComment={(taskId: string, body: string) => onAddComment?.({ taskId, chainId: chainWork.chainId }, body)}
+                    onSubmitForReview={(taskId: string) => onSetTaskStatus?.({ taskId, chainId: chainWork.chainId, status: 'review_ready', body: '' })}
+                    onNudge={(taskId: string) => onNudgeTask?.({ taskId, chainId: chainWork.chainId })}
+                    onVote={(taskId: string, approved: boolean) => onVoteTask?.({ taskId, chainId: chainWork.chainId }, approved)}
+                    onOpenTask={(taskId: string) => { setInspectorTab('work'); setInspectorOpen(true); onOpenTask?.(taskId); }}
+                  />
+                ) : chainWork.chainId && chainWork.progress.total === 0 ? (
+                  <div data-debug-id={`${conversationAgentContext.debug.composerPrefix}-current-task-empty`} className="mb-2 rounded-xl border border-dashed border-white/10 bg-[#101010] px-3 py-2 text-[11.5px] text-zinc-500">No active task — ask the agent to make a plan.</div>
+                ) : null,
               }}
             />
           </WorkspaceMainRegion>
         )}
-        inspector={<ContextInspector title={conversationWorkspaceContext.title} subtitle={conversationWorkspaceContext.subtitle || 'conversation'} tabs={conversationInspectorTabs} activeTabId={inspectorTab} onTabChange={(tabId) => { setInspectorTab(tabId as any); setInspectorOpen(true); }} collapsed={!inspectorOpen} onToggleCollapsed={() => setInspectorOpen((open) => !open)} className={`${!inspectorOpen ? 'w-0 border-l-0 p-0' : 'w-[420px] border-l border-[#262626] p-4'} min-h-0 shrink-0 overflow-hidden bg-[#0d0d0d] transition-[width,padding] duration-200`} />}
+        inspector={<ContextInspector title={conversationWorkspaceContext.title} subtitle={conversationWorkspaceContext.subtitle || 'conversation'} tabs={conversationInspectorTabs} activeTabId={inspectorTab} onTabChange={(tabId) => { setInspectorTab(tabId as any); setInspectorOpen(true); }} collapsed={!inspectorOpen} onToggleCollapsed={() => setInspectorOpen((open) => !open)} className={`${!inspectorOpen ? 'w-[52px] border-l border-[#262626] p-0' : 'w-[420px] border-l border-[#262626] p-4'} min-h-0 shrink-0 overflow-hidden bg-[#0d0d0d] transition-[width,padding] duration-200`} />}
       />
       {threadError && <div data-debug-id="conversation-thread-action-error" className="mx-5 mb-4 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{threadError}</div>}
     </div>
@@ -4928,9 +5485,15 @@ function formatArtifactWhen(value: number) {
 
 function ChatArtifactsSidePanel({ debugPrefix, daemonUrl = '', clientToken = '', projectId = '', originKind = 'chat', originRef = '', onUploaded, onClose, embedded = false }: any) {
   const [activeArtifactId, setActiveArtifactId] = useState('');
-  const artifactsQuery = useListArtifactsQuery({ projectId, limit: 100 }, { skip: !projectId || !daemonUrl || !clientToken });
+  const [triggerFetchArtifactsPage, fetchArtifactsPageResult] = useLazyFetchArtifactsPageQuery();
+  const artifactsQuery = useListArtifactsQuery({ projectId, limit: 20 }, { skip: !projectId || !daemonUrl || !clientToken });
   const artifacts = (artifactsQuery.data?.artifacts || []) as ChatArtifactRow[];
-  const loading = artifactsQuery.isFetching;
+  const loading = artifactsQuery.isFetching || fetchArtifactsPageResult.isFetching;
+  const handleLoadMore = () => {
+    if (artifactsQuery.isFetching || fetchArtifactsPageResult.isFetching) return;
+    const nextOffset = artifacts.length;
+    triggerFetchArtifactsPage({ projectId, limit: 20, offset: nextOffset });
+  };
   const error = !projectId
     ? 'No project context for artifacts.'
     : !daemonUrl || !clientToken
@@ -4980,6 +5543,19 @@ function ChatArtifactsSidePanel({ debugPrefix, daemonUrl = '', clientToken = '',
               </button>
             );
           })}
+          {artifactsQuery.data?.has_more && (
+            <div className="pt-2 flex justify-center pb-1">
+              <button
+                type="button"
+                data-debug-id={`${debugPrefix}-artifacts-load-more-btn`}
+                onClick={handleLoadMore}
+                disabled={fetchArtifactsPageResult.isFetching}
+                className="w-full rounded-xl border border-white/10 py-2 text-xs text-zinc-400 hover:bg-white/[0.04] hover:text-zinc-200 disabled:opacity-50"
+              >
+                {fetchArtifactsPageResult.isFetching ? 'Loading…' : 'Show more'}
+              </button>
+            </div>
+          )}
         </div>
       )}
       {activeArtifactId && daemonUrl && clientToken ? <ArtifactViewer artifactId={activeArtifactId} daemonUrl={daemonUrl} clientToken={clientToken} onClose={() => setActiveArtifactId('')} /> : null}
@@ -5128,26 +5704,21 @@ function perceivedTaskStatus(task: any, tasksById: Record<string, any>): { label
   return { label: task.status || 'unknown', tone: statusTone(task.status || 'unknown') };
 }
 
-function dependencyOrderedTasks(tasks: any[], tasksById: Record<string, any>): any[] {
-  const byId = new Map<string, any>();
-  const originalIndex = new Map<string, number>();
-  tasks.forEach((task, index) => { byId.set(task.taskId, task); originalIndex.set(task.taskId, index); });
-  const visited = new Set<string>();
-  const visiting = new Set<string>();
-  const out: any[] = [];
-  const visit = (task: any) => {
-    if (!task?.taskId || visited.has(task.taskId)) return;
-    if (visiting.has(task.taskId)) { out.push(task); visited.add(task.taskId); return; }
-    visiting.add(task.taskId);
-    parseDependsOn(task.dependsOn).forEach((depId) => {
-      const dep = byId.get(depId) || tasksById?.[depId];
-      if (dep && byId.has(dep.taskId)) visit(dep);
-    });
-    visiting.delete(task.taskId);
-    if (!visited.has(task.taskId)) { visited.add(task.taskId); out.push(task); }
-  };
-  [...tasks].sort((a, b) => (originalIndex.get(a.taskId) || 0) - (originalIndex.get(b.taskId) || 0)).forEach(visit);
-  return out;
+// UI-8: v1 Chain view orders tasks by CREATION (created_at) with task_id as a
+// deterministic tie-breaker — the backend does not yet expose graph/dependency
+// order, so the UI MUST NOT invent a client-side topological/DAG order. When
+// creation timestamps are missing/zero, fall back to the list order the backend
+// returned (assumed already creation-ordered).
+function dependencyOrderedTasks(tasks: any[], _tasksById: Record<string, any>): any[] {
+  return [...tasks].sort((a, b) => {
+    const aCreated = Number(a?.createdAtUnixMs || a?.created_at_unix_ms || 0);
+    const bCreated = Number(b?.createdAtUnixMs || b?.created_at_unix_ms || 0);
+    if (aCreated && bCreated && aCreated !== bCreated) return aCreated - bCreated;
+    if (aCreated && !bCreated) return -1;
+    if (bCreated && !aCreated) return 1;
+    // Stable tie-break by task_id; keeps deterministic output without inventing order.
+    return String(a?.taskId || '').localeCompare(String(b?.taskId || ''));
+  });
 }
 
 function ChainProgressPanel({ chain, progress }: { chain: any; progress: ChainProgress }) {
@@ -5181,7 +5752,37 @@ function ChainProgressPanel({ chain, progress }: { chain: any; progress: ChainPr
   );
 }
 
-function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentities = [], chainView, projects = [], providers = [], taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, initialTaskId = '', onBack, onSend, onToggleDiff, onFetchDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenAgentChat, onOpenChain, onOpenTask, onLoadTaskLogPage, onLoadCoordinatorChatPage, onOpenEditor, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onRefreshAgents }: any) {
+function ChainDescriptionPanel({ chain }: { chain: any }) {
+  const description = String(chain?.description || chain?.goal || '').trim();
+  const [expanded, setExpanded] = useState(false);
+  if (!description) return null;
+  // Collapse long descriptions by default; short ones can stay inline.
+  const isLong = description.length > 220 || description.includes('\n');
+  return (
+    <section data-debug-id="chain-description-panel" className="mt-3 overflow-hidden rounded-[13px] border border-white/10 bg-[#111]">
+      <button
+        type="button"
+        data-debug-id="chain-description-toggle-btn"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        className="flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left transition hover:bg-white/[0.03]"
+      >
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">Chain description</span>
+          {!expanded && isLong ? <span className="min-w-0 truncate text-[12px] text-zinc-500">{description.replace(/\s+/g, ' ').slice(0, 90)}…</span> : null}
+        </span>
+        <span className="shrink-0 text-zinc-500">{expanded ? '⌃' : '›'}</span>
+      </button>
+      {expanded || !isLong ? (
+        <div data-debug-id="chain-description-body" className="border-t border-white/10 px-4 py-3">
+          <Markdown source={description} className="text-sm text-zinc-300" />
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentities = [], chainView, projects = [], providers = [], taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, initialTaskId = '', onBack, onSend, onToggleDiff, onFetchDiff, onRescan, onPreviewMerge, onOpenAgent, onOpenAgentChat, onOpenChain, onOpenTask, onLoadTaskLogPage, onLoadCoordinatorChatPage, onOpenEditor, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onSetReviewers, onRefreshAgents }: any) {
   const dispatch = useDispatch<any>();
   const session = useSelector((state: any) => state.chat?.session || {});
   const chatState = useSelector((state: any) => state.chat || {});
@@ -5275,12 +5876,12 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
     await daemonApi.startAgent({ daemonUrl: session?.daemonUrl || '', agentInstanceId: coordinatorAgentId, provider: coordinatorProvider || coordinatorAgent?.providerProfile || providers?.[0]?.name || 'pi', templateId: coordinatorAgent?.templateId || 'coordinator', projectId: projectId || coordinatorAgent?.projectId || '', displayName: coordinatorAgent?.label || coordinatorAgentId, modelTier: coordinatorTier || coordinatorAgent?.modelTier || 'normal'});
     await onRefreshAgents?.();
   };
-  const submit = async () => {
+  const submit = async (payload?: ChatComposerSubmitPayload) => {
     const body = draft.trim();
     if (!body) return;
     setSendError('');
     try {
-      await onSend(body);
+      await onSend(body, payload?.artifactIds);
       setDraft('');
     } catch (err: any) {
       setSendError(`Send failed. ${String(err?.message || err || 'Review your message and try again.')}`);
@@ -5390,6 +5991,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
           onNudgeTask={onNudgeTask}
           onAssignTask={onAssignTask}
           onSetReviewer={onSetReviewer}
+          onSetReviewers={onSetReviewers}
           onOpenAgentChat={onOpenAgentChat}
           agents={agents}
           agentIdentities={agentIdentities}
@@ -5532,6 +6134,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
                       inputDebugId: coordinatorAgentContext.debug.composerPrefix + '-composer-input',
                       sendButtonDebugId: coordinatorAgentContext.debug.composerPrefix + '-send-btn',
                       sendAriaLabel: 'Send coordinator message',
+                      mobileBottomPinned: true,
                       value: draft,
                       onValueChange: (value) => { setDraft(value); setSendError(''); },
                       onSubmit: submit,
@@ -5554,7 +6157,7 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
                       sendError,
                       sendErrorDebugId: 'chain-coordinator-send-error',
                       uploadErrorDebugId: 'chain-coordinator-paste-error',
-                      upload: { onUploaded: (link) => { setSendError(''); setDraft((current) => appendArtifactLink(current, link)); }, debugIdPrefix: coordinatorAgentContext.debug.uploadPrefix, context: { projectId, originRef: chain.chainId || '' }, buttonClassName: 'inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-lg text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40', label: '⇧', error: composerArtifactUpload.error },
+                      upload: { uploadFile: composerArtifactUpload.uploadFile, uploading: composerArtifactUpload.uploading, clearError: composerArtifactUpload.clearError, onUploaded: (link) => { setSendError(''); setDraft((current) => appendArtifactLink(current, link)); }, debugIdPrefix: coordinatorAgentContext.debug.uploadPrefix, context: { projectId, originRef: chain.chainId || '' }, buttonClassName: 'inline-flex h-8 w-8 items-center justify-center rounded-md border border-white/10 bg-[#1c1c1c] text-lg text-zinc-400 hover:text-zinc-100 disabled:cursor-not-allowed disabled:opacity-40', label: '⇧', error: composerArtifactUpload.error },
                       runtimeControls: { debugPrefix: coordinatorAgentContext.debug.runtimePrefix, providers, projects, provider: coordinatorProvider, modelTier: coordinatorTier, projectId, disabled: true, restarting: false, showProject: true, onRestart: async () => undefined },
                       leftAdornment: <span className="rounded-md border border-white/10 bg-[#1c1c1c] px-2 py-1.5 text-xs text-zinc-500">@ mention agent</span>,
                       footer: <><span>🗂 {projectName} · shares memories &amp; skills from the <code>coordinator</code> identity</span><span>⌘↵ to send</span></>,
@@ -5583,14 +6186,15 @@ function ChainView({ chain, tasks, tasksById, chainsById, agents, agentIdentitie
   );
 }
 
-function ChainTasksInspectorContent({ chain, chainProgress, activeTasks, completedTasks, tasksById, taskLogsByTaskId, taskLogCursorByTaskId, taskLogHasMoreByTaskId, taskLogLoadingByTaskId, taskLogTotalByTaskId, selectedTaskId, commentDraft, nudgeDraft, projectId, daemonUrl, clientToken, onRefreshAgents, onCommentDraft, onNudgeDraft, openTask, onLoadTaskLogPage, openTaskById, closeTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onOpenAgentChat, agents, agentIdentities, taskIndexMap }: any) {
+function ChainTasksInspectorContent({ chain, chainProgress, activeTasks, completedTasks, tasksById, taskLogsByTaskId, taskLogCursorByTaskId, taskLogHasMoreByTaskId, taskLogLoadingByTaskId, taskLogTotalByTaskId, selectedTaskId, commentDraft, nudgeDraft, projectId, daemonUrl, clientToken, onRefreshAgents, onCommentDraft, onNudgeDraft, openTask, onLoadTaskLogPage, openTaskById, closeTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onSetReviewers, onOpenAgentChat, agents, agentIdentities, taskIndexMap }: any) {
   return (
     <div data-debug-id="chain-task-surface" className="px-[18px] py-4">
       <ChainProgressPanel chain={chain} progress={chainProgress} />
+      <ChainDescriptionPanel chain={chain} />
       <div className="mt-5 flex items-start justify-between gap-3">
         <div>
           <h2 className="text-[14px] font-semibold text-zinc-100">Task chain plan</h2>
-          <p className="mt-1 text-[11.5px] text-zinc-500">Dependency-ordered. Click a task to expand.</p>
+          <p className="mt-1 text-[11.5px] text-zinc-500">Creation-ordered. Click a task to expand.</p>
         </div>
         <span data-debug-id="chain-task-count" className="rounded-full border border-white/10 bg-[#141414] px-2.5 py-1 text-[11px] text-zinc-400">{activeTasks.length} · {completedTasks.length}</span>
       </div>
@@ -5624,6 +6228,7 @@ function ChainTasksInspectorContent({ chain, chainProgress, activeTasks, complet
         onNudgeTask={onNudgeTask}
         onAssignTask={onAssignTask}
         onSetReviewer={onSetReviewer}
+        onSetReviewers={onSetReviewers}
         onOpenAgentChat={onOpenAgentChat}
         agents={agents}
         agentIdentities={agentIdentities}
@@ -5661,6 +6266,7 @@ function ChainTasksInspectorContent({ chain, chainProgress, activeTasks, complet
             onNudgeTask={onNudgeTask}
             onAssignTask={onAssignTask}
             onSetReviewer={onSetReviewer}
+            onSetReviewers={onSetReviewers}
             onOpenAgentChat={onOpenAgentChat}
             agents={agents}
             agentIdentities={agentIdentities}
@@ -5809,17 +6415,47 @@ function TaskAgentChip({ role, agentId, agent, active, onClick, onChatClick }: a
   );
 }
 
-function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, expandedTaskId, commentDraft, nudgeDraft, projectId = '', chainId = '', daemonUrl = '', clientToken = '', onRefreshAgents, onCommentDraft, onNudgeDraft, onOpenTask, onLoadTaskLogPage, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onOpenAgentChat, agents = [], agentIdentities = [], taskIndexMap = new Map(), completed = false }: any) {
+function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, taskLogCursorByTaskId = {}, taskLogHasMoreByTaskId = {}, taskLogLoadingByTaskId = {}, taskLogTotalByTaskId = {}, expandedTaskId, commentDraft, nudgeDraft, projectId = '', chainId = '', daemonUrl = '', clientToken = '', onRefreshAgents, onCommentDraft, onNudgeDraft, onOpenTask, onLoadTaskLogPage, onOpenTaskById, onCloseTask, onAddComment, onSetTaskStatus, onVoteTask, onNudgeTask, onAssignTask, onSetReviewer, onSetReviewers, onOpenAgentChat, agents = [], agentIdentities = [], taskIndexMap = new Map(), completed = false }: any) {
   const [commentsOpenByTaskId, setCommentsOpenByTaskId] = useState<Record<string, boolean>>({});
   const [busyAction, setBusyAction] = useState('');
   const [localError, setLocalError] = useState('');
   const [lastPasteTarget, setLastPasteTarget] = useState('');
   const [agentPicker, setAgentPicker] = useState<{ taskId: string; mode: 'assignee' | 'reviewer' } | null>(null);
+  const dispatch = useDispatch<any>();
   const session = useSelector((state: any) => state.chat?.session || {});
   const conversationSummaryById = useSelector((state: any) => state.chat?.conversationSummaryById || {});
-  const conversationSummariesQuery = useListConversationSummariesQuery(undefined, { skip: !session.clientToken });
-  const effectiveConversationSummaryById = conversationSummariesQuery.data || conversationSummaryById;
+  const conversationSummariesQuery = useListConversationSummariesQuery(undefined, { skip: !session.clientToken, refetchOnMountOrArgChange: true });
+  const effectiveConversationSummaryById = useMemo(
+    () => ({ ...(conversationSummaryById || {}), ...(conversationSummariesQuery.data?.summaries || {}) }),
+    [conversationSummaryById, conversationSummariesQuery.data],
+  );
   const taskTextArtifactUpload = useArtifactUpload({ projectId, originRef: chainId || '', originKind: 'clipboard_chain_text' });
+  // UI-8: add-agent-to-chain flow (POST /api/v1/agent-instances with existing chain_id).
+  const [createInstanceInChain] = useCreateAgentInstanceInChainMutation();
+  const [addAgentOpen, setAddAgentOpen] = useState(false);
+  const [addAgentBusy, setAddAgentBusy] = useState(false);
+  const sameChainInstanceIds = useMemo(() => new Set((agents || []).filter((agent: any) => String(agent?.chainId || agent?.chain_id || '') === String(chainId)).map((agent: any) => String(agent?.id || ''))), [agents, chainId]);
+  const addAgentToChain = async (agentId: string) => {
+    if (!agentId || !chainId || addAgentBusy) return;
+    setAddAgentBusy(true);
+    try {
+      const result = await createInstanceInChain({ agentId, chainId, projectId: projectId || undefined }).unwrap();
+      const newInstance = result?.agent_instance || result?.agentInstance || result?.agent;
+      if (newInstance) upsertAgentInCaches(dispatch, newInstance);
+      await onRefreshAgents?.();
+      setAddAgentOpen(false);
+      // If the picker is for a task, select the new instance for it.
+      if (agentPicker && newInstance?.agent_instance_id) {
+        if (agentPicker.mode === 'assignee') await onAssignTask?.(pickerTask, String(newInstance.agent_instance_id));
+        else await onSetReviewers?.(pickerTask, [String(newInstance.agent_instance_id)]);
+        setAgentPicker(null);
+      }
+    } catch (err: any) {
+      setLocalError(String(err?.message || err || 'Unable to add agent to chain'));
+    } finally {
+      setAddAgentBusy(false);
+    }
+  };
   const selectableAgents = useMemo(() => [{ id: 'user_proxy', label: 'User / operator', templateId: 'user', providerProfile: 'heimdall', projectId: projectId || '', connected: true, connectionState: 'connected' }, ...(agents || [])], [agents, projectId]);
   const agentsById = useMemo(() => {
     const map = new Map<string, any>();
@@ -5838,12 +6474,12 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
     }
   };
   const pickerTask = agentPicker ? tasksById?.[agentPicker.taskId] : null;
-  const applyAgentPick = async (agentInstanceId: string, result?: any) => {
-    if (!agentPicker || !pickerTask) return;
-    if (agentPicker.mode === 'assignee') await onAssignTask?.(pickerTask, agentInstanceId, result);
-    else await onSetReviewer?.(pickerTask, agentInstanceId, result);
-    setAgentPicker(null);
-  };
+  const pickerDefaults = useMemo(() => {
+    if (!agentPicker || !pickerTask) return [] as string[];
+    return agentPicker.mode === 'assignee'
+      ? (pickerTask.assigneeAgentInstanceId ? [String(pickerTask.assigneeAgentInstanceId)] : [])
+      : taskReviewerIds(pickerTask);
+  }, [agentPicker, pickerTask]);
 
   return (
     <div data-debug-id={`chain-task-list-${completed ? 'completed' : 'active'}`} className="mt-4">
@@ -5855,23 +6491,61 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
                 <h2 className="text-lg font-semibold text-zinc-100">Set task {agentPicker.mode}</h2>
                 <p className="mt-1 truncate text-sm text-zinc-500">{pickerTask.title || pickerTask.taskId}</p>
               </div>
-              <button data-debug-id="task-agent-picker-close-btn" onClick={() => setAgentPicker(null)} className="rounded-xl bg-white/10 px-3 py-2 text-sm text-zinc-200 transition hover:bg-white/15">Close</button>
+              {/* UI-8: if the desired agent identity is not yet in the chain, hydrate a
+                  fresh AgentInstance via POST /api/v1/agent-instances with the existing chain_id. */}
+              <button type="button" data-debug-id="chain-add-agent-to-chain-btn" onClick={() => setAddAgentOpen((open) => !open)} className="shrink-0 rounded-full border border-white/10 px-3 py-1 text-[11.5px] text-zinc-300 hover:bg-white/10">＋ Add agent to chain</button>
             </div>
-            <AgentPicker
+            {addAgentOpen ? (
+              <div data-debug-id="chain-add-agent-to-chain-panel" className="mb-4 rounded-2xl border border-sky-400/25 bg-sky-400/[0.05] p-3">
+                <div className="mb-2 text-[11.5px] text-sky-100/80">Choose an agent identity to hydrate into this chain. Creates a new AgentInstance with chain_id and its 1:1 conversation.</div>
+                <AgentPickerV2
+                  debugId="chain-add-agent-identity-picker"
+                  title="Add agent to chain"
+                  entityTypes={['agent_id']}
+                  projectId={projectId || ''}
+                  includeUserProxy={false}
+                  filterPredicate={(row) => row.section === 'agent-ids'}
+                  onClose={() => setAddAgentOpen(false)}
+                  onCancel={() => setAddAgentOpen(false)}
+                  onChange={async (selected) => {
+                    const pick = selected[0];
+                    if (pick) await addAgentToChain(pick.id);
+                  }}
+                />
+                {addAgentBusy ? <div className="mt-2 text-[11.5px] text-zinc-400">Adding agent to chain…</div> : null}
+              </div>
+            ) : null}
+            <AgentPickerV2
+              key={`${agentPicker.mode}:${agentPicker.taskId}`}
               debugId={`task-${agentPicker.mode}-agent-picker`}
-              daemonUrl={session.daemonUrl || daemonUrl || ''}
-              clientToken={session.clientToken || clientToken || ''}
-              remotePeersEnabled
-              agents={selectableAgents}
-              identities={agentIdentities}
-              projects={projectId ? [{ projectId, name: projectId }] : []}
-              preferredTemplateId={agentPicker.mode === 'reviewer' ? 'reviewer' : ''}
-              defaultProjectId={projectId || ''}
-              conversationSummaryById={effectiveConversationSummaryById}
-              value={agentPicker.mode === 'assignee' ? (pickerTask.assigneeAgentInstanceId || '') : (taskReviewerIds(pickerTask)[0] || '')}
-              selectionOnly
-              onRefreshAgents={onRefreshAgents}
-              onSelected={(agentInstanceId, result) => applyAgentPick(agentInstanceId, result)}
+              title={`Set task ${agentPicker.mode}`}
+              entityTypes={['agent_instance_id']}
+              projectId={projectId || ''}
+              // UI-8: assignee picker = same-chain instances only (no user option in v1).
+              // reviewer picker = user + same-chain instances.
+              includeUserProxy={agentPicker.mode === 'reviewer'}
+              multiple={agentPicker.mode === 'reviewer'}
+              filterPredicate={(row) => {
+                if (row.isUser) return agentPicker.mode === 'reviewer';
+                // Same-chain validation: agent_instance.chain_id == task.chain_id.
+                const inst = (agents || []).find((agent: any) => String(agent?.id || '') === String(row.id));
+                if (!inst) return false;
+                return String(inst.chainId || inst.chain_id || '') === String(pickerTask.chainId || pickerTask.chain_id || chainId);
+              }}
+              defaultSelected={pickerDefaults}
+              onClose={() => setAgentPicker(null)}
+              onCancel={() => setAgentPicker(null)}
+              onChange={async (selected) => {
+                if (agentPicker.mode === 'assignee') {
+                  const pick = selected[0];
+                  if (pick) await onAssignTask?.(pickerTask, pick.id);
+                  setAgentPicker(null);
+                }
+              }}
+              onConfirm={async (selected) => {
+                await onSetReviewers?.(pickerTask, selected.map((s) => s.id));
+                setAgentPicker(null);
+              }}
             />
           </div>
         </div>
@@ -5879,7 +6553,8 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
       <div className="mb-2 flex items-center justify-between text-xs uppercase tracking-wide text-zinc-500"><span>{title}</span><span>{tasks.length}</span></div>
       {localError && <div data-debug-id="task-list-action-error" className="mb-2 rounded-xl border border-red-400/30 bg-red-500/10 px-3 py-2 text-sm text-red-100">{localError}</div>}
       <div className="space-y-2">
-        {tasks.length === 0 ? <div className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">{emptyText}</div> : tasks.map((task: any, index: number) => {
+        {tasks.length === 0 ? <div className="rounded-xl border border-dashed border-white/10 p-4 text-sm text-zinc-500">{emptyText}</div> : tasks.map((taskFromList: any, index: number) => {
+          const task = tasksById?.[taskFromList.taskId] || taskFromList;
           const expanded = expandedTaskId === task.taskId;
           const perceived = perceivedTaskStatus(task, tasksById || {});
           const commentsOpen = Boolean(commentsOpenByTaskId[task.taskId]);
@@ -5916,7 +6591,11 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
                   </button>
                   <div data-debug-id={`chain-task-row-${task.taskId}-agents`} className="mt-2 ml-8 flex min-w-0 flex-wrap items-center gap-2">
                     <TaskAgentChip role="Assignee" agentId={assigneeId} agent={assigneeAgent} active={assigneeWorking} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'assignee' })} onChatClick={onOpenAgentChat} />
-                    <TaskAgentChip role="Reviewer" agentId={reviewerId} agent={reviewerAgent} active={reviewerWorking} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'reviewer' })} onChatClick={onOpenAgentChat} />
+                    {reviewerIds.length === 0 ? (
+                      <TaskAgentChip role="Reviewer" agentId="" agent={null} active={false} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'reviewer' })} onChatClick={onOpenAgentChat} />
+                    ) : reviewerIds.map((rid: string) => (
+                      <TaskAgentChip key={rid} role="Reviewer" agentId={rid} agent={agentsById.get(String(rid))} active={reviewerWorking} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'reviewer' })} onChatClick={onOpenAgentChat} />
+                    ))}
                   </div>
                 </div>
                 {actionNeeded && (
@@ -5930,7 +6609,7 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
                     <span className={`rounded-full border px-2 py-1 ${statusTone(task.status)}`}>{task.status}</span>
                     <span className="rounded-full bg-black/20 px-2 py-1 font-mono text-zinc-400">ID: {task.taskId}</span>
                     <button data-debug-id={`task-detail-assignee-picker-btn-${task.taskId}`} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'assignee' })} className="rounded-full bg-black/20 px-2 py-1 text-zinc-300 hover:bg-white/10">Assignee {task.assigneeAgentInstanceId || '—'}</button>
-                    <button data-debug-id={`task-detail-reviewer-picker-btn-${task.taskId}`} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'reviewer' })} className="rounded-full bg-black/20 px-2 py-1 text-zinc-300 hover:bg-white/10">Reviewer {reviewerId || task.reviewerAgentInstanceId || '—'}</button>
+                    <button data-debug-id={`task-detail-reviewer-picker-btn-${task.taskId}`} onClick={() => setAgentPicker({ taskId: task.taskId, mode: 'reviewer' })} className="rounded-full bg-black/20 px-2 py-1 text-zinc-300 hover:bg-white/10">{reviewerIds.length > 1 ? `Reviewers ${reviewerIds.join(', ')}` : `Reviewer ${reviewerIds[0] || task.reviewerAgentInstanceId || '—'}`}</button>
                   </div>
                   <div data-debug-id={`task-detail-description-${task.taskId}`} className="mt-3 rounded-xl bg-black/20 p-3">
                     {task.description ? <Markdown source={task.description} className="text-sm text-zinc-300" /> : <div className="text-sm text-zinc-500">No description.</div>}
@@ -6038,7 +6717,7 @@ function TaskTodoList({ title, emptyText, tasks, tasksById, taskLogsByTaskId, ta
 
 function AgentSideSheet({ agent, taskId = '', onClose }: any) {
   const taskQuery = useFetchTaskQuery({ taskId }, { skip: !taskId });
-  const taskCommentsQuery = useFetchTaskCommentsQuery({ taskId }, { skip: !taskId });
+  const taskCommentsQuery = useFetchTaskCommentsQuery({ taskId, limit: 100 }, { skip: !taskId });
   const task = taskQuery.data?.task || null;
   const recentComments = useMemo(() => {
     const comments = taskCommentsQuery.data?.comments || [];

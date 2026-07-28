@@ -61,6 +61,21 @@ request_body :: proc(request: string) -> string {
 	return ""
 }
 
+// request_line_matches reports whether the HTTP request line is `<method> <path>`
+// optionally followed by a query string. Unlike a strict `has_prefix(request,
+// "<method> <path> ")` check, this tolerates `<method> <path>?query ...`, which
+// federation forwards produce by appending `?peer_token=...&peer_daemon_id=...`.
+// Without this, forwarded routes fall through to the catch-all 404 and surface as
+// a 502 "not found" on the origin daemon.
+request_line_matches :: proc(request, method, path: string) -> bool {
+	prefix := fmt.tprintf("%s %s", method, path)
+	if !strings.has_prefix(request, prefix) do return false
+	rest := request[len(prefix):]
+	// The char immediately after the path must be a space (no query) or '?'.
+	if len(rest) == 0 do return false
+	return rest[0] == ' ' || rest[0] == '?'
+}
+
 extract_header :: proc(request, name: string) -> string {
 	pattern := fmt.tprintf("%s:", name)
 	idx := strings.index(request, pattern)

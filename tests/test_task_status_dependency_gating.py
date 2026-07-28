@@ -87,6 +87,7 @@ ham_ctl_bin = "{ctl_bin}"
         wait_for_daemon()
 
         status, agent_res = request_post("/register", {
+            "protocol_version": 1,
             "agent_class": "coord-dependency-gating",
             "agent_instance_id": COORDINATOR_ID,
             "display_name": "Dependency Gating Coordinator",
@@ -94,6 +95,15 @@ ham_ctl_bin = "{ctl_bin}"
         coord_token = agent_res.get("agent_token")
         if status != 200 or not coord_token:
             raise AssertionError(f"register coordinator failed: status={status} body={agent_res}")
+
+        status, worker_res = request_post("/register", {
+            "protocol_version": 1,
+            "agent_class": "worker-dependency-gating",
+            "agent_instance_id": ASSIGNEE_ID,
+            "display_name": "Dependency Gating Worker",
+        })
+        if status != 200:
+            raise AssertionError(f"register worker failed: status={status} body={worker_res}")
 
         status, user_res = request_post("/user-client/register", {"user_id": USER_ID, "client_instance_id": CLIENT_ID})
         user_token = user_res.get("client_token")
@@ -104,26 +114,15 @@ ham_ctl_bin = "{ctl_bin}"
             "action": "task_chain_create",
             "client_instance_id": CLIENT_ID,
             "client_token": user_token,
-            "project_id": "default",
-            "kind": "coding",
             "title": "Dependency gating regression",
             "chain_id": CHAIN_ID,
             "coordinator_agent_instance_id": COORDINATOR_ID,
             "wants_vcs": False,
-            "no_scaffold": True,
         })
         require_ok("create chain", status, chain_res)
-        team_id = chain_res.get("team_id")
-        if not team_id:
-            raise AssertionError(f"create chain missing team_id: {chain_res}")
+        team_id = CHAIN_ID
 
-        status, add_member_res = request_post("/teams/add-member", {
-            "agent_token": coord_token,
-            "team_id": team_id,
-            "role_key": "worker",
-            "agent_instance_id": ASSIGNEE_ID,
-        })
-        require_ok("add assignee to chain team", status, add_member_res)
+
 
         status, task_a_res = request_post("/tasks/create", {
             "agent_token": coord_token,

@@ -111,7 +111,7 @@ export default function ChatMessageList({
           const delivery = getDeliveryStatus(message);
           return (
             <div key={message.key} data-debug-id={`${debugPrefix}-message-${message.messageId}`} className={`msg group flex ${message.isUser ? 'justify-end' : 'justify-start'}`}>
-              <div className={`flex ${message.isUser ? 'max-w-[74%] items-end' : 'w-full items-start'} flex-col text-sm`}>
+              <div className={`flex ${message.isUser ? 'max-w-[86%] items-end sm:max-w-[78%]' : 'w-full items-start'} flex-col text-sm`}>
                 <div className="mb-1 flex max-w-full items-center gap-2 text-[10px] uppercase tracking-wider text-zinc-600">
                   <span className="truncate">{message.authorLabel}</span>
                   {timestamp.label ? <time data-debug-id={`${debugPrefix}-message-${message.messageId}-time`} dateTime={timestamp.iso} title={timestamp.iso} className="shrink-0">{timestamp.label}</time> : null}
@@ -120,8 +120,8 @@ export default function ChatMessageList({
                 <div className={`${message.isUser ? 'rounded-[15px] border border-[#262626] bg-[#1c1c1c] px-[14px] py-[10px] text-zinc-100' : 'max-w-full text-zinc-200'}`}>
                   {renderMessageBody ? renderMessageBody({ message, onReply: reply }) : <Markdown source={message.body} compact copyAll={false} />}
                 </div>
-                <div data-debug-id={`${debugPrefix}-message-actions-${message.messageId}`} className={`mt-1 flex items-center gap-[10px] text-[13px] text-zinc-500 ${message.isUser ? 'self-end' : 'self-start'}`}>
-                  <ChatHoverCopyButton debugId={`${debugPrefix}-message-copy-btn-${message.messageId}`} text={message.body} />
+                <div data-debug-id={`${debugPrefix}-message-actions-${message.messageId}`} className={`pointer-events-none h-0 overflow-visible text-[12px] text-zinc-500 ${message.isUser ? 'self-end' : 'self-start'}`}>
+                  <ChatHoverCopyButton debugId={`${debugPrefix}-message-copy-btn-${message.messageId}`} text={message.body} className="pointer-events-auto rounded-full border border-white/10 bg-black/50 px-1.5 py-0.5 shadow-lg" />
                 </div>
                 {message.isUser && delivery.glyph ? (
                   <div data-debug-id={`${debugPrefix}-message-${message.messageId}-status`} title={delivery.label} className={`mt-1 text-right text-[10px] ${delivery.tone}`}>{delivery.glyph} {delivery.label}</div>

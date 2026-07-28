@@ -81,6 +81,10 @@ function joinUrl(baseUrl: string, path: string) {
   return `${baseUrl.replace(/\/$/, '')}${path}`;
 }
 
+function sanitizeProjectId(projectId?: string): string {
+  return projectId === 'default' ? '' : (projectId || '');
+}
+
 export async function registerUserClient({ daemonUrl, userId, clientInstanceId, clientToken }: SessionRequest) {
   return requestJson(joinUrl(daemonUrl, '/user-client/register'), {
     method: 'POST',
@@ -149,22 +153,36 @@ export async function listKnownAgentsCatalog({
   projectId = '',
   includeIdentities = false,
   includeConversations = false,
+  limit,
+  offset,
+  running,
 }: {
   daemonUrl: string;
   projectId?: string;
   includeIdentities?: boolean;
   includeConversations?: boolean;
+  limit?: number;
+  offset?: number;
+  running?: boolean;
 }) {
   const params = new URLSearchParams();
-  if (projectId) params.set('project_id', projectId);
+  const sanitizedProjectId = sanitizeProjectId(projectId);
+  if (sanitizedProjectId) params.set('project_id', sanitizedProjectId);
   if (includeIdentities) params.set('include_identities', 'true');
   if (includeConversations) params.set('include_conversations', 'true');
+  if (limit !== undefined) params.set('limit', String(limit));
+  if (offset !== undefined) params.set('offset', String(offset));
+  if (running) params.set('running', 'true');
   const query = params.toString();
   const path = query ? `/agents?${query}` : '/agents';
   const data = await requestJson(joinUrl(daemonUrl, path));
   return {
     agents: data.agents ?? data.records ?? [],
     identities: data.identities ?? [],
+    total: Number(data.total || 0),
+    limit: Number(data.limit || 0),
+    offset: Number(data.offset || 0),
+    hasMore: Boolean(data.has_more || data.hasMore),
   };
 }
 
@@ -234,17 +252,40 @@ export async function bindRemoteProxy({ daemonUrl, clientToken, peerId, originDa
   });
 }
 
+// Fetch the template (persona/instructions/role defaults) for a peer-advertised
+// remote agent-id, via the proxy-side pass-through route. Used to display a
+// local-proxy agent-id's remote role content.
+export async function fetchPeerAgentTemplate({ daemonUrl, clientToken, peerId, remoteAgentId }: { daemonUrl: string; clientToken: string; peerId: string; remoteAgentId: string }) {
+  const data = await requestJson(joinUrl(daemonUrl, `/federation/peers/${encodeURIComponent(peerId)}/agents/${encodeURIComponent(remoteAgentId)}/template`), {
+    headers: { Authorization: `Bearer ${clientToken}` },
+  });
+  return { agentId: String(data.agent_id || data.agentId || remoteAgentId), template: data.template ?? null };
+}
+
+// Change which remote agent-id (and optionally which peer) a local proxy
+// agent-id maps to. The local id and history stay stable.
+export async function remapRemoteProxy({ daemonUrl, clientToken, localAgentId, remoteAgentId, peerId = '', originDaemonId = '', displayName, templateId }: { daemonUrl: string; clientToken: string; localAgentId: string; remoteAgentId: string; peerId?: string; originDaemonId?: string; displayName?: string; templateId?: string }) {
+  const body: any = { local_agent_id: localAgentId, remote_agent_id: remoteAgentId };
+  if (peerId) body.peer_id = peerId;
+  if (originDaemonId) body.origin_daemon_id = originDaemonId;
+  if (displayName !== undefined) body.display_name = displayName;
+  if (templateId !== undefined) body.template_id = templateId;
+  return requestJson(joinUrl(daemonUrl, '/federation/proxies/remap'), {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${clientToken}` },
+    body,
+  });
+}
+
 export async function listKnownAgentsPage({ daemonUrl, projectId = '', limit = 20, offset = 0 }: { daemonUrl: string; projectId?: string; limit?: number; offset?: number }) {
-  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
-  if (projectId) params.set('project_id', projectId);
-  const data = await requestJson(joinUrl(daemonUrl, `/agents?${params.toString()}`));
+  const data = await listKnownAgentsCatalog({ daemonUrl, projectId, limit, offset });
   return {
-    agents: data.agents ?? data.records ?? [],
-    limit: Number(data.limit || limit),
-    offset: Number(data.offset || offset),
-    nextOffset: Number(data.next_offset || data.nextOffset || (offset + ((data.agents ?? data.records ?? []).length))),
-    hasMore: Boolean(data.has_more || data.hasMore),
-    total: Number(data.total || 0),
+    agents: data.agents,
+    limit: data.limit,
+    offset: data.offset,
+    nextOffset: data.offset + data.agents.length,
+    hasMore: data.hasMore,
+    total: data.total,
   };
 }
 
@@ -264,16 +305,15 @@ export async function listAgentProviders({ daemonUrl }: { daemonUrl: string }) {
   return data.providers ?? [];
 }
 
-export async function startAgent({ daemonUrl, agentId, agentInstanceId = '', provider, templateId, projectId, projectIdSet, alias, displayName, modelTier, newMessage }: { daemonUrl: string; agentId?: string; agentInstanceId?: string; provider?: string; templateId?: string; projectId?: string; projectIdSet?: boolean; alias?: string; displayName?: string; modelTier?: string; newMessage?: string }) {
+export async function startAgent({ daemonUrl, agentId, agentInstanceId = '', provider, templateId, projectId, projectIdSet, alias, displayName, modelTier }: { daemonUrl: string; agentId?: string; agentInstanceId?: string; provider?: string; templateId?: string; projectId?: string; projectIdSet?: boolean; alias?: string; displayName?: string; modelTier?: string }) {
   const body: any = {
     template_id: templateId || '',
-    project_id: projectId || '',
+    project_id: sanitizeProjectId(projectId),
     alias: alias || displayName || '',
     display_name: displayName || alias || '',
     agent_instance_id: agentInstanceId || '',
     model_tier: modelTier || '',
     agent_id: agentId || '',
-    new_message: newMessage || ''
   };
   if (provider !== undefined) {
     body.agent = provider || '';
@@ -292,10 +332,151 @@ export async function startAgent({ daemonUrl, agentId, agentInstanceId = '', pro
   });
 }
 
+// UI-8: Add agent to chain. Creates a new AgentInstance bound to an EXISTING
+// chain_id via POST /api/v1/agent-instances (the rewrite API), as documented in
+// the architecture doc and confirmed ready in the gap analysis. This never
+// attaches an unrelated live instance from another chain — it hydrates a fresh
+// instance into the current chain and creates its 1:1 conversation.
+export async function createAgentInstanceInChain({ daemonUrl, clientToken, agentId, chainId, providerProfile, modelTier, projectId, displayName, templateId }: { daemonUrl: string; clientToken: string; agentId: string; chainId: string; providerProfile?: string; modelTier?: string; projectId?: string; displayName?: string; templateId?: string }) {
+  if (!agentId || !chainId) throw new Error('agentId and chainId are required to add an agent to a chain');
+  return requestJson(joinUrl(daemonUrl, '/api/v1/agent-instances'), {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${clientToken}` },
+    body: {
+      agent_id: agentId,
+      chain_id: chainId,
+      ...(providerProfile ? { provider_profile: providerProfile } : {}),
+      ...(modelTier ? { model_tier: modelTier } : {}),
+      ...(projectId ? { project_id: projectId } : {}),
+      ...(displayName ? { display_name: displayName } : {}),
+      ...(templateId ? { template_id: templateId } : {}),
+    },
+    timeoutMs: 10000,
+  });
+}
+
 export async function showAgent({ daemonUrl, agentRecordId, agentInstanceId }: { daemonUrl: string; agentRecordId?: string; agentInstanceId?: string }) {
   return requestJson(joinUrl(daemonUrl, '/agents/show'), {
     method: 'POST',
     body: { agent_record_id: agentRecordId || '', agent_instance_id: agentInstanceId || '' },
+  });
+}
+
+// UI-9: agent bridge-support config (which bridges this agent may run on).
+// Rewrite /api/v1 routes with Bearer clientToken (see gap analysis lines 59-62).
+export type AgentBridgeSupportEntry = {
+  bridgeId: string;
+  enabled: boolean;
+  providerProfile?: string;
+  modelTier?: string;
+  priority?: number;
+  maxInstances?: number;
+};
+
+export async function listAgentBridgeSupport({ daemonUrl, clientToken, agentId }: { daemonUrl: string; clientToken: string; agentId: string }) {
+  return requestJson(joinUrl(daemonUrl, `/api/v1/agents/${encodeURIComponent(agentId)}/bridge-support`), {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${clientToken}` },
+  });
+}
+
+export async function patchAgentBridgeSupport({ daemonUrl, clientToken, agentId, bridgeId, enabled, providerProfile, modelTier, priority, maxInstances }: { daemonUrl: string; clientToken: string; agentId: string; bridgeId: string; enabled?: boolean; providerProfile?: string; modelTier?: string; priority?: number; maxInstances?: number }) {
+  return requestJson(joinUrl(daemonUrl, `/api/v1/agents/${encodeURIComponent(agentId)}/bridge-support/${encodeURIComponent(bridgeId)}`), {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${clientToken}` },
+    body: {
+      ...(enabled !== undefined ? { enabled } : {}),
+      ...(providerProfile !== undefined ? { provider_profile: providerProfile } : {}),
+      ...(modelTier !== undefined ? { model_tier: modelTier } : {}),
+      ...(priority !== undefined ? { priority } : {}),
+      ...(maxInstances !== undefined ? { max_instances: maxInstances } : {}),
+    },
+  });
+}
+
+// UI-9: Bridges list (all known bridges the user owns / can use).
+export async function listBridges({ daemonUrl, clientToken }: { daemonUrl: string; clientToken: string }) {
+  return requestJson(joinUrl(daemonUrl, '/api/v1/bridges'), {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${clientToken}` },
+  });
+}
+
+// UI-11: Settings → Bridges management. All routes are Hub /api/v1 (Bearer).
+// Per arch doc §6A: list/detail/rename/revoke exist; enrollments create/list/
+// revoke exist. Rotate-token is NOT yet served (documented gap).
+export async function fetchBridgeDetail({ daemonUrl, clientToken, bridgeId, expand }: { daemonUrl: string; clientToken: string; bridgeId: string; expand?: string }) {
+  const params = new URLSearchParams();
+  if (expand) params.set('expand', expand);
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  return requestJson(joinUrl(daemonUrl, `/api/v1/bridges/${encodeURIComponent(bridgeId)}${suffix}`), {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${clientToken}` },
+  });
+}
+
+export async function renameBridge({ daemonUrl, clientToken, bridgeId, label }: { daemonUrl: string; clientToken: string; bridgeId: string; label: string }) {
+  return requestJson(joinUrl(daemonUrl, `/api/v1/bridges/${encodeURIComponent(bridgeId)}`), {
+    method: 'PATCH',
+    headers: { Authorization: `Bearer ${clientToken}` },
+    body: { label },
+  });
+}
+
+// Revoke = "remove": invalidates token, disconnects live WS, marks revoked.
+export async function revokeBridge({ daemonUrl, clientToken, bridgeId }: { daemonUrl: string; clientToken: string; bridgeId: string }) {
+  return requestJson(joinUrl(daemonUrl, `/api/v1/bridges/${encodeURIComponent(bridgeId)}/revoke`), {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${clientToken}` },
+  });
+}
+
+// Enrollment ceremony: create a one-time enrollment token.
+export async function createBridgeEnrollment({ daemonUrl, clientToken, label, expiresInSeconds }: { daemonUrl: string; clientToken: string; label?: string; expiresInSeconds?: number }) {
+  const body: any = {};
+  if (label) body.label = label;
+  if (expiresInSeconds) body.expires_in_seconds = expiresInSeconds;
+  return requestJson(joinUrl(daemonUrl, '/api/v1/bridge-enrollments'), {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${clientToken}` },
+    body,
+  });
+}
+
+export async function listBridgeEnrollments({ daemonUrl, clientToken }: { daemonUrl: string; clientToken: string }) {
+  return requestJson(joinUrl(daemonUrl, '/api/v1/bridge-enrollments'), {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${clientToken}` },
+  });
+}
+
+export async function revokeBridgeEnrollment({ daemonUrl, clientToken, enrollmentId }: { daemonUrl: string; clientToken: string; enrollmentId: string }) {
+  return requestJson(joinUrl(daemonUrl, `/api/v1/bridge-enrollments/${encodeURIComponent(enrollmentId)}`), {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${clientToken}` },
+  });
+}
+
+// Project bridge-paths (per-bridge override + advisory validation).
+export async function putProjectBridgePath({ daemonUrl, clientToken, projectId, bridgeId, path }: { daemonUrl: string; clientToken: string; projectId: string; bridgeId: string; path: string }) {
+  return requestJson(joinUrl(daemonUrl, `/api/v1/projects/${encodeURIComponent(projectId)}/bridge-paths/${encodeURIComponent(bridgeId)}`), {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${clientToken}` },
+    body: { path },
+  });
+}
+
+export async function deleteProjectBridgePath({ daemonUrl, clientToken, projectId, bridgeId }: { daemonUrl: string; clientToken: string; projectId: string; bridgeId: string }) {
+  return requestJson(joinUrl(daemonUrl, `/api/v1/projects/${encodeURIComponent(projectId)}/bridge-paths/${encodeURIComponent(bridgeId)}`), {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${clientToken}` },
+  });
+}
+
+export async function validateProjectBridgePath({ daemonUrl, clientToken, projectId, bridgeId }: { daemonUrl: string; clientToken: string; projectId: string; bridgeId: string }) {
+  return requestJson(joinUrl(daemonUrl, `/api/v1/projects/${encodeURIComponent(projectId)}/bridge-paths/${encodeURIComponent(bridgeId)}/validate`), {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${clientToken}` },
   });
 }
 
@@ -308,7 +489,7 @@ export async function createAgent({ daemonUrl, agentId, agentInstanceId, display
       display_name: displayName || '',
       provider_profile: providerProfile || '',
       template_id: templateId || '',
-      project_id: projectId || '',
+      project_id: sanitizeProjectId(projectId),
       model_tier: modelTier || 'normal',
       start: Boolean(start),
     },
@@ -320,7 +501,7 @@ export async function updateAgent({ daemonUrl, agentRecordId, agentInstanceId, d
   if (displayName !== undefined) body.display_name = displayName;
   if (templateId !== undefined) body.template_id = templateId;
   if (providerProfile !== undefined) body.provider_profile = providerProfile;
-  if (projectId !== undefined) body.project_id = projectId;
+  if (projectId !== undefined) body.project_id = sanitizeProjectId(projectId);
   if (runDir !== undefined) body.run_dir = runDir;
   if (modelTier !== undefined) body.model_tier = modelTier;
   if (updateAgentIdDefaults) body.update_agent_id_defaults = true;
@@ -349,7 +530,7 @@ export async function stopAgent({ daemonUrl, agentInstanceId, timeInSec }: { dae
 export async function associateAgentWithProject({ daemonUrl, agentRecordId, agentInstanceId, projectId }: { daemonUrl: string; agentRecordId?: string; agentInstanceId?: string; projectId: string }) {
   return requestJson(joinUrl(daemonUrl, '/agents/associate'), {
     method: 'POST',
-    body: { agent_record_id: agentRecordId || '', agent_instance_id: agentInstanceId || '', project_id: projectId },
+    body: { agent_record_id: agentRecordId || '', agent_instance_id: agentInstanceId || '', project_id: sanitizeProjectId(projectId) },
   });
 }
 
@@ -363,8 +544,14 @@ export async function disassociateAgentFromProject({ daemonUrl, agentRecordId, a
 // Daemon-authoritative conversation list for the sidebar: rows are returned
 // most-recent-first with persisted titles and last_message_unix_ms. Used only
 // on explicit triggers (open/create/send/refresh) — never passive events.
-export async function listConversations({ daemonUrl, clientInstanceId, clientToken }: UserRpcRequest) {
-  const data = await userRpcRequest({ daemonUrl, clientInstanceId, clientToken, action: 'list_chats' });
+export async function listConversations({ daemonUrl, clientInstanceId, clientToken, limit, cursor }: UserRpcRequest & { limit?: number; cursor?: string }) {
+  const data = await userRpcRequest({
+    daemonUrl,
+    clientInstanceId,
+    clientToken,
+    action: 'list_chats',
+    body: { limit, cursor }
+  });
   return { ...data, chats: data.chats ?? [] };
 }
 
@@ -390,7 +577,8 @@ export async function fetchChatMessage({ daemonUrl, clientToken, messageId }: { 
 }
 
 
-export async function sendToAgent({ daemonUrl, clientInstanceId, clientToken, agentInstanceId, body, interrupt }: AgentRequest & { body: string; interrupt?: boolean }) {
+export async function sendToAgent({ daemonUrl, clientInstanceId, clientToken, agentInstanceId, body, interrupt, artifactIds }: AgentRequest & { body: string; interrupt?: boolean; artifactIds?: string[] }) {
+  const attachments = (artifactIds || []).filter(Boolean);
   return requestJson(joinUrl(daemonUrl, '/user-rpc'), {
     method: 'POST',
     body: {
@@ -400,14 +588,18 @@ export async function sendToAgent({ daemonUrl, clientInstanceId, clientToken, ag
       agent_instance_id: agentInstanceId,
       body,
       interrupt,
+      // UI-5 upload-before-send: forward resolved attachment ids as artifact_ids.
+      ...(attachments.length > 0 ? { artifact_ids: attachments } : {}),
     },
   });
 }
 
-export async function sendToCoordinator({ daemonUrl, clientInstanceId, clientToken, chainId, body }: UserRpcRequest & { chainId: string; body: string }) {
+export async function sendToCoordinator({ daemonUrl, clientInstanceId, clientToken, chainId, body, artifactIds }: UserRpcRequest & { chainId: string; body: string; artifactIds?: string[] }) {
+  const attachments = (artifactIds || []).filter(Boolean);
   return requestJson(joinUrl(daemonUrl, '/chat/send-to-coordinator'), {
     method: 'POST',
-    body: { agent_token: clientToken, chain_id: chainId, body, client_instance_id: clientInstanceId },
+    // UI-5 upload-before-send: forward resolved attachment ids as artifact_ids.
+    body: { agent_token: clientToken, chain_id: chainId, body, client_instance_id: clientInstanceId, ...(attachments.length > 0 ? { artifact_ids: attachments } : {}) },
   });
 }
 
@@ -423,10 +615,11 @@ export async function markChatRead({ daemonUrl, clientInstanceId, clientToken, a
   });
 }
 
-export async function listTaskChains({ daemonUrl, clientToken, createdAfter, createdBefore, limit = 1000, offset = 0 }: Omit<UserRpcRequest, 'clientInstanceId'> & { createdAfter?: number; createdBefore?: number; limit?: number; offset?: number }) {
+export async function listTaskChains({ daemonUrl, clientToken, createdAfter, createdBefore, limit = 20, offset = 0, status }: Omit<UserRpcRequest, 'clientInstanceId'> & { createdAfter?: number; createdBefore?: number; limit?: number; offset?: number; status?: string }) {
   let path = `/task-chains?limit=${limit}&offset=${offset}`;
   if (createdAfter && createdAfter > 0) path += `&created_after=${createdAfter}`;
   if (createdBefore && createdBefore > 0) path += `&created_before=${createdBefore}`;
+  if (status) path += `&status=${encodeURIComponent(status)}`;
   return requestJson(joinUrl(daemonUrl, path), {
     method: 'GET',
     headers: { 'Authorization': `Bearer ${clientToken}` }
@@ -517,8 +710,9 @@ export async function fetchWorkspaceDiff({ daemonUrl, clientToken, chainId, file
   return requestJson(joinUrl(daemonUrl, path));
 }
 
-export async function listChainTasks({ daemonUrl, clientToken, chainId }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId: string }) {
-  const path = `/task-chains/${encodeURIComponent(chainId)}/tasks`;
+export async function listChainTasks({ daemonUrl, clientToken, chainId, limit = 20, offset = 0 }: Omit<UserRpcRequest, 'clientInstanceId'> & { chainId: string; limit?: number; offset?: number }) {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const path = `/task-chains/${encodeURIComponent(chainId)}/tasks?${params.toString()}`;
   return requestJson(joinUrl(daemonUrl, path), {
     method: 'GET',
     headers: { 'Authorization': `Bearer ${clientToken}` }
@@ -533,8 +727,17 @@ export async function fetchTask({ daemonUrl, clientToken, taskId }: Omit<UserRpc
   });
 }
 
-export async function fetchTaskComments({ daemonUrl, clientToken, taskId, unresolved = false }: Omit<UserRpcRequest, 'clientInstanceId'> & { taskId: string; unresolved?: boolean }) {
-  const path = `/tasks/${encodeURIComponent(taskId)}/comments?unresolved=${unresolved}`;
+export async function fetchTaskComments({ daemonUrl, clientToken, taskId, unresolved = false, limit = 20, offset = 0 }: Omit<UserRpcRequest, 'clientInstanceId'> & { taskId: string; unresolved?: boolean; limit?: number; offset?: number }) {
+  const params = new URLSearchParams({ unresolved: String(unresolved), limit: String(limit), offset: String(offset) });
+  const path = `/tasks/${encodeURIComponent(taskId)}/comments?${params.toString()}`;
+  return requestJson(joinUrl(daemonUrl, path), {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${clientToken}` }
+  });
+}
+
+export async function fetchTaskComment({ daemonUrl, clientToken, taskId, commentId }: Omit<UserRpcRequest, 'clientInstanceId'> & { taskId: string; commentId: string }) {
+  const path = `/tasks/${encodeURIComponent(taskId)}/comments/${encodeURIComponent(commentId)}`;
   return requestJson(joinUrl(daemonUrl, path), {
     method: 'GET',
     headers: { 'Authorization': `Bearer ${clientToken}` }
@@ -545,7 +748,7 @@ export async function createArtifact({ daemonUrl, clientToken, name, kind = '', 
   const body: any = {
     name,
     kind,
-    project_id: projectId,
+    project_id: sanitizeProjectId(projectId),
     description,
     content_base64: contentBase64,
   };
@@ -579,9 +782,10 @@ export function artifactContentUrl({ daemonUrl, clientToken, artifactId, version
   return joinUrl(daemonUrl, `/artifacts/${encodeURIComponent(artifactId)}/content?${params.toString()}`);
 }
 
-export async function listArtifacts({ daemonUrl, clientToken, projectId = '', creatorId = '', originRef = '', includeDeleted = false, limit = 100 }: { daemonUrl: string; clientToken: string; projectId?: string; creatorId?: string; originRef?: string; includeDeleted?: boolean; limit?: number }) {
-  const params = new URLSearchParams({ limit: String(limit) });
-  if (projectId) params.set('project_id', projectId);
+export async function listArtifacts({ daemonUrl, clientToken, projectId = '', creatorId = '', originRef = '', includeDeleted = false, limit = 100, offset = 0 }: { daemonUrl: string; clientToken: string; projectId?: string; creatorId?: string; originRef?: string; includeDeleted?: boolean; limit?: number; offset?: number }) {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  const sanitizedProjectId = sanitizeProjectId(projectId);
+  if (sanitizedProjectId) params.set('project_id', sanitizedProjectId);
   if (creatorId) params.set('creator_id', creatorId);
   if (originRef) params.set('origin_ref', originRef);
   if (includeDeleted) params.set('include_deleted', 'true');
@@ -592,19 +796,18 @@ export async function listArtifacts({ daemonUrl, clientToken, projectId = '', cr
 }
 
 export async function updateArtifact({ daemonUrl, clientToken, artifactId, name, kind, projectId, description, originKind, originRef, contentBase64, changeReason }: { daemonUrl: string; clientToken: string; artifactId: string; name?: string; kind?: string; projectId?: string; description?: string; originKind?: string; originRef?: string; contentBase64?: string; changeReason?: string }) {
-  const body: any = { artifact_id: artifactId };
-  if (name !== undefined) body.name = name;
-  if (kind !== undefined) body.kind = kind;
-  if (projectId !== undefined) body.project_id = projectId;
-  if (description !== undefined) body.description = description;
-  if (originKind !== undefined) body.origin_kind = originKind;
-  if (originRef !== undefined) body.origin_ref = originRef;
-  if (contentBase64 !== undefined) body.content_base64 = contentBase64;
-  if (changeReason !== undefined) body.change_reason = changeReason;
-  return requestJson(joinUrl(daemonUrl, '/artifacts/update'), {
-    method: 'POST',
+  // UI-10: PATCH /api/v1/artifacts/{id} is the Hub rewrite route (Bearer auth).
+  // The Hub patch_artifact handler only persists `name` + `description`
+  // (metadata rename); kind/origin/content/versioning are NOT supported by the
+  // /api/v1 PATCH surface and must not be sent as if honored. Legacy
+  // POST /artifacts/update is unserved by the Hub.
+  const patchBody: any = {};
+  if (name !== undefined) patchBody.name = name;
+  if (description !== undefined) patchBody.description = description;
+  return requestJson(joinUrl(daemonUrl, `/api/v1/artifacts/${encodeURIComponent(artifactId)}`), {
+    method: 'PATCH',
     headers: { 'Authorization': `Bearer ${clientToken}` },
-    body,
+    body: patchBody,
   });
 }
 
@@ -662,10 +865,11 @@ export async function deleteArtifactAnnotation({ daemonUrl, clientToken, annotat
 }
 
 export async function deleteArtifact({ daemonUrl, clientToken, artifactId }: { daemonUrl: string; clientToken: string; artifactId: string }) {
-  return requestJson(joinUrl(daemonUrl, '/artifacts/delete'), {
-    method: 'POST',
+  // UI-10: DELETE /api/v1/artifacts/{id} is the Hub rewrite route (Bearer auth,
+  // returns 204 No Content). Legacy POST /artifacts/delete is unserved by the Hub.
+  return requestJson(joinUrl(daemonUrl, `/api/v1/artifacts/${encodeURIComponent(artifactId)}`), {
+    method: 'DELETE',
     headers: { 'Authorization': `Bearer ${clientToken}` },
-    body: { artifact_id: artifactId },
   });
 }
 
@@ -917,29 +1121,6 @@ export async function resetPreference({ daemonUrl, clientToken, key }: { daemonU
   return requestJson(joinUrl(daemonUrl, `/preferences/${encodeURIComponent(key)}`), {
     method: 'DELETE',
     headers: { 'Authorization': `Bearer ${clientToken || ''}` }
-  });
-}
-
-export async function listUnreviewedTaskChains({ daemonUrl, clientToken, limit = 100, offset = 0 }: Omit<UserRpcRequest, 'clientInstanceId'> & { limit?: number; offset?: number }) {
-  const path = `/task-chains?status=completed&evaluation=unreviewed&limit=${limit}&offset=${offset}`;
-  return requestJson(joinUrl(daemonUrl, path), {
-    method: 'GET',
-    headers: { 'Authorization': `Bearer ${clientToken}` }
-  });
-}
-
-export async function evaluateTaskChain({ daemonUrl, agentToken, clientInstanceId, clientToken, chainId, evaluation }: Partial<TaskAgentRequest & UserRpcRequest> & { chainId: string; evaluation: string }) {
-  return taskMutationRequest({
-    daemonUrl,
-    agentToken,
-    clientInstanceId,
-    clientToken,
-    action: 'task_chain_evaluate',
-    agentPath: '/task-chains/evaluate',
-    body: {
-      chain_id: chainId,
-      evaluation,
-    }
   });
 }
 

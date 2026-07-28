@@ -21,12 +21,14 @@ ROUTE_BRIDGE_SEND :: "/bridge/send"
 ROUTE_BRIDGE_REQUEST :: "/bridge/request"
 ROUTE_BRIDGE_REACHABLE :: "/bridge/reachable"
 ROUTE_BRIDGE_HEALTH :: "/bridge/health"
+ROUTE_BRIDGE_VALIDATE_PROJECT_PATH :: "/bridge/validate-project-path"
 ROUTE_BRIDGE_WS :: "/bridge-ws"
 
 ROUTE_FEDERATION_INBOX :: "/federation/inbox"
 ROUTE_FEDERATION_CALLBACK :: "/federation/callback"
 ROUTE_FEDERATION_START :: "/federation/start"
 ROUTE_FEDERATION_STOP :: "/federation/stop"
+ROUTE_FEDERATION_SUBSCRIBE :: "/federation/subscribe"
 ROUTE_FEDERATION_REACHABILITY :: "/federation/reachability"
 ROUTE_FEDERATION_PEERS :: "/federation/peers"
 ROUTE_FEDERATION_ARTIFACTS_PREFIX :: "/federation/artifacts"
@@ -66,7 +68,7 @@ bridge_loopback_route_supported :: proc(method, route: string) -> bool {
 	switch route {
 	case ROUTE_BRIDGE_HEALTH:
 		return method == BRIDGE_HTTP_METHOD_GET || method == BRIDGE_HTTP_METHOD_POST
-	case ROUTE_BRIDGE_SEND, ROUTE_BRIDGE_REQUEST:
+	case ROUTE_BRIDGE_SEND, ROUTE_BRIDGE_REQUEST, ROUTE_BRIDGE_VALIDATE_PROJECT_PATH:
 		return method == BRIDGE_HTTP_METHOD_POST
 	case ROUTE_BRIDGE_REACHABLE:
 		return method == BRIDGE_HTTP_METHOD_GET || method == BRIDGE_HTTP_METHOD_POST
@@ -84,6 +86,7 @@ bridge_daemon_route_supported :: proc(method, route: string) -> bool {
 	     ROUTE_FEDERATION_CALLBACK,
 	     ROUTE_FEDERATION_START,
 	     ROUTE_FEDERATION_STOP,
+	     ROUTE_FEDERATION_SUBSCRIBE,
 	     ROUTE_FEDERATION_REACHABILITY:
 		return method == BRIDGE_HTTP_METHOD_POST
 	case ROUTE_FEDERATION_PEERS:

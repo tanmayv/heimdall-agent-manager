@@ -62,13 +62,10 @@ def create_chain(user_token, chain_id, title):
         "action": "task_chain_create",
         "client_instance_id": CLIENT_ID,
         "client_token": user_token,
-        "project_id": "default",
-        "kind": "coding",
         "title": title,
         "chain_id": chain_id,
         "coordinator_agent_instance_id": COORDINATOR_ID,
         "wants_vcs": False,
-        "no_scaffold": True,
     })
     require_ok(f"create chain {chain_id}", status, body)
     return body

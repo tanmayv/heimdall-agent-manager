@@ -385,9 +385,9 @@ agent_id_record_to_event :: proc(rec: Agent_Id_Record, author: string) -> Agent_
 
 // Update the durable defaults for an existing agent_id from the Agents tab
 // identity edit / instance update. Only updates a record that already exists;
-// preserves template/role/state and always applies the requested default
+// preserves state and always applies the requested default
 // project verbatim (empty clears the default). Returns false if unknown.
-agent_id_update_defaults :: proc(agent_id, display_name, default_provider_profile, default_model_tier, default_project_id, author: string) -> bool {
+agent_id_update_defaults :: proc(agent_id, display_name, template_id, default_provider_profile, default_model_tier, default_project_id, author: string) -> bool {
 	if agent_id == "" do return false
 	idx := agent_id_index(agent_id)
 	if idx < 0 do return false
@@ -398,7 +398,7 @@ agent_id_update_defaults :: proc(agent_id, display_name, default_provider_profil
 		kind = .Agent_Id_Upserted,
 		agent_id = agent_id,
 		display_name = display_name if display_name != "" else rec.display_name,
-		template_id = rec.template_id,
+		template_id = template_id if template_id != "" else rec.template_id,
 		default_provider_profile = default_provider_profile,
 		default_model_tier = tier,
 		default_project_id = default_project_id,

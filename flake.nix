@@ -45,6 +45,11 @@
           mkdir -p $out/bin
           odin build ${srcDir} -collection:odin_test=src -out:$out/bin/${name}
           wrapProgram $out/bin/${name} --prefix PATH : ${pkgs.lib.makeBinPath runtimeInputs}
+          # Bundle the hub migrations SQL into the store output so the apps.hub
+          # wrapper can inject an absolute --migrations-dir (NRX-1/NRX-4) and
+          # `nix run .#hub` works from any CWD.
+          ${if name == "ham-hub" then "mkdir -p $out/share/ham-hub && cp -r src/hub/repository/sqlite/migrations $out/share/ham-hub/migrations" else ""}
+          ${if name == "ham-bridge" then "ln -s ${pkgs.openssl}/bin/openssl $out/bin/openssl" else ""}
           ${if name == "ham-wrapper" then "ln -s ham-wrapper $out/bin/bc-agent-wrapper" else ""}
           ${if name == "ham-test-agent" then "ln -s ham-test-agent $out/bin/bc-test-agent" else ""}
           runHook postBuild
@@ -137,7 +142,9 @@
         in
         {
           ham-daemon = mkOdinDaemonPackage pkgs odin;
-          ham-bridge = mkOdinPackage pkgs odin "ham-bridge" "src/bridge";
+          ham-hub = mkOdinPackageWithRuntime pkgs odin "ham-hub" "src/hub" [ pkgs.sqlite ];
+          ham-bridge = mkOdinPackageWithRuntime pkgs odin "ham-bridge" "src/bridge" [ pkgs.openssl pkgs.tmux ];
+          ham-dev-proxy = mkOdinPackage pkgs odin "ham-dev-proxy" "src/dev_proxy";
           # ham-wrapper shells out to tmux (agent windows) and git/jj (VCS
           # workspaces). It must carry those on PATH because the daemon launches
           # the wrapper detached with only the daemon's PATH, which does not
@@ -161,9 +168,32 @@
           type = "app";
           program = "${self.packages.${system}.ham-daemon}/bin/ham-daemon";
         };
+        # hub: wraps ham-hub so `nix run .#hub` works from any CWD. The ham-hub
+        # package bundles its migrations under share/ham-hub/migrations; this
+        # wrapper injects the absolute store path via --migrations-dir and
+        # forwards all user args (e.g. `nix run .#hub -- --port 9000 --db x.db`).
+        hub = {
+          type = "app";
+          program = "${(pkgs.writeShellScriptBin "ham-hub" ''
+            #!/usr/bin/env bash
+            set -euo pipefail
+            HAM_HUB="${self.packages.${system}.ham-hub}/bin/ham-hub"
+            MIGRATIONS="${self.packages.${system}.ham-hub}/share/ham-hub/migrations"
+            exec "$HAM_HUB" --migrations-dir "$MIGRATIONS" "$@"
+          '')}/bin/ham-hub";
+        };
         bridge = {
           type = "app";
-          program = "${self.packages.${system}.ham-bridge}/bin/ham-bridge";
+          program = "${(pkgs.writeShellScriptBin "ham-bridge" ''
+            #!/usr/bin/env bash
+            set -euo pipefail
+            export HEIMDALL_HAM_WRAPPER_BIN="${self.packages.${system}.ham-wrapper}/bin/ham-wrapper"
+            exec "${self.packages.${system}.ham-bridge}/bin/ham-bridge" "$@"
+          '')}/bin/ham-bridge";
+        };
+        dev-proxy = {
+          type = "app";
+          program = "${self.packages.${system}.ham-dev-proxy}/bin/ham-dev-proxy";
         };
         # daemon-with-wrapper: builds the current ham-wrapper and ham-ctl
         # alongside the ham-daemon and launches the daemon with a generated
@@ -536,6 +566,31 @@
             fi
           ''}/bin/heimdall-browser";
         };
+        ham-ui-server = {
+          type = "app";
+          program = "${pkgs.writeShellScriptBin "ham-ui-server" ''
+            #!/usr/bin/env bash
+            PORT="5173"
+
+            while [[ "$#" -gt 0 ]]; do
+                case $1 in
+                    --port) PORT="$2"; shift 2 ;;
+                    *) echo "Unknown parameter passed: $1"; exit 1 ;;
+                esac
+            done
+
+            echo "[ham-ui-server] Starting Vite production server on port $PORT..."
+            if [ ! -d "node_modules" ]; then
+              echo "[ham-ui-server] node_modules not found. Copying from Nix store..."
+              cp -r "${self.packages.${system}.heimdall-node-modules}/node_modules" node_modules
+              chmod -R u+w node_modules
+            fi
+
+            echo "[ham-ui-server] Building UI..."
+            ${pkgs.nodejs}/bin/npm run build
+            exec ${pkgs.nodejs}/bin/npx vite preview --host 127.0.0.1 --port "$PORT"
+          ''}/bin/ham-ui-server";
+        };
         default = self.apps.${system}.daemon;
       });
 
@@ -553,6 +608,7 @@
               pkks.tmux
               pkks.curl
               pkks.jq
+              pkks.sqlite
             ];
           };
         });
