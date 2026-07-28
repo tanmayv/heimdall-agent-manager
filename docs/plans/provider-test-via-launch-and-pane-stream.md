@@ -331,9 +331,9 @@ skip unchanged.
 
 ## 13. Build order
 
-1. **DONE — Bridge real-launch test on existing `test_provider` relay** — reuses the wrapper-supervisor launch path, dedicated `heimdall-bridge-test` tmux session/window, bridge-local start-success correlation, timeout/fail/pass teardown, one active test per provider, bounded diagnostics, and optional change-only pane snapshots. Phase commits: `39577ad`, `d958729`.
-2. **DONE — Hub owner-scoped status/frame relay** — existing provider-test REST route now waits for the final bridge command result; bridge WS consumes `provider_test_status` / `provider_test_frame` and fans out raw events to the owning user's `/user-ws`. Phase commits: `39577ad`, `d958729`.
-3. **DONE — UI provider list result semantics** — existing Providers row test button renders `passed`/`timeout` in addition to legacy `ok`/`failed`. Phase commits: `39577ad`, `d958729`.
+1. **DONE — Bridge real-launch test on existing `test_provider` relay** — reuses the wrapper-supervisor launch path, dedicated `heimdall-bridge-test` tmux session/window, bridge-local start-success correlation, timeout/fail/pass teardown, one active test per provider, bounded diagnostics, and optional change-only pane snapshots. Phase commits: `39577ad`, `d958729`, `699671e`.
+2. **DONE — Hub owner-scoped status/frame relay** — existing provider-test REST route now waits for the final bridge command result; bridge WS consumes `provider_test_status` / `provider_test_frame` and fans out raw events to the owning user's `/user-ws`. Phase commits: `39577ad`, `d958729`, `699671e`.
+3. **DONE — UI provider list result semantics** — existing Providers row test button renders `passed`/`timeout` in addition to legacy `ok`/`failed`. Phase commits: `39577ad`, `d958729`, `699671e`.
 4. Follow-up: add first-class `start_provider_test` / `cancel_provider_test` command names and `GET/POST /provider-tests/{id}` poll/cancel REST records.
 5. Follow-up: routed `/settings/providers/{name}/test` page with advanced timeout/capture controls, pane viewer, frame scrubber, and cancel button.
 6. Follow-up: persist/display Bridge `last_test` in provider profile reports.
