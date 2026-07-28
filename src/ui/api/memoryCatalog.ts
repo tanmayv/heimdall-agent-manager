@@ -1,10 +1,14 @@
 export function memoryTargetSummary(record: any) {
   if (record.target) return String(record.target);
   const targetAgentId = String(record.target_agent_id || record.targetAgentId || '').trim();
-  const targetProjectId = String(record.target_project_id || record.targetProjectId || '').trim();
+  const targetProjectId = String(record.target_project_id || record.targetProjectId || record.project_id || record.projectId || '').trim();
+  const targetTemplateId = String(record.target_template_id || record.targetTemplateId || record.template_id || record.templateId || '').trim();
+  const targetBridgeId = String(record.target_bridge_id || record.targetBridgeId || record.bridge_id || record.bridgeId || '').trim();
   const parts = [] as string[];
   if (targetAgentId) parts.push(`agent ${targetAgentId}`);
   if (targetProjectId) parts.push(`project ${targetProjectId}`);
+  if (targetTemplateId) parts.push(`template ${targetTemplateId}`);
+  if (targetBridgeId) parts.push(`bridge ${targetBridgeId}`);
   return parts.length ? parts.join(' · ') : 'global';
 }
 
@@ -13,8 +17,10 @@ export function normalizeMemory(record: any) {
     id: record.memory_id || record.memoryId || '',
     memoryId: record.memory_id || record.memoryId || '',
     proposalId: record.proposal_id || record.proposalId || '',
-    targetAgentId: record.target_agent_id || record.targetAgentId || '',
-    targetProjectId: record.target_project_id || record.targetProjectId || '',
+    targetAgentId: record.target_agent_id || record.targetAgentId || record.agent_id || record.agentId || '',
+    targetProjectId: record.target_project_id || record.targetProjectId || record.project_id || record.projectId || '',
+    targetTemplateId: record.target_template_id || record.targetTemplateId || record.template_id || record.templateId || '',
+    targetBridgeId: record.target_bridge_id || record.targetBridgeId || record.bridge_id || record.bridgeId || '',
     target: memoryTargetSummary(record),
     type: record.type || record.memory_type || 'fact',
     title: record.title || '',
@@ -35,8 +41,10 @@ export function normalizeHistory(event: any) {
     eventId: event.event_id || event.eventId || '',
     memoryId: event.memory_id || event.memoryId || '',
     proposalId: event.proposal_id || event.proposalId || '',
-    targetAgentId: event.target_agent_id || event.targetAgentId || '',
-    targetProjectId: event.target_project_id || event.targetProjectId || '',
+    targetAgentId: event.target_agent_id || event.targetAgentId || event.agent_id || event.agentId || '',
+    targetProjectId: event.target_project_id || event.targetProjectId || event.project_id || event.projectId || '',
+    targetTemplateId: event.target_template_id || event.targetTemplateId || event.template_id || event.templateId || '',
+    targetBridgeId: event.target_bridge_id || event.targetBridgeId || event.bridge_id || event.bridgeId || '',
     target: memoryTargetSummary(event),
     type: event.type || event.memory_type || 'fact',
     title: event.title || '',
@@ -59,7 +67,7 @@ function includesText(value: any, needle: string) {
 }
 
 function hasTargeting(record: any) {
-  return Boolean(record.targetAgentId || record.targetProjectId);
+  return Boolean(record.targetAgentId || record.targetProjectId || record.targetTemplateId || record.targetBridgeId);
 }
 
 export function matchesMemoryFilters(record: any, filters: any) {
@@ -68,6 +76,12 @@ export function matchesMemoryFilters(record: any, filters: any) {
 
   const targetProjectIdFilter = String(filters?.targetProjectId || '').trim().toLowerCase();
   if (targetProjectIdFilter && String(record.targetProjectId || '').trim().toLowerCase() !== targetProjectIdFilter) return false;
+
+  const targetTemplateIdFilter = String(filters?.targetTemplateId || '').trim().toLowerCase();
+  if (targetTemplateIdFilter && String(record.targetTemplateId || '').trim().toLowerCase() !== targetTemplateIdFilter) return false;
+
+  const targetBridgeIdFilter = String(filters?.targetBridgeId || '').trim().toLowerCase();
+  if (targetBridgeIdFilter && String(record.targetBridgeId || '').trim().toLowerCase() !== targetBridgeIdFilter) return false;
 
   const typeFilter = String(filters?.type || '').trim().toLowerCase();
   if (typeFilter && String(record.type || '').trim().toLowerCase() !== typeFilter) return false;
@@ -90,6 +104,8 @@ export function matchesMemoryFilters(record: any, filters: any) {
     record.target,
     record.targetAgentId,
     record.targetProjectId,
+    record.targetTemplateId,
+    record.targetBridgeId,
     record.type,
     record.status,
     record.reason,

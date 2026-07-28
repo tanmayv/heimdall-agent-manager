@@ -49,6 +49,12 @@ def main() -> None:
     for marker in [
         "bridge_runtime_resolve_provider_executable",
         "bridge_runtime_find_on_path(trimmed)",
+        "skill_dir = bridge_provider_skill_dir_from_config(cmd)",
+        "bridge_provider_default_skill_dir",
+        'case "pi":',
+        'return ".pi/skills"',
+        'case "antigravity", "agy":',
+        'return ".agents/skills"',
     ]:
         require(marker in provider_store, f"missing provider store marker: {marker}")
 
@@ -63,6 +69,7 @@ def main() -> None:
         "if !bridge_bootstrap_write_ham_ctl_wrapper(run_dir, bridge_endpoint, agent_token, instance_id) do return false",
         "bridge_config.ham_ctl_bin",
         "bridge bootstrap failed: ham-ctl not found",
+        "if skill_dir == \"\" do skill_dir = bridge_provider_default_skill_dir(provider)",
     ]:
         require(marker in bootstrap, f"missing bootstrap marker: {marker}")
 

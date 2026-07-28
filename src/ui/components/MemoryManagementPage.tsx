@@ -72,6 +72,8 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
   const [form, setForm] = useState({
     targetAgentId: '',
     targetProjectId: '',
+    targetTemplateId: '',
+    targetBridgeId: '',
     type: 'fact',
     title: '',
     body: '',
@@ -97,6 +99,8 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
       setForm({
         targetAgentId: '',
         targetProjectId: '',
+        targetTemplateId: '',
+        targetBridgeId: '',
         type: 'fact',
         title: '',
         body: '',
@@ -111,6 +115,8 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
     setForm({
       targetAgentId: selectedRecord.targetAgentId || '',
       targetProjectId: selectedRecord.targetProjectId || '',
+      targetTemplateId: selectedRecord.targetTemplateId || '',
+      targetBridgeId: selectedRecord.targetBridgeId || '',
       type: selectedRecord.type || 'fact',
       title: selectedRecord.title || '',
       body: selectedRecord.body || '',
@@ -139,6 +145,8 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
           proposalAction: 'new',
           targetAgentId: form.targetAgentId,
           targetProjectId: form.targetProjectId,
+          targetTemplateId: form.targetTemplateId,
+          targetBridgeId: form.targetBridgeId,
           type: form.type,
           title: form.title,
           body: form.body,
@@ -159,6 +167,8 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
             expectedVersion: selectedRecord.version,
             targetAgentId: form.targetAgentId,
             targetProjectId: form.targetProjectId,
+            targetTemplateId: form.targetTemplateId,
+            targetBridgeId: form.targetBridgeId,
             type: form.type,
             title: form.title,
             body: form.body,
@@ -275,6 +285,8 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
             <div data-debug-id="memory-filters" className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
               <FilterInput debugId="memory-filter-agent-input" label="Agent target" value={filters.targetAgentId || ''} onChange={(value) => handleFilterChange({ targetAgentId: value })} placeholder="worker" />
               <FilterInput debugId="memory-filter-project-input" label="Project target" value={filters.targetProjectId || ''} onChange={(value) => handleFilterChange({ targetProjectId: value })} placeholder="heimdall-agent-manager" />
+              <FilterInput debugId="memory-filter-template-input" label="Template target" value={filters.targetTemplateId || ''} onChange={(value) => handleFilterChange({ targetTemplateId: value })} placeholder="template id" />
+              <FilterInput debugId="memory-filter-bridge-input" label="Bridge target" value={filters.targetBridgeId || ''} onChange={(value) => handleFilterChange({ targetBridgeId: value })} placeholder="bridge id" />
               <FilterInput debugId="memory-filter-search-input" label="Free text" value={filters.search || ''} onChange={(value) => handleFilterChange({ search: value })} placeholder="title, body, evidence, metadata…" />
               <FilterSelect debugId="memory-filter-type-select" label="Type" value={filters.type || ''} onChange={(value) => handleFilterChange({ type: value })} options={typeOptions} />
               <FilterSelect debugId="memory-filter-status-select" label="Status" value={filters.status || ''} onChange={(value) => handleFilterChange({ status: value })} options={statusOptions} />
@@ -434,7 +446,7 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
                     <label className="block text-sm text-zinc-300">
                       <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">Type</div>
                       <select data-debug-id="memory-form-type-select" value={form.type} onChange={(event) => setForm((current) => ({ ...current, type: event.target.value }))} className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
-                        {['fact', 'habit', 'episode', 'expertise', 'skill', 'template'].map((type) => <option key={type} value={type}>{type}</option>)}
+                        {['fact', 'habit', 'episode', 'expertise', 'skill'].map((type) => <option key={type} value={type}>{type}</option>)}
                       </select>
                     </label>
                   </div>
@@ -442,6 +454,8 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
                   <div className="grid gap-3 md:grid-cols-2">
                     <FilterInput debugId="memory-form-agent-input" label="target_agent_id" value={form.targetAgentId} onChange={(value) => setForm((current) => ({ ...current, targetAgentId: value }))} placeholder="worker" />
                     <FilterInput debugId="memory-form-project-input" label="target_project_id" value={form.targetProjectId} onChange={(value) => setForm((current) => ({ ...current, targetProjectId: value }))} placeholder="heimdall-agent-manager" />
+                    <FilterInput debugId="memory-form-template-input" label="target_template_id" value={form.targetTemplateId} onChange={(value) => setForm((current) => ({ ...current, targetTemplateId: value }))} placeholder="template id" />
+                    <FilterInput debugId="memory-form-bridge-input" label="target_bridge_id" value={form.targetBridgeId} onChange={(value) => setForm((current) => ({ ...current, targetBridgeId: value }))} placeholder="bridge id" />
                     <FilterInput debugId="memory-form-source-task-input" label="source_task_id" value={form.sourceTaskId} onChange={(value) => setForm((current) => ({ ...current, sourceTaskId: value }))} placeholder="task-..." />
                   </div>
 
@@ -491,7 +505,7 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
                           <Badge>v{record.version || 0}</Badge>
                         </div>
                         <div className="mt-2 text-xs text-zinc-400">Proposal {record.proposalId || '—'} · Target {record.target || 'global'}</div>
-                        <div className="mt-1 text-xs text-zinc-500">Agent {record.targetAgentId || '—'} · project {record.targetProjectId || '—'}</div>
+                        <div className="mt-1 text-xs text-zinc-500">Agent {record.targetAgentId || '—'} · project {record.targetProjectId || '—'} · template {record.targetTemplateId || '—'} · bridge {record.targetBridgeId || '—'}</div>
                       </div>
                       <button data-debug-id={`memory-pending-open-${record.memoryId}`} onClick={() => onSelectMemory(record.memoryId)} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Inspect</button>
                     </div>

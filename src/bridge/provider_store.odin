@@ -215,10 +215,31 @@ bridge_provider_profile_from_config :: proc(cmd: cfg_lib.Agent_Command_Config) -
 		prompt_tmux_enter = cmd.prompt_tmux_enter,
 		agent_run_dir = strings.clone(cmd.agent_run_dir),
 		use_random_dir = cmd.use_random_dir,
+		skill_dir = bridge_provider_skill_dir_from_config(cmd),
 		models = cmd.models,
 		startup_detection = cmd.startup_detection,
 		activity_detection = cmd.activity_detection,
 	}
+}
+
+bridge_provider_skill_dir_from_config :: proc(cmd: cfg_lib.Agent_Command_Config) -> string {
+	if cmd.bootstrap.features != nil {
+		for key, feature in cmd.bootstrap.features {
+			if strings.to_lower(key) == "skills" && strings.trim_space(feature.relative_dir) != "" do return strings.clone(feature.relative_dir)
+		}
+	}
+	return bridge_provider_default_skill_dir(cmd.name)
+}
+
+bridge_provider_default_skill_dir :: proc(provider: string) -> string {
+	name := strings.to_lower(strings.trim_space(provider))
+	switch name {
+	case "pi":
+		return ".pi/skills"
+	case "antigravity", "agy":
+		return ".agents/skills"
+	}
+	return "skills"
 }
 
 bridge_provider_profile_from_override :: proc(override: Bridge_Provider_Override) -> Bridge_Provider_Profile {
@@ -226,6 +247,7 @@ bridge_provider_profile_from_override :: proc(override: Bridge_Provider_Override
 		name = strings.clone(override.name),
 		enabled = true,
 		source = .Store,
+		skill_dir = bridge_provider_default_skill_dir(override.name),
 		activity_detection = cfg_lib.default_activity_detection_config(),
 	}
 	return bridge_provider_apply_override(profile, override)

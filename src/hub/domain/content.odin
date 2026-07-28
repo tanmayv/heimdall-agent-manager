@@ -1,10 +1,58 @@
 package domain
 
+import "core:strings"
+
+Memory_Type :: enum {
+	Unknown,
+	Fact,
+	Habit,
+	Episode,
+	Expertise,
+	Skill,
+}
+
+memory_type_from_string :: proc(value: string) -> Memory_Type {
+	switch strings.to_lower(strings.trim_space(value)) {
+	case "fact", "":
+		return .Fact
+	case "habit":
+		return .Habit
+	case "episode":
+		return .Episode
+	case "expertise":
+		return .Expertise
+	case "skill":
+		return .Skill
+	}
+	return .Unknown
+}
+
+memory_type_string :: proc(t: Memory_Type) -> string {
+	switch t {
+	case .Unknown:
+		return "unknown"
+	case .Fact:
+		return "fact"
+	case .Habit:
+		return "habit"
+	case .Episode:
+		return "episode"
+	case .Expertise:
+		return "expertise"
+	case .Skill:
+		return "skill"
+	}
+	return "unknown"
+}
+
 Memory :: struct {
 	memory_id: string,
 	owner_user_id: User_ID,
 	agent_id: string,
-	type: string,
+	project_id: Project_ID,
+	template_id: string,
+	bridge_id: string,
+	type: Memory_Type,
 	status: string,
 	title: string,
 	body: string,

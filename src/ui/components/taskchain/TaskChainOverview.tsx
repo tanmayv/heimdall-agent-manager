@@ -377,6 +377,14 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                       >
                         {task.title}
                       </div>
+                      {task.description && (
+                        <p
+                          data-debug-id={`taskchain-task-description-${taskId}`}
+                          className="mt-1 whitespace-pre-wrap text-[11.5px] leading-5 text-zinc-300"
+                        >
+                          {task.description}
+                        </p>
+                      )}
                       <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-zinc-400">
                         {task.assigneeRef && (
                           <span data-debug-id={`taskchain-task-assignee-${taskId}`}>
@@ -477,13 +485,6 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                 {/* Expanded Card Details (Description & Comments) */}
                 {isExpanded && (
                   <div className="mt-3 border-t border-white/5 pt-3 space-y-3">
-                    {task.description && (
-                      <div>
-                        <span className="font-semibold text-zinc-400">Description:</span>
-                        <p className="mt-1 text-zinc-300">{task.description}</p>
-                      </div>
-                    )}
-
                     {/* Comments Thread */}
                     <div data-debug-id={`taskchain-task-comments-${taskId}`} className="space-y-2">
                       <span className="font-semibold text-zinc-400">Comments:</span>

@@ -5,6 +5,8 @@ import { matchesMemoryFilters } from '../api/memoryCatalog';
 const initialFilters = {
   targetAgentId: '',
   targetProjectId: '',
+  targetTemplateId: '',
+  targetBridgeId: '',
   type: '',
   status: '',
   targeting: 'all',

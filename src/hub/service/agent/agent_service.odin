@@ -400,37 +400,114 @@ bootstrap_json_for_bridge :: proc(service: ^Agent_Service, owner: domain.User_ID
 	strings.write_string(&b, "\\n\\n## Working with tasks (REQUIRED)\\nYou MUST track all substantial work as tasks in this task chain. This is not optional.\\n\\nRules you must follow:\\n1. Before starting work, ALWAYS run ./.heimdall/bin/ham-ctl agent tasks fetch to see the current tasks in your chain.\\n2. Do NOT do meaningful work that is not represented by a task. If a task does not exist for what you are about to do, create one (coordinator) or ask the coordinator to create one.\\n3. When you begin a task, move it to in_progress: ./.heimdall/bin/ham-ctl agent tasks status --task-id <id> --status in_progress\\n4. As you make progress, you MUST post a comment on the task describing what you did, what changed, and what is next: ./.heimdall/bin/ham-ctl agent tasks comment --task-id <id> --body \\\"<progress update>\\\". Add a comment at every meaningful step, on blockers, and before handing off for review.\\n5. When the work is complete, submit it for review: ./.heimdall/bin/ham-ctl agent tasks status --task-id <id> --status in_validation (or ./.heimdall/bin/ham-ctl agent tasks done --task-id <id>). Include a summary comment of what to review.\\n6. Reviewers vote with ./.heimdall/bin/ham-ctl agent tasks vote --task-id <id> --result lgtm|ngtm --comment \\\"<feedback>\\\". If you receive ngtm, address the feedback, comment what you changed, and re-submit.\\n7. Use ./.heimdall/bin/ham-ctl agent tasks nudge --task-id <id> to request attention on a stalled task.\\n\\nKeep task status and comments current at all times so the whole chain reflects real progress.")
 	write_bootstrap_memory_markdown(&b, service, owner, inst)
 	strings.write_string(&b, "\"}]")
-	write_bootstrap_default_skill_fields(&b, service, owner, inst)
+	write_bootstrap_skill_fields(&b, service, owner, inst)
 	strings.write_string(&b, ",\"instance_token\":\"hit_"); write_service_json_string(&b, inst.agent_instance_id)
 	strings.write_string(&b, "\",\"hub_url\":\""); write_service_json_string(&b, bridge.hub_url); strings.write_string(&b, "\"}")
 	return strings.to_string(b), true, domain.Domain_Error{}
 }
 
-write_bootstrap_default_skill_fields :: proc(b: ^strings.Builder, service: ^Agent_Service, owner: domain.User_ID, inst: domain.Agent_Instance) {
-	if service == nil || service.content == nil do return
-	memories, err := iface.content_list_memories(service.content, owner)
-	if err.code != .None do return
-	for m in memories {
-		if !bootstrap_memory_applies(m, inst) || m.type != "skill" do continue
-		strings.write_string(b, ",\"default_skill_name\":\"heimdall-ctl-communication\",\"default_skill_content\":\"")
-		write_bootstrap_skill_file_content(b, m)
-		strings.write_string(b, "\"")
-		return
+write_bootstrap_skill_fields :: proc(b: ^strings.Builder, service: ^Agent_Service, owner: domain.User_ID, inst: domain.Agent_Instance) {
+	strings.write_string(b, ",\"skills\":[")
+	written := 0
+	default_name := ""
+	default_content := ""
+	if service != nil && service.content != nil {
+		memories, err := iface.content_list_memories(service.content, owner)
+		if err.code == .None {
+			for m in memories {
+				if !bootstrap_memory_applies(m, service, owner, inst) || m.type != .Skill do continue
+				name := bootstrap_skill_name(m)
+				content := bootstrap_skill_file_content(m, name)
+				if written > 0 do strings.write_byte(b, ',')
+				write_bootstrap_skill_json(b, name, content)
+				if default_name == "" { default_name = name; default_content = content }
+				written += 1
+			}
+		}
 	}
+	if written == 0 {
+		name, content := bootstrap_fallback_skill()
+		write_bootstrap_skill_json(b, name, content)
+		default_name = name
+		default_content = content
+	}
+	strings.write_string(b, "]")
+	strings.write_string(b, ",\"default_skill_name\":\""); write_service_json_string(b, default_name)
+	strings.write_string(b, "\",\"default_skill_content\":\""); write_service_json_string(b, default_content)
+	strings.write_string(b, "\"")
 }
 
-write_bootstrap_skill_file_content :: proc(b: ^strings.Builder, m: domain.Memory) {
-	content := strings.builder_make()
-	strings.write_string(&content, "---\nname: heimdall-ctl-communication\ndescription: Use Heimdall CLI for agent startup, chat communication, task coordination, and concise status reporting. Load when communicating through Heimdall or reacting to message notifications.\n---\n\n# ")
-	strings.write_string(&content, m.title)
-	strings.write_string(&content, "\n\n")
+write_bootstrap_skill_json :: proc(b: ^strings.Builder, name, content: string) {
+	strings.write_string(b, "{\"name\":\""); write_service_json_string(b, name)
+	strings.write_string(b, "\",\"content\":\""); write_service_json_string(b, content)
+	strings.write_string(b, "\"}")
+}
+
+bootstrap_fallback_skill :: proc() -> (string, string) {
+	content := "---\nname: heimdall-ctl-communication\ndescription: Use Heimdall CLI for agent startup, chat communication, task coordination, and concise status reporting. Load when communicating through Heimdall or reacting to message notifications.\n---\n\n# Heimdall CLI communication basics\n\nUse the managed Heimdall CLI wrapper from the agent run directory for all Heimdall communication: `./.heimdall/bin/ham-ctl`.\n\nStartup: after you are fully ready, report readiness with `./.heimdall/bin/ham-ctl agent start-success`.\n\nRead inbound messages with `./.heimdall/bin/ham-ctl agent chat read` and reply to the user with `./.heimdall/bin/ham-ctl agent chat send --body \"...\"`. Keep replies concise and include blockers, concrete results, and next steps."
+	return "heimdall-ctl-communication", content
+}
+
+bootstrap_skill_file_content :: proc(m: domain.Memory, name: string) -> string {
 	body := m.body
 	if strings.index(body, "\\n") >= 0 {
 		replaced, _ := strings.replace_all(body, "\\n", "\n")
 		body = replaced
 	}
+	trimmed := strings.trim_space(body)
+	if strings.has_prefix(trimmed, "---\n") || strings.has_prefix(trimmed, "---\r\n") do return trimmed
+	content := strings.builder_make()
+	strings.write_string(&content, "---\nname: "); strings.write_string(&content, name)
+	strings.write_string(&content, "\ndescription: ")
+	if strings.trim_space(m.title) != "" { strings.write_string(&content, m.title) } else { strings.write_string(&content, name) }
+	strings.write_string(&content, "\nheimdall_managed: true\n---\n\n# ")
+	if strings.trim_space(m.title) != "" { strings.write_string(&content, m.title) } else { strings.write_string(&content, name) }
+	strings.write_string(&content, "\n\n")
 	strings.write_string(&content, body)
-	write_service_json_string(b, strings.to_string(content))
+	return strings.to_string(content)
+}
+
+bootstrap_skill_name :: proc(m: domain.Memory) -> string {
+	if name := bootstrap_skill_frontmatter_value(m.body, "name"); name != "" do return bootstrap_safe_slug(name)
+	if slug := bootstrap_safe_slug(m.title); slug != "" do return slug
+	return bootstrap_safe_slug(m.memory_id)
+}
+
+bootstrap_skill_frontmatter_value :: proc(body, key: string) -> string {
+	text := body
+	if strings.index(text, "\\n") >= 0 { replaced, _ := strings.replace_all(text, "\\n", "\n"); text = replaced }
+	trimmed := strings.trim_space(text)
+	if !strings.has_prefix(trimmed, "---") do return ""
+	prefix := strings.concatenate({key, ":"})
+	defer delete(prefix)
+	idx := 0
+	for line in strings.split_lines_iterator(&trimmed) {
+		line_trimmed := strings.trim_space(line)
+		if idx == 0 {
+			if line_trimmed != "---" do return ""
+			idx += 1
+			continue
+		}
+		if line_trimmed == "---" do break
+		if strings.has_prefix(line_trimmed, prefix) do return strings.trim(strings.trim_space(line_trimmed[len(prefix):]), " \t\"'")
+		idx += 1
+	}
+	return ""
+}
+
+bootstrap_safe_slug :: proc(value: string) -> string {
+	b := strings.builder_make()
+	last_dash := false
+	for ch in strings.to_lower(strings.trim_space(value)) {
+		switch ch {
+		case 'a'..='z', '0'..='9':
+			strings.write_rune(&b, ch); last_dash = false
+		case '-', '_', ' ', '.', '/', ':':
+			if !last_dash { strings.write_byte(&b, '-'); last_dash = true }
+		case:
+		}
+	}
+	return strings.trim(strings.to_string(b), "-")
 }
 
 write_bootstrap_memories :: proc(b: ^strings.Builder, service: ^Agent_Service, owner: domain.User_ID, inst: domain.Agent_Instance) {
@@ -439,11 +516,14 @@ write_bootstrap_memories :: proc(b: ^strings.Builder, service: ^Agent_Service, o
 	if err.code != .None do return
 	written := 0
 	for m in memories {
-		if !bootstrap_memory_applies(m, inst) do continue
+		if !bootstrap_memory_applies(m, service, owner, inst) do continue
 		if written > 0 do strings.write_byte(b, ',')
 		strings.write_string(b, "{\"memory_id\":\""); write_service_json_string(b, m.memory_id)
 		strings.write_string(b, "\",\"agent_id\":\""); write_service_json_string(b, m.agent_id)
-		strings.write_string(b, "\",\"type\":\""); write_service_json_string(b, m.type)
+		strings.write_string(b, "\",\"project_id\":\""); write_service_json_string(b, string(m.project_id))
+		strings.write_string(b, "\",\"template_id\":\""); write_service_json_string(b, m.template_id)
+		strings.write_string(b, "\",\"bridge_id\":\""); write_service_json_string(b, m.bridge_id)
+		strings.write_string(b, "\",\"type\":\""); write_service_json_string(b, domain.memory_type_string(m.type))
 		strings.write_string(b, "\",\"status\":\""); write_service_json_string(b, m.status)
 		strings.write_string(b, "\",\"title\":\""); write_service_json_string(b, m.title)
 		strings.write_string(b, "\",\"body\":\""); write_service_json_string(b, m.body)
@@ -459,10 +539,10 @@ write_bootstrap_memory_markdown :: proc(b: ^strings.Builder, service: ^Agent_Ser
 	if err.code != .None do return
 	written := 0
 	for m in memories {
-		if !bootstrap_memory_applies(m, inst) do continue
+		if !bootstrap_memory_applies(m, service, owner, inst) do continue
 		if written == 0 do strings.write_string(b, "\\n\\n## Applicable Memories / Skills")
 		strings.write_string(b, "\\n\\n### "); write_service_json_string(b, m.title)
-		strings.write_string(b, "\\nType: "); write_service_json_string(b, m.type)
+		strings.write_string(b, "\\nType: "); write_service_json_string(b, domain.memory_type_string(m.type))
 		strings.write_string(b, "\\n\\n"); write_bootstrap_markdown_json_string(b, m.body)
 		written += 1
 	}
@@ -477,10 +557,17 @@ write_bootstrap_markdown_json_string :: proc(b: ^strings.Builder, value: string)
 	write_service_json_string(b, text)
 }
 
-bootstrap_memory_applies :: proc(m: domain.Memory, inst: domain.Agent_Instance) -> bool {
+bootstrap_memory_applies :: proc(m: domain.Memory, service: ^Agent_Service, owner: domain.User_ID, inst: domain.Agent_Instance) -> bool {
 	if m.status != "active" do return false
-	if m.agent_id == "" do return true
-	return m.agent_id == inst.agent_id || m.agent_id == inst.agent_instance_id
+	if strings.trim_space(m.agent_id) != "" && m.agent_id != inst.agent_id do return false
+	if string(m.project_id) != "" && m.project_id != inst.project_id do return false
+	if strings.trim_space(m.template_id) != "" {
+		if service == nil || service.agents == nil || strings.trim_space(inst.agent_id) == "" do return false
+		agent, ok, _ := iface.agent_get(service.agents, inst.agent_id)
+		if !ok || agent.owner_user_id != owner || agent.template_id != m.template_id do return false
+	}
+	if strings.trim_space(m.bridge_id) != "" && m.bridge_id != inst.bridge_id do return false
+	return true
 }
 
 write_bootstrap_task_context :: proc(b: ^strings.Builder, service: ^Agent_Service, inst: domain.Agent_Instance, chain: domain.Task_Chain, chain_ok: bool) {
@@ -687,8 +774,20 @@ ensure_instance_conversation :: proc(service: ^Agent_Service, inst: domain.Agent
 	}
 	now := platform.clock_now(service.clock)
 	conv_id := inst.conversation_id; if conv_id == "" do conv_id = platform.generate_id(service.ids, "chat_")
-	conv := domain.Chat_Conversation{conversation_id = conv_id, owner_user_id = inst.owner_user_id, agent_id = inst.agent_id, agent_instance_id = inst.agent_instance_id, project_id = inst.project_id, chain_id = inst.chain_id, title = inst.agent_id, created_at = now, updated_at = now}
+	title := agent_display_name_for_id(service, inst.owner_user_id, inst.agent_id)
+	conv := domain.Chat_Conversation{conversation_id = conv_id, owner_user_id = inst.owner_user_id, agent_id = inst.agent_id, agent_instance_id = inst.agent_instance_id, project_id = inst.project_id, chain_id = inst.chain_id, title = title, created_at = now, updated_at = now}
 	return iface.content_save_conversation(service.content, conv)
+}
+
+agent_display_name_for_id :: proc(service: ^Agent_Service, owner: domain.User_ID, agent_id: string) -> string {
+	fallback := strings.trim_space(agent_id)
+	if service != nil && service.agents != nil && strings.trim_space(agent_id) != "" {
+		if agent, ok, _ := iface.agent_get(service.agents, agent_id); ok && agent.owner_user_id == owner {
+			if name := strings.trim_space(agent.name); name != "" do return name
+			if slug := strings.trim_space(agent.slug); slug != "" do return slug
+		}
+	}
+	return fallback
 }
 
 resolve_provider_tier :: proc(service: ^Agent_Service, auth: contracts.Auth_Context, agent_id, bridge_id: string, req: Run_Request) -> (domain.Resolved_Provider_Tier, bool, domain.Domain_Error) {

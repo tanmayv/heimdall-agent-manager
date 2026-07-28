@@ -1050,12 +1050,14 @@ function normalizeMemoryMutationBody(body: Record<string, any>) {
   if (normalized.expected_version == null && normalized.expectedVersion != null) normalized.expected_version = normalized.expectedVersion;
   if (normalized.target_agent_id == null && normalized.targetAgentId != null) normalized.target_agent_id = normalizeMemoryTargetValue(normalized.targetAgentId);
   if (normalized.target_project_id == null && normalized.targetProjectId != null) normalized.target_project_id = normalizeMemoryTargetValue(normalized.targetProjectId);
+  if (normalized.target_template_id == null && normalized.targetTemplateId != null) normalized.target_template_id = normalizeMemoryTargetValue(normalized.targetTemplateId);
+  if (normalized.target_bridge_id == null && normalized.targetBridgeId != null) normalized.target_bridge_id = normalizeMemoryTargetValue(normalized.targetBridgeId);
   if (normalized.source_task_id == null && normalized.sourceTaskId != null) normalized.source_task_id = normalized.sourceTaskId;
   if (normalized.metadata_json == null && normalized.metadataJson != null) normalized.metadata_json = normalized.metadataJson;
   return normalized;
 }
 
-export async function listMemory({ daemonUrl, clientInstanceId, clientToken, type, status, targetProjectId, includeAllStatuses = true }: UserRpcRequest & { type?: string; status?: string; targetProjectId?: string; includeAllStatuses?: boolean }) {
+export async function listMemory({ daemonUrl, clientInstanceId, clientToken, type, status, targetProjectId, targetBridgeId, includeAllStatuses = true }: UserRpcRequest & { type?: string; status?: string; targetProjectId?: string; targetBridgeId?: string; includeAllStatuses?: boolean }) {
   return userRpcRequest({
     daemonUrl,
     clientInstanceId,
@@ -1065,13 +1067,14 @@ export async function listMemory({ daemonUrl, clientInstanceId, clientToken, typ
       type: type || '',
       status: status || '',
       target_project_id: normalizeMemoryTargetValue(targetProjectId),
+      target_bridge_id: normalizeMemoryTargetValue(targetBridgeId),
       include_all_statuses: includeAllStatuses,
     }
   });
 }
 
-export async function listApplicableMemory({ daemonUrl, clientInstanceId, clientToken, targetAgentId, targetProjectId }: UserRpcRequest & { targetAgentId?: string; targetProjectId?: string }) {
-  return requestJson(joinUrl(daemonUrl, '/memory/applicable'), { method: 'POST', body: { client_instance_id: clientInstanceId, client_token: clientToken, target_agent_id: normalizeMemoryTargetValue(targetAgentId), target_project_id: normalizeMemoryTargetValue(targetProjectId) } });
+export async function listApplicableMemory({ daemonUrl, clientInstanceId, clientToken, targetAgentId, targetProjectId, targetBridgeId }: UserRpcRequest & { targetAgentId?: string; targetProjectId?: string; targetBridgeId?: string }) {
+  return requestJson(joinUrl(daemonUrl, '/memory/applicable'), { method: 'POST', body: { client_instance_id: clientInstanceId, client_token: clientToken, target_agent_id: normalizeMemoryTargetValue(targetAgentId), target_project_id: normalizeMemoryTargetValue(targetProjectId), target_bridge_id: normalizeMemoryTargetValue(targetBridgeId) } });
 }
 
 export async function showMemory({ daemonUrl, clientInstanceId, clientToken, memoryId }: UserRpcRequest & { memoryId: string }) {

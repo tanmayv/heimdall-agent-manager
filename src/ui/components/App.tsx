@@ -371,11 +371,16 @@ function conversationProjectName(agent: any, projectsById: Record<string, any>):
   return projectsById?.[projectId]?.name || String(agent?.projectName || agent?.project_name || projectId || 'No project');
 }
 
+function conversationTitleLooksInternal(value: string): boolean {
+  return /^(agt|inst|chat|conv|usr|brg|task|chain|proj|art)_[a-z0-9]/i.test(String(value || '').trim());
+}
+
 function conversationTitle(agent: any, messages: any[] = [], summary?: any): string {
-  // Daemon-persisted title is authoritative when present (survives reload/resume).
-  const daemonTitle = String(summary?.title || '').trim();
-  if (daemonTitle) return daemonTitle;
   const explicit = String(agent?.label || agent?.display_name || '').trim();
+  // Daemon-persisted title is authoritative when present, unless it is an old
+  // generated fallback like agt_*/inst_*; then prefer the user-visible agent name.
+  const daemonTitle = String(summary?.title || '').trim();
+  if (daemonTitle && !conversationTitleLooksInternal(daemonTitle)) return daemonTitle;
   const id = String(agent?.id || agent?.agent_instance_id || '').trim();
   const durable = durableAgentId(agent);
   if (explicit && explicit !== id && explicit.toLowerCase() !== durable.toLowerCase()) return explicit;
@@ -3959,7 +3964,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
               <div className="py-20 text-center text-sm text-zinc-500">Loading memory details…</div>
             ) : (
               <>
-                <div className="grid gap-3 md:grid-cols-3"><label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Type<select data-debug-id="agent-memory-editor-type-select" value={memoryEditor.type} onChange={(event) => setMemoryEditor({ ...memoryEditor, type: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400">{['fact', 'habit', 'episode', 'expertise', 'skill', 'template'].map((type) => <option key={type} value={type}>{type}</option>)}</select></label><label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500 md:col-span-2">Title<input data-debug-id="agent-memory-editor-title-input" value={memoryEditor.title} onChange={(event) => setMemoryEditor({ ...memoryEditor, title: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400" /></label></div>
+                <div className="grid gap-3 md:grid-cols-3"><label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Type<select data-debug-id="agent-memory-editor-type-select" value={memoryEditor.type} onChange={(event) => setMemoryEditor({ ...memoryEditor, type: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400">{['fact', 'habit', 'episode', 'expertise', 'skill'].map((type) => <option key={type} value={type}>{type}</option>)}</select></label><label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500 md:col-span-2">Title<input data-debug-id="agent-memory-editor-title-input" value={memoryEditor.title} onChange={(event) => setMemoryEditor({ ...memoryEditor, title: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400" /></label></div>
                 <label className="mt-3 block text-xs font-semibold uppercase tracking-wide text-zinc-500"><div className="mb-2 flex items-center justify-between gap-3"><span>Body</span><VimEditButton debugId="agent-memory-editor-body-vim-edit-btn" title={memoryEditor.mode === 'edit' ? 'Edit Memory Body' : 'New Memory Body'} value={memoryEditor.body} onApply={(value) => setMemoryEditor({ ...memoryEditor, body: value })} lang="markdown" /></div><textarea data-debug-id="agent-memory-editor-body-textarea" value={memoryEditor.body} onChange={(event) => setMemoryEditor({ ...memoryEditor, body: event.target.value })} rows={12} className="w-full resize-y rounded-xl border border-white/10 bg-black/30 px-3 py-2 font-mono text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400" placeholder="Memory body" /></label>
                 <label className="mt-3 block text-xs font-semibold uppercase tracking-wide text-zinc-500">Evidence<input data-debug-id="agent-memory-editor-evidence-input" value={memoryEditor.evidence} onChange={(event) => setMemoryEditor({ ...memoryEditor, evidence: event.target.value })} className="mt-2 w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm normal-case tracking-normal text-zinc-100 outline-none focus:border-sky-400" /></label>
               </>

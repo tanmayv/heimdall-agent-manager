@@ -185,6 +185,28 @@ function formatMessageTimestamp(unixMs: number): ChatTimestamp {
   return { label: date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), iso: date.toISOString() };
 }
 
+function looksLikeInternalId(value: string): boolean {
+  return /^(agt|inst|chat|conv|usr|brg|task|chain|proj|art)_[a-z0-9]/i.test(String(value || '').trim());
+}
+
+function conversationAgentLabel(conversation: any): string {
+  const candidates = [conversation?.agent_name, conversation?.agentName, conversation?.agent_display_name, conversation?.agentDisplayName, conversation?.agent_slug, conversation?.agentSlug];
+  for (const value of candidates) {
+    const trimmed = String(value || '').trim();
+    if (trimmed && !looksLikeInternalId(trimmed)) return trimmed;
+  }
+  return '';
+}
+
+function conversationDisplayTitle(conversation: any, agentId: string, agentInstanceId: string, conversationId: string): string {
+  const rawTitle = String(conversation?.title || '').trim();
+  const agentLabel = conversationAgentLabel(conversation);
+  if (!rawTitle || rawTitle === agentId || rawTitle === agentInstanceId || rawTitle === conversationId || looksLikeInternalId(rawTitle)) {
+    return agentLabel || agentId || conversationId;
+  }
+  return rawTitle;
+}
+
 function runtimeNeedsStart(status: string): boolean {
   const normalized = String(status || '').toLowerCase();
   // `idle` is a live Bridge runtime state: the wrapper is connected and ready,
@@ -266,8 +288,9 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const agentId = String(conversation?.agent_id || conversation?.agentId || '');
   const agentInstanceId = String(conversation?.agent_instance_id || conversation?.agentInstanceId || '');
   const chainId = String(conversation?.chain_id || conversation?.chainId || '');
-  const title = String(conversation?.title || '').trim() || agentId || conversationId;
+  const title = conversationDisplayTitle(conversation, agentId, agentInstanceId, conversationId);
   const rawTitle = String(conversation?.title || '').trim();
+  const editableTitle = rawTitle && !looksLikeInternalId(rawTitle) ? rawTitle : title;
 
   // The instance record is the source of truth for the CONCRETE provider / tier /
   // bridge this conversation runs on (never "default"/"Auto").
@@ -333,7 +356,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const uploadedAttachments = attachments.filter((item) => item.status === 'uploaded' && item.id);
   const sendDisabled = hasUploadingAttachments || hasFailedAttachments || (!draft.trim() && uploadedAttachments.length === 0);
 
-  useEffect(() => { if (!renaming) setTitleDraft(rawTitle || title); }, [rawTitle, title, renaming]);
+  useEffect(() => { if (!renaming) setTitleDraft(editableTitle); }, [editableTitle, renaming]);
   useEffect(() => { if (agentInstanceId && (conversation?.unread_count || conversation?.unreadCount)) void markRead({ conversationId }); }, [conversationId, agentInstanceId]);
   // Seed the selects from the instance's ACTUAL provider/tier (no empty/"default").
   useEffect(() => { if (instanceProvider) setProvider(instanceProvider); }, [instanceProvider]);
@@ -525,18 +548,18 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
                 onChange={(event) => { setTitleDraft(event.target.value); setTitleError(''); }}
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') { event.preventDefault(); void saveConversationTitle(); }
-                  if (event.key === 'Escape') { setRenaming(false); setTitleError(''); setTitleDraft(rawTitle || title); }
+                  if (event.key === 'Escape') { setRenaming(false); setTitleError(''); setTitleDraft(editableTitle); }
                 }}
                 className="min-h-9 min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-1.5 text-sm font-semibold text-white outline-none focus:border-sky-400/60"
                 autoFocus
               />
               <button type="button" data-debug-id="conversation-thread-title-save-btn" onClick={() => void saveConversationTitle()} disabled={updateTitleState.isLoading || !titleDraft.trim()} className="rounded-xl bg-sky-400 px-3 py-1.5 text-xs font-bold text-black hover:bg-sky-300 disabled:opacity-50">Save</button>
-              <button type="button" data-debug-id="conversation-thread-title-cancel-btn" onClick={() => { setRenaming(false); setTitleError(''); setTitleDraft(rawTitle || title); }} className="rounded-xl border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-white/10">Cancel</button>
+              <button type="button" data-debug-id="conversation-thread-title-cancel-btn" onClick={() => { setRenaming(false); setTitleError(''); setTitleDraft(editableTitle); }} className="rounded-xl border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-white/10">Cancel</button>
             </div>
           ) : (
             <div className="flex min-w-0 items-center gap-2">
               <h2 data-debug-id="conversation-thread-title" className="truncate text-base font-semibold text-white sm:text-lg">{title}</h2>
-              <button type="button" data-debug-id="conversation-thread-title-edit-btn" onClick={() => { setTitleDraft(rawTitle || title); setRenaming(true); setTitleError(''); }} className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10">Rename</button>
+              <button type="button" data-debug-id="conversation-thread-title-edit-btn" onClick={() => { setTitleDraft(editableTitle); setRenaming(true); setTitleError(''); }} className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10">Rename</button>
             </div>
           )}
           {titleError ? <div data-debug-id="conversation-thread-title-error" className="mt-1 text-[11px] text-red-300">{titleError}</div> : null}
