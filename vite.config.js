@@ -12,6 +12,7 @@ import react from '@vitejs/plugin-react';
 // Override the upstream proxy with HEIMDALL_DEV_PROXY_URL if your
 // ham-dev-proxy listens elsewhere.
 const DEV_PROXY_URL = process.env.HEIMDALL_DEV_PROXY_URL || 'http://127.0.0.1:8080';
+const LONG_PROXY_TIMEOUT_MS = 16 * 60 * 1000;
 
 export default defineConfig({
   plugins: [react()],
@@ -25,7 +26,7 @@ export default defineConfig({
       '/_dev/login': { target: DEV_PROXY_URL, changeOrigin: true },
       '/_dev/logout': { target: DEV_PROXY_URL, changeOrigin: true },
       // Rewrite Hub API: cookie-auth, identity injected by the proxy.
-      '/api/v1': { target: DEV_PROXY_URL, changeOrigin: true, cookieDomainRewrite: '', ws: true },
+      '/api/v1': { target: DEV_PROXY_URL, changeOrigin: true, cookieDomainRewrite: '', ws: true, timeout: LONG_PROXY_TIMEOUT_MS, proxyTimeout: LONG_PROXY_TIMEOUT_MS },
     },
   },
 });

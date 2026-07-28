@@ -238,10 +238,11 @@ proxy_copy_response :: proc(client, upstream: net.TCP_Socket) {
 	// The hub sends Connection: close + Content-Length and closes when done, so
 	// this read loop terminates on EOF. The timeout is only a backstop against a
 	// truly stuck upstream. It must be generous: some endpoints (e.g. the
-	// provider test, which launches an agent and waits for start-success) take
-	// several seconds to respond. A short 5s timeout dropped those responses
-	// mid-flight, surfacing as a 500 / "socket hang up" in the UI.
-	_ = net.set_option(upstream, .Receive_Timeout, 120 * time.Second)
+	// provider test, which may sequentially launch cheap/normal/smart agents and
+	// wait for start-success on each tier) can take several minutes to respond. A
+	// short timeout drops those responses mid-flight, leaving the UI stuck in a
+	// Testing state while the Bridge keeps running the tests.
+	_ = net.set_option(upstream, .Receive_Timeout, 16 * time.Minute)
 	buf: [8192]byte
 	for {
 		n, recv_err := net.recv_tcp(upstream, buf[:])

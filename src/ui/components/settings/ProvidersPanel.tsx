@@ -130,11 +130,30 @@ export function ProvidersPanel() {
   async function runTest(profile: any) {
     if (!selectedId || offline) return;
     const name = String(profile.name || '');
+    const tiers = configuredTiers(profile);
     setTestBusy(name);
     setActionError('');
     try {
-      const result = await testProvider({ bridgeId: selectedId, name }).unwrap();
-      setTestResults((prev) => ({ ...prev, [name]: result }));
+      if (tiers.length <= 1) {
+        const result = await testProvider({ bridgeId: selectedId, name, tier: tiers[0] }).unwrap();
+        setTestResults((prev) => ({ ...prev, [name]: result }));
+        return;
+      }
+      const tierResults: any[] = [];
+      setTestResults((prev) => ({ ...prev, [name]: { status: 'in_progress', message: `testing ${tiers[0]}`, tiers: [] } }));
+      for (const tier of tiers) {
+        setTestResults((prev) => ({ ...prev, [name]: { status: 'in_progress', message: `testing ${tier}`, tiers: tierResults.slice() } }));
+        try {
+          const result = await testProvider({ bridgeId: selectedId, name, tier }).unwrap();
+          tierResults.push({ ...result, tier: result?.tier || tier });
+        } catch (err: any) {
+          tierResults.push({ tier, status: 'failed', message: String(err?.message || 'Test failed') });
+        }
+        const allPassedSoFar = tierResults.every((row) => row?.status === 'passed' || row?.status === 'ok');
+        setTestResults((prev) => ({ ...prev, [name]: { status: allPassedSoFar ? 'in_progress' : 'failed', message: `completed ${tier}`, tiers: tierResults.slice() } }));
+      }
+      const allPassed = tierResults.every((row) => row?.status === 'passed' || row?.status === 'ok');
+      setTestResults((prev) => ({ ...prev, [name]: { status: allPassed ? 'passed' : 'failed', message: allPassed ? 'tested every configured tier' : 'one or more configured tiers failed', tiers: tierResults } }));
     } catch (err: any) {
       setTestResults((prev) => ({ ...prev, [name]: { status: 'failed', message: String(err?.message || 'Test failed') } }));
     } finally {

@@ -204,7 +204,15 @@ bridge_provider_relay :: proc(h: ^Bridge_Handlers, req: Request, bridge_id, comm
 	command_id := fmt.tprintf("cmd_provider_%d", time.to_unix_nanoseconds(time.now()))
 	cmd_body := bridge_provider_command_json(command_type, command_id, provider_name, body)
 	timeout_ms := 10000
-	if command_type == "test_provider" do timeout_ms = json_int(cmd_body, "hard_deadline_ms", 90000) + 10000
+	if command_type == "test_provider" {
+		hard_deadline_ms := json_int(cmd_body, "hard_deadline_ms", 90000)
+		// Provider tests can fan out across all configured tiers (cheap/normal/smart)
+		// on the Bridge. The command body only includes `tier` for a single-tier
+		// request, so budget for three sequential tier smoke tests when absent.
+		tier_count := 3
+		if json_string(cmd_body, "tier") != "" do tier_count = 1
+		timeout_ms = hard_deadline_ms * tier_count + 120000
+	}
 	reply, reply_ok, reply_err := bridge_runtime_service.send_runtime_command_wait(h.bridge_runtime_registry, project_service.Runtime_Command{bridge_id = bridge.bridge_id, command_id = command_id, body_json = cmd_body}, timeout_ms)
 	if !reply_ok do return "", false, reply_err
 	reply_type := json_string(reply, "type")
