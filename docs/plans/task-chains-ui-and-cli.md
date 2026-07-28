@@ -355,6 +355,9 @@ Layout (see ASCII mock):
 - Per-task quick actions: Nudge, LGTM, NGTM, Change status (menu:
   start/done/pause/cancel), Cancel.
 - Members strip (avatars/names + role) with add/remove for the owner.
+- **Mobile View Requirement**: On narrow/mobile viewports (`< 768px`), opening or
+  toggling the Task Chain view must fully replace the chat view (100% width)
+  instead of rendering a 50/50 split panel, including a back/toggle control to return to chat.
 
 Debug IDs (register in `AGENTS.md`, new `TaskChainOverview` row):
 - `taskchain-overview`, `taskchain-overview-title`,
