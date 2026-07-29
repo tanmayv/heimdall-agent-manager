@@ -1,11 +1,34 @@
 import { heimdallApi } from '../heimdallApi';
-import { cookieJsonFetch } from '../cookieFetch';
+import { apiUrl, cookieJsonFetch } from '../cookieFetch';
 
 // UI-14: cookie-authenticated sidebar data for the live shell. The shell serves
 // the rewrite behind the trusted proxy, so these use `credentials: 'include'`
 // (same auth session as `/api/v1/me`) — not the legacy per-client token session.
 // Server state lives in RTK Query; WS events invalidate the tags below so the
 // sidebar's unread badges refresh through the single user-WS invalidation path.
+
+export type SidebarConversationLastMessage = {
+  messageId: string;
+  direction: string;
+  rawDirection: string;
+  bodyPreview: string;
+  createdAt: string;
+  createdUnixMs: number;
+  messageType: string;
+  messageStatus: string;
+  sender: {
+    displayName: string;
+    agentId: string;
+    agentInstanceId: string;
+  };
+};
+
+export type SidebarConversationParticipant = {
+  role: string;
+  displayName: string;
+  agentId?: string;
+  agentInstanceId?: string;
+};
 
 export type SidebarConversation = {
   conversationId: string;
@@ -16,8 +39,20 @@ export type SidebarConversation = {
   title: string;
   unreadCount: number;
   updatedAt: string;
+  lastMessageAt: string;
+  lastMessagePreview: string;
+  lastMessageDirection: string;
+  lastMessageUnixMs: number;
+  lastMessage?: SidebarConversationLastMessage | null;
+  participants?: SidebarConversationParticipant[];
   bridgeId?: string;
   runtimeStatus?: string;
+};
+
+export type ConversationInboxPage = {
+  conversations: SidebarConversation[];
+  nextCursor: string;
+  hasMore: boolean;
 };
 
 export type SidebarProject = {
@@ -38,15 +73,48 @@ function normalizeSidebarConversation(raw: any): SidebarConversation {
   const projectId = String(raw?.project_id || raw?.projectId || 'default-conversations');
   const bridgeId = String(raw?.bridge_id || raw?.bridgeId || '').trim() || undefined;
   const runtimeStatus = String(raw?.runtime_status || raw?.runtimeStatus || raw?.status || '').trim() || undefined;
+  const lastMessageRaw = raw?.last_message || raw?.lastMessage || null;
+  const lastMessagePreview = String(lastMessageRaw?.body_preview || lastMessageRaw?.bodyPreview || raw?.last_message_preview || raw?.lastMessagePreview || '');
+  const lastMessageAt = String(lastMessageRaw?.created_at || lastMessageRaw?.createdAt || raw?.last_message_at || raw?.lastMessageAt || raw?.updated_at || raw?.updatedAt || '');
+  const lastMessageDirection = String(lastMessageRaw?.direction || raw?.last_message_direction || raw?.lastMessageDirection || '').trim();
+  const rawLastMessageUnixMs = lastMessageRaw?.created_unix_ms ?? lastMessageRaw?.createdUnixMs ?? raw?.last_message_unix_ms ?? raw?.lastMessageUnixMs;
+  const lastMessageUnixMs = asNumber(rawLastMessageUnixMs || Date.parse(lastMessageAt) || 0);
+  const lastMessage = lastMessageRaw || lastMessagePreview || lastMessageDirection ? {
+    messageId: String(lastMessageRaw?.message_id || lastMessageRaw?.messageId || ''),
+    direction: lastMessageDirection,
+    rawDirection: String(lastMessageRaw?.raw_direction || lastMessageRaw?.rawDirection || raw?.last_message_direction || raw?.lastMessageDirection || ''),
+    bodyPreview: lastMessagePreview,
+    createdAt: lastMessageAt,
+    createdUnixMs: lastMessageUnixMs,
+    messageType: String(lastMessageRaw?.message_type || lastMessageRaw?.messageType || 'text'),
+    messageStatus: String(lastMessageRaw?.message_status || lastMessageRaw?.messageStatus || 'complete'),
+    sender: {
+      displayName: String(lastMessageRaw?.sender?.display_name || lastMessageRaw?.sender?.displayName || ''),
+      agentId: String(lastMessageRaw?.sender?.agent_id || lastMessageRaw?.sender?.agentId || ''),
+      agentInstanceId: String(lastMessageRaw?.sender?.agent_instance_id || lastMessageRaw?.sender?.agentInstanceId || ''),
+    },
+  } : null;
+  const participants = Array.isArray(raw?.participants) ? raw.participants.map((p: any) => ({
+    role: String(p?.role || ''),
+    displayName: String(p?.display_name || p?.displayName || p?.name || ''),
+    agentId: String(p?.agent_id || p?.agentId || '') || undefined,
+    agentInstanceId: String(p?.agent_instance_id || p?.agentInstanceId || '') || undefined,
+  })) : undefined;
   return {
     conversationId,
     agentId: agentId || 'unknown-agent',
     agentInstanceId,
     agentName: String(raw?.agent_name || raw?.agentName || raw?.agent_display_name || raw?.agentDisplayName || '').trim() || undefined,
     projectId: projectId || 'default-conversations',
-    title: String(raw?.title || raw?.last_message_preview || raw?.lastMessagePreview || agentInstanceId || conversationId || 'Untitled session'),
+    title: String(raw?.title || lastMessagePreview || agentInstanceId || conversationId || 'Untitled session'),
     unreadCount: asNumber(raw?.unread_count ?? raw?.unreadCount),
-    updatedAt: String(raw?.updated_at || raw?.updatedAt || raw?.last_message_at || raw?.lastMessageAt || ''),
+    updatedAt: String(raw?.updated_at || raw?.updatedAt || lastMessageAt || ''),
+    lastMessageAt,
+    lastMessagePreview,
+    lastMessageDirection,
+    lastMessageUnixMs,
+    lastMessage,
+    participants,
     bridgeId,
     runtimeStatus,
   };
@@ -79,6 +147,21 @@ async function fetchCookieList(path: string, collectionKeys: string[] = []): Pro
   return extractListPayload(payload, collectionKeys);
 }
 
+async function fetchCookiePage(path: string, collectionKeys: string[] = []): Promise<{ rows: any[]; page: any }> {
+  const response = await fetch(apiUrl(path), { credentials: 'include' });
+  if (!response.ok) {
+    let msg = `Request failed (${response.status})`;
+    try {
+      const text = await response.text();
+      const body = JSON.parse(text);
+      msg = String(body?.error?.message || body?.message || msg);
+    } catch (_err) {}
+    throw new Error(msg);
+  }
+  const body = await response.json();
+  return { rows: extractListPayload(body, collectionKeys), page: body?.page || body?.data?.page || {} };
+}
+
 export const sidebarApi = heimdallApi.injectEndpoints({
   endpoints: (build) => ({
     // Conversations list for the sidebar tree. Tagged so the user-WS chat-event
@@ -99,6 +182,29 @@ export const sidebarApi = heimdallApi.injectEndpoints({
         ...(result || []).map((c) => ({ type: 'SidebarConversations' as const, id: c.conversationId })),
       ],
     }),
+    listConversationInbox: build.query<ConversationInboxPage, { limit?: number; cursor?: string } | void>({
+      queryFn: async (arg) => {
+        try {
+          const limit = (arg && typeof arg === 'object' && arg.limit) || 50;
+          const cursor = (arg && typeof arg === 'object' && arg.cursor) || '';
+          const params = new URLSearchParams({
+            limit: String(limit),
+            include: 'last_message,participants',
+            sort: '-last_message_at',
+          });
+          if (cursor) params.set('cursor', cursor);
+          const { rows, page } = await fetchCookiePage(`/chats?${params.toString()}`, ['conversations', 'chats']);
+          const conversations = rows.map(normalizeSidebarConversation).filter((c) => c.conversationId);
+          return { data: { conversations, nextCursor: String(page?.next_cursor ?? page?.nextCursor ?? ''), hasMore: Boolean(page?.has_more ?? page?.hasMore ?? conversations.length >= limit) } };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error || 'Request failed') } as any };
+        }
+      },
+      providesTags: (result) => [
+        { type: 'SidebarConversations' as const, id: 'ALL' },
+        ...(result?.conversations || []).map((c) => ({ type: 'SidebarConversations' as const, id: c.conversationId })),
+      ],
+    }),
     listSidebarProjects: build.query<SidebarProject[], { limit?: number } | void>({
       queryFn: async (arg) => {
         try {
@@ -114,4 +220,4 @@ export const sidebarApi = heimdallApi.injectEndpoints({
   }),
 });
 
-export const { useListSidebarConversationsQuery, useListSidebarProjectsQuery } = sidebarApi;
+export const { useListSidebarConversationsQuery, useLazyListSidebarConversationsQuery, useListConversationInboxQuery, useLazyListConversationInboxQuery, useListSidebarProjectsQuery } = sidebarApi;

@@ -71,7 +71,22 @@ memory_action_handler :: proc(ctx:rawptr, req:Request)->Response{
 	return respond_success(strings.to_string(b),req.request_id,auth_ctx_server_time(req))
 }
 
-list_chats_handler :: proc(ctx:rawptr, req:Request)->Response{ h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp; limit:=query_int(req.query,"limit",50); cursor:=query_value(req.query,"cursor"); rows,err:=content_service.list_conversations(h.content,auth,limit,cursor); if err.code!=.None do return respond_error(err,req.request_id); b:=strings.builder_make(); strings.write_byte(&b,'['); next:=""; for r,i in rows{ if i>0 do strings.write_byte(&b,','); write_chat_json_with_runtime(&b,r,h,auth); next=r.updated_at}; strings.write_byte(&b,']'); has_more:=len(rows)>=limit; return respond_list(strings.to_string(b),contracts.API_Page{limit=limit,next_cursor=next if has_more else "",has_more=has_more},req.request_id,auth_ctx_server_time(req)) }
+list_chats_handler :: proc(ctx:rawptr, req:Request)->Response{
+	h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp
+	limit:=query_int(req.query,"limit",50); if limit<=0 do limit=50; if limit>200 do limit=200
+	cursor:=query_value(req.query,"cursor")
+	// Standard chat-list affordances are additive/optional. The existing sidebar
+	// path keeps working with bare /chats?limit=N, while richer consumers can ask
+	// for conventional includes/sort without receiving a different envelope.
+	include:=query_value(req.query,"include"); sort:=query_value(req.query,"sort"); order:=query_value(req.query,"order"); _=include; _=sort; _=order
+	rows,err:=content_service.list_conversations(h.content,auth,limit,cursor); if err.code!=.None do return respond_error(err,req.request_id)
+	b:=strings.builder_make(); strings.write_byte(&b,'[')
+	next:=""
+	for r,i in rows{ if i>0 do strings.write_byte(&b,','); write_chat_json_with_runtime(&b,r,h,auth); next=chat_page_cursor(r) }
+	strings.write_byte(&b,']')
+	has_more:=len(rows)>=limit
+	return respond_list(strings.to_string(b),contracts.API_Page{limit=limit,next_cursor=next if has_more else "",has_more=has_more},req.request_id,auth_ctx_server_time(req))
+}
 create_chat_handler :: proc(ctx:rawptr, req:Request)->Response{
 	h:=(^Content_Handlers)(ctx); auth,ok,resp:=require_auth(h.auth,req); if !ok do return resp
 	input:=chat_input(req.body)
@@ -384,12 +399,88 @@ template_input :: proc(body:string)->content_service.Template_Input{ return cont
 
 write_memory_json :: proc(b:^strings.Builder,m:domain.Memory,preview:bool){ typ:=domain.memory_type_string(m.type); strings.write_string(b,"{\"memory_id\":\""); write_handler_json_string(b,m.memory_id); strings.write_string(b,"\",\"agent_id\":\""); write_handler_json_string(b,m.agent_id); strings.write_string(b,"\",\"target_agent_id\":\""); write_handler_json_string(b,m.agent_id); strings.write_string(b,"\",\"project_id\":\""); write_handler_json_string(b,string(m.project_id)); strings.write_string(b,"\",\"target_project_id\":\""); write_handler_json_string(b,string(m.project_id)); strings.write_string(b,"\",\"template_id\":\""); write_handler_json_string(b,m.template_id); strings.write_string(b,"\",\"target_template_id\":\""); write_handler_json_string(b,m.template_id); strings.write_string(b,"\",\"bridge_id\":\""); write_handler_json_string(b,m.bridge_id); strings.write_string(b,"\",\"target_bridge_id\":\""); write_handler_json_string(b,m.bridge_id); strings.write_string(b,"\",\"type\":\""); write_handler_json_string(b,typ); strings.write_string(b,"\",\"status\":\""); write_handler_json_string(b,m.status); strings.write_string(b,"\",\"title\":\""); write_handler_json_string(b,m.title); if preview { strings.write_string(b,"\",\"body_preview\":\""); write_handler_json_string(b,m.body); strings.write_string(b,"\",\"evidence\":\""); write_handler_json_string(b,m.evidence) } else { strings.write_string(b,"\",\"body\":\""); write_handler_json_string(b,m.body); strings.write_string(b,"\",\"evidence\":\""); write_handler_json_string(b,m.evidence) }; strings.write_string(b,"\",\"updated_at\":\""); write_handler_json_string(b,m.updated_at); strings.write_string(b,"\"}") }
 write_chat_json :: proc(b:^strings.Builder,c:domain.Chat_Conversation){ strings.write_string(b,"{\"conversation_id\":\""); write_handler_json_string(b,c.conversation_id); strings.write_string(b,"\",\"agent_id\":\""); write_handler_json_string(b,c.agent_id); strings.write_string(b,"\",\"agent_instance_id\":\""); write_handler_json_string(b,c.agent_instance_id); strings.write_string(b,"\",\"project_id\":\""); write_handler_json_string(b,string(c.project_id)); strings.write_string(b,"\",\"chain_id\":\""); write_handler_json_string(b,c.chain_id); strings.write_string(b,"\",\"title\":\""); write_handler_json_string(b,c.title); strings.write_string(b,"\",\"unread_count\":"); strings.write_string(b,fmt.tprintf("%d",c.unread_count)); strings.write_string(b,",\"last_message_preview\":\""); write_handler_json_string(b,c.last_message_preview); strings.write_string(b,"\",\"last_message_at\":\""); write_handler_json_string(b,c.last_message_at); strings.write_string(b,"\",\"updated_at\":\""); write_handler_json_string(b,c.updated_at); strings.write_string(b,"\"}") }
-write_chat_json_with_runtime :: proc(b:^strings.Builder,c:domain.Chat_Conversation,h:^Content_Handlers,auth:contracts.Auth_Context){ bridge_id:=""; runtime_status:=""; agent_name:=""; agent_slug:=""; if h!=nil && h.agents!=nil { if c.agent_instance_id!="" { if inst,inst_ok,_:=agent_service.get_instance(h.agents,auth,c.agent_instance_id); inst_ok { bridge_id=inst.bridge_id; runtime_status=inst.runtime_status } }; if c.agent_id!="" { if agent,agent_ok,_:=agent_service.get_agent(h.agents,auth,c.agent_id); agent_ok { agent_name=agent.name; agent_slug=agent.slug } } }; strings.write_string(b,"{\"conversation_id\":\""); write_handler_json_string(b,c.conversation_id); strings.write_string(b,"\",\"agent_id\":\""); write_handler_json_string(b,c.agent_id); strings.write_string(b,"\",\"agent_name\":\""); write_handler_json_string(b,agent_name); strings.write_string(b,"\",\"agent_slug\":\""); write_handler_json_string(b,agent_slug); strings.write_string(b,"\",\"agent_instance_id\":\""); write_handler_json_string(b,c.agent_instance_id); strings.write_string(b,"\",\"bridge_id\":\""); write_handler_json_string(b,bridge_id); strings.write_string(b,"\",\"runtime_status\":\""); write_handler_json_string(b,runtime_status); strings.write_string(b,"\",\"project_id\":\""); write_handler_json_string(b,string(c.project_id)); strings.write_string(b,"\",\"chain_id\":\""); write_handler_json_string(b,c.chain_id); strings.write_string(b,"\",\"title\":\""); write_handler_json_string(b,c.title); strings.write_string(b,"\",\"unread_count\":"); strings.write_string(b,fmt.tprintf("%d",c.unread_count)); strings.write_string(b,",\"last_message_preview\":\""); write_handler_json_string(b,c.last_message_preview); strings.write_string(b,"\",\"last_message_at\":\""); write_handler_json_string(b,c.last_message_at); strings.write_string(b,"\",\"updated_at\":\""); write_handler_json_string(b,c.updated_at); strings.write_string(b,"\"}") }
+write_chat_json_with_runtime :: proc(b:^strings.Builder,c:domain.Chat_Conversation,h:^Content_Handlers,auth:contracts.Auth_Context){
+	bridge_id:=""; runtime_status:=""; agent_name:=""; agent_slug:=""
+	if h!=nil && h.agents!=nil { if c.agent_instance_id!="" { if inst,inst_ok,_:=agent_service.get_instance(h.agents,auth,c.agent_instance_id); inst_ok { bridge_id=inst.bridge_id; runtime_status=inst.runtime_status } }; if c.agent_id!="" { if agent,agent_ok,_:=agent_service.get_agent(h.agents,auth,c.agent_id); agent_ok { agent_name=agent.name; agent_slug=agent.slug } } }
+	last_at:=chat_last_message_at(c)
+	standard_direction:=chat_last_message_standard_direction(c.last_message_direction)
+	sender_name:="You" if standard_direction=="sent" else agent_name
+	strings.write_string(b,"{\"conversation_id\":\""); write_handler_json_string(b,c.conversation_id)
+	strings.write_string(b,"\",\"agent_id\":\""); write_handler_json_string(b,c.agent_id)
+	strings.write_string(b,"\",\"agent_name\":\""); write_handler_json_string(b,agent_name)
+	strings.write_string(b,"\",\"agent_slug\":\""); write_handler_json_string(b,agent_slug)
+	strings.write_string(b,"\",\"agent_instance_id\":\""); write_handler_json_string(b,c.agent_instance_id)
+	strings.write_string(b,"\",\"bridge_id\":\""); write_handler_json_string(b,bridge_id)
+	strings.write_string(b,"\",\"runtime_status\":\""); write_handler_json_string(b,runtime_status)
+	strings.write_string(b,"\",\"project_id\":\""); write_handler_json_string(b,string(c.project_id))
+	strings.write_string(b,"\",\"chain_id\":\""); write_handler_json_string(b,c.chain_id)
+	strings.write_string(b,"\",\"title\":\""); write_handler_json_string(b,c.title)
+	strings.write_string(b,"\",\"unread_count\":"); strings.write_string(b,fmt.tprintf("%d",c.unread_count))
+	strings.write_string(b,",\"last_message_preview\":\""); write_handler_json_string(b,c.last_message_preview)
+	strings.write_string(b,"\",\"last_message_at\":\""); write_handler_json_string(b,last_at)
+	strings.write_string(b,"\",\"last_message_direction\":\""); write_handler_json_string(b,c.last_message_direction)
+	strings.write_string(b,"\",\"last_message_unix_ms\":"); strings.write_string(b,fmt.tprintf("%d",rfc3339_unix_ms(last_at)))
+	strings.write_string(b,",\"updated_at\":\""); write_handler_json_string(b,c.updated_at)
+	strings.write_string(b,"\",\"participants\":[{\"role\":\"user\",\"display_name\":\"You\"},{\"role\":\"agent\",\"agent_id\":\""); write_handler_json_string(b,c.agent_id)
+	strings.write_string(b,"\",\"agent_instance_id\":\""); write_handler_json_string(b,c.agent_instance_id)
+	strings.write_string(b,"\",\"display_name\":\""); write_handler_json_string(b,agent_name)
+	strings.write_string(b,"\"}],\"last_message\":{\"message_id\":\""); write_handler_json_string(b,c.last_message_id)
+	strings.write_string(b,"\",\"direction\":\""); write_handler_json_string(b,standard_direction)
+	strings.write_string(b,"\",\"raw_direction\":\""); write_handler_json_string(b,c.last_message_direction)
+	strings.write_string(b,"\",\"body_preview\":\""); write_handler_json_string(b,c.last_message_preview)
+	strings.write_string(b,"\",\"created_at\":\""); write_handler_json_string(b,last_at)
+	strings.write_string(b,"\",\"created_unix_ms\":"); strings.write_string(b,fmt.tprintf("%d",rfc3339_unix_ms(last_at)))
+	strings.write_string(b,",\"message_type\":\""); write_handler_json_string(b,c.last_message_type)
+	strings.write_string(b,"\",\"message_status\":\""); write_handler_json_string(b,c.last_message_status)
+	strings.write_string(b,"\",\"sender\":{\"display_name\":\""); write_handler_json_string(b,sender_name)
+	strings.write_string(b,"\",\"agent_id\":\""); write_handler_json_string(b,c.last_message_sender_agent_id)
+	strings.write_string(b,"\",\"agent_instance_id\":\""); write_handler_json_string(b,c.last_message_sender_agent_instance_id)
+	strings.write_string(b,"\"}}}")
+}
 write_message_json :: proc(b:^strings.Builder,m:domain.Chat_Message,svc:^content_service.Content_Service){ body:=content_service.message_body_for_response(svc,m); typ:=m.message_type; if typ=="" do typ="text"; status:=m.message_status; if status=="" do status="complete"; metadata:=m.metadata_json; if strings.trim_space(metadata)=="" do metadata="{}"; strings.write_string(b,"{\"message_id\":\""); write_handler_json_string(b,m.message_id); strings.write_string(b,"\",\"conversation_id\":\""); write_handler_json_string(b,m.conversation_id); strings.write_string(b,"\",\"direction\":\""); write_handler_json_string(b,m.direction); strings.write_string(b,"\",\"body\":\""); write_handler_json_string(b,body); strings.write_string(b,"\",\"artifact_ids\":"); strings.write_string(b,artifact_json_or_empty(m.artifact_ids_json)); strings.write_string(b,",\"message_type\":\""); write_handler_json_string(b,typ); strings.write_string(b,"\",\"message_status\":\""); write_handler_json_string(b,status); strings.write_string(b,"\",\"metadata\":"); strings.write_string(b,metadata); strings.write_string(b,",\"metadata_json\":\""); write_handler_json_string(b,metadata); strings.write_string(b,"\",\"created_at\":\""); write_handler_json_string(b,m.created_at); strings.write_string(b,"\"}") }
 write_artifact_json :: proc(b:^strings.Builder,a:domain.Artifact,with_content:bool){ strings.write_string(b,"{\"artifact_id\":\""); write_handler_json_string(b,a.artifact_id); strings.write_string(b,"\",\"kind\":\""); write_handler_json_string(b,a.kind); strings.write_string(b,"\",\"name\":\""); write_handler_json_string(b,a.name); strings.write_string(b,"\",\"description\":\""); write_handler_json_string(b,a.description); strings.write_string(b,"\",\"content_type\":\""); write_handler_json_string(b,a.content_type); strings.write_string(b,"\",\"mime\":\""); write_handler_json_string(b,a.mime); strings.write_string(b,"\",\"ext\":\""); write_handler_json_string(b,a.ext); strings.write_string(b,"\",\"sha256\":\""); write_handler_json_string(b,a.sha256); strings.write_string(b,"\",\"origin_kind\":\""); write_handler_json_string(b,a.origin_kind); strings.write_string(b,"\",\"origin_ref\":\""); write_handler_json_string(b,a.origin_ref); strings.write_string(b,"\",\"agent_id\":\""); write_handler_json_string(b,a.agent_id); strings.write_string(b,"\",\"agent_instance_id\":\""); write_handler_json_string(b,a.agent_instance_id); strings.write_string(b,"\",\"chain_id\":\""); write_handler_json_string(b,a.chain_id); strings.write_string(b,"\",\"task_id\":\""); write_handler_json_string(b,a.task_id); strings.write_string(b,"\",\"project_id\":\""); write_handler_json_string(b,string(a.project_id)); strings.write_string(b,"\",\"link\":\"artifact://"); write_handler_json_string(b,a.artifact_id); strings.write_string(b,"\",\"size_bytes\":"); strings.write_string(b,fmt.tprintf("%d",a.size_bytes)); if with_content {strings.write_string(b,",\"content\":\""); write_handler_json_string(b,a.content)}; strings.write_string(b,",\"deleted_at\":\""); write_handler_json_string(b,a.deleted_at); strings.write_string(b,"\",\"created_at\":\""); write_handler_json_string(b,a.created_at); strings.write_string(b,"\",\"updated_at\":\""); write_handler_json_string(b,a.updated_at); strings.write_string(b,"\"}") }
 write_template_json :: proc(b:^strings.Builder,t:domain.Template){ strings.write_string(b,"{\"template_id\":\""); write_handler_json_string(b,t.template_id); strings.write_string(b,"\",\"is_system\":"); strings.write_string(b,"true" if t.is_system else "false"); strings.write_string(b,",\"name\":\""); write_handler_json_string(b,t.name); strings.write_string(b,"\",\"description\":\""); write_handler_json_string(b,t.description); strings.write_string(b,"\",\"persona\":\""); write_handler_json_string(b,t.persona); strings.write_string(b,"\",\"instructions\":\""); write_handler_json_string(b,t.instructions); strings.write_string(b,"\"}") }
 
-query_value :: proc(q,key:string)->string{ parts:=strings.split(q,"&"); defer delete(parts); for p in parts{ eq:=strings.index_byte(p,'='); if eq>=0 && p[:eq]==key do return p[eq+1:] }; return "" }
+chat_last_message_at :: proc(c:domain.Chat_Conversation)->string{ if c.last_message_created_at!="" do return c.last_message_created_at; if c.last_message_at!="" do return c.last_message_at; if c.updated_at!="" do return c.updated_at; return c.created_at }
+chat_page_cursor :: proc(c:domain.Chat_Conversation)->string{ at:=chat_last_message_at(c); if at=="" do return ""; return strings.concatenate({at,"|",c.conversation_id}) }
+chat_last_message_standard_direction :: proc(direction:string)->string{ switch direction { case "user_to_agent": return "sent"; case "agent_to_user": return "received" }; if direction=="" do return ""; return direction }
+
+rfc3339_unix_ms :: proc(value:string)->i64{
+	if len(value)<19 do return 0
+	year,ok:=rfc3339_part(value,0,4); if !ok do return 0
+	month,ok:=rfc3339_part(value,5,2); if !ok do return 0
+	day,ok:=rfc3339_part(value,8,2); if !ok do return 0
+	hour,ok:=rfc3339_part(value,11,2); if !ok do return 0
+	minute,ok:=rfc3339_part(value,14,2); if !ok do return 0
+	second,ok:=rfc3339_part(value,17,2); if !ok do return 0
+	if month<1 || month>12 || day<1 || day>31 || hour<0 || hour>23 || minute<0 || minute>59 || second<0 || second>60 do return 0
+	days:i64=0
+	for y:=1970; y<year; y+=1 { days += 366 if rfc3339_leap_year(y) else 365 }
+	for m:=1; m<month; m+=1 { days += i64(rfc3339_month_days(year,m)) }
+	days += i64(day-1)
+	return (((days*24 + i64(hour))*60 + i64(minute))*60 + i64(second))*1000
+}
+rfc3339_part :: proc(value:string,start,count:int)->(int,bool){ if start<0 || count<=0 || start+count>len(value) do return 0,false; parsed,ok:=strconv.parse_int(value[start:start+count]); if !ok do return 0,false; return int(parsed),true }
+rfc3339_leap_year :: proc(year:int)->bool{ if year%400==0 do return true; if year%100==0 do return false; return year%4==0 }
+rfc3339_month_days :: proc(year,month:int)->int{ switch month { case 1,3,5,7,8,10,12: return 31; case 4,6,9,11: return 30; case 2: return 29 if rfc3339_leap_year(year) else 28 }; return 30 }
+
+query_value :: proc(q,key:string)->string{ parts:=strings.split(q,"&"); defer delete(parts); for p in parts{ eq:=strings.index_byte(p,'='); if eq>=0 && p[:eq]==key do return query_component_decode(p[eq+1:]) }; return "" }
+query_component_decode :: proc(value:string)->string{
+	if strings.index_byte(value,'%')<0 && strings.index_byte(value,'+')<0 do return value
+	b:=strings.builder_make()
+	i:=0
+	for i<len(value) {
+		ch:=value[i]
+		if ch=='+' { strings.write_byte(&b,' '); i+=1; continue }
+		if ch=='%' && i+2<len(value) {
+			hi,ok_hi:=query_hex_nibble(value[i+1]); lo,ok_lo:=query_hex_nibble(value[i+2])
+			if ok_hi && ok_lo { strings.write_byte(&b,byte(hi*16+lo)); i+=3; continue }
+		}
+		strings.write_byte(&b,ch); i+=1
+	}
+	return strings.to_string(b)
+}
+query_hex_nibble :: proc(ch:byte)->(int,bool){ if ch>='0' && ch<='9' do return int(ch-'0'),true; if ch>='a' && ch<='f' do return int(ch-'a')+10,true; if ch>='A' && ch<='F' do return int(ch-'A')+10,true; return 0,false }
 query_int :: proc(q,key:string,d:int)->int{ v:=query_value(q,key); if p,ok:=strconv.parse_int(v); ok do return int(p); return d }
 json_body_int :: proc(body,key:string,d:int)->int{ needle:=strings.concatenate({"\"",key,"\""}); defer delete(needle); idx:=strings.index(body,needle); if idx<0 do return d; rest:=body[idx+len(needle):]; colon:=strings.index_byte(rest,':'); if colon<0 do return d; rest=strings.trim_space(rest[colon+1:]); end:=0; for end<len(rest)&&rest[end]>='0'&&rest[end]<='9' do end+=1; if end==0 do return d; if p,ok:=strconv.parse_int(rest[:end]); ok do return int(p); return d }
 pane_capture_request_id_from_metadata :: proc(metadata:string)->string{ return json_string(metadata,"pane_capture_request_id") }

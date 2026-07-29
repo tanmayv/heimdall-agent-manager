@@ -1,0 +1,143 @@
+import { useEffect, useMemo, useState } from 'react';
+import { useListConversationInboxQuery, useLazyListConversationInboxQuery, type SidebarConversation } from '../../api/endpoints/sidebar';
+import { buildRouteHash } from '../../utils/appLocation';
+
+const PAGE_SIZE = 40;
+
+function looksLikeInternalId(value: string): boolean {
+  return /^(agt|inst|chat|conv|usr|brg|task|chain|proj|art)_[a-z0-9]/i.test(String(value || '').trim());
+}
+
+function conversationTitle(conversation: SidebarConversation): string {
+  const title = String(conversation.title || '').trim();
+  if (title && title !== conversation.conversationId && title !== conversation.agentInstanceId && !looksLikeInternalId(title)) return title;
+  const agent = String(conversation.agentName || '').trim();
+  if (agent && !looksLikeInternalId(agent)) return agent;
+  return 'Untitled conversation';
+}
+
+function timestampLabel(conversation: SidebarConversation): string {
+  const unixMs = Number(conversation.lastMessage?.createdUnixMs || conversation.lastMessageUnixMs || 0);
+  const raw = conversation.lastMessage?.createdAt || conversation.lastMessageAt || conversation.updatedAt || '';
+  const date = unixMs > 0 ? new Date(unixMs) : raw ? new Date(raw) : null;
+  if (!date || Number.isNaN(date.getTime())) return '';
+  const now = new Date();
+  if (date.toDateString() === now.toDateString()) return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const sameYear = date.getFullYear() === now.getFullYear();
+  return date.toLocaleDateString([], sameYear ? { month: 'short', day: 'numeric' } : { month: 'short', day: 'numeric', year: '2-digit' });
+}
+
+function lastMessageLabel(conversation: SidebarConversation): { prefix: string; preview: string } {
+  const last = conversation.lastMessage;
+  const direction = String(last?.direction || conversation.lastMessageDirection || '').toLowerCase();
+  const rawDirection = String(last?.rawDirection || '').toLowerCase();
+  const sent = direction === 'sent' || rawDirection === 'user_to_agent';
+  const sender = String(last?.sender?.displayName || conversation.agentName || '').trim();
+  const prefix = sent ? 'You' : (sender && !looksLikeInternalId(sender) ? sender : 'Received');
+  const preview = String(last?.bodyPreview || conversation.lastMessagePreview || '').trim();
+  return { prefix, preview: preview || 'No messages yet' };
+}
+
+function mergeConversations(current: SidebarConversation[], next: SidebarConversation[]): SidebarConversation[] {
+  const byId = new Map<string, SidebarConversation>();
+  for (const item of current) if (item.conversationId) byId.set(item.conversationId, item);
+  for (const item of next) if (item.conversationId) byId.set(item.conversationId, item);
+  return Array.from(byId.values()).sort((left, right) => {
+    const leftTime = Number(left.lastMessage?.createdUnixMs || left.lastMessageUnixMs || Date.parse(left.lastMessageAt || left.updatedAt || '') || 0);
+    const rightTime = Number(right.lastMessage?.createdUnixMs || right.lastMessageUnixMs || Date.parse(right.lastMessageAt || right.updatedAt || '') || 0);
+    return rightTime - leftTime || String(right.conversationId).localeCompare(String(left.conversationId));
+  });
+}
+
+export default function ConversationsHomePage() {
+  const firstPage = useListConversationInboxQuery({ limit: PAGE_SIZE });
+  const [fetchPage, fetchPageResult] = useLazyListConversationInboxQuery();
+  const [rows, setRows] = useState<SidebarConversation[]>([]);
+  const [nextCursor, setNextCursor] = useState('');
+  const [hasMore, setHasMore] = useState(false);
+  const [loadError, setLoadError] = useState('');
+
+  useEffect(() => {
+    if (!firstPage.data) return;
+    setRows(firstPage.data.conversations || []);
+    setNextCursor(firstPage.data.nextCursor || '');
+    setHasMore(Boolean(firstPage.data.hasMore));
+  }, [firstPage.data]);
+
+  const conversations = useMemo(() => mergeConversations([], rows), [rows]);
+  const unreadTotal = conversations.reduce((sum, conversation) => sum + Number(conversation.unreadCount || 0), 0);
+
+  async function loadMore() {
+    if (!nextCursor || fetchPageResult.isFetching) return;
+    setLoadError('');
+    try {
+      const page = await fetchPage({ limit: PAGE_SIZE, cursor: nextCursor }).unwrap();
+      setRows((current) => mergeConversations(current, page.conversations || []));
+      setNextCursor(page.nextCursor || '');
+      setHasMore(Boolean(page.hasMore));
+    } catch (error: any) {
+      setLoadError(String(error?.message || error || 'Failed to load more conversations'));
+    }
+  }
+
+  return (
+    <div data-debug-id="conversations-home-page" className="flex min-h-full w-full flex-col text-left">
+      <header data-debug-id="conversations-home-header" className="sticky top-0 z-10 -mx-3 border-b border-white/10 bg-[#090909]/95 px-3 pb-3 pt-2 backdrop-blur sm:-mx-4 sm:px-4 lg:-mx-5 lg:px-5">
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-sky-300/75">Conversations</p>
+            <h1 className="mt-1 text-2xl font-semibold tracking-tight text-white">Inbox</h1>
+            <p data-debug-id="conversations-home-subtitle" className="mt-1 text-sm text-zinc-500">Newest message first · {conversations.length} loaded{unreadTotal ? ` · ${unreadTotal} unread` : ''}</p>
+          </div>
+          <a data-debug-id="conversations-home-new-btn" href={buildRouteHash('/conversations/new', '')} className="inline-flex min-h-11 shrink-0 items-center rounded-2xl bg-sky-400 px-4 py-2 text-sm font-black text-black shadow-lg shadow-sky-950/30 hover:bg-sky-300">New</a>
+        </div>
+      </header>
+
+      {firstPage.isError ? (
+        <div data-debug-id="conversation-inbox-error" className="mt-4 rounded-2xl border border-red-400/25 bg-red-400/10 p-4 text-sm text-red-100">{String((firstPage.error as any)?.error || 'Failed to load conversations')}</div>
+      ) : null}
+
+      <section data-debug-id="conversation-inbox-list" className="mt-3 w-full divide-y divide-white/[0.06] overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03]">
+        {firstPage.isLoading && conversations.length === 0 ? (
+          <div data-debug-id="conversation-inbox-loading" className="p-5 text-sm text-zinc-500">Loading conversations…</div>
+        ) : conversations.length === 0 ? (
+          <div data-debug-id="conversation-inbox-empty" className="p-6 text-sm text-zinc-500">No conversations yet. Start a new conversation to see it here.</div>
+        ) : conversations.map((conversation) => {
+          const title = conversationTitle(conversation);
+          const last = lastMessageLabel(conversation);
+          const ts = timestampLabel(conversation);
+          return (
+            <a
+              key={conversation.conversationId}
+              data-debug-id={`conversation-inbox-row-${conversation.conversationId}`}
+              href={buildRouteHash(`/conversations/${encodeURIComponent(conversation.conversationId)}`, '')}
+              className="group flex min-h-[76px] w-full touch-manipulation items-center gap-3 px-3 py-3 text-left transition hover:bg-white/[0.06] active:bg-white/[0.09] sm:min-h-[84px] sm:px-4"
+            >
+              <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-sky-400/10 text-base font-black text-sky-200 ring-1 ring-sky-400/20 sm:h-14 sm:w-14">{title.slice(0, 1).toUpperCase() || 'C'}</div>
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 items-center gap-2">
+                  <h2 data-debug-id={`conversation-inbox-title-${conversation.conversationId}`} className="truncate text-[15px] font-semibold text-zinc-100 sm:text-base">{title}</h2>
+                  {conversation.unreadCount > 0 ? <span data-debug-id={`conversation-inbox-unread-${conversation.conversationId}`} className="inline-flex min-w-5 shrink-0 items-center justify-center rounded-full bg-sky-400 px-1.5 py-0.5 text-[10px] font-black text-black">{conversation.unreadCount > 99 ? '99+' : conversation.unreadCount}</span> : null}
+                </div>
+                <p data-debug-id={`conversation-inbox-last-message-${conversation.conversationId}`} className="mt-1 line-clamp-2 text-[13px] leading-5 text-zinc-400 group-hover:text-zinc-300">
+                  <span data-debug-id={`conversation-inbox-last-message-label-${conversation.conversationId}`} className="font-semibold text-zinc-300">{last.prefix}: </span>{last.preview}
+                </p>
+              </div>
+              <div className="flex h-full shrink-0 flex-col items-end justify-start gap-2 pt-1">
+                {ts ? <time data-debug-id={`conversation-inbox-timestamp-${conversation.conversationId}`} className="text-[11px] font-medium text-zinc-500">{ts}</time> : null}
+                <span aria-hidden="true" className="text-lg text-zinc-700 group-hover:text-zinc-400">›</span>
+              </div>
+            </a>
+          );
+        })}
+      </section>
+
+      {loadError ? <div data-debug-id="conversation-inbox-load-error" className="mt-3 rounded-2xl border border-red-400/25 bg-red-400/10 p-3 text-sm text-red-100">{loadError}</div> : null}
+      {hasMore ? (
+        <button data-debug-id="conversation-inbox-load-more-btn" type="button" onClick={loadMore} disabled={fetchPageResult.isFetching} className="mx-auto mt-4 min-h-11 rounded-2xl border border-white/10 px-5 py-2 text-sm font-semibold text-zinc-300 hover:bg-white/10 disabled:cursor-wait disabled:opacity-60">
+          {fetchPageResult.isFetching ? 'Loading…' : 'Load more conversations'}
+        </button>
+      ) : null}
+    </div>
+  );
+}

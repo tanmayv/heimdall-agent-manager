@@ -26,7 +26,36 @@ content_list_memories_sqlite :: proc(ctx: rawptr, owner: domain.User_ID) -> ([]d
 
 content_save_conversation_sqlite :: proc(ctx: rawptr, c: domain.Chat_Conversation) -> (domain.Chat_Conversation,bool,domain.Domain_Error) { impl:=(^Content_Repo_SQLite)(ctx); stmt:sqlite3_stmt=nil; q:="INSERT INTO chat_conversations (conversation_id, owner_user_id, agent_id, agent_instance_id, project_id, chain_id, title, unread_count, last_message_preview, last_message_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(conversation_id) DO UPDATE SET title=excluded.title, unread_count=excluded.unread_count, last_message_preview=excluded.last_message_preview, last_message_at=excluded.last_message_at, updated_at=excluded.updated_at;"; if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(q)),-1,&stmt,nil)!=SQLITE_OK do return {},false,domain.domain_error(.Internal_Error,"failed conversation save"); defer sqlite3_finalize(stmt); bind_conversation(stmt,c); if sqlite3_step(stmt)!=SQLITE_DONE do return {},false,domain.domain_error(.Conflict,"conversation could not be saved"); return c,true,{} }
 content_get_conversation_sqlite :: proc(ctx: rawptr, id:string)->(domain.Chat_Conversation,bool,domain.Domain_Error){ impl:=(^Content_Repo_SQLite)(ctx); stmt:sqlite3_stmt=nil; q:="SELECT conversation_id, owner_user_id, agent_id, agent_instance_id, project_id, chain_id, title, unread_count, last_message_preview, last_message_at, created_at, updated_at FROM chat_conversations WHERE conversation_id=?;"; if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(q)),-1,&stmt,nil)!=SQLITE_OK do return {},false,domain.domain_error(.Internal_Error,"failed conversation lookup"); defer sqlite3_finalize(stmt); bind_text(stmt,1,id); if sqlite3_step(stmt)!=SQLITE_ROW do return {},false,domain.domain_error(.Not_Found,"conversation not found"); return conversation_from_stmt(stmt),true,{} }
-content_list_conversations_sqlite :: proc(ctx:rawptr, owner:domain.User_ID, limit:int, cursor:string)->([]domain.Chat_Conversation,domain.Domain_Error){ impl:=(^Content_Repo_SQLite)(ctx); stmt:sqlite3_stmt=nil; q := "SELECT conversation_id, owner_user_id, agent_id, agent_instance_id, project_id, chain_id, title, unread_count, last_message_preview, last_message_at, created_at, updated_at FROM chat_conversations WHERE owner_user_id=? ORDER BY updated_at DESC LIMIT ?;"; if cursor!="" do q="SELECT conversation_id, owner_user_id, agent_id, agent_instance_id, project_id, chain_id, title, unread_count, last_message_preview, last_message_at, created_at, updated_at FROM chat_conversations WHERE owner_user_id=? AND updated_at < ? ORDER BY updated_at DESC LIMIT ?;"; if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(q)),-1,&stmt,nil)!=SQLITE_OK do return nil,domain.domain_error(.Internal_Error,"failed conversation list"); defer sqlite3_finalize(stmt); bind_text(stmt,1,string(owner)); if cursor!="" {bind_text(stmt,2,cursor); bind_text(stmt,3,int_s(limit))} else {bind_text(stmt,2,int_s(limit))}; out:=make([dynamic]domain.Chat_Conversation); for sqlite3_step(stmt)==SQLITE_ROW do append(&out,conversation_from_stmt(stmt)); return out[:],{} }
+content_list_conversations_sqlite :: proc(ctx:rawptr, owner:domain.User_ID, limit:int, cursor:string)->([]domain.Chat_Conversation,domain.Domain_Error){
+	impl:=(^Content_Repo_SQLite)(ctx); stmt:sqlite3_stmt=nil
+	eff_limit:=limit; if eff_limit<=0 do eff_limit=50; if eff_limit>200 do eff_limit=200
+	cursor_order_at:=cursor; cursor_conversation_id:=""
+	if sep:=strings.index_byte(cursor,'|'); sep>=0 {
+		cursor_order_at=cursor[:sep]
+		cursor_conversation_id=cursor[sep+1:]
+	}
+	select_fields := "c.conversation_id, c.owner_user_id, c.agent_id, c.agent_instance_id, c.project_id, c.chain_id, c.title, c.unread_count, c.last_message_preview, c.last_message_at, c.created_at, c.updated_at, COALESCE((SELECT m.message_id FROM chat_messages m WHERE m.conversation_id=c.conversation_id AND m.owner_user_id=c.owner_user_id AND m.direction != 'agent_to_agent' ORDER BY m.created_at DESC, m.message_id DESC LIMIT 1), ''), COALESCE((SELECT m.direction FROM chat_messages m WHERE m.conversation_id=c.conversation_id AND m.owner_user_id=c.owner_user_id AND m.direction != 'agent_to_agent' ORDER BY m.created_at DESC, m.message_id DESC LIMIT 1), ''), COALESCE((SELECT m.sender_agent_id FROM chat_messages m WHERE m.conversation_id=c.conversation_id AND m.owner_user_id=c.owner_user_id AND m.direction != 'agent_to_agent' ORDER BY m.created_at DESC, m.message_id DESC LIMIT 1), ''), COALESCE((SELECT m.sender_agent_instance_id FROM chat_messages m WHERE m.conversation_id=c.conversation_id AND m.owner_user_id=c.owner_user_id AND m.direction != 'agent_to_agent' ORDER BY m.created_at DESC, m.message_id DESC LIMIT 1), ''), COALESCE((SELECT COALESCE(m.message_type, 'text') FROM chat_messages m WHERE m.conversation_id=c.conversation_id AND m.owner_user_id=c.owner_user_id AND m.direction != 'agent_to_agent' ORDER BY m.created_at DESC, m.message_id DESC LIMIT 1), 'text'), COALESCE((SELECT COALESCE(m.message_status, 'complete') FROM chat_messages m WHERE m.conversation_id=c.conversation_id AND m.owner_user_id=c.owner_user_id AND m.direction != 'agent_to_agent' ORDER BY m.created_at DESC, m.message_id DESC LIMIT 1), 'complete'), COALESCE((SELECT m.created_at FROM chat_messages m WHERE m.conversation_id=c.conversation_id AND m.owner_user_id=c.owner_user_id AND m.direction != 'agent_to_agent' ORDER BY m.created_at DESC, m.message_id DESC LIMIT 1), c.last_message_at)"
+	order_expr := "COALESCE(NULLIF(c.last_message_at,''), c.updated_at, c.created_at)"
+	q := strings.concatenate({"SELECT ", select_fields, " FROM chat_conversations c WHERE c.owner_user_id=? ORDER BY ", order_expr, " DESC, c.conversation_id DESC LIMIT ?;"})
+	if cursor_order_at!="" && cursor_conversation_id!="" {
+		q=strings.concatenate({"SELECT ", select_fields, " FROM chat_conversations c WHERE c.owner_user_id=? AND (", order_expr, " < ? OR (", order_expr, " = ? AND c.conversation_id < ?)) ORDER BY ", order_expr, " DESC, c.conversation_id DESC LIMIT ?;"})
+	} else if cursor_order_at!="" {
+		q=strings.concatenate({"SELECT ", select_fields, " FROM chat_conversations c WHERE c.owner_user_id=? AND ", order_expr, " < ? ORDER BY ", order_expr, " DESC, c.conversation_id DESC LIMIT ?;"})
+	}
+	if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(q)),-1,&stmt,nil)!=SQLITE_OK do return nil,domain.domain_error(.Internal_Error,"failed conversation list")
+	defer sqlite3_finalize(stmt)
+	bind_text(stmt,1,string(owner))
+	if cursor_order_at!="" && cursor_conversation_id!="" {
+		bind_text(stmt,2,cursor_order_at); bind_text(stmt,3,cursor_order_at); bind_text(stmt,4,cursor_conversation_id); bind_text(stmt,5,int_s(eff_limit))
+	} else if cursor_order_at!="" {
+		bind_text(stmt,2,cursor_order_at); bind_text(stmt,3,int_s(eff_limit))
+	} else {
+		bind_text(stmt,2,int_s(eff_limit))
+	}
+	out:=make([dynamic]domain.Chat_Conversation)
+	for sqlite3_step(stmt)==SQLITE_ROW do append(&out,conversation_summary_from_stmt(stmt))
+	return out[:],{}
+}
 
 CHAT_MESSAGE_SELECT :: "message_id, conversation_id, owner_user_id, direction, sender_agent_id, sender_agent_instance_id, body, artifact_ids_json, COALESCE(message_type, 'text'), COALESCE(message_status, 'complete'), COALESCE(metadata_json, '{}'), created_at, delivered_at, read_at"
 
@@ -118,6 +147,17 @@ bind_memory :: proc(s:sqlite3_stmt,m:domain.Memory){ bind_text(s,1,m.memory_id);
 memory_from_stmt :: proc(s:sqlite3_stmt)->domain.Memory { return domain.Memory{memory_id=column_text(s,0),owner_user_id=domain.User_ID(column_text(s,1)),agent_id=column_text(s,2),project_id=domain.Project_ID(column_text(s,3)),template_id=column_text(s,4),bridge_id=column_text(s,5),type=domain.memory_type_from_string(column_text(s,6)),status=column_text(s,7),title=column_text(s,8),body=column_text(s,9),evidence=column_text(s,10),created_at=column_text(s,11),updated_at=column_text(s,12)} }
 bind_conversation :: proc(s:sqlite3_stmt,c:domain.Chat_Conversation){ bind_text(s,1,c.conversation_id);bind_text(s,2,string(c.owner_user_id));bind_text(s,3,c.agent_id);bind_text(s,4,c.agent_instance_id);bind_text(s,5,string(c.project_id));bind_text(s,6,c.chain_id);bind_text(s,7,c.title);bind_text(s,8,int_s(c.unread_count));bind_text(s,9,c.last_message_preview);bind_text(s,10,c.last_message_at);bind_text(s,11,c.created_at);bind_text(s,12,c.updated_at) }
 conversation_from_stmt :: proc(s:sqlite3_stmt)->domain.Chat_Conversation { return domain.Chat_Conversation{conversation_id=column_text(s,0),owner_user_id=domain.User_ID(column_text(s,1)),agent_id=column_text(s,2),agent_instance_id=column_text(s,3),project_id=domain.Project_ID(column_text(s,4)),chain_id=column_text(s,5),title=column_text(s,6),unread_count=int_v(column_text(s,7)),last_message_preview=column_text(s,8),last_message_at=column_text(s,9),created_at=column_text(s,10),updated_at=column_text(s,11)} }
+conversation_summary_from_stmt :: proc(s:sqlite3_stmt)->domain.Chat_Conversation {
+	c := conversation_from_stmt(s)
+	c.last_message_id=column_text(s,12)
+	c.last_message_direction=column_text(s,13)
+	c.last_message_sender_agent_id=column_text(s,14)
+	c.last_message_sender_agent_instance_id=column_text(s,15)
+	c.last_message_type=column_text(s,16)
+	c.last_message_status=column_text(s,17)
+	c.last_message_created_at=column_text(s,18)
+	return c
+}
 bind_message :: proc(s:sqlite3_stmt,m:domain.Chat_Message){ n:=normalize_message_defaults(m); bind_text(s,1,n.message_id);bind_text(s,2,n.conversation_id);bind_text(s,3,string(n.owner_user_id));bind_text(s,4,n.direction);bind_text(s,5,n.sender_agent_id);bind_text(s,6,n.sender_agent_instance_id);bind_text(s,7,n.body);bind_text(s,8,n.artifact_ids_json);bind_text(s,9,n.message_type);bind_text(s,10,n.message_status);bind_text(s,11,n.metadata_json);bind_text(s,12,n.created_at);bind_text(s,13,n.delivered_at);bind_text(s,14,n.read_at) }
 message_from_stmt :: proc(s:sqlite3_stmt)->domain.Chat_Message { return normalize_message_defaults(domain.Chat_Message{message_id=column_text(s,0),conversation_id=column_text(s,1),owner_user_id=domain.User_ID(column_text(s,2)),direction=column_text(s,3),sender_agent_id=column_text(s,4),sender_agent_instance_id=column_text(s,5),body=column_text(s,6),artifact_ids_json=column_text(s,7),message_type=column_text(s,8),message_status=column_text(s,9),metadata_json=column_text(s,10),created_at=column_text(s,11),delivered_at=column_text(s,12),read_at=column_text(s,13)}) }
 normalize_message_defaults :: proc(m:domain.Chat_Message)->domain.Chat_Message{ n:=m; if strings.trim_space(n.artifact_ids_json)=="" do n.artifact_ids_json="[]"; if strings.trim_space(n.message_type)=="" do n.message_type="text"; if strings.trim_space(n.message_status)=="" do n.message_status="complete"; if strings.trim_space(n.metadata_json)=="" do n.metadata_json="{}"; return n }

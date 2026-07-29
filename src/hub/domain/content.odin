@@ -72,6 +72,16 @@ Chat_Conversation :: struct {
 	unread_count: int,
 	last_message_preview: string,
 	last_message_at: string,
+	// Additive summary-only fields populated by conversation list queries. They
+	// support standard chat-list APIs without changing the persisted conversation
+	// table or forcing the UI to fetch every message thread for inbox rows.
+	last_message_id: string,
+	last_message_direction: string,
+	last_message_sender_agent_id: string,
+	last_message_sender_agent_instance_id: string,
+	last_message_type: string,
+	last_message_status: string,
+	last_message_created_at: string,
 	created_at: string,
 	updated_at: string,
 }

@@ -2,6 +2,7 @@ import TaskChainsPage from '../taskchain/TaskChainsPage';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useDispatch } from 'react-redux';
 import ConversationLaunchComposer from '../chat/ConversationLaunchComposer';
+import ConversationsHomePage from '../chat/ConversationsHomePage';
 import ConversationThreadPage from '../chat/ConversationThreadPage';
 import CommandPalette from '../command-palette/CommandPalette';
 import { useViewport, MobileTabBar, MobileTopBar } from './responsive';
@@ -60,6 +61,12 @@ type ConversationSummary = {
   title: string;
   unreadCount: number;
   updatedAt: string;
+  lastMessageAt?: string;
+  lastMessagePreview?: string;
+  lastMessageDirection?: string;
+  lastMessageUnixMs?: number;
+  lastMessage?: any;
+  participants?: any[];
   bridgeId?: string;
   runtimeStatus?: string;
 };
@@ -319,6 +326,12 @@ function sidebarConversationToSummary(c: SidebarConversation, agentNamesById: Ma
     title: c.title,
     unreadCount: c.unreadCount,
     updatedAt: c.updatedAt,
+    lastMessageAt: c.lastMessageAt,
+    lastMessagePreview: c.lastMessagePreview,
+    lastMessageDirection: c.lastMessageDirection,
+    lastMessageUnixMs: c.lastMessageUnixMs,
+    lastMessage: c.lastMessage,
+    participants: c.participants,
     bridgeId: c.bridgeId,
     runtimeStatus: c.runtimeStatus,
   };
@@ -812,7 +825,9 @@ function RouteOutlet({ path, mobileBottomPadded = false, conversations = [] }: {
     <main data-debug-id="shell-main-route-outlet" className={`min-w-0 flex-1 overflow-auto bg-[#090909] ${mobileBottomPadded ? 'pb-20 md:pb-0' : ''}`}>
       <section className="mx-auto flex min-h-full w-full max-w-6xl flex-col items-start px-3 py-3 text-left sm:px-4 sm:py-4 lg:px-5 lg:py-5">
         {path.startsWith('/settings') ? <SettingsSubNav path={path} /> : null}
-        {path === '/conversations/new' ? (
+        {path === '/conversations' ? (
+          <ConversationsHomePage />
+        ) : path === '/conversations/new' ? (
           <ConversationLaunchComposer />
         ) : path === '/settings' || path === '/settings/bridges' ? (
           <BridgesPanel />
