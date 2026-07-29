@@ -255,6 +255,8 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 			defer strings.builder_destroy(&payload_b)
 			strings.write_string(&payload_b, "{\"type\":\"notify_task_nudge\",\"command_id\":\"")
 			bridge_runtime_write_json_string(&payload_b, command_id)
+			strings.write_string(&payload_b, "\",\"mutation_id\":\"")
+			bridge_runtime_write_json_string(&payload_b, mutation_id)
 			strings.write_string(&payload_b, "\",\"task_id\":\"")
 			bridge_runtime_write_json_string(&payload_b, task_id)
 			strings.write_string(&payload_b, "\",\"new_status\":\"")

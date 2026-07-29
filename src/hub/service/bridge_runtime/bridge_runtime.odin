@@ -98,8 +98,14 @@ write_ws_text_frame :: proc(socket: net.TCP_Socket, text: string) -> bool {
 	frame[0] = 0x81
 	if n <= 125 { frame[1] = byte(n) } else { frame[1] = 126; frame[2] = byte((n >> 8) & 0xff); frame[3] = byte(n & 0xff) }
 	copy(frame[header_len:], transmute([]byte)text)
-	_, err := net.send_tcp(socket, frame)
-	return err == nil
+	sent_bytes := 0
+	for sent_bytes < len(frame) {
+		n_written, err := net.send_tcp(socket, frame[sent_bytes:])
+		if err != nil do return false
+		if n_written == 0 do break
+		sent_bytes += n_written
+	}
+	return sent_bytes == len(frame)
 }
 
 json_string :: proc(body, key: string) -> string {

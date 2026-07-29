@@ -1,6 +1,8 @@
 package taskchain
 
 import "core:fmt"
+import "core:log"
+import "core:os"
 import "core:strings"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
@@ -415,19 +417,20 @@ notify_task_status_change :: proc(service: ^Taskchain_Service, auth: contracts.A
 	if chain.coordinator_agent_instance_id != "" do append(&instance_ids, chain.coordinator_agent_instance_id)
 	
 	assignees := extract_instances_from_ref_blob(task.assignee_ref_json)
+	defer delete(assignees)
 	for id in assignees do append(&instance_ids, id)
-	delete(assignees)
 	
 	reviewers := extract_instances_from_ref_blob(task.reviewer_refs_json)
+	defer delete(reviewers)
 	for id in reviewers do append(&instance_ids, id)
-	delete(reviewers)
 	
 	def_reviewers := extract_instances_from_ref_blob(chain.default_reviewer_refs_json)
+	defer delete(def_reviewers)
 	for id in def_reviewers do append(&instance_ids, id)
-	delete(def_reviewers)
 	
 	bridge_ids := make(map[string]bool)
 	defer delete(bridge_ids)
+	
 	for id in instance_ids {
 		inst, inst_ok, _ := iface.agent_get_instance(service.agents, id)
 		if inst_ok && inst.bridge_id != "" do bridge_ids[inst.bridge_id] = true
@@ -445,11 +448,11 @@ notify_task_status_change :: proc(service: ^Taskchain_Service, auth: contracts.A
 		strings.write_string(&b, `","new_status":"`)
 		contracts.write_json_string(&b, task_status_string(task.status))
 		strings.write_string(&b, `","assignee_instance_ids":[`)
-		for id, i in assignees { if i>0 do strings.write_string(&b, ","); strings.write_string(&b, "\""); strings.write_string(&b, id); strings.write_string(&b, "\"") }
+		for id, i in assignees { if i>0 do strings.write_string(&b, ","); strings.write_string(&b, `"`); contracts.write_json_string(&b, id); strings.write_string(&b, `"`) }
 		strings.write_string(&b, `],"reviewer_instance_ids":[`)
-		for id, i in reviewers { if i>0 do strings.write_string(&b, ","); strings.write_string(&b, "\""); strings.write_string(&b, id); strings.write_string(&b, "\"") }
+		for id, i in reviewers { if i>0 do strings.write_string(&b, ","); strings.write_string(&b, `"`); contracts.write_json_string(&b, id); strings.write_string(&b, `"`) }
 		strings.write_string(&b, `],"default_reviewer_instance_ids":[`)
-		for id, i in def_reviewers { if i>0 do strings.write_string(&b, ","); strings.write_string(&b, "\""); strings.write_string(&b, id); strings.write_string(&b, "\"") }
+		for id, i in def_reviewers { if i>0 do strings.write_string(&b, ","); strings.write_string(&b, `"`); contracts.write_json_string(&b, id); strings.write_string(&b, `"`) }
 		strings.write_string(&b, `],"mutation_id":"`)
 		contracts.write_json_string(&b, cmd_id)
 		strings.write_string(&b, `","actor_agent_instance_id":"`)
@@ -458,7 +461,7 @@ notify_task_status_change :: proc(service: ^Taskchain_Service, auth: contracts.A
 		contracts.write_json_string(&b, task.updated_at)
 		strings.write_string(&b, `"}`)
 		
-		project.bridge_command_send_runtime(service.bridge_command_sink, project.Runtime_Command{bridge_id=bridge_id, command_id=cmd_id, body_json=strings.to_string(b)})
+		sent, err := project.bridge_command_send_runtime(service.bridge_command_sink, project.Runtime_Command{bridge_id=bridge_id, command_id=cmd_id, body_json=strings.to_string(b)})
 		strings.builder_destroy(&b)
 	}
 }
