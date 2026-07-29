@@ -55,10 +55,10 @@ agent_action_chat_fetch_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	conv, conv_ok, conv_err := content_service.get_conversation_by_instance(h.content, auth, inst.agent_instance_id)
 	if !conv_ok do return respond_error(conv_err, req.request_id)
 	
-	unread_only := strings.contains(params, "\"unread_only\":true") || strings.contains(params, "\"unread_only\": true")
-	receiver_only := strings.contains(params, "\"receiver_only\":true") || strings.contains(params, "\"receiver_only\": true")
-	include_outgoing := !strings.contains(params, "\"include_outgoing\":false") && !strings.contains(params, "\"include_outgoing\": false")
-	include_debug := !strings.contains(params, "\"include_debug\":false") && !strings.contains(params, "\"include_debug\": false")
+	unread_only := !strings.contains(params, "\"unread_only\":false") && !strings.contains(params, "\"unread_only\": false")
+	receiver_only := !strings.contains(params, "\"receiver_only\":false") && !strings.contains(params, "\"receiver_only\": false")
+	include_outgoing := strings.contains(params, "\"include_outgoing\":true") || strings.contains(params, "\"include_outgoing\": true")
+	include_debug := strings.contains(params, "\"include_debug\":true") || strings.contains(params, "\"include_debug\": true")
 	mark_read := strings.contains(params, "\"mark_read\":true") || strings.contains(params, "\"mark_read\": true")
 
 	filter := content_service.Agent_Inbox_Filter{

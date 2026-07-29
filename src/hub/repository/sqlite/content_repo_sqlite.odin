@@ -9,6 +9,7 @@ import iface "odin_test:hub/repository/iface"
 Content_Repo_SQLite :: struct { conn: ^Conn }
 
 new_content_repository :: proc(impl: ^Content_Repo_SQLite, conn: ^Conn) -> iface.Content_Repository {
+	impl.conn = conn
 	return iface.Content_Repository{ctx=rawptr(impl), save_memory=content_save_memory_sqlite, get_memory=content_get_memory_sqlite, list_memories=content_list_memories_sqlite, save_conversation=content_save_conversation_sqlite, get_conversation=content_get_conversation_sqlite, list_conversations=content_list_conversations_sqlite, save_message=content_save_message_sqlite, get_message=content_get_message_sqlite, update_message=content_update_message_sqlite, list_messages=content_list_messages_sqlite, list_user_visible_messages=content_list_user_visible_messages_sqlite, list_agent_inbox_messages=content_list_agent_inbox_messages_sqlite, mark_messages_read=content_mark_messages_read_sqlite, save_artifact=content_save_artifact_sqlite, get_artifact=content_get_artifact_sqlite, list_artifacts=content_list_artifacts_sqlite, delete_artifact=content_delete_artifact_sqlite, save_template=content_save_template_sqlite, get_template=content_get_template_sqlite, list_templates=content_list_templates_sqlite}
 }
 
@@ -35,7 +36,7 @@ content_update_message_sqlite :: proc(ctx:rawptr, owner:domain.User_ID, cid,id,b
 content_list_messages_sqlite :: proc(ctx:rawptr, cid:string, owner:domain.User_ID, limit:int, cursor:string)->([]domain.Chat_Message,domain.Domain_Error){ impl:=(^Content_Repo_SQLite)(ctx); stmt:sqlite3_stmt=nil; q:=strings.concatenate({"SELECT ",CHAT_MESSAGE_SELECT," FROM chat_messages WHERE conversation_id=? AND owner_user_id=? ORDER BY created_at DESC LIMIT ?;"}); if cursor!="" do q=strings.concatenate({"SELECT ",CHAT_MESSAGE_SELECT," FROM chat_messages WHERE conversation_id=? AND owner_user_id=? AND created_at < ? ORDER BY created_at DESC LIMIT ?;"}); if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(q)),-1,&stmt,nil)!=SQLITE_OK do return nil,domain.domain_error(.Internal_Error,"failed message list"); defer sqlite3_finalize(stmt); bind_text(stmt,1,cid); bind_text(stmt,2,string(owner)); if cursor!="" {bind_text(stmt,3,cursor); bind_text(stmt,4,int_s(limit))} else {bind_text(stmt,3,int_s(limit))}; out:=make([dynamic]domain.Chat_Message); for sqlite3_step(stmt)==SQLITE_ROW do append(&out,message_from_stmt(stmt)); return out[:],{} }
 content_list_user_visible_messages_sqlite :: proc(ctx:rawptr, cid:string, owner:domain.User_ID, limit:int, cursor:string)->([]domain.Chat_Message,domain.Domain_Error){ impl:=(^Content_Repo_SQLite)(ctx); stmt:sqlite3_stmt=nil; q:=strings.concatenate({"SELECT ",CHAT_MESSAGE_SELECT," FROM chat_messages WHERE conversation_id=? AND owner_user_id=? AND direction != 'agent_to_agent' ORDER BY created_at DESC LIMIT ?;"}); if cursor!="" do q=strings.concatenate({"SELECT ",CHAT_MESSAGE_SELECT," FROM chat_messages WHERE conversation_id=? AND owner_user_id=? AND direction != 'agent_to_agent' AND created_at < ? ORDER BY created_at DESC LIMIT ?;"}); if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(q)),-1,&stmt,nil)!=SQLITE_OK do return nil,domain.domain_error(.Internal_Error,"failed visible message list"); defer sqlite3_finalize(stmt); bind_text(stmt,1,cid); bind_text(stmt,2,string(owner)); if cursor!="" {bind_text(stmt,3,cursor); bind_text(stmt,4,int_s(limit))} else {bind_text(stmt,3,int_s(limit))}; out:=make([dynamic]domain.Chat_Message); for sqlite3_step(stmt)==SQLITE_ROW do append(&out,message_from_stmt(stmt)); return out[:],{} }
 
-content_list_agent_inbox_messages_sqlite :: proc(ctx:rawptr, cid:string, owner:domain.User_ID, unread_only, receiver_only, include_outgoing, include_debug: bool, limit:int, cursor:string)->([]domain.Chat_Message,domain.Domain_Error){
+content_list_agent_inbox_messages_sqlite :: proc(ctx:rawptr, cid:string, owner:domain.User_ID, agent_instance_id: string, unread_only, receiver_only, include_outgoing, include_debug: bool, limit:int, cursor:string)->([]domain.Chat_Message,domain.Domain_Error){
 	impl:=(^Content_Repo_SQLite)(ctx); stmt:sqlite3_stmt=nil
 	
 	filters := make([dynamic]string)
@@ -45,9 +46,7 @@ content_list_agent_inbox_messages_sqlite :: proc(ctx:rawptr, cid:string, owner:d
 		append(&filters, "direction != 'agent_to_user'")
 	}
 	if receiver_only {
-		// Receiver only generally means we exclude agent_to_user always.
-		// Wait, if it's agent_to_agent, we know it's bound for this conv. So just exclude agent_to_user.
-		append(&filters, "direction != 'agent_to_user'")
+		append(&filters, "sender_agent_instance_id != ?")
 	}
 	if !include_debug do append(&filters, "message_type NOT IN ('pane_capture', 'status_update', 'pane_capture_result')")
 	
@@ -64,6 +63,12 @@ content_list_agent_inbox_messages_sqlite :: proc(ctx:rawptr, cid:string, owner:d
 	bind_text(stmt,2,string(owner))
 	
 	bind_idx := 3
+	
+	if receiver_only {
+		bind_text(stmt,bind_idx,agent_instance_id)
+		bind_idx += 1
+	}
+	
 	if cursor != "" {
 		bind_text(stmt,bind_idx,cursor)
 		bind_idx += 1
