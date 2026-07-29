@@ -20,7 +20,8 @@ send_runtime_command :: proc(ctx: rawptr, command: project_service.Runtime_Comma
 	return true, domain.Domain_Error{}
 }
 
-send_runtime_command_wait :: proc(registry: ^project_service.Bridge_Runtime_Registry, command: project_service.Runtime_Command, timeout_ms: int) -> (string, bool, domain.Domain_Error) {
+send_runtime_command_wait :: proc(ctx: rawptr, command: project_service.Runtime_Command, timeout_ms: int) -> (string, bool, domain.Domain_Error) {
+	registry := cast(^project_service.Bridge_Runtime_Registry)ctx
 	if !project_service.bridge_runtime_registry_has_live(registry, command.bridge_id) do return "", false, domain.domain_error(.Bridge_Offline, "bridge is not connected")
 	socket, socket_ok := project_service.bridge_runtime_registry_command_socket(registry, command.bridge_id)
 	if !socket_ok do return "", false, domain.domain_error(.Bridge_Offline, "bridge websocket command path is not connected")

@@ -273,6 +273,7 @@ wrapper_bridge_dispatch_push_lines :: proc(cfg: Bridge_Runtime_Config, pending: 
 			continue
 		}
 		if strings.contains(line, "\"push\":\"agent_message\"") do wrapper_bridge_deliver_message_push(cfg, line)
+		if strings.contains(line, "\"push\":\"task_nudge\"") do wrapper_bridge_deliver_task_nudge_push(cfg, line)
 	}
 }
 
@@ -309,6 +310,14 @@ wrapper_bridge_deliver_message_push :: proc(cfg: Bridge_Runtime_Config, line: st
 	_ = tmux.send_text(pane, msg, true)
 }
 
+wrapper_bridge_deliver_task_nudge_push :: proc(cfg: Bridge_Runtime_Config, line: string) {
+	task_id := extract_json_string(line, "task_id", "unknown")
+	target_role := extract_json_string(line, "target_role", "participant")
+	pane := wrapper_bridge_prompt_pane(cfg)
+	if strings.trim_space(pane) == "" do return
+	msg := strings.concatenate({"Nudge: you have been nudged on ", task_id, " (", target_role, "). Run './.heimdall/bin/ham-ctl tasks list' and complete your assignment."})
+	_ = tmux.send_text(pane, msg, true)
+}
 wrapper_bridge_deliver_startup_prompt :: proc(cfg: Bridge_Runtime_Config) {
 	pane := wrapper_bridge_prompt_pane(cfg)
 	if strings.trim_space(pane) == "" do return
