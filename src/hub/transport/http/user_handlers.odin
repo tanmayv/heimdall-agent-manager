@@ -254,17 +254,7 @@ read_user_ws_text_blocking :: proc(client: net.TCP_Socket, timeout: time.Duratio
 }
 
 write_handler_json_string :: proc(builder: ^strings.Builder, value: string) {
-	for i in 0..<len(value) {
-		ch := value[i]
-		switch ch {
-		case '"': strings.write_string(builder, "\\\"")
-		case '\\': strings.write_string(builder, "\\\\")
-		case '\n': strings.write_string(builder, "\\n")
-		case '\r': strings.write_string(builder, "\\r")
-		case '\t': strings.write_string(builder, "\\t")
-		case: strings.write_byte(builder, ch)
-		}
-	}
+	contracts.write_json_string(builder, value)
 }
 
 auth_ctx_server_time :: proc(req: Request) -> string {

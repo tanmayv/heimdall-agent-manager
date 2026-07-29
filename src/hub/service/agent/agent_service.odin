@@ -1004,16 +1004,7 @@ stop_command_json :: proc(command_id, instance_id, reason: string) -> string {
 }
 
 write_service_json_string :: proc(b: ^strings.Builder, value: string) {
-	for ch in value {
-		switch ch {
-		case '\\': strings.write_string(b, "\\\\")
-		case '"': strings.write_string(b, "\\\"")
-		case '\n': strings.write_string(b, "\\n")
-		case '\r': strings.write_string(b, "\\r")
-		case '\t': strings.write_string(b, "\\t")
-		case: strings.write_rune(b, ch)
-		}
-	}
+	contracts.write_json_string(b, value)
 }
 
 default_provider_from_bridge :: proc(bridge: domain.Bridge) -> string { return json_value(bridge.capabilities_json, "provider") }

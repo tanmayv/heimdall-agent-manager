@@ -4,6 +4,7 @@ import "core:fmt"
 import "core:net"
 import "core:strings"
 import "core:time"
+import contracts "odin_test:contracts"
 
 User_Event_Bus :: struct {
 	owner_user_ids: [128]string,
@@ -78,14 +79,5 @@ write_ws_text_frame :: proc(socket: net.TCP_Socket, text: string) -> bool {
 }
 
 write_json_string :: proc(b: ^strings.Builder, value: string) {
-	for ch in value {
-		switch ch {
-		case '\\': strings.write_string(b, "\\\\")
-		case '"': strings.write_string(b, "\\\"")
-		case '\n': strings.write_string(b, "\\n")
-		case '\r': strings.write_string(b, "\\r")
-		case '\t': strings.write_string(b, "\\t")
-		case: strings.write_rune(b, ch)
-		}
-	}
+	contracts.write_json_string(b, value)
 }
