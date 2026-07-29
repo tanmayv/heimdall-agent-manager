@@ -5277,6 +5277,8 @@ type ChatArtifactRow = {
   name?: string;
   kind?: string;
   mime?: string;
+  content_type?: string;
+  contentType?: string;
   size_bytes?: number;
   created_unix_ms?: number;
   updated_unix_ms?: number;
@@ -5351,7 +5353,8 @@ function ChatArtifactsSidePanel({ debugPrefix, daemonUrl = '', clientToken = '',
           {artifacts.map((artifact) => {
             const artifactId = artifact.artifact_id;
             const label = artifact.name || artifactId;
-            const details = [artifact.kind || artifact.mime || 'artifact', formatArtifactBytes(Number(artifact.size_bytes || 0)), formatArtifactWhen(Number(artifact.updated_unix_ms || artifact.created_unix_ms || 0))].filter(Boolean).join(' · ');
+            const mime = artifact.mime || artifact.content_type || artifact.contentType || '';
+            const details = [artifact.kind || 'artifact', mime, formatArtifactBytes(Number(artifact.size_bytes || 0)), formatArtifactWhen(Number(artifact.updated_unix_ms || artifact.created_unix_ms || 0))].filter(Boolean).join(' · ');
             return (
               <button key={artifactId} type="button" data-debug-id={`${debugPrefix}-artifact-row-${artifactId}`} onClick={() => setActiveArtifactId(artifactId)} className="w-full rounded-2xl border border-white/10 bg-black/20 p-3 text-left hover:border-white/20 hover:bg-[#141414]">
                 <div className="truncate text-sm font-medium text-zinc-100">{label}</div>

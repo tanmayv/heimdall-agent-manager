@@ -90,6 +90,93 @@ function annotationScopeTag(artifactId: string, versionNo?: number | null) {
   return `${artifactId}:${versionNo == null ? 'HEAD' : versionNo}`;
 }
 
+function stringField(row: any, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = row?.[key];
+    if (value != null && String(value).trim()) return String(value).trim();
+  }
+  return '';
+}
+
+function inferExt(name: string, explicitExt = ''): string {
+  const normalizedExt = String(explicitExt || '').trim().toLowerCase();
+  if (normalizedExt) return normalizedExt.startsWith('.') ? normalizedExt : `.${normalizedExt}`;
+  const normalizedName = String(name || '').trim().toLowerCase();
+  const dot = normalizedName.lastIndexOf('.');
+  if (dot <= 0 || dot === normalizedName.length - 1) return '';
+  return normalizedName.slice(dot);
+}
+
+function inferKind(kind: string, mime: string, ext: string, name: string, renderer = ''): string {
+  const explicit = String(kind || '').trim().toLowerCase();
+  if (explicit) return explicit;
+  const normalizedMime = String(mime || '').trim().toLowerCase();
+  const normalizedExt = String(ext || '').trim().toLowerCase();
+  const normalizedName = String(name || '').trim().toLowerCase();
+  const normalizedRenderer = String(renderer || '').trim().toLowerCase();
+  if (normalizedRenderer === 'markdown' || normalizedMime === 'text/markdown' || normalizedMime === 'text/plain' || ['.md', '.markdown', '.txt'].includes(normalizedExt) || normalizedName.endsWith('.md') || normalizedName.endsWith('.markdown') || normalizedName.endsWith('.txt')) return 'markdown';
+  if (normalizedMime === 'image/png' || normalizedExt === '.png' || normalizedName.endsWith('.png')) return 'png';
+  if (normalizedMime === 'image/jpeg' || ['.jpg', '.jpeg'].includes(normalizedExt) || normalizedName.endsWith('.jpg') || normalizedName.endsWith('.jpeg')) return 'jpeg';
+  if (normalizedMime === 'text/csv' || normalizedExt === '.csv' || normalizedName.endsWith('.csv')) return 'csv';
+  if (normalizedMime === 'text/html' || ['.html', '.htm'].includes(normalizedExt) || normalizedName.endsWith('.html') || normalizedName.endsWith('.htm')) return 'html';
+  return '';
+}
+
+function inferMime(kind: string, explicitMime: string): string {
+  const normalizedMime = String(explicitMime || '').trim().toLowerCase();
+  if (normalizedMime) return normalizedMime;
+  switch (String(kind || '').trim().toLowerCase()) {
+    case 'markdown':
+    case 'text':
+      return 'text/markdown';
+    case 'png':
+      return 'image/png';
+    case 'jpeg':
+    case 'jpg':
+      return 'image/jpeg';
+    case 'csv':
+      return 'text/csv';
+    case 'html':
+      return 'text/html';
+    default:
+      return '';
+  }
+}
+
+export function normalizeArtifactRecord(row: any) {
+  if (!row || typeof row !== 'object') return row;
+  const artifactId = artifactIdOf(row);
+  const name = stringField(row, 'name') || artifactId || 'Untitled artifact';
+  const ext = inferExt(name, stringField(row, 'ext', 'extension'));
+  const explicitMime = stringField(row, 'mime', 'content_type', 'contentType');
+  const kind = inferKind(stringField(row, 'kind', 'type'), explicitMime, ext, name, stringField(row, 'renderer'));
+  const mime = inferMime(kind, explicitMime);
+  const contentType = stringField(row, 'content_type', 'contentType') || mime;
+  return {
+    ...row,
+    artifact_id: artifactId,
+    artifactId,
+    name,
+    kind,
+    mime,
+    content_type: contentType,
+    contentType,
+    ext,
+    link: stringField(row, 'link') || (artifactId ? `artifact://${artifactId}` : ''),
+  };
+}
+
+function normalizeArtifactResponse(data: any) {
+  const raw = data?.artifact || data?.data?.artifact || (data?.data?.artifact_id || data?.data?.artifactId ? data.data : null) || (data?.artifact_id || data?.artifactId ? data : null);
+  if (!raw) return data;
+  return { ...data, artifact: normalizeArtifactRecord(raw) };
+}
+
+function normalizeArtifactVersionsResponse(data: any) {
+  const rows = Array.isArray(data?.versions) ? data.versions : Array.isArray(data?.data?.versions) ? data.data.versions : [];
+  return { ...data, versions: rows.map((row: any) => normalizeArtifactRecord(row)) };
+}
+
 function artifactContentUrl(session: any, artifactId: string, versionNo?: number | null) {
   return daemonApi.artifactContentUrl({ daemonUrl: session.daemonUrl, clientToken: session.clientToken, artifactId, version: versionNo });
 }
@@ -141,14 +228,14 @@ export const artifactsApi = heimdallApi.injectEndpoints({
     fetchArtifactMeta: build.query<any, { artifactId: string }>({
       queryFn: withSessionQuery(async ({ artifactId }, { session }) => {
         if (!session?.clientToken || !artifactId) return { artifact: null };
-        return daemonApi.fetchArtifactMeta({ ...auth(session), artifactId });
+        return normalizeArtifactResponse(await daemonApi.fetchArtifactMeta({ ...auth(session), artifactId }));
       }),
       providesTags: (_result, _error, { artifactId }) => [{ type: 'Artifact' as const, id: artifactId }],
     }),
     fetchArtifactVersions: build.query<any, { artifactId: string }>({
       queryFn: withSessionQuery(async ({ artifactId }, { session }) => {
         if (!session?.clientToken || !artifactId) return { versions: [] };
-        return daemonApi.fetchArtifactVersions({ ...auth(session), artifactId });
+        return normalizeArtifactVersionsResponse(await daemonApi.fetchArtifactVersions({ ...auth(session), artifactId }));
       }),
       providesTags: (_result, _error, { artifactId }) => [{ type: 'ArtifactVersions' as const, id: artifactId }],
     }),
@@ -157,7 +244,22 @@ export const artifactsApi = heimdallApi.injectEndpoints({
         if (!session?.clientToken || !artifactId) return { artifactId, versionNo, text: '' };
         const response = await fetch(artifactContentUrl(session, artifactId, versionNo));
         if (!response.ok) throw new Error(`Failed to load artifact content (${response.status})`);
-        return { artifactId, versionNo, text: await response.text() };
+        const body = await response.text();
+        const responseContentType = response.headers.get('content-type') || '';
+        if (/\bjson\b/i.test(responseContentType)) {
+          try {
+            const parsed = JSON.parse(body);
+            const text = typeof parsed?.content === 'string'
+              ? parsed.content
+              : typeof parsed?.data?.content === 'string'
+                ? parsed.data.content
+                : typeof parsed?.text === 'string'
+                  ? parsed.text
+                  : '';
+            if (text) return { artifactId, versionNo, text };
+          } catch {}
+        }
+        return { artifactId, versionNo, text: body };
       }),
       providesTags: (_result, _error, { artifactId }) => [{ type: 'ArtifactContent' as const, id: artifactId }],
       keepUnusedDataFor: 0,
@@ -247,8 +349,9 @@ export const artifactsApi = heimdallApi.injectEndpoints({
 });
 
 export function normalizeArtifacts(data: any) {
-  const rows = Array.isArray(data?.artifacts) ? data.artifacts : [];
+  const rows = Array.isArray(data?.artifacts) ? data.artifacts : Array.isArray(data?.data?.artifacts) ? data.data.artifacts : [];
   return [...rows]
+    .map((row: any) => normalizeArtifactRecord(row))
     .filter((row: any) => row?.artifact_id || row?.artifactId)
     .sort((a: any, b: any) => {
       const left = Number(b?.updated_unix_ms || b?.updatedUnixMs || b?.created_unix_ms || b?.createdUnixMs || 0);
