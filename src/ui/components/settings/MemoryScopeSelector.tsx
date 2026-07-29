@@ -2,7 +2,6 @@ import React, { useMemo } from "react";
 import {
   useListAgentIdentitiesQuery,
   useListAgentTemplatesQuery,
-  useListAgentsQuery,
 } from "../../api/endpoints/agents";
 import { useListSidebarProjectsQuery } from "../../api/endpoints/sidebar";
 import { useListBridgesQuery } from "../../api/endpoints/bridgeSupport";
@@ -12,7 +11,6 @@ export type MemoryScopeValue = {
   project_id?: string;
   bridge_id?: string;
   template_id?: string;
-  instance_id?: string;
   type?: string;
 };
 
@@ -47,7 +45,6 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
   const { data: projectsData } = useListSidebarProjectsQuery();
   const { data: bridgesData } = useListBridgesQuery();
   const { data: templatesData } = useListAgentTemplatesQuery();
-  const { data: agentsData } = useListAgentsQuery();
 
   const agentIdentities = useMemo(() => {
     const list = Array.isArray(identitiesData?.agents)
@@ -95,19 +92,6 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
       .filter((item: any) => Boolean(item.id));
   }, [templatesData]);
 
-  const instances = useMemo(() => {
-    const raw = agentsData?.agents || agentsData || [];
-    const list = Array.isArray(raw) ? raw : [];
-    return list
-      .map((item: any) => ({
-        id: String(item.id || item.agent_instance_id || item.agentInstanceId || ""),
-        agentId: String(item.agentId || item.agent_id || ""),
-        name: String(item.name || item.displayName || item.title || item.id || "Unnamed Instance"),
-        projectId: String(item.projectId || item.project_id || ""),
-        bridgeId: String(item.bridgeId || item.bridge_id || ""),
-      }))
-      .filter((item: any) => Boolean(item.id));
-  }, [agentsData]);
 
   const labelFor = (items: Array<{ id: string; name: string }>, id?: string) => {
     if (!id) return "";
@@ -119,34 +103,7 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
     onChange({
       ...value,
       agent_id: newAgentId || undefined,
-      instance_id: undefined,
     });
-  };
-
-  const handleInstanceChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    const instId = e.target.value;
-    if (!instId) {
-      onChange({
-        ...value,
-        instance_id: undefined,
-      });
-      return;
-    }
-    const found = instances.find((inst) => inst.id === instId);
-    if (found) {
-      onChange({
-        ...value,
-        instance_id: instId,
-        agent_id: found.agentId || value.agent_id,
-        project_id: found.projectId || value.project_id,
-        bridge_id: found.bridgeId || value.bridge_id,
-      });
-    } else {
-      onChange({
-        ...value,
-        instance_id: instId,
-      });
-    }
   };
 
   const handleProjectChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -179,14 +136,7 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
 
   const summaryParts: string[] = [];
   if (value.agent_id) {
-    const agentLabel = labelFor(agentIdentities, value.agent_id);
-    if (value.instance_id) {
-      summaryParts.push(`scoped to agent ${agentLabel} (from instance ${labelFor(instances, value.instance_id)})`);
-    } else {
-      summaryParts.push(`agent: ${agentLabel}`);
-    }
-  } else if (value.instance_id) {
-    summaryParts.push(`instance: ${labelFor(instances, value.instance_id)}`);
+    summaryParts.push(`agent: ${labelFor(agentIdentities, value.agent_id)}`);
   }
   if (value.project_id) summaryParts.push(`project: ${labelFor(projects, value.project_id)}`);
   if (value.bridge_id) summaryParts.push(`bridge: ${labelFor(bridges, value.bridge_id)}`);
@@ -233,7 +183,7 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
             disabled={disabled || readOnly}
             className="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 p-2 focus:ring-blue-500 focus:border-blue-500"
           >
-            <option value="">All / None (Global)</option>
+            <option value="">Any agent</option>
             {agentIdentities.map((a) => (
               <option key={a.id} value={a.id}>
                 {a.name}
@@ -242,26 +192,6 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
           </select>
         </div>
 
-        <div>
-          <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
-            Agent Instance (Resolves to durable Agent)
-          </label>
-          <select
-            data-debug-id={`${debugPrefix}-instance-select`}
-            id={`${debugPrefix}-instance-select`}
-            value={value.instance_id || ""}
-            onChange={handleInstanceChange}
-            disabled={disabled || readOnly}
-            className="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 p-2 focus:ring-blue-500 focus:border-blue-500"
-          >
-            <option value="">Select Live Instance...</option>
-            {instances.map((inst) => (
-              <option key={inst.id} value={inst.id}>
-                {inst.name}
-              </option>
-            ))}
-          </select>
-        </div>
 
         <div>
           <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
@@ -275,7 +205,7 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
             disabled={disabled || readOnly}
             className="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 p-2 focus:ring-blue-500 focus:border-blue-500"
           >
-            <option value="">All / None (Global)</option>
+            <option value="">Any project</option>
             {projects.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
@@ -296,7 +226,7 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
             disabled={disabled || readOnly}
             className="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 p-2 focus:ring-blue-500 focus:border-blue-500"
           >
-            <option value="">All / None (Global)</option>
+            <option value="">Any bridge</option>
             {bridges.map((b) => (
               <option key={b.id} value={b.id}>
                 {b.name}
@@ -317,7 +247,7 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
             disabled={disabled || readOnly}
             className="w-full text-sm rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 p-2 focus:ring-blue-500 focus:border-blue-500"
           >
-            <option value="">All / None (Global)</option>
+            <option value="">Any template</option>
             {templates.map((tpl) => (
               <option key={tpl.id} value={tpl.id}>
                 {tpl.name}

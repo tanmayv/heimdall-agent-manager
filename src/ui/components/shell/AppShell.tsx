@@ -580,7 +580,7 @@ function ProjectGroupItem({ projectGroup }: { projectGroup: ProjectGroup }) {
   );
 }
 
-function ProjectConversationTree({ groups }: { groups: ProjectGroup[] }) {
+function ProjectConversationTree({ groups, loading = false, error = '' }: { groups: ProjectGroup[]; loading?: boolean; error?: string }) {
   const bridgesQuery = useListBridgesQuery(undefined, { pollingInterval: 10000 });
   const bridges = bridgesQuery.data?.bridges || [];
 
@@ -588,7 +588,9 @@ function ProjectConversationTree({ groups }: { groups: ProjectGroup[] }) {
     <section data-debug-id="sidebar-project-agent-session-tree" className="mt-4 border-t border-white/10 pt-4">
       <div className="mb-2 flex items-center justify-between px-1 text-[11px] font-bold uppercase tracking-[0.18em] text-zinc-500">
         <span>Projects</span>
+        {loading ? <span data-debug-id="sidebar-project-agent-session-loading" className="normal-case tracking-normal text-zinc-600">Loading…</span> : null}
       </div>
+      {error ? <div data-debug-id="sidebar-project-agent-session-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-2 py-1.5 text-[11px] leading-4 text-red-100">{error}</div> : null}
       {bridges.length > 0 && (
         <div data-debug-id="sidebar-bridge-legend" className="mb-3 flex flex-wrap items-center gap-2 px-1 text-[11px] text-zinc-400">
           <span className="font-semibold text-zinc-500">Bridges:</span>
@@ -930,6 +932,8 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const secondary = NAV_ROUTES.filter((item) => item.group === 'secondary');
   const conversationTree = useMemo(() => buildProjectConversationTree(conversations, projects), [conversations, projects]);
   const totalUnread = conversationTree.reduce((sum, project) => sum + project.unreadCount, 0);
+  const sidebarError = String((conversationsQuery.error as any)?.error || (projectsQuery.error as any)?.error || '');
+  const sidebarLoading = conversationsQuery.isLoading || projectsQuery.isLoading;
 
   return (
     <div data-debug-id="app-shell" className="flex h-screen bg-[#090909] text-zinc-100">
@@ -980,7 +984,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           <nav data-debug-id="shell-primary-nav" className="space-y-2" aria-label="Primary destinations">
             {primary.map((item) => <NavItem key={item.path} item={item} active={isRouteActive(path, item.path)} collapsed={collapsed} badge={item.path === '/conversations' ? totalUnread : 0} />)}
           </nav>
-          {!collapsed && <ProjectConversationTree groups={conversationTree} />}
+          {!collapsed && <ProjectConversationTree groups={conversationTree} loading={sidebarLoading} error={sidebarError} />}
         </div>
 
         <div className="border-t border-white/10 p-3">

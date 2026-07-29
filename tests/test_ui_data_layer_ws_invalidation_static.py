@@ -52,6 +52,10 @@ def main() -> None:
 
     # --- Cookie-auth sidebar uses /api/v1, not the legacy client-token path ---
     require("/chats?" in sidebar and "/projects?" in sidebar, "sidebar must read /api/v1/chats and /api/v1/projects")
+    require("extractListPayload" in sidebar and "Array.isArray(payload?.data)" in sidebar,
+            "sidebar must normalize both bare arrays and wrapped API list envelopes")
+    require("['conversations', 'chats']" in sidebar and "['projects']" in sidebar,
+            "sidebar list extraction must tolerate named collection wrappers")
     require("client_token" not in sidebar and "clientToken" not in sidebar,
             "cookie-auth sidebar must not depend on the legacy client-token session")
 

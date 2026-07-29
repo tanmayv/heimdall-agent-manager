@@ -70,20 +70,11 @@ This applies to create, edit, filters, and proposal review alike.
 
 ## Instance Scope Decision
 
-Requirement asks for selection of **agent-id, project, bridge, instance**.
-
-- agent / project / bridge / template map directly to existing columns.
-- **Instance**: memories are durable and outlive a running instance; the model
-  has no `agent_instance_id`. Two options:
-  1. **Recommended (no schema change):** in the UI, an "instance" selector is a
-     convenience that **resolves to the instance's `agent_id`** (and optionally
-     its `project_id`/`bridge_id`) and stores those durable scopes. The UI shows
-     "scoped to agent X (from instance Y)". This keeps memory semantics durable.
-  2. If a genuine per-instance ephemeral memory is ever needed, add an
-     `agent_instance_id` column + `applicable` filter (larger change). Out of
-     scope unless explicitly requested.
-- This plan implements option (1). Call it out in the UI so users understand
-  instance selection = that instance's durable agent (+ project/bridge) scope.
+Memory targets are durable: `agent_id`, `project_id`, `bridge_id`, and
+`template_id`. There is no `agent_instance_id` scope, and the UI does not expose
+an instance selector because it would only duplicate the durable agent/project/
+bridge selectors. If a genuine per-instance ephemeral memory is ever needed, add
+an `agent_instance_id` column + applicable filter as a separate larger change.
 
 ## Scope Model (what the selectors set)
 
@@ -183,7 +174,7 @@ dropdowns only — no free-text ID inputs anywhere.** Each option renders a
 human-friendly label (name/title) and carries the id as its value; ids are never
 shown as the primary label and never typed by the user.
 
-- **Agent** `<select>` — options from `useListAgentsQuery` (cookie). Label =
+- **Agent** `<select>` — options from the durable agent identity list. Label =
   agent name; value = `agent_id`. First option "Any agent" (empty value).
 - **Project** `<select>` — from `useListSidebarProjectsQuery`. Label = project
   name; value = `project_id`. "Any project".
@@ -191,12 +182,6 @@ shown as the primary label and never typed by the user.
   hostname; value = `bridge_id`. "Any bridge".
 - **Template** `<select>` — from templates list (add cookie `GET /templates` if
   not present). Label = template name; value = `template_id`. "Any template".
-- **Instance** `<select>` (convenience) — from running instances
-  (`/agent-instances` or `useListAgentsQuery`). Label = a readable instance
-  descriptor (agent name + bridge + short suffix); value = `agent_instance_id`.
-  On pick, resolves to that instance's `agent_id` (+ optionally project/bridge)
-  and sets those fields, with a hint "scoped to agent X (from instance Y)".
-  (See Instance Scope Decision.)
 - **Type** `<select>` — fact/habit/episode/expertise/skill (fixed enum). `template` is not a type.
 
 Emits `{ agent_id, project_id, bridge_id, template_id, type }` (ids resolved from
@@ -207,8 +192,7 @@ name-first and debug-id compliant.
 
 Debug IDs: `memory-scope-agent-select`, `memory-scope-project-select`,
 `memory-scope-bridge-select`, `memory-scope-template-select`,
-`memory-scope-instance-select`, `memory-scope-type-select`,
-`memory-scope-summary`.
+`memory-scope-type-select`, `memory-scope-summary`.
 
 ### F3 — Memory Settings page (list + filters + create)
 

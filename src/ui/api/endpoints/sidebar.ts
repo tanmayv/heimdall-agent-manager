@@ -59,9 +59,24 @@ function normalizeSidebarProject(raw: any): SidebarProject {
   return { projectId: projectId || (isDefaultConversations ? 'default-conversations' : name), name, isDefaultConversations };
 }
 
-async function fetchCookieJson(path: string): Promise<any> {
-  const rows = await cookieJsonFetch(path);
-  return Array.isArray(rows) ? rows : [];
+function extractListPayload(payload: any, collectionKeys: string[] = []): any[] {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.data)) return payload.data;
+
+  const candidates = [payload?.data, payload].filter(Boolean);
+  const keys = [...collectionKeys, 'items', 'rows', 'results'];
+  for (const source of candidates) {
+    for (const key of keys) {
+      const value = source?.[key];
+      if (Array.isArray(value)) return value;
+    }
+  }
+  return [];
+}
+
+async function fetchCookieList(path: string, collectionKeys: string[] = []): Promise<any[]> {
+  const payload = await cookieJsonFetch(path);
+  return extractListPayload(payload, collectionKeys);
 }
 
 export const sidebarApi = heimdallApi.injectEndpoints({
@@ -72,7 +87,7 @@ export const sidebarApi = heimdallApi.injectEndpoints({
       queryFn: async (arg) => {
         try {
           const limit = (arg && typeof arg === 'object' && arg.limit) || 100;
-          const rows = await fetchCookieJson(`/chats?limit=${limit}`);
+          const rows = await fetchCookieList(`/chats?limit=${limit}`, ['conversations', 'chats']);
           const conversations = rows.map(normalizeSidebarConversation).filter((c) => c.conversationId);
           return { data: conversations };
         } catch (error: any) {
@@ -88,7 +103,7 @@ export const sidebarApi = heimdallApi.injectEndpoints({
       queryFn: async (arg) => {
         try {
           const limit = (arg && typeof arg === 'object' && arg.limit) || 100;
-          const rows = await fetchCookieJson(`/projects?limit=${limit}`);
+          const rows = await fetchCookieList(`/projects?limit=${limit}`, ['projects']);
           return { data: rows.map(normalizeSidebarProject) };
         } catch (error: any) {
           return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error || 'Request failed') } as any };
