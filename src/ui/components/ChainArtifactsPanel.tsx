@@ -17,6 +17,8 @@ type ArtifactRow = {
   name: string;
   kind: string;
   mime: string;
+  content_type?: string;
+  contentType?: string;
   ext: string;
   size_bytes: number;
   description: string;
@@ -149,7 +151,7 @@ export default function ChainArtifactsPanel({ daemonUrl = '', clientToken = '', 
               {artifacts.map((row) => {
                 const artifactId = String(row.artifact_id || '');
                 const kind = String(row.kind || '').trim();
-                const mime = String(row.mime || '').trim();
+                const mime = String(row.mime || row.content_type || row.contentType || '').trim();
                 const originKind = String(row.origin_kind || '').trim();
                 const originRef = String(row.origin_ref || '').trim();
                 const creator = String(row.creator_id || row.creator_type || '').trim();

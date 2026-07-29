@@ -37,6 +37,8 @@ type ArtifactMeta = {
   name: string;
   kind: string;
   mime: string;
+  content_type?: string;
+  contentType?: string;
   ext: string;
   size_bytes: number;
   sha256: string;
@@ -60,6 +62,8 @@ type ArtifactVersion = {
   name: string;
   kind: string;
   mime: string;
+  content_type?: string;
+  contentType?: string;
   ext: string;
   size_bytes: number;
   sha256: string;
@@ -93,23 +97,24 @@ function formatBytes(value: number) {
 function classifyPreview(meta: ArtifactMeta | null): PreviewKind {
   if (!meta) return 'unsupported';
   const kind = String(meta.kind || '').toLowerCase();
-  const mime = String(meta.mime || '').toLowerCase();
+  const mime = String(meta.mime || meta.content_type || meta.contentType || '').toLowerCase();
   const rawExt = String(meta.ext || '').toLowerCase();
   const name = String(meta.name || '').toLowerCase();
   const nameDot = name.lastIndexOf('.');
   const ext = rawExt
     ? (rawExt.startsWith('.') ? rawExt : `.${rawExt}`)
     : (nameDot >= 0 ? name.slice(nameDot) : '');
+  const renderer = String(meta.renderer || '').toLowerCase();
   if (kind === 'diff' || ext === '.diff' || ext === '.patch' || mime === 'text/x-diff') {
     return 'diff';
   }
   if (kind === 'json' || mime === 'application/json' || mime === 'text/json' || ext === '.json') {
     return 'json';
   }
-  if (kind === 'markdown' || mime === 'text/markdown' || ext === '.md' || ext === '.markdown') {
+  if (renderer === 'markdown' || kind === 'markdown' || kind === 'text' || mime === 'text/markdown' || mime === 'text/plain' || ext === '.md' || ext === '.markdown' || ext === '.txt' || name.endsWith('.md') || name.endsWith('.markdown') || name.endsWith('.txt')) {
     return 'markdown';
   }
-  if (kind === 'png' || mime === 'image/png' || ext === '.png') {
+  if (kind === 'png' || mime === 'image/png' || ext === '.png' || name.endsWith('.png')) {
     return 'png';
   }
   if (kind === 'image' || kind === 'jpeg' || kind === 'jpg' || mime === 'image/jpeg' || mime === 'image/jpg' || ext === '.jpg' || ext === '.jpeg'
@@ -118,7 +123,7 @@ function classifyPreview(meta: ArtifactMeta | null): PreviewKind {
       || mime.startsWith('image/')) {
     return 'image';
   }
-  if (kind === 'text' || mime === 'text/plain' || ext === '.txt' || mime.startsWith('text/')) {
+  if (mime.startsWith('text/')) {
     return 'text';
   }
   return 'unsupported';
@@ -694,6 +699,8 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
       name: selectedVersionRecord.name,
       kind: selectedVersionRecord.kind,
       mime: selectedVersionRecord.mime,
+      content_type: selectedVersionRecord.content_type,
+      contentType: selectedVersionRecord.contentType,
       ext: selectedVersionRecord.ext,
       size_bytes: selectedVersionRecord.size_bytes,
       sha256: selectedVersionRecord.sha256,
@@ -718,7 +725,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
       .map((row: any) => normalizeDaemonAnnotation(row, {
         artifactId,
         artifactName: selectedArtifactMeta?.name || meta?.name || artifactId,
-        artifactMime: selectedArtifactMeta?.mime || meta?.mime || '',
+        artifactMime: selectedArtifactMeta?.mime || selectedArtifactMeta?.content_type || selectedArtifactMeta?.contentType || meta?.mime || meta?.content_type || meta?.contentType || '',
         artifactKind: selectedArtifactMeta?.kind || meta?.kind || '',
         artifactUri: meta?.link || `artifact://${artifactId}`,
       }))
@@ -733,17 +740,16 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
     { skip: !artifactId || !clientToken || previewKind !== 'markdown' },
   );
   const textContent = textQuery.data?.text || '';
-  const loading = metaQuery.isFetching || versionsQuery.isFetching;
+  const loading = metaQuery.isFetching;
   const loadingText = textQuery.isFetching;
   const loadingContent = imagePreviewNeedsContent && contentState.loading;
   const contentError = imagePreviewNeedsContent ? contentState.error : '';
   const error = metaQuery.error
     ? 'Failed to load artifact metadata.'
-    : versionsQuery.error
-      ? 'Failed to load retained artifact versions.'
-      : textQuery.error
-        ? 'Failed to load artifact content.'
-        : (!loading && !meta ? 'Artifact metadata is unavailable.' : '');
+    : textQuery.error
+      ? 'Failed to load artifact content.'
+      : (!loading && !meta ? 'Artifact metadata is unavailable.' : '');
+  const versionHistoryUnavailable = Boolean(versionsQuery.error);
 
   const title = selectedArtifactMeta?.name || meta?.name || artifactId;
   const versionSelectValue = selectedVersionNo == null ? 'HEAD' : String(selectedVersionNo);
@@ -966,7 +972,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
             <div className="truncate text-xl font-semibold tracking-[-0.01em] text-zinc-100">{title}</div>
             <div data-debug-id="artifact-viewer-meta-strip" className="mt-2 flex flex-wrap items-center gap-2 text-[11.5px] text-zinc-400">
               <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-0.5 uppercase tracking-wide text-zinc-300">{selectedArtifactMeta?.kind || 'artifact'}</span>
-              {selectedArtifactMeta?.mime && <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-0.5">{selectedArtifactMeta.mime}</span>}
+              {(selectedArtifactMeta?.mime || selectedArtifactMeta?.content_type || selectedArtifactMeta?.contentType) && <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-0.5">{selectedArtifactMeta.mime || selectedArtifactMeta.content_type || selectedArtifactMeta.contentType}</span>}
               {selectedArtifactMeta?.size_bytes != null && <span className="rounded-full border border-white/10 bg-black/20 px-2.5 py-0.5">{formatBytes(Number(selectedArtifactMeta.size_bytes))}</span>}
               {(meta?.link || artifactId) && <span className="max-w-full truncate rounded-full border border-white/10 bg-black/20 px-2.5 py-0.5 font-mono">{meta?.link || `artifact://${artifactId}`}</span>}
               {currentHeadVersionNo > 0 ? <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2.5 py-0.5 text-emerald-100">{selectedVersionLabel}</span> : null}
@@ -1106,6 +1112,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                 </div>
               ) : null}
               {actionMessage ? <div className="rounded-xl border border-sky-400/20 bg-sky-400/10 px-4 py-3 text-sm text-sky-100">{actionMessage}</div> : null}
+              {versionHistoryUnavailable ? <div data-debug-id="artifact-viewer-versions-unavailable" className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-zinc-400">Version history is unavailable for this artifact. The current artifact preview and download remain available.</div> : null}
               {migrationMessage ? <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-zinc-300">{migrationMessage}</div> : null}
               {!loading && (
                 <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-zinc-300">
@@ -1196,7 +1203,7 @@ export default function ArtifactViewer({ artifactId, daemonUrl, clientToken, onC
                   ) : previewKind === 'json' || previewKind === 'diff' || previewKind === 'text' ? (
                     <ArtifactCodePreview artifactId={artifactId} versionNo={selectedVersionNo} kind={previewKind} />
                   ) : (
-                    <div data-debug-id="artifact-viewer-unsupported-preview" className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-zinc-400">Preview is not available for this artifact type{selectedArtifactMeta.kind ? ` (${selectedArtifactMeta.kind}${selectedArtifactMeta.mime ? `, ${selectedArtifactMeta.mime}` : ''})` : ''}. Use Download to open it externally.</div>
+                    <div data-debug-id="artifact-viewer-unsupported-preview" className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-zinc-400">Preview is not available for this artifact type{selectedArtifactMeta.kind ? ` (${selectedArtifactMeta.kind}${selectedArtifactMeta.mime || selectedArtifactMeta.content_type || selectedArtifactMeta.contentType ? `, ${selectedArtifactMeta.mime || selectedArtifactMeta.content_type || selectedArtifactMeta.contentType}` : ''})` : ''}. Use Download to open it externally.</div>
                   )}
                 </div>
               )}

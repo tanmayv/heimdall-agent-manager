@@ -39,7 +39,16 @@ export type MarkdownBodyProps = {
   onTextSelectionChange?: (selection: MarkdownTextSelection | null) => void;
 };
 
-const ARTIFACT_TOKEN_RE = /(^|[^"'>])(artifact:\/\/(art_[0-9a-f]{8,}))/g;
+export const ARTIFACT_ID_PATTERN = 'art_[0-9A-Za-z][0-9A-Za-z_]*';
+const ARTIFACT_URI_PATTERN = `artifact://(${ARTIFACT_ID_PATTERN})`;
+const ARTIFACT_TOKEN_RE = new RegExp(`(^|[^"'>])(${ARTIFACT_URI_PATTERN})`, 'g');
+const ARTIFACT_MARKDOWN_LINK_RE = new RegExp(`\\[([^\\]\\n]+)\\]\\((${ARTIFACT_URI_PATTERN})\\)`, 'g');
+const ARTIFACT_URI_ONLY_RE = new RegExp(`^artifact://(${ARTIFACT_ID_PATTERN})$`);
+
+export function artifactIdFromUri(value: string): string {
+  const match = String(value || '').trim().match(ARTIFACT_URI_ONLY_RE);
+  return match?.[1] || '';
+}
 
 function escapeHtml(value: string): string {
   return value
@@ -52,6 +61,12 @@ function escapeHtml(value: string): string {
 
 function normalizeMarkdownSource(source: string): string {
   return String(source || '').replace(/\\n/g, '\n');
+}
+
+function createArtifactButtonHtml(artifactId: string, initialLabelHtml = ''): string {
+  const safeArtifactId = escapeHtml(artifactId);
+  const initialText = initialLabelHtml || safeArtifactId;
+  return `<button type="button" data-artifact-id="${safeArtifactId}" data-artifact-link="true" data-debug-id="artifact-link-chip-${safeArtifactId}" title="Open artifact" class="inline-flex items-center gap-1 rounded-full border border-sky-400/30 bg-sky-400/10 px-2.5 py-0.5 text-xs font-medium text-sky-200 hover:bg-sky-400/15"><span aria-hidden="true">\u{1F4CE}</span><span data-artifact-label="true">${initialText}</span></button>`;
 }
 
 function renderInline(text: string): string {
@@ -67,11 +82,11 @@ function renderInline(text: string): string {
   escaped = escaped.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (_m, label, url) => (
     `<a href="${url}" target="_blank" rel="noreferrer" class="text-sky-300 underline decoration-sky-500/40 hover:decoration-sky-400">${label}</a>`
   ));
+  escaped = escaped.replace(ARTIFACT_MARKDOWN_LINK_RE, (_m, label, _link, artifactId) => createArtifactButtonHtml(artifactId, label));
   escaped = escaped.replace(ARTIFACT_TOKEN_RE, (_m, prefix, _link, artifactId) => {
     // Initial visible text is the artifact ID (safe fallback). A React-side
     // effect asynchronously swaps in the resolved artifact name when available.
-    const initialText = escapeHtml(artifactId);
-    return `${prefix}<button type="button" data-artifact-id="${artifactId}" data-artifact-link="true" data-debug-id="artifact-link-chip-${artifactId}" title="Open artifact" class="inline-flex items-center gap-1 rounded-full border border-sky-400/30 bg-sky-400/10 px-2.5 py-0.5 text-xs font-medium text-sky-200 hover:bg-sky-400/15"><span aria-hidden="true">\u{1F4CE}</span><span data-artifact-label="true">${initialText}</span></button>`;
+    return `${prefix}${createArtifactButtonHtml(artifactId)}`;
   });
   escaped = escaped.replace(/(^|[^"'>])((?:https?:\/\/)[\w\-._~:\/?#\[\]@!$&'()*+,;=%]+[\w\-_~:\/?#\[\]@!$&'()*+;=%])/g, (_m, prefix, url) => {
     return `${prefix}<a href="${url}" target="_blank" rel="noreferrer" class="text-sky-300 underline decoration-sky-500/40 hover:decoration-sky-400">${url}</a>`;
@@ -351,6 +366,7 @@ export default function MarkdownBody({ source, className, compact, copyAll = tru
       const target = event.target as HTMLElement | null;
       const artifactButton = target?.closest?.('[data-artifact-id]') as HTMLButtonElement | null;
       if (artifactButton) {
+        event.preventDefault();
         const artifactId = String(artifactButton.getAttribute('data-artifact-id') || '');
         if (artifactId && onArtifactClick) onArtifactClick(artifactId);
         return;
