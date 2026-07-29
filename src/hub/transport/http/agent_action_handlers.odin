@@ -74,22 +74,37 @@ agent_action_chat_fetch_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	rows, err := content_service.list_agent_inbox_messages(h.content, auth, filter)
 	if err.code != .None do return respond_error(err, req.request_id)
 	
-	if mark_read && len(rows) > 0 {
+	unread_count_before := 0
+	for row in rows { if row.read_at == "" do unread_count_before += 1 }
+
+	marked_count := 0
+	through_message_id := ""
+	through_created_at := ""
+	
+	if mark_read && len(rows) > 0 && unread_count_before > 0 {
 		ids := make([dynamic]string)
 		defer delete(ids)
 		for row in rows { if row.read_at == "" do append(&ids, row.message_id) }
-		if len(ids) > 0 {
-			_, _ = content_service.mark_messages_read_by_ids(h.content, auth, ids[:])
-		}
+		marked_count, _ = content_service.mark_messages_read_by_ids(h.content, auth, ids[:])
+		through_message_id = rows[len(rows)-1].message_id
+		through_created_at = rows[len(rows)-1].created_at
 	}
 
 	b := strings.builder_make()
-	strings.write_string(&b, "{\"conversation\":")
-	write_chat_json(&b, conv)
-	strings.write_string(&b, ",\"messages\":[")
+	mode_str := unread_only ? "inbox_unread" : "history"
+	
+	fmt.sbprintf(&b, "{\"conversation\":{\"conversation_id\":\"%s\",\"agent_instance_id\":\"%s\",\"unread_count_before\":%d,\"unread_count_after\":%d},\"mode\":\"%s\",\"filters\":{\"receiver_agent_instance_id\":\"%s\",\"unread_only\":%t,\"receiver_only\":%t,\"include_outgoing\":%t,\"include_debug\":%t,\"mark_read\":%t},\"messages\":[",
+		conv.conversation_id, inst.agent_instance_id, unread_count_before, unread_count_before - marked_count, mode_str,
+		inst.agent_instance_id, unread_only, receiver_only, include_outgoing, include_debug, mark_read)
+
 	next := ""
 	for msg, i in rows { if i > 0 do strings.write_byte(&b, ','); write_message_json(&b, msg, h.content); next = msg.created_at }
-	strings.write_string(&b, "],\"next_cursor\":\""); write_handler_json_string(&b, next); strings.write_string(&b, "\",\"has_more\":"); strings.write_string(&b, "true" if len(rows) >= limit else "false"); strings.write_byte(&b, '}')
+	
+	fmt.sbprintf(&b, "],\"page\":{\"limit\":%d,\"next_cursor\":\"%s\",\"has_more\":%t}", limit, next, len(rows) >= limit)
+	
+	fmt.sbprintf(&b, ",\"read\":{\"marked\":%t,\"marked_count\":%d,\"through_message_id\":\"%s\",\"through_created_at\":\"%s\"}}",
+	    mark_read, marked_count, through_message_id, through_created_at)
+
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
 

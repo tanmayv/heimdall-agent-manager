@@ -98,20 +98,35 @@ ctl_agentmode_chat_fetch :: proc(endpoint, token, action: string, args: []string
 	append(&fields, json_kv_raw("limit", option_value(args, "--limit", "50")))
 	if cursor := option_value(args, "--since", option_value(args, "--cursor", "")); cursor != "" do append(&fields, json_kv("cursor", cursor))
 	
-	if action == "read" || action == "read-messages" {
-		append(&fields, json_kv_raw("unread_only", "true"))
-		append(&fields, json_kv_raw("receiver_only", "true"))
-		append(&fields, json_kv_raw("mark_read", "true"))
-		append(&fields, json_kv_raw("include_outgoing", "false"))
-		append(&fields, json_kv_raw("include_debug", "false"))
+	is_read := action == "read" || action == "read-messages"
+	
+	// Default low-noise
+	unread_only := true
+	receiver_only := true
+	include_outgoing := false
+	include_debug := false
+	mark_read := is_read
+
+	if has_flag(args, "--include-read") {
+		unread_only = false
 	}
-	// allow overrides via flags
-	if has_flag(args, "--all") {
-		append(&fields, json_kv_raw("unread_only", "false"))
-		append(&fields, json_kv_raw("receiver_only", "false"))
-		append(&fields, json_kv_raw("include_outgoing", "true"))
-		append(&fields, json_kv_raw("include_debug", "true"))
+	
+	if has_flag(args, "--transcript") || has_flag(args, "--all") {
+		unread_only = false
+		receiver_only = false
+		include_outgoing = true
+		include_debug = true
 	}
+	
+	if has_flag(args, "--include-outgoing") do include_outgoing = true
+	if has_flag(args, "--include-debug") do include_debug = true
+
+	if unread_only { append(&fields, json_kv_raw("unread_only", "true")) } else { append(&fields, json_kv_raw("unread_only", "false")) }
+	if receiver_only { append(&fields, json_kv_raw("receiver_only", "true")) } else { append(&fields, json_kv_raw("receiver_only", "false")) }
+	if mark_read { append(&fields, json_kv_raw("mark_read", "true")) } else { append(&fields, json_kv_raw("mark_read", "false")) }
+	
+	if include_outgoing { append(&fields, json_kv_raw("include_outgoing", "true")) } else { append(&fields, json_kv_raw("include_outgoing", "false")) }
+	if include_debug { append(&fields, json_kv_raw("include_debug", "true")) } else { append(&fields, json_kv_raw("include_debug", "false")) }
 	
 	ctl_agent_call(endpoint, token, "agent.chat.fetch", json_object_from_slice(fields[:]))
 }
