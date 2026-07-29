@@ -886,6 +886,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const [path, setPath] = useState(routeFromLocation);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [mobileChromeSuppressed, setMobileChromeSuppressed] = useState(false);
   const displayName = user.display_name || user.name || user.user_id || 'Current user';
 
   // UI-14: server state for the sidebar lives in RTK Query (cookie-auth), not
@@ -925,6 +926,27 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   // Close the mobile drawer whenever the route changes.
   useEffect(() => { setDrawerOpen(false); }, [path]);
 
+  // Mobile keyboards consume most of the viewport. While focus is inside an
+  // opted-in chat composer/input, hide the mobile top bar and bottom tab bar;
+  // restore them as soon as focus leaves the composer. Desktop is unaffected.
+  useEffect(() => {
+    if (!isMobile) { setMobileChromeSuppressed(false); return; }
+    const focusSuppressesChrome = (target: EventTarget | null) => {
+      const node = target as Element | null;
+      return Boolean(node?.closest?.('[data-mobile-shell-chrome="hide-on-focus"]'));
+    };
+    const updateFromActiveElement = () => setMobileChromeSuppressed(focusSuppressesChrome(document.activeElement));
+    const onFocusIn = (event: FocusEvent) => setMobileChromeSuppressed(focusSuppressesChrome(event.target));
+    const onFocusOut = () => window.setTimeout(updateFromActiveElement, 0);
+    document.addEventListener('focusin', onFocusIn);
+    document.addEventListener('focusout', onFocusOut);
+    updateFromActiveElement();
+    return () => {
+      document.removeEventListener('focusin', onFocusIn);
+      document.removeEventListener('focusout', onFocusOut);
+    };
+  }, [isMobile, path]);
+
   // UI-12: Cmd/Ctrl-K opens the command palette (desktop). Also the sidebar
   // Search button and the mobile bottom-tab center button open the same surface.
   useEffect(() => {
@@ -959,6 +981,7 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
   const conversationTree = useMemo(() => buildProjectConversationTree(conversations, projects), [conversations, projects]);
   const totalUnread = conversationTree.reduce((sum, project) => sum + project.unreadCount, 0);
   const mobileRouteTitle = useMemo(() => routeMobileTitle(path, conversations), [path, conversations]);
+  const hideMobileShellChrome = isMobile && mobileChromeSuppressed;
   const sidebarError = String((conversationsQuery.error as any)?.error || (projectsQuery.error as any)?.error || '');
   const sidebarLoading = conversationsQuery.isLoading || projectsQuery.isLoading;
 
@@ -1035,21 +1058,23 @@ function AuthenticatedShell({ user, logoutUrl }: { user: AuthUser; logoutUrl: st
           gets bottom padding so content clears the bottom tab bar. On >= md the
           sidebar is a normal static column. */}
       <div className="flex min-w-0 flex-1 flex-col">
-        {isMobile ? (
+        {isMobile && !hideMobileShellChrome ? (
           <MobileTopBar title={mobileRouteTitle} onOpenDrawer={() => setDrawerOpen(true)} />
         ) : null}
-        <RouteOutlet path={path} mobileBottomPadded={isMobile} conversations={conversations} />
+        <RouteOutlet path={path} mobileBottomPadded={isMobile && !hideMobileShellChrome} conversations={conversations} />
       </div>
 
       {/* UI-12/UI-13: mobile bottom tab bar with a command-palette center button.
           The center button owns the canonical `shell-mobile-palette-button` debug-id
           so the palette entry point has one stable, layout-independent id. */}
-      <MobileTabBar
-        activePath={path}
-        onNavigate={(route) => { window.location.hash = buildRouteHash(route, ''); }}
-        onOpenPalette={() => setPaletteOpen(true)}
-        chatBadge={totalUnread}
-      />
+      {!hideMobileShellChrome ? (
+        <MobileTabBar
+          activePath={path}
+          onNavigate={(route) => { window.location.hash = buildRouteHash(route, ''); }}
+          onOpenPalette={() => setPaletteOpen(true)}
+          chatBadge={totalUnread}
+        />
+      ) : null}
 
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onNavigate={handlePaletteNavigate} />
     </div>

@@ -465,7 +465,7 @@ export default function ConversationLaunchComposer() {
 
       <label className="mt-5 block">
         <span className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">Message</span>
-        <textarea data-debug-id="new-convo-input" value={body} onChange={(event) => setBody(event.target.value)} rows={5} placeholder="Ask the selected agent to start working…" className="mt-2 w-full resize-y rounded-3xl border border-white/10 bg-black/30 px-4 py-3 text-base leading-6 text-white sm:text-sm outline-none placeholder:text-zinc-600 focus:border-sky-400/60" />
+        <textarea data-debug-id="new-convo-input" data-mobile-shell-chrome="hide-on-focus" value={body} onChange={(event) => setBody(event.target.value)} rows={5} placeholder="Ask the selected agent to start working…" className="mt-2 w-full resize-y rounded-3xl border border-white/10 bg-black/30 px-4 py-3 text-base leading-6 text-white sm:text-sm outline-none placeholder:text-zinc-600 focus:border-sky-400/60" />
       </label>
 
       {usingSyntheticDefault && (

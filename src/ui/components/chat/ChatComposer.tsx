@@ -194,6 +194,7 @@ export default function ChatComposer({
     <div
       data-debug-id={shellDebugId}
       data-upload-before-send="true"
+      data-mobile-shell-chrome="hide-on-focus"
       data-mobile-bottom-pinned={bottomPinnedActive ? 'true' : 'false'}
       className={`${shellClassName} ${dragActive ? 'ring-2 ring-sky-400/50' : ''} ${bottomPinnedActive ? 'ui-safe-bottom sticky bottom-0 z-20 bg-[#141414] md:static md:z-auto' : ''}`}
       style={bottomPinnedActive && keyboardInset ? { paddingBottom: keyboardInset } : undefined}

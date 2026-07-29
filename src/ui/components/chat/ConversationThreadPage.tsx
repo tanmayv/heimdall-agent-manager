@@ -813,7 +813,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
 
   function renderComposer() {
     return (
-      <form onSubmit={submit} data-debug-id="conversation-composer-shell" className="w-full max-w-full shrink-0 overflow-x-hidden border-t border-white/10 px-2 py-2 sm:px-4 sm:py-3">
+      <form onSubmit={submit} data-debug-id="conversation-composer-shell" data-mobile-shell-chrome="hide-on-focus" className="w-full max-w-full shrink-0 overflow-x-hidden border-t border-white/10 px-2 py-2 sm:px-4 sm:py-3">
         {error ? <div data-debug-id="conversation-composer-send-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">{error}</div> : null}
         {attachments.length > 0 && (
           <div data-debug-id="conversation-attachment-tray" className="mb-2 space-y-2 rounded-2xl border border-white/10 bg-white/[0.03] p-2 text-xs text-zinc-200">
