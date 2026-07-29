@@ -448,11 +448,11 @@ chat_last_message_standard_direction :: proc(direction:string)->string{ switch d
 rfc3339_unix_ms :: proc(value:string)->i64{
 	if len(value)<19 do return 0
 	year,ok:=rfc3339_part(value,0,4); if !ok do return 0
-	month,ok:=rfc3339_part(value,5,2); if !ok do return 0
-	day,ok:=rfc3339_part(value,8,2); if !ok do return 0
-	hour,ok:=rfc3339_part(value,11,2); if !ok do return 0
-	minute,ok:=rfc3339_part(value,14,2); if !ok do return 0
-	second,ok:=rfc3339_part(value,17,2); if !ok do return 0
+	month,ok2:=rfc3339_part(value,5,2); if !ok2 do return 0
+	day,ok3:=rfc3339_part(value,8,2); if !ok3 do return 0
+	hour,ok4:=rfc3339_part(value,11,2); if !ok4 do return 0
+	minute,ok5:=rfc3339_part(value,14,2); if !ok5 do return 0
+	second,ok6:=rfc3339_part(value,17,2); if !ok6 do return 0
 	if month<1 || month>12 || day<1 || day>31 || hour<0 || hour>23 || minute<0 || minute>59 || second<0 || second>60 do return 0
 	days:i64=0
 	for y:=1970; y<year; y+=1 { days += 366 if rfc3339_leap_year(y) else 365 }
