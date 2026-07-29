@@ -21,3 +21,14 @@ reject_query_or_body_token :: proc(req: Request) -> (bool, Response) {
 	}
 	return false, Response{}
 }
+
+require_auth_any :: proc(auth: ^auth_service.Auth_Service, req: Request) -> (contracts.Auth_Context, bool, Response) {
+	ctx, ok, err := auth_service.resolve_auth_any(auth, auth_service.Auth_Request{
+		remote_addr = req.remote_addr,
+		query = req.query,
+		body = req.body,
+		headers = req.headers,
+	})
+	if !ok do return contracts.Auth_Context{}, false, respond_error(err, req.request_id)
+	return ctx, true, Response{}
+}

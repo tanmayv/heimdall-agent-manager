@@ -23,8 +23,16 @@ ctl_hub_user_mode :: proc(cmd: []string, args: []string) {
 	if resource == "agents" { ctl_hub_agents(base, user_token, action, args); return }
 	if resource == "launch" { ctl_hub_launch(base, user_token, args); return }
 	if resource == "chats" { ctl_hub_chats(base, user_token, action, args); return }
-	if resource == "tasks" { ctl_hub_tasks(base, user_token, action, args); return }
-	if resource == "task-chains" { ctl_hub_task_chains(base, user_token, action, args); return }
+	if resource == "tasks" {
+		fmt.eprintln("Notice: 'ham-ctl hub tasks' is deprecated; use top-level 'ham-ctl tasks' instead.")
+		ctl_tasks_command(cmd[idx:], args)
+		return
+	}
+	if resource == "task-chains" {
+		fmt.eprintln("Notice: 'ham-ctl hub task-chains' is deprecated; use top-level 'ham-ctl task-chains' instead.")
+		ctl_task_chains_command(cmd[idx:], args)
+		return
+	}
 	if resource == "projects" { ctl_hub_projects(base, user_token, action, args); return }
 	if resource == "artifacts" { ctl_hub_artifacts(base, user_token, action, args); return }
 	if resource == "memories" || resource == "memory" { ctl_hub_memories(base, user_token, action, args); return }
@@ -309,6 +317,7 @@ hub_user_mode_token :: proc(args: []string) -> string {
 	if v := option_value(args, "--user-token", ""); v != "" do return v
 	if v := option_value(args, "--token", ""); v != "" do return v
 	if v := os.get_env_alloc("HAM_HUB_USER_TOKEN", context.allocator); v != "" do return v
+	if v := os.get_env_alloc("HAM_USER_TOKEN", context.allocator); v != "" do return v
 	if v := os.get_env_alloc("HEIMDALL_USER_TOKEN", context.allocator); v != "" do return v
 	return ""
 }

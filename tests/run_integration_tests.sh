@@ -22,7 +22,7 @@ default_agent_id_reviewer = "user_proxy"
 
 [ctl]
 daemon_url = "http://127.0.0.1:49328"
-ham_ctl_bin = "$REPO_DIR/result-ctl/bin/ham-ctl"
+ham_ctl_bin = "$REPO_DIR/bin/ham-ctl"
 
 [wrapper]
 daemon_url = "http://127.0.0.1:49328"
@@ -38,7 +38,7 @@ EOF
 
 # 3. Start the daemon in the background
 echo "[*] Starting ham-daemon on port 49328..."
-"$REPO_DIR/result-daemon/bin/ham-daemon" --config "$TEMP_HOME/config.toml" > "$TEMP_HOME/daemon.log" 2>&1 &
+"$REPO_DIR/bin/ham-hub" --port 49328 --migrations-dir "$REPO_DIR/src/hub/repository/sqlite/migrations" > "$TEMP_HOME/daemon.log" 2>&1 &
 DAEMON_PID=$!
 
 cleanup() {
@@ -53,7 +53,7 @@ trap cleanup EXIT
 # 4. Wait for daemon to be healthy
 echo "[*] Waiting for daemon to start..."
 for i in {1..10}; do
-  if curl -sf http://127.0.0.1:49328/health >/dev/null; then
+  if curl -sf http://127.0.0.1:49328/api/v1/health >/dev/null; then
     echo "[*] Daemon is healthy!"
     break
   fi
@@ -65,18 +65,11 @@ for i in {1..10}; do
   sleep 0.5
 done
 
-# 5. Run the existing tasks smoke tests pointing to our temp daemon and new ham-ctl
-echo "[*] Running tasks smoke test..."
-export HEIMDALL_HOME="$TEMP_HOME"
-export HAM_CTL_BIN="$REPO_DIR/result-ctl/bin/ham-ctl"
-export DAEMON_URL="http://127.0.0.1:49328"
-export HEIMDALL_DAEMON_BIN="$REPO_DIR/result-daemon/bin/ham-daemon"
-export HEIMDALL_BRIDGE_BIN="$REPO_DIR/result-bridge/bin/ham-bridge"
-
-# Run tests/test_tasks.sh
-if ! bash "$SCRIPT_DIR/test_tasks.sh" > "$TEMP_HOME/test_tasks.log" 2>&1; then
-  echo "[-] Error: test_tasks.sh failed! Full test logs:"
-  cat "$TEMP_HOME/test_tasks.log" || true
+# 5. Run task auth parity integration test suite
+echo "[*] Running task auth parity test..."
+if ! bash "$SCRIPT_DIR/test_tasks_auth_parity.sh" > "$TEMP_HOME/test_auth_parity.log" 2>&1; then
+  echo "[-] Error: test_tasks_auth_parity.sh failed! Full test logs:"
+  cat "$TEMP_HOME/test_auth_parity.log" || true
   echo "[-] Daemon logs:"
   cat "$TEMP_HOME/daemon.log" || true
   exit 1

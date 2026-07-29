@@ -229,7 +229,7 @@ bridge_local_method_allowed :: proc(method: string, role: Bridge_Local_Token_Rol
 	case .Wrapper:
 		return method == "wrapper.startup.report" || method == "wrapper.activity.report" || method == "wrapper.liveness.ping" || method == "wrapper.exited" || method == "wrapper.notifications.subscribe"
 	case .Agent:
-		return method == "agent.chat.send_to_user" || method == "agent.chat.send_to_agent" || method == "agent.chat.fetch" || method == "agent.chat.read" || method == "agent.agents.live" || method == "agent.tasks.create" || method == "agent.tasks.depend" || method == "agent.tasks.comment" || method == "agent.tasks.status" || method == "agent.tasks.vote" || method == "agent.tasks.nudge" || method == "agent.artifacts.create" || method == "agent.artifacts.list" || method == "agent.artifacts.show" || method == "agent.artifacts.content" || method == "agent.memory.propose" || method == "agent.context.get" || method == "agent.start_success"
+		return method == "agent.rest.request" || method == "agent.chat.send_to_user" || method == "agent.chat.send_to_agent" || method == "agent.chat.fetch" || method == "agent.chat.read" || method == "agent.agents.live" || method == "agent.tasks.create" || method == "agent.tasks.depend" || method == "agent.tasks.comment" || method == "agent.tasks.status" || method == "agent.tasks.vote" || method == "agent.tasks.nudge" || method == "agent.artifacts.create" || method == "agent.artifacts.list" || method == "agent.artifacts.show" || method == "agent.artifacts.content" || method == "agent.memory.propose" || method == "agent.context.get" || method == "agent.start_success"
 	}
 	return false
 }
@@ -273,6 +273,14 @@ bridge_local_handle_wrapper_method :: proc(request_id, method, params: string, r
 }
 
 bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec: Bridge_Local_Agent_Token_Record) -> string {
+	if method == "agent.rest.request" {
+		if strings.trim_space(rec.instance_token) == "" do return bridge_local_response_error(request_id, "unavailable", "Bridge-held instance token is unavailable")
+		relay := bridge_local_relay_rest_request(params, rec)
+		if !relay.ok do return bridge_local_response_error(request_id, "retryable_unavailable", "Hub REST relay failed")
+		if relay.status < 200 || relay.status >= 300 do return bridge_local_response_error(request_id, "hub_error", relay.body)
+		if strings.trim_space(relay.body) == "" do return bridge_local_response_data(request_id, "{}")
+		return bridge_local_response_data(request_id, relay.body)
+	}
 	if method == "agent.start_success" {
 		// Absolute transition: a valid instance token can mark the agent running from
 		// any prior bridge-local state (starting, failed, unreachable, stopped, etc.).
@@ -288,6 +296,23 @@ bridge_local_handle_agent_method :: proc(request_id, method, params: string, rec
 	if relay.status < 200 || relay.status >= 300 do return bridge_local_response_error(request_id, "hub_error", relay.body)
 	if strings.trim_space(relay.body) == "" do return bridge_local_response_data(request_id, "{}")
 	return bridge_local_response_data(request_id, relay.body)
+}
+
+bridge_local_relay_rest_request :: proc(params: string, rec: Bridge_Local_Agent_Token_Record) -> Bridge_Local_Relay_Result {
+	http_method := bridge_local_extract_json_string(params, "http_method", "")
+	if http_method == "" do http_method = bridge_local_extract_json_string(params, "method", "POST")
+	path := bridge_local_extract_json_string(params, "path", "")
+	if path == "" do return Bridge_Local_Relay_Result{status = 0, ok = false}
+	body := bridge_local_extract_json_string(params, "body", "")
+	if body == "" do body = bridge_local_extract_json_object(params, "body")
+	if body == "{}" && !strings.contains(params, "\"body\"") do body = ""
+
+	headers := [?]http.Header{
+		{name = "Authorization", value = strings.concatenate({"Bearer ", bridge_config.bridge_token})},
+		{name = "X-Heimdall-Instance-Token", value = rec.instance_token},
+	}
+	resp, ok := http.request_with_headers_timeout(http_method, bridge_config.daemon_url, path, body, headers[:], http.DEFAULT_TIMEOUT_MS)
+	return Bridge_Local_Relay_Result{status = resp.status, body = resp.body, ok = ok}
 }
 
 bridge_local_relay_agent_method :: proc(method, params: string, rec: Bridge_Local_Agent_Token_Record) -> Bridge_Local_Relay_Result {

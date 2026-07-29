@@ -15,7 +15,7 @@ Taskchain_Handlers :: struct {
 
 list_task_chains_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chains, err := taskchain_service.list_chains(h.taskchains, auth_ctx)
 	if err.code != .None do return respond_error(err, req.request_id)
@@ -27,7 +27,7 @@ list_task_chains_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 create_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain, created, err := taskchain_service.create_chain(h.taskchains, auth_ctx, taskchain_service.Create_Chain_Input{title = json_string(req.body, "title"), description = json_string(req.body, "description"), owner_user_id = json_string(req.body, "owner_user_id"), kind = json_string(req.body, "kind"), coordinator_agent_id = json_string(req.body, "coordinator_agent_id"), default_reviewer_refs_json = json_array_raw(req.body, "default_reviewer_refs")})
 	if !created do return respond_error(err, req.request_id)
@@ -44,7 +44,7 @@ create_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 patch_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := path_part(req.path, 4)
 	chain, updated, err := taskchain_service.update_chain(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id), taskchain_service.Update_Chain_Input{title = json_string(req.body, "title"), description = json_string(req.body, "description"), status = json_string(req.body, "status")})
@@ -55,7 +55,7 @@ patch_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 task_chain_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := path_part(req.path, 4)
 	chain, got, err := taskchain_service.get_chain(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id))
@@ -92,7 +92,7 @@ task_chain_detail_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 publish_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := path_part(req.path, 4)
 	chain, got, err := taskchain_service.publish_chain(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id))
@@ -103,7 +103,7 @@ publish_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 complete_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := path_part(req.path, 4)
 	chain, got, err := taskchain_service.change_chain_status(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id), .Completed)
@@ -114,7 +114,7 @@ complete_task_chain_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 list_tasks_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := path_part(req.path, 4)
 	tasks, err := taskchain_service.list_tasks(h.taskchains, auth_ctx, domain.Task_Chain_ID(chain_id))
@@ -134,7 +134,7 @@ list_tasks_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 create_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := path_part(req.path, 4)
 	deps := json_array_of_strings(req.body, "depends_on")
@@ -146,7 +146,7 @@ create_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 patch_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
 	task_id := domain.Task_ID(path_part(req.path, 6))
@@ -161,7 +161,7 @@ patch_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 publish_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
 	task_id := domain.Task_ID(path_part(req.path, 6))
@@ -174,7 +174,7 @@ publish_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 change_task_status_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
 	task_id := domain.Task_ID(path_part(req.path, 6))
@@ -189,7 +189,7 @@ change_task_status_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 cancel_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
 	task_id := domain.Task_ID(path_part(req.path, 6))
@@ -202,7 +202,7 @@ cancel_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 nudge_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
 	task_id := domain.Task_ID(path_part(req.path, 6))
@@ -216,7 +216,7 @@ nudge_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 list_task_comments_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
 	task_id := domain.Task_ID(path_part(req.path, 6))
@@ -231,7 +231,7 @@ list_task_comments_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 create_task_comment_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
 	task_id := domain.Task_ID(path_part(req.path, 6))
@@ -244,7 +244,7 @@ create_task_comment_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 list_task_votes_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
 	task_id := domain.Task_ID(path_part(req.path, 6))
@@ -259,7 +259,7 @@ list_task_votes_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 vote_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
 	task_id := domain.Task_ID(path_part(req.path, 6))
@@ -272,7 +272,7 @@ vote_task_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 list_chain_members_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
 	members, err := taskchain_service.list_chain_members(h.taskchains, auth_ctx, chain_id)
@@ -285,7 +285,7 @@ list_chain_members_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 add_chain_member_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
 	member, added, err := taskchain_service.add_chain_member(h.taskchains, auth_ctx, chain_id, json_string(req.body, "agent_instance_id"), json_string(req.body, "role"))
@@ -296,7 +296,7 @@ add_chain_member_handler :: proc(ctx: rawptr, req: Request) -> Response {
 
 remove_chain_member_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	h := (^Taskchain_Handlers)(ctx)
-	auth_ctx, ok, auth_resp := require_auth(h.auth, req)
+	auth_ctx, ok, auth_resp := require_auth_any(h.auth, req)
 	if !ok do return auth_resp
 	chain_id := domain.Task_Chain_ID(path_part(req.path, 4))
 	agent_instance_id := path_part(req.path, 6)

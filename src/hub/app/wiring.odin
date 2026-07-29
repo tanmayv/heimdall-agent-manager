@@ -93,6 +93,8 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 		login_url = config.login_url,
 		logout_url = config.logout_url,
 	}, &graph.users, &graph.repos.users, &graph.clock, &graph.ids)
+	graph.auth.bridges = &graph.bridges
+	graph.auth.agents = &graph.agents
 	graph.device_auth_store = device_auth_service.new_grant_store(device_auth_service.Grant_Store_Config{
 		verification_uri = config.device_auth_verification_uri,
 		expires_in = config.device_auth_expires_in,
@@ -113,7 +115,7 @@ build_graph :: proc(graph: ^App_Graph, config: Hub_Config) -> (bool, string) {
 	graph.taskchain_handlers = http.Taskchain_Handlers{auth = &graph.auth, taskchains = &graph.taskchains, agents = &graph.agents}
 	graph.search_handlers = http.Search_Handlers{auth = &graph.auth, search = &graph.search}
 	graph.device_auth_handlers = http.Device_Auth_Handlers{service = &graph.device_auth, auth = &graph.auth}
-	graph.agent_action_handlers = http.Agent_Action_Handlers{agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, taskchains = &graph.taskchains}
+	graph.agent_action_handlers = http.Agent_Action_Handlers{auth = &graph.auth, agents = &graph.agents, bridges = &graph.bridges, content = &graph.content, taskchains = &graph.taskchains}
 	graph.router = http.new_router()
 	register_routes(graph)
 	return true, ""
@@ -145,7 +147,6 @@ register_routes :: proc(graph: ^App_Graph) {
 	http.router_add(&graph.router, "GET", "/api/v1/memories", rawptr(&graph.content_handlers), http.list_memories_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/memories", rawptr(&graph.content_handlers), http.create_memory_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/memories/*", rawptr(&graph.content_handlers), http.memory_detail_handler)
-	http.router_add(&graph.router, "PATCH", "/api/v1/memories/*", rawptr(&graph.content_handlers), http.patch_memory_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/memories/*/*", rawptr(&graph.content_handlers), http.memory_action_handler)
 	http.router_add(&graph.router, "GET", "/api/v1/chats", rawptr(&graph.content_handlers), http.list_chats_handler)
 	http.router_add(&graph.router, "POST", "/api/v1/chats", rawptr(&graph.content_handlers), http.create_chat_handler)

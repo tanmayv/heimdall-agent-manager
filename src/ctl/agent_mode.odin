@@ -33,7 +33,11 @@ ctl_agent_mode :: proc(cmd: []string, args: []string) {
 	if resource == "start-success" { ctl_agent_call(endpoint, token, "agent.start_success", "{}"); return }
 	if resource == "agents" || resource == "instances" { ctl_agentmode_agents(endpoint, token, action, args); return }
 	if resource == "chat" || resource == "chats" { ctl_agentmode_chat(endpoint, token, action, args); return }
-	if resource == "tasks" || resource == "task" { ctl_agentmode_tasks(endpoint, token, action, args); return }
+	if resource == "tasks" || resource == "task" {
+		fmt.eprintln("Notice: 'ham-ctl agent tasks' is deprecated; use top-level 'ham-ctl tasks' instead.")
+		ctl_tasks_command(cmd[idx:], args)
+		return
+	}
 	if resource == "artifacts" || resource == "artifact" { ctl_agentmode_artifacts(endpoint, token, action, args); return }
 	if resource == "memory" { ctl_agentmode_memory(endpoint, token, action, args); return }
 	fmt.println("usage: ham-ctl agent <context|start-success|agents|chat|tasks|artifacts|memory> ...")

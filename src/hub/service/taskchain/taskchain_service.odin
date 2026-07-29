@@ -84,16 +84,43 @@ new_taskchain_service :: proc(repo: ^iface.Taskchain_Repository, agents: ^iface.
 	return Taskchain_Service{repo = repo, agents = agents, clock = clock, ids = ids, nudges = make([dynamic]Manual_Nudge)}
 }
 
+is_instance_member_or_coordinator :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain, instance_id: string) -> bool {
+	if instance_id == "" do return false
+	if chain.coordinator_agent_instance_id == instance_id do return true
+	members, err := iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
+	if err.code != .None do return false
+	for m in members {
+		if m.agent_instance_id == instance_id do return true
+	}
+	return false
+}
+
 list_chains :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context) -> ([]domain.Task_Chain, domain.Domain_Error) {
 	owner, ok, err := ownership.owner_from_auth(auth)
 	if !ok do return nil, err
-	return iface.taskchain_list_chains_by_owner(service.repo, owner)
+	chains, list_err := iface.taskchain_list_chains_by_owner(service.repo, owner)
+	if list_err.code != .None do return nil, list_err
+	if auth.kind == .Instance_Token {
+		filtered := make([dynamic]domain.Task_Chain)
+		for c in chains {
+			if is_instance_member_or_coordinator(service, c, auth.agent_instance_id) {
+				append(&filtered, c)
+			}
+		}
+		return filtered[:], domain.Domain_Error{}
+	}
+	return chains, domain.Domain_Error{}
 }
 
 get_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> (domain.Task_Chain, bool, domain.Domain_Error) {
 	chain, ok, err := iface.taskchain_get_chain(service.repo, chain_id)
 	if !ok do return domain.Task_Chain{}, false, err
 	if owner_ok, owner_err := ownership.require_owner(auth, chain.owner_user_id); !owner_ok do return domain.Task_Chain{}, false, owner_err
+	if auth.kind == .Instance_Token {
+		if !is_instance_member_or_coordinator(service, chain, auth.agent_instance_id) {
+			return domain.Task_Chain{}, false, domain.domain_error(.Forbidden, "agent instance is not a member or coordinator of this chain")
+		}
+	}
 	return chain, true, domain.Domain_Error{}
 }
 
@@ -110,6 +137,10 @@ create_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	now := platform.clock_now(service.clock)
 	kind := input.kind; if kind == "" do kind = "team_work"
 	default_reviewers := input.default_reviewer_refs_json; if default_reviewers == "" do default_reviewers = "[]"
+	coordinator_id := input.coordinator_agent_id
+	if auth.kind == .Instance_Token && coordinator_id == "" {
+		coordinator_id = auth.agent_instance_id
+	}
 	chain := domain.Task_Chain{
 		chain_id = domain.Task_Chain_ID(platform.generate_id(service.ids, "chain_")),
 		owner_user_id = owner,
@@ -118,16 +149,34 @@ create_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 		publish_state = .Draft,
 		status = .Active,
 		kind = kind,
+		coordinator_agent_instance_id = coordinator_id,
 		default_reviewer_refs_json = default_reviewers,
 		created_at = now,
 		updated_at = now,
 	}
-	return iface.taskchain_save_chain(service.repo, chain)
+	saved_chain, save_ok, save_err := iface.taskchain_save_chain(service.repo, chain)
+	if !save_ok do return domain.Task_Chain{}, false, save_err
+
+	if auth.kind == .Instance_Token && auth.agent_instance_id != "" {
+		member := domain.Task_Chain_Member{
+			chain_id = saved_chain.chain_id,
+			agent_instance_id = auth.agent_instance_id,
+			owner_user_id = owner,
+			role = "coordinator",
+			created_at = now,
+		}
+		iface.taskchain_save_member(service.repo, member)
+	}
+
+	return saved_chain, true, domain.Domain_Error{}
 }
 
 update_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, input: Update_Chain_Input) -> (domain.Task_Chain, bool, domain.Domain_Error) {
 	chain, ok, err := get_chain(service, auth, chain_id)
 	if !ok do return domain.Task_Chain{}, false, err
+	if auth.kind == .Instance_Token && auth.agent_instance_id != chain.coordinator_agent_instance_id {
+		return domain.Task_Chain{}, false, domain.domain_error(.Forbidden, "only chain coordinator can perform this action")
+	}
 	if input.title != "" do chain.title = input.title
 	if input.description != "" do chain.description = input.description
 	if input.status != "" {
@@ -143,22 +192,39 @@ update_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 }
 
 publish_chain :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID) -> (domain.Task_Chain, bool, domain.Domain_Error) {
-	chain, ok, err := iface.taskchain_get_chain(service.repo, chain_id)
+	chain, ok, err := get_chain(service, auth, chain_id)
 	if !ok do return domain.Task_Chain{}, false, err
-	if owner_ok, owner_err := ownership.require_owner(auth, chain.owner_user_id); !owner_ok do return domain.Task_Chain{}, false, owner_err
+	if auth.kind == .Instance_Token && auth.agent_instance_id != chain.coordinator_agent_instance_id {
+		return domain.Task_Chain{}, false, domain.domain_error(.Forbidden, "only chain coordinator can perform this action")
+	}
 	if chain.publish_state != .Draft do return domain.Task_Chain{}, false, domain.domain_error(.Conflict, "chain is already published")
 	now := platform.clock_now(service.clock)
 	chain.publish_state = .Published
 	chain.status = .Active
 	chain.published_at = now
 	chain.updated_at = now
-	return iface.taskchain_save_chain(service.repo, chain)
+	saved_chain, save_ok, save_err := iface.taskchain_save_chain(service.repo, chain)
+	if !save_ok do return domain.Task_Chain{}, false, save_err
+
+	tasks, err_t := iface.taskchain_list_tasks_by_chain(service.repo, chain_id, chain.owner_user_id)
+	if err_t.code == .None {
+		for t in tasks {
+			t_copy := t
+			t_copy.publish_state = .Published
+			if t_copy.published_at == "" do t_copy.published_at = now
+			t_copy.updated_at = now
+			_, _, _ = iface.taskchain_save_task(service.repo, t_copy)
+		}
+	}
+	return saved_chain, true, domain.Domain_Error{}
 }
 
 change_chain_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, next: domain.Task_Chain_Status) -> (domain.Task_Chain, bool, domain.Domain_Error) {
-	chain, ok, err := iface.taskchain_get_chain(service.repo, chain_id)
+	chain, ok, err := get_chain(service, auth, chain_id)
 	if !ok do return domain.Task_Chain{}, false, err
-	if owner_ok, owner_err := ownership.require_owner(auth, chain.owner_user_id); !owner_ok do return domain.Task_Chain{}, false, owner_err
+	if auth.kind == .Instance_Token && auth.agent_instance_id != chain.coordinator_agent_instance_id {
+		return domain.Task_Chain{}, false, domain.domain_error(.Forbidden, "only chain coordinator can perform this action")
+	}
 	if chain.publish_state != .Published do return domain.Task_Chain{}, false, domain.domain_error(.Conflict, "draft chain has no execution status")
 	if !valid_chain_transition(chain.status, next) do return domain.Task_Chain{}, false, domain.domain_error(.Conflict, "invalid chain status transition")
 	now := platform.clock_now(service.clock)
@@ -198,7 +264,7 @@ create_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, i
 		owner_user_id = chain.owner_user_id,
 		title = input.title,
 		description = input.description,
-		publish_state = .Draft,
+		publish_state = chain.publish_state,
 		status = .Assigned,
 		assignee_ref_json = assignee_ref,
 		reviewer_refs_json = reviewer_refs,
@@ -222,6 +288,14 @@ update_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, t
 	if !ok do return domain.Task{}, false, err
 	chain, chain_ok, chain_err := iface.taskchain_get_chain(service.repo, task.chain_id)
 	if !chain_ok do return domain.Task{}, false, chain_err
+
+	if auth.kind == .Instance_Token {
+		is_coord := auth.agent_instance_id == chain.coordinator_agent_instance_id
+		is_assignee := strings.contains(task.assignee_ref_json, auth.agent_instance_id)
+		if !is_coord && !is_assignee {
+			return domain.Task{}, false, domain.domain_error(.Forbidden, "only assignee or coordinator can update task")
+		}
+	}
 
 	if input.title != "" do task.title = input.title
 	if input.description != "" do task.description = input.description
@@ -258,6 +332,13 @@ publish_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	if !chain_ok do return domain.Task{}, false, chain_err
 	if chain.publish_state != .Published do return domain.Task{}, false, domain.domain_error(.Conflict, "cannot publish task before chain is published")
 	if task.publish_state != .Draft do return domain.Task{}, false, domain.domain_error(.Conflict, "task is already published")
+	if auth.kind == .Instance_Token {
+		is_coord := auth.agent_instance_id == chain.coordinator_agent_instance_id
+		is_assignee := strings.contains(task.assignee_ref_json, auth.agent_instance_id)
+		if !is_coord && !is_assignee {
+			return domain.Task{}, false, domain.domain_error(.Forbidden, "only assignee or coordinator can publish task")
+		}
+	}
 	now := platform.clock_now(service.clock)
 	task.publish_state = .Published
 	task.status = .Assigned
@@ -271,6 +352,16 @@ change_task_status :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 	if !ok do return domain.Task{}, false, err
 	if task.publish_state != .Published do return domain.Task{}, false, domain.domain_error(.Conflict, "draft task has no execution status")
 	if !valid_task_transition(task.status, next) do return domain.Task{}, false, domain.domain_error(.Conflict, "invalid task status transition")
+
+	chain, chain_ok, chain_err := iface.taskchain_get_chain(service.repo, task.chain_id)
+	if !chain_ok do return domain.Task{}, false, chain_err
+	if auth.kind == .Instance_Token {
+		is_coord := auth.agent_instance_id == chain.coordinator_agent_instance_id
+		is_assignee := strings.contains(task.assignee_ref_json, auth.agent_instance_id)
+		if !is_coord && !is_assignee {
+			return domain.Task{}, false, domain.domain_error(.Forbidden, "only assignee or coordinator can change task status")
+		}
+	}
 
 	// Dependency Gating: reject transition to In_Progress if any dependency is blocked
 	if next == .In_Progress {
@@ -315,9 +406,11 @@ create_comment :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context
 	if strings.trim_space(input.body) == "" do return domain.Task_Comment{}, false, domain.domain_error(.Validation_Failed, "comment body is required")
 	task, ok, err := get_task(service, auth, input.task_id)
 	if !ok do return domain.Task_Comment{}, false, err
+	chain, chain_ok, chain_err := get_chain(service, auth, task.chain_id)
+	if !chain_ok do return domain.Task_Comment{}, false, chain_err
 	if auth.kind == .Instance_Token {
 		if auth.agent_instance_id == "" do return domain.Task_Comment{}, false, domain.domain_error(.Forbidden, "instance token is required")
-		if same, same_err := agent_instance_same_chain(service, auth.agent_instance_id, string(task.chain_id), task.owner_user_id); !same do return domain.Task_Comment{}, false, same_err
+		if same, same_err := agent_instance_same_chain(service, auth.agent_instance_id, chain); !same do return domain.Task_Comment{}, false, same_err
 	}
 	now := platform.clock_now(service.clock)
 	comment := domain.Task_Comment{comment_id = platform.generate_id(service.ids, "cmt_"), task_id = task.task_id, chain_id = task.chain_id, owner_user_id = task.owner_user_id, author_agent_instance_id = auth.agent_instance_id, body = input.body, created_at = now, updated_at = now}
@@ -347,7 +440,10 @@ comment_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 	if task.publish_state != .Published do return domain.Task_Comment{}, false, domain.domain_error(.Conflict, "draft task cannot be commented on")
 	if auth.kind == .Instance_Token {
 		if auth.agent_instance_id == "" do return domain.Task_Comment{}, false, domain.domain_error(.Forbidden, "instance token is required")
-		if !(strings.contains(task.assignee_ref_json, auth.agent_instance_id) || strings.contains(task.reviewer_refs_json, auth.agent_instance_id)) do return domain.Task_Comment{}, false, domain.domain_error(.Forbidden, "instance token is not assigned to this task")
+		chain, chain_ok, _ := iface.taskchain_get_chain(service.repo, task.chain_id)
+		is_coord := chain_ok && auth.agent_instance_id == chain.coordinator_agent_instance_id
+		is_actor := strings.contains(task.assignee_ref_json, auth.agent_instance_id) || strings.contains(task.reviewer_refs_json, auth.agent_instance_id)
+		if !is_coord && !is_actor do return domain.Task_Comment{}, false, domain.domain_error(.Forbidden, "instance token is not assigned to or coordinator of this task")
 	}
 	now := platform.clock_now(service.clock)
 	comment := domain.Task_Comment{comment_id = platform.generate_id(service.ids, "cmt_"), task_id = task.task_id, chain_id = task.chain_id, owner_user_id = task.owner_user_id, author_agent_instance_id = auth.agent_instance_id, body = input.body, created_at = now, updated_at = now}
@@ -365,6 +461,9 @@ list_task_comments :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Con
 add_chain_member :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, agent_instance_id: string, role: string) -> (domain.Task_Chain_Member, bool, domain.Domain_Error) {
 	chain, ok, err := get_chain(service, auth, chain_id)
 	if !ok do return domain.Task_Chain_Member{}, false, err
+	if auth.kind == .Instance_Token && auth.agent_instance_id != chain.coordinator_agent_instance_id {
+		return domain.Task_Chain_Member{}, false, domain.domain_error(.Forbidden, "only chain coordinator can add members")
+	}
 	if agent_instance_id == "" do return domain.Task_Chain_Member{}, false, domain.domain_error(.Validation_Failed, "agent_instance_id is required")
 
 	agent_id := ""
@@ -395,6 +494,9 @@ add_chain_member :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 remove_chain_member :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, chain_id: domain.Task_Chain_ID, agent_instance_id: string) -> (bool, domain.Domain_Error) {
 	chain, ok, err := get_chain(service, auth, chain_id)
 	if !ok do return false, err
+	if auth.kind == .Instance_Token && auth.agent_instance_id != chain.coordinator_agent_instance_id {
+		return false, domain.domain_error(.Forbidden, "only chain coordinator can remove members")
+	}
 
 	members, list_err := iface.taskchain_list_members_by_chain(service.repo, chain.chain_id, chain.owner_user_id)
 	if list_err.code != .None do return false, list_err
@@ -489,6 +591,17 @@ record_task_vote :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Conte
 	// Assignee cannot vote on own task
 	if voter_instance_id != "" && strings.contains(task.assignee_ref_json, voter_instance_id) {
 		return domain.Task_Vote{}, false, domain.domain_error(.Forbidden, "assignee cannot vote on their own task")
+	}
+
+	if auth.kind == .Instance_Token {
+		chain, chain_ok, _ := iface.taskchain_get_chain(service.repo, task.chain_id)
+		is_reviewer := strings.contains(task.reviewer_refs_json, voter_instance_id)
+		if !is_reviewer && chain_ok {
+			is_reviewer = strings.contains(chain.default_reviewer_refs_json, voter_instance_id)
+		}
+		if !is_reviewer {
+			return domain.Task_Vote{}, false, domain.domain_error(.Forbidden, "voter is not a designated reviewer for this task")
+		}
 	}
 
 	now := platform.clock_now(service.clock)
@@ -588,6 +701,13 @@ get_task :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, task
 	task, ok, err := iface.taskchain_get_task(service.repo, task_id)
 	if !ok do return domain.Task{}, false, err
 	if owner_ok, owner_err := ownership.require_owner(auth, task.owner_user_id); !owner_ok do return domain.Task{}, false, owner_err
+	if auth.kind == .Instance_Token {
+		chain, chain_ok, chain_err := iface.taskchain_get_chain(service.repo, task.chain_id)
+		if !chain_ok do return domain.Task{}, false, chain_err
+		if !is_instance_member_or_coordinator(service, chain, auth.agent_instance_id) {
+			return domain.Task{}, false, domain.domain_error(.Forbidden, "agent instance is not a member or coordinator of this task's chain")
+		}
+	}
 	return task, true, domain.Domain_Error{}
 }
 
@@ -595,7 +715,7 @@ update_chain_coordinator :: proc(service: ^Taskchain_Service, auth: contracts.Au
 	chain, ok, err := get_chain(service, auth, chain_id)
 	if !ok do return domain.Task_Chain{}, false, err
 	if coordinator_agent_instance_id != "" {
-		if same, same_err := agent_instance_same_chain(service, coordinator_agent_instance_id, string(chain.chain_id), chain.owner_user_id); !same do return domain.Task_Chain{}, false, same_err
+		if same, same_err := agent_instance_same_chain(service, coordinator_agent_instance_id, chain); !same do return domain.Task_Chain{}, false, same_err
 	}
 	chain.coordinator_agent_instance_id = coordinator_agent_instance_id
 	chain.updated_at = platform.clock_now(service.clock)
@@ -616,7 +736,7 @@ validate_ref_blob :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain,
 		idx := search + rel
 		id := json_string_value_after(blob, idx)
 		if id != "" {
-			if same, same_err := agent_instance_same_chain(service, id, string(chain.chain_id), chain.owner_user_id); !same do return false, same_err
+			if same, same_err := agent_instance_same_chain(service, id, chain); !same do return false, same_err
 		}
 		search = idx + len("agent_instance_id")
 	}
@@ -632,12 +752,15 @@ validate_ref_blob :: proc(service: ^Taskchain_Service, chain: domain.Task_Chain,
 	return true, domain.Domain_Error{}
 }
 
-agent_instance_same_chain :: proc(service: ^Taskchain_Service, instance_id, chain_id: string, owner: domain.User_ID) -> (bool, domain.Domain_Error) {
+agent_instance_same_chain :: proc(service: ^Taskchain_Service, instance_id: string, chain: domain.Task_Chain) -> (bool, domain.Domain_Error) {
 	if service.agents == nil do return false, domain.domain_error(.Internal_Error, "agent repository is not configured")
 	inst, ok, err := iface.agent_get_instance(service.agents, instance_id)
 	if !ok do return false, err
-	if inst.owner_user_id != owner || inst.chain_id != chain_id do return false, domain.domain_error(.Conflict, "agent instance ref must belong to the same chain")
-	return true, domain.Domain_Error{}
+	if inst.owner_user_id != chain.owner_user_id do return false, domain.domain_error(.Conflict, "agent instance ref must belong to the same chain owner")
+	if inst.chain_id == string(chain.chain_id) || instance_id == chain.coordinator_agent_instance_id || is_instance_member_or_coordinator(service, chain, instance_id) {
+		return true, domain.Domain_Error{}
+	}
+	return false, domain.domain_error(.Conflict, "agent instance ref must belong to the same chain")
 }
 
 agent_instance_ref_json :: proc(instance_id: string) -> string { return strings.concatenate({`{"type":"agent_instance","agent_instance_id":"`, instance_id, `"}`}) }

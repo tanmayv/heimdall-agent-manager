@@ -486,7 +486,9 @@ SET body = 'Organize all substantial work as tasks within your current task chai
 WHERE memory_id = 'mem_system_use_current_chain_tasks';
 `
 
-MIGRATION_015_MEMORY_TARGET_SCOPE :: `SELECT 1;
+MIGRATION_015_MEMORY_TARGET_SCOPE :: `ALTER TABLE memories ADD COLUMN project_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE memories ADD COLUMN template_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE memories ADD COLUMN bridge_id TEXT NOT NULL DEFAULT '';
 `
 
 MIGRATION_016_MEMORY_WORKFLOW_SKILL_MEMORY :: `INSERT INTO memories (memory_id, owner_user_id, agent_id, project_id, template_id, bridge_id, type, status, title, body, evidence, created_at, updated_at)

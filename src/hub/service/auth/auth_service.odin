@@ -8,6 +8,8 @@ import domain "odin_test:hub/domain"
 import iface "odin_test:hub/repository/iface"
 import platform "odin_test:hub/platform"
 import user_service "odin_test:hub/service/user"
+import agent_service "odin_test:hub/service/agent"
+import bridge_service "odin_test:hub/service/bridge"
 
 Trusted_Proxy_Config :: struct {
 	username_header: string,
@@ -23,6 +25,8 @@ Auth_Service :: struct {
 	config: Trusted_Proxy_Config,
 	users: ^user_service.User_Service,
 	user_tokens: ^iface.User_Repository,
+	bridges: ^bridge_service.Bridge_Service,
+	agents: ^agent_service.Agent_Service,
 	clock: ^platform.Clock,
 	ids: ^platform.ID_Generator,
 }
@@ -51,6 +55,83 @@ new_auth_service :: proc(config: Trusted_Proxy_Config, users: ^user_service.User
 
 new_auth_service_with_tokens :: proc(config: Trusted_Proxy_Config, users: ^user_service.User_Service, user_tokens: ^iface.User_Repository, clock: ^platform.Clock, ids: ^platform.ID_Generator) -> Auth_Service {
 	return Auth_Service{config = config, users = users, user_tokens = user_tokens, clock = clock, ids = ids}
+}
+
+resolve_bridge_instance_auth :: proc(service: ^Auth_Service, req: Auth_Request) -> (contracts.Auth_Context, bool, domain.Domain_Error) {
+	if service == nil || service.bridges == nil || service.agents == nil {
+		return contracts.Auth_Context{}, false, domain.domain_error(.Internal_Error, "bridge auth service is not configured")
+	}
+	if token_in_query_or_body(req.query, req.body) {
+		return contracts.Auth_Context{}, false, domain.domain_error(.Unauthenticated, "bearer tokens must use the Authorization header")
+	}
+	authz := header_value(req.headers, "Authorization")
+	if authz == "" || !strings.has_prefix(authz, "Bearer ") {
+		return contracts.Auth_Context{}, false, domain.domain_error(.Unauthenticated, "bridge bearer token is required")
+	}
+	bridge_token := strings.trim_space(authz[len("Bearer "):])
+	bridge_auth, bridge_ok, bridge_err := bridge_service.verify_bridge_token(service.bridges, bridge_token)
+	if !bridge_ok do return contracts.Auth_Context{}, false, bridge_err
+
+	instance_id := ""
+	relay_token := header_value(req.headers, "X-Heimdall-Instance-Token")
+	if relay_token != "" && strings.has_prefix(relay_token, "hit_") {
+		instance_id = relay_token[len("hit_"):]
+	}
+	if instance_id == "" {
+		instance_id = json_key_value(req.body, "agent_instance_id")
+	}
+	if instance_id == "" {
+		return contracts.Auth_Context{}, false, domain.domain_error(.Validation_Failed, "agent_instance_id is required")
+	}
+
+	inst, inst_ok, inst_err := agent_service.get_instance(service.agents, bridge_auth, instance_id)
+	if !inst_ok do return contracts.Auth_Context{}, false, inst_err
+	if inst.bridge_id != bridge_auth.bridge_id {
+		return contracts.Auth_Context{}, false, domain.domain_error(.Forbidden, "bridge cannot act for an instance it does not own")
+	}
+
+	if relay_token != "" {
+		expected_relay_token := strings.concatenate({"hit_", inst.agent_instance_id})
+		defer delete(expected_relay_token)
+		if relay_token != expected_relay_token {
+			return contracts.Auth_Context{}, false, domain.domain_error(.Forbidden, "bridge instance assertion token is invalid")
+		}
+	}
+
+	return contracts.Auth_Context{
+		kind = .Instance_Token,
+		user_id = string(inst.owner_user_id),
+		agent_instance_id = inst.agent_instance_id,
+		bridge_id = inst.bridge_id,
+	}, true, domain.Domain_Error{}
+}
+
+resolve_auth_any :: proc(service: ^Auth_Service, req: Auth_Request) -> (contracts.Auth_Context, bool, domain.Domain_Error) {
+	authz := header_value(req.headers, "Authorization")
+	if authz != "" && strings.has_prefix(authz, "Bearer ") {
+		token := strings.trim_space(authz[len("Bearer "):])
+		if strings.has_prefix(token, "hbr_") {
+			return resolve_bridge_instance_auth(service, req)
+		}
+	}
+	return resolve_auth(service, req)
+}
+
+json_key_value :: proc(body, key: string) -> string {
+	if body == "" do return ""
+	needle := strings.concatenate({"\"", key, "\""})
+	defer delete(needle)
+	idx := strings.index(body, needle)
+	if idx < 0 do return ""
+	rest := body[idx + len(needle):]
+	colon := strings.index_byte(rest, ':')
+	if colon < 0 do return ""
+	rest = strings.trim_space(rest[colon + 1:])
+	if len(rest) == 0 || rest[0] != '"' do return ""
+	for i := 1; i < len(rest); i += 1 {
+		if rest[i] == '"' do return rest[1:i]
+	}
+	return ""
 }
 
 resolve_auth :: proc(service: ^Auth_Service, req: Auth_Request) -> (contracts.Auth_Context, bool, domain.Domain_Error) {

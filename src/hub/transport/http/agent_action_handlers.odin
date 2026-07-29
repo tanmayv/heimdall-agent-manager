@@ -5,12 +5,14 @@ import "core:strings"
 import internal_b64 "core:encoding/base64"
 import contracts "odin_test:contracts"
 import domain "odin_test:hub/domain"
+import auth_service "odin_test:hub/service/auth"
 import agent_service "odin_test:hub/service/agent"
 import bridge_service "odin_test:hub/service/bridge"
 import content_service "odin_test:hub/service/content"
 import taskchain_service "odin_test:hub/service/taskchain"
 
 Agent_Action_Handlers :: struct {
+	auth: ^auth_service.Auth_Service,
 	agents: ^agent_service.Agent_Service,
 	bridges: ^bridge_service.Bridge_Service,
 	content: ^content_service.Content_Service,
@@ -343,20 +345,15 @@ agent_action_accepted_handler :: proc(ctx: rawptr, req: Request) -> Response {
 }
 
 require_instance_action_auth :: proc(h: ^Agent_Action_Handlers, req: Request) -> (contracts.Auth_Context, domain.Agent_Instance, bool, Response) {
-	if rejected, resp := reject_query_or_body_token(req); rejected do return contracts.Auth_Context{}, domain.Agent_Instance{}, false, resp
-	bridge_token, has_token := bearer_token(req)
-	if !has_token do return contracts.Auth_Context{}, domain.Agent_Instance{}, false, respond_error(domain.domain_error(.Unauthenticated, "bridge bearer token is required"), req.request_id)
-	bridge_auth, bridge_ok, bridge_err := bridge_service.verify_bridge_token(h.bridges, bridge_token)
-	if !bridge_ok do return contracts.Auth_Context{}, domain.Agent_Instance{}, false, respond_error(bridge_err, req.request_id)
-	body_instance := json_string(req.body, "agent_instance_id")
-	if body_instance == "" do return contracts.Auth_Context{}, domain.Agent_Instance{}, false, respond_error(domain.domain_error(.Validation_Failed, "agent_instance_id is required"), req.request_id)
-	inst, inst_ok, inst_err := agent_service.get_instance(h.agents, bridge_auth, body_instance)
+	auth, ok, err := auth_service.resolve_bridge_instance_auth(h.auth, auth_service.Auth_Request{
+		remote_addr = req.remote_addr,
+		query = req.query,
+		body = req.body,
+		headers = req.headers,
+	})
+	if !ok do return contracts.Auth_Context{}, domain.Agent_Instance{}, false, respond_error(err, req.request_id)
+	inst, inst_ok, inst_err := agent_service.get_instance(h.agents, contracts.Auth_Context{kind = .Bridge_Token, bridge_id = auth.bridge_id, user_id = auth.user_id}, auth.agent_instance_id)
 	if !inst_ok do return contracts.Auth_Context{}, domain.Agent_Instance{}, false, respond_error(inst_err, req.request_id)
-	if inst.bridge_id != bridge_auth.bridge_id do return contracts.Auth_Context{}, domain.Agent_Instance{}, false, respond_error(domain.domain_error(.Forbidden, "bridge cannot act for an instance it does not own"), req.request_id)
-	relay_token := header_value(req.headers, "X-Heimdall-Instance-Token")
-	expected_relay_token := strings.concatenate({"hit_", inst.agent_instance_id})
-	if relay_token != expected_relay_token do return contracts.Auth_Context{}, domain.Agent_Instance{}, false, respond_error(domain.domain_error(.Forbidden, "bridge instance assertion token is invalid"), req.request_id)
-	auth := contracts.Auth_Context{kind = .Instance_Token, user_id = string(inst.owner_user_id), agent_instance_id = inst.agent_instance_id, bridge_id = inst.bridge_id}
 	return auth, inst, true, Response{}
 }
 
