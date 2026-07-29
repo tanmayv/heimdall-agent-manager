@@ -54,8 +54,35 @@ agent_action_chat_fetch_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	cursor := json_string(params, "cursor")
 	conv, conv_ok, conv_err := content_service.get_conversation_by_instance(h.content, auth, inst.agent_instance_id)
 	if !conv_ok do return respond_error(conv_err, req.request_id)
-	rows, err := content_service.list_messages(h.content, auth, conv.conversation_id, limit, cursor)
+	
+	unread_only := strings.contains(params, "\"unread_only\":true") || strings.contains(params, "\"unread_only\": true")
+	receiver_only := strings.contains(params, "\"receiver_only\":true") || strings.contains(params, "\"receiver_only\": true")
+	include_outgoing := !strings.contains(params, "\"include_outgoing\":false") && !strings.contains(params, "\"include_outgoing\": false")
+	include_debug := !strings.contains(params, "\"include_debug\":false") && !strings.contains(params, "\"include_debug\": false")
+	mark_read := strings.contains(params, "\"mark_read\":true") || strings.contains(params, "\"mark_read\": true")
+
+	filter := content_service.Agent_Inbox_Filter{
+		agent_instance_id=inst.agent_instance_id, 
+		unread_only=unread_only, 
+		receiver_only=receiver_only, 
+		include_outgoing=include_outgoing, 
+		include_debug=include_debug, 
+		limit=limit, 
+		cursor=cursor,
+	}
+
+	rows, err := content_service.list_agent_inbox_messages(h.content, auth, filter)
 	if err.code != .None do return respond_error(err, req.request_id)
+	
+	if mark_read && len(rows) > 0 {
+		ids := make([dynamic]string)
+		defer delete(ids)
+		for row in rows { if row.read_at == "" do append(&ids, row.message_id) }
+		if len(ids) > 0 {
+			_, _ = content_service.mark_messages_read_by_ids(h.content, auth, ids[:])
+		}
+	}
+
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"conversation\":")
 	write_chat_json(&b, conv)

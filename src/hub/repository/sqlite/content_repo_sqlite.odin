@@ -9,8 +9,7 @@ import iface "odin_test:hub/repository/iface"
 Content_Repo_SQLite :: struct { conn: ^Conn }
 
 new_content_repository :: proc(impl: ^Content_Repo_SQLite, conn: ^Conn) -> iface.Content_Repository {
-	impl.conn = conn
-	return iface.Content_Repository{ctx=rawptr(impl), save_memory=content_save_memory_sqlite, get_memory=content_get_memory_sqlite, list_memories=content_list_memories_sqlite, save_conversation=content_save_conversation_sqlite, get_conversation=content_get_conversation_sqlite, list_conversations=content_list_conversations_sqlite, save_message=content_save_message_sqlite, get_message=content_get_message_sqlite, update_message=content_update_message_sqlite, list_messages=content_list_messages_sqlite, list_user_visible_messages=content_list_user_visible_messages_sqlite, save_artifact=content_save_artifact_sqlite, get_artifact=content_get_artifact_sqlite, list_artifacts=content_list_artifacts_sqlite, delete_artifact=content_delete_artifact_sqlite, save_template=content_save_template_sqlite, get_template=content_get_template_sqlite, list_templates=content_list_templates_sqlite}
+	return iface.Content_Repository{ctx=rawptr(impl), save_memory=content_save_memory_sqlite, get_memory=content_get_memory_sqlite, list_memories=content_list_memories_sqlite, save_conversation=content_save_conversation_sqlite, get_conversation=content_get_conversation_sqlite, list_conversations=content_list_conversations_sqlite, save_message=content_save_message_sqlite, get_message=content_get_message_sqlite, update_message=content_update_message_sqlite, list_messages=content_list_messages_sqlite, list_user_visible_messages=content_list_user_visible_messages_sqlite, list_agent_inbox_messages=content_list_agent_inbox_messages_sqlite, mark_messages_read=content_mark_messages_read_sqlite, save_artifact=content_save_artifact_sqlite, get_artifact=content_get_artifact_sqlite, list_artifacts=content_list_artifacts_sqlite, delete_artifact=content_delete_artifact_sqlite, save_template=content_save_template_sqlite, get_template=content_get_template_sqlite, list_templates=content_list_templates_sqlite}
 }
 
 content_save_memory_sqlite :: proc(ctx: rawptr, m: domain.Memory) -> (domain.Memory, bool, domain.Domain_Error) {
@@ -35,6 +34,69 @@ content_get_message_sqlite :: proc(ctx:rawptr, id:string)->(domain.Chat_Message,
 content_update_message_sqlite :: proc(ctx:rawptr, owner:domain.User_ID, cid,id,body,status,metadata_json:string)->(domain.Chat_Message,bool,domain.Domain_Error){ impl:=(^Content_Repo_SQLite)(ctx); stmt:sqlite3_stmt=nil; q:="UPDATE chat_messages SET body=?, message_status=?, metadata_json=? WHERE owner_user_id=? AND conversation_id=? AND message_id=?;"; if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(q)),-1,&stmt,nil)!=SQLITE_OK do return {},false,domain.domain_error(.Internal_Error,"failed message update"); defer sqlite3_finalize(stmt); bind_text(stmt,1,body); bind_text(stmt,2,normalize_message_status(status)); bind_text(stmt,3,json_object_or_empty(metadata_json)); bind_text(stmt,4,string(owner)); bind_text(stmt,5,cid); bind_text(stmt,6,id); if sqlite3_step(stmt)!=SQLITE_DONE do return {},false,domain.domain_error(.Conflict,"message could not be updated"); return content_get_message_sqlite(ctx,id) }
 content_list_messages_sqlite :: proc(ctx:rawptr, cid:string, owner:domain.User_ID, limit:int, cursor:string)->([]domain.Chat_Message,domain.Domain_Error){ impl:=(^Content_Repo_SQLite)(ctx); stmt:sqlite3_stmt=nil; q:=strings.concatenate({"SELECT ",CHAT_MESSAGE_SELECT," FROM chat_messages WHERE conversation_id=? AND owner_user_id=? ORDER BY created_at DESC LIMIT ?;"}); if cursor!="" do q=strings.concatenate({"SELECT ",CHAT_MESSAGE_SELECT," FROM chat_messages WHERE conversation_id=? AND owner_user_id=? AND created_at < ? ORDER BY created_at DESC LIMIT ?;"}); if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(q)),-1,&stmt,nil)!=SQLITE_OK do return nil,domain.domain_error(.Internal_Error,"failed message list"); defer sqlite3_finalize(stmt); bind_text(stmt,1,cid); bind_text(stmt,2,string(owner)); if cursor!="" {bind_text(stmt,3,cursor); bind_text(stmt,4,int_s(limit))} else {bind_text(stmt,3,int_s(limit))}; out:=make([dynamic]domain.Chat_Message); for sqlite3_step(stmt)==SQLITE_ROW do append(&out,message_from_stmt(stmt)); return out[:],{} }
 content_list_user_visible_messages_sqlite :: proc(ctx:rawptr, cid:string, owner:domain.User_ID, limit:int, cursor:string)->([]domain.Chat_Message,domain.Domain_Error){ impl:=(^Content_Repo_SQLite)(ctx); stmt:sqlite3_stmt=nil; q:=strings.concatenate({"SELECT ",CHAT_MESSAGE_SELECT," FROM chat_messages WHERE conversation_id=? AND owner_user_id=? AND direction != 'agent_to_agent' ORDER BY created_at DESC LIMIT ?;"}); if cursor!="" do q=strings.concatenate({"SELECT ",CHAT_MESSAGE_SELECT," FROM chat_messages WHERE conversation_id=? AND owner_user_id=? AND direction != 'agent_to_agent' AND created_at < ? ORDER BY created_at DESC LIMIT ?;"}); if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(q)),-1,&stmt,nil)!=SQLITE_OK do return nil,domain.domain_error(.Internal_Error,"failed visible message list"); defer sqlite3_finalize(stmt); bind_text(stmt,1,cid); bind_text(stmt,2,string(owner)); if cursor!="" {bind_text(stmt,3,cursor); bind_text(stmt,4,int_s(limit))} else {bind_text(stmt,3,int_s(limit))}; out:=make([dynamic]domain.Chat_Message); for sqlite3_step(stmt)==SQLITE_ROW do append(&out,message_from_stmt(stmt)); return out[:],{} }
+
+content_list_agent_inbox_messages_sqlite :: proc(ctx:rawptr, cid:string, owner:domain.User_ID, unread_only, receiver_only, include_outgoing, include_debug: bool, limit:int, cursor:string)->([]domain.Chat_Message,domain.Domain_Error){
+	impl:=(^Content_Repo_SQLite)(ctx); stmt:sqlite3_stmt=nil
+	
+	filters := make([dynamic]string)
+	append(&filters, "conversation_id=? AND owner_user_id=?")
+	if unread_only do append(&filters, "read_at=''")
+	if !include_outgoing {
+		append(&filters, "direction != 'agent_to_user'")
+	}
+	if receiver_only {
+		// Receiver only generally means we exclude agent_to_user always.
+		// Wait, if it's agent_to_agent, we know it's bound for this conv. So just exclude agent_to_user.
+		append(&filters, "direction != 'agent_to_user'")
+	}
+	if !include_debug do append(&filters, "message_type NOT IN ('pane_capture', 'status_update', 'pane_capture_result')")
+	
+	if cursor != "" do append(&filters, "created_at < ?")
+	
+	filter_str := strings.join(filters[:], " AND ")
+	
+	q:=strings.concatenate({"SELECT ",CHAT_MESSAGE_SELECT," FROM chat_messages WHERE ", filter_str, " ORDER BY created_at DESC LIMIT ?;"})
+	
+	if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(q)),-1,&stmt,nil)!=SQLITE_OK do return nil,domain.domain_error(.Internal_Error,"failed agent inbox list")
+	defer sqlite3_finalize(stmt)
+	
+	bind_text(stmt,1,cid)
+	bind_text(stmt,2,string(owner))
+	
+	bind_idx := 3
+	if cursor != "" {
+		bind_text(stmt,bind_idx,cursor)
+		bind_idx += 1
+	}
+	bind_text(stmt,bind_idx,int_s(limit))
+	
+	out:=make([dynamic]domain.Chat_Message)
+	for sqlite3_step(stmt)==SQLITE_ROW do append(&out,message_from_stmt(stmt))
+	return out[:],{}
+}
+
+content_mark_messages_read_sqlite :: proc(ctx:rawptr, owner:domain.User_ID, message_ids:[]string, updated_at:string)->(int,domain.Domain_Error){
+	if len(message_ids) == 0 do return 0, {}
+	impl:=(^Content_Repo_SQLite)(ctx); stmt:sqlite3_stmt=nil
+	
+	// Create an IN clause with enough ?'s
+	qs := make([dynamic]string)
+	for _ in message_ids { append(&qs, "?") }
+	in_clause := strings.join(qs[:], ",")
+	
+	q:=strings.concatenate({"UPDATE chat_messages SET read_at=? WHERE owner_user_id=? AND message_id IN (", in_clause, ");"})
+	if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(q)),-1,&stmt,nil)!=SQLITE_OK do return 0,domain.domain_error(.Internal_Error,"failed mark messages read")
+	defer sqlite3_finalize(stmt)
+	
+	bind_text(stmt, 1, updated_at)
+	bind_text(stmt, 2, string(owner))
+	for id, i in message_ids {
+		bind_text(stmt, 3 + i, id)
+	}
+	
+	if sqlite3_step(stmt)!=SQLITE_DONE do return 0,domain.domain_error(.Internal_Error,"failed mark messages read exec")
+	return len(message_ids), {}
+}
 
 content_save_artifact_sqlite :: proc(ctx:rawptr, a:domain.Artifact)->(domain.Artifact,bool,domain.Domain_Error){ impl:=(^Content_Repo_SQLite)(ctx); stmt:sqlite3_stmt=nil; q:="INSERT INTO artifacts (artifact_id, owner_user_id, kind, name, description, content_type, size_bytes, blob_ref, content, agent_id, agent_instance_id, chain_id, task_id, project_id, mime, ext, sha256, origin_kind, origin_ref, deleted_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(artifact_id) DO UPDATE SET kind=excluded.kind, name=excluded.name, description=excluded.description, content_type=excluded.content_type, size_bytes=excluded.size_bytes, blob_ref=excluded.blob_ref, content=excluded.content, mime=excluded.mime, ext=excluded.ext, sha256=excluded.sha256, origin_kind=excluded.origin_kind, origin_ref=excluded.origin_ref, deleted_at=excluded.deleted_at, updated_at=excluded.updated_at;"; if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(q)),-1,&stmt,nil)!=SQLITE_OK do return {},false,domain.domain_error(.Internal_Error,"failed artifact save"); defer sqlite3_finalize(stmt); bind_artifact(stmt,a); if sqlite3_step(stmt)!=SQLITE_DONE do return {},false,domain.domain_error(.Conflict,"artifact could not be saved"); return a,true,{} }
 content_get_artifact_sqlite :: proc(ctx:rawptr,id:string)->(domain.Artifact,bool,domain.Domain_Error){ impl:=(^Content_Repo_SQLite)(ctx); stmt:sqlite3_stmt=nil; q:="SELECT artifact_id, owner_user_id, kind, name, description, content_type, size_bytes, blob_ref, content, agent_id, agent_instance_id, chain_id, task_id, project_id, mime, ext, sha256, origin_kind, origin_ref, deleted_at, created_at, updated_at FROM artifacts WHERE artifact_id=?;"; if sqlite3_prepare_v2(impl.conn.db,cstring(raw_data(q)),-1,&stmt,nil)!=SQLITE_OK do return {},false,domain.domain_error(.Internal_Error,"failed artifact lookup"); defer sqlite3_finalize(stmt); bind_text(stmt,1,id); if sqlite3_step(stmt)!=SQLITE_ROW do return {},false,domain.domain_error(.Not_Found,"artifact not found"); return artifact_from_stmt(stmt),true,{} }
