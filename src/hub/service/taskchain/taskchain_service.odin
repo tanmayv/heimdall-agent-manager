@@ -560,15 +560,21 @@ manual_nudge :: proc(service: ^Taskchain_Service, auth: contracts.Auth_Context, 
 		strings.write_string(&b, `"}`)
 		
 		sent := false
-		if service.bridge_command_sink.send_runtime_command != nil {
-			sent, _ = project.bridge_command_send_runtime(service.bridge_command_sink, project.Runtime_Command{bridge_id=inst.bridge_id, command_id=cmd_id, body_json=strings.to_string(b)})
-		}
-		if sent {
-			durable_queued += 1
-			strings.write_string(&targets_b, `","state":"queued"}`)
-		} else {
-			failed += 1
-			strings.write_string(&targets_b, `","state":"failed"}`)
+		if service.bridge_command_sink.send_runtime_command_wait != nil {
+			result_json, sent, _ := project.bridge_command_send_runtime_wait(service.bridge_command_sink, project.Runtime_Command{bridge_id=inst.bridge_id, command_id=cmd_id, body_json=strings.to_string(b)}, 1000)
+			if sent {
+				status := project.extract_json_string(result_json, "status", "")
+				if status == "succeeded" {
+					live_delivered += 1
+					strings.write_string(&targets_b, `","state":"delivered"}`)
+				} else {
+					durable_queued += 1
+					strings.write_string(&targets_b, `","state":"queued"}`)
+				}
+			} else {
+				failed += 1
+				strings.write_string(&targets_b, `","state":"failed"}`)
+			}
 		}
 	}
 	strings.write_string(&targets_b, "]")

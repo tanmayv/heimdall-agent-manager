@@ -48,7 +48,7 @@ main :: proc() {
 	clock := platform.Clock{ctx = nil, now = fixed_clock_now}
 	ids := platform.ID_Generator{ctx = rawptr(&repo_data), generate = fixed_id_generate}
 	repo := iface.Taskchain_Repository{ctx = rawptr(&repo_data), get_chain = chain_get, save_chain = chain_save, save_task = task_save, get_task = task_get}
-	service := taskchain_service.new_taskchain_service(&repo, &clock, &ids)
+	service := taskchain_service.new_taskchain_service(&repo, nil, &clock, &ids)
 	auth := contracts.Auth_Context{kind = .Trusted_Proxy, user_id = "alice"}
 
 	chain, ok, err := taskchain_service.create_chain(&service, auth, taskchain_service.Create_Chain_Input{title = "chain"})

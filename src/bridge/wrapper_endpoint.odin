@@ -205,6 +205,10 @@ bridge_wrapper_push :: proc(instance_id, json_payload: string) -> bool {
 	return bridge_wrapper_push_line(instance_id, strings.concatenate({"{\"push\":\"agent_message\",\"payload\":", json_payload, "}\n"}))
 }
 
+bridge_wrapper_push_task_nudge :: proc(instance_id, json_payload: string) -> bool {
+	return bridge_wrapper_push_line(instance_id, strings.concatenate({"{\"push\":\"task_nudge\",\"payload\":", json_payload, "}\n"}))
+}
+
 bridge_wrapper_push_startup_prompt :: proc(instance_id: string) -> bool {
 	return bridge_wrapper_push_line(instance_id, "{\"push\":\"startup_prompt\"}\n")
 }
