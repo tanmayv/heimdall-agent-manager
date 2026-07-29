@@ -1,5 +1,5 @@
 import TaskChainOverview from '../taskchain/TaskChainOverview';
-import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { type ClipboardEvent, type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
   useFetchConversationQuery,
   useFetchConversationMessagesQuery,
@@ -26,6 +26,7 @@ import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 import ChatMessageList from './ChatMessageList';
 import { useViewport } from '../shell/responsive';
+import { artifactKindForFile, artifactLinkFromResponse, artifactMimeForFile, artifactUploadName, clipboardFilesFromEvent } from '../../utils/artifactUpload';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
 
 // e2e conversation thread for /conversations/{conversationId}. Cookie-auth,
@@ -550,7 +551,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
 
   async function uploadAttachment(file: File, existingLocalId = '') {
     const localId = existingLocalId || `att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    const name = file.name || 'attachment';
+    const name = artifactUploadName(file, 'conversation-attachment');
     const tooLarge = file.size > MAX_UPLOAD_BYTES;
     setError('');
     setAttachments((current) => {
@@ -561,14 +562,14 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     try {
       const res = await createArtifact({
         file,
-        name: file.name,
-        mime: file.type || 'application/octet-stream',
-        kind: (file.type || '').startsWith('image/') ? 'image' : 'text',
+        name,
+        mime: artifactMimeForFile(file),
+        kind: artifactKindForFile(file),
         originKind: 'conversation_chat',
         originRef: conversationId,
       }).unwrap();
-      const artifact = res?.artifact || res;
-      const id = String(artifact?.artifact_id || artifact?.artifactId || artifact?.id || '');
+      const link = artifactLinkFromResponse(res);
+      const id = link.replace(/^artifact:\/\//i, '');
       if (!id) throw new Error('Upload failed: Hub did not return an artifact id.');
       setAttachments((current) => current.map((item) => item.localId === localId ? { ...item, id, status: 'uploaded', error: '' } : item));
     } catch (err: any) {
@@ -585,6 +586,13 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   function openAttachmentPicker() {
     setComposerActionsOpen(false);
     fileInputRef.current?.click();
+  }
+
+  function handleComposerPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const files = clipboardFilesFromEvent(event);
+    if (files.length === 0) return;
+    event.preventDefault();
+    files.forEach((file) => void uploadAttachment(file));
   }
 
   async function submit(event: FormEvent) {
@@ -774,6 +782,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void submit(e as any); } }}
+            onPaste={handleComposerPaste}
             rows={2}
             placeholder="Message the agent… (Cmd/Ctrl+Enter to send)"
             className="min-h-[44px] min-w-0 flex-1 resize-none rounded-2xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-sky-400/60 sm:px-4"
