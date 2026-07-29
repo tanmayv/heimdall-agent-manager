@@ -32,11 +32,12 @@ Memory_Update_Input :: struct {
 	has_template_id: bool,
 }
 Memory_Filter :: struct {
-	status:     string,
-	type:       string,
-	agent_id:   string,
-	project_id: domain.Project_ID,
-	bridge_id:  string,
+	status:      string,
+	type:        string,
+	agent_id:    string,
+	project_id:  domain.Project_ID,
+	bridge_id:   string,
+	template_id: string,
 }
 Chat_Input :: struct { agent_id,agent_instance_id,chain_id,title,initial_body,artifact_ids_json,bridge_id,provider,tier: string, project_id: domain.Project_ID }
 Message_Input :: struct { body,artifact_ids_json: string }
@@ -58,6 +59,7 @@ list_memories :: proc(s:^Content_Service, auth:contracts.Auth_Context, filter:Me
 		if filter.agent_id!="" && m.agent_id!=filter.agent_id do continue
 		if string(filter.project_id)!="" && m.project_id!=filter.project_id do continue
 		if filter.bridge_id!="" && m.bridge_id!=filter.bridge_id do continue
+		if filter.template_id!="" && m.template_id!=filter.template_id do continue
 		append(&filtered,m)
 	}
 	out:=make([dynamic]domain.Memory)

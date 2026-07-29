@@ -525,7 +525,7 @@ Use Heimdall memory management for managing long-term agent knowledge, project s
 - episode: Record of specific past event or task run outcome.
 - expertise: Special knowledge, architectural insight, or deep domain rule.
 - skill: Machine-actionable procedure or SKILL.md instruction set.
-- template: Structured format reference.
+Template targeting is available through template_id scope; template is not a memory type.
 
 ## Propose-Review-Approve Workflow
 - Agents propose new memories in pending status using ham-ctl or agent actions.
@@ -561,6 +561,9 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 		return false, domain.domain_error(.Internal_Error, "database connection is not open")
 	}
 	for name in migration_order {
+		if name == "016_memory_workflow_skill_memory.sql" {
+			if !upgrade_memory_target_scope_schema(conn) do return false, domain.domain_error(.Internal_Error, "memory target scope schema upgrade failed")
+		}
 		if migration_applied(conn, name) do continue
 		if name == "003_device_tokens.sql" && table_column_exists(conn, "user_api_tokens", "created_from") && table_column_exists(conn, "user_api_tokens", "device_label") {
 			mark_migration_applied(conn, name)

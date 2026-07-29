@@ -28,7 +28,7 @@ This applies to create, edit, filters, and proposal review alike.
 
 - Domain `Memory` (`src/hub/domain/content.odin`) already has scope fields:
   `agent_id`, `project_id`, `bridge_id`, `template_id`, plus `type`
-  (fact/habit/episode/expertise/skill/template), `status`, `title`, `body`,
+  (fact/habit/episode/expertise/skill), `status`, `title`, `body`,
   `evidence`.
 - Routes (`src/hub/app/wiring.odin`):
   - `GET  /api/v1/memories` (list; owner-scoped; includes body preview)
@@ -92,7 +92,8 @@ A memory may set any combination of:
 - `project_id` — applies within a project
 - `bridge_id` — applies on a specific machine/bridge
 - `template_id` — applies to agents using a template
-- `type` — fact | habit | episode | expertise | skill | template
+- `type` — fact | habit | episode | expertise | skill
+- `template_id` is a scope target; `template` is not a memory type.
 
 Empty scope field = "any". `applicable` resolution already exists for bootstrap
 (`bootstrap_memory_applies`). The UI just needs to let users pick these.
@@ -141,7 +142,7 @@ memory `mem_system_heimdall_memory` (owner `system`, type `skill`, status
 - when to propose memory vs. keep ephemeral,
 - choosing the right **scope** (agent vs project vs bridge vs template; prefer
   the narrowest correct scope),
-- choosing the right **type** (fact/habit/episode/expertise/skill/template),
+- choosing the right **type** (fact/habit/episode/expertise/skill), and using `template_id` only as a scope target,
 - how to author a **skill-type** memory: SKILL.md front-matter (`name:`,
   `description:`), concise imperative body, when it loads,
 - the propose→review→approve lifecycle and how NGTM/edits work,
@@ -196,7 +197,7 @@ shown as the primary label and never typed by the user.
   On pick, resolves to that instance's `agent_id` (+ optionally project/bridge)
   and sets those fields, with a hint "scoped to agent X (from instance Y)".
   (See Instance Scope Decision.)
-- **Type** `<select>` — fact/habit/episode/expertise/skill/template (fixed enum).
+- **Type** `<select>` — fact/habit/episode/expertise/skill (fixed enum). `template` is not a type.
 
 Emits `{ agent_id, project_id, bridge_id, template_id, type }` (ids resolved from
 the chosen option values). If a referenced list is still loading, the select

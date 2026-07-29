@@ -32,7 +32,7 @@ Use Heimdall memory management for managing long-term agent knowledge, project s
 - episode: Record of specific past event or task run outcome.
 - expertise: Special knowledge, architectural insight, or deep domain rule.
 - skill: Machine-actionable procedure or SKILL.md instruction set.
-- template: Structured format reference.
+Template targeting is available through template_id scope; template is not a memory type.
 
 ## Propose-Review-Approve Workflow
 - Agents propose new memories in pending status using ham-ctl or agent actions.

@@ -8,9 +8,11 @@ export type ListMemoriesQueryArg = {
   agent_id?: string;
   project_id?: string;
   bridge_id?: string;
+  template_id?: string;
   targetAgentId?: string;
   targetProjectId?: string;
   targetBridgeId?: string;
+  targetTemplateId?: string;
   limit?: number;
   cursor?: string;
 } | void;
@@ -98,6 +100,8 @@ export const memoryApi = heimdallApi.injectEndpoints({
             if (projectId) params.set("project_id", projectId);
             const bridgeId = arg.bridge_id || arg.targetBridgeId;
             if (bridgeId) params.set("bridge_id", bridgeId);
+            const templateId = arg.template_id || arg.targetTemplateId;
+            if (templateId) params.set("template_id", templateId);
             if (arg.limit) params.set("limit", String(arg.limit));
             if (arg.cursor) params.set("cursor", arg.cursor);
           }

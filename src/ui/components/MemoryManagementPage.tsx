@@ -15,6 +15,9 @@ import {
   useListMemoryQuery,
   useProposeMemoryChangeMutation,
 } from '../api/endpoints/memory';
+import { useListAgentIdentitiesQuery, useListAgentTemplatesQuery } from '../api/endpoints/agents';
+import { useListBridgesQuery } from '../api/endpoints/bridgeSupport';
+import { useListSidebarProjectsQuery } from '../api/endpoints/sidebar';
 
 type Props = {
   selectedMemoryId: string;
@@ -23,6 +26,9 @@ type Props = {
 };
 
 type FormMode = 'new' | 'edit' | 'archive' | 'rollback';
+
+const MEMORY_TYPE_OPTIONS = ['fact', 'habit', 'episode', 'expertise', 'skill'];
+const MEMORY_STATUS_OPTIONS = ['pending', 'active', 'archived', 'rejected'];
 
 function formatUnix(ms: number) {
   if (!ms) return '—';
@@ -49,20 +55,48 @@ function normalizeProposalState(record: any) {
   return record.status || '—';
 }
 
-function optionValues(records: any[], key: 'type' | 'status') {
-  return Array.from(new Set(records.map((record: any) => String(record?.[key] || '').trim()).filter(Boolean))).sort();
+type SelectOption = { value: string; label: string };
+
+function normalizeOptionList(data: any, kind: 'agent' | 'project' | 'bridge' | 'template'): SelectOption[] {
+  const raw =
+    kind === 'agent'
+      ? (Array.isArray(data?.agents) ? data.agents : data)
+      : kind === 'bridge'
+      ? (Array.isArray(data?.bridges) ? data.bridges : data)
+      : kind === 'template'
+      ? (Array.isArray(data?.templates) ? data.templates : data)
+      : data;
+  const rows = Array.isArray(raw) ? raw : [];
+  return rows
+    .map((item: any) => {
+      const id = String(
+        kind === 'agent'
+          ? item.agent_id || item.agentId || item.id || ''
+          : kind === 'project'
+          ? item.project_id || item.projectId || item.id || ''
+          : kind === 'bridge'
+          ? item.bridge_id || item.bridgeId || item.id || ''
+          : item.template_id || item.templateId || item.id || ''
+      );
+      const label = String(item.name || item.label || item.title || item.display_name || item.displayName || 'Unnamed');
+      return { value: id, label };
+    })
+    .filter((item: any) => item.value);
 }
 
 export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory, onBackToHome }: Props) {
   const dispatch = useDispatch<any>();
-  const session = useSelector((state: any) => state.chat.session);
   const filters = useSelector(selectMemoryFilters);
-  const memoryListQuery = useListMemoryQuery(undefined, { skip: !session?.clientToken });
-  const allRecords = memoryListQuery.data?.records || [];
+  const agentIdentitiesQuery = useListAgentIdentitiesQuery();
+  const projectsQuery = useListSidebarProjectsQuery();
+  const bridgesQuery = useListBridgesQuery();
+  const templatesQuery = useListAgentTemplatesQuery();
+  const memoryListQuery = useListMemoryQuery(undefined);
+  const allRecords = memoryListQuery.data?.records || memoryListQuery.data?.items || [];
   const filteredRecords = useMemo(() => allRecords.filter((record: any) => matchesMemoryFilters(record, filters)), [allRecords, filters]);
   const pendingRecords = useMemo(() => allRecords.filter((record: any) => record.status === 'pending'), [allRecords]);
-  const selectedMemoryQuery = useFetchMemoryQuery({ memoryId: selectedMemoryId || '' }, { skip: !selectedMemoryId || !session?.clientToken });
-  const selectedHistoryQuery = useFetchMemoryHistoryQuery({ memoryId: selectedMemoryId || '' }, { skip: !selectedMemoryId || !session?.clientToken });
+  const selectedMemoryQuery = useFetchMemoryQuery({ memoryId: selectedMemoryId || '' }, { skip: !selectedMemoryId });
+  const selectedHistoryQuery = useFetchMemoryHistoryQuery({ memoryId: selectedMemoryId || '' }, { skip: !selectedMemoryId });
   const [proposeMemoryChange] = useProposeMemoryChangeMutation();
   const [decideMemoryProposal] = useDecideMemoryProposalMutation();
   const [formMode, setFormMode] = useState<FormMode>('new');
@@ -89,10 +123,14 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
     if (next && next !== selectedMemoryId) onSelectMemory(next);
   }, [allRecords, filteredRecords, onSelectMemory, selectedMemoryId]);
 
-  const selectedRecord = selectedMemoryId ? (selectedMemoryQuery.data?.record || allRecords.find((record: any) => record.memoryId === selectedMemoryId)) : null;
+  const selectedRecord = selectedMemoryId ? (selectedMemoryQuery.data?.record || selectedMemoryQuery.data || allRecords.find((record: any) => record.memoryId === selectedMemoryId)) : null;
   const history = selectedRecord ? (selectedHistoryQuery.data?.events || []) : [];
-  const typeOptions = useMemo(() => optionValues(allRecords, 'type'), [allRecords]);
-  const statusOptions = useMemo(() => optionValues(allRecords, 'status'), [allRecords]);
+  const agentOptions = useMemo(() => normalizeOptionList(agentIdentitiesQuery.data, 'agent'), [agentIdentitiesQuery.data]);
+  const projectOptions = useMemo(() => normalizeOptionList(projectsQuery.data, 'project'), [projectsQuery.data]);
+  const bridgeOptions = useMemo(() => normalizeOptionList(bridgesQuery.data, 'bridge'), [bridgesQuery.data]);
+  const templateOptions = useMemo(() => normalizeOptionList(templatesQuery.data, 'template'), [templatesQuery.data]);
+  const typeOptions = MEMORY_TYPE_OPTIONS;
+  const statusOptions = MEMORY_STATUS_OPTIONS;
 
   useEffect(() => {
     if (formMode === 'new') {
@@ -283,10 +321,10 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
               <button data-debug-id="memory-filters-reset-btn" onClick={() => dispatch(resetMemoryFilters())} className="rounded-xl bg-white/10 px-3 py-2 text-sm hover:bg-white/15">Reset</button>
             </div>
             <div data-debug-id="memory-filters" className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              <FilterInput debugId="memory-filter-agent-input" label="Agent target" value={filters.targetAgentId || ''} onChange={(value) => handleFilterChange({ targetAgentId: value })} placeholder="worker" />
-              <FilterInput debugId="memory-filter-project-input" label="Project target" value={filters.targetProjectId || ''} onChange={(value) => handleFilterChange({ targetProjectId: value })} placeholder="heimdall-agent-manager" />
-              <FilterInput debugId="memory-filter-template-input" label="Template target" value={filters.targetTemplateId || ''} onChange={(value) => handleFilterChange({ targetTemplateId: value })} placeholder="template id" />
-              <FilterInput debugId="memory-filter-bridge-input" label="Bridge target" value={filters.targetBridgeId || ''} onChange={(value) => handleFilterChange({ targetBridgeId: value })} placeholder="bridge id" />
+              <FilterSelect debugId="memory-filter-agent-select" label="Agent target" value={filters.targetAgentId || ''} onChange={(value) => handleFilterChange({ targetAgentId: value })} options={agentOptions} />
+              <FilterSelect debugId="memory-filter-project-select" label="Project target" value={filters.targetProjectId || ''} onChange={(value) => handleFilterChange({ targetProjectId: value })} options={projectOptions} />
+              <FilterSelect debugId="memory-filter-template-select" label="Template target" value={filters.targetTemplateId || ''} onChange={(value) => handleFilterChange({ targetTemplateId: value })} options={templateOptions} />
+              <FilterSelect debugId="memory-filter-bridge-select" label="Bridge target" value={filters.targetBridgeId || ''} onChange={(value) => handleFilterChange({ targetBridgeId: value })} options={bridgeOptions} />
               <FilterInput debugId="memory-filter-search-input" label="Free text" value={filters.search || ''} onChange={(value) => handleFilterChange({ search: value })} placeholder="title, body, evidence, metadata…" />
               <FilterSelect debugId="memory-filter-type-select" label="Type" value={filters.type || ''} onChange={(value) => handleFilterChange({ type: value })} options={typeOptions} />
               <FilterSelect debugId="memory-filter-status-select" label="Status" value={filters.status || ''} onChange={(value) => handleFilterChange({ status: value })} options={statusOptions} />
@@ -446,16 +484,16 @@ export default function MemoryManagementPage({ selectedMemoryId, onSelectMemory,
                     <label className="block text-sm text-zinc-300">
                       <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">Type</div>
                       <select data-debug-id="memory-form-type-select" value={form.type} onChange={(event) => setForm((current) => ({ ...current, type: event.target.value }))} className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
-                        {['fact', 'habit', 'episode', 'expertise', 'skill'].map((type) => <option key={type} value={type}>{type}</option>)}
+                        {MEMORY_TYPE_OPTIONS.map((type) => <option key={type} value={type}>{type}</option>)}
                       </select>
                     </label>
                   </div>
 
                   <div className="grid gap-3 md:grid-cols-2">
-                    <FilterInput debugId="memory-form-agent-input" label="target_agent_id" value={form.targetAgentId} onChange={(value) => setForm((current) => ({ ...current, targetAgentId: value }))} placeholder="worker" />
-                    <FilterInput debugId="memory-form-project-input" label="target_project_id" value={form.targetProjectId} onChange={(value) => setForm((current) => ({ ...current, targetProjectId: value }))} placeholder="heimdall-agent-manager" />
-                    <FilterInput debugId="memory-form-template-input" label="target_template_id" value={form.targetTemplateId} onChange={(value) => setForm((current) => ({ ...current, targetTemplateId: value }))} placeholder="template id" />
-                    <FilterInput debugId="memory-form-bridge-input" label="target_bridge_id" value={form.targetBridgeId} onChange={(value) => setForm((current) => ({ ...current, targetBridgeId: value }))} placeholder="bridge id" />
+                    <FilterSelect debugId="memory-form-agent-select" label="target_agent_id" value={form.targetAgentId} onChange={(value) => setForm((current) => ({ ...current, targetAgentId: value }))} options={agentOptions} />
+                    <FilterSelect debugId="memory-form-project-select" label="target_project_id" value={form.targetProjectId} onChange={(value) => setForm((current) => ({ ...current, targetProjectId: value }))} options={projectOptions} />
+                    <FilterSelect debugId="memory-form-template-select" label="target_template_id" value={form.targetTemplateId} onChange={(value) => setForm((current) => ({ ...current, targetTemplateId: value }))} options={templateOptions} />
+                    <FilterSelect debugId="memory-form-bridge-select" label="target_bridge_id" value={form.targetBridgeId} onChange={(value) => setForm((current) => ({ ...current, targetBridgeId: value }))} options={bridgeOptions} />
                     <FilterInput debugId="memory-form-source-task-input" label="source_task_id" value={form.sourceTaskId} onChange={(value) => setForm((current) => ({ ...current, sourceTaskId: value }))} placeholder="task-..." />
                   </div>
 
@@ -557,12 +595,15 @@ function FilterInput({ debugId, label, value, onChange, placeholder }: any) {
 }
 
 function FilterSelect({ debugId, label, value, onChange, options, includeAny = true }: any) {
+  const normalized = (options || []).map((option: any) => typeof option === 'string' ? { value: option, label: option } : { value: String(option?.value || ''), label: String(option?.label || option?.value || '') }).filter((option: SelectOption) => option.value);
+  const selectedMissing = value && !normalized.some((option: SelectOption) => option.value === value);
   return (
     <label className="block text-sm text-zinc-300">
       <div className="mb-1 text-xs uppercase tracking-wide text-zinc-500">{label}</div>
       <select data-debug-id={debugId} value={value} onChange={(event) => onChange(event.target.value)} className="w-full rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-sm outline-none focus:border-sky-400">
         {includeAny && <option value="">Any</option>}
-        {(options || []).map((option: string) => <option key={option} value={option}>{option}</option>)}
+        {selectedMissing && <option value={value}>Current selection</option>}
+        {normalized.map((option: SelectOption) => <option key={option.value} value={option.value}>{option.label}</option>)}
       </select>
     </label>
   );

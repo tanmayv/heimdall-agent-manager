@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "src" / "ui" / "components" / "App.tsx"
 MEMORY_PAGE = ROOT / "src" / "ui" / "components" / "MemoryManagementPage.tsx"
 MEMORY_SERVICE = ROOT / "src" / "daemon" / "memory_service.odin"
-EXPECTED = ["fact", "habit", "episode", "expertise", "skill", "template"]
+EXPECTED = ["fact", "habit", "episode", "expertise", "skill"]
 
 
 def fail(message: str) -> None:
@@ -35,7 +35,7 @@ def main() -> None:
     require(expected_literal in page, "MemoryManagementPage type dropdown should list supported types")
     require(expected_literal in app, "Agent detail create-memory popup should list supported types")
 
-    unsupported = ["preference", "instruction"]
+    unsupported = ["preference", "instruction", "template"]
     editor_block_match = re.search(r'agent-memory-editor-type-select[\s\S]+?</select>', app)
     require(editor_block_match is not None, "agent memory editor type select not found")
     editor_block = editor_block_match.group(0)

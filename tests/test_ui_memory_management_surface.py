@@ -42,9 +42,11 @@ def main() -> None:
         ('data-debug-id="memory-metric-pending"', 'memory pending metric missing'),
         ('data-debug-id="memory-refresh-btn"', 'memory refresh button debug id missing'),
         ('data-debug-id="memory-filters"', 'memory filters debug id missing'),
-        ('debugId="memory-filter-agent-input"', 'memory target_agent_id filter missing'),
-        ('debugId="memory-filter-project-input"', 'memory target_project_id filter missing'),
-                ('debugId="memory-filter-search-input"', 'memory free-text filter missing'),
+        ('debugId="memory-filter-agent-select"', 'memory target_agent_id dropdown missing'),
+        ('debugId="memory-filter-project-select"', 'memory target_project_id dropdown missing'),
+        ('debugId="memory-filter-template-select"', 'memory target_template_id dropdown missing'),
+        ('debugId="memory-filter-bridge-select"', 'memory target_bridge_id dropdown missing'),
+        ('debugId="memory-filter-search-input"', 'memory free-text filter missing'),
         ('debugId="memory-filter-type-select"', 'memory type filter missing'),
         ('debugId="memory-filter-status-select"', 'memory status filter missing'),
         ('debugId="memory-filter-targeting-select"', 'memory targeting filter missing'),
@@ -63,8 +65,10 @@ def main() -> None:
     for marker, message in [
         ('debugId="memory-form-title-input"', 'memory form title input missing'),
         ('data-debug-id="memory-form-type-select"', 'memory form type select missing'),
-        ('debugId="memory-form-agent-input"', 'memory form target_agent_id input missing'),
-        ('debugId="memory-form-project-input"', 'memory form target_project_id input missing'),
+        ('debugId="memory-form-agent-select"', 'memory form target_agent_id dropdown missing'),
+        ('debugId="memory-form-project-select"', 'memory form target_project_id dropdown missing'),
+        ('debugId="memory-form-template-select"', 'memory form target_template_id dropdown missing'),
+        ('debugId="memory-form-bridge-select"', 'memory form target_bridge_id dropdown missing'),
         ('debugId="memory-form-source-task-input"', 'memory form source_task_id input missing'),
         ('debugId="memory-form-body-textarea"', 'memory form body textarea missing'),
         ('debugId="memory-form-metadata-textarea"', 'memory form metadata textarea missing'),
@@ -80,6 +84,17 @@ def main() -> None:
     require("expectedVersion: selectedRecord.version" in memory_page, "Memory page should submit selected version for edit/archive/rollback")
     require("decideMemoryProposal" in memory_page, "Memory page should use decideMemoryProposal for approve/reject")
     require("target_agent_id" in memory_page and "target_project_id" in memory_page and "source_task_id" in memory_page, "Memory page should display simplified targeting fields")
+    for forbidden in [
+        'FilterInput debugId="memory-filter-agent-input"',
+        'FilterInput debugId="memory-filter-project-input"',
+        'FilterInput debugId="memory-filter-template-input"',
+        'FilterInput debugId="memory-filter-bridge-input"',
+        'FilterInput debugId="memory-form-agent-input"',
+        'FilterInput debugId="memory-form-project-input"',
+        'FilterInput debugId="memory-form-template-input"',
+        'FilterInput debugId="memory-form-bridge-input"',
+    ]:
+        require(forbidden not in memory_page, f"fixed target should not be free-text input: {forbidden}")
     require("metadata_json" in memory_page and "Evidence" in memory_page and "Reason" in memory_page and "Version" in memory_page, "Memory page should display metadata/evidence/reason/version details")
 
     print("UI MEMORY MANAGEMENT SURFACE TEST PASSED")

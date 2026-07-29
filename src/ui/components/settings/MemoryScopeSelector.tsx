@@ -23,6 +23,7 @@ export type MemoryScopeSelectorProps = {
   disabled?: boolean;
   hideTypeSelect?: boolean;
   className?: string;
+  debugPrefix?: string;
 };
 
 export const MEMORY_TYPES = [
@@ -31,7 +32,6 @@ export const MEMORY_TYPES = [
   { value: "episode", label: "Episode" },
   { value: "expertise", label: "Expertise" },
   { value: "skill", label: "Skill" },
-  { value: "template", label: "Template" },
 ];
 
 export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
@@ -41,6 +41,7 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
   disabled = false,
   hideTypeSelect = false,
   className = "",
+  debugPrefix = "memory-scope",
 }) => {
   const { data: identitiesData } = useListAgentIdentitiesQuery();
   const { data: projectsData } = useListSidebarProjectsQuery();
@@ -108,6 +109,11 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
       .filter((item: any) => Boolean(item.id));
   }, [agentsData]);
 
+  const labelFor = (items: Array<{ id: string; name: string }>, id?: string) => {
+    if (!id) return "";
+    return items.find((item) => item.id === id)?.name || "Selected item";
+  };
+
   const handleAgentChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const newAgentId = e.target.value;
     onChange({
@@ -173,18 +179,19 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
 
   const summaryParts: string[] = [];
   if (value.agent_id) {
+    const agentLabel = labelFor(agentIdentities, value.agent_id);
     if (value.instance_id) {
-      summaryParts.push(`scoped to agent ${value.agent_id} (from instance ${value.instance_id})`);
+      summaryParts.push(`scoped to agent ${agentLabel} (from instance ${labelFor(instances, value.instance_id)})`);
     } else {
-      summaryParts.push(`agent: ${value.agent_id}`);
+      summaryParts.push(`agent: ${agentLabel}`);
     }
   } else if (value.instance_id) {
-    summaryParts.push(`instance: ${value.instance_id}`);
+    summaryParts.push(`instance: ${labelFor(instances, value.instance_id)}`);
   }
-  if (value.project_id) summaryParts.push(`project: ${value.project_id}`);
-  if (value.bridge_id) summaryParts.push(`bridge: ${value.bridge_id}`);
-  if (value.template_id) summaryParts.push(`template: ${value.template_id}`);
-  if (value.type) summaryParts.push(`type: ${value.type}`);
+  if (value.project_id) summaryParts.push(`project: ${labelFor(projects, value.project_id)}`);
+  if (value.bridge_id) summaryParts.push(`bridge: ${labelFor(bridges, value.bridge_id)}`);
+  if (value.template_id) summaryParts.push(`template: ${labelFor(templates, value.template_id)}`);
+  if (value.type) summaryParts.push(`type: ${MEMORY_TYPES.find((t) => t.value === value.type)?.label || value.type}`);
 
   const summaryText = summaryParts.length > 0 ? summaryParts.join(" · ") : "Global scope (no specific binding)";
 
@@ -197,8 +204,8 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
               Memory Type
             </label>
             <select
-              data-debug-id="memory-scope-type-select"
-              id="memory-scope-type-select"
+              data-debug-id={`${debugPrefix}-type-select`}
+              id={`${debugPrefix}-type-select`}
               value={value.type || ""}
               onChange={handleTypeChange}
               disabled={disabled || readOnly}
@@ -219,8 +226,8 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
             Agent Identity
           </label>
           <select
-            data-debug-id="memory-scope-agent-select"
-            id="memory-scope-agent-select"
+            data-debug-id={`${debugPrefix}-agent-select`}
+            id={`${debugPrefix}-agent-select`}
             value={value.agent_id || ""}
             onChange={handleAgentChange}
             disabled={disabled || readOnly}
@@ -229,7 +236,7 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
             <option value="">All / None (Global)</option>
             {agentIdentities.map((a) => (
               <option key={a.id} value={a.id}>
-                {a.name} ({a.id})
+                {a.name}
               </option>
             ))}
           </select>
@@ -240,8 +247,8 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
             Agent Instance (Resolves to durable Agent)
           </label>
           <select
-            data-debug-id="memory-scope-instance-select"
-            id="memory-scope-instance-select"
+            data-debug-id={`${debugPrefix}-instance-select`}
+            id={`${debugPrefix}-instance-select`}
             value={value.instance_id || ""}
             onChange={handleInstanceChange}
             disabled={disabled || readOnly}
@@ -250,7 +257,7 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
             <option value="">Select Live Instance...</option>
             {instances.map((inst) => (
               <option key={inst.id} value={inst.id}>
-                {inst.name} ({inst.id})
+                {inst.name}
               </option>
             ))}
           </select>
@@ -261,8 +268,8 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
             Project
           </label>
           <select
-            data-debug-id="memory-scope-project-select"
-            id="memory-scope-project-select"
+            data-debug-id={`${debugPrefix}-project-select`}
+            id={`${debugPrefix}-project-select`}
             value={value.project_id || ""}
             onChange={handleProjectChange}
             disabled={disabled || readOnly}
@@ -271,7 +278,7 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
             <option value="">All / None (Global)</option>
             {projects.map((p) => (
               <option key={p.id} value={p.id}>
-                {p.name} ({p.id})
+                {p.name}
               </option>
             ))}
           </select>
@@ -282,8 +289,8 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
             Bridge
           </label>
           <select
-            data-debug-id="memory-scope-bridge-select"
-            id="memory-scope-bridge-select"
+            data-debug-id={`${debugPrefix}-bridge-select`}
+            id={`${debugPrefix}-bridge-select`}
             value={value.bridge_id || ""}
             onChange={handleBridgeChange}
             disabled={disabled || readOnly}
@@ -292,7 +299,7 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
             <option value="">All / None (Global)</option>
             {bridges.map((b) => (
               <option key={b.id} value={b.id}>
-                {b.name} ({b.id})
+                {b.name}
               </option>
             ))}
           </select>
@@ -303,8 +310,8 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
             Template
           </label>
           <select
-            data-debug-id="memory-scope-template-select"
-            id="memory-scope-template-select"
+            data-debug-id={`${debugPrefix}-template-select`}
+            id={`${debugPrefix}-template-select`}
             value={value.template_id || ""}
             onChange={handleTemplateChange}
             disabled={disabled || readOnly}
@@ -313,7 +320,7 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
             <option value="">All / None (Global)</option>
             {templates.map((tpl) => (
               <option key={tpl.id} value={tpl.id}>
-                {tpl.name} ({tpl.id})
+                {tpl.name}
               </option>
             ))}
           </select>
@@ -321,8 +328,8 @@ export const MemoryScopeSelector: React.FC<MemoryScopeSelectorProps> = ({
       </div>
 
       <div
-        data-debug-id="memory-scope-summary"
-        id="memory-scope-summary"
+        data-debug-id={`${debugPrefix}-summary`}
+        id={`${debugPrefix}-summary`}
         className="text-xs italic text-gray-500 dark:text-gray-400 bg-gray-50 dark:bg-gray-900/50 p-2 rounded border border-gray-200 dark:border-gray-700/50"
       >
         Scope Summary: <span className="font-medium text-gray-700 dark:text-gray-300">{summaryText}</span>

@@ -24,7 +24,7 @@ export function normalizeMemory(record: any) {
     target: memoryTargetSummary(record),
     type: record.type || record.memory_type || 'fact',
     title: record.title || '',
-    body: record.body || '',
+    body: record.body || record.body_preview || record.bodyPreview || '',
     status: record.status || 'pending',
     reason: record.reason || '',
     evidence: record.evidence || '',

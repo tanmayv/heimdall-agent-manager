@@ -12,12 +12,17 @@ import { MemoryScopeSelector, MemoryScopeValue, MEMORY_TYPES } from "./MemorySco
 export const MemoryPanel: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<string>("all");
   const [typeFilter, setTypeFilter] = useState<string>("");
+  const [scopeFilter, setScopeFilter] = useState<MemoryScopeValue>({});
   const [createOpen, setCreateOpen] = useState<boolean>(false);
 
   // Filters for memories query
   const queryArg = {
     status: statusFilter !== "all" ? statusFilter : undefined,
     type: typeFilter || undefined,
+    agent_id: scopeFilter.agent_id,
+    project_id: scopeFilter.project_id,
+    bridge_id: scopeFilter.bridge_id,
+    template_id: scopeFilter.template_id,
   };
 
   const { data: listData, isLoading, error: listError, refetch } = useListMemoriesQuery(queryArg);
@@ -53,6 +58,7 @@ export const MemoryPanel: React.FC = () => {
         project_id: createScope.project_id,
         bridge_id: createScope.bridge_id,
         template_id: createScope.template_id,
+        status: "active",
       }).unwrap();
       setCreateTitle("");
       setCreateBody("");
@@ -85,6 +91,8 @@ export const MemoryPanel: React.FC = () => {
           </button>
           <button
             type="button"
+            data-debug-id="memory-refresh-btn"
+            id="memory-refresh-btn"
             onClick={() => refetch()}
             className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-zinc-300 hover:bg-white/10 hover:text-white"
           >
@@ -150,6 +158,8 @@ export const MemoryPanel: React.FC = () => {
           <div className="flex justify-end gap-2 pt-2">
             <button
               type="button"
+              data-debug-id="memory-create-cancel-btn"
+              id="memory-create-cancel-btn"
               onClick={() => setCreateOpen(false)}
               className="rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-xs font-semibold text-zinc-300 hover:bg-white/10"
             >
@@ -228,6 +238,15 @@ export const MemoryPanel: React.FC = () => {
               ))}
             </select>
           </div>
+        </div>
+        <div className="pt-2">
+          <label className="block text-xs font-medium text-zinc-400 mb-2">Scope Filters</label>
+          <MemoryScopeSelector
+            value={scopeFilter}
+            onChange={setScopeFilter}
+            hideTypeSelect
+            debugPrefix="memory-filter-scope"
+          />
         </div>
       </div>
 
@@ -401,7 +420,7 @@ const ProposalCard: React.FC<{ memory: any }> = ({ memory }) => {
 
           <div data-debug-id={`memory-proposal-scope-${memoryId}`} id={`memory-proposal-scope-${memoryId}`}>
             <label className="block text-[11px] font-medium text-zinc-400 mb-1">Scope Settings</label>
-            <MemoryScopeSelector value={scope} onChange={setScope} />
+            <MemoryScopeSelector value={scope} onChange={setScope} debugPrefix={`memory-proposal-scope-${memoryId}`} />
           </div>
 
           <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-white/10">
@@ -606,6 +625,8 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
         <label className="block text-[11px] text-zinc-400 mb-1">Title</label>
         <input
           type="text"
+          data-debug-id={`memory-edit-title-input-${memoryId}`}
+          id={`memory-edit-title-input-${memoryId}`}
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           className="w-full text-xs rounded-lg border border-white/10 bg-black/60 text-white p-2"
@@ -615,6 +636,8 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
         <label className="block text-[11px] text-zinc-400 mb-1">Body</label>
         <textarea
           rows={2}
+          data-debug-id={`memory-edit-body-textarea-${memoryId}`}
+          id={`memory-edit-body-textarea-${memoryId}`}
           value={body}
           onChange={(e) => setBody(e.target.value)}
           className="w-full text-xs rounded-lg border border-white/10 bg-black/60 text-white p-2"
@@ -624,6 +647,8 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
         <label className="block text-[11px] text-zinc-400 mb-1">Evidence</label>
         <input
           type="text"
+          data-debug-id={`memory-edit-evidence-input-${memoryId}`}
+          id={`memory-edit-evidence-input-${memoryId}`}
           value={evidence}
           onChange={(e) => setEvidence(e.target.value)}
           className="w-full text-xs rounded-lg border border-white/10 bg-black/60 text-white p-2"
@@ -631,11 +656,13 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
       </div>
       <div>
         <label className="block text-[11px] text-zinc-400 mb-1">Scope</label>
-        <MemoryScopeSelector value={scope} onChange={setScope} />
+        <MemoryScopeSelector value={scope} onChange={setScope} debugPrefix={`memory-edit-scope-${memoryId}`} />
       </div>
       <div className="flex justify-end gap-2 pt-1">
         <button
           type="button"
+          data-debug-id={`memory-edit-cancel-btn-${memoryId}`}
+          id={`memory-edit-cancel-btn-${memoryId}`}
           onClick={onClose}
           className="rounded-lg border border-white/10 bg-white/5 px-3 py-1 text-xs text-zinc-300"
         >
@@ -643,6 +670,8 @@ const EditMemoryForm: React.FC<{ memory: any; onClose: () => void }> = ({ memory
         </button>
         <button
           type="submit"
+          data-debug-id={`memory-edit-save-btn-${memoryId}`}
+          id={`memory-edit-save-btn-${memoryId}`}
           disabled={isLoading}
           className="rounded-lg bg-sky-500 px-3 py-1 text-xs font-bold text-black hover:bg-sky-400"
         >
