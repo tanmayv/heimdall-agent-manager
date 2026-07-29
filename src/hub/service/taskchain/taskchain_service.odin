@@ -444,13 +444,15 @@ notify_task_status_change :: proc(service: ^Taskchain_Service, auth: contracts.A
 		contracts.write_json_string(&b, string(task.chain_id))
 		strings.write_string(&b, `","new_status":"`)
 		contracts.write_json_string(&b, task_status_string(task.status))
-		strings.write_string(&b, `","assignee_ref_json":`)
-		strings.write_string(&b, task.assignee_ref_json if task.assignee_ref_json != "" else "[]")
-		strings.write_string(&b, `,"reviewer_refs_json":`)
-		strings.write_string(&b, task.reviewer_refs_json if task.reviewer_refs_json != "" else "[]")
-		strings.write_string(&b, `,"default_reviewer_refs_json":`)
-		strings.write_string(&b, chain.default_reviewer_refs_json if chain.default_reviewer_refs_json != "" else "[]")
-		strings.write_string(&b, `,"actor_agent_instance_id":"`)
+		strings.write_string(&b, `","assignee_instance_ids":[`)
+		for id, i in assignees { if i>0 do strings.write_string(&b, ","); strings.write_string(&b, "\""); strings.write_string(&b, id); strings.write_string(&b, "\"") }
+		strings.write_string(&b, `],"reviewer_instance_ids":[`)
+		for id, i in reviewers { if i>0 do strings.write_string(&b, ","); strings.write_string(&b, "\""); strings.write_string(&b, id); strings.write_string(&b, "\"") }
+		strings.write_string(&b, `],"default_reviewer_instance_ids":[`)
+		for id, i in def_reviewers { if i>0 do strings.write_string(&b, ","); strings.write_string(&b, "\""); strings.write_string(&b, id); strings.write_string(&b, "\"") }
+		strings.write_string(&b, `],"mutation_id":"`)
+		contracts.write_json_string(&b, cmd_id)
+		strings.write_string(&b, `","actor_agent_instance_id":"`)
 		contracts.write_json_string(&b, actor_agent_instance_id)
 		strings.write_string(&b, `","updated_at":"`)
 		contracts.write_json_string(&b, task.updated_at)
