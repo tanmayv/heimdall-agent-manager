@@ -354,9 +354,7 @@ function displayConversationMeta(conversation: ConversationSummary): string {
   return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
 }
 
-function sortByUpdatedDesc<T extends { updatedAt?: string }>(items: T[]): T[] {
-  return [...items].sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')));
-}
+
 
 function buildProjectConversationTree(conversations: ConversationSummary[], projects: ProjectSummary[]): ProjectGroup[] {
   const projectsById = new Map<string, ProjectSummary>();
@@ -382,7 +380,7 @@ function buildProjectConversationTree(conversations: ConversationSummary[], proj
 
   return Array.from(grouped.entries()).map(([projectId, agentMap]) => {
     const agents: AgentGroup[] = Array.from(agentMap.entries()).map(([agentId, sessions]) => {
-      const sortedSessions = sortByUpdatedDesc(sessions).map((conversation) => ({ conversation }));
+      const sortedSessions = sessions.map((conversation) => ({ conversation }));
       const named = sortedSessions.find((session) => session.conversation.agentName && session.conversation.agentName !== 'Unnamed agent')?.conversation.agentName;
       return { agentId, agentName: named || 'Unnamed agent', sessions: sortedSessions, unreadCount: sortedSessions.reduce((sum, session) => sum + session.conversation.unreadCount, 0) };
     }).sort((a, b) => b.unreadCount - a.unreadCount || a.agentName.localeCompare(b.agentName));
