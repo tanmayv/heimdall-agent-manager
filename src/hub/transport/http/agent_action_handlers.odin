@@ -46,6 +46,14 @@ agent_action_chat_send_to_agent_handler :: proc(ctx: rawptr, req: Request) -> Re
 }
 
 agent_action_chat_fetch_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	return process_agent_chat_fetch_or_read(ctx, req, false)
+}
+
+agent_action_chat_read_handler :: proc(ctx: rawptr, req: Request) -> Response {
+	return process_agent_chat_fetch_or_read(ctx, req, true)
+}
+
+process_agent_chat_fetch_or_read :: proc(ctx: rawptr, req: Request, default_mark_read: bool) -> Response {
 	h := (^Agent_Action_Handlers)(ctx)
 	auth, inst, ok, resp := require_instance_action_auth(h, req)
 	if !ok do return resp
@@ -54,31 +62,57 @@ agent_action_chat_fetch_handler :: proc(ctx: rawptr, req: Request) -> Response {
 	cursor := json_string(params, "cursor")
 	conv, conv_ok, conv_err := content_service.get_conversation_by_instance(h.content, auth, inst.agent_instance_id)
 	if !conv_ok do return respond_error(conv_err, req.request_id)
-	rows, err := content_service.list_messages(h.content, auth, conv.conversation_id, limit, cursor)
+	
+	unread_only := !strings.contains(params, "\"unread_only\":false") && !strings.contains(params, "\"unread_only\": false")
+	receiver_only := !strings.contains(params, "\"receiver_only\":false") && !strings.contains(params, "\"receiver_only\": false")
+	include_outgoing := strings.contains(params, "\"include_outgoing\":true") || strings.contains(params, "\"include_outgoing\": true")
+	include_debug := strings.contains(params, "\"include_debug\":true") || strings.contains(params, "\"include_debug\": true")
+	mark_read := default_mark_read ? (!strings.contains(params, "\"mark_read\":false") && !strings.contains(params, "\"mark_read\": false")) : (strings.contains(params, "\"mark_read\":true") || strings.contains(params, "\"mark_read\": true"))
+
+	filter := content_service.Agent_Inbox_Filter{
+		agent_instance_id=inst.agent_instance_id, 
+		unread_only=unread_only, 
+		receiver_only=receiver_only, 
+		include_outgoing=include_outgoing, 
+		include_debug=include_debug, 
+		limit=limit, 
+		cursor=cursor,
+	}
+
+	rows, err := content_service.list_agent_inbox_messages(h.content, auth, filter)
 	if err.code != .None do return respond_error(err, req.request_id)
+	
+	unread_count_before := 0
+	for row in rows { if row.read_at == "" do unread_count_before += 1 }
+
+	marked_count := 0
+	through_message_id := ""
+	through_created_at := ""
+	
+	if mark_read && len(rows) > 0 && unread_count_before > 0 {
+		ids := make([dynamic]string)
+		defer delete(ids)
+		for row in rows { if row.read_at == "" do append(&ids, row.message_id) }
+		marked_count, _ = content_service.mark_messages_read_by_ids(h.content, auth, ids[:])
+		through_message_id = rows[len(rows)-1].message_id
+		through_created_at = rows[len(rows)-1].created_at
+	}
+
 	b := strings.builder_make()
-	strings.write_string(&b, "{\"conversation\":")
-	write_chat_json(&b, conv)
-	strings.write_string(&b, ",\"messages\":[")
+	mode_str := unread_only ? "inbox_unread" : "history"
+	
+	fmt.sbprintf(&b, "{{\"conversation\":{{\"conversation_id\":\"%s\",\"agent_instance_id\":\"%s\",\"unread_count_before\":%d,\"unread_count_after\":%d}},\"mode\":\"%s\",\"filters\":{{\"receiver_agent_instance_id\":\"%s\",\"unread_only\":%t,\"receiver_only\":%t,\"include_outgoing\":%t,\"include_debug\":%t,\"mark_read\":%t}},\"messages\":[",
+		conv.conversation_id, inst.agent_instance_id, unread_count_before, unread_count_before - marked_count, mode_str,
+		inst.agent_instance_id, unread_only, receiver_only, include_outgoing, include_debug, mark_read)
+
 	next := ""
 	for msg, i in rows { if i > 0 do strings.write_byte(&b, ','); write_message_json(&b, msg, h.content); next = msg.created_at }
-	strings.write_string(&b, "],\"next_cursor\":\""); write_handler_json_string(&b, next); strings.write_string(&b, "\",\"has_more\":"); strings.write_string(&b, "true" if len(rows) >= limit else "false"); strings.write_byte(&b, '}')
-	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
-}
+	
+	fmt.sbprintf(&b, "],\"page\":{{\"limit\":%d,\"next_cursor\":\"%s\",\"has_more\":%t}}", limit, next, len(rows) >= limit)
+	
+	fmt.sbprintf(&b, ",\"read\":{{\"marked\":%t,\"marked_count\":%d,\"through_message_id\":\"%s\",\"through_created_at\":\"%s\"}}}}",
+	    mark_read, marked_count, through_message_id, through_created_at)
 
-agent_action_chat_read_handler :: proc(ctx: rawptr, req: Request) -> Response {
-	h := (^Agent_Action_Handlers)(ctx)
-	auth, inst, ok, resp := require_instance_action_auth(h, req)
-	if !ok do return resp
-	conv, conv_ok, conv_err := content_service.get_conversation_by_instance(h.content, auth, inst.agent_instance_id)
-	if !conv_ok do return respond_error(conv_err, req.request_id)
-	// Direction-safe v1 acknowledgement: Chat_Conversation.unread_count is the
-	// human user's unread agent->user badge, so an agent-side read must not call
-	// content_service.mark_read() or mutate that counter.
-	b := strings.builder_make()
-	strings.write_string(&b, "{\"accepted\":true,\"conversation\":")
-	write_chat_json(&b, conv)
-	strings.write_byte(&b, '}')
 	return respond_success(strings.to_string(b), req.request_id, auth_ctx_server_time(req), 200)
 }
 
