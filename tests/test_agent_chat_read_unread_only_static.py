@@ -31,7 +31,7 @@ def main():
 
     require('unread_only' in content_repo, "SQLite repo must filter by unread_only")
     require('receiver_only' in content_repo, "SQLite repo must filter by receiver_only")
-    require('direction != \\\'agent_to_agent\\\' OR sender_agent_instance_id != ?' in content_repo, "SQLite receiver_only filter must correctly allow inbound messages without relying on IS NULL")
+    require("direction != 'agent_to_agent' OR sender_agent_instance_id != ?" in content_repo, "SQLite receiver_only filter must correctly allow inbound messages without relying on IS NULL")
 
     require('process_agent_chat_fetch_or_read' in action_handlers, "API handlers must use a shared fetch-and-read procedure")
     require('process_agent_chat_fetch_or_read(ctx, req, true)' in action_handlers, "API chat read handler must set mark_read to true")
