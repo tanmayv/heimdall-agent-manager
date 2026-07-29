@@ -425,7 +425,7 @@ export default function MarkdownBody({ source, className, compact, copyAll = tru
     <div
       ref={rootRef}
       data-debug-id={dataDebugId}
-      className={`markdown ${spacing} text-sm text-zinc-200 ${className || ''}`}
+      className={`markdown min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere] ${spacing} text-sm text-zinc-200 ${className || ''}`}
       dangerouslySetInnerHTML={{ __html: html }}
     />
   );

@@ -633,7 +633,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                             {taskCommentFailed ? <div data-debug-id={`taskchain-task-comment-failed-hint-${taskId}`} className="text-[11px] text-red-300">Retry or remove failed uploads before sending.</div> : null}
                           </div>
                         ) : null}
-                        <div className="flex gap-2">
+                        <div className="flex min-w-0 gap-2">
                           <label data-debug-id={`taskchain-task-comment-attach-btn-${taskId}`} className="grid h-8 w-8 shrink-0 cursor-pointer place-items-center rounded border border-white/10 bg-zinc-900 text-sm font-semibold text-zinc-400 hover:border-sky-500 hover:text-white" title="Upload attachment">
                             <input
                               type="file"
@@ -655,7 +655,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                             value={commentInputs[taskId] || ''}
                             onChange={(e) => setCommentInputs({ ...commentInputs, [taskId]: e.target.value })}
                             onPaste={(e) => handleCommentPaste(e, taskId)}
-                            className="flex-1 rounded border border-white/10 bg-zinc-900 px-2 py-1 text-white placeholder-zinc-500 focus:outline-none focus:border-sky-500"
+                            className="min-w-0 flex-1 rounded border border-white/10 bg-zinc-900 px-2 py-1 text-base text-white placeholder-zinc-500 focus:border-sky-500 focus:outline-none sm:text-sm"
                           />
                           <button
                             type="button"

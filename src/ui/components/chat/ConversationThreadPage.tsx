@@ -190,6 +190,25 @@ function failedPaneCaptureMessage(message: Message, error: string): Message {
   };
 }
 
+function PaneCaptureOutput({ body, messageId }: { body: string; messageId: string }) {
+  const preRef = useRef<HTMLPreElement | null>(null);
+
+  useEffect(() => {
+    const node = preRef.current;
+    if (!node) return;
+    const scrollToBottom = () => {
+      node.scrollTop = node.scrollHeight;
+    };
+    scrollToBottom();
+    const frame = typeof window !== 'undefined' ? window.requestAnimationFrame(scrollToBottom) : 0;
+    return () => {
+      if (frame && typeof window !== 'undefined') window.cancelAnimationFrame(frame);
+    };
+  }, [body, messageId]);
+
+  return <pre ref={preRef} data-debug-id={`conversation-pane-capture-pre-${messageId}`} className="chat-scrollbar max-h-[420px] max-w-full overflow-auto whitespace-pre-wrap rounded-xl bg-black/30 p-3 font-mono text-xs leading-5 text-zinc-100">{body}</pre>;
+}
+
 function parseMessageMetadata(message: Message): any {
   const raw = (message as any).metadata ?? (message as any).metadata_json ?? (message as any).metadataJson;
   if (!raw) return {};
@@ -659,7 +678,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
             {lineCount ? <span>{lineCount} lines</span> : null}
             {metadata.truncated ? <span>truncated</span> : null}
           </div>
-          {status === 'pending' ? <div className="text-sm text-sky-100/80">Waiting for the wrapper to resize and capture the pane…</div> : <pre className="chat-scrollbar max-h-[420px] overflow-auto whitespace-pre-wrap rounded-xl bg-black/30 p-3 font-mono text-xs leading-5 text-zinc-100">{message.body}</pre>}
+          {status === 'pending' ? <div className="text-sm text-sky-100/80">Waiting for the wrapper to resize and capture the pane…</div> : <PaneCaptureOutput body={message.body} messageId={message.messageId} />}
           {status === 'failed' ? <button type="button" data-debug-id={`conversation-pane-capture-retry-${message.messageId}`} onClick={() => void requestPane()} disabled={paneCaptureDisabled} className="mt-2 rounded-full border border-white/10 px-3 py-1 text-xs text-zinc-100 hover:bg-white/10 disabled:opacity-50">Retry</button> : null}
         </div>
       );
@@ -744,7 +763,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
 
   function renderComposer() {
     return (
-      <form onSubmit={submit} data-debug-id="conversation-composer-shell" className="shrink-0 border-t border-white/10 px-2 py-2 sm:px-4 sm:py-3">
+      <form onSubmit={submit} data-debug-id="conversation-composer-shell" className="w-full max-w-full shrink-0 overflow-x-hidden border-t border-white/10 px-2 py-2 sm:px-4 sm:py-3">
         {error ? <div data-debug-id="conversation-composer-send-error" className="mb-2 rounded-xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-100">{error}</div> : null}
         {attachments.length > 0 && (
           <div data-debug-id="conversation-attachment-tray" className="mb-2 space-y-2 rounded-2xl border border-white/10 bg-white/[0.03] p-2 text-xs text-zinc-200">
@@ -785,7 +804,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
             onPaste={handleComposerPaste}
             rows={2}
             placeholder="Message the agent… (Cmd/Ctrl+Enter to send)"
-            className="min-h-[44px] min-w-0 flex-1 resize-none rounded-2xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-sky-400/60 sm:px-4"
+            className="min-h-[44px] min-w-0 flex-1 resize-none rounded-2xl border border-white/10 bg-black/30 px-3 py-2 text-base text-white outline-none placeholder:text-zinc-600 focus:border-sky-400/60 sm:px-4 sm:text-sm"
           />
           <button data-debug-id="conversation-request-pane-btn" type="button" disabled={paneCaptureDisabled} title={pendingPaneCapture ? 'A pane capture is already pending' : needsStart ? 'Start the agent before requesting a pane capture' : 'Request terminal pane capture'} aria-label="Request terminal pane capture" onClick={requestPaneFromComposer} className="hidden h-[44px] w-[44px] shrink-0 place-items-center rounded-2xl border border-sky-400/30 bg-sky-400/10 text-lg font-bold text-sky-100 hover:bg-sky-400/20 disabled:cursor-not-allowed disabled:opacity-40 sm:grid">▣</button>
           <button data-debug-id="conversation-composer-send-btn" type="submit" disabled={sendDisabled} aria-label="Send message" title={hasUploadingAttachments ? 'Wait for uploads to finish before sending' : hasFailedAttachments ? 'Retry or remove failed uploads before sending' : 'Send'} className="grid h-[44px] w-[44px] shrink-0 place-items-center rounded-2xl bg-sky-400 text-lg font-black text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">{hasUploadingAttachments ? '⇧' : '↑'}</button>
@@ -795,7 +814,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   }
 
   return (
-    <section data-debug-id="conversation-thread-page" className="flex h-full min-h-0 w-full flex-col bg-[#090909] p-0 text-left">
+    <section data-debug-id="conversation-thread-page" className="flex h-full min-h-0 w-full max-w-full flex-col overflow-x-hidden bg-[#090909] p-0 text-left">
       <header data-debug-id="conversation-thread-header" className="flex shrink-0 flex-col gap-2 border-b border-white/10 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:px-4">
         <div className="min-w-0 flex-1 self-stretch sm:self-auto">
           {renaming ? (
@@ -808,7 +827,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
                   if (event.key === 'Enter') { event.preventDefault(); void saveConversationTitle(); }
                   if (event.key === 'Escape') { setRenaming(false); setTitleError(''); setTitleDraft(editableTitle); }
                 }}
-                className="min-h-9 min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-1.5 text-sm font-semibold text-white outline-none focus:border-sky-400/60"
+                className="min-h-9 min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-1.5 text-base font-semibold text-white outline-none focus:border-sky-400/60 sm:text-sm"
                 autoFocus
               />
               <button type="button" data-debug-id="conversation-thread-title-save-btn" onClick={() => void saveConversationTitle()} disabled={updateTitleState.isLoading || !titleDraft.trim()} className="rounded-xl bg-sky-400 px-3 py-1.5 text-xs font-bold text-black hover:bg-sky-300 disabled:opacity-50">Save</button>
@@ -867,9 +886,9 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
       </header>
 
       {taskChainOpen && chainId ? (
-        <div className="flex h-full min-h-0 w-full flex-col sm:flex-row">
+        <div className="flex h-full min-h-0 w-full max-w-full flex-col overflow-x-hidden sm:flex-row">
           {/* Mobile view (< 768px): TaskChain 100% width (Requirement 10) */}
-          <div className="flex h-full w-full min-h-0 flex-col sm:hidden">
+          <div className="flex h-full w-full min-h-0 max-w-full flex-col overflow-x-hidden sm:hidden">
             <TaskChainOverview
               chainId={chainId}
               onClose={() => setTaskChainOpen(false)}
@@ -877,9 +896,9 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
             />
           </div>
           {/* Desktop view (>= 768px): 50/50 split panel */}
-          <div className="hidden h-full min-h-0 w-full flex-row sm:flex">
-            <div className="flex h-full min-h-0 w-1/2 flex-col border-r border-white/10">
-              <div data-debug-id="conversation-thread-transcript" className="min-h-0 flex-1 px-2 py-2 sm:px-4 sm:py-3">
+          <div className="hidden h-full min-h-0 w-full max-w-full flex-row overflow-x-hidden sm:flex">
+            <div className="flex h-full min-h-0 min-w-0 w-1/2 flex-col overflow-x-hidden border-r border-white/10">
+              <div data-debug-id="conversation-thread-transcript" className="min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden px-2 py-2 sm:px-4 sm:py-3">
         <ChatMessageList
           conversationKey={conversationId}
           messages={chatMessages}
@@ -890,8 +909,8 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
           formatTimestamp={formatMessageTimestamp}
           getDeliveryStatus={deliveryStatusFor}
           renderMessageBody={({ message }) => renderConversationMessageBody(message)}
-          wrapperClassName="relative h-full min-h-0 overflow-hidden"
-          scrollClassName="chat-scrollbar h-full min-h-0 space-y-3 overflow-y-auto rounded-none bg-[#090909] px-1 py-2 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
+          wrapperClassName="relative h-full min-h-0 min-w-0 max-w-full overflow-hidden overflow-x-hidden"
+          scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-[#090909] px-1 py-2 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
           emptyState={messagesQuery.isFetching ? (
             <div data-debug-id="conversation-thread-empty-state" className="grid h-full min-h-[220px] place-items-center rounded-2xl border border-dashed border-white/10 p-6 text-sm text-zinc-500">Loading messages…</div>
           ) : (
@@ -902,7 +921,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
 
       {renderComposer()}
             </div>
-            <div className="flex h-full min-h-0 w-1/2 flex-col">
+            <div className="flex h-full min-h-0 min-w-0 w-1/2 flex-col overflow-x-hidden">
               <TaskChainOverview
                 chainId={chainId}
                 onClose={() => setTaskChainOpen(false)}
@@ -913,7 +932,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
         </div>
       ) : (
         <>
-          <div data-debug-id="conversation-thread-transcript" className="min-h-0 flex-1 px-2 py-2 sm:px-4 sm:py-3">
+          <div data-debug-id="conversation-thread-transcript" className="min-h-0 min-w-0 max-w-full flex-1 overflow-x-hidden px-2 py-2 sm:px-4 sm:py-3">
         <ChatMessageList
           conversationKey={conversationId}
           messages={chatMessages}
@@ -924,8 +943,8 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
           formatTimestamp={formatMessageTimestamp}
           getDeliveryStatus={deliveryStatusFor}
           renderMessageBody={({ message }) => renderConversationMessageBody(message)}
-          wrapperClassName="relative h-full min-h-0 overflow-hidden"
-          scrollClassName="chat-scrollbar h-full min-h-0 space-y-3 overflow-y-auto rounded-none bg-[#090909] px-1 py-2 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
+          wrapperClassName="relative h-full min-h-0 min-w-0 max-w-full overflow-hidden overflow-x-hidden"
+          scrollClassName="chat-scrollbar h-full min-h-0 max-w-full space-y-3 overflow-y-auto overflow-x-hidden rounded-none bg-[#090909] px-1 py-2 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
           emptyState={messagesQuery.isFetching ? (
             <div data-debug-id="conversation-thread-empty-state" className="grid h-full min-h-[220px] place-items-center rounded-2xl border border-dashed border-white/10 p-6 text-sm text-zinc-500">Loading messages…</div>
           ) : (

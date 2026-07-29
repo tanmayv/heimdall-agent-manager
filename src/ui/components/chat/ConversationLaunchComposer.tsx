@@ -375,14 +375,14 @@ export default function ConversationLaunchComposer() {
           <div className="grid gap-4 md:grid-cols-2">
             <label className="block">
               <span className="text-xs font-semibold text-emerald-100/70">New provider</span>
-              <select data-debug-id="launch-post-start-provider-select" value={pendingProvider} onChange={(event) => setPendingProvider(event.target.value)} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-sm text-white">
+              <select data-debug-id="launch-post-start-provider-select" value={pendingProvider} onChange={(event) => setPendingProvider(event.target.value)} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-base text-white sm:text-sm">
                 <option value="">Default</option>
                 {pendingProviderOptions.map((option) => <option key={option} value={option}>{option}</option>)}
               </select>
             </label>
             <label className="block">
               <span className="text-xs font-semibold text-emerald-100/70">New tier</span>
-              <select data-debug-id="launch-post-start-tier-select" value={pendingTier} onChange={(event) => setPendingTier(event.target.value)} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-sm text-white">
+              <select data-debug-id="launch-post-start-tier-select" value={pendingTier} onChange={(event) => setPendingTier(event.target.value)} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-base text-white sm:text-sm">
                 <option value="">Default</option>
                 {pendingTierOptions.map((option) => <option key={option} value={option}>{option}</option>)}
               </select>
@@ -414,14 +414,14 @@ export default function ConversationLaunchComposer() {
       <div data-debug-id="launch-required-agent-control" className="mt-5 grid gap-4 md:grid-cols-2">
         <label className="block">
           <span className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">Agent required</span>
-          <select data-debug-id="new-convo-agent-select" value={agentId} onChange={(event) => setAgentId(event.target.value)} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-sm text-white">
+          <select data-debug-id="new-convo-agent-select" value={agentId} onChange={(event) => setAgentId(event.target.value)} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-base text-white sm:text-sm">
             <option value="">Choose an agent before sending…</option>
             {runnableAgents.map((agent) => <option key={agent.agent_id} value={agent.agent_id}>{agent.name || agent.agent_id}</option>)}
           </select>
         </label>
         <label data-debug-id="launch-project-default-control" className="block">
           <span className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">Project</span>
-          <select data-debug-id="new-convo-project-select" value={projectId} onChange={(event) => setProjectId(event.target.value)} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-sm text-white">
+          <select data-debug-id="new-convo-project-select" value={projectId} onChange={(event) => setProjectId(event.target.value)} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-base text-white sm:text-sm">
             {projects.map((project) => <option key={project.project_id} value={project.project_id}>{project.name}{isDefaultProject(project) ? ' · default' : ''}</option>)}
           </select>
         </label>
@@ -432,20 +432,20 @@ export default function ConversationLaunchComposer() {
         <div className="grid gap-4 md:grid-cols-3">
           <label className="block">
             <span className="text-xs font-semibold text-zinc-400">Bridge / machine</span>
-            <select data-debug-id="new-convo-bridge-select" value={bridgeId} onChange={(event) => { setBridgeId(event.target.value); setProvider(''); setTier(''); }} disabled={!agentId} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-sm text-white disabled:opacity-50">
+            <select data-debug-id="new-convo-bridge-select" value={bridgeId} onChange={(event) => { setBridgeId(event.target.value); setProvider(''); setTier(''); }} disabled={!agentId} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-base text-white sm:text-sm disabled:opacity-50">
               <option value="">Choose Bridge…</option>
               {bridgeOptions.map((row) => <option key={row.bridge_id} value={row.bridge_id}>{bridgeLabel(row)}</option>) }
             </select>
           </label>
           <label className="block">
             <span className="text-xs font-semibold text-zinc-400">Provider for this launch</span>
-            <select data-debug-id="new-convo-provider-select" value={provider} onChange={(event) => { setProvider(event.target.value); setTier(''); }} disabled={!agentId || !selectedBridge} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-sm text-white disabled:opacity-50">
+            <select data-debug-id="new-convo-provider-select" value={provider} onChange={(event) => { setProvider(event.target.value); setTier(''); }} disabled={!agentId || !selectedBridge} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-base text-white sm:text-sm disabled:opacity-50">
               {providerOptions.map((option) => <option key={option} value={option}>{option}</option>)}
             </select>
           </label>
           <label className="block">
             <span className="text-xs font-semibold text-zinc-400">Tier for this launch</span>
-            <select data-debug-id="new-convo-tier-select" value={tier} onChange={(event) => setTier(event.target.value)} disabled={!agentId || !selectedBridge} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-sm text-white disabled:opacity-50">
+            <select data-debug-id="new-convo-tier-select" value={tier} onChange={(event) => setTier(event.target.value)} disabled={!agentId || !selectedBridge} className="mt-2 w-full rounded-2xl border border-white/10 bg-black/30 px-3 py-3 text-base text-white sm:text-sm disabled:opacity-50">
               {tierOptions.map((option) => <option key={option} value={option}>{option}</option>)}
             </select>
           </label>
@@ -465,7 +465,7 @@ export default function ConversationLaunchComposer() {
 
       <label className="mt-5 block">
         <span className="text-xs font-bold uppercase tracking-[0.16em] text-zinc-500">Message</span>
-        <textarea data-debug-id="new-convo-input" value={body} onChange={(event) => setBody(event.target.value)} rows={5} placeholder="Ask the selected agent to start working…" className="mt-2 w-full resize-y rounded-3xl border border-white/10 bg-black/30 px-4 py-3 text-sm leading-6 text-white outline-none placeholder:text-zinc-600 focus:border-sky-400/60" />
+        <textarea data-debug-id="new-convo-input" value={body} onChange={(event) => setBody(event.target.value)} rows={5} placeholder="Ask the selected agent to start working…" className="mt-2 w-full resize-y rounded-3xl border border-white/10 bg-black/30 px-4 py-3 text-base leading-6 text-white sm:text-sm outline-none placeholder:text-zinc-600 focus:border-sky-400/60" />
       </label>
 
       {usingSyntheticDefault && (

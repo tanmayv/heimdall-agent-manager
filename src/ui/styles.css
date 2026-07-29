@@ -43,6 +43,12 @@ body {
    inset utilities for keyboard/notch-aware layout (composer, bottom tab bar). */
 @media (max-width: 767px) {
   body { min-width: 0; min-height: 100vh; }
+
+  input:not([type='checkbox']):not([type='radio']),
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
 }
 
 @supports (padding: env(safe-area-inset-bottom)) {
@@ -110,6 +116,26 @@ body {
 ::selection {
   background: var(--fd-accent-blue);
   color: var(--fd-on-primary);
+}
+
+
+.markdown {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.markdown a,
+.markdown code {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.markdown pre,
+.markdown table,
+.markdown .markdown-table {
+  max-width: 100%;
 }
 
 .markdown-message > * + * {

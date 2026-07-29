@@ -3930,7 +3930,7 @@ function AgentDetailPage({ agent, tasksById, chainsById, chats, session, project
                       ...(runtimeRestarting ? [{ debugId: 'agent-detail-chat-runtime-restart-status', message: `Restarting exact instance ${agent?.id} with selected ${runtimeRestarting}…`, tone: 'info' as const }] : []),
                     ],
                     footer: <><span>🗂 {agent?.projectName || agent?.projectId || 'No project'} · shares memories &amp; skills from the <code>{detailAgentContext.durableAgentId || 'agent'}</code> identity</span><span>⌘↵ to send</span></>,
-                    textareaClassName: 'min-h-[74px] w-full resize-none bg-transparent px-3 pt-3 text-[15px] leading-relaxed text-zinc-100 outline-none placeholder:text-zinc-600',
+                    textareaClassName: 'min-h-[74px] w-full resize-none bg-transparent px-3 pt-3 text-base leading-relaxed text-zinc-100 outline-none placeholder:text-zinc-600 sm:text-[15px]',
                   },
                   currentTaskStrip: chainWork.currentTask && chainWork.currentRole ? (
                     <CurrentTaskStrip

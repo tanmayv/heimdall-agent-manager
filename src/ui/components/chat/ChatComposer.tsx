@@ -116,7 +116,7 @@ export default function ChatComposer({
   footer,
   keyboardHint = '⌘↵ to send',
   shellClassName = 'rounded-[15px] border border-white/10 bg-[#141414] p-0 focus-within:border-white/35',
-  textareaClassName = 'w-full resize-none bg-transparent px-4 py-3 text-sm text-zinc-100 outline-none placeholder:text-zinc-500',
+  textareaClassName = 'w-full resize-none bg-transparent px-4 py-3 text-base text-zinc-100 outline-none placeholder:text-zinc-500 sm:text-sm',
   controlsClassName = 'flex flex-wrap items-center justify-between gap-3 px-3 py-2',
   footerClassName = 'flex items-center justify-between border-t border-white/5 px-3 py-2 text-[11.5px] text-zinc-500',
   mobileBottomPinned = false,
