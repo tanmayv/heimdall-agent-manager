@@ -384,9 +384,12 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const [reconfigStatus, setReconfigStatus] = useState('');
   const [taskChainOpen, setTaskChainOpen] = useState(false);
   const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false);
+  const [headerActionsOpen, setHeaderActionsOpen] = useState(false);
   const [composerActionsOpen, setComposerActionsOpen] = useState(false);
   const runtimeMenuRef = useRef<HTMLDivElement | null>(null);
   const runtimeMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const headerActionsRef = useRef<HTMLDivElement | null>(null);
+  const headerActionsButtonRef = useRef<HTMLButtonElement | null>(null);
   const composerActionsRef = useRef<HTMLDivElement | null>(null);
   const composerActionsButtonRef = useRef<HTMLButtonElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -424,6 +427,9 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const runtimeStopping = runtimeIsStopping(runtimeStatus);
   const runtimeActionBusy = reconfigureState.isLoading || restartState.isLoading || stopState.isLoading;
   const runtimeButtonLabel = runtimeActionBusy ? (stopState.isLoading ? 'Stopping…' : (needsStart ? 'Starting…' : 'Restarting…')) : (runtimeStopping ? 'Stopping…' : needsStart ? 'Start' : 'Stop');
+  const runtimeButtonIcon = runtimeActionBusy || runtimeStopping ? '…' : needsStart ? '▶' : '■';
+  const bridgeLabel = String(instanceBridge?.label || instanceBridge?.machine_hostname || instanceBridgeId || '');
+  const runtimeConfigLabel = [instanceProvider, instanceTier].filter(Boolean).join(' / ');
   const hasUploadingAttachments = attachments.some((item) => item.status === 'uploading');
   const hasFailedAttachments = attachments.some((item) => item.status === 'error');
   const uploadedAttachments = attachments.filter((item) => item.status === 'uploaded' && item.id);
@@ -484,6 +490,33 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
       document.removeEventListener('keydown', onKeyDown);
     };
   }, [runtimeMenuOpen]);
+
+  useEffect(() => {
+    if (!headerActionsOpen) return;
+    const isInsideHeaderActions = (target: EventTarget | null) => {
+      const node = target as Node | null;
+      return Boolean(node && (headerActionsRef.current?.contains(node) || headerActionsButtonRef.current?.contains(node)));
+    };
+    const onPointerDown = (event: MouseEvent | TouchEvent) => {
+      if (!isInsideHeaderActions(event.target)) setHeaderActionsOpen(false);
+    };
+    const onFocusIn = (event: FocusEvent) => {
+      if (!isInsideHeaderActions(event.target)) setHeaderActionsOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setHeaderActionsOpen(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('touchstart', onPointerDown, { passive: true });
+    document.addEventListener('focusin', onFocusIn);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('touchstart', onPointerDown);
+      document.removeEventListener('focusin', onFocusIn);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [headerActionsOpen]);
 
   useEffect(() => {
     if (!composerActionsOpen) return;
@@ -665,6 +698,23 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     if (!paneCaptureDisabled) void requestPane();
   }
 
+  function beginRenameFromHeader() {
+    setHeaderActionsOpen(false);
+    setTitleDraft(editableTitle);
+    setRenaming(true);
+    setTitleError('');
+  }
+
+  function refreshFromHeader() {
+    setHeaderActionsOpen(false);
+    void messagesQuery.refetch();
+  }
+
+  function toggleTaskChainFromHeader() {
+    setHeaderActionsOpen(false);
+    setTaskChainOpen((open) => !open);
+  }
+
   function renderConversationMessageBody(message: ChatMessage) {
     if (message.messageType === 'pane_capture') {
       const metadata = message.metadata || {};
@@ -815,7 +865,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
 
   return (
     <section data-debug-id="conversation-thread-page" className="flex h-full min-h-0 w-full max-w-full flex-col overflow-x-hidden bg-[#090909] p-0 text-left">
-      <header data-debug-id="conversation-thread-header" className="flex shrink-0 flex-col gap-2 border-b border-white/10 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:px-4">
+      <header data-debug-id="conversation-thread-header" className="flex shrink-0 items-center gap-2 border-b border-white/10 px-3 py-2 sm:gap-3 sm:px-4">
         <div className="min-w-0 flex-1 self-stretch sm:self-auto">
           {renaming ? (
             <div className="flex min-w-0 items-center gap-2">
@@ -830,30 +880,27 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
                 className="min-h-9 min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3 py-1.5 text-base font-semibold text-white outline-none focus:border-sky-400/60 sm:text-sm"
                 autoFocus
               />
-              <button type="button" data-debug-id="conversation-thread-title-save-btn" onClick={() => void saveConversationTitle()} disabled={updateTitleState.isLoading || !titleDraft.trim()} className="rounded-xl bg-sky-400 px-3 py-1.5 text-xs font-bold text-black hover:bg-sky-300 disabled:opacity-50">Save</button>
-              <button type="button" data-debug-id="conversation-thread-title-cancel-btn" onClick={() => { setRenaming(false); setTitleError(''); setTitleDraft(editableTitle); }} className="rounded-xl border border-white/10 bg-white/5 px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-white/10">Cancel</button>
+              <button type="button" data-debug-id="conversation-thread-title-save-btn" aria-label="Save conversation title" title="Save" onClick={() => void saveConversationTitle()} disabled={updateTitleState.isLoading || !titleDraft.trim()} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-sky-400 text-sm font-bold text-black hover:bg-sky-300 disabled:opacity-50">✓</button>
+              <button type="button" data-debug-id="conversation-thread-title-cancel-btn" aria-label="Cancel title edit" title="Cancel" onClick={() => { setRenaming(false); setTitleError(''); setTitleDraft(editableTitle); }} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-sm text-zinc-300 hover:bg-white/10">×</button>
             </div>
           ) : (
             <div className="flex min-w-0 items-center gap-2">
               <h2 data-debug-id="conversation-thread-title" className="truncate text-base font-semibold text-white sm:text-lg">{title}</h2>
-              <button type="button" data-debug-id="conversation-thread-title-edit-btn" onClick={() => { setTitleDraft(editableTitle); setRenaming(true); setTitleError(''); }} className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-zinc-300 hover:bg-white/10">Rename</button>
+              <span data-debug-id="conversation-thread-status-chip" title={`Runtime status: ${runtimeStatus || 'unknown'}`} className={`max-w-[96px] shrink-0 truncate rounded-full border px-2 py-0.5 text-[10.5px] font-semibold uppercase tracking-wide ${needsStart ? 'border-zinc-600 bg-zinc-800/70 text-zinc-300' : runtimeStopping ? 'border-amber-400/30 bg-amber-400/10 text-amber-200' : 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200'}`}>{runtimeStatus || '—'}</span>
             </div>
           )}
           {titleError ? <div data-debug-id="conversation-thread-title-error" className="mt-1 text-[11px] text-red-300">{titleError}</div> : null}
-          <div className="mt-0.5 hidden flex-wrap gap-2 text-[11px] text-zinc-500 sm:flex">
-            <span data-debug-id="conversation-thread-agent">agent: {agentId || '—'}</span>
-            <span data-debug-id="conversation-thread-instance">instance: {agentInstanceId || '—'}</span>
-            <span data-debug-id="conversation-thread-bridge">bridge: {instanceBridge?.label || instanceBridge?.machine_hostname || instanceBridgeId || '—'}</span>
-            <span data-debug-id="conversation-thread-provider">provider: {instanceProvider || '—'}</span>
-            <span data-debug-id="conversation-thread-tier">tier: {instanceTier || '—'}</span>
-            <span data-debug-id="conversation-thread-status">{runtimeStatus || '—'}</span>
-            {chainId ? <span>chain: {chainId}</span> : null}
+          <div data-debug-id="conversation-thread-compact-summary" className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-zinc-500">
+            {bridgeLabel ? <span data-debug-id="conversation-thread-bridge-summary" className="min-w-0 truncate">{bridgeLabel}</span> : null}
+            {bridgeLabel && runtimeConfigLabel ? <span className="shrink-0 text-zinc-700">•</span> : null}
+            {runtimeConfigLabel ? <span data-debug-id="conversation-thread-runtime-summary" className="shrink-0">{runtimeConfigLabel}</span> : null}
+            {chainId ? <span data-debug-id="conversation-thread-chain-summary" className="hidden shrink-0 text-sky-300/70 sm:inline">• task chain linked</span> : null}
           </div>
         </div>
-        <div data-debug-id="conversation-thread-mobile-actions" className="flex w-full shrink-0 flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap sm:justify-end">
-          <button type="button" data-debug-id={needsStart ? 'conversation-thread-start-btn' : 'conversation-thread-stop-btn'} onClick={() => void toggleRuntime()} disabled={!agentInstanceId || runtimeActionBusy || runtimeStopping} className={needsStart ? 'min-h-10 shrink-0 rounded-xl bg-emerald-400 px-3 py-1.5 text-xs font-bold text-black hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50' : 'min-h-10 shrink-0 rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-1.5 text-xs font-bold text-red-100 hover:bg-red-400/20 disabled:cursor-not-allowed disabled:opacity-50'}>{runtimeButtonLabel}</button>
+        <div data-debug-id="conversation-thread-mobile-actions" className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+          <button type="button" data-debug-id={needsStart ? 'conversation-thread-start-btn' : 'conversation-thread-stop-btn'} aria-label={`${runtimeButtonLabel} runtime`} title={`${runtimeButtonLabel} runtime`} onClick={() => void toggleRuntime()} disabled={!agentInstanceId || runtimeActionBusy || runtimeStopping} className={needsStart ? 'grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-emerald-400 text-sm font-bold text-black hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50' : 'grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-red-400/30 bg-red-400/10 text-sm font-bold text-red-100 hover:bg-red-400/20 disabled:cursor-not-allowed disabled:opacity-50'}>{runtimeButtonIcon}</button>
           <div className="relative" ref={runtimeMenuRef}>
-            <button ref={runtimeMenuButtonRef} type="button" data-debug-id="conversation-runtime-menu-btn" aria-haspopup={isMobile ? 'dialog' : 'menu'} aria-expanded={runtimeMenuOpen ? 'true' : 'false'} onClick={() => setRuntimeMenuOpen((open) => !open)} className="min-h-10 shrink-0 rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10">Runtime</button>
+            <button ref={runtimeMenuButtonRef} type="button" data-debug-id="conversation-runtime-menu-btn" aria-label="Runtime controls" title="Runtime controls" aria-haspopup={isMobile ? 'dialog' : 'menu'} aria-expanded={runtimeMenuOpen ? 'true' : 'false'} onClick={() => setRuntimeMenuOpen((open) => !open)} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-base text-zinc-200 hover:bg-white/10">⚙</button>
             {runtimeMenuOpen && !isMobile ? (
               <div data-debug-id="conversation-runtime-menu" role="menu" className="absolute right-0 top-full z-40 mt-2 w-[min(92vw,430px)] rounded-2xl border border-white/10 bg-[#101010] p-3 text-left shadow-2xl shadow-black/60">
                 {runtimeControls}
@@ -871,17 +918,26 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
               </div>
             ) : null}
           </div>
-          <button type="button" data-debug-id="conversation-thread-refresh-btn" onClick={() => void messagesQuery.refetch()} className="min-h-10 shrink-0 rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10">Refresh</button>
           {chainId ? (
-            <button
-              type="button"
-              data-debug-id="taskchain-overview-toggle-btn"
-              onClick={() => setTaskChainOpen((open) => !open)}
-              className="min-h-10 shrink-0 rounded-xl border border-sky-400/30 bg-sky-400/10 px-3 py-1.5 text-xs font-semibold text-sky-200 hover:bg-sky-400/20"
-            >
-              {taskChainOpen ? 'Hide Task Chain' : 'Task Chain'}
-            </button>
+            <button type="button" data-debug-id="taskchain-overview-toggle-btn" aria-label={taskChainOpen ? 'Hide task chain' : 'Show task chain'} title={taskChainOpen ? 'Hide task chain' : 'Show task chain'} onClick={toggleTaskChainFromHeader} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-sky-400/30 bg-sky-400/10 text-base font-semibold text-sky-200 hover:bg-sky-400/20">▤</button>
           ) : null}
+          <div className="relative" ref={headerActionsRef}>
+            <button ref={headerActionsButtonRef} type="button" data-debug-id="conversation-thread-overflow-menu-btn" aria-label="More conversation actions" title="More conversation actions" aria-haspopup="menu" aria-expanded={headerActionsOpen ? 'true' : 'false'} onClick={() => setHeaderActionsOpen((open) => !open)} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-xl leading-none text-zinc-200 hover:bg-white/10">⋯</button>
+            {headerActionsOpen ? (
+              <div data-debug-id="conversation-thread-overflow-menu" role="menu" className="absolute right-0 top-full z-40 mt-2 w-[min(88vw,300px)] overflow-hidden rounded-2xl border border-white/10 bg-[#101010] p-1.5 text-left shadow-2xl shadow-black/60">
+                <button type="button" role="menuitem" data-debug-id="conversation-thread-title-edit-btn" onClick={beginRenameFromHeader} className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm text-zinc-100 hover:bg-white/10"><span className="w-5 text-center">✎</span><span>Rename</span></button>
+                <button type="button" role="menuitem" data-debug-id="conversation-thread-refresh-btn" onClick={refreshFromHeader} className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-sm text-zinc-100 hover:bg-white/10"><span className="w-5 text-center">↻</span><span>Refresh messages</span></button>
+                <div data-debug-id="conversation-thread-overflow-details" className="mt-1 border-t border-white/10 px-3 py-2 text-[11px] leading-5 text-zinc-500">
+                  <div data-debug-id="conversation-thread-agent" className="truncate">Agent: {agentId || '—'}</div>
+                  <div data-debug-id="conversation-thread-instance" className="truncate">Instance: {agentInstanceId || '—'}</div>
+                  <div data-debug-id="conversation-thread-bridge" className="truncate">Bridge: {bridgeLabel || '—'}</div>
+                  <div className="flex gap-2"><span data-debug-id="conversation-thread-provider">Provider: {instanceProvider || '—'}</span><span data-debug-id="conversation-thread-tier">Tier: {instanceTier || '—'}</span></div>
+                  <div data-debug-id="conversation-thread-status">Status: {runtimeStatus || '—'}</div>
+                  {chainId ? <div data-debug-id="conversation-thread-chain" className="truncate">Chain: {chainId}</div> : null}
+                </div>
+              </div>
+            ) : null}
+          </div>
         </div>
       </header>
 

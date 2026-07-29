@@ -63,16 +63,19 @@ for marker in [
 ]:
     require(marker in THREAD, f"runtime mobile sheet missing marker: {marker}")
 
-# Header/actions: actions wrap on mobile, touch targets remain visible, and the
-# task-chain button is not hidden behind overflow.
+# Header/actions: visible controls are compact icon buttons with touch-sized
+# targets, and the task-chain button stays directly visible while secondary
+# actions/details move behind overflow.
 for marker in [
     'data-debug-id="conversation-thread-mobile-actions"',
-    "flex-wrap",
-    "sm:flex-nowrap",
-    "min-h-10 shrink-0 rounded-xl",
+    "flex shrink-0 items-center gap-1.5",
+    "grid h-10 w-10 shrink-0 place-items-center rounded-xl",
     'data-debug-id="taskchain-overview-toggle-btn"',
-    "Task Chain",
+    "aria-label={taskChainOpen ? 'Hide task chain' : 'Show task chain'}",
+    'data-debug-id="conversation-thread-overflow-menu-btn"',
 ]:
     require(marker in THREAD, f"mobile header/task-chain visibility marker missing: {marker}")
+require("{taskChainOpen ? 'Hide Task Chain' : 'Task Chain'}" not in THREAD,
+        "task-chain action should be an accessible icon button instead of text label")
 
 print("PASS: mobile runtime sheet, dismissal, contextual title, and task-chain action static checks")
