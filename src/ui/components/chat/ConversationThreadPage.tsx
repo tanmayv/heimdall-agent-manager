@@ -1,5 +1,5 @@
 import TaskChainOverview from '../taskchain/TaskChainOverview';
-import { type FormEvent, useEffect, useMemo, useState } from 'react';
+import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import {
   useFetchConversationQuery,
   useFetchConversationMessagesQuery,
@@ -25,6 +25,7 @@ import {
 import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
 import Markdown from '../Markdown';
 import ChatMessageList from './ChatMessageList';
+import { useViewport } from '../shell/responsive';
 import type { ChatDeliveryStatus, ChatMessage, ChatTimestamp } from './types';
 
 // e2e conversation thread for /conversations/{conversationId}. Cookie-auth,
@@ -363,6 +364,10 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const [reconfigStatus, setReconfigStatus] = useState('');
   const [taskChainOpen, setTaskChainOpen] = useState(false);
   const [runtimeMenuOpen, setRuntimeMenuOpen] = useState(false);
+  const runtimeMenuRef = useRef<HTMLDivElement | null>(null);
+  const runtimeMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const viewport = useViewport();
+  const isMobile = viewport === 'mobile';
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState('');
   const [titleError, setTitleError] = useState('');
@@ -429,6 +434,32 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     setOlderCursor(String(messagesQuery.data?.nextCursor || ''));
     setOlderHasMore(Boolean(messagesQuery.data?.hasMore));
   }, [messagesQuery.data?.nextCursor, messagesQuery.data?.hasMore, olderMessages.length]);
+  useEffect(() => {
+    if (!runtimeMenuOpen) return;
+    const isInsideRuntimeMenu = (target: EventTarget | null) => {
+      const node = target as Node | null;
+      return Boolean(node && (runtimeMenuRef.current?.contains(node) || runtimeMenuButtonRef.current?.contains(node)));
+    };
+    const onPointerDown = (event: MouseEvent | TouchEvent) => {
+      if (!isInsideRuntimeMenu(event.target)) setRuntimeMenuOpen(false);
+    };
+    const onFocusIn = (event: FocusEvent) => {
+      if (!isInsideRuntimeMenu(event.target)) setRuntimeMenuOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setRuntimeMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onPointerDown);
+    document.addEventListener('touchstart', onPointerDown, { passive: true });
+    document.addEventListener('focusin', onFocusIn);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', onPointerDown);
+      document.removeEventListener('touchstart', onPointerDown);
+      document.removeEventListener('focusin', onFocusIn);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [runtimeMenuOpen]);
 
   // Apply & relaunch only matters when the selection differs from what the
   // instance currently runs; otherwise it's a no-op (use Restart instead).
@@ -622,6 +653,29 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
     }
   }
 
+  const runtimeControls = (
+    <div data-debug-id="conversation-runtime-controls" className="space-y-3">
+      <div className="grid gap-2 sm:grid-cols-2">
+        <label className="text-[11px] text-zinc-500">Provider
+          <select data-debug-id="conversation-provider-select" value={provider} onChange={(e) => setProvider(e.target.value)} disabled={runtimeActionBusy} className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50">
+            {providerOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </label>
+        <label className="text-[11px] text-zinc-500">Tier
+          <select data-debug-id="conversation-tier-select" value={tier} onChange={(e) => setTier(e.target.value)} disabled={runtimeActionBusy} className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50">
+            {tierOptions.map((t) => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </label>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        <button type="button" data-debug-id="conversation-reconfigure-btn" onClick={() => { setRuntimeMenuOpen(false); void applyReconfigure(); }} disabled={!selectionChangesConfig || runtimeActionBusy} title={selectionChangesConfig ? 'Save the selected provider/tier and relaunch' : 'Selection matches the current config'} className="min-h-10 rounded-lg border border-sky-400/30 bg-sky-400/10 px-3 py-1.5 text-xs text-sky-100 hover:bg-sky-400/20 disabled:cursor-not-allowed disabled:opacity-40">Apply &amp; relaunch</button>
+        <button type="button" data-debug-id="conversation-restart-btn" onClick={() => { setRuntimeMenuOpen(false); void doRestart(); }} disabled={runtimeActionBusy} title="Relaunch the process with its current provider/tier" className="min-h-10 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40">Restart current config</button>
+      </div>
+      {reconfigStatus ? <div data-debug-id="conversation-reconfigure-status" className="text-[11px] text-zinc-400">{reconfigStatus}</div> : null}
+      <p data-debug-id="conversation-runtime-hint" className="text-[10px] leading-4 text-zinc-600"><span className="text-zinc-400">Apply &amp; relaunch</span> saves the selected provider/tier then restarts this exact instance. <span className="text-zinc-400">Restart current config</span> relaunches as-is.</p>
+    </div>
+  );
+
   if (!conversation && !convQuery.isFetching) {
     return (
       <section data-debug-id="conversation-thread-page" className="w-full max-w-4xl rounded-[2rem] border border-white/10 bg-white/[0.04] p-6 text-left">
@@ -634,8 +688,8 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
 
   return (
     <section data-debug-id="conversation-thread-page" className="flex h-full min-h-0 w-full flex-col bg-[#090909] p-0 text-left">
-      <header data-debug-id="conversation-thread-header" className="flex shrink-0 items-center justify-between gap-2 border-b border-white/10 px-3 py-2 sm:px-4">
-        <div className="min-w-0 flex-1">
+      <header data-debug-id="conversation-thread-header" className="flex shrink-0 flex-col gap-2 border-b border-white/10 px-3 py-2 sm:flex-row sm:items-center sm:justify-between sm:px-4">
+        <div className="min-w-0 flex-1 self-stretch sm:self-auto">
           {renaming ? (
             <div className="flex min-w-0 items-center gap-2">
               <input
@@ -669,42 +723,34 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
             {chainId ? <span>chain: {chainId}</span> : null}
           </div>
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <button type="button" data-debug-id={needsStart ? 'conversation-thread-start-btn' : 'conversation-thread-stop-btn'} onClick={() => void toggleRuntime()} disabled={!agentInstanceId || runtimeActionBusy || runtimeStopping} className={needsStart ? 'rounded-xl bg-emerald-400 px-3 py-1.5 text-xs font-bold text-black hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50' : 'rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-1.5 text-xs font-bold text-red-100 hover:bg-red-400/20 disabled:cursor-not-allowed disabled:opacity-50'}>{runtimeButtonLabel}</button>
-          <div className="relative">
-            <button type="button" data-debug-id="conversation-runtime-menu-btn" aria-haspopup="menu" aria-expanded={runtimeMenuOpen ? 'true' : 'false'} onClick={() => setRuntimeMenuOpen((open) => !open)} className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10">Runtime</button>
-            {runtimeMenuOpen ? (
-              <div data-debug-id="conversation-runtime-menu" className="absolute right-0 top-full z-40 mt-2 w-[min(92vw,430px)] rounded-2xl border border-white/10 bg-[#101010] p-3 text-left shadow-2xl shadow-black/60">
-                <div data-debug-id="conversation-runtime-controls" className="space-y-3">
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    <label className="text-[11px] text-zinc-500">Provider
-                      <select data-debug-id="conversation-provider-select" value={provider} onChange={(e) => setProvider(e.target.value)} disabled={runtimeActionBusy} className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50">
-                        {providerOptions.map((p) => <option key={p} value={p}>{p}</option>)}
-                      </select>
-                    </label>
-                    <label className="text-[11px] text-zinc-500">Tier
-                      <select data-debug-id="conversation-tier-select" value={tier} onChange={(e) => setTier(e.target.value)} disabled={runtimeActionBusy} className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-2 py-2 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50">
-                        {tierOptions.map((t) => <option key={t} value={t}>{t}</option>)}
-                      </select>
-                    </label>
+        <div data-debug-id="conversation-thread-mobile-actions" className="flex w-full shrink-0 flex-wrap items-center gap-2 sm:w-auto sm:flex-nowrap sm:justify-end">
+          <button type="button" data-debug-id={needsStart ? 'conversation-thread-start-btn' : 'conversation-thread-stop-btn'} onClick={() => void toggleRuntime()} disabled={!agentInstanceId || runtimeActionBusy || runtimeStopping} className={needsStart ? 'min-h-10 shrink-0 rounded-xl bg-emerald-400 px-3 py-1.5 text-xs font-bold text-black hover:bg-emerald-300 disabled:cursor-not-allowed disabled:opacity-50' : 'min-h-10 shrink-0 rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-1.5 text-xs font-bold text-red-100 hover:bg-red-400/20 disabled:cursor-not-allowed disabled:opacity-50'}>{runtimeButtonLabel}</button>
+          <div className="relative" ref={runtimeMenuRef}>
+            <button ref={runtimeMenuButtonRef} type="button" data-debug-id="conversation-runtime-menu-btn" aria-haspopup={isMobile ? 'dialog' : 'menu'} aria-expanded={runtimeMenuOpen ? 'true' : 'false'} onClick={() => setRuntimeMenuOpen((open) => !open)} className="min-h-10 shrink-0 rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10">Runtime</button>
+            {runtimeMenuOpen && !isMobile ? (
+              <div data-debug-id="conversation-runtime-menu" role="menu" className="absolute right-0 top-full z-40 mt-2 w-[min(92vw,430px)] rounded-2xl border border-white/10 bg-[#101010] p-3 text-left shadow-2xl shadow-black/60">
+                {runtimeControls}
+              </div>
+            ) : null}
+            {runtimeMenuOpen && isMobile ? (
+              <div data-debug-id="conversation-runtime-mobile-sheet" className="fixed inset-0 z-50 flex items-end bg-black/60 p-2 backdrop-blur-sm sm:hidden" role="dialog" aria-modal="true" aria-labelledby="conversation-runtime-sheet-title" onPointerDown={(event) => { if (event.target === event.currentTarget) setRuntimeMenuOpen(false); }}>
+                <div data-debug-id="conversation-runtime-mobile-sheet-panel" className="max-h-[86vh] w-full overflow-y-auto rounded-t-[1.75rem] border border-white/10 bg-[#101010] p-4 pb-[calc(env(safe-area-inset-bottom)+1rem)] shadow-2xl shadow-black/70">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <h2 id="conversation-runtime-sheet-title" data-debug-id="conversation-runtime-mobile-sheet-title" className="text-sm font-semibold text-white">Runtime controls</h2>
+                    <button type="button" data-debug-id="conversation-runtime-mobile-sheet-close" onClick={() => setRuntimeMenuOpen(false)} aria-label="Close runtime controls" className="grid h-10 w-10 place-items-center rounded-xl border border-white/10 bg-white/5 text-zinc-300 hover:bg-white/10">×</button>
                   </div>
-                  <div className="flex flex-wrap gap-2">
-                    <button type="button" data-debug-id="conversation-reconfigure-btn" onClick={() => void applyReconfigure()} disabled={!selectionChangesConfig || runtimeActionBusy} title={selectionChangesConfig ? 'Save the selected provider/tier and relaunch' : 'Selection matches the current config'} className="rounded-lg border border-sky-400/30 bg-sky-400/10 px-3 py-1.5 text-xs text-sky-100 hover:bg-sky-400/20 disabled:cursor-not-allowed disabled:opacity-40">Apply &amp; relaunch</button>
-                    <button type="button" data-debug-id="conversation-restart-btn" onClick={() => void doRestart()} disabled={runtimeActionBusy} title="Relaunch the process with its current provider/tier" className="rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-40">Restart current config</button>
-                  </div>
-                  {reconfigStatus ? <div data-debug-id="conversation-reconfigure-status" className="text-[11px] text-zinc-400">{reconfigStatus}</div> : null}
-                  <p data-debug-id="conversation-runtime-hint" className="text-[10px] leading-4 text-zinc-600"><span className="text-zinc-400">Apply &amp; relaunch</span> saves the selected provider/tier then restarts this exact instance. <span className="text-zinc-400">Restart current config</span> relaunches as-is.</p>
+                  {runtimeControls}
                 </div>
               </div>
             ) : null}
           </div>
-          <button type="button" data-debug-id="conversation-thread-refresh-btn" onClick={() => void messagesQuery.refetch()} className="rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10">Refresh</button>
+          <button type="button" data-debug-id="conversation-thread-refresh-btn" onClick={() => void messagesQuery.refetch()} className="min-h-10 shrink-0 rounded-xl border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-200 hover:bg-white/10">Refresh</button>
           {chainId ? (
             <button
               type="button"
               data-debug-id="taskchain-overview-toggle-btn"
               onClick={() => setTaskChainOpen((open) => !open)}
-              className="rounded-xl border border-sky-400/30 bg-sky-400/10 px-3 py-1.5 text-xs font-semibold text-sky-200 hover:bg-sky-400/20"
+              className="min-h-10 shrink-0 rounded-xl border border-sky-400/30 bg-sky-400/10 px-3 py-1.5 text-xs font-semibold text-sky-200 hover:bg-sky-400/20"
             >
               {taskChainOpen ? 'Hide Task Chain' : 'Task Chain'}
             </button>
