@@ -1,4 +1,18 @@
 import React, { useState } from 'react';
+import { useCreateArtifactMutation } from '../../api/endpoints/artifacts';
+import { ArtifactAttachmentPreview } from '../ArtifactAttachmentPreview';
+import { MAX_UPLOAD_BYTES } from '../ArtifactUpload';
+import Markdown from '../Markdown';
+import {
+  appendArtifactLinks,
+  artifactIdFromLink,
+  artifactIdsFromText,
+  artifactKindForFile,
+  artifactLinkFromResponse,
+  artifactMimeForFile,
+  artifactUploadName,
+  clipboardFilesFromEvent,
+} from '../../utils/artifactUpload';
 import {
   useFetchTaskChainDetailQuery,
   useCreateTaskMutation,
@@ -18,6 +32,18 @@ interface TaskChainOverviewProps {
   isMobile?: boolean;
 }
 
+type CommentAttachmentStatus = 'uploading' | 'uploaded' | 'error';
+
+type CommentAttachment = {
+  localId: string;
+  id: string;
+  link: string;
+  name: string;
+  file: File;
+  status: CommentAttachmentStatus;
+  error: string;
+};
+
 export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   chainId,
   onClose,
@@ -33,6 +59,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const [setStatus] = useSetTaskStatusMutation();
   const [cancelTask] = useCancelTaskDetailMutation();
   const [addComment] = useAddTaskCommentMutation();
+  const [createArtifact] = useCreateArtifactMutation();
   const [voteTask] = useVoteTaskMutation();
   const [nudgeTask] = useNudgeTaskMutation();
   const [addMember] = useAddChainMemberMutation();
@@ -42,6 +69,7 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
   const [descExpanded, setDescExpanded] = useState(true);
   const [expandedTaskIds, setExpandedTaskIds] = useState<Record<string, boolean>>({});
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
+  const [commentAttachments, setCommentAttachments] = useState<Record<string, CommentAttachment[]>>({});
   const [statusMenuOpenTaskId, setStatusMenuOpenTaskId] = useState<string | null>(null);
 
   // Modal state
@@ -113,12 +141,70 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
     }
   };
 
-  const handleAddComment = async (taskId: string) => {
-    const text = commentInputs[taskId]?.trim();
-    if (!text) return;
+  const updateCommentAttachments = (taskId: string, updater: (items: CommentAttachment[]) => CommentAttachment[]) => {
+    setCommentAttachments((prev) => ({
+      ...prev,
+      [taskId]: updater(prev[taskId] || []),
+    }));
+  };
+
+  const uploadCommentAttachment = async (taskId: string, file: File, existingLocalId = '') => {
+    const localId = existingLocalId || `task_att_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const name = artifactUploadName(file, 'task-comment-attachment');
+    const tooLarge = file.size > MAX_UPLOAD_BYTES;
+    updateCommentAttachments(taskId, (items) => [
+      ...items.filter((item) => item.localId !== localId),
+      {
+        localId,
+        id: '',
+        link: '',
+        name,
+        file,
+        status: tooLarge ? 'error' : 'uploading',
+        error: tooLarge ? `File is too large. Maximum upload size is ${Math.round(MAX_UPLOAD_BYTES / (1024 * 1024))} MB.` : '',
+      },
+    ]);
+    if (tooLarge) return;
     try {
-      await addComment({ chainId, taskId, body: text }).unwrap();
+      const res = await createArtifact({
+        file,
+        name,
+        mime: artifactMimeForFile(file),
+        kind: artifactKindForFile(file),
+        originKind: 'task_comment',
+        originRef: `${chainId}:${taskId}`,
+      }).unwrap();
+      const link = artifactLinkFromResponse(res);
+      const id = artifactIdFromLink(link);
+      if (!id) throw new Error('Upload failed: Hub did not return an artifact id.');
+      updateCommentAttachments(taskId, (items) => items.map((item) => (
+        item.localId === localId ? { ...item, id, link, status: 'uploaded', error: '' } : item
+      )));
+    } catch (err: any) {
+      const message = String(err?.data?.message || err?.message || err || 'Upload failed');
+      updateCommentAttachments(taskId, (items) => items.map((item) => (
+        item.localId === localId ? { ...item, status: 'error', error: message } : item
+      )));
+    }
+  };
+
+  const handleCommentPaste = (event: React.ClipboardEvent<HTMLInputElement>, taskId: string) => {
+    const files = clipboardFilesFromEvent(event);
+    if (files.length === 0) return;
+    event.preventDefault();
+    files.forEach((file) => void uploadCommentAttachment(taskId, file));
+  };
+
+  const handleAddComment = async (taskId: string) => {
+    const text = commentInputs[taskId]?.trim() || '';
+    const attachments = commentAttachments[taskId] || [];
+    if (attachments.some((item) => item.status === 'uploading' || item.status === 'error')) return;
+    const body = appendArtifactLinks(text, attachments.filter((item) => item.status === 'uploaded' && item.link).map((item) => item.link)).trim();
+    if (!body) return;
+    try {
+      await addComment({ chainId, taskId, body }).unwrap();
       setCommentInputs((prev) => ({ ...prev, [taskId]: '' }));
+      setCommentAttachments((prev) => ({ ...prev, [taskId]: [] }));
       refetch();
     } catch (err) {
       console.error('Failed to add comment:', err);
@@ -352,6 +438,11 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
           tasks.map((task: any) => {
             const taskId = task.taskId || task.id;
             const isExpanded = Boolean(expandedTaskIds[taskId]);
+            const taskCommentAttachments = commentAttachments[taskId] || [];
+            const taskCommentUploading = taskCommentAttachments.some((item) => item.status === 'uploading');
+            const taskCommentFailed = taskCommentAttachments.some((item) => item.status === 'error');
+            const taskCommentReady = taskCommentAttachments.filter((item) => item.status === 'uploaded' && item.link);
+            const taskCommentCanSend = !taskCommentUploading && !taskCommentFailed && (Boolean((commentInputs[taskId] || '').trim()) || taskCommentReady.length > 0);
 
             return (
               <div
@@ -497,28 +588,86 @@ export const TaskChainOverview: React.FC<TaskChainOverviewProps> = ({
                           <div className="font-semibold text-zinc-400">
                             {comment.authorAgentInstanceId || 'user'}:
                           </div>
-                          <div className="mt-0.5 text-zinc-200">{comment.body}</div>
+                          <div className="mt-1 text-zinc-200">
+                            <Markdown source={comment.body || ''} compact copyAll={false} data-debug-id={`taskchain-task-comment-body-${taskId}-${idx}`} />
+                            {artifactIdsFromText(comment.body || '').length > 0 ? (
+                              <div data-debug-id={`taskchain-task-comment-artifacts-${taskId}-${idx}`} className="mt-2 flex flex-wrap gap-2">
+                                {artifactIdsFromText(comment.body || '').map((artifactId) => (
+                                  <ArtifactAttachmentPreview
+                                    key={artifactId}
+                                    artifactId={artifactId}
+                                    session={{ daemonUrl: '', clientToken: '' }}
+                                    debugId={`taskchain-task-comment-artifact-${taskId}-${idx}-${artifactId}`}
+                                  />
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
                         </div>
                       ))}
 
                       {/* Comment Composer */}
-                      <div className="flex gap-2 pt-1">
-                        <input
-                          type="text"
-                          data-debug-id={`taskchain-task-comment-input-${taskId}`}
-                          placeholder="Write a comment..."
-                          value={commentInputs[taskId] || ''}
-                          onChange={(e) => setCommentInputs({ ...commentInputs, [taskId]: e.target.value })}
-                          className="flex-1 rounded border border-white/10 bg-zinc-900 px-2 py-1 text-white placeholder-zinc-500 focus:outline-none focus:border-sky-500"
-                        />
-                        <button
-                          type="button"
-                          data-debug-id={`taskchain-task-comment-submit-btn-${taskId}`}
-                          onClick={() => handleAddComment(taskId)}
-                          className="rounded bg-sky-600 px-3 py-1 font-semibold text-white hover:bg-sky-500"
-                        >
-                          Send
-                        </button>
+                      <div className="space-y-2 pt-1">
+                        {taskCommentAttachments.length > 0 ? (
+                          <div data-debug-id={`taskchain-task-comment-attachment-tray-${taskId}`} className="space-y-1 rounded border border-white/10 bg-black/20 p-2">
+                            {taskCommentAttachments.map((attachment) => (
+                              <div key={attachment.localId} data-debug-id={`taskchain-task-comment-attachment-${taskId}-${attachment.localId}`} className="rounded bg-zinc-950/60 px-2 py-1.5">
+                                <div className="flex min-w-0 items-center gap-2">
+                                  <span className={attachment.status === 'uploaded' ? 'text-emerald-300' : attachment.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{attachment.status === 'uploading' ? '⇧' : attachment.status === 'uploaded' ? '✓' : '!'}</span>
+                                  <span className="min-w-0 flex-1 truncate" title={attachment.name}>{attachment.name}</span>
+                                  <span className={attachment.status === 'uploaded' ? 'text-emerald-300' : attachment.status === 'error' ? 'text-red-300' : 'text-sky-300'}>{attachment.status === 'uploading' ? 'Uploading…' : attachment.status === 'uploaded' ? 'Uploaded' : 'Failed'}</span>
+                                  {attachment.status === 'error' ? (
+                                    <button type="button" data-debug-id={`taskchain-task-comment-attachment-retry-${taskId}-${attachment.localId}`} onClick={() => void uploadCommentAttachment(taskId, attachment.file, attachment.localId)} className="rounded border border-white/10 px-2 py-0.5 text-zinc-300 hover:bg-white/10">
+                                      Retry
+                                    </button>
+                                  ) : null}
+                                  <button type="button" data-debug-id={`taskchain-task-comment-attachment-remove-${taskId}-${attachment.localId}`} onClick={() => updateCommentAttachments(taskId, (items) => items.filter((item) => item.localId !== attachment.localId))} className="rounded border border-white/10 px-2 py-0.5 text-zinc-400 hover:bg-white/10">
+                                    Remove
+                                  </button>
+                                </div>
+                                {attachment.status === 'uploading' ? <div data-debug-id={`taskchain-task-comment-attachment-progress-${taskId}-${attachment.localId}`} className="mt-1 h-1 overflow-hidden rounded-full bg-white/10"><div className="h-full w-1/2 animate-pulse rounded-full bg-sky-300" /></div> : null}
+                                {attachment.error ? <div data-debug-id={`taskchain-task-comment-attachment-error-${taskId}-${attachment.localId}`} className="mt-1 text-red-300">{attachment.error}</div> : null}
+                              </div>
+                            ))}
+                            {taskCommentUploading ? <div data-debug-id={`taskchain-task-comment-uploading-hint-${taskId}`} className="text-[11px] text-zinc-500">You can keep typing. Send unlocks when uploads finish.</div> : null}
+                            {taskCommentFailed ? <div data-debug-id={`taskchain-task-comment-failed-hint-${taskId}`} className="text-[11px] text-red-300">Retry or remove failed uploads before sending.</div> : null}
+                          </div>
+                        ) : null}
+                        <div className="flex gap-2">
+                          <label data-debug-id={`taskchain-task-comment-attach-btn-${taskId}`} className="grid h-8 w-8 shrink-0 cursor-pointer place-items-center rounded border border-white/10 bg-zinc-900 text-sm font-semibold text-zinc-400 hover:border-sky-500 hover:text-white" title="Upload attachment">
+                            <input
+                              type="file"
+                              multiple
+                              data-debug-id={`taskchain-task-comment-attach-input-${taskId}`}
+                              className="hidden"
+                              onChange={(e) => {
+                                const files = Array.from(e.target.files || []) as File[];
+                                e.target.value = '';
+                                files.forEach((file) => void uploadCommentAttachment(taskId, file));
+                              }}
+                            />
+                            ＋
+                          </label>
+                          <input
+                            type="text"
+                            data-debug-id={`taskchain-task-comment-input-${taskId}`}
+                            placeholder="Write a comment, paste an image/file, or attach one..."
+                            value={commentInputs[taskId] || ''}
+                            onChange={(e) => setCommentInputs({ ...commentInputs, [taskId]: e.target.value })}
+                            onPaste={(e) => handleCommentPaste(e, taskId)}
+                            className="flex-1 rounded border border-white/10 bg-zinc-900 px-2 py-1 text-white placeholder-zinc-500 focus:outline-none focus:border-sky-500"
+                          />
+                          <button
+                            type="button"
+                            data-debug-id={`taskchain-task-comment-submit-btn-${taskId}`}
+                            disabled={!taskCommentCanSend}
+                            onClick={() => handleAddComment(taskId)}
+                            title={taskCommentUploading ? 'Wait for uploads to finish before sending' : taskCommentFailed ? 'Retry or remove failed uploads before sending' : 'Send comment'}
+                            className="rounded bg-sky-600 px-3 py-1 font-semibold text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400"
+                          >
+                            {taskCommentUploading ? 'Uploading…' : 'Send'}
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>

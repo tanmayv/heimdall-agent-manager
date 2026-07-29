@@ -769,41 +769,63 @@ export async function fetchTaskComment({ daemonUrl, clientToken, taskId, comment
   });
 }
 
-export async function createArtifact({ daemonUrl, clientToken, file, name, kind = '', mime = '', projectId = '', description = '', originKind = '', originRef = '', contentBase64 = '' }: { daemonUrl: string; clientToken: string; file?: File | Blob | null; name: string; kind?: string; mime?: string; projectId?: string; description?: string; originKind?: string; originRef?: string; contentBase64?: string }) {
-  if (file) {
-    const form = new FormData();
-    form.append('file', file, name || 'artifact');
-    if (name) form.append('name', name);
-    if (kind) form.append('kind', kind);
-    if (mime) form.append('mime', mime);
-    if (mime) form.append('content_type', mime);
-    const sanitizedProjectId = sanitizeProjectId(projectId);
-    if (sanitizedProjectId) form.append('project_id', sanitizedProjectId);
-    if (description) form.append('description', description);
-    if (originKind) form.append('origin_kind', originKind);
-    if (originRef) form.append('origin_ref', originRef);
-    return requestFormJson(joinUrl(daemonUrl, '/api/v1/artifacts'), {
-      method: 'POST',
-      headers: bearerHeaders(clientToken),
-      body: form,
-      timeoutMs: 120000,
-    });
-  }
+function extensionFromNameOrMime(name = '', mime = ''): string {
+  const cleanName = String(name || '').toLowerCase();
+  const dot = cleanName.lastIndexOf('.');
+  if (dot >= 0 && dot < cleanName.length - 1) return cleanName.slice(dot + 1).replace(/[^a-z0-9]+/g, '').slice(0, 16);
+  const normalized = String(mime || '').toLowerCase();
+  if (normalized === 'image/png') return 'png';
+  if (normalized === 'image/jpeg') return 'jpg';
+  if (normalized === 'image/gif') return 'gif';
+  if (normalized === 'image/webp') return 'webp';
+  if (normalized === 'text/markdown') return 'md';
+  if (normalized === 'text/csv') return 'csv';
+  if (normalized === 'text/html') return 'html';
+  if (normalized === 'application/json') return 'json';
+  if (normalized.startsWith('text/')) return 'txt';
+  return '';
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error('Unable to read selected file'));
+    reader.onload = () => {
+      const value = String(reader.result || '');
+      const comma = value.indexOf(',');
+      resolve(comma >= 0 ? value.slice(comma + 1) : value);
+    };
+    reader.readAsDataURL(blob);
+  });
+}
+
+export async function createArtifact({ daemonUrl, clientToken, file, name, kind = '', mime = '', ext = '', projectId = '', description = '', originKind = '', originRef = '', contentBase64 = '' }: { daemonUrl: string; clientToken: string; file?: File | Blob | null; name: string; kind?: string; mime?: string; ext?: string; projectId?: string; description?: string; originKind?: string; originRef?: string; contentBase64?: string }) {
+  // Use the JSON/base64 artifact API for browser-selected files. Chromium/Electron
+  // may stream multipart FormData with Transfer-Encoding: chunked; the lightweight
+  // Hub HTTP server is Content-Length based, so that path can fail at the network
+  // layer with an opaque "Load failed" after file selection. JSON keeps uploads
+  // fixed-length and works consistently in the browser, dev proxy, and Electron
+  // fetch bridge while preserving the same artifact endpoint contract.
+  const uploadBase64 = file ? await blobToBase64(file) : contentBase64;
   const body: any = {
     name,
     kind,
     project_id: sanitizeProjectId(projectId),
     description,
-    content_base64: contentBase64,
+    content_base64: uploadBase64,
   };
-  if (mime) body.mime = mime;
-  if (mime) body.content_type = mime;
+  const finalMime = mime || (file ? String((file as any).type || '') : '');
+  const finalExt = ext || extensionFromNameOrMime(name, finalMime);
+  if (finalMime) body.mime = finalMime;
+  if (finalMime) body.content_type = finalMime;
+  if (finalExt) body.ext = finalExt;
   if (originKind) body.origin_kind = originKind;
   if (originRef) body.origin_ref = originRef;
   return requestJson(joinUrl(daemonUrl, '/api/v1/artifacts'), {
     method: 'POST',
     headers: bearerHeaders(clientToken),
     body,
+    timeoutMs: 120000,
   });
 }
 
