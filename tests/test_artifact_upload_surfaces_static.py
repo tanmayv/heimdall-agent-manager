@@ -7,6 +7,8 @@ ROOT = Path(__file__).resolve().parents[1]
 CHAT = (ROOT / 'src/ui/components/chat/ConversationThreadPage.tsx').read_text(encoding='utf-8')
 TASK = (ROOT / 'src/ui/components/taskchain/TaskChainOverview.tsx').read_text(encoding='utf-8')
 UTIL = (ROOT / 'src/ui/utils/artifactUpload.ts').read_text(encoding='utf-8')
+DAEMON = (ROOT / 'src/ui/api/daemonApi.ts').read_text(encoding='utf-8')
+ARTIFACT_ENDPOINTS = (ROOT / 'src/ui/api/endpoints/artifacts.ts').read_text(encoding='utf-8')
 
 checks = [
     ('shared upload helpers preserve text paste unless clipboard files exist', all(snippet in UTIL for snippet in [
@@ -71,6 +73,16 @@ checks = [
         "session={{ daemonUrl: '', clientToken: '' }}",
         '<Markdown source={comment.body || \'\'} compact copyAll={false}',
     ])),
+    ('artifact file uploads avoid multipart load-failed path and preserve mime/ext metadata', all(snippet in DAEMON + ARTIFACT_ENDPOINTS for snippet in [
+        'function blobToBase64(blob: Blob): Promise<string>',
+        'reader.readAsDataURL(blob);',
+        'const uploadBase64 = file ? await blobToBase64(file) : contentBase64;',
+        'content_base64: uploadBase64,',
+        'function extensionFromNameOrMime',
+        'if (finalExt) body.ext = finalExt;',
+        'timeoutMs: 120000,',
+        'ext?: string;',
+    ]) and 'requestFormJson(joinUrl(daemonUrl, \'/api/v1/artifacts\')' not in DAEMON),
 ]
 
 failures = [name for name, ok in checks if not ok]
