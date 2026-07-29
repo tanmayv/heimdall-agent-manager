@@ -165,6 +165,8 @@ export function normalizeArtifactRecord(row: any) {
   const kind = inferKind(stringField(row, 'kind', 'type'), explicitMime, ext, name, stringField(row, 'renderer'));
   const mime = inferMime(kind, explicitMime);
   const contentType = stringField(row, 'content_type', 'contentType') || mime;
+  const rawSize = row?.size_bytes ?? row?.sizeBytes ?? row?.size;
+  const sizeBytes = Number(rawSize || 0);
   return {
     ...row,
     artifact_id: artifactId,
@@ -175,6 +177,8 @@ export function normalizeArtifactRecord(row: any) {
     content_type: contentType,
     contentType,
     ext,
+    size_bytes: Number.isFinite(sizeBytes) ? sizeBytes : 0,
+    sizeBytes: Number.isFinite(sizeBytes) ? sizeBytes : 0,
     link: stringField(row, 'link') || (artifactId ? `artifact://${artifactId}` : ''),
   };
 }
@@ -186,7 +190,9 @@ function normalizeArtifactResponse(data: any) {
 }
 
 function normalizeArtifactVersionsResponse(data: any) {
-  const rows = Array.isArray(data?.versions) ? data.versions : Array.isArray(data?.data?.versions) ? data.data.versions : [];
+  const rows = Array.isArray(data?.versions)
+    ? data.versions
+    : (Array.isArray(data?.data?.versions) ? data.data.versions : (Array.isArray(data?.data) ? data.data : []));
   return { ...data, versions: rows.map((row: any) => normalizeArtifactRecord(row)) };
 }
 
@@ -382,30 +388,15 @@ export const artifactsApi = heimdallApi.injectEndpoints({
 
 export function normalizeArtifact(row: any) {
   if (!row) return null;
-  const artifactId = artifactIdOf(row);
-  const mime = String(row?.mime || row?.content_type || row?.contentType || '');
-  const rawSize = row?.size_bytes ?? row?.sizeBytes ?? row?.size;
-  const sizeBytes = Number(rawSize || 0);
-  return {
-    ...row,
-    artifact_id: artifactId,
-    artifactId,
-    mime,
-    content_type: row?.content_type || row?.contentType || mime,
-    size_bytes: Number.isFinite(sizeBytes) ? sizeBytes : 0,
-    sizeBytes: Number.isFinite(sizeBytes) ? sizeBytes : 0,
-    link: row?.link || (artifactId ? `artifact://${artifactId}` : ''),
-  };
+  return normalizeArtifactRecord(row);
 }
 
 export function normalizeArtifacts(data: any) {
   const rows = Array.isArray(data?.artifacts)
     ? data.artifacts
-    : (Array.isArray(data?.data?.artifacts)
-      ? data.data.artifacts
-      : (Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : [])));
+    : (Array.isArray(data?.data?.artifacts) ? data.data.artifacts : (Array.isArray(data?.data) ? data.data : (Array.isArray(data) ? data : [])));
   return rows
-    .map((row: any) => normalizeArtifactRecord(normalizeArtifact(row)))
+    .map((row: any) => normalizeArtifact(row))
     .filter((row: any) => row?.artifact_id || row?.artifactId)
     .sort((a: any, b: any) => {
       const left = Number(b?.updated_unix_ms || b?.updatedUnixMs || b?.updated_at || b?.updatedAt || b?.created_unix_ms || b?.createdUnixMs || 0);
