@@ -245,6 +245,7 @@ function handleTaskEvent(dispatch: any, payload: any) {
 function handleChatEvent(dispatch: any, payload: any, ctx: WsCtx) {
   dispatch(chatEventReceived(payload));
   const agentId = String(payload.agent_instance_id || '');
+  const conversationId = String(payload.conversation_id || payload.conversationId || '');
   const eventChainId = String(payload.chain_id || '');
   const focusedChainId = String(ctx.focusedChainId || '');
   const focusedCoordinatorAgentInstanceId = String(ctx.focusedCoordinatorAgentInstanceId || '');
@@ -297,6 +298,7 @@ function handleChatEvent(dispatch: any, payload: any, ctx: WsCtx) {
   }
   if (!message && payload.fetch_required && String(payload.fetch_kind || '') === 'chat_message') {
     const messageId = String(payload.fetch_id || payload.message_id || '');
+    if (conversationId) dispatch(heimdallApi.util.invalidateTags([{ type: 'Chat', id: conversationId }, { type: 'ConversationSummaries', id: conversationId }]));
     if (messageId) {
       dispatch(chatEndpoints.endpoints.fetchChatMessage.initiate({ messageId }, { subscribe: false })).unwrap().catch(() => undefined);
     }
@@ -316,6 +318,7 @@ function handleChatEvent(dispatch: any, payload: any, ctx: WsCtx) {
     } else if (agentId) {
       dispatch(heimdallApi.util.invalidateTags([{ type: 'Chat', id: agentId }]));
     }
+    if (conversationId) dispatch(heimdallApi.util.invalidateTags([{ type: 'Chat', id: conversationId }, { type: 'ConversationSummaries', id: conversationId }]));
     dispatch(heimdallApi.util.invalidateTags([{ type: 'ConversationSummaries', id: 'ALL' }]));
   }
   // UI-14: any chat event (new message, read watermark, unread count) can change

@@ -5,6 +5,7 @@ import {
   useFetchConversationMessagesQuery,
   useLazyFetchConversationMessagesQuery,
   useUpdateConversationTitleMutation,
+  useRequestPaneCaptureMutation,
   useSendConversationMessageMutation,
   useMarkConversationReadMutation,
 } from '../../api/endpoints/chats';
@@ -58,6 +59,13 @@ type Message = {
   artifactIds?: string[];
   artifact_ids_json?: string;
   artifactIdsJson?: string;
+  message_type?: string;
+  messageType?: string;
+  message_status?: string;
+  messageStatus?: string;
+  metadata?: any;
+  metadata_json?: string;
+  metadataJson?: string;
   sending?: boolean;
 };
 
@@ -137,6 +145,20 @@ function optimisticUserMessage(conversationId: string, body: string): Message {
   };
 }
 
+function optimisticPaneCaptureMessage(conversationId: string, requestId: string, agentInstanceId: string): Message {
+  return {
+    message_id: `local_${requestId}`,
+    conversation_id: conversationId,
+    direction: 'agent_to_user',
+    body: 'Requesting pane capture...',
+    message_type: 'pane_capture',
+    message_status: 'pending',
+    metadata: { pane_capture_request_id: requestId, agent_instance_id: agentInstanceId, width: 80, line_limit: 120 },
+    created_unix_ms: Date.now(),
+    sending: true,
+  };
+}
+
 function sentMessageFromResult(result: any): Message | null {
   const candidate = result?.message || result?.chat_message || result?.chatMessage || result;
   if (!candidate || typeof candidate !== 'object') return null;
@@ -153,6 +175,24 @@ function failedLocalMessage(message: Message, error: string): Message {
     delivery_failed_unix_ms: Date.now(),
     delivery_error: error,
   };
+}
+
+function failedPaneCaptureMessage(message: Message, error: string): Message {
+  return {
+    ...message,
+    sending: false,
+    body: error,
+    message_status: 'failed',
+    messageStatus: 'failed',
+    metadata: { ...((message as any).metadata || {}), error_code: 'request_failed' },
+  };
+}
+
+function parseMessageMetadata(message: Message): any {
+  const raw = (message as any).metadata ?? (message as any).metadata_json ?? (message as any).metadataJson;
+  if (!raw) return {};
+  if (typeof raw === 'object') return raw;
+  try { return JSON.parse(String(raw)); } catch (_err) { return {}; }
 }
 
 function capTiers(cap: BridgeCapability | undefined): string[] {
@@ -254,6 +294,9 @@ function normalizeConversationMessages(rows: Message[], agentLabel: string): Cha
           sending: Boolean(message.sending),
           authorLabel,
           artifactIds,
+          messageType: String((message as any).message_type || (message as any).messageType || 'text'),
+          messageStatus: String((message as any).message_status || (message as any).messageStatus || 'complete'),
+          metadata: parseMessageMetadata(message),
         } satisfies ChatMessage,
       };
     })
@@ -277,6 +320,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const messagesQuery = useFetchConversationMessagesQuery({ conversationId }, { skip: !conversationId, pollingInterval: 4000, refetchOnMountOrArgChange: true });
   const [fetchOlderMessages, olderMessagesState] = useLazyFetchConversationMessagesQuery();
   const [updateConversationTitle, updateTitleState] = useUpdateConversationTitleMutation();
+  const [requestPaneCapture, requestPaneCaptureState] = useRequestPaneCaptureMutation();
   const [sendMessage] = useSendConversationMessageMutation();
   const [markRead] = useMarkConversationReadMutation();
   const [reconfigureInstance, reconfigureState] = useReconfigureAgentInstanceMutation();
@@ -355,6 +399,8 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
   const hasFailedAttachments = attachments.some((item) => item.status === 'error');
   const uploadedAttachments = attachments.filter((item) => item.status === 'uploaded' && item.id);
   const sendDisabled = hasUploadingAttachments || hasFailedAttachments || (!draft.trim() && uploadedAttachments.length === 0);
+  const pendingPaneCapture = chatMessages.some((message) => message.messageType === 'pane_capture' && message.messageStatus === 'pending');
+  const paneCaptureDisabled = !agentInstanceId || needsStart || runtimeStopping || pendingPaneCapture || requestPaneCaptureState.isLoading;
 
   useEffect(() => { if (!renaming) setTitleDraft(editableTitle); }, [editableTitle, renaming]);
   useEffect(() => { if (agentInstanceId && (conversation?.unread_count || conversation?.unreadCount)) void markRead({ conversationId }); }, [conversationId, agentInstanceId]);
@@ -494,6 +540,56 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
       const message = errMsg(err, 'Send failed');
       setLocalMessages((current) => current.map((item) => (msgId(item, 0) === localId ? failedLocalMessage(item, message) : item)));
     }
+  }
+
+  async function requestPane() {
+    if (paneCaptureDisabled) return;
+    const requestId = `cap_local_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    const local = optimisticPaneCaptureMessage(conversationId, requestId, agentInstanceId);
+    const localId = msgId(local, 0);
+    setError('');
+    setLocalMessages((current) => [...current, local]);
+    try {
+      const result = await requestPaneCapture({ conversationId, width: 80, settleMs: 3000, lineLimit: 120 }).unwrap();
+      const serverMessage = result?.message || null;
+      setLocalMessages((current) => current.map((message) => (msgId(message, 0) === localId && serverMessage ? { ...serverMessage, sending: false } : message)));
+      void messagesQuery.refetch();
+    } catch (err: any) {
+      const message = errMsg(err, 'Pane capture request failed');
+      setLocalMessages((current) => current.map((item) => (msgId(item, 0) === localId ? failedPaneCaptureMessage(item, message) : item)));
+    }
+  }
+
+  function renderConversationMessageBody(message: ChatMessage) {
+    if (message.messageType === 'pane_capture') {
+      const metadata = message.metadata || {};
+      const status = message.messageStatus || 'complete';
+      const lineCount = Number(metadata.line_count || metadata.lineCount || 0);
+      return (
+        <div data-debug-id={status === 'pending' ? `conversation-pane-capture-loading-${message.messageId}` : status === 'failed' ? `conversation-pane-capture-error-${message.messageId}` : `conversation-pane-capture-output-${message.messageId}`} className={`rounded-2xl border p-3 ${status === 'failed' ? 'border-red-400/30 bg-red-500/10 text-red-100' : 'border-sky-400/20 bg-sky-400/10 text-sky-50'}`}>
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-wide text-sky-100/70">
+            <span>{status === 'pending' ? 'Requesting terminal pane…' : status === 'failed' ? 'Pane capture failed' : 'Terminal pane capture'}</span>
+            <span>{Number(metadata.width || 80)} cols</span>
+            {lineCount ? <span>{lineCount} lines</span> : null}
+            {metadata.truncated ? <span>truncated</span> : null}
+          </div>
+          {status === 'pending' ? <div className="text-sm text-sky-100/80">Waiting for the wrapper to resize and capture the pane…</div> : <pre className="chat-scrollbar max-h-[420px] overflow-auto whitespace-pre-wrap rounded-xl bg-black/30 p-3 font-mono text-xs leading-5 text-zinc-100">{message.body}</pre>}
+          {status === 'failed' ? <button type="button" data-debug-id={`conversation-pane-capture-retry-${message.messageId}`} onClick={() => void requestPane()} disabled={paneCaptureDisabled} className="mt-2 rounded-full border border-white/10 px-3 py-1 text-xs text-zinc-100 hover:bg-white/10 disabled:opacity-50">Retry</button> : null}
+        </div>
+      );
+    }
+    return (
+      <div className="flex flex-col gap-1">
+        <Markdown source={message.body} compact copyAll={false} />
+        {message.artifactIds && message.artifactIds.length > 0 && (
+          <div className="mt-2 flex max-w-full flex-wrap gap-2">
+            {message.artifactIds.map((id) => (
+              <ArtifactAttachmentPreview key={id} artifactId={id} session={{ daemonUrl: '', clientToken: '' }} debugId={`conversation-thread-artifact-${message.messageId}-${id}`} />
+            ))}
+          </div>
+        )}
+      </div>
+    );
   }
 
   async function applyReconfigure() {
@@ -639,18 +735,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
           onLoadOlder={loadOlderMessages}
           formatTimestamp={formatMessageTimestamp}
           getDeliveryStatus={deliveryStatusFor}
-          renderMessageBody={({ message }) => (
-            <div className="flex flex-col gap-1">
-              <Markdown source={message.body} compact copyAll={false} />
-              {message.artifactIds && message.artifactIds.length > 0 && (
-                <div className="mt-2 flex max-w-full flex-wrap gap-2">
-                  {message.artifactIds.map((id) => (
-                    <ArtifactAttachmentPreview key={id} artifactId={id} session={{ daemonUrl: '', clientToken: '' }} debugId={`conversation-thread-artifact-${message.messageId}-${id}`} />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+          renderMessageBody={({ message }) => renderConversationMessageBody(message)}
           wrapperClassName="relative h-full min-h-0 overflow-hidden"
           scrollClassName="chat-scrollbar h-full min-h-0 space-y-3 overflow-y-auto rounded-none bg-[#090909] px-1 py-2 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
           emptyState={messagesQuery.isFetching ? (
@@ -700,6 +785,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
             placeholder="Message the agent… (Cmd/Ctrl+Enter to send)"
             className="min-h-[44px] flex-1 resize-none rounded-2xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-sky-400/60 sm:px-4"
           />
+          <button data-debug-id="conversation-request-pane-btn" type="button" disabled={paneCaptureDisabled} title={pendingPaneCapture ? 'A pane capture is already pending' : needsStart ? 'Start the agent before requesting a pane capture' : 'Request terminal pane capture'} aria-label="Request terminal pane capture" onClick={() => void requestPane()} className="rounded-2xl border border-sky-400/30 bg-sky-400/10 px-3 py-2.5 text-sm font-bold text-sky-100 hover:bg-sky-400/20 disabled:cursor-not-allowed disabled:opacity-40">Pane</button>
           <button data-debug-id="conversation-composer-send-btn" type="submit" disabled={sendDisabled} title={hasUploadingAttachments ? 'Wait for uploads to finish before sending' : hasFailedAttachments ? 'Retry or remove failed uploads before sending' : 'Send'} className="rounded-2xl bg-sky-400 px-4 py-2.5 text-sm font-black text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">{hasUploadingAttachments ? 'Uploading…' : 'Send'}</button>
         </div>
       </form>
@@ -725,18 +811,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
           onLoadOlder={loadOlderMessages}
           formatTimestamp={formatMessageTimestamp}
           getDeliveryStatus={deliveryStatusFor}
-          renderMessageBody={({ message }) => (
-            <div className="flex flex-col gap-1">
-              <Markdown source={message.body} compact copyAll={false} />
-              {message.artifactIds && message.artifactIds.length > 0 && (
-                <div className="mt-2 flex max-w-full flex-wrap gap-2">
-                  {message.artifactIds.map((id) => (
-                    <ArtifactAttachmentPreview key={id} artifactId={id} session={{ daemonUrl: '', clientToken: '' }} debugId={`conversation-thread-artifact-${message.messageId}-${id}`} />
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+          renderMessageBody={({ message }) => renderConversationMessageBody(message)}
           wrapperClassName="relative h-full min-h-0 overflow-hidden"
           scrollClassName="chat-scrollbar h-full min-h-0 space-y-3 overflow-y-auto rounded-none bg-[#090909] px-1 py-2 sm:space-y-4 sm:rounded-[18px] sm:px-4 sm:py-4"
           emptyState={messagesQuery.isFetching ? (
@@ -786,6 +861,7 @@ export default function ConversationThreadPage({ conversationId }: { conversatio
             placeholder="Message the agent… (Cmd/Ctrl+Enter to send)"
             className="min-h-[44px] flex-1 resize-none rounded-2xl border border-white/10 bg-black/30 px-3 py-2 text-sm text-white outline-none placeholder:text-zinc-600 focus:border-sky-400/60 sm:px-4"
           />
+          <button data-debug-id="conversation-request-pane-btn" type="button" disabled={paneCaptureDisabled} title={pendingPaneCapture ? 'A pane capture is already pending' : needsStart ? 'Start the agent before requesting a pane capture' : 'Request terminal pane capture'} aria-label="Request terminal pane capture" onClick={() => void requestPane()} className="rounded-2xl border border-sky-400/30 bg-sky-400/10 px-3 py-2.5 text-sm font-bold text-sky-100 hover:bg-sky-400/20 disabled:cursor-not-allowed disabled:opacity-40">Pane</button>
           <button data-debug-id="conversation-composer-send-btn" type="submit" disabled={sendDisabled} title={hasUploadingAttachments ? 'Wait for uploads to finish before sending' : hasFailedAttachments ? 'Retry or remove failed uploads before sending' : 'Send'} className="rounded-2xl bg-sky-400 px-4 py-2.5 text-sm font-black text-black hover:bg-sky-300 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400">{hasUploadingAttachments ? 'Uploading…' : 'Send'}</button>
         </div>
       </form>

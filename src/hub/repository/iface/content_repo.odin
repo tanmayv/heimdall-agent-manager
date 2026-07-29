@@ -9,6 +9,8 @@ Content_Save_Conversation_Proc :: proc(ctx: rawptr, c: domain.Chat_Conversation)
 Content_Get_Conversation_Proc :: proc(ctx: rawptr, conversation_id: string) -> (domain.Chat_Conversation, bool, domain.Domain_Error)
 Content_List_Conversations_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID, limit: int, cursor: string) -> ([]domain.Chat_Conversation, domain.Domain_Error)
 Content_Save_Message_Proc :: proc(ctx: rawptr, m: domain.Chat_Message) -> (domain.Chat_Message, bool, domain.Domain_Error)
+Content_Get_Message_Proc :: proc(ctx: rawptr, message_id: string) -> (domain.Chat_Message, bool, domain.Domain_Error)
+Content_Update_Message_Proc :: proc(ctx: rawptr, owner_user_id: domain.User_ID, conversation_id, message_id, body, message_status, metadata_json: string) -> (domain.Chat_Message, bool, domain.Domain_Error)
 Content_List_Messages_Proc :: proc(ctx: rawptr, conversation_id: string, owner_user_id: domain.User_ID, limit: int, cursor: string) -> ([]domain.Chat_Message, domain.Domain_Error)
 Content_List_User_Visible_Messages_Proc :: proc(ctx: rawptr, conversation_id: string, owner_user_id: domain.User_ID, limit: int, cursor: string) -> ([]domain.Chat_Message, domain.Domain_Error)
 Content_Save_Artifact_Proc :: proc(ctx: rawptr, a: domain.Artifact) -> (domain.Artifact, bool, domain.Domain_Error)
@@ -28,6 +30,8 @@ Content_Repository :: struct {
 	get_conversation: Content_Get_Conversation_Proc,
 	list_conversations: Content_List_Conversations_Proc,
 	save_message: Content_Save_Message_Proc,
+	get_message: Content_Get_Message_Proc,
+	update_message: Content_Update_Message_Proc,
 	list_messages: Content_List_Messages_Proc,
 	list_user_visible_messages: Content_List_User_Visible_Messages_Proc,
 	save_artifact: Content_Save_Artifact_Proc,
@@ -46,6 +50,8 @@ content_save_conversation :: proc(r: ^Content_Repository, c: domain.Chat_Convers
 content_get_conversation :: proc(r: ^Content_Repository, id: string) -> (domain.Chat_Conversation, bool, domain.Domain_Error) { if r == nil || r.get_conversation == nil do return {}, false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.get_conversation(r.ctx, id) }
 content_list_conversations :: proc(r: ^Content_Repository, owner: domain.User_ID, limit: int, cursor: string) -> ([]domain.Chat_Conversation, domain.Domain_Error) { if r == nil || r.list_conversations == nil do return nil, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.list_conversations(r.ctx, owner, limit, cursor) }
 content_save_message :: proc(r: ^Content_Repository, m: domain.Chat_Message) -> (domain.Chat_Message, bool, domain.Domain_Error) { if r == nil || r.save_message == nil do return {}, false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.save_message(r.ctx, m) }
+content_get_message :: proc(r: ^Content_Repository, id: string) -> (domain.Chat_Message, bool, domain.Domain_Error) { if r == nil || r.get_message == nil do return {}, false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.get_message(r.ctx, id) }
+content_update_message :: proc(r: ^Content_Repository, owner: domain.User_ID, cid, id, body, status, metadata_json: string) -> (domain.Chat_Message, bool, domain.Domain_Error) { if r == nil || r.update_message == nil do return {}, false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.update_message(r.ctx, owner, cid, id, body, status, metadata_json) }
 content_list_messages :: proc(r: ^Content_Repository, id: string, owner: domain.User_ID, limit: int, cursor: string) -> ([]domain.Chat_Message, domain.Domain_Error) { if r == nil || r.list_messages == nil do return nil, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.list_messages(r.ctx, id, owner, limit, cursor) }
 content_list_user_visible_messages :: proc(r: ^Content_Repository, id: string, owner: domain.User_ID, limit: int, cursor: string) -> ([]domain.Chat_Message, domain.Domain_Error) { if r == nil do return nil, domain.domain_error(.Internal_Error, "content repository is not configured"); if r.list_user_visible_messages != nil do return r.list_user_visible_messages(r.ctx, id, owner, limit, cursor); if r.list_messages == nil do return nil, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.list_messages(r.ctx, id, owner, limit, cursor) }
 content_save_artifact :: proc(r: ^Content_Repository, a: domain.Artifact) -> (domain.Artifact, bool, domain.Domain_Error) { if r == nil || r.save_artifact == nil do return {}, false, domain.domain_error(.Internal_Error, "content repository is not configured"); return r.save_artifact(r.ctx, a) }

@@ -13,6 +13,9 @@ export type ChatMessage = {
   sending: boolean;
   authorLabel: string;
   artifactIds?: string[];
+  messageType?: string;
+  messageStatus?: string;
+  metadata?: any;
 };
 
 export type ChatTimestamp = { label: string; iso: string };

@@ -19,6 +19,9 @@ type ChatMessage = {
   deliveryError: string;
   interrupt: boolean;
   artifactIds?: string[];
+  messageType?: string;
+  messageStatus?: string;
+  metadata?: any;
   sending?: boolean;
   optimistic?: boolean;
   error?: boolean;
@@ -58,6 +61,13 @@ function extractMessageArtifactIds(message: any): string[] | undefined {
   return out.length ? out : undefined;
 }
 
+function parseMessageMetadata(message: any): any {
+  const raw = message?.metadata ?? message?.metadata_json ?? message?.metadataJson;
+  if (!raw) return {};
+  if (typeof raw === 'object') return raw;
+  try { return JSON.parse(String(raw)); } catch (_err) { return {}; }
+}
+
 function mapMessage(message: any): ChatMessage {
   const createdUnixMs = Number(message.created_unix_ms ?? message.createdUnixMs ?? 0);
   const deliveredUnixMs = Number(message.delivered_unix_ms ?? message.deliveredUnixMs ?? 0);
@@ -78,6 +88,9 @@ function mapMessage(message: any): ChatMessage {
     deliveryError: String(message.delivery_error ?? message.deliveryError ?? ''),
     interrupt: Boolean(message.interrupt),
     artifactIds: extractMessageArtifactIds(message),
+    messageType: String(message.message_type ?? message.messageType ?? 'text'),
+    messageStatus: String(message.message_status ?? message.messageStatus ?? 'complete'),
+    metadata: parseMessageMetadata(message),
     sending: Boolean(message.sending),
     optimistic: Boolean(message.optimistic),
     error: Boolean(message.error),
@@ -274,6 +287,22 @@ export const chatEndpoints = heimdallApi.injectEndpoints({
         }
       },
       invalidatesTags: (_r, _e, { conversationId }) => [
+        { type: 'ConversationSummaries' as const, id: conversationId },
+        { type: 'SidebarConversations' as const, id: 'ALL' },
+      ],
+    }),
+    requestPaneCapture: build.mutation<any, { conversationId: string; width?: number; settleMs?: number; lineLimit?: number }>({
+      queryFn: async ({ conversationId, width = 80, settleMs = 3000, lineLimit = 120 }) => {
+        if (!conversationId) return { error: { status: 'CUSTOM_ERROR', error: 'Missing conversation' } as any };
+        try {
+          const data = await cookieMutation(`/chats/${encodeURIComponent(conversationId)}/pane-capture`, 'POST', { width, settle_ms: settleMs, line_limit: lineLimit });
+          return { data };
+        } catch (error: any) {
+          return { error: { status: 'CUSTOM_ERROR', error: String(error?.message || error) } as any };
+        }
+      },
+      invalidatesTags: (_r, _e, { conversationId }) => [
+        { type: 'Chat' as const, id: conversationId },
         { type: 'ConversationSummaries' as const, id: conversationId },
         { type: 'SidebarConversations' as const, id: 'ALL' },
       ],
@@ -663,6 +692,7 @@ export const {
   useFetchConversationMessagesQuery,
   useLazyFetchConversationMessagesQuery,
   useUpdateConversationTitleMutation,
+  useRequestPaneCaptureMutation,
   useSendConversationMessageMutation,
   useMarkConversationReadMutation,
   useListConversationSummariesQuery,

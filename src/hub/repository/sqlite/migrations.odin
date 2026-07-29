@@ -172,7 +172,14 @@ CREATE TABLE IF NOT EXISTS memories (
 CREATE TABLE IF NOT EXISTS chat_conversations (
   conversation_id TEXT PRIMARY KEY,
   owner_user_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL DEFAULT '',
+  agent_instance_id TEXT NOT NULL DEFAULT '',
+  project_id TEXT NOT NULL DEFAULT '',
+  chain_id TEXT NOT NULL DEFAULT '',
   title TEXT NOT NULL DEFAULT '',
+  unread_count INTEGER NOT NULL DEFAULT 0,
+  last_message_preview TEXT NOT NULL DEFAULT '',
+  last_message_at TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -181,9 +188,17 @@ CREATE TABLE IF NOT EXISTS chat_messages (
   message_id TEXT PRIMARY KEY,
   conversation_id TEXT NOT NULL,
   owner_user_id TEXT NOT NULL,
+  direction TEXT NOT NULL DEFAULT 'user_to_agent',
+  sender_agent_id TEXT NOT NULL DEFAULT '',
+  sender_agent_instance_id TEXT NOT NULL DEFAULT '',
   body TEXT NOT NULL,
+  artifact_ids_json TEXT NOT NULL DEFAULT '[]',
+  message_type TEXT NOT NULL DEFAULT 'text',
+  message_status TEXT NOT NULL DEFAULT 'complete',
+  metadata_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  delivered_at TEXT NOT NULL DEFAULT '',
+  read_at TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS artifacts (
@@ -491,6 +506,11 @@ ALTER TABLE memories ADD COLUMN template_id TEXT NOT NULL DEFAULT '';
 ALTER TABLE memories ADD COLUMN bridge_id TEXT NOT NULL DEFAULT '';
 `
 
+MIGRATION_017_CHAT_MESSAGE_TYPES :: `ALTER TABLE chat_messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'text';
+ALTER TABLE chat_messages ADD COLUMN message_status TEXT NOT NULL DEFAULT 'complete';
+ALTER TABLE chat_messages ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';
+`
+
 MIGRATION_016_MEMORY_WORKFLOW_SKILL_MEMORY :: `INSERT INTO memories (memory_id, owner_user_id, agent_id, project_id, template_id, bridge_id, type, status, title, body, evidence, created_at, updated_at)
 VALUES (
   'mem_system_heimdall_memory',
@@ -554,7 +574,7 @@ ON CONFLICT(memory_id) DO UPDATE SET
   updated_at=excluded.updated_at;
 `
 
-migration_order :: [16]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql"}
+migration_order :: [17]string{"001_foundation.sql", "002_owner_scoped_core.sql", "003_device_tokens.sql", "004_default_skill_memory.sql", "005_agent_to_agent_cross_chain_memory.sql", "006_live_agents_skill_memory.sql", "007_hide_agent_to_agent_from_user_chat.sql", "008_read_inbound_messages_skill_memory.sql", "009_artifact_metadata.sql", "010_artifact_usage_skill_memory.sql", "011_artifact_download_skill_memory.sql", "012_task_chains_v2.sql", "013_task_workflow_skill_memory.sql", "014_task_workflow_skill_comments.sql", "015_memory_target_scope.sql", "016_memory_workflow_skill_memory.sql", "017_chat_message_types.sql"}
 
 run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite/migrations") -> (bool, domain.Domain_Error) {
 	if conn == nil || conn.db == nil {
@@ -566,6 +586,10 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 		}
 		if migration_applied(conn, name) do continue
 		if name == "003_device_tokens.sql" && table_column_exists(conn, "user_api_tokens", "created_from") && table_column_exists(conn, "user_api_tokens", "device_label") {
+			mark_migration_applied(conn, name)
+			continue
+		}
+		if name == "017_chat_message_types.sql" && table_column_exists(conn, "chat_messages", "message_type") && table_column_exists(conn, "chat_messages", "message_status") && table_column_exists(conn, "chat_messages", "metadata_json") {
 			mark_migration_applied(conn, name)
 			continue
 		}
@@ -584,6 +608,7 @@ run_migrations :: proc(conn: ^Conn, migrations_dir := "src/hub/repository/sqlite
 	if !upgrade_task_comments_schema(conn) do return false, domain.domain_error(.Internal_Error, "task_comments schema upgrade failed")
 	if !upgrade_task_chains_v2_schema(conn) do return false, domain.domain_error(.Internal_Error, "task_chains_v2 schema upgrade failed")
 	if !upgrade_memory_target_scope_schema(conn) do return false, domain.domain_error(.Internal_Error, "memory target scope schema upgrade failed")
+	if !upgrade_chat_message_types_schema(conn) do return false, domain.domain_error(.Internal_Error, "chat message type schema upgrade failed")
 	return true, domain.Domain_Error{}
 }
 
@@ -609,6 +634,7 @@ migration_sql :: proc(name, migrations_dir: string) -> string {
 	if name == "014_task_workflow_skill_comments.sql" do return strings.clone(MIGRATION_014_TASK_WORKFLOW_SKILL_COMMENTS)
 	if name == "015_memory_target_scope.sql" do return strings.clone(MIGRATION_015_MEMORY_TARGET_SCOPE)
 	if name == "016_memory_workflow_skill_memory.sql" do return strings.clone(MIGRATION_016_MEMORY_WORKFLOW_SKILL_MEMORY)
+	if name == "017_chat_message_types.sql" do return strings.clone(MIGRATION_017_CHAT_MESSAGE_TYPES)
 	return ""
 }
 
@@ -675,5 +701,12 @@ upgrade_memory_target_scope_schema :: proc(conn: ^Conn) -> bool {
 	if !table_column_exists(conn, "memories", "project_id") && !exec(conn, "ALTER TABLE memories ADD COLUMN project_id TEXT NOT NULL DEFAULT '';") do return false
 	if !table_column_exists(conn, "memories", "template_id") && !exec(conn, "ALTER TABLE memories ADD COLUMN template_id TEXT NOT NULL DEFAULT '';") do return false
 	if !table_column_exists(conn, "memories", "bridge_id") && !exec(conn, "ALTER TABLE memories ADD COLUMN bridge_id TEXT NOT NULL DEFAULT '';") do return false
+	return true
+}
+
+upgrade_chat_message_types_schema :: proc(conn: ^Conn) -> bool {
+	if !table_column_exists(conn, "chat_messages", "message_type") && !exec(conn, "ALTER TABLE chat_messages ADD COLUMN message_type TEXT NOT NULL DEFAULT 'text';") do return false
+	if !table_column_exists(conn, "chat_messages", "message_status") && !exec(conn, "ALTER TABLE chat_messages ADD COLUMN message_status TEXT NOT NULL DEFAULT 'complete';") do return false
+	if !table_column_exists(conn, "chat_messages", "metadata_json") && !exec(conn, "ALTER TABLE chat_messages ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';") do return false
 	return true
 }

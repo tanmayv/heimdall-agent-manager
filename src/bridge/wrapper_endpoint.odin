@@ -227,7 +227,7 @@ bridge_wrapper_push_line :: proc(instance_id, line: string) -> bool {
 bridge_local_method_allowed :: proc(method: string, role: Bridge_Local_Token_Role) -> bool {
 	switch role {
 	case .Wrapper:
-		return method == "wrapper.startup.report" || method == "wrapper.activity.report" || method == "wrapper.liveness.ping" || method == "wrapper.exited" || method == "wrapper.notifications.subscribe"
+		return method == "wrapper.startup.report" || method == "wrapper.activity.report" || method == "wrapper.liveness.ping" || method == "wrapper.exited" || method == "wrapper.notifications.subscribe" || method == "wrapper.pane_capture.result"
 	case .Agent:
 		return method == "agent.rest.request" || method == "agent.chat.send_to_user" || method == "agent.chat.send_to_agent" || method == "agent.chat.fetch" || method == "agent.chat.read" || method == "agent.agents.live" || method == "agent.tasks.create" || method == "agent.tasks.depend" || method == "agent.tasks.comment" || method == "agent.tasks.status" || method == "agent.tasks.vote" || method == "agent.tasks.nudge" || method == "agent.artifacts.create" || method == "agent.artifacts.list" || method == "agent.artifacts.show" || method == "agent.artifacts.content" || method == "agent.memory.propose" || method == "agent.context.get" || method == "agent.start_success"
 	}
@@ -268,6 +268,24 @@ bridge_local_handle_wrapper_method :: proc(request_id, method, params: string, r
 		// liveness tick, without implying start-success.
 		bridge_runtime_note_wrapper_signal(rec.agent_instance_id, "idle")
 		return bridge_local_response_data(request_id, "{\"accepted\":true,\"subscribed\":true}")
+	}
+	if method == "wrapper.pane_capture.result" {
+		command_id := bridge_local_extract_json_string(params,"command_id","")
+		req_id := bridge_local_extract_json_string(params,"pane_capture_request_id","")
+		pending,pending_ok := bridge_pane_capture_remove_pending(command_id, req_id)
+		if !pending_ok do return bridge_local_response_error(request_id,"not_found","pane capture request is no longer pending")
+		ok := strings.contains(params,"\"ok\":true")
+		line_count := bridge_local_extract_json_int(params,"line_count",0)
+		truncated := strings.contains(params,"\"truncated\":true")
+		if ok {
+			output := bridge_local_extract_json_string(params,"output","")
+			bridge_pane_capture_enqueue_result(bridge_pane_capture_result_json(pending,true,"","",output,line_count,truncated), command_id)
+		} else {
+			error_code := bridge_local_extract_json_string(params,"error_code","capture_failed")
+			message := bridge_local_extract_json_string(params,"message","")
+			bridge_pane_capture_enqueue_result(bridge_pane_capture_result_json(pending,false,error_code,message,"",line_count,truncated), command_id)
+		}
+		return bridge_local_response_data(request_id,"{\"accepted\":true}")
 	}
 	return bridge_local_response_error(request_id, "forbidden", "wrapper method is not allowlisted")
 }

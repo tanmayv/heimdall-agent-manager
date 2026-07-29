@@ -15,12 +15,14 @@ import events "odin_test:hub/service/events"
 import platform "odin_test:hub/platform"
 import bridge_service "odin_test:hub/service/bridge"
 import bridge_runtime_service "odin_test:hub/service/bridge_runtime"
+import content_service "odin_test:hub/service/content"
 import project_service "odin_test:hub/service/project"
 
 Bridge_Handlers :: struct {
 	auth: ^auth_service.Auth_Service,
 	bridges: ^bridge_service.Bridge_Service,
 	agents: ^agent_service.Agent_Service,
+	content: ^content_service.Content_Service,
 	event_bus: ^events.User_Event_Bus,
 	bridge_runtime_registry: ^project_service.Bridge_Runtime_Registry,
 }
@@ -338,6 +340,14 @@ bridge_ws_runtime_loop :: proc(h: ^Bridge_Handlers, bridge_id: string, connectio
 		case "command_result", "project_path_validation_result", "providers_report":
 			command_id := json_string(text, "command_id")
 			_, _ = bridge_runtime_service.runtime_command_result_idempotent(h.bridge_runtime_registry, bridge_id, command_id, text)
+		case "pane_capture_result":
+			if json_int(text, "protocol_version", 0) != 1 do continue
+			if h.content != nil {
+				input := content_service.Pane_Capture_Result_Input{command_id=json_string_unescaped(text,"command_id"),pane_capture_request_id=json_string_unescaped(text,"pane_capture_request_id"),conversation_id=json_string_unescaped(text,"conversation_id"),message_id=json_string_unescaped(text,"message_id"),agent_instance_id=json_string_unescaped(text,"agent_instance_id"),ok=json_bool_value(text,"ok"),output=json_string_unescaped(text,"output"),error_code=json_string_unescaped(text,"error_code"),message=json_string_unescaped(text,"message"),width=json_int(text,"width",80),line_count=json_int(text,"line_count",0),truncated=json_bool_value(text,"truncated")}
+				if msg, conv, applied, _ := content_service.complete_pane_capture(h.content, bridge_id, input); applied {
+					events.publish_raw_to_user(h.event_bus, string(conv.owner_user_id), pane_capture_chat_event_json(conv, msg))
+				}
+			}
 		case "capability_report":
 			_, _, _ = bridge_service.update_runtime_capabilities(h.bridges, bridge_id, text)
 		case "provider_test_status", "provider_test_frame":
@@ -462,6 +472,10 @@ write_bridge_json :: proc(b: ^strings.Builder, br: domain.Bridge, agents: ^agent
 }
 
 json_string :: proc(body, key: string) -> string {
+	return json_string_unescaped(body, key)
+}
+
+json_string_unescaped :: proc(body, key: string) -> string {
 	needle := strings.concatenate({"\"", key, "\""})
 	defer delete(needle)
 	idx := strings.index(body, needle)
@@ -471,8 +485,18 @@ json_string :: proc(body, key: string) -> string {
 	if colon < 0 do return ""
 	rest = strings.trim_space(rest[colon + 1:])
 	if len(rest) == 0 || rest[0] != '"' do return ""
+	b := strings.builder_make()
+	escaped := false
 	for i := 1; i < len(rest); i += 1 {
-		if rest[i] == '"' do return rest[1:i]
+		ch := rest[i]
+		if escaped {
+			switch ch { case 'n': strings.write_byte(&b,'\n'); case 'r': strings.write_byte(&b,'\r'); case 't': strings.write_byte(&b,'\t'); case '"': strings.write_byte(&b,'"'); case '\\': strings.write_byte(&b,'\\'); case: strings.write_byte(&b,ch) }
+			escaped = false
+			continue
+		}
+		if ch == '\\' { escaped = true; continue }
+		if ch == '"' do return strings.to_string(b)
+		strings.write_byte(&b,ch)
 	}
 	return ""
 }
@@ -622,30 +646,37 @@ ws_accept_key :: proc(key: string) -> string {
 
 read_ws_text_blocking :: proc(client: net.TCP_Socket, timeout: time.Duration) -> (string, bool) {
 	_ = net.set_option(client, .Receive_Timeout, timeout)
+	data := make([dynamic]byte)
 	buf: [8192]byte
-	n, err := net.recv_tcp(client, buf[:])
-	if err != nil || n < 2 do return "", false
-	opcode := buf[0] & 0x0f
-	if opcode != 0x1 do return "", false
-	masked := (buf[1] & 0x80) != 0
-	payload_len := int(buf[1] & 0x7f)
-	offset := 2
-	if payload_len == 126 {
-		if n < 4 do return "", false
-		payload_len = int(buf[2]) << 8 | int(buf[3])
-		offset = 4
+	for {
+		n, err := net.recv_tcp(client, buf[:])
+		if err != nil || n <= 0 do return "", false
+		append(&data, ..buf[:n])
+		if len(data) < 2 do continue
+		opcode := data[0] & 0x0f
+		if opcode != 0x1 do return "", false
+		masked := (data[1] & 0x80) != 0
+		payload_len := int(data[1] & 0x7f)
+		offset := 2
+		if payload_len == 126 {
+			if len(data) < 4 do continue
+			payload_len = int(data[2]) << 8 | int(data[3])
+			offset = 4
+		} else if payload_len == 127 {
+			return "", false
+		}
+		mask_key: [4]byte
+		if masked {
+			if len(data) < offset + 4 do continue
+			mask_key = {data[offset], data[offset + 1], data[offset + 2], data[offset + 3]}
+			offset += 4
+		}
+		if len(data) < offset + payload_len do continue
+		payload := make([]byte, payload_len)
+		copy(payload, data[offset:offset + payload_len])
+		if masked { for i in 0..<payload_len { payload[i] = payload[i] ~ mask_key[i % 4] } }
+		return string(payload), true
 	}
-	mask_key: [4]byte
-	if masked {
-		if n < offset + 4 do return "", false
-		mask_key = {buf[offset], buf[offset + 1], buf[offset + 2], buf[offset + 3]}
-		offset += 4
-	}
-	if n < offset + payload_len do return "", false
-	payload := make([]byte, payload_len)
-	copy(payload, buf[offset:offset + payload_len])
-	if masked { for i in 0..<payload_len { payload[i] = payload[i] ~ mask_key[i % 4] } }
-	return string(payload), true
 }
 
 write_ws_text_frame :: proc(client: net.TCP_Socket, text: string) -> bool {
@@ -682,6 +713,10 @@ json_string_array :: proc(body, key: string) -> []string {
 	}
 	return out[:]
 }
+
+json_bool_value :: proc(body,key:string)->bool{ needle:=strings.concatenate({"\"",key,"\""}); defer delete(needle); idx:=strings.index(body,needle); if idx<0 do return false; rest:=body[idx+len(needle):]; colon:=strings.index_byte(rest,':'); if colon<0 do return false; rest=strings.trim_space(rest[colon+1:]); return strings.has_prefix(rest,"true") }
+
+pane_capture_chat_event_json :: proc(c:domain.Chat_Conversation,m:domain.Chat_Message)->string{ b:=strings.builder_make(); strings.write_string(&b,"{\"type\":\"chat_event\",\"event\":\"chat_updated\",\"agent_instance_id\":\""); write_handler_json_string(&b,c.agent_instance_id); strings.write_string(&b,"\",\"conversation_id\":\""); write_handler_json_string(&b,c.conversation_id); strings.write_string(&b,"\",\"message_id\":\""); write_handler_json_string(&b,m.message_id); strings.write_string(&b,"\",\"direction\":\"pane_capture\",\"fetch_required\":true,\"fetch_kind\":\"chat_message\",\"fetch_id\":\""); write_handler_json_string(&b,m.message_id); strings.write_string(&b,"\",\"message_type\":\""); write_handler_json_string(&b,m.message_type); strings.write_string(&b,"\",\"message_status\":\""); write_handler_json_string(&b,m.message_status); strings.write_string(&b,"\"}"); return strings.to_string(b) }
 
 json_int :: proc(body, key: string, default_value: int) -> int {
 	needle := strings.concatenate({"\"", key, "\""})

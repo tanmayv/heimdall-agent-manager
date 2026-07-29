@@ -268,9 +268,37 @@ wrapper_bridge_dispatch_push_lines :: proc(cfg: Bridge_Runtime_Config, pending: 
 			wrapper_bridge_deliver_startup_prompt(cfg)
 			continue
 		}
+		if strings.contains(line, "\"push\":\"pane_capture_request\"") {
+			wrapper_bridge_handle_pane_capture_request(cfg, line)
+			continue
+		}
 		if strings.contains(line, "\"push\":\"agent_message\"") do wrapper_bridge_deliver_message_push(cfg, line)
 	}
 }
+
+wrapper_bridge_handle_pane_capture_request :: proc(cfg: Bridge_Runtime_Config, line: string) {
+	command_id := extract_json_string(line,"command_id","")
+	req_id := extract_json_string(line,"pane_capture_request_id","")
+	message_id := extract_json_string(line,"message_id","")
+	if extract_json_int(line,"protocol_version",0) != 1 { _ = wrapper_bridge_pane_capture_failure(cfg,command_id,req_id,message_id,"unsupported_capture_agent_pane","The pane capture request protocol is not supported."); return }
+	width := wrapper_bridge_clamp_int(extract_json_int(line,"width",80),40,200)
+	settle_ms := wrapper_bridge_clamp_int(extract_json_int(line,"settle_ms",3000),500,10000)
+	line_limit := wrapper_bridge_clamp_int(extract_json_int(line,"line_limit",120),20,300)
+	pane := wrapper_bridge_prompt_pane(cfg)
+	if strings.trim_space(pane)=="" || !tmux.pane_exists(pane) { _ = wrapper_bridge_pane_capture_failure(cfg,command_id,req_id,message_id,"pane_not_running","The agent tmux pane is no longer running."); return }
+	if !tmux.resize_pane_width(pane,width) { _ = wrapper_bridge_pane_capture_failure(cfg,command_id,req_id,message_id,"resize_failed","The agent pane could not be resized before capture."); return }
+	time.sleep(time.Duration(settle_ms) * time.Millisecond)
+	output,captured := tmux.capture_pane_text(pane,line_limit)
+	if !captured { _ = wrapper_bridge_pane_capture_failure(cfg,command_id,req_id,message_id,"capture_failed","The agent pane could not be captured."); return }
+	sanitized,line_count,truncated := wrapper_bridge_sanitize_capture(output,48000)
+	b:=strings.builder_make(); strings.write_string(&b,"{\"command_id\":\""); json_write_string(&b,command_id); strings.write_string(&b,"\",\"pane_capture_request_id\":\""); json_write_string(&b,req_id); strings.write_string(&b,"\",\"message_id\":\""); json_write_string(&b,message_id); strings.write_string(&b,"\",\"ok\":true,\"output\":\""); json_write_string(&b,sanitized); strings.write_string(&b,"\",\"width\":"); strings.write_string(&b,fmt.tprintf("%d",width)); strings.write_string(&b,",\"line_count\":"); strings.write_string(&b,fmt.tprintf("%d",line_count)); strings.write_string(&b,",\"truncated\":"); strings.write_string(&b,"true" if truncated else "false"); strings.write_string(&b,"}")
+	_ = wrapper_bridge_local_call(cfg,"wrapper.pane_capture.result",strings.to_string(b))
+}
+
+wrapper_bridge_pane_capture_failure :: proc(cfg:Bridge_Runtime_Config,command_id,req_id,message_id,error_code,message:string)->bool{ b:=strings.builder_make(); strings.write_string(&b,"{\"command_id\":\""); json_write_string(&b,command_id); strings.write_string(&b,"\",\"pane_capture_request_id\":\""); json_write_string(&b,req_id); strings.write_string(&b,"\",\"message_id\":\""); json_write_string(&b,message_id); strings.write_string(&b,"\",\"ok\":false,\"error_code\":\""); json_write_string(&b,error_code); strings.write_string(&b,"\",\"message\":\""); json_write_string(&b,message); strings.write_string(&b,"\"}"); return wrapper_bridge_local_call(cfg,"wrapper.pane_capture.result",strings.to_string(b)) }
+
+wrapper_bridge_clamp_int :: proc(v,min,max:int)->int{ out:=v; if out<min do out=min; if out>max do out=max; return out }
+wrapper_bridge_sanitize_capture :: proc(value:string,max_bytes:int)->(string,int,bool){ b:=strings.builder_make(); line_count:=0; last_newline:=true; truncated:=false; esc:=false; for i:=0; i<len(value); i+=1 { ch:=value[i]; if esc { if ch>='@' && ch<='~' do esc=false; continue }; if ch==0x1b { esc=true; continue }; if ch<32 && ch!='\n' && ch!='\r' && ch!='\t' do continue; if strings.builder_len(b)>=max_bytes { truncated=true; break }; if ch=='\r' do continue; strings.write_byte(&b,ch); if ch=='\n' { line_count+=1; last_newline=true } else { last_newline=false } }; if !last_newline do line_count+=1; return strings.to_string(b),line_count,truncated }
 
 wrapper_bridge_deliver_message_push :: proc(cfg: Bridge_Runtime_Config, line: string) {
 	sender := extract_json_string(line, "sender_agent_instance_id", extract_json_string(line, "sender", "user"))

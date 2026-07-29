@@ -54,11 +54,29 @@ Bridge_Provider_Test :: struct {
 	frame_seq: int,
 }
 
+Bridge_Pane_Capture_Pending :: struct {
+	command_id: string,
+	pane_capture_request_id: string,
+	conversation_id: string,
+	message_id: string,
+	agent_instance_id: string,
+	width: int,
+	line_limit: int,
+	deadline_unix_ms: i64,
+}
+
+Bridge_Pane_Capture_Outgoing :: struct {
+	command_id: string,
+	result_json: string,
+}
+
 bridge_runtime_mutex: sync.Mutex
 bridge_runtime_instances: [dynamic]Bridge_Runtime_Instance
 bridge_runtime_results: [dynamic]Bridge_Runtime_Command_Result
 bridge_runtime_launches: [dynamic]Bridge_Runtime_Launch
 bridge_provider_tests: [dynamic]Bridge_Provider_Test
+bridge_pane_capture_pending: [dynamic]Bridge_Pane_Capture_Pending
+bridge_pane_capture_outgoing: [dynamic]Bridge_Pane_Capture_Outgoing
 bridge_runtime_local_endpoint_started: bool
 bridge_runtime_local_endpoint_unix_started: bool
 bridge_runtime_local_endpoint_loopback_started: bool
@@ -70,6 +88,8 @@ bridge_hub_runtime_init :: proc() {
 	bridge_runtime_results = make([dynamic]Bridge_Runtime_Command_Result)
 	bridge_runtime_launches = make([dynamic]Bridge_Runtime_Launch)
 	bridge_provider_tests = make([dynamic]Bridge_Provider_Test)
+	bridge_pane_capture_pending = make([dynamic]Bridge_Pane_Capture_Pending)
+	bridge_pane_capture_outgoing = make([dynamic]Bridge_Pane_Capture_Outgoing)
 }
 
 bridge_hub_runtime_worker :: proc() {
@@ -113,6 +133,8 @@ bridge_hub_runtime_loop :: proc(conn: ^ws.Connection) {
 	last_heartbeat := time.to_unix_nanoseconds(time.now())
 	for conn.connected {
 		if text, got := ws.poll_text(conn); got do bridge_hub_handle_command(conn, text)
+		bridge_pane_capture_expire_pending()
+		bridge_pane_capture_drain_outgoing(conn)
 		now := time.to_unix_nanoseconds(time.now())
 		if now - last_heartbeat >= i64(2 * time.Second) {
 			_ = ws.send_text(conn, bridge_hub_heartbeat_json())
@@ -165,7 +187,35 @@ bridge_hub_handle_command :: proc(conn: ^ws.Connection, text: string) {
 		if command_id != "" do _ = ws.send_text(conn, bridge_command_result_json(command_id, "succeeded" if ok else "accepted", ""))
 		return
 	}
+	if type == "capture_agent_pane" {
+		bridge_hub_handle_pane_capture_command(conn, text)
+		return
+	}
 	if bridge_hub_handle_provider_command(conn, type, text) do return
+}
+
+bridge_hub_handle_pane_capture_command :: proc(conn: ^ws.Connection, text: string) {
+	command_id := extract_json_string(text, "command_id", "")
+	if cached, ok := bridge_runtime_cached_command(command_id); ok { _ = ws.send_text(conn, cached); return }
+	if extract_json_int(text, "protocol_version", 0) != 1 {
+		failed := bridge_command_result_payload_json(command_id, "failed", "{\"error_code\":\"unsupported_capture_agent_pane\"}")
+		bridge_runtime_cache_command(command_id, failed)
+		_ = ws.send_text(conn, failed)
+		return
+	}
+	instance_id := extract_json_string(text, "agent_instance_id", "")
+	pending := Bridge_Pane_Capture_Pending{command_id=strings.clone(command_id),pane_capture_request_id=strings.clone(extract_json_string(text,"pane_capture_request_id","")),conversation_id=strings.clone(extract_json_string(text,"conversation_id","")),message_id=strings.clone(extract_json_string(text,"message_id","")),agent_instance_id=strings.clone(instance_id),width=bridge_runtime_provider_test_int(text,"width",80,40,200),line_limit=bridge_runtime_provider_test_int(text,"line_limit",120,20,300),deadline_unix_ms=bridge_runtime_now_ms()+i64(bridge_runtime_provider_test_int(text,"settle_ms",3000,500,10000)+30000)}
+	bridge_pane_capture_register_pending(pending)
+	accepted := bridge_command_result_json(command_id, "accepted", "")
+	bridge_runtime_cache_command(command_id, accepted)
+	_ = ws.send_text(conn, accepted)
+	push := bridge_pane_capture_push_json(pending, bridge_runtime_provider_test_int(text,"settle_ms",3000,500,10000))
+	if !bridge_wrapper_push_line(instance_id, push) {
+		bridge_pane_capture_remove_pending(command_id, pending.pane_capture_request_id)
+		result := bridge_pane_capture_result_json(pending,false,"wrapper_unavailable","The agent wrapper is not connected.","",0,false)
+		bridge_runtime_cache_command(command_id, bridge_command_result_payload_json(command_id,"failed","{\"error_code\":\"wrapper_unavailable\"}"))
+		_ = ws.send_text(conn, result)
+	}
 }
 
 bridge_hub_handle_provider_command :: proc(conn: ^ws.Connection, type, text: string) -> bool {
@@ -834,6 +884,7 @@ bridge_instance_status_json :: proc(instance_id: string) -> string {
 
 bridge_hub_heartbeat_json :: proc() -> string {
 	caps := bridge_provider_capabilities_json()
+	features := bridge_runtime_features_json()
 	now := bridge_runtime_now_ms()
 	sync.mutex_lock(&bridge_runtime_mutex)
 	defer sync.mutex_unlock(&bridge_runtime_mutex)
@@ -841,6 +892,8 @@ bridge_hub_heartbeat_json :: proc() -> string {
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"bridge_heartbeat\",\"protocol_version\":1,\"capabilities\":")
 	strings.write_string(&b, caps)
+	strings.write_string(&b, ",\"features\":")
+	strings.write_string(&b, features)
 	strings.write_string(&b, ",\"active_instance_ids\":[")
 	first_active := true
 	for inst in bridge_runtime_instances {
@@ -910,6 +963,69 @@ bridge_runtime_cache_command :: proc(command_id, result_json: string) {
 	for i in 0..<len(bridge_runtime_results) { if bridge_runtime_results[i].command_id == command_id { bridge_runtime_results[i].result_json = strings.clone(result_json); return } }
 	append(&bridge_runtime_results, Bridge_Runtime_Command_Result{command_id = strings.clone(command_id), result_json = strings.clone(result_json)})
 }
+
+bridge_pane_capture_register_pending :: proc(pending: Bridge_Pane_Capture_Pending) {
+	if pending.command_id == "" && pending.pane_capture_request_id == "" do return
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	for i in 0..<len(bridge_pane_capture_pending) { if bridge_pane_capture_pending[i].command_id == pending.command_id || bridge_pane_capture_pending[i].pane_capture_request_id == pending.pane_capture_request_id { bridge_pane_capture_pending[i] = pending; return } }
+	append(&bridge_pane_capture_pending, pending)
+}
+
+bridge_pane_capture_remove_pending :: proc(command_id, request_id: string) -> (Bridge_Pane_Capture_Pending, bool) {
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	for i in 0..<len(bridge_pane_capture_pending) {
+		if (command_id != "" && bridge_pane_capture_pending[i].command_id == command_id) || (request_id != "" && bridge_pane_capture_pending[i].pane_capture_request_id == request_id) {
+			pending := bridge_pane_capture_pending[i]
+			unordered_remove(&bridge_pane_capture_pending, i)
+			return pending, true
+		}
+	}
+	return {}, false
+}
+
+bridge_pane_capture_enqueue_result :: proc(result_json, command_id: string) {
+	if strings.trim_space(result_json) == "" do return
+	sync.mutex_lock(&bridge_runtime_mutex)
+	defer sync.mutex_unlock(&bridge_runtime_mutex)
+	append(&bridge_pane_capture_outgoing, Bridge_Pane_Capture_Outgoing{command_id=strings.clone(command_id),result_json=strings.clone(result_json)})
+}
+
+bridge_pane_capture_drain_outgoing :: proc(conn: ^ws.Connection) {
+	for {
+		item: Bridge_Pane_Capture_Outgoing
+		have := false
+		sync.mutex_lock(&bridge_runtime_mutex)
+		if len(bridge_pane_capture_outgoing) > 0 { item = bridge_pane_capture_outgoing[0]; ordered_remove(&bridge_pane_capture_outgoing, 0); have = true }
+		sync.mutex_unlock(&bridge_runtime_mutex)
+		if !have do return
+		if !ws.send_text(conn, item.result_json) {
+			sync.mutex_lock(&bridge_runtime_mutex)
+			append(&bridge_pane_capture_outgoing, item)
+			sync.mutex_unlock(&bridge_runtime_mutex)
+			conn.connected = false
+			return
+		}
+		if item.command_id != "" do bridge_runtime_cache_command(item.command_id, bridge_command_result_payload_json(item.command_id,"succeeded","{}"))
+	}
+}
+
+bridge_pane_capture_expire_pending :: proc() {
+	now := bridge_runtime_now_ms()
+	expired := make([dynamic]Bridge_Pane_Capture_Pending)
+	sync.mutex_lock(&bridge_runtime_mutex)
+	for i:=0; i<len(bridge_pane_capture_pending); {
+		if bridge_pane_capture_pending[i].deadline_unix_ms > 0 && now >= bridge_pane_capture_pending[i].deadline_unix_ms { append(&expired, bridge_pane_capture_pending[i]); unordered_remove(&bridge_pane_capture_pending, i); continue }
+		i += 1
+	}
+	sync.mutex_unlock(&bridge_runtime_mutex)
+	for pending in expired { bridge_pane_capture_enqueue_result(bridge_pane_capture_result_json(pending,false,"capture_timeout","The pane capture request timed out.","",0,false), pending.command_id) }
+}
+
+bridge_pane_capture_push_json :: proc(pending: Bridge_Pane_Capture_Pending, settle_ms:int)->string{ b:=strings.builder_make(); strings.write_string(&b,"{\"push\":\"pane_capture_request\",\"payload\":{\"protocol_version\":1,\"command_id\":\""); bridge_runtime_write_json_string(&b,pending.command_id); strings.write_string(&b,"\",\"pane_capture_request_id\":\""); bridge_runtime_write_json_string(&b,pending.pane_capture_request_id); strings.write_string(&b,"\",\"message_id\":\""); bridge_runtime_write_json_string(&b,pending.message_id); strings.write_string(&b,"\",\"width\":"); strings.write_string(&b,fmt.tprintf("%d",pending.width)); strings.write_string(&b,",\"settle_ms\":"); strings.write_string(&b,fmt.tprintf("%d",settle_ms)); strings.write_string(&b,",\"line_limit\":"); strings.write_string(&b,fmt.tprintf("%d",pending.line_limit)); strings.write_string(&b,"}}\n"); return strings.to_string(b) }
+
+bridge_pane_capture_result_json :: proc(pending: Bridge_Pane_Capture_Pending, ok:bool, error_code,message,output:string,line_count:int,truncated:bool)->string{ b:=strings.builder_make(); strings.write_string(&b,"{\"type\":\"pane_capture_result\",\"protocol_version\":1,\"command_id\":\""); bridge_runtime_write_json_string(&b,pending.command_id); strings.write_string(&b,"\",\"pane_capture_request_id\":\""); bridge_runtime_write_json_string(&b,pending.pane_capture_request_id); strings.write_string(&b,"\",\"conversation_id\":\""); bridge_runtime_write_json_string(&b,pending.conversation_id); strings.write_string(&b,"\",\"message_id\":\""); bridge_runtime_write_json_string(&b,pending.message_id); strings.write_string(&b,"\",\"agent_instance_id\":\""); bridge_runtime_write_json_string(&b,pending.agent_instance_id); strings.write_string(&b,"\",\"ok\":"); strings.write_string(&b,"true" if ok else "false"); strings.write_string(&b,",\"width\":"); strings.write_string(&b,fmt.tprintf("%d",pending.width)); strings.write_string(&b,",\"line_count\":"); strings.write_string(&b,fmt.tprintf("%d",line_count)); strings.write_string(&b,",\"truncated\":"); strings.write_string(&b,"true" if truncated else "false"); if ok { strings.write_string(&b,",\"output\":\""); bridge_runtime_write_json_string(&b,output); strings.write_string(&b,"\"") } else { strings.write_string(&b,",\"error_code\":\""); bridge_runtime_write_json_string(&b,error_code); strings.write_string(&b,"\",\"message\":\""); bridge_runtime_write_json_string(&b,message); strings.write_string(&b,"\"") }; strings.write_string(&b,"}"); return strings.to_string(b) }
 
 bridge_command_result_json :: proc(command_id, status, runtime_status: string) -> string {
 	b := strings.builder_make()
@@ -1029,11 +1145,14 @@ bridge_provider_test_sanitize_diagnostics :: proc(value: string) -> string {
 
 bridge_hub_hello_json :: proc() -> string {
 	caps := bridge_provider_capabilities_json()
+	features := bridge_runtime_features_json()
 	b := strings.builder_make()
 	strings.write_string(&b, "{\"type\":\"bridge_hello\",\"protocol_version\":1,\"bootstrap_fragment_cache\":true,\"hostname\":\"")
 	bridge_runtime_write_json_string(&b, bridge_config.daemon_id)
 	strings.write_string(&b, "\",\"capabilities\":")
 	strings.write_string(&b, caps)
+	strings.write_string(&b, ",\"features\":")
+	strings.write_string(&b, features)
 	strings.write_string(&b, ",\"active_instance_ids\":[")
 	sync.mutex_lock(&bridge_runtime_mutex)
 	first := true
@@ -1048,6 +1167,8 @@ bridge_hub_hello_json :: proc() -> string {
 	strings.write_string(&b, "]}")
 	return strings.to_string(b)
 }
+
+bridge_runtime_features_json :: proc() -> string { return "[\"capture_agent_pane\"]" }
 
 bridge_runtime_write_json_string :: proc(b: ^strings.Builder, value: string) {
 	for ch in value {

@@ -204,6 +204,16 @@ send_line_with_escape :: proc(pane_id, text: string, escape_prefix: bool) -> boo
 	return err == nil && state.success
 }
 
+resize_pane_width :: proc(pane_id: string, width: int) -> bool {
+	if pane_id == "" do return false
+	w := width
+	if w < 40 do w = 40
+	if w > 200 do w = 200
+	cmd := []string{"tmux", "resize-pane", "-t", pane_id, "-x", fmt.tprintf("%d", w)}
+	state, _, _, err := os.process_exec(os.Process_Desc{command = cmd}, context.allocator)
+	return err == nil && state.success
+}
+
 capture_pane_text :: proc(pane_id: string, line_limit := 80) -> (string, bool) {
 	if pane_id == "" do return "", false
 	limit := line_limit

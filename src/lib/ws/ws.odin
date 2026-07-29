@@ -243,12 +243,34 @@ send_text :: proc(conn: ^Connection, text: string) -> bool {
 		frame[3] = byte(n & 0xff)
 	}
 	copy(frame[header_len:], transmute([]byte)text)
-	if conn.secure {
-		_, err := os.write(conn.stdin_w, frame)
-		return err == nil
+	if conn.secure do return send_all_file(conn.stdin_w, frame)
+	return send_all_tcp(conn.socket, frame)
+}
+
+send_all_tcp :: proc(socket: net.TCP_Socket, bytes: []byte) -> bool {
+	sent := 0
+	deadline := time.to_unix_nanoseconds(time.now()) + i64(5 * time.Second)
+	for sent < len(bytes) {
+		if time.to_unix_nanoseconds(time.now()) > deadline do return false
+		n, err := net.send_tcp(socket, bytes[sent:])
+		if err != nil {
+			if err == .Would_Block { time.sleep(10 * time.Millisecond); continue }
+			return false
+		}
+		if n <= 0 do return false
+		sent += n
 	}
-	_, err := net.send_tcp(conn.socket, frame)
-	return err == nil
+	return true
+}
+
+send_all_file :: proc(file: ^os.File, bytes: []byte) -> bool {
+	sent := 0
+	for sent < len(bytes) {
+		n, err := os.write(file, bytes[sent:])
+		if err != nil || n <= 0 do return false
+		sent += n
+	}
+	return true
 }
 
 tls_client_command :: proc(host: string, port: u16) -> []string {
